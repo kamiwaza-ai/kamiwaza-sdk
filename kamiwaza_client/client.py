@@ -1,13 +1,20 @@
+# kamiwaza_client/client.py
+
 import requests
 from typing import Optional
 from .exceptions import APIError, AuthenticationError
 from .services.models import ModelService
+from .services.serving import ServingService
 class KamiwazaClient:
     def __init__(self, base_url: str, api_key: Optional[str] = None):
         self.base_url = base_url.rstrip('/')
         self.session = requests.Session()
         if api_key:
             self.session.headers.update({'Authorization': f'Bearer {api_key}'})
+
+        # Initalize services
+        self.models = ModelService(self)
+        self.serving = ServingService(self)
 
     def _request(self, method: str, endpoint: str, **kwargs):
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
@@ -38,3 +45,9 @@ class KamiwazaClient:
         if not hasattr(self, '_models'):
             self._models = ModelService(self)
         return self._models
+    
+    @property
+    def serving(self):
+        if not hasattr(self, '_serving'):
+            self._serving = ServingService(self)
+        return self._serving
