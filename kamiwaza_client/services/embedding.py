@@ -1,24 +1,27 @@
 # kamiwaza_client/services/embedding.py
 
-from typing import Dict, List, Optional, Any
+from typing import List, Optional, Any, Dict
+from ..schemas.embedding import EmbeddingInput, EmbeddingOutput
 from .base_service import BaseService
 
 class EmbeddingService(BaseService):
-    def create_embedding(self, text: str, model: Optional[Dict] = None, max_length: int = 382,
-                         overlap: int = 32, preamble_text: str = "") -> Dict:
+    def create_embedding(self, text: str, model: Optional[Any] = None, max_length: int = 382,
+                         overlap: int = 32, preamble_text: str = "") -> EmbeddingOutput:
         """Create an embedding for the given text."""
-        data = {
-            "text": text,
-            "model": model,
-            "max_length": max_length,
-            "overlap": overlap,
-            "preamble_text": preamble_text
-        }
-        return self.client.post("/embedding/embedding/", json=data)
+        input_data = EmbeddingInput(
+            text=text,
+            model=model,
+            max_length=max_length,
+            overlap=overlap,
+            preamble_text=preamble_text
+        )
+        response = self.client.post("/embedding/embedding/", json=input_data.model_dump())
+        return EmbeddingOutput.model_validate(response)
 
-    def get_embedding(self, text: str) -> Dict:
+    def get_embedding(self, text: str) -> EmbeddingOutput:
         """Get an embedding for the given text."""
-        return self.client.get(f"/embedding/embedding/{text}")
+        response = self.client.get(f"/embedding/embedding/{text}")
+        return EmbeddingOutput.model_validate(response)
 
     def chunk_text(self, text: str, max_length: int = 510, overlap: int = 32,
                    preamble_text: str = "") -> List[str]:
@@ -36,7 +39,7 @@ class EmbeddingService(BaseService):
         params = {"batch_size": batch_size}
         return self.client.post("/embedding/embedding/embed_chunks", params=params, json=text_chunks)
 
-    def reset_model(self) -> Dict:
+    def reset_model(self) -> Dict[str, str]:
         """Reset the embedding model."""
         return self.client.post("/embedding/embedding/reset_model")
 

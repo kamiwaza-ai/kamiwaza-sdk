@@ -1,5 +1,4 @@
 # kamiwaza_client/client.py
-
 import requests
 from typing import Optional
 from .exceptions import APIError, AuthenticationError
@@ -13,6 +12,7 @@ from .services.cluster import ClusterService
 from .services.activity import ActivityService
 from .services.lab import LabService
 from .services.auth import AuthService
+
 class KamiwazaClient:
     def __init__(self, base_url: str, api_key: Optional[str] = None):
         self.base_url = base_url.rstrip('/')

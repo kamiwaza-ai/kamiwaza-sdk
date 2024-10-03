@@ -1,9 +1,11 @@
 # kamiwaza_client/services/activity.py
 
-from typing import List, Dict
+from typing import List
+from ..schemas.activity import Activity
 from .base_service import BaseService
 
 class ActivityService(BaseService):
-    def get_recent_activity(self) -> List[Dict]:
+    def get_recent_activity(self) -> List[Activity]:
         """Get recent activity."""
-        return self.client.get("/activity/activities/")
+        response = self.client.get("/activity/activities/")
+        return [Activity.model_validate(item) for item in response]

@@ -1,25 +1,28 @@
 # kamiwaza_client/services/catalog.py
 
-from typing import Dict, List, Optional
-from uuid import UUID
+from typing import List, Optional, Dict
+from ..schemas.catalog import Dataset, Container
 from .base_service import BaseService
 
 class CatalogService(BaseService):
-    def list_datasets(self) -> List[Dict]:
+    def list_datasets(self) -> List[Dataset]:
         """List all datasets."""
-        return self.client.get("/catalog/dataset")
+        response = self.client.get("/catalog/dataset")
+        return [Dataset.model_validate(item) for item in response]
 
-    def create_dataset(self, dataset: Dict) -> Dict:
+    def create_dataset(self, dataset: Dataset) -> Dataset:
         """Create a new dataset."""
-        return self.client.post("/catalog/dataset", json=dataset)
+        response = self.client.post("/catalog/dataset", json=dataset.model_dump())
+        return Dataset.model_validate(response)
 
     def list_containers(self) -> List[str]:
         """List all containers."""
         return self.client.get("/catalog/containers")
 
-    def get_dataset(self, datasetname: str) -> List[Dict]:
+    def get_dataset(self, datasetname: str) -> List[Dataset]:
         """Retrieve a specific dataset by its name."""
-        return self.client.get(f"/catalog/dataset/{datasetname}")
+        response = self.client.get(f"/catalog/dataset/{datasetname}")
+        return [Dataset.model_validate(item) for item in response]
 
     def ingest_by_path(self, path: str, dataset_urn: Optional[str] = None, 
                        platform: Optional[str] = None, env: str = "PROD", 
