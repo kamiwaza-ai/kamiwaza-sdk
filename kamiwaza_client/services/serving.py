@@ -2,11 +2,10 @@
 
 from typing import Dict, List, Optional, Union
 from uuid import UUID
+from .base_service import BaseService
 
-class ServingService:
-    def __init__(self, client):
-        self.client = client
-
+class ServingService(BaseService):
+    
     def start_ray(self, address: Optional[str] = None, runtime_env: Optional[Dict] = None, options: Optional[Dict] = None) -> None:
         """Start Ray with given parameters."""
         data = {

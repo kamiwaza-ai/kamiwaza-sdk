@@ -2,10 +2,9 @@
 
 from typing import Dict, List, Optional, Union
 from uuid import UUID
+from .base_service import BaseService
 
-class ModelService:
-    def __init__(self, client):
-        self.client = client
+class ModelService(BaseService):
 
     def get_model(self, model_id: UUID) -> Dict:
         """Retrieve a specific model by its ID."""
