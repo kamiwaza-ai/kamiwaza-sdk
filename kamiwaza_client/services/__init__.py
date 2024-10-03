@@ -2,7 +2,7 @@ from .models import ModelService
 from .serving import ServingService
 from .vectordb import VectorDBService
 from .catalog import CatalogService
-from .prompts import PromptService
+from .prompts import PromptsService
 from .embedding import EmbeddingService
 from .cluster import ClusterService
 from .activity import ActivityService

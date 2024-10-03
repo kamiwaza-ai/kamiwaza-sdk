@@ -1,6 +1,6 @@
 # kamiwaza_client/services/lab.py
 
-from typing import List, Optional
+from typing import List, Optional, Dict
 from uuid import UUID
 from ..schemas.lab import CreateLabRequest, Lab, LabResponse
 from .base_service import BaseService

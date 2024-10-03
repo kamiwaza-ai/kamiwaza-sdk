@@ -27,7 +27,9 @@ class KamiwazaClient:
     ):
         self.base_url = base_url.rstrip('/')
         self.session = requests.Session()
-        self.auth = AuthService(self)
+        
+        # Initialize _auth_service directly
+        self._auth_service = AuthService(self)
 
         if authenticator:
             self.authenticator = authenticator
@@ -138,6 +140,4 @@ class KamiwazaClient:
 
     @property
     def auth(self):
-        if not hasattr(self, '_auth_service'):
-            self._auth_service = AuthService(self)
         return self._auth_service
