@@ -1,19 +1,51 @@
 # kamiwaza_client/services/catalog.py
 
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Any
 from ..schemas.catalog import Dataset, Container
 from .base_service import BaseService
-
+import uuid
 class CatalogService(BaseService):
     def list_datasets(self) -> List[Dataset]:
         """List all datasets."""
         response = self.client.get("/catalog/dataset")
         return [Dataset.model_validate(item) for item in response]
-
-    def create_dataset(self, dataset: Dataset) -> Dataset:
+    
+    def create_dataset(
+        self,
+        dataset_name: str, 
+        platform: str, 
+        environment: str = "PROD",
+        description: str = "", 
+        owners: List[str] = None,
+        status: str = "CONFORMING",
+        location: Optional[str] = None,
+        additional_properties: Optional[Dict[str, Any]] = None
+    ) -> Dataset:
         """Create a new dataset."""
-        response = self.client.post("/catalog/dataset", json=dataset.model_dump())
+        # Create a Dataset object that matches the server's expected structure
+        dataset = {
+            "paths": [dataset_name],
+            "platform": platform,
+            "name": dataset_name,
+            "id": str(uuid.uuid4()),
+            "actor": owners[0] if owners else "system",
+            "customProperties": {
+                "environment": environment,
+                "description": description,
+                "status": status,
+                "location": location,
+                **(additional_properties or {})
+            },
+            "removed": False,
+            "tags": []
+        }
+
+        # Send the Dataset object to the server
+        response = self.client.post("/catalog/dataset", json=dataset)
+
+        # Parse the response and return a Dataset object
         return Dataset.model_validate(response)
+    
 
     def list_containers(self) -> List[str]:
         """List all containers."""

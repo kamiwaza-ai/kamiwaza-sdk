@@ -6,6 +6,7 @@ from .exceptions import APIError, AuthenticationError
 from .services.models import ModelService
 from .services.serving import ServingService
 from .services.vectordb import VectorDBService
+from .services.vectors import VectorService
 from .services.catalog import CatalogService
 from .services.prompts import PromptsService  
 from .services.embedding import EmbeddingService
@@ -14,6 +15,7 @@ from .services.activity import ActivityService
 from .services.lab import LabService
 from .services.auth import AuthService
 from .authentication import Authenticator, ApiKeyAuthenticator
+from .runners.file_runner import FileRunnerClient
 import logging
 
 logger = logging.getLogger(__name__)
@@ -101,6 +103,12 @@ class KamiwazaClient:
         if not hasattr(self, '_vectordb'):
             self._vectordb = VectorDBService(self)
         return self._vectordb
+    
+    @property
+    def vectors(self):
+        if not hasattr(self, '_vectors'):
+            self._vectors = VectorService(self)
+        return self._vectors
 
     @property
     def catalog(self):
@@ -141,3 +149,9 @@ class KamiwazaClient:
     @property
     def auth(self):
         return self._auth_service
+
+    @property
+    def file_runner(self):
+        if not hasattr(self, '_file_runner'):
+            self._file_runner = FileRunnerClient(self)
+        return self._file_runner

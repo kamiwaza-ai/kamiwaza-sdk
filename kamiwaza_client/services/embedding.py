@@ -47,3 +47,7 @@ class EmbeddingService(BaseService):
         """Generate embeddings for a batch of inputs."""
         params = {"model_name": model_name} if model_name else None
         return self.client.post("/embedding/embedding/call", params=params, json=batch)
+
+    def get_model_name(self) -> str:
+        """Get the name of the embedding model."""
+        return self.client.get("/embedding/model_name")

@@ -1,6 +1,7 @@
 from .models import ModelService
 from .serving import ServingService
 from .vectordb import VectorDBService
+from .vectors import VectorService
 from .catalog import CatalogService
 from .prompts import PromptsService
 from .embedding import EmbeddingService
