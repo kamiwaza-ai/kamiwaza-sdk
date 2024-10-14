@@ -15,6 +15,7 @@ setup(
     long_description_content_type="text/markdown",
     packages=find_packages(),
     python_requires=">=3.10",
+    setup_requires=["Cython"],
     install_requires=[
         "requests>=2.25.1",
         "pydantic>=1.8.1",
