@@ -10,13 +10,29 @@ class StorageType(str, Enum):
     FILE = 'file'
     S3 = 's3'
 
+    def __str__(self):
+        return self.value
+
 class CreateModelFile(BaseModel):
     name: str
     size: Optional[int] = None
     storage_type: Optional[StorageType] = None
     storage_location: Optional[str] = None
 
-class ModelFile(CreateModelFile):
+    def __str__(self):
+        return f"CreateModelFile: {self.name} (Size: {self.size}, Type: {self.storage_type})"
+
+    def __repr__(self):
+        return self.__str__()
+
+    def all_attributes(self):
+        return "\n".join(f"{key}: {value}" for key, value in self.model_dump().items())
+
+class ModelFile(BaseModel):
+    name: str
+    size: Optional[int] = None
+    storage_type: Optional[StorageType] = None
+    storage_location: Optional[str] = None
     id: Optional[UUID] = Field(default=None, description="Primary key for the model file.")
     hub: Optional[str] = Field(default=None, description="The hub where the model file is located.")
     m_id: Optional[UUID] = Field(default=None, description="The id of the model")
@@ -32,3 +48,19 @@ class ModelFile(CreateModelFile):
     download_elapsed: Optional[str] = Field(default=None, description="The time elapsed during the download.")
     download_remaining: Optional[str] = Field(default=None, description="The time remaining during the download.")
     download_throughput: Optional[str] = Field(default=None, description="The download throughput")
+
+    def __str__(self):
+        return (
+            f"ModelFile: {self.name}\n"
+            f"ID: {self.id}\n"
+            f"Size: {self.size}\n"
+            f"Storage Type: {self.storage_type}\n"
+            f"Is Downloading: {self.is_downloading}\n"
+            f"Download Progress: {self.download_percentage}%"
+        )
+
+    def __repr__(self):
+        return self.__str__()
+
+    def all_attributes(self):
+        return "\n".join(f"{key}: {value}" for key, value in self.model_dump().items())

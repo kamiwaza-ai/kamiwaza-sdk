@@ -51,6 +51,21 @@ class DeployModelRequest(BaseModel):
     disable_log_requests: bool = Field(default=False, description="Disable logging of requests")
     m_config: Optional[UUID] = Field(default=None, description="Reference to DBModelConfig")
 
+    def __str__(self):
+        return (
+            f"DeployModelRequest:\n"
+            f"Model ID: {self.model}\n"
+            f"Config ID: {self.m_config}\n"
+            f"Copies: {self.starting_copies}"
+        )
+    
+    def __repr__(self):
+        return self.__str__()
+
+    def all_attributes(self):
+        return "\n".join(f"{key}: {value}" for key, value in self.model_dump().items())
+
 model_config = {
     "from_attributes": True
 }
+

@@ -23,14 +23,19 @@ class CreateModelDeployment(BaseModel):
     vram_allocation: Optional[float] = Field(default=None, description="The VRAM allocation, in bytes of vram for each copy of the deployed model")
     gpu_allocation: Optional[float] = Field(default=None, description="The GPU allocation, as a percentage of the total VRAM available")
 
-class ModelDeployment(CreateModelDeployment):
-    id: UUID = Field(description="The UUID of the deployment")
-    requested_at: datetime = Field(description="Time at which the deployment was requested")
-    deployed_at: Optional[datetime] = Field(default=None, description="Time at which the deployment was started")
-    serve_path: Optional[str] = Field(default=None, description="Ray serve path prefix of the deployment")
-    single_node_mode: Optional[bool] = Field(default=False, description="Whether the deployment is in single node mode")
-    status: str = Field(description="Status of the deployment")
-    instances: List['ModelInstance'] = Field(default_factory=list, description="List of instances associated with the deployment")
+    def __str__(self):
+        return (
+            f"CreateModelDeployment:\n"
+            f"Model ID: {self.m_id}\n"
+            f"Config ID: {self.m_config_id}\n"
+            f"Copies: {self.starting_copies}"
+        )
+
+    def __repr__(self):
+        return self.__str__()
+
+    def all_attributes(self):
+        return "\n".join(f"{key}: {value}" for key, value in self.model_dump().items())
 
 class ModelInstance(BaseModel):
     id: UUID = Field(description="The UUID of the instance")
@@ -42,6 +47,60 @@ class ModelInstance(BaseModel):
     listen_port: Optional[int] = Field(default=None, description="Port on which the instance is listening")
     status: Optional[str] = Field(default=None, description="Status of the instance")
 
+    def __str__(self):
+        return (
+            f"ModelInstance:\n"
+            f"ID: {self.id}\n"
+            f"Deployment ID: {self.deployment_id}\n"
+            f"Status: {self.status}\n"
+            f"Listen Port: {self.listen_port}"
+        )
+
+    def __repr__(self):
+        return self.__str__()
+
+    def all_attributes(self):
+        return "\n".join(f"{key}: {value}" for key, value in self.model_dump().items())
+
+class ModelDeployment(CreateModelDeployment):
+    id: UUID = Field(description="The UUID of the deployment")
+    requested_at: datetime = Field(description="Time at which the deployment was requested")
+    deployed_at: Optional[datetime] = Field(default=None, description="Time at which the deployment was started")
+    serve_path: Optional[str] = Field(default=None, description="Ray serve path prefix of the deployment")
+    single_node_mode: Optional[bool] = Field(default=False, description="Whether the deployment is in single node mode")
+    status: str = Field(description="Status of the deployment")
+    instances: List[ModelInstance] = Field(default_factory=list, description="List of instances associated with the deployment")
+
+    def __str__(self):
+        return (
+            f"ModelDeployment: ID: {self.id}\n"
+            f"Model ID: {self.m_id}\n"
+            f"Status: {self.status}\n"
+            f"Instances: {len(self.instances)}\n"
+            f"Requested at: {self.requested_at}"
+        )
+
+    def __repr__(self):
+        return self.__str__()
+
+    def all_attributes(self):
+        return "\n".join(f"{key}: {value}" for key, value in self.model_dump().items())
+
 class UIModelDeployment(ModelDeployment):
     m_name: Optional[str] = Field(default=None, description="Name of the model")
     host_ip: Optional[str] = Field(default=None, description="IP address associated with the host_name")
+
+    def __str__(self):
+        return (
+            f"UIModelDeployment: ID: {self.id}\n"
+            f"Model Name: {self.m_name}\n"
+            f"Status: {self.status}\n"
+            f"Instances: {len(self.instances)}\n"
+            f"Host IP: {self.host_ip}"
+        )
+
+    def __repr__(self):
+        return self.__str__()
+
+    def all_attributes(self):
+        return "\n".join(f"{key}: {value}" for key, value in self.model_dump().items())
