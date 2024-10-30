@@ -174,8 +174,13 @@ class ModelService(BaseService):
     
     def get_model_files_by_model_id(self, model_id: UUID) -> List[ModelFile]:
         """Retrieve all model files by their model ID."""
-        response = self.client._request("GET", f"/model_files/model/{model_id}")
-        return [ModelFile.model_validate(item) for item in response]
+        # Get the model which includes the files
+        response = self.client._request("GET", f"/models/{model_id}")
+        
+        # Extract the files from the response
+        if "m_files" in response:
+            return [ModelFile.model_validate(item) for item in response["m_files"]]
+        return []
 
     def list_model_files(self) -> List[ModelFile]:
         """List all model files."""

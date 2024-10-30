@@ -25,61 +25,53 @@ class ServingService(BaseService):
     def estimate_model_vram(self, deployment_request: CreateModelDeployment) -> dict:
         """Estimate the VRAM required for a model deployment."""
         return self.client.post("/serving/estimate_model_vram", json=deployment_request.model_dump())
+    
 
     def deploy_model(self, 
-                        model_id: Union[str, UUID], 
-                        m_config_id: Optional[Union[str, UUID]] = None,
-                        m_file_id: Optional[Union[str, UUID]] = None,
-                        **kwargs) -> Union[UUID, bool]:
-            """
-            Deploy a model based on the provided model ID and optional parameters.
+                model_id: Union[str, UUID], 
+                m_config_id: Optional[Union[str, UUID]] = None,
+                m_file_id: Optional[Union[str, UUID]] = None,
+                **kwargs) -> Union[UUID, bool]:
+        """
+        Deploy a model based on the provided model ID and optional parameters.
 
-            Args:
-                model_id (Union[str, UUID]): The ID of the model to deploy.
-                m_config_id (Optional[Union[str, UUID]]): The ID of the model configuration to use.
-                m_file_id (Optional[Union[str, UUID]]): The ID of the specific model file to use.
-                **kwargs: Additional parameters for the deployment (e.g., autoscaling, min_copies, etc.)
+        Args:
+            model_id (Union[str, UUID]): The ID of the model to deploy.
+            m_config_id (Optional[Union[str, UUID]]): The ID of the model configuration to use.
+            m_file_id (Optional[Union[str, UUID]]): The ID of the specific model file to use.
+            **kwargs: Additional deployment parameters (engine_name, min_copies, etc.)
 
-            Returns:
-                Union[UUID, bool]: The deployment ID if successful, or a boolean indicating success/failure.
-            """
-            # Convert model_id to UUID if it's a string
-            model_id = UUID(model_id) if isinstance(model_id, str) else model_id
+        Returns:
+            Union[UUID, bool]: The deployment ID if successful, or False if deployment failed.
+        """
+        # Convert model_id to UUID if it's a string
+        model_id = UUID(model_id) if isinstance(model_id, str) else model_id
+        
+        # If m_config_id is not provided, fetch the default configuration
+        if m_config_id is None:
+            configs = self.client.models.get_model_configs(model_id)
+            if not configs:
+                raise ValueError("No configurations found for this model")
+            default_config = next((config for config in configs if config.default), configs[0])
+            m_config_id = default_config.id
 
-            # If m_config_id is not provided, fetch the default configuration
-            if m_config_id is None:
-                configs = self.client.models.get_model_configs(model_id)
-                default_config = next((config for config in configs if config.default), configs[0])
-                m_config_id = default_config.id
+        # Prepare the deployment request
+        deployment_request = CreateModelDeployment(
+            m_id=model_id,
+            m_config_id=m_config_id,
+            m_file_id=m_file_id,
+            **kwargs
+        )
 
-            # If m_file_id is not provided, fetch them
-            if m_file_id is None:
-                model_files = self.client.models.get_model_files_by_model_id(model_id)
-                if model_files:
-                    # filter to models that have download = True
-                    model_files = [file for file in model_files if file.download == True]
-                    print(f"model_files: {model_files}")
-                    m_file_id = model_files[0].id
-                else:
-                    raise ValueError("No model files found for the given model ID")
-
-            # Prepare the deployment request
-            deployment_request = CreateModelDeployment(
-                m_id=model_id,
-                m_config_id=m_config_id,
-                m_file_id=m_file_id,
-                **kwargs
-            )
-
-            # Convert UUIDs to strings in the deployment_request dictionary
-            request_dict = deployment_request.model_dump()
-            request_dict['m_id'] = str(request_dict['m_id'])
-            request_dict['m_file_id'] = str(request_dict['m_file_id']) if request_dict['m_file_id'] else None
-            request_dict['m_config_id'] = str(request_dict['m_config_id'])
-
-            
-            response = self.client.post("/serving/deploy_model", json=request_dict)
-            return UUID(response) if isinstance(response, str) else response
+        # Convert UUIDs to strings in the deployment_request dictionary
+        request_dict = deployment_request.model_dump()
+        request_dict['m_id'] = str(request_dict['m_id'])
+        if request_dict.get('m_file_id'):
+            request_dict['m_file_id'] = str(request_dict['m_file_id'])
+        request_dict['m_config_id'] = str(request_dict['m_config_id'])
+    
+        response = self.client.post("/serving/deploy_model", json=request_dict)
+        return UUID(response) if isinstance(response, str) else response
 
 
     def list_deployments(self, model_id: Optional[UUID] = None) -> List[UIModelDeployment]:

@@ -16,12 +16,16 @@ class VectorService(BaseService):
         response = self.client.delete(f"/vectors/schema/{collection_name}")
         return response
 
-    def add_schema(self, add_schema_data: AddSchema) -> Dict[str, Any]:
+    def add_schema(self, add_schema_data: AddSchema | Dict[str, Any]) -> Dict[str, Any]:
         """Add a new schema for a collection."""
-        print(add_schema_data)
-        print(add_schema_data.model_dump())
-        add_schema_data = add_schema_data.model_dump()
-        response = self.client.post("/vectors/schema", json=add_schema_data)
+        if isinstance(add_schema_data, dict):
+            # If it's already a dict, use it directly
+            schema_data = add_schema_data
+        else:
+            # If it's an AddSchema object, convert it to a dict
+            schema_data = add_schema_data.model_dump()
+        
+        response = self.client.post("/vectors/schema", json=schema_data)
         return response
 
     def search_vector(self, search_vector_data: SearchVector) -> List[Dict[str, Any]]:

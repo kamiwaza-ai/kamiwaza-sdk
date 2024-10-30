@@ -9,7 +9,7 @@ class CatalogService(BaseService):
         """List all datasets."""
         response = self.client.get("/catalog/dataset")
         return [Dataset.model_validate(item) for item in response]
-    
+        
     def create_dataset(
         self,
         dataset_name: str, 
@@ -22,30 +22,29 @@ class CatalogService(BaseService):
         additional_properties: Optional[Dict[str, Any]] = None
     ) -> Dataset:
         """Create a new dataset."""
-        # Create a Dataset object that matches the server's expected structure
-        dataset = {
-            "paths": [dataset_name],
-            "platform": platform,
-            "name": dataset_name,
-            "id": str(uuid.uuid4()),
-            "actor": owners[0] if owners else "system",
-            "customProperties": {
+        # First create the Dataset model as expected by the API endpoint
+        dataset = Dataset(
+            paths=[dataset_name],
+            name=dataset_name,
+            id=str(uuid.uuid4()),
+            platform=platform,
+            actor=owners[0] if owners and owners[0] else "system",
+            customProperties={
                 "environment": environment,
                 "description": description,
                 "status": status,
                 "location": location,
                 **(additional_properties or {})
             },
-            "removed": False,
-            "tags": []
-        }
+            removed=False,
+            tags=[]
+        )
 
         # Send the Dataset object to the server
-        response = self.client.post("/catalog/dataset", json=dataset)
+        response = self.client.post("/catalog/dataset", json=dataset.model_dump())
 
         # Parse the response and return a Dataset object
         return Dataset.model_validate(response)
-    
 
     def list_containers(self) -> List[str]:
         """List all containers."""

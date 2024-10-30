@@ -16,6 +16,7 @@ from .services.lab import LabService
 from .services.auth import AuthService
 from .authentication import Authenticator, ApiKeyAuthenticator
 from .runners.file_runner import FileRunnerClient
+from .utils.rag import RAGUtils
 import logging
 
 logger = logging.getLogger(__name__)
@@ -155,3 +156,9 @@ class KamiwazaClient:
         if not hasattr(self, '_file_runner'):
             self._file_runner = FileRunnerClient(self)
         return self._file_runner
+    
+    @property
+    def rag(self):
+        if not hasattr(self, '_rag'):
+            self._rag = RAGUtils(self)
+        return self._rag    
