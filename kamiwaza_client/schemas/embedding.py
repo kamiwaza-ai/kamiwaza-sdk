@@ -23,10 +23,8 @@ class EmbeddingInput(BaseModel):
         return data
 
 class EmbeddingOutput(BaseModel):
-    """
-    Pydantic model for the output data of the embedding generation.
-    """
-    embedding: List[float] = Field(..., description="The generated embedding")
+    embedding: List[float]
+    offset: Optional[int] = None
 class EmbeddingConfig(BaseModel):
     id: UUID = Field(default_factory=uuid4)
     provider_type: str
@@ -44,3 +42,9 @@ class EmbeddingConfig(BaseModel):
         data = super().model_dump()
         data['id'] = str(data['id'])
         return data
+    
+
+class ChunkResponse(BaseModel):
+    chunks: List[str]
+    offsets: Optional[List[int]] = None
+    token_counts: Optional[List[int]] = None
