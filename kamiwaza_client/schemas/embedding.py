@@ -1,3 +1,5 @@
+# kamiwaza_client/schemas/embedding.py
+
 
 from pydantic import BaseModel, Field
 from typing import Any, List, Optional

@@ -1,3 +1,5 @@
+# kamiwaza-sdk/kamiwaza_client/schemas/vectordb.py
+
 import uuid
 from pydantic import Field, BaseModel
 from typing import Any, Dict, List, Tuple, Optional

@@ -15,9 +15,6 @@ class EmbeddingProvider:
     def __init__(self, service: 'EmbeddingService', embedder_id: Union[str, UUID]):
         self._service = service
         self.embedder_id = str(embedder_id)
-        self.default_timeout = 60
-        self.batch_timeout = 120  # 2 minutes for batch operations
-        self.model_load_timeout = 300  # 5 minutes for first model load
 
     def chunk_text(
         self, 
@@ -26,7 +23,6 @@ class EmbeddingProvider:
         overlap: int = 32,
         preamble_text: str = "",
         return_metadata: bool = False,
-        timeout: Optional[int] = None
     ) -> Union[List[str], ChunkResponse]:
         """Chunk text into smaller pieces."""
         # Parameter validation
@@ -47,8 +43,7 @@ class EmbeddingProvider:
         try:
             response = self._service.client.post(
                 "/embedding/chunk", 
-                params=params,
-                timeout=timeout or self.default_timeout
+                params=params
             )
             
             if return_metadata:
@@ -59,23 +54,24 @@ class EmbeddingProvider:
                 )
             return response
         except Exception as e:
-            if "timeout" in str(e).lower():
-                raise TimeoutError(f"Request timed out after {timeout or self.default_timeout} seconds")
             raise APIError(f"Operation failed: {str(e)}")
 
-    def embed_chunks(self, text_chunks: List[str], batch_size: int = 64, timeout: Optional[int] = None) -> List[List[float]]:
+    def embed_chunks(self, text_chunks: List[str], batch_size: int = 64) -> List[List[float]]:
         """Generate embeddings for a list of text chunks."""
         try:
-            actual_timeout = timeout or self.batch_timeout
-            return self._service.client.post(
+            total_chunks = len(text_chunks)
+            logger.info(f"Starting embedding generation for {total_chunks} chunks (batch size: {batch_size})")
+            
+            result = self._service.client.post(
                 "/embedding/batch", 
                 params={"batch_size": batch_size, "embedder_id": self.embedder_id},
-                json=text_chunks,
-                timeout=actual_timeout
+                json=text_chunks
             )
+            
+            logger.info(f"Successfully generated embeddings for {total_chunks} chunks")
+            return result
         except Exception as e:
-            if "timeout" in str(e).lower():
-                raise TimeoutError(f"Batch embedding timed out after {actual_timeout} seconds")
+            logger.error(f"Failed to generate embeddings: {str(e)}")
             raise APIError(f"Operation failed: {str(e)}")
 
     def create_embedding(self, text: str, max_length: int = 382,
@@ -89,17 +85,13 @@ class EmbeddingProvider:
             preamble_text=preamble_text
         )
         try:
-            timeout = self.model_load_timeout if not self._service._model_loaded.get(self.embedder_id) else self.default_timeout
             response = self._service.client.post(
                 "/embedding/generate", 
-                json=input_data.model_dump(),
-                timeout=timeout
+                json=input_data.model_dump()
             )
             self._service._model_loaded[self.embedder_id] = True
             return EmbeddingOutput.model_validate(response)
         except Exception as e:
-            if "timeout" in str(e).lower():
-                raise TimeoutError(f"Request timed out after {timeout} seconds")
             raise APIError(f"Operation failed: {str(e)}")
 
     def get_embedding(self, text: str, return_offset: bool = False) -> EmbeddingOutput:
@@ -118,8 +110,7 @@ class EmbeddingProvider:
         try:
             return self._service.client.post(
                 "/embedding/reset",
-                params={"embedder_id": self.embedder_id},
-                timeout=self.default_timeout
+                params={"embedder_id": self.embedder_id}
             )
         except Exception as e:
             raise APIError(f"Failed to reset model: {str(e)}")
@@ -146,8 +137,6 @@ class EmbeddingService(BaseService):
 
     def __init__(self, client):
         super().__init__(client)
-        self.default_timeout = 60
-        self.init_timeout = 300  # 5 minutes for initialization
         self._model_loaded = {}  # Track which models have been loaded
 
     def initialize_provider(
@@ -155,7 +144,6 @@ class EmbeddingService(BaseService):
         provider_type: str, 
         model: str, 
         device: Optional[str] = None,
-        timeout: Optional[int] = None,
         **kwargs
     ) -> EmbeddingProvider:
         """Initialize a new embedding provider"""
@@ -166,22 +154,14 @@ class EmbeddingService(BaseService):
             **kwargs
         )
         try:
-            actual_timeout = timeout or self.init_timeout
             response = self.client.post(
                 "/embedding/initialize", 
-                json=config.model_dump(),
-                timeout=actual_timeout
+                json=config.model_dump()
             )
             provider_id = response["id"]
             self._model_loaded[provider_id] = False  # Track new provider
             return EmbeddingProvider(self, provider_id)
         except Exception as e:
-            if "timeout" in str(e).lower():
-                raise TimeoutError(
-                    f"Provider initialization timed out after {actual_timeout} seconds. "
-                    "This may be normal for large models - the model will continue downloading "
-                    "in the background and will be available when ready."
-                )
             raise APIError(f"Failed to initialize provider: {str(e)}")
 
     def SentenceTransformerEmbedding(
@@ -201,7 +181,7 @@ class EmbeddingService(BaseService):
     def get_providers(self) -> List[str]:
         """Get list of available embedding providers"""
         try:
-            return self.client.get("/embedding/providers", timeout=self.default_timeout)
+            return self.client.get("/embedding/providers")
         except Exception as e:
             raise APIError(f"Failed to get providers: {str(e)}")
 

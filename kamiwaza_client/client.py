@@ -2,7 +2,7 @@
 
 import requests
 from typing import Optional
-from .exceptions import APIError, AuthenticationError, TimeoutError
+from .exceptions import APIError, AuthenticationError
 from .services.models import ModelService
 from .services.serving import ServingService
 from .services.vectordb import VectorDBService
@@ -16,7 +16,6 @@ from .services.lab import LabService
 from .services.auth import AuthService
 from .authentication import Authenticator, ApiKeyAuthenticator
 from .runners.file_runner import FileRunnerClient
-from .utils.rag import RAGUtils
 import logging
 
 logger = logging.getLogger(__name__)
@@ -27,10 +26,8 @@ class KamiwazaClient:
         base_url: str,
         api_key: Optional[str] = None,
         authenticator: Optional[Authenticator] = None,
-        timeout: int = 30  # Add default timeout
     ):
         self.base_url = base_url.rstrip('/')
-        self.timeout = timeout
         self.session = requests.Session()
         
         # Initialize _auth_service directly
@@ -49,10 +46,9 @@ class KamiwazaClient:
     def _request(self, method: str, endpoint: str, **kwargs):
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
 
-        # Ensure headers and timeout are present
+        # Ensure headers are present
         if 'headers' not in kwargs:
             kwargs['headers'] = {}
-        kwargs['timeout'] = kwargs.get('timeout', self.timeout)
 
         try:
             response = self.session.request(method, url, **kwargs)
@@ -67,8 +63,6 @@ class KamiwazaClient:
                     raise AuthenticationError("Authentication failed. No authenticator provided.")
             elif response.status_code >= 400:
                 raise APIError(f"API request failed with status {response.status_code}: {response.text}")
-        except requests.Timeout:
-            raise TimeoutError(f"Request to {endpoint} timed out after {kwargs['timeout']} seconds")
         except requests.RequestException as e:
             logger.error(f"Request failed: {e}")
             raise APIError(f"An error occurred while making the request: {e}")
@@ -158,8 +152,3 @@ class KamiwazaClient:
             self._file_runner = FileRunnerClient(self)
         return self._file_runner
     
-    @property
-    def rag(self):
-        if not hasattr(self, '_rag'):
-            self._rag = RAGUtils(self)
-        return self._rag    

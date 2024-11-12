@@ -3,19 +3,25 @@
 from pydantic import BaseModel, Field
 from typing import Dict, Any, List, Optional
 
+from pydantic import BaseModel, Field
+from typing import Dict, Any, List, Optional
+
 class Dataset(BaseModel):
-    paths: List[str]
-    platform: str
-    name: str
+    urn: str
     id: str
-    actor: str
-    customProperties: Dict[str, Any]
-    removed: bool
-    tags: List[str]
+    platform: str
+    environment: str
+    paths: Optional[List[str]] = None
+    name: Optional[str] = None
+    actor: Optional[str] = None
+    customProperties: Optional[Dict[str, Any]] = None
+    removed: Optional[bool] = None
+    tags: Optional[List[str]] = None
 
     model_config = {
         "extra": "allow"
     }
+
 
 class Container(BaseModel):
     model_config = {

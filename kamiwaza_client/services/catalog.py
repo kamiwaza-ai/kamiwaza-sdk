@@ -56,9 +56,10 @@ class CatalogService(BaseService):
         return [Dataset.model_validate(item) for item in response]
 
     def ingest_by_path(self, path: str, dataset_urn: Optional[str] = None, 
-                       platform: Optional[str] = None, env: str = "PROD", 
-                       location: str = "MAIN", recursive: bool = False, 
-                       secrets: Optional[Dict[str, str]] = None) -> None:
+                    platform: Optional[str] = None, env: str = "PROD", 
+                    location: str = "MAIN", recursive: bool = False, 
+                    description: Optional[str] = None,
+                    secrets: Optional[Dict[str, str]] = None) -> None:
         """Ingest a dataset by its path."""
         params = {
             "path": path,
@@ -66,9 +67,11 @@ class CatalogService(BaseService):
             "platform": platform,
             "env": env,
             "location": location,
-            "recursive": recursive
+            "recursive": recursive,
+            "description": description  
         }
         return self.client.post("/catalog/dataset/ingestbypath", params=params, json=secrets)
+
 
     def secret_exists(self, secret_name: str) -> bool:
         """Check if a secret exists."""
