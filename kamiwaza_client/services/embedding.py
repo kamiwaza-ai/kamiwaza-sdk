@@ -68,6 +68,9 @@ class EmbeddingProvider:
                 json=text_chunks
             )
             
+            # Convert embeddings to lists of native Python floats
+            result = [[float(x) for x in embedding] for embedding in result]
+            
             logger.info(f"Successfully generated embeddings for {total_chunks} chunks")
             return result
         except Exception as e:
@@ -89,6 +92,10 @@ class EmbeddingProvider:
                 "/embedding/generate", 
                 json=input_data.model_dump()
             )
+            # Convert embedding values to native Python floats
+            if 'embedding' in response:
+                response['embedding'] = [float(x) for x in response['embedding']]
+            
             self._service._model_loaded[self.embedder_id] = True
             return EmbeddingOutput.model_validate(response)
         except Exception as e:

@@ -45,3 +45,39 @@ class SearchVector(BaseModel):
     anns_field: str = Field("embedding", description="The field of the collection to search in")
     param: Dict = Field(None, description="The parameters for the search")
     limit: int = Field(100, description="The maximum number of top records to return")
+
+class InsertVectorsRequest(BaseModel):
+    collection_name: str
+    vectors: List[List[float]]
+    metadata: List[Dict[str, Any]]
+    dimensions: int
+    field_list: Optional[List[Tuple[str, str]]] = None
+
+class InsertVectorsResponse(BaseModel):
+    rows_inserted: int
+
+class SearchVectorsRequest(BaseModel):
+    collection_name: str
+    query_vectors: List[List[float]]
+    anns_field: str = "embedding"
+    search_params: Dict[str, Any] = None
+    limit: int = 100
+    output_fields: Optional[List[str]] = None
+
+class SearchResult(BaseModel):
+    id: Any
+    score: float
+    metadata: Dict[str, Any]
+
+    @classmethod
+    def from_milvus_result(cls, hit):
+        # Extract metadata from the hit entity
+        metadata = {}
+        for field_name in hit.entity.get_field_names():
+            if field_name != "embedding":  # Skip embedding if not needed
+                metadata[field_name] = hit.entity.get(field_name)
+        return cls(
+            id=hit.id,
+            score=hit.distance,
+            metadata=metadata
+        )

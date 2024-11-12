@@ -26,7 +26,15 @@ class KamiwazaClient:
         base_url: str,
         api_key: Optional[str] = None,
         authenticator: Optional[Authenticator] = None,
+        log_level: int = logging.INFO,
     ):
+        # Configure logging
+        logging.basicConfig(
+            level=log_level,
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
+        self.logger = logger
+        
         self.base_url = base_url.rstrip('/')
         self.session = requests.Session()
         
@@ -45,6 +53,7 @@ class KamiwazaClient:
 
     def _request(self, method: str, endpoint: str, **kwargs):
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
+        self.logger.debug(f"Making {method} request to {url}")
 
         # Ensure headers are present
         if 'headers' not in kwargs:
