@@ -1,6 +1,6 @@
 # kamiwaza_client/services/vectordb.py
 
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from ..schemas.vectordb import CreateVectorDB, VectorDB, InsertVectorsRequest, InsertVectorsResponse, SearchVectorsRequest, SearchResult
 from .base_service import BaseService
 import logging
@@ -57,3 +57,84 @@ class VectorDBService(BaseService):
             
         response = self.client.post("/vectordb/search_vectors", json=request_dict)
         return [SearchResult.model_validate(item) for item in response]
+
+    def insert(
+        self,
+        vectors: List[List[float]],
+        metadata: List[Dict[str, Any]],
+        collection_name: str = "default",
+        field_list: Optional[List[tuple[str, str]]] = None
+    ) -> InsertVectorsResponse:
+        """
+        Simplified method to insert vectors and metadata into the vector database.
+        """
+        dimensions = len(vectors[0]) if vectors else 0
+        
+        if field_list is None and metadata:
+            field_list = [
+                (key, self._infer_field_type(value))
+                for key, value in metadata[0].items()
+            ]
+        
+        request = InsertVectorsRequest(
+            collection_name=collection_name,
+            vectors=vectors,
+            metadata=metadata,
+            dimensions=dimensions,
+            field_list=field_list
+        )
+        
+        return self.insert_vectors(request)
+    
+    def search(
+        self,
+        query_vector: List[float],
+        collection_name: str = "default",
+        limit: int = 5,
+        metric_type: str = "IP",
+        output_fields: Optional[List[str]] = None,
+        nprobe: int = 10
+    ) -> List[SearchResult]:
+        """
+        Simplified method to search for similar vectors.
+        
+        Args:
+            query_vector: Vector to search for
+            collection_name: Name of collection to search in
+            limit: Maximum number of results to return
+            metric_type: Distance metric to use ("IP" or "L2")
+            output_fields: Metadata fields to return. If None, returns ["source", "offset"]
+            nprobe: Number of clusters to search
+        """
+        # Set default output fields if none specified
+        if output_fields is None:
+            output_fields = ["source", "offset"]  # Default fields we need
+            
+        search_params = {
+            "metric_type": metric_type,
+            "params": {"nprobe": nprobe}
+        }
+        
+        request = SearchVectorsRequest(
+            collection_name=collection_name,
+            query_vectors=[query_vector],
+            search_params=search_params,
+            limit=limit,
+            output_fields=output_fields  # Pass the specific fields we want
+        )
+        
+        results = self.search_vectors(request)
+        return results
+
+    def _infer_field_type(self, value: Any) -> str:
+        """Helper method to infer field type from value."""
+        if isinstance(value, str):
+            return "str"
+        elif isinstance(value, int):
+            return "int"
+        elif isinstance(value, float):
+            return "float"
+        elif isinstance(value, bool):
+            return "bool"
+        else:
+            return "str"  # Default to string for unknown types

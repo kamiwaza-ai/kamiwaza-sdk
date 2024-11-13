@@ -70,12 +70,21 @@ class SearchResult(BaseModel):
     metadata: Dict[str, Any]
 
     @classmethod
-    def from_milvus_result(cls, hit):
-        # Extract metadata from the hit entity
+    def from_milvus_result(cls, hit, output_fields: Optional[List[str]] = None):
         metadata = {}
-        for field_name in hit.entity.get_field_names():
-            if field_name != "embedding":  # Skip embedding if not needed
-                metadata[field_name] = hit.entity.get(field_name)
+        if hit.entity:
+            # If output_fields is None or contains "*", get all available fields
+            if output_fields is None or "*" in output_fields:
+                field_names = hit.entity.keys()
+            else:
+                field_names = output_fields
+
+            for field_name in field_names:
+                if field_name != "embedding":  # Skip embedding field
+                    value = hit.entity.get(field_name)
+                    if value is not None:
+                        metadata[field_name] = value
+                        
         return cls(
             id=hit.id,
             score=hit.distance,
