@@ -15,7 +15,8 @@ from .services.activity import ActivityService
 from .services.lab import LabService
 from .services.auth import AuthService
 from .authentication import Authenticator, ApiKeyAuthenticator
-from .runners.file_runner import FileRunnerClient
+from .services.retrieval import RetrievalService
+from .services.ingestion import IngestionService
 import logging
 
 logger = logging.getLogger(__name__)
@@ -155,9 +156,15 @@ class KamiwazaClient:
     def auth(self):
         return self._auth_service
 
+
     @property
-    def file_runner(self):
-        if not hasattr(self, '_file_runner'):
-            self._file_runner = FileRunnerClient(self)
-        return self._file_runner
-    
+    def retrieval(self):
+        if not hasattr(self, '_retrieval'):
+            self._retrieval = RetrievalService(self)
+        return self._retrieval
+
+    @property
+    def ingestion(self):
+        if not hasattr(self, '_ingestion'):
+            self._ingestion = IngestionService(self)
+        return self._ingestion

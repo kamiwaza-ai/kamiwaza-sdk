@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from typing import Dict, Any, List, Optional
 
 class Dataset(BaseModel):
-    urn: str
+    urn: Optional[str] = None
     id: str
     platform: str
     environment: str

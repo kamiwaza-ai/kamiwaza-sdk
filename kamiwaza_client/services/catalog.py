@@ -4,6 +4,10 @@ from typing import List, Optional, Dict, Any
 from ..schemas.catalog import Dataset, Container
 from .base_service import BaseService
 import uuid
+import os
+
+
+
 class CatalogService(BaseService):
     def list_datasets(self) -> List[Dataset]:
         """List all datasets."""
@@ -22,12 +26,18 @@ class CatalogService(BaseService):
         additional_properties: Optional[Dict[str, Any]] = None
     ) -> Dataset:
         """Create a new dataset."""
+        # Ensure dataset_name is absolute
+        dataset_name = os.path.abspath(dataset_name)
+        # Generate a deterministic ID based on the dataset name and platform
+        dataset_id = f"{platform}_{dataset_name}".replace('/', '_').lower()
+        
         # First create the Dataset model as expected by the API endpoint
         dataset = Dataset(
+            id=dataset_id,
+            platform=platform,
+            environment=environment,
             paths=[dataset_name],
             name=dataset_name,
-            id=str(uuid.uuid4()),
-            platform=platform,
             actor=owners[0] if owners and owners[0] else "system",
             customProperties={
                 "environment": environment,
@@ -42,8 +52,13 @@ class CatalogService(BaseService):
 
         # Send the Dataset object to the server
         response = self.client.post("/catalog/dataset", json=dataset.model_dump())
-
-        # Parse the response and return a Dataset object
+        
+        # If response is a URN string, store it and return the dataset with the URN
+        if isinstance(response, str):
+            dataset.urn = response
+            return dataset
+        
+        # If response is a dict, parse it normally
         return Dataset.model_validate(response)
 
     def list_containers(self) -> List[str]:
