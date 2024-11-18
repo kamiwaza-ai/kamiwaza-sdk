@@ -7,16 +7,16 @@ from pydantic import BaseModel, Field
 from typing import Dict, Any, List, Optional
 
 class Dataset(BaseModel):
-    urn: Optional[str] = None
-    id: str
-    platform: str
-    environment: str
-    paths: Optional[List[str]] = None
-    name: Optional[str] = None
-    actor: Optional[str] = None
-    customProperties: Optional[Dict[str, Any]] = None
-    removed: Optional[bool] = None
-    tags: Optional[List[str]] = None
+    urn: Optional[str] = Field(None, description="Dataset URN")
+    id: str = Field(..., description="Unique identifier for the dataset")
+    platform: str = Field(..., description="Platform identifier")
+    environment: str = Field(..., description="Environment (e.g., PROD, DEV)")
+    paths: Optional[List[str]] = Field(None, description="List of dataset paths")
+    name: Optional[str] = Field(None, description="Dataset name")
+    actor: Optional[str] = Field(None, description="Actor who created/modified the dataset")
+    customProperties: Optional[Dict[str, Any]] = Field(None, description="Custom metadata properties")
+    removed: Optional[bool] = Field(None, description="Soft deletion flag")
+    tags: Optional[List[str]] = Field(None, description="Dataset tags")
 
     model_config = {
         "extra": "allow"

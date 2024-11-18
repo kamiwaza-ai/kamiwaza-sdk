@@ -171,15 +171,15 @@ class EmbeddingService(BaseService):
         except Exception as e:
             raise APIError(f"Failed to initialize provider: {str(e)}")
 
-    def SentenceTransformerEmbedding(
+    def HuggingFaceEmbedding(
         self,
         model: str = 'BAAI/bge-large-en-v1.5',
         device: Optional[str] = None,
         **kwargs
     ) -> EmbeddingProvider:
-        """Convenience method for creating SentenceTransformer embedder"""
+        """Convenience method for creating HuggingFace embedder"""
         return self.initialize_provider(
-            provider_type="sentence_transformers",
+            provider_type="huggingface_embedding",
             model=model,
             device=device,
             **kwargs
@@ -195,5 +195,5 @@ class EmbeddingService(BaseService):
     def call(self, batch: Dict[str, List[Any]], **kwargs) -> Dict[str, List[Any]]:
         """Legacy method - requires explicit provider initialization"""
         raise DeprecationWarning(
-            "The global call() method is deprecated. Please initialize a provider first using initialize_provider() or SentenceTransformerEmbedding()"
+            "The global call() method is deprecated. Please initialize a provider first using initialize_provider() or HuggingFaceEmbedding()"
         )

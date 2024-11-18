@@ -1,6 +1,7 @@
 # kamiwaza_client/services/catalog.py
 
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Union
+from pathlib import Path
 from ..schemas.catalog import Dataset, Container
 from .base_service import BaseService
 import uuid
@@ -70,12 +71,42 @@ class CatalogService(BaseService):
         response = self.client.get(f"/catalog/dataset/{datasetname}")
         return [Dataset.model_validate(item) for item in response]
 
-    def ingest_by_path(self, path: str, dataset_urn: Optional[str] = None, 
-                    platform: Optional[str] = None, env: str = "PROD", 
-                    location: str = "MAIN", recursive: bool = False, 
-                    description: Optional[str] = None,
-                    secrets: Optional[Dict[str, str]] = None) -> None:
-        """Ingest a dataset by its path."""
+    def ingest_by_path(
+        self, 
+        path: Union[str, Path],
+        dataset_urn: Optional[str] = None,
+        platform: Optional[str] = None,
+        env: str = "PROD",
+        location: str = "MAIN",
+        recursive: bool = False,
+        description: Optional[str] = None,
+        secrets: Optional[Dict[str, str]] = None
+    ) -> None:
+        """
+        Ingest a dataset by its path.
+        
+        Args:
+            path: Path to the dataset (string or Path object)
+            dataset_urn: Optional URN for the dataset
+            platform: Platform identifier
+            env: Environment (default: PROD)
+            location: Location identifier (default: MAIN)
+            recursive: Whether to scan recursively (default: False)
+            description: Optional dataset description
+            secrets: Optional secrets required for ingestion
+            
+        Raises:
+            ValueError: If path doesn't exist or is invalid
+            TypeError: If path is not string or Path object
+        """
+        if isinstance(path, Path):
+            path = str(path)
+        elif not isinstance(path, str):
+            raise TypeError("path must be string or Path object")
+            
+        if not os.path.exists(path):
+            raise ValueError(f"Path does not exist: {path}")
+            
         params = {
             "path": path,
             "dataset_urn": dataset_urn,
@@ -83,9 +114,11 @@ class CatalogService(BaseService):
             "env": env,
             "location": location,
             "recursive": recursive,
-            "description": description  
+            "description": description
         }
-        return self.client.post("/catalog/dataset/ingestbypath", params=params, json=secrets)
+        return self.client.post("/catalog/dataset/ingestbypath", 
+                              params=params,
+                              json=secrets)
 
 
     def secret_exists(self, secret_name: str) -> bool:
@@ -100,3 +133,12 @@ class CatalogService(BaseService):
             "clobber": clobber
         }
         return self.client.post("/catalogcatalog/dataset/secret", params=params)
+    
+
+    def flush_catalog(self) -> None:
+        """
+        Delete all datasets and containers from the catalog.
+        
+        Warning: This operation cannot be undone and will remove all data from the catalog.
+        """
+        return self.client.delete("/catalog/flush")
