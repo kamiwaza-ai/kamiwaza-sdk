@@ -8,7 +8,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 print("Packages found: ", find_packages())
 
 setup(
-    name="kamiwaza-client",
+    name="kamiwaza_client",
     version="0.1.0",
     author="",
     author_email="",
