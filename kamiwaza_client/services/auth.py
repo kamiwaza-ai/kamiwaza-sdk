@@ -35,7 +35,7 @@ class AuthService(BaseService):
         
         try:
             response = self.client.post(
-                "/api/auth/token", 
+                "/auth/token", 
                 data=form_data,
                 headers=headers
             )
@@ -51,7 +51,7 @@ class AuthService(BaseService):
         token = authorization.split(" ")[1] if authorization and " " in authorization else authorization
         
         cookies = {"access_token": token} if token else None
-        response = self.client.get("/api/auth/verify-token", cookies=cookies)
+        response = self.client.get("/auth/verify-token", cookies=cookies)
         return User.model_validate(response)
 
     def create_local_user(self, user: LocalUserCreate) -> User:
@@ -70,7 +70,7 @@ class AuthService(BaseService):
         token = authorization.split(" ")[1] if " " in authorization else authorization
         
         cookies = {"access_token": token}
-        response = self.client.get("/api/auth/users/me", cookies=cookies)
+        response = self.client.get("/auth/users/me", cookies=cookies)
         return response
 
     def login_local(self, username: str, password: str) -> Token:
@@ -81,7 +81,7 @@ class AuthService(BaseService):
 
     def read_user(self, user_id: UUID) -> User:
         """Read a specific user."""
-        response = self.client.get(f"/api/auth/users/{user_id}")
+        response = self.client.get(f"/auth/users/{user_id}")
         return User.model_validate(response)
 
     def update_user(self, user_id: UUID, user: UserUpdate) -> User:
