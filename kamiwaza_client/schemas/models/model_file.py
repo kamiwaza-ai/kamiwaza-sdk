@@ -9,6 +9,7 @@ from uuid import UUID
 class StorageType(str, Enum):
     FILE = 'file'
     S3 = 's3'
+    SCRATCH = 'scratch'
 
     def __str__(self):
         return self.value
@@ -17,7 +18,13 @@ class CreateModelFile(BaseModel):
     name: str
     size: Optional[int] = None
     storage_type: Optional[StorageType] = None
+    storage_host: str = "localhost"
     storage_location: Optional[str] = None
+
+    model_config = {
+        "from_attributes": True,
+        "populate_by_name": True
+    }
 
     def __str__(self):
         return f"CreateModelFile: {self.name} (Size: {self.size}, Type: {self.storage_type})"
@@ -28,11 +35,7 @@ class CreateModelFile(BaseModel):
     def all_attributes(self):
         return "\n".join(f"{key}: {value}" for key, value in self.model_dump().items())
 
-class ModelFile(BaseModel):
-    name: str
-    size: Optional[int] = None
-    storage_type: Optional[StorageType] = None
-    storage_location: Optional[str] = None
+class ModelFile(CreateModelFile):
     id: Optional[UUID] = Field(default=None, description="Primary key for the model file.")
     hub: Optional[str] = Field(default=None, description="The hub where the model file is located.")
     m_id: Optional[UUID] = Field(default=None, description="The id of the model")
@@ -48,6 +51,11 @@ class ModelFile(BaseModel):
     download_elapsed: Optional[str] = Field(default=None, description="The time elapsed during the download.")
     download_remaining: Optional[str] = Field(default=None, description="The time remaining during the download.")
     download_throughput: Optional[str] = Field(default=None, description="The download throughput")
+
+    model_config = {
+        "from_attributes": True,
+        "populate_by_name": True
+    }
 
     def __str__(self):
         return (

@@ -13,132 +13,34 @@ pip install kamiwaza-client
 ```python
 from kamiwaza_client import KamiwazaClient
 
-# Initialize with API key
-client = KamiwazaClient(
-    base_url="https://api.kamiwaza.ai",
-    api_key="your-api-key"
-)
-
-# Or with username/password
-from kamiwaza_client.authentication import UserPasswordAuthenticator
-
-auth = UserPasswordAuthenticator("username", "password", auth_service)
-client = KamiwazaClient(base_url="https://api.kamiwaza.ai", authenticator=auth)
+# Initialize the client for local development
+client = KamiwazaClient("http://localhost:7777/api/")
 ```
 
-## SDK Structure
+## Examples
 
-The SDK is organized into service modules that map directly to API endpoints:
+The `/examples` directory contains Jupyter notebooks demonstrating various use cases:
 
-### Model Management
-```python
-# List available models
-models = client.models.list_models()
+1. [Model Download and Deployment](examples/quickstart.ipynb) - Shows how to download and deploy a model using the SDK
+2. [Structured Data Extraction](examples/structured_data_extraction.ipynb) - Demonstrates how to use deployed models for data processing and standardization
 
-# Deploy a model
-deployment = client.serving.deploy_model(
-    model_id="model-id",
-    min_copies=1,
-    max_copies=3
-)
-```
-
-### Vector Operations
-```python
-# Store vectors
-client.vectordb.insert(
-    vectors=[[1.0, 2.0], [3.0, 4.0]],
-    metadata=[{"source": "doc1"}, {"source": "doc2"}],
-    collection_name="my_collection"
-)
-
-# Search vectors
-results = client.vectordb.search(
-    query_vector=[1.0, 2.0],
-    collection_name="my_collection",
-    limit=5
-)
-```
-
-### Data Management
-```python
-# Create a dataset
-dataset = client.catalog.create_dataset(
-    dataset_name="/path/to/data",
-    platform="local"
-)
-
-# Ingest data
-client.ingestion.ingest(IngestionConfig(
-    dataset_path="/path/to/data",
-    collection_name="my_collection"
-))
-
-# Search data
-chunks = client.retrieval.retrieve_relevant_chunks(
-    RetrieveRelevantChunksRequest(
-        collections=["my_collection"],
-        query="search query"
-    )
-)
-```
-
-### Infrastructure Management
-```python
-# Create a lab environment
-lab = client.lab.create_lab(
-    username="user123",
-    resources={"cpu": "2", "memory": "8Gi"}
-)
-
-# Manage cluster
-location = client.cluster.create_location(CreateLocation(
-    name="us-west",
-    datacenter="dc1"
-))
-```
-
-### Authentication & Users
-```python
-# Create user
-user = client.auth.create_local_user(LocalUserCreate(
-    username="newuser",
-    email="user@example.com",
-    password="securepass"
-))
-
-# Manage permissions
-client.auth.add_user_to_group(user.id, group_id)
-```
+More examples coming soon!
 
 ## Service Overview
 
-| Service | Description | Key Operations |
-|---------|-------------|----------------|
-| `client.models` | Model management | Create, list, update, delete models and configurations |
-| `client.serving` | Model deployment | Deploy models, manage instances, handle inference |
-| `client.vectordb` | Vector database | Store and search vectors with metadata |
-| `client.catalog` | Data management | Manage datasets and secrets |
-| `client.embedding` | Text processing | Generate embeddings, chunk text |
-| `client.retrieval` | Search | Retrieve relevant text chunks |
-| `client.ingestion` | Data pipeline | Coordinate data ingestion workflows |
-| `client.cluster` | Infrastructure | Manage locations, hardware, nodes |
-| `client.lab` | Lab environments | Create and manage lab environments |
-| `client.auth` | Security | Handle users, roles, permissions |
-| `client.activity` | Monitoring | Track user actions and system events |
-
-## Error Handling
-
-The SDK provides specific error types:
-```python
-try:
-    result = client.models.create_model(...)
-except AuthenticationError:
-    # Handle authentication failures
-except APIError as e:
-    # Handle API errors
-    print(f"Operation failed: {e}")
-```
+| Service | Description | Documentation |
+|---------|-------------|---------------|
+| `client.models` | Model management | [Models Service](docs/services/models/README.md) |
+| `client.serving` | Model deployment | [Serving Service](docs/services/serving/README.md) |
+| `client.vectordb` | Vector database | [VectorDB Service](docs/services/vectordb/README.md) |
+| `client.catalog` | Data management | [Catalog Service](docs/services/catalog/README.md) |
+| `client.embedding` | Text processing | [Embedding Service](docs/services/embedding/README.md) |
+| `client.retrieval` | Search | [Retrieval Service](docs/services/retrieval/README.md) |
+| `client.ingestion` | Data pipeline | [Ingestion Service](docs/services/ingestion/README.md) |
+| `client.cluster` | Infrastructure | [Cluster Service](docs/services/cluster/README.md) |
+| `client.lab` | Lab environments | [Lab Service](docs/services/lab/README.md) |
+| `client.auth` | Security | [Auth Service](docs/services/auth/README.md) |
+| `client.activity` | Monitoring | [Activity Service](docs/services/activity/README.md) |
 
 ## Batch Operations
 
@@ -152,16 +54,6 @@ embeddings = embedder.embed_chunks(chunks, batch_size=32)
 client.vectordb.insert(vectors, metadata, batch_size=1000)
 ```
 
-## Resource Management
+---
 
-Resources are automatically cleaned up:
-```python
-# Resources cleaned up when client is destroyed
-client = KamiwazaClient(...)
-
-# Explicit cleanup
-client.auth.delete_user(user_id)
-client.lab.delete_lab(lab_id)
-```
-
-The SDK maps closely to the Kamiwaza API while providing additional convenience methods, type safety, and resource management. Each service module corresponds to specific API endpoints and implements the full functionality available through those endpoints.
+The Kamiwaza SDK is actively being developed with new features, examples, and documentation being added regularly. Stay tuned for updates including additional example notebooks, enhanced documentation, and expanded functionality across all services. For the latest updates and feature releases, keep an eye on this repository.
