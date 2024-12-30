@@ -1,6 +1,6 @@
 # Kamiwaza Python SDK
 
-Python client library for interacting with the Kamiwaza AI Infrastructure Platform. This SDK provides a type-safe interface to all Kamiwaza API endpoints with built-in authentication, error handling, and resource management.
+Python client library for interacting with the Kamiwaza AI Platform. This SDK provides a type-safe interface to all Kamiwaza API endpoints with built-in authentication, error handling, and resource management.
 
 ## Installation
 

@@ -11,7 +11,7 @@ setup(
     version="0.1.4",
     author="Kamiwaza Team",
     author_email="tyler@kamiwaza.ai",
-    description="Python client library for the Kamiwaza AI Infrastructure Platform",
+    description="Python client library for the Kamiwaza AI Platform",
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/kamiwaza/kamiwaza-client",
