@@ -1,0 +1,4 @@
+requests
+pydantic[email]
+httpx
+openai>=1.0
