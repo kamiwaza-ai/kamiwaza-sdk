@@ -8,7 +8,7 @@ with open("requirements.txt", "r", encoding="utf-8") as f:
 
 setup(
     name="kamiwaza",
-    version="0.1.2",
+    version="0.1.3",
     author="Kamiwaza Team",
     author_email="tyler@kamiwaza.ai",
     description="Python client library for the Kamiwaza AI Infrastructure Platform",

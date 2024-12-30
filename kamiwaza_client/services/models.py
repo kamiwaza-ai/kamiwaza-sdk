@@ -11,9 +11,20 @@ from ..schemas.models.model_search import ModelSearchRequest, ModelSearchRespons
 from ..schemas.models.downloads import ModelDownloadRequest, ModelDownloadStatus
 from .base_service import BaseService
 import difflib
+
 class ModelService(BaseService):
-    def get_model(self, model_id: UUID) -> Model:
+    def __init__(self, client):
+        super().__init__(client)
+        self._server_info = None  # Cache server info
+
+    def get_model(self, model_id: Union[str, UUID]) -> Model:
         """Retrieve a specific model by its ID."""
+        try:
+            if isinstance(model_id, str):
+                model_id = UUID(model_id)
+        except ValueError as e:
+            raise ValueError(f"Invalid UUID format: {model_id}") from e
+            
         response = self.client._request("GET", f"/models/{model_id}")
         return Model.model_validate(response)
 
@@ -22,8 +33,14 @@ class ModelService(BaseService):
         response = self.client._request("POST", "/models/", json=model.model_dump())
         return Model.model_validate(response)
 
-    def delete_model(self, model_id: UUID) -> dict:
+    def delete_model(self, model_id: Union[str, UUID]) -> dict:
         """Delete a specific model by its ID."""
+        try:
+            if isinstance(model_id, str):
+                model_id = UUID(model_id)
+        except ValueError as e:
+            raise ValueError(f"Invalid UUID format: {model_id}") from e
+            
         return self.client._request("DELETE", f"/models/{model_id}")
 
     def list_models(self, load_files: bool = False) -> List[Model]:
@@ -158,22 +175,46 @@ class ModelService(BaseService):
         response = self.client._request("GET", f"/models/repo/{repo_id}")
         return Model.model_validate(response)
 
-    def get_model_memory_usage(self, model_id: UUID) -> int:
+    def get_model_memory_usage(self, model_id: Union[str, UUID]) -> int:
         """Get the memory usage of a model."""
+        try:
+            if isinstance(model_id, str):
+                model_id = UUID(model_id)
+        except ValueError as e:
+            raise ValueError(f"Invalid UUID format: {model_id}") from e
+            
         return self.client._request("GET", f"/models/{model_id}/memory_usage")
 
     # Model File operations
-    def delete_model_file(self, model_file_id: UUID) -> dict:
+    def delete_model_file(self, model_file_id: Union[str, UUID]) -> dict:
         """Delete a model file by its ID."""
+        try:
+            if isinstance(model_file_id, str):
+                model_file_id = UUID(model_file_id)
+        except ValueError as e:
+            raise ValueError(f"Invalid UUID format: {model_file_id}") from e
+            
         return self.client._request("DELETE", f"/model_files/{model_file_id}")
 
-    def get_model_file(self, model_file_id: UUID) -> ModelFile:
+    def get_model_file(self, model_file_id: Union[str, UUID]) -> ModelFile:
         """Retrieve a specific model file by its ID."""
+        try:
+            if isinstance(model_file_id, str):
+                model_file_id = UUID(model_file_id)
+        except ValueError as e:
+            raise ValueError(f"Invalid UUID format: {model_file_id}") from e
+            
         response = self.client._request("GET", f"/model_files/{model_file_id}")
         return ModelFile.model_validate(response)
     
-    def get_model_files_by_model_id(self, model_id: UUID) -> List[ModelFile]:
+    def get_model_files_by_model_id(self, model_id: Union[str, UUID]) -> List[ModelFile]:
         """Retrieve all model files by their model ID."""
+        try:
+            if isinstance(model_id, str):
+                model_id = UUID(model_id)
+        except ValueError as e:
+            raise ValueError(f"Invalid UUID format: {model_id}") from e
+            
         # Get the model which includes the files
         response = self.client._request("GET", f"/models/{model_id}")
         
@@ -197,8 +238,14 @@ class ModelService(BaseService):
         response = self.client._request("POST", "/model_files/search/", json=search_request.model_dump())
         return [ModelFile.model_validate(item) for item in response]
 
-    def get_model_file_memory_usage(self, model_file_id: UUID) -> int:
+    def get_model_file_memory_usage(self, model_file_id: Union[str, UUID]) -> int:
         """Get the memory usage of a model file."""
+        try:
+            if isinstance(model_file_id, str):
+                model_file_id = UUID(model_file_id)
+        except ValueError as e:
+            raise ValueError(f"Invalid UUID format: {model_file_id}") from e
+            
         return self.client._request("GET", f"/model_files/{model_file_id}/memory_usage")
 
     # Model Configuration operations
@@ -207,27 +254,57 @@ class ModelService(BaseService):
         response = self.client._request("POST", "/model_configs/", json=config.model_dump())
         return ModelConfig.model_validate(response)
 
-    def get_model_configs(self, model_id: UUID) -> List[ModelConfig]:
+    def get_model_configs(self, model_id: Union[str, UUID]) -> List[ModelConfig]:
         """Get a list of model configurations for a given model ID."""
+        try:
+            if isinstance(model_id, str):
+                model_id = UUID(model_id)
+        except ValueError as e:
+            raise ValueError(f"Invalid UUID format: {model_id}") from e
+            
         response = self.client._request("GET", "/model_configs/", params={"model_id": str(model_id)})
         return [ModelConfig.model_validate(item) for item in response]
 
-    def get_model_configs_for_model(self, model_id: UUID, default: bool = False) -> List[ModelConfig]:
+    def get_model_configs_for_model(self, model_id: Union[str, UUID], default: bool = False) -> List[ModelConfig]:
         """Get a list of model configurations for a given model ID."""
+        try:
+            if isinstance(model_id, str):
+                model_id = UUID(model_id)
+        except ValueError as e:
+            raise ValueError(f"Invalid UUID format: {model_id}") from e
+            
         response = self.client._request("GET", f"/models/{model_id}/configs", params={"default": default})
         return [ModelConfig.model_validate(item) for item in response]
 
-    def get_model_config(self, model_config_id: UUID) -> ModelConfig:
+    def get_model_config(self, model_config_id: Union[str, UUID]) -> ModelConfig:
         """Get a model configuration by its ID."""
+        try:
+            if isinstance(model_config_id, str):
+                model_config_id = UUID(model_config_id)
+        except ValueError as e:
+            raise ValueError(f"Invalid UUID format: {model_config_id}") from e
+            
         response = self.client._request("GET", f"/model_configs/{model_config_id}")
         return ModelConfig.model_validate(response)
 
-    def delete_model_config(self, model_config_id: UUID) -> None:
+    def delete_model_config(self, model_config_id: Union[str, UUID]) -> None:
         """Delete a model configuration by its ID."""
+        try:
+            if isinstance(model_config_id, str):
+                model_config_id = UUID(model_config_id)
+        except ValueError as e:
+            raise ValueError(f"Invalid UUID format: {model_config_id}") from e
+            
         self.client._request("DELETE", f"/model_configs/{model_config_id}")
 
-    def update_model_config(self, model_config_id: UUID, config: CreateModelConfig) -> ModelConfig:
+    def update_model_config(self, model_config_id: Union[str, UUID], config: CreateModelConfig) -> ModelConfig:
         """Update a model configuration by its ID."""
+        try:
+            if isinstance(model_config_id, str):
+                model_config_id = UUID(model_config_id)
+        except ValueError as e:
+            raise ValueError(f"Invalid UUID format: {model_config_id}") from e
+            
         response = self.client._request("PUT", f"/model_configs/{model_config_id}", json=config.model_dump())
         return ModelConfig.model_validate(response)
 
@@ -248,30 +325,49 @@ class ModelService(BaseService):
 
     ### This stuff could be moved to a helper class
 
-    def filter_compatible_models(self, model_name: str, version: Optional[str] = None) -> List[Dict[str, Any]]:
-        """
-        Search for models matching the given name and filter those compatible with the current operating system.
+    def _get_server_os(self) -> str:
+        """Get and cache server OS info from cluster hardware"""
+        if self._server_info is None:
+            try:
+                # Get first hardware entry - limit=1 for efficiency
+                hardware = self.client.cluster.list_hardware(limit=1)
+                if hardware and len(hardware) > 0:
+                    self._server_info = {
+                        'os': hardware[0].os,
+                        'platform': hardware[0].platform,
+                        'processors': hardware[0].processors
+                    }
+                else:
+                    raise ValueError("No hardware information available")
+            except Exception as e:
+                raise APIError(f"Failed to get server info: {str(e)}")
+        
+        return self._server_info['os']
 
-        Args:
-            model_name (str): The name of the model to search for.
-            version (Optional[str]): Specific version of the model, if needed.
-
-        Returns:
-            List[Dict[str, Any]]: A list of dictionaries containing compatible models and their files.
-        """
-        compatible_models = []
+    def filter_compatible_models(self, model_name: str) -> List[Dict[str, Any]]:
+        """Filter models based on server compatibility"""
+        server_os = self._get_server_os()
         models = self.search_models(model_name)
-
+        
+        # Let server handle compatibility via download endpoint
+        # Just organize the model info for the user
+        model_info = []
         for model in models:
-            files = self.search_hub_model_files(HubModelFileSearch(hub=model.hub, model=model.repo_modelId, version=version))
-            compatible_files = self._filter_files_for_os(files)
-            if compatible_files:
-                compatible_models.append({"model": model, "files": compatible_files})
+            files = self.search_hub_model_files(
+                HubModelFileSearch(
+                    hub=model.hub, 
+                    model=model.repo_modelId
+                )
+            )
+            if files:  # If there are any files, include the model
+                model_info.append({
+                    "model": model,
+                    "files": files,
+                    "server_platform": self._server_info  # Include server info for reference
+                })
 
-        if not compatible_models:
-            raise ValueError(f"No compatible models found for '{model_name}' on this operating system")
+        return model_info
 
-        return compatible_models
 
     def _filter_files_for_os(self, files: List[ModelFile]) -> List[ModelFile]:
         """
