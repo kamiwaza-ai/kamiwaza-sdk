@@ -7,7 +7,7 @@ with open("requirements.txt", "r", encoding="utf-8") as f:
     requirements = [line.strip() for line in f if line.strip() and not line.startswith("#")]
 
 setup(
-    name="kamiwaza-client",
+    name="kamiwaza",
     version="0.1.0",
     author="Kamiwaza Team",
     author_email="tyler@kamiwaza.ai",
@@ -33,4 +33,7 @@ setup(
     package_data={
         "kamiwaza_client": ["py.typed"],
     }
-)
+) # end
+
+
+
