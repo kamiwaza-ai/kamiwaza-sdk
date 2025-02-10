@@ -3,7 +3,7 @@
 from typing import List, Optional, Union
 from uuid import UUID
 from ..schemas.serving.serving import CreateModelDeployment, ModelDeployment, UIModelDeployment, ModelInstance
-from ..schemas.serving.inference import LoadModelRequest, LoadModelResponse, UnloadModelRequest, UnloadModelResponse, SimpleGenerateRequest, SimpleGenerateResponse, GenerateRequest, GenerateResponse
+from ..schemas.serving.inference import LoadModelRequest, LoadModelResponse, UnloadModelRequest, UnloadModelResponse, GenerateRequest, GenerateResponse
 from ..schemas.models.model_search import HubModelFileSearch
 from .base_service import BaseService
 
@@ -118,11 +118,6 @@ class ServingService(BaseService):
         """Load a model."""
         response = self.client.post("/load_model", json=request.model_dump())
         return LoadModelResponse.model_validate(response)
-
-    def simple_generate(self, request: SimpleGenerateRequest) -> SimpleGenerateResponse:
-        """Generate a simple response based on a prompt."""
-        response = self.client.post("/simple_generate/", json=request.model_dump())
-        return SimpleGenerateResponse.model_validate(response)
 
     def generate(self, request: GenerateRequest) -> GenerateResponse:
         """Generate a response based on a conversation history."""

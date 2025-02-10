@@ -85,16 +85,9 @@ client.serving.load_model(deployment_id)
 ## Text Generation
 
 ### Available Methods
-- `simple_generate(deployment_id: UUID, prompt: str) -> str`: Simple text generation
 - `generate(deployment_id: UUID, request: GenerationRequest) -> GenerationResponse`: Advanced text generation
 
 ```python
-# Simple text generation
-response = client.serving.simple_generate(
-    deployment_id=deployment_id,
-    prompt="Once upon a time"
-)
-
 # Advanced text generation
 response = client.serving.generate(
     deployment_id=deployment_id,

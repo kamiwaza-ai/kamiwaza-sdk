@@ -17,13 +17,6 @@ class UnloadModelRequest(BaseModel):
 class LoadModelResponse(BaseModel):
     result: str
 
-class SimpleGenerateRequest(BaseModel):
-    prompt: Optional[str] = Field(default=None, description="The prompt for the model to generate a response from")
-    system_message: Optional[str] = Field(default=None, description="The system message to be included in the prompt")
-
-class SimpleGenerateResponse(BaseModel):
-    assistant: str
-
 class GenerateRequest(BaseModel):
     messages: List[Message]
     system_message: Optional[str] = Field(default=None, description="The system message to be included in the prompt")
