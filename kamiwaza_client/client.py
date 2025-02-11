@@ -36,6 +36,9 @@ class KamiwazaClient:
         )
         self.logger = logger
         
+        if not base_url:
+            raise ValueError("base_url is required. Please set KAMIWAZA_API_URI environment variable or provide the base_url directly.")
+            
         self.base_url = base_url.rstrip('/')
         self.session = requests.Session()
         
