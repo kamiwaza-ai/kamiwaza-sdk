@@ -104,3 +104,27 @@ class UIModelDeployment(ModelDeployment):
 
     def all_attributes(self):
         return "\n".join(f"{key}: {value}" for key, value in self.model_dump().items())
+
+
+
+class ActiveModelDeployment(BaseModel):
+    id: UUID = Field(description="The UUID of the deployment")
+    m_id: UUID = Field(description="The UUID of the model")
+    m_name: str = Field(description="Name of the model")
+    status: str = Field(description="Status of the deployment")
+    instances: List[ModelInstance] = Field(description="List of active instances")
+    lb_port: int = Field(description="Load balancer port for the deployment")
+    endpoint: Optional[str] = Field(
+        default=None, 
+        description="The OpenAI-compatible endpoint URL for this deployment"
+    )
+
+    @property
+    def is_available(self) -> bool:
+        """Check if deployment has at least one running instance"""
+        return any(i.status == "DEPLOYED" for i in self.instances)
+
+    @property
+    def active_instance(self) -> Optional[ModelInstance]:
+        """Get first active instance if any exists"""
+        return next((i for i in self.instances if i.status == "DEPLOYED"), None)
