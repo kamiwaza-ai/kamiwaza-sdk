@@ -6,6 +6,7 @@ from ..schemas.serving.serving import CreateModelDeployment, ModelDeployment, UI
 from ..schemas.serving.inference import LoadModelRequest, LoadModelResponse, UnloadModelRequest, UnloadModelResponse, GenerateRequest, GenerateResponse
 from ..schemas.models.model_search import HubModelFileSearch
 from .base_service import BaseService
+from urllib.parse import urlparse
 
 class ServingService(BaseService):
     
@@ -76,28 +77,23 @@ class ServingService(BaseService):
 
 
     def list_active_deployments(self) -> List[ActiveModelDeployment]:
-        """List only active deployments that have at least one running instance.
-        
-        Returns:
-            List[ActiveModelDeployment]: A list of active model deployments with OpenAI-compatible
-            endpoint information. Only includes deployments that have at least one instance 
-            in DEPLOYED status and the deployment itself is in DEPLOYED status.
-        """
         deployments = self.list_deployments()
         active = []
 
+        # Parse the base URL to get host
+        parsed_url = urlparse(self.client.base_url)
+        host = parsed_url.netloc.split(':')[0]  # Remove port if present
+        
         for deployment in deployments:
-            # Check if deployment and at least one instance is active
             running_instance = next(
                 (i for i in deployment.instances if i.status == 'DEPLOYED'),
                 None
             )
             
             if running_instance and deployment.status == 'DEPLOYED':
-                # Build endpoint URL using the load balancer port
-                endpoint = f"http://localhost:{deployment.lb_port}/v1"
+                # Always use http for model endpoints
+                endpoint = f"http://{host}:{deployment.lb_port}/v1"
                 
-                # Convert to ActiveModelDeployment
                 active_deployment = ActiveModelDeployment(
                     id=deployment.id,
                     m_id=deployment.m_id,
