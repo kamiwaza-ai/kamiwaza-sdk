@@ -53,6 +53,14 @@ deployments = client.serving.list_deployments()
 
 # List only active deployments (deployed status with running instances)
 active_deployments = client.serving.list_active_deployments()
+# Each active deployment will have:
+# - id: The deployment ID
+# - m_id: The model ID
+# - m_name: The model name
+# - status: The deployment status
+# - instances: List of running instances
+# - lb_port: The load balancer port
+# - endpoint: The HTTP endpoint for the deployment (e.g. http://hostname:port/v1)
 
 # Get deployment status
 status = client.serving.get_deployment_status(deployment_id)

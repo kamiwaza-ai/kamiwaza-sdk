@@ -2,10 +2,11 @@
 
 from typing import List, Optional, Union
 from uuid import UUID
-from ..schemas.serving.serving import CreateModelDeployment, ModelDeployment, UIModelDeployment, ModelInstance
+from ..schemas.serving.serving import CreateModelDeployment, ModelDeployment, UIModelDeployment, ModelInstance, ActiveModelDeployment
 from ..schemas.serving.inference import LoadModelRequest, LoadModelResponse, UnloadModelRequest, UnloadModelResponse, GenerateRequest, GenerateResponse
 from ..schemas.models.model_search import HubModelFileSearch
 from .base_service import BaseService
+from urllib.parse import urlparse
 
 class ServingService(BaseService):
     
@@ -26,21 +27,6 @@ class ServingService(BaseService):
         """Estimate the VRAM required for a model deployment."""
         return self.client.post("/serving/estimate_model_vram", json=deployment_request.model_dump())
     
-    def list_active_deployments(self) -> List[UIModelDeployment]:
-        """List only active deployments that have at least one running instance.
-        
-        Returns:
-            List[UIModelDeployment]: A list of active model deployments that have at least
-                                   one instance in DEPLOYED status and the deployment itself
-                                   is in DEPLOYED status.
-        """
-        deployments = self.list_deployments()
-        return [
-            d for d in deployments 
-            if len([i for i in d.instances if i.status == 'DEPLOYED']) > 0 
-            and d.status == 'DEPLOYED'
-        ]
-
     def deploy_model(self, 
                 model_id: Union[str, UUID], 
                 m_config_id: Optional[Union[str, UUID]] = None,
@@ -86,6 +72,40 @@ class ServingService(BaseService):
     
         response = self.client.post("/serving/deploy_model", json=request_dict)
         return UUID(response) if isinstance(response, str) else response
+    
+
+
+
+    def list_active_deployments(self) -> List[ActiveModelDeployment]:
+        deployments = self.list_deployments()
+        active = []
+
+        # Parse the base URL to get host
+        parsed_url = urlparse(self.client.base_url)
+        host = parsed_url.netloc.split(':')[0]  # Remove port if present
+        
+        for deployment in deployments:
+            running_instance = next(
+                (i for i in deployment.instances if i.status == 'DEPLOYED'),
+                None
+            )
+            
+            if running_instance and deployment.status == 'DEPLOYED':
+                # Always use http for model endpoints
+                endpoint = f"http://{host}:{deployment.lb_port}/v1"
+                
+                active_deployment = ActiveModelDeployment(
+                    id=deployment.id,
+                    m_id=deployment.m_id,
+                    m_name=deployment.m_name,
+                    status=deployment.status,
+                    instances=[i for i in deployment.instances if i.status == 'DEPLOYED'],
+                    lb_port=deployment.lb_port,
+                    endpoint=endpoint
+                )
+                active.append(active_deployment)
+
+        return active
 
 
     def list_deployments(self, model_id: Optional[UUID] = None) -> List[UIModelDeployment]:
