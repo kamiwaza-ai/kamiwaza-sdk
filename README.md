@@ -41,6 +41,7 @@ More examples coming soon!
 | `client.lab` | Lab environments | [Lab Service](docs/services/lab/README.md) |
 | `client.auth` | Security | [Auth Service](docs/services/auth/README.md) |
 | `client.activity` | Monitoring | [Activity Service](docs/services/activity/README.md) |
+| `client.openai` | OpenAI API compatible| [OpenAI Service](docs/services/openai/README.md) |
 
 ## Batch Operations
 
