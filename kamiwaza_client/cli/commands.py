@@ -47,9 +47,12 @@ def run_cmd(model):
         quantization='q6_k'
     )
     
+    console.print(f"DEBUG: Full download_info: {download_info}")
+    console.print(f"DEBUG: download_info keys: {download_info.keys()}")
+    console.print(f"DEBUG: download_info['model']: {download_info['model']}")
+    console.print(f"DEBUG: download_info['result']: {download_info['result']}")
+    
     console.print(f"Downloading model: {download_info['model'].name}")
-    console.print(f"DEBUG: Model info: {download_info['model']}")
-
     console.print("Files being downloaded:")
     for file in download_info['files']:
         console.print(f"- {file.name}")
