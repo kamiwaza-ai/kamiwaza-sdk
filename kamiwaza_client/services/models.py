@@ -16,6 +16,15 @@ class ModelService(BaseService):
     def __init__(self, client):
         super().__init__(client)
         self._server_info = None  # Cache server info
+        # Define known quantization variants
+        self._quant_variants = {
+            'q6_k': ['q6_k', 'q6_k_l', 'q6_k_m', 'q6_k_s'],
+            'q5_k_m': ['q5_k_m', 'q5_k_l', 'q5_k_s'],
+            'q4_k_m': ['q4_k_m', 'q4_k_l', 'q4_k_s'],
+            'q8_0': ['q8_0']
+        }
+        # Priority order for fallback
+        self._priority_order = ['q6_k', 'q5_k_m', 'q4_k_m', 'q8_0']
 
     def get_model(self, model_id: Union[str, UUID]) -> Model:
         """Retrieve a specific model by its ID."""
@@ -71,6 +80,32 @@ class ModelService(BaseService):
         search_response = ModelSearchResponse.model_validate(response)
         return [result.model for result in search_response.results]
 
+    def _get_exact_quant_match(self, filename: str, quantization: str) -> bool:
+        """
+        Check if a filename matches exactly a quantization pattern.
+        
+        Args:
+            filename (str): The filename to check
+            quantization (str): The quantization pattern to match
+            
+        Returns:
+            bool: True if exact match found, False otherwise
+        """
+        # Convert both filename and quantization to lowercase for case-insensitive comparison
+        filename_lower = filename.lower()
+        quantization_lower = quantization.lower()
+        
+        # If the quantization includes a specific variant (like q6_k_l), match exactly
+        if '_' in quantization_lower and any(q for q in sum(self._quant_variants.values(), []) if q == quantization_lower):
+            return f"-{quantization_lower}" in filename_lower
+            
+        # If it's a base quantization (like q6_k), only match the exact base version
+        base_pattern = f"-{quantization_lower}"
+        
+        # Check if it's a base match (exact) or part of a multi-file pattern
+        return (base_pattern + ".gguf" in filename_lower or 
+                base_pattern + "-" in filename_lower)  # For multi-file patterns like -00001-of-00002
+
     def initiate_model_download(self, repo_id: str, quantization: str = 'q6_k') -> Dict[str, Any]:
         """
         Initiate the download of a model based on the repo ID and desired quantization.
@@ -78,13 +113,11 @@ class ModelService(BaseService):
         Args:
             repo_id (str): The repo ID of the model to download.
             quantization (str): The desired quantization level. Defaults to 'q6_k'.
+                              Can include variant (e.g., 'q6_k_l' for large version).
 
         Returns:
             Dict[str, Any]: A dictionary containing information about the initiated download.
         """
-        # TODO: Replace this priority scheme with user-configurable options in the future
-        priority_order = ['q6_k', 'q5_k_m', 'q4_k_m', 'q8_0']
-
         # Search for the model
         models = self.search_models(repo_id)
         if not models:
@@ -97,17 +130,32 @@ class ModelService(BaseService):
         # Fetch model files
         files = self.search_hub_model_files(HubModelFileSearch(hub=model.hub, model=model.repo_modelId))
         
-        # Filter files based on quantization and priority
+        # Try exact match first
         compatible_files = [
             file for file in files 
-            if quantization in file.name.lower() and file.name.lower().endswith('.gguf')
+            if self._get_exact_quant_match(file.name, quantization) and file.name.lower().endswith('.gguf')
         ]
         
+        # If no exact match and no specific variant was requested, try variants in size order
+        if not compatible_files and '_' not in quantization:
+            base_quant = quantization
+            if base_quant in self._quant_variants:
+                for variant in self._quant_variants[base_quant]:
+                    compatible_files = [
+                        file for file in files 
+                        if self._get_exact_quant_match(file.name, variant) and file.name.lower().endswith('.gguf')
+                    ]
+                    if compatible_files:
+                        break
+        
+        # If still no match, try fallback quantizations
         if not compatible_files:
-            for priority in priority_order:
+            for priority in self._priority_order:
+                if priority == quantization:
+                    continue
                 compatible_files = [
                     file for file in files 
-                    if priority in file.name.lower() and file.name.lower().endswith('.gguf')
+                    if self._get_exact_quant_match(file.name, priority) and file.name.lower().endswith('.gguf')
                 ]
                 if compatible_files:
                     break
@@ -233,8 +281,16 @@ class ModelService(BaseService):
         response = self.client._request("POST", "/model_files/", json=model_file.model_dump())
         return ModelFile.model_validate(response)
 
-    def search_hub_model_files(self, search_request: HubModelFileSearch) -> List[ModelFile]:
-        """Search for model files in a specific hub."""
+    def search_hub_model_files(self, search_request: Union[dict, HubModelFileSearch]) -> List[ModelFile]:
+        """Search for model files in a specific hub.
+        
+        Args:
+            search_request: Either a dictionary containing hub and model information,
+                          or a HubModelFileSearch schema object.
+        """
+        if isinstance(search_request, dict):
+            search_request = HubModelFileSearch.model_validate(search_request)
+        
         response = self.client._request("POST", "/model_files/search/", json=search_request.model_dump())
         return [ModelFile.model_validate(item) for item in response]
 
