@@ -1,3 +1,5 @@
+# kamiwaza/kamiwaza-sdk/kamiwaza_client/cli/commands.py
+
 """Kamiwaza CLI command implementations."""
 
 import time
@@ -5,13 +7,9 @@ import click
 import re
 from rich.table import Table
 from ..client import KamiwazaClient
-from .utils import console, create_progress, handle_error
+from .utils import console, create_progress, handle_error, ensure_model_pulled, ensure_model_served, interactive_chat
 from .config import get_base_url, save_config, load_config
-
-# Model name mapping
-MODEL_MAP = {
-    'qwen2.5-7b-instruct': 'Qwen/Qwen2.5-7B-Instruct-GGUF'  # Include GGUF suffix
-}
+from .models import MODEL_MAP, get_friendly_names
 
 def get_client() -> KamiwazaClient:
     """Get a configured KamiwazaClient instance."""
@@ -24,83 +22,79 @@ def get_endpoint_url(deployment) -> str:
         return "Not available"
     return f"{base_url}{deployment.serve_path}"
 
+@click.command(name='pull')
+@click.argument('model')
+@handle_error
+def pull_cmd(model: str):
+    """Download a model."""
+    client = get_client()
+    model_id, model_name = ensure_model_pulled(client, model)
+    console.print(f"✨ Model {model_name} downloaded successfully!")
+    return 0
+
+@click.command(name='serve')
+@click.argument('model')
+@handle_error
+def serve_cmd(model: str):
+    """Deploy a model as API."""
+    client = get_client()
+    
+    # Ensure model is pulled
+    model_id, model_name = ensure_model_pulled(client, model)
+    
+    # Deploy model
+    endpoint = ensure_model_served(client, model_id, model_name)
+    console.print(f"✨ Model deployed at: {endpoint}")
+    return 0
+
 @click.command(name='run')
 @click.argument('model')
 @handle_error
-def run_cmd(model):
-    """Download and run a model."""
-    if model not in MODEL_MAP:
-        console.print(f"[red]Error:[/red] Unknown model '{model}'")
-        return 1
-    
-    repo_id = MODEL_MAP[model]
+def run_cmd(model: str):
+    """Interactive chat with a model."""
     client = get_client()
     
-    # 1. Initiate the download
-    console.print(f"🚀 Initiating download...")
-    download_info = client.models.initiate_model_download(
-        repo_id,
-        quantization='q6_k'
-    )
+    # Ensure model is pulled
+    model_id, model_name = ensure_model_pulled(client, model)
     
-    console.print(f"Downloading model: {download_info['model'].name}")
-    console.print("Files being downloaded:")
-    for file in download_info['files']:
-        console.print(f"- {file.name}")
+    # Ensure model is served
+    endpoint = ensure_model_served(client, model_id, model_name)
     
-    # 2. Monitor download progress
-    with create_progress() as progress:
-        task = progress.add_task("⏳ Downloading...", total=100)
-        
-        def all_downloads_complete(status):
-            return all(s.download_percentage == 100 for s in status)
-        
-        while True:
-            status = client.models.check_download_status(repo_id)
-            
-            # Update progress
-            if status:
-                # Calculate average progress across all files
-                avg_progress = sum(s.download_percentage for s in status) / len(status)
-                progress.update(task, completed=avg_progress)
-                
-                # Show individual file progress
-                for s in status:
-                    console.print(f"File: {s.name}, Progress: {s.download_percentage}%")
-            
-            if all_downloads_complete(status):
-                console.print("✨ All downloads completed!")
-                break
-            
-            time.sleep(1)
+    # Get OpenAI client using the endpoint
+    openai_client = client.openai.get_client(endpoint=endpoint)
     
-    # Get the model ID from one of the downloaded files
-    file_id = download_info['result']['files'][0]  # Take the first file ID
-    model_file = client.models.get_model_file(file_id)
-    if not model_file.m_id:
-        console.print("[red]Error:[/red] Could not get model ID from downloaded file")
-        return 1
+    # Start interactive chat
+    interactive_chat(openai_client)
+    return 0
+
+@click.command(name='list')
+@handle_error
+def list_cmd():
+    """List downloaded models."""
+    client = get_client()
+    models = client.models.list_models(load_files=True)
     
-    # 3. Get model configs
-    console.print("📦 Preparing for deployment...")
-    configs = client.models.get_model_configs(model_file.m_id)
-    default_config = next((config for config in configs if config.default), configs[0])
-    
-    # 4. Deploy the model
-    console.print("🚀 Deploying model...")
-    deployment_id = client.serving.deploy_model(model_file.m_id)
-    
-    # 5. Verify deployment
-    deployments = client.serving.list_deployments()
-    deployment = next((d for d in deployments if str(d.id) == str(deployment_id)), None)
-    
-    if deployment:
-        console.print("✨ Model deployed successfully!")
-        console.print(f"Endpoint: {get_endpoint_url(deployment)}")
+    if not models:
+        console.print("No models downloaded")
         return 0
-    else:
-        console.print("[red]Error:[/red] Failed to verify deployment")
-        return 1
+        
+    table = Table(show_header=True, header_style="bold", show_lines=True)
+    table.add_column("MODEL", style="cyan")
+    table.add_column("REPO ID", style="blue")
+    table.add_column("FILES", style="green")
+    
+    for model in models:
+        files = client.models.get_model_files_by_model_id(model.id)
+        file_count = len(files) if files else 0
+        
+        table.add_row(
+            model.name,
+            model.repo_modelId,
+            str(file_count)
+        )
+    
+    console.print(table)
+    return 0
 
 @click.command(name='ps')
 @handle_error
@@ -115,9 +109,6 @@ def ps_cmd():
     table.add_column("ENDPOINT", style="blue")
     
     for dep in deployments:
-        # Get model name
-        model_name = dep.m_name
-        
         # Get status with icon
         status_style = "[green]● RUNNING[/]" if dep.is_available else "[yellow]◌ STARTING[/]"
         
@@ -125,7 +116,7 @@ def ps_cmd():
         endpoint = dep.endpoint or "Not available"
         
         table.add_row(
-            model_name,
+            dep.m_name,
             status_style,
             endpoint
         )
@@ -139,21 +130,16 @@ def ps_cmd():
 @click.command(name='stop')
 @click.argument('model')
 @handle_error
-def stop_cmd(model):
+def stop_cmd(model: str):
     """Stop a running model."""
     client = get_client()
     deployments = client.serving.list_active_deployments()
     
-    # Normalize the input model name
-    model_lower = model.lower()
-    if model_lower in MODEL_MAP:
-        model_lower = MODEL_MAP[model_lower].lower()
-    
     # Find deployment by model name or ID
     deployment = next(
         (d for d in deployments if 
-         d.m_name.lower() == model_lower or  # Exact match
-         d.m_name.lower().startswith(model_lower) or  # Prefix match
+         d.m_name.lower() == model.lower() or  # Exact match
+         d.m_name.lower().startswith(model.lower()) or  # Prefix match
          str(d.id) == model),  # ID match
         None
     )
