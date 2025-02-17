@@ -9,6 +9,10 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeRe
 from uuid import UUID
 import time
 from .models import MODEL_MAP  # Import from models module
+import click
+import re
+import logging
+from rich.table import Table
 
 console = Console()
 
@@ -137,6 +141,11 @@ def ensure_model_served(client, model_id: UUID, model_name: str) -> str:
 
 def interactive_chat(openai_client):
     """Run interactive chat session."""
+    # Temporarily increase logging level for httpx to suppress request logs
+    httpx_logger = logging.getLogger("httpx")
+    original_level = httpx_logger.level
+    httpx_logger.setLevel(logging.WARNING)
+    
     console.print("\n🤖 Chat session started (Ctrl+C to exit)\n")
     
     messages = [
@@ -180,4 +189,7 @@ def interactive_chat(openai_client):
             print("\n")  # New line after response
             
     except KeyboardInterrupt:
-        console.print("\n\n✨ Chat session ended") 
+        console.print("\n\n✨ Chat session ended")
+    finally:
+        # Restore original logging level
+        httpx_logger.setLevel(original_level) 
