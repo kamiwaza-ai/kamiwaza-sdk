@@ -1,3 +1,5 @@
+#kamiwaza/kamiwaza-sdk/setup.py
+
 from setuptools import setup, find_packages
 
 with open("README.md", "r", encoding="utf-8") as fh:
@@ -5,6 +7,12 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 with open("requirements.txt", "r", encoding="utf-8") as f:
     requirements = [line.strip() for line in f if line.strip() and not line.startswith("#")]
+
+# Add CLI dependencies
+cli_requirements = [
+    'click>=8.0.0',
+    'rich>=10.0.0'
+]
 
 setup(
     name="kamiwaza",
@@ -28,10 +36,15 @@ setup(
         "Topic :: Scientific/Engineering :: Artificial Intelligence",
     ],
     python_requires=">=3.10",
-    install_requires=requirements,
+    install_requires=requirements + cli_requirements,
     include_package_data=True,
     package_data={
         "kamiwaza_client": ["py.typed"],
+    },
+    entry_points={
+        'console_scripts': [
+            'kamiwaza=kamiwaza_client.cli.main:cli'
+        ]
     }
 ) # end
 

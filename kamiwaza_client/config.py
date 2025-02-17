@@ -5,7 +5,7 @@
 # also need to clarify what the base url is
 
 # Default API endpoint
-DEFAULT_API_BASE_URL = "https://api.kamiwaza.ai"
+DEFAULT_API_BASE_URL = "http://localhost:7777"
 
 # Default timeout for API requests (in seconds)
 DEFAULT_TIMEOUT = 30
