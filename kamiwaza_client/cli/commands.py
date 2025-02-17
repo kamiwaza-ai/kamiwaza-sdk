@@ -38,27 +38,16 @@ def run_cmd(model):
     
     # 1. Initiate the download
     console.print(f"🚀 Initiating download...")
-    console.print(f"DEBUG: Base URL: {client.base_url}")
-    console.print(f"DEBUG: Repo ID (type={type(repo_id)}): {repo_id}")
-    
-    # This is exactly what works in the notebook
     download_info = client.models.initiate_model_download(
         repo_id,
         quantization='q6_k'
     )
-    
-    console.print(f"DEBUG: Full download_info: {download_info}")
-    console.print(f"DEBUG: download_info keys: {download_info.keys()}")
-    console.print(f"DEBUG: download_info['model']: {download_info['model']}")
-    console.print(f"DEBUG: download_info['result']: {download_info['result']}")
     
     console.print(f"Downloading model: {download_info['model'].name}")
     console.print("Files being downloaded:")
     for file in download_info['files']:
         console.print(f"- {file.name}")
     
-
-    console.print(f"DEBUG: Download result: {download_info['result']}")
     # 2. Monitor download progress
     with create_progress() as progress:
         task = progress.add_task("⏳ Downloading...", total=100)
@@ -85,15 +74,21 @@ def run_cmd(model):
             
             time.sleep(1)
     
+    # Get the model ID from one of the downloaded files
+    file_id = download_info['result']['files'][0]  # Take the first file ID
+    model_file = client.models.get_model_file(file_id)
+    if not model_file.m_id:
+        console.print("[red]Error:[/red] Could not get model ID from downloaded file")
+        return 1
+    
     # 3. Get model configs
     console.print("📦 Preparing for deployment...")
-    model_id = download_info['model'].id
-    configs = client.models.get_model_configs(model_id)
+    configs = client.models.get_model_configs(model_file.m_id)
     default_config = next((config for config in configs if config.default), configs[0])
     
     # 4. Deploy the model
     console.print("🚀 Deploying model...")
-    deployment_id = client.serving.deploy_model(model_id)
+    deployment_id = client.serving.deploy_model(model_file.m_id)
     
     # 5. Verify deployment
     deployments = client.serving.list_deployments()
@@ -101,7 +96,7 @@ def run_cmd(model):
     
     if deployment:
         console.print("✨ Model deployed successfully!")
-        console.print(f"Endpoint: {deployment.endpoint}")
+        console.print(f"Endpoint: {get_endpoint_url(deployment)}")
         return 0
     else:
         console.print("[red]Error:[/red] Failed to verify deployment")
@@ -149,11 +144,17 @@ def stop_cmd(model):
     client = get_client()
     deployments = client.serving.list_active_deployments()
     
+    # Normalize the input model name
+    model_lower = model.lower()
+    if model_lower in MODEL_MAP:
+        model_lower = MODEL_MAP[model_lower].lower()
+    
     # Find deployment by model name or ID
     deployment = next(
         (d for d in deployments if 
-         d.m_name.lower() == model.lower() or 
-         str(d.id) == model),
+         d.m_name.lower() == model_lower or  # Exact match
+         d.m_name.lower().startswith(model_lower) or  # Prefix match
+         str(d.id) == model),  # ID match
         None
     )
     
