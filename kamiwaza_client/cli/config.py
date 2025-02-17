@@ -1,3 +1,4 @@
+# kamiwaza/kamiwaza-sdk/kamiwaza_client/cli/config.py
 """Configuration management for Kamiwaza CLI."""
 
 import os
