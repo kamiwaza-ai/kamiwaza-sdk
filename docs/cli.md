@@ -110,10 +110,9 @@ $ kamiwaza config show
 
 ## Supported Models
 
-The CLI supports friendly names for common models:
+The CLI currently supports friendly names for common models (more coming soon):
 
 - `qwen2.5-7b-instruct` → `Qwen/Qwen2.5-7B-Instruct-GGUF`
-- `qwen2.5-32b-instruct` → `Qwen/Qwen2.5-32B-Instruct-GGUF`
 
 You can use either the friendly name or the full repository ID in any command.
 
