@@ -55,13 +55,29 @@ class ModelDownloadStatus(BaseModel):
     }
 
     def __str__(self):
-        return (
-            f"ModelDownloadStatus: {self.name}\n"
-            f"ID: {self.id}\n"
-            f"Model ID: {self.m_id}\n"
-            f"Is Downloading: {self.is_downloading}\n"
-            f"Download Progress: {self.download_percentage}%"
-        )
+        # Create progress bar
+        bar_width = 30
+        percentage = self.download_percentage or 0
+        filled = int(bar_width * percentage / 100)
+        bar = f"[{'█' * filled}{'▒' * (bar_width - filled)}]"
+        
+        # Format status line
+        status = "📥 Downloading" if self.is_downloading else "✅ Complete" if percentage == 100 else "⏸️ Paused"
+        
+        # Build the output
+        output = [
+            f"📦 {self.name}",
+            f"{status}  {bar} {percentage}%"
+        ]
+        
+        # Add speed and time info if available
+        if self.is_downloading and self.download_throughput:
+            speed_line = f"🚀 Speed: {self.download_throughput}"
+            if self.download_remaining:
+                speed_line += f"  |  ⏱️ ETA: {self.download_remaining}"
+            output.append(speed_line)
+            
+        return "\n".join(output)
 
     def __repr__(self):
         return self.__str__()

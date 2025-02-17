@@ -43,14 +43,21 @@ class Model(CreateModel):
     files_being_downloaded: List[ModelFile] = []
 
     def __str__(self):
+        # Calculate the width based on the longest content
+        width = max(
+            len(self.name or ""),
+            len(self.repo_modelId or ""),
+            40  # minimum width
+        ) + 4  # padding
+
         return (
-            f"Model: {self.name}\n"
-            f"ID: {self.id}\n"
-            f"Repo Model ID: {self.repo_modelId}\n"
-            f"Version: {self.version}\n"
-            f"Author: {self.author}\n"
-            f"Created: {self.created_timestamp}\n"
-            f"Files being downloaded: {len(self.files_being_downloaded)}"
+            f"┌{'─' * width}┐\n"
+            f"│ {self.name or 'Unnamed':<{width-2}} │\n"
+            f"├{'─' * width}┤\n"
+            f"│ 🔗 {(self.repo_modelId or 'No repo ID'):<{width-4}} │\n"
+            f"│ 📚 Version: {(self.version or 'N/A'):<{width-12}} │\n"
+            f"│ 📦 Files downloading: {len(self.files_being_downloaded):<{width-21}} │\n"
+            f"└{'─' * width}┘"
         )
 
     def __repr__(self):

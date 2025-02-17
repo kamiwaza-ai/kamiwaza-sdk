@@ -86,17 +86,44 @@ class ModelDeployment(CreateModelDeployment):
     def all_attributes(self):
         return "\n".join(f"{key}: {value}" for key, value in self.model_dump().items())
 
-class UIModelDeployment(ModelDeployment):
-    m_name: Optional[str] = Field(default=None, description="Name of the model")
-    host_ip: Optional[str] = Field(default=None, description="IP address associated with the host_name")
+class UIModelDeployment(BaseModel):
+    id: UUID
+    m_id: UUID
+    m_name: str
+    status: str
+    instances: List[ModelInstance]
+    lb_port: Optional[int] = None
+    host_ip: Optional[str] = None
+    endpoint: Optional[str] = None
 
     def __str__(self):
+        # Calculate width based on content
+        width = max(
+            len(self.m_name or ""),
+            len(self.endpoint or ""),
+            40  # minimum width
+        ) + 4  # padding
+
+        # Status formatting
+        status_icon = "●" if self.status == "DEPLOYED" else "○"
+        status_text = f"{status_icon} {self.status}"
+        
+        # Instance count
+        instance_text = f"🔄 Instances: {len(self.instances)}"
+        
+        # Endpoint formatting
+        endpoint = self.endpoint or "Not available"
+        if self.endpoint:
+            endpoint = f"🌐 {endpoint}"
+
         return (
-            f"UIModelDeployment: ID: {self.id}\n"
-            f"Model Name: {self.m_name}\n"
-            f"Status: {self.status}\n"
-            f"Instances: {len(self.instances)}\n"
-            f"Host IP: {self.host_ip}"
+            f"┌{'─' * width}┐\n"
+            f"│ {self.m_name:<{width-2}} │\n"
+            f"├{'─' * width}┤\n"
+            f"│ {status_text:<{width-2}} │\n"
+            f"│ {instance_text:<{width-2}} │\n"
+            f"│ {endpoint:<{width-2}} │\n"
+            f"└{'─' * width}┘"
         )
 
     def __repr__(self):
@@ -104,8 +131,6 @@ class UIModelDeployment(ModelDeployment):
 
     def all_attributes(self):
         return "\n".join(f"{key}: {value}" for key, value in self.model_dump().items())
-
-
 
 class ActiveModelDeployment(BaseModel):
     id: UUID = Field(description="The UUID of the deployment")
@@ -128,3 +153,42 @@ class ActiveModelDeployment(BaseModel):
     def active_instance(self) -> Optional[ModelInstance]:
         """Get first active instance if any exists"""
         return next((i for i in self.instances if i.status == "DEPLOYED"), None)
+
+    def __str__(self):
+        # Calculate width based on content
+        width = max(
+            len(self.m_name or ""),
+            len(self.endpoint or ""),
+            len(str(self.lb_port)) + 20,  # For port display
+            40  # minimum width
+        ) + 4  # padding
+
+        # Status formatting with color indicators
+        status_icon = "●" if self.is_available else "○"
+        status_text = f"{status_icon} {self.status}"
+        
+        # Instance info
+        active_count = sum(1 for i in self.instances if i.status == "DEPLOYED")
+        total_count = len(self.instances)
+        instance_text = f"🔄 Instances: {active_count}/{total_count} active"
+        
+        # Port and endpoint info
+        port_text = f"🔌 Port: {self.lb_port}"
+        endpoint_text = f"🌐 {self.endpoint}" if self.endpoint else "🌐 Not available"
+
+        return (
+            f"┌{'─' * width}┐\n"
+            f"│ {self.m_name:<{width-2}} │\n"
+            f"├{'─' * width}┤\n"
+            f"│ {status_text:<{width-2}} │\n"
+            f"│ {instance_text:<{width-2}} │\n"
+            f"│ {port_text:<{width-2}} │\n"
+            f"│ {endpoint_text:<{width-2}} │\n"
+            f"└{'─' * width}┘"
+        )
+
+    def __repr__(self):
+        return self.__str__()
+
+    def all_attributes(self):
+        return "\n".join(f"{key}: {value}" for key, value in self.model_dump().items())
