@@ -9,11 +9,7 @@ from rich.table import Table
 from ..client import KamiwazaClient
 from .utils import console, create_progress, handle_error, ensure_model_pulled, ensure_model_served, interactive_chat
 from .config import get_base_url, save_config, load_config
-
-# Model name mapping
-MODEL_MAP = {
-    'qwen2.5-7b-instruct': 'Qwen/Qwen2.5-7B-Instruct-GGUF'  # Include GGUF suffix
-}
+from .models import MODEL_MAP, get_friendly_names
 
 def get_client() -> KamiwazaClient:
     """Get a configured KamiwazaClient instance."""
@@ -64,8 +60,8 @@ def run_cmd(model: str):
     # Ensure model is served
     endpoint = ensure_model_served(client, model_id, model_name)
     
-    # Get OpenAI client
-    openai_client = client.openai.get_client(model=model_name)
+    # Get OpenAI client using the endpoint
+    openai_client = client.openai.get_client(endpoint=endpoint)
     
     # Start interactive chat
     interactive_chat(openai_client)

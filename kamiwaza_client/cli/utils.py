@@ -8,6 +8,7 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeRemainingColumn
 from uuid import UUID
 import time
+from .models import MODEL_MAP  # Import from models module
 
 console = Console()
 
@@ -45,10 +46,13 @@ def ensure_model_pulled(client, model: str) -> tuple[UUID, str]:
     Ensure model is downloaded, pull if not.
     Returns (model_id, model_name) tuple.
     """
+    # Convert friendly name to repo ID using MODEL_MAP
+    repo_id = MODEL_MAP.get(model.lower(), model)
+    
     # Check if model exists in downloaded models
     models = client.models.list_models(load_files=True)
     model_match = next(
-        (m for m in models if m.repo_modelId.lower() == model.lower()),
+        (m for m in models if m.repo_modelId.lower() == repo_id.lower()),
         None
     )
     
@@ -58,7 +62,7 @@ def ensure_model_pulled(client, model: str) -> tuple[UUID, str]:
     # Need to download - initiate download
     console.print(f"🚀 Downloading {model}...")
     download_info = client.models.initiate_model_download(
-        repo_id=model,
+        repo_id=repo_id,
         quantization='q6_k'
     )
     
@@ -67,7 +71,7 @@ def ensure_model_pulled(client, model: str) -> tuple[UUID, str]:
         task = progress.add_task("⏳ Downloading...", total=100)
         
         while True:
-            status = client.models.check_download_status(model)
+            status = client.models.check_download_status(repo_id)
             if status:
                 # Calculate average progress across all files
                 avg_progress = sum(s.download_percentage for s in status) / len(status)
@@ -153,7 +157,7 @@ def interactive_chat(openai_client):
             
             # Get streaming response
             response = openai_client.chat.completions.create(
-                model="model",
+                model="local-model",  # Use local-model for local deployments
                 messages=messages,
                 stream=True
             )
