@@ -43,15 +43,26 @@ class Model(CreateModel):
     files_being_downloaded: List[ModelFile] = []
 
     def __str__(self):
-        return (
-            f"Model: {self.name}\n"
-            f"ID: {self.id}\n"
-            f"Repo Model ID: {self.repo_modelId}\n"
-            f"Version: {self.version}\n"
-            f"Author: {self.author}\n"
-            f"Created: {self.created_timestamp}\n"
-            f"Files being downloaded: {len(self.files_being_downloaded)}"
-        )
+        # Create parts list with only non-None values
+        parts = [f"Model: {self.name}"]
+        if self.repo_modelId:
+            parts.append(f"Repo ID: {self.repo_modelId}")
+        if self.id:
+            parts.append(f"ID: {self.id}")
+        if self.version:
+            parts.append(f"Version: {self.version}")
+        if self.author:
+            parts.append(f"Author: {self.author}")
+        if self.created_timestamp:
+            parts.append(f"Created: {self.created_timestamp}")
+        
+        # Always show downloading files count
+        if hasattr(self, 'files_being_downloaded') and len(self.files_being_downloaded) > 0:
+            parts.append(f"Files: {len(self.files_being_downloaded)} downloading")
+        else:
+            parts.append("Files: 0 downloading")
+            
+        return "\n".join(parts)
 
     def __repr__(self):
         return self.__str__()
