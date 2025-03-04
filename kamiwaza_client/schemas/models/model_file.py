@@ -68,14 +68,37 @@ class ModelFile(CreateModelFile):
     }
 
     def __str__(self):
-        return (
-            f"ModelFile: {self.name}\n"
-            f"ID: {self.id}\n"
-            f"Size: {self.size}\n"
-            f"Storage Type: {self.storage_type}\n"
-            f"Is Downloading: {self.is_downloading}\n"
-            f"Download Progress: {self.download_percentage}%"
-        )
+        parts = [f"ModelFile: {self.name}"]
+        
+        if self.id:
+            parts.append(f"ID: {self.id}")
+        
+        # Format size in human-readable format if available
+        if self.size:
+            size_str = self._format_size(self.size)
+            parts.append(f"Size: {size_str}")
+            
+        if self.storage_type:
+            parts.append(f"Storage Type: {self.storage_type}")
+            
+        # Only show download info if it's downloading
+        if self.is_downloading:
+            parts.append(f"Is Downloading: {self.is_downloading}")
+            if self.download_percentage is not None:
+                parts.append(f"Download Progress: {self.download_percentage}%")
+                
+        return "\n".join(parts)
+
+    def _format_size(self, size_in_bytes):
+        """Format size in human-readable format"""
+        if size_in_bytes < 1024:
+            return f"{size_in_bytes} B"
+        elif size_in_bytes < 1024 * 1024:
+            return f"{size_in_bytes/1024:.2f} KB"
+        elif size_in_bytes < 1024 * 1024 * 1024:
+            return f"{size_in_bytes/(1024*1024):.2f} MB"
+        else:
+            return f"{size_in_bytes/(1024*1024*1024):.2f} GB"
 
     def __repr__(self):
         return self.__str__()
