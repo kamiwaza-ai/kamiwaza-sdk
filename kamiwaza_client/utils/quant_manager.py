@@ -165,3 +165,24 @@ class QuantizationManager:
                         break
                         
         return compatible_files
+        
+    def has_multiple_quantizations(self, files: List[Any]) -> bool:
+        """
+        Determine if the files list contains multiple distinct quantizations.
+        
+        Args:
+            files (List[Any]): List of file objects with 'name' attribute
+            
+        Returns:
+            bool: True if multiple quantizations detected, False otherwise
+        """
+        # Extract quantizations from filenames
+        quantizations = set()
+        for file in files:
+            if hasattr(file, 'name') and file.name:
+                quant = self.detect_quantization(file.name)
+                if quant:
+                    quantizations.add(quant)
+        
+        # Return True if more than one quantization found
+        return len(quantizations) > 1

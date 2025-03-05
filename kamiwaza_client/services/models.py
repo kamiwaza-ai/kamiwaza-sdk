@@ -138,13 +138,19 @@ class ModelService(BaseService):
 
     def initiate_model_download(self, repo_id: str, quantization: str = 'q6_k') -> Dict[str, Any]:
         """
-        Initiate the download of a model based on the repo ID and desired quantization.
-
+        Initiate the download of a model based on the repo ID.
+        
+        This method adapts its behavior based on the model repository structure:
+        - If multiple quantization variants are available, it will use the specified
+          quantization parameter (defaulting to 'q6_k' if not specified)
+        - If no quantization variants are detected, it will download all necessary
+          model files regardless of the quantization parameter
+        
         Args:
             repo_id (str): The repo ID of the model to download.
-            quantization (str): The desired quantization level. Defaults to 'q6_k'.
-                              Can include variant (e.g., 'q6_k_l' for large version).
-
+            quantization (str, optional): The desired quantization level when multiple
+                                         options are available. Defaults to 'q6_k'.
+        
         Returns:
             Dict[str, Any]: A dictionary containing information about the initiated download.
         """
@@ -165,22 +171,45 @@ class ModelService(BaseService):
             files = self.search_hub_model_files(HubModelFileSearch(hub=model.hub, model=model.repo_modelId))
             model.m_files = files
         
-        # Use QuantizationManager to filter files by quantization with fallback
-        compatible_files = self.quant_manager.filter_files_by_quantization(files, quantization)
+        # Check if the model has multiple quantization options
+        has_multiple_quants = self.quant_manager.has_multiple_quantizations(files)
         
-        if not compatible_files:
-            # If no compatible files found, extract and show available quantizations
-            available_quants = set()
-            for file in files:
-                if file.name:
-                    quant = self.quant_manager.detect_quantization(file.name)
-                    if quant:
-                        available_quants.add(quant)
+        if has_multiple_quants:
+            # Model has multiple quantizations - use the specified one or default
+            compatible_files = self.quant_manager.filter_files_by_quantization(files, quantization)
             
-            error_msg = f"No compatible files found for model {repo_id} with quantization {quantization}"
-            if available_quants:
-                error_msg += f"\nAvailable quantizations: {', '.join(sorted(available_quants))}"
-            raise ValueError(error_msg)
+            if not compatible_files:
+                # If no compatible files found, extract and show available quantizations
+                available_quants = set()
+                for file in files:
+                    if file.name:
+                        quant = self.quant_manager.detect_quantization(file.name)
+                        if quant:
+                            available_quants.add(quant)
+                
+                error_msg = f"No compatible files found for model {repo_id} with quantization {quantization}"
+                if available_quants:
+                    error_msg += f"\nAvailable quantizations: {', '.join(sorted(available_quants))}"
+                raise ValueError(error_msg)
+        else:
+            # Model doesn't have multiple quantizations - use all model files
+            # Filter to only include model files (exclude metadata, etc.)
+            compatible_files = [
+                file for file in files 
+                if hasattr(file, 'name') and file.name and (
+                    file.name.lower().endswith('.gguf') or 
+                    file.name.lower().endswith('.safetensors') or
+                    file.name.lower().endswith('.bin')
+                )
+            ]
+            
+            if not compatible_files:
+                raise ValueError(f"No model files found for {repo_id}. Available files: {[f.name for f in files if hasattr(f, 'name')]}")
+            
+            # Log that we're ignoring quantization parameter
+            if quantization != 'q6_k':  # Only log if user explicitly specified a quantization
+                print(f"Note: Model {repo_id} doesn't have multiple quantization options. "
+                      f"Ignoring specified quantization '{quantization}' and downloading all model files.")
         
         # Send the download request
         download_request = ModelDownloadRequest(
