@@ -133,9 +133,9 @@ class ModelService(BaseService):
                                 # Use regex to find quantization patterns
                                 matches = quant_pattern.findall(file.name)
                                 for match in matches:
-                                    # Remove just the leading separator but preserve case
-                                    quant = match[1:]
-                                    quants.add(quant)
+                                    # match already has the leading separator removed by the regex
+                                    # Keep the pattern exactly as found in the filename
+                                    quants.add(match)
                         
                         # Store available quantizations in the model for display
                         model.available_quantizations = sorted(list(quants))
@@ -185,13 +185,13 @@ class ModelService(BaseService):
         
         # Check each match against the requested quantization
         for match in matches:
-            # Remove the leading separator but preserve case for display
-            found_quant = match[1:]
+            # match already has the leading separator removed by the regex
             # Use lowercase for comparison
-            found_quant_lower = found_quant.lower()
+            match_lower = match.lower()
             
             # Check for exact match or as a prefix
-            if found_quant_lower == quantization_lower or found_quant_lower.startswith(f"{quantization_lower}_"):
+            if (match_lower == quantization_lower or 
+                match_lower.startswith(f"{quantization_lower}_")):
                 return True
         
         return False
@@ -269,9 +269,8 @@ class ModelService(BaseService):
                 if file.name:
                     matches = quant_pattern.findall(file.name)
                     for match in matches:
-                        # Remove just the leading separator but preserve case
-                        quant = match[1:]
-                        available_quants.add(quant)
+                        # Keep the pattern exactly as found in the filename
+                        available_quants.add(match)
             
             error_msg = f"No compatible files found for model {repo_id} with quantization {quantization}"
             if available_quants:
