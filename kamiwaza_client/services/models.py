@@ -12,42 +12,18 @@ from ..schemas.models.downloads import ModelDownloadRequest, ModelDownloadStatus
 from .base_service import BaseService
 import difflib
 import re
+from ..utils.quant_manager import QuantizationManager
 
 class ModelService(BaseService):
     def __init__(self, client):
         super().__init__(client)
         self._server_info = None  # Cache server info
+        self.quant_manager = QuantizationManager()
         
-        # Define known quantization variants - expanded to include more variants
-        self._quant_variants = {
-            # Standard quantizations
-            'q2_k': ['q2_k', 'q2_k_l', 'q2_k_m', 'q2_k_s'],
-            'q3_k': ['q3_k', 'q3_k_l', 'q3_k_m', 'q3_k_s', 'q3_k_xl'],
-            'q4_k': ['q4_k', 'q4_k_l', 'q4_k_m', 'q4_k_s'],
-            'q4_0': ['q4_0'],
-            'q4_1': ['q4_1'],
-            'q5_k': ['q5_k', 'q5_k_l', 'q5_k_m', 'q5_k_s'],
-            'q6_k': ['q6_k', 'q6_k_l', 'q6_k_m', 'q6_k_s'],
-            'q8_0': ['q8_0'],
-            
-            # Integer quantizations
-            'iq1': ['iq1_m', 'iq1_s'],
-            'iq2': ['iq2_m', 'iq2_s', 'iq2_xs', 'iq2_xxs'],
-            'iq3': ['iq3_m', 'iq3_s', 'iq3_xs'],
-            'iq4': ['iq4_nl', 'iq4_xs'],
-            
-            # Floating point
-            'fp16': ['fp16']
-        }
+        # For backwards compatibility, keep references to these attributes
+        self._quant_variants = self.quant_manager._quant_variants
+        self._priority_order = self.quant_manager._priority_order
         
-        # Priority order for fallback - expanded to include new types
-        self._priority_order = [
-            'q6_k', 'q5_k', 'q4_k', 'q3_k', 'q2_k',  # K-quants in quality order
-            'q8_0', 'q4_0', 'q4_1',                   # Other quants
-            'iq4', 'iq3', 'iq2', 'iq1',               # Integer quants
-            'fp16'                                     # Floating point (highest quality, most memory)
-        ]
-
     def get_model(self, model_id: Union[str, UUID]) -> Model:
         """Retrieve a specific model by its ID."""
         try:
@@ -105,17 +81,6 @@ class ModelService(BaseService):
         
         # Load file information for each model if requested
         if load_files and result_models:
-            import re
-            
-            # Regex pattern to detect quantization formats
-            # This handles:
-            # - Different separators (-, _, .)
-            # - Standard Q formats (Q2_K, Q4_0, etc.)
-            # - Integer quantization (IQ2_M, IQ3_XS, etc.)
-            # - Floating point formats (fp16)
-            # - Various size variants (S, M, L, XS, XXS, XL, etc.)
-            quant_pattern = re.compile(r'[-._](I?Q\d+(?:_?\w+)*|fp\d+)')
-            
             for model in result_models:
                 try:
                     # Search for files for this model
@@ -126,16 +91,13 @@ class ModelService(BaseService):
                         # Add files to the model
                         model.m_files = files
                         
-                        # Extract quantization information using regex
+                        # Extract quantization information using the QuantizationManager
                         quants = set()
                         for file in files:
                             if file.name:
-                                # Use regex to find quantization patterns
-                                matches = quant_pattern.findall(file.name)
-                                for match in matches:
-                                    # match already has the leading separator removed by the regex
-                                    # Keep the pattern exactly as found in the filename
-                                    quants.add(match)
+                                quant = self.quant_manager.detect_quantization(file.name)
+                                if quant:
+                                    quants.add(quant)
                         
                         # Store available quantizations in the model for display
                         model.available_quantizations = sorted(list(quants))
@@ -171,30 +133,8 @@ class ModelService(BaseService):
         Returns:
             bool: True if exact match found, False otherwise
         """
-        if not filename:
-            return False
-        
-        import re
-        
-        # Normalize quantization to lowercase for comparison
-        quantization_lower = quantization.lower()
-        
-        # Find all quantization patterns in the filename
-        quant_pattern = re.compile(r'[-._](I?Q\d+(?:_?\w+)*|fp\d+)')
-        matches = quant_pattern.findall(filename)
-        
-        # Check each match against the requested quantization
-        for match in matches:
-            # match already has the leading separator removed by the regex
-            # Use lowercase for comparison
-            match_lower = match.lower()
-            
-            # Check for exact match or as a prefix
-            if (match_lower == quantization_lower or 
-                match_lower.startswith(f"{quantization_lower}_")):
-                return True
-        
-        return False
+        # Use the QuantizationManager for matching
+        return self.quant_manager.match_quantization(filename, quantization)
 
     def initiate_model_download(self, repo_id: str, quantization: str = 'q6_k') -> Dict[str, Any]:
         """
@@ -225,52 +165,17 @@ class ModelService(BaseService):
             files = self.search_hub_model_files(HubModelFileSearch(hub=model.hub, model=model.repo_modelId))
             model.m_files = files
         
-        # Try exact match first
-        compatible_files = [
-            file for file in files 
-            if self._get_exact_quant_match(file.name, quantization)
-        ]
-        
-        # If no exact match and no specific variant was requested, try variants in size order
-        if not compatible_files and '_' not in quantization:
-            base_quant = quantization
-            if base_quant in self._quant_variants:
-                for variant in self._quant_variants[base_quant]:
-                    compatible_files = [
-                        file for file in files 
-                        if self._get_exact_quant_match(file.name, variant)
-                    ]
-                    if compatible_files:
-                        break
-        
-        # If still no match, try fallback to other quantizations
-        if not compatible_files:
-            # Try to find best fallback based on priority order
-            for fallback in self._priority_order:
-                if fallback != quantization:
-                    for variant in self._quant_variants.get(fallback, [fallback]):
-                        compatible_files = [
-                            file for file in files 
-                            if self._get_exact_quant_match(file.name, variant)
-                        ]
-                        if compatible_files:
-                            break
-                    if compatible_files:
-                        break
+        # Use QuantizationManager to filter files by quantization with fallback
+        compatible_files = self.quant_manager.filter_files_by_quantization(files, quantization)
         
         if not compatible_files:
             # If no compatible files found, extract and show available quantizations
-            import re
-            
-            # Use the same regex pattern as in search_models
-            quant_pattern = re.compile(r'[-._](I?Q\d+(?:_?\w+)*|fp\d+)')
             available_quants = set()
             for file in files:
                 if file.name:
-                    matches = quant_pattern.findall(file.name)
-                    for match in matches:
-                        # Keep the pattern exactly as found in the filename
-                        available_quants.add(match)
+                    quant = self.quant_manager.detect_quantization(file.name)
+                    if quant:
+                        available_quants.add(quant)
             
             error_msg = f"No compatible files found for model {repo_id} with quantization {quantization}"
             if available_quants:
