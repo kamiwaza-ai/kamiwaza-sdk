@@ -145,6 +145,8 @@ class ModelService(BaseService):
           quantization parameter (defaulting to 'q6_k' if not specified)
         - If no quantization variants are detected, it will download all necessary
           model files regardless of the quantization parameter
+        - If the requested files are already downloaded, it will skip the download
+          and return information about the existing files
         
         Args:
             repo_id (str): The repo ID of the model to download.
@@ -211,13 +213,50 @@ class ModelService(BaseService):
                 print(f"Note: Model {repo_id} doesn't have multiple quantization options. "
                       f"Ignoring specified quantization '{quantization}' and downloading all model files.")
         
-        # Send the download request
-        download_request = ModelDownloadRequest(
-            model=model.repo_modelId,
-            hub=model.hub,
-            files_to_download=[file.name for file in compatible_files]
-        )
-        result = self.client._request("POST", "/models/download/", json=download_request.model_dump())
+        # Check if files are already downloaded
+        files_to_download = []
+        already_downloaded_files = []
+        
+        # Get model files directly from the model object
+        for file in compatible_files:
+            # Check if the file has the download attribute and it's True
+            if file.download:
+                # File is already downloaded
+                already_downloaded_files.append(file)
+            else:
+                # File needs to be downloaded
+                files_to_download.append(file.name)
+        
+        # If all files are already downloaded, return without initiating a new download
+        if not files_to_download and already_downloaded_files:
+            print(f"All requested files for model {repo_id} are already downloaded.")
+            return {
+                "model": model,
+                "files": already_downloaded_files,
+                "download_request": None,
+                "result": {
+                    "result": True,
+                    "message": "Files already downloaded",
+                    "files": [file.id for file in already_downloaded_files]
+                }
+            }
+        
+        # Send the download request for files that need to be downloaded
+        if files_to_download:
+            download_request = ModelDownloadRequest(
+                model=model.repo_modelId,
+                hub=model.hub,
+                files_to_download=files_to_download
+            )
+            result = self.client._request("POST", "/models/download/", json=download_request.model_dump())
+        else:
+            # This should not happen, but just in case
+            download_request = None
+            result = {
+                "result": True,
+                "message": "No files to download",
+                "files": []
+            }
         
         # Create an enhanced output dictionary with better string representation
         result_dict = {
@@ -243,15 +282,26 @@ class ModelService(BaseService):
                     files_info.append(f"- {file.name} ({size_formatted})")
                 
                 # Create the formatted output
-                output = [
-                    f"Download initiated for: {model_name}",
-                    f"Status: {status}",
-                    "Files:"
-                ]
-                output.extend(files_info)
-                output.append("")
-                output.append(f"Total download size: {self._format_size(total_size)}")
-                output.append("Use check_download_status() to monitor progress")
+                if status == "Files already downloaded":
+                    output = [
+                        f"Model files for {model_name} are already downloaded",
+                        f"Status: {status}",
+                        "Files:"
+                    ]
+                    output.extend(files_info)
+                    output.append("")
+                    output.append(f"Total size: {self._format_size(total_size)}")
+                    output.append("No download needed - files are ready to use")
+                else:
+                    output = [
+                        f"Download initiated for: {model_name}",
+                        f"Status: {status}",
+                        "Files:"
+                    ]
+                    output.extend(files_info)
+                    output.append("")
+                    output.append(f"Total size: {self._format_size(total_size)}")
+                    output.append("Use check_download_status() to monitor progress")
                 
                 return "\n".join(output)
                 
@@ -875,3 +925,114 @@ class ModelService(BaseService):
             hours = seconds // 3600
             minutes = (seconds % 3600) // 60
             return f"{hours}:{minutes:02d} hours"
+
+    def download_and_deploy_model(self, repo_id: str, quantization: str = 'q6_k', wait_for_download: bool = True, timeout: Optional[int] = None) -> Dict[str, Any]:
+        """
+        Download and deploy a model in one step.
+        
+        This method encapsulates the entire workflow from model search to deployment:
+        1. Searches for the model
+        2. Checks if the model files are already downloaded
+        3. Downloads the model files if needed
+        4. Deploys the model
+        5. Returns information about the deployment
+        
+        Args:
+            repo_id (str): The repo ID of the model to download and deploy.
+            quantization (str, optional): The desired quantization level. Defaults to 'q6_k'.
+            wait_for_download (bool, optional): Whether to wait for the download to complete. Defaults to True.
+            timeout (Optional[int], optional): Timeout in seconds for the download. Defaults to None (no timeout).
+            
+        Returns:
+            Dict[str, Any]: A dictionary containing information about the deployment.
+        """
+        print(f"Preparing model {repo_id} with quantization {quantization}...")
+        
+        try:
+            # Step 1: Download the model (if needed)
+            download_result = self.initiate_model_download(repo_id, quantization)
+            
+            # Step 2: Wait for download to complete (if needed and requested)
+            if wait_for_download:
+                # Check if we need to wait (if files were already downloaded, we don't need to wait)
+                if download_result['result'].get('message') != "Files already downloaded":
+                    print(f"Waiting for download to complete...")
+                    self.wait_for_download(repo_id, timeout=timeout)
+                else:
+                    print("Files already downloaded, proceeding to deployment...")
+            
+            # Step 3: Deploy the model
+            print(f"Deploying model {repo_id}...")
+            deployment_id = self.client.serving.deploy_model(repo_id=repo_id)
+            
+            # Step 4: Get the OpenAI client
+            print(f"Creating OpenAI-compatible client...")
+            openai_client = self.client.openai.get_client(repo_id=repo_id)
+            
+            # Step 5: Create result dictionary with custom string representation
+            result = {
+                "model": download_result["model"],
+                "files": download_result["files"],
+                "deployment_id": deployment_id,
+                "openai_client": openai_client
+            }
+            
+            # Add custom string representation
+            class EnhancedDeploymentResult(dict):
+                def __str__(self):
+                    model_name = self["model"].name if self["model"].name else self["model"].repo_modelId
+                    
+                    # Format the file information
+                    files_info = []
+                    total_size = 0
+                    for file in self["files"]:
+                        size_bytes = file.size if file.size else 0
+                        total_size += size_bytes
+                        size_formatted = self._format_size(size_bytes)
+                        files_info.append(f"- {file.name} ({size_formatted})")
+                    
+                    # Create the formatted output
+                    output = [
+                        f"Model {model_name} is ready for inference!",
+                        f"Deployment ID: {self['deployment_id']}",
+                        "",
+                        "Files:"
+                    ]
+                    output.extend(files_info)
+                    output.append("")
+                    output.append(f"Total size: {self._format_size(total_size)}")
+                    output.append("")
+                    output.append("Example usage:")
+                    output.append("```python")
+                    output.append("response = openai_client.chat.completions.create(")
+                    output.append("    messages=[")
+                    output.append("        {\"role\": \"user\", \"content\": \"Hello, how are you?\"},")
+                    output.append("    ],")
+                    output.append("    model=\"model\",")
+                    output.append(")")
+                    output.append("print(response.choices[0].message.content)")
+                    output.append("```")
+                    
+                    return "\n".join(output)
+                    
+                def _format_size(self, size_in_bytes):
+                    """Format size in human-readable format"""
+                    if size_in_bytes < 1024:
+                        return f"{size_in_bytes} B"
+                    elif size_in_bytes < 1024 * 1024:
+                        return f"{size_in_bytes/1024:.2f} KB"
+                    elif size_in_bytes < 1024 * 1024 * 1024:
+                        return f"{size_in_bytes/(1024*1024):.2f} MB"
+                    else:
+                        return f"{size_in_bytes/(1024*1024*1024):.2f} GB"
+            
+            return EnhancedDeploymentResult(result)
+            
+        except Exception as e:
+            print(f"Error in download_and_deploy_model: {e}")
+            # Return a dictionary with error information
+            return {
+                "error": str(e),
+                "repo_id": repo_id,
+                "quantization": quantization
+            }
