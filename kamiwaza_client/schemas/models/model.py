@@ -41,6 +41,7 @@ class Model(CreateModel):
     created_timestamp: Optional[datetime] = None
     modified_timestamp: Optional[datetime] = None
     files_being_downloaded: List[ModelFile] = []
+    available_quantizations: List[str] = []
 
     def __str__(self):
         # Create parts list with only non-None values
@@ -55,6 +56,27 @@ class Model(CreateModel):
             parts.append(f"Author: {self.author}")
         if self.created_timestamp:
             parts.append(f"Created: {self.created_timestamp}")
+        
+        # Show file information
+        if hasattr(self, 'm_files') and self.m_files:
+            parts.append(f"Files: {len(self.m_files)} available")
+            
+            # Show file sizes by type
+            file_types = {}
+            for file in self.m_files:
+                ext = file.name.split('.')[-1].lower() if file.name and '.' in file.name else 'unknown'
+                if ext not in file_types:
+                    file_types[ext] = []
+                file_types[ext].append(file)
+            
+            for ext, files in file_types.items():
+                parts.append(f"  {ext.upper()} files: {len(files)}")
+        
+        # Show available quantizations
+        if hasattr(self, 'available_quantizations') and self.available_quantizations:
+            parts.append("Available quantizations:")
+            for quant in sorted(self.available_quantizations):
+                parts.append(f"  - {quant}")
         
         # Always show downloading files count
         if hasattr(self, 'files_being_downloaded') and len(self.files_being_downloaded) > 0:

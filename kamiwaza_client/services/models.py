@@ -12,21 +12,18 @@ from ..schemas.models.downloads import ModelDownloadRequest, ModelDownloadStatus
 from .base_service import BaseService
 import difflib
 import re
+from ..utils.quant_manager import QuantizationManager
 
 class ModelService(BaseService):
     def __init__(self, client):
         super().__init__(client)
         self._server_info = None  # Cache server info
-        # Define known quantization variants
-        self._quant_variants = {
-            'q6_k': ['q6_k', 'q6_k_l', 'q6_k_m', 'q6_k_s'],
-            'q5_k_m': ['q5_k_m', 'q5_k_l', 'q5_k_s'],
-            'q4_k_m': ['q4_k_m', 'q4_k_l', 'q4_k_s'],
-            'q8_0': ['q8_0']
-        }
-        # Priority order for fallback
-        self._priority_order = ['q6_k', 'q5_k_m', 'q4_k_m', 'q8_0']
-
+        self.quant_manager = QuantizationManager()
+        
+        # For backwards compatibility, keep references to these attributes
+        self._quant_variants = self.quant_manager._quant_variants
+        self._priority_order = self.quant_manager._priority_order
+        
     def get_model(self, model_id: Union[str, UUID]) -> Model:
         """Retrieve a specific model by its ID."""
         try:
@@ -58,7 +55,7 @@ class ModelService(BaseService):
         response = self.client._request("GET", "/models/", params={"load_files": load_files})
         return [Model.model_validate(item) for item in response]
 
-    def search_models(self, query: str, exact: bool = False, limit: int = 100, hubs_to_search: Optional[List[str]] = None) -> List[Model]:
+    def search_models(self, query: str, exact: bool = False, limit: int = 100, hubs_to_search: Optional[List[str]] = None, load_files: bool = True) -> List[Model]:
         """
         Search for models based on a query string.
 
@@ -67,6 +64,7 @@ class ModelService(BaseService):
             exact (bool, optional): Whether to perform an exact match. Defaults to False.
             limit (int, optional): Maximum number of results to return. Defaults to 100.
             hubs_to_search (List[str], optional): List of hubs to search in. Defaults to None (search all hubs).
+            load_files (bool, optional): Whether to load file information for each model. Defaults to True.
 
         Returns:
             List[Model]: A list of matching models.
@@ -80,6 +78,31 @@ class ModelService(BaseService):
         response = self.client._request("POST", "/models/search/", json=search_request.model_dump())
         search_response = ModelSearchResponse.model_validate(response)
         result_models = [result.model for result in search_response.results]
+        
+        # Load file information for each model if requested
+        if load_files and result_models:
+            for model in result_models:
+                try:
+                    # Search for files for this model
+                    if model.repo_modelId and model.hub:
+                        files = self.search_hub_model_files(
+                            HubModelFileSearch(hub=model.hub, model=model.repo_modelId)
+                        )
+                        # Add files to the model
+                        model.m_files = files
+                        
+                        # Extract quantization information using the QuantizationManager
+                        quants = set()
+                        for file in files:
+                            if file.name:
+                                quant = self.quant_manager.detect_quantization(file.name)
+                                if quant:
+                                    quants.add(quant)
+                        
+                        # Store available quantizations in the model for display
+                        model.available_quantizations = sorted(list(quants))
+                except Exception as e:
+                    print(f"Error loading files for model {model.repo_modelId}: {e}")
         
         # Add a summary line at the beginning when printing
         if result_models:
@@ -110,35 +133,29 @@ class ModelService(BaseService):
         Returns:
             bool: True if exact match found, False otherwise
         """
-        # Convert both filename and quantization to lowercase for case-insensitive comparison
-        filename_lower = filename.lower()
-        quantization_lower = quantization.lower()
-        
-        # If the quantization includes a specific variant (like q6_k_l), match exactly
-        if '_' in quantization_lower and any(q for q in sum(self._quant_variants.values(), []) if q == quantization_lower):
-            return f"-{quantization_lower}" in filename_lower
-            
-        # If it's a base quantization (like q6_k), only match the exact base version
-        base_pattern = f"-{quantization_lower}"
-        
-        # Check if it's a base match (exact) or part of a multi-file pattern
-        return (base_pattern + ".gguf" in filename_lower or 
-                base_pattern + "-" in filename_lower)  # For multi-file patterns like -00001-of-00002
+        # Use the QuantizationManager for matching
+        return self.quant_manager.match_quantization(filename, quantization)
 
     def initiate_model_download(self, repo_id: str, quantization: str = 'q6_k') -> Dict[str, Any]:
         """
-        Initiate the download of a model based on the repo ID and desired quantization.
-
+        Initiate the download of a model based on the repo ID.
+        
+        This method adapts its behavior based on the model repository structure:
+        - If multiple quantization variants are available, it will use the specified
+          quantization parameter (defaulting to 'q6_k' if not specified)
+        - If no quantization variants are detected, it will download all necessary
+          model files regardless of the quantization parameter
+        
         Args:
             repo_id (str): The repo ID of the model to download.
-            quantization (str): The desired quantization level. Defaults to 'q6_k'.
-                              Can include variant (e.g., 'q6_k_l' for large version).
-
+            quantization (str, optional): The desired quantization level when multiple
+                                         options are available. Defaults to 'q6_k'.
+        
         Returns:
             Dict[str, Any]: A dictionary containing information about the initiated download.
         """
-        # Search for the model
-        models = self.search_models(repo_id)
+        # Search for the model with files included
+        models = self.search_models(repo_id, load_files=True)
         if not models:
             raise ValueError(f"No model found with repo ID: {repo_id}")
         
@@ -146,48 +163,61 @@ class ModelService(BaseService):
         if not model:
             raise ValueError(f"Exact match for repo ID {repo_id} not found in search results")
 
-        # Fetch model files
-        files = self.search_hub_model_files(HubModelFileSearch(hub=model.hub, model=model.repo_modelId))
+        # Get files from the model
+        files = model.m_files if hasattr(model, 'm_files') and model.m_files else []
         
-        # Try exact match first
-        compatible_files = [
-            file for file in files 
-            if self._get_exact_quant_match(file.name, quantization) and file.name.lower().endswith('.gguf')
-        ]
+        if not files:
+            # If files weren't loaded with the model, fetch them directly
+            files = self.search_hub_model_files(HubModelFileSearch(hub=model.hub, model=model.repo_modelId))
+            model.m_files = files
         
-        # If no exact match and no specific variant was requested, try variants in size order
-        if not compatible_files and '_' not in quantization:
-            base_quant = quantization
-            if base_quant in self._quant_variants:
-                for variant in self._quant_variants[base_quant]:
-                    compatible_files = [
-                        file for file in files 
-                        if self._get_exact_quant_match(file.name, variant) and file.name.lower().endswith('.gguf')
-                    ]
-                    if compatible_files:
-                        break
+        # Check if the model has multiple quantization options
+        has_multiple_quants = self.quant_manager.has_multiple_quantizations(files)
         
-        # If still no match, try fallback to other quantizations
-        if not compatible_files:
-            # Try to find best fallback based on priority order
-            for fallback in self._priority_order:
-                if fallback != quantization:
-                    for variant in self._quant_variants.get(fallback, [fallback]):
-                        compatible_files = [
-                            file for file in files 
-                            if self._get_exact_quant_match(file.name, variant) and file.name.lower().endswith('.gguf')
-                        ]
-                        if compatible_files:
-                            break
-                    if compatible_files:
-                        break
-        
-        if not compatible_files:
-            raise ValueError(f"No compatible files found for model {repo_id} with quantization {quantization}")
+        if has_multiple_quants:
+            # Model has multiple quantizations - use the specified one or default
+            compatible_files = self.quant_manager.filter_files_by_quantization(files, quantization)
+            
+            if not compatible_files:
+                # If no compatible files found, extract and show available quantizations
+                available_quants = set()
+                for file in files:
+                    if file.name:
+                        quant = self.quant_manager.detect_quantization(file.name)
+                        if quant:
+                            available_quants.add(quant)
+                
+                error_msg = f"No compatible files found for model {repo_id} with quantization {quantization}"
+                if available_quants:
+                    error_msg += f"\nAvailable quantizations: {', '.join(sorted(available_quants))}"
+                raise ValueError(error_msg)
+        else:
+            # Model doesn't have multiple quantizations - use all model files
+            # Filter to only include model files (exclude metadata, etc.)
+            compatible_files = [
+                file for file in files 
+                if hasattr(file, 'name') and file.name and (
+                    file.name.lower().endswith('.gguf') or 
+                    file.name.lower().endswith('.safetensors') or
+                    file.name.lower().endswith('.bin')
+                )
+            ]
+            
+            if not compatible_files:
+                raise ValueError(f"No model files found for {repo_id}. Available files: {[f.name for f in files if hasattr(f, 'name')]}")
+            
+            # Log that we're ignoring quantization parameter
+            if quantization != 'q6_k':  # Only log if user explicitly specified a quantization
+                print(f"Note: Model {repo_id} doesn't have multiple quantization options. "
+                      f"Ignoring specified quantization '{quantization}' and downloading all model files.")
         
         # Send the download request
-        download_request = ModelDownloadRequest(model=model.repo_modelId, hub=model.hub)
-        result = self.client._request("POST", "/model_files/download/", json=download_request.model_dump())
+        download_request = ModelDownloadRequest(
+            model=model.repo_modelId,
+            hub=model.hub,
+            files_to_download=[file.name for file in compatible_files]
+        )
+        result = self.client._request("POST", "/models/download/", json=download_request.model_dump())
         
         # Create an enhanced output dictionary with better string representation
         result_dict = {
