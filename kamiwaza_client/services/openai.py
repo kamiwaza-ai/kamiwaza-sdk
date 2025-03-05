@@ -12,10 +12,23 @@ class OpenAIService(BaseService):
         self,
         model: Optional[str] = None,
         deployment_id: Optional[UUID] = None,
+        repo_id: Optional[str] = None,
         endpoint: Optional[str] = None
     ) -> OpenAI:
         """
         Get an OpenAI client configured for a specific model deployment.
+        
+        Args:
+            model (Optional[str]): The name of the deployed model.
+            deployment_id (Optional[UUID]): The ID of the deployment.
+            repo_id (Optional[str]): The Hugging Face repo ID of the model.
+            endpoint (Optional[str]): Direct endpoint URL to use.
+            
+        Returns:
+            OpenAI: Configured OpenAI client for the specified deployment.
+            
+        Note:
+            You must specify exactly one of: model, deployment_id, repo_id, or endpoint.
         """
         if endpoint:
             base_url = endpoint
@@ -32,12 +45,25 @@ class OpenAIService(BaseService):
                     (d for d in deployments if d.m_name == model),
                     None
                 )
+            elif repo_id:
+                # First, get the model ID for the repo ID
+                model_obj = self.client.models.get_model_by_repo_id(repo_id)
+                if not model_obj:
+                    raise ValueError(f"No model found with repo ID: {repo_id}")
+                
+                # Then find deployments for this model
+                deployment = next(
+                    (d for d in deployments if str(d.m_id) == str(model_obj.id)),
+                    None
+                )
             else:
-                raise ValueError("Must specify either model, deployment_id, or endpoint")
+                raise ValueError("Must specify either model, deployment_id, repo_id, or endpoint")
                 
             if not deployment:
+                identifier_type = 'model' if model else 'repo_id' if repo_id else 'deployment_id'
+                identifier_value = model or repo_id or deployment_id
                 raise ValueError(
-                    f"No active deployment found for specified {'model' if model else 'deployment_id'}"
+                    f"No active deployment found for specified {identifier_type}: {identifier_value}"
                 )
                 
             base_url = deployment.endpoint
