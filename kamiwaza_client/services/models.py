@@ -432,11 +432,6 @@ class ModelService(BaseService):
             print(f"Exception in get_model_files_download_status: {e}")
             return []
 
-    def get_model_by_repo_id(self, repo_id: str) -> Model:
-        """Retrieve a model by its repo_modelId."""
-        response = self.client._request("GET", f"/models/repo/{repo_id}")
-        return Model.model_validate(response)
-
     def get_model_memory_usage(self, model_id: Union[str, UUID]) -> int:
         """Get the memory usage of a model."""
         try:
@@ -489,6 +484,14 @@ class ModelService(BaseService):
         """List all model files."""
         response = self.client._request("GET", "/model_files/")
         return [ModelFile.model_validate(item) for item in response]
+    
+    def get_model_by_repo_id(self, repo_id: str) -> Model:
+        """Retrieve a model by its repo_modelId by searching through the models list."""
+        models = self.list_models()
+        for model in models:
+            if model.repo_modelId == repo_id:
+                return model
+        return None
 
     def create_model_file(self, model_file: CreateModelFile) -> ModelFile:
         """Create a new model file."""

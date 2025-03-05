@@ -28,15 +28,19 @@ class ServingService(BaseService):
         return self.client.post("/serving/estimate_model_vram", json=deployment_request.model_dump())
     
     def deploy_model(self, 
-                model_id: Union[str, UUID], 
+                model_id: Optional[Union[str, UUID]] = None,
+                repo_id: Optional[str] = None,
                 m_config_id: Optional[Union[str, UUID]] = None,
                 m_file_id: Optional[Union[str, UUID]] = None,
                 **kwargs) -> Union[UUID, bool]:
         """
-        Deploy a model based on the provided model ID and optional parameters.
+        Deploy a model based on the provided model ID or repo ID and optional parameters.
 
         Args:
-            model_id (Union[str, UUID]): The ID of the model to deploy.
+            model_id (Optional[Union[str, UUID]]): The ID of the model to deploy.
+                                                  Required if repo_id is not provided.
+            repo_id (Optional[str]): The Hugging Face repo ID of the model to deploy.
+                                    Required if model_id is not provided.
             m_config_id (Optional[Union[str, UUID]]): The ID of the model configuration to use.
             m_file_id (Optional[Union[str, UUID]]): The ID of the specific model file to use.
             **kwargs: Additional deployment parameters (engine_name, min_copies, etc.)
@@ -44,6 +48,20 @@ class ServingService(BaseService):
         Returns:
             Union[UUID, bool]: The deployment ID if successful, or False if deployment failed.
         """
+        # Ensure at least one identifier is provided
+        if model_id is None and repo_id is None:
+            raise ValueError("Either model_id or repo_id must be provided")
+            
+        # If repo_id is provided but model_id isn't, look up the model_id
+        if model_id is None and repo_id is not None:
+            # Find the model with matching repo_id
+            model = self.client.models.get_model_by_repo_id(repo_id)
+            
+            if not model:
+                raise ValueError(f"No model found with repo ID: {repo_id}")
+                
+            model_id = model.id
+        
         # Convert model_id to UUID if it's a string
         model_id = UUID(model_id) if isinstance(model_id, str) else model_id
         
@@ -119,8 +137,60 @@ class ServingService(BaseService):
         response = self.client.get(f"/serving/deployment/{deployment_id}")
         return UIModelDeployment.model_validate(response)
 
-    def stop_deployment(self, deployment_id: UUID, force: Optional[bool] = False) -> bool:
-        """Stop a model deployment."""
+    def stop_deployment(self, 
+                    deployment_id: Optional[UUID] = None, 
+                    repo_id: Optional[str] = None,
+                    force: Optional[bool] = False) -> bool:
+        """
+        Stop a model deployment.
+        
+        Args:
+            deployment_id (Optional[UUID]): The ID of the deployment to stop.
+                                          Required if repo_id is not provided.
+            repo_id (Optional[str]): The Hugging Face repo ID of the model deployment to stop.
+                                    Required if deployment_id is not provided.
+            force (Optional[bool]): Whether to force stop the deployment. Defaults to False.
+            
+        Returns:
+            bool: True if the deployment was successfully stopped, False otherwise.
+        """
+        # Ensure at least one identifier is provided
+        if deployment_id is None and repo_id is None:
+            raise ValueError("Either deployment_id or repo_id must be provided")
+            
+        # If repo_id is provided but deployment_id isn't, look up the deployment_id
+        if deployment_id is None and repo_id is not None:
+            # Get all deployments
+            deployments = self.list_deployments()
+            
+            # Find the model ID for the repo ID
+            model = self.client.models.get_model_by_repo_id(repo_id)
+            if not model:
+                raise ValueError(f"No model found with repo ID: {repo_id}")
+                
+            # Find deployments for this model
+            matching_deployments = [d for d in deployments if str(d.m_id) == str(model.id)]
+            # Filter out deployments that are not active
+            matching_deployments = [d for d in matching_deployments if d.status == 'DEPLOYED']
+
+
+            
+            if not matching_deployments:
+                raise ValueError(f"No active deployments found for model with repo ID: {repo_id}")
+                
+            if len(matching_deployments) > 1:
+                # If multiple deployments exist, doesnt matter. Stop all.
+                print(f"Multiple deployments found for {repo_id}. Stopping all of them.")
+     
+                for deployment in matching_deployments:
+                    self.stop_deployment(deployment_id=deployment.id, force=force)
+                return True
+                
+            deployment_id = matching_deployments[0].id
+            
+        # Convert deployment_id to UUID if it's a string
+        deployment_id = UUID(deployment_id) if isinstance(deployment_id, str) else deployment_id
+            
         return self.client.delete(f"/serving/deployment/{deployment_id}", params={"force": force})
 
     def get_deployment_status(self, deployment_id: UUID) -> ModelDeployment:
