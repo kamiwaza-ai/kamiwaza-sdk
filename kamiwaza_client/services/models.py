@@ -58,7 +58,7 @@ class ModelService(BaseService):
         response = self.client._request("GET", "/models/", params={"load_files": load_files})
         return [Model.model_validate(item) for item in response]
 
-    def search_models(self, query: str, exact: bool = False, limit: int = 100, hubs_to_search: Optional[List[str]] = None) -> List[Model]:
+    def search_models(self, query: str, exact: bool = False, limit: int = 100, hubs_to_search: Optional[List[str]] = None, load_files: bool = True) -> List[Model]:
         """
         Search for models based on a query string.
 
@@ -67,6 +67,7 @@ class ModelService(BaseService):
             exact (bool, optional): Whether to perform an exact match. Defaults to False.
             limit (int, optional): Maximum number of results to return. Defaults to 100.
             hubs_to_search (List[str], optional): List of hubs to search in. Defaults to None (search all hubs).
+            load_files (bool, optional): Whether to load file information for each model. Defaults to True.
 
         Returns:
             List[Model]: A list of matching models.
@@ -80,6 +81,44 @@ class ModelService(BaseService):
         response = self.client._request("POST", "/models/search/", json=search_request.model_dump())
         search_response = ModelSearchResponse.model_validate(response)
         result_models = [result.model for result in search_response.results]
+        
+        # Load file information for each model if requested
+        if load_files and result_models:
+            for model in result_models:
+                try:
+                    # Search for files for this model
+                    if model.repo_modelId and model.hub:
+                        files = self.search_hub_model_files(
+                            HubModelFileSearch(hub=model.hub, model=model.repo_modelId)
+                        )
+                        # Add files to the model
+                        model.m_files = files
+                        
+                        # Extract quantization information for display
+                        quants = []
+                        for file in files:
+                            # Try to extract quantization from filename
+                            if file.name:
+                                file_lower = file.name.lower()
+                                # Look for common quantization patterns
+                                for q_base in ['q2', 'q3', 'q4', 'q5', 'q6', 'q8']:
+                                    if f"-{q_base}" in file_lower or f"_{q_base}" in file_lower:
+                                        # Extract the full quantization (e.g., q4_k_m)
+                                        for variant in ['k', 'k_s', 'k_m', 'k_l', '0']:
+                                            full_quant = f"{q_base}_{variant}"
+                                            if full_quant in file_lower or f"{q_base}-{variant}" in file_lower:
+                                                if full_quant not in quants:
+                                                    quants.append(full_quant)
+                                                break
+                                        else:
+                                            # If no specific variant found, just add the base
+                                            if q_base not in quants:
+                                                quants.append(q_base)
+                        
+                        # Store available quantizations in the model for display
+                        model.available_quantizations = quants
+                except Exception as e:
+                    print(f"Error loading files for model {model.repo_modelId}: {e}")
         
         # Add a summary line at the beginning when printing
         if result_models:
@@ -110,20 +149,25 @@ class ModelService(BaseService):
         Returns:
             bool: True if exact match found, False otherwise
         """
+        if not filename:
+            return False
+            
         # Convert both filename and quantization to lowercase for case-insensitive comparison
         filename_lower = filename.lower()
         quantization_lower = quantization.lower()
         
         # If the quantization includes a specific variant (like q6_k_l), match exactly
         if '_' in quantization_lower and any(q for q in sum(self._quant_variants.values(), []) if q == quantization_lower):
-            return f"-{quantization_lower}" in filename_lower
-            
-        # If it's a base quantization (like q6_k), only match the exact base version
-        base_pattern = f"-{quantization_lower}"
+            return f"-{quantization_lower}" in filename_lower or f"_{quantization_lower}" in filename_lower
+        
+        # For base quantization (like q6_k), match the base pattern
+        base_pattern = quantization_lower
         
         # Check if it's a base match (exact) or part of a multi-file pattern
-        return (base_pattern + ".gguf" in filename_lower or 
-                base_pattern + "-" in filename_lower)  # For multi-file patterns like -00001-of-00002
+        return (f"-{base_pattern}" in filename_lower or 
+                f"_{base_pattern}" in filename_lower or
+                f"-{base_pattern}-" in filename_lower or
+                f"_{base_pattern}_" in filename_lower)
 
     def initiate_model_download(self, repo_id: str, quantization: str = 'q6_k') -> Dict[str, Any]:
         """
@@ -137,8 +181,8 @@ class ModelService(BaseService):
         Returns:
             Dict[str, Any]: A dictionary containing information about the initiated download.
         """
-        # Search for the model
-        models = self.search_models(repo_id)
+        # Search for the model with files included
+        models = self.search_models(repo_id, load_files=True)
         if not models:
             raise ValueError(f"No model found with repo ID: {repo_id}")
         
@@ -146,13 +190,18 @@ class ModelService(BaseService):
         if not model:
             raise ValueError(f"Exact match for repo ID {repo_id} not found in search results")
 
-        # Fetch model files
-        files = self.search_hub_model_files(HubModelFileSearch(hub=model.hub, model=model.repo_modelId))
+        # Get files from the model
+        files = model.m_files if hasattr(model, 'm_files') and model.m_files else []
+        
+        if not files:
+            # If files weren't loaded with the model, fetch them directly
+            files = self.search_hub_model_files(HubModelFileSearch(hub=model.hub, model=model.repo_modelId))
+            model.m_files = files
         
         # Try exact match first
         compatible_files = [
             file for file in files 
-            if self._get_exact_quant_match(file.name, quantization) and file.name.lower().endswith('.gguf')
+            if self._get_exact_quant_match(file.name, quantization)
         ]
         
         # If no exact match and no specific variant was requested, try variants in size order
@@ -162,7 +211,7 @@ class ModelService(BaseService):
                 for variant in self._quant_variants[base_quant]:
                     compatible_files = [
                         file for file in files 
-                        if self._get_exact_quant_match(file.name, variant) and file.name.lower().endswith('.gguf')
+                        if self._get_exact_quant_match(file.name, variant)
                     ]
                     if compatible_files:
                         break
@@ -175,7 +224,7 @@ class ModelService(BaseService):
                     for variant in self._quant_variants.get(fallback, [fallback]):
                         compatible_files = [
                             file for file in files 
-                            if self._get_exact_quant_match(file.name, variant) and file.name.lower().endswith('.gguf')
+                            if self._get_exact_quant_match(file.name, variant)
                         ]
                         if compatible_files:
                             break
@@ -183,11 +232,35 @@ class ModelService(BaseService):
                         break
         
         if not compatible_files:
-            raise ValueError(f"No compatible files found for model {repo_id} with quantization {quantization}")
+            # If no compatible files found, show available quantizations
+            available_quants = []
+            for file in files:
+                if file.name:
+                    file_lower = file.name.lower()
+                    for q_base in ['q2', 'q3', 'q4', 'q5', 'q6', 'q8']:
+                        if f"-{q_base}" in file_lower or f"_{q_base}" in file_lower:
+                            for variant in ['k', 'k_s', 'k_m', 'k_l', '0']:
+                                full_quant = f"{q_base}_{variant}"
+                                if full_quant in file_lower or f"{q_base}-{variant}" in file_lower:
+                                    if full_quant not in available_quants:
+                                        available_quants.append(full_quant)
+                                    break
+                            else:
+                                if q_base not in available_quants:
+                                    available_quants.append(q_base)
+            
+            error_msg = f"No compatible files found for model {repo_id} with quantization {quantization}"
+            if available_quants:
+                error_msg += f"\nAvailable quantizations: {', '.join(sorted(available_quants))}"
+            raise ValueError(error_msg)
         
         # Send the download request
-        download_request = ModelDownloadRequest(model=model.repo_modelId, hub=model.hub)
-        result = self.client._request("POST", "/model_files/download/", json=download_request.model_dump())
+        download_request = ModelDownloadRequest(
+            model=model.repo_modelId,
+            hub=model.hub,
+            files_to_download=[file.name for file in compatible_files]
+        )
+        result = self.client._request("POST", "/models/download/", json=download_request.model_dump())
         
         # Create an enhanced output dictionary with better string representation
         result_dict = {
