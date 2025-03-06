@@ -862,6 +862,8 @@ class ModelService(BaseService):
             
     def _format_elapsed_time(self, seconds):
         """Format elapsed time in MM:SS format to match API output"""
+        # Convert seconds to integer to avoid formatting issues
+        seconds = int(seconds)
         minutes = seconds // 60
         secs = seconds % 60
         return f"{minutes:02d}:{secs:02d}"
@@ -921,66 +923,63 @@ class ModelService(BaseService):
         Returns:
             Dict[str, Any]: A dictionary containing information about the deployment.
         """
+        import time
         print(f"Preparing model {repo_id} with quantization {quantization}...")
         
         try:
-            # Step 1: Download the model (if needed)
+            # Step 1: Initiate download for the model
+            print(f"Initiating download for {repo_id} with quantization {quantization}...")
             download_result = self.initiate_model_download(repo_id, quantization)
             
-            # Step 2: Wait for download to complete (if needed and requested)
+            # Step 2: Wait for download to complete if requested
             if wait_for_download:
-                files_already_downloaded = False
-                # Check if we need to wait (if files were already downloaded, we don't need to wait)
-                if download_result.get('result', {}).get('message') == "Files already downloaded":
-                    print("Files already downloaded, proceeding to deployment...")
-                    files_already_downloaded = True
-                else:
+                # Wait a moment for download to start
+                time.sleep(2)
+                
+                # Check if there are active downloads
+                status_list = self.check_download_status(repo_id)
+                
+                if status_list:
                     print(f"Waiting for download to complete...")
+                    # Use our simplified wait_for_download method
                     status_list = self.wait_for_download(repo_id, timeout=timeout)
+                    
+                    # Add a small delay after download completes to ensure file system is ready
+                    time.sleep(3)
+                else:
+                    # If no active downloads, check if the files are already downloaded
+                    # This requires the model to be in our database now
+                    try:
+                        model = self.get_model_by_repo_id(repo_id)
+                        if model and hasattr(model, 'm_files') and model.m_files:
+                            files = model.m_files
+                            # Use quant_manager to filter files by quantization
+                            from kamiwaza_client.utils.quant_manager import QuantizationManager
+                            quant_manager = QuantizationManager()
+                            
+                            # Only consider GGUF files
+                            gguf_files = [f for f in files if f.name and f.name.lower().endswith('.gguf')]
+                            
+                            # Filter by quantization
+                            target_files = quant_manager.filter_files_by_quantization(gguf_files, quantization)
+                            
+                            if target_files:
+                                downloaded_files = [f for f in target_files if hasattr(f, 'download') and f.download]
+                                if downloaded_files and len(downloaded_files) == len(target_files):
+                                    print(f"Model files for {repo_id} are already downloaded.")
+                                else:
+                                    print(f"Warning: Some files may not be fully downloaded. Proceeding anyway...")
+                            else:
+                                print(f"Warning: No files found matching quantization {quantization}. Proceeding anyway...")
+                    except Exception as e:
+                        print(f"Note: Could not verify download status: {str(e)}. Proceeding anyway...")
             
-            # Regardless of whether we waited or not, we should verify all files are ready before deploying
+            # Step 3: Get the model (should be in our database now)
             model = self.get_model_by_repo_id(repo_id)
+            if not model:
+                raise ValueError(f"Model not found after download: {repo_id}")
             
-            # Add a delay based on whether we just downloaded or files were already there
-            import time
-            if not files_already_downloaded:
-                # Longer delay after a fresh download
-                post_download_delay = 8  # seconds
-                print(f"Download complete. Waiting {post_download_delay} seconds for file system to finalize...")
-                time.sleep(post_download_delay)
-                
-                # Refresh the model one more time to get the latest file status
-                model = self.get_model_by_repo_id(repo_id)
-            
-            # Now verify all necessary files are marked as downloaded
-            if model and hasattr(model, 'm_files') and model.m_files:
-                files_to_check = [f for f in model.m_files if hasattr(f, 'name') and f.name]
-                downloaded_files = [f.name for f in files_to_check if hasattr(f, 'download') and f.download]
-                not_downloaded = [f.name for f in files_to_check if not hasattr(f, 'download') or not f.download]
-                
-                # Get the specific file we need for the current quantization
-                target_files = [f for f in files_to_check if quantization.lower() in f.name.lower() and f.name.lower().endswith('.gguf')]
-                
-                # Check if our target file is downloaded
-                if target_files:
-                    target_file = target_files[0]
-                    if hasattr(target_file, 'download') and target_file.download:
-                        print(f"Target file {target_file.name} is ready for deployment.")
-                    else:
-                        print(f"Warning: Target file {target_file.name} may not be fully downloaded.")
-                        # Force one more delay if the target file isn't marked as downloaded
-                        time.sleep(5)
-                
-                if not_downloaded:
-                    # Some files are not marked as downloaded
-                    print(f"Note: {len(downloaded_files)}/{len(files_to_check)} files are marked as downloaded.")
-                    if not_downloaded:
-                        print(f"The following files are not marked as downloaded: {', '.join(not_downloaded[:3])}")
-                        if len(not_downloaded) > 3:
-                            print(f"...and {len(not_downloaded) - 3} more")
-                        print("Proceeding with deployment anyway...")
-            
-            # Step 3: Deploy the model
+            # Step 4: Deploy the model
             print(f"Deploying model {repo_id}...")
             
             # Add better retry logic for deployment
@@ -992,7 +991,7 @@ class ModelService(BaseService):
                 try:
                     # Add a small delay before first deployment attempt
                     if deploy_retry_count == 0:
-                        time.sleep(3)
+                        time.sleep(2)
                     
                     deployment_id = self.client.serving.deploy_model(repo_id=repo_id)
                     break  # Deployment successful, exit the retry loop
@@ -1011,14 +1010,14 @@ class ModelService(BaseService):
                     # Wait before retrying
                     time.sleep(deploy_retry_delay)
             
-            # Step 4: Get the OpenAI client
+            # Step 5: Get the OpenAI client
             print(f"Creating OpenAI-compatible client...")
             openai_client = self.client.openai.get_client(repo_id=repo_id)
             
-            # Step 5: Create result dictionary with custom string representation
+            # Step 6: Create result dictionary with custom string representation
             result = {
-                "model": download_result["model"],
-                "files": download_result["files"],
+                "model": model,
+                "files": model.m_files if hasattr(model, 'm_files') else [],
                 "deployment_id": deployment_id,
                 "openai_client": openai_client
             }
@@ -1083,3 +1082,70 @@ class ModelService(BaseService):
                 "repo_id": repo_id,
                 "quantization": quantization
             }
+
+    def get_model_download_status(self, repo_id: str, quantization: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Get detailed download status for a model.
+        
+        Args:
+            repo_id (str): The repository ID of the model
+            quantization (Optional[str]): Filter files by quantization
+            
+        Returns:
+            Dict with download status information including:
+            - model: The model object
+            - target_files: Files matching the quantization filter
+            - downloading_files: Files currently downloading
+            - downloaded_files: Files already downloaded
+            - pending_files: Files not yet downloaded
+            - total_progress: Overall download progress percentage
+            - all_downloaded: Whether all target files are downloaded
+            - any_downloading: Whether any target files are downloading
+        """
+        # Get the model
+        model = self.get_model_by_repo_id(repo_id)
+        if not model:
+            return {"error": f"Model not found: {repo_id}"}
+        
+        # Get all files for the model
+        files = self.get_model_files_by_model_id(model.id)
+        
+        # Filter files by quantization if specified
+        if quantization:
+            # Use quant_manager to filter files by quantization
+            from kamiwaza_client.utils.quant_manager import QuantizationManager
+            quant_manager = QuantizationManager()
+            
+            # Only consider GGUF files
+            gguf_files = [f for f in files if f.name and f.name.lower().endswith('.gguf')]
+            
+            # Filter by quantization
+            target_files = quant_manager.filter_files_by_quantization(gguf_files, quantization)
+        else:
+            # If no quantization specified, include all GGUF files
+            target_files = [f for f in files if f.name and f.name.lower().endswith('.gguf')]
+        
+        # Analyze download status
+        downloading_files = [f for f in target_files if f.is_downloading]
+        downloaded_files = [f for f in target_files if hasattr(f, 'download') and f.download]
+        pending_files = [f for f in target_files if f not in downloading_files and f not in downloaded_files]
+        
+        # Calculate overall progress
+        total_progress = 0
+        if downloading_files:
+            for file in downloading_files:
+                total_progress += file.download_percentage or 0
+            total_progress /= len(downloading_files)
+        elif downloaded_files and len(downloaded_files) == len(target_files):
+            total_progress = 100
+        
+        return {
+            "model": model,
+            "target_files": target_files,
+            "downloading_files": downloading_files,
+            "downloaded_files": downloaded_files,
+            "pending_files": pending_files,
+            "total_progress": total_progress,
+            "all_downloaded": len(downloaded_files) == len(target_files) and len(target_files) > 0,
+            "any_downloading": len(downloading_files) > 0
+        }
