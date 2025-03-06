@@ -644,21 +644,6 @@ class ModelService(BaseService):
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-    ### This stuff could be moved to a helper class
-
     def _get_server_os(self) -> str:
         """Get and cache server OS info from cluster hardware"""
         if self._server_info is None:
@@ -909,7 +894,7 @@ class ModelService(BaseService):
         """
         Download and deploy a model in one step.
         
-        This method encapsulates the entire workflow from model search to deployment:
+        This method encapsulates the workflow from model search to deployment:
         1. Searches for the model
         2. Checks if the model files are already downloaded
         3. Downloads the model files if needed
@@ -1012,16 +997,11 @@ class ModelService(BaseService):
                     # Wait before retrying
                     time.sleep(deploy_retry_delay)
             
-            # Step 5: Get the OpenAI client
-            print(f"Creating OpenAI-compatible client...")
-            openai_client = self.client.openai.get_client(repo_id=repo_id)
-            
-            # Step 6: Create result dictionary with custom string representation
+            # Step 5: Create result dictionary with custom string representation
             result = {
                 "model": model,
                 "files": model.m_files if hasattr(model, 'm_files') else [],
-                "deployment_id": deployment_id,
-                "openai_client": openai_client
+                "deployment_id": deployment_id
             }
             
             # Add custom string representation
@@ -1048,17 +1028,6 @@ class ModelService(BaseService):
                     output.extend(files_info)
                     output.append("")
                     output.append(f"Total size: {self._format_size(total_size)}")
-                    output.append("")
-                    output.append("Example usage:")
-                    output.append("```python")
-                    output.append("response = openai_client.chat.completions.create(")
-                    output.append("    messages=[")
-                    output.append("        {\"role\": \"user\", \"content\": \"Hello, how are you?\"},")
-                    output.append("    ],")
-                    output.append("    model=\"model\",")
-                    output.append(")")
-                    output.append("print(response.choices[0].message.content)")
-                    output.append("```")
                     
                     return "\n".join(output)
                 
