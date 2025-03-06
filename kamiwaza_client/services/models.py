@@ -213,15 +213,24 @@ class ModelService(BaseService):
                 print(f"Note: Model {repo_id} doesn't have multiple quantization options. "
                       f"Ignoring specified quantization '{quantization}' and downloading all model files.")
         
-        # Check if files are already downloaded
+        # Check if files are already downloaded using multiple indicators
         files_to_download = []
         already_downloaded_files = []
         
         # Get model files directly from the model object
         for file in compatible_files:
-            # Check if the file has the download attribute and it's True
-            if file.download:
-                # File is already downloaded
+            # A file is considered downloaded if:
+            # 1. It has download=True attribute, OR
+            # 2. It appears in the directory where it should be downloaded
+            
+            is_downloaded = False
+            
+            # Check method 1: file.download attribute
+            if hasattr(file, 'download') and file.download:
+                is_downloaded = True
+            
+            # If the file is downloaded, add it to already_downloaded_files
+            if is_downloaded:
                 already_downloaded_files.append(file)
             else:
                 # File needs to be downloaded
@@ -735,299 +744,88 @@ class ModelService(BaseService):
         """
         import time
         import sys
-        import re
-        from datetime import datetime, timedelta
+        from datetime import datetime
         
         # Initialize variables
         start_time = datetime.now()
-        elapsed_seconds = 0
-        previous_percentages = {}
-        download_speeds = {}
         last_status_list = []
-        
-        # Add retry logic for when no downloads are found
-        max_empty_retries = 5
-        empty_retry_count = 0
-        empty_retry_delay = 2  # seconds
-        
-        # Track high water mark for download percentage
-        highest_percentage_seen = 0
         
         try:
             while True:
+                # Check if we've hit the timeout
+                if timeout is not None:
+                    elapsed_seconds = (datetime.now() - start_time).total_seconds()
+                    if elapsed_seconds > timeout:
+                        raise TimeoutError(f"Download timeout after {timeout} seconds")
+                
                 # Check current status
                 status_list = self.check_download_status(repo_id)
                 
+                # If we have status, update our last known status
                 if status_list:
-                    # Reset retry counter when we find active downloads
-                    empty_retry_count = 0
                     last_status_list = status_list
-                    
-                    # Update highest percentage seen
-                    for status in status_list:
-                        if status.download_percentage is not None and status.download_percentage > highest_percentage_seen:
-                            highest_percentage_seen = status.download_percentage
                 
-                if not status_list:
-                    # No active downloads found - implement retry logic
-                    empty_retry_count += 1
-                    
-                    # If we've seen high download percentages (like 90%+) and then downloads disappear,
-                    # it's likely the download just completed but the system hasn't updated yet
-                    if highest_percentage_seen >= 90:
-                        if show_progress:
-                            print(f"\nDownload appears to be completing (reached {highest_percentage_seen}%). Waiting for system to finalize...")
-                        
-                        # Wait longer to allow the system to update file status
-                        completion_wait = 10  # seconds
-                        time.sleep(completion_wait)
-                        
-                        # Refresh the model to get updated file status
-                        model = self.get_model_by_repo_id(repo_id)
-                        
-                        if model and hasattr(model, 'm_files') and model.m_files:
-                            # Check if files are now marked as downloaded
-                            all_downloaded = all(file.download for file in model.m_files if hasattr(file, 'download'))
-                            
-                            if all_downloaded:
-                                if show_progress:
-                                    print("\nDownload complete for:", repo_id)
-                                    print(f"Total download time: {self._format_elapsed_time(elapsed_seconds)}")
-                                    print("Files downloaded:")
-                                    for file in model.m_files:
-                                        size_str = f" ({self._format_size(file.size)})" if hasattr(file, 'size') and file.size else ""
-                                        print(f"- {file.name}{size_str}")
-                                    
-                                    # Show model ID if available
-                                    if hasattr(model, 'id') and model.id:
-                                        print(f"Model ID: {model.id}")
-                                
-                                # Return the last status list we had
-                                return last_status_list if last_status_list else []
-                    
-                    if empty_retry_count >= max_empty_retries:
-                        # After multiple retries, check if files are actually downloaded
-                        model = self.get_model_by_repo_id(repo_id)
-                        if model and hasattr(model, 'm_files') and model.m_files:
-                            all_downloaded = all(file.download for file in model.m_files if hasattr(file, 'download'))
-                            if all_downloaded:
-                                if show_progress:
-                                    print("\nAll files appear to be already downloaded for:", repo_id)
-                                    print("Files:")
-                                    for file in model.m_files:
-                                        size_str = f" ({self._format_size(file.size)})" if hasattr(file, 'size') and file.size else ""
-                                        print(f"- {file.name}{size_str}")
-                                    
-                                    # Show model ID if available
-                                    if hasattr(model, 'id') and model.id:
-                                        print(f"Model ID: {model.id}")
-                                
-                                return last_status_list if last_status_list else []
-                            else:
-                                # Files exist but not all are downloaded
-                                # Instead of just warning, let's wait a bit longer
-                                if show_progress:
-                                    print(f"\nDownload status unclear for {repo_id}. Waiting additional time for system to update...")
-                                
-                                # Wait longer to allow the system to update file status
-                                additional_wait = 15  # seconds
-                                time.sleep(additional_wait)
-                                
-                                # Refresh the model to get updated file status
-                                model = self.get_model_by_repo_id(repo_id)
-                                
-                                if model and hasattr(model, 'm_files') and model.m_files:
-                                    # Check again if files are now marked as downloaded
-                                    all_downloaded = all(file.download for file in model.m_files if hasattr(file, 'download'))
-                                    
-                                    if all_downloaded:
-                                        if show_progress:
-                                            print("\nDownload complete for:", repo_id)
-                                            print(f"Total download time: {self._format_elapsed_time(elapsed_seconds)}")
-                                            print("Files downloaded:")
-                                            for file in model.m_files:
-                                                size_str = f" ({self._format_size(file.size)})" if hasattr(file, 'size') and file.size else ""
-                                                print(f"- {file.name}{size_str}")
-                                            
-                                            # Show model ID if available
-                                            if hasattr(model, 'id') and model.id:
-                                                print(f"Model ID: {model.id}")
-                                        
-                                        return last_status_list if last_status_list else []
-                                    else:
-                                        if show_progress:
-                                            print(f"Warning: Some files for {repo_id} are not marked as downloaded, but no active downloads were found.")
-                                            print("This may indicate an issue with the download process.")
-                                            print("Assuming download is complete and proceeding...")
-                                        
-                                        return last_status_list if last_status_list else []
-                        
-                        if show_progress:
-                            print(f"No active downloads found for {repo_id} after {max_empty_retries} retries")
-                        
-                        return last_status_list if last_status_list else []
-                    
-                    # Wait before retrying
-                    if show_progress:
-                        print(f"No active downloads found yet for {repo_id}, retrying in {empty_retry_delay} seconds... (attempt {empty_retry_count}/{max_empty_retries})")
-                    time.sleep(empty_retry_delay)
-                    continue
-                
-                # Calculate overall progress
-                total_percentage = 0
-                active_downloads = 0
-                completed_downloads = 0
-                
-                # Check if all downloads are complete
-                all_completed = True
-                for status in status_list:
-                    if status.is_downloading:
-                        all_completed = False
-                        active_downloads += 1
-                        if status.download_percentage is not None:
-                            total_percentage += status.download_percentage
-                            
-                            # Use API-provided values if available, otherwise calculate
-                            if not hasattr(status, 'download_speed') or not status.download_speed:
-                                # Try to parse download_throughput if available (e.g., "6.12MB/s")
-                                if status.download_throughput:
-                                    try:
-                                        # Extract number and unit from throughput string
-                                        match = re.match(r'([\d.]+)([KMG]B)/s', status.download_throughput)
-                                        if match:
-                                            value, unit = match.groups()
-                                            value = float(value)
-                                            # Convert to bytes/sec based on unit
-                                            if unit == 'KB':
-                                                status.download_speed = value * 1024
-                                            elif unit == 'MB':
-                                                status.download_speed = value * 1024 * 1024
-                                            elif unit == 'GB':
-                                                status.download_speed = value * 1024 * 1024 * 1024
-                                    except:
-                                        pass  # If parsing fails, leave as is
-                            
-                            # Calculate speed only if not available from API
-                            if not hasattr(status, 'download_speed') or not status.download_speed:
-                                # Calculate from percentage change if possible
-                                if status.id in previous_percentages:
-                                    prev_pct = previous_percentages[status.id]
-                                    pct_diff = status.download_percentage - prev_pct
-                                    
-                                    # If we have file information, estimate bytes transferred
-                                    model = self.get_model_by_repo_id(repo_id)
-                                    file = next((f for f in model.m_files if f.name == status.name), None)
-                                    
-                                    if file and file.size and pct_diff > 0:
-                                        bytes_per_interval = (file.size * pct_diff) / 100
-                                        bytes_per_second = bytes_per_interval / polling_interval
-                                        
-                                        # Update download speed estimate
-                                        download_speeds[status.id] = bytes_per_second
-                                        status.download_speed = bytes_per_second
-                                    
-                            # Store current percentage for next iteration
-                            previous_percentages[status.id] = status.download_percentage
-                    elif status.download_percentage == 100:
-                        completed_downloads += 1
-                        
-                # If there are active downloads, calculate overall progress
-                if active_downloads > 0:
-                    overall_progress = total_percentage / active_downloads
-                else:
-                    overall_progress = 100 if completed_downloads > 0 else 0
+                # Calculate elapsed time
+                elapsed_seconds = (datetime.now() - start_time).total_seconds()
                 
                 # Display progress if requested
-                if show_progress:
-                    self._display_progress(status_list, overall_progress, elapsed_seconds)
+                if show_progress and status_list:
+                    self._display_progress(status_list, self._calculate_overall_progress(status_list), elapsed_seconds)
                 
                 # Check if all downloads are complete
-                if all_completed:
-                    # Wait a moment to ensure file status is updated
-                    time.sleep(2)
-                    
-                    # Refresh the model to get updated file status
-                    model = self.get_model_by_repo_id(repo_id)
-                    all_files_downloaded = True
-                    
-                    if model and hasattr(model, 'm_files') and model.m_files:
-                        for file in model.m_files:
-                            # Check if this file was part of the download
-                            if any(status.name == file.name for status in status_list):
-                                # Verify the file is marked as downloaded
-                                if not hasattr(file, 'download') or not file.download:
-                                    all_files_downloaded = False
-                                    if show_progress:
-                                        print(f"\nWaiting for file {file.name} to be marked as downloaded...")
-                    
-                    # If verification passes or we don't have file info, proceed
-                    if all_files_downloaded or not (model and hasattr(model, 'm_files') and model.m_files):
-                        if show_progress:
-                            print("\nDownload complete for:", repo_id)
-                            print(f"Total download time: {self._format_elapsed_time(elapsed_seconds)}")
-                            print("Files downloaded:")
-                            for status in status_list:
-                                # Get file size if available
-                                model = self.get_model_by_repo_id(repo_id)
-                                file = next((f for f in model.m_files if f.name == status.name), None)
-                                size_str = f" ({self._format_size(file.size)})" if file and file.size else ""
-                                print(f"- {status.name}{size_str}")
-                            
-                            # Show model ID
-                            if status_list and status_list[0].m_id:
-                                print(f"Model ID: {status_list[0].m_id}")
-                        return status_list
-                    else:
-                        # If verification fails, wait a bit longer
-                        if show_progress:
-                            print("\nDownload reported complete, but files are not yet marked as downloaded. Waiting additional time...")
-                        
-                        # Wait longer to allow the system to update file status
-                        additional_wait = 10  # seconds
-                        time.sleep(additional_wait)
-                        
-                        # Refresh the model again
+                # This means either:
+                # 1. No downloads are found (empty status_list), or
+                # 2. All downloads in status_list have is_downloading=False
+                if not status_list or all(not status.is_downloading for status in status_list):
+                    if show_progress:
+                        # Get the model to display final information
                         model = self.get_model_by_repo_id(repo_id)
-                        all_files_downloaded = True
-                        
                         if model and hasattr(model, 'm_files') and model.m_files:
-                            for file in model.m_files:
-                                # Check if this file was part of the download
-                                if any(status.name == file.name for status in status_list):
-                                    # Verify the file is marked as downloaded
-                                    if not hasattr(file, 'download') or not file.download:
-                                        all_files_downloaded = False
-                        
-                        # After waiting, assume download is complete even if verification fails
-                        if show_progress:
                             print("\nDownload complete for:", repo_id)
                             print(f"Total download time: {self._format_elapsed_time(elapsed_seconds)}")
                             print("Files downloaded:")
-                            for status in status_list:
-                                # Get file size if available
-                                model = self.get_model_by_repo_id(repo_id)
-                                file = next((f for f in model.m_files if f.name == status.name), None)
-                                size_str = f" ({self._format_size(file.size)})" if file and file.size else ""
-                                print(f"- {status.name}{size_str}")
+                            for file in model.m_files:
+                                if hasattr(file, 'download') and file.download:
+                                    size_str = f" ({self._format_size(file.size)})" if hasattr(file, 'size') and file.size else ""
+                                    print(f"- {file.name}{size_str}")
                             
-                            # Show model ID
-                            if status_list and status_list[0].m_id:
-                                print(f"Model ID: {status_list[0].m_id}")
-                        
-                        return status_list
+                            # Show model ID if available
+                            if hasattr(model, 'id') and model.id:
+                                print(f"Model ID: {model.id}")
+                    
+                    # Return the last known status list
+                    return last_status_list
                 
-                # Check timeout
-                elapsed_seconds = (datetime.now() - start_time).total_seconds()
-                if timeout and elapsed_seconds > timeout:
-                    raise TimeoutError(f"Download did not complete within {timeout} seconds")
-                
-                # Sleep before next check
+                # Wait before next status check
                 time.sleep(polling_interval)
                 
         except KeyboardInterrupt:
-            print("\nDownload monitoring interrupted")
-            return self.check_download_status(repo_id)
-    
+            print("\nDownload monitoring interrupted by user")
+            return last_status_list
+        except Exception as e:
+            print(f"\nError monitoring download: {str(e)}")
+            return last_status_list
+            
+    def _calculate_overall_progress(self, status_list):
+        """Calculate the overall progress percentage from a list of download statuses"""
+        total_percentage = 0
+        active_downloads = 0
+        completed_downloads = 0
+        
+        for status in status_list:
+            if status.is_downloading:
+                active_downloads += 1
+                if status.download_percentage is not None:
+                    total_percentage += status.download_percentage
+            elif status.download_percentage == 100:
+                completed_downloads += 1
+                
+        # If there are active downloads, calculate overall progress
+        if active_downloads > 0:
+            return total_percentage / active_downloads
+        else:
+            return 100 if completed_downloads > 0 else 0
+
     def _display_progress(self, status_list, overall_progress, elapsed_seconds):
         """Display download progress for wait_for_download method"""
         import sys
@@ -1131,73 +929,87 @@ class ModelService(BaseService):
             
             # Step 2: Wait for download to complete (if needed and requested)
             if wait_for_download:
+                files_already_downloaded = False
                 # Check if we need to wait (if files were already downloaded, we don't need to wait)
-                if download_result['result'].get('message') != "Files already downloaded":
+                if download_result.get('result', {}).get('message') == "Files already downloaded":
+                    print("Files already downloaded, proceeding to deployment...")
+                    files_already_downloaded = True
+                else:
                     print(f"Waiting for download to complete...")
                     status_list = self.wait_for_download(repo_id, timeout=timeout)
-                    
-                    # Add a delay after download completion to ensure files are fully processed
-                    import time
-                    post_download_delay = 5  # seconds
-                    time.sleep(post_download_delay)
-                else:
-                    print("Files already downloaded, proceeding to deployment...")
             
-            # Verify files are downloaded before proceeding to deployment
+            # Regardless of whether we waited or not, we should verify all files are ready before deploying
             model = self.get_model_by_repo_id(repo_id)
+            
+            # Add a delay based on whether we just downloaded or files were already there
+            import time
+            if not files_already_downloaded:
+                # Longer delay after a fresh download
+                post_download_delay = 8  # seconds
+                print(f"Download complete. Waiting {post_download_delay} seconds for file system to finalize...")
+                time.sleep(post_download_delay)
+                
+                # Refresh the model one more time to get the latest file status
+                model = self.get_model_by_repo_id(repo_id)
+            
+            # Now verify all necessary files are marked as downloaded
             if model and hasattr(model, 'm_files') and model.m_files:
                 files_to_check = [f for f in model.m_files if hasattr(f, 'name') and f.name]
+                downloaded_files = [f.name for f in files_to_check if hasattr(f, 'download') and f.download]
                 not_downloaded = [f.name for f in files_to_check if not hasattr(f, 'download') or not f.download]
                 
+                # Get the specific file we need for the current quantization
+                target_files = [f for f in files_to_check if quantization.lower() in f.name.lower() and f.name.lower().endswith('.gguf')]
+                
+                # Check if our target file is downloaded
+                if target_files:
+                    target_file = target_files[0]
+                    if hasattr(target_file, 'download') and target_file.download:
+                        print(f"Target file {target_file.name} is ready for deployment.")
+                    else:
+                        print(f"Warning: Target file {target_file.name} may not be fully downloaded.")
+                        # Force one more delay if the target file isn't marked as downloaded
+                        time.sleep(5)
+                
                 if not_downloaded:
-                    # Some files are not marked as downloaded - wait a bit longer
-                    print(f"Waiting for file system to finalize download status...")
-                    
-                    # Wait additional time
-                    import time
-                    additional_wait = 10  # seconds
-                    time.sleep(additional_wait)
-                    
-                    # Refresh model to get updated download status
-                    model = self.get_model_by_repo_id(repo_id)
-                    if model and hasattr(model, 'm_files') and model.m_files:
-                        files_to_check = [f for f in model.m_files if hasattr(f, 'name') and f.name]
-                        not_downloaded = [f.name for f in files_to_check if not hasattr(f, 'download') or not f.download]
-                        
-                        if not_downloaded:
-                            print(f"Warning: Some files may not be fully downloaded, but proceeding with deployment anyway.")
+                    # Some files are not marked as downloaded
+                    print(f"Note: {len(downloaded_files)}/{len(files_to_check)} files are marked as downloaded.")
+                    if not_downloaded:
+                        print(f"The following files are not marked as downloaded: {', '.join(not_downloaded[:3])}")
+                        if len(not_downloaded) > 3:
+                            print(f"...and {len(not_downloaded) - 3} more")
+                        print("Proceeding with deployment anyway...")
             
             # Step 3: Deploy the model
             print(f"Deploying model {repo_id}...")
             
-            # Add retry logic for deployment
+            # Add better retry logic for deployment
             max_deploy_retries = 3
             deploy_retry_count = 0
-            deploy_retry_delay = 5  # seconds
+            deploy_base_delay = 5  # seconds
             
             while deploy_retry_count < max_deploy_retries:
                 try:
-                    # Add a small delay before deployment to ensure files are ready
-                    import time
-                    time.sleep(2)
+                    # Add a small delay before first deployment attempt
+                    if deploy_retry_count == 0:
+                        time.sleep(3)
                     
                     deployment_id = self.client.serving.deploy_model(repo_id=repo_id)
                     break  # Deployment successful, exit the retry loop
                 except Exception as e:
                     deploy_retry_count += 1
+                    
                     if deploy_retry_count >= max_deploy_retries:
                         # All retries failed
                         raise ValueError(f"Failed to deploy model after {max_deploy_retries} attempts: {str(e)}")
                     
+                    # Calculate delay with exponential backoff
+                    deploy_retry_delay = deploy_base_delay * (2 ** (deploy_retry_count - 1))
                     print(f"Deployment attempt {deploy_retry_count} failed: {str(e)}")
                     print(f"Retrying in {deploy_retry_delay} seconds...")
                     
                     # Wait before retrying
-                    import time
                     time.sleep(deploy_retry_delay)
-                    
-                    # Double the delay for next retry (exponential backoff)
-                    deploy_retry_delay *= 2
             
             # Step 4: Get the OpenAI client
             print(f"Creating OpenAI-compatible client...")
@@ -1263,11 +1075,9 @@ class ModelService(BaseService):
             return EnhancedDeploymentResult(result)
             
         except Exception as e:
-            # Improved error handling
+            # Handle any errors and provide error information
             error_msg = f"Error in download_and_deploy_model: {str(e)}"
             print(error_msg)
-            
-            # Return a dictionary with error information
             return {
                 "error": error_msg,
                 "repo_id": repo_id,
