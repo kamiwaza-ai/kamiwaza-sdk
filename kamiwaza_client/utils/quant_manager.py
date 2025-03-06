@@ -45,7 +45,8 @@ class QuantizationManager:
         ]
         
         # Compile the regex pattern for detecting quantization formats once
-        self._quant_pattern = re.compile(r'[-._](I?Q\d+(?:_?\w+)*|fp\d+)')
+        # Updated pattern to better match all quantization formats, case-insensitive
+        self._quant_pattern = re.compile(r'-(q[2-8]_[0-9k]|q[2-8]_k_[lms]|iq[1-4]_[a-z]+|fp\d+)', re.IGNORECASE)
 
     def detect_quantization(self, filename: str) -> Optional[str]:
         """
@@ -61,7 +62,14 @@ class QuantizationManager:
             return None
             
         matches = self._quant_pattern.findall(filename)
-        return matches[0].lower() if matches else None
+        if matches:
+            # Get the last match (in case there are multiple)
+            quant_match = matches[-1]
+            
+            # Strip any shard indicators to get clean quantization
+            clean_quant = re.sub(r'-\d+(?:-of-\d+)?$', '', quant_match)
+            return clean_quant.lower()
+        return None
 
     def match_quantization(self, filename: str, target_quant: str) -> bool:
         """
@@ -85,7 +93,9 @@ class QuantizationManager:
         
         # Check each match against the requested quantization
         for match in matches:
-            match_lower = match.lower()
+            # Strip any shard indicators to get clean quantization
+            clean_match = re.sub(r'-\d+(?:-of-\d+)?$', '', match)
+            match_lower = clean_match.lower()
             
             # Check for exact match or as a prefix
             if (match_lower == target_quant_lower or 

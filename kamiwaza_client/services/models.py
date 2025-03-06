@@ -570,6 +570,8 @@ class ModelService(BaseService):
         response = self.client._request("POST", "/model_files/search/", json=search_request.model_dump())
         return [ModelFile.model_validate(item) for item in response]
 
+
+
     def get_model_file_memory_usage(self, model_file_id: Union[str, UUID]) -> int:
         """Get the memory usage of a model file."""
         try:
