@@ -7,6 +7,8 @@ from ...schemas.models.model import Model
 from ...schemas.models.model_file import ModelFile
 from ...schemas.models.model_search import HubModelFileSearch
 from ...schemas.models.downloads import ModelDownloadRequest, ModelDownloadStatus
+from ...utils.download_tracker import DownloadTracker
+from ...utils.progress_formatter import ProgressFormatter
 
 
 class ModelDownloadMixin:
@@ -378,7 +380,9 @@ class ModelDownloadMixin:
                 
                 # Display progress if requested
                 if show_progress and status_list:
-                    self._display_progress(status_list, self._calculate_overall_progress(status_list), elapsed_seconds)
+                    # Use DownloadTracker and ProgressFormatter instead of private methods
+                    overall_progress = DownloadTracker.calculate_overall_progress(status_list)
+                    self._display_progress(status_list, overall_progress, elapsed_seconds)
                 
                 # Check if all downloads are complete
                 # This means either:
@@ -390,11 +394,11 @@ class ModelDownloadMixin:
                         model = self.get_model_by_repo_id(repo_id)
                         if model and hasattr(model, 'm_files') and model.m_files:
                             print("\nDownload complete for:", repo_id)
-                            print(f"Total download time: {self._format_elapsed_time(elapsed_seconds)}")
+                            print(f"Total download time: {ProgressFormatter.format_elapsed_time(elapsed_seconds)}")
                             print("Files downloaded:")
                             for file in model.m_files:
                                 if hasattr(file, 'download') and file.download:
-                                    size_str = f" ({self._format_size(file.size)})" if hasattr(file, 'size') and file.size else ""
+                                    size_str = f" ({ProgressFormatter.format_size(file.size)})" if hasattr(file, 'size') and file.size else ""
                                     print(f"- {file.name}{size_str}")
                             
                             # Show model ID if available
@@ -419,9 +423,9 @@ class ModelDownloadMixin:
         # Clear previous line if not the first output
         sys.stdout.write("\r" + " " * 80 + "\r")
         
-        # Format the progress string
+        # Format the progress string using ProgressFormatter
         progress_str = f"Overall: {overall_progress:.1f}% "
-        progress_str += f"[{self._format_elapsed_time(elapsed_seconds)}]"
+        progress_str += f"[{ProgressFormatter.format_elapsed_time(elapsed_seconds)}]"
         
         # Count active and completed downloads
         active = sum(1 for s in status_list if s.is_downloading)
@@ -495,7 +499,7 @@ class ModelDownloadMixin:
                         if model and hasattr(model, 'm_files') and model.m_files:
                             files = model.m_files
                             # Use quant_manager to filter files by quantization
-                            from kamiwaza_client.utils.quant_manager import QuantizationManager
+                            from ...utils.quant_manager import QuantizationManager
                             quant_manager = QuantizationManager()
                             
                             # Only consider GGUF files
@@ -522,57 +526,72 @@ class ModelDownloadMixin:
                 raise ValueError(f"Could not find model {repo_id} in the database after download.")
             
             # Step 4: Deploy the model
-            # ...
-            # This part would normally call the model deployment service
-            # since this isn't implemented, we'll just provide status information
+            print(f"Deploying model {repo_id}...")
+            
+            # Add retry logic for deployment
+            max_deploy_retries = 3
+            deploy_retry_count = 0
+            deploy_base_delay = 5  # seconds
+            
+            while deploy_retry_count < max_deploy_retries:
+                try:
+                    # Add a small delay before first deployment attempt
+                    if deploy_retry_count == 0:
+                        time.sleep(2)
+                    
+                    deployment_id = self.client.serving.deploy_model(repo_id=repo_id)
+                    break  # Deployment successful, exit the retry loop
+                except Exception as e:
+                    deploy_retry_count += 1
+                    
+                    if deploy_retry_count >= max_deploy_retries:
+                        # All retries failed
+                        raise ValueError(f"Failed to deploy model after {max_deploy_retries} attempts: {str(e)}")
+                    
+                    # Calculate delay with exponential backoff
+                    deploy_retry_delay = deploy_base_delay * (2 ** (deploy_retry_count - 1))
+                    print(f"Deployment attempt {deploy_retry_count} failed: {str(e)}")
+                    print(f"Retrying in {deploy_retry_delay} seconds...")
+                    
+                    # Wait before retrying
+                    time.sleep(deploy_retry_delay)
+            
+            # Model is deployed
+            print(f"Model {repo_id} successfully deployed!")
             
             # Get files from the model
             files = model.m_files if hasattr(model, 'm_files') and model.m_files else []
             
-            if not files:
-                # If files weren't loaded with the model, fetch them directly
-                files = self.search_hub_model_files(HubModelFileSearch(hub=model.hub, model=model.repo_modelId))
-                model.m_files = files
-            
-            # Filter files by quantization if specified
-            if quantization:
-                # Use quant_manager to filter files by quantization
-                from kamiwaza_client.utils.quant_manager import QuantizationManager
-                quant_manager = QuantizationManager()
-                
-                # Only consider GGUF files
-                gguf_files = [f for f in files if f.name and f.name.lower().endswith('.gguf')]
-                
-                # Filter by quantization
-                target_files = quant_manager.filter_files_by_quantization(gguf_files, quantization)
-            else:
-                # If no quantization specified, include all GGUF files
-                target_files = [f for f in files if f.name and f.name.lower().endswith('.gguf')]
-            
-            # Analyze download status
-            downloading_files = [f for f in target_files if f.is_downloading]
-            downloaded_files = [f for f in target_files if hasattr(f, 'download') and f.download]
-            pending_files = [f for f in target_files if f not in downloading_files and f not in downloaded_files]
-            
-            # Calculate overall progress
-            total_progress = 0
-            if downloading_files:
-                for file in downloading_files:
-                    total_progress += file.download_percentage or 0
-                total_progress /= len(downloading_files)
-            elif downloaded_files and len(downloaded_files) == len(target_files):
-                total_progress = 100
-            
-            return {
+            # Create result dictionary with deployment information
+            result = {
                 "model": model,
-                "target_files": target_files,
-                "downloading_files": downloading_files,
-                "downloaded_files": downloaded_files,
-                "pending_files": pending_files,
-                "total_progress": total_progress,
-                "all_downloaded": len(downloaded_files) == len(target_files) and len(target_files) > 0,
-                "any_downloading": len(downloading_files) > 0
+                "target_files": [f for f in files if f.name and f.name.lower().endswith('.gguf')],
+                "downloading_files": [f for f in files if hasattr(f, 'is_downloading') and f.is_downloading],
+                "downloaded_files": [f for f in files if hasattr(f, 'download') and f.download],
+                "pending_files": [],
+                "total_progress": 100 if files else 0,
+                "all_downloaded": bool(files),
+                "any_downloading": False,
+                "deployment_id": deployment_id
             }
+            
+            # Simple custom string representation
+            class EnhancedDeploymentResult(dict):
+                def __str__(self):
+                    model_name = self["model"].name if self["model"].name else self["model"].repo_modelId
+                    return f"Model {model_name} downloaded and deployed successfully. Deployment ID: {self['deployment_id']}"
+                
+                # Use ProgressFormatter for any formatting if needed
+                def _format_details(self):
+                    """Format additional details about the deployment if needed."""
+                    files = self.get("downloaded_files", [])
+                    if not files:
+                        return "No files"
+                    
+                    total_size = sum(getattr(f, 'size', 0) or 0 for f in files)
+                    return f"{len(files)} files, {ProgressFormatter.format_size(total_size)} total"
+            
+            return EnhancedDeploymentResult(result)
             
         except Exception as e:
             print(f"Error downloading and deploying model: {str(e)}")
