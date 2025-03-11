@@ -21,8 +21,10 @@ client = KamiwazaClient("http://localhost:7777/api/")
 
 The `/examples` directory contains Jupyter notebooks demonstrating various use cases:
 
-1. [Model Download and Deployment](examples/quickstart.ipynb) - Shows how to download and deploy a model using the SDK
-2. [Structured Data Extraction](examples/structured_data_extraction.ipynb) - Demonstrates how to use deployed models for data processing and standardization
+1. [Model Download and Deployment](examples/01_download_and_deploy.ipynb) - A comprehensive guide to searching, downloading, deploying, and using models with the Kamiwaza SDK
+2. [Quick Model Deployment](examples/02_download_and_deploy_quick.ipynb) - Streamlined approach to download and deploy models using a single function
+3. [Model Evaluation](examples/03_eval_multiple_models.ipynb) - How to evaluate and benchmark multiple language models for performance comparison using the streamlined `download_and_deploy_model` function
+4. [Structured Output](examples/04_structured_output.ipynb) - Using Kamiwaza's OpenAI-compatible interface to generate structured outputs with specific JSON schemas
 
 More examples coming soon!
 
