@@ -70,11 +70,55 @@ class VectorDBService(BaseService):
         """
         dimensions = len(vectors[0]) if vectors else 0
         
-        if field_list is None and metadata:
-            field_list = [
-                (key, self._infer_field_type(value))
-                for key, value in metadata[0].items()
-            ]
+        # Define known autofields that Milvus expects
+        autofields = {
+            'model_name': 'str',
+            'source': 'str', 
+            'catalog_urn': 'str',
+            'offset': 'int',
+            'filename': 'str'  # Add filename explicitly as it's required
+        }
+        
+        # Ensure all metadata entries have the required autofields
+        if metadata and len(metadata) > 0:
+            # Get all unique keys from all metadata entries
+            all_keys = set()
+            for entry in metadata:
+                all_keys.update(entry.keys())
+                
+            # Add all autofields to the set of keys
+            all_keys.update(autofields.keys())
+                
+            # Ensure each entry has all keys with appropriate defaults
+            for entry in metadata:
+                for key in all_keys:
+                    if key not in entry:
+                        if key in autofields:
+                            # Use appropriate default based on field type
+                            entry[key] = "" if autofields[key] == 'str' else 0
+                        else:
+                            # Default for unknown fields
+                            entry[key] = ""
+        
+        # If field_list not provided, generate it from the metadata and autofields
+        if field_list is None:
+            if metadata:
+                # Use all keys from the metadata plus required autofields
+                field_list = []
+                all_field_keys = set(metadata[0].keys()).union(autofields.keys())
+                
+                for key in all_field_keys:
+                    # Use autofield type if it's a known field, otherwise infer
+                    if key in autofields:
+                        field_list.append((key, autofields[key]))
+                    else:
+                        field_list.append((key, self._infer_field_type(metadata[0][key])))
+            else:
+                # If no metadata, just use autofields
+                field_list = [(key, ftype) for key, ftype in autofields.items()]
+        
+        self.logger.debug(f"Using field_list: {field_list}")
+        self.logger.debug(f"First metadata entry: {metadata[0] if metadata else 'None'}")
         
         request = InsertVectorsRequest(
             collection_name=collection_name,

@@ -145,6 +145,8 @@ class EmbeddingService(BaseService):
     def __init__(self, client):
         super().__init__(client)
         self._model_loaded = {}  # Track which models have been loaded
+        self._default_model = 'BAAI/bge-large-en-v1.5'
+        self._default_provider = 'sentencetransformers'
 
     def initialize_provider(
         self, 
@@ -171,19 +173,44 @@ class EmbeddingService(BaseService):
         except Exception as e:
             raise APIError(f"Failed to initialize provider: {str(e)}")
 
+    def get_embedder(
+        self,
+        model: Optional[str] = None,
+        provider_type: Optional[str] = None,
+        device: Optional[str] = None,
+        **kwargs
+    ) -> EmbeddingProvider:
+        """Get an embedding provider with the specified or default configuration
+        
+        Args:
+            model: Model name to use, defaults to BAAI/bge-large-en-v1.5
+            provider_type: Provider type, defaults to sentencetransformers
+            device: Device to use (cpu, cuda, mps), defaults to None (auto-detect)
+            **kwargs: Additional provider-specific arguments
+            
+        Returns:
+            EmbeddingProvider instance
+        """
+        return self.initialize_provider(
+            provider_type=provider_type or self._default_provider,
+            model=model or self._default_model,
+            device=device,
+            **kwargs
+        )
+
+    # Deprecated method - left for backward compatibility
     def HuggingFaceEmbedding(
         self,
         model: str = 'BAAI/bge-large-en-v1.5',
         device: Optional[str] = None,
         **kwargs
     ) -> EmbeddingProvider:
-        """Convenience method for creating HuggingFace embedder"""
-        return self.initialize_provider(
-            provider_type="huggingface_embedding",
-            model=model,
-            device=device,
-            **kwargs
-        )
+        """Deprecated: Use get_embedder() instead
+        
+        This method is maintained for backward compatibility only.
+        """
+        logger.warning("HuggingFaceEmbedding() is deprecated. Please use get_embedder() instead.")
+        return self.get_embedder(model=model, device=device, **kwargs)
 
     def get_providers(self) -> List[str]:
         """Get list of available embedding providers"""
@@ -195,5 +222,5 @@ class EmbeddingService(BaseService):
     def call(self, batch: Dict[str, List[Any]], **kwargs) -> Dict[str, List[Any]]:
         """Legacy method - requires explicit provider initialization"""
         raise DeprecationWarning(
-            "The global call() method is deprecated. Please initialize a provider first using initialize_provider() or HuggingFaceEmbedding()"
+            "The global call() method is deprecated. Please initialize a provider first using get_embedder()"
         )
