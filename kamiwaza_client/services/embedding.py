@@ -19,17 +19,17 @@ class EmbeddingProvider:
     def chunk_text(
         self, 
         text: str, 
-        max_length: int = 510, 
-        overlap: int = 32,
+        max_length: int = 1024, 
+        overlap: int = 102,
         preamble_text: str = "",
         return_metadata: bool = False,
     ) -> Union[List[str], ChunkResponse]:
         """Chunk text into smaller pieces."""
         # Parameter validation
         if max_length < 100:
-            max_length = 510
+            max_length = 1024
         if overlap >= max_length // 2:
-            overlap = max_length // 4
+            overlap = max_length // 10
             
         params = {
             "text": text,
@@ -77,8 +77,8 @@ class EmbeddingProvider:
             logger.error(f"Failed to generate embeddings: {str(e)}")
             raise APIError(f"Operation failed: {str(e)}")
 
-    def create_embedding(self, text: str, max_length: int = 382,
-                        overlap: int = 32, preamble_text: str = "") -> EmbeddingOutput:
+    def create_embedding(self, text: str, max_length: int = 1024,
+                        overlap: int = 102, preamble_text: str = "") -> EmbeddingOutput:
         """Create an embedding for the given text."""
         input_data = EmbeddingInput(
             id=self.embedder_id,
@@ -145,7 +145,7 @@ class EmbeddingService(BaseService):
     def __init__(self, client):
         super().__init__(client)
         self._model_loaded = {}  # Track which models have been loaded
-        self._default_model = 'BAAI/bge-large-en-v1.5'
+        self._default_model = 'nomic-ai/nomic-embed-text-v1.5'
         self._default_provider = 'sentencetransformers'
 
     def initialize_provider(
@@ -183,7 +183,7 @@ class EmbeddingService(BaseService):
         """Get an embedding provider with the specified or default configuration
         
         Args:
-            model: Model name to use, defaults to BAAI/bge-large-en-v1.5
+            model: Model name to use, defaults to nomic-ai/nomic-embed-text-v1.5
             provider_type: Provider type, defaults to sentencetransformers
             device: Device to use (cpu, cuda, mps), defaults to None (auto-detect)
             **kwargs: Additional provider-specific arguments
@@ -201,7 +201,7 @@ class EmbeddingService(BaseService):
     # Deprecated method - left for backward compatibility
     def HuggingFaceEmbedding(
         self,
-        model: str = 'BAAI/bge-large-en-v1.5',
+        model: str = 'nomic-ai/nomic-embed-text-v1.5',
         device: Optional[str] = None,
         **kwargs
     ) -> EmbeddingProvider:
