@@ -16,7 +16,7 @@ cli_requirements = [
 
 setup(
     name="kamiwaza",
-    version="0.1.4",
+    version="0.3.3.0",
     author="Kamiwaza Team",
     author_email="tyler@kamiwaza.ai",
     description="Python client library for the Kamiwaza AI Platform",
