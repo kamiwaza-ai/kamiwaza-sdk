@@ -3,17 +3,27 @@
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 
-class RetrieveRelevantChunksRequest(BaseModel):
-    collections: List[str]
+class RetrieveDatasetsRequest(BaseModel):
+    """Request model for retrieving datasets."""
     query: str
-    catalog_urns: Optional[List[str]] = None
-    max_results: int = 100
-    # Additional parameters as needed
+    platform: Optional[str] = None
+    environment: Optional[str] = None
+    owners: Optional[List[str]] = None
+    container: Optional[str] = None
+    location: Optional[str] = None
+    pathspec: Optional[Dict[str, Any]] = None
+    iterator: Optional[bool] = False
+    ray_mode: Optional[str] = 'read_binary_files'
+    ray_kwargs: Optional[Dict[str, Any]] = None
 
-class ChunkData(BaseModel):
-    source: str
-    offset: int
-    data: str
+class DatasetItem(BaseModel):
+    """Individual dataset item."""
+    # Fields will vary based on the actual dataset structure
+    id: Optional[str] = None
+    name: Optional[str] = None
+    path: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
 
-class RetrieveRelevantChunksResponse(BaseModel):
-    chunks: List[ChunkData]
+class RetrieveDatasetsResponse(BaseModel):
+    """Response model for dataset retrieval."""
+    datasets: List[Dict[str, Any]]

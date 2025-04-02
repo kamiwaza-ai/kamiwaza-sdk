@@ -18,6 +18,7 @@ from .authentication import Authenticator, ApiKeyAuthenticator
 from .services.retrieval import RetrievalService
 from .services.ingestion import IngestionService
 from .services.openai import OpenAIService
+from .services.search import SearchService
 import logging
 
 logger = logging.getLogger(__name__)
@@ -178,3 +179,9 @@ class KamiwazaClient:
         if not hasattr(self, '_openai'):
             self._openai = OpenAIService(self)
         return self._openai
+
+    @property
+    def search(self):
+        if not hasattr(self, '_search'):
+            self._search = SearchService(self)
+        return self._search
