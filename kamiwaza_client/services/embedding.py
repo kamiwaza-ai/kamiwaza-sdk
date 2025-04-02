@@ -50,7 +50,8 @@ class EmbeddingProvider:
                 return ChunkResponse(
                     chunks=response["chunks"],
                     offsets=response.get("offsets"),
-                    token_counts=response.get("token_counts")
+                    token_counts=response.get("token_counts"),
+                    metadata=response.get("metadata", [])
                 )
             return response
         except Exception as e:

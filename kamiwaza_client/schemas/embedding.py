@@ -50,3 +50,4 @@ class ChunkResponse(BaseModel):
     chunks: List[str]
     offsets: Optional[List[int]] = None
     token_counts: Optional[List[int]] = None
+    metadata: Optional[List[dict]] = None

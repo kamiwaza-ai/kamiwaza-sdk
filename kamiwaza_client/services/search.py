@@ -20,7 +20,8 @@ class SearchService(BaseService):
         limit: int = 5,
         retrieve_content: bool = True,
         filter_criteria: Optional[Dict[str, Any]] = None,
-        output_fields: Optional[List[str]] = None
+        output_fields: Optional[List[str]] = None,
+        embedder_model: str = "nomic-ai/nomic-embed-text-v1.5"
     ) -> Dict[str, Any]:
         """
         Search for documents based on semantic similarity to the query.
@@ -32,6 +33,7 @@ class SearchService(BaseService):
             retrieve_content: Whether to retrieve content immediately
             filter_criteria: Optional filters for metadata fields
             output_fields: Metadata fields to include in results
+            embedder_model: The embedding model to use (default: nomic-ai/nomic-embed-text-v1.5)
             
         Returns:
             Dictionary containing search results with matching chunks and metadata
@@ -42,7 +44,8 @@ class SearchService(BaseService):
             "query": query,
             "collection_name": collection_name,
             "limit": limit,
-            "retrieve_content": retrieve_content
+            "retrieve_content": retrieve_content,
+            "embedder_model": embedder_model
         }
         
         if filter_criteria is not None:
