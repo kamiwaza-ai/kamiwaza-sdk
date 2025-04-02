@@ -182,3 +182,12 @@ class VectorDBService(BaseService):
             return "bool"
         else:
             return "str"  # Default to string for unknown types
+
+    def list_collections(self) -> List[str]:
+        """List all collections in the vector database.
+        
+        Returns:
+            List[str]: List of collection names in the vector database
+        """
+        response = self.client.get("/vectordb/collections")
+        return response
