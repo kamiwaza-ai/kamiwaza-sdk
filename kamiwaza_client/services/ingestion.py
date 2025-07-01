@@ -118,7 +118,9 @@ class IngestionService(BaseService):
                     metadata = {
                         'source': file_path,
                         'offset': offset,
-                        'catalog_urn': self.catalog_urn
+                        'catalog_urn': self.catalog_urn,
+                        'filename': os.path.basename(file_path),  # Add required filename field
+                        'model_name': self.config.embedder_model  # Add model_name field
                     }
                     metadata_list.append(metadata)
             except Exception as e:
