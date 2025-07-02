@@ -191,3 +191,15 @@ class VectorDBService(BaseService):
         """
         response = self.client.get("/vectordb/collections")
         return response
+
+    def drop_collection(self, collection_name: str) -> dict:
+        """Drop a collection from the vector database.
+        
+        Args:
+            collection_name: Name of the collection to drop
+            
+        Returns:
+            dict: Response message indicating success or failure
+        """
+        response = self.client.delete(f"/vectordb/collections/{collection_name}")
+        return response
