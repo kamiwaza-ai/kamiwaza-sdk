@@ -31,19 +31,26 @@ class EmbeddingProvider:
         if overlap >= max_length // 2:
             overlap = max_length // 10
             
+        # For POST endpoints, FastAPI expects the data in the request body
+        # Only embedder_id should be in params since it might be used for routing
         params = {
+            "embedder_id": self.embedder_id
+        }
+        
+        # All other data goes in the request body
+        body = {
             "text": text,
             "max_length": max_length,
             "overlap": overlap,
             "preamble_text": preamble_text,
-            "embedder_id": self.embedder_id,
             "return_metadata": return_metadata
         }
         
         try:
             response = self._service.client.post(
                 "/embedding/chunk", 
-                params=params
+                params=params,
+                json=body
             )
             
             if return_metadata:
