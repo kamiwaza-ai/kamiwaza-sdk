@@ -1,6 +1,6 @@
 # Kamiwaza Python SDK
 
-Python client library and CLI for interacting with the Kamiwaza AI Platform. This SDK provides a type-safe interface to all Kamiwaza API endpoints with built-in authentication, error handling, and resource management.
+Python client library for interacting with the Kamiwaza AI Platform. This SDK provides a type-safe interface to all Kamiwaza API endpoints with built-in authentication, error handling, and resource management.
 
 ## Installation
 
@@ -45,28 +45,5 @@ More examples coming soon!
 | `client.activity` | Monitoring | [Activity Service](docs/services/activity/README.md) |
 | `client.openai` | OpenAI API compatible| [OpenAI Service](docs/services/openai/README.md) |
 
----
-
-## Quick Start - CLI
-
-The easiest way to get started is using the CLI:
-
-```bash
-# First time setup
-kamiwaza config set-url http://localhost:7777/api
-
-# Download, deploy, and chat with a model in one command
-$ kamiwaza run qwen2.5-7b-instruct
-🚀 Deploying Qwen2.5-7B-Instruct-GGUF...
-✨ Deployment ready!
-
-🤖 Chat session started (Ctrl+C to exit)
-
-User: What is a funny way to explain GenAI?
-
-Assistant: GenAI is like a magic wand that can create amazing things. It can write code, draw pictures, and even figure out your taxes.
-```
-
-For more CLI commands and examples, see the [CLI Documentation](docs/cli.md).
 
 The Kamiwaza SDK is actively being developed with new features, examples, and documentation being added regularly. Stay tuned for updates including additional example notebooks, enhanced documentation, and expanded functionality across all services.
