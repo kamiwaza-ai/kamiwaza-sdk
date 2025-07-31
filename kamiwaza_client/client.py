@@ -15,7 +15,6 @@ from .services.lab import LabService
 from .services.auth import AuthService
 from .authentication import Authenticator, ApiKeyAuthenticator
 from .services.retrieval import RetrievalService
-from .services.ingestion import IngestionService
 from .services.openai import OpenAIService
 import logging
 
@@ -161,12 +160,6 @@ class KamiwazaClient:
             self._retrieval = RetrievalService(self)
         return self._retrieval
 
-    @property
-    def ingestion(self):
-        if not hasattr(self, '_ingestion'):
-            self._ingestion = IngestionService(self)
-        return self._ingestion
-    
     @property
     def openai(self):
         if not hasattr(self, '_openai'):

@@ -9,4 +9,3 @@ from .activity import ActivityService
 from .lab import LabService
 from .auth import AuthService
 from .retrieval import RetrievalService
-from .ingestion import IngestionService

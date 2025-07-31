@@ -38,7 +38,6 @@ More examples coming soon!
 | `client.catalog` | Data management | [Catalog Service](docs/services/catalog/README.md) |
 | `client.embedding` | Text processing | [Embedding Service](docs/services/embedding/README.md) |
 | `client.retrieval` | Search | [Retrieval Service](docs/services/retrieval/README.md) |
-| `client.ingestion` | Data pipeline | [Ingestion Service](docs/services/ingestion/README.md) |
 | `client.cluster` | Infrastructure | [Cluster Service](docs/services/cluster/README.md) |
 | `client.lab` | Lab environments | [Lab Service](docs/services/lab/README.md) |
 | `client.auth` | Security | [Auth Service](docs/services/auth/README.md) |
