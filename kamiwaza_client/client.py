@@ -6,7 +6,6 @@ from .exceptions import APIError, AuthenticationError
 from .services.models import ModelService
 from .services.serving import ServingService
 from .services.vectordb import VectorDBService
-from .services.vectors import VectorService
 from .services.catalog import CatalogService
 from .services.prompts import PromptsService  
 from .services.embedding import EmbeddingService
@@ -114,11 +113,6 @@ class KamiwazaClient:
             self._vectordb = VectorDBService(self)
         return self._vectordb
     
-    @property
-    def vectors(self):
-        if not hasattr(self, '_vectors'):
-            self._vectors = VectorService(self)
-        return self._vectors
 
     @property
     def catalog(self):
