@@ -16,6 +16,8 @@ from .services.auth import AuthService
 from .authentication import Authenticator, ApiKeyAuthenticator
 from .services.retrieval import RetrievalService
 from .services.openai import OpenAIService
+from .services.apps import AppService
+from .services.tools import ToolService
 import logging
 
 logger = logging.getLogger(__name__)
@@ -50,9 +52,8 @@ class KamiwazaClient:
             self.authenticator = ApiKeyAuthenticator(api_key)
         else:
             self.authenticator = None
-
-        if self.authenticator:
-            self.authenticator.authenticate(self.session)
+        
+        # Don't authenticate during initialization - let it happen on first request
 
     def _request(self, method: str, endpoint: str, **kwargs):
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
@@ -61,11 +62,24 @@ class KamiwazaClient:
         # Ensure headers are present
         if 'headers' not in kwargs:
             kwargs['headers'] = {}
+        
+        # Ensure authentication is set up (except for auth endpoints)
+        if self.authenticator and endpoint != "/auth/token":
+            self.authenticator.authenticate(self.session)
 
         try:
+            # Debug headers
+            self.logger.debug(f"Request headers: {self.session.headers}")
             response = self.session.request(method, url, **kwargs)
+            self.logger.debug(f"Response status: {response.status_code}")
+            
             if response.status_code == 401:
-                logger.warning("Received 401 Unauthorized. Attempting to refresh token.")
+                # Don't try to refresh token if we're already calling the auth endpoint
+                if endpoint == "/auth/token":
+                    self.logger.error(f"Login endpoint returned 401: {response.text}")
+                    raise APIError(f"Login failed with status {response.status_code}: {response.text}")
+                    
+                logger.warning(f"Received 401 Unauthorized. Response: {response.text}")
                 if self.authenticator:
                     self.authenticator.refresh_token(self.session)
                     response = self.session.request(method, url, **kwargs)
@@ -74,12 +88,17 @@ class KamiwazaClient:
                 else:
                     raise AuthenticationError("Authentication failed. No authenticator provided.")
             elif response.status_code >= 400:
+                self.logger.error(f"Request failed: {response.text}")
                 raise APIError(f"API request failed with status {response.status_code}: {response.text}")
         except requests.RequestException as e:
             logger.error(f"Request failed: {e}")
             raise APIError(f"An error occurred while making the request: {e}")
-
-        return response.json()
+        
+        # Check if response is successful before parsing JSON
+        if response.status_code == 200:
+            return response.json()
+        else:
+            raise APIError(f"Unexpected status code {response.status_code}: {response.text}")
 
     def get(self, endpoint: str, **kwargs):
         return self._request('GET', endpoint, **kwargs)
@@ -165,4 +184,16 @@ class KamiwazaClient:
         if not hasattr(self, '_openai'):
             self._openai = OpenAIService(self)
         return self._openai
+    
+    @property
+    def apps(self):
+        if not hasattr(self, '_apps'):
+            self._apps = AppService(self)
+        return self._apps
+    
+    @property
+    def tools(self):
+        if not hasattr(self, '_tools'):
+            self._tools = ToolService(self)
+        return self._tools
 

@@ -9,3 +9,5 @@ from .activity import ActivityService
 from .lab import LabService
 from .auth import AuthService
 from .retrieval import RetrievalService
+from .apps import AppService
+from .tools import ToolService

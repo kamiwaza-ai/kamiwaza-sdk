@@ -34,6 +34,10 @@ class AuthService(BaseService):
         headers = {"Content-Type": "application/x-www-form-urlencoded"}
         
         try:
+            # Debug logging
+            self.client.logger.debug(f"Attempting login with username: {username}")
+            self.client.logger.debug(f"Form data: {form_data}")
+            
             response = self.client.post(
                 "/auth/token", 
                 data=form_data,

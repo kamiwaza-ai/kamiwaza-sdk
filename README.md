@@ -43,6 +43,8 @@ More examples coming soon!
 | `client.auth` | Security | [Auth Service](docs/services/auth/README.md) |
 | `client.activity` | Monitoring | [Activity Service](docs/services/activity/README.md) |
 | `client.openai` | OpenAI API compatible| [OpenAI Service](docs/services/openai/README.md) |
+| `client.apps` | App deployment | [App Service](docs/services/apps/README.md) |
+| `client.tools` | Tool servers (MCP) | [Tool Service](docs/services/tools/README.md) |
 
 
 The Kamiwaza SDK is actively being developed with new features, examples, and documentation being added regularly. Stay tuned for updates including additional example notebooks, enhanced documentation, and expanded functionality across all services.

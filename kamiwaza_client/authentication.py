@@ -36,15 +36,24 @@ class UserPasswordAuthenticator(Authenticator):
         self.token_expiry: Optional[datetime] = None
 
     def authenticate(self, session: requests.Session):
-        if not self.token or datetime.utcnow() >= self.token_expiry:
+        if not self.token or self.token_expiry is None or datetime.utcnow() >= self.token_expiry:
             self.refresh_token(session)
+        # Set both Authorization header and cookie for compatibility
         session.headers.update({'Authorization': f'Bearer {self.token}'})
+        session.cookies.set('access_token', self.token)
+        # Debug log
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.debug(f"Set Authorization header and cookie: Bearer {self.token[:20]}...")
 
     def refresh_token(self, session: requests.Session):
-        token_response: Token = self.auth_service.login_for_access_token(self.username, self.password)
-        self.token = token_response.access_token
-        self.token_expiry = datetime.utcnow() + timedelta(seconds=token_response.expires_in)
-        session.headers.update({'Authorization': f'Bearer {self.token}'})
+        try:
+            token_response: Token = self.auth_service.login_for_access_token(self.username, self.password)
+            self.token = token_response.access_token
+            self.token_expiry = datetime.utcnow() + timedelta(seconds=token_response.expires_in)
+            session.headers.update({'Authorization': f'Bearer {self.token}'})
+        except Exception as e:
+            raise AuthenticationError(f"Failed to refresh token: {str(e)}")
 
 class OAuthAuthenticator(Authenticator):
     def __init__(self, client_id: str, client_secret: str, auth_service):
