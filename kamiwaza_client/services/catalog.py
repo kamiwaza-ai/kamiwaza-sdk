@@ -132,7 +132,7 @@ class CatalogService(BaseService):
             "secret_value": secret_value,
             "clobber": clobber
         }
-        return self.client.post("/catalogcatalog/dataset/secret", params=params)
+        return self.client.post("/catalog/catalog/dataset/secret", params=params)
     
 
     def flush_catalog(self) -> None:
