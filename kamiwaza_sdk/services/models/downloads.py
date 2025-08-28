@@ -631,7 +631,7 @@ class ModelDownloadMixin:
             # Filter files by quantization if specified
             if quantization:
                 # Use quant_manager to filter files by quantization
-                from kamiwaza_client.utils.quant_manager import QuantizationManager
+                from kamiwaza_sdk.utils.quant_manager import QuantizationManager
                 quant_manager = QuantizationManager()
                 
                 # Only consider GGUF files

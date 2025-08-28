@@ -10,14 +10,14 @@ with open("requirements.txt", "r", encoding="utf-8") as f:
 
 
 setup(
-    name="kamiwaza",
+    name="kamiwaza-sdk",
     version="0.5.0",
     author="Kamiwaza Team",
     author_email="tyler@kamiwaza.ai",
     description="Python client library for the Kamiwaza AI Platform",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/kamiwaza/kamiwaza-client",
+    url="https://github.com/kamiwaza/kamiwaza-sdk",
     packages=find_packages(exclude=["tests*", "examples*"]),
     classifiers=[
         "Development Status :: 4 - Beta",
@@ -34,7 +34,7 @@ setup(
     install_requires=requirements,
     include_package_data=True,
     package_data={
-        "kamiwaza_client": ["py.typed"],
+        "kamiwaza_sdk": ["py.typed"],
     },
 ) # end
 

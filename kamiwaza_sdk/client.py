@@ -1,5 +1,6 @@
 # kamiwaza_client/client.py
 
+import os
 import requests
 from typing import Optional
 from .exceptions import APIError, AuthenticationError
@@ -42,6 +43,15 @@ class KamiwazaClient:
             
         self.base_url = base_url.rstrip('/')
         self.session = requests.Session()
+        
+        # Check KAMIWAZA_VERIFY_SSL environment variable
+        verify_ssl = os.environ.get('KAMIWAZA_VERIFY_SSL', 'true').lower()
+        if verify_ssl == 'false':
+            self.session.verify = False
+            # Suppress SSL warnings when verification is disabled
+            import urllib3
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+            self.logger.info("SSL verification disabled (KAMIWAZA_VERIFY_SSL=false)")
         
         # Initialize _auth_service directly
         self._auth_service = AuthService(self)

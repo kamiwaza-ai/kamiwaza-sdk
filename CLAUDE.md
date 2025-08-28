@@ -14,9 +14,9 @@ Kamiwaza SDK is a Python client library for the Kamiwaza AI Platform. It provide
 - **Build package**: `python setup.py sdist bdist_wheel`
 
 ### Code Quality
-- **Format code**: `black kamiwaza_client/`
-- **Sort imports**: `isort kamiwaza_client/`
-- **Type checking**: `mypy kamiwaza_client/` (type stubs may need configuration)
+- **Format code**: `black kamiwaza_sdk/`
+- **Sort imports**: `isort kamiwaza_sdk/`
+- **Type checking**: `mypy kamiwaza_sdk/` (type stubs may need configuration)
 
 ## Architecture and Code Organization
 
@@ -24,7 +24,7 @@ Kamiwaza SDK is a Python client library for the Kamiwaza AI Platform. It provide
 The SDK uses a lazy-loading service pattern where the main `KamiwazaClient` class acts as an orchestrator:
 
 ```python
-# kamiwaza_client/client.py
+# kamiwaza_sdk/client.py
 class KamiwazaClient:
     @property
     def models(self) -> ModelsService:

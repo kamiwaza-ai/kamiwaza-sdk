@@ -5,16 +5,16 @@ Python client library for interacting with the Kamiwaza AI Platform. This SDK pr
 ## Installation
 
 ```bash
-pip install kamiwaza-client
+pip install kamiwaza-sdk
 ```
 
 ## Python SDK Usage
 
 ```python
-from kamiwaza_client import KamiwazaClient
+from kamiwaza_sdk import kamiwaza_sdk as kz
 
 # Initialize the client for local development
-client = KamiwazaClient("http://localhost:7777/api/")
+client = kz("http://localhost:7777/api/")
 ```
 
 ## Examples

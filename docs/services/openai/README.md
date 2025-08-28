@@ -17,7 +17,7 @@ The service provides several ways to get an OpenAI client for your deployments:
 
 ```python
 # Initialize Kamiwaza client
-client = KamiwazaClient("https://prod.kamiwaza.ai/api/")
+client = kz("https://prod.kamiwaza.ai/api/")
 
 # Get client by model name
 openai_client = client.openai.get_client(model="Owen2.5-72B-Instruct-GPTQ-Int4")
