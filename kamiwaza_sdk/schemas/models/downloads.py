@@ -1,4 +1,4 @@
-# kamiwaza_client/schemas/models/downloads.py
+# kamiwaza_sdk/schemas/models/downloads.py
 
 from pydantic import BaseModel, Field
 from typing import Optional, List

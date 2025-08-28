@@ -1,7 +1,7 @@
 # VectorDB Service
 
 ## Overview
-The VectorDB Service (`VectorDBService`) provides comprehensive vector database management functionality for the Kamiwaza AI Platform. Located in `kamiwaza_client/services/vectordb.py`, this service handles vector storage, retrieval, and similarity search operations.
+The VectorDB Service (`VectorDBService`) provides comprehensive vector database management functionality for the Kamiwaza AI Platform. Located in `kamiwaza_sdk/services/vectordb.py`, this service handles vector storage, retrieval, and similarity search operations.
 
 ## Key Features
 - Vector Database Management

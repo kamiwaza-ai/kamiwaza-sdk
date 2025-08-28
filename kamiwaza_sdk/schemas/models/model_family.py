@@ -1,4 +1,4 @@
-# kamiwaza_client/schemas/models/model_family.py
+# kamiwaza_sdk/schemas/models/model_family.py
 
 from pydantic import BaseModel
 from datetime import datetime

@@ -1,4 +1,4 @@
-# kamiwaza_client/schemas/serving/prompt_format.py
+# kamiwaza_sdk/schemas/serving/prompt_format.py
 
 from pydantic import BaseModel, Field
 from typing import Optional

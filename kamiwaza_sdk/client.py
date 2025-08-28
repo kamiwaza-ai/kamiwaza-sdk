@@ -1,4 +1,4 @@
-# kamiwaza_client/client.py
+# kamiwaza_sdk/client.py
 
 import os
 import requests

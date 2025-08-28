@@ -1,4 +1,4 @@
-# kamiwaza_client/services/catalog.py
+# kamiwaza_sdk/services/catalog.py
 
 from typing import List, Optional, Dict, Any, Union
 from pathlib import Path

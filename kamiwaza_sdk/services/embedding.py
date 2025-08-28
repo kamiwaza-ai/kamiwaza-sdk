@@ -1,4 +1,4 @@
-# kamiwaza_client/services/embedding.py
+# kamiwaza_sdk/services/embedding.py
 
 from typing import List, Optional, Any, Dict, Union
 from uuid import UUID

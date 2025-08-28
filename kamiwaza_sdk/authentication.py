@@ -1,4 +1,4 @@
-# kamiwaza_client/authentication.py
+# kamiwaza_sdk/authentication.py
 
 from abc import ABC, abstractmethod
 from typing import Optional

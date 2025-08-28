@@ -1,4 +1,4 @@
-# kamiwaza_client/services/apps.py
+# kamiwaza_sdk/services/apps.py
 
 from typing import List, Optional, Dict, Any
 from uuid import UUID

@@ -1,4 +1,4 @@
-# kamiwaza_client/schemas/serving/serving.py
+# kamiwaza_sdk/schemas/serving/serving.py
 
 from pydantic import BaseModel, Field
 from typing import List, Optional

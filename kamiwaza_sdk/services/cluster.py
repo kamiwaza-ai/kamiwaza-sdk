@@ -1,4 +1,4 @@
-# kamiwaza_client/services/cluster.py
+# kamiwaza_sdk/services/cluster.py
 
 from typing import List, Optional, Dict, Any
 from uuid import UUID

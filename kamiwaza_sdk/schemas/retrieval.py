@@ -1,4 +1,4 @@
-# kamiwaza_client/schemas/retrieval.py
+# kamiwaza_sdk/schemas/retrieval.py
 
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional

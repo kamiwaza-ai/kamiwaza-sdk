@@ -1,4 +1,4 @@
-# kamiwaza_client/schemas/tools.py
+# kamiwaza_sdk/schemas/tools.py
 
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field

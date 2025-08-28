@@ -1,4 +1,4 @@
-# kamiwaza_client/schemas/models/model_file.py
+# kamiwaza_sdk/schemas/models/model_file.py
 from pydantic import BaseModel, Field
 from enum import Enum
 from typing import Optional

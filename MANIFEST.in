@@ -1,6 +1,6 @@
 include README.md
 include LICENSE
 include requirements.txt
-recursive-include kamiwaza_client *.py
-recursive-include kamiwaza_client *.typed
-recursive-include kamiwaza_client py.typed
+recursive-include kamiwaza_sdk *.py
+recursive-include kamiwaza_sdk *.typed
+recursive-include kamiwaza_sdk py.typed

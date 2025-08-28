@@ -1,4 +1,4 @@
-# kamiwaza_client/schemas/activity.py
+# kamiwaza_sdk/schemas/activity.py
 
 from pydantic import BaseModel, Field
 from typing import Optional

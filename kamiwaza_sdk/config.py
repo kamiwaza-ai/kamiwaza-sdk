@@ -1,4 +1,4 @@
-# kamiwaza_client/config.py
+# kamiwaza_sdk/config.py
 
 
 # all of this is just to have something to start with... idk if we have versioning on the api etc

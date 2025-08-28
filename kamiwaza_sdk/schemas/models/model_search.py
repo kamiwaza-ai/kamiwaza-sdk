@@ -1,4 +1,4 @@
-# kamiwaza_client/schemas/models/model_search.py
+# kamiwaza_sdk/schemas/models/model_search.py
 
 from pydantic import BaseModel
 from typing import List, Optional

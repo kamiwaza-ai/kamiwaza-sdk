@@ -17,7 +17,7 @@ The Tool Shed allows you to:
 
 ```python
 from kamiwaza_sdk import kamiwaza_sdk as kz
-from kamiwaza_client.authentication import UserPasswordAuthenticator
+from kamiwaza_sdk.authentication import UserPasswordAuthenticator
 
 # Create authenticated client
 client = kz("http://localhost:7777/api/")
@@ -209,7 +209,7 @@ The `tool.url` returned after deployment is the public HTTPS endpoint for your T
 ## Error Handling
 
 ```python
-from kamiwaza_client.exceptions import AuthenticationError, NotFoundError
+from kamiwaza_sdk.exceptions import AuthenticationError, NotFoundError
 
 try:
     tool = client.tools.deploy_from_template(

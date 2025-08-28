@@ -1,4 +1,4 @@
-# kamiwaza_client/schemas/serving/inference.py
+# kamiwaza_sdk/schemas/serving/inference.py
 
 from pydantic import BaseModel, Field
 from typing import List, Optional

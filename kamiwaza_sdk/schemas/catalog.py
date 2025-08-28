@@ -1,4 +1,4 @@
-# kamiwaza_client/schemas/catalog.py
+# kamiwaza_sdk/schemas/catalog.py
 
 from pydantic import BaseModel, Field
 from typing import Dict, Any, List, Optional

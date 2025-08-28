@@ -1,7 +1,7 @@
 # Model Service
 
 ## Overview
-The Model Service (`ModelService`) provides comprehensive model management functionality for the Kamiwaza AI Platform. Located in `kamiwaza_client/services/models.py`, this service handles model lifecycle management, including creation, deployment, file management, and configuration.
+The Model Service (`ModelService`) provides comprehensive model management functionality for the Kamiwaza AI Platform. Located in `kamiwaza_sdk/services/models.py`, this service handles model lifecycle management, including creation, deployment, file management, and configuration.
 
 ## Key Features
 - Model Management (CRUD operations)

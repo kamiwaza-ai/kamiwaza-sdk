@@ -1,4 +1,4 @@
-# kamiwaza_client/services/vectordb.py
+# kamiwaza_sdk/services/vectordb.py
 
 from typing import List, Optional, Dict, Any
 from ..schemas.vectordb import CreateVectorDB, VectorDB, InsertVectorsRequest, InsertVectorsResponse, SearchVectorsRequest, SearchResult

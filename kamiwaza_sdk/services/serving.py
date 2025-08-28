@@ -1,4 +1,4 @@
-# kamiwaza_client/services/serving.py
+# kamiwaza_sdk/services/serving.py
 
 from typing import List, Optional, Union
 from uuid import UUID

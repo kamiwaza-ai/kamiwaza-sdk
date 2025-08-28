@@ -1,4 +1,4 @@
-# kamiwaza_client/services/lab.py
+# kamiwaza_sdk/services/lab.py
 
 from typing import List, Optional, Dict
 from uuid import UUID

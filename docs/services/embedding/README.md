@@ -1,7 +1,7 @@
 # Embedding Service
 
 ## Overview
-The Embedding Service (`EmbeddingService`) provides comprehensive text embedding functionality for the Kamiwaza AI Platform. Located in `kamiwaza_client/services/embedding.py`, this service handles text chunking, embedding generation, and provider management.
+The Embedding Service (`EmbeddingService`) provides comprehensive text embedding functionality for the Kamiwaza AI Platform. Located in `kamiwaza_sdk/services/embedding.py`, this service handles text chunking, embedding generation, and provider management.
 
 ## Key Features
 - Text Chunking

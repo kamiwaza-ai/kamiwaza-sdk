@@ -1,7 +1,7 @@
 # Serving Service
 
 ## Overview
-The Serving Service (`ServingService`) provides comprehensive model deployment and serving capabilities for the Kamiwaza AI Platform. Located in `kamiwaza_client/services/serving.py`, this service manages Ray cluster operations, model deployment, and inference requests.
+The Serving Service (`ServingService`) provides comprehensive model deployment and serving capabilities for the Kamiwaza AI Platform. Located in `kamiwaza_sdk/services/serving.py`, this service manages Ray cluster operations, model deployment, and inference requests.
 
 ## Key Features
 - Ray Service Management

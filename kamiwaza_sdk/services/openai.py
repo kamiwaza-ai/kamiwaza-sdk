@@ -1,4 +1,4 @@
-# kamiwaza_client/services/openai.py    
+# kamiwaza_sdk/services/openai.py    
 
 from typing import Optional
 from uuid import UUID

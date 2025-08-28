@@ -1,4 +1,4 @@
-# kamiwaza_client/schemas/lab.py
+# kamiwaza_sdk/schemas/lab.py
 
 from pydantic import BaseModel, Field
 from typing import Optional, Dict

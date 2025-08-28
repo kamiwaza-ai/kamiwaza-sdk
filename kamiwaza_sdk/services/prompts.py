@@ -1,4 +1,4 @@
-# kamiwaza_client/services/prompts.py
+# kamiwaza_sdk/services/prompts.py
 
 from typing import List
 from uuid import UUID

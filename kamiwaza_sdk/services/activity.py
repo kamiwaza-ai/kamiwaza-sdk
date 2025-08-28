@@ -1,4 +1,4 @@
-# kamiwaza_client/services/activity.py
+# kamiwaza_sdk/services/activity.py
 
 from typing import List
 from ..schemas.activity import Activity

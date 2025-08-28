@@ -1,4 +1,4 @@
-# kamiwaza_client/services/retrieval.py
+# kamiwaza_sdk/services/retrieval.py
 
 from typing import List, Dict, Any, Optional, Union
 from ..schemas.retrieval import (

@@ -1,4 +1,4 @@
-# kamiwaza_client/services/auth.py
+# kamiwaza_sdk/services/auth.py
 
 from typing import List, Optional
 from uuid import UUID

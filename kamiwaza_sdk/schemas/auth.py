@@ -1,4 +1,4 @@
-# kamiwaza_client/schemas/auth.py
+# kamiwaza_sdk/schemas/auth.py
 
 from pydantic import BaseModel, Field, EmailStr, HttpUrl
 from typing import Optional, List, Dict, Any

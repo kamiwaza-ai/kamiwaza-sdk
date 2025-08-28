@@ -1,4 +1,4 @@
-# kamiwaza_client/schemas/embedding.py
+# kamiwaza_sdk/schemas/embedding.py
 
 
 from pydantic import BaseModel, Field

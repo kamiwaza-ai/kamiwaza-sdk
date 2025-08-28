@@ -1,4 +1,4 @@
-# kamiwaza_client/schemas/cluster.py
+# kamiwaza_sdk/schemas/cluster.py
 
 from pydantic import BaseModel, Field, EmailStr
 from typing import Optional, List, Dict, Any

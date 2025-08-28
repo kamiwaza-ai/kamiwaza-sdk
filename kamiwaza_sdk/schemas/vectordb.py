@@ -1,4 +1,4 @@
-# kamiwaza-sdk/kamiwaza_client/schemas/vectordb.py
+# kamiwaza-sdk/schemas/vectordb.py
 
 import uuid
 from pydantic import Field, BaseModel
