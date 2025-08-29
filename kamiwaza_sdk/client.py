@@ -3,7 +3,7 @@
 import os
 import requests
 from typing import Optional
-from .exceptions import APIError, AuthenticationError
+from .exceptions import APIError, AuthenticationError, NonAPIResponseError
 from .services.models import ModelService
 from .services.serving import ServingService
 from .services.vectordb import VectorDBService
@@ -106,8 +106,31 @@ class KamiwazaClient:
         
         # Check if response is successful before parsing JSON
         if response.status_code == 200:
-            return response.json()
+            # Try to parse JSON
+            try:
+                return response.json()
+            except requests.exceptions.JSONDecodeError:
+                # Check if we got an HTML response (likely the dashboard)
+                content_type = response.headers.get('content-type', '').lower()
+                if 'text/html' in content_type or 'Dashboard' in response.text:
+                    raise NonAPIResponseError(
+                        f"Received HTML response instead of JSON. "
+                        f"Your base URL is '{self.base_url}' - did you forget to append '/api'?"
+                    )
+                else:
+                    raise APIError(
+                        f"Failed to parse JSON response. Content-Type: {content_type}, "
+                        f"Response: {response.text[:200]}..."
+                    )
         else:
+            # For non-200 status codes, check if it's an HTML error page
+            if response.status_code == 404:
+                content_type = response.headers.get('content-type', '').lower()
+                if 'text/html' in content_type or 'Dashboard' in response.text:
+                    raise NonAPIResponseError(
+                        f"Received 404 with HTML response. "
+                        f"Your base URL is '{self.base_url}' - did you forget to append '/api'?"
+                    )
             raise APIError(f"Unexpected status code {response.status_code}: {response.text}")
 
     def get(self, endpoint: str, **kwargs):
