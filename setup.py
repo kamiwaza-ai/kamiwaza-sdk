@@ -1,4 +1,4 @@
-#kamiwaza/kamiwaza-sdk/setup.py
+# kamiwaza/kamiwaza-sdk/setup.py
 
 from setuptools import setup, find_packages
 
@@ -6,12 +6,14 @@ with open("README.md", "r", encoding="utf-8") as fh:
     long_description = fh.read()
 
 with open("requirements.txt", "r", encoding="utf-8") as f:
-    requirements = [line.strip() for line in f if line.strip() and not line.startswith("#")]
+    requirements = [
+        line.strip() for line in f if line.strip() and not line.startswith("#")
+    ]
 
 
 setup(
-    name="kamiwaza",
-    version="0.5.0",
+    name="kamiwaza-sdk",
+    version="0.5.1",
     author="Kamiwaza Team",
     author_email="tyler@kamiwaza.ai",
     description="Python client library for the Kamiwaza AI Platform",
@@ -36,7 +38,4 @@ setup(
     package_data={
         "kamiwaza_client": ["py.typed"],
     },
-) # end
-
-
-
+)  # end
