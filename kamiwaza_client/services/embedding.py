@@ -1,8 +1,7 @@
 # kamiwaza_client/services/embedding.py
 
 from typing import List, Optional, Any, Dict, Union
-from uuid import UUID
-from ..schemas.embedding import EmbeddingInput, EmbeddingOutput, EmbeddingConfig, ChunkResponse
+from ..schemas.embedding import EmbeddingOutput, ChunkResponse
 from .base_service import BaseService
 from ..exceptions import APIError
 import logging
@@ -12,9 +11,11 @@ logger = logging.getLogger(__name__)
 class EmbeddingProvider:
     """Provider class for handling embedder-specific operations"""
     
-    def __init__(self, service: 'EmbeddingService', embedder_id: Union[str, UUID]):
+    def __init__(self, service: 'EmbeddingService', model: str, provider_type: str, device: Optional[str] = None):
         self._service = service
-        self.embedder_id = str(embedder_id)
+        self.model = model
+        self.provider_type = provider_type
+        self.device = device
 
     def chunk_text(
         self, 
@@ -31,13 +32,13 @@ class EmbeddingProvider:
         if overlap >= max_length // 2:
             overlap = max_length // 10
             
-        # For POST endpoints, FastAPI expects the data in the request body
-        # Only embedder_id should be in params since it might be used for routing
         params = {
-            "embedder_id": self.embedder_id
+            "model": self.model,
+            "provider_type": self.provider_type,
         }
+        if self.device:
+            params["device"] = self.device
         
-        # All other data goes in the request body
         body = {
             "text": text,
             "max_length": max_length,
@@ -70,9 +71,17 @@ class EmbeddingProvider:
             total_chunks = len(text_chunks)
             logger.info(f"Starting embedding generation for {total_chunks} chunks (batch size: {batch_size})")
             
+            params = {
+                "model": self.model,
+                "provider_type": self.provider_type,
+                "batch_size": batch_size
+            }
+            if self.device:
+                params["device"] = self.device
+            
             result = self._service.client.post(
                 "/embedding/batch", 
-                params={"batch_size": batch_size, "embedder_id": self.embedder_id},
+                params=params,
                 json=text_chunks
             )
             
@@ -88,98 +97,59 @@ class EmbeddingProvider:
     def create_embedding(self, text: str, max_length: int = 1024,
                         overlap: int = 102, preamble_text: str = "") -> EmbeddingOutput:
         """Create an embedding for the given text."""
-        input_data = EmbeddingInput(
-            id=self.embedder_id,
-            text=text,
-            max_length=max_length,
-            overlap=overlap,
-            preamble_text=preamble_text
-        )
+        request_data = {
+            "text": text,
+            "model": self.model,
+            "provider_type": self.provider_type
+        }
+        if self.device:
+            request_data["device"] = self.device
+            
         try:
             response = self._service.client.post(
                 "/embedding/generate", 
-                json=input_data.model_dump()
+                json=request_data
             )
             # Convert embedding values to native Python floats
             if 'embedding' in response:
                 response['embedding'] = [float(x) for x in response['embedding']]
             
-            self._service._model_loaded[self.embedder_id] = True
             return EmbeddingOutput.model_validate(response)
         except Exception as e:
             raise APIError(f"Operation failed: {str(e)}")
 
     def get_embedding(self, text: str, return_offset: bool = False) -> EmbeddingOutput:
         """Get an embedding for the given text."""
+        params = {
+            "model": self.model,
+            "provider_type": self.provider_type,
+            "return_offset": return_offset
+        }
+        if self.device:
+            params["device"] = self.device
+            
         response = self._service.client.get(
             f"/embedding/generate/{text}",
-            params={
-                "embedder_id": self.embedder_id,
-                "return_offset": return_offset
-            }
+            params=params
         )
         return EmbeddingOutput.model_validate(response)
 
     def reset_model(self) -> Dict[str, str]:
-        """Reset the embedding model."""
-        try:
-            return self._service.client.post(
-                "/embedding/reset",
-                params={"embedder_id": self.embedder_id}
-            )
-        except Exception as e:
-            raise APIError(f"Failed to reset model: {str(e)}")
+        """Reset the embedding model - deprecated in stateless design."""
+        logger.warning("reset_model() is deprecated in the stateless design")
+        return {"status": "no-op"}
 
     def call(self, batch: Dict[str, List[Any]], model_name: Optional[str] = None) -> Dict[str, List[Any]]:
         """Generate embeddings for a batch of inputs."""
-        params = {
-            "embedder_id": self.embedder_id,
-            "model_name": model_name
-        }
-        return self._service.client.post("/embedding/embedding/call", 
-                                       params=params, 
-                                       json=batch)
-
-    def __del__(self):
-        """Cleanup when provider is destroyed"""
-        try:
-            self._service.client.delete(f"/embedding/{self.embedder_id}")
-        except:
-            pass
+        raise NotImplementedError("Batch call not yet implemented in stateless design")
 
 class EmbeddingService(BaseService):
     """Main service class for managing embedding operations"""
 
     def __init__(self, client):
         super().__init__(client)
-        self._model_loaded = {}  # Track which models have been loaded
         self._default_model = 'nomic-ai/nomic-embed-text-v1.5'
         self._default_provider = 'sentencetransformers'
-
-    def initialize_provider(
-        self, 
-        provider_type: str, 
-        model: str, 
-        device: Optional[str] = None,
-        **kwargs
-    ) -> EmbeddingProvider:
-        """Initialize a new embedding provider"""
-        config = EmbeddingConfig(
-            provider_type=provider_type,
-            model=model,
-            device=device,
-            **kwargs
-        )
-        try:
-            response = self.client.post(
-                "/embedding/initialize", 
-                json=config.model_dump()
-            )
-            provider_id = response["id"]
-            self._model_loaded[provider_id] = False  # Track new provider
-            return EmbeddingProvider(self, provider_id)
-        except Exception as e:
-            raise APIError(f"Failed to initialize provider: {str(e)}")
 
     def get_embedder(
         self,
@@ -199,11 +169,11 @@ class EmbeddingService(BaseService):
         Returns:
             EmbeddingProvider instance
         """
-        return self.initialize_provider(
-            provider_type=provider_type or self._default_provider,
+        return EmbeddingProvider(
+            self,
             model=model or self._default_model,
-            device=device,
-            **kwargs
+            provider_type=provider_type or self._default_provider,
+            device=device
         )
 
     # Deprecated method - left for backward compatibility
@@ -213,12 +183,14 @@ class EmbeddingService(BaseService):
         device: Optional[str] = None,
         **kwargs
     ) -> EmbeddingProvider:
-        """Deprecated: Use get_embedder() instead
-        
-        This method is maintained for backward compatibility only.
-        """
+        """Deprecated: Use get_embedder() instead"""
         logger.warning("HuggingFaceEmbedding() is deprecated. Please use get_embedder() instead.")
-        return self.get_embedder(model=model, device=device, **kwargs)
+        return self.get_embedder(
+            model=model, 
+            provider_type='huggingface_embedding',
+            device=device, 
+            **kwargs
+        )
 
     def get_providers(self) -> List[str]:
         """Get list of available embedding providers"""
