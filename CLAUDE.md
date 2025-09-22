@@ -6,6 +6,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Kamiwaza SDK is a Python client library for the Kamiwaza AI Platform. It provides a type-safe, object-oriented interface to all Kamiwaza API endpoints with built-in authentication, error handling, and resource management.
 
+## AI Development Guidance
+
+This project uses a comprehensive AI assistance framework:
+- **Core principles**: Follow @.ai/rules/core-principles.md for YAGNI, KISS, and fundamental practices
+- **Code style**: Apply @.ai/rules/style.md for Python conventions and SDK patterns
+- **Architecture patterns**: Use @.ai/rules/sdk-patterns.md for service design
+- **Testing standards**: Follow @.ai/rules/testing.md for test requirements
+- **Task templates**: Use prompts in @.ai/prompts/ for common tasks
+
+See @.ai/README.md for the complete AI assistance framework.
+
 ## Common Development Commands
 
 ### Installation and Setup
@@ -18,113 +29,84 @@ Kamiwaza SDK is a Python client library for the Kamiwaza AI Platform. It provide
 - **Sort imports**: `isort kamiwaza_sdk/`
 - **Type checking**: `mypy kamiwaza_sdk/` (type stubs may need configuration)
 
-## Architecture and Code Organization
+### Testing
+- **Run all tests**: `pytest`
+- **Run with coverage**: `pytest --cov=kamiwaza_client --cov-report=html`
+- **Run unit tests only**: `pytest -m "not integration"`
+- **Run specific test**: `pytest tests/unit/services/test_models.py::TestModelsService::test_list_models`
 
-### Client-Service Architecture
-The SDK uses a lazy-loading service pattern where the main `KamiwazaClient` class acts as an orchestrator:
+## Architecture Overview
 
-```python
-# kamiwaza_sdk/client.py
-class KamiwazaClient:
-    @property
-    def models(self) -> ModelsService:
-        # Services are instantiated only when accessed
+### Client-Service Pattern
+The SDK uses a lazy-loading service architecture where `KamiwazaClient` orchestrates access to individual service modules. Services are instantiated only when first accessed, reducing memory footprint and startup time.
+
+For detailed patterns, see @.ai/rules/sdk-patterns.md.
+
+### Key Components
+
+1. **KamiwazaClient** (`client.py`): Main entry point, provides lazy-loaded service properties
+2. **BaseService** (`services/base_service.py`): Common functionality for all services
+3. **AuthenticationManager** (`authentication.py`): Handles API keys, OAuth tokens, and refresh
+4. **Schemas** (`schemas/`): Pydantic models for all API contracts
+5. **Exceptions** (`exceptions.py`): Semantic error hierarchy mapping HTTP codes
+
+### Service Composition
+Complex services use mixin composition for modularity:
+- `ModelsService` = BaseService + SearchMixin + DownloadMixin + FileMixin + ConfigMixin
+- Each mixin handles a specific feature area
+- See @.ai/knowledge/successful/service-patterns.md for why this works well
+
+## Quick Start for New Contributors
+
+### Adding a New Service
+Use @.ai/prompts/add-service.md template:
+```bash
+"Add a new service for embeddings following @.ai/prompts/add-service.md"
 ```
 
-### Service Layer Pattern
-Every service inherits from `BaseService` and follows this structure:
-- **Service Class**: Business logic and API endpoint methods
-- **Schema Module**: Pydantic models for request/response validation
-- **Mixins** (for complex services): Modular functionality (see `services/models/`)
-
-### Authentication Flow
-1. `KamiwazaClient` accepts API key or OAuth credentials
-2. `AuthenticationManager` handles token refresh and retry logic
-3. Each service inherits authenticated HTTP client from `BaseService`
-4. 401 errors trigger automatic token refresh
-
-### Key Architectural Decisions
-
-#### Mixin-Based Service Design
-The `models` service demonstrates sophisticated mixin composition:
-```
-ModelsService = BaseService + SearchMixin + DownloadMixin + FileMixin + ConfigMixin + CompatibilityMixin
-```
-This pattern allows modular feature composition while keeping individual mixins focused.
-
-#### Type Safety Throughout
-- All API contracts defined as Pydantic models in `schemas/`
-- Comprehensive type hints for IDE support
-- Runtime validation of inputs and outputs
-
-#### Error Handling Hierarchy
-Custom exceptions in `exceptions.py` map HTTP errors to semantic exceptions:
-- `KamiwazaAPIError` - Base exception
-- `AuthenticationError` - 401/403 responses
-- `ResourceNotFoundError` - 404 responses
-- `ValidationError` - 400/422 responses
-
-## Development Patterns
-
-### Adding New Service Endpoints
-1. Define Pydantic schemas in `schemas/{service_name}/`
-2. Add method to service class with proper type hints
-3. Use `self._request()` for HTTP calls (handles auth/retry)
-4. Update service documentation in `docs/services/`
-
-### Progress Tracking
-The SDK includes sophisticated progress tracking:
-- `DownloadTracker` - Tracks multi-file downloads
-- `ProgressFormatter` - Rich terminal output
-- Used for user feedback during long operations
-
-## Testing Guidelines
-
-**Current State**: No test infrastructure exists. When adding tests:
-
-### Recommended Test Structure
-```
-tests/
-├── unit/
-│   ├── services/
-│   │   ├── test_models.py
-│   │   └── test_serving.py
-│   ├── test_client.py
-│   └── test_authentication.py
-├── integration/
-│   └── test_api_endpoints.py
-└── conftest.py
+### Extending Existing Service
+Use @.ai/prompts/add-mixin.md template:
+```bash
+"Add batch operations to models service using @.ai/prompts/add-mixin.md"
 ```
 
-### Testing Patterns
-- Mock HTTP responses using `responses` or `httpx` test client
-- Test both success and error scenarios
-- Validate Pydantic schema serialization/deserialization
+### Debugging Issues
+- **Test failures**: @.ai/prompts/fix-test.md
+- **Auth problems**: @.ai/prompts/debug-auth.md
+- **Performance**: @.ai/prompts/optimize-performance.md
 
 ## Important Implementation Notes
 
-### Service Lazy Loading
-Services are properties that instantiate on first access. This pattern:
-- Reduces initial client creation overhead
-- Allows partial SDK usage without loading all services
-- Maintains single instance per service per client
+### Forward Compatibility
+All Pydantic models must use `Config.extra = "allow"` to handle new API fields gracefully. See @.ai/knowledge/failures/common-pitfalls.md for what happens without this.
 
-### Authentication State
-- API keys stored in `AuthenticationManager`
-- OAuth tokens cached with automatic refresh
-- Never log or expose authentication credentials
+### Progress Tracking
+Long-running operations (downloads, batch processing) should use the progress tracking framework with context managers. See examples in @.ai/knowledge/successful/service-patterns.md.
 
 ### OpenAI Compatibility
-The `openai` service provides drop-in compatibility:
-```python
-# Can be used with OpenAI client libraries
-client.openai.chat.completions.create(...)
-```
+The `openai` service provides drop-in compatibility with OpenAI's client library, translating between Kamiwaza and OpenAI formats transparently.
 
-## Code Style
+## Testing Philosophy
 
-- **Black**: 88 character line length
-- **isort**: Black-compatible profile
-- **Type hints**: Required for all public methods
-- **Docstrings**: Google style for complex methods
-- **No print statements**: Use logging
+Tests are mandatory - no exceptions. See @.ai/rules/testing.md for comprehensive testing standards.
+
+Key points:
+- Mock all HTTP calls in unit tests
+- Test both success and error paths
+- Maintain > 80% coverage on new code
+- Integration tests marked with `@pytest.mark.integration`
+
+## Common Pitfalls
+
+Before implementing, review @.ai/knowledge/failures/common-pitfalls.md to avoid:
+- Returning raw dicts instead of Pydantic models
+- Forgetting pagination handling
+- Mutable default arguments
+- Missing forward compatibility
+
+## Release Process
+
+1. Update version in `setup.py`
+2. Run full test suite: `pytest`
+3. Build distribution: `python setup.py sdist bdist_wheel`
+4. Use `release.sh` for automated release (requires proper PyPI credentials)
