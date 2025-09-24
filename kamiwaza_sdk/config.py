@@ -1,5 +1,6 @@
 # kamiwaza_sdk/config.py
 
+from . import __version__
 
 # all of this is just to have something to start with... idk if we have versioning on the api etc
 # also need to clarify what the base url is
@@ -14,7 +15,7 @@ DEFAULT_TIMEOUT = 30
 MAX_RETRIES = 3
 
 # User agent for API requests
-USER_AGENT = "KamiwazaClient/0.1.0"
+USER_AGENT = f"KamiwazaClient/{__version__}"
 
 # Default pagination limits
 DEFAULT_PAGE_SIZE = 100
