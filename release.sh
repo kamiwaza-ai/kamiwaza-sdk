@@ -11,10 +11,8 @@ for folder in examples; do
         echo "Clearing notebook state in $folder..."
         
         # Clear notebook state if needed
-        if [ "$folder" = "notebooks" ]; then
-            echo "Clearing notebook state..."
-            find notebooks -name "*.ipynb" -not -path "*/\.*" -exec ./notebook-venv/bin/jupyter nbconvert --to notebook --ClearOutputPreprocessor.enabled=True --inplace {} \;
-        fi
+        echo "Clearing notebook state..."
+        find "${folder}" -name "*.ipynb" -not -path "*/\.*" -exec ./notebook-venv/bin/jupyter nbconvert --to notebook --ClearOutputPreprocessor.enabled=True --inplace {} \;
         
     else
         echo "$folder directory does not exist, skipping..."
