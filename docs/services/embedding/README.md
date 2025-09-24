@@ -16,7 +16,7 @@ The Embedding Service (`EmbeddingService`) provides comprehensive text embedding
 The embedding service requires initializing a provider before use:
 
 ```python
-from kamiwaza_client import KamiwazaClient
+from kamiwaza_sdk import KamiwazaClient
 
 client = KamiwazaClient(api_key="your-key")
 
@@ -116,7 +116,7 @@ class ChunkResponse:
 ## Error Handling
 The service uses a unified error handling approach:
 ```python
-from kamiwaza_client.exceptions import APIError
+from kamiwaza_sdk.exceptions import APIError
 
 try:
     embedder = client.embedding.get_embedder()
@@ -157,8 +157,8 @@ The following methods are deprecated and should not be used:
 ## Complete Example
 
 ```python
-from kamiwaza_client import KamiwazaClient
-from kamiwaza_client.exceptions import APIError
+from kamiwaza_sdk import KamiwazaClient
+from kamiwaza_sdk.exceptions import APIError
 
 # Initialize client
 client = KamiwazaClient(api_key="your-key")

@@ -13,8 +13,8 @@ I need to add a new mixin that will:
 ## Implementation Steps
 
 Please:
-1. Review existing mixins in `kamiwaza_client/services/{SERVICE_NAME}/`
-2. Create new mixin file: `kamiwaza_client/services/{SERVICE_NAME}/{MIXIN_NAME}.py`
+1. Review existing mixins in `kamiwaza_sdk/services/{SERVICE_NAME}/`
+2. Create new mixin file: `kamiwaza_sdk/services/{SERVICE_NAME}/{MIXIN_NAME}.py`
 3. Add mixin to service class inheritance
 4. Update schemas if new models are needed
 5. Add unit tests for new functionality
@@ -25,7 +25,7 @@ Please:
 ```python
 # services/{SERVICE_NAME}/{MIXIN_NAME}.py
 from typing import List, Optional, Dict, Any
-from kamiwaza_client.schemas.{SERVICE_NAME} import {NewSchema}
+from kamiwaza_sdk.schemas.{SERVICE_NAME} import {NewSchema}
 
 class {MixinName}Mixin:
     """Mixin for {FEATURE} functionality."""
@@ -51,7 +51,7 @@ class {MixinName}Mixin:
 
 ```python
 # services/{SERVICE_NAME}/base.py
-from kamiwaza_client.services.base_service import BaseService
+from kamiwaza_sdk.services.base_service import BaseService
 from .{EXISTING_MIXIN} import {ExistingMixin}
 from .{MIXIN_NAME} import {MixinName}Mixin  # Add new import
 

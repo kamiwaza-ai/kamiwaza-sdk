@@ -38,8 +38,8 @@ tests/
 ```python
 import pytest
 from unittest.mock import Mock, patch
-from kamiwaza_client.services.models import ModelsService
-from kamiwaza_client.exceptions import ResourceNotFoundError
+from kamiwaza_sdk.services.models import ModelsService
+from kamiwaza_sdk.exceptions import ResourceNotFoundError
 
 class TestModelsService:
     @pytest.fixture
@@ -89,7 +89,7 @@ class TestModelsService:
 ```python
 import pytest
 from datetime import datetime
-from kamiwaza_client.schemas.models import Model, ModelList
+from kamiwaza_sdk.schemas.models import Model, ModelList
 
 class TestModelSchemas:
     def test_model_from_dict(self):
@@ -166,7 +166,7 @@ def mock_response():
 
 ### Mock Progress Tracking
 ```python
-@patch('kamiwaza_client.utils.progress.tqdm')
+@patch('kamiwaza_sdk.utils.progress.tqdm')
 def test_download_with_progress(mock_tqdm, service):
     """Test progress tracking during download."""
     # Progress should be updated
@@ -183,7 +183,7 @@ def test_download_with_progress(mock_tqdm, service):
 ```python
 # conftest.py
 import pytest
-from kamiwaza_client import KamiwazaClient
+from kamiwaza_sdk import KamiwazaClient
 
 @pytest.fixture
 def client():
@@ -290,7 +290,7 @@ class TestModelsIntegration:
 pytest
 
 # Run with coverage
-pytest --cov=kamiwaza_client --cov-report=html
+pytest --cov=kamiwaza_sdk --cov-report=html
 
 # Run only unit tests
 pytest -m "not integration"
@@ -311,7 +311,7 @@ pytest --lf
 ```yaml
 - name: Run tests
   run: |
-    pytest --cov=kamiwaza_client --cov-report=xml
+    pytest --cov=kamiwaza_sdk --cov-report=xml
     
 - name: Upload coverage
   uses: codecov/codecov-action@v3

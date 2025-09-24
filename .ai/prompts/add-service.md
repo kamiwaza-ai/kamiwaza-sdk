@@ -19,10 +19,10 @@ The service will implement these endpoints:
 ## Implementation Checklist
 
 Please:
-1. First check if similar services exist in `kamiwaza_client/services/`
+1. First check if similar services exist in `kamiwaza_sdk/services/`
 2. Review the base service pattern in `base_service.py`
-3. Create schema models in `kamiwaza_client/schemas/{SERVICE_NAME}.py`
-4. Implement service in `kamiwaza_client/services/{SERVICE_NAME}.py`
+3. Create schema models in `kamiwaza_sdk/schemas/{SERVICE_NAME}.py`
+4. Implement service in `kamiwaza_sdk/services/{SERVICE_NAME}.py`
 5. Add service property to `KamiwazaClient` class
 6. Create unit tests in `tests/unit/services/test_{SERVICE_NAME}.py`
 7. Update `__init__.py` exports as needed
@@ -57,8 +57,8 @@ class {ResourceName}List(BaseModel):
 ```python
 # services/{SERVICE_NAME}.py
 from typing import List, Optional
-from kamiwaza_client.services.base_service import BaseService
-from kamiwaza_client.schemas.{SERVICE_NAME} import {ResourceName}, {ResourceName}List
+from kamiwaza_sdk.services.base_service import BaseService
+from kamiwaza_sdk.schemas.{SERVICE_NAME} import {ResourceName}, {ResourceName}List
 
 class {ServiceName}Service(BaseService):
     """Service for {SERVICE_NAME} operations."""
@@ -80,8 +80,8 @@ class {ServiceName}Service(BaseService):
 # tests/unit/services/test_{SERVICE_NAME}.py
 import pytest
 from unittest.mock import Mock
-from kamiwaza_client.services.{SERVICE_NAME} import {ServiceName}Service
-from kamiwaza_client.schemas.{SERVICE_NAME} import {ResourceName}
+from kamiwaza_sdk.services.{SERVICE_NAME} import {ServiceName}Service
+from kamiwaza_sdk.schemas.{SERVICE_NAME} import {ResourceName}
 
 class Test{ServiceName}Service:
     @pytest.fixture

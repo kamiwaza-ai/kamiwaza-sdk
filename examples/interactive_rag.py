@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 
-from kamiwaza_sdk import kamiwaza_sdk as kz
+from kamiwaza_sdk import KamiwazaClient as kz
 
 
 # ------------------------------

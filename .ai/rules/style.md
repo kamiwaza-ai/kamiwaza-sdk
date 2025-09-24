@@ -77,9 +77,9 @@ import requests
 from pydantic import BaseModel, Field
 
 # Kamiwaza SDK
-from kamiwaza_client.exceptions import KamiwazaAPIError
-from kamiwaza_client.schemas.models import Model
-from kamiwaza_client.services.base_service import BaseService
+from kamiwaza_sdk.exceptions import KamiwazaAPIError
+from kamiwaza_sdk.schemas.models import Model
+from kamiwaza_sdk.services.base_service import BaseService
 
 # Relative imports (within same package)
 from .mixins import SearchMixin

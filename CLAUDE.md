@@ -31,7 +31,7 @@ See @.ai/README.md for the complete AI assistance framework.
 
 ### Testing
 - **Run all tests**: `pytest`
-- **Run with coverage**: `pytest --cov=kamiwaza_client --cov-report=html`
+- **Run with coverage**: `pytest --cov=kamiwaza_sdk --cov-report=html`
 - **Run unit tests only**: `pytest -m "not integration"`
 - **Run specific test**: `pytest tests/unit/services/test_models.py::TestModelsService::test_list_models`
 

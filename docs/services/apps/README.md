@@ -18,7 +18,7 @@ The App Garden is designed to make it easy to deploy applications alongside your
 ## Quick Start
 
 ```python
-from kamiwaza_sdk import kamiwaza_sdk as kz
+from kamiwaza_sdk import KamiwazaClient as kz
 
 # Initialize client
 client = kz("http://localhost:7777/api/")

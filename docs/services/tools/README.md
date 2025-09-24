@@ -16,7 +16,7 @@ The Tool Shed allows you to:
 **Important**: Tool Shed endpoints require authentication. You must provide valid credentials to access these services.
 
 ```python
-from kamiwaza_sdk import kamiwaza_sdk as kz
+from kamiwaza_sdk import KamiwazaClient as kz
 from kamiwaza_sdk.authentication import UserPasswordAuthenticator
 
 # Create authenticated client
