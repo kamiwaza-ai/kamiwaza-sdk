@@ -3,6 +3,21 @@
 # Exit on any error
 set -e
 
+for folder in examples; do
+    if [ -d "$folder" ]; then
+        echo "Clearing notebook state in $folder..."
+        
+        # Clear notebook state if needed
+        if [ "$folder" = "notebooks" ]; then
+            echo "Clearing notebook state..."
+            find notebooks -name "*.ipynb" -not -path "*/\.*" -exec ./notebook-venv/bin/jupyter nbconvert --to notebook --ClearOutputPreprocessor.enabled=True --inplace {} \;
+        fi
+        
+    else
+        echo "$folder directory does not exist, skipping..."
+    fi
+done
+
 # Remove old builds
 rm -rf dist/ build/ *.egg-info
 
