@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 
-from kamiwaza_client import KamiwazaClient
+from kamiwaza_sdk import KamiwazaClient as kz
 
 
 # ------------------------------
@@ -45,7 +45,7 @@ def safe_read_utf8_window(path: Path, start: int, length: int) -> str:
 
 
 def rechunk_get_chunk_text(
-    client: KamiwazaClient,
+    client: kz,
     model: str,
     provider_type: str,
     source_path: Path,
@@ -83,7 +83,7 @@ def rechunk_get_chunk_text(
 # Ingestion (catalog, chunk, embed, insert)
 # ------------------------------
 
-def create_catalog_entries(client: KamiwazaClient, files: List[Path]) -> Dict[Path, str]:
+def create_catalog_entries(client: kz, files: List[Path]) -> Dict[Path, str]:
     mapping: Dict[Path, str] = {}
     for fp in files:
         ds = client.catalog.create_dataset(
@@ -100,7 +100,7 @@ def create_catalog_entries(client: KamiwazaClient, files: List[Path]) -> Dict[Pa
 
 
 def insert_document(
-    client: KamiwazaClient,
+    client: kz,
     file_path: Path,
     dataset_urn: str,
     collection_name: str,
@@ -162,7 +162,7 @@ def insert_document(
 # ------------------------------
 
 def retrieve_topk(
-    client: KamiwazaClient,
+    client: kz,
     embedder_model: str,
     provider_type: str,
     collection_name: str,
@@ -192,7 +192,7 @@ def retrieve_topk(
 
 
 def build_context(
-    client: KamiwazaClient,
+    client: kz,
     hits: List[Dict[str, Any]],
     embedder_model: str,
     provider_type: str,
@@ -248,7 +248,7 @@ def build_context(
     return "\n\n".join(context_parts), citations
 
 
-def pick_first_active_deployment(client: KamiwazaClient) -> Optional[str]:
+def pick_first_active_deployment(client: kz) -> Optional[str]:
     try:
         deployments = client.serving.list_active_deployments()
     except Exception:
@@ -262,7 +262,7 @@ def pick_first_active_deployment(client: KamiwazaClient) -> Optional[str]:
     return model_name
 
 
-def generate_with_llm(client: KamiwazaClient, model_name: str, question: str, context: str) -> str:
+def generate_with_llm(client: kz, model_name: str, question: str, context: str) -> str:
     openai_client = client.openai.get_client(model_name)
 
     system_prompt = (
@@ -327,7 +327,7 @@ def main() -> None:
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-    client = KamiwazaClient(base_url=args.api_url)
+    client = kz(args.api_url)
 
     # Build collection name
     collection_name = f"SDKRAG_{int(time.time())}"

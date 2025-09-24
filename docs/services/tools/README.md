@@ -16,17 +16,17 @@ The Tool Shed allows you to:
 **Important**: Tool Shed endpoints require authentication. You must provide valid credentials to access these services.
 
 ```python
-from kamiwaza_client import KamiwazaClient
-from kamiwaza_client.authentication import UserPasswordAuthenticator
+from kamiwaza_sdk import KamiwazaClient as kz
+from kamiwaza_sdk.authentication import UserPasswordAuthenticator
 
 # Create authenticated client
-client = KamiwazaClient("http://localhost:7777/api/")
+client = kz("http://localhost:7777/api/")
 authenticator = UserPasswordAuthenticator(
     username="your_username",
     password="your_password",
     auth_service=client.auth
 )
-client = KamiwazaClient(
+client = kz(
     "http://localhost:7777/api/",
     authenticator=authenticator
 )
@@ -209,7 +209,7 @@ The `tool.url` returned after deployment is the public HTTPS endpoint for your T
 ## Error Handling
 
 ```python
-from kamiwaza_client.exceptions import AuthenticationError, NotFoundError
+from kamiwaza_sdk.exceptions import AuthenticationError, NotFoundError
 
 try:
     tool = client.tools.deploy_from_template(

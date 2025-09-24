@@ -13,10 +13,10 @@ pip install kamiwaza-sdk
 ## Python SDK Usage
 
 ```python
-from kamiwaza_client import KamiwazaClient
+from kamiwaza_sdk import KamiwazaClient as kz
 
 # Initialize the client for local development
-client = KamiwazaClient("http://localhost:7777/api/")
+client = kz("http://localhost:7777/api/")
 ```
 
 ## Examples

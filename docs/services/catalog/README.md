@@ -1,7 +1,7 @@
 # Catalog Service
 
 ## Overview
-The Catalog Service (`CatalogService`) provides comprehensive dataset and container management for the Kamiwaza AI Platform. Located in `kamiwaza_client/services/catalog.py`, this service handles dataset operations, container management, and secret handling for secure data access.
+The Catalog Service (`CatalogService`) provides comprehensive dataset and container management for the Kamiwaza AI Platform. Located in `kamiwaza_sdk/services/catalog.py`, this service handles dataset operations, container management, and secret handling for secure data access.
 
 ## Key Features
 - Dataset Management

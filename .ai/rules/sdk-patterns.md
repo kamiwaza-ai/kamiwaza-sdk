@@ -26,8 +26,8 @@ class KamiwazaClient:
 Every service MUST follow this structure:
 
 ```python
-from kamiwaza_client.services.base_service import BaseService
-from kamiwaza_client.schemas.models import Model, ModelList
+from kamiwaza_sdk.services.base_service import BaseService
+from kamiwaza_sdk.schemas.models import Model, ModelList
 
 class ModelsService(BaseService):
     """Service for model-related operations."""
@@ -186,7 +186,7 @@ class ValidationError(KamiwazaAPIError):
 For long-running operations:
 
 ```python
-from kamiwaza_client.utils.progress import ProgressTracker
+from kamiwaza_sdk.utils.progress import ProgressTracker
 
 def download_model(self, model_id: str, path: Path) -> Path:
     """Download with progress tracking."""

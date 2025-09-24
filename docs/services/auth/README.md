@@ -1,7 +1,7 @@
 # Authentication Service
 
 ## Overview
-The Authentication Service (`AuthService`) provides comprehensive user authentication and authorization functionality for the Kamiwaza AI Platform. Located in `kamiwaza_client/services/auth.py`, this service handles user management, token-based authentication, and role-based access control (RBAC).
+The Authentication Service (`AuthService`) provides comprehensive user authentication and authorization functionality for the Kamiwaza AI Platform. Located in `kamiwaza_sdk/services/auth.py`, this service handles user management, token-based authentication, and role-based access control (RBAC).
 
 ## Key Features
 - User Authentication (token-based)

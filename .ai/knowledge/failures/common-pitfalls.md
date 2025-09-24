@@ -58,7 +58,7 @@ class Model(BaseModel):
 Services importing from client module:
 ```python
 # ❌ In services/models.py
-from kamiwaza_client.client import KamiwazaClient  # Circular!
+from kamiwaza_sdk.client import KamiwazaClient  # Circular!
 
 class ModelsService:
     def __init__(self, client: KamiwazaClient):
@@ -76,7 +76,7 @@ class ModelsService:
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from kamiwaza_client.client import KamiwazaClient
+    from kamiwaza_sdk.client import KamiwazaClient
 
 class ModelsService:
     def __init__(self, client: "KamiwazaClient"):

@@ -1,7 +1,7 @@
 # Cluster Service
 
 ## Overview
-The Cluster Service (`ClusterService`) provides comprehensive cluster and infrastructure management for the Kamiwaza AI Platform. Located in `kamiwaza_client/services/cluster.py`, this service handles location management, cluster operations, node management, and hardware configuration.
+The Cluster Service (`ClusterService`) provides comprehensive cluster and infrastructure management for the Kamiwaza AI Platform. Located in `kamiwaza_sdk/services/cluster.py`, this service handles location management, cluster operations, node management, and hardware configuration.
 
 ## Key Features
 - Location Management

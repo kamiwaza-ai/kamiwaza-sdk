@@ -1,7 +1,7 @@
 # Lab Service
 
 ## Overview
-The Lab Service (`LabService`) provides comprehensive lab environment management for the Kamiwaza AI Platform. Located in `kamiwaza_client/services/lab.py`, this service handles the creation, management, and deletion of lab environments for development and experimentation.
+The Lab Service (`LabService`) provides comprehensive lab environment management for the Kamiwaza AI Platform. Located in `kamiwaza_sdk/services/lab.py`, this service handles the creation, management, and deletion of lab environments for development and experimentation.
 
 ## Key Features
 - Lab Environment Management

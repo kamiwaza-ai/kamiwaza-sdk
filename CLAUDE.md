@@ -25,13 +25,13 @@ See @.ai/README.md for the complete AI assistance framework.
 - **Build package**: `python setup.py sdist bdist_wheel`
 
 ### Code Quality
-- **Format code**: `black kamiwaza_client/`
-- **Sort imports**: `isort kamiwaza_client/`
-- **Type checking**: `mypy kamiwaza_client/` (type stubs may need configuration)
+- **Format code**: `black kamiwaza_sdk/`
+- **Sort imports**: `isort kamiwaza_sdk/`
+- **Type checking**: `mypy kamiwaza_sdk/` (type stubs may need configuration)
 
 ### Testing
 - **Run all tests**: `pytest`
-- **Run with coverage**: `pytest --cov=kamiwaza_client --cov-report=html`
+- **Run with coverage**: `pytest --cov=kamiwaza_sdk --cov-report=html`
 - **Run unit tests only**: `pytest -m "not integration"`
 - **Run specific test**: `pytest tests/unit/services/test_models.py::TestModelsService::test_list_models`
 
