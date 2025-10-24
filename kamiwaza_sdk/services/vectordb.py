@@ -72,11 +72,12 @@ class VectorDBService(BaseService):
         
         # Define known autofields that Milvus expects
         autofields = {
+            'text': 'str',
             'model_name': 'str',
-            'source': 'str', 
+            'source': 'str',
             'catalog_urn': 'str',
             'offset': 'int',
-            'filename': 'str'  # Add filename explicitly as it's required
+            'filename': 'str'
         }
         
         # Ensure all metadata entries have the required autofields
@@ -106,16 +107,34 @@ class VectorDBService(BaseService):
                 # Use all keys from the metadata plus required autofields
                 field_list = []
                 all_field_keys = set(metadata[0].keys()).union(autofields.keys())
-                
+
                 for key in all_field_keys:
                     # Use autofield type if it's a known field, otherwise infer
                     if key in autofields:
-                        field_list.append((key, autofields[key]))
+                        # Special handling for 'text' field to support large chunks
+                        # IMPORTANT: Milvus VARCHAR max_length is in BYTES, not characters!
+                        # UTF-8 characters can be 1-4 bytes each, so:
+                        # - ASCII: ~1 byte/char
+                        # - European (accents): ~1.5 bytes/char
+                        # - Asian languages: ~3 bytes/char
+                        # Using 65535 bytes = max Milvus VARCHAR length
+                        if key == 'text':
+                            field_list.append((key, autofields[key], 65535))
+                        else:
+                            field_list.append((key, autofields[key]))
                     else:
                         field_list.append((key, self._infer_field_type(metadata[0][key])))
             else:
                 # If no metadata, just use autofields
-                field_list = [(key, ftype) for key, ftype in autofields.items()]
+                field_list = []
+                for key, ftype in autofields.items():
+                    # Special handling for 'text' field to support large chunks
+                    # IMPORTANT: Milvus VARCHAR max_length is in BYTES, not characters!
+                    # Using 65535 bytes = max Milvus VARCHAR length
+                    if key == 'text':
+                        field_list.append((key, ftype, 65535))
+                    else:
+                        field_list.append((key, ftype))
         
         self.logger.debug(f"Using field_list: {field_list}")
         self.logger.debug(f"First metadata entry: {metadata[0] if metadata else 'None'}")
@@ -152,7 +171,7 @@ class VectorDBService(BaseService):
         """
         # Set default output fields if none specified
         if output_fields is None:
-            output_fields = ["source", "offset"]  # Default fields we need
+            output_fields = ["text", "source", "offset"]  # Default fields for RAG
             
         search_params = {
             "metric_type": metric_type,
