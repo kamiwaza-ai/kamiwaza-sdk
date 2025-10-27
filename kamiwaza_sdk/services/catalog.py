@@ -17,26 +17,44 @@ class CatalogService(BaseService):
     """
     Service for Kamiwaza Catalog operations.
 
-    The catalog provides metadata management for datasets, containers, and secrets.
-    This service offers both V1 (legacy) and V2 (recommended) API methods.
+    The catalog provides metadata management for datasets, containers, and schemas.
+    All methods properly handle DataHub URNs including those with forward slashes.
 
-    V2 methods are recommended for new code as they provide:
-    - Better URN handling (supports URNs with forward slashes)
-    - Cleaner REST semantics
-    - Sub-resource operations (e.g., dataset schemas)
+    Dataset Operations:
+        - list_datasets() - List all datasets with optional filtering
+        - create_dataset() - Create a new dataset
+        - get_dataset() - Get dataset by URN
+        - update_dataset() - Update dataset metadata
+        - delete_dataset() - Delete a dataset
+        - get_dataset_schema() - Get dataset schema
+        - update_dataset_schema() - Update dataset schema
+
+    Container Operations:
+        - list_containers() - List all containers
+        - create_container() - Create a new container
+        - get_container() - Get container by URN
+        - update_container() - Update container metadata
+        - delete_container() - Delete a container
+        - add_dataset_to_container() - Link dataset to container
+        - remove_dataset_from_container() - Unlink dataset from container
     """
 
-    # ===== V1 API Methods (Legacy) =====
+    # ===== Dataset Operations =====
 
     def list_datasets(self, query: Optional[str] = None) -> List[Dataset]:
         """
-        List all datasets (V1 API).
+        List all datasets with optional filtering.
 
         Args:
             query: Optional search query string to filter datasets
 
         Returns:
             List of Dataset objects
+
+        Example:
+            >>> datasets = client.catalog.list_datasets(query="rag")
+            >>> for dataset in datasets:
+            ...     print(f"{dataset.name}: {dataset.urn}")
         """
         params = {}
         if query:
@@ -46,56 +64,33 @@ class CatalogService(BaseService):
 
     def create_dataset(self, dataset: DatasetCreate) -> str:
         """
-        Create a new dataset (V1 API).
+        Create a new dataset.
 
         Args:
             dataset: Dataset creation payload
 
         Returns:
             URN of the created dataset
+
+        Example:
+            >>> from kamiwaza_sdk.schemas.catalog import DatasetCreate
+            >>> dataset = DatasetCreate(
+            ...     name="my_dataset",
+            ...     platform="file",
+            ...     environment="PROD",
+            ...     description="My dataset"
+            ... )
+            >>> urn = client.catalog.create_dataset(dataset)
         """
         response = self.client.post("/catalog/datasets/", json=dataset.model_dump())
         # API returns URN as a string
         return response if isinstance(response, str) else response.get("urn")
 
-    def list_containers(self, query: Optional[str] = None) -> List[Container]:
+    def get_dataset(self, urn: str) -> Dataset:
         """
-        List all containers (V1 API).
+        Get dataset by URN.
 
-        Args:
-            query: Optional search query string to filter containers
-
-        Returns:
-            List of Container objects
-        """
-        params = {}
-        if query:
-            params["query"] = query
-        response = self.client.get("/catalog/containers/", params=params)
-        return [Container.model_validate(item) for item in response]
-
-    def create_container(self, container: ContainerCreate) -> str:
-        """
-        Create a new container (V1 API).
-
-        Args:
-            container: Container creation payload
-
-        Returns:
-            URN of the created container
-        """
-        response = self.client.post("/catalog/containers/", json=container.model_dump())
-        # API returns URN as a string
-        return response if isinstance(response, str) else response.get("urn")
-
-    # ===== V2 Dataset API Methods (Recommended) =====
-
-    def get_dataset_v2(self, urn: str) -> Dataset:
-        """
-        Get dataset by URN using V2 API (RECOMMENDED).
-
-        This method properly handles DataHub URNs with forward slashes using
-        the V2 API's query parameter approach for reliable URN handling.
+        Properly handles DataHub URNs with forward slashes.
 
         Args:
             urn: Dataset URN (e.g., 'urn:li:dataset:(urn:li:dataPlatform:file,/var/tmp/docs,PROD)')
@@ -104,16 +99,16 @@ class CatalogService(BaseService):
             Dataset object
 
         Example:
-            >>> dataset = client.catalog.get_dataset_v2(
+            >>> dataset = client.catalog.get_dataset(
             ...     'urn:li:dataset:(urn:li:dataPlatform:file,/var/tmp/data,PROD)'
             ... )
         """
         response = self.client.get("/catalog/datasets/by-urn", params={"urn": urn})
         return Dataset.model_validate(response)
 
-    def update_dataset_v2(self, urn: str, update_data: DatasetUpdate) -> Dataset:
+    def update_dataset(self, urn: str, update_data: DatasetUpdate) -> Dataset:
         """
-        Update dataset using V2 API (RECOMMENDED).
+        Update dataset metadata.
 
         Args:
             urn: Dataset URN
@@ -123,11 +118,12 @@ class CatalogService(BaseService):
             Updated Dataset object
 
         Example:
+            >>> from kamiwaza_sdk.schemas.catalog import DatasetUpdate
             >>> update = DatasetUpdate(
             ...     description="Updated description",
             ...     tags=["processed", "validated"]
             ... )
-            >>> dataset = client.catalog.update_dataset_v2(urn, update)
+            >>> dataset = client.catalog.update_dataset(urn, update)
         """
         response = self.client.patch(
             "/catalog/datasets/by-urn",
@@ -136,21 +132,21 @@ class CatalogService(BaseService):
         )
         return Dataset.model_validate(response)
 
-    def delete_dataset_v2(self, urn: str) -> None:
+    def delete_dataset(self, urn: str) -> None:
         """
-        Delete dataset using V2 API (RECOMMENDED).
+        Delete a dataset.
 
         Args:
             urn: Dataset URN
 
         Example:
-            >>> client.catalog.delete_dataset_v2('urn:li:dataset:(...)')
+            >>> client.catalog.delete_dataset('urn:li:dataset:(...)')
         """
         self.client.delete("/catalog/datasets/by-urn", params={"urn": urn})
 
-    def get_dataset_schema_v2(self, urn: str) -> Schema:
+    def get_dataset_schema(self, urn: str) -> Schema:
         """
-        Get dataset schema using V2 API (RECOMMENDED).
+        Get dataset schema.
 
         Args:
             urn: Dataset URN
@@ -159,16 +155,16 @@ class CatalogService(BaseService):
             Schema object containing field definitions
 
         Example:
-            >>> schema = client.catalog.get_dataset_schema_v2('urn:li:dataset:(...)')
+            >>> schema = client.catalog.get_dataset_schema('urn:li:dataset:(...)')
             >>> for field in schema.fields:
             ...     print(f"{field.name}: {field.type}")
         """
         response = self.client.get("/catalog/datasets/by-urn/schema", params={"urn": urn})
         return Schema.model_validate(response)
 
-    def update_dataset_schema_v2(self, urn: str, schema: Schema) -> None:
+    def update_dataset_schema(self, urn: str, schema: Schema) -> None:
         """
-        Update dataset schema using V2 API (RECOMMENDED).
+        Update dataset schema.
 
         Args:
             urn: Dataset URN
@@ -184,7 +180,7 @@ class CatalogService(BaseService):
             ...         SchemaField(name="email", type="string")
             ...     ]
             ... )
-            >>> client.catalog.update_dataset_schema_v2(urn, schema)
+            >>> client.catalog.update_dataset_schema(urn, schema)
         """
         self.client.put(
             "/catalog/datasets/by-urn/schema",
@@ -192,11 +188,55 @@ class CatalogService(BaseService):
             json=schema.model_dump()
         )
 
-    # ===== V2 Container API Methods (Recommended) =====
+    # ===== Container Operations =====
 
-    def get_container_v2(self, urn: str) -> Container:
+    def list_containers(self, query: Optional[str] = None) -> List[Container]:
         """
-        Get container by URN using V2 API (RECOMMENDED).
+        List all containers with optional filtering.
+
+        Args:
+            query: Optional search query string to filter containers
+
+        Returns:
+            List of Container objects
+
+        Example:
+            >>> containers = client.catalog.list_containers()
+            >>> for container in containers:
+            ...     print(f"{container.name}: {len(container.datasets)} datasets")
+        """
+        params = {}
+        if query:
+            params["query"] = query
+        response = self.client.get("/catalog/containers/", params=params)
+        return [Container.model_validate(item) for item in response]
+
+    def create_container(self, container: ContainerCreate) -> str:
+        """
+        Create a new container.
+
+        Args:
+            container: Container creation payload
+
+        Returns:
+            URN of the created container
+
+        Example:
+            >>> from kamiwaza_sdk.schemas.catalog import ContainerCreate
+            >>> container = ContainerCreate(
+            ...     name="my_container",
+            ...     platform="file",
+            ...     description="My container"
+            ... )
+            >>> urn = client.catalog.create_container(container)
+        """
+        response = self.client.post("/catalog/containers/", json=container.model_dump())
+        # API returns URN as a string
+        return response if isinstance(response, str) else response.get("urn")
+
+    def get_container(self, urn: str) -> Container:
+        """
+        Get container by URN.
 
         Args:
             urn: Container URN
@@ -205,15 +245,15 @@ class CatalogService(BaseService):
             Container object
 
         Example:
-            >>> container = client.catalog.get_container_v2('urn:li:container:(...)')
+            >>> container = client.catalog.get_container('urn:li:container:(...)')
             >>> print(f"Container has {len(container.datasets)} datasets")
         """
         response = self.client.get("/catalog/containers/by-urn", params={"urn": urn})
         return Container.model_validate(response)
 
-    def update_container_v2(self, urn: str, update_data: ContainerUpdate) -> Container:
+    def update_container(self, urn: str, update_data: ContainerUpdate) -> Container:
         """
-        Update container using V2 API (RECOMMENDED).
+        Update container metadata.
 
         Args:
             urn: Container URN
@@ -223,11 +263,12 @@ class CatalogService(BaseService):
             Updated Container object
 
         Example:
+            >>> from kamiwaza_sdk.schemas.catalog import ContainerUpdate
             >>> update = ContainerUpdate(
             ...     description="Production data warehouse",
             ...     tags=["prod", "analytics"]
             ... )
-            >>> container = client.catalog.update_container_v2(urn, update)
+            >>> container = client.catalog.update_container(urn, update)
         """
         response = self.client.patch(
             "/catalog/containers/by-urn",
@@ -236,28 +277,28 @@ class CatalogService(BaseService):
         )
         return Container.model_validate(response)
 
-    def delete_container_v2(self, urn: str) -> None:
+    def delete_container(self, urn: str) -> None:
         """
-        Delete container using V2 API (RECOMMENDED).
+        Delete a container.
 
         Args:
             urn: Container URN
 
         Example:
-            >>> client.catalog.delete_container_v2('urn:li:container:(...)')
+            >>> client.catalog.delete_container('urn:li:container:(...)')
         """
         self.client.delete("/catalog/containers/by-urn", params={"urn": urn})
 
-    def add_dataset_to_container_v2(self, container_urn: str, dataset_urn: str) -> None:
+    def add_dataset_to_container(self, container_urn: str, dataset_urn: str) -> None:
         """
-        Add dataset to container using V2 API (RECOMMENDED).
+        Add dataset to container (link relationship).
 
         Args:
             container_urn: Container URN
             dataset_urn: Dataset URN to add
 
         Example:
-            >>> client.catalog.add_dataset_to_container_v2(
+            >>> client.catalog.add_dataset_to_container(
             ...     'urn:li:container:(prod_db)',
             ...     'urn:li:dataset:(urn:li:dataPlatform:file,/data/users.csv,PROD)'
             ... )
@@ -268,20 +309,20 @@ class CatalogService(BaseService):
             json={"dataset_urn": dataset_urn}
         )
 
-    def remove_dataset_from_container_v2(
+    def remove_dataset_from_container(
         self,
         container_urn: str,
         dataset_urn: str
     ) -> None:
         """
-        Remove dataset from container using V2 API (RECOMMENDED).
+        Remove dataset from container (unlink relationship).
 
         Args:
             container_urn: Container URN
             dataset_urn: Dataset URN to remove
 
         Example:
-            >>> client.catalog.remove_dataset_from_container_v2(
+            >>> client.catalog.remove_dataset_from_container(
             ...     'urn:li:container:(prod_db)',
             ...     'urn:li:dataset:(urn:li:dataPlatform:file,/data/users.csv,PROD)'
             ... )
@@ -291,14 +332,7 @@ class CatalogService(BaseService):
             params={"container_urn": container_urn, "dataset_urn": dataset_urn}
         )
 
-    # ===== Helper/Utility Methods =====
+    # ===== Utility Methods =====
 
-    def flush_catalog(self) -> None:
-        """
-        Delete all datasets and containers from the catalog.
-
-        Warning:
-            This operation cannot be undone and will remove all data from the catalog.
-            Use with extreme caution!
-        """
-        self.client.delete("/catalog/flush")
+    # Note: flush_catalog() endpoint does not exist in backend
+    # Manual cleanup required: delete all datasets first, then containers will auto-delete

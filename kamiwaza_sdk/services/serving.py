@@ -7,6 +7,7 @@ from ..schemas.serving.inference import LoadModelRequest, LoadModelResponse, Unl
 from ..schemas.models.model_search import HubModelFileSearch
 from .base_service import BaseService
 from urllib.parse import urlparse
+import os
 
 class ServingService(BaseService):
     
@@ -98,19 +99,23 @@ class ServingService(BaseService):
         deployments = self.list_deployments()
         active = []
 
+        use_ssl = True
+        if os.environ.get("KAMIWAZA_USE_HTTPS", "true").lower() == "false":
+            use_ssl = False
+
         # Parse the base URL to get host
         parsed_url = urlparse(self.client.base_url)
         host = parsed_url.netloc.split(':')[0]  # Remove port if present
-        
+
         for deployment in deployments:
             running_instance = next(
                 (i for i in deployment.instances if i.status == 'DEPLOYED'),
                 None
             )
-            
+
             if running_instance and deployment.status == 'DEPLOYED':
                 # Always use http for model endpoints
-                endpoint = f"http://{host}:{deployment.lb_port}/v1"
+                endpoint = f"{'https' if use_ssl else 'http'}://{host}:{deployment.lb_port}/v1"
                 
                 active_deployment = ActiveModelDeployment(
                     id=deployment.id,
