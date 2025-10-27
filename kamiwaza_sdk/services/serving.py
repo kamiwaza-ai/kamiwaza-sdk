@@ -7,6 +7,7 @@ from ..schemas.serving.inference import LoadModelRequest, LoadModelResponse, Unl
 from ..schemas.models.model_search import HubModelFileSearch
 from .base_service import BaseService
 from urllib.parse import urlparse
+import os
 
 class ServingService(BaseService):
     
