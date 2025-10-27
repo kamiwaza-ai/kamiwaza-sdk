@@ -287,7 +287,9 @@ class CatalogService(BaseService):
         Example:
             >>> client.catalog.delete_container('urn:li:container:(...)')
         """
-        self.client.delete("/catalog/containers/by-urn", params={"urn": urn})
+        from urllib.parse import quote
+        # Use path parameter endpoint instead of /by-urn (which returns 404)
+        self.client.delete(f"/catalog/containers/{quote(urn, safe='')}")
 
     def add_dataset_to_container(self, container_urn: str, dataset_urn: str) -> None:
         """
