@@ -248,7 +248,9 @@ class CatalogService(BaseService):
             >>> container = client.catalog.get_container('urn:li:container:(...)')
             >>> print(f"Container has {len(container.datasets)} datasets")
         """
-        response = self.client.get("/catalog/containers/by-urn", params={"urn": urn})
+        from urllib.parse import quote
+        # Use path parameter endpoint instead of /by-urn (which returns 404)
+        response = self.client.get(f"/catalog/containers/{quote(urn, safe='')}")
         return Container.model_validate(response)
 
     def update_container(self, urn: str, update_data: ContainerUpdate) -> Container:
@@ -270,9 +272,10 @@ class CatalogService(BaseService):
             ... )
             >>> container = client.catalog.update_container(urn, update)
         """
+        from urllib.parse import quote
+        # Use path parameter endpoint instead of /by-urn (which returns 404)
         response = self.client.patch(
-            "/catalog/containers/by-urn",
-            params={"urn": urn},
+            f"/catalog/containers/{quote(urn, safe='')}",
             json=update_data.model_dump(exclude_unset=True)
         )
         return Container.model_validate(response)
