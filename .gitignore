@@ -141,3 +141,6 @@ Desktop.ini
 # Custom files per instructions
 code.txt
 collated.txt
+
+# AI generated files
+ad-hoc-docs/

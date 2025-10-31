@@ -19,6 +19,7 @@ from .services.retrieval import RetrievalService
 from .services.openai import OpenAIService
 from .services.apps import AppService
 from .services.tools import ToolService
+from .services.ingestion import IngestionService
 import logging
 
 logger = logging.getLogger(__name__)
@@ -122,8 +123,18 @@ class KamiwazaClient:
                         f"Failed to parse JSON response. Content-Type: {content_type}, "
                         f"Response: {response.text[:200]}..."
                     )
+        elif response.status_code == 201:
+            # Handle 201 Created - try to parse JSON response
+            try:
+                return response.json()
+            except requests.exceptions.JSONDecodeError:
+                # Some 201 responses return plain text (like URN strings)
+                return response.text.strip('"')
+        elif response.status_code == 204:
+            # 204 No Content - successful but no response body
+            return None
         else:
-            # For non-200 status codes, check if it's an HTML error page
+            # For non-success status codes, check if it's an HTML error page
             if response.status_code == 404:
                 content_type = response.headers.get('content-type', '').lower()
                 if 'text/html' in content_type or 'Dashboard' in response.text:
@@ -141,6 +152,9 @@ class KamiwazaClient:
 
     def put(self, endpoint: str, **kwargs):
         return self._request('PUT', endpoint, **kwargs)
+
+    def patch(self, endpoint: str, **kwargs):
+        return self._request('PATCH', endpoint, **kwargs)
 
     def delete(self, endpoint: str, **kwargs):
         return self._request('DELETE', endpoint, **kwargs)
@@ -229,4 +243,10 @@ class KamiwazaClient:
         if not hasattr(self, '_tools'):
             self._tools = ToolService(self)
         return self._tools
+
+    @property
+    def ingestion(self):
+        if not hasattr(self, '_ingestion'):
+            self._ingestion = IngestionService(self)
+        return self._ingestion
 

@@ -2,7 +2,7 @@
 
 import uuid
 from pydantic import Field, BaseModel
-from typing import Any, Dict, List, Tuple, Optional
+from typing import Any, Dict, List, Tuple, Optional, Union
 from datetime import datetime
 from uuid import UUID
 
@@ -30,7 +30,9 @@ class InsertVectorsRequest(BaseModel):
     vectors: List[List[float]]
     metadata: List[Dict[str, Any]]
     dimensions: int
-    field_list: Optional[List[Tuple[str, str]]] = None
+    # field_list can be: (name, type) or (name, type, max_length)
+    # max_length is used for VARCHAR fields in Milvus (in BYTES, not characters!)
+    field_list: Optional[List[Union[Tuple[str, str], Tuple[str, str, int]]]] = None
 
 class InsertVectorsResponse(BaseModel):
     rows_inserted: int
