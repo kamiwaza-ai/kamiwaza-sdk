@@ -1,5 +1,6 @@
 # kamiwaza_sdk/services/serving.py
 
+import os
 from typing import List, Optional, Union
 from uuid import UUID
 from ..schemas.serving.serving import CreateModelDeployment, ModelDeployment, UIModelDeployment, ModelInstance, ActiveModelDeployment

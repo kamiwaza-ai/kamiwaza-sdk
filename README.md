@@ -14,9 +14,15 @@ pip install kamiwaza-sdk
 
 ```python
 from kamiwaza_sdk import KamiwazaClient as kz
+from kamiwaza_sdk.authentication import UserPasswordAuthenticator
 
-# Initialize the client for local development
-client = kz("http://localhost:7777/api/")
+client = kz("https://localhost/api")
+
+# Supply a PAT via environment (preferred for automation)
+# export KAMIWAZA_API_KEY=<your PAT>
+
+# Or bootstrap with a username/password
+client.authenticator = UserPasswordAuthenticator("admin", "kamiwaza", client.auth)
 ```
 
 ## Examples
