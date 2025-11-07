@@ -1,3 +1,7 @@
+# Local scratch docs
+/docs-local/*
+!/docs-local/00-server-defects.md
+
 # Virtual environments
 notebook-venv/
 venv/

@@ -1,69 +1,44 @@
 # Retrieval Service
 
-## Overview
-The Retrieval Service (`RetrievalService`) provides text chunk retrieval functionality for the Kamiwaza AI Platform. Located in `kamiwaza_sdk/services/retrieval.py`, this service handles the retrieval of relevant text chunks based on queries, enabling efficient information retrieval.
+The `kamiwaza_sdk.services.retrieval.RetrievalService` module drives the
+job-oriented retrieval API introduced in Kamiwaza 0.7.0.
 
-## Key Features
-- Relevant Text Chunk Retrieval
-- Query-based Search
-- Integration with Vector Database
-- Semantic Search Capabilities
-
-## Text Chunk Retrieval
-
-### Available Methods
-- `retrieve_relevant_chunks(query: str, k: int = 5) -> List[TextChunk]`: Get relevant text chunks based on query
+## Creating a job
 
 ```python
-# Retrieve relevant chunks
-chunks = client.retrieval.retrieve_relevant_chunks(
-    query="What is machine learning?",
-    k=5  # Number of chunks to retrieve
+from kamiwaza_sdk import KamiwazaClient
+from kamiwaza_sdk.schemas.retrieval import RetrievalRequest
+
+client = KamiwazaClient("https://localhost/api", api_key="...")
+
+request = RetrievalRequest(
+    dataset_urn="urn:li:dataset:(urn:li:dataPlatform:s3,my-bucket/my-key,PROD)",
+    transport="inline",
+    format_hint="parquet",
+    credential_override='{"aws_access_key_id":"...","aws_secret_access_key":"..."}',
 )
-
-# Process retrieved chunks
-for chunk in chunks:
-    print(f"Text: {chunk.text}")
-    print(f"Score: {chunk.score}")
-    print(f"Source: {chunk.metadata.get('source')}")
+job = client.retrieval.create_job(request)
+if job.inline:
+    print("Rows:", job.inline.data)
+else:
+    print("Transport:", job.transport)
 ```
 
-## Integration with Other Services
-The Retrieval Service works in conjunction with:
-1. Embedding Service
-   - For converting queries into vector representations
-2. VectorDB Service
-   - For performing similarity search
-3. Ingestion Service
-   - For accessing processed and stored text chunks
+## Polling status
 
-## Error Handling
-The service includes built-in error handling for common scenarios:
 ```python
-try:
-    chunks = client.retrieval.retrieve_relevant_chunks(
-        query="example query"
-    )
-except VectorDBError:
-    print("Vector database error")
-except EmbeddingError:
-    print("Embedding generation error")
-except APIError as e:
-    print(f"Operation failed: {e}")
+status = client.retrieval.get_job(job.job_id)
+print(status.status, status.progress)
 ```
 
-## Best Practices
-1. Use specific and focused queries
-2. Adjust the number of chunks (k) based on your needs
-3. Consider chunk relevance scores
-4. Process chunks in order of relevance
-5. Handle empty result sets appropriately
-6. Implement proper error handling
-7. Consider caching frequently retrieved chunks
-8. Monitor retrieval performance
+## Streaming output
 
-## Performance Considerations
-- Query length affects retrieval time
-- Number of chunks (k) impacts response time
-- Vector database size influences search speed
-- Embedding generation adds processing overhead
+For SSE jobs (`transport="sse"`), `stream_job` yields raw server-sent-event lines:
+
+```python
+for event in client.retrieval.stream_job(job.job_id):
+    print(event)
+```
+
+> **Routing note:** the router is mounted under `/retrieval`, so the live paths
+> are `/retrieval/retrieval/jobs`, `/retrieval/retrieval/jobs/{job_id}`, etc.

@@ -14,8 +14,10 @@ from .services.cluster import ClusterService
 from .services.activity import ActivityService
 from .services.lab import LabService
 from .services.auth import AuthService
+from .services.authz import AuthzService
 from .authentication import Authenticator, ApiKeyAuthenticator
 from .services.retrieval import RetrievalService
+from .services.ingestion import IngestionService
 from .services.openai import OpenAIService
 from .services.apps import AppService
 from .services.tools import ToolService
@@ -157,6 +159,9 @@ class KamiwazaClient:
     def delete(self, endpoint: str, **kwargs):
         return self._request('DELETE', endpoint, **kwargs)
 
+    def patch(self, endpoint: str, **kwargs):
+        return self._request('PATCH', endpoint, **kwargs)
+
     # Lazy load the services
     @property
     def models(self):
@@ -217,6 +222,12 @@ class KamiwazaClient:
     def auth(self):
         return self._auth_service
 
+    @property
+    def authz(self):
+        if not hasattr(self, '_authz'):
+            self._authz = AuthzService(self)
+        return self._authz
+
     def get_bearer_token(self) -> Optional[str]:
         if not self.authenticator:
             return None
@@ -249,3 +260,9 @@ class KamiwazaClient:
         if not hasattr(self, '_tools'):
             self._tools = ToolService(self)
         return self._tools
+
+    @property
+    def ingestion(self):
+        if not hasattr(self, '_ingestion'):
+            self._ingestion = IngestionService(self)
+        return self._ingestion

@@ -13,16 +13,20 @@ pip install kamiwaza-sdk
 ## Python SDK Usage
 
 ```python
-from kamiwaza_sdk import KamiwazaClient as kz
+from kamiwaza_sdk import KamiwazaClient
 from kamiwaza_sdk.authentication import UserPasswordAuthenticator
+from kamiwaza_sdk.schemas.auth import PATCreate
 
-client = kz("https://localhost/api")
+client = KamiwazaClient("https://localhost/api")
 
-# Supply a PAT via environment (preferred for automation)
-# export KAMIWAZA_API_KEY=<your PAT>
+# Option 1 (recommended): Personal Access Token
+# export KAMIWAZA_API_KEY=<your-pat>
+# client automatically loads the token and reuses it for every request.
 
-# Or bootstrap with a username/password
+# Option 2: bootstrap with username/password to mint a PAT
 client.authenticator = UserPasswordAuthenticator("admin", "kamiwaza", client.auth)
+pat = client.auth.create_pat(PATCreate(name="local-bootstrap")).token
+print("Save this token:", pat)
 ```
 
 ## Examples
@@ -53,10 +57,25 @@ More examples coming soon!
 | `client.cluster` | Infrastructure | [Cluster Service](docs/services/cluster/README.md) |
 | `client.lab` | Lab environments | [Lab Service](docs/services/lab/README.md) |
 | `client.auth` | Security | [Auth Service](docs/services/auth/README.md) |
+| `client.authz` | Authorization tuples/checks | [AuthZ Service](docs/services/authz/README.md) |
 | `client.activity` | Monitoring | [Activity Service](docs/services/activity/README.md) |
 | `client.openai` | OpenAI API compatible| [OpenAI Service](docs/services/openai/README.md) |
 | `client.apps` | App deployment | [App Service](docs/services/apps/README.md) |
 | `client.tools` | Tool servers (MCP) | [Tool Service](docs/services/tools/README.md) |
+| `client.ingestion` | Data ingestion | [Ingestion Service](docs/services/ingestion/README.md) |
+
+
+## Integration Tests
+
+The `tests/integration` suite spins up a MinIO fixture via Docker Compose and
+exercises the ingestion → catalog flow using the SDK. Run it with:
+
+```bash
+pytest -m integration
+```
+
+> **Note:** Retrieval checks are currently marked `xfail` because the live
+> deployment returns HTTP 500 while Ray-backed transport is being stabilised.
 
 
 The Kamiwaza SDK is actively being developed with new features, examples, and documentation being added regularly. Stay tuned for updates including additional example notebooks, enhanced documentation, and expanded functionality across all services.
