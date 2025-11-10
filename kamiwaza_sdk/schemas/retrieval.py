@@ -75,3 +75,8 @@ class RetrievalJobStatus(BaseModel):
     progress: JobProgress = Field(default_factory=JobProgress)
     created_at: datetime
     updated_at: datetime
+
+
+class RetrievalStreamEvent(BaseModel):
+    event: str
+    data: Dict[str, Any]

@@ -26,7 +26,8 @@ class AuthzService(BaseService):
         payload = relationship.model_dump(exclude_none=True)
         if tenant_id and "tenant_id" not in payload:
             payload["tenant_id"] = tenant_id
-        self.client.post("/auth/tuples", json=payload, expect_json=False)
+        headers = self._tenant_headers(tenant_id)
+        self.client.post("/auth/tuples", json=payload, headers=headers, expect_json=False)
 
     def delete_tuple(
         self,
@@ -37,7 +38,8 @@ class AuthzService(BaseService):
         payload = relationship.model_dump(exclude_none=True)
         if tenant_id and "tenant_id" not in payload:
             payload["tenant_id"] = tenant_id
-        self.client.delete("/auth/tuples", json=payload, expect_json=False)
+        headers = self._tenant_headers(tenant_id)
+        self.client.delete("/auth/tuples", json=payload, headers=headers, expect_json=False)
 
     def delete_object(
         self,
@@ -48,8 +50,21 @@ class AuthzService(BaseService):
         payload = relationship.model_dump(exclude_none=True)
         if tenant_id and "tenant_id" not in payload:
             payload["tenant_id"] = tenant_id
-        self.client.delete("/auth/tuples/object", json=payload, expect_json=False)
+        headers = self._tenant_headers(tenant_id)
+        self.client.delete("/auth/tuples/object", json=payload, headers=headers, expect_json=False)
 
-    def check_access(self, request: CheckRequest) -> CheckResponse:
-        response = self.client.post("/auth/check", json=request.model_dump())
+    def check_access(
+        self,
+        request: CheckRequest,
+        *,
+        tenant_id: Optional[str] = None,
+    ) -> CheckResponse:
+        headers = self._tenant_headers(tenant_id)
+        response = self.client.post("/auth/check", json=request.model_dump(), headers=headers)
         return CheckResponse.model_validate(response)
+
+    @staticmethod
+    def _tenant_headers(tenant_id: Optional[str]) -> Optional[dict[str, str]]:
+        if tenant_id:
+            return {"X-Tenant-Id": tenant_id}
+        return None

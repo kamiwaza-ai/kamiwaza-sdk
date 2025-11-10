@@ -35,3 +35,7 @@ class IngestResponse(BaseModel):
     urns: List[str] = Field(default_factory=list)
     status: str = "success"
     errors: List[str] = Field(default_factory=list)
+
+
+class OperationStatus(BaseModel):
+    status: str

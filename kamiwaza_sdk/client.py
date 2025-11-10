@@ -1,9 +1,17 @@
 # kamiwaza_sdk/client.py
 
+import logging
 import os
+from typing import Any, Optional
+
 import requests
-from typing import Optional
-from .exceptions import APIError, AuthenticationError, NonAPIResponseError
+
+from .exceptions import (
+    APIError,
+    AuthenticationError,
+    NonAPIResponseError,
+    VectorDBUnavailableError,
+)
 from .services.models import ModelService
 from .services.serving import ServingService
 from .services.vectordb import VectorDBService
@@ -21,7 +29,6 @@ from .services.ingestion import IngestionService
 from .services.openai import OpenAIService
 from .services.apps import AppService
 from .services.tools import ToolService
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -76,12 +83,13 @@ class KamiwazaClient:
         **kwargs,
     ):
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
+        path = endpoint.lstrip("/")
         self.logger.debug(f"Making {method} request to {url}")
 
         # Ensure headers are present
         if "headers" not in kwargs:
             kwargs["headers"] = {}
-        
+
         # Ensure authentication is set up (except for auth endpoints)
         if self.authenticator and not skip_auth:
             self.authenticator.authenticate(self.session)
@@ -109,8 +117,29 @@ class KamiwazaClient:
                 else:
                     raise AuthenticationError("Authentication failed. No authenticator provided.")
             elif response.status_code >= 400:
-                self.logger.error(f"Request failed: {response.text}")
-                raise APIError(f"API request failed with status {response.status_code}: {response.text}")
+                content_type = response.headers.get("content-type", "")
+                response_text = response.text
+                payload: Any | None = None
+                if "application/json" in content_type.lower():
+                    try:
+                        payload = response.json()
+                    except ValueError:
+                        payload = None
+                message = f"API request failed with status {response.status_code}: {response_text}"
+                if response.status_code == 501 and path.startswith("vectordb"):
+                    raise VectorDBUnavailableError(
+                        "VectorDB backend is not configured",
+                        status_code=response.status_code,
+                        response_text=response_text,
+                        response_data=payload,
+                    )
+                self.logger.error(f"Request failed: {response_text}")
+                raise APIError(
+                    message,
+                    status_code=response.status_code,
+                    response_text=response_text,
+                    response_data=payload,
+                )
         except requests.RequestException as e:
             logger.error(f"Request failed: {e}")
             raise APIError(f"An error occurred while making the request: {e}")
@@ -118,12 +147,14 @@ class KamiwazaClient:
         if not expect_json:
             return response
 
-        # Check if response is successful before parsing JSON
-        if response.status_code == 200:
+        if response.status_code == 204:
+            return None
+
+        if 200 <= response.status_code < 300:
             # Try to parse JSON
             try:
                 return response.json()
-            except requests.exceptions.JSONDecodeError:
+            except ValueError:
                 # Check if we got an HTML response (likely the dashboard)
                 content_type = response.headers.get('content-type', '').lower()
                 if 'text/html' in content_type or 'Dashboard' in response.text:
@@ -131,21 +162,26 @@ class KamiwazaClient:
                         f"Received HTML response instead of JSON. "
                         f"Your base URL is '{self.base_url}' - did you forget to append '/api'?"
                     )
-                else:
-                    raise APIError(
-                        f"Failed to parse JSON response. Content-Type: {content_type}, "
-                        f"Response: {response.text[:200]}..."
-                    )
-        else:
-            # For non-200 status codes, check if it's an HTML error page
-            if response.status_code == 404:
-                content_type = response.headers.get('content-type', '').lower()
-                if 'text/html' in content_type or 'Dashboard' in response.text:
-                    raise NonAPIResponseError(
-                        f"Received 404 with HTML response. "
-                        f"Your base URL is '{self.base_url}' - did you forget to append '/api'?"
-                    )
-            raise APIError(f"Unexpected status code {response.status_code}: {response.text}")
+                raise APIError(
+                    f"Failed to parse JSON response. Content-Type: {content_type}, "
+                    f"Response: {response.text[:200]}...",
+                    status_code=response.status_code,
+                    response_text=response.text,
+                )
+
+        # For non-2xx status codes, check if it's an HTML error page
+        if response.status_code == 404:
+            content_type = response.headers.get('content-type', '').lower()
+            if 'text/html' in content_type or 'Dashboard' in response.text:
+                raise NonAPIResponseError(
+                    f"Received 404 with HTML response. "
+                    f"Your base URL is '{self.base_url}' - did you forget to append '/api'?"
+                )
+        raise APIError(
+            f"Unexpected status code {response.status_code}: {response.text}",
+            status_code=response.status_code,
+            response_text=response.text,
+        )
 
     def get(self, endpoint: str, **kwargs):
         return self._request('GET', endpoint, **kwargs)

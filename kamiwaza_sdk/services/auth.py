@@ -6,9 +6,10 @@ from typing import Any, Dict, Mapping, Optional
 from uuid import UUID
 
 from .base_service import BaseService
-from ..exceptions import APIError
+from ..exceptions import APIError, AuthorizationError
 from ..schemas.auth import (
     IdentityProviderListResponse,
+    IdentityProviderOperationResponse,
     JWKSResponse,
     LocalUserCreateRequest,
     LocalUserPasswordChangeRequest,
@@ -101,6 +102,10 @@ class AuthService(BaseService):
         """Retrieve auth service health metadata."""
         return self.client.get("/auth/health")
 
+    def metadata(self) -> Dict[str, Any]:
+        """Fetch auth service metadata from the root endpoint."""
+        return self.client.get("/auth/")
+
     # --------------------------------------------------------------------- #
     # Personal access tokens
     # --------------------------------------------------------------------- #
@@ -139,26 +144,40 @@ class AuthService(BaseService):
         response = self.client.get("/auth/idp/public/providers")
         return IdentityProviderListResponse.model_validate(response)
 
-    def register_identity_provider(self, payload: RegisterIdPRequest) -> Dict[str, Any]:
-        return self.client.post(
+    def register_identity_provider(
+        self, payload: RegisterIdPRequest
+    ) -> IdentityProviderOperationResponse:
+        response = self.client.post(
             "/auth/idp/register",
             json=payload.model_dump(exclude_none=True),
         )
+        return IdentityProviderOperationResponse.model_validate(response)
 
-    def update_identity_provider(self, alias: str, payload: RegisterIdPRequest) -> Dict[str, Any]:
-        return self.client.put(
+    def update_identity_provider(
+        self,
+        alias: str,
+        payload: RegisterIdPRequest,
+    ) -> IdentityProviderOperationResponse:
+        response = self.client.put(
             f"/auth/idp/{alias}",
             json=payload.model_dump(exclude_none=True),
         )
+        return IdentityProviderOperationResponse.model_validate(response)
 
-    def toggle_identity_provider(self, alias: str, payload: ToggleIdPRequest) -> Dict[str, Any]:
-        return self.client.patch(
+    def toggle_identity_provider(
+        self,
+        alias: str,
+        payload: ToggleIdPRequest,
+    ) -> IdentityProviderOperationResponse:
+        response = self.client.patch(
             f"/auth/idp/{alias}",
             json=payload.model_dump(),
         )
+        return IdentityProviderOperationResponse.model_validate(response)
 
-    def delete_identity_provider(self, alias: str) -> Dict[str, Any]:
-        return self.client.delete(f"/auth/idp/{alias}")
+    def delete_identity_provider(self, alias: str) -> IdentityProviderOperationResponse:
+        response = self.client.delete(f"/auth/idp/{alias}")
+        return IdentityProviderOperationResponse.model_validate(response)
 
     # --------------------------------------------------------------------- #
     # Local user management
@@ -204,8 +223,23 @@ class AuthService(BaseService):
         self,
         payload: LocalUserPasswordChangeRequest,
     ) -> PasswordChangeResponse:
-        response = self.client.post(
-            "/auth/users/me/password",
-            json=payload.model_dump(),
-        )
+        try:
+            response = self.client.post(
+                "/auth/users/me/password",
+                json=payload.model_dump(),
+            )
+        except APIError as exc:
+            if exc.status_code == 403:
+                raise AuthorizationError(
+                    "Password self-service is unavailable for SSO users; "
+                    "use your identity provider to change credentials."
+                ) from exc
+            raise
         return PasswordChangeResponse.model_validate(response)
+
+    @staticmethod
+    def require_admin(headers: ValidationHeaders) -> None:
+        """Ensure ForwardAuth headers include the admin role."""
+        roles = {role.lower() for role in headers.user_roles}
+        if "admin" not in roles:
+            raise AuthorizationError("Admin role required for this operation.")

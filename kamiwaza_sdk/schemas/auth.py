@@ -136,6 +136,14 @@ class IdentityProviderListResponse(BaseModel):
     idp_management_enabled: bool = True
 
 
+class IdentityProviderOperationResponse(BaseModel):
+    status: Optional[str] = None
+    provider: Optional[IdentityProvider] = None
+    idp_management_enabled: Optional[bool] = None
+    deleted: Optional[bool] = None
+    alias: Optional[str] = None
+
+
 class LocalUserResponse(BaseModel):
     id: UUID
     username: str

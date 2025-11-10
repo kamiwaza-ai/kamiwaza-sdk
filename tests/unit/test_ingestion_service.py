@@ -46,11 +46,12 @@ def test_emit_mcp_posts_payload():
     client = DummyClient(responses)
     service = IngestionService(client)
 
-    service.emit_mcp({"entityUrn": "urn"})
+    status = service.emit_mcp({"entityUrn": "urn"})
 
     assert client.calls == [
         ("post", "/ingestion/ingest/emit", {"json": {"mcp": {"entityUrn": "urn"}}})
     ]
+    assert status.status == "ok"
 
 
 def test_schedule_job_and_status_round_trip():
@@ -68,9 +69,10 @@ def test_schedule_job_and_status_round_trip():
     client = DummyClient(responses)
     service = IngestionService(client)
 
-    service.schedule_job(job)
+    status_response = service.schedule_job(job)
     status = service.get_job_status("nightly")
 
     assert client.calls[0][1] == "/ingestion/ingest/jobs"
+    assert status_response.status == "scheduled"
     assert status.job_id == "nightly"
     assert status.status == "running"
