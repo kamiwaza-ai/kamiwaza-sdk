@@ -1,39 +1,14 @@
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
-ROOT = Path(__file__).resolve().parents[2]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+import pytest
 
 from kamiwaza_sdk.schemas.catalog import ContainerCreate, DatasetCreate, SecretCreate
 from kamiwaza_sdk.services.catalog import CatalogService, ContainerClient, DatasetClient, SecretClient
 
-
-class DummyClient:
-    def __init__(self, responses):
-        self.responses = responses
-        self.calls: list[tuple[str, str, dict]] = []
-
-    def post(self, path: str, **kwargs):
-        self.calls.append(("post", path, kwargs))
-        return self.responses[("post", path)]
-
-    def get(self, path: str, **kwargs):
-        self.calls.append(("get", path, kwargs))
-        return self.responses[("get", path)]
-
-    def patch(self, path: str, **kwargs):
-        self.calls.append(("patch", path, kwargs))
-        return self.responses[("patch", path)]
-
-    def delete(self, path: str, **kwargs):
-        self.calls.append(("delete", path, kwargs))
-        return self.responses[("delete", path)]
+pytestmark = pytest.mark.unit
 
 
-def test_catalog_service_create_dataset_roundtrip():
+def test_catalog_service_create_dataset_roundtrip(dummy_client):
     dataset_response = {
         "urn": "urn:li:dataset:(s3,my,PROD)",
         "name": "/tmp/data",
@@ -42,11 +17,11 @@ def test_catalog_service_create_dataset_roundtrip():
         "tags": [],
         "properties": {},
     }
-    responses = {
+    canned = {
         ("post", "/catalog/datasets/"): dataset_response["urn"],
         ("get", "/catalog/datasets/by-urn"): dataset_response,
     }
-    client = DummyClient(responses)
+    client = dummy_client(canned)
     service = CatalogService(client)
 
     dataset = service.create_dataset(dataset_name="/tmp/data", platform="s3")
@@ -56,13 +31,13 @@ def test_catalog_service_create_dataset_roundtrip():
     assert client.calls[1][1] == "/catalog/datasets/by-urn"
 
 
-def test_container_membership_helpers_use_query_endpoints():
+def test_container_membership_helpers_use_query_endpoints(dummy_client):
     responses = {
         ("post", "/catalog/containers/"): "urn:li:container:1",
         ("post", "/catalog/containers/by-urn/datasets"): {"message": "ok"},
         ("delete", "/catalog/containers/by-urn/datasets"): {"message": "removed"},
     }
-    client = DummyClient(responses)
+    client = dummy_client(responses)
     containers = ContainerClient(client)
 
     containers.create(ContainerCreate(name="demo"))
@@ -75,7 +50,7 @@ def test_container_membership_helpers_use_query_endpoints():
     assert add_kwargs["json"]["dataset_urn"] == "dataset"
 
 
-def test_secret_client_sets_clobber_flag():
+def test_secret_client_sets_clobber_flag(dummy_client):
     responses = {
         ("post", "/catalog/secrets/"): "urn:li:secret:demo",
         ("get", "/catalog/secrets/by-urn"): {
@@ -84,7 +59,7 @@ def test_secret_client_sets_clobber_flag():
             "owner": "urn:li:corpuser:demo",
         },
     }
-    client = DummyClient(responses)
+    client = dummy_client(responses)
     secrets = SecretClient(client)
 
     urn = secrets.create(

@@ -1,35 +1,18 @@
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
-ROOT = Path(__file__).resolve().parents[2]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+import pytest
 
 from kamiwaza_sdk.schemas.ingestion import IngestJobCreate
 from kamiwaza_sdk.services.ingestion import IngestionService
 
-
-class DummyClient:
-    def __init__(self, responses):
-        self.responses = responses
-        self.calls: list[tuple[str, str, dict]] = []
-
-    def post(self, path: str, **kwargs):
-        self.calls.append(("post", path, kwargs))
-        return self.responses[("post", path)]
-
-    def get(self, path: str, **kwargs):
-        self.calls.append(("get", path, kwargs))
-        return self.responses[("get", path)]
+pytestmark = pytest.mark.unit
 
 
-def test_run_active_returns_ingest_response():
+def test_run_active_returns_ingest_response(dummy_client):
     responses = {
         ("post", "/ingestion/ingest/run"): {"urns": ["urn:li:dataset:(s3,my,PROD)"], "status": "success", "errors": []}
     }
-    client = DummyClient(responses)
+    client = dummy_client(responses)
     service = IngestionService(client)
 
     result = service.run_active("s3", bucket="bucket", prefix="data/")
@@ -41,9 +24,9 @@ def test_run_active_returns_ingest_response():
     assert payload["json"]["kwargs"]["bucket"] == "bucket"
 
 
-def test_emit_mcp_posts_payload():
+def test_emit_mcp_posts_payload(dummy_client):
     responses = {("post", "/ingestion/ingest/emit"): {"status": "ok"}}
-    client = DummyClient(responses)
+    client = dummy_client(responses)
     service = IngestionService(client)
 
     status = service.emit_mcp({"entityUrn": "urn"})
@@ -54,7 +37,7 @@ def test_emit_mcp_posts_payload():
     assert status.status == "ok"
 
 
-def test_schedule_job_and_status_round_trip():
+def test_schedule_job_and_status_round_trip(dummy_client):
     job = IngestJobCreate(job_id="nightly", schedule="0 0 * * *", source_type="s3")
     responses = {
         ("post", "/ingestion/ingest/jobs"): {"status": "scheduled"},
@@ -66,7 +49,7 @@ def test_schedule_job_and_status_round_trip():
             "last_run": "2025-01-01T00:00:00Z",
         },
     }
-    client = DummyClient(responses)
+    client = dummy_client(responses)
     service = IngestionService(client)
 
     status_response = service.schedule_job(job)

@@ -1,16 +1,14 @@
 from __future__ import annotations
 
-import sys
-from pathlib import Path
 from typing import Iterator
 
-ROOT = Path(__file__).resolve().parents[2]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+import pytest
 
 from kamiwaza_sdk.exceptions import APIError, DatasetNotFoundError
 from kamiwaza_sdk.schemas.retrieval import RetrievalRequest
 from kamiwaza_sdk.services.retrieval import RetrievalResult, RetrievalService
+
+pytestmark = pytest.mark.unit
 
 
 class DummyResponse:
@@ -30,21 +28,7 @@ class DummyResponse:
         self.closed = True
 
 
-class DummyClient:
-    def __init__(self, responses):
-        self.responses = responses
-        self.calls: list[tuple[str, str, dict]] = []
-
-    def post(self, path: str, **kwargs):
-        self.calls.append(("post", path, kwargs))
-        return self.responses[("post", path)]
-
-    def get(self, path: str, **kwargs):
-        self.calls.append(("get", path, kwargs))
-        return self.responses[("get", path)]
-
-
-def test_create_job_returns_model():
+def test_create_job_returns_model(dummy_client):
     job_payload = {
         "job_id": "123",
         "transport": "inline",
@@ -53,7 +37,7 @@ def test_create_job_returns_model():
         "inline": {"media_type": "application/json", "data": [{"a": 1}], "row_count": 1, "metadata": {}},
     }
     responses = {("post", "/retrieval/retrieval/jobs"): job_payload}
-    service = RetrievalService(DummyClient(responses))
+    service = RetrievalService(dummy_client(responses))
 
     job = service.create_job(RetrievalRequest(dataset_urn="urn"))
 
@@ -61,7 +45,7 @@ def test_create_job_returns_model():
     assert service.client.calls[0][1] == "/retrieval/retrieval/jobs"
 
 
-def test_get_job_status_returns_model():
+def test_get_job_status_returns_model(dummy_client):
     status_payload = {
         "job_id": "123",
         "status": "running",
@@ -72,14 +56,14 @@ def test_get_job_status_returns_model():
         "updated_at": "2025-01-01T00:00:01Z",
     }
     responses = {("get", "/retrieval/retrieval/jobs/123"): status_payload}
-    service = RetrievalService(DummyClient(responses))
+    service = RetrievalService(dummy_client(responses))
 
     status = service.get_job("123")
 
     assert status.status == "running"
 
 
-def test_stream_job_yields_events():
+def test_stream_job_yields_events(dummy_client):
     resp = DummyResponse(
         [
             "event: chunk",
@@ -91,7 +75,7 @@ def test_stream_job_yields_events():
         ]
     )
     responses = {("get", "/retrieval/retrieval/jobs/abc/stream"): resp}
-    client = DummyClient(responses)
+    client = dummy_client(responses)
     service = RetrievalService(client)
 
     events = list(service.stream_job("abc"))
@@ -105,7 +89,7 @@ def test_stream_job_yields_events():
     assert kwargs["stream"] is True
 
 
-def test_materialize_inline_returns_inline_payload():
+def test_materialize_inline_returns_inline_payload(dummy_client):
     job_payload = {
         "job_id": "job-1",
         "transport": "inline",
@@ -114,7 +98,7 @@ def test_materialize_inline_returns_inline_payload():
         "inline": {"media_type": "application/json", "data": [{"a": 1}], "row_count": 1, "metadata": {}},
     }
     responses = {("post", "/retrieval/retrieval/jobs"): job_payload}
-    service = RetrievalService(DummyClient(responses))
+    service = RetrievalService(dummy_client(responses))
 
     result = service.materialize(RetrievalRequest(dataset_urn="urn"))
 
@@ -123,7 +107,7 @@ def test_materialize_inline_returns_inline_payload():
     assert result.inline.row_count == 1
 
 
-def test_materialize_sse_returns_stream():
+def test_materialize_sse_returns_stream(dummy_client):
     job_payload = {
         "job_id": "job-2",
         "transport": "sse",
@@ -141,7 +125,7 @@ def test_materialize_sse_returns_stream():
         ("post", "/retrieval/retrieval/jobs"): job_payload,
         ("get", "/retrieval/retrieval/jobs/job-2/stream"): stream_response,
     }
-    service = RetrievalService(DummyClient(responses))
+    service = RetrievalService(dummy_client(responses))
 
     result = service.materialize(RetrievalRequest(dataset_urn="urn", transport="sse"))
 
