@@ -2,13 +2,29 @@ from __future__ import annotations
 
 import pytest
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+import time
 
 from kamiwaza_sdk.authentication import UserPasswordAuthenticator
+from kamiwaza_sdk.token_store import StoredToken, TokenStore
 from kamiwaza_sdk.exceptions import AuthenticationError
 from kamiwaza_sdk.schemas.auth import TokenResponse
 
 pytestmark = pytest.mark.unit
+
+
+class MemoryTokenStore(TokenStore):
+    def __init__(self):
+        self.value: StoredToken | None = None
+
+    def load(self):
+        return self.value
+
+    def save(self, token: StoredToken):
+        self.value = token
+
+    def clear(self):
+        self.value = None
 
 
 class DummyAuthService:
@@ -47,7 +63,8 @@ class DummyAuthService:
 def test_user_password_authenticator_performs_password_grant():
     token = TokenResponse(access_token="token-1", expires_in=60, refresh_token="refresh-1")
     auth_service = DummyAuthService(login_response=token)
-    authenticator = UserPasswordAuthenticator("admin", "secret", auth_service)
+    store = MemoryTokenStore()
+    authenticator = UserPasswordAuthenticator("admin", "secret", auth_service, token_store=store)
 
     session = requests.Session()
     authenticator.authenticate(session)
@@ -56,18 +73,20 @@ def test_user_password_authenticator_performs_password_grant():
     assert session.headers["Authorization"] == f"Bearer {token.access_token}"
     assert authenticator.token == token.access_token
     assert authenticator.refresh_token_value == token.refresh_token
+    assert store.value is not None
 
 
 def test_user_password_authenticator_prefers_refresh_when_token_expires():
     login_token = TokenResponse(access_token="token-1", expires_in=1, refresh_token="refresh-1")
     refresh_token = TokenResponse(access_token="token-2", expires_in=60, refresh_token="refresh-2")
     auth_service = DummyAuthService(login_response=login_token, refresh_response=refresh_token)
-    authenticator = UserPasswordAuthenticator("admin", "secret", auth_service)
+    store = MemoryTokenStore()
+    authenticator = UserPasswordAuthenticator("admin", "secret", auth_service, token_store=store)
     session = requests.Session()
 
     authenticator.authenticate(session)
     # Force expiry to trigger refresh path
-    authenticator.token_expiry = datetime.utcnow() - timedelta(seconds=1)
+    authenticator.token_expiry = datetime.now(timezone.utc) - timedelta(seconds=1)
     authenticator.authenticate(session)
 
     assert auth_service.login_calls == [("admin", "secret")]
@@ -75,14 +94,28 @@ def test_user_password_authenticator_prefers_refresh_when_token_expires():
     assert session.headers["Authorization"] == f"Bearer {refresh_token.access_token}"
     assert authenticator.token == refresh_token.access_token
     assert authenticator.refresh_token_value == refresh_token.refresh_token
+    assert store.value and store.value.access_token == refresh_token.access_token
 
 
 def test_user_password_authenticator_raises_when_login_fails():
     auth_service = DummyAuthService(
         login_error=RuntimeError("bad credentials"),
     )
-    authenticator = UserPasswordAuthenticator("admin", "wrong", auth_service)
+    authenticator = UserPasswordAuthenticator("admin", "wrong", auth_service, token_store=MemoryTokenStore())
     session = requests.Session()
 
     with pytest.raises(AuthenticationError):
         authenticator.authenticate(session)
+
+
+def test_user_password_authenticator_uses_cached_token():
+    store = MemoryTokenStore()
+    store.value = StoredToken(access_token="cached", refresh_token=None, expires_at=time.time() + 60)
+    auth_service = DummyAuthService(login_error=RuntimeError("should not login"))
+    authenticator = UserPasswordAuthenticator("admin", "secret", auth_service, token_store=store)
+    session = requests.Session()
+
+    authenticator.authenticate(session)
+
+    assert auth_service.login_calls == []
+    assert session.headers["Authorization"] == "Bearer cached"

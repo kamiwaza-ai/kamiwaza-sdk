@@ -62,6 +62,15 @@ def artifact_cache_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return cache
 
 
+@pytest.fixture(scope="session")
+def hf_cache_dir() -> Path:
+    """Shared cache for Hugging Face snapshots to avoid repeated downloads."""
+
+    path = Path("build") / "hf-cache"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 class DummyAPIClient:
     """Minimal HTTP client stub that records calls and replays canned responses."""
 

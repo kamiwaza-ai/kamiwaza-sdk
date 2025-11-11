@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from datetime import datetime, timedelta
-from typing import Optional
+from datetime import datetime, timedelta, timezone
+import time
+from typing import Optional, TYPE_CHECKING
 
 import requests
 
 from .exceptions import AuthenticationError
 from .schemas.auth import TokenResponse
+from .token_store import FileTokenStore, StoredToken, TokenStore
 
 LOGGER = logging.getLogger(__name__)
 _REFRESH_LEEWAY = timedelta(seconds=30)
@@ -56,6 +58,8 @@ class UserPasswordAuthenticator(Authenticator):
         username: str,
         password: str,
         auth_service,
+        *,
+        token_store: Optional[TokenStore] = None,
     ):
         self.username = username
         self.password = password
@@ -63,9 +67,11 @@ class UserPasswordAuthenticator(Authenticator):
         self.token: Optional[str] = None
         self.token_expiry: Optional[datetime] = None
         self.refresh_token_value: Optional[str] = None
+        self.token_store = token_store or FileTokenStore()
+        self._load_cached_token()
 
     def authenticate(self, session: requests.Session) -> None:
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         if (
             not self.token
             or self.token_expiry is None
@@ -108,7 +114,7 @@ class UserPasswordAuthenticator(Authenticator):
         session.headers.update({"Authorization": f"Bearer {self.token}"})
 
     def get_access_token(self, session: requests.Session) -> Optional[str]:
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         if (
             not self.token
             or self.token_expiry is None
@@ -119,11 +125,30 @@ class UserPasswordAuthenticator(Authenticator):
 
     def _store_token_response(self, token_response: TokenResponse) -> None:
         self.token = token_response.access_token
-        self.token_expiry = datetime.utcnow() + timedelta(
-            seconds=token_response.expires_in
-        )
+        expiry_epoch = time.time() + token_response.expires_in
+        self.token_expiry = datetime.fromtimestamp(expiry_epoch, tz=timezone.utc)
         if token_response.refresh_token:
             self.refresh_token_value = token_response.refresh_token
+        stored = StoredToken(
+            access_token=self.token,
+            refresh_token=self.refresh_token_value,
+            expires_at=expiry_epoch,
+        )
+        if self.token_store:
+            self.token_store.save(stored)
+
+    def _load_cached_token(self) -> None:
+        if not self.token_store:
+            return
+        cached = self.token_store.load()
+        if not cached:
+            return
+        if cached.is_expired:
+            self.token_store.clear()
+            return
+        self.token = cached.access_token
+        self.refresh_token_value = cached.refresh_token
+        self.token_expiry = datetime.fromtimestamp(cached.expires_at, tz=timezone.utc)
 
 
 class OAuthAuthenticator(Authenticator):

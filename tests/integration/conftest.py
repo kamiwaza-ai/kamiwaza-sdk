@@ -9,6 +9,7 @@ from typing import Iterator
 
 import pytest
 import requests
+from huggingface_hub import snapshot_download
 
 from kamiwaza_sdk import KamiwazaClient
 from kamiwaza_sdk.authentication import UserPasswordAuthenticator
@@ -44,6 +45,20 @@ def live_server_available(live_base_url: str) -> str:
             "check base URL or ping route configuration."
         )
     return live_base_url
+
+
+@pytest.fixture(scope="session")
+def qwen_snapshot_dir(hf_cache_dir: Path) -> Path:
+    """Ensure the canonical MLX model README is cached locally."""
+
+    repo_id = "mlx-community/Qwen3-4B-4bit"
+    snapshot_path = snapshot_download(
+        repo_id,
+        cache_dir=hf_cache_dir,
+        allow_patterns=["README.md"],
+        repo_type="model",
+    )
+    return Path(snapshot_path)
 
 
 @pytest.fixture
