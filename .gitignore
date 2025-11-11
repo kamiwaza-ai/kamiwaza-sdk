@@ -147,3 +147,4 @@ code.txt
 collated.txt
 070-update.md
 tests/integration/catalog_stack/data/
+.env.local
