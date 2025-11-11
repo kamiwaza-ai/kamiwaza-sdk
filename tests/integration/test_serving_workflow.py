@@ -1,33 +1,35 @@
 from __future__ import annotations
 
-import time
 import uuid
 
 import pytest
 
-from kamiwaza_sdk.schemas.models.model import CreateModelConfig
 from kamiwaza_sdk.exceptions import APIError
+from kamiwaza_sdk.schemas.models.model import CreateModelConfig
 
-pytestmark = [pytest.mark.integration, pytest.mark.withoutresponses]
+pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
 
 TEST_REPO_ID = "mlx-community/Qwen3-4B-4bit"
 CONFIG_PREFIX = "sdk-m2"
-POLL_INTERVAL = 5
-POLL_TIMEOUT = 300
+WAIT_TIMEOUT = 600
 
 
-def _wait_for_deployment(client, deployment_id):
-    deadline = time.time() + POLL_TIMEOUT
-    last_status = None
-    while time.time() < deadline:
-        deployment = client.serving.get_deployment(deployment_id)
-        last_status = deployment.status
-        if last_status == "DEPLOYED":
-            return deployment
-        if last_status in {"FAILED", "ERROR"}:
-            raise AssertionError(f"Deployment {deployment_id} failed with status {last_status}")
-        time.sleep(POLL_INTERVAL)
-    raise TimeoutError(f"Timed out waiting for deployment {deployment_id} (last status {last_status})")
+def _sample_logs(client, deployment_id):
+    try:
+        lines = []
+        for idx, line in enumerate(
+            client.serving.stream_deployment_logs(
+                deployment_id,
+                poll_interval=0,
+                max_empty_polls=2,
+            )
+        ):
+            lines.append(line)
+            if idx >= 4:
+                break
+        return lines
+    except APIError:
+        return []
 
 
 def _ensure_model_cached(client, model):
@@ -86,8 +88,22 @@ def test_deploy_qwen_and_infer_with_strip_thinking(live_kamiwaza_client):
         )
         deployments.append(strip_deployment)
 
-        _wait_for_deployment(client, default_deployment)
-        _wait_for_deployment(client, strip_deployment)
+        default_details = client.serving.wait_for_deployment(
+            default_deployment,
+            poll_interval=5,
+            timeout=WAIT_TIMEOUT,
+        )
+        strip_details = client.serving.wait_for_deployment(
+            strip_deployment,
+            poll_interval=5,
+            timeout=WAIT_TIMEOUT,
+        )
+
+        assert default_details.instances, "Default deployment should report instances"
+        assert strip_details.instances, "Strip deployment should report instances"
+
+        _sample_logs(client, default_deployment)
+        _sample_logs(client, strip_deployment)
 
         default_openai = client.openai.get_client(deployment_id=default_deployment)
         strip_openai = client.openai.get_client(deployment_id=strip_deployment)

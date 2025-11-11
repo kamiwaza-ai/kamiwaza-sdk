@@ -12,6 +12,7 @@ Example usage (doctest-friendly):
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import time
 from typing import Callable, Optional
@@ -60,6 +61,27 @@ def build_parser() -> argparse.ArgumentParser:
         "--revoke-jti",
         help="Optional JTI of an older PAT to revoke after creating the new one",
     )
+
+    serve = sub.add_parser("serve", help="Manage serving deployments")
+    serve_sub = serve.add_subparsers(dest="serve_command", required=True)
+
+    serve_deploy = serve_sub.add_parser("deploy", help="Deploy a model via the serving service")
+    identity = serve_deploy.add_mutually_exclusive_group(required=True)
+    identity.add_argument("--model-id", help="Model UUID to deploy")
+    identity.add_argument("--repo-id", help="Hugging Face repo ID to deploy")
+    serve_deploy.add_argument("--config-id", help="Model config UUID to deploy")
+    serve_deploy.add_argument("--file-id", help="Specific model file UUID")
+    serve_deploy.add_argument("--engine-name", help="Engine to use for deployment")
+    serve_deploy.add_argument("--lb-port", type=int, default=0, help="Requested load balancer port (0 = auto)")
+    serve_deploy.add_argument("--min-copies", type=int, default=1, help="Minimum number of copies")
+    serve_deploy.add_argument("--starting-copies", type=int, default=1, help="Initial copies to launch")
+    serve_deploy.add_argument("--max-copies", type=int, help="Maximum copies when autoscaling")
+    serve_deploy.add_argument("--duration", type=int, help="Duration in minutes for the deployment")
+    serve_deploy.add_argument("--autoscaling", action="store_true", help="Enable autoscaling")
+    serve_deploy.add_argument("--force-cpu", action="store_true", help="Force CPU execution")
+    serve_deploy.add_argument("--wait", action="store_true", help="Wait for deployment to reach DEPLOYED status")
+    serve_deploy.add_argument("--poll-interval", type=float, default=5.0, help="Seconds between status polls when waiting")
+    serve_deploy.add_argument("--timeout", type=float, default=600.0, help="Timeout in seconds when waiting")
 
     return parser
 
@@ -114,6 +136,45 @@ def pat_create_command(
     return response.token
 
 
+def serve_deploy_command(
+    args: argparse.Namespace,
+    *,
+    client_factory: Callable[..., KamiwazaClient] = _default_client_factory,
+    token_store: Optional[TokenStore] = None,
+) -> dict[str, str]:
+    store = token_store or FileTokenStore(args.token_path)
+    cached = store.load()
+    if not cached or cached.is_expired:
+        raise AuthenticationError("Login first with `kamiwaza login` to cache a session token.")
+
+    client = client_factory(args.base_url, api_key=cached.access_token)
+    deployment_id = client.serving.deploy_model(
+        model_id=args.model_id,
+        repo_id=args.repo_id,
+        m_config_id=args.config_id,
+        m_file_id=args.file_id,
+        engine_name=args.engine_name,
+        lb_port=args.lb_port,
+        min_copies=args.min_copies,
+        starting_copies=args.starting_copies,
+        max_copies=args.max_copies,
+        duration=args.duration,
+        autoscaling=args.autoscaling,
+        force_cpu=args.force_cpu,
+    )
+
+    summary: dict[str, str] = {"deployment_id": str(deployment_id)}
+
+    if args.wait:
+        deployment = client.serving.wait_for_deployment(
+            deployment_id,
+            poll_interval=args.poll_interval,
+            timeout=args.timeout,
+        )
+        summary["status"] = deployment.status
+    return summary
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -124,6 +185,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.command == "pat" and args.pat_command == "create":
         token = pat_create_command(args)
         print(token)
+        return 0
+    if args.command == "serve" and args.serve_command == "deploy":
+        summary = serve_deploy_command(args)
+        print(json.dumps(summary))
         return 0
     parser.error("Unknown command")
     return 1

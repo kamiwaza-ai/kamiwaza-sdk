@@ -1,13 +1,31 @@
 # kamiwaza_sdk/services/serving.py
 
 import os
-from typing import List, Optional, Union
+import time
+from typing import Callable, Iterable, Iterator, List, Optional, Union
 from uuid import UUID
-from ..schemas.serving.serving import CreateModelDeployment, ModelDeployment, UIModelDeployment, ModelInstance, ActiveModelDeployment
-from ..schemas.serving.inference import LoadModelRequest, LoadModelResponse, UnloadModelRequest, UnloadModelResponse, GenerateRequest, GenerateResponse
+from urllib.parse import urlparse
+
+from ..schemas.serving.serving import (
+    ActiveModelDeployment,
+    ContainerLogListResponse,
+    ContainerLogPatternResponse,
+    ContainerLogResponse,
+    CreateModelDeployment,
+    ModelDeployment,
+    ModelInstance,
+    UIModelDeployment,
+)
+from ..schemas.serving.inference import (
+    GenerateRequest,
+    GenerateResponse,
+    LoadModelRequest,
+    LoadModelResponse,
+    UnloadModelRequest,
+    UnloadModelResponse,
+)
 from ..schemas.models.model_search import HubModelFileSearch
 from .base_service import BaseService
-from urllib.parse import urlparse
 
 class ServingService(BaseService):
     
@@ -142,6 +160,28 @@ class ServingService(BaseService):
         response = self.client.get(f"/serving/deployment/{deployment_id}")
         return UIModelDeployment.model_validate(response)
 
+    def wait_for_deployment(
+        self,
+        deployment_id: Union[str, UUID],
+        *,
+        desired_status: Iterable[str] = ("DEPLOYED",),
+        failure_status: Iterable[str] = ("FAILED", "ERROR"),
+        poll_interval: float = 5.0,
+        timeout: Optional[float] = 600.0,
+    ) -> ModelDeployment:
+        """Poll the deployment until it reaches a desired status."""
+
+        poller = DeploymentStatusPoller(
+            self,
+            poll_interval=poll_interval,
+            timeout=timeout,
+        )
+        return poller.wait_for(
+            deployment_id,
+            desired_status=desired_status,
+            failure_status=failure_status,
+        )
+
     def stop_deployment(self, 
                     deployment_id: Optional[UUID] = None, 
                     repo_id: Optional[str] = None,
@@ -203,6 +243,38 @@ class ServingService(BaseService):
         response = self.client.get(f"/serving/deployment/{deployment_id}/status")
         return ModelDeployment.model_validate(response)
 
+    def get_deployment_logs(self, deployment_id: UUID) -> ContainerLogResponse:
+        """Fetch captured logs for a deployment."""
+        response = self.client.get(f"/serving/deployment/{deployment_id}/logs")
+        return ContainerLogResponse.model_validate(response)
+
+    def get_deployment_log_patterns(self, deployment_id: UUID) -> ContainerLogPatternResponse:
+        """Fetch log pattern analysis for a deployment."""
+        response = self.client.get(f"/serving/deployment/{deployment_id}/logs/patterns")
+        return ContainerLogPatternResponse.model_validate(response)
+
+    def list_engine_logs(self, engine_type: str) -> ContainerLogListResponse:
+        """List available container logs for a given engine type."""
+        response = self.client.get(f"/serving/logs/{engine_type}")
+        return ContainerLogListResponse.model_validate(response)
+
+    def stream_deployment_logs(
+        self,
+        deployment_id: Union[str, UUID],
+        *,
+        stop_when: Optional[Callable[[ContainerLogResponse], bool]] = None,
+        poll_interval: float = 2.0,
+        max_empty_polls: Optional[int] = 10,
+    ) -> Iterator[str]:
+        """Yield log lines for a deployment until capture stops or a stop condition is met."""
+
+        streamer = DeploymentLogStreamer(self, poll_interval=poll_interval)
+        return streamer.stream(
+            deployment_id,
+            stop_when=stop_when,
+            max_empty_polls=max_empty_polls,
+        )
+
     def list_model_instances(self, deployment_id: Optional[UUID] = None) -> List[ModelInstance]:
         """List all model instances, optionally filtered by deployment ID."""
         params = {"deployment_id": str(deployment_id)} if deployment_id else None
@@ -227,3 +299,103 @@ class ServingService(BaseService):
         """Load a model."""
         response = self.client.post("/load_model", json=request.model_dump())
         return LoadModelResponse.model_validate(response)
+
+
+class DeploymentStatusPoller:
+    """Utility helper that polls deployment status until completion."""
+
+    def __init__(
+        self,
+        service: "ServingService",
+        *,
+        poll_interval: float = 5.0,
+        timeout: Optional[float] = 600.0,
+        sleep_fn: Callable[[float], None] = time.sleep,
+        time_fn: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._service = service
+        self._poll_interval = poll_interval
+        self._timeout = timeout
+        self._sleep = sleep_fn
+        self._time = time_fn
+
+    def wait_for(
+        self,
+        deployment_id: Union[str, UUID],
+        *,
+        desired_status: Iterable[str],
+        failure_status: Iterable[str],
+    ) -> ModelDeployment:
+        deployment_uuid = UUID(str(deployment_id))
+        desired = {status.upper() for status in desired_status}
+        failures = {status.upper() for status in failure_status}
+        start = self._time()
+        while True:
+            deployment = self._service.get_deployment(deployment_uuid)
+            current = (deployment.status or "").upper()
+            if current in desired:
+                return deployment
+            if failures and current in failures:
+                raise RuntimeError(
+                    f"Deployment {deployment_uuid} entered failure status {deployment.status}"
+                )
+            if self._timeout is not None and (self._time() - start) > self._timeout:
+                raise TimeoutError(
+                    f"Timed out waiting for deployment {deployment_uuid} to reach {desired}"
+                )
+            if self._poll_interval > 0:
+                self._sleep(self._poll_interval)
+
+
+class DeploymentLogStreamer:
+    """Simple polling log streamer for serving deployments."""
+
+    def __init__(
+        self,
+        service: "ServingService",
+        *,
+        poll_interval: float = 2.0,
+        sleep_fn: Callable[[float], None] = time.sleep,
+    ) -> None:
+        self._service = service
+        self._poll_interval = poll_interval
+        self._sleep = sleep_fn
+
+    def stream(
+        self,
+        deployment_id: Union[str, UUID],
+        *,
+        stop_when: Optional[Callable[[ContainerLogResponse], bool]] = None,
+        max_empty_polls: Optional[int] = 10,
+    ) -> Iterator[str]:
+        deployment_uuid = UUID(str(deployment_id))
+        last_seen = 0
+        empty_polls = 0
+        while True:
+            response = self._service.get_deployment_logs(deployment_uuid)
+            logs = response.logs
+            if len(logs) < last_seen:
+                last_seen = len(logs)
+            new_logs = logs[last_seen:]
+            if new_logs:
+                for line in new_logs:
+                    yield line
+                last_seen = len(logs)
+                empty_polls = 0
+            else:
+                empty_polls += 1
+
+            should_stop = False
+            if stop_when is not None and stop_when(response):
+                should_stop = True
+            elif stop_when is None and not response.capture_active and not new_logs:
+                should_stop = True
+
+            if should_stop:
+                break
+
+            if max_empty_polls is not None and empty_polls >= max_empty_polls:
+                break
+
+            if self._poll_interval > 0:
+                self._sleep(self._poll_interval)

@@ -9,7 +9,9 @@ from pathlib import Path
 
 import pytest
 
-pytestmark = [pytest.mark.integration, pytest.mark.withoutresponses]
+TEST_REPO_ID = "mlx-community/Qwen3-4B-4bit"
+
+pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
 
 
 def run_cli(args: list[str], env: dict[str, str]) -> subprocess.CompletedProcess[str]:
@@ -27,6 +29,7 @@ def test_cli_login_and_pat_flow(
     live_server_available: str,
     live_username: str,
     live_password: str,
+    client_factory,
     tmp_path: Path,
 ) -> None:
     token_path = tmp_path / "token.json"
@@ -65,3 +68,30 @@ def test_cli_login_and_pat_flow(
 
     cached = json.loads(token_path.read_text())
     assert cached["access_token"] == pat_token
+
+    serve_result = run_cli(
+        [
+            *base_args,
+            "serve",
+            "deploy",
+            "--repo-id",
+            TEST_REPO_ID,
+            "--wait",
+            "--poll-interval",
+            "5",
+            "--timeout",
+            "600",
+        ],
+        env,
+    )
+
+    summary = json.loads(serve_result.stdout.strip())
+    deployment_id = summary.get("deployment_id")
+    assert deployment_id, "CLI serve deploy did not return a deployment_id"
+    assert summary.get("status") == "DEPLOYED"
+
+    pat_client = client_factory(base_url=live_server_available, api_key=pat_token)
+    try:
+        pat_client.serving.stop_deployment(deployment_id=deployment_id, force=True)
+    except Exception:
+        pass

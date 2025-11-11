@@ -225,6 +225,7 @@ class KamiwazaClient:
         return self._catalog
 
     @property
+    @property
     def prompts(self):
         if not hasattr(self, '_prompts'):
             self._prompts = PromptsService(self)

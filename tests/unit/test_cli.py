@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import time
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 
@@ -110,3 +111,72 @@ def test_pat_create_command_creates_and_caches_token(monkeypatch):
     assert store.value and store.value.access_token == "new-token"
     assert create_called["payload"].name == "cli"
     assert create_called["revoked"] == "old-jti"
+
+
+def _serve_args(**overrides):
+    defaults = dict(
+        base_url="https://localhost/api",
+        token_path=None,
+        model_id=str(uuid4()),
+        repo_id=None,
+        config_id=None,
+        file_id=None,
+        engine_name=None,
+        lb_port=0,
+        min_copies=1,
+        starting_copies=1,
+        max_copies=None,
+        duration=None,
+        autoscaling=False,
+        force_cpu=False,
+        wait=False,
+        poll_interval=1.0,
+        timeout=5.0,
+    )
+    defaults.update(overrides)
+    return argparse.Namespace(**defaults)
+
+
+def test_serve_deploy_command_requires_cached_token():
+    store = MemoryStore()
+    args = _serve_args()
+
+    with pytest.raises(AuthenticationError):
+        cli.serve_deploy_command(args, token_store=store, client_factory=lambda *_args, **_kwargs: None)  # type: ignore[arg-type]
+
+
+def test_serve_deploy_command_invokes_service(monkeypatch):
+    store = MemoryStore()
+    store.save(StoredToken(access_token="session", refresh_token=None, expires_at=time.time() + 60))
+
+    deployment_id = uuid4()
+    waited = SimpleNamespace(status="DEPLOYED")
+
+    class FakeServing:
+        def __init__(self):
+            self.deploy_calls = []
+
+        def deploy_model(self, **kwargs):
+            self.deploy_calls.append(kwargs)
+            return deployment_id
+
+        def wait_for_deployment(self, dep_id, **kwargs):
+            assert dep_id == deployment_id
+            self.wait_kwargs = kwargs
+            return waited
+
+    fake_serving = FakeServing()
+    client = SimpleNamespace(serving=fake_serving)
+
+    def factory(base_url, api_key):
+        assert api_key == "session"
+        return client
+
+    args = _serve_args(wait=True, poll_interval=0.5, timeout=2.5)
+
+    summary = cli.serve_deploy_command(args, token_store=store, client_factory=factory)
+
+    assert summary["deployment_id"] == str(deployment_id)
+    assert summary["status"] == "DEPLOYED"
+    assert fake_serving.deploy_calls, "Expected deploy_model to be invoked"
+    assert fake_serving.wait_kwargs == {"poll_interval": 0.5, "timeout": 2.5}
