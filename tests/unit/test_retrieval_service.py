@@ -152,3 +152,23 @@ def test_create_job_translates_not_found():
         assert "Dataset missing" in str(exc)
     else:  # pragma: no cover
         raise AssertionError("Expected exception was not raised")
+
+
+def test_create_job_unwraps_secret_fields(dummy_client):
+    job_payload = {
+        "job_id": "job-secret",
+        "transport": "inline",
+        "status": "queued",
+        "dataset": {"urn": "urn", "platform": "s3", "path": None, "format": None},
+    }
+    client = dummy_client({("post", "/retrieval/retrieval/jobs"): job_payload})
+    service = RetrievalService(client)
+
+    service.create_job(
+        RetrievalRequest(dataset_urn="urn", credential_override="{\"token\":\"secret\"}"),
+    )
+
+    method, path, kwargs = client.calls[0]
+    assert method == "post"
+    assert path == "/retrieval/retrieval/jobs"
+    assert kwargs["json"]["credential_override"] == '{"token":"secret"}'

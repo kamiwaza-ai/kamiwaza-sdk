@@ -69,6 +69,7 @@ def test_secret_client_sets_clobber_flag(dummy_client):
     assert urn == "urn:li:secret:demo"
     method, path, kwargs = client.calls[0]
     assert kwargs["params"]["clobber"] == "true"
+    assert kwargs["json"]["value"] == "hunter2"
 
 
 def test_dataset_client_encode_helper():

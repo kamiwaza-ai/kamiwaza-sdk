@@ -22,6 +22,7 @@ from ..schemas.retrieval import (
     RetrievalStreamEvent,
     TransportType,
 )
+from ..utils import reveal_secrets
 
 
 @dataclass
@@ -41,9 +42,10 @@ class RetrievalService(BaseService):
 
     def create_job(self, request: RetrievalRequest) -> RetrievalJob:
         try:
+            payload = reveal_secrets(request.model_dump(exclude_none=True))
             response = self.client.post(
                 f"{self._BASE_PATH}/jobs",
-                json=request.model_dump(exclude_none=True),
+                json=payload,
             )
         except APIError as exc:
             raise self._translate_error(exc) from exc

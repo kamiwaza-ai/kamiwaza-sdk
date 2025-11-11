@@ -17,6 +17,7 @@ from ..schemas.catalog import (
     Secret,
     SecretCreate,
 )
+from ..utils import reveal_secrets
 
 
 def _encode_path_segment(value: str) -> str:
@@ -150,10 +151,11 @@ class SecretClient(BaseService):
     _BASE_PATH = "/catalog/secrets"
 
     def create(self, payload: SecretCreate, *, clobber: bool = False) -> str:
+        body = reveal_secrets(payload.model_dump(exclude_none=True))
         response = self.client.post(
             f"{self._BASE_PATH}/",
             params={"clobber": str(clobber).lower()},
-            json=payload.model_dump(exclude_none=True),
+            json=body,
         )
         return str(response)
 

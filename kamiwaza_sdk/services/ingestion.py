@@ -18,6 +18,11 @@ from ..schemas.ingestion import (
 class IngestionService(BaseService):
     """High level helper for ingestion operations."""
 
+    def health(self) -> Dict[str, Any]:
+        """Return ingestion service health metadata."""
+
+        return self.client.get("/ingestion/health")
+
     def run_active(self, source_type: str, **kwargs: Any) -> IngestResponse:
         payload = ActiveIngestRequest(source_type=source_type, kwargs=kwargs)
         response = self.client.post("/ingestion/ingest/run", json=payload.model_dump())

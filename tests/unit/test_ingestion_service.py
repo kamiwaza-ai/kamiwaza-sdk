@@ -59,3 +59,14 @@ def test_schedule_job_and_status_round_trip(dummy_client):
     assert status_response.status == "scheduled"
     assert status.job_id == "nightly"
     assert status.status == "running"
+
+
+def test_ingestion_health_hits_endpoint(dummy_client):
+    responses = {("get", "/ingestion/health"): {"status": "ok"}}
+    client = dummy_client(responses)
+    service = IngestionService(client)
+
+    health = service.health()
+
+    assert health["status"] == "ok"
+    assert client.calls[0][:2] == ("get", "/ingestion/health")
