@@ -16,7 +16,7 @@ class ModelConfigMixin:
         Returns:
             ModelConfig: The created model configuration object.
         """
-        response = self.client._request("POST", "/model_configs/", json=config.model_dump())
+        response = self.client._request("POST", "/model_configs/", json=config.model_dump(mode="json"))
         return ModelConfig.model_validate(response)
     
     def get_model_configs(self, model_id: Union[str, UUID]) -> List[ModelConfig]:
@@ -109,5 +109,5 @@ class ModelConfigMixin:
         except ValueError as e:
             raise ValueError(f"Invalid UUID format: {model_config_id}") from e
             
-        response = self.client._request("PUT", f"/model_configs/{model_config_id}", json=config.model_dump())
+        response = self.client._request("PUT", f"/model_configs/{model_config_id}", json=config.model_dump(mode="json"))
         return ModelConfig.model_validate(response)
