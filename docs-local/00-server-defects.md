@@ -69,3 +69,26 @@ The earlier `location` mismatch defect still applies; ingestion writes `properti
 
 - **Ingestion API mounted at `/ingestion/ingest/*` not `/ingest/*`**  
   Documentation/spec mention `/ingest`. Actual FastAPI router includes `/ingestion` prefix, so client must call `/ingestion/ingest/run`. Update spec or provide alias.
+
+## 2025-11-08
+
+### File ingest path constraints {#file-ingest-path-constraints}
+```
+pytest tests/integration/test_catalog_multi_source.py -k file_ingestion_metadata
+```
+The File ingester still hardcodes `/data` + `/shared` as the only allowed base directories. Running the SDK test against the multi-source stack points the ingester at `tests/integration/catalog_stack/state/test-data`, but the API responds 400 with "Path outside allowed directories". We need either a configurable allowlist exposed via the API or to broaden the default so CI fixtures (which live in the repo) can pass.
+
+### File retrieval missing {#file-retrieval-missing}
+Even when the File ingester succeeds (manually seeded inside `/data`), the retrieval service refuses to materialize the dataset because it requires object-store metadata (`endpoint`, `location`) that file datasets do not have. Track the gap so we can either implement a local file transport or document the limitation.
+
+### Object JSON retrieval {#object-json-retrieval}
+Ingesting `objects/sample.json` via the S3 plugin succeeds, but calling `/retrieval/retrieval/jobs` with `format_hint="json"` returns 422 "Unsupported transport". Retrieving Parquet blobs works (see `test_catalog_parquet_ingestion_inline_retrieval`), so only JSON objects regress. The SDK test now xfails accordingly until the backend can stream non-tabular S3 objects.
+
+### Postgres retrieval missing {#postgres-retrieval-missing}
+`test_catalog_postgres_ingestion_metadata` creates datasets for `public.catalog_test_orders`, but any attempt to run a retrieval job for the resulting URN returns 422 `"Requested transport is not supported"`. The ingestion metadata is there; we just need server-side plumbing for relational sources.
+
+### Kafka retrieval missing {#kafka-retrieval-missing}
+Kafka ingestion populates catalog containers/topics, but `/retrieval/retrieval/jobs` can't materialize topic metadata or events. Until we have a streaming transport, keep the SDK test marked xfail to flag regressions.
+
+### Slack retrieval missing {#slack-retrieval-missing}
+Slack ingestion (when provided with `SLACK_TEST_TOKEN` + channel/team IDs) only writes metadata/documentation and cannot be replayed through retrieval. The backend should either expose the collected messages via retrieval or document that Slack datasets are catalog-only.

@@ -17,10 +17,37 @@ from kamiwaza_sdk.authentication import UserPasswordAuthenticator
 DOCKER_COMPOSE_FILE = Path(__file__).parent / "docker" / "docker-compose.yml"
 SEED_SCRIPT = Path(__file__).parent / "docker" / "seed_minio.py"
 
+CATALOG_STACK_DIR = Path(__file__).parent / "catalog_stack"
+CATALOG_STACK_COMPOSE = CATALOG_STACK_DIR / "docker-compose.yml"
+CATALOG_STACK_SETUP = CATALOG_STACK_DIR / "setup-test-data.sh"
+CATALOG_MINIO_ENDPOINT = os.environ.get("CATALOG_STACK_MINIO_ENDPOINT", "http://localhost:9100")
+CATALOG_MINIO_BUCKET = os.environ.get("CATALOG_STACK_MINIO_BUCKET", "kamiwaza-test-bucket")
+CATALOG_MINIO_PREFIX = os.environ.get("CATALOG_STACK_MINIO_PREFIX", "catalog-tests")
+CATALOG_POSTGRES = {
+    "host": os.environ.get("CATALOG_STACK_POSTGRES_HOST", "localhost"),
+    "port": os.environ.get("CATALOG_STACK_POSTGRES_PORT", "15432"),
+    "database": os.environ.get("CATALOG_STACK_POSTGRES_DB", "kamiwaza"),
+    "user": os.environ.get("CATALOG_STACK_POSTGRES_USER", "kamiwaza"),
+    "password": os.environ.get("CATALOG_STACK_POSTGRES_PASSWORD", "kamiwazaGetY0urCape"),
+    "schema": os.environ.get("CATALOG_STACK_POSTGRES_SCHEMA", "public"),
+}
+CATALOG_KAFKA_BOOTSTRAP = os.environ.get("CATALOG_STACK_KAFKA_BOOTSTRAP", "localhost:29092")
+
 
 def _run_compose(*args: str) -> None:
     cmd = ["docker", "compose", "-f", str(DOCKER_COMPOSE_FILE), *args]
     subprocess.run(cmd, check=True)
+
+
+def _run_catalog_compose(*args: str) -> None:
+    cmd = ["docker", "compose", "-f", str(CATALOG_STACK_COMPOSE), *args]
+    subprocess.run(cmd, check=True)
+
+
+def _catalog_stack_running() -> bool:
+    cmd = ["docker", "compose", "-f", str(CATALOG_STACK_COMPOSE), "ps", "-q"]
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    return bool(result.stdout.strip())
 
 
 def _verify_ssl_enabled() -> bool:
@@ -102,3 +129,66 @@ def ingestion_environment() -> Iterator[dict[str, str]]:
         }
     finally:
         _run_compose("down", "-v")
+
+
+@pytest.fixture(scope="session")
+def catalog_stack_environment() -> Iterator[dict[str, object]]:
+    """Provision the multi-source ingestion stack used by catalog tests."""
+
+    if shutil.which("docker") is None:
+        pytest.skip("Docker is required for catalog ingestion tests")
+    if not CATALOG_STACK_COMPOSE.exists() or not CATALOG_STACK_SETUP.exists():
+        pytest.skip("Catalog stack assets are unavailable")
+
+    stack_running = _catalog_stack_running()
+    if not stack_running:
+        _run_catalog_compose("up", "-d")
+
+    env = os.environ.copy()
+    env.setdefault("INGESTION_STACK_COMPOSE", str(CATALOG_STACK_COMPOSE))
+    env.setdefault("STATE_DIR", str((CATALOG_STACK_DIR / "state").resolve()))
+    env.setdefault("DATA_DIR", str((CATALOG_STACK_DIR / "data").resolve()))
+    env.setdefault("MINIO_ENDPOINT", CATALOG_MINIO_ENDPOINT)
+    env.setdefault("MINIO_BUCKET", CATALOG_MINIO_BUCKET)
+    env.setdefault("MINIO_PREFIX", CATALOG_MINIO_PREFIX)
+    env.setdefault("POSTGRES_HOST", CATALOG_POSTGRES["host"])
+    env.setdefault("POSTGRES_PORT", str(CATALOG_POSTGRES["port"]))
+    env.setdefault("POSTGRES_DB", CATALOG_POSTGRES["database"])
+    env.setdefault("POSTGRES_USER", CATALOG_POSTGRES["user"])
+    env.setdefault("POSTGRES_PASSWORD", CATALOG_POSTGRES["password"])
+    env.setdefault("KAFKA_EXTERNAL_BOOTSTRAP", CATALOG_KAFKA_BOOTSTRAP)
+
+    subprocess.run(
+        ["bash", str(CATALOG_STACK_SETUP)],
+        check=True,
+        cwd=str(CATALOG_STACK_DIR),
+        env=env,
+    )
+
+    config = {
+        "object": {
+            "bucket": CATALOG_MINIO_BUCKET,
+            "prefix": CATALOG_MINIO_PREFIX,
+            "endpoint": CATALOG_MINIO_ENDPOINT,
+            "region": "us-east-1",
+        },
+        "file_root": str((CATALOG_STACK_DIR / "state" / "test-data").resolve()),
+        "postgres": {
+            "host": CATALOG_POSTGRES["host"],
+            "port": int(CATALOG_POSTGRES["port"]),
+            "database": CATALOG_POSTGRES["database"],
+            "user": CATALOG_POSTGRES["user"],
+            "password": CATALOG_POSTGRES["password"],
+            "schema": CATALOG_POSTGRES["schema"],
+        },
+        "kafka": {
+            "bootstrap": CATALOG_KAFKA_BOOTSTRAP,
+            "topic": "catalog-test-events",
+        },
+    }
+
+    try:
+        yield config
+    finally:
+        if not stack_running:
+            _run_catalog_compose("down", "-v")
