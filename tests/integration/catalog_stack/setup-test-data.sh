@@ -6,6 +6,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STATE_DIR="${STATE_DIR:-$SCRIPT_DIR/state}"
 DATA_DIR="${DATA_DIR:-$SCRIPT_DIR/data}"
+export STATE_DIR DATA_DIR
 COMPOSE_FILE="${INGESTION_STACK_COMPOSE:-$SCRIPT_DIR/docker-compose.yml}"
 MINIO_ENDPOINT="${MINIO_ENDPOINT:-http://localhost:19100}"
 MINIO_BUCKET="${MINIO_BUCKET:-kamiwaza-test-bucket}"
@@ -32,6 +33,39 @@ if command -v rsync >/dev/null 2>&1; then
 else
     cp -R "$DATA_DIR/test-data" "$STATE_DIR/"
 fi
+
+echo "Generating inline threshold parquet fixtures..."
+python3 - <<'EOF'
+import os
+from pathlib import Path
+import pandas as pd
+import numpy as np
+
+state_dir = Path(os.environ.get("STATE_DIR", ".")) / "test-data"
+state_dir.mkdir(parents=True, exist_ok=True)
+
+def generate_parquet(path: Path, target_bytes: int) -> None:
+    rows = 1024
+    while True:
+        alphabet = list("abcdefghijklmnopqrstuvwxyz0123456789")
+        payload = ["".join(np.random.choice(alphabet, size=64)) for _ in range(rows)]
+        df = pd.DataFrame(
+            {
+                "id": np.arange(rows, dtype=np.int64),
+                "value": np.random.random(rows),
+                "payload": payload,
+            }
+        )
+        df.to_parquet(path, engine="pyarrow")
+        size = path.stat().st_size
+        if size >= target_bytes:
+            print(f"Generated {path.name}: {size/1024:.1f} KiB (rows={rows})")
+            break
+        rows *= 2
+
+generate_parquet(state_dir / "inline-small.parquet", int(0.5 * 1024 * 1024))
+generate_parquet(state_dir / "inline-large.parquet", int(1.3 * 1024 * 1024))
+EOF
 
 wait_for_port() {
     local name="$1"

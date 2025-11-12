@@ -171,6 +171,8 @@ def catalog_stack_environment() -> Iterator[dict[str, object]]:
             "prefix": CATALOG_MINIO_PREFIX,
             "endpoint": CATALOG_MINIO_ENDPOINT,
             "region": "us-east-1",
+            "small_key": f"{CATALOG_MINIO_PREFIX}/inline-small.parquet",
+            "large_key": f"{CATALOG_MINIO_PREFIX}/inline-large.parquet",
         },
         "file_root": str((CATALOG_STACK_DIR / "state" / "test-data").resolve()),
         "postgres": {

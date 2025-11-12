@@ -55,6 +55,7 @@ def _run_inline_retrieval(client, dataset_urn: str, *, format_hint: str, endpoin
         "credential_override": json.dumps(
             {
                 **_MINIO_CREDS,
+                "endpoint": endpoint,
                 "endpoint_override": endpoint,
                 "endpoint_url": endpoint,
                 "region": "us-east-1",
@@ -66,6 +67,68 @@ def _run_inline_retrieval(client, dataset_urn: str, *, format_hint: str, endpoin
     inline = job.get("inline")
     assert inline is not None and inline["row_count"] > 0
     return inline
+
+
+def _run_sse_retrieval(client, dataset_urn: str, *, format_hint: str, endpoint: str) -> None:
+    payload = {
+        "dataset_urn": dataset_urn,
+        "transport": "sse",
+        "format_hint": format_hint,
+        "credential_override": json.dumps(
+            {
+                **_MINIO_CREDS,
+                "endpoint": endpoint,
+                "endpoint_override": endpoint,
+                "endpoint_url": endpoint,
+                "region": "us-east-1",
+            }
+        ),
+    }
+    job = client.post("/retrieval/retrieval/jobs", json=payload)
+    assert job["transport"] == "sse"
+    job_id = job["job_id"]
+    response = client.get(
+        f"/retrieval/retrieval/jobs/{job_id}/stream",
+        expect_json=False,
+        stream=True,
+    )
+    try:
+        events = []
+        for raw in response.iter_lines():
+            if raw is None:
+                continue
+            line = raw.decode("utf-8")
+            if line.startswith("data:"):
+                events.append(line)
+                if len(events) >= 1:
+                    break
+        assert events, "SSE stream did not emit any events"
+    finally:
+        response.close()
+
+
+def _ingest_object_dataset(
+    client,
+    *,
+    bucket: str,
+    key: str,
+    endpoint: str,
+    region: str,
+) -> tuple[str, list[str]]:
+    response = client.ingestion.run_active(
+        "s3",
+        bucket=bucket,
+        prefix=key,
+        endpoint_url=endpoint,
+        region=region,
+        **_MINIO_CREDS,
+    )
+    dataset_urns = response.urns
+    if not dataset_urns:
+        dataset_urns = [f"urn:li:dataset:(urn:li:dataPlatform:s3,{bucket}/{key},PROD)"]
+    target = dataset_urns[0]
+    _ensure_retrieval_metadata(client, target, endpoint)
+    return target, dataset_urns
 
 
 def test_catalog_file_ingestion_metadata(live_kamiwaza_client, catalog_stack_environment):
@@ -146,19 +209,81 @@ def test_catalog_parquet_ingestion_inline_retrieval(live_kamiwaza_client, catalo
         assert dataset_urns, "Parquet ingestion returned no datasets"
         target = next((urn for urn in dataset_urns if "sales_data_10k" in urn), dataset_urns[0])
         _ensure_retrieval_metadata(live_kamiwaza_client, target, cfg["endpoint"])
-        try:
-            inline = _run_inline_retrieval(
+        inline = _run_inline_retrieval(
+            live_kamiwaza_client,
+            target,
+            format_hint="parquet",
+            endpoint=cfg["endpoint"],
+        )
+        assert inline["row_count"] > 0
+    finally:
+        _cleanup_datasets(live_kamiwaza_client, dataset_urns)
+
+
+def test_catalog_inline_small_object_succeeds(live_kamiwaza_client, catalog_stack_environment):
+    cfg = catalog_stack_environment["object"]
+    dataset_urns: list[str] = []
+    try:
+        target, dataset_urns = _ingest_object_dataset(
+            live_kamiwaza_client,
+            bucket=cfg["bucket"],
+            key=cfg["small_key"],
+            endpoint=cfg["endpoint"],
+            region=cfg["region"],
+        )
+        inline = _run_inline_retrieval(
+            live_kamiwaza_client,
+            target,
+            format_hint="parquet",
+            endpoint=cfg["endpoint"],
+        )
+        assert inline["row_count"] > 0
+    finally:
+        _cleanup_datasets(live_kamiwaza_client, dataset_urns)
+
+
+def test_catalog_inline_large_object_hits_threshold(live_kamiwaza_client, catalog_stack_environment):
+    cfg = catalog_stack_environment["object"]
+    dataset_urns: list[str] = []
+    try:
+        target, dataset_urns = _ingest_object_dataset(
+            live_kamiwaza_client,
+            bucket=cfg["bucket"],
+            key=cfg["large_key"],
+            endpoint=cfg["endpoint"],
+            region=cfg["region"],
+        )
+        with pytest.raises(APIError) as excinfo:
+            _run_inline_retrieval(
                 live_kamiwaza_client,
                 target,
                 format_hint="parquet",
                 endpoint=cfg["endpoint"],
             )
-        except APIError as exc:  # pragma: no cover - backend defect tracked in docs
-            pytest.xfail(
-                "Inline retrieval for Parquet datasets still 500s; "
-                "see docs-local/00-server-defects.md#retrieval-inline-jobs-return-500"
-            )
-        assert inline["row_count"] > 0
+        assert excinfo.value.status_code == 422
+        detail = (excinfo.value.response_text or "").lower()
+        assert "inline threshold" in detail
+    finally:
+        _cleanup_datasets(live_kamiwaza_client, dataset_urns)
+
+
+def test_catalog_large_object_sse_retrieval(live_kamiwaza_client, catalog_stack_environment):
+    cfg = catalog_stack_environment["object"]
+    dataset_urns: list[str] = []
+    try:
+        target, dataset_urns = _ingest_object_dataset(
+            live_kamiwaza_client,
+            bucket=cfg["bucket"],
+            key=cfg["large_key"],
+            endpoint=cfg["endpoint"],
+            region=cfg["region"],
+        )
+        _run_sse_retrieval(
+            live_kamiwaza_client,
+            target,
+            format_hint="parquet",
+            endpoint=cfg["endpoint"],
+        )
     finally:
         _cleanup_datasets(live_kamiwaza_client, dataset_urns)
 
@@ -181,18 +306,16 @@ def test_catalog_postgres_ingestion_metadata(live_kamiwaza_client, catalog_stack
         orders = next((urn for urn in dataset_urns if "catalog_test_orders" in urn), dataset_urns[0])
         dataset = _fetch_dataset(live_kamiwaza_client, orders)
         assert dataset["platform"] == "postgres"
-        try:
-            _run_inline_retrieval(
-                live_kamiwaza_client,
-                orders,
-                format_hint="parquet",
-                endpoint=catalog_stack_environment["object"]["endpoint"],
-            )
-        except APIError:
-            pytest.xfail(
-                "Retrieval API cannot materialize Postgres metadata yet; "
-                "see docs-local/00-server-defects.md#postgres-retrieval-missing"
-            )
+        job = live_kamiwaza_client.post(
+            "/retrieval/retrieval/jobs",
+            json={
+                "dataset_urn": orders,
+                "transport": "inline",
+                "format_hint": "parquet",
+            },
+        )
+        assert job["transport"] == "inline"
+        assert job["inline"]["row_count"] >= 1
     finally:
         _cleanup_datasets(live_kamiwaza_client, dataset_urns)
 

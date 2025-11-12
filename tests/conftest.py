@@ -11,6 +11,28 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+def _load_local_env() -> None:
+    env_file = PROJECT_ROOT / ".env.local"
+    if not env_file.exists():
+        return
+    for raw_line in env_file.read_text().splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key:
+            continue
+        if value.startswith(("'", '"')) and value.endswith(("'", '"')) and len(value) >= 2:
+            value = value[1:-1]
+        if key not in os.environ:
+            os.environ[key] = value
+
+_load_local_env()
+
 DEFAULT_BASE_URL = os.environ.get("KAMIWAZA_BASE_URL", "https://localhost/api").rstrip("/")
 
 

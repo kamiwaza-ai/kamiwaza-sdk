@@ -47,6 +47,11 @@ HTTP/1.1 500 Internal Server Error
 
 Observed after successfully ingesting the same dataset via `/ingestion/ingest/run`. Looks like the Ray-backed transport crashes in the server (no dataset/job entry returned).
 
+**Status – 2025-11-12 (“Retrieval Inline Fix”)**  
+- Upstream change (`kamiwaza/services/retrieval/adapters/s3.py`) now honors per-request overrides for `endpoint`, `endpoint_override`, and `region`, preventing the adapter from falling back to stale catalog metadata and crashing Ray when pointed at MinIO or other non-default endpoints.  
+- Regression coverage: `kamiwaza/services/retrieval/tests/test_s3_adapter.py` (mocks `pyarrow.fs.S3FileSystem` to assert overrides win) plus the SDK integration tests `test_catalog_inline_small_object_succeeds`, `test_catalog_inline_large_object_hits_threshold`, `test_catalog_large_object_sse_retrieval`, and `test_s3_ingest_and_retrieve_inline`. These verify <500 KB payloads stay inline, ~1.3 MB payloads raise the documented 422 threshold error, and SSE fallback still streams rows.  
+- Local stack expected to return 201/422/200 sequences per above; any regression will now surface as a hard test failure (no `xfail`).
+
 ### Ingestion router mounted as `/ingestion/ingest`
 Spec/`070-update.md` list endpoints as `/ingest/*`, but the FastAPI router is included under `/ingestion`, so the deployed path is `/ingestion/ingest/run`. Probably a docs fix (the service originated as standalone).
 
@@ -57,18 +62,13 @@ The earlier `location` mismatch defect still applies; ingestion writes `properti
   Repro (historical): run the docker-backed integration test (`tests/integration/test_catalog_ingest_retrieval.py`) to ingest the sample parquet object. The ingest response returned a dataset URN whose S3 component contained a `//` between the bucket and key.  
   Result: dataset metadata (and downstream retrieval requests) carried the redundant slash, pointing at `s3://kamiwaza-sdk-tests//sdk-integration/visitors.parquet`. Root cause fixed server-side; SDK formatter no longer emits the malformed URN, so this item can fall off the open defect list unless it regresses.
 
-- **Retrieval jobs fail with HTTP 500**  
-  Path: `POST /retrieval/retrieval/jobs`  
-  Repro: ingest S3 parquet dataset via `/ingestion/ingest/run`, then request inline retrieval with explicit credentials.  
-  Result: API returns 500 `Internal Server Error` even after ensuring dataset properties include `endpoint`, `region`, and `path`. Ray-backed transport appears to crash server-side.
-
 - **Retrieval rejects datasets missing `properties.location`**  
   Path: `POST /retrieval/retrieval/jobs`  
   Repro: ingest via S3 plugin (which stores `properties.path`), then attempt retrieval.  
   Result: API responds 400 `"Dataset is missing a location property"`. Retrieval service expects `properties["location"]`, but ingestion writes `path`. Manual PATCH adding `location` works around it.
 
-- **Ingestion API mounted at `/ingestion/ingest/*` not `/ingest/*`**  
-  Documentation/spec mention `/ingest`. Actual FastAPI router includes `/ingestion` prefix, so client must call `/ingestion/ingest/run`. Update spec or provide alias.
+### Ingestion router mounted as `/ingestion/ingest` _(resolved 2025-11-12)_
+Spec `kamiwaza-openapi-spec.json` already reflects the `/ingestion/ingest/*` prefix, so the doc drift noted earlier has been cleared. Any lingering references to `/ingest/*` in docs should be updated; the SDK now consistently calls `/ingestion/ingest/run` and friends.
 
 ## 2025-11-08
 
@@ -82,13 +82,12 @@ The File ingester still hardcodes `/data` + `/shared` as the only allowed base d
 Even when the File ingester succeeds (manually seeded inside `/data`), the retrieval service refuses to materialize the dataset because it requires object-store metadata (`endpoint`, `location`) that file datasets do not have. Track the gap so we can either implement a local file transport or document the limitation.
 
 ### Object JSON retrieval {#object-json-retrieval}
-Ingesting `objects/sample.json` via the S3 plugin succeeds, but calling `/retrieval/retrieval/jobs` with `format_hint="json"` returns 422 "Unsupported transport". Retrieving Parquet blobs works (see `test_catalog_parquet_ingestion_inline_retrieval`), so only JSON objects regress. The SDK test now xfails accordingly until the backend can stream non-tabular S3 objects.
+Ingesting `objects/sample.json` via the S3 plugin succeeds, but calling `/retrieval/retrieval/jobs` with `format_hint="json"` returns 422 "Unsupported transport". Repro: `pytest tests/integration/test_catalog_multi_source.py::test_catalog_object_ingestion_inline_retrieval`. Retrieving Parquet blobs is supposed to work once the inline fix rolls out broadly, so this entry tracks the non-tabular JSON gap specifically.
 
-### Postgres retrieval missing {#postgres-retrieval-missing}
-`test_catalog_postgres_ingestion_metadata` creates datasets for `public.catalog_test_orders`, but any attempt to run a retrieval job for the resulting URN returns 422 `"Requested transport is not supported"`. The ingestion metadata is there; we just need server-side plumbing for relational sources.
+
 
 ### Kafka retrieval missing {#kafka-retrieval-missing}
-Kafka ingestion populates catalog containers/topics, but `/retrieval/retrieval/jobs` can't materialize topic metadata or events. Until we have a streaming transport, keep the SDK test marked xfail to flag regressions.
+Kafka ingestion populates catalog containers/topics, but `/retrieval/retrieval/jobs` can't materialize topic metadata or events (`pytest tests/integration/test_catalog_multi_source.py::test_catalog_kafka_ingestion_metadata`). Until we have a streaming transport, keep the SDK test marked xfail to flag regressions.
 
 ### Slack retrieval missing {#slack-retrieval-missing}
 Slack ingestion (when provided with `SLACK_TEST_TOKEN` + channel/team IDs) only writes metadata/documentation and cannot be replayed through retrieval. The backend should either expose the collected messages via retrieval or document that Slack datasets are catalog-only.
