@@ -25,7 +25,7 @@ Root cause: PATs must use the platform audience so the Keycloak validator recogn
 
 ## 2025-11-06
 
-### Retrieval inline jobs return 500
+### Retrieval inline jobs return 500 {#retrieval-inline-jobs-return-500}
 ```
 POST /retrieval/retrieval/jobs HTTP/1.1
 Authorization: Bearer <admin token>

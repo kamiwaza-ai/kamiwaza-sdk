@@ -7,7 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STATE_DIR="${STATE_DIR:-$SCRIPT_DIR/state}"
 DATA_DIR="${DATA_DIR:-$SCRIPT_DIR/data}"
 COMPOSE_FILE="${INGESTION_STACK_COMPOSE:-$SCRIPT_DIR/docker-compose.yml}"
-MINIO_ENDPOINT="${MINIO_ENDPOINT:-http://localhost:9100}"
+MINIO_ENDPOINT="${MINIO_ENDPOINT:-http://localhost:19100}"
 MINIO_BUCKET="${MINIO_BUCKET:-kamiwaza-test-bucket}"
 MINIO_PREFIX="${MINIO_PREFIX:-catalog-tests}"
 POSTGRES_HOST="${POSTGRES_HOST:-localhost}"
@@ -65,14 +65,14 @@ compose_exec() {
 MINIO_HOST=$(python3 - <<'PY'
 from urllib.parse import urlparse
 import os
-parsed = urlparse(os.environ.get('MINIO_ENDPOINT', 'http://localhost:9100'))
+parsed = urlparse(os.environ.get('MINIO_ENDPOINT', 'http://localhost:19100'))
 print(parsed.hostname)
 PY
 )
 MINIO_PORT=$(python3 - <<'PY'
 from urllib.parse import urlparse
 import os
-parsed = urlparse(os.environ.get('MINIO_ENDPOINT', 'http://localhost:9100'))
+parsed = urlparse(os.environ.get('MINIO_ENDPOINT', 'http://localhost:19100'))
 print(parsed.port or (443 if parsed.scheme == 'https' else 80))
 PY
 )
