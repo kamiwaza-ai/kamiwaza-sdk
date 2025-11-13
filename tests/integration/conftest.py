@@ -4,8 +4,9 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator
 
 import pytest
 import requests
@@ -110,6 +111,41 @@ def live_kamiwaza_client(
     client = KamiwazaClient(live_server_available)
     client.authenticator = UserPasswordAuthenticator(username, password, client._auth_service)
     return client
+
+
+@pytest.fixture(scope="session")
+def ensure_repo_ready() -> Callable[[KamiwazaClient, str], object]:
+    """Ensure a Hugging Face repo is present in the live catalog (downloading if needed)."""
+
+    def _ensure(
+        client: KamiwazaClient,
+        repo_id: str,
+        *,
+        quantization: str = "q6_k",
+        wait_timeout: int = 900,
+        poll_interval: int = 5,
+    ):
+        model = client.models.get_model_by_repo_id(repo_id)
+        if model:
+            return model
+
+        client.models.initiate_model_download(repo_id, quantization=quantization)
+
+        try:
+            client.models.wait_for_download(repo_id, timeout=wait_timeout, show_progress=False)
+        except TimeoutError as exc:  # pragma: no cover - slow live path
+            raise TimeoutError(f"Timed out downloading {repo_id}: {exc}") from exc
+
+        deadline = time.time() + wait_timeout if wait_timeout else None
+        while True:
+            model = client.models.get_model_by_repo_id(repo_id)
+            if model:
+                return model
+            if deadline and time.time() >= deadline:
+                raise TimeoutError(f"Timed out waiting for {repo_id} to register after download")
+            time.sleep(poll_interval)
+
+    return _ensure
 
 
 @pytest.fixture(scope="session")

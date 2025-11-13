@@ -41,11 +41,9 @@ def _ensure_model_cached(client, model):
         pytest.skip(f"Model download API unavailable: {exc}")
 
 
-def test_deploy_qwen_and_infer_with_strip_thinking(live_kamiwaza_client):
+def test_deploy_qwen_and_infer_with_strip_thinking(live_kamiwaza_client, ensure_repo_ready):
     client = live_kamiwaza_client
-    model = client.models.get_model_by_repo_id(TEST_REPO_ID)
-    if not model:
-        pytest.skip(f"{TEST_REPO_ID} not registered on live server")
+    model = ensure_repo_ready(client, TEST_REPO_ID)
 
     _ensure_model_cached(client, model)
 

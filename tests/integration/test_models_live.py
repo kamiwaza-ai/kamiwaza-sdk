@@ -9,16 +9,9 @@ pytestmark = [pytest.mark.integration, pytest.mark.withoutresponses]
 CANONICAL_REPO = "mlx-community/Qwen3-4B-4bit"
 
 
-def test_live_model_metadata_and_download(live_kamiwaza_client) -> None:
-    models = live_kamiwaza_client.models.list_models(load_files=False)
-    if not models:
-        pytest.skip("No models registered on live server")
+def test_live_model_metadata_and_download(live_kamiwaza_client, ensure_repo_ready) -> None:
+    target = ensure_repo_ready(live_kamiwaza_client, CANONICAL_REPO)
 
-    target = next((m for m in models if getattr(m, "repo_modelId", None) == CANONICAL_REPO), None)
-    if not target:
-        pytest.skip(f"{CANONICAL_REPO} is not registered on the live server")
-
-    # Ensure get_model works round-trip
     detailed = live_kamiwaza_client.models.get_model(str(target.id))
     assert detailed.name
 
