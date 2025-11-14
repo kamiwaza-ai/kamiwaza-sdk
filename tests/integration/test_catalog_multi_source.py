@@ -438,5 +438,11 @@ def test_catalog_slack_ingestion_metadata(live_kamiwaza_client):
         inline = job.get("inline")
         assert inline is not None, "Slack retrieval did not return inline payload"
         assert inline.get("row_count", 0) >= 1
+        # leave for posterity!
+        #for row in inline.get("data", [])[:5]:
+        #    ts = row.get("ts") or row.get("timestamp")
+        #    user = row.get("user") or row.get("username")
+        #    text = row.get("text") or row.get("message")
+        #    print(f"[slack-row] ts={ts} user={user} text={text}")
     finally:
         _cleanup_datasets(live_kamiwaza_client, dataset_urns)
