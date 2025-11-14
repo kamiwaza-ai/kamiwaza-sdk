@@ -39,8 +39,10 @@ class RetrievalService(BaseService):
     """High-level wrapper for dataset materialisation jobs."""
 
     _BASE_PATH = "/retrieval/retrieval"
+    _KAFKA_PLATFORM_TAG = "urn:li:dataset:(urn:li:dataplatform:kafka"
 
     def create_job(self, request: RetrievalRequest) -> RetrievalJob:
+        self._ensure_kafka_supported(request)
         try:
             payload = reveal_secrets(request.model_dump(exclude_none=True))
             response = self.client.post(
@@ -101,6 +103,15 @@ class RetrievalService(BaseService):
             options=options or None,
         )
         return self.create_job(request)
+
+    def _ensure_kafka_supported(self, request: RetrievalRequest) -> None:
+        urn = (request.dataset_urn or "").lower()
+        if self._KAFKA_PLATFORM_TAG in urn:
+            raise TransportNotSupportedError(
+                "Kafka datasets cannot be materialized via the Kamiwaza SDK yet; "
+                "use the Catalog service (e.g. client.get('/catalog/datasets/by-urn', params={'urn': <dataset_urn>})) "
+                "to retrieve connection metadata and connect directly."
+            )
 
     def _iter_sse(self, response) -> Iterator[RetrievalStreamEvent]:
         buffer: list[str] = []

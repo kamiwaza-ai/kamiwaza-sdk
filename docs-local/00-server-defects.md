@@ -89,5 +89,5 @@ Ingesting `objects/sample.json` via the S3 plugin succeeds, but calling `/retrie
 ### Kafka retrieval missing {#kafka-retrieval-missing}
 Kafka ingestion populates catalog containers/topics, but `/retrieval/retrieval/jobs` can't materialize topic metadata or events (`pytest tests/integration/test_catalog_multi_source.py::test_catalog_kafka_ingestion_metadata`). Until we have a streaming transport, keep the SDK test marked xfail to flag regressions.
 
-### Slack retrieval missing {#slack-retrieval-missing}
-Slack ingestion (when provided with `SLACK_TEST_TOKEN` + channel/team IDs) only writes metadata/documentation and cannot be replayed through retrieval. The backend should either expose the collected messages via retrieval or document that Slack datasets are catalog-only.
+### Slack retrieval missing _(resolved 2025-11-14)_ {#slack-retrieval-missing}
+Slack ingestion can now stream conversations (and optional replies) via the retrieval API when supplied with a bot token. Regression coverage: `tests/integration/test_catalog_multi_source.py::test_catalog_slack_ingestion_metadata` ingests a channel and asserts that `/retrieval/retrieval/jobs` returns inline rows when `SLACK_TEST_TOKEN`/`SLACK_TEST_CHANNEL`/`SLACK_TEST_TEAM` env vars are provided.

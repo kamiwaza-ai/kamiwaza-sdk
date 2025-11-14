@@ -4,7 +4,7 @@ from typing import Iterator
 
 import pytest
 
-from kamiwaza_sdk.exceptions import APIError, DatasetNotFoundError
+from kamiwaza_sdk.exceptions import APIError, DatasetNotFoundError, TransportNotSupportedError
 from kamiwaza_sdk.schemas.retrieval import RetrievalRequest
 from kamiwaza_sdk.services.retrieval import RetrievalResult, RetrievalService
 
@@ -172,3 +172,13 @@ def test_create_job_unwraps_secret_fields(dummy_client):
     assert method == "post"
     assert path == "/retrieval/retrieval/jobs"
     assert kwargs["json"]["credential_override"] == '{"token":"secret"}'
+
+
+def test_create_job_rejects_kafka_datasets(dummy_client):
+    service = RetrievalService(dummy_client({}))
+    request = RetrievalRequest(dataset_urn="urn:li:dataset:(urn:li:dataPlatform:kafka,topic,PROD)")
+
+    with pytest.raises(TransportNotSupportedError) as excinfo:
+        service.create_job(request)
+
+    assert "Kafka datasets" in str(excinfo.value)

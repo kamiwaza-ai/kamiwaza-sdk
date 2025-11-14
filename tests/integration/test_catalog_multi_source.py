@@ -420,9 +420,23 @@ def test_catalog_slack_ingestion_metadata(live_kamiwaza_client):
         assert dataset_urns, "Slack ingestion returned no datasets"
         dataset = _fetch_dataset(live_kamiwaza_client, dataset_urns[0])
         assert dataset["platform"] == "slack"
-        pytest.xfail(
-            "Slack datasets currently expose documentation only; retrieval transport pending; "
-            "see docs-local/00-server-defects.md#slack-retrieval-missing"
+
+        job = live_kamiwaza_client.post(
+            "/retrieval/retrieval/jobs",
+            json={
+                "dataset_urn": dataset_urns[0],
+                "transport": "inline",
+                "format_hint": "json",
+                "options": {
+                    "max_messages": 3,
+                    "include_replies": False,
+                },
+            },
         )
+
+        assert job["transport"] == "inline"
+        inline = job.get("inline")
+        assert inline is not None, "Slack retrieval did not return inline payload"
+        assert inline.get("row_count", 0) >= 1
     finally:
         _cleanup_datasets(live_kamiwaza_client, dataset_urns)

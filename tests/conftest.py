@@ -11,8 +11,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-def _load_local_env() -> None:
-    env_file = PROJECT_ROOT / ".env.local"
+def _load_env_file(env_file: Path) -> None:
     if not env_file.exists():
         return
     for raw_line in env_file.read_text().splitlines():
@@ -30,6 +29,23 @@ def _load_local_env() -> None:
             value = value[1:-1]
         if key not in os.environ:
             os.environ[key] = value
+
+def _load_local_env() -> None:
+    candidates: list[Path] = [PROJECT_ROOT / ".env.local"]
+    root = os.environ.get("KAMIWAZA_ROOT")
+    if root:
+        candidates.append(Path(root).expanduser() / ".env.local")
+
+    seen: set[Path] = set()
+    for env_file in candidates:
+        try:
+            resolved = env_file.resolve()
+        except FileNotFoundError:
+            resolved = env_file
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        _load_env_file(env_file)
 
 _load_local_env()
 
