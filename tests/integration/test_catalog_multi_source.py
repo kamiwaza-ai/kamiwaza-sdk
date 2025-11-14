@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 from typing import Dict, Iterable
 
 import pytest
@@ -132,7 +133,24 @@ def _ingest_object_dataset(
 
 
 def test_catalog_file_ingestion_metadata(live_kamiwaza_client, catalog_stack_environment):
-    file_root = catalog_stack_environment["file_root"]
+    server_root_candidates = [
+        Path.home() / "code" / "kamiwaza",
+        Path.home() / "kamiwaza",
+    ]
+    target_root = None
+    for candidate in server_root_candidates:
+        candidate_path = candidate / "tests" / "integration" / "services" / "ingestion" / "docker" / "state" / "test-data"
+        if candidate_path.exists():
+            target_root = candidate_path
+            break
+
+    if target_root is None:
+        checked = ", ".join(str((c / 'tests/integration/services/ingestion/docker/state/test-data').resolve()) for c in server_root_candidates)
+        pytest.xfail(
+            f"Ingestion folders for file ingestion do not exist; checked: {checked}"
+        )
+
+    file_root = str(target_root)
     dataset_urns: list[str] = []
     try:
         response = live_kamiwaza_client.ingestion.run_active(
