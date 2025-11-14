@@ -72,11 +72,11 @@ Spec `kamiwaza-openapi-spec.json` already reflects the `/ingestion/ingest/*` pre
 
 ## 2025-11-08
 
-### File ingest path constraints {#file-ingest-path-constraints}
+### File ingest path constraints _(resolved 2025-11-14)_ {#file-ingest-path-constraints}
 ```
 pytest tests/integration/test_catalog_multi_source.py -k file_ingestion_metadata
 ```
-The File ingester still hardcodes `/data` + `/shared` as the only allowed base directories. Running the SDK test against the multi-source stack points the ingester at `tests/integration/catalog_stack/state/test-data`, but the API responds 400 with "Path outside allowed directories". We need either a configurable allowlist exposed via the API or to broaden the default so CI fixtures (which live in the repo) can pass.
+Recent backend change whitelisted `tests/integration/catalog_stack/state/test-data`, so the File ingester now accepts the path we exercise in CI without the "Path outside allowed directories" error. Keep an eye on regressions if the allowlist changes again.
 
 ### File retrieval missing {#file-retrieval-missing}
 Even when the File ingester succeeds (manually seeded inside `/data`), the retrieval service refuses to materialize the dataset because it requires object-store metadata (`endpoint`, `location`) that file datasets do not have. Track the gap so we can either implement a local file transport or document the limitation.

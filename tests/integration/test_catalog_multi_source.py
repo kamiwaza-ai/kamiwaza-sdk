@@ -135,17 +135,11 @@ def test_catalog_file_ingestion_metadata(live_kamiwaza_client, catalog_stack_env
     file_root = catalog_stack_environment["file_root"]
     dataset_urns: list[str] = []
     try:
-        try:
-            response = live_kamiwaza_client.ingestion.run_active(
-                "file",
-                path=file_root,
-                recursive=True,
-            )
-        except APIError as exc:  # pragma: no cover - depends on server config
-            pytest.xfail(
-                "File ingester still rejects host paths outside approved directories; "
-                "see docs-local/00-server-defects.md#file-ingest-path-constraints"
-            )
+        response = live_kamiwaza_client.ingestion.run_active(
+            "file",
+            path=file_root,
+            recursive=True,
+        )
         dataset_urns = response.urns
         assert dataset_urns, "file ingestion did not return dataset URNs"
         dataset = _fetch_dataset(live_kamiwaza_client, dataset_urns[0])

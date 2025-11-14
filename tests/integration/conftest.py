@@ -8,6 +8,8 @@ import time
 from pathlib import Path
 from typing import Callable, Iterator
 
+import urllib3
+
 import pytest
 import requests
 from huggingface_hub import snapshot_download
@@ -61,6 +63,8 @@ def live_server_available(live_base_url: str) -> str:
 
     health_url = f"{live_base_url}/ping"
     os.environ.setdefault("KAMIWAZA_VERIFY_SSL", "false")
+    if not _verify_ssl_enabled():
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
     try:
         response = requests.get(health_url, timeout=5, verify=_verify_ssl_enabled())
     except requests.RequestException as exc:  # pragma: no cover - network guard
