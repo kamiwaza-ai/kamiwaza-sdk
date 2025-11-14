@@ -78,8 +78,8 @@ pytest tests/integration/test_catalog_multi_source.py -k file_ingestion_metadata
 ```
 Recent backend change whitelisted `tests/integration/catalog_stack/state/test-data`, so the File ingester now accepts the path we exercise in CI without the "Path outside allowed directories" error. Keep an eye on regressions if the allowlist changes again.
 
-### File retrieval missing {#file-retrieval-missing}
-Even when the File ingester succeeds (manually seeded inside `/data`), the retrieval service refuses to materialize the dataset because it requires object-store metadata (`endpoint`, `location`) that file datasets do not have. Track the gap so we can either implement a local file transport or document the limitation.
+### File retrieval missing _(resolved 2025-11-14)_ {#file-retrieval-missing}
+File ingests that point at `tests/integration/catalog_stack/state/test-data` can return inline payloads via `/retrieval/retrieval/jobs` once the backend sets `RETRIEVAL_FILESYSTEM_ALLOWED_ROOTS` to include that path. Regression covered by `tests/integration/test_catalog_multi_source.py::test_catalog_file_ingestion_metadata`, which ingests the sample tree and asserts `row_count >= 1` from the inline job response (skips when the server has filesystem retrieval disabled).
 
 ### Object JSON retrieval {#object-json-retrieval}
 Ingesting `objects/sample.json` via the S3 plugin succeeds, but calling `/retrieval/retrieval/jobs` with `format_hint="json"` returns 422 "Unsupported transport". Repro: `pytest tests/integration/test_catalog_multi_source.py::test_catalog_object_ingestion_inline_retrieval`. Retrieving Parquet blobs is supposed to work once the inline fix rolls out broadly, so this entry tracks the non-tabular JSON gap specifically.

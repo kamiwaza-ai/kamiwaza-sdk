@@ -142,12 +142,59 @@ def test_catalog_file_ingestion_metadata(live_kamiwaza_client, catalog_stack_env
         )
         dataset_urns = response.urns
         assert dataset_urns, "file ingestion did not return dataset URNs"
-        dataset = _fetch_dataset(live_kamiwaza_client, dataset_urns[0])
-        assert dataset["platform"] == "file"
-        pytest.xfail(
-            "Retrieval service cannot materialize file-system datasets yet; "
-            "see docs-local/00-server-defects.md#file-retrieval-missing"
-        )
+        target_urn = None
+        format_hint = None
+        for urn in dataset_urns:
+            dataset = _fetch_dataset(live_kamiwaza_client, urn)
+            assert dataset["platform"] == "file"
+            path = (dataset.get("properties") or {}).get("path", "") or ""
+            lowered = path.lower()
+            if lowered.endswith(".parquet"):
+                target_urn = urn
+                format_hint = "parquet"
+                break
+            if lowered.endswith(".json"):
+                target_urn = urn
+                format_hint = "json"
+                break
+            if lowered.endswith(".csv"):
+                target_urn = urn
+                format_hint = "csv"
+                break
+
+        if not target_urn:
+            pytest.skip("File ingester did not produce a dataset with a supported file extension")
+
+        target_dataset = _fetch_dataset(live_kamiwaza_client, target_urn)
+        props = dict(target_dataset.get("properties") or {})
+        if props.get("location") is None and props.get("path"):
+            props["location"] = props["path"]
+            live_kamiwaza_client.patch(
+                "/catalog/datasets/by-urn",
+                params={"urn": target_urn},
+                json={"properties": props},
+            )
+
+        try:
+            job = live_kamiwaza_client.post(
+                "/retrieval/retrieval/jobs",
+                json={
+                    "dataset_urn": target_urn,
+                    "transport": "inline",
+                    "format_hint": format_hint or "parquet",
+                },
+            )
+        except APIError as exc:
+            detail = (exc.response_text or "").lower()
+            if exc.status_code == 400 and "filesystem datasets are disabled" in detail:
+                pytest.skip(
+                    "Filesystem retrieval disabled on server (set RETRIEVAL_FILESYSTEM_ALLOWED_ROOTS to enable)"
+                )
+            raise
+
+        inline = job.get("inline")
+        assert inline is not None, "Inline retrieval did not return payload"
+        assert inline["row_count"] >= 1
     finally:
         _cleanup_datasets(live_kamiwaza_client, dataset_urns)
 
