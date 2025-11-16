@@ -403,15 +403,21 @@ def test_catalog_kafka_ingestion_metadata(live_kamiwaza_client, catalog_stack_en
 def test_catalog_slack_ingestion_metadata(live_kamiwaza_client):
     token = os.environ.get("SLACK_TEST_TOKEN")
     channel = os.environ.get("SLACK_TEST_CHANNEL")
+    multi_channels = os.environ.get("SLACK_TEST_CHANNELS")
     team_id = os.environ.get("SLACK_TEST_TEAM")
     if not (token and channel and team_id):
         pytest.skip("Provide SLACK_TEST_TOKEN/SLACK_TEST_CHANNEL/SLACK_TEST_TEAM to exercise Slack ingestion")
 
+    channel_list: list[str] = []
+    if multi_channels:
+        channel_list.extend([item.strip() for item in multi_channels.split(",") if item.strip()])
+    if not channel_list:
+        channel_list = [channel]
+
     dataset_urns: list[str] = []
     try:
-        response = live_kamiwaza_client.ingestion.run_active(
-            "slack",
-            channel_id=channel,
+        response = live_kamiwaza_client.ingestion.run_slack_ingest(
+            channels=channel_list,
             token=token,
             team_id=team_id,
             max_messages=3,
@@ -420,29 +426,21 @@ def test_catalog_slack_ingestion_metadata(live_kamiwaza_client):
         assert dataset_urns, "Slack ingestion returned no datasets"
         dataset = _fetch_dataset(live_kamiwaza_client, dataset_urns[0])
         assert dataset["platform"] == "slack"
+        props = dataset.get("properties") or {}
+        resolved_channel = props.get("channel_id") or channel_list[0]
 
-        job = live_kamiwaza_client.post(
-            "/retrieval/retrieval/jobs",
-            json={
-                "dataset_urn": dataset_urns[0],
-                "transport": "inline",
-                "format_hint": "json",
-                "options": {
-                    "max_messages": 3,
-                    "include_replies": False,
-                },
-            },
+        rows = live_kamiwaza_client.retrieval.slack_messages(
+            dataset_urns[0],
+            channels=[resolved_channel],
+            max_messages=3,
+            include_replies=False,
         )
 
-        assert job["transport"] == "inline"
-        inline = job.get("inline")
-        assert inline is not None, "Slack retrieval did not return inline payload"
-        assert inline.get("row_count", 0) >= 1
-        # leave for posterity!
-        #for row in inline.get("data", [])[:5]:
-        #    ts = row.get("ts") or row.get("timestamp")
-        #    user = row.get("user") or row.get("username")
-        #    text = row.get("text") or row.get("message")
-        #    print(f"[slack-row] ts={ts} user={user} text={text}")
+        assert rows, "Slack retrieval did not return inline payload"
+        for row in rows[:5]:
+            ts = row.get("ts") or row.get("timestamp")
+            user = row.get("user") or row.get("username")
+            text = row.get("text") or row.get("message")
+            print(f"[slack-row] ts={ts} user={user} text={text}")
     finally:
         _cleanup_datasets(live_kamiwaza_client, dataset_urns)

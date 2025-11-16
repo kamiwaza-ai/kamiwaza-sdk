@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Iterator, Optional
+from datetime import datetime
+from typing import Iterator, Optional, Sequence
 
 from ..exceptions import (
     APIError,
@@ -13,6 +14,7 @@ from ..exceptions import (
     TransportNotSupportedError,
 )
 from .base_service import BaseService
+from pydantic import SecretStr
 from ..schemas.retrieval import (
     GrpcHandshake,
     InlineData,
@@ -112,6 +114,63 @@ class RetrievalService(BaseService):
                 "use the Catalog service (e.g. client.get('/catalog/datasets/by-urn', params={'urn': <dataset_urn>})) "
                 "to retrieve connection metadata and connect directly."
             )
+
+    def slack_messages(
+        self,
+        dataset_urn: str,
+        *,
+        channels: Sequence[str] | None = None,
+        include_replies: bool | None = None,
+        max_messages: int | None = None,
+        since_ts: str | datetime | None = None,
+        until_ts: str | datetime | None = None,
+        credential_override: str | SecretStr | None = None,
+        transport: TransportType | str = TransportType.INLINE,
+        format_hint: str = "json",
+    ) -> list[dict]:
+        options: dict[str, object] = {}
+        if channels:
+            options["channels"] = list(channels)
+        if include_replies is not None:
+            options["include_replies"] = bool(include_replies)
+        if max_messages is not None:
+            if max_messages <= 0:
+                raise ValueError("max_messages must be positive")
+            options["max_messages"] = max_messages
+        if since_ts:
+            options["since_ts"] = self._normalize_timestamp(since_ts)
+        if until_ts:
+            options["until_ts"] = self._normalize_timestamp(until_ts)
+
+        cred: SecretStr | None = None
+        if isinstance(credential_override, SecretStr):
+            cred = credential_override
+        elif isinstance(credential_override, str):
+            cred = SecretStr(credential_override)
+
+        transport_value = transport.value if isinstance(transport, TransportType) else str(transport)
+
+        request = RetrievalRequest(
+            dataset_urn=dataset_urn,
+            transport=transport_value,
+            format_hint=format_hint,
+            credential_override=cred,
+            options=options or None,
+        )
+
+        result = self.materialize(request)
+        if not result.inline:
+            raise TransportNotSupportedError("Slack retrieval requires inline transport")
+        data = result.inline.data
+        if isinstance(data, list):
+            return data
+        return [data]
+
+    @staticmethod
+    def _normalize_timestamp(value: str | datetime) -> str:
+        if isinstance(value, datetime):
+            return value.isoformat()
+        return value
 
     def _iter_sse(self, response) -> Iterator[RetrievalStreamEvent]:
         buffer: list[str] = []

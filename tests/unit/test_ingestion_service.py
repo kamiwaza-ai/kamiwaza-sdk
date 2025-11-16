@@ -70,3 +70,40 @@ def test_ingestion_health_hits_endpoint(dummy_client):
 
     assert health["status"] == "ok"
     assert client.calls[0][:2] == ("get", "/ingestion/health")
+
+
+def test_run_slack_ingest_builds_payload(dummy_client):
+    responses = {
+        ("post", "/ingestion/ingest/run"): {"urns": ["urn:li:dataset:(slack,C1,PROD)"], "status": "success", "errors": []}
+    }
+    client = dummy_client(responses)
+    service = IngestionService(client)
+
+    result = service.run_slack_ingest(
+        channels=["C1", "#general"],
+        channel_selector="all",
+        include_dm=True,
+        token="xoxb-123",
+        token_secret_name="slack_bot",
+        team_id="T1",
+        max_messages=25,
+        since_ts="2024-10-01T00:00:00Z",
+        until_ts="2024-10-10T00:00:00Z",
+        extra_kwargs={"force_refresh": True},
+    )
+
+    assert result.urns
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("post", "/ingestion/ingest/run")
+    body = kwargs["json"]
+    assert body["source_type"] == "slack"
+    slack_kwargs = body["kwargs"]
+    assert slack_kwargs["channels"] == ["C1", "#general"]
+    assert slack_kwargs["channel_selector"] == "all"
+    assert slack_kwargs["include_dm"] is True
+    assert slack_kwargs["token"] == "xoxb-123"
+    assert slack_kwargs["token_secret_name"] == "slack_bot"
+    assert slack_kwargs["team_id"] == "T1"
+    assert slack_kwargs["max_messages"] == 25
+    assert slack_kwargs["since_ts"] == "2024-10-01T00:00:00Z"
+    assert slack_kwargs["force_refresh"] is True

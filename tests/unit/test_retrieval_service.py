@@ -4,6 +4,8 @@ from typing import Iterator
 
 import pytest
 
+from datetime import datetime
+
 from kamiwaza_sdk.exceptions import APIError, DatasetNotFoundError, TransportNotSupportedError
 from kamiwaza_sdk.schemas.retrieval import RetrievalRequest
 from kamiwaza_sdk.services.retrieval import RetrievalResult, RetrievalService
@@ -182,3 +184,58 @@ def test_create_job_rejects_kafka_datasets(dummy_client):
         service.create_job(request)
 
     assert "Kafka datasets" in str(excinfo.value)
+
+
+def test_slack_messages_builds_request(dummy_client):
+    job_payload = {
+        "job_id": "job-slack",
+        "transport": "inline",
+        "status": "complete",
+        "dataset": {"urn": "urn", "platform": "slack", "path": None, "format": None},
+        "inline": {"media_type": "application/json", "data": [{"ts": "1"}], "row_count": 1, "metadata": {}},
+    }
+    responses = {("post", "/retrieval/retrieval/jobs"): job_payload}
+    client = dummy_client(responses)
+    service = RetrievalService(client)
+
+    rows = service.slack_messages(
+        "urn:li:dataset:(urn:li:dataPlatform:slack,C1,PROD)",
+        channels=["C1", "C2"],
+        include_replies=True,
+        max_messages=10,
+        since_ts="2024-10-01T00:00:00Z",
+        until_ts=datetime(2024, 10, 10, 0, 0, 0),
+        credential_override="token",
+    )
+
+    assert rows == [{"ts": "1"}]
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("post", "/retrieval/retrieval/jobs")
+    payload = kwargs["json"]
+    assert payload["dataset_urn"].startswith("urn:li:dataset")
+    assert payload["transport"] == "inline"
+    options = payload["options"]
+    assert options["channels"] == ["C1", "C2"]
+    assert options["include_replies"] is True
+    assert options["max_messages"] == 10
+    assert options["since_ts"] == "2024-10-01T00:00:00Z"
+    assert options["until_ts"].startswith("2024-10-10")
+    assert payload["credential_override"] == "token"
+
+
+def test_slack_messages_requires_inline(dummy_client):
+    job_payload = {
+        "job_id": "job-slack",
+        "transport": "sse",
+        "status": "queued",
+        "dataset": {"urn": "urn", "platform": "slack", "path": None, "format": None},
+    }
+    stream_response = DummyResponse(["event: complete", "data: {}", ""])
+    responses = {
+        ("post", "/retrieval/retrieval/jobs"): job_payload,
+        ("get", "/retrieval/retrieval/jobs/job-slack/stream"): stream_response,
+    }
+    service = RetrievalService(dummy_client(responses))
+
+    with pytest.raises(TransportNotSupportedError):
+        service.slack_messages("urn:li:dataset:(urn:li:dataPlatform:slack,C1,PROD)", transport="sse")
