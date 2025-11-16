@@ -65,7 +65,29 @@ The earlier `location` mismatch defect still applies; ingestion writes `properti
 - **Retrieval rejects datasets missing `properties.location`**  
   Path: `POST /retrieval/retrieval/jobs`  
   Repro: ingest via S3 plugin (which stores `properties.path`), then attempt retrieval.  
-  Result: API responds 400 `"Dataset is missing a location property"`. Retrieval service expects `properties["location"]`, but ingestion writes `path`. Manual PATCH adding `location` works around it.
+  Result: API responds 400 `"Dataset is missing a location property"`. Retrieval service expects `properties["location"]`, but ingestion writes `path`. Manual PATCH adding `location` works around it.  
+  **Status – 2025-11-16**: Server now backfills `properties.location` directly. Removed the SDK-side patching in `tests/integration/test_catalog_ingest_retrieval.py` + `test_catalog_multi_source.py` and reran `pytest tests/integration/test_catalog_ingest_retrieval.py::test_s3_ingest_and_retrieve_inline` twice with clean passes.
+
+### Retrieval gRPC transport fails {#retrieval-grpc-transport-fails}
+```
+POST /retrieval/retrieval/jobs HTTP/1.1
+Content-Type: application/json
+
+{
+  "dataset_urn": "urn:li:dataset:(urn:li:dataPlatform:s3,kamiwaza-sdk-tests/sdk-integration/visitors.parquet,PROD)",
+  "transport": "grpc",
+  "format_hint": "parquet",
+  "credential_override": "{\"aws_access_key_id\":\"minioadmin\",\"aws_secret_access_key\":\"minioadmin\",\"endpoint_override\":\"http://localhost:9100\",\"region\":\"us-east-1\"}"
+}
+```
+
+Response:
+```
+HTTP/1.1 500 Internal Server Error
+{"detail":"Internal Server Error"}
+```
+
+The same dataset/materialisation succeeds via inline transport, but requesting `transport="grpc"` never returns a handshake. `tests/integration/test_catalog_ingest_retrieval.py::test_s3_ingest_and_retrieve_grpc` is marked `pytest.skip` until the server can establish a gRPC job. Tracked as `INC-006` in `docs-local/03-sdk-inconsistencies.md`.
 
 ### Ingestion router mounted as `/ingestion/ingest` _(resolved 2025-11-12)_
 Spec `kamiwaza-openapi-spec.json` already reflects the `/ingestion/ingest/*` prefix, so the doc drift noted earlier has been cleared. Any lingering references to `/ingest/*` in docs should be updated; the SDK now consistently calls `/ingestion/ingest/run` and friends.

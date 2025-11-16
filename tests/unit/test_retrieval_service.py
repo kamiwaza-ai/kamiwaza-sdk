@@ -136,6 +136,28 @@ def test_materialize_sse_returns_stream(dummy_client):
     assert events[0].event == "chunk"
 
 
+def test_materialize_grpc_returns_handshake(dummy_client):
+    job_payload = {
+        "job_id": "job-3",
+        "transport": "grpc",
+        "status": "queued",
+        "dataset": {"urn": "urn", "platform": "s3", "path": None, "format": None},
+        "grpc": {
+            "endpoint": "grpc://localhost:50051",
+            "token": "secret",
+            "expires_at": "2025-01-01T00:00:00Z",
+            "protocol": "kamiwaza.retrieval.v1",
+        },
+    }
+    responses = {("post", "/retrieval/retrieval/jobs"): job_payload}
+    service = RetrievalService(dummy_client(responses))
+
+    result = service.materialize(RetrievalRequest(dataset_urn="urn", transport="grpc"))
+
+    assert result.grpc is not None
+    assert result.grpc.endpoint == "grpc://localhost:50051"
+
+
 def test_create_job_translates_not_found():
     class FailingClient:
         def post(self, *_args, **_kwargs):

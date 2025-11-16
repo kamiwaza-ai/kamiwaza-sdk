@@ -75,3 +75,50 @@ def test_secret_client_sets_clobber_flag(dummy_client):
 def test_dataset_client_encode_helper():
     encoded = DatasetClient.encode_path_urn("urn:li:dataset:(s3,my path,PROD)")
     assert "%2F" in encoded or "%28" in encoded
+
+
+def test_catalog_service_normalizes_path_to_location(dummy_client):
+    dataset_urn = "urn:li:dataset:(s3,my,PROD)"
+    dataset_response = {
+        "urn": dataset_urn,
+        "name": "demo",
+        "platform": "s3",
+        "environment": "PROD",
+        "tags": [],
+        "properties": {"path": "s3://bucket/key"},
+    }
+    responses = {
+        ("get", "/catalog/datasets/by-urn"): dataset_response,
+    }
+    client = dummy_client(responses)
+    service = CatalogService(client)
+
+    dataset = service.get_dataset(dataset_urn)
+
+    assert dataset.properties["location"] == "s3://bucket/key"
+    assert "location" not in dataset_response["properties"], "should not mutate source dict"
+
+
+def test_catalog_service_normalizes_location_to_path(dummy_client):
+    dataset_urn = "urn:li:dataset:(s3,my,PROD)"
+    raw_properties = {"location": "s3://bucket/key"}
+    list_payload = [
+        {
+            "urn": dataset_urn,
+            "name": "demo",
+            "platform": "s3",
+            "environment": "PROD",
+            "tags": [],
+            "properties": raw_properties,
+        }
+    ]
+    responses = {
+        ("get", "/catalog/datasets/"): list_payload,
+    }
+    client = dummy_client(responses)
+    service = CatalogService(client)
+
+    datasets = service.list_datasets()
+
+    assert datasets[0].properties["path"] == "s3://bucket/key"
+    assert "path" not in raw_properties, "original properties dict should remain untouched"

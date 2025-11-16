@@ -31,17 +31,6 @@ def _ingest_sample_dataset(client, ingestion_environment: Dict[str, str]) -> str
     assert dataset["urn"] == dataset_urn
     assert dataset["properties"]["path"].startswith("s3://")
 
-    endpoint = ingestion_environment["endpoint"]
-    updated_properties = dict(dataset["properties"])
-    updated_properties.update({"endpoint": endpoint, "region": "us-east-1"})
-    if "location" not in updated_properties and updated_properties.get("path"):
-        updated_properties["location"] = updated_properties["path"]
-    client.patch(
-        "/catalog/datasets/by-urn",
-        params={"urn": dataset_urn},
-        json={"properties": updated_properties},
-    )
-
     return dataset_urn
 
 

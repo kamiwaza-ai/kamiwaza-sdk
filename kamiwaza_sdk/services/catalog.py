@@ -191,16 +191,36 @@ class CatalogService(BaseService):
         self.containers = ContainerClient(client)
         self.secrets = SecretClient(client)
 
+    @staticmethod
+    def _normalize_dataset(dataset: Dataset) -> Dataset:
+        """Ensure catalog metadata always exposes matching `path`/`location` keys."""
+
+        properties: Dict[str, Any] = dict(dataset.properties or {})
+        path = properties.get("path")
+        location = properties.get("location")
+        updated = False
+        if path and not location:
+            properties["location"] = path
+            updated = True
+        elif location and not path:
+            properties["path"] = location
+            updated = True
+        if not updated:
+            return dataset
+        return dataset.model_copy(update={"properties": properties})
+
     def encode_urn(self, urn: str) -> str:
         """Expose a helper for percent-encoding URNs."""
         return _encode_path_segment(urn)
 
     def list_datasets(self, query: Optional[str] = None) -> List[Dataset]:
         """Backward-compatible helper delegating to the dataset client."""
-        return self.datasets.list(query=query)
+        datasets = self.datasets.list(query=query)
+        return [self._normalize_dataset(dataset) for dataset in datasets]
 
     def get_dataset(self, dataset_urn: str) -> Dataset:
-        return self.datasets.get(dataset_urn)
+        dataset = self.datasets.get(dataset_urn)
+        return self._normalize_dataset(dataset)
 
     def create_dataset(
         self,
@@ -226,7 +246,8 @@ class CatalogService(BaseService):
             dataset_schema=dataset_schema,
         )
         dataset_urn = self.datasets.create(payload)
-        return self.datasets.get(dataset_urn)
+        dataset = self.datasets.get(dataset_urn)
+        return self._normalize_dataset(dataset)
 
     def list_containers(self, query: Optional[str] = None) -> List[Container]:
         return self.containers.list(query=query)

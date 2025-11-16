@@ -4,10 +4,12 @@ import json
 import os
 from pathlib import Path
 from typing import Dict, Iterable
+from uuid import uuid4
 
 import pytest
 
 from kamiwaza_sdk.exceptions import APIError
+from kamiwaza_sdk.schemas.catalog import ContainerCreate
 
 pytestmark = [pytest.mark.integration, pytest.mark.withoutresponses]
 
@@ -40,7 +42,6 @@ def _ensure_retrieval_metadata(client, urn: str, endpoint: str) -> None:
     props.setdefault("endpoint_url", endpoint)
     props.setdefault("endpoint_override", endpoint)
     props.setdefault("region", props.get("region", "us-east-1"))
-    props.setdefault("location", props.get("path", ""))
     client.patch(
         "/catalog/datasets/by-urn",
         params={"urn": urn},
@@ -344,6 +345,39 @@ def test_catalog_large_object_sse_retrieval(live_kamiwaza_client, catalog_stack_
             endpoint=cfg["endpoint"],
         )
     finally:
+        _cleanup_datasets(live_kamiwaza_client, dataset_urns)
+
+
+def test_catalog_container_membership_round_trip(live_kamiwaza_client, catalog_stack_environment):
+    cfg = catalog_stack_environment["object"]
+    dataset_urns: list[str] = []
+    container_urn: str | None = None
+    try:
+        target, dataset_urns = _ingest_object_dataset(
+            live_kamiwaza_client,
+            bucket=cfg["bucket"],
+            key=cfg["small_key"],
+            endpoint=cfg["endpoint"],
+            region=cfg["region"],
+        )
+        containers = live_kamiwaza_client.catalog.containers
+        container_payload = ContainerCreate(
+            name=f"sdk-catalog-{uuid4().hex[:8]}",
+            platform="integration",
+        )
+        container_urn = containers.create(container_payload)
+        containers.add_dataset(container_urn, target)
+        container = containers.get(container_urn)
+        assert target in container.datasets
+        containers.remove_dataset(container_urn, target)
+        refreshed = containers.get(container_urn)
+        assert target not in refreshed.datasets
+    finally:
+        if container_urn:
+            try:
+                live_kamiwaza_client.catalog.containers.delete(container_urn)
+            except APIError:
+                pass
         _cleanup_datasets(live_kamiwaza_client, dataset_urns)
 
 
