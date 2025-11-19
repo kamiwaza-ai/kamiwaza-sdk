@@ -8,7 +8,9 @@ Python client library for interacting with the Kamiwaza AI Platform. This SDK pr
 pip install kamiwaza-sdk
 ```
 
-> **Note:** This SDK (version 0.5.1+) is incompatible with Kamiwaza versions before 0.5.1. Please ensure you're using the latest version of Kamiwaza.
+> **Naming note:** Install the package as `kamiwaza-sdk`, but import it as `kamiwaza_sdk`. A deprecated `kamiwaza_client` alias remains for older snippets, though new code should prefer `kamiwaza_sdk`.
+
+> **Version compatibility:** This SDK (version 0.5.1+) is incompatible with Kamiwaza versions before 0.5.1. Please ensure you're using the latest version of Kamiwaza.
 
 ## Python SDK Usage
 

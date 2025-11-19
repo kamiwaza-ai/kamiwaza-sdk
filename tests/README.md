@@ -2,6 +2,8 @@
 
 M0 establishes the shared pytest scaffolding so every feature ships with deterministic unit coverage, docker-backed integration checks, and opt-in live/e2e smoke tests.
 
+> **Naming note:** Install the SDK via `pip install kamiwaza-sdk` and import it as `kamiwaza_sdk`. The legacy `kamiwaza_client` module name still works via a compatibility shim so older tests don't break, but new suites should stick to `kamiwaza_sdk`.
+
 ## Markers & Layers
 - `unit` – fast, deterministic tests with no external services.
 - `contract` – schema/fixture verification against recorded API responses.
