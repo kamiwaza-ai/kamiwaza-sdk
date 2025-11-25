@@ -27,7 +27,7 @@ Root cause: PATs must use the platform audience so the Keycloak validator recogn
 
 ### Retrieval inline jobs return 500 {#retrieval-inline-jobs-return-500}
 ```
-POST /retrieval/retrieval/jobs HTTP/1.1
+POST /retrieval/jobs HTTP/1.1
 Authorization: Bearer <admin token>
 Content-Type: application/json
 
@@ -63,14 +63,14 @@ The earlier `location` mismatch defect still applies; ingestion writes `properti
   Result: dataset metadata (and downstream retrieval requests) carried the redundant slash, pointing at `s3://kamiwaza-sdk-tests//sdk-integration/visitors.parquet`. Root cause fixed server-side; SDK formatter no longer emits the malformed URN, so this item can fall off the open defect list unless it regresses.
 
 - **Retrieval rejects datasets missing `properties.location`**  
-  Path: `POST /retrieval/retrieval/jobs`  
+  Path: `POST /retrieval/jobs`  
   Repro: ingest via S3 plugin (which stores `properties.path`), then attempt retrieval.  
   Result: API responds 400 `"Dataset is missing a location property"`. Retrieval service expects `properties["location"]`, but ingestion writes `path`. Manual PATCH adding `location` works around it.  
   **Status – 2025-11-16**: Server now backfills `properties.location` directly. Removed the SDK-side patching in `tests/integration/test_catalog_ingest_retrieval.py` + `test_catalog_multi_source.py` and reran `pytest tests/integration/test_catalog_ingest_retrieval.py::test_s3_ingest_and_retrieve_inline` twice with clean passes.
 
 ### Retrieval gRPC transport fails {#retrieval-grpc-transport-fails}
 ```
-POST /retrieval/retrieval/jobs HTTP/1.1
+POST /retrieval/jobs HTTP/1.1
 Content-Type: application/json
 
 {
@@ -101,15 +101,15 @@ pytest tests/integration/test_catalog_multi_source.py -k file_ingestion_metadata
 Recent backend change whitelisted `tests/integration/catalog_stack/state/test-data`, so the File ingester now accepts the path we exercise in CI without the "Path outside allowed directories" error. Keep an eye on regressions if the allowlist changes again.
 
 ### File retrieval missing _(resolved 2025-11-14)_ {#file-retrieval-missing}
-File ingests that point at `tests/integration/catalog_stack/state/test-data` can return inline payloads via `/retrieval/retrieval/jobs` once the backend sets `RETRIEVAL_FILESYSTEM_ALLOWED_ROOTS` to include that path. Regression covered by `tests/integration/test_catalog_multi_source.py::test_catalog_file_ingestion_metadata`, which ingests the sample tree and asserts `row_count >= 1` from the inline job response (skips when the server has filesystem retrieval disabled).
+File ingests that point at `tests/integration/catalog_stack/state/test-data` can return inline payloads via `/retrieval/jobs` once the backend sets `RETRIEVAL_FILESYSTEM_ALLOWED_ROOTS` to include that path. Regression covered by `tests/integration/test_catalog_multi_source.py::test_catalog_file_ingestion_metadata`, which ingests the sample tree and asserts `row_count >= 1` from the inline job response (skips when the server has filesystem retrieval disabled).
 
 ### Object JSON retrieval {#object-json-retrieval}
-Ingesting `objects/sample.json` via the S3 plugin succeeds, but calling `/retrieval/retrieval/jobs` with `format_hint="json"` returns 422 "Unsupported transport". Repro: `pytest tests/integration/test_catalog_multi_source.py::test_catalog_object_ingestion_inline_retrieval`. Retrieving Parquet blobs is supposed to work once the inline fix rolls out broadly, so this entry tracks the non-tabular JSON gap specifically.
+Ingesting `objects/sample.json` via the S3 plugin succeeds, but calling `/retrieval/jobs` with `format_hint="json"` returns 422 "Unsupported transport". Repro: `pytest tests/integration/test_catalog_multi_source.py::test_catalog_object_ingestion_inline_retrieval`. Retrieving Parquet blobs is supposed to work once the inline fix rolls out broadly, so this entry tracks the non-tabular JSON gap specifically.
 
 
 
 ### Kafka retrieval missing {#kafka-retrieval-missing}
-Kafka ingestion populates catalog containers/topics, but `/retrieval/retrieval/jobs` can't materialize topic metadata or events (`pytest tests/integration/test_catalog_multi_source.py::test_catalog_kafka_ingestion_metadata`). Until we have a streaming transport, keep the SDK test marked xfail to flag regressions.
+Kafka ingestion populates catalog containers/topics, but `/retrieval/jobs` can't materialize topic metadata or events (`pytest tests/integration/test_catalog_multi_source.py::test_catalog_kafka_ingestion_metadata`). Until we have a streaming transport, keep the SDK test marked xfail to flag regressions.
 
 ### Slack retrieval missing _(resolved 2025-11-14)_ {#slack-retrieval-missing}
-Slack ingestion can now stream conversations (and optional replies) via the retrieval API when supplied with a bot token. Regression coverage: `tests/integration/test_catalog_multi_source.py::test_catalog_slack_ingestion_metadata` ingests a channel and asserts that `/retrieval/retrieval/jobs` returns inline rows when `SLACK_TEST_TOKEN`/`SLACK_TEST_CHANNEL`/`SLACK_TEST_TEAM` env vars are provided.
+Slack ingestion can now stream conversations (and optional replies) via the retrieval API when supplied with a bot token. Regression coverage: `tests/integration/test_catalog_multi_source.py::test_catalog_slack_ingestion_metadata` ingests a channel and asserts that `/retrieval/jobs` returns inline rows when `SLACK_TEST_TOKEN`/`SLACK_TEST_CHANNEL`/`SLACK_TEST_TEAM` env vars are provided.

@@ -41,4 +41,4 @@ for event in client.retrieval.stream_job(job.job_id):
 ```
 
 > **Routing note:** the router is mounted under `/retrieval`, so the live paths
-> are `/retrieval/retrieval/jobs`, `/retrieval/retrieval/jobs/{job_id}`, etc.
+> are `/retrieval/jobs`, `/retrieval/jobs/{job_id}`, etc.

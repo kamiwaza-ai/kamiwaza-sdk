@@ -40,7 +40,7 @@ class RetrievalResult:
 class RetrievalService(BaseService):
     """High-level wrapper for dataset materialisation jobs."""
 
-    _BASE_PATH = "/retrieval/retrieval"
+    _BASE_PATH = "/retrieval"
     _KAFKA_PLATFORM_TAG = "urn:li:dataset:(urn:li:dataplatform:kafka"
 
     def create_job(self, request: RetrievalRequest) -> RetrievalJob:

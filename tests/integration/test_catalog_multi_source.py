@@ -64,7 +64,7 @@ def _run_inline_retrieval(client, dataset_urn: str, *, format_hint: str, endpoin
             }
         ),
     }
-    job = client.post("/retrieval/retrieval/jobs", json=payload)
+    job = client.post("/retrieval/jobs", json=payload)
     assert job["transport"] == "inline"
     inline = job.get("inline")
     assert inline is not None and inline["row_count"] > 0
@@ -86,11 +86,11 @@ def _run_sse_retrieval(client, dataset_urn: str, *, format_hint: str, endpoint: 
             }
         ),
     }
-    job = client.post("/retrieval/retrieval/jobs", json=payload)
+    job = client.post("/retrieval/jobs", json=payload)
     assert job["transport"] == "sse"
     job_id = job["job_id"]
     response = client.get(
-        f"/retrieval/retrieval/jobs/{job_id}/stream",
+        f"/retrieval/jobs/{job_id}/stream",
         expect_json=False,
         stream=True,
     )
@@ -196,7 +196,7 @@ def test_catalog_file_ingestion_metadata(live_kamiwaza_client, catalog_stack_env
 
         try:
             job = live_kamiwaza_client.post(
-                "/retrieval/retrieval/jobs",
+                "/retrieval/jobs",
                 json={
                     "dataset_urn": target_urn,
                     "transport": "inline",
@@ -400,7 +400,7 @@ def test_catalog_postgres_ingestion_metadata(live_kamiwaza_client, catalog_stack
         dataset = _fetch_dataset(live_kamiwaza_client, orders)
         assert dataset["platform"] == "postgres"
         job = live_kamiwaza_client.post(
-            "/retrieval/retrieval/jobs",
+            "/retrieval/jobs",
             json={
                 "dataset_urn": orders,
                 "transport": "inline",

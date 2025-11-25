@@ -38,13 +38,13 @@ def test_create_job_returns_model(dummy_client):
         "dataset": {"urn": "urn", "platform": "s3", "path": None, "format": None},
         "inline": {"media_type": "application/json", "data": [{"a": 1}], "row_count": 1, "metadata": {}},
     }
-    responses = {("post", "/retrieval/retrieval/jobs"): job_payload}
+    responses = {("post", "/retrieval/jobs"): job_payload}
     service = RetrievalService(dummy_client(responses))
 
     job = service.create_job(RetrievalRequest(dataset_urn="urn"))
 
     assert job.job_id == "123"
-    assert service.client.calls[0][1] == "/retrieval/retrieval/jobs"
+    assert service.client.calls[0][1] == "/retrieval/jobs"
 
 
 def test_get_job_status_returns_model(dummy_client):
@@ -57,7 +57,7 @@ def test_get_job_status_returns_model(dummy_client):
         "created_at": "2025-01-01T00:00:00Z",
         "updated_at": "2025-01-01T00:00:01Z",
     }
-    responses = {("get", "/retrieval/retrieval/jobs/123"): status_payload}
+    responses = {("get", "/retrieval/jobs/123"): status_payload}
     service = RetrievalService(dummy_client(responses))
 
     status = service.get_job("123")
@@ -76,7 +76,7 @@ def test_stream_job_yields_events(dummy_client):
             "",
         ]
     )
-    responses = {("get", "/retrieval/retrieval/jobs/abc/stream"): resp}
+    responses = {("get", "/retrieval/jobs/abc/stream"): resp}
     client = dummy_client(responses)
     service = RetrievalService(client)
 
@@ -99,7 +99,7 @@ def test_materialize_inline_returns_inline_payload(dummy_client):
         "dataset": {"urn": "urn", "platform": "s3", "path": None, "format": None},
         "inline": {"media_type": "application/json", "data": [{"a": 1}], "row_count": 1, "metadata": {}},
     }
-    responses = {("post", "/retrieval/retrieval/jobs"): job_payload}
+    responses = {("post", "/retrieval/jobs"): job_payload}
     service = RetrievalService(dummy_client(responses))
 
     result = service.materialize(RetrievalRequest(dataset_urn="urn"))
@@ -124,8 +124,8 @@ def test_materialize_sse_returns_stream(dummy_client):
         ]
     )
     responses = {
-        ("post", "/retrieval/retrieval/jobs"): job_payload,
-        ("get", "/retrieval/retrieval/jobs/job-2/stream"): stream_response,
+        ("post", "/retrieval/jobs"): job_payload,
+        ("get", "/retrieval/jobs/job-2/stream"): stream_response,
     }
     service = RetrievalService(dummy_client(responses))
 
@@ -149,7 +149,7 @@ def test_materialize_grpc_returns_handshake(dummy_client):
             "protocol": "kamiwaza.retrieval.v1",
         },
     }
-    responses = {("post", "/retrieval/retrieval/jobs"): job_payload}
+    responses = {("post", "/retrieval/jobs"): job_payload}
     service = RetrievalService(dummy_client(responses))
 
     result = service.materialize(RetrievalRequest(dataset_urn="urn", transport="grpc"))
@@ -185,7 +185,7 @@ def test_create_job_unwraps_secret_fields(dummy_client):
         "status": "queued",
         "dataset": {"urn": "urn", "platform": "s3", "path": None, "format": None},
     }
-    client = dummy_client({("post", "/retrieval/retrieval/jobs"): job_payload})
+    client = dummy_client({("post", "/retrieval/jobs"): job_payload})
     service = RetrievalService(client)
 
     service.create_job(
@@ -194,7 +194,7 @@ def test_create_job_unwraps_secret_fields(dummy_client):
 
     method, path, kwargs = client.calls[0]
     assert method == "post"
-    assert path == "/retrieval/retrieval/jobs"
+    assert path == "/retrieval/jobs"
     assert kwargs["json"]["credential_override"] == '{"token":"secret"}'
 
 
@@ -216,7 +216,7 @@ def test_slack_messages_builds_request(dummy_client):
         "dataset": {"urn": "urn", "platform": "slack", "path": None, "format": None},
         "inline": {"media_type": "application/json", "data": [{"ts": "1"}], "row_count": 1, "metadata": {}},
     }
-    responses = {("post", "/retrieval/retrieval/jobs"): job_payload}
+    responses = {("post", "/retrieval/jobs"): job_payload}
     client = dummy_client(responses)
     service = RetrievalService(client)
 
@@ -232,7 +232,7 @@ def test_slack_messages_builds_request(dummy_client):
 
     assert rows == [{"ts": "1"}]
     method, path, kwargs = client.calls[0]
-    assert (method, path) == ("post", "/retrieval/retrieval/jobs")
+    assert (method, path) == ("post", "/retrieval/jobs")
     payload = kwargs["json"]
     assert payload["dataset_urn"].startswith("urn:li:dataset")
     assert payload["transport"] == "inline"
@@ -254,8 +254,8 @@ def test_slack_messages_requires_inline(dummy_client):
     }
     stream_response = DummyResponse(["event: complete", "data: {}", ""])
     responses = {
-        ("post", "/retrieval/retrieval/jobs"): job_payload,
-        ("get", "/retrieval/retrieval/jobs/job-slack/stream"): stream_response,
+        ("post", "/retrieval/jobs"): job_payload,
+        ("get", "/retrieval/jobs/job-slack/stream"): stream_response,
     }
     service = RetrievalService(dummy_client(responses))
 

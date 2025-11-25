@@ -70,7 +70,7 @@ def test_s3_ingest_and_retrieve_inline(
         dataset_urn = _ingest_sample_dataset(client, ingestion_environment)
         retrieval_payload = _inline_payload(dataset_urn, endpoint)
 
-        retrieval_job = client.post("/retrieval/retrieval/jobs", json=retrieval_payload)
+        retrieval_job = client.post("/retrieval/jobs", json=retrieval_payload)
 
         assert retrieval_job["transport"] == "inline"
         inline = retrieval_job.get("inline")
@@ -99,7 +99,7 @@ def test_s3_ingest_and_retrieve_grpc(
         dataset_urn = _ingest_sample_dataset(client, ingestion_environment)
         retrieval_payload = _grpc_payload(dataset_urn, endpoint)
 
-        retrieval_job = client.post("/retrieval/retrieval/jobs", json=retrieval_payload)
+        retrieval_job = client.post("/retrieval/jobs", json=retrieval_payload)
         assert retrieval_job["transport"] == "grpc"
         handshake = retrieval_job.get("grpc")
         assert handshake is not None
