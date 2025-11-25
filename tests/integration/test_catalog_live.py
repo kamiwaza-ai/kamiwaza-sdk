@@ -3,6 +3,7 @@ from __future__ import annotations
 from uuid import uuid4
 
 import pytest
+import time
 from pydantic import SecretStr
 
 from kamiwaza_sdk.exceptions import APIError
@@ -53,8 +54,21 @@ def test_catalog_dataset_and_secret_lifecycle(live_kamiwaza_client):
         secret = client.catalog.secrets.get(secret_urn)
         assert secret.name.endswith("-secret")
 
-        secrets = client.catalog.list_secrets(query=dataset_name)
-        assert any(item.urn == secret_urn for item in secrets)
+        secret_name = secret_payload.name
+        attempts = 5
+        delay = 2
+        for i in range(attempts):
+            secrets = client.catalog.list_secrets(query=secret_name)
+            if any(item.urn == secret_urn for item in secrets):
+                break
+            if i < attempts - 1:
+                time.sleep(delay)
+        else:
+            observed = [item.urn for item in secrets]
+            pytest.fail(
+                f"Secret not found in list for query '{secret_name}' after {attempts} attempts: "
+                f"expected={secret_urn}, observed={observed}"
+            )
     finally:
         if secret_urn:
             try:
