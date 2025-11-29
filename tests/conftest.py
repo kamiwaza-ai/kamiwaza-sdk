@@ -49,7 +49,11 @@ def _load_local_env() -> None:
 
 _load_local_env()
 
-DEFAULT_BASE_URL = os.environ.get("KAMIWAZA_BASE_URL", "https://localhost/api").rstrip("/")
+DEFAULT_BASE_URL = (
+    os.environ.get("KAMIWAZA_BASE_URL")
+    or os.environ.get("KAMIWAZA_BASE_URI")
+    or "https://localhost/api"
+).rstrip("/")
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:

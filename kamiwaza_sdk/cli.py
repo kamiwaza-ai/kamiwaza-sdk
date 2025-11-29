@@ -23,7 +23,11 @@ from .exceptions import AuthenticationError
 from .schemas.auth import PATCreate
 from .token_store import FileTokenStore, StoredToken, TokenStore
 
-DEFAULT_BASE_URL = os.environ.get("KAMIWAZA_BASE_URL", "https://localhost/api")
+DEFAULT_BASE_URL = (
+    os.environ.get("KAMIWAZA_BASE_URL")
+    or os.environ.get("KAMIWAZA_BASE_URI")
+    or "https://localhost/api"
+)
 
 
 def build_parser() -> argparse.ArgumentParser:

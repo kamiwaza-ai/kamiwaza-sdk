@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 class KamiwazaClient:
     def __init__(
         self,
-        base_url: str,
+        base_url: Optional[str] = None,
         api_key: Optional[str] = None,
         authenticator: Optional[Authenticator] = None,
         log_level: int = logging.INFO,
@@ -47,10 +47,13 @@ class KamiwazaClient:
         )
         self.logger = logger
         
-        if not base_url:
-            raise ValueError("base_url is required. Please set KAMIWAZA_API_URI environment variable or provide the base_url directly.")
-            
-        self.base_url = base_url.rstrip('/')
+        resolved_base_url = base_url or os.environ.get("KAMIWAZA_BASE_URL") or os.environ.get("KAMIWAZA_BASE_URI")
+        if not resolved_base_url:
+            raise ValueError(
+                "base_url is required. Provide it directly or set KAMIWAZA_BASE_URL or KAMIWAZA_BASE_URI."
+            )
+
+        self.base_url = resolved_base_url.rstrip('/')
         self.session = requests.Session()
         
         # Check KAMIWAZA_VERIFY_SSL environment variable
@@ -68,7 +71,7 @@ class KamiwazaClient:
         if authenticator:
             self.authenticator = authenticator
         else:
-            api_key = api_key or os.environ.get("KAMIWAZA_API_KEY")
+            api_key = api_key or os.environ.get("KAMIWAZA_API_KEY") or os.environ.get("KAMIWAZA_API_TOKEN")
             self.authenticator = ApiKeyAuthenticator(api_key) if api_key else None
         
         # Don't authenticate during initialization - let it happen on first request
