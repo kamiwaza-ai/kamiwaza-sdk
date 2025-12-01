@@ -50,13 +50,9 @@ def test_pat_lifecycle_supports_api_key_auth(
 
     try:
         pat_client: KamiwazaClient = client_factory(base_url=live_server_available, api_key=pat_token)
-        try:
-            profile = pat_client.auth.get_current_user()
-        except AuthenticationError as exc:
-            pytest.xfail(f"PAT bearer tokens rejected by server: {exc}")
-        else:
-            assert profile.sub == expected_sub
-            assert profile.username in {expected_username, expected_sub}
+        profile = pat_client.auth.get_current_user()
+        assert profile.sub == expected_sub
+        assert profile.username in {expected_username, expected_sub}
     finally:
         admin_client.auth.revoke_pat(pat_jti)
 
