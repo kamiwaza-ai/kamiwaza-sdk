@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from kamiwaza_sdk.exceptions import APIError
 from kamiwaza_sdk.schemas.catalog import ContainerCreate, DatasetCreate, SecretCreate
 from kamiwaza_sdk.services.catalog import CatalogService, ContainerClient, DatasetClient, SecretClient
 
@@ -51,10 +52,11 @@ def test_container_membership_helpers_use_query_endpoints(dummy_client):
 
 
 def test_secret_client_sets_clobber_flag(dummy_client):
+    expected_urn = "urn:li:dataHubSecret:demo"
     responses = {
-        ("post", "/catalog/secrets/"): "urn:li:secret:demo",
-        ("get", "/catalog/secrets/by-urn"): {
-            "urn": "urn:li:secret:demo",
+        ("post", "/catalog/secrets/"): expected_urn,
+        ("get", "/catalog/secrets/v2/urn:li:dataHubSecret:demo"): {
+            "urn": expected_urn,
             "name": "demo",
             "owner": "urn:li:corpuser:demo",
         },
@@ -66,10 +68,39 @@ def test_secret_client_sets_clobber_flag(dummy_client):
         SecretCreate(name="demo", value="hunter2", owner="urn:li:corpuser:demo"),
         clobber=True,
     )
-    assert urn == "urn:li:secret:demo"
+    assert urn == expected_urn
     method, path, kwargs = client.calls[0]
     assert kwargs["params"]["clobber"] == "true"
     assert kwargs["json"]["value"] == "hunter2"
+
+
+def test_secret_client_preserves_opaque_urn(dummy_client):
+    expected_urn = "urn:li:dataHubSecret:demo"
+    raw = expected_urn
+    responses = {
+        ("post", "/catalog/secrets/"): {"urn": expected_urn},
+        ("get", f"/catalog/secrets/v2/{raw}"): {
+            "urn": expected_urn,
+            "name": "demo",
+            "owner": "urn:li:corpuser:demo",
+        },
+        ("delete", f"/catalog/secrets/v2/{raw}"): {},
+    }
+    client = dummy_client(responses)
+    secrets = SecretClient(client)
+
+    urn = secrets.create(
+        SecretCreate(name="demo", value="hunter2", owner="urn:li:corpuser:demo"),
+        clobber=False,
+    )
+    secrets.get(urn)
+    secrets.delete(urn)
+
+    assert urn == expected_urn
+    assert client.calls[1][1].endswith(raw)
+    assert "params" not in client.calls[1][2]
+    assert client.calls[2][1].endswith(raw)
+    assert "params" not in client.calls[2][2]
 
 
 def test_dataset_client_encode_helper():

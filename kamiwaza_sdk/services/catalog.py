@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
 from .base_service import BaseService
+from ..exceptions import APIError
 from ..schemas.catalog import (
     Container,
     ContainerCreate,
@@ -157,7 +158,7 @@ class SecretClient(BaseService):
             params={"clobber": str(clobber).lower()},
             json=body,
         )
-        return str(response)
+        return self._unwrap_secret_urn(response)
 
     def list(self, query: Optional[str] = None) -> List[Secret]:
         params = {"query": query} if query else None
@@ -165,21 +166,43 @@ class SecretClient(BaseService):
         return [Secret.model_validate(item) for item in response]
 
     def get(self, secret_urn: str) -> Secret:
-        response = self.client.get(
-            f"{self._BASE_PATH}/by-urn",
-            params={"urn": secret_urn},
-        )
+        try:
+            response = self.client.get(f"{self._BASE_PATH}/v2/{secret_urn}")
+        except APIError as exc:
+            if exc.status_code != 404:
+                raise
+            response = self.client.get(
+                f"{self._BASE_PATH}/by-urn",
+                params={"urn": secret_urn},
+            )
         return Secret.model_validate(response)
 
     def delete(self, secret_urn: str) -> None:
-        self.client.delete(
-            f"{self._BASE_PATH}/by-urn",
-            params={"urn": secret_urn},
-        )
+        try:
+            self.client.delete(f"{self._BASE_PATH}/v2/{secret_urn}")
+        except APIError as exc:
+            if exc.status_code != 404:
+                raise
+            self.client.delete(
+                f"{self._BASE_PATH}/by-urn",
+                params={"urn": secret_urn},
+            )
 
     @staticmethod
     def encode_path_urn(secret_urn: str) -> str:
-        return _encode_path_segment(secret_urn)
+        return secret_urn
+
+    @staticmethod
+    def _unwrap_secret_urn(response: Any) -> str:
+        """Return the backend-issued secret URN without altering its shape."""
+        if isinstance(response, str):
+            return response
+        if isinstance(response, dict):
+            for key in ("urn", "secret_urn"):
+                value = response.get(key)
+                if value:
+                    return str(value)
+        return str(response)
 
 
 class CatalogService(BaseService):
