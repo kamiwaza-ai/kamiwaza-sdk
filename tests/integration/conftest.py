@@ -181,8 +181,8 @@ def catalog_stack_environment() -> Iterator[dict[str, object]]:
         pytest.skip("Catalog stack assets are unavailable")
 
     stack_running = _catalog_stack_running()
-    if not stack_running:
-        _run_catalog_compose("up", "-d")
+    # Always issue an up to ensure all services (e.g., minio) are running; harmless if already up.
+    _run_catalog_compose("up", "-d")
 
     env = os.environ.copy()
     env.setdefault("INGESTION_STACK_COMPOSE", str(CATALOG_STACK_COMPOSE))
