@@ -21,6 +21,8 @@ _MINIO_CREDS = {
 
 
 def _cleanup_datasets(client, urns: Iterable[str]) -> None:
+    if os.environ.get("KEEP_CATALOG_DATASETS") == "1":
+        return
     seen: set[str] = set()
     for urn in urns:
         if not urn or urn in seen:

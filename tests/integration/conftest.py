@@ -159,7 +159,23 @@ def ingestion_environment() -> Iterator[dict[str, str]]:
     if shutil.which("docker") is None:
         pytest.skip("Docker is required for integration tests")
 
-    _run_compose("up", "-d")
+    # If something is already listening on the MinIO port (e.g., catalog stack), reuse it.
+    def _port_open(host: str, port: int) -> bool:
+        import socket
+
+        try:
+            with socket.create_connection((host, port), timeout=2):
+                return True
+        except OSError:
+            return False
+
+    host = "localhost"
+    port = 19100
+    started_compose = False
+    if not _port_open(host, port):
+        _run_compose("up", "-d")
+        started_compose = True
+
     try:
         subprocess.run([sys.executable, str(SEED_SCRIPT)], check=True)
         yield {
@@ -168,7 +184,8 @@ def ingestion_environment() -> Iterator[dict[str, str]]:
             "endpoint": "http://localhost:19100",
         }
     finally:
-        _run_compose("down", "-v")
+        if started_compose and os.environ.get("KEEP_INGESTION_FIXTURES") != "1":
+            _run_compose("down", "-v")
 
 
 @pytest.fixture(scope="session")
@@ -185,19 +202,19 @@ def catalog_stack_environment() -> Iterator[dict[str, object]]:
     _run_catalog_compose("up", "-d")
 
     env = os.environ.copy()
-    env.setdefault("INGESTION_STACK_COMPOSE", str(CATALOG_STACK_COMPOSE))
-    env.setdefault("STATE_DIR", str((CATALOG_STACK_DIR / "state").resolve()))
-    env.setdefault("DATA_DIR", str((CATALOG_STACK_DIR / "data").resolve()))
-    env.setdefault("MINIO_ENDPOINT", CATALOG_MINIO_ENDPOINT)
-    env.setdefault("MINIO_BUCKET", CATALOG_MINIO_BUCKET)
-    env.setdefault("MINIO_PREFIX", CATALOG_MINIO_PREFIX)
-    env.setdefault("POSTGRES_HOST", CATALOG_POSTGRES["host"])
-    env.setdefault("POSTGRES_PORT", str(CATALOG_POSTGRES["port"]))
-    env.setdefault("POSTGRES_DB", CATALOG_POSTGRES["database"])
-    env.setdefault("POSTGRES_USER", CATALOG_POSTGRES["user"])
-    env.setdefault("POSTGRES_PASSWORD", CATALOG_POSTGRES["password"])
-    env.setdefault("KAFKA_EXTERNAL_BOOTSTRAP", CATALOG_KAFKA_BOOTSTRAP)
-    env.setdefault("FORCE_SEED", "1")
+    env["INGESTION_STACK_COMPOSE"] = str(CATALOG_STACK_COMPOSE)
+    env["STATE_DIR"] = str((CATALOG_STACK_DIR / "state").resolve())
+    env["DATA_DIR"] = str((CATALOG_STACK_DIR / "data").resolve())
+    env["MINIO_ENDPOINT"] = CATALOG_MINIO_ENDPOINT
+    env["MINIO_BUCKET"] = CATALOG_MINIO_BUCKET
+    env["MINIO_PREFIX"] = CATALOG_MINIO_PREFIX
+    env["POSTGRES_HOST"] = CATALOG_POSTGRES["host"]
+    env["POSTGRES_PORT"] = str(CATALOG_POSTGRES["port"])
+    env["POSTGRES_DB"] = CATALOG_POSTGRES["database"]
+    env["POSTGRES_USER"] = CATALOG_POSTGRES["user"]
+    env["POSTGRES_PASSWORD"] = CATALOG_POSTGRES["password"]
+    env["KAFKA_EXTERNAL_BOOTSTRAP"] = CATALOG_KAFKA_BOOTSTRAP
+    env["FORCE_SEED"] = "1"
 
     subprocess.run(
         ["bash", str(CATALOG_STACK_SETUP)],
@@ -233,5 +250,5 @@ def catalog_stack_environment() -> Iterator[dict[str, object]]:
     try:
         yield config
     finally:
-        if not stack_running:
+        if not stack_running and os.environ.get("KEEP_CATALOG_STACK") != "1":
             _run_catalog_compose("down", "-v")
