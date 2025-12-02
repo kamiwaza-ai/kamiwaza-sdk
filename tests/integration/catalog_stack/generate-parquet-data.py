@@ -160,6 +160,6 @@ with open(success_file, 'w') as f:
 
 print("\nTest data generation complete!")
 print(f"\nTo copy to MinIO, run:")
-print(f"  mc alias set test-minio http://localhost:9100 minioadmin minioadmin")
+print(f"  mc alias set test-minio http://localhost:19100 minioadmin minioadmin")
 print(f"  mc mb test-minio/kamiwaza-test-bucket")
 print(f"  mc cp -r {output_dir}/* test-minio/kamiwaza-test-bucket/")

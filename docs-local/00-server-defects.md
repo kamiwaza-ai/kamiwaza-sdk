@@ -35,7 +35,7 @@ Content-Type: application/json
   "dataset_urn": "urn:li:dataset:(urn:li:dataPlatform:s3,kamiwaza-sdk-tests//sdk-integration/visitors.parquet,PROD)",
   "transport": "inline",
   "format_hint": "parquet",
-  "credential_override": "{\"aws_access_key_id\":\"minioadmin\",\"aws_secret_access_key\":\"minioadmin\",\"endpoint_override\":\"http://localhost:9100\",\"region\":\"us-east-1\"}"
+  "credential_override": "{\"aws_access_key_id\":\"minioadmin\",\"aws_secret_access_key\":\"minioadmin\",\"endpoint_override\":\"http://localhost:19100\",\"region\":\"us-east-1\"}"
 }
 ```
 
@@ -77,7 +77,7 @@ Content-Type: application/json
   "dataset_urn": "urn:li:dataset:(urn:li:dataPlatform:s3,kamiwaza-sdk-tests/sdk-integration/visitors.parquet,PROD)",
   "transport": "grpc",
   "format_hint": "parquet",
-  "credential_override": "{\"aws_access_key_id\":\"minioadmin\",\"aws_secret_access_key\":\"minioadmin\",\"endpoint_override\":\"http://localhost:9100\",\"region\":\"us-east-1\"}"
+  "credential_override": "{\"aws_access_key_id\":\"minioadmin\",\"aws_secret_access_key\":\"minioadmin\",\"endpoint_override\":\"http://localhost:19100\",\"region\":\"us-east-1\"}"
 }
 ```
 

@@ -165,7 +165,7 @@ def ingestion_environment() -> Iterator[dict[str, str]]:
         yield {
             "bucket": "kamiwaza-sdk-tests",
             "prefix": "sdk-integration",
-            "endpoint": "http://localhost:9100",
+            "endpoint": "http://localhost:19100",
         }
     finally:
         _run_compose("down", "-v")
@@ -197,6 +197,7 @@ def catalog_stack_environment() -> Iterator[dict[str, object]]:
     env.setdefault("POSTGRES_USER", CATALOG_POSTGRES["user"])
     env.setdefault("POSTGRES_PASSWORD", CATALOG_POSTGRES["password"])
     env.setdefault("KAFKA_EXTERNAL_BOOTSTRAP", CATALOG_KAFKA_BOOTSTRAP)
+    env.setdefault("FORCE_SEED", "1")
 
     subprocess.run(
         ["bash", str(CATALOG_STACK_SETUP)],

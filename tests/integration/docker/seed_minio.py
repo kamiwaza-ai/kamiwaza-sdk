@@ -7,7 +7,7 @@ from typing import Iterable
 import boto3
 import pandas as pd
 
-MINIO_ENDPOINT = "http://localhost:9100"
+MINIO_ENDPOINT = "http://localhost:19100"
 ACCESS_KEY = "minioadmin"
 SECRET_KEY = "minioadmin"
 REGION = "us-east-1"

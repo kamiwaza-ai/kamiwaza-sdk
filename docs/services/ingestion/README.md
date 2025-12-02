@@ -15,7 +15,7 @@ resp = client.ingestion.run_active(
     "s3",
     bucket="kamiwaza-sdk-tests",
     prefix="sdk-integration",
-    endpoint_url="http://localhost:9100",
+    endpoint_url="http://localhost:19100",
     region="us-east-1",
     aws_access_key_id="minioadmin",
     aws_secret_access_key="minioadmin",

@@ -25,7 +25,7 @@ payload = DatasetCreate(
     platform="s3",
     environment="PROD",
     description="Daily visitor export",
-    properties={"region": "us-east-1", "endpoint": "http://localhost:9100"},
+    properties={"region": "us-east-1", "endpoint": "http://localhost:19100"},
     tags=["pii", "bronze"],
 )
 dataset_urn = client.catalog.datasets.create(payload)
