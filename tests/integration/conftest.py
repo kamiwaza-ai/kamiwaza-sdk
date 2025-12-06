@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Callable, Iterator
+from urllib.parse import urlparse
 
 import urllib3
 
@@ -42,15 +44,45 @@ def _run_compose(*args: str) -> None:
     subprocess.run(cmd, check=True)
 
 
-def _run_catalog_compose(*args: str) -> None:
+def _run_catalog_compose(*args: str, env: dict[str, str] | None = None) -> None:
     cmd = ["docker", "compose", "-f", str(CATALOG_STACK_COMPOSE), *args]
-    subprocess.run(cmd, check=True)
+    subprocess.run(cmd, check=True, env=env)
 
 
 def _catalog_stack_running() -> bool:
     cmd = ["docker", "compose", "-f", str(CATALOG_STACK_COMPOSE), "ps", "-q"]
     result = subprocess.run(cmd, capture_output=True, text=True, check=False)
     return bool(result.stdout.strip())
+
+
+def _port_open(host: str, port: int) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=2):
+            return True
+    except OSError:
+        return False
+
+
+def _reserve_port(preferred: int) -> int:
+    if not _port_open("localhost", preferred):
+        return preferred
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("localhost", 0))
+        return sock.getsockname()[1]
+
+
+def _compose_port(service: str, container_port: int, env: dict[str, str] | None = None) -> int | None:
+    cmd = ["docker", "compose", "-f", str(CATALOG_STACK_COMPOSE), "port", service, str(container_port)]
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False, env=env)
+    if result.returncode != 0 or not result.stdout:
+        return None
+    line = result.stdout.strip().splitlines()[0]
+    if ":" not in line:
+        return None
+    try:
+        return int(line.rsplit(":", 1)[1])
+    except (IndexError, ValueError):
+        return None
 
 
 def _verify_ssl_enabled() -> bool:
@@ -160,15 +192,6 @@ def ingestion_environment() -> Iterator[dict[str, str]]:
         pytest.skip("Docker is required for integration tests")
 
     # If something is already listening on the MinIO port (e.g., catalog stack), reuse it.
-    def _port_open(host: str, port: int) -> bool:
-        import socket
-
-        try:
-            with socket.create_connection((host, port), timeout=2):
-                return True
-        except OSError:
-            return False
-
     host = "localhost"
     port = 19100
     started_compose = False
@@ -197,15 +220,38 @@ def catalog_stack_environment() -> Iterator[dict[str, object]]:
     if not CATALOG_STACK_COMPOSE.exists() or not CATALOG_STACK_SETUP.exists():
         pytest.skip("Catalog stack assets are unavailable")
 
+    compose_env = os.environ.copy()
     stack_running = _catalog_stack_running()
-    # Always issue an up to ensure all services (e.g., minio) are running; harmless if already up.
-    _run_catalog_compose("up", "-d")
+    parsed_minio = urlparse(CATALOG_MINIO_ENDPOINT)
+    preferred_minio_port = int(
+        os.environ.get("CATALOG_STACK_MINIO_PORT") or (parsed_minio.port or 19100)
+    )
+    preferred_console_port = int(os.environ.get("CATALOG_STACK_MINIO_CONSOLE_PORT", "19101"))
 
-    env = os.environ.copy()
+    minio_port = preferred_minio_port
+    minio_console_port = preferred_console_port
+
+    if stack_running:
+        minio_port = _compose_port("minio", 9000, env=compose_env) or minio_port
+        minio_console_port = _compose_port("minio", 9001, env=compose_env) or minio_console_port
+    else:
+        if _port_open(parsed_minio.hostname or "localhost", minio_port):
+            minio_port = _reserve_port(minio_port)
+        if minio_console_port == minio_port or _port_open("localhost", minio_console_port):
+            minio_console_port = _reserve_port(minio_console_port)
+
+    compose_env["CATALOG_STACK_MINIO_PORT"] = str(minio_port)
+    compose_env["CATALOG_STACK_MINIO_CONSOLE_PORT"] = str(minio_console_port)
+    # Always issue an up to ensure all services (e.g., minio) are running; harmless if already up.
+    _run_catalog_compose("up", "-d", env=compose_env)
+
+    minio_endpoint = f"{parsed_minio.scheme or 'http'}://{parsed_minio.hostname or 'localhost'}:{minio_port}"
+
+    env = compose_env.copy()
     env["INGESTION_STACK_COMPOSE"] = str(CATALOG_STACK_COMPOSE)
     env["STATE_DIR"] = str((CATALOG_STACK_DIR / "state").resolve())
     env["DATA_DIR"] = str((CATALOG_STACK_DIR / "data").resolve())
-    env["MINIO_ENDPOINT"] = CATALOG_MINIO_ENDPOINT
+    env["MINIO_ENDPOINT"] = minio_endpoint
     env["MINIO_BUCKET"] = CATALOG_MINIO_BUCKET
     env["MINIO_PREFIX"] = CATALOG_MINIO_PREFIX
     env["POSTGRES_HOST"] = CATALOG_POSTGRES["host"]
@@ -227,7 +273,7 @@ def catalog_stack_environment() -> Iterator[dict[str, object]]:
         "object": {
             "bucket": CATALOG_MINIO_BUCKET,
             "prefix": CATALOG_MINIO_PREFIX,
-            "endpoint": CATALOG_MINIO_ENDPOINT,
+            "endpoint": minio_endpoint,
             "region": "us-east-1",
             "small_key": f"{CATALOG_MINIO_PREFIX}/inline-small.parquet",
             "large_key": f"{CATALOG_MINIO_PREFIX}/inline-large.parquet",

@@ -6,8 +6,8 @@ services:
     image: minio/minio:latest
     platform: linux/amd64
     ports:
-      - "19100:9000"  # API port (non-standard)
-      - "19101:9001"  # Console port (non-standard)
+      - "${CATALOG_STACK_MINIO_PORT:-19100}:9000"    # API port (non-standard)
+      - "${CATALOG_STACK_MINIO_CONSOLE_PORT:-19101}:9001"  # Console port (non-standard)
     environment:
       - MINIO_ROOT_USER=minioadmin
       - MINIO_ROOT_PASSWORD=minioadmin
