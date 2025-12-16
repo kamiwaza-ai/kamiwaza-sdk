@@ -2,6 +2,7 @@ from typing import List, Optional, Union, Dict, Any
 from uuid import UUID
 from ...exceptions import APIError
 from ...schemas.models.model import Model, CreateModel
+from ...schemas.guide import ModelGuide
 from ...utils.quant_manager import QuantizationManager
 from ..base_service import BaseService
 from .search import ModelSearchMixin
@@ -9,6 +10,7 @@ from .downloads import ModelDownloadMixin
 from .files import ModelFileMixin
 from .configs import ModelConfigMixin
 from .compatibility import CompatibilityMixin
+from ...model_selector import ModelAutoSelector
 
 
 class ModelService(BaseService, 
@@ -99,7 +101,7 @@ class ModelService(BaseService,
     def list_models(self, load_files: bool = False) -> List[Model]:
         """
         List all models, optionally including associated files.
-        
+
         Args:
             load_files (bool, optional): Whether to include file information. Defaults to False.
             
@@ -108,7 +110,7 @@ class ModelService(BaseService,
         """
         response = self.client._request("GET", "/models/", params={"load_files": load_files})
         return [Model.model_validate(item) for item in response]
-    
+
     def get_model_by_repo_id(self, repo_id: str) -> Model:
         """
         Retrieve a model by its repo_modelId by searching through the models list.
@@ -124,3 +126,21 @@ class ModelService(BaseService,
             if model.repo_modelId == repo_id:
                 return model
         return None
+
+    def auto_selector(self) -> ModelAutoSelector:
+        """Return a helper that can recommend models/variants based on guide data."""
+
+        return ModelAutoSelector(self)
+
+    # Guide helpers --------------------------------------------------
+
+    def list_guides(self) -> List[ModelGuide]:
+        response = self.client.get("/guide/")
+        return [ModelGuide.model_validate(item) for item in response]
+
+    def import_guides(self, *, replace: bool = False) -> dict:
+        params = {"replace": replace} if replace else None
+        return self.client.post("/guide/import", params=params)
+
+    def refresh_guides(self) -> dict:
+        return self.client.post("/guide/refresh")

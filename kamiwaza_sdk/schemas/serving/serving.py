@@ -1,7 +1,7 @@
 # kamiwaza_sdk/schemas/serving/serving.py
 
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import Dict, List, Optional
 from datetime import datetime
 from uuid import UUID
 
@@ -128,3 +128,30 @@ class ActiveModelDeployment(BaseModel):
     def active_instance(self) -> Optional[ModelInstance]:
         """Get first active instance if any exists"""
         return next((i for i in self.instances if i.status == "DEPLOYED"), None)
+
+
+class ContainerLogResponse(BaseModel):
+    deployment_id: UUID = Field(description="The UUID of the deployment")
+    engine_type: Optional[str] = Field(default=None, description="Engine type (vllm, llamacpp, etc.)")
+    container_id: Optional[str] = Field(default=None, description="Container ID if available")
+    log_file_path: str = Field(description="Path to the aggregated log file")
+    logs: List[str] = Field(description="Captured log lines")
+    total_lines_seen: int = Field(description="Total number of lines observed")
+    current_lines_stored: int = Field(description="Number of lines currently stored")
+    compressed: bool = Field(description="Whether capture truncated to head/tail")
+    capture_active: bool = Field(description="Whether capture is still running")
+
+
+class ContainerLogPatternResponse(BaseModel):
+    deployment_id: UUID = Field(description="The UUID of the deployment")
+    patterns_detected: Dict[str, bool] = Field(description="Map of pattern name to detection status")
+    analysis_timestamp: datetime = Field(description="Timestamp of the most recent analysis")
+    failure_lines: Optional[List[Dict[str, str]]] = Field(
+        default=None,
+        description="Log lines where failures were detected",
+    )
+
+
+class ContainerLogListResponse(BaseModel):
+    engine_type: str = Field(description="Engine type (vllm, llamacpp, etc.)")
+    logs: List[Dict[str, str]] = Field(description="Available log entries with metadata")

@@ -1,74 +1,93 @@
-# kamiwaza_sdk/schemas/catalog.py
+"""Pydantic models for catalog datasets, containers, and secrets."""
 
-from pydantic import BaseModel, Field
-from typing import Dict, Any, List, Optional
+from __future__ import annotations
 
-from pydantic import BaseModel, Field
-from typing import Dict, Any, List, Optional
+from datetime import datetime
+from typing import Any, Dict, List, Optional
 
-class Dataset(BaseModel):
-    urn: Optional[str] = Field(None, description="Dataset URN")
-    id: str = Field(..., description="Unique identifier for the dataset")
-    platform: str = Field(..., description="Platform identifier")
-    environment: str = Field(..., description="Environment (e.g., PROD, DEV)")
-    paths: Optional[List[str]] = Field(None, description="List of dataset paths")
-    name: Optional[str] = Field(None, description="Dataset name")
-    actor: Optional[str] = Field(None, description="Actor who created/modified the dataset")
-    customProperties: Optional[Dict[str, Any]] = Field(None, description="Custom metadata properties")
-    removed: Optional[bool] = Field(None, description="Soft deletion flag")
-    tags: Optional[List[str]] = Field(None, description="Dataset tags")
-
-    model_config = {
-        "extra": "allow"
-    }
+from pydantic import BaseModel, Field, SecretStr
 
 
-class Container(BaseModel):
-    model_config = {
-        "extra": "allow"
-    }
+class SchemaField(BaseModel):
+    name: str
+    type: str
+    description: Optional[str] = None
 
-class Lineage(BaseModel):
-    model_config = {
-        "extra": "allow"
-    }
 
-class Tags(BaseModel):
-    model_config = {
-        "extra": "allow"
-    }
+class Schema(BaseModel):
+    name: str
+    platform: str
+    version: Optional[int] = None
+    fields: List[SchemaField]
 
-class Terms(BaseModel):
-    model_config = {
-        "extra": "allow"
-    }
 
-class Ownership(BaseModel):
-    model_config = {
-        "extra": "allow"
-    }
+class DatasetCreate(BaseModel):
+    name: str
+    platform: str
+    environment: str = "PROD"
+    description: Optional[str] = None
+    tags: List[str] = Field(default_factory=list)
+    properties: Dict[str, Any] = Field(default_factory=dict)
+    dataset_schema: Optional[Schema] = None
+    container_urn: Optional[str] = None
 
-class Domains(BaseModel):
-    model_config = {
-        "extra": "allow"
-    }
 
-class Deprecation(BaseModel):
-    model_config = {
-        "extra": "allow"
-    }
+class Dataset(DatasetCreate):
+    urn: str
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
-class Description(BaseModel):
-    model_config = {
-        "extra": "allow"
-    }
 
-class CustomProperties(BaseModel):
-    model_config = {
-        "extra": "allow"
-    }
+class DatasetUpdate(BaseModel):
+    description: Optional[str] = None
+    tags: Optional[List[str]] = None
+    properties: Optional[Dict[str, Any]] = None
+    dataset_schema: Optional[Schema] = None
+    container_urn: Optional[str] = None
 
-class MLSystems(BaseModel):
-    model_config = {
-        "extra": "allow"
-    }
+
+class ContainerCreate(BaseModel):
+    name: str
+    platform: Optional[str] = None
+    description: Optional[str] = None
+    tags: List[str] = Field(default_factory=list)
+    properties: Dict[str, Any] = Field(default_factory=dict)
+    parent_urn: Optional[str] = None
+
+
+class Container(ContainerCreate):
+    urn: str
+    sub_containers: List[str] = Field(default_factory=list)
+    datasets: List[str] = Field(default_factory=list)
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
+class ContainerUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    tags: Optional[List[str]] = None
+    properties: Optional[Dict[str, Any]] = None
+    parent_urn: Optional[str] = None
+
+
+class SecretCreate(BaseModel):
+    name: str
+    value: SecretStr
+    owner: str
+    description: Optional[str] = None
+
+
+class Secret(BaseModel):
+    urn: str
+    name: str
+    owner: Optional[str] = None
+    description: Optional[str] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
+class SecretUpdate(BaseModel):
+    value: Optional[SecretStr] = None
+    owner: Optional[str] = None
+    description: Optional[str] = None

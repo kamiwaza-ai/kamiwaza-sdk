@@ -5,7 +5,7 @@ from uuid import UUID
 import httpx
 from openai import OpenAI
 from .base_service import BaseService
-from ..exceptions import APIError
+from ..exceptions import APIError, AuthenticationError
 
 class OpenAIService(BaseService):
     def get_client(
@@ -68,11 +68,18 @@ class OpenAIService(BaseService):
                 
             base_url = deployment.endpoint
 
+        # Retrieve bearer token from the authenticated client (PAT or session token)
+        api_key = self.client.get_bearer_token()
+        if not api_key:
+            raise AuthenticationError(
+                "Unable to configure OpenAI client without an authenticated session or API key."
+            )
+
         # Create httpx client with same verify setting as Kamiwaza client
         http_client = httpx.Client(verify=self.client.session.verify)
         
         return OpenAI(
-            api_key="local",
+            api_key=api_key,
             base_url=base_url,
             http_client=http_client
         )

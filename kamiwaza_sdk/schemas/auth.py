@@ -1,130 +1,218 @@
-# kamiwaza_sdk/schemas/auth.py
+"""Pydantic models for the authentication API surface."""
 
-from pydantic import BaseModel, Field, EmailStr, HttpUrl
-from typing import Optional, List, Dict, Any
+from __future__ import annotations
+
 from datetime import datetime
+from typing import Any, Dict, List, Mapping, Optional
 from uuid import UUID
 
-class IDPConfig(BaseModel):
-    provider: str = Field(description="Name of the identity provider (e.g., 'Auth0', 'Okta', 'Azure AD')")
-    domain: str = Field(description="Domain of the identity provider")
-    client_id: str = Field(description="Client ID for the identity provider")
-    metadata_url: Optional[HttpUrl] = Field(default=None, description="URL for fetching IDP metadata")
-    additional_config: Dict[str, Any] = Field(default_factory=dict, description="Additional provider-specific configuration")
+from pydantic import BaseModel, Field, HttpUrl
 
-class Right(BaseModel):
-    id: UUID
-    name: str = Field(description="Name of the right")
-    description: Optional[str] = Field(default=None, description="Description of the right")
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
 
-class RightCreate(BaseModel):
-    name: str
-    description: Optional[str] = None
+class TokenResponse(BaseModel):
+    """Access/refresh token pair returned by the auth gateway."""
 
-class RightUpdate(BaseModel):
+    access_token: str = Field(..., description="JWT access token")
+    token_type: str = Field(default="bearer", description="Token type (bearer)")
+    expires_in: int = Field(..., description="Access token TTL in seconds")
+    refresh_token: Optional[str] = Field(
+        default=None, description="Refresh token used for silent renewal"
+    )
+    id_token: Optional[str] = Field(
+        default=None, description="OpenID Connect ID token (when available)"
+    )
+
+
+class UserInfo(BaseModel):
+    """Who-am-I payload normalised by the auth gateway."""
+
+    username: str
+    email: Optional[str] = None
+    groups: List[str] = Field(default_factory=list)
+    roles: List[str] = Field(default_factory=list)
+    sub: str
+
+
+class ValidationHeaders(BaseModel):
+    """Structured representation of ForwardAuth validation headers."""
+
+    user_id: Optional[str] = Field(default=None, alias="x-user-id")
+    user_email: Optional[str] = Field(default=None, alias="x-user-email")
+    user_name: Optional[str] = Field(default=None, alias="x-user-name")
+    user_roles: List[str] = Field(default_factory=list, alias="x-user-roles")
+    auth_token: Optional[str] = Field(default=None, alias="x-auth-token")
+    request_id: Optional[str] = Field(default=None, alias="x-request-id")
+    signature: Optional[str] = Field(default=None, alias="x-user-signature")
+    signature_ts: Optional[str] = Field(default=None, alias="x-user-signature-ts")
+
+    @classmethod
+    def from_headers(cls, headers: Mapping[str, str]) -> "ValidationHeaders":
+        # Normalise header keys to lower-case for lookup
+        lowered = {key.lower(): value for key, value in headers.items()}
+        roles_raw = lowered.get("x-user-roles", "") or ""
+        roles = [role.strip() for role in roles_raw.split(",") if role.strip()]
+        data: Dict[str, Any] = {
+            "x-user-id": lowered.get("x-user-id"),
+            "x-user-email": lowered.get("x-user-email"),
+            "x-user-name": lowered.get("x-user-name"),
+            "x-user-roles": roles,
+            "x-auth-token": lowered.get("x-auth-token"),
+            "x-request-id": lowered.get("x-request-id"),
+            "x-user-signature": lowered.get("x-user-signature"),
+            "x-user-signature-ts": lowered.get("x-user-signature-ts"),
+        }
+        return cls.model_validate(data)
+
+
+class PATCreate(BaseModel):
     name: Optional[str] = None
-    description: Optional[str] = None
+    ttl_seconds: Optional[int] = Field(
+        default=None, description="TTL in seconds for the PAT"
+    )
+    scope: Optional[str] = None
+    aud: Optional[str] = None
 
-class Role(BaseModel):
+
+class PAT(PATCreate):
     id: UUID
-    name: str = Field(description="Name of the role")
-    description: Optional[str] = Field(default=None, description="Description of the role")
-    rights: List[UUID] = Field(default_factory=list, description="List of right IDs associated with this role")
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    jti: str
+    owner_id: str
+    exp: Optional[int] = None
+    tenant_id: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+    revoked: bool = Field(default=False)
 
-class RoleCreate(BaseModel):
-    name: str
-    description: Optional[str] = None
-    rights: List[UUID] = Field(default_factory=list)
 
-class RoleUpdate(BaseModel):
-    name: Optional[str] = None
-    description: Optional[str] = None
-    rights: Optional[List[UUID]] = None
+class PATListResponse(BaseModel):
+    pats: List[PAT]
 
-class Group(BaseModel):
+
+class PATCreateResponse(BaseModel):
+    token: str
+    pat: PAT
+
+
+def _default_scopes() -> List[str]:
+    return ["openid", "profile", "email"]
+
+
+class GoogleConfig(BaseModel):
+    alias: str = Field(default="google")
+    client_id: str
+    client_secret: str
+    hosted_domain: Optional[str] = None
+    scopes: List[str] = Field(default_factory=_default_scopes)
+
+
+class OIDCConfig(BaseModel):
+    alias: str
+    issuer: HttpUrl
+    client_id: str
+    client_secret: str
+    scopes: List[str] = Field(default_factory=_default_scopes)
+
+
+class RegisterIdPRequest(BaseModel):
+    provider: str = Field(description="'google' or 'oidc'")
+    google: Optional[GoogleConfig] = None
+    oidc: Optional[OIDCConfig] = None
+    ensure_redirects: bool = True
+
+
+class ToggleIdPRequest(BaseModel):
+    enabled: bool
+
+
+class IdentityProvider(BaseModel):
+    alias: str
+    provider_id: Optional[str] = None
+    display_name: Optional[str] = None
+    enabled: bool = True
+
+
+class IdentityProviderListResponse(BaseModel):
+    providers: List[IdentityProvider] = Field(default_factory=list)
+    idp_management_enabled: bool = True
+
+
+class IdentityProviderOperationResponse(BaseModel):
+    status: Optional[str] = None
+    provider: Optional[IdentityProvider] = None
+    idp_management_enabled: Optional[bool] = None
+    deleted: Optional[bool] = None
+    alias: Optional[str] = None
+
+
+class LocalUserResponse(BaseModel):
     id: UUID
-    name: str = Field(description="Name of the group")
-    description: Optional[str] = Field(default=None, description="Description of the group")
-    roles: List[UUID] = Field(default_factory=list, description="List of role IDs associated with this group")
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
-
-class GroupCreate(BaseModel):
-    name: str
-    description: Optional[str] = None
-    roles: List[UUID] = Field(default_factory=list)
-
-class GroupUpdate(BaseModel):
+    username: str
+    email: Optional[str] = None
+    roles: List[str] = Field(default_factory=list)
+    active: bool
+    deleted: bool
+    is_external: bool
+    external_id: Optional[str] = None
+    full_name: Optional[str] = None
     name: Optional[str] = None
-    description: Optional[str] = None
-    roles: Optional[List[UUID]] = None
+    is_superuser: bool = False
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
 
-class Organization(BaseModel):
-    id: UUID
-    name: str = Field(description="Name of the organization")
-    description: Optional[str] = Field(default=None, description="Description of the organization")
-    idp_config: Optional[IDPConfig] = Field(default=None, description="IDP configuration for this organization")
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
 
-class OrganizationCreate(BaseModel):
-    name: str
-    description: Optional[str] = None
-    idp_config: Optional[IDPConfig] = None
+class LocalUserCreateRequest(BaseModel):
+    username: str
+    email: Optional[str] = None
+    password: str
+    roles: Optional[List[str]] = None
 
-class OrganizationUpdate(BaseModel):
-    name: Optional[str] = None
-    description: Optional[str] = None
-    idp_config: Optional[IDPConfig] = None
 
-class UserBase(BaseModel):
-    username: str = Field(description="Username of the user")
-    email: EmailStr = Field(description="Email of the user")
-    full_name: Optional[str] = Field(default=None, description="Full name of the user")
-    organization_id: Optional[UUID] = Field(default=None, description="ID of the organization the user belongs to")
-    is_superuser: bool = Field(default=False, description="Whether the user is a superuser")
-    external_id: Optional[str] = Field(default=None, description="External ID from the IDP")
+class LocalUserUpdateRequest(BaseModel):
+    username: Optional[str] = None
+    email: Optional[str] = None
+    active: Optional[bool] = None
+    roles: Optional[List[str]] = None
 
-class UserCreate(UserBase):
-    password: Optional[str] = Field(default=None, description="Password for user creation (required for local users)")
-    groups: List[UUID] = Field(default_factory=list, description="List of group IDs the user belongs to")
 
-class LocalUserCreate(UserCreate):
-    password: str = Field(description="Password required for local user creation")
+class LocalUserPasswordResetRequest(BaseModel):
+    new_password: str
 
-class UserUpdate(BaseModel):
-    email: Optional[EmailStr] = Field(default=None, description="Email of the user")
-    full_name: Optional[str] = Field(default=None, description="Full name of the user")
-    is_active: Optional[bool] = Field(default=None, description="Whether the user is active")
-    groups: Optional[List[UUID]] = Field(default=None, description="List of group IDs the user belongs to")
-    is_superuser: Optional[bool] = Field(default=None, description="Whether the user is a superuser")
-    organization_id: Optional[UUID] = Field(default=None, description="ID of the organization the user belongs to")
 
-class User(UserBase):
-    id: UUID = Field(description="Unique identifier for the user")
-    is_active: bool = Field(default=True, description="Whether the user is active")
-    groups: List[UUID] = Field(default_factory=list, description="List of group IDs the user belongs to")
-    created_at: datetime = Field(description="Timestamp of user creation")
-    updated_at: Optional[datetime] = Field(default=None, description="Timestamp of last user update")
-    last_login: Optional[datetime] = Field(default=None, description="Last login timestamp")
+class LocalUserPasswordChangeRequest(BaseModel):
+    current_password: str
+    new_password: str
 
-class UserPermissions(BaseModel):
-    user_id: UUID = Field(description="ID of the user")
-    rights: List[str] = Field(default_factory=list, description="List of rights assigned to the user")
-    roles: List[str] = Field(default_factory=list, description="List of roles assigned to the user")
-    groups: List[str] = Field(default_factory=list, description="List of groups the user belongs to")
 
-class Token(BaseModel):
-    access_token: str = Field(description="JWT access token")
-    token_type: str = Field(description="Token type (e.g., 'bearer')")
-    expires_in: int = Field(description="Token expiration time in seconds")
-    refresh_token: Optional[str] = Field(default=None, description="Refresh token for obtaining a new access token")
-    id_token: Optional[str] = Field(default=None, description="ID token (used in OpenID Connect)")
+class PasswordChangeResponse(BaseModel):
+    changed: bool
 
-model_config = {
-    "from_attributes": True
-}
+
+class SessionPurgeRequest(BaseModel):
+    tenant_id: str
+    subject_namespace: str = Field(default="user")
+    subject_id: str
+
+
+class SessionPurgeResponse(BaseModel):
+    revoked: int
+
+
+class LogoutResponse(BaseModel):
+    message: str
+    logout_time: str
+    session_termination_requested: bool = False
+    front_channel_logout_url: Optional[str] = None
+    post_logout_redirect_uri: Optional[str] = None
+
+
+class JWKSKey(BaseModel):
+    alg: str
+    kty: str
+    use: str
+    kid: str
+    n: str
+    e: str
+
+
+class JWKSResponse(BaseModel):
+    keys: List[JWKSKey]
