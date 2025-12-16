@@ -8,6 +8,8 @@ from .cluster import ClusterService
 from .activity import ActivityService
 from .lab import LabService
 from .auth import AuthService
+from .authz import AuthzService
+from .ingestion import IngestionService
 from .retrieval import RetrievalService
 from .apps import AppService
 from .tools import ToolService
