@@ -13,7 +13,7 @@ with open("requirements.txt", "r", encoding="utf-8") as f:
 
 setup(
     name="kamiwaza-sdk",
-    version="0.7.0",
+    version="0.8.0",
     author="Kamiwaza Team",
     author_email="eng@kamiwaza.ai",
     description="Python client library for the Kamiwaza AI Platform",
