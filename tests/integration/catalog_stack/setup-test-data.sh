@@ -65,6 +65,29 @@ def generate_parquet(path: Path, target_bytes: int) -> None:
 
 generate_parquet(state_dir / "inline-small.parquet", int(0.5 * 1024 * 1024))
 generate_parquet(state_dir / "inline-large.parquet", int(1.3 * 1024 * 1024))
+
+# Generate sales_data_10k.parquet for parquet ingestion test
+df_sales = pd.DataFrame({
+    'sale_id': range(10000),
+    'product': ['Product_' + str(i % 100) for i in range(10000)],
+    'amount': np.random.uniform(10.0, 1000.0, 10000),
+    'date': pd.date_range('2024-01-01', periods=10000, freq='5min')
+})
+df_sales.to_parquet(state_dir / "sales_data_10k.parquet", engine="pyarrow")
+print(f"Generated sales_data_10k.parquet: {(state_dir / 'sales_data_10k.parquet').stat().st_size/1024:.1f} KiB")
+
+# Create objects subdirectory with sample.json for object ingestion test
+objects_dir = state_dir / "objects"
+objects_dir.mkdir(exist_ok=True)
+import json
+sample_data = [
+    {"id": 1, "name": "Alice", "age": 30, "city": "New York"},
+    {"id": 2, "name": "Bob", "age": 25, "city": "San Francisco"},
+    {"id": 3, "name": "Charlie", "age": 35, "city": "Seattle"},
+]
+with open(objects_dir / "sample.json", 'w') as f:
+    json.dump(sample_data, f, indent=2)
+print(f"Generated objects/sample.json")
 EOF
 
 wait_for_port() {
@@ -120,6 +143,8 @@ wait_for_port "Postgres" "$POSTGRES_HOST" "$POSTGRES_PORT"
 wait_for_port "Kafka" "$KAFKA_HOST" "$KAFKA_PORT"
 
 echo "Uploading sample objects to MinIO..."
+# Unset AWS_PROFILE to prevent boto3 from trying to load credentials from ~/.aws/credentials
+unset AWS_PROFILE AWS_DEFAULT_PROFILE
 python3 - "$MINIO_ENDPOINT" "$MINIO_BUCKET" "$MINIO_PREFIX" "$STATE_DIR/test-data" <<'PY'
 import os
 import sys
