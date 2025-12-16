@@ -13,9 +13,9 @@ with open("requirements.txt", "r", encoding="utf-8") as f:
 
 setup(
     name="kamiwaza-sdk",
-    version="0.5.2",
+    version="0.7.0",
     author="Kamiwaza Team",
-    author_email="tyler@kamiwaza.ai",
+    author_email="eng@kamiwaza.ai",
     description="Python client library for the Kamiwaza AI Platform",
     long_description=long_description,
     long_description_content_type="text/markdown",
