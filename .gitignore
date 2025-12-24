@@ -1,3 +1,7 @@
+# Local scratch docs
+/docs-local/*
+!/docs-local/00-server-defects.md
+
 # Virtual environments
 notebook-venv/
 venv/
@@ -141,3 +145,6 @@ Desktop.ini
 # Custom files per instructions
 code.txt
 collated.txt
+070-update.md
+tests/integration/catalog_stack/data/
+.env.local

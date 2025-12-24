@@ -1,0 +1,111 @@
+name: api-ingestion-test-env
+
+services:
+  # MinIO - S3 compatible storage on dedicated host ports 19100/19101
+  minio:
+    image: minio/minio:latest
+    platform: linux/amd64
+    ports:
+      - "${CATALOG_STACK_MINIO_PORT:-19100}:9000"    # API port (non-standard)
+      - "${CATALOG_STACK_MINIO_CONSOLE_PORT:-19101}:9001"  # Console port (non-standard)
+    environment:
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+  
+  # PostgreSQL for testing on non-standard port 15432
+  postgres:
+    image: postgres:15-alpine
+    platform: linux/amd64
+    ports:
+      - "15432:5432"
+    environment:
+      - POSTGRES_USER=kamiwaza
+      - POSTGRES_PASSWORD=kamiwazaGetY0urCape
+      - POSTGRES_DB=kamiwaza
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kamiwaza"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Kafka with non-standard port 29092 - Using Apache Kafka official image with KRaft
+  kafka:
+    image: apache/kafka:latest
+    platform: linux/amd64
+    ports:
+      - "29092:29092"
+    environment:
+      # KRaft mode configuration (no Zookeeper needed)
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: 'broker,controller'
+      KAFKA_CONTROLLER_QUORUM_VOTERS: '1@kafka:9093'
+      KAFKA_LISTENERS: 'PLAINTEXT://kafka:9092,CONTROLLER://kafka:9093,PLAINTEXT_HOST://0.0.0.0:29092'
+      KAFKA_ADVERTISED_LISTENERS: 'PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: 'CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT'
+      KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
+      KAFKA_INTER_BROKER_LISTENER_NAME: 'PLAINTEXT'
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+      CLUSTER_ID: 'MkU3OEVBNTcwNTJENDM2Qk'
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 40s
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+
+  # Simplified Hive setup with non-standard port 19083
+  hive-postgres:
+    image: postgres:13-alpine
+    platform: linux/amd64
+    environment:
+      - POSTGRES_USER=hive
+      - POSTGRES_PASSWORD=hive
+      - POSTGRES_DB=metastore
+    volumes:
+      - hive_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hive -d metastore"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # For now, let's simplify and just run Hive Metastore without the full setup
+  hive-metastore:
+    image: apache/hive:3.1.3
+    platform: linux/amd64
+    depends_on:
+      hive-postgres:
+        condition: service_healthy
+    ports:
+      - "19083:9083"
+    environment:
+      - SERVICE_NAME=metastore
+    volumes:
+      - ./data/hive-data:/opt/hive-data
+    # Simple placeholder - in real setup you'd configure properly
+    command: ["sh", "-c", "echo 'Hive Metastore placeholder' && tail -f /dev/null"]
+
+volumes:
+  kafka_data:
+  hive_postgres_data:
+  postgres_data:
+  minio_data:
+
+networks:
+  default:
+    name: api-ingestion-test-network
