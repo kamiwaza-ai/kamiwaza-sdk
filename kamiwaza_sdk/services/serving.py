@@ -26,6 +26,9 @@ from ..schemas.serving.inference import (
 )
 from ..schemas.models.model_search import HubModelFileSearch
 from .base_service import BaseService
+from urllib.parse import urlparse
+import os
+
 
 class ServingService(BaseService):
     
