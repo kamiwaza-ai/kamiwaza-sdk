@@ -200,7 +200,8 @@ def ingestion_environment() -> Iterator[dict[str, str]]:
         started_compose = True
 
     try:
-        subprocess.run([sys.executable, str(SEED_SCRIPT)], check=True)
+        # Pass environment explicitly to ensure subprocess has access to system PATH and Python packages
+        subprocess.run([sys.executable, str(SEED_SCRIPT)], check=True, env=os.environ.copy())
         yield {
             "bucket": "kamiwaza-sdk-tests",
             "prefix": "sdk-integration",
@@ -247,7 +248,9 @@ def catalog_stack_environment() -> Iterator[dict[str, object]]:
 
     minio_endpoint = f"{parsed_minio.scheme or 'http'}://{parsed_minio.hostname or 'localhost'}:{minio_port}"
 
-    env = compose_env.copy()
+    # Start with current environment to preserve PATH and other system variables
+    env = os.environ.copy()
+    env.update(compose_env)
     env["INGESTION_STACK_COMPOSE"] = str(CATALOG_STACK_COMPOSE)
     env["STATE_DIR"] = str((CATALOG_STACK_DIR / "state").resolve())
     env["DATA_DIR"] = str((CATALOG_STACK_DIR / "data").resolve())
