@@ -66,6 +66,15 @@ More examples coming soon!
 | `client.tools` | Tool servers (MCP) | [Tool Service](docs/services/tools/README.md) |
 | `client.ingestion` | Data ingestion | [Ingestion Service](docs/services/ingestion/README.md) |
 
+## Auth / User Management (0.9.0)
+
+- **Base URL rule:** set `base_url=https://<host>` (no `/auth` suffix). Quick preflight: `GET {base_url}/auth/ping` → 200. If you include `/auth`, calls will double-prefix and fail.
+- **Admin-only:** creating/resetting users requires an admin bearer.
+- **Auth-on semantics:** `create_local_user` provisions Keycloak so the user can authenticate; `reset_user_password` updates Keycloak only (Keycloak is authoritative). Auth-off updates the local hash only.
+- **Roles caveat:** requested realm roles must exist; otherwise create will 500 + rollback. Omit roles or use known-good roles.
+- **Self-signed TLS:** set `--verify-ssl false` (or `verify_ssl=False`) when needed.
+- A runnable smoke script lives at `scripts/fed_user_smoke.py` (see script usage inside).
+
 
 ## Integration Tests
 
