@@ -119,16 +119,3 @@ provisions the Keycloak identity (transactional, rolls back on Keycloak failure)
 and `reset_user_password` updates Keycloak only (Keycloak is authoritative for
 login). In Auth-off mode, these calls remain DB-only.
 
-### Fed automation smoke (Auth-on)
-
-Use `scripts/fed_user_smoke.py` as a ready-to-run check:
-
-```
-python scripts/fed_user_smoke.py \
-  --base-url https://<host> \
-  --admin-user <admin> \
-  --admin-pass <password> \
-  --verify-ssl true
-```
-
-It validates: admin login → create user → login as new user → reset password → login with new password. It exits non-zero and prints the failing stage on errors. Roles are optional; omit unless you know the realm roles exist (missing roles will 500 + rollback).
