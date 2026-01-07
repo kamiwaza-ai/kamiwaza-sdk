@@ -67,6 +67,14 @@ class ModelDeployment(CreateModelDeployment):
     requested_at: datetime = Field(description="Time at which the deployment was requested")
     deployed_at: Optional[datetime] = Field(default=None, description="Time at which the deployment was started")
     serve_path: Optional[str] = Field(default=None, description="Ray serve path prefix of the deployment")
+    access_path_prefix: Optional[str] = Field(
+        default=None,
+        description="Public path prefix used for ingress routing (e.g., /models)",
+    )
+    access_path: Optional[str] = Field(
+        default=None,
+        description="Full public path for this deployment (e.g., /models/{uuid})",
+    )
     single_node_mode: Optional[bool] = Field(default=False, description="Whether the deployment is in single node mode")
     status: str = Field(description="Status of the deployment")
     instances: List[ModelInstance] = Field(default_factory=list, description="List of instances associated with the deployment")
