@@ -3,6 +3,8 @@
 The authentication helpers live in `kamiwaza_sdk/services/auth.py`.  They wrap the
 Keycloak-backed auth gateway that fronts the Kamiwaza APIs.
 
+> Base URL rule: set `base_url=https://<host>` (no `/auth` suffix). A quick preflight is `GET {base_url}/auth/ping` → 200. If base_url ends with `/auth`, SDK calls will double-prefix and fail.
+
 ## Getting Started
 
 ```python
@@ -112,4 +114,21 @@ client.auth.create_local_user(LocalUserCreateRequest(
 ```
 
 These calls require an authenticated admin role and are intended for operational
-tooling rather than end-user flows.
+tooling rather than end-user flows. In Auth-on deployments, `create_local_user`
+provisions the Keycloak identity (transactional, rolls back on Keycloak failure),
+and `reset_user_password` updates Keycloak only (Keycloak is authoritative for
+login). In Auth-off mode, these calls remain DB-only.
+
+### Fed automation smoke (Auth-on)
+
+Use `scripts/fed_user_smoke.py` as a ready-to-run check:
+
+```
+python scripts/fed_user_smoke.py \
+  --base-url https://<host> \
+  --admin-user <admin> \
+  --admin-pass <password> \
+  --verify-ssl true
+```
+
+It validates: admin login → create user → login as new user → reset password → login with new password. It exits non-zero and prints the failing stage on errors. Roles are optional; omit unless you know the realm roles exist (missing roles will 500 + rollback).
