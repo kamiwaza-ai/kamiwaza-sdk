@@ -123,6 +123,7 @@ class ServingService(BaseService):
         use_ssl = True
         if os.environ.get("KAMIWAZA_USE_HTTPS", "true").lower() == "false":
             use_ssl = False
+        scheme = "https" if use_ssl else "http"
 
         # Parse the base URL to get host
         parsed_url = urlparse(self.client.base_url)
@@ -135,8 +136,18 @@ class ServingService(BaseService):
             )
             
             if running_instance and deployment.status == 'DEPLOYED':
-                # Always use http for model endpoints
-                endpoint = f"{'https' if use_ssl else 'http'}://{host}:{deployment.lb_port}/v1"
+                access_path = deployment.access_path
+                if access_path:
+                    path = access_path if access_path.startswith("/") else f"/{access_path}"
+                    path = path.rstrip("/")
+                    if path.endswith("/v1"):
+                        endpoint = f"{scheme}://{host}{path}"
+                    else:
+                        endpoint = f"{scheme}://{host}{path}/v1"
+                elif deployment.lb_port and deployment.lb_port != 443:
+                    endpoint = f"{scheme}://{host}:{deployment.lb_port}/v1"
+                else:
+                    endpoint = f"{scheme}://{host}/runtime/models/{deployment.id}/v1"
                 
                 active_deployment = ActiveModelDeployment(
                     id=deployment.id,
