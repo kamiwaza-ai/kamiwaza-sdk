@@ -5,8 +5,8 @@ Coverage: tests in tests/integration (direct client calls + SDK service method m
 Note: CLI/authenticator flows are mapped manually; OpenAI client calls are listed separately.
 
 Total endpoints: 266
-Covered by integration tests: 24
-Missing integration coverage: 242
+Covered by integration tests: 55
+Missing integration coverage: 211
 
 
 ## (TS0) ACTIVITY
@@ -150,9 +150,9 @@ Missing integration coverage: 242
 | TS4.001 | [ ] | POST | /cluster/attach_pairing |  |
 | TS4.002 | [ ] | POST | /cluster/cluster |  |
 | TS4.003 | [ ] | GET | /cluster/cluster/{cluster_id} |  |
-| TS4.004 | [ ] | GET | /cluster/cluster_capabilities |  |
+| TS4.004 | [x] | GET | /cluster/cluster_capabilities | test_cluster_live.py::TestClusterCapabilities::test_cluster_capabilities (cluster.cluster_capabilities) |
 | TS4.005 | [ ] | POST | /cluster/cluster_federation_reciprocation |  |
-| TS4.006 | [ ] | GET | /cluster/clusters |  |
+| TS4.006 | [x] | GET | /cluster/clusters | test_cluster_live.py::TestClusterReadOperations::test_list_clusters (cluster.list_clusters) |
 | TS4.007 | [ ] | POST | /cluster/detach_pairing |  |
 | TS4.008 | [ ] | POST | /cluster/disconnect_federation |  |
 | TS4.009 | [ ] | GET | /cluster/dummy_node_list_node |  |
@@ -164,20 +164,20 @@ Missing integration coverage: 242
 | TS4.015 | [ ] | POST | /cluster/federations/{federation_id}/disconnect |  |
 | TS4.016 | [ ] | POST | /cluster/federations/{federation_id}/pair |  |
 | TS4.017 | [ ] | POST | /cluster/federations/{federation_id}/ping |  |
-| TS4.018 | [ ] | GET | /cluster/get_hostname |  |
-| TS4.019 | [ ] | GET | /cluster/get_running_nodes |  |
-| TS4.020 | [ ] | GET | /cluster/hardware |  |
+| TS4.018 | [x] | GET | /cluster/get_hostname | test_cluster_live.py::TestClusterReadOperations::test_get_hostname (cluster.get_hostname) |
+| TS4.019 | [x] | GET | /cluster/get_running_nodes | test_cluster_live.py::TestClusterReadOperations::test_get_running_nodes (cluster.get_running_nodes) |
+| TS4.020 | [x] | GET | /cluster/hardware | test_cluster_live.py::TestClusterReadOperations::test_list_hardware (cluster.list_hardware) |
 | TS4.021 | [ ] | POST | /cluster/hardware |  |
 | TS4.022 | [ ] | GET | /cluster/hardware/{hardware_id} |  |
-| TS4.023 | [ ] | POST | /cluster/location |  |
-| TS4.024 | [ ] | GET | /cluster/location/{location_id} |  |
-| TS4.025 | [ ] | PUT | /cluster/location/{location_id} |  |
-| TS4.026 | [ ] | GET | /cluster/locations |  |
-| TS4.027 | [ ] | GET | /cluster/node/{node_id} |  |
-| TS4.028 | [ ] | GET | /cluster/nodes |  |
+| TS4.023 | [x] | POST | /cluster/location | test_cluster_live.py::TestClusterLocationLifecycle::test_location_lifecycle (cluster.create_location) |
+| TS4.024 | [x] | GET | /cluster/location/{location_id} | test_cluster_live.py::TestClusterLocationLifecycle::test_location_lifecycle (cluster.get_location) |
+| TS4.025 | [x] | PUT | /cluster/location/{location_id} | test_cluster_live.py::TestClusterLocationLifecycle::test_location_lifecycle (cluster.update_location) |
+| TS4.026 | [x] | GET | /cluster/locations | test_cluster_live.py::TestClusterReadOperations::test_list_locations (cluster.list_locations) |
+| TS4.027 | [x] | GET | /cluster/node/{node_id} | test_cluster_live.py::TestClusterNodeDetails::test_get_node_by_id (cluster.get_node_by_id) |
+| TS4.028 | [x] | GET | /cluster/nodes | test_cluster_live.py::TestClusterReadOperations::test_list_nodes (cluster.list_nodes) |
 | TS4.029 | [ ] | POST | /cluster/pair_federation |  |
 | TS4.030 | [ ] | POST | /cluster/refresh_hardware |  |
-| TS4.031 | [ ] | GET | /cluster/runtime_config |  |
+| TS4.031 | [x] | GET | /cluster/runtime_config | test_cluster_live.py::TestClusterReadOperations::test_get_runtime_config (cluster.get_runtime_config) |
 
 ## (TS5) CONFIG
 
@@ -190,20 +190,20 @@ Missing integration coverage: 242
 
 | Test Id | Coverage | Method | Path | Tests |
 | --- | --- | --- | --- | --- |
-| TS6.001 | [ ] | POST | /embedding/batch |  |
-| TS6.002 | [ ] | POST | /embedding/chunk |  |
-| TS6.003 | [ ] | POST | /embedding/generate |  |
+| TS6.001 | [x] | POST | /embedding/batch | test_embedding_live.py::TestEmbeddingGeneration::test_batch_embeddings (embedding.embedder.batch_embed) |
+| TS6.002 | [x] | POST | /embedding/chunk | test_embedding_live.py::TestEmbeddingChunking::test_chunk_text_simple; test_embedding_live.py::TestEmbeddingChunking::test_chunk_text_overlap_handling (embedding.embedder.chunk_text) |
+| TS6.003 | [x] | POST | /embedding/generate | test_embedding_live.py::TestEmbeddingGeneration::test_generate_embeddings_basic; test_embedding_live.py::TestEmbeddingGeneration::test_generate_embeddings_batch (embedding.embedder.embed) |
 | TS6.004 | [ ] | GET | /embedding/generate/{text} |  |
-| TS6.005 | [ ] | GET | /embedding/health |  |
-| TS6.006 | [ ] | GET | /embedding/providers |  |
+| TS6.005 | [x] | GET | /embedding/health | test_embedding_live.py::TestEmbeddingHealth::test_embedding_health (embedding.health) |
+| TS6.006 | [x] | GET | /embedding/providers | test_embedding_live.py::TestEmbeddingProviders::test_list_providers (embedding.list_providers) |
 
 ## (TS7) GUIDE
 
 | Test Id | Coverage | Method | Path | Tests |
 | --- | --- | --- | --- | --- |
-| TS7.001 | [ ] | GET | /guide/ |  |
-| TS7.002 | [ ] | POST | /guide/import |  |
-| TS7.003 | [ ] | POST | /guide/refresh |  |
+| TS7.001 | [x] | GET | /guide/ | test_guide_live.py::TestGuideReadOperations::test_list_guides; test_guide_live.py::TestGuideReadOperations::test_list_guides_with_normalized_use_case (models.list_guides) |
+| TS7.002 | [x] | POST | /guide/import | test_guide_live.py::TestGuideImportOperations::test_import_guides (models.import_guides) |
+| TS7.003 | [x] | POST | /guide/refresh | test_guide_live.py::TestGuideRefreshOperations::test_refresh_guides (models.refresh_guides) |
 
 ## (TS8) INGESTION
 
@@ -244,43 +244,43 @@ Missing integration coverage: 242
 
 | Test Id | Coverage | Method | Path | Tests |
 | --- | --- | --- | --- | --- |
-| TS10.001 | [x] | GET | /model_configs/ | test_serving_workflow.py::test_deploy_qwen_and_infer_with_strip_thinking (models.get_model_configs) |
-| TS10.002 | [x] | POST | /model_configs/ | test_serving_workflow.py::test_deploy_qwen_and_infer_with_strip_thinking (models.create_model_config) |
-| TS10.003 | [x] | DELETE | /model_configs/{model_config_id} | test_serving_workflow.py::test_deploy_qwen_and_infer_with_strip_thinking (models.delete_model_config) |
-| TS10.004 | [ ] | GET | /model_configs/{model_config_id} |  |
-| TS10.005 | [ ] | PUT | /model_configs/{model_config_id} |  |
+| TS10.001 | [x] | GET | /model_configs/ | test_serving_workflow.py::test_deploy_qwen_and_infer_with_strip_thinking (models.get_model_configs); test_model_configs_live.py::TestModelConfigListOperations::test_get_model_configs (models.get_model_configs) |
+| TS10.002 | [x] | POST | /model_configs/ | test_serving_workflow.py::test_deploy_qwen_and_infer_with_strip_thinking (models.create_model_config); test_model_configs_live.py::TestModelConfigLifecycle::test_create_and_delete_model_config (models.create_model_config) |
+| TS10.003 | [x] | DELETE | /model_configs/{model_config_id} | test_serving_workflow.py::test_deploy_qwen_and_infer_with_strip_thinking (models.delete_model_config); test_model_configs_live.py::TestModelConfigLifecycle::test_create_and_delete_model_config (models.delete_model_config) |
+| TS10.004 | [x] | GET | /model_configs/{model_config_id} | test_model_configs_live.py::TestModelConfigReadOperations::test_get_model_config_by_id (models.get_model_config) |
+| TS10.005 | [x] | PUT | /model_configs/{model_config_id} | test_model_configs_live.py::TestModelConfigLifecycle::test_update_model_config (models.update_model_config) |
 
 ## (TS11) MODEL_FILES
 
 | Test Id | Coverage | Method | Path | Tests |
 | --- | --- | --- | --- | --- |
-| TS11.001 | [ ] | GET | /model_files/ |  |
+| TS11.001 | [x] | GET | /model_files/ | test_model_files_live.py::TestModelFileListOperations::test_list_model_files (models.list_model_files) |
 | TS11.002 | [ ] | POST | /model_files/ |  |
-| TS11.003 | [x] | GET | /model_files/download_status/ | conftest.py::_ensure (models.wait_for_download) |
+| TS11.003 | [x] | GET | /model_files/download_status/ | conftest.py::_ensure (models.wait_for_download); test_model_files_live.py::TestModelFileDownloadStatus::test_get_download_status (models.get_model_files_download_status) |
 | TS11.004 | [ ] | DELETE | /model_files/downloads/cancel_all |  |
-| TS11.005 | [ ] | POST | /model_files/search/ |  |
+| TS11.005 | [ ] | POST | /model_files/search/ | SKIPPED: Server returns 500 (see 00-server-defects.md) |
 | TS11.006 | [ ] | DELETE | /model_files/{model_file_id} |  |
-| TS11.007 | [ ] | GET | /model_files/{model_file_id} |  |
+| TS11.007 | [x] | GET | /model_files/{model_file_id} | test_model_files_live.py::TestModelFileReadOperations::test_get_model_file_by_id (models.get_model_file) |
 | TS11.008 | [ ] | DELETE | /model_files/{model_file_id}/download |  |
-| TS11.009 | [ ] | GET | /model_files/{model_file_id}/memory_usage |  |
+| TS11.009 | [x] | GET | /model_files/{model_file_id}/memory_usage | test_model_files_live.py::TestModelFileMemoryUsage::test_get_model_file_memory_usage (models.get_model_file_memory_usage) |
 
 ## (TS12) MODELS
 
 | Test Id | Coverage | Method | Path | Tests |
 | --- | --- | --- | --- | --- |
-| TS12.001 | [x] | GET | /models/ | conftest.py::_ensure (models.get_model_by_repo_id) |
+| TS12.001 | [x] | GET | /models/ | conftest.py::_ensure (models.get_model_by_repo_id); test_models_extended_live.py::TestModelListOperations::test_list_models; test_models_extended_live.py::TestModelListOperations::test_list_models_with_files (models.list_models) |
 | TS12.002 | [ ] | POST | /models/ |  |
-| TS12.003 | [ ] | POST | /models/cleanup_stale_deployments |  |
+| TS12.003 | [x] | POST | /models/cleanup_stale_deployments | test_models_extended_live.py::TestModelCleanupOperations::test_cleanup_stale_deployments (direct) |
 | TS12.004 | [ ] | POST | /models/deploy_after_download/{model_key} |  |
 | TS12.005 | [x] | POST | /models/download/ | conftest.py::_ensure (models.initiate_model_download); test_models_live.py::test_live_model_metadata_and_download (direct); test_serving_workflow.py::_ensure_model_cached (direct) |
 | TS12.006 | [ ] | POST | /models/download_and_deploy |  |
-| TS12.007 | [ ] | GET | /models/pending_deployments |  |
-| TS12.008 | [ ] | POST | /models/search/ |  |
+| TS12.007 | [x] | GET | /models/pending_deployments | test_models_extended_live.py::TestModelDeploymentInfo::test_get_pending_deployments (direct) |
+| TS12.008 | [x] | POST | /models/search/ | test_models_extended_live.py::TestModelSearchOperations::test_search_models_by_repo_id; test_models_extended_live.py::TestModelSearchOperations::test_search_models_exact_match; test_models_extended_live.py::TestModelSearchOperations::test_get_model_by_repo_id (models.search_models) |
 | TS12.009 | [ ] | DELETE | /models/{model_id} |  |
-| TS12.010 | [x] | GET | /models/{model_id} | test_models_live.py::test_live_model_metadata_and_download (models.get_model) |
-| TS12.011 | [ ] | GET | /models/{model_id}/configs |  |
-| TS12.012 | [ ] | GET | /models/{model_id}/deployment_info |  |
-| TS12.013 | [ ] | GET | /models/{model_id}/memory_usage |  |
+| TS12.010 | [x] | GET | /models/{model_id} | test_models_live.py::test_live_model_metadata_and_download (models.get_model); test_models_extended_live.py::TestModelDetailOperations::test_get_model (models.get_model) |
+| TS12.011 | [x] | GET | /models/{model_id}/configs | test_models_extended_live.py::TestModelDetailOperations::test_get_model_configs_via_model (models.get_model_configs_for_model) |
+| TS12.012 | [x] | GET | /models/{model_id}/deployment_info | test_models_extended_live.py::TestModelDeploymentInfo::test_get_model_deployment_info (direct) |
+| TS12.013 | [x] | GET | /models/{model_id}/memory_usage | test_models_extended_live.py::TestModelDetailOperations::test_get_model_memory_usage (models.get_model_memory_usage) |
 
 ## (TS13) NEWS
 
