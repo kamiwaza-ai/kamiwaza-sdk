@@ -109,7 +109,7 @@ client.auth.create_local_user(LocalUserCreateRequest(
     username="new-admin",
     email="new-admin@example.com",
     password="changeme!",
-    roles=["admin"],
+    roles=["admin", "user", "viewer", "guest"],
 ))
 ```
 
@@ -118,4 +118,3 @@ tooling rather than end-user flows. In Auth-on deployments, `create_local_user`
 provisions the Keycloak identity (transactional, rolls back on Keycloak failure),
 and `reset_user_password` updates Keycloak only (Keycloak is authoritative for
 login). In Auth-off mode, these calls remain DB-only.
-

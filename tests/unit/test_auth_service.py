@@ -58,4 +58,4 @@ def test_create_pat_round_trip(dummy_client):
     assert result.pat.jti == "jti-1"
     method, path, kwargs = client.calls[0]
     assert path == "/auth/pats"
-    assert kwargs["json"]["name"] == "sdk"
+    assert kwargs["params"]["name"] == "sdk"

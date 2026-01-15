@@ -110,7 +110,8 @@ class AuthService(BaseService):
     # Personal access tokens
     # --------------------------------------------------------------------- #
     def create_pat(self, payload: PATCreate) -> PATCreateResponse:
-        response = self.client.post("/auth/pats", json=payload.model_dump(exclude_none=True))
+        params = payload.model_dump(exclude_none=True)
+        response = self.client.post("/auth/pats", params=params if params else None)
         return PATCreateResponse.model_validate(response)
 
     def list_pats(self) -> PATListResponse:

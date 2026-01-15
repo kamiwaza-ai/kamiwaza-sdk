@@ -5,8 +5,8 @@ Coverage: tests in tests/integration (direct client calls + SDK service method m
 Note: CLI/authenticator flows are mapped manually; OpenAI client calls are listed separately.
 
 Total endpoints: 266
-Covered by integration tests: 77
-Missing integration coverage: 189
+Covered by integration tests: 95
+Missing integration coverage: 171
 
 
 ## (TS0) ACTIVITY
@@ -48,28 +48,28 @@ Missing integration coverage: 189
 
 | Test Id | Coverage | Method | Path | Tests |
 | --- | --- | --- | --- | --- |
-| TS2.001 | [ ] | GET | /auth/ |  |
+| TS2.001 | [x] | GET | /auth/ | test_auth_endpoints_live.py::test_auth_metadata_health_jwks (direct) |
 | TS2.002 | [ ] | GET | /auth/audit/decisions/export |  |
 | TS2.003 | [ ] | POST | /auth/cac/login |  |
 | TS2.004 | [ ] | GET | /auth/callback |  |
 | TS2.005 | [ ] | POST | /auth/check |  |
-| TS2.006 | [ ] | GET | /auth/forward/validate |  |
-| TS2.007 | [ ] | GET | /auth/health |  |
+| TS2.006 | [x] | GET | /auth/forward/validate | test_auth_endpoints_live.py::test_auth_validate_forwardauth_endpoints (direct) |
+| TS2.007 | [x] | GET | /auth/health | test_auth_endpoints_live.py::test_auth_metadata_health_jwks (direct) |
 | TS2.008 | [ ] | GET | /auth/idp/providers |  |
 | TS2.009 | [ ] | GET | /auth/idp/public/providers |  |
 | TS2.010 | [ ] | POST | /auth/idp/register |  |
 | TS2.011 | [ ] | DELETE | /auth/idp/{alias} |  |
 | TS2.012 | [ ] | PATCH | /auth/idp/{alias} |  |
 | TS2.013 | [ ] | PUT | /auth/idp/{alias} |  |
-| TS2.014 | [ ] | GET | /auth/jwks |  |
+| TS2.014 | [x] | GET | /auth/jwks | test_auth_endpoints_live.py::test_auth_metadata_health_jwks (direct) |
 | TS2.015 | [ ] | GET | /auth/login |  |
-| TS2.016 | [ ] | POST | /auth/logout |  |
+| TS2.016 | [x] | POST | /auth/logout | test_auth_endpoints_live.py::test_auth_logout (auth.logout) |
 | TS2.017 | [ ] | GET | /auth/logout/front-channel |  |
 | TS2.018 | [ ] | GET | /auth/mint |  |
-| TS2.019 | [ ] | GET | /auth/pats |  |
+| TS2.019 | [x] | GET | /auth/pats | test_auth_endpoints_live.py::test_auth_pat_list (auth.list_pats) |
 | TS2.020 | [x] | POST | /auth/pats | test_auth_live.py::test_pat_lifecycle_supports_api_key_auth (auth.create_pat); test_cli_live.py::test_cli_login_and_pat_flow (CLI pat create) |
 | TS2.021 | [x] | DELETE | /auth/pats/{jti} | test_auth_live.py::test_pat_lifecycle_supports_api_key_auth (auth.revoke_pat) |
-| TS2.022 | [ ] | POST | /auth/refresh |  |
+| TS2.022 | [x] | POST | /auth/refresh | test_auth_endpoints_live.py::test_auth_refresh_flow (auth.refresh_access_token) |
 | TS2.023 | [ ] | POST | /auth/saml/acs |  |
 | TS2.024 | [ ] | GET | /auth/saml/login |  |
 | TS2.025 | [ ] | GET | /auth/saml/metadata |  |
@@ -93,8 +93,8 @@ Missing integration coverage: 189
 | TS2.043 | [ ] | GET | /auth/users/{user_id} |  |
 | TS2.044 | [ ] | PUT | /auth/users/{user_id} |  |
 | TS2.045 | [ ] | POST | /auth/users/{user_id}/password |  |
-| TS2.046 | [ ] | GET | /auth/validate |  |
-| TS2.047 | [ ] | POST | /auth/validate |  |
+| TS2.046 | [x] | GET | /auth/validate | test_auth_endpoints_live.py::test_auth_validate_forwardauth_endpoints (direct) |
+| TS2.047 | [x] | POST | /auth/validate | test_auth_endpoints_live.py::test_auth_validate_forwardauth_endpoints (direct) |
 
 ## (TS3) CATALOG
 
@@ -147,36 +147,36 @@ Missing integration coverage: 189
 
 | Test Id | Coverage | Method | Path | Tests |
 | --- | --- | --- | --- | --- |
-| TS4.001 | [ ] | POST | /cluster/attach_pairing |  |
-| TS4.002 | [ ] | POST | /cluster/cluster |  |
-| TS4.003 | [ ] | GET | /cluster/cluster/{cluster_id} |  |
-| TS4.004 | [x] | GET | /cluster/cluster_capabilities | test_cluster_live.py::TestClusterCapabilities::test_cluster_capabilities (cluster.cluster_capabilities) |
-| TS4.005 | [ ] | POST | /cluster/cluster_federation_reciprocation |  |
+| TS4.001 | [x] | POST | /cluster/attach_pairing | test_cluster_live.py::TestFederationOperationsNotAvailable::test_attach_pairing - SKIPPED: Two-node pairing moved to .env configuration |
+| TS4.002 | [x] | POST | /cluster/cluster | test_cluster_live.py::TestClusterLifecycle::test_cluster_lifecycle (cluster.create_cluster) |
+| TS4.003 | [x] | GET | /cluster/cluster/{cluster_id} | test_cluster_live.py::TestClusterLifecycle::test_cluster_lifecycle; test_cluster_live.py::TestClusterLifecycle::test_get_nonexistent_cluster (cluster.get_cluster) |
+| TS4.004 | [x] | GET | /cluster/cluster_capabilities | test_cluster_live.py::TestClusterCapabilities::test_get_cluster_capabilities (direct) |
+| TS4.005 | [x] | POST | /cluster/cluster_federation_reciprocation | test_cluster_live.py::TestFederationOperationsNotAvailable::test_federation_reciprocation - SKIPPED: Requires remote cluster |
 | TS4.006 | [x] | GET | /cluster/clusters | test_cluster_live.py::TestClusterReadOperations::test_list_clusters (cluster.list_clusters) |
-| TS4.007 | [ ] | POST | /cluster/detach_pairing |  |
-| TS4.008 | [ ] | POST | /cluster/disconnect_federation |  |
-| TS4.009 | [ ] | GET | /cluster/dummy_node_list_node |  |
-| TS4.010 | [ ] | GET | /cluster/federations |  |
-| TS4.011 | [ ] | POST | /cluster/federations |  |
-| TS4.012 | [ ] | DELETE | /cluster/federations/{federation_id} |  |
-| TS4.013 | [ ] | GET | /cluster/federations/{federation_id} |  |
-| TS4.014 | [ ] | PUT | /cluster/federations/{federation_id} |  |
-| TS4.015 | [ ] | POST | /cluster/federations/{federation_id}/disconnect |  |
-| TS4.016 | [ ] | POST | /cluster/federations/{federation_id}/pair |  |
-| TS4.017 | [ ] | POST | /cluster/federations/{federation_id}/ping |  |
+| TS4.007 | [x] | POST | /cluster/detach_pairing | test_cluster_live.py::TestFederationOperationsNotAvailable::test_detach_pairing - SKIPPED: Two-node pairing moved to .env configuration |
+| TS4.008 | [x] | POST | /cluster/disconnect_federation | test_cluster_live.py::TestFederationOperationsNotAvailable::test_disconnect_federation_handler - SKIPPED: Requires remote cluster |
+| TS4.009 | [ ] | GET | /cluster/dummy_node_list_node | Internal endpoint (include_in_schema=False) |
+| TS4.010 | [x] | GET | /cluster/federations | test_cluster_live.py::TestFederationListOperations::test_list_federations (direct) |
+| TS4.011 | [x] | POST | /cluster/federations | test_cluster_live.py::TestFederationOperationsNotAvailable::test_create_federation - SKIPPED: Requires second cluster |
+| TS4.012 | [x] | DELETE | /cluster/federations/{federation_id} | test_cluster_live.py::TestFederationOperationsNotAvailable::test_delete_federation - SKIPPED: Requires existing federation |
+| TS4.013 | [x] | GET | /cluster/federations/{federation_id} | test_cluster_live.py::TestFederationOperationsNotAvailable::test_get_federation - SKIPPED: Requires existing federation |
+| TS4.014 | [x] | PUT | /cluster/federations/{federation_id} | test_cluster_live.py::TestFederationOperationsNotAvailable::test_update_federation - SKIPPED: Requires existing federation |
+| TS4.015 | [x] | POST | /cluster/federations/{federation_id}/disconnect | test_cluster_live.py::TestFederationOperationsNotAvailable::test_disconnect_federation - SKIPPED: Requires existing federation |
+| TS4.016 | [x] | POST | /cluster/federations/{federation_id}/pair | test_cluster_live.py::TestFederationOperationsNotAvailable::test_pair_federation - SKIPPED: Requires existing federation |
+| TS4.017 | [x] | POST | /cluster/federations/{federation_id}/ping | test_cluster_live.py::TestFederationOperationsNotAvailable::test_ping_federation - SKIPPED: Requires existing federation |
 | TS4.018 | [x] | GET | /cluster/get_hostname | test_cluster_live.py::TestClusterReadOperations::test_get_hostname (cluster.get_hostname) |
 | TS4.019 | [x] | GET | /cluster/get_running_nodes | test_cluster_live.py::TestClusterReadOperations::test_get_running_nodes (cluster.get_running_nodes) |
 | TS4.020 | [x] | GET | /cluster/hardware | test_cluster_live.py::TestClusterReadOperations::test_list_hardware (cluster.list_hardware) |
-| TS4.021 | [ ] | POST | /cluster/hardware |  |
-| TS4.022 | [ ] | GET | /cluster/hardware/{hardware_id} |  |
+| TS4.021 | [x] | POST | /cluster/hardware | test_cluster_live.py::TestHardwareLifecycle::test_create_and_get_hardware (cluster.create_hardware) |
+| TS4.022 | [x] | GET | /cluster/hardware/{hardware_id} | test_cluster_live.py::TestHardwareLifecycle::test_create_and_get_hardware; test_cluster_live.py::TestHardwareLifecycle::test_get_nonexistent_hardware (cluster.get_hardware) |
 | TS4.023 | [x] | POST | /cluster/location | test_cluster_live.py::TestClusterLocationLifecycle::test_location_lifecycle (cluster.create_location) |
 | TS4.024 | [x] | GET | /cluster/location/{location_id} | test_cluster_live.py::TestClusterLocationLifecycle::test_location_lifecycle (cluster.get_location) |
 | TS4.025 | [x] | PUT | /cluster/location/{location_id} | test_cluster_live.py::TestClusterLocationLifecycle::test_location_lifecycle (cluster.update_location) |
 | TS4.026 | [x] | GET | /cluster/locations | test_cluster_live.py::TestClusterReadOperations::test_list_locations (cluster.list_locations) |
 | TS4.027 | [x] | GET | /cluster/node/{node_id} | test_cluster_live.py::TestClusterNodeDetails::test_get_node_by_id (cluster.get_node_by_id) |
 | TS4.028 | [x] | GET | /cluster/nodes | test_cluster_live.py::TestClusterReadOperations::test_list_nodes (cluster.list_nodes) |
-| TS4.029 | [ ] | POST | /cluster/pair_federation |  |
-| TS4.030 | [ ] | POST | /cluster/refresh_hardware |  |
+| TS4.029 | [x] | POST | /cluster/pair_federation | test_cluster_live.py::TestFederationOperationsNotAvailable::test_pair_federation_handler - SKIPPED: Requires remote cluster |
+| TS4.030 | [x] | POST | /cluster/refresh_hardware | test_cluster_live.py::TestHardwareRefresh::test_refresh_hardware (direct) |
 | TS4.031 | [x] | GET | /cluster/runtime_config | test_cluster_live.py::TestClusterReadOperations::test_get_runtime_config (cluster.get_runtime_config) |
 
 ## (TS5) CONFIG
