@@ -5,8 +5,8 @@ Coverage: tests in tests/integration (direct client calls + SDK service method m
 Note: CLI/authenticator flows are mapped manually; OpenAI client calls are listed separately.
 
 Total endpoints: 266
-Covered by integration tests: 55
-Missing integration coverage: 211
+Covered by integration tests: 72
+Missing integration coverage: 194
 
 
 ## (TS0) ACTIVITY
@@ -286,50 +286,50 @@ Missing integration coverage: 211
 
 | Test Id | Coverage | Method | Path | Tests |
 | --- | --- | --- | --- | --- |
-| TS13.001 | [ ] | GET | /news/latest |  |
-| TS13.002 | [ ] | GET | /news/quadrants |  |
+| TS13.001 | [x] | GET | /news/latest | test_news_live.py::TestNewsEndpoints::test_get_latest_news (direct) |
+| TS13.002 | [x] | GET | /news/quadrants | test_news_live.py::TestNewsEndpoints::test_get_news_quadrants (direct) |
 
 ## (TS14) NODE
 
 | Test Id | Coverage | Method | Path | Tests |
 | --- | --- | --- | --- | --- |
-| TS14.001 | [ ] | GET | /node/node_id |  |
-| TS14.002 | [ ] | GET | /node/node_status |  |
+| TS14.001 | [x] | GET | /node/node_id | test_node_live.py::TestNodeEndpoints::test_get_node_id (direct) |
+| TS14.002 | [x] | GET | /node/node_status | test_node_live.py::TestNodeEndpoints::test_get_node_status (direct) |
 
 ## (TS15) PING
 
 | Test Id | Coverage | Method | Path | Tests |
 | --- | --- | --- | --- | --- |
-| TS15.001 | [ ] | GET | /ping |  |
+| TS15.001 | [x] | GET | /ping | test_ping_live.py::TestPingEndpoint::test_ping (direct) |
 
 ## (TS16) PROMPTS
 
 | Test Id | Coverage | Method | Path | Tests |
 | --- | --- | --- | --- | --- |
-| TS16.001 | [ ] | POST | /prompts/elements/ |  |
-| TS16.002 | [ ] | GET | /prompts/elements/{element_id} |  |
-| TS16.003 | [ ] | POST | /prompts/roles/ |  |
-| TS16.004 | [ ] | GET | /prompts/roles/{role_id} |  |
-| TS16.005 | [ ] | POST | /prompts/systems/ |  |
-| TS16.006 | [ ] | GET | /prompts/systems/{system_id} |  |
-| TS16.007 | [ ] | POST | /prompts/templates/ |  |
-| TS16.008 | [ ] | GET | /prompts/templates/{template_id} |  |
+| TS16.001 | [x] | POST | /prompts/elements/ | test_prompts_live.py::TestPromptElementOperations::test_create_and_get_element (prompts.create_element) |
+| TS16.002 | [x] | GET | /prompts/elements/{element_id} | test_prompts_live.py::TestPromptElementOperations::test_create_and_get_element (prompts.get_element); test_prompts_live.py::TestPromptElementOperations::test_get_nonexistent_element (prompts.get_element) |
+| TS16.003 | [x] | POST | /prompts/roles/ | test_prompts_live.py::TestPromptRoleOperations::test_create_and_get_role (prompts.create_role) |
+| TS16.004 | [x] | GET | /prompts/roles/{role_id} | test_prompts_live.py::TestPromptRoleOperations::test_create_and_get_role (prompts.get_role); test_prompts_live.py::TestPromptRoleOperations::test_get_nonexistent_role (prompts.get_role) |
+| TS16.005 | [x] | POST | /prompts/systems/ | test_prompts_live.py::TestPromptSystemOperations::test_create_and_get_system (prompts.create_system) |
+| TS16.006 | [x] | GET | /prompts/systems/{system_id} | test_prompts_live.py::TestPromptSystemOperations::test_create_and_get_system (prompts.get_system); test_prompts_live.py::TestPromptSystemOperations::test_get_nonexistent_system (prompts.get_system) |
+| TS16.007 | [x] | POST | /prompts/templates/ | test_prompts_live.py::TestPromptTemplateOperations::test_create_and_get_template (prompts.create_template) |
+| TS16.008 | [x] | GET | /prompts/templates/{template_id} | test_prompts_live.py::TestPromptTemplateOperations::test_create_and_get_template (prompts.get_template); test_prompts_live.py::TestPromptTemplateOperations::test_get_nonexistent_template (prompts.get_template) |
 
 ## (TS17) RETRIEVAL
 
 | Test Id | Coverage | Method | Path | Tests |
 | --- | --- | --- | --- | --- |
 | TS17.001 | [x] | POST | /retrieval/jobs | test_catalog_ingest_retrieval.py::test_s3_ingest_and_retrieve_grpc (direct); test_catalog_ingest_retrieval.py::test_s3_ingest_and_retrieve_inline (direct); test_catalog_multi_source.py::_run_inline_retrieval (direct); test_catalog_multi_source.py::_run_sse_retrieval (direct); test_catalog_multi_source.py::test_catalog_file_ingestion_metadata (direct); test_catalog_multi_source.py::test_catalog_postgres_ingestion_metadata (direct); test_catalog_multi_source.py::test_catalog_slack_ingestion_metadata (retrieval.slack_messages) |
-| TS17.002 | [ ] | GET | /retrieval/jobs/{job_id} |  |
+| TS17.002 | [x] | GET | /retrieval/jobs/{job_id} | test_retrieval_live.py::TestRetrievalJobStatus::test_get_job_via_direct_api (direct); test_retrieval_live.py::TestRetrievalJobStatus::test_get_nonexistent_job_status (retrieval.get_job) |
 | TS17.003 | [x] | GET | /retrieval/jobs/{job_id}/stream | test_catalog_multi_source.py::_run_sse_retrieval (direct) |
 
 ## (TS18) SECURITY
 
 | Test Id | Coverage | Method | Path | Tests |
 | --- | --- | --- | --- | --- |
-| TS18.001 | [ ] | POST | /security/consent/accept |  |
-| TS18.002 | [ ] | GET | /security/embed.js |  |
-| TS18.003 | [ ] | GET | /security/public/config |  |
+| TS18.001 | [x] | POST | /security/consent/accept | test_security_live.py::TestSecurityConsentAccept::test_accept_consent (direct) |
+| TS18.002 | [x] | GET | /security/embed.js | test_security_live.py::TestSecurityEmbedScript::test_get_embed_script (direct) |
+| TS18.003 | [x] | GET | /security/public/config | test_security_live.py::TestSecurityPublicConfig::test_get_public_config (direct) |
 
 ## (TS19) SERVING
 
