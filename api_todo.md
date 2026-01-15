@@ -100,48 +100,48 @@ Missing integration coverage: 189
 
 | Test Id | Coverage | Method | Path | Tests |
 | --- | --- | --- | --- | --- |
-| TS3.001 | [ ] | GET | /catalog/ |  |
-| TS3.002 | [ ] | GET | /catalog/containers/ |  |
-| TS3.003 | [ ] | POST | /catalog/containers/ |  |
-| TS3.004 | [ ] | DELETE | /catalog/containers/by-urn |  |
-| TS3.005 | [ ] | GET | /catalog/containers/by-urn |  |
-| TS3.006 | [ ] | PATCH | /catalog/containers/by-urn |  |
-| TS3.007 | [ ] | DELETE | /catalog/containers/by-urn/datasets |  |
-| TS3.008 | [ ] | POST | /catalog/containers/by-urn/datasets |  |
-| TS3.009 | [ ] | DELETE | /catalog/containers/v2/{container_urn:container_urn} |  |
-| TS3.010 | [ ] | GET | /catalog/containers/v2/{container_urn:container_urn} |  |
-| TS3.011 | [ ] | PATCH | /catalog/containers/v2/{container_urn:container_urn} |  |
-| TS3.012 | [ ] | POST | /catalog/containers/v2/{container_urn:container_urn}/datasets |  |
-| TS3.013 | [ ] | DELETE | /catalog/containers/v2/{container_urn:container_urn}/datasets/{dataset_urn:dataset_urn} |  |
-| TS3.014 | [ ] | GET | /catalog/containers/{container_urn:path} |  |
-| TS3.015 | [ ] | PATCH | /catalog/containers/{container_urn:path} |  |
-| TS3.016 | [ ] | POST | /catalog/containers/{container_urn:path}/datasets |  |
-| TS3.017 | [ ] | DELETE | /catalog/containers/{container_urn:path}/datasets/{dataset_urn:path} |  |
-| TS3.018 | [ ] | DELETE | /catalog/containers/{container_urn} |  |
-| TS3.019 | [ ] | GET | /catalog/datasets/ |  |
-| TS3.020 | [x] | POST | /catalog/datasets/ | test_catalog_live.py::test_catalog_dataset_and_secret_lifecycle (catalog.create_dataset) |
+| TS3.001 | [x] | GET | /catalog/ | test_catalog_endpoints.py::test_catalog_metadata_and_health (direct) |
+| TS3.002 | [x] | GET | /catalog/containers/ | test_catalog_endpoints.py::test_catalog_container_endpoints (catalog.containers.list) |
+| TS3.003 | [x] | POST | /catalog/containers/ | test_catalog_endpoints.py::test_catalog_container_endpoints (catalog.containers.create) |
+| TS3.004 | [x] | DELETE | /catalog/containers/by-urn | test_catalog_endpoints.py::test_catalog_container_endpoints (direct cleanup) |
+| TS3.005 | [x] | GET | /catalog/containers/by-urn | test_catalog_endpoints.py::test_catalog_container_endpoints (direct) |
+| TS3.006 | [x] | PATCH | /catalog/containers/by-urn | test_catalog_endpoints.py::test_catalog_container_endpoints (direct) |
+| TS3.007 | [x] | DELETE | /catalog/containers/by-urn/datasets | test_catalog_endpoints.py::test_catalog_container_endpoints (direct) |
+| TS3.008 | [x] | POST | /catalog/containers/by-urn/datasets | test_catalog_endpoints.py::test_catalog_container_endpoints (direct) |
+| TS3.009 | [x] | DELETE | /catalog/containers/v2/{container_urn:container_urn} | test_catalog_endpoints.py::test_catalog_container_endpoints (direct) |
+| TS3.010 | [x] | GET | /catalog/containers/v2/{container_urn:container_urn} | test_catalog_endpoints.py::test_catalog_container_endpoints (direct) |
+| TS3.011 | [x] | PATCH | /catalog/containers/v2/{container_urn:container_urn} | test_catalog_endpoints.py::test_catalog_container_endpoints (direct) |
+| TS3.012 | [x] | POST | /catalog/containers/v2/{container_urn:container_urn}/datasets | test_catalog_endpoints.py::test_catalog_container_endpoints (direct) |
+| TS3.013 | [x] | DELETE | /catalog/containers/v2/{container_urn:container_urn}/datasets/{dataset_urn:dataset_urn} | test_catalog_endpoints.py::test_catalog_container_endpoints (direct) |
+| TS3.014 | [x] | GET | /catalog/containers/{container_urn:path} | test_catalog_endpoints.py::test_catalog_container_endpoints (direct) |
+| TS3.015 | [x] | PATCH | /catalog/containers/{container_urn:path} | test_catalog_endpoints.py::test_catalog_container_endpoints (direct) |
+| TS3.016 | [x] | POST | /catalog/containers/{container_urn:path}/datasets | test_catalog_endpoints.py::test_catalog_container_endpoints (direct) |
+| TS3.017 | [x] | DELETE | /catalog/containers/{container_urn:path}/datasets/{dataset_urn:path} | test_catalog_endpoints.py::test_catalog_container_endpoints (direct) |
+| TS3.018 | [x] | DELETE | /catalog/containers/{container_urn} | test_catalog_endpoints.py::test_catalog_container_endpoints (direct) |
+| TS3.019 | [x] | GET | /catalog/datasets/ | test_catalog_endpoints.py::test_catalog_dataset_schema_endpoints (catalog.datasets.list) |
+| TS3.020 | [x] | POST | /catalog/datasets/ | test_catalog_endpoints.py::test_catalog_dataset_schema_endpoints (catalog.datasets.create); test_catalog_live.py::test_catalog_dataset_and_secret_lifecycle (catalog.create_dataset) |
 | TS3.021 | [x] | DELETE | /catalog/datasets/by-urn | test_catalog_ingest_retrieval.py::test_s3_ingest_and_retrieve_grpc (direct); test_catalog_ingest_retrieval.py::test_s3_ingest_and_retrieve_inline (direct); test_catalog_multi_source.py::_cleanup_datasets (direct) |
 | TS3.022 | [x] | GET | /catalog/datasets/by-urn | test_catalog_ingest_retrieval.py::_ingest_sample_dataset (direct); test_catalog_live.py::test_catalog_dataset_and_secret_lifecycle (catalog.create_dataset); test_catalog_live.py::test_catalog_dataset_and_secret_lifecycle (catalog.get_dataset); test_catalog_multi_source.py::_fetch_dataset (direct) |
 | TS3.023 | [x] | PATCH | /catalog/datasets/by-urn | test_catalog_multi_source.py::_ensure_retrieval_metadata (direct); test_catalog_multi_source.py::test_catalog_file_ingestion_metadata (direct) |
-| TS3.024 | [ ] | GET | /catalog/datasets/by-urn/schema |  |
-| TS3.025 | [ ] | PUT | /catalog/datasets/by-urn/schema |  |
-| TS3.026 | [ ] | DELETE | /catalog/datasets/v2/{dataset_urn:dataset_urn} |  |
-| TS3.027 | [ ] | GET | /catalog/datasets/v2/{dataset_urn:dataset_urn} |  |
-| TS3.028 | [ ] | PATCH | /catalog/datasets/v2/{dataset_urn:dataset_urn} |  |
-| TS3.029 | [ ] | GET | /catalog/datasets/v2/{dataset_urn:dataset_urn}/schema |  |
-| TS3.030 | [ ] | PUT | /catalog/datasets/v2/{dataset_urn:dataset_urn}/schema |  |
-| TS3.031 | [ ] | DELETE | /catalog/datasets/{dataset_urn:path} |  |
-| TS3.032 | [ ] | GET | /catalog/datasets/{dataset_urn:path} |  |
-| TS3.033 | [ ] | PATCH | /catalog/datasets/{dataset_urn:path} |  |
-| TS3.034 | [ ] | GET | /catalog/health |  |
-| TS3.035 | [x] | GET | /catalog/secrets/ | test_catalog_live.py::test_catalog_dataset_and_secret_lifecycle (catalog.list_secrets) |
-| TS3.036 | [ ] | POST | /catalog/secrets/ |  |
-| TS3.037 | [ ] | DELETE | /catalog/secrets/by-urn |  |
-| TS3.038 | [ ] | GET | /catalog/secrets/by-urn |  |
-| TS3.039 | [ ] | DELETE | /catalog/secrets/v2/{secret_urn:secret_urn} |  |
-| TS3.040 | [ ] | GET | /catalog/secrets/v2/{secret_urn:secret_urn} |  |
-| TS3.041 | [ ] | DELETE | /catalog/secrets/{secret_urn} |  |
-| TS3.042 | [ ] | GET | /catalog/secrets/{secret_urn} |  |
+| TS3.024 | [x] | GET | /catalog/datasets/by-urn/schema | test_catalog_endpoints.py::test_catalog_dataset_schema_endpoints (direct) |
+| TS3.025 | [x] | PUT | /catalog/datasets/by-urn/schema | test_catalog_endpoints.py::test_catalog_dataset_schema_endpoints (direct) |
+| TS3.026 | [x] | DELETE | /catalog/datasets/v2/{dataset_urn:dataset_urn} | test_catalog_endpoints.py::test_catalog_dataset_delete_variants (direct) |
+| TS3.027 | [x] | GET | /catalog/datasets/v2/{dataset_urn:dataset_urn} | test_catalog_endpoints.py::test_catalog_dataset_variant_endpoints (direct) |
+| TS3.028 | [x] | PATCH | /catalog/datasets/v2/{dataset_urn:dataset_urn} | test_catalog_endpoints.py::test_catalog_dataset_variant_endpoints (direct) |
+| TS3.029 | [x] | GET | /catalog/datasets/v2/{dataset_urn:dataset_urn}/schema | test_catalog_endpoints.py::test_catalog_dataset_schema_endpoints (direct) |
+| TS3.030 | [x] | PUT | /catalog/datasets/v2/{dataset_urn:dataset_urn}/schema | test_catalog_endpoints.py::test_catalog_dataset_schema_endpoints (direct) |
+| TS3.031 | [x] | DELETE | /catalog/datasets/{dataset_urn:path} | test_catalog_endpoints.py::test_catalog_dataset_delete_variants (direct) |
+| TS3.032 | [x] | GET | /catalog/datasets/{dataset_urn:path} | test_catalog_endpoints.py::test_catalog_dataset_variant_endpoints (direct) |
+| TS3.033 | [x] | PATCH | /catalog/datasets/{dataset_urn:path} | test_catalog_endpoints.py::test_catalog_dataset_variant_endpoints (direct) |
+| TS3.034 | [x] | GET | /catalog/health | test_catalog_endpoints.py::test_catalog_metadata_and_health (direct) |
+| TS3.035 | [x] | GET | /catalog/secrets/ | test_catalog_endpoints.py::test_catalog_secret_list (catalog.secrets.list); test_catalog_live.py::test_catalog_dataset_and_secret_lifecycle (catalog.list_secrets) |
+| TS3.036 | [x] | POST | /catalog/secrets/ | test_catalog_endpoints.py::test_catalog_secret_endpoints (catalog.secrets.create) |
+| TS3.037 | [x] | DELETE | /catalog/secrets/by-urn | test_catalog_endpoints.py::test_catalog_secret_endpoints (direct) |
+| TS3.038 | [x] | GET | /catalog/secrets/by-urn | test_catalog_endpoints.py::test_catalog_secret_endpoints (direct) |
+| TS3.039 | [x] | DELETE | /catalog/secrets/v2/{secret_urn:secret_urn} | test_catalog_endpoints.py::test_catalog_secret_endpoints (direct) |
+| TS3.040 | [x] | GET | /catalog/secrets/v2/{secret_urn:secret_urn} | test_catalog_endpoints.py::test_catalog_secret_endpoints (direct) |
+| TS3.041 | [x] | DELETE | /catalog/secrets/{secret_urn} | test_catalog_endpoints.py::test_catalog_secret_endpoints (direct) |
+| TS3.042 | [x] | GET | /catalog/secrets/{secret_urn} | test_catalog_endpoints.py::test_catalog_secret_endpoints (direct) |
 
 ## (TS4) CLUSTER
 
