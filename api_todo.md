@@ -5,8 +5,8 @@ Coverage: tests in tests/integration (direct client calls + SDK service method m
 Note: CLI/authenticator flows are mapped manually; OpenAI client calls are listed separately.
 
 Total endpoints: 266
-Covered by integration tests: 95
-Missing integration coverage: 171
+Covered by integration tests: 103
+Missing integration coverage: 163
 
 
 ## (TS0) ACTIVITY
@@ -375,14 +375,14 @@ Missing integration coverage: 171
 
 | Test Id | Coverage | Method | Path | Tests |
 | --- | --- | --- | --- | --- |
-| TS21.001 | [ ] | GET | /vectordb/ |  |
-| TS21.002 | [ ] | POST | /vectordb/ |  |
-| TS21.003 | [ ] | GET | /vectordb/collections |  |
-| TS21.004 | [ ] | DELETE | /vectordb/collections/{collection_name} |  |
-| TS21.005 | [ ] | POST | /vectordb/insert_vectors |  |
-| TS21.006 | [ ] | POST | /vectordb/search_vectors |  |
-| TS21.007 | [ ] | DELETE | /vectordb/{vectordb_id} |  |
-| TS21.008 | [ ] | GET | /vectordb/{vectordb_id} |  |
+| TS21.001 | [x] | GET | /vectordb/ | test_vectordb_live.py::TestVectorDBListOperations::test_list_vectordbs; test_vectordb_live.py::TestVectorDBListOperations::test_list_vectordbs_filter_by_engine (vectordb.get_vectordbs) |
+| TS21.002 | [x] | POST | /vectordb/ | test_vectordb_live.py::TestVectorDBLifecycle::test_create_get_and_remove_vectordb (vectordb.create_vectordb) |
+| TS21.003 | [x] | GET | /vectordb/collections | test_vectordb_live.py::TestVectorDBCollectionOperations::test_list_collections (vectordb.list_collections) |
+| TS21.004 | [x] | DELETE | /vectordb/collections/{collection_name} | test_vectordb_live.py::TestVectorDBCollectionOperations::test_drop_nonexistent_collection; test_vectordb_live.py::TestVectorOperations::test_insert_and_search_vectors (vectordb.drop_collection) |
+| TS21.005 | [x] | POST | /vectordb/insert_vectors | test_vectordb_live.py::TestVectorOperations::test_insert_and_search_vectors; test_vectordb_live.py::TestVectorDBHelperMethods::test_insert_helper_method (vectordb.insert_vectors) |
+| TS21.006 | [x] | POST | /vectordb/search_vectors | test_vectordb_live.py::TestVectorOperations::test_insert_and_search_vectors; test_vectordb_live.py::TestVectorOperations::test_search_with_no_results; test_vectordb_live.py::TestVectorDBHelperMethods::test_search_helper_method (vectordb.search_vectors) |
+| TS21.007 | [x] | DELETE | /vectordb/{vectordb_id} | test_vectordb_live.py::TestVectorDBLifecycle::test_create_get_and_remove_vectordb; test_vectordb_live.py::TestVectorDBLifecycle::test_remove_nonexistent_vectordb (vectordb.remove_vectordb) |
+| TS21.008 | [x] | GET | /vectordb/{vectordb_id} | test_vectordb_live.py::TestVectorDBLifecycle::test_create_get_and_remove_vectordb; test_vectordb_live.py::TestVectorDBLifecycle::test_get_nonexistent_vectordb (vectordb.get_vectordb) |
 
 ## (TS22) WHOAMI
 
