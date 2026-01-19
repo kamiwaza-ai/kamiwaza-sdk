@@ -8,6 +8,50 @@ STACK_DIR="${STACK_DIR:-$ROOT_DIR/tests/integration/catalog_stack}"
 COMPOSE_FILE="${INGESTION_STACK_COMPOSE:-$STACK_DIR/docker-compose.yml}"
 SETUP_SCRIPT="${STACK_DIR}/setup-test-data.sh"
 
+ENV_FILE=""
+if [[ -z "${KAMIWAZA_API_KEY:-}" && -z "${KAMIWAZA_USERNAME:-}" && -z "${KAMIWAZA_PASSWORD:-}" ]]; then
+    if [[ -f "$ROOT_DIR/.env.local" ]]; then
+        ENV_FILE="$ROOT_DIR/.env.local"
+    elif [[ -f "$ROOT_DIR/.env" ]]; then
+        ENV_FILE="$ROOT_DIR/.env"
+    fi
+fi
+
+load_env_file() {
+    local file="$1"
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line#"${line%%[![:space:]]*}"}"
+        line="${line%"${line##*[![:space:]]}"}"
+        [[ -z "$line" || "$line" == \#* ]] && continue
+        if [[ "$line" == export\ * ]]; then
+            line="${line#export }"
+        fi
+        [[ "$line" != *=* ]] && continue
+        local key="${line%%=*}"
+        local value="${line#*=}"
+        key="${key%%[[:space:]]*}"
+        value="${value#"${value%%[![:space:]]*}"}"
+        value="${value%"${value##*[![:space:]]}"}"
+        if [[ "$value" == \"*\" && "$value" == *\" ]]; then
+            value="${value:1:-1}"
+        elif [[ "$value" == \'*\' && "$value" == *\' ]]; then
+            value="${value:1:-1}"
+        fi
+        case "$key" in
+            KAMIWAZA_*|CATALOG_STACK_*|KAFKA_BOOTSTRAP)
+                if [[ -z "${!key:-}" && -n "$value" ]]; then
+                    export "$key=$value"
+                fi
+                ;;
+        esac
+    done < "$file"
+}
+
+if [[ -n "$ENV_FILE" ]]; then
+    echo "Loading KAMIWAZA_* overrides from $ENV_FILE"
+    load_env_file "$ENV_FILE"
+fi
+
 KAMIWAZA_BASE_URL="${KAMIWAZA_BASE_URL:-https://localhost/api}"
 MINIO_PORT="${CATALOG_STACK_MINIO_PORT:-19100}"
 MINIO_ENDPOINT="${CATALOG_STACK_MINIO_ENDPOINT:-http://localhost:${MINIO_PORT}}"
