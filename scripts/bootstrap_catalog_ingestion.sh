@@ -94,6 +94,7 @@ export PYTHON_BIN
 require_python_modules() {
     "$PYTHON_BIN" - <<'PY'
 import importlib
+import os
 missing = []
 for mod in ("boto3",):
     try:
