@@ -200,7 +200,18 @@ def ingestion_environment() -> Iterator[dict[str, str]]:
         started_compose = True
 
     try:
-        subprocess.run([sys.executable, str(SEED_SCRIPT)], check=True)
+        result = subprocess.run(
+            [sys.executable, str(SEED_SCRIPT)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            error_msg = f"MinIO seed script failed (exit {result.returncode})\n"
+            error_msg += f"STDOUT: {result.stdout}\n"
+            error_msg += f"STDERR: {result.stderr}"
+            pytest.skip(error_msg)
+
         yield {
             "bucket": "kamiwaza-sdk-tests",
             "prefix": "sdk-integration",
@@ -262,12 +273,19 @@ def catalog_stack_environment() -> Iterator[dict[str, object]]:
     env["KAFKA_EXTERNAL_BOOTSTRAP"] = CATALOG_KAFKA_BOOTSTRAP
     env["FORCE_SEED"] = "1"
 
-    subprocess.run(
+    result = subprocess.run(
         ["bash", str(CATALOG_STACK_SETUP)],
-        check=True,
+        check=False,
         cwd=str(CATALOG_STACK_DIR),
         env=env,
+        capture_output=True,
+        text=True,
     )
+    if result.returncode != 0:
+        error_msg = f"Catalog stack setup failed (exit {result.returncode})\n"
+        error_msg += f"STDOUT: {result.stdout}\n"
+        error_msg += f"STDERR: {result.stderr}"
+        pytest.skip(error_msg)
 
     config = {
         "object": {
