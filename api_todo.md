@@ -312,7 +312,7 @@ Missing integration coverage: 163
 | TS16.004 | [x] | GET | /prompts/roles/{role_id} | test_prompts_live.py::TestPromptRoleOperations::test_create_and_get_role (prompts.get_role); test_prompts_live.py::TestPromptRoleOperations::test_get_nonexistent_role (prompts.get_role) |
 | TS16.005 | [x] | POST | /prompts/systems/ | test_prompts_live.py::TestPromptSystemOperations::test_create_and_get_system (prompts.create_system) |
 | TS16.006 | [x] | GET | /prompts/systems/{system_id} | test_prompts_live.py::TestPromptSystemOperations::test_create_and_get_system (prompts.get_system); test_prompts_live.py::TestPromptSystemOperations::test_get_nonexistent_system (prompts.get_system) |
-| TS16.007 | [x] | POST | /prompts/templates/ | test_prompts_live.py::TestPromptTemplateOperations::test_create_and_get_template (prompts.create_template) |
+| TS16.007 | [x] | POST | /prompts/templates/ | test_prompts_live.py::TestplateOperations::test_create_and_get_template (prompts.create_template) |
 | TS16.008 | [x] | GET | /prompts/templates/{template_id} | test_prompts_live.py::TestPromptTemplateOperations::test_create_and_get_template (prompts.get_template); test_prompts_live.py::TestPromptTemplateOperations::test_get_nonexistent_template (prompts.get_template) |
 
 ## (TS17) RETRIEVAL

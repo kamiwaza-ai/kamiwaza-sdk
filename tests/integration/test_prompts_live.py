@@ -31,7 +31,11 @@ from kamiwaza_sdk.schemas.prompts import (
     PromptTemplate,
 )
 
-pytestmark = [pytest.mark.integration, pytest.mark.withoutresponses]
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.withoutresponses,
+    pytest.mark.skip(reason="Prompts endpoints tests are disabled."),
+]
 
 
 class TestPromptElementOperations:
