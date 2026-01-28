@@ -6,6 +6,7 @@ import socket
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 from typing import Callable, Iterator
 from urllib.parse import urlparse
@@ -18,6 +19,7 @@ from huggingface_hub import snapshot_download
 
 from kamiwaza_sdk import KamiwazaClient
 from kamiwaza_sdk.authentication import UserPasswordAuthenticator
+from kamiwaza_sdk.schemas.auth import PATCreate
 
 DOCKER_COMPOSE_FILE = Path(__file__).parent / "docker" / "docker-compose.yml"
 SEED_SCRIPT = Path(__file__).parent / "docker" / "seed_minio.py"
@@ -25,18 +27,26 @@ SEED_SCRIPT = Path(__file__).parent / "docker" / "seed_minio.py"
 CATALOG_STACK_DIR = Path(__file__).parent / "catalog_stack"
 CATALOG_STACK_COMPOSE = CATALOG_STACK_DIR / "docker-compose.yml"
 CATALOG_STACK_SETUP = CATALOG_STACK_DIR / "setup-test-data.sh"
-CATALOG_MINIO_ENDPOINT = os.environ.get("CATALOG_STACK_MINIO_ENDPOINT", "http://localhost:19100")
-CATALOG_MINIO_BUCKET = os.environ.get("CATALOG_STACK_MINIO_BUCKET", "kamiwaza-test-bucket")
+CATALOG_MINIO_ENDPOINT = os.environ.get(
+    "CATALOG_STACK_MINIO_ENDPOINT", "http://localhost:19100"
+)
+CATALOG_MINIO_BUCKET = os.environ.get(
+    "CATALOG_STACK_MINIO_BUCKET", "kamiwaza-test-bucket"
+)
 CATALOG_MINIO_PREFIX = os.environ.get("CATALOG_STACK_MINIO_PREFIX", "catalog-tests")
 CATALOG_POSTGRES = {
     "host": os.environ.get("CATALOG_STACK_POSTGRES_HOST", "localhost"),
     "port": os.environ.get("CATALOG_STACK_POSTGRES_PORT", "15432"),
     "database": os.environ.get("CATALOG_STACK_POSTGRES_DB", "kamiwaza"),
     "user": os.environ.get("CATALOG_STACK_POSTGRES_USER", "kamiwaza"),
-    "password": os.environ.get("CATALOG_STACK_POSTGRES_PASSWORD", "kamiwazaGetY0urCape"),
+    "password": os.environ.get(
+        "CATALOG_STACK_POSTGRES_PASSWORD", "kamiwazaGetY0urCape"
+    ),
     "schema": os.environ.get("CATALOG_STACK_POSTGRES_SCHEMA", "public"),
 }
-CATALOG_KAFKA_BOOTSTRAP = os.environ.get("CATALOG_STACK_KAFKA_BOOTSTRAP", "localhost:29092")
+CATALOG_KAFKA_BOOTSTRAP = os.environ.get(
+    "CATALOG_STACK_KAFKA_BOOTSTRAP", "localhost:29092"
+)
 
 
 def _run_compose(*args: str) -> None:
@@ -71,8 +81,18 @@ def _reserve_port(preferred: int) -> int:
         return sock.getsockname()[1]
 
 
-def _compose_port(service: str, container_port: int, env: dict[str, str] | None = None) -> int | None:
-    cmd = ["docker", "compose", "-f", str(CATALOG_STACK_COMPOSE), "port", service, str(container_port)]
+def _compose_port(
+    service: str, container_port: int, env: dict[str, str] | None = None
+) -> int | None:
+    cmd = [
+        "docker",
+        "compose",
+        "-f",
+        str(CATALOG_STACK_COMPOSE),
+        "port",
+        service,
+        str(container_port),
+    ]
     result = subprocess.run(cmd, capture_output=True, text=True, check=False, env=env)
     if result.returncode != 0 or not result.stdout:
         return None
@@ -102,7 +122,9 @@ def live_server_available(live_base_url: str) -> str:
     except requests.RequestException as exc:  # pragma: no cover - network guard
         pytest.skip(f"Kamiwaza server unavailable at {live_base_url}: {exc}")
     if response.status_code >= 500:
-        pytest.skip(f"Kamiwaza server unhealthy at {health_url}: {response.status_code}")
+        pytest.skip(
+            f"Kamiwaza server unhealthy at {health_url}: {response.status_code}"
+        )
     if response.status_code >= 400 and response.status_code not in (401, 403):
         pytest.skip(
             f"Kamiwaza server at {health_url} returned unexpected status {response.status_code}; "
@@ -125,6 +147,58 @@ def qwen_snapshot_dir(hf_cache_dir: Path) -> Path:
     return Path(snapshot_path)
 
 
+@pytest.fixture(scope="session")
+def _live_session_pat(
+    live_server_available: str,
+    live_api_key: str,
+    live_username: str,
+    live_password: str,
+) -> Iterator[str]:
+    """Mint a short-lived PAT from username/password for the test session.
+
+    If KAMIWAZA_API_KEY is provided, it is yielded directly (no PAT lifecycle).
+    Otherwise a bootstrap client authenticates with username/password, creates a
+    session-scoped PAT, yields the token, and revokes it on teardown.
+    """
+    os.environ.setdefault("KAMIWAZA_VERIFY_SSL", "false")
+
+    api_key = live_api_key.strip()
+    if api_key:
+        yield api_key
+        return
+
+    username = live_username.strip()
+    password = live_password.strip()
+    if not username or not password:
+        pytest.skip(
+            "Provide KAMIWAZA_API_KEY or username/password for live integration tests"
+        )
+
+    # Bootstrap client with username/password to mint a PAT
+    bootstrap = KamiwazaClient(live_server_available)
+    bootstrap.authenticator = UserPasswordAuthenticator(
+        username, password, bootstrap._auth_service
+    )
+
+    pat_name = f"sdk-integ-{uuid.uuid4().hex[:8]}-{int(time.time())}"
+    pat_response = bootstrap.auth.create_pat(
+        PATCreate(
+            name=pat_name,
+            ttl_seconds=7200,
+        )
+    )
+    pat_token = pat_response.token
+    pat_jti = pat_response.pat.jti
+
+    yield pat_token
+
+    # Teardown: revoke the session PAT
+    try:
+        bootstrap.auth.revoke_pat(pat_jti)
+    except Exception:  # noqa: BLE001
+        pass  # Best-effort cleanup; don't fail the suite on revocation errors
+
+
 @pytest.fixture
 def live_kamiwaza_client(
     live_server_available: str,
@@ -133,8 +207,8 @@ def live_kamiwaza_client(
     live_password: str,
 ) -> KamiwazaClient:
     """Provide an authenticated client for integration tests."""
-
     os.environ.setdefault("KAMIWAZA_VERIFY_SSL", "false")
+
     api_key = live_api_key.strip()
     if api_key:
         return KamiwazaClient(live_server_available, api_key=api_key)
@@ -142,10 +216,14 @@ def live_kamiwaza_client(
     username = live_username.strip()
     password = live_password.strip()
     if not username or not password:
-        pytest.skip("Provide KAMIWAZA_API_KEY or username/password for live integration tests")
+        pytest.skip(
+            "Provide KAMIWAZA_API_KEY or username/password for live integration tests"
+        )
 
     client = KamiwazaClient(live_server_available)
-    client.authenticator = UserPasswordAuthenticator(username, password, client._auth_service)
+    client.authenticator = UserPasswordAuthenticator(
+        username, password, client._auth_service
+    )
     return client
 
 
@@ -168,7 +246,9 @@ def ensure_repo_ready() -> Callable[[KamiwazaClient, str], object]:
         client.models.initiate_model_download(repo_id, quantization=quantization)
 
         try:
-            client.models.wait_for_download(repo_id, timeout=wait_timeout, show_progress=False)
+            client.models.wait_for_download(
+                repo_id, timeout=wait_timeout, show_progress=False
+            )
         except TimeoutError as exc:  # pragma: no cover - slow live path
             raise TimeoutError(f"Timed out downloading {repo_id}: {exc}") from exc
 
@@ -178,7 +258,9 @@ def ensure_repo_ready() -> Callable[[KamiwazaClient, str], object]:
             if model:
                 return model
             if deadline and time.time() >= deadline:
-                raise TimeoutError(f"Timed out waiting for {repo_id} to register after download")
+                raise TimeoutError(
+                    f"Timed out waiting for {repo_id} to register after download"
+                )
             time.sleep(poll_interval)
 
     return _ensure
@@ -237,18 +319,24 @@ def catalog_stack_environment() -> Iterator[dict[str, object]]:
     preferred_minio_port = int(
         os.environ.get("CATALOG_STACK_MINIO_PORT") or (parsed_minio.port or 19100)
     )
-    preferred_console_port = int(os.environ.get("CATALOG_STACK_MINIO_CONSOLE_PORT", "19101"))
+    preferred_console_port = int(
+        os.environ.get("CATALOG_STACK_MINIO_CONSOLE_PORT", "19101")
+    )
 
     minio_port = preferred_minio_port
     minio_console_port = preferred_console_port
 
     if stack_running:
         minio_port = _compose_port("minio", 9000, env=compose_env) or minio_port
-        minio_console_port = _compose_port("minio", 9001, env=compose_env) or minio_console_port
+        minio_console_port = (
+            _compose_port("minio", 9001, env=compose_env) or minio_console_port
+        )
     else:
         if _port_open(parsed_minio.hostname or "localhost", minio_port):
             minio_port = _reserve_port(minio_port)
-        if minio_console_port == minio_port or _port_open("localhost", minio_console_port):
+        if minio_console_port == minio_port or _port_open(
+            "localhost", minio_console_port
+        ):
             minio_console_port = _reserve_port(minio_console_port)
 
     compose_env["CATALOG_STACK_MINIO_PORT"] = str(minio_port)
