@@ -20,9 +20,9 @@ See @.ai/README.md for the complete AI assistance framework.
 ## Common Development Commands
 
 ### Installation and Setup
-- **Development install**: `pip install -e .`
-- **Install dependencies**: `pip install -r requirements.txt`
-- **Build package**: `python setup.py sdist bdist_wheel`
+- **Development install**: `uv sync`
+- **Build package**: `uv build`
+- **Run tests**: `uv run pytest`
 
 ### Code Quality
 - **Format code**: `black kamiwaza_sdk/`
@@ -106,7 +106,7 @@ Before implementing, review @.ai/knowledge/failures/common-pitfalls.md to avoid:
 
 ## Release Process
 
-1. Update version in `setup.py`
-2. Run full test suite: `pytest`
-3. Build distribution: `python setup.py sdist bdist_wheel`
+1. Update version in `pyproject.toml`
+2. Run full test suite: `uv run pytest`
+3. Build distribution: `uv build`
 4. Use `release.sh` for automated release (requires proper PyPI credentials)
