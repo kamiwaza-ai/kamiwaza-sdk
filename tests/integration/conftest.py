@@ -6,7 +6,6 @@ import socket
 import subprocess
 import sys
 import time
-import uuid
 from pathlib import Path
 from typing import Callable, Iterator
 from urllib.parse import urlparse
@@ -19,7 +18,6 @@ from huggingface_hub import snapshot_download
 
 from kamiwaza_sdk import KamiwazaClient
 from kamiwaza_sdk.authentication import UserPasswordAuthenticator
-from kamiwaza_sdk.schemas.auth import PATCreate
 
 DOCKER_COMPOSE_FILE = Path(__file__).parent / "docker" / "docker-compose.yml"
 SEED_SCRIPT = Path(__file__).parent / "docker" / "seed_minio.py"
@@ -145,58 +143,6 @@ def qwen_snapshot_dir(hf_cache_dir: Path) -> Path:
         repo_type="model",
     )
     return Path(snapshot_path)
-
-
-@pytest.fixture(scope="session")
-def _live_session_pat(
-    live_server_available: str,
-    live_api_key: str,
-    live_username: str,
-    live_password: str,
-) -> Iterator[str]:
-    """Mint a short-lived PAT from username/password for the test session.
-
-    If KAMIWAZA_API_KEY is provided, it is yielded directly (no PAT lifecycle).
-    Otherwise a bootstrap client authenticates with username/password, creates a
-    session-scoped PAT, yields the token, and revokes it on teardown.
-    """
-    os.environ.setdefault("KAMIWAZA_VERIFY_SSL", "false")
-
-    api_key = live_api_key.strip()
-    if api_key:
-        yield api_key
-        return
-
-    username = live_username.strip()
-    password = live_password.strip()
-    if not username or not password:
-        pytest.skip(
-            "Provide KAMIWAZA_API_KEY or username/password for live integration tests"
-        )
-
-    # Bootstrap client with username/password to mint a PAT
-    bootstrap = KamiwazaClient(live_server_available)
-    bootstrap.authenticator = UserPasswordAuthenticator(
-        username, password, bootstrap._auth_service
-    )
-
-    pat_name = f"sdk-integ-{uuid.uuid4().hex[:8]}-{int(time.time())}"
-    pat_response = bootstrap.auth.create_pat(
-        PATCreate(
-            name=pat_name,
-            ttl_seconds=7200,
-        )
-    )
-    pat_token = pat_response.token
-    pat_jti = pat_response.pat.jti
-
-    yield pat_token
-
-    # Teardown: revoke the session PAT
-    try:
-        bootstrap.auth.revoke_pat(pat_jti)
-    except Exception:  # noqa: BLE001
-        pass  # Best-effort cleanup; don't fail the suite on revocation errors
 
 
 @pytest.fixture
