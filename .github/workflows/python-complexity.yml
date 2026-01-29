@@ -1,0 +1,88 @@
+name: Python Complexity
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - '**.py'
+      - '.github/workflows/python-complexity.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  complexity:
+    name: Cyclomatic Complexity
+    runs-on: ubuntu-latest
+    env:
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          version: "0.7.5"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Get changed Python files
+        id: changed-files
+        run: |
+          CHANGED_FILES=$(git diff --name-only --diff-filter=AM "$BASE_SHA"..HEAD | grep '\.py$' | grep -v __pycache__ | grep -v test_ | grep -v /tests/ || true)
+          if [ -z "$CHANGED_FILES" ]; then
+            echo "No Python files changed"
+            echo "files=" >> "$GITHUB_OUTPUT"
+          else
+            echo "Changed Python files:"
+            echo "$CHANGED_FILES"
+            CHANGED_FILES_SPACE=$(echo "$CHANGED_FILES" | tr '\n' ' ')
+            echo "files=$CHANGED_FILES_SPACE" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check complexity
+        if: steps.changed-files.outputs.files != ''
+        env:
+          FILES: ${{ steps.changed-files.outputs.files }}
+        run: |
+          echo "Checking cyclomatic complexity..."
+          CRITICAL_ISSUES=false
+          HIGH_ISSUES=false
+
+          for file in $FILES; do
+            if [ -f "$file" ]; then
+              echo "Checking $file..."
+              RADON_OUTPUT=$(uv run radon cc "$file" -s 2>&1)
+
+              if echo "$RADON_OUTPUT" | grep -E " - (E|F) " > /dev/null; then
+                echo "::error::Critical complexity detected in $file"
+                echo "$RADON_OUTPUT" | grep -E " - (D|E|F) "
+                CRITICAL_ISSUES=true
+              elif echo "$RADON_OUTPUT" | grep -E " - D " > /dev/null; then
+                echo "::warning::High complexity detected in $file"
+                echo "$RADON_OUTPUT" | grep -E " - (C|D) "
+                HIGH_ISSUES=true
+              fi
+            fi
+          done
+
+          if [ "$CRITICAL_ISSUES" = true ]; then
+            echo ""
+            echo "::error::Critical cyclomatic complexity detected (Grade E or F)"
+            echo "Functions with Grade E or F must be refactored before merge"
+            exit 1
+          elif [ "$HIGH_ISSUES" = true ]; then
+            echo ""
+            echo "::warning::High cyclomatic complexity detected (Grade D)"
+            echo "Consider refactoring functions with Grade D"
+          else
+            echo "Complexity check passed"
+          fi
+
+      - name: No Python files to check
+        if: steps.changed-files.outputs.files == ''
+        run: echo "No Python files changed - skipping complexity check"
