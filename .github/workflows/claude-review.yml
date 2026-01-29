@@ -79,7 +79,7 @@ jobs:
 
           # Call Claude API using jq for safe JSON construction
           # jq --arg safely escapes all string values
-          RESPONSE=$(curl -s https://api.anthropic.com/v1/messages \
+          HTTP_CODE=$(curl -s -w "%{http_code}" -o response.json https://api.anthropic.com/v1/messages \
             -H "Content-Type: application/json" \
             -H "x-api-key: $ANTHROPIC_API_KEY" \
             -H "anthropic-version: 2023-06-01" \
@@ -89,14 +89,23 @@ jobs:
               --arg body "$PR_BODY" \
               --arg diff "$DIFF_CONTENT" \
               '{
-                model: "claude-sonnet-4-20250514",
-                max_tokens: 2048,
+                model: "claude-opus-4-5-20250514",
+                max_tokens: 4096,
                 messages: [{
                   role: "user",
                   content: ($prompt + "\n\n## PR Title\n" + $title + "\n\n## PR Description\n" + $body + "\n\n## Diff\n```diff\n" + $diff + "\n```")
                 }]
               }'
             )")
+
+          # Check for API errors
+          if [ "$HTTP_CODE" -ne 200 ]; then
+            echo "::warning::Claude API returned HTTP $HTTP_CODE, skipping review"
+            cat response.json
+            exit 0
+          fi
+
+          RESPONSE=$(cat response.json)
 
           # Extract review text from response
           REVIEW=$(echo "$RESPONSE" | jq -r '.content[0].text // empty')
