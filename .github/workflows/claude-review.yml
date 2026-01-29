@@ -1,0 +1,121 @@
+name: Claude Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  pull_request_target:
+    types: [labeled]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    name: Claude Review
+    runs-on: ubuntu-latest
+    # Only run for team members OR if safe-to-review label is present
+    if: >
+      github.event.pull_request.author_association == 'OWNER' ||
+      github.event.pull_request.author_association == 'MEMBER' ||
+      github.event.pull_request.author_association == 'COLLABORATOR' ||
+      contains(github.event.pull_request.labels.*.name, 'safe-to-review')
+    env:
+      # Use env block for GitHub context values (security best practice)
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get PR diff
+        id: diff
+        run: |
+          # Get diff via gh CLI (safe, no user-controlled input in command)
+          gh pr diff "$PR_NUMBER" > pr_diff.txt
+          DIFF_SIZE=$(wc -c < pr_diff.txt)
+          echo "diff_size=$DIFF_SIZE" >> "$GITHUB_OUTPUT"
+          echo "Diff size: $DIFF_SIZE bytes"
+
+      - name: Skip if diff too large
+        id: check-size
+        run: |
+          if [ "${{ steps.diff.outputs.diff_size }}" -gt 100000 ]; then
+            echo "::warning::PR diff exceeds 100KB, skipping Claude review"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run Claude review
+        if: steps.check-size.outputs.skip != 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          # Get PR metadata via gh CLI (outputs are JSON-safe via jq)
+          PR_TITLE=$(gh pr view "$PR_NUMBER" --json title -q .title)
+          PR_BODY=$(gh pr view "$PR_NUMBER" --json body -q .body)
+
+          # Read diff content (limit to ~80KB for API)
+          DIFF_CONTENT=$(head -c 80000 pr_diff.txt)
+
+          # Build prompt (static content, no user input)
+          PROMPT="You are a code reviewer for the Kamiwaza SDK, a Python client library for the Kamiwaza AI Platform.
+
+          Review the following pull request diff and provide constructive feedback. Focus on:
+          - Potential bugs or logic errors
+          - Security concerns
+          - Performance issues
+          - Code style and readability
+          - Missing error handling
+          - Test coverage gaps
+
+          Be concise and actionable. If the code looks good, say so briefly.
+          Do not comment on minor style issues that linters would catch.
+
+          Format your response as markdown suitable for a GitHub PR comment."
+
+          # Call Claude API using jq for safe JSON construction
+          # jq --arg safely escapes all string values
+          RESPONSE=$(curl -s https://api.anthropic.com/v1/messages \
+            -H "Content-Type: application/json" \
+            -H "x-api-key: $ANTHROPIC_API_KEY" \
+            -H "anthropic-version: 2023-06-01" \
+            -d "$(jq -n \
+              --arg prompt "$PROMPT" \
+              --arg title "$PR_TITLE" \
+              --arg body "$PR_BODY" \
+              --arg diff "$DIFF_CONTENT" \
+              '{
+                model: "claude-sonnet-4-20250514",
+                max_tokens: 2048,
+                messages: [{
+                  role: "user",
+                  content: ($prompt + "\n\n## PR Title\n" + $title + "\n\n## PR Description\n" + $body + "\n\n## Diff\n```diff\n" + $diff + "\n```")
+                }]
+              }'
+            )")
+
+          # Extract review text from response
+          REVIEW=$(echo "$RESPONSE" | jq -r '.content[0].text // empty')
+
+          if [ -z "$REVIEW" ]; then
+            echo "::error::Failed to get review from Claude API"
+            echo "Response: $RESPONSE"
+            exit 1
+          fi
+
+          # Save review to file for safe posting (avoids shell interpolation issues)
+          {
+            echo "## Claude Code Review"
+            echo ""
+            echo "$REVIEW"
+            echo ""
+            echo "---"
+            echo "*Automated review by Claude. This is advisory only.*"
+          } > review_comment.md
+
+          # Post comment using file input (safe)
+          gh pr comment "$PR_NUMBER" --body-file review_comment.md
