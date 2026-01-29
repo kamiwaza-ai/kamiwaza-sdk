@@ -285,34 +285,36 @@ class TestModelsIntegration:
 
 ## Test Commands
 
+This project uses **uv** for dependency management. Use `make` targets or `uv run` to execute tests.
+
 ```bash
-# Run all tests
-pytest
+# Preferred: Makefile targets
+make test                    # Unit + contract tests (excludes integration/live/e2e)
+make test-unit               # Unit tests only (-m "unit")
+make test-live               # Live integration tests (-m "live")
 
-# Run with coverage
-pytest --cov=kamiwaza_sdk --cov-report=html
-
-# Run only unit tests
-pytest -m "not integration"
-
-# Run specific test file
-pytest tests/unit/services/test_models.py
-
-# Run with verbose output
-pytest -v
-
-# Run failed tests from last run
-pytest --lf
+# Direct uv commands
+uv run pytest                                          # All tests
+uv run pytest --cov=kamiwaza_sdk --cov-report=html     # With coverage
+uv run pytest -m "not integration and not live"        # Unit tests only
+uv run pytest tests/unit/services/test_models.py       # Specific file
+uv run pytest -v                                       # Verbose output
+uv run pytest --lf                                     # Failed tests from last run
 ```
 
 ## Continuous Integration
 
 ### GitHub Actions Example
 ```yaml
+- name: Install uv
+  uses: astral-sh/setup-uv@v4
+
+- name: Install dependencies
+  run: uv sync
+
 - name: Run tests
-  run: |
-    pytest --cov=kamiwaza_sdk --cov-report=xml
-    
+  run: uv run pytest --cov=kamiwaza_sdk --cov-report=xml
+
 - name: Upload coverage
   uses: codecov/codecov-action@v3
   with:

@@ -1,5 +1,0 @@
-requests
-pydantic[email]
-httpx
-openai>=1.0
-huggingface_hub>=0.23
