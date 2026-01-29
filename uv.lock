@@ -771,7 +771,7 @@ wheels = [
 
 [[package]]
 name = "kamiwaza-sdk"
-version = "0.10.0"
+version = "0.9.3"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },
