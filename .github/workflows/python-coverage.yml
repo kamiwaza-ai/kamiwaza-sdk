@@ -1,0 +1,69 @@
+name: Python Coverage
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - '**.py'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'tests/**'
+      - '.github/workflows/python-coverage.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  coverage:
+    name: Coverage Check
+    runs-on: ubuntu-latest
+    env:
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          version: "0.7.5"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Get changed Python source files
+        id: changed-files
+        run: |
+          CHANGED_FILES=$(git diff --name-only --diff-filter=AM "$BASE_SHA"..HEAD | grep '\.py$' | grep -v __pycache__ | grep '^kamiwaza_sdk/' | grep -v test_ || true)
+          if [ -z "$CHANGED_FILES" ]; then
+            echo "No source files changed"
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Changed source files:"
+            echo "$CHANGED_FILES"
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run tests with coverage
+        if: steps.changed-files.outputs.has_changes == 'true'
+        run: |
+          uv run pytest tests/unit/ \
+            --cov=kamiwaza_sdk \
+            --cov-report=term-missing \
+            --cov-report=json \
+            --cov-fail-under=80 \
+            -q
+
+      - name: Upload coverage report
+        if: steps.changed-files.outputs.has_changes == 'true' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.json
+          retention-days: 7
+
+      - name: No source files changed
+        if: steps.changed-files.outputs.has_changes != 'true'
+        run: echo "No source files changed - skipping coverage check"

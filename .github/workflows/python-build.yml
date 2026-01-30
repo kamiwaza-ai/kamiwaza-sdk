@@ -1,0 +1,63 @@
+name: Python Build
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'kamiwaza_sdk/**'
+      - 'kamiwaza_client/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'MANIFEST.in'
+      - '.github/workflows/python-build.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Package
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          version: "0.7.5"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Build package
+        run: uv build
+
+      - name: Verify package contents
+        run: |
+          echo "Built packages:"
+          ls -la dist/
+
+          echo ""
+          echo "Wheel contents:"
+          unzip -l dist/*.whl | grep -E "(kamiwaza_sdk|kamiwaza_client)" | head -20
+
+          # Verify both packages are included
+          if ! unzip -l dist/*.whl | grep -q "kamiwaza_sdk/"; then
+            echo "::error::kamiwaza_sdk not found in wheel"
+            exit 1
+          fi
+          if ! unzip -l dist/*.whl | grep -q "kamiwaza_client/"; then
+            echo "::error::kamiwaza_client not found in wheel"
+            exit 1
+          fi
+
+          echo ""
+          echo "Build verification passed"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          retention-days: 7
