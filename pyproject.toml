@@ -1,6 +1,72 @@
+[project]
+name = "kamiwaza-sdk"
+version = "0.9.3"
+description = "Python client library for the Kamiwaza AI Platform"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [
+    { name = "Kamiwaza Team", email = "eng@kamiwaza.ai" },
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "requests",
+    "pydantic[email]",
+    "httpx",
+    "openai>=1.0",
+    "huggingface_hub>=0.23",
+]
+
+[project.urls]
+Homepage = "https://github.com/kamiwaza/kamiwaza-sdk"
+
 [build-system]
-requires = ["setuptools>=45", "wheel", "Cython"]
+requires = ["setuptools>=45", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["kamiwaza_sdk*", "kamiwaza_client*"]
+exclude = ["tests*", "examples*"]
+
+[tool.setuptools.package-data]
+kamiwaza_sdk = ["py.typed"]
+
+[dependency-groups]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "pytest-responses>=0.5",
+    "black>=23.0",
+    "isort>=5.12",
+    "ruff>=0.1",
+    "mypy>=1.0",
+    "build>=1.0",
+    "twine>=4.0",
+    "radon>=5.1",
+]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-markers"
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = [
+    "unit: fast, deterministic tests that require no external services",
+    "contract: schema/contract tests with recorded HTTP interactions",
+    "integration: tests with local Docker/MinIO dependencies",
+    "live: tests that talk to a running Kamiwaza deployment",
+    "e2e: full workflow tests",
+    "slow: intentionally slow tests",
+    "withoutresponses: tests needing real network access",
+]
 
 [tool.black]
 line-length = 88

@@ -17,23 +17,32 @@ This project uses a comprehensive AI assistance framework:
 
 See @.ai/README.md for the complete AI assistance framework.
 
-## Common Development Commands
+## Tooling
 
-### Installation and Setup
-- **Development install**: `pip install -e .`
-- **Install dependencies**: `pip install -r requirements.txt`
-- **Build package**: `python setup.py sdist bdist_wheel`
+This project uses **uv** for dependency management and a **Makefile** for common tasks.
 
-### Code Quality
-- **Format code**: `black kamiwaza_sdk/`
-- **Sort imports**: `isort kamiwaza_sdk/`
-- **Type checking**: `mypy kamiwaza_sdk/` (type stubs may need configuration)
+### Makefile Targets (preferred)
+- `make sync` — Install/update dependencies (`uv sync`)
+- `make test` — Run unit + contract tests (excludes integration/live/e2e)
+- `make test-unit` — Run unit tests only (`-m unit`)
+- `make test-live` — Run live integration tests (`-m live`)
+- `make lint` — Run ruff linter
+- `make format` — Format with black + isort
+- `make type-check` — Run mypy
+- `make build` — Build wheel and sdist
+- `make clean` — Remove build artifacts
 
-### Testing
-- **Run all tests**: `pytest`
-- **Run with coverage**: `pytest --cov=kamiwaza_sdk --cov-report=html`
-- **Run unit tests only**: `pytest -m "not integration"`
-- **Run specific test**: `pytest tests/unit/services/test_models.py::TestModelsService::test_list_models`
+### Direct uv Commands
+- `uv sync` — Install dependencies into project venv
+- `uv run pytest` — Run tests via uv
+- `uv build` — Build distribution packages
+- `uv run pytest --cov=kamiwaza_sdk --cov-report=html` — Coverage report
+
+### Running Specific Tests
+- **Specific file**: `uv run pytest tests/unit/services/test_models.py`
+- **Specific test**: `uv run pytest tests/unit/services/test_models.py::TestModelsService::test_list_models`
+- **By marker**: `uv run pytest -m "unit"`, `uv run pytest -m "live"`
+- **Exclude slow**: `uv run pytest -m "not integration and not live and not e2e"`
 
 ## Architecture Overview
 
@@ -106,7 +115,7 @@ Before implementing, review @.ai/knowledge/failures/common-pitfalls.md to avoid:
 
 ## Release Process
 
-1. Update version in `setup.py`
-2. Run full test suite: `pytest`
-3. Build distribution: `python setup.py sdist bdist_wheel`
-4. Use `release.sh` for automated release (requires proper PyPI credentials)
+1. Update version in `pyproject.toml`
+2. Run full test suite: `make test`
+3. Build distribution: `make build` (or `uv build`)
+4. Use `release.sh` for automated release (uses `uv build` and `uv publish`)

@@ -72,6 +72,8 @@ Pipfile.lock
 # poetry
 poetry.lock
 
+# uv lockfile (committed for reproducibility - do NOT add uv.lock here)
+
 # pdm
 .pdm.toml
 

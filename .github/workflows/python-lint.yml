@@ -1,0 +1,57 @@
+name: Python Lint
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - '**.py'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - '.github/workflows/python-lint.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Ruff Lint
+    runs-on: ubuntu-latest
+    env:
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          version: "0.7.5"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Get changed Python files
+        id: changed-files
+        run: |
+          CHANGED_FILES=$(git diff --name-only --diff-filter=AM "$BASE_SHA"..HEAD | grep '\.py$' | grep -v __pycache__ || true)
+          if [ -z "$CHANGED_FILES" ]; then
+            echo "No Python files changed"
+            echo "files=" >> "$GITHUB_OUTPUT"
+          else
+            echo "Changed Python files:"
+            echo "$CHANGED_FILES"
+            CHANGED_FILES_SPACE=$(echo "$CHANGED_FILES" | tr '\n' ' ')
+            echo "files=$CHANGED_FILES_SPACE" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run ruff
+        if: steps.changed-files.outputs.files != ''
+        env:
+          FILES: ${{ steps.changed-files.outputs.files }}
+        run: uv run ruff check $FILES
+
+      - name: No Python files to check
+        if: steps.changed-files.outputs.files == ''
+        run: echo "No Python files changed - skipping lint"
