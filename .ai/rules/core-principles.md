@@ -106,7 +106,7 @@ Complete one feature fully before starting another.
 Regular verification prevents drift:
 ```bash
 pwd                    # Still in right directory?
-python -m pytest      # Tests still passing?
+make test             # Tests still passing? (or: uv run pytest)
 git diff              # What changed?
 # Am I still on task?
 ```

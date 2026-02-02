@@ -32,7 +32,7 @@ class ClusterService(BaseService):
 
     def create_cluster(self, cluster: CreateCluster) -> Cluster:
         """Create a new cluster."""
-        response = self.client.post("/cluster/cluster", json=cluster.model_dump())
+        response = self.client.post("/cluster/cluster", json=cluster.model_dump(mode='json'))
         return Cluster.model_validate(response)
 
     def get_cluster(self, cluster_id: UUID) -> Cluster:

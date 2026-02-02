@@ -77,15 +77,15 @@ class ToolTemplate(BaseModel):
     name: str
     version: str
     description: str
-    category: str
-    tags: List[str]
-    author: str
-    license: str
+    category: Optional[str] = None
+    tags: List[str] = []
+    author: Optional[str] = None
+    license: Optional[str] = None
     homepage: Optional[str] = None
-    image: str
-    capabilities: List[str]
-    required_env_vars: List[str]
-    env_defaults: Dict[str, str]
+    image: Optional[str] = None
+    capabilities: List[str] = []
+    required_env_vars: List[str] = []
+    env_defaults: Dict[str, str] = {}
     risk_tier: int = 1
     verified: bool = False
     

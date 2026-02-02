@@ -72,6 +72,8 @@ Pipfile.lock
 # poetry
 poetry.lock
 
+# uv lockfile (committed for reproducibility - do NOT add uv.lock here)
+
 # pdm
 .pdm.toml
 
@@ -148,3 +150,5 @@ collated.txt
 070-update.md
 tests/integration/catalog_stack/data/
 .env.local
+
+handroll/

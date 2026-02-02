@@ -8,6 +8,7 @@ STATE_DIR="${STATE_DIR:-$SCRIPT_DIR/state}"
 DATA_DIR="${DATA_DIR:-$SCRIPT_DIR/data}"
 export STATE_DIR DATA_DIR
 COMPOSE_FILE="${INGESTION_STACK_COMPOSE:-$SCRIPT_DIR/docker-compose.yml}"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
 MINIO_ENDPOINT="${MINIO_ENDPOINT:-http://localhost:19100}"
 MINIO_BUCKET="${MINIO_BUCKET:-kamiwaza-test-bucket}"
 MINIO_PREFIX="${MINIO_PREFIX:-catalog-tests}"
@@ -34,8 +35,29 @@ else
     cp -R "$DATA_DIR/test-data" "$STATE_DIR/"
 fi
 
-echo "Generating inline threshold parquet fixtures..."
-python3 - <<'EOF'
+INLINE_SMALL="$STATE_DIR/test-data/inline-small.parquet"
+INLINE_LARGE="$STATE_DIR/test-data/inline-large.parquet"
+FALLBACK_PARQUET="$STATE_DIR/test-data/sales_data_10k.parquet"
+
+if [[ "${SKIP_INLINE_PARQUET:-0}" == "1" ]]; then
+    echo "Skipping inline parquet generation (SKIP_INLINE_PARQUET=1)."
+else
+    echo "Generating inline threshold parquet fixtures..."
+    if "$PYTHON_BIN" - <<'PY'
+import importlib
+import sys
+missing = []
+for mod in ("pandas", "numpy", "pyarrow"):
+    try:
+        importlib.import_module(mod)
+    except Exception:
+        missing.append(mod)
+if missing:
+    print("Missing optional modules for inline parquet generation: " + ", ".join(missing))
+    sys.exit(1)
+PY
+    then
+        "$PYTHON_BIN" - <<'EOF'
 import os
 from pathlib import Path
 import pandas as pd
@@ -89,13 +111,26 @@ with open(objects_dir / "sample.json", 'w') as f:
     json.dump(sample_data, f, indent=2)
 print(f"Generated objects/sample.json")
 EOF
+    else
+        echo "Skipping inline parquet generation (missing pandas/numpy/pyarrow)."
+    fi
+fi
+
+if [[ ! -f "$INLINE_SMALL" && -f "$FALLBACK_PARQUET" ]]; then
+    cp "$FALLBACK_PARQUET" "$INLINE_SMALL"
+    echo "Copied fallback parquet to inline-small.parquet."
+fi
+if [[ ! -f "$INLINE_LARGE" && -f "$FALLBACK_PARQUET" ]]; then
+    cp "$FALLBACK_PARQUET" "$INLINE_LARGE"
+    echo "Copied fallback parquet to inline-large.parquet."
+fi
 
 wait_for_port() {
     local name="$1"
     local host="$2"
     local port="$3"
     local timeout="${4:-150}"
-    python3 - "$name" "$host" "$port" "$timeout" <<'PY'
+    "$PYTHON_BIN" - "$name" "$host" "$port" "$timeout" <<'PY'
 import socket
 import sys
 import time
@@ -119,14 +154,14 @@ compose_exec() {
     docker compose -f "$COMPOSE_FILE" exec -T "$@"
 }
 
-MINIO_HOST=$(python3 - <<'PY'
+MINIO_HOST=$("$PYTHON_BIN" - <<'PY'
 from urllib.parse import urlparse
 import os
 parsed = urlparse(os.environ.get('MINIO_ENDPOINT', 'http://localhost:19100'))
 print(parsed.hostname)
 PY
 )
-MINIO_PORT=$(python3 - <<'PY'
+MINIO_PORT=$("$PYTHON_BIN" - <<'PY'
 from urllib.parse import urlparse
 import os
 parsed = urlparse(os.environ.get('MINIO_ENDPOINT', 'http://localhost:19100'))
@@ -143,9 +178,7 @@ wait_for_port "Postgres" "$POSTGRES_HOST" "$POSTGRES_PORT"
 wait_for_port "Kafka" "$KAFKA_HOST" "$KAFKA_PORT"
 
 echo "Uploading sample objects to MinIO..."
-# Unset AWS_PROFILE to prevent boto3 from trying to load credentials from ~/.aws/credentials
-unset AWS_PROFILE AWS_DEFAULT_PROFILE
-python3 - "$MINIO_ENDPOINT" "$MINIO_BUCKET" "$MINIO_PREFIX" "$STATE_DIR/test-data" <<'PY'
+"$PYTHON_BIN" - "$MINIO_ENDPOINT" "$MINIO_BUCKET" "$MINIO_PREFIX" "$STATE_DIR/test-data" <<'PY'
 import os
 import sys
 import boto3
