@@ -66,6 +66,7 @@ More examples coming soon!
 | `client.tools` | Tool servers (MCP) | [Tool Service](docs/services/tools/README.md) |
 | `client.skills` | Skills Library catalog and package workflows | [Skills Service](docs/services/skills/README.md) |
 | `client.ingestion` | Data ingestion | [Ingestion Service](docs/services/ingestion/README.md) |
+| `client.enclaves` | Connectors + documents | [Enclaves Service](docs/services/enclaves/README.md) |
 
 ## Auth / User Management (0.9.0)
 
