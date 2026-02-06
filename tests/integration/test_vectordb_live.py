@@ -18,7 +18,7 @@ from __future__ import annotations
 import pytest
 from uuid import uuid4
 
-from kamiwaza_sdk.exceptions import APIError
+from kamiwaza_sdk.exceptions import APIError, VectorDBUnavailableError
 from kamiwaza_sdk.schemas.vectordb import (
     CreateVectorDB,
     InsertVectorsRequest,
@@ -228,6 +228,8 @@ class TestVectorOperations:
                 assert hasattr(result, "score")
                 assert hasattr(result, "metadata")
 
+        except VectorDBUnavailableError as exc:
+            pytest.skip(f"VectorDB backend is not configured: {exc}")
         except APIError as exc:
             if exc.status_code == 500:
                 pytest.skip(f"Vector operations failed - Milvus may not be running: {exc}")
@@ -253,11 +255,13 @@ class TestVectorOperations:
             # Should either return empty or raise error
             results = live_kamiwaza_client.vectordb.search_vectors(search_request)
             assert isinstance(results, list)
+        except VectorDBUnavailableError as exc:
+            pytest.skip(f"VectorDB backend is not configured: {exc}")
         except APIError as exc:
             if exc.status_code == 500:
                 pytest.skip(f"Milvus may not be running: {exc}")
-            # 404 or validation error acceptable for non-existent collection
-            assert exc.status_code in (404, 500, 422, 400)
+            # 404, 501 (VectorDB unavailable), or validation error acceptable
+            assert exc.status_code in (404, 500, 501, 422, 400)
 
 
 class TestVectorDBHelperMethods:
@@ -288,6 +292,8 @@ class TestVectorDBHelperMethods:
             assert result is not None
             assert result.rows_inserted == 2
 
+        except VectorDBUnavailableError as exc:
+            pytest.skip(f"VectorDB backend is not configured: {exc}")
         except APIError as exc:
             if exc.status_code == 500:
                 pytest.skip(f"Insert failed - Milvus may not be running: {exc}")
@@ -322,6 +328,8 @@ class TestVectorDBHelperMethods:
             assert isinstance(results, list)
             # Results may be empty if Milvus isn't properly configured
 
+        except VectorDBUnavailableError as exc:
+            pytest.skip(f"VectorDB backend is not configured: {exc}")
         except APIError as exc:
             if exc.status_code == 500:
                 pytest.skip(f"Search failed - Milvus may not be running: {exc}")
@@ -329,5 +337,5 @@ class TestVectorDBHelperMethods:
         finally:
             try:
                 live_kamiwaza_client.vectordb.drop_collection(collection_name)
-            except (APIError, Exception):
+            except (APIError, VectorDBUnavailableError, Exception):
                 pass

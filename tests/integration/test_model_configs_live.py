@@ -157,22 +157,34 @@ class TestModelConfigValidation:
     """Tests for model config validation behavior."""
 
     def test_create_config_requires_model_id(self, live_kamiwaza_client) -> None:
-        """Test that creating config without valid model_id fails appropriately."""
+        """Test model config creation behavior with non-existent model_id.
+
+        Note: API behavior changed - configs can now be created with any model_id.
+        The validation happens when the config is actually used, not at creation time.
+        """
         from uuid import uuid4
 
         fake_model_id = uuid4()
         create_payload = CreateModelConfig(
             m_id=fake_model_id,
-            name="should-fail",
+            name="test-config-fake-model",
             default=False
         )
 
-        with pytest.raises(APIError) as exc_info:
-            live_kamiwaza_client.models.create_model_config(create_payload)
-
-        # Should get an error for non-existent model
-        # Note: Server returns 500 instead of 400/404/422 (see server-defects.md)
-        assert exc_info.value.status_code in (400, 404, 422, 500)
+        created_config = None
+        try:
+            # API now allows creating configs with non-existent model IDs
+            created_config = live_kamiwaza_client.models.create_model_config(create_payload)
+            assert created_config is not None
+            assert created_config.m_id == fake_model_id
+            assert created_config.name == "test-config-fake-model"
+        finally:
+            # Clean up
+            if created_config:
+                try:
+                    live_kamiwaza_client.models.delete_model_config(created_config.id)
+                except APIError:
+                    pass
 
     def test_get_nonexistent_config(self, live_kamiwaza_client) -> None:
         """Test that getting a non-existent config returns appropriate error."""

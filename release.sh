@@ -42,7 +42,7 @@ fi
 rm -rf dist/ build/ *.egg-info
 
 # Build new package
-python -m build
+uv build
 
 # Exit if clean-only mode is requested
 if [[ ${CLEAN_ONLY:-} == "--clean-only" ]]; then
@@ -55,7 +55,7 @@ read -p "Ready to upload to PyPI. Continue? (y/n) " -n 1 -r
 echo    # Move to a new line
 if [[ $REPLY =~ ^[Yy]$ ]]
 then
-    twine upload dist/*
+    uv publish
 else
     echo "Upload cancelled"
     exit 1
