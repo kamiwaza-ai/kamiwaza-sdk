@@ -38,6 +38,7 @@ class AppTemplate(BaseModel):
     created_at: datetime
     updated_at: Optional[datetime] = None
     description: Optional[str] = None
+    capabilities: Optional[List[str]] = None
     env_defaults: Optional[Dict[str, str]] = None
 
 
