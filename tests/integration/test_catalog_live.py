@@ -55,7 +55,8 @@ def test_catalog_dataset_and_secret_lifecycle(live_kamiwaza_client):
         assert secret.name.endswith("-secret")
 
         secret_name = secret_payload.name
-        attempts = 5
+        # Allow for eventual consistency in the underlying catalog backend.
+        attempts = 15
         delay = 2
         for i in range(attempts):
             secrets = client.catalog.list_secrets(query=secret_name)

@@ -4,6 +4,8 @@ import time
 from urllib.parse import quote
 from uuid import uuid4
 
+import os
+
 import pytest
 from pydantic import SecretStr
 
@@ -97,9 +99,15 @@ def _delete_secret_by_urn(client, urn: str) -> None:
         pass
 
 
-def _wait_for_urn_in_list(fetch, expected_urn: str, label: str, *, required: bool = True) -> bool:
-    attempts = 5
-    delay = 2
+def _wait_for_urn_in_list(
+    fetch,
+    expected_urn: str,
+    label: str,
+    *,
+    required: bool = True,
+    attempts: int = 15,
+    delay: float = 2.0,
+) -> bool:
     last_urns: list[str | None] = []
     for attempt in range(attempts):
         items = fetch()
@@ -123,6 +131,38 @@ def test_catalog_metadata_and_health(live_kamiwaza_client) -> None:
 
     health = client.get("/catalog/health")
     assert health.get("status") == "ok"
+
+
+def test_catalog_container_endpoints_require_admin_user(live_server_available, tmp_path) -> None:
+    """Ensure catalog container endpoints are admin-protected.
+
+    Uses a conventional non-admin credential pair (testuser/testpass). If the
+    user is not configured in the environment, this test xfails.
+    """
+
+    from kamiwaza_sdk import KamiwazaClient
+    from kamiwaza_sdk.authentication import UserPasswordAuthenticator
+    from kamiwaza_sdk.exceptions import AuthenticationError
+    from kamiwaza_sdk.token_store import FileTokenStore
+
+    os.environ.setdefault("KAMIWAZA_VERIFY_SSL", "false")
+
+    client = KamiwazaClient(live_server_available)
+    client.authenticator = UserPasswordAuthenticator(
+        "testuser",
+        "testpass",
+        client._auth_service,
+        token_store=FileTokenStore(path=tmp_path / "token.json"),
+    )
+
+    try:
+        client.get("/catalog/containers/")
+    except AuthenticationError:
+        pytest.xfail("Non-admin test user testuser/testpass not configured")
+    except APIError as exc:
+        assert exc.status_code in (401, 403)
+    else:  # pragma: no cover - indicates test user is unexpectedly privileged
+        pytest.fail("Non-admin user unexpectedly accessed /catalog/containers/")
 
 
 def test_catalog_dataset_schema_endpoints(live_kamiwaza_client) -> None:
