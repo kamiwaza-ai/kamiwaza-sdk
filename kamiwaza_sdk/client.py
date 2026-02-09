@@ -1,7 +1,9 @@
 # kamiwaza_sdk/client.py
 
+from collections import OrderedDict
 import logging
 import os
+import time
 from typing import Any, Optional
 
 import requests
@@ -33,6 +35,13 @@ from .services.tools import ToolService
 logger = logging.getLogger(__name__)
 
 class KamiwazaClient:
+    _RECENT_DATASET_TTL_SECONDS = 30.0
+    _RECENT_DATASET_MAX = 1024
+
+    # Retry window for PUT-after-create/update schema operations.
+    # Total sleep time sums to 5.0s.
+    _DATASET_SCHEMA_PUT_RETRY_DELAYS_SECONDS = (0.1, 0.2, 0.4, 0.8, 1.0, 1.0, 1.0, 0.5)
+
     def __init__(
         self,
         base_url: Optional[str] = None,
@@ -55,6 +64,7 @@ class KamiwazaClient:
 
         self.base_url = resolved_base_url.rstrip('/')
         self.session = requests.Session()
+        self._recent_datasets: "OrderedDict[str, float]" = OrderedDict()
         
         # Check KAMIWAZA_VERIFY_SSL environment variable
         verify_ssl = os.environ.get('KAMIWAZA_VERIFY_SSL', 'true').lower()
@@ -75,6 +85,39 @@ class KamiwazaClient:
             self.authenticator = ApiKeyAuthenticator(api_key) if api_key else None
         
         # Don't authenticate during initialization - let it happen on first request
+
+    def _note_recent_dataset_change(self, dataset_urn: str) -> None:
+        """Mark a dataset as recently created/updated for eventual-consistency retries."""
+        if not isinstance(dataset_urn, str) or not dataset_urn:
+            return
+        now = time.monotonic()
+        self._recent_datasets[dataset_urn] = now
+        # Ensure touch moves the URN to the end so prune removes the oldest first.
+        self._recent_datasets.move_to_end(dataset_urn)
+        self._prune_recent_datasets(now)
+
+    def _prune_recent_datasets(self, now: Optional[float] = None) -> None:
+        now = time.monotonic() if now is None else now
+        cutoff = now - self._RECENT_DATASET_TTL_SECONDS
+
+        while self._recent_datasets:
+            oldest_urn, oldest_ts = next(iter(self._recent_datasets.items()))
+            if oldest_ts >= cutoff and len(self._recent_datasets) <= self._RECENT_DATASET_MAX:
+                break
+            self._recent_datasets.popitem(last=False)
+
+    def _dataset_recently_changed(self, dataset_urn: str) -> bool:
+        if not isinstance(dataset_urn, str) or not dataset_urn:
+            return False
+        ts = self._recent_datasets.get(dataset_urn)
+        if ts is None:
+            return False
+        now = time.monotonic()
+        if now - ts > self._RECENT_DATASET_TTL_SECONDS:
+            self._recent_datasets.pop(dataset_urn, None)
+            self._prune_recent_datasets(now)
+            return False
+        return True
 
     def _request(
         self,
@@ -97,11 +140,27 @@ class KamiwazaClient:
         if self.authenticator and not skip_auth:
             self.authenticator.authenticate(self.session)
 
-        try:
-            # Debug headers
-            self.logger.debug(f"Request headers: {self.session.headers}")
-            response = self.session.request(method, url, **kwargs)
-            self.logger.debug(f"Response status: {response.status_code}")
+        params = kwargs.get("params") if isinstance(kwargs.get("params"), dict) else {}
+        dataset_urn_for_schema = (
+            params.get("urn") if path.rstrip("/") == "catalog/datasets/by-urn/schema" else None
+        )
+        schema_retry = (
+            method.upper() == "PUT"
+            and dataset_urn_for_schema
+            and self._dataset_recently_changed(str(dataset_urn_for_schema))
+        )
+        retry_idx = 0
+        did_refresh = False
+
+        while True:
+            try:
+                # Debug headers
+                self.logger.debug(f"Request headers: {self.session.headers}")
+                response = self.session.request(method, url, **kwargs)
+                self.logger.debug(f"Response status: {response.status_code}")
+            except requests.RequestException as e:
+                logger.error(f"Request failed: {e}")
+                raise APIError(f"An error occurred while making the request: {e}")
 
             if response.status_code == 401:
                 if skip_auth:
@@ -110,16 +169,14 @@ class KamiwazaClient:
                     )
                 logger.warning(f"Received 401 Unauthorized. Response: {response.text}")
                 if self.authenticator:
-                    self.authenticator.refresh_token(self.session)
-                    response = self.session.request(method, url, **kwargs)
-                    self.logger.debug(
-                        f"Retry response status after refresh: {response.status_code}"
-                    )
-                    if response.status_code == 401:
-                        raise AuthenticationError("Authentication failed after token refresh.")
-                else:
-                    raise AuthenticationError("Authentication failed. No authenticator provided.")
-            elif response.status_code >= 400:
+                    if not did_refresh:
+                        did_refresh = True
+                        self.authenticator.refresh_token(self.session)
+                        continue
+                    raise AuthenticationError("Authentication failed after token refresh.")
+                raise AuthenticationError("Authentication failed. No authenticator provided.")
+
+            if response.status_code >= 400:
                 content_type = response.headers.get("content-type", "")
                 response_text = response.text
                 payload: Any | None = None
@@ -128,6 +185,31 @@ class KamiwazaClient:
                         payload = response.json()
                     except ValueError:
                         payload = None
+                if response.status_code == 404:
+                    lowered = content_type.lower()
+                    if "text/html" in lowered or "Dashboard" in response_text:
+                        raise NonAPIResponseError(
+                            f"Received 404 with HTML response. "
+                            f"Your base URL is '{self.base_url}' - did you forget to append '/api'?"
+                        )
+
+                if schema_retry and response.status_code == 404 and retry_idx < len(
+                    self._DATASET_SCHEMA_PUT_RETRY_DELAYS_SECONDS
+                ):
+                    detail = payload.get("detail") if isinstance(payload, dict) else None
+                    if detail == "Dataset not found or schema could not be updated":
+                        delay = self._DATASET_SCHEMA_PUT_RETRY_DELAYS_SECONDS[retry_idx]
+                        retry_idx += 1
+                        self.logger.debug(
+                            "Retrying dataset schema update after 404 (attempt %s/%s, delay=%.2fs): %s",
+                            retry_idx,
+                            len(self._DATASET_SCHEMA_PUT_RETRY_DELAYS_SECONDS),
+                            delay,
+                            dataset_urn_for_schema,
+                        )
+                        time.sleep(delay)
+                        continue
+
                 message = f"API request failed with status {response.status_code}: {response_text}"
                 if response.status_code == 501 and path.startswith("vectordb"):
                     raise VectorDBUnavailableError(
@@ -143,9 +225,8 @@ class KamiwazaClient:
                     response_text=response_text,
                     response_data=payload,
                 )
-        except requests.RequestException as e:
-            logger.error(f"Request failed: {e}")
-            raise APIError(f"An error occurred while making the request: {e}")
+
+            break
 
         if not expect_json:
             return response

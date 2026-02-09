@@ -216,14 +216,17 @@ class AppService(BaseService):
                 raise NotFoundError(f"Template {template_id} not found")
             raise
     
-    def list_garden_apps(self) -> List[GardenApp]:
+    def list_garden_apps(self, *, force_refresh: bool = False) -> List[GardenApp]:
         """
         List pre-built applications available in the Kamiwaza garden.
+
+        Note: This is backed by the remote catalog endpoint (`GET /apps/remote/apps`).
         
         Returns:
             List of GardenApp objects
         """
-        response = self.client.get("/apps/kamiwaza_garden")
+        params = {"force_refresh": "true"} if force_refresh else None
+        response = self.client.get("/apps/remote/apps", params=params)
         return [GardenApp.model_validate(item) for item in response]
     
     def import_garden_apps(self) -> Dict[str, Any]:

@@ -73,9 +73,6 @@ class TestModelFileSearch:
 
     def test_search_hub_model_files_with_dict(self, live_kamiwaza_client) -> None:
         """TS11.005: POST /model_files/search/ - Search with dict.
-
-        Note: This endpoint returns 500 on some server configurations.
-        See server-defects.md for details.
         """
         search_request = {
             "hub": "hf",
@@ -87,8 +84,8 @@ class TestModelFileSearch:
             assert isinstance(results, list)
             # Results may be empty if not cached, but should return list
         except APIError as exc:
-            if exc.status_code in (404, 500):
-                pytest.skip(f"Model files search not available: {exc}")
+            if exc.status_code == 404:
+                pytest.skip(f"Model files search endpoint not available: {exc}")
             raise
 
     def test_search_hub_model_files_with_schema(self, live_kamiwaza_client) -> None:
@@ -102,8 +99,8 @@ class TestModelFileSearch:
             results = live_kamiwaza_client.models.search_hub_model_files(search_request)
             assert isinstance(results, list)
         except APIError as exc:
-            if exc.status_code in (404, 500):
-                pytest.skip(f"Model files search not available: {exc}")
+            if exc.status_code == 404:
+                pytest.skip(f"Model files search endpoint not available: {exc}")
             raise
 
 
@@ -197,19 +194,10 @@ class TestModelFileValidation:
 
 
 class TestModelFileCreateAndDelete:
-    """Tests for model file create and delete operations.
-
-    Note: POST /model_files/ currently returns 500 due to a server defect
-    where the service returns an int (ID) but the API is annotated to return ModelFile.
-    See 00-server-defects.md for details.
-    """
+    """Tests for model file create and delete operations."""
 
     def test_create_model_file(self, live_kamiwaza_client) -> None:
         """TS11.002: POST /model_files/ - Create model file.
-
-        Note: Server returns 500 due to response type mismatch.
-        Service returns int (ID), but API expects ModelFile.
-        See 00-server-defects.md for details.
         """
         try:
             # Create a test model file
@@ -234,11 +222,6 @@ class TestModelFileCreateAndDelete:
                 pass
 
         except APIError as exc:
-            if exc.status_code == 500:
-                pytest.skip(
-                    "POST /model_files/ returns 500 - server defect: "
-                    "service returns int but API expects ModelFile"
-                )
             if exc.status_code in (403, 401):
                 pytest.skip("Insufficient permissions for model file creation")
             raise

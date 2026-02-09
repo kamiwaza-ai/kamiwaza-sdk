@@ -19,18 +19,20 @@ class TestNodeEndpoints:
     def test_get_node_status(self, live_kamiwaza_client) -> None:
         """TS14.002: GET /node/node_status - Get node status.
 
-        Note: Despite the server code comment suggesting this is an open endpoint
-        for health checks, it currently requires authentication.
+        This should be an open endpoint for health checks.
         """
         try:
-            response = live_kamiwaza_client.get("/node/node_status")
+            response = live_kamiwaza_client.get("/node/node_status", skip_auth=True)
             assert response is not None
             assert isinstance(response, dict)
             # NodeStatus should have relevant fields
             # Common fields might include: status, uptime, version, etc.
         except APIError as exc:
-            if exc.status_code in (403, 401):
-                pytest.skip("node_status endpoint requires authentication (contrary to docs)")
+            if exc.status_code == 404:
+                pytest.skip(
+                    "Server defect: /api/node/node_status not routed through /api in cluster mode "
+                    "(see docs-local/0.10.0/00-server-defects.md)"
+                )
             raise
 
     def test_get_node_id(self, live_kamiwaza_client) -> None:

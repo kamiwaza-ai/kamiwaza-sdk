@@ -157,7 +157,7 @@ class TestModelConfigValidation:
     """Tests for model config validation behavior."""
 
     def test_create_config_requires_model_id(self, live_kamiwaza_client) -> None:
-        """Creating a config for a non-existent model_id should return a client error."""
+        """Creating a config for a non-existent model_id should return 404."""
         from uuid import uuid4
 
         fake_model_id = uuid4()
@@ -167,30 +167,12 @@ class TestModelConfigValidation:
             default=False
         )
 
-        created_config = None
         try:
-            created_config = live_kamiwaza_client.models.create_model_config(create_payload)
+            live_kamiwaza_client.models.create_model_config(create_payload)
         except APIError as exc:
-            if exc.status_code == 500:
-                pytest.skip(
-                    "Server defect: POST /model_configs/ returns 500 for invalid model_id "
-                    "(see docs-local/0.10.0/00-server-defects.md)"
-                )
-            assert exc.status_code in (400, 404, 422)
+            assert exc.status_code == 404
         else:
-            try:
-                live_kamiwaza_client.models.delete_model_config(created_config.id)
-            except APIError:
-                pass
-            created_config = None
             pytest.fail("Expected server to reject a non-existent model_id when creating configs")
-        finally:
-            # Clean up
-            if created_config:
-                try:
-                    live_kamiwaza_client.models.delete_model_config(created_config.id)
-                except APIError:
-                    pass
 
     def test_get_nonexistent_config(self, live_kamiwaza_client) -> None:
         """Test that getting a non-existent config returns appropriate error."""
