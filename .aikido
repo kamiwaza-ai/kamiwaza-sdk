@@ -1,0 +1,40 @@
+# Aikido Security Scanner Configuration
+# ======================================
+# Excludes paths that are NOT part of the shipped product (the pip-installable wheel).
+# The wheel includes only kamiwaza_sdk/ and kamiwaza_client/ packages, as defined by
+# pyproject.toml [tool.setuptools.packages.find] include/exclude rules.
+#
+# Aikido path matching uses simple string inclusion — if the configured value appears
+# anywhere in the full file path, it gets excluded. Wildcards/regex are not supported.
+
+exclude:
+  paths:
+    # ── Tests (excluded from wheel by pyproject.toml exclude = ["tests*"]) ──
+    - tests/
+
+    # ── Examples (excluded from wheel by pyproject.toml exclude = ["examples*"]) ──
+    - examples/
+
+    # ── Documentation ──
+    - docs/
+    - docs-local/
+    - api_todo.md
+
+    # ── AI Assistant / Code Intelligence Configs ──
+    - .ai/
+    - CLAUDE.md
+
+    # ── CI/CD ──
+    - .github/
+
+    # ── Build / Release Scripts ──
+    - scripts/
+    - release.sh
+    - Makefile
+    - MANIFEST.in
+    - setup.py
+
+    # ── Dev Configuration ──
+    - .env.local.example
+    - uv.lock
+    - kamiwaza-openapi-spec.json
