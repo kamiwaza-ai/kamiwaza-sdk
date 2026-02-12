@@ -31,6 +31,7 @@ from .services.ingestion import IngestionService
 from .services.openai import OpenAIService
 from .services.apps import AppService
 from .services.tools import ToolService
+from .services.oauth_broker import OAuthBrokerService
 
 logger = logging.getLogger(__name__)
 
@@ -386,3 +387,9 @@ class KamiwazaClient:
         if not hasattr(self, '_ingestion'):
             self._ingestion = IngestionService(self)
         return self._ingestion
+
+    @property
+    def oauth_broker(self):
+        if not hasattr(self, '_oauth_broker'):
+            self._oauth_broker = OAuthBrokerService(self)
+        return self._oauth_broker
