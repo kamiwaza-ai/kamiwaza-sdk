@@ -137,6 +137,9 @@ class DummyAPIClient:
     def patch(self, path: str, **kwargs) -> Any:
         return self._dispatch("patch", path, **kwargs)
 
+    def put(self, path: str, **kwargs) -> Any:
+        return self._dispatch("put", path, **kwargs)
+
     def delete(self, path: str, **kwargs) -> Any:
         return self._dispatch("delete", path, **kwargs)
 

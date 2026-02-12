@@ -65,6 +65,7 @@ More examples coming soon!
 | `client.apps` | App deployment | [App Service](docs/services/apps/README.md) |
 | `client.tools` | Tool servers (MCP) | [Tool Service](docs/services/tools/README.md) |
 | `client.ingestion` | Data ingestion | [Ingestion Service](docs/services/ingestion/README.md) |
+| `client.enclaves` | Connectors + documents | [Enclaves Service](docs/services/enclaves/README.md) |
 
 ## Auth / User Management (0.9.0)
 

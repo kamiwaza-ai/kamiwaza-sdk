@@ -13,3 +13,4 @@ from .ingestion import IngestionService
 from .retrieval import RetrievalService
 from .apps import AppService
 from .tools import ToolService
+from .enclaves import EnclavesService
