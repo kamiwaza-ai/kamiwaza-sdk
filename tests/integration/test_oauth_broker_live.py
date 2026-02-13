@@ -14,10 +14,8 @@ Tests will skip gracefully if not configured.
 
 from __future__ import annotations
 
-import os
 import uuid
 from datetime import datetime, timedelta
-from typing import Any
 
 import pytest
 

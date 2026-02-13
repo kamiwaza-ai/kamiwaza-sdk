@@ -12,7 +12,6 @@ from kamiwaza_sdk.schemas.oauth_broker import (
     AppInstallationUpdate,
     MintTokenRequest,
     ToolPolicyCreate,
-    ToolPolicyUpdate,
 )
 from kamiwaza_sdk.services.oauth_broker import OAuthBrokerService
 

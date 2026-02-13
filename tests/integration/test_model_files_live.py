@@ -14,7 +14,6 @@ Tests cover:
 from __future__ import annotations
 
 import pytest
-from uuid import UUID
 
 from kamiwaza_sdk.exceptions import APIError
 from kamiwaza_sdk.schemas.models.model_file import ModelFile, CreateModelFile, StorageType
@@ -109,7 +108,7 @@ class TestModelFileDownloadStatus:
 
     def test_get_download_status(self, live_kamiwaza_client, ensure_repo_ready) -> None:
         """TS11.003: GET /model_files/download_status/ - Get download status."""
-        model = ensure_repo_ready(live_kamiwaza_client, CANONICAL_REPO)
+        ensure_repo_ready(live_kamiwaza_client, CANONICAL_REPO)
 
         try:
             # get_model_files_download_status requires a repo_model_id
@@ -125,7 +124,7 @@ class TestModelFileDownloadStatus:
         self, live_kamiwaza_client, ensure_repo_ready
     ) -> None:
         """Test the comprehensive download status method."""
-        model = ensure_repo_ready(live_kamiwaza_client, CANONICAL_REPO)
+        ensure_repo_ready(live_kamiwaza_client, CANONICAL_REPO)
 
         status = live_kamiwaza_client.models.get_model_download_status(CANONICAL_REPO)
         assert isinstance(status, dict)
@@ -243,7 +242,7 @@ class TestModelFileCreateAndDelete:
         except APIError as exc:
             # Should get 404 or 500 for non-existent file
             assert exc.status_code in (404, 500, 422)
-        except Exception as exc:
+        except Exception:
             # Some other error is acceptable (e.g., database error)
             pass
 

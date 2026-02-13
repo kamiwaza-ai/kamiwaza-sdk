@@ -19,7 +19,6 @@ Prerequisites:
 import os
 import sys
 from datetime import datetime, timedelta
-from uuid import UUID
 
 from kamiwaza_sdk import KamiwazaClient
 from kamiwaza_sdk.exceptions import APIError

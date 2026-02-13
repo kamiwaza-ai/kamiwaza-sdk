@@ -10,7 +10,6 @@ Tests cover:
 from __future__ import annotations
 
 import pytest
-from uuid import UUID
 
 from kamiwaza_sdk.exceptions import APIError
 from kamiwaza_sdk.schemas.models.model import CreateModelConfig, ModelConfig
