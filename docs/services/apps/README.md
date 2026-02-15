@@ -1,5 +1,20 @@
 # App Garden Service
 
+> **DEPRECATED:** The App Garden service (`client.apps`) is deprecated and will be removed in a future release. The Docker Compose-based App Garden is being replaced by Kubernetes CRD-based extensions. Use the **Extensions API** (`client.extensions`) instead.
+>
+> **Migration guide:**
+>
+> | Legacy (App Garden)                              | New (Extensions API)                                  |
+> |--------------------------------------------------|-------------------------------------------------------|
+> | `client.apps.list_deployments()`                 | `client.extensions.list_extensions()`                 |
+> | `client.apps.deploy(template_id=..., name=...)` | `client.extensions.create_extension(request)`         |
+> | `client.apps.get_deployment(deployment_id)`      | `client.extensions.get_extension(name)`               |
+> | `client.apps.stop_deployment(deployment_id)`     | `client.extensions.delete_extension(name)`            |
+>
+> See the [Extensions Service documentation](../extensions/README.md) for full details.
+
+---
+
 The App Garden service allows you to deploy and manage containerized applications within the Kamiwaza platform. It provides a simple interface for deploying web applications, databases, and other services using Docker containers.
 
 ## Overview
@@ -202,5 +217,6 @@ except Exception as e:
 
 ## See Also
 
-- [Example Notebook](../../../examples/08_app_garden_and_tools.ipynb) - Complete examples of App Garden usage
-- [Tool Service](../tools/README.md) - Deploy MCP Tool servers
+- **[Extensions Service](../extensions/README.md)** - The recommended replacement for App Garden (K8s-native extensions)
+- [Example Notebook](../../../examples/08_app_garden_and_tools.ipynb) - Legacy examples of App Garden usage
+- [Tool Service](../tools/README.md) - Deploy MCP Tool servers (also deprecated)
