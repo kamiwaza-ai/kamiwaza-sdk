@@ -4,7 +4,7 @@ import logging
 import os
 from typing import Any, Optional
 
-import requests
+import requests  # type: ignore[import-untyped]
 
 from .exceptions import (
     APIError,
@@ -16,7 +16,7 @@ from .services.models import ModelService
 from .services.serving import ServingService
 from .services.vectordb import VectorDBService
 from .services.catalog import CatalogService
-from .services.prompts import PromptsService  
+from .services.prompts import PromptsService
 from .services.embedding import EmbeddingService
 from .services.cluster import ClusterService
 from .services.activity import ActivityService
@@ -32,6 +32,7 @@ from .services.tools import ToolService
 
 logger = logging.getLogger(__name__)
 
+
 class KamiwazaClient:
     def __init__(
         self,
@@ -43,37 +44,47 @@ class KamiwazaClient:
         # Configure logging
         logging.basicConfig(
             level=log_level,
-            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+            format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         )
         self.logger = logger
-        
-        resolved_base_url = base_url or os.environ.get("KAMIWAZA_BASE_URL") or os.environ.get("KAMIWAZA_BASE_URI")
+
+        resolved_base_url = (
+            base_url
+            or os.environ.get("KAMIWAZA_BASE_URL")
+            or os.environ.get("KAMIWAZA_BASE_URI")
+        )
         if not resolved_base_url:
             raise ValueError(
                 "base_url is required. Provide it directly or set KAMIWAZA_BASE_URL or KAMIWAZA_BASE_URI."
             )
 
-        self.base_url = resolved_base_url.rstrip('/')
+        self.base_url = resolved_base_url.rstrip("/")
         self.session = requests.Session()
-        
+
         # Check KAMIWAZA_VERIFY_SSL environment variable
-        verify_ssl = os.environ.get('KAMIWAZA_VERIFY_SSL', 'true').lower()
-        if verify_ssl == 'false':
+        verify_ssl = os.environ.get("KAMIWAZA_VERIFY_SSL", "true").lower()
+        if verify_ssl == "false":
             self.session.verify = False
             # Suppress SSL warnings when verification is disabled
             import urllib3
+
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
             self.logger.info("SSL verification disabled (KAMIWAZA_VERIFY_SSL=false)")
-        
+
         # Initialize _auth_service directly
         self._auth_service = AuthService(self)
 
+        self.authenticator: Optional[Authenticator] = None
         if authenticator:
             self.authenticator = authenticator
         else:
-            api_key = api_key or os.environ.get("KAMIWAZA_API_KEY") or os.environ.get("KAMIWAZA_API_TOKEN")
+            api_key = (
+                api_key
+                or os.environ.get("KAMIWAZA_API_KEY")
+                or os.environ.get("KAMIWAZA_API_TOKEN")
+            )
             self.authenticator = ApiKeyAuthenticator(api_key) if api_key else None
-        
+
         # Don't authenticate during initialization - let it happen on first request
 
     def _request(
@@ -116,9 +127,13 @@ class KamiwazaClient:
                         f"Retry response status after refresh: {response.status_code}"
                     )
                     if response.status_code == 401:
-                        raise AuthenticationError("Authentication failed after token refresh.")
+                        raise AuthenticationError(
+                            "Authentication failed after token refresh."
+                        )
                 else:
-                    raise AuthenticationError("Authentication failed. No authenticator provided.")
+                    raise AuthenticationError(
+                        "Authentication failed. No authenticator provided."
+                    )
             elif response.status_code >= 400:
                 content_type = response.headers.get("content-type", "")
                 response_text = response.text
@@ -159,8 +174,8 @@ class KamiwazaClient:
                 return response.json()
             except ValueError:
                 # Check if we got an HTML response (likely the dashboard)
-                content_type = response.headers.get('content-type', '').lower()
-                if 'text/html' in content_type or 'Dashboard' in response.text:
+                content_type = response.headers.get("content-type", "").lower()
+                if "text/html" in content_type or "Dashboard" in response.text:
                     raise NonAPIResponseError(
                         f"Received HTML response instead of JSON. "
                         f"Your base URL is '{self.base_url}' - did you forget to append '/api'?"
@@ -174,8 +189,8 @@ class KamiwazaClient:
 
         # For non-2xx status codes, check if it's an HTML error page
         if response.status_code == 404:
-            content_type = response.headers.get('content-type', '').lower()
-            if 'text/html' in content_type or 'Dashboard' in response.text:
+            content_type = response.headers.get("content-type", "").lower()
+            if "text/html" in content_type or "Dashboard" in response.text:
                 raise NonAPIResponseError(
                     f"Received 404 with HTML response. "
                     f"Your base URL is '{self.base_url}' - did you forget to append '/api'?"
@@ -187,73 +202,72 @@ class KamiwazaClient:
         )
 
     def get(self, endpoint: str, **kwargs):
-        return self._request('GET', endpoint, **kwargs)
+        return self._request("GET", endpoint, **kwargs)
 
     def post(self, endpoint: str, **kwargs):
-        return self._request('POST', endpoint, **kwargs)
+        return self._request("POST", endpoint, **kwargs)
 
     def put(self, endpoint: str, **kwargs):
-        return self._request('PUT', endpoint, **kwargs)
+        return self._request("PUT", endpoint, **kwargs)
 
     def delete(self, endpoint: str, **kwargs):
-        return self._request('DELETE', endpoint, **kwargs)
+        return self._request("DELETE", endpoint, **kwargs)
 
     def patch(self, endpoint: str, **kwargs):
-        return self._request('PATCH', endpoint, **kwargs)
+        return self._request("PATCH", endpoint, **kwargs)
 
     # Lazy load the services
     @property
     def models(self):
-        if not hasattr(self, '_models'):
+        if not hasattr(self, "_models"):
             self._models = ModelService(self)
         return self._models
 
     @property
     def serving(self):
-        if not hasattr(self, '_serving'):
+        if not hasattr(self, "_serving"):
             self._serving = ServingService(self)
         return self._serving
 
     @property
     def vectordb(self):
-        if not hasattr(self, '_vectordb'):
+        if not hasattr(self, "_vectordb"):
             self._vectordb = VectorDBService(self)
         return self._vectordb
-    
 
     @property
     def catalog(self):
-        if not hasattr(self, '_catalog'):
+        if not hasattr(self, "_catalog"):
             self._catalog = CatalogService(self)
         return self._catalog
 
     @property
     def prompts(self):
-        if not hasattr(self, '_prompts'):
+        if not hasattr(self, "_prompts"):
             self._prompts = PromptsService(self)
         return self._prompts
 
     @property
     def embedding(self):
-        if not hasattr(self, '_embedding'):
+        if not hasattr(self, "_embedding"):
             self._embedding = EmbeddingService(self)
         return self._embedding
 
     @property
     def cluster(self):
-        if not hasattr(self, '_cluster'):
+        if not hasattr(self, "_cluster"):
             self._cluster = ClusterService(self)
         return self._cluster
 
     @property
     def activity(self):
-        if not hasattr(self, '_activity'):
+        if not hasattr(self, "_activity"):
             self._activity = ActivityService(self)
         return self._activity
 
     @property
     def lab(self):
-        if not hasattr(self, '_lab'):
+        if not hasattr(self, "_lab"):
             self._lab = LabService(self)
         return self._lab
 
@@ -263,7 +277,7 @@ class KamiwazaClient:
 
     @property
     def authz(self):
-        if not hasattr(self, '_authz'):
+        if not hasattr(self, "_authz"):
             self._authz = AuthzService(self)
         return self._authz
 
@@ -275,33 +289,40 @@ class KamiwazaClient:
         except AttributeError:
             return None
 
-
     @property
     def retrieval(self):
-        if not hasattr(self, '_retrieval'):
+        if not hasattr(self, "_retrieval"):
             self._retrieval = RetrievalService(self)
         return self._retrieval
 
     @property
     def openai(self):
-        if not hasattr(self, '_openai'):
+        if not hasattr(self, "_openai"):
             self._openai = OpenAIService(self)
         return self._openai
-    
+
     @property
     def apps(self):
-        if not hasattr(self, '_apps'):
+        if not hasattr(self, "_apps"):
             self._apps = AppService(self)
         return self._apps
-    
+
     @property
     def tools(self):
-        if not hasattr(self, '_tools'):
+        if not hasattr(self, "_tools"):
             self._tools = ToolService(self)
         return self._tools
 
     @property
     def ingestion(self):
-        if not hasattr(self, '_ingestion'):
+        if not hasattr(self, "_ingestion"):
             self._ingestion = IngestionService(self)
         return self._ingestion
+
+    @property
+    def extensions(self):
+        if not hasattr(self, "_extensions"):
+            from .services.extensions import ExtensionService
+
+            self._extensions = ExtensionService(self)
+        return self._extensions
