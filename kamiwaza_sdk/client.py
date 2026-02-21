@@ -29,6 +29,7 @@ from .services.ingestion import IngestionService
 from .services.openai import OpenAIService
 from .services.apps import AppService
 from .services.tools import ToolService
+from .services.workrooms import WorkroomService
 
 logger = logging.getLogger(__name__)
 
@@ -305,3 +306,10 @@ class KamiwazaClient:
         if not hasattr(self, '_ingestion'):
             self._ingestion = IngestionService(self)
         return self._ingestion
+
+    @property
+    def workrooms(self):
+        if not hasattr(self, '_workrooms'):
+            self._workrooms = WorkroomService(self)
+        return self._workrooms
+
