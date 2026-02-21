@@ -328,7 +328,6 @@ def test_delete_not_found_raises(dummy_client):
 
 def test_delete_global_workroom_raises_api_error(dummy_client):
     global_id = "ffffffff-ffff-ffff-ffff-ffffffffffff"
-    global_uuid = uuid.UUID(global_id)
     responses = {}
     client = dummy_client(responses)
     def _raise_403(path, **kwargs):
