@@ -21,14 +21,15 @@ pytest -m unit
 # Contract tests (future milestone)
 pytest -m contract
 
-# Integration: requires Docker + seeded MinIO fixture
+# Integration: requires docker CLI + seeded MinIO fixture.
+# If Docker daemon is unavailable, set KAMIWAZA_DOCKER_HOST/DOCKER_HOST to a Podman socket.
 pytest -m integration
 
 # Live smoke tests (needs running Kamiwaza server)
 pytest -m live --live-base-url https://localhost/api --live-username admin --live-password kamiwaza
 ```
 
-`--live-base-url`, `--live-api-key`, `--live-username`, and `--live-password` override the defaults pulled from `KAMIWAZA_BASE_URL`, `KAMIWAZA_API_KEY`, `KAMIWAZA_USERNAME`, and `KAMIWAZA_PASSWORD`. When no API key is provided the fixtures fall back to password auth (defaulting to `admin` / `kamiwaza`). Live/integration tests automatically skip when Docker, server health, or credentials are missing, so CI can include them as optional jobs.
+`--live-base-url`, `--live-api-key`, `--live-username`, and `--live-password` override the defaults pulled from `KAMIWAZA_BASE_URL`, `KAMIWAZA_API_KEY`, `KAMIWAZA_USERNAME`, and `KAMIWAZA_PASSWORD`. When no API key is provided the fixtures fall back to password auth (defaulting to `admin` / `kamiwaza`). Live/integration tests automatically skip when container runtime access, server health, or credentials are missing, so CI can include them as optional jobs.
 
 ## Shared Fixtures
 - `dummy_client` – lightweight HTTP stub for unit tests (records calls, replays canned responses).

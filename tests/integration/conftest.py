@@ -45,21 +45,131 @@ CATALOG_POSTGRES = {
 CATALOG_KAFKA_BOOTSTRAP = os.environ.get(
     "CATALOG_STACK_KAFKA_BOOTSTRAP", "localhost:29092"
 )
+PODMAN_MACHINE_SOCKET = Path.home() / ".local" / "share" / "containers" / "podman" / "machine" / "podman.sock"
+RUNTIME_HOST_ALIAS = os.environ.get("KAMIWAZA_DOCKER_HOST_ALIAS", "host.docker.internal")
+
+_COMPOSE_ENV_CACHE: dict[str, str] | None = None
+_COMPOSE_ENV_ERROR: str | None = None
 
 
-def _run_compose(*args: str) -> None:
+def _docker_info_ok(env: dict[str, str]) -> tuple[bool, str]:
+    result = subprocess.run(
+        ["docker", "info"],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    if result.returncode == 0:
+        return True, ""
+    message = (result.stderr or result.stdout or "").strip()
+    return False, message
+
+
+def _resolve_compose_env() -> dict[str, str]:
+    global _COMPOSE_ENV_CACHE, _COMPOSE_ENV_ERROR
+
+    if _COMPOSE_ENV_CACHE is not None:
+        return _COMPOSE_ENV_CACHE.copy()
+    if _COMPOSE_ENV_ERROR is not None:
+        raise RuntimeError(_COMPOSE_ENV_ERROR)
+
+    if shutil.which("docker") is None:
+        _COMPOSE_ENV_ERROR = "Docker CLI is required for integration tests"
+        raise RuntimeError(_COMPOSE_ENV_ERROR)
+
+    base_env = os.environ.copy()
+    ok, message = _docker_info_ok(base_env)
+    if ok:
+        _COMPOSE_ENV_CACHE = base_env
+        return _COMPOSE_ENV_CACHE.copy()
+
+    candidate_hosts: list[str] = []
+    for host in (
+        os.environ.get("KAMIWAZA_DOCKER_HOST"),
+        os.environ.get("DOCKER_HOST"),
+        f"unix://{PODMAN_MACHINE_SOCKET}",
+    ):
+        if host and host not in candidate_hosts:
+            candidate_hosts.append(host)
+
+    for host in candidate_hosts:
+        env = base_env.copy()
+        env["DOCKER_HOST"] = host
+        ok, _ = _docker_info_ok(env)
+        if ok:
+            _COMPOSE_ENV_CACHE = env
+            return _COMPOSE_ENV_CACHE.copy()
+
+    _COMPOSE_ENV_ERROR = (
+        "Docker daemon is unavailable for integration fixtures. "
+        f"Last error: {message or 'docker info failed'}. "
+        "Set KAMIWAZA_DOCKER_HOST/DOCKER_HOST to a reachable Podman or Docker socket."
+    )
+    raise RuntimeError(_COMPOSE_ENV_ERROR)
+
+
+def _compose_env(extra_env: dict[str, str] | None = None) -> dict[str, str]:
+    env = _resolve_compose_env()
+    if extra_env:
+        merged = env.copy()
+        merged.update(extra_env)
+        return merged
+    return env
+
+
+def _runtime_endpoint(endpoint: str) -> str:
+    """Return an endpoint reachable from services running inside the K8s cluster."""
+
+    parsed = urlparse(endpoint)
+    host = parsed.hostname
+    if host not in {"localhost", "127.0.0.1", "::1"}:
+        return endpoint
+
+    target_host = os.environ.get("KAMIWAZA_RUNTIME_HOST", RUNTIME_HOST_ALIAS).strip()
+    if not target_host:
+        return endpoint
+
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    replaced = parsed._replace(netloc=f"{target_host}:{port}")
+    return replaced.geturl()
+
+
+def _runtime_host(host: str) -> str:
+    if host in {"localhost", "127.0.0.1", "::1"}:
+        target = os.environ.get("KAMIWAZA_RUNTIME_HOST", RUNTIME_HOST_ALIAS).strip()
+        if target:
+            return target
+    return host
+
+
+def _runtime_bootstrap(bootstrap: str) -> str:
+    rewritten: list[str] = []
+    for endpoint in bootstrap.split(","):
+        candidate = endpoint.strip()
+        if not candidate:
+            continue
+        host, sep, port = candidate.partition(":")
+        runtime_host = _runtime_host(host)
+        rewritten.append(f"{runtime_host}{sep}{port}" if sep else runtime_host)
+    return ",".join(rewritten)
+
+
+def _run_compose(*args: str, env: dict[str, str] | None = None) -> None:
     cmd = ["docker", "compose", "-f", str(DOCKER_COMPOSE_FILE), *args]
-    subprocess.run(cmd, check=True)
+    subprocess.run(cmd, check=True, env=_compose_env(env))
 
 
 def _run_catalog_compose(*args: str, env: dict[str, str] | None = None) -> None:
     cmd = ["docker", "compose", "-f", str(CATALOG_STACK_COMPOSE), *args]
-    subprocess.run(cmd, check=True, env=env)
+    subprocess.run(cmd, check=True, env=_compose_env(env))
 
 
 def _catalog_stack_running() -> bool:
     cmd = ["docker", "compose", "-f", str(CATALOG_STACK_COMPOSE), "ps", "-q"]
-    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    result = subprocess.run(
+        cmd, capture_output=True, text=True, check=False, env=_compose_env()
+    )
     return bool(result.stdout.strip())
 
 
@@ -91,7 +201,9 @@ def _compose_port(
         service,
         str(container_port),
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True, check=False, env=env)
+    result = subprocess.run(
+        cmd, capture_output=True, text=True, check=False, env=_compose_env(env)
+    )
     if result.returncode != 0 or not result.stdout:
         return None
     line = result.stdout.strip().splitlines()[0]
@@ -216,15 +328,17 @@ def ensure_repo_ready() -> Callable[[KamiwazaClient, str], object]:
 def ingestion_environment() -> Iterator[dict[str, str]]:
     """Spin up fixture services used by ingestion/retrieval integration tests."""
 
-    if shutil.which("docker") is None:
-        pytest.skip("Docker is required for integration tests")
+    try:
+        compose_env = _compose_env()
+    except RuntimeError as exc:
+        pytest.skip(str(exc))
 
     # If something is already listening on the MinIO port (e.g., catalog stack), reuse it.
     host = "localhost"
     port = 19100
     started_compose = False
     if not _port_open(host, port):
-        _run_compose("up", "-d")
+        _run_compose("up", "-d", env=compose_env)
         started_compose = True
 
     try:
@@ -243,23 +357,23 @@ def ingestion_environment() -> Iterator[dict[str, str]]:
         yield {
             "bucket": "kamiwaza-sdk-tests",
             "prefix": "sdk-integration",
-            "endpoint": "http://localhost:19100",
+            "endpoint": _runtime_endpoint("http://localhost:19100"),
         }
     finally:
         if started_compose and os.environ.get("KEEP_INGESTION_FIXTURES") != "1":
-            _run_compose("down", "-v")
+            _run_compose("down", "-v", env=compose_env)
 
 
 @pytest.fixture(scope="session")
 def catalog_stack_environment() -> Iterator[dict[str, object]]:
     """Provision the multi-source ingestion stack used by catalog tests."""
 
-    if shutil.which("docker") is None:
-        pytest.skip("Docker is required for catalog ingestion tests")
+    try:
+        compose_env = _compose_env()
+    except RuntimeError as exc:
+        pytest.skip(str(exc))
     if not CATALOG_STACK_COMPOSE.exists() or not CATALOG_STACK_SETUP.exists():
         pytest.skip("Catalog stack assets are unavailable")
-
-    compose_env = os.environ.copy()
     stack_running = _catalog_stack_running()
     parsed_minio = urlparse(CATALOG_MINIO_ENDPOINT)
     preferred_minio_port = int(
@@ -287,16 +401,18 @@ def catalog_stack_environment() -> Iterator[dict[str, object]]:
 
     compose_env["CATALOG_STACK_MINIO_PORT"] = str(minio_port)
     compose_env["CATALOG_STACK_MINIO_CONSOLE_PORT"] = str(minio_console_port)
+    compose_env["CATALOG_STACK_KAFKA_ADVERTISED_HOST"] = _runtime_host("localhost")
     # Always issue an up to ensure all services (e.g., minio) are running; harmless if already up.
     _run_catalog_compose("up", "-d", env=compose_env)
 
-    minio_endpoint = f"{parsed_minio.scheme or 'http'}://{parsed_minio.hostname or 'localhost'}:{minio_port}"
+    minio_endpoint_local = f"{parsed_minio.scheme or 'http'}://{parsed_minio.hostname or 'localhost'}:{minio_port}"
+    minio_endpoint_runtime = _runtime_endpoint(minio_endpoint_local)
 
     env = compose_env.copy()
     env["INGESTION_STACK_COMPOSE"] = str(CATALOG_STACK_COMPOSE)
     env["STATE_DIR"] = str((CATALOG_STACK_DIR / "state").resolve())
     env["DATA_DIR"] = str((CATALOG_STACK_DIR / "data").resolve())
-    env["MINIO_ENDPOINT"] = minio_endpoint
+    env["MINIO_ENDPOINT"] = minio_endpoint_local
     env["MINIO_BUCKET"] = CATALOG_MINIO_BUCKET
     env["MINIO_PREFIX"] = CATALOG_MINIO_PREFIX
     env["POSTGRES_HOST"] = CATALOG_POSTGRES["host"]
@@ -325,14 +441,14 @@ def catalog_stack_environment() -> Iterator[dict[str, object]]:
         "object": {
             "bucket": CATALOG_MINIO_BUCKET,
             "prefix": CATALOG_MINIO_PREFIX,
-            "endpoint": minio_endpoint,
+            "endpoint": minio_endpoint_runtime,
             "region": "us-east-1",
             "small_key": f"{CATALOG_MINIO_PREFIX}/inline-small.parquet",
             "large_key": f"{CATALOG_MINIO_PREFIX}/inline-large.parquet",
         },
         "file_root": str((CATALOG_STACK_DIR / "state" / "test-data").resolve()),
         "postgres": {
-            "host": CATALOG_POSTGRES["host"],
+            "host": _runtime_host(CATALOG_POSTGRES["host"]),
             "port": int(CATALOG_POSTGRES["port"]),
             "database": CATALOG_POSTGRES["database"],
             "user": CATALOG_POSTGRES["user"],
@@ -340,7 +456,7 @@ def catalog_stack_environment() -> Iterator[dict[str, object]]:
             "schema": CATALOG_POSTGRES["schema"],
         },
         "kafka": {
-            "bootstrap": CATALOG_KAFKA_BOOTSTRAP,
+            "bootstrap": _runtime_bootstrap(CATALOG_KAFKA_BOOTSTRAP),
             "topic": "catalog-test-events",
         },
     }
