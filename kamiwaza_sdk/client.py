@@ -16,7 +16,6 @@ from .exceptions import (
 )
 from .services.models import ModelService
 from .services.serving import ServingService
-from .services.vectordb import VectorDBService
 from .services.catalog import CatalogService
 from .services.prompts import PromptsService  
 from .services.embedding import EmbeddingService
@@ -295,12 +294,6 @@ class KamiwazaClient:
         if not hasattr(self, '_serving'):
             self._serving = ServingService(self)
         return self._serving
-
-    @property
-    def vectordb(self):
-        if not hasattr(self, '_vectordb'):
-            self._vectordb = VectorDBService(self)
-        return self._vectordb
     
 
     @property
