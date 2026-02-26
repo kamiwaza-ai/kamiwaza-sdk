@@ -134,6 +134,9 @@ class DummyAPIClient:
     def post(self, path: str, **kwargs) -> Any:
         return self._dispatch("post", path, **kwargs)
 
+    def put(self, path: str, **kwargs) -> Any:
+        return self._dispatch("put", path, **kwargs)
+
     def patch(self, path: str, **kwargs) -> Any:
         return self._dispatch("patch", path, **kwargs)
 
