@@ -18,6 +18,8 @@ from huggingface_hub import snapshot_download
 
 from kamiwaza_sdk import KamiwazaClient
 from kamiwaza_sdk.authentication import UserPasswordAuthenticator
+from kamiwaza_sdk.exceptions import APIError, AuthenticationError
+from kamiwaza_sdk.token_store import StoredToken, TokenStore
 
 DOCKER_COMPOSE_FILE = Path(__file__).parent / "docker" / "docker-compose.yml"
 SEED_SCRIPT = Path(__file__).parent / "docker" / "seed_minio.py"
@@ -219,6 +221,66 @@ def _verify_ssl_enabled() -> bool:
     return os.environ.get("KAMIWAZA_VERIFY_SSL", "true").lower() != "false"
 
 
+class _NoCacheTokenStore(TokenStore):
+    """Disable token persistence/loading during credential validation checks."""
+
+    def load(self) -> StoredToken | None:
+        return None
+
+    def save(self, token: StoredToken) -> None:
+        return None
+
+    def clear(self) -> None:
+        return None
+
+
+def _resolve_kz_login_password() -> str | None:
+    """Attempt to load the current local admin password from deploy helper script."""
+
+    repo_root = Path(__file__).resolve().parents[2]
+    candidates = [
+        repo_root.parent / "deploy" / "scripts" / "kz-login",
+    ]
+    kamiwaza_root = os.environ.get("KAMIWAZA_ROOT")
+    if kamiwaza_root:
+        candidates.append(Path(kamiwaza_root).expanduser() / "deploy" / "scripts" / "kz-login")
+
+    for script in candidates:
+        if not script.exists():
+            continue
+        try:
+            result = subprocess.run(
+                [str(script), "--show-password"],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+        except (subprocess.CalledProcessError, OSError, subprocess.TimeoutExpired):
+            continue
+        password = result.stdout.strip()
+        if password:
+            return password
+    return None
+
+
+def _password_auth_works(base_url: str, username: str, password: str) -> tuple[bool, str]:
+    """Validate username/password by calling /auth/users/me."""
+
+    client = KamiwazaClient(base_url)
+    client.authenticator = UserPasswordAuthenticator(
+        username,
+        password,
+        client._auth_service,
+        token_store=_NoCacheTokenStore(),
+    )
+    try:
+        client.auth.get_current_user()
+        return True, ""
+    except (AuthenticationError, APIError) as exc:
+        return False, str(exc)
+
+
 @pytest.fixture(scope="session")
 def live_server_available(live_base_url: str) -> str:
     """Ensure a running Kamiwaza server is reachable before running live tests."""
@@ -261,8 +323,8 @@ def qwen_snapshot_dir(hf_cache_dir: Path) -> Path:
 def live_kamiwaza_client(
     live_server_available: str,
     live_api_key: str,
+    resolved_live_password: str,
     live_username: str,
-    live_password: str,
 ) -> KamiwazaClient:
     """Provide an authenticated client for integration tests."""
     os.environ.setdefault("KAMIWAZA_VERIFY_SSL", "false")
@@ -272,7 +334,7 @@ def live_kamiwaza_client(
         return KamiwazaClient(live_server_available, api_key=api_key)
 
     username = live_username.strip()
-    password = live_password.strip()
+    password = resolved_live_password.strip()
     if not username or not password:
         pytest.skip(
             "Provide KAMIWAZA_API_KEY or username/password for live integration tests"
@@ -283,6 +345,63 @@ def live_kamiwaza_client(
         username, password, client._auth_service
     )
     return client
+
+
+@pytest.fixture(scope="session")
+def resolved_live_password(
+    live_server_available: str,
+    live_api_key: str,
+    live_username: str,
+    pytestconfig: pytest.Config,
+) -> str:
+    """
+    Resolve live password by trying configured credentials first, then falling
+    back to deploy/scripts/kz-login when available.
+    """
+
+    if live_api_key.strip():
+        return ""
+
+    username = live_username.strip()
+    configured_password = str(pytestconfig.getoption("live_password")).strip()
+    if not username:
+        return configured_password
+
+    if configured_password:
+        ok, error = _password_auth_works(
+            live_server_available,
+            username,
+            configured_password,
+        )
+        if ok:
+            return configured_password
+    else:
+        error = "password is empty"
+
+    fallback_password = _resolve_kz_login_password()
+    if fallback_password:
+        ok, fallback_error = _password_auth_works(
+            live_server_available,
+            username,
+            fallback_password,
+        )
+        if ok:
+            os.environ["KAMIWAZA_PASSWORD"] = fallback_password
+            return fallback_password
+        error = f"{error}; kz-login fallback failed: {fallback_error}"
+    else:
+        error = f"{error}; kz-login fallback unavailable"
+
+    pytest.skip(
+        "Unable to authenticate live integration client with configured credentials "
+        f"or kz-login fallback ({error})"
+    )
+
+
+@pytest.fixture(scope="session")
+def live_password(resolved_live_password: str) -> str:
+    """Override base fixture so integration tests get resolved/fallback password."""
+    return resolved_live_password
 
 
 @pytest.fixture(scope="session")
