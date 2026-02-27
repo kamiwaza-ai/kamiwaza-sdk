@@ -80,6 +80,8 @@ class AppInstallationResponse(BaseModel):
 class AppInstallationListResponse(BaseModel):
     """Schema for listing app installations."""
 
+    model_config = ConfigDict(extra="allow")
+
     items: list[AppInstallationResponse]
     total: int = Field(..., description="Total number of app installations")
 
@@ -131,7 +133,7 @@ class MintTokenRequest(BaseModel):
 
     app_installation_id: UUID = Field(..., description="App installation ID")
     tool_id: str = Field(..., description="Tool identifier requesting token")
-    provider: str = Field(..., description="Provider (google, microsoft)")
+    provider: Provider | str = Field(..., description="Provider (google, microsoft)")
     scope_subset: list[str] | None = Field(
         None,
         description="Optional scope subset (must be subset of connection's granted_scopes)",
@@ -169,7 +171,7 @@ class LeaseStatusResponse(BaseModel):
     lease_id: str
     app_installation_id: UUID
     tool_id: str
-    provider: str
+    provider: Provider
     granted_scopes: list[str]
     issued_at: datetime
     expires_at: datetime
@@ -187,19 +189,7 @@ class GoogleAuthStartResponse(BaseModel):
         ..., description="URL to redirect user to for Google authorization"
     )
     state: str = Field(..., description="CSRF protection state parameter")
-    provider: str = Field(default="google", description="Provider name")
-
-
-class GoogleCallbackRequest(BaseModel):
-    """Request parameters from Google OAuth callback."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    code: str = Field(..., description="Authorization code from Google")
-    state: str = Field(..., description="State parameter for CSRF validation")
-    scope: str | None = Field(
-        default=None, description="Space-separated list of granted scopes"
-    )
+    provider: Provider = Field(default=Provider.GOOGLE, description="Provider name")
 
 
 # ========== Tool Policy Schemas ==========
@@ -217,7 +207,7 @@ class ToolPolicyCreate(BaseModel):
         max_length=255,
         description="Tool identifier (e.g., gmail-read-tool)",
     )
-    provider: str = Field(..., description="Provider (google, microsoft, etc.)")
+    provider: Provider | str = Field(..., description="Provider (google, microsoft, etc.)")
     allowed_operations: list[str] = Field(
         default_factory=list,
         description="Allowed operations (e.g., ['gmail.search', 'gmail.getMessage'])",
@@ -249,7 +239,7 @@ class ToolPolicyResponse(BaseModel):
     id: UUID
     app_installation_id: UUID
     tool_id: str
-    provider: str
+    provider: Provider
     allowed_operations: list[str]
     allowed_scope_subset: list[str]
     policy_metadata: dict | None = None
@@ -259,6 +249,8 @@ class ToolPolicyResponse(BaseModel):
 
 class ToolPolicyListResponse(BaseModel):
     """Schema for listing tool policies."""
+
+    model_config = ConfigDict(extra="allow")
 
     items: list[ToolPolicyResponse]
     total: int = Field(..., description="Total number of policies")
@@ -270,12 +262,16 @@ class ToolPolicyListResponse(BaseModel):
 class GmailSearchRequest(BaseModel):
     """Request body for Gmail search."""
 
+    model_config = ConfigDict(extra="forbid")
+
     query: str
     max_results: int = Field(default=10, ge=1, le=200)
 
 
 class GmailGetMessageRequest(BaseModel):
     """Request body for Gmail get message."""
+
+    model_config = ConfigDict(extra="forbid")
 
     message_id: str
     msg_format: Literal["full", "metadata", "minimal", "raw"] = "full"
@@ -284,11 +280,15 @@ class GmailGetMessageRequest(BaseModel):
 class GmailSendRequest(BaseModel):
     """Request body for Gmail send."""
 
+    model_config = ConfigDict(extra="forbid")
+
     raw_message: str  # Base64url encoded RFC 2822 message
 
 
 class GmailModifyRequest(BaseModel):
     """Request body for Gmail modify message."""
+
+    model_config = ConfigDict(extra="forbid")
 
     message_id: str
     add_labels: list[str] | None = None
@@ -297,6 +297,8 @@ class GmailModifyRequest(BaseModel):
 
 class DriveListFilesRequest(BaseModel):
     """Request body for Drive list files."""
+
+    model_config = ConfigDict(extra="forbid")
 
     query: str | None = None
     page_size: int = Field(default=10, ge=1, le=200)

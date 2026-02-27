@@ -267,9 +267,9 @@ class ProxyMixin:
             "calendar_id": calendar_id,
             "max_results": max_results,
         }
-        if time_min:
+        if time_min is not None:
             params["time_min"] = time_min
-        if time_max:
+        if time_max is not None:
             params["time_max"] = time_max
 
         response = self.client.get(
