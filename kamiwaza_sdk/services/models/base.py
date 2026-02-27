@@ -1,6 +1,5 @@
-from typing import List, Optional, Union, Dict, Any
+from typing import List, Union
 from uuid import UUID
-from ...exceptions import APIError
 from ...schemas.models.model import Model, CreateModel
 from ...schemas.guide import ModelGuide
 from ...utils.quant_manager import QuantizationManager
@@ -125,7 +124,7 @@ class ModelService(BaseService,
         for model in models:
             if model.repo_modelId == repo_id:
                 return model
-        return None
+        return None  # type: ignore[return-value]
 
     def auto_selector(self) -> ModelAutoSelector:
         """Return a helper that can recommend models/variants based on guide data."""

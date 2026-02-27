@@ -6,7 +6,7 @@ import os
 import time
 from typing import Any, Optional
 
-import requests
+import requests  # type: ignore[import-untyped]
 
 from .exceptions import (
     APIError,
@@ -31,6 +31,7 @@ from .services.ingestion import IngestionService
 from .services.openai import OpenAIService
 from .services.apps import AppService
 from .services.tools import ToolService
+from .services.oauth_broker import OAuthBrokerService
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +79,7 @@ class KamiwazaClient:
         # Initialize _auth_service directly
         self._auth_service = AuthService(self)
 
+        self.authenticator: Optional[Authenticator] = None
         if authenticator:
             self.authenticator = authenticator
         else:
@@ -140,7 +142,8 @@ class KamiwazaClient:
         if self.authenticator and not skip_auth:
             self.authenticator.authenticate(self.session)
 
-        params = kwargs.get("params") if isinstance(kwargs.get("params"), dict) else {}
+        raw_params = kwargs.get("params")
+        params: dict[str, Any] = raw_params if isinstance(raw_params, dict) else {}
         dataset_urn_for_schema = (
             params.get("urn") if path.rstrip("/") == "catalog/datasets/by-urn/schema" else None
         )
@@ -386,3 +389,9 @@ class KamiwazaClient:
         if not hasattr(self, '_ingestion'):
             self._ingestion = IngestionService(self)
         return self._ingestion
+
+    @property
+    def oauth_broker(self):
+        if not hasattr(self, '_oauth_broker'):
+            self._oauth_broker = OAuthBrokerService(self)
+        return self._oauth_broker

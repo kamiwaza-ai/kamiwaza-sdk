@@ -1,10 +1,7 @@
-from typing import List, Optional, Union, Dict, Any, Set
-from uuid import UUID
+from typing import List, Optional, Dict, Any
 import time
 from datetime import datetime
 import sys
-from ...schemas.models.model import Model
-from ...schemas.models.model_file import ModelFile
 from ...schemas.models.model_search import HubModelFileSearch
 from ...schemas.models.downloads import ModelDownloadRequest, ModelDownloadStatus
 from ...utils.download_tracker import DownloadTracker
@@ -13,7 +10,10 @@ from ...utils.progress_formatter import ProgressFormatter
 
 class ModelDownloadMixin:
     """Mixin for model download functionality."""
-    
+
+    client: Any  # Provided by BaseService when mixed in
+    quant_manager: Any  # Provided by ModelService.__init__
+
     def initiate_model_download(self, repo_id: str, quantization: str = 'q6_k') -> Dict[str, Any]:
         """
         Initiate the download of a model based on the repo ID.
@@ -35,7 +35,7 @@ class ModelDownloadMixin:
             Dict[str, Any]: A dictionary containing information about the initiated download.
         """
         # Search for the model with files included
-        models = self.search_models(repo_id, load_files=True)
+        models = self.search_models(repo_id, load_files=True)  # type: ignore[attr-defined]
         if not models:
             raise ValueError(f"No model found with repo ID: {repo_id}")
         
@@ -48,7 +48,9 @@ class ModelDownloadMixin:
         
         if not files:
             # If files weren't loaded with the model, fetch them directly
-            files = self.search_hub_model_files(HubModelFileSearch(hub=model.hub, model=model.repo_modelId))
+            files = self.search_hub_model_files(  # type: ignore[attr-defined]
+                HubModelFileSearch(hub=model.hub, model=model.repo_modelId)
+            )
             model.m_files = files
         
         # Check if the model has multiple quantization options
@@ -391,7 +393,7 @@ class ModelDownloadMixin:
                 if not status_list or all(not status.is_downloading for status in status_list):
                     if show_progress:
                         # Get the model to display final information
-                        model = self.get_model_by_repo_id(repo_id)
+                        model = self.get_model_by_repo_id(repo_id)  # type: ignore[attr-defined]
                         if model and hasattr(model, 'm_files') and model.m_files:
                             print("\nDownload complete for:", repo_id)
                             print(f"Total download time: {ProgressFormatter.format_elapsed_time(elapsed_seconds)}")
@@ -474,7 +476,7 @@ class ModelDownloadMixin:
         try:
             # Step 1: Initiate download for the model
             print(f"Initiating download for {repo_id} with quantization {quantization}...")
-            download_result = self.initiate_model_download(repo_id, quantization)
+            self.initiate_model_download(repo_id, quantization)
             
             # Step 2: Wait for download to complete if requested
             if wait_for_download:
@@ -485,7 +487,7 @@ class ModelDownloadMixin:
                 status_list = self.check_download_status(repo_id)
                 
                 if status_list:
-                    print(f"Waiting for download to complete...")
+                    print("Waiting for download to complete...")
                     # Use our simplified wait_for_download method
                     status_list = self.wait_for_download(repo_id, timeout=timeout)
                     
@@ -495,7 +497,7 @@ class ModelDownloadMixin:
                     # If no active downloads, check if the files are already downloaded
                     # This requires the model to be in our database now
                     try:
-                        model = self.get_model_by_repo_id(repo_id)
+                        model = self.get_model_by_repo_id(repo_id)  # type: ignore[attr-defined]
                         if model and hasattr(model, 'm_files') and model.m_files:
                             files = model.m_files
                             # Use quant_manager to filter files by quantization
@@ -513,15 +515,15 @@ class ModelDownloadMixin:
                                 if downloaded_files and len(downloaded_files) == len(target_files):
                                     print(f"Model files for {repo_id} are already downloaded.")
                                 else:
-                                    print(f"Warning: Some files may not be fully downloaded. Proceeding anyway...")
+                                    print("Warning: Some files may not be fully downloaded. Proceeding anyway...")
                             else:
                                 print(f"Warning: No files found matching quantization {quantization}. Proceeding anyway...")
                     except Exception as e:
                         print(f"Note: Could not verify download status: {str(e)}. Proceeding anyway...")
             
             # Step 3: Get the model (should be in our database now)
-            model = self.get_model_by_repo_id(repo_id)
-            
+            model = self.get_model_by_repo_id(repo_id)  # type: ignore[attr-defined]
+
             if not model:
                 raise ValueError(f"Could not find model {repo_id} in the database after download.")
             
@@ -612,8 +614,8 @@ class ModelDownloadMixin:
         """
         try:
             # Get the model
-            model = self.get_model_by_repo_id(repo_id)
-            
+            model = self.get_model_by_repo_id(repo_id)  # type: ignore[attr-defined]
+
             if not model:
                 return {
                     "error": f"Model {repo_id} not found",
@@ -625,7 +627,9 @@ class ModelDownloadMixin:
             
             if not files:
                 # If files weren't loaded with the model, fetch them directly
-                files = self.search_hub_model_files(HubModelFileSearch(hub=model.hub, model=model.repo_modelId))
+                files = self.search_hub_model_files(  # type: ignore[attr-defined]
+                    HubModelFileSearch(hub=model.hub, model=model.repo_modelId)
+                )
                 model.m_files = files
             
             # Filter files by quantization if specified
@@ -649,7 +653,7 @@ class ModelDownloadMixin:
             pending_files = [f for f in target_files if f not in downloading_files and f not in downloaded_files]
             
             # Calculate overall progress
-            total_progress = 0
+            total_progress: float = 0
             if downloading_files:
                 for file in downloading_files:
                     total_progress += getattr(file, 'download_percentage', 0) or 0

@@ -65,6 +65,69 @@ More examples coming soon!
 | `client.apps` | App deployment | [App Service](docs/services/apps/README.md) |
 | `client.tools` | Tool servers (MCP) | [Tool Service](docs/services/tools/README.md) |
 | `client.ingestion` | Data ingestion | [Ingestion Service](docs/services/ingestion/README.md) |
+| `client.oauth_broker` | OAuth broker | [OAuth Broker Service](#oauth-broker-service) |
+
+## OAuth Broker Service
+
+The OAuth Broker provides secure, centralized OAuth connection management for AI applications. It allows tools and agents to access user data from OAuth providers (Google, Microsoft) without directly handling tokens.
+
+### Quick Start
+
+```python
+from kamiwaza_sdk import KamiwazaClient
+from kamiwaza_sdk.schemas.oauth_broker import AppInstallationCreate
+
+client = KamiwazaClient("https://localhost/api", api_key="your-api-key")
+
+# Create an app installation
+app = client.oauth_broker.create_app_installation(
+    AppInstallationCreate(
+        name="Email Assistant",
+        description="AI-powered email helper",
+        allowed_tools=["gmail-reader", "gmail-sender"]
+    )
+)
+
+# Start OAuth flow for Google
+scopes = [
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/gmail.compose"
+]
+auth_result = client.oauth_broker.start_google_auth(app.id, scopes)
+print(f"Visit this URL to authorize: {auth_result.auth_url}")
+
+# After user authorizes, check connection status
+status = client.oauth_broker.get_connection_status(app.id, "google")
+if status.status == "connected":
+    print(f"Connected as {status.external_email}")
+
+    # Use proxy endpoints (recommended - tokens never exposed)
+    emails = client.oauth_broker.gmail_search(
+        app_id=app.id,
+        tool_id="gmail-reader",
+        query="is:unread",
+        max_results=10
+    )
+```
+
+### Features
+
+- **App Installation Management**: Create and manage OAuth apps
+- **Tool Policy Enforcement**: Control which tools can access which APIs
+- **Proxy Mode (Recommended)**: Tools call broker endpoints, tokens never exposed
+- **Token Minting Mode**: For advanced scenarios requiring direct provider API access
+- **Multiple Providers**: Google (Gmail, Drive, Calendar), Microsoft (coming soon)
+
+### Environment Variables
+
+```bash
+# OAuth Broker requires Google OAuth credentials
+export OAUTH_BROKER_GOOGLE_CLIENT_ID="your-client-id.apps.googleusercontent.com"
+export OAUTH_BROKER_GOOGLE_CLIENT_SECRET="your-client-secret"
+export OAUTH_BROKER_GOOGLE_REDIRECT_URI="https://your-domain.com/oauth/google/callback"
+```
+
+For more examples, see `examples/oauth_broker_example.py`.
 
 ## Auth / User Management (0.9.0)
 

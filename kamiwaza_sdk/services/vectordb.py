@@ -35,7 +35,7 @@ class VectorDBService(BaseService):
     
     def insert_vectors(self, insert_request: InsertVectorsRequest) -> InsertVectorsResponse:
         """Insert embeddings into the vector database."""
-        self.logger.debug(f"Sending insert request to vectordb service")
+        self.logger.debug("Sending insert request to vectordb service")
         
         # Ensure embeddings are lists of native Python floats
         request_dict = insert_request.model_dump()
@@ -82,7 +82,7 @@ class VectorDBService(BaseService):
         # Ensure all metadata entries have the required autofields
         if metadata and len(metadata) > 0:
             # Get all unique keys from all metadata entries
-            all_keys = set()
+            all_keys: set[str] = set()
             for entry in metadata:
                 all_keys.update(entry.keys())
                 

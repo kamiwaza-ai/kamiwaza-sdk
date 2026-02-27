@@ -1,11 +1,13 @@
-from typing import List, Optional, Union, Dict, Any
+from typing import List, Union, Any
 from uuid import UUID
-from ...schemas.models.model import Model, ModelConfig, CreateModelConfig
+from ...schemas.models.model import ModelConfig, CreateModelConfig
 
 
 class ModelConfigMixin:
     """Mixin for model configuration operations."""
-    
+
+    client: Any  # Provided by BaseService when mixed in
+
     def create_model_config(self, config: CreateModelConfig) -> ModelConfig:
         """
         Create a new model configuration.

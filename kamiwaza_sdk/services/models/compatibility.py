@@ -1,6 +1,5 @@
-from typing import List, Optional, Union, Dict, Any
+from typing import List, Optional, Dict, Any
 import platform
-from uuid import UUID
 from ...exceptions import APIError
 from ...schemas.models.model_file import ModelFile
 from ...schemas.models.model_search import HubModelFileSearch
@@ -8,7 +7,10 @@ from ...schemas.models.model_search import HubModelFileSearch
 
 class CompatibilityMixin:
     """Mixin for OS compatibility checks."""
-    
+
+    client: Any  # Provided by BaseService when mixed in
+    _server_info: Optional[Dict[str, Any]]  # Initialized in ModelService.__init__
+
     def _get_server_os(self) -> str:
         """
         Get and cache server OS info from cluster hardware.
@@ -43,16 +45,16 @@ class CompatibilityMixin:
         Returns:
             List[Dict[str, Any]]: A list of compatible models with their files.
         """
-        server_os = self._get_server_os()
-        models = self.search_models(model_name)
+        self._get_server_os()  # Populate _server_info cache
+        models = self.search_models(model_name)  # type: ignore[attr-defined]
         
         # Let server handle compatibility via download endpoint
         # Just organize the model info for the user
         model_info = []
         for model in models:
-            files = self.search_hub_model_files(
+            files = self.search_hub_model_files(  # type: ignore[attr-defined]
                 HubModelFileSearch(
-                    hub=model.hub, 
+                    hub=model.hub,
                     model=model.repo_modelId
                 )
             )

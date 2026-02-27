@@ -17,17 +17,12 @@ from ..schemas.serving.serving import (
     UIModelDeployment,
 )
 from ..schemas.serving.inference import (
-    GenerateRequest,
-    GenerateResponse,
     LoadModelRequest,
     LoadModelResponse,
     UnloadModelRequest,
     UnloadModelResponse,
 )
-from ..schemas.models.model_search import HubModelFileSearch
 from .base_service import BaseService
-from urllib.parse import urlparse
-import os
 
 
 class ServingService(BaseService):
@@ -97,9 +92,9 @@ class ServingService(BaseService):
 
         # Prepare the deployment request
         deployment_request = CreateModelDeployment(
-            m_id=model_id,
-            m_config_id=m_config_id,
-            m_file_id=m_file_id,
+            m_id=model_id,  # type: ignore[arg-type]
+            m_config_id=m_config_id,  # type: ignore[arg-type]
+            m_file_id=m_file_id,  # type: ignore[arg-type]
             **kwargs
         )
 
@@ -152,7 +147,7 @@ class ServingService(BaseService):
                 active_deployment = ActiveModelDeployment(
                     id=deployment.id,
                     m_id=deployment.m_id,
-                    m_name=deployment.m_name,
+                    m_name=deployment.m_name or "",
                     status=deployment.status,
                     instances=[i for i in deployment.instances if i.status == 'DEPLOYED'],
                     lb_port=deployment.lb_port,

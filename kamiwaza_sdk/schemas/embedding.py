@@ -13,12 +13,10 @@ class EmbeddingInput(BaseModel):
     overlap: int = Field(default=32, description="Number of tokens to overlap between chunks when chunking")
     preamble_text: str = Field(default="", description="Text to prepend to each chunk")
 
-    model_config = ConfigDict(
-        json_serialization={'uuid_mode': 'str'}
-    )
+    model_config = ConfigDict()
 
-    def model_dump(self):
-        data = super().model_dump()
+    def model_dump(self, **kwargs):  # type: ignore[override]
+        data = super().model_dump(**kwargs)
         if data['id']:
             data['id'] = str(data['id'])
         return data
@@ -33,9 +31,7 @@ class EmbeddingConfig(BaseModel):
     device: Optional[str] = None
     additional_config: Optional[dict] = {}
 
-    model_config = ConfigDict(
-        json_serialization={'uuid_mode': 'str'}  # Convert UUID to string during serialization
-    )
+    model_config = ConfigDict()
         
     def model_dump(self):
         # Override model_dump to ensure UUID is converted to string
