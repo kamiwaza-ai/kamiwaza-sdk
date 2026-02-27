@@ -1,6 +1,6 @@
-from typing import List, Optional, Union, Dict, Any
+from typing import List, Union, Any
 from uuid import UUID
-from ...schemas.models.model import Model, ModelConfig, CreateModelConfig
+from ...schemas.models.model import ModelConfig, CreateModelConfig
 
 
 class ModelConfigMixin:

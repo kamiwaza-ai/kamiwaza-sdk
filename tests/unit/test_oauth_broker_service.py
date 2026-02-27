@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -12,6 +12,7 @@ from kamiwaza_sdk.schemas.oauth_broker import (
     AppInstallationUpdate,
     MintTokenRequest,
     ToolPolicyCreate,
+    ToolPolicyUpdate,
 )
 from kamiwaza_sdk.services.oauth_broker import OAuthBrokerService
 
@@ -25,7 +26,7 @@ def test_create_app_installation(dummy_client):
     """Test creating an app installation."""
     app_id = str(uuid.uuid4())
     user_id = str(uuid.uuid4())
-    now = datetime.utcnow().isoformat() + "Z"
+    now = datetime.now(timezone.utc).isoformat()
 
     response = {
         "id": app_id,
@@ -67,7 +68,7 @@ def test_list_app_installations(dummy_client):
     """Test listing app installations."""
     app_id = str(uuid.uuid4())
     user_id = str(uuid.uuid4())
-    now = datetime.utcnow().isoformat() + "Z"
+    now = datetime.now(timezone.utc).isoformat()
 
     response = {
         "items": [
@@ -107,7 +108,7 @@ def test_get_app_installation(dummy_client):
     """Test getting a specific app installation."""
     app_id = str(uuid.uuid4())
     user_id = str(uuid.uuid4())
-    now = datetime.utcnow().isoformat() + "Z"
+    now = datetime.now(timezone.utc).isoformat()
 
     response = {
         "id": app_id,
@@ -139,7 +140,7 @@ def test_update_app_installation(dummy_client):
     """Test updating an app installation."""
     app_id = str(uuid.uuid4())
     user_id = str(uuid.uuid4())
-    now = datetime.utcnow().isoformat() + "Z"
+    now = datetime.now(timezone.utc).isoformat()
 
     response = {
         "id": app_id,
@@ -195,7 +196,7 @@ def test_create_tool_policy(dummy_client):
     """Test creating a tool policy."""
     policy_id = str(uuid.uuid4())
     app_id = str(uuid.uuid4())
-    now = datetime.utcnow().isoformat() + "Z"
+    now = datetime.now(timezone.utc).isoformat()
 
     response = {
         "id": policy_id,
@@ -235,7 +236,7 @@ def test_list_tool_policies(dummy_client):
     """Test listing tool policies."""
     policy_id = str(uuid.uuid4())
     app_id = str(uuid.uuid4())
-    now = datetime.utcnow().isoformat() + "Z"
+    now = datetime.now(timezone.utc).isoformat()
 
     response = {
         "items": [
@@ -267,6 +268,74 @@ def test_list_tool_policies(dummy_client):
     assert path == "/oauth-broker/tool-policies"
     assert kwargs["params"]["app_id"] == app_id
     assert kwargs["params"]["limit"] == 50
+
+
+def test_get_tool_policy(dummy_client):
+    """Test getting a specific tool policy."""
+    policy_id = str(uuid.uuid4())
+    app_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+
+    response = {
+        "id": policy_id,
+        "app_installation_id": app_id,
+        "tool_id": "test-tool",
+        "provider": "google",
+        "allowed_operations": ["gmail.search"],
+        "allowed_scope_subset": ["https://www.googleapis.com/auth/gmail.readonly"],
+        "policy_metadata": None,
+        "created_at": now,
+        "updated_at": None,
+    }
+    responses = {("get", f"/oauth-broker/tool-policies/{policy_id}"): response}
+    client = dummy_client(responses)
+    service = OAuthBrokerService(client)
+
+    result = service.get_tool_policy(uuid.UUID(policy_id))
+
+    assert result.id == uuid.UUID(policy_id)
+    assert result.tool_id == "test-tool"
+    assert result.provider == "google"
+
+    method, path, kwargs = client.calls[0]
+    assert method == "get"
+    assert path == f"/oauth-broker/tool-policies/{policy_id}"
+
+
+def test_update_tool_policy(dummy_client):
+    """Test updating a tool policy."""
+    policy_id = str(uuid.uuid4())
+    app_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+
+    response = {
+        "id": policy_id,
+        "app_installation_id": app_id,
+        "tool_id": "test-tool",
+        "provider": "google",
+        "allowed_operations": ["gmail.search"],
+        "allowed_scope_subset": ["https://www.googleapis.com/auth/gmail.readonly"],
+        "policy_metadata": {"updated": True},
+        "created_at": now,
+        "updated_at": now,
+    }
+    responses = {("patch", f"/oauth-broker/tool-policies/{policy_id}"): response}
+    client = dummy_client(responses)
+    service = OAuthBrokerService(client)
+
+    update_request = ToolPolicyUpdate(
+        allowed_operations=["gmail.search"],
+        policy_metadata={"updated": True},
+    )
+    result = service.update_tool_policy(uuid.UUID(policy_id), update_request)
+
+    assert result.id == uuid.UUID(policy_id)
+    assert result.policy_metadata == {"updated": True}
+
+    method, path, kwargs = client.calls[0]
+    assert method == "patch"
+    assert path == f"/oauth-broker/tool-policies/{policy_id}"
+    assert kwargs["json"]["allowed_operations"] == ["gmail.search"]
 
 
 def test_delete_tool_policy(dummy_client):
@@ -319,8 +388,8 @@ def test_handle_google_callback(dummy_client):
     connection_id = str(uuid.uuid4())
     app_id = str(uuid.uuid4())
     user_id = str(uuid.uuid4())
-    now = datetime.utcnow().isoformat() + "Z"
-    expires = (datetime.utcnow() + timedelta(hours=1)).isoformat() + "Z"
+    now = datetime.now(timezone.utc).isoformat()
+    expires = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
 
     response = {
         "id": connection_id,
@@ -363,7 +432,7 @@ def test_handle_google_callback(dummy_client):
 def test_get_connection_status(dummy_client):
     """Test getting connection status."""
     app_id = str(uuid.uuid4())
-    now = datetime.utcnow().isoformat() + "Z"
+    now = datetime.now(timezone.utc).isoformat()
 
     response = {
         "status": "connected",
@@ -450,8 +519,8 @@ def test_mint_ephemeral_token(dummy_client):
 def test_get_lease_status(dummy_client):
     """Test getting lease status."""
     app_id = str(uuid.uuid4())
-    now = datetime.utcnow().isoformat() + "Z"
-    expires = (datetime.utcnow() + timedelta(minutes=5)).isoformat() + "Z"
+    now = datetime.now(timezone.utc).isoformat()
+    expires = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
 
     response = {
         "lease_id": "lease-123",
@@ -533,7 +602,7 @@ def test_gmail_get_message(dummy_client):
     service = OAuthBrokerService(client)
 
     result = service.gmail_get_message(
-        app_id=uuid.UUID(app_id), tool_id="gmail-reader", message_id="msg1", format="full"
+        app_id=uuid.UUID(app_id), tool_id="gmail-reader", message_id="msg1", msg_format="full"
     )
 
     assert result["id"] == "msg1"
@@ -542,7 +611,86 @@ def test_gmail_get_message(dummy_client):
     assert method == "post"
     assert path == "/oauth-broker/proxy/google/gmail/getMessage"
     assert kwargs["json"]["message_id"] == "msg1"
-    assert kwargs["json"]["format"] == "full"
+    assert kwargs["json"]["msg_format"] == "full"
+
+
+def test_gmail_send(dummy_client):
+    """Test Gmail send proxy."""
+    app_id = str(uuid.uuid4())
+
+    response = {"id": "msg-sent-1", "threadId": "thread1", "labelIds": ["SENT"]}
+    responses = {("post", "/oauth-broker/proxy/google/gmail/send"): response}
+    client = dummy_client(responses)
+    service = OAuthBrokerService(client)
+
+    result = service.gmail_send(
+        app_id=uuid.UUID(app_id),
+        tool_id="gmail-sender",
+        raw_message="base64encodedmessage",
+    )
+
+    assert result["id"] == "msg-sent-1"
+
+    method, path, kwargs = client.calls[0]
+    assert method == "post"
+    assert path == "/oauth-broker/proxy/google/gmail/send"
+    assert kwargs["json"]["raw_message"] == "base64encodedmessage"
+    assert kwargs["params"]["app_id"] == app_id
+    assert kwargs["params"]["tool_id"] == "gmail-sender"
+
+
+def test_gmail_list_labels(dummy_client):
+    """Test Gmail list labels proxy."""
+    app_id = str(uuid.uuid4())
+
+    response = {
+        "labels": [
+            {"id": "INBOX", "name": "INBOX", "type": "system"},
+            {"id": "SENT", "name": "SENT", "type": "system"},
+        ]
+    }
+    responses = {("get", "/oauth-broker/proxy/google/gmail/labels"): response}
+    client = dummy_client(responses)
+    service = OAuthBrokerService(client)
+
+    result = service.gmail_list_labels(
+        app_id=uuid.UUID(app_id), tool_id="gmail-reader"
+    )
+
+    assert "labels" in result
+    assert len(result["labels"]) == 2
+
+    method, path, kwargs = client.calls[0]
+    assert method == "get"
+    assert path == "/oauth-broker/proxy/google/gmail/labels"
+    assert kwargs["params"]["app_id"] == app_id
+    assert kwargs["params"]["tool_id"] == "gmail-reader"
+
+
+def test_gmail_modify(dummy_client):
+    """Test Gmail modify message proxy."""
+    app_id = str(uuid.uuid4())
+
+    response = {"id": "msg1", "threadId": "thread1", "labelIds": ["INBOX"]}
+    responses = {("post", "/oauth-broker/proxy/google/gmail/modify"): response}
+    client = dummy_client(responses)
+    service = OAuthBrokerService(client)
+
+    result = service.gmail_modify(
+        app_id=uuid.UUID(app_id),
+        tool_id="gmail-reader",
+        message_id="msg1",
+        remove_labels=["UNREAD"],
+    )
+
+    assert result["id"] == "msg1"
+
+    method, path, kwargs = client.calls[0]
+    assert method == "post"
+    assert path == "/oauth-broker/proxy/google/gmail/modify"
+    assert kwargs["json"]["message_id"] == "msg1"
+    assert kwargs["json"]["remove_labels"] == ["UNREAD"]
+    assert kwargs["params"]["app_id"] == app_id
 
 
 def test_drive_list_files(dummy_client):
@@ -569,6 +717,57 @@ def test_drive_list_files(dummy_client):
     assert path == "/oauth-broker/proxy/google/drive/listFiles"
     assert kwargs["json"]["query"] == "mimeType='application/pdf'"
     assert kwargs["json"]["page_size"] == 20
+
+
+def test_drive_get_file(dummy_client):
+    """Test Drive get file metadata proxy."""
+    app_id = str(uuid.uuid4())
+
+    response = {"id": "file1", "name": "report.pdf", "mimeType": "application/pdf"}
+    responses = {("get", "/oauth-broker/proxy/google/drive/files/file1"): response}
+    client = dummy_client(responses)
+    service = OAuthBrokerService(client)
+
+    result = service.drive_get_file(
+        app_id=uuid.UUID(app_id), tool_id="drive-reader", file_id="file1"
+    )
+
+    assert result["id"] == "file1"
+    assert result["name"] == "report.pdf"
+
+    method, path, kwargs = client.calls[0]
+    assert method == "get"
+    assert path == "/oauth-broker/proxy/google/drive/files/file1"
+    assert kwargs["params"]["app_id"] == app_id
+    assert kwargs["params"]["tool_id"] == "drive-reader"
+
+
+def test_calendar_list_calendars(dummy_client):
+    """Test Calendar list calendars proxy."""
+    app_id = str(uuid.uuid4())
+
+    response = {
+        "items": [
+            {"id": "primary", "summary": "My Calendar"},
+            {"id": "holidays", "summary": "Holidays"},
+        ]
+    }
+    responses = {("get", "/oauth-broker/proxy/google/calendar/calendars"): response}
+    client = dummy_client(responses)
+    service = OAuthBrokerService(client)
+
+    result = service.calendar_list_calendars(
+        app_id=uuid.UUID(app_id), tool_id="calendar-reader"
+    )
+
+    assert "items" in result
+    assert len(result["items"]) == 2
+
+    method, path, kwargs = client.calls[0]
+    assert method == "get"
+    assert path == "/oauth-broker/proxy/google/calendar/calendars"
+    assert kwargs["params"]["app_id"] == app_id
+    assert kwargs["params"]["tool_id"] == "calendar-reader"
 
 
 def test_calendar_list_events(dummy_client):

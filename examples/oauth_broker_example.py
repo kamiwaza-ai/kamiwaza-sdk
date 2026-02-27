@@ -18,7 +18,7 @@ Prerequisites:
 
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from kamiwaza_sdk import KamiwazaClient
 from kamiwaza_sdk.exceptions import APIError
@@ -49,7 +49,7 @@ def main():
             AppInstallationCreate(
                 name="Email Assistant Demo",
                 description="Example app for OAuth broker integration",
-                allowed_tools=["gmail-reader", "gmail-sender", "drive-reader"],
+                allowed_tools=["gmail-reader", "gmail-sender", "drive-reader", "calendar-reader"],
             )
         )
         print(f"   Created app: {app.name} (ID: {app.id})")
@@ -139,9 +139,9 @@ def main():
             print(f"   Found {calendar_count} calendars")
 
             # List upcoming events
-            now = datetime.utcnow()
-            time_min = now.isoformat() + "Z"
-            time_max = (now + timedelta(days=7)).isoformat() + "Z"
+            now = datetime.now(timezone.utc)
+            time_min = now.isoformat()
+            time_max = (now + timedelta(days=7)).isoformat()
 
             events = client.oauth_broker.calendar_list_events(
                 app_id=app.id,

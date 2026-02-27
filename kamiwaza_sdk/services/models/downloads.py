@@ -1,10 +1,7 @@
-from typing import List, Optional, Union, Dict, Any, Set
-from uuid import UUID
+from typing import List, Optional, Dict, Any
 import time
 from datetime import datetime
 import sys
-from ...schemas.models.model import Model
-from ...schemas.models.model_file import ModelFile
 from ...schemas.models.model_search import HubModelFileSearch
 from ...schemas.models.downloads import ModelDownloadRequest, ModelDownloadStatus
 from ...utils.download_tracker import DownloadTracker
@@ -479,7 +476,7 @@ class ModelDownloadMixin:
         try:
             # Step 1: Initiate download for the model
             print(f"Initiating download for {repo_id} with quantization {quantization}...")
-            download_result = self.initiate_model_download(repo_id, quantization)
+            self.initiate_model_download(repo_id, quantization)
             
             # Step 2: Wait for download to complete if requested
             if wait_for_download:
@@ -490,7 +487,7 @@ class ModelDownloadMixin:
                 status_list = self.check_download_status(repo_id)
                 
                 if status_list:
-                    print(f"Waiting for download to complete...")
+                    print("Waiting for download to complete...")
                     # Use our simplified wait_for_download method
                     status_list = self.wait_for_download(repo_id, timeout=timeout)
                     
@@ -518,7 +515,7 @@ class ModelDownloadMixin:
                                 if downloaded_files and len(downloaded_files) == len(target_files):
                                     print(f"Model files for {repo_id} are already downloaded.")
                                 else:
-                                    print(f"Warning: Some files may not be fully downloaded. Proceeding anyway...")
+                                    print("Warning: Some files may not be fully downloaded. Proceeding anyway...")
                             else:
                                 print(f"Warning: No files found matching quantization {quantization}. Proceeding anyway...")
                     except Exception as e:

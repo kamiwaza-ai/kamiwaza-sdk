@@ -1,6 +1,5 @@
-from typing import List, Optional, Union, Dict, Any
+from typing import List, Optional, Dict, Any
 import platform
-from uuid import UUID
 from ...exceptions import APIError
 from ...schemas.models.model_file import ModelFile
 from ...schemas.models.model_search import HubModelFileSearch
@@ -46,7 +45,7 @@ class CompatibilityMixin:
         Returns:
             List[Dict[str, Any]]: A list of compatible models with their files.
         """
-        server_os = self._get_server_os()
+        self._get_server_os()  # Populate _server_info cache
         models = self.search_models(model_name)  # type: ignore[attr-defined]
         
         # Let server handle compatibility via download endpoint

@@ -17,17 +17,12 @@ from ..schemas.serving.serving import (
     UIModelDeployment,
 )
 from ..schemas.serving.inference import (
-    GenerateRequest,
-    GenerateResponse,
     LoadModelRequest,
     LoadModelResponse,
     UnloadModelRequest,
     UnloadModelResponse,
 )
-from ..schemas.models.model_search import HubModelFileSearch
 from .base_service import BaseService
-from urllib.parse import urlparse
-import os
 
 
 class ServingService(BaseService):

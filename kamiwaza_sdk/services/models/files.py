@@ -1,6 +1,5 @@
-from typing import List, Optional, Union, Dict, Any
+from typing import List, Union, Any
 from uuid import UUID
-from ...schemas.models.model import Model
 from ...schemas.models.model_file import ModelFile, CreateModelFile
 from ...schemas.models.model_search import HubModelFileSearch
 

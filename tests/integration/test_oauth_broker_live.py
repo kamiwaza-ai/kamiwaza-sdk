@@ -15,7 +15,7 @@ Tests will skip gracefully if not configured.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -35,22 +35,23 @@ pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresp
 
 
 def oauth_broker_available(client) -> bool:
-    """Check if OAuth broker is available and configured."""
+    """Check if OAuth broker is available and configured.
+
+    Returns:
+        True if broker is reachable, False otherwise.
+    """
     try:
-        # Try to list app installations as a health check
         client.oauth_broker.list_app_installations()
         return True
     except APIError as e:
         if e.status_code == 404:
-            pytest.skip("OAuth broker not available")
+            return False
         return False
 
 
 def google_oauth_configured(client) -> bool:
     """Check if Google OAuth is configured."""
     try:
-        # Try to get server info to check OAuth broker config
-        # This is a non-destructive check
         app = client.oauth_broker.create_app_installation(
             AppInstallationCreate(
                 name=f"test-check-{uuid.uuid4().hex[:8]}",
@@ -358,21 +359,6 @@ def test_google_oauth_callback(live_kamiwaza_client, test_app):
     print(f"\nVisit this URL to authorize: {auth_result.auth_url}")
     print("After authorizing, paste the callback URL:")
 
-    # In a real test, you would need to:
-    # 1. Programmatically authorize (requires Google OAuth test credentials)
-    # 2. Or use a mock/fake OAuth provider
-    # 3. Extract code and state from callback
-
-    # connection = live_kamiwaza_client.oauth_broker.handle_google_callback(
-    #     code="<code_from_callback>",
-    #     state=auth_result.state,
-    #     scope="https://www.googleapis.com/auth/gmail.readonly"
-    # )
-    #
-    # assert connection.id is not None
-    # assert connection.provider == "google"
-    # assert connection.status == "connected"
-
 
 # ========== Connection Management Tests ==========
 
@@ -456,9 +442,9 @@ def test_calendar_list_calendars(live_kamiwaza_client, test_app):
 def test_calendar_list_events(live_kamiwaza_client, test_app):
     """Test Calendar list events proxy endpoint."""
     # Get events for the next 7 days
-    now = datetime.utcnow()
-    time_min = now.isoformat() + "Z"
-    time_max = (now + timedelta(days=7)).isoformat() + "Z"
+    now = datetime.now(timezone.utc)
+    time_min = now.isoformat()
+    time_max = (now + timedelta(days=7)).isoformat()
 
     result = live_kamiwaza_client.oauth_broker.calendar_list_events(
         app_id=test_app.id,

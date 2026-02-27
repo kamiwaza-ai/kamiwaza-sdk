@@ -35,7 +35,7 @@ class VectorDBService(BaseService):
     
     def insert_vectors(self, insert_request: InsertVectorsRequest) -> InsertVectorsResponse:
         """Insert embeddings into the vector database."""
-        self.logger.debug(f"Sending insert request to vectordb service")
+        self.logger.debug("Sending insert request to vectordb service")
         
         # Ensure embeddings are lists of native Python floats
         request_dict = insert_request.model_dump()

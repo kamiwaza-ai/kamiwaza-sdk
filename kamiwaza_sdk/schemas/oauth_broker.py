@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from enum import Enum
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -21,6 +22,7 @@ class ConnectionStatus(str, Enum):
     """Connection status values."""
 
     CONNECTED = "connected"
+    DISCONNECTED = "disconnected"
     NEEDS_REAUTH = "needs_reauth"
     REVOKED = "revoked"
 
@@ -61,7 +63,7 @@ class AppInstallationUpdate(BaseModel):
 class AppInstallationResponse(BaseModel):
     """Schema for app installation response."""
 
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, extra="allow")
 
     id: UUID
     name: str
@@ -88,17 +90,17 @@ class AppInstallationListResponse(BaseModel):
 class ConnectionResponse(BaseModel):
     """Schema for connection response."""
 
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, extra="allow")
 
     id: UUID
     app_installation_id: UUID
     user_id: UUID
-    provider: str
+    provider: Provider
     external_user_id: str | None = None
     external_email: str | None = None
     granted_scopes: list[str]
     expires_at: datetime
-    status: str
+    status: ConnectionStatus
     created_at: datetime
     updated_at: datetime | None = None
     last_used_at: datetime | None = None
@@ -108,8 +110,10 @@ class ConnectionResponse(BaseModel):
 class ConnectionStatusResponse(BaseModel):
     """Response for connection status check."""
 
-    status: str  # connected, needs_reauth, revoked
-    provider: str
+    model_config = ConfigDict(extra="allow")
+
+    status: ConnectionStatus
+    provider: Provider
     external_email: str | None = None
     granted_scopes: list[str] | None = None
     expires_at: datetime | None = None
@@ -123,7 +127,7 @@ class ConnectionStatusResponse(BaseModel):
 class MintTokenRequest(BaseModel):
     """Request to mint an ephemeral access token."""
 
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(extra="forbid")
 
     app_installation_id: UUID = Field(..., description="App installation ID")
     tool_id: str = Field(..., description="Tool identifier requesting token")
@@ -143,7 +147,7 @@ class MintTokenRequest(BaseModel):
 class MintTokenResponse(BaseModel):
     """Response containing ephemeral access token."""
 
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, extra="allow")
 
     access_token: str = Field(
         ..., description="Provider access token (use directly with provider API)"
@@ -160,7 +164,7 @@ class MintTokenResponse(BaseModel):
 class LeaseStatusResponse(BaseModel):
     """Status of a token lease."""
 
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, extra="allow")
 
     lease_id: str
     app_installation_id: UUID
@@ -174,19 +178,6 @@ class LeaseStatusResponse(BaseModel):
 
 
 # ========== Google OAuth Schemas ==========
-
-
-class GoogleOAuthConfig(BaseModel):
-    """Configuration for Google OAuth using Authorization Code Flow."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    client_id: str = Field(..., description="Google OAuth 2.0 client ID")
-    client_secret: str = Field(..., description="Google OAuth 2.0 client secret")
-    redirect_uri: str = Field(
-        ...,
-        description="Redirect URI registered in Google Console",
-    )
 
 
 class GoogleAuthStartResponse(BaseModel):
@@ -253,7 +244,7 @@ class ToolPolicyUpdate(BaseModel):
 class ToolPolicyResponse(BaseModel):
     """Schema for tool policy response."""
 
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, extra="allow")
 
     id: UUID
     app_installation_id: UUID
@@ -280,14 +271,14 @@ class GmailSearchRequest(BaseModel):
     """Request body for Gmail search."""
 
     query: str
-    max_results: int = 10
+    max_results: int = Field(default=10, ge=1, le=200)
 
 
 class GmailGetMessageRequest(BaseModel):
     """Request body for Gmail get message."""
 
     message_id: str
-    format: str = "full"  # full, metadata, minimal, raw
+    msg_format: Literal["full", "metadata", "minimal", "raw"] = "full"
 
 
 class GmailSendRequest(BaseModel):
@@ -308,4 +299,4 @@ class DriveListFilesRequest(BaseModel):
     """Request body for Drive list files."""
 
     query: str | None = None
-    page_size: int = 10
+    page_size: int = Field(default=10, ge=1, le=200)

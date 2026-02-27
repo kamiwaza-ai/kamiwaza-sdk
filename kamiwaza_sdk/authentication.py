@@ -6,7 +6,7 @@ import logging
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta, timezone
 import time
-from typing import Optional, TYPE_CHECKING
+from typing import Optional
 
 import requests  # type: ignore[import-untyped]
 

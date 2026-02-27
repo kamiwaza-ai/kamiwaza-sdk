@@ -16,7 +16,6 @@ from uuid import uuid4
 
 from kamiwaza_sdk.exceptions import APIError
 from kamiwaza_sdk.services.retrieval import RetrievalService
-from kamiwaza_sdk.schemas.retrieval import RetrievalJobStatus
 
 pytestmark = [pytest.mark.integration, pytest.mark.withoutresponses]
 
