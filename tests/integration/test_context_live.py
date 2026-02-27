@@ -29,32 +29,9 @@ def _sample_vector() -> list[float]:
     return list(TEST_VECTOR)
 
 
-def _error_detail(exc: APIError) -> str:
-    if isinstance(exc.response_data, dict):
-        detail = exc.response_data.get("detail")
-        if isinstance(detail, dict):
-            error = detail.get("error")
-            if isinstance(error, str):
-                return error
-        if isinstance(detail, str):
-            return detail
-    return exc.response_text or str(exc)
-
-
-def _xfail_known_defect(
-    exc: APIError,
-    *,
-    defect_id: str,
-    reason: str,
-    statuses: set[int],
-    detail_contains: tuple[str, ...],
-) -> None:
-    assert exc.status_code in statuses
-    detail = _error_detail(exc).lower()
-    assert any(token.lower() in detail for token in detail_contains), detail
-    pytest.xfail(
-        f"{defect_id}: {reason} (status={exc.status_code}, detail={detail})"
-    )
+def _sdk_collection_name() -> str:
+    # Milvus collection names must be alphanumeric/underscore; hyphens are rejected.
+    return f"sdk_context_col_{uuid4().hex[:8]}"
 
 
 def _context_service(live_kamiwaza_client) -> ContextService:
@@ -67,6 +44,7 @@ def _wait_for_vectordb_ready(
     service: ContextService,
     vectordb_id: str,
     *,
+    workroom_id: str | None = None,
     timeout_seconds: float = 300.0,
     poll_seconds: float = 2.0,
 ) -> None:
@@ -75,7 +53,7 @@ def _wait_for_vectordb_ready(
 
     while True:
         try:
-            instance = service.get_vectordb(vectordb_id)
+            instance = service.get_vectordb(vectordb_id, workroom_id=workroom_id)
         except APIError:
             if time.monotonic() >= deadline:
                 raise
@@ -133,24 +111,39 @@ def _wait_for_ontology_ready(
         time.sleep(poll_seconds)
 
 
-def _create_temp_vectordb(service: ContextService, *, prefix: str) -> str:
+def _create_temp_vectordb(
+    service: ContextService,
+    *,
+    prefix: str,
+    workroom_id: str | None = None,
+) -> str:
     created = service.create_vectordb(
         name=f"{prefix}-{uuid4().hex[:8]}",
         engine="milvus",
+        workroom_id=workroom_id,
     )
     vectordb_id = created["id"]
     assert vectordb_id
     try:
-        _wait_for_vectordb_ready(service, vectordb_id)
+        _wait_for_vectordb_ready(
+            service,
+            vectordb_id,
+            workroom_id=workroom_id,
+        )
     except Exception:
-        _safe_delete_vectordb(service, vectordb_id)
+        _safe_delete_vectordb(service, vectordb_id, workroom_id=workroom_id)
         raise
     return vectordb_id
 
 
-def _safe_delete_vectordb(service: ContextService, vectordb_id: str) -> None:
+def _safe_delete_vectordb(
+    service: ContextService,
+    vectordb_id: str,
+    *,
+    workroom_id: str | None = None,
+) -> None:
     try:
-        service.delete_vectordb(vectordb_id)
+        service.delete_vectordb(vectordb_id, workroom_id=workroom_id)
     except APIError:
         pass
 
@@ -228,7 +221,7 @@ def test_context_vectordb_lifecycle_global(live_kamiwaza_client) -> None:
 def test_context_vectordb_insert_vectors_instance(live_kamiwaza_client) -> None:
     service = _context_service(live_kamiwaza_client)
     vectordb_id = _create_temp_vectordb(service, prefix="sdk-context-vdb-insert-inst")
-    collection_name = f"sdk-context-col-{uuid4().hex[:8]}"
+    collection_name = _sdk_collection_name()
 
     try:
         inserted = service.insert_vectors(
@@ -238,14 +231,6 @@ def test_context_vectordb_insert_vectors_instance(live_kamiwaza_client) -> None:
             metadata=[{"source": "sdk-context-live"}],
         )
         assert inserted["inserted_count"] == 1
-    except APIError as exc:
-        _xfail_known_defect(
-            exc,
-            defect_id="D260-004",
-            reason="VectorDB instance-scoped insert fails after lifecycle create",
-            statuses={403, 404, 500},
-            detail_contains=("not found", "workroom_access_denied", "failed to insert"),
-        )
     finally:
         _safe_delete_vectordb(service, vectordb_id)
 
@@ -253,7 +238,7 @@ def test_context_vectordb_insert_vectors_instance(live_kamiwaza_client) -> None:
 def test_context_vectordb_insert_vectors_global(live_kamiwaza_client) -> None:
     service = _context_service(live_kamiwaza_client)
     vectordb_id = _create_temp_vectordb(service, prefix="sdk-context-vdb-insert-global")
-    collection_name = f"sdk-context-col-{uuid4().hex[:8]}"
+    collection_name = _sdk_collection_name()
 
     try:
         inserted = service.insert_vectors_global(
@@ -263,14 +248,6 @@ def test_context_vectordb_insert_vectors_global(live_kamiwaza_client) -> None:
             metadata=[{"source": "sdk-context-live"}],
         )
         assert inserted["inserted_count"] == 1
-    except APIError as exc:
-        _xfail_known_defect(
-            exc,
-            defect_id="D260-004",
-            reason="VectorDB global insert fails after lifecycle create",
-            statuses={403, 404, 500},
-            detail_contains=("not found", "workroom_access_denied", "failed to insert"),
-        )
     finally:
         _safe_delete_vectordb(service, vectordb_id)
 
@@ -278,7 +255,7 @@ def test_context_vectordb_insert_vectors_global(live_kamiwaza_client) -> None:
 def test_context_vectordb_query_vectors_instance(live_kamiwaza_client) -> None:
     service = _context_service(live_kamiwaza_client)
     vectordb_id = _create_temp_vectordb(service, prefix="sdk-context-vdb-query-inst")
-    collection_name = f"sdk-context-col-{uuid4().hex[:8]}"
+    collection_name = _sdk_collection_name()
 
     try:
         service.insert_vectors(
@@ -294,14 +271,6 @@ def test_context_vectordb_query_vectors_instance(live_kamiwaza_client) -> None:
             limit=1,
         )
         assert isinstance(queried["results"], list)
-    except APIError as exc:
-        _xfail_known_defect(
-            exc,
-            defect_id="D260-004",
-            reason="VectorDB instance-scoped query fails after lifecycle create",
-            statuses={403, 404, 500},
-            detail_contains=("not found", "workroom_access_denied", "failed to query"),
-        )
     finally:
         _safe_delete_vectordb(service, vectordb_id)
 
@@ -309,7 +278,7 @@ def test_context_vectordb_query_vectors_instance(live_kamiwaza_client) -> None:
 def test_context_vectordb_query_vectors_global(live_kamiwaza_client) -> None:
     service = _context_service(live_kamiwaza_client)
     vectordb_id = _create_temp_vectordb(service, prefix="sdk-context-vdb-query-global")
-    collection_name = f"sdk-context-col-{uuid4().hex[:8]}"
+    collection_name = _sdk_collection_name()
 
     try:
         service.insert_vectors_global(
@@ -325,14 +294,6 @@ def test_context_vectordb_query_vectors_global(live_kamiwaza_client) -> None:
             limit=1,
         )
         assert isinstance(queried["results"], list)
-    except APIError as exc:
-        _xfail_known_defect(
-            exc,
-            defect_id="D260-004",
-            reason="VectorDB global query fails after lifecycle create",
-            statuses={403, 404, 500},
-            detail_contains=("not found", "workroom_access_denied", "failed to query"),
-        )
     finally:
         _safe_delete_vectordb(service, vectordb_id)
 
@@ -364,14 +325,6 @@ def test_context_ontology_add_knowledge(live_kamiwaza_client) -> None:
             messages=[{"content": "sdk test message", "role": "user"}],
         )
         assert knowledge["group_id"] == group_id
-    except APIError as exc:
-        _xfail_known_defect(
-            exc,
-            defect_id="D260-007",
-            reason="Ontology add_knowledge is not functional end-to-end",
-            statuses={404, 500},
-            detail_contains=("not found", "failed to add knowledge"),
-        )
     finally:
         _safe_delete_ontology(service, ontology_id)
 
@@ -394,14 +347,6 @@ def test_context_ontology_add_entity(live_kamiwaza_client) -> None:
             entity_type="concept",
         )
         assert entity.get("success") is True
-    except APIError as exc:
-        _xfail_known_defect(
-            exc,
-            defect_id="D260-007",
-            reason="Ontology add_entity is not functional end-to-end",
-            statuses={404, 500},
-            detail_contains=("not found", "failed to add entity"),
-        )
     finally:
         _safe_delete_ontology(service, ontology_id)
 
@@ -418,14 +363,6 @@ def test_context_ontology_search_knowledge(live_kamiwaza_client) -> None:
             group_ids=[group_id],
         )
         assert isinstance(search["facts"], list)
-    except APIError as exc:
-        _xfail_known_defect(
-            exc,
-            defect_id="D260-007",
-            reason="Ontology search_knowledge is not functional end-to-end",
-            statuses={404, 500},
-            detail_contains=("not found", "failed to search knowledge"),
-        )
     finally:
         _safe_delete_ontology(service, ontology_id)
 
@@ -442,14 +379,6 @@ def test_context_ontology_get_memory(live_kamiwaza_client) -> None:
             query="sdk memory",
         )
         assert isinstance(memory["facts"], list)
-    except APIError as exc:
-        _xfail_known_defect(
-            exc,
-            defect_id="D260-007",
-            reason="Ontology get_memory is not functional end-to-end",
-            statuses={404, 500},
-            detail_contains=("not found", "failed to get memory"),
-        )
     finally:
         _safe_delete_ontology(service, ontology_id)
 
@@ -466,14 +395,6 @@ def test_context_ontology_get_episodes(live_kamiwaza_client) -> None:
             last_n=5,
         )
         assert isinstance(episodes["episodes"], list)
-    except APIError as exc:
-        _xfail_known_defect(
-            exc,
-            defect_id="D260-007",
-            reason="Ontology get_episodes is not functional end-to-end",
-            statuses={404, 500},
-            detail_contains=("not found", "failed to get episodes"),
-        )
     finally:
         _safe_delete_ontology(service, ontology_id)
 
@@ -494,14 +415,6 @@ def test_context_ontology_delete_group(live_kamiwaza_client) -> None:
             group_id=group_id,
         )
         assert deleted.get("success") is True
-    except APIError as exc:
-        _xfail_known_defect(
-            exc,
-            defect_id="D260-007",
-            reason="Ontology delete_group is not functional end-to-end",
-            statuses={404, 500},
-            detail_contains=("not found", "failed to delete group"),
-        )
     finally:
         _safe_delete_ontology(service, ontology_id)
 
@@ -582,14 +495,6 @@ def test_context_workroom_pipeline_followup_access(live_kamiwaza_client) -> None
         fetched_job = service.get_pipeline_job(workroom_id=workroom_id, job_id=job_id)
         assert fetched_job["id"] == job_id
         service.cancel_pipeline_job(workroom_id=workroom_id, job_id=job_id)
-    except APIError as exc:
-        _xfail_known_defect(
-            exc,
-            defect_id="D150-008",
-            reason="Workroom follow-up access denied for context jobs",
-            statuses={403},
-            detail_contains=("workroom_access_denied",),
-        )
     finally:
         try:
             service.cancel_pipeline_job(workroom_id=workroom_id, job_id=job_id)
@@ -600,7 +505,12 @@ def test_context_workroom_pipeline_followup_access(live_kamiwaza_client) -> None
 def test_context_workroom_collection_lifecycle(live_kamiwaza_client) -> None:
     service = _context_service(live_kamiwaza_client)
     workroom_id = DEFAULT_WORKROOM_ID
-    collection_name = f"sdk-collection-{uuid4().hex[:8]}"
+    workroom_vectordb_id = _create_temp_vectordb(
+        service,
+        prefix="sdk-context-vdb-workroom-collections",
+        workroom_id=workroom_id,
+    )
+    collection_name = _sdk_collection_name()
     created = False
 
     try:
@@ -625,14 +535,6 @@ def test_context_workroom_collection_lifecycle(live_kamiwaza_client) -> None:
             workroom_id=workroom_id,
             collection_name=collection_name,
         )
-    except APIError as exc:
-        _xfail_known_defect(
-            exc,
-            defect_id="D260-005",
-            reason="Workroom collection APIs fail in deployed context stack",
-            statuses={500},
-            detail_contains=("failed to list collections", "failed to create collection"),
-        )
     finally:
         if created:
             _safe_delete_collection(
@@ -640,39 +542,50 @@ def test_context_workroom_collection_lifecycle(live_kamiwaza_client) -> None:
                 workroom_id=workroom_id,
                 collection_name=collection_name,
             )
+        _safe_delete_vectordb(
+            service,
+            workroom_vectordb_id,
+            workroom_id=workroom_id,
+        )
 
 
 def test_context_search_contract(live_kamiwaza_client) -> None:
     service = _context_service(live_kamiwaza_client)
     workroom_id = DEFAULT_WORKROOM_ID
+    workroom_vectordb_id = _create_temp_vectordb(
+        service,
+        prefix="sdk-context-vdb-workroom-search",
+        workroom_id=workroom_id,
+    )
 
     try:
         search = service.search(workroom_id=workroom_id, query="hello context")
         assert isinstance(search.get("results"), list)
-    except APIError as exc:
-        _xfail_known_defect(
-            exc,
-            defect_id="D260-006",
-            reason="Search endpoint fails under current context backend state",
-            statuses={500},
-            detail_contains=("search operation failed",),
+    finally:
+        _safe_delete_vectordb(
+            service,
+            workroom_vectordb_id,
+            workroom_id=workroom_id,
         )
 
 
 def test_context_retrieve_contract(live_kamiwaza_client) -> None:
     service = _context_service(live_kamiwaza_client)
     workroom_id = DEFAULT_WORKROOM_ID
+    workroom_vectordb_id = _create_temp_vectordb(
+        service,
+        prefix="sdk-context-vdb-workroom-retrieve",
+        workroom_id=workroom_id,
+    )
 
     try:
         retrieve = service.retrieve(workroom_id=workroom_id, query="hello context")
         assert isinstance(retrieve.get("sources"), list)
-    except APIError as exc:
-        _xfail_known_defect(
-            exc,
-            defect_id="D260-006",
-            reason="Retrieve endpoint fails under current context backend state",
-            statuses={500},
-            detail_contains=("retrieval operation failed",),
+    finally:
+        _safe_delete_vectordb(
+            service,
+            workroom_vectordb_id,
+            workroom_id=workroom_id,
         )
 
 
@@ -680,17 +593,9 @@ def test_context_agentic_search_contract(live_kamiwaza_client) -> None:
     service = _context_service(live_kamiwaza_client)
     workroom_id = DEFAULT_WORKROOM_ID
 
-    try:
-        agentic = service.agentic_search(
-            workroom_id=workroom_id,
-            query="hello context",
-        )
-        assert isinstance(agentic.get("results"), list)
-    except APIError as exc:
-        _xfail_known_defect(
-            exc,
-            defect_id="D260-006",
-            reason="Agentic search endpoint fails under current context backend state",
-            statuses={500},
-            detail_contains=("agentic search failed",),
-        )
+    # Agentic search should degrade gracefully even with no workroom-scoped VectorDB.
+    agentic = service.agentic_search(
+        workroom_id=workroom_id,
+        query="hello context",
+    )
+    assert isinstance(agentic.get("results"), list)
