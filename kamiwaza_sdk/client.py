@@ -6,7 +6,7 @@ import os
 import time
 from typing import Any, Optional
 
-import requests
+import requests  # type: ignore[import-untyped]
 
 from .exceptions import (
     APIError,
@@ -79,6 +79,7 @@ class KamiwazaClient:
         # Initialize _auth_service directly
         self._auth_service = AuthService(self)
 
+        self.authenticator: Optional[Authenticator] = None
         if authenticator:
             self.authenticator = authenticator
         else:
@@ -141,7 +142,8 @@ class KamiwazaClient:
         if self.authenticator and not skip_auth:
             self.authenticator.authenticate(self.session)
 
-        params = kwargs.get("params") if isinstance(kwargs.get("params"), dict) else {}
+        raw_params = kwargs.get("params")
+        params: dict[str, Any] = raw_params if isinstance(raw_params, dict) else {}
         dataset_urn_for_schema = (
             params.get("urn") if path.rstrip("/") == "catalog/datasets/by-urn/schema" else None
         )

@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 import time
 from typing import Optional, TYPE_CHECKING
 
-import requests
+import requests  # type: ignore[import-untyped]
 
 from .exceptions import AuthenticationError
 from .schemas.auth import TokenResponse

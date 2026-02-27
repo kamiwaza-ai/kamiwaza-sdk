@@ -82,7 +82,7 @@ class VectorDBService(BaseService):
         # Ensure all metadata entries have the required autofields
         if metadata and len(metadata) > 0:
             # Get all unique keys from all metadata entries
-            all_keys = set()
+            all_keys: set[str] = set()
             for entry in metadata:
                 all_keys.update(entry.keys())
                 

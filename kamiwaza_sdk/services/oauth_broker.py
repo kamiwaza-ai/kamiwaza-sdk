@@ -319,7 +319,7 @@ class OAuthBrokerService(BaseService):
         Returns:
             List of tool policies
         """
-        params = {"limit": limit, "offset": offset}
+        params: dict[str, int | str] = {"limit": limit, "offset": offset}
         if app_id:
             params["app_id"] = str(app_id)
 

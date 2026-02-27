@@ -6,7 +6,10 @@ from ...schemas.models.model_search import ModelSearchRequest, ModelSearchRespon
 
 class ModelSearchMixin:
     """Mixin for model search functionality."""
-    
+
+    client: Any  # Provided by BaseService when mixed in
+    quant_manager: Any  # Provided by ModelService.__init__
+
     def search_models(self, query: str, exact: bool = False, limit: int = 100, 
                      hubs_to_search: Optional[List[str]] = None, 
                      load_files: bool = True) -> List[Model]:
@@ -39,7 +42,7 @@ class ModelSearchMixin:
                 try:
                     # Search for files for this model
                     if model.repo_modelId and model.hub:
-                        files = self.search_hub_model_files(
+                        files = self.search_hub_model_files(  # type: ignore[attr-defined]
                             HubModelFileSearch(hub=model.hub, model=model.repo_modelId)
                         )
                         # Add files to the model

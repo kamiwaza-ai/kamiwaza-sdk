@@ -7,7 +7,9 @@ from ...schemas.models.model_search import HubModelFileSearch
 
 class ModelFileMixin:
     """Mixin for model file operations."""
-    
+
+    client: Any  # Provided by BaseService when mixed in
+
     def get_model_memory_usage(self, model_id: Union[str, UUID]) -> int:
         """
         Get the memory usage of a model.
