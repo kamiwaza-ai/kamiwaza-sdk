@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import os
+import time
 from uuid import uuid4
 
 import pytest
@@ -21,6 +22,11 @@ DEFAULT_WORKROOM_ID = os.getenv(
     "KAMIWAZA_CONTEXT_WORKROOM_ID",
     ContextService.DEFAULT_WORKROOM_ID,
 )
+TEST_VECTOR = [round(index * 0.01, 4) for index in range(1, 33)]
+
+
+def _sample_vector() -> list[float]:
+    return list(TEST_VECTOR)
 
 
 def _error_detail(exc: APIError) -> str:
@@ -57,6 +63,76 @@ def _context_service(live_kamiwaza_client) -> ContextService:
     return service
 
 
+def _wait_for_vectordb_ready(
+    service: ContextService,
+    vectordb_id: str,
+    *,
+    timeout_seconds: float = 300.0,
+    poll_seconds: float = 2.0,
+) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    last_status = "unknown"
+
+    while True:
+        try:
+            instance = service.get_vectordb(vectordb_id)
+        except APIError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(poll_seconds)
+            continue
+
+        last_status = str(instance.get("status", "unknown")).lower()
+        endpoint = instance.get("endpoint")
+        if last_status == "running" and endpoint:
+            return
+        if last_status in {"failed", "stopped"}:
+            raise RuntimeError(
+                f"VectorDB {vectordb_id} entered non-recoverable status {last_status}"
+            )
+        if time.monotonic() >= deadline:
+            raise TimeoutError(
+                f"Timed out waiting for VectorDB {vectordb_id} to be ready "
+                f"(last_status={last_status}, endpoint={endpoint})"
+            )
+        time.sleep(poll_seconds)
+
+
+def _wait_for_ontology_ready(
+    service: ContextService,
+    ontology_id: str,
+    *,
+    timeout_seconds: float = 180.0,
+    poll_seconds: float = 2.0,
+) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    last_status = "unknown"
+
+    while True:
+        try:
+            instance = service.get_ontology(ontology_id)
+        except APIError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(poll_seconds)
+            continue
+
+        last_status = str(instance.get("status", "unknown")).lower()
+        endpoint = instance.get("endpoint")
+        if last_status == "running" and endpoint:
+            return
+        if last_status in {"failed", "stopped"}:
+            raise RuntimeError(
+                f"Ontology {ontology_id} entered non-recoverable status {last_status}"
+            )
+        if time.monotonic() >= deadline:
+            raise TimeoutError(
+                f"Timed out waiting for ontology {ontology_id} to be ready "
+                f"(last_status={last_status}, endpoint={endpoint})"
+            )
+        time.sleep(poll_seconds)
+
+
 def _create_temp_vectordb(service: ContextService, *, prefix: str) -> str:
     created = service.create_vectordb(
         name=f"{prefix}-{uuid4().hex[:8]}",
@@ -64,6 +140,11 @@ def _create_temp_vectordb(service: ContextService, *, prefix: str) -> str:
     )
     vectordb_id = created["id"]
     assert vectordb_id
+    try:
+        _wait_for_vectordb_ready(service, vectordb_id)
+    except Exception:
+        _safe_delete_vectordb(service, vectordb_id)
+        raise
     return vectordb_id
 
 
@@ -81,6 +162,11 @@ def _create_temp_ontology(service: ContextService, *, prefix: str) -> str:
     )
     ontology_id = created["id"]
     assert ontology_id
+    try:
+        _wait_for_ontology_ready(service, ontology_id)
+    except Exception:
+        _safe_delete_ontology(service, ontology_id)
+        raise
     return ontology_id
 
 
@@ -148,7 +234,7 @@ def test_context_vectordb_insert_vectors_instance(live_kamiwaza_client) -> None:
         inserted = service.insert_vectors(
             vectordb_id,
             collection_name=collection_name,
-            vectors=[[0.1, 0.2, 0.3]],
+            vectors=[_sample_vector()],
             metadata=[{"source": "sdk-context-live"}],
         )
         assert inserted["inserted_count"] == 1
@@ -173,7 +259,7 @@ def test_context_vectordb_insert_vectors_global(live_kamiwaza_client) -> None:
         inserted = service.insert_vectors_global(
             vectordb_id=vectordb_id,
             collection_name=collection_name,
-            vectors=[[0.1, 0.2, 0.3]],
+            vectors=[_sample_vector()],
             metadata=[{"source": "sdk-context-live"}],
         )
         assert inserted["inserted_count"] == 1
@@ -195,10 +281,16 @@ def test_context_vectordb_query_vectors_instance(live_kamiwaza_client) -> None:
     collection_name = f"sdk-context-col-{uuid4().hex[:8]}"
 
     try:
+        service.insert_vectors(
+            vectordb_id,
+            collection_name=collection_name,
+            vectors=[_sample_vector()],
+            metadata=[{"source": "sdk-context-live"}],
+        )
         queried = service.query_vectors(
             vectordb_id,
             collection_name=collection_name,
-            vectors=[[0.1, 0.2, 0.3]],
+            vectors=[_sample_vector()],
             limit=1,
         )
         assert isinstance(queried["results"], list)
@@ -220,10 +312,16 @@ def test_context_vectordb_query_vectors_global(live_kamiwaza_client) -> None:
     collection_name = f"sdk-context-col-{uuid4().hex[:8]}"
 
     try:
+        service.insert_vectors_global(
+            vectordb_id=vectordb_id,
+            collection_name=collection_name,
+            vectors=[_sample_vector()],
+            metadata=[{"source": "sdk-context-live"}],
+        )
         queried = service.query_vectors_global(
             vectordb_id=vectordb_id,
             collection_name=collection_name,
-            vectors=[[0.1, 0.2, 0.3]],
+            vectors=[_sample_vector()],
             limit=1,
         )
         assert isinstance(queried["results"], list)
@@ -284,16 +382,18 @@ def test_context_ontology_add_entity(live_kamiwaza_client) -> None:
     group_id = f"sdk-group-{uuid4().hex[:8]}"
 
     try:
+        service.add_knowledge(
+            ontology_id,
+            group_id=group_id,
+            messages=[{"content": "seed ontology group", "role": "user"}],
+        )
         entity = service.add_entity(
             ontology_id,
             group_id=group_id,
             name="SDK Entity",
             entity_type="concept",
         )
-        if entity.get("success") is not True:
-            pytest.xfail(
-                "D260-007: Ontology add_entity returned success=false"
-            )
+        assert entity.get("success") is True
     except APIError as exc:
         _xfail_known_defect(
             exc,
@@ -384,14 +484,16 @@ def test_context_ontology_delete_group(live_kamiwaza_client) -> None:
     group_id = f"sdk-group-{uuid4().hex[:8]}"
 
     try:
+        service.add_knowledge(
+            ontology_id,
+            group_id=group_id,
+            messages=[{"content": "seed ontology group", "role": "user"}],
+        )
         deleted = service.delete_group(
             ontology_id,
             group_id=group_id,
         )
-        if deleted.get("success") is not True:
-            pytest.xfail(
-                "D260-007: Ontology delete_group returned success=false"
-            )
+        assert deleted.get("success") is True
     except APIError as exc:
         _xfail_known_defect(
             exc,
