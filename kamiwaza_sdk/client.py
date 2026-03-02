@@ -211,7 +211,9 @@ class KamiwazaClient:
                         continue
 
                 message = f"API request failed with status {response.status_code}: {response_text}"
-                if response.status_code == 501 and path.startswith("vectordb"):
+                if response.status_code == 501 and (
+                    path.startswith("vectordb") or path.startswith("context/vectordb")
+                ):
                     raise VectorDBUnavailableError(
                         "VectorDB backend is not configured",
                         status_code=response.status_code,
