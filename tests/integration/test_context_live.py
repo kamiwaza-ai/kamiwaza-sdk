@@ -9,6 +9,8 @@ from uuid import uuid4
 
 import pytest
 
+from kamiwaza_sdk import KamiwazaClient
+from kamiwaza_sdk.authentication import UserPasswordAuthenticator
 from kamiwaza_sdk.exceptions import APIError
 from kamiwaza_sdk.services.context import ContextService
 
@@ -185,6 +187,92 @@ def _safe_delete_collection(
         pass
 
 
+def _safe_delete_group(
+    service: ContextService,
+    *,
+    ontology_id: str,
+    group_id: str,
+) -> None:
+    try:
+        service.delete_group(ontology_id, group_id=group_id)
+    except APIError:
+        pass
+
+
+@pytest.fixture(scope="session")
+def shared_context_service(
+    live_server_available: str,
+    live_api_key: str,
+    resolved_live_password: str,
+    live_username: str,
+) -> ContextService:
+    """Session-scoped context service client for shared provisioning fixtures."""
+    os.environ.setdefault("KAMIWAZA_VERIFY_SSL", "false")
+
+    api_key = live_api_key.strip()
+    if api_key:
+        client = KamiwazaClient(live_server_available, api_key=api_key)
+    else:
+        username = live_username.strip()
+        password = resolved_live_password.strip()
+        if not username or not password:
+            pytest.skip(
+                "Provide KAMIWAZA_API_KEY or username/password for live integration tests"
+            )
+
+        client = KamiwazaClient(live_server_available)
+        client.authenticator = UserPasswordAuthenticator(
+            username,
+            password,
+            client._auth_service,
+        )
+
+    service = client.context
+    assert isinstance(service, ContextService)
+    return service
+
+
+@pytest.fixture(scope="session")
+def shared_vectordb(shared_context_service: ContextService) -> str:
+    """Shared global VectorDB instance for non-destructive vector tests."""
+    service = shared_context_service
+    vectordb_id = _create_temp_vectordb(service, prefix="sdk-shared-vdb")
+    try:
+        yield vectordb_id
+    finally:
+        _safe_delete_vectordb(service, vectordb_id)
+
+
+@pytest.fixture(scope="session")
+def shared_workroom_vectordb(shared_context_service: ContextService) -> str:
+    """Shared workroom-scoped VectorDB for collection/search/retrieve tests."""
+    service = shared_context_service
+    vectordb_id = _create_temp_vectordb(
+        service,
+        prefix="sdk-shared-vdb-workroom",
+        workroom_id=DEFAULT_WORKROOM_ID,
+    )
+    try:
+        yield vectordb_id
+    finally:
+        _safe_delete_vectordb(
+            service,
+            vectordb_id,
+            workroom_id=DEFAULT_WORKROOM_ID,
+        )
+
+
+@pytest.fixture(scope="session")
+def shared_ontology(shared_context_service: ContextService) -> str:
+    """Shared ontology instance for non-destructive ontology tests."""
+    service = shared_context_service
+    ontology_id = _create_temp_ontology(service, prefix="sdk-shared-ont")
+    try:
+        yield ontology_id
+    finally:
+        _safe_delete_ontology(service, ontology_id)
+
+
 def test_context_health_endpoint(live_kamiwaza_client) -> None:
     service = _context_service(live_kamiwaza_client)
     health = service.health()
@@ -218,84 +306,84 @@ def test_context_vectordb_lifecycle_global(live_kamiwaza_client) -> None:
         _safe_delete_vectordb(service, vectordb_id)
 
 
-def test_context_vectordb_insert_vectors_instance(live_kamiwaza_client) -> None:
+def test_context_vectordb_insert_vectors_instance(
+    live_kamiwaza_client,
+    shared_vectordb: str,
+) -> None:
     service = _context_service(live_kamiwaza_client)
-    vectordb_id = _create_temp_vectordb(service, prefix="sdk-context-vdb-insert-inst")
+    vectordb_id = shared_vectordb
     collection_name = _sdk_collection_name()
 
-    try:
-        inserted = service.insert_vectors(
-            vectordb_id,
-            collection_name=collection_name,
-            vectors=[_sample_vector()],
-            metadata=[{"source": "sdk-context-live"}],
-        )
-        assert inserted["inserted_count"] == 1
-    finally:
-        _safe_delete_vectordb(service, vectordb_id)
+    inserted = service.insert_vectors(
+        vectordb_id,
+        collection_name=collection_name,
+        vectors=[_sample_vector()],
+        metadata=[{"source": "sdk-context-live"}],
+    )
+    assert inserted["inserted_count"] == 1
 
 
-def test_context_vectordb_insert_vectors_global(live_kamiwaza_client) -> None:
+def test_context_vectordb_insert_vectors_global(
+    live_kamiwaza_client,
+    shared_vectordb: str,
+) -> None:
     service = _context_service(live_kamiwaza_client)
-    vectordb_id = _create_temp_vectordb(service, prefix="sdk-context-vdb-insert-global")
+    vectordb_id = shared_vectordb
     collection_name = _sdk_collection_name()
 
-    try:
-        inserted = service.insert_vectors_global(
-            vectordb_id=vectordb_id,
-            collection_name=collection_name,
-            vectors=[_sample_vector()],
-            metadata=[{"source": "sdk-context-live"}],
-        )
-        assert inserted["inserted_count"] == 1
-    finally:
-        _safe_delete_vectordb(service, vectordb_id)
+    inserted = service.insert_vectors_global(
+        vectordb_id=vectordb_id,
+        collection_name=collection_name,
+        vectors=[_sample_vector()],
+        metadata=[{"source": "sdk-context-live"}],
+    )
+    assert inserted["inserted_count"] == 1
 
 
-def test_context_vectordb_query_vectors_instance(live_kamiwaza_client) -> None:
+def test_context_vectordb_query_vectors_instance(
+    live_kamiwaza_client,
+    shared_vectordb: str,
+) -> None:
     service = _context_service(live_kamiwaza_client)
-    vectordb_id = _create_temp_vectordb(service, prefix="sdk-context-vdb-query-inst")
+    vectordb_id = shared_vectordb
     collection_name = _sdk_collection_name()
 
-    try:
-        service.insert_vectors(
-            vectordb_id,
-            collection_name=collection_name,
-            vectors=[_sample_vector()],
-            metadata=[{"source": "sdk-context-live"}],
-        )
-        queried = service.query_vectors(
-            vectordb_id,
-            collection_name=collection_name,
-            vectors=[_sample_vector()],
-            limit=1,
-        )
-        assert isinstance(queried["results"], list)
-    finally:
-        _safe_delete_vectordb(service, vectordb_id)
+    service.insert_vectors(
+        vectordb_id,
+        collection_name=collection_name,
+        vectors=[_sample_vector()],
+        metadata=[{"source": "sdk-context-live"}],
+    )
+    queried = service.query_vectors(
+        vectordb_id,
+        collection_name=collection_name,
+        vectors=[_sample_vector()],
+        limit=1,
+    )
+    assert isinstance(queried["results"], list)
 
 
-def test_context_vectordb_query_vectors_global(live_kamiwaza_client) -> None:
+def test_context_vectordb_query_vectors_global(
+    live_kamiwaza_client,
+    shared_vectordb: str,
+) -> None:
     service = _context_service(live_kamiwaza_client)
-    vectordb_id = _create_temp_vectordb(service, prefix="sdk-context-vdb-query-global")
+    vectordb_id = shared_vectordb
     collection_name = _sdk_collection_name()
 
-    try:
-        service.insert_vectors_global(
-            vectordb_id=vectordb_id,
-            collection_name=collection_name,
-            vectors=[_sample_vector()],
-            metadata=[{"source": "sdk-context-live"}],
-        )
-        queried = service.query_vectors_global(
-            vectordb_id=vectordb_id,
-            collection_name=collection_name,
-            vectors=[_sample_vector()],
-            limit=1,
-        )
-        assert isinstance(queried["results"], list)
-    finally:
-        _safe_delete_vectordb(service, vectordb_id)
+    service.insert_vectors_global(
+        vectordb_id=vectordb_id,
+        collection_name=collection_name,
+        vectors=[_sample_vector()],
+        metadata=[{"source": "sdk-context-live"}],
+    )
+    queried = service.query_vectors_global(
+        vectordb_id=vectordb_id,
+        collection_name=collection_name,
+        vectors=[_sample_vector()],
+        limit=1,
+    )
+    assert isinstance(queried["results"], list)
 
 
 def test_context_ontology_lifecycle_global(live_kamiwaza_client) -> None:
@@ -313,9 +401,12 @@ def test_context_ontology_lifecycle_global(live_kamiwaza_client) -> None:
         _safe_delete_ontology(service, ontology_id)
 
 
-def test_context_ontology_add_knowledge(live_kamiwaza_client) -> None:
+def test_context_ontology_add_knowledge(
+    live_kamiwaza_client,
+    shared_ontology: str,
+) -> None:
     service = _context_service(live_kamiwaza_client)
-    ontology_id = _create_temp_ontology(service, prefix="sdk-context-ont-knowledge")
+    ontology_id = shared_ontology
     group_id = f"sdk-group-{uuid4().hex[:8]}"
 
     try:
@@ -326,12 +417,15 @@ def test_context_ontology_add_knowledge(live_kamiwaza_client) -> None:
         )
         assert knowledge["group_id"] == group_id
     finally:
-        _safe_delete_ontology(service, ontology_id)
+        _safe_delete_group(service, ontology_id=ontology_id, group_id=group_id)
 
 
-def test_context_ontology_add_entity(live_kamiwaza_client) -> None:
+def test_context_ontology_add_entity(
+    live_kamiwaza_client,
+    shared_ontology: str,
+) -> None:
     service = _context_service(live_kamiwaza_client)
-    ontology_id = _create_temp_ontology(service, prefix="sdk-context-ont-entity")
+    ontology_id = shared_ontology
     group_id = f"sdk-group-{uuid4().hex[:8]}"
 
     try:
@@ -348,55 +442,55 @@ def test_context_ontology_add_entity(live_kamiwaza_client) -> None:
         )
         assert entity.get("success") is True
     finally:
-        _safe_delete_ontology(service, ontology_id)
+        _safe_delete_group(service, ontology_id=ontology_id, group_id=group_id)
 
 
-def test_context_ontology_search_knowledge(live_kamiwaza_client) -> None:
+def test_context_ontology_search_knowledge(
+    live_kamiwaza_client,
+    shared_ontology: str,
+) -> None:
     service = _context_service(live_kamiwaza_client)
-    ontology_id = _create_temp_ontology(service, prefix="sdk-context-ont-search")
+    ontology_id = shared_ontology
     group_id = f"sdk-group-{uuid4().hex[:8]}"
 
-    try:
-        search = service.search_knowledge(
-            ontology_id,
-            query="sdk query",
-            group_ids=[group_id],
-        )
-        assert isinstance(search["facts"], list)
-    finally:
-        _safe_delete_ontology(service, ontology_id)
+    search = service.search_knowledge(
+        ontology_id,
+        query="sdk query",
+        group_ids=[group_id],
+    )
+    assert isinstance(search["facts"], list)
 
 
-def test_context_ontology_get_memory(live_kamiwaza_client) -> None:
+def test_context_ontology_get_memory(
+    live_kamiwaza_client,
+    shared_ontology: str,
+) -> None:
     service = _context_service(live_kamiwaza_client)
-    ontology_id = _create_temp_ontology(service, prefix="sdk-context-ont-memory")
+    ontology_id = shared_ontology
     group_id = f"sdk-group-{uuid4().hex[:8]}"
 
-    try:
-        memory = service.get_memory(
-            ontology_id,
-            group_id=group_id,
-            query="sdk memory",
-        )
-        assert isinstance(memory["facts"], list)
-    finally:
-        _safe_delete_ontology(service, ontology_id)
+    memory = service.get_memory(
+        ontology_id,
+        group_id=group_id,
+        query="sdk memory",
+    )
+    assert isinstance(memory["facts"], list)
 
 
-def test_context_ontology_get_episodes(live_kamiwaza_client) -> None:
+def test_context_ontology_get_episodes(
+    live_kamiwaza_client,
+    shared_ontology: str,
+) -> None:
     service = _context_service(live_kamiwaza_client)
-    ontology_id = _create_temp_ontology(service, prefix="sdk-context-ont-episodes")
+    ontology_id = shared_ontology
     group_id = f"sdk-group-{uuid4().hex[:8]}"
 
-    try:
-        episodes = service.get_episodes(
-            ontology_id,
-            group_id=group_id,
-            last_n=5,
-        )
-        assert isinstance(episodes["episodes"], list)
-    finally:
-        _safe_delete_ontology(service, ontology_id)
+    episodes = service.get_episodes(
+        ontology_id,
+        group_id=group_id,
+        last_n=5,
+    )
+    assert isinstance(episodes["episodes"], list)
 
 
 def test_context_ontology_delete_group(live_kamiwaza_client) -> None:
@@ -502,14 +596,13 @@ def test_context_workroom_pipeline_followup_access(live_kamiwaza_client) -> None
             pass
 
 
-def test_context_workroom_collection_lifecycle(live_kamiwaza_client) -> None:
+def test_context_workroom_collection_lifecycle(
+    live_kamiwaza_client,
+    shared_workroom_vectordb: str,
+) -> None:
     service = _context_service(live_kamiwaza_client)
     workroom_id = DEFAULT_WORKROOM_ID
-    workroom_vectordb_id = _create_temp_vectordb(
-        service,
-        prefix="sdk-context-vdb-workroom-collections",
-        workroom_id=workroom_id,
-    )
+    assert shared_workroom_vectordb
     collection_name = _sdk_collection_name()
     created = False
 
@@ -542,51 +635,30 @@ def test_context_workroom_collection_lifecycle(live_kamiwaza_client) -> None:
                 workroom_id=workroom_id,
                 collection_name=collection_name,
             )
-        _safe_delete_vectordb(
-            service,
-            workroom_vectordb_id,
-            workroom_id=workroom_id,
-        )
 
 
-def test_context_search_contract(live_kamiwaza_client) -> None:
+def test_context_search_contract(
+    live_kamiwaza_client,
+    shared_workroom_vectordb: str,
+) -> None:
     service = _context_service(live_kamiwaza_client)
     workroom_id = DEFAULT_WORKROOM_ID
-    workroom_vectordb_id = _create_temp_vectordb(
-        service,
-        prefix="sdk-context-vdb-workroom-search",
-        workroom_id=workroom_id,
-    )
+    assert shared_workroom_vectordb
 
-    try:
-        search = service.search(workroom_id=workroom_id, query="hello context")
-        assert isinstance(search.get("results"), list)
-    finally:
-        _safe_delete_vectordb(
-            service,
-            workroom_vectordb_id,
-            workroom_id=workroom_id,
-        )
+    search = service.search(workroom_id=workroom_id, query="hello context")
+    assert isinstance(search.get("results"), list)
 
 
-def test_context_retrieve_contract(live_kamiwaza_client) -> None:
+def test_context_retrieve_contract(
+    live_kamiwaza_client,
+    shared_workroom_vectordb: str,
+) -> None:
     service = _context_service(live_kamiwaza_client)
     workroom_id = DEFAULT_WORKROOM_ID
-    workroom_vectordb_id = _create_temp_vectordb(
-        service,
-        prefix="sdk-context-vdb-workroom-retrieve",
-        workroom_id=workroom_id,
-    )
+    assert shared_workroom_vectordb
 
-    try:
-        retrieve = service.retrieve(workroom_id=workroom_id, query="hello context")
-        assert isinstance(retrieve.get("sources"), list)
-    finally:
-        _safe_delete_vectordb(
-            service,
-            workroom_vectordb_id,
-            workroom_id=workroom_id,
-        )
+    retrieve = service.retrieve(workroom_id=workroom_id, query="hello context")
+    assert isinstance(retrieve.get("sources"), list)
 
 
 def test_context_agentic_search_contract(live_kamiwaza_client) -> None:
