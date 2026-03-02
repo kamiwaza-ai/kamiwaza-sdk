@@ -20,6 +20,50 @@ _MINIO_CREDS = {
 }
 
 
+def _candidate_file_ingestion_roots(catalog_stack_environment: Dict) -> list[Path]:
+    candidates: list[Path] = []
+    seen: set[Path] = set()
+
+    def _add(path: Path) -> None:
+        expanded = path.expanduser()
+        try:
+            resolved = expanded.resolve()
+        except FileNotFoundError:
+            resolved = expanded
+        if resolved in seen:
+            return
+        seen.add(resolved)
+        candidates.append(expanded)
+
+    for base in (
+        os.environ.get("KAMIWAZA_ROOT"),
+        str(Path(__file__).resolve().parents[3] / "kamiwaza"),
+        str(Path.home() / "code" / "kz" / "kamiwaza"),
+        str(Path.home() / "code" / "kamiwaza"),
+        str(Path.home() / "kamiwaza"),
+    ):
+        if not base:
+            continue
+        root = (
+            Path(base)
+            / "tests"
+            / "integration"
+            / "services"
+            / "ingestion"
+            / "docker"
+        )
+        # Legacy location used in older local stacks.
+        _add(root / "state" / "test-data")
+        # Current location in the migrated test fixture.
+        _add(root / "data")
+
+    stack_file_root = catalog_stack_environment.get("file_root")
+    if isinstance(stack_file_root, str) and stack_file_root.strip():
+        _add(Path(stack_file_root))
+
+    return candidates
+
+
 def _cleanup_datasets(client, urns: Iterable[str]) -> None:
     if os.environ.get("KEEP_CATALOG_DATASETS") == "1":
         return
@@ -137,36 +181,33 @@ def _ingest_object_dataset(
 
 
 def test_catalog_file_ingestion_metadata(live_kamiwaza_client, catalog_stack_environment):
-    server_root_candidates = [
-        Path.home() / "code" / "kamiwaza",
-        Path.home() / "kamiwaza",
-    ]
-    target_root = None
-    for candidate in server_root_candidates:
-        candidate_path = candidate / "tests" / "integration" / "services" / "ingestion" / "docker" / "state" / "test-data"
-        if candidate_path.exists():
-            target_root = candidate_path
-            break
-
-    if target_root is None:
-        checked = ", ".join(str((c / 'tests/integration/services/ingestion/docker/state/test-data').resolve()) for c in server_root_candidates)
+    candidates = _candidate_file_ingestion_roots(catalog_stack_environment)
+    existing_candidates = [candidate for candidate in candidates if candidate.exists()]
+    if not existing_candidates:
+        checked = ", ".join(str(path) for path in candidates)
         pytest.xfail(
             f"Ingestion folders for file ingestion do not exist; checked: {checked}"
         )
 
-    file_root = str(target_root)
     dataset_urns: list[str] = []
+    attempted_no_data: list[str] = []
     try:
-        response = live_kamiwaza_client.ingestion.run_active(
-            "file",
-            path=file_root,
-            recursive=True,
-        )
-        dataset_urns = response.urns
+        for candidate in existing_candidates:
+            response = live_kamiwaza_client.ingestion.run_active(
+                "file",
+                path=str(candidate),
+                recursive=True,
+            )
+            if response.urns:
+                dataset_urns = response.urns
+                break
+            attempted_no_data.append(str(candidate))
+
         if not dataset_urns:
+            details = ", ".join(attempted_no_data)
             pytest.xfail(
                 "File ingestion returned no datasets in this deployment topology; "
-                "host-mounted ingestion roots may be unavailable."
+                f"checked existing roots: {details}"
             )
         target_urn = None
         format_hint = None
@@ -212,9 +253,13 @@ def test_catalog_file_ingestion_metadata(live_kamiwaza_client, catalog_stack_env
             )
         except APIError as exc:
             detail = (exc.response_text or "").lower()
-            if exc.status_code == 400 and "filesystem datasets are disabled" in detail:
+            if exc.status_code == 400 and (
+                "filesystem datasets are disabled" in detail
+                or "outside permitted roots" in detail
+            ):
                 pytest.skip(
-                    "Filesystem retrieval disabled on server (set RETRIEVAL_FILESYSTEM_ALLOWED_ROOTS to enable)"
+                    "Filesystem retrieval disabled/restricted on server "
+                    "(set RETRIEVAL_FILESYSTEM_ALLOWED_ROOTS to include the ingestion root)"
                 )
             raise
 

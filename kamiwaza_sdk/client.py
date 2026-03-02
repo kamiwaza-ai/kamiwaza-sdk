@@ -16,7 +16,6 @@ from .exceptions import (
 )
 from .services.models import ModelService
 from .services.serving import ServingService
-from .services.vectordb import VectorDBService
 from .services.catalog import CatalogService
 from .services.prompts import PromptsService  
 from .services.embedding import EmbeddingService
@@ -31,6 +30,7 @@ from .services.ingestion import IngestionService
 from .services.openai import OpenAIService
 from .services.apps import AppService
 from .services.tools import ToolService
+from .services.context import ContextService
 
 logger = logging.getLogger(__name__)
 
@@ -294,12 +294,6 @@ class KamiwazaClient:
         if not hasattr(self, '_serving'):
             self._serving = ServingService(self)
         return self._serving
-
-    @property
-    def vectordb(self):
-        if not hasattr(self, '_vectordb'):
-            self._vectordb = VectorDBService(self)
-        return self._vectordb
     
 
     @property
@@ -386,3 +380,9 @@ class KamiwazaClient:
         if not hasattr(self, '_ingestion'):
             self._ingestion = IngestionService(self)
         return self._ingestion
+
+    @property
+    def context(self):
+        if not hasattr(self, '_context'):
+            self._context = ContextService(self)
+        return self._context

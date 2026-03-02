@@ -1,6 +1,5 @@
 from .models import ModelService
 from .serving import ServingService
-from .vectordb import VectorDBService
 from .catalog import CatalogService
 from .prompts import PromptsService
 from .embedding import EmbeddingService
@@ -13,3 +12,4 @@ from .ingestion import IngestionService
 from .retrieval import RetrievalService
 from .apps import AppService
 from .tools import ToolService
+from .context import ContextService
