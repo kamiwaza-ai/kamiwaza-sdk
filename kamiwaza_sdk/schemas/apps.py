@@ -27,6 +27,7 @@ class RiskTier(int, Enum):
 
 class AppTemplate(BaseModel):
     """Application template information."""
+
     id: UUID
     name: str
     version: Optional[str] = None
@@ -35,6 +36,7 @@ class AppTemplate(BaseModel):
     compose_yml: str
     risk_tier: RiskTier
     verified: bool = False
+    strip_path_prefix: Optional[bool] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
     description: Optional[str] = None
@@ -44,16 +46,28 @@ class AppTemplate(BaseModel):
 
 class CreateAppDeployment(BaseModel):
     """Request to deploy an application."""
+
     name: str = Field(..., description="Name of the app deployment")
-    template_id: Optional[UUID] = Field(None, description="The UUID of the app template to use")
-    min_copies: int = Field(default=1, description="Minimum number of copies to maintain")
-    starting_copies: int = Field(default=1, description="Number of copies to start with")
-    max_copies: Optional[int] = Field(default=None, description="Maximum number of copies allowed")
-    env_vars: Optional[Dict[str, str]] = Field(None, description="Environment variables to pass to the app container")
+    template_id: Optional[UUID] = Field(
+        None, description="The UUID of the app template to use"
+    )
+    min_copies: int = Field(
+        default=1, description="Minimum number of copies to maintain"
+    )
+    starting_copies: int = Field(
+        default=1, description="Number of copies to start with"
+    )
+    max_copies: Optional[int] = Field(
+        default=None, description="Maximum number of copies allowed"
+    )
+    env_vars: Optional[Dict[str, str]] = Field(
+        None, description="Environment variables to pass to the app container"
+    )
 
 
 class AppDeployment(BaseModel):
     """Application deployment information."""
+
     id: UUID
     name: str
     template_id: Optional[UUID] = None
@@ -70,6 +84,7 @@ class AppDeployment(BaseModel):
 
 class AppInstance(BaseModel):
     """Application instance information."""
+
     id: UUID
     deployment_id: UUID
     deployed_at: datetime
@@ -83,6 +98,7 @@ class AppInstance(BaseModel):
 
 class ImageStatus(BaseModel):
     """Docker image pull status."""
+
     template_id: UUID
     images: List[str]
     image_status: Dict[str, bool]
@@ -91,6 +107,7 @@ class ImageStatus(BaseModel):
 
 class ImagePullResult(BaseModel):
     """Result of pulling Docker images."""
+
     template_id: UUID
     total_images: int
     successful_pulls: int
@@ -100,11 +117,13 @@ class ImagePullResult(BaseModel):
 
 class GardenApp(BaseModel):
     """Pre-built garden application."""
+
     name: str
     version: str
     description: str
     compose_yml: str
     env_defaults: Optional[Dict[str, str]] = None
+    strip_path_prefix: Optional[bool] = None
     category: Optional[str] = None
     tags: Optional[List[str]] = None
     author: Optional[str] = None
