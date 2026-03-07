@@ -52,7 +52,7 @@ _load_local_env()
 DEFAULT_BASE_URL = (
     os.environ.get("KAMIWAZA_BASE_URL")
     or os.environ.get("KAMIWAZA_BASE_URI")
-    or "https://localhost/api"
+    or "https://kamiwaza.test/api"
 ).rstrip("/")
 
 
@@ -62,7 +62,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         "--live-base-url",
         action="store",
         default=DEFAULT_BASE_URL,
-        help="Base URL used by live/e2e tests (defaults to env KAMIWAZA_BASE_URL or https://localhost/api).",
+        help="Base URL used by live/e2e tests (defaults to env KAMIWAZA_BASE_URL or https://kamiwaza.test/api).",
     )
     group.addoption(
         "--live-api-key",
@@ -79,8 +79,11 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     group.addoption(
         "--live-password",
         action="store",
-        default=os.environ.get("KAMIWAZA_PASSWORD", "kamiwaza"),
-        help="Password used for live/e2e password auth fallback (defaults to kamiwaza).",
+        default=os.environ.get("KAMIWAZA_PASSWORD", ""),
+        help=(
+            "Password used for live/e2e password auth fallback "
+            "(defaults to env KAMIWAZA_PASSWORD, else integration fixture resolves via kz-login)."
+        ),
     )
 
 

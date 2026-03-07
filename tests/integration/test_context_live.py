@@ -231,23 +231,23 @@ def shared_context_service(
     """Session-scoped context service client for shared provisioning fixtures."""
     os.environ.setdefault("KAMIWAZA_VERIFY_SSL", "false")
 
-    api_key = live_api_key.strip()
-    if api_key:
-        client = KamiwazaClient(live_server_available, api_key=api_key)
-    else:
-        username = live_username.strip()
-        password = resolved_live_password.strip()
-        if not username or not password:
-            pytest.skip(
-                "Provide KAMIWAZA_API_KEY or username/password for live integration tests"
-            )
-
+    username = live_username.strip()
+    password = resolved_live_password.strip()
+    if username and password:
         client = KamiwazaClient(live_server_available)
         client.authenticator = UserPasswordAuthenticator(
             username,
             password,
             client._auth_service,
         )
+    else:
+        api_key = live_api_key.strip()
+        if not api_key:
+            pytest.skip(
+                "Unable to build authenticated context client. "
+                "Provide username/password (kz-login-backed) or KAMIWAZA_API_KEY."
+            )
+        client = KamiwazaClient(live_server_available, api_key=api_key)
 
     service = client.context
     assert isinstance(service, ContextService)

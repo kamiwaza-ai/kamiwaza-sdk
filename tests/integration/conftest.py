@@ -329,22 +329,23 @@ def live_kamiwaza_client(
     """Provide an authenticated client for integration tests."""
     os.environ.setdefault("KAMIWAZA_VERIFY_SSL", "false")
 
+    username = live_username.strip()
+    password = resolved_live_password.strip()
+    if username and password:
+        client = KamiwazaClient(live_server_available)
+        client.authenticator = UserPasswordAuthenticator(
+            username, password, client._auth_service, token_store=_NoCacheTokenStore()
+        )
+        return client
+
     api_key = live_api_key.strip()
     if api_key:
         return KamiwazaClient(live_server_available, api_key=api_key)
 
-    username = live_username.strip()
-    password = resolved_live_password.strip()
-    if not username or not password:
-        pytest.skip(
-            "Provide KAMIWAZA_API_KEY or username/password for live integration tests"
-        )
-
-    client = KamiwazaClient(live_server_available)
-    client.authenticator = UserPasswordAuthenticator(
-        username, password, client._auth_service
+    pytest.skip(
+        "Unable to build authenticated live client. "
+        "Provide username/password (kz-login-backed) or KAMIWAZA_API_KEY."
     )
-    return client
 
 
 @pytest.fixture(scope="session")
@@ -355,17 +356,31 @@ def resolved_live_password(
     pytestconfig: pytest.Config,
 ) -> str:
     """
-    Resolve live password by trying configured credentials first, then falling
-    back to deploy/scripts/kz-login when available.
+    Resolve live password with kube-derived credentials first (kz-login),
+    then explicit configured password as fallback.
     """
-
-    if live_api_key.strip():
-        return ""
 
     username = live_username.strip()
     configured_password = str(pytestconfig.getoption("live_password")).strip()
     if not username:
-        return configured_password
+        return ""
+
+    errors: list[str] = []
+
+    # Prefer kube-derived password for dev clusters; explicit passwords remain fallback.
+    fallback_password = _resolve_kz_login_password()
+    if fallback_password:
+        ok, error = _password_auth_works(
+            live_server_available,
+            username,
+            fallback_password,
+        )
+        if ok:
+            os.environ["KAMIWAZA_PASSWORD"] = fallback_password
+            return fallback_password
+        errors.append(f"kz-login password failed: {error}")
+    else:
+        errors.append("kz-login fallback unavailable")
 
     if configured_password:
         ok, error = _password_auth_works(
@@ -375,26 +390,17 @@ def resolved_live_password(
         )
         if ok:
             return configured_password
+        errors.append(f"configured password failed: {error}")
     else:
-        error = "password is empty"
+        errors.append("configured password is empty")
 
-    fallback_password = _resolve_kz_login_password()
-    if fallback_password:
-        ok, fallback_error = _password_auth_works(
-            live_server_available,
-            username,
-            fallback_password,
-        )
-        if ok:
-            os.environ["KAMIWAZA_PASSWORD"] = fallback_password
-            return fallback_password
-        error = f"{error}; kz-login fallback failed: {fallback_error}"
-    else:
-        error = f"{error}; kz-login fallback unavailable"
+    if live_api_key.strip():
+        # Defer to API key in live_kamiwaza_client when password auth cannot be established.
+        return ""
 
     pytest.skip(
-        "Unable to authenticate live integration client with configured credentials "
-        f"or kz-login fallback ({error})"
+        "Unable to authenticate live integration client via username/password "
+        f"(user='{username}', details: {'; '.join(errors)})"
     )
 
 
