@@ -14,7 +14,7 @@ import pytest
 
 from kamiwaza_sdk.exceptions import APIError
 
-pytestmark = [pytest.mark.integration, pytest.mark.withoutresponses]
+pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
 
 # Default embedding model - small and commonly available
 # Note: nomic-ai/nomic-embed-text-v1.5 requires trust_remote_code=True on server

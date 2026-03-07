@@ -20,7 +20,7 @@ from kamiwaza_sdk.exceptions import APIError
 from kamiwaza_sdk.schemas.models.model_file import ModelFile, CreateModelFile, StorageType
 from kamiwaza_sdk.schemas.models.model_search import HubModelFileSearch
 
-pytestmark = [pytest.mark.integration, pytest.mark.withoutresponses]
+pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
 
 CANONICAL_REPO = "mlx-community/Qwen3-4B-4bit"
 

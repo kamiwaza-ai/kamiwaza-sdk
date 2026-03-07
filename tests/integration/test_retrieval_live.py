@@ -18,7 +18,7 @@ from kamiwaza_sdk.exceptions import APIError
 from kamiwaza_sdk.services.retrieval import RetrievalService
 from kamiwaza_sdk.schemas.retrieval import RetrievalJobStatus
 
-pytestmark = [pytest.mark.integration, pytest.mark.withoutresponses]
+pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
 
 
 class TestRetrievalServiceAvailability:

@@ -33,6 +33,7 @@ from kamiwaza_sdk.schemas.prompts import (
 
 pytestmark = [
     pytest.mark.integration,
+    pytest.mark.live,
     pytest.mark.withoutresponses,
     pytest.mark.skip(reason="Prompts endpoints tests are disabled."),
 ]

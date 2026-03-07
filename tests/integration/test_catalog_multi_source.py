@@ -12,7 +12,7 @@ import pytest
 from kamiwaza_sdk.exceptions import APIError
 from kamiwaza_sdk.schemas.catalog import ContainerCreate
 
-pytestmark = [pytest.mark.integration, pytest.mark.withoutresponses]
+pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
 
 _MINIO_CREDS = {
     "aws_access_key_id": "minioadmin",
