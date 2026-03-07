@@ -24,6 +24,13 @@ DEFAULT_WORKROOM_ID = os.getenv(
     "KAMIWAZA_CONTEXT_WORKROOM_ID",
     ContextService.DEFAULT_WORKROOM_ID,
 )
+DEFAULT_CONTEXT_LLM_REPO = os.getenv(
+    "KAMIWAZA_CONTEXT_LLM_REPO",
+    "mlx-community/Qwen3-4B-4bit",
+)
+DEFAULT_CONTEXT_LLM_DEPLOY_TIMEOUT_SECONDS = float(
+    os.getenv("KAMIWAZA_CONTEXT_LLM_DEPLOY_TIMEOUT_SECONDS", "600")
+)
 TEST_VECTOR = [round(index * 0.01, 4) for index in range(1, 33)]
 
 
@@ -40,6 +47,21 @@ def _context_service(live_kamiwaza_client) -> ContextService:
     service = live_kamiwaza_client.context
     assert isinstance(service, ContextService)
     return service
+
+
+def _deployment_ready(deployment) -> bool:
+    deployment_status = str(getattr(deployment, "status", "")).upper()
+    if deployment_status != "DEPLOYED":
+        return False
+    instances = getattr(deployment, "instances", []) or []
+    return any(str(getattr(instance, "status", "")).upper() == "DEPLOYED" for instance in instances)
+
+
+def _find_existing_ready_deployment(client) -> str | None:
+    for deployment in client.serving.list_deployments():
+        if _deployment_ready(deployment):
+            return str(deployment.id)
+    return None
 
 
 def _wait_for_vectordb_ready(
@@ -233,6 +255,52 @@ def shared_context_service(
 
 
 @pytest.fixture(scope="session")
+def context_required_llm(shared_context_service: ContextService, ensure_repo_ready) -> str:
+    """Ensure a deployed platform LLM exists for ontology operations."""
+    client = shared_context_service.client
+
+    existing_deployment_id = _find_existing_ready_deployment(client)
+    if existing_deployment_id:
+        yield existing_deployment_id
+        return
+
+    model = ensure_repo_ready(client, DEFAULT_CONTEXT_LLM_REPO)
+    configs = client.models.get_model_configs(model.id)
+    if not configs:
+        pytest.fail(f"No model configs available for context LLM repo '{DEFAULT_CONTEXT_LLM_REPO}'")
+    default_config = next((config for config in configs if config.default), configs[0])
+
+    created_deployment_id = client.serving.deploy_model(
+        model_id=str(model.id),
+        m_config_id=default_config.id,
+        lb_port=0,
+        autoscaling=False,
+        min_copies=1,
+        starting_copies=1,
+    )
+    deployment = client.serving.wait_for_deployment(
+        created_deployment_id,
+        poll_interval=5,
+        timeout=DEFAULT_CONTEXT_LLM_DEPLOY_TIMEOUT_SECONDS,
+    )
+    if not _deployment_ready(deployment):
+        pytest.fail(
+            "Context ontology prerequisite deployment is not ready: "
+            f"deployment_id={deployment.id}, status={deployment.status}, "
+            f"instance_statuses={[instance.status for instance in deployment.instances]}"
+        )
+
+    deployment_id = deployment.id
+    try:
+        yield str(deployment_id)
+    finally:
+        try:
+            client.serving.stop_deployment(deployment_id=deployment_id, force=True)
+        except Exception:
+            pass
+
+
+@pytest.fixture(scope="session")
 def shared_vectordb(shared_context_service: ContextService) -> str:
     """Shared global VectorDB instance for non-destructive vector tests."""
     service = shared_context_service
@@ -263,8 +331,12 @@ def shared_workroom_vectordb(shared_context_service: ContextService) -> str:
 
 
 @pytest.fixture(scope="session")
-def shared_ontology(shared_context_service: ContextService) -> str:
+def shared_ontology(
+    shared_context_service: ContextService,
+    context_required_llm: str,
+) -> str:
     """Shared ontology instance for non-destructive ontology tests."""
+    assert context_required_llm
     service = shared_context_service
     ontology_id = _create_temp_ontology(service, prefix="sdk-shared-ont")
     try:
@@ -279,6 +351,11 @@ def test_context_health_endpoint(live_kamiwaza_client) -> None:
     assert health["status"] == "healthy"
     assert health["service"] == "context"
     assert "features" in health
+
+
+def test_context_required_llm_available(context_required_llm: str) -> None:
+    """Ensure context ontology prerequisites include a running model deployment."""
+    assert context_required_llm
 
 
 def test_context_vectordb_lifecycle_global(live_kamiwaza_client) -> None:
@@ -386,7 +463,11 @@ def test_context_vectordb_query_vectors_global(
     assert isinstance(queried["results"], list)
 
 
-def test_context_ontology_lifecycle_global(live_kamiwaza_client) -> None:
+def test_context_ontology_lifecycle_global(
+    live_kamiwaza_client,
+    context_required_llm: str,
+) -> None:
+    assert context_required_llm
     service = _context_service(live_kamiwaza_client)
     ontology_id = _create_temp_ontology(service, prefix="sdk-context-ontology")
 
@@ -493,7 +574,11 @@ def test_context_ontology_get_episodes(
     assert isinstance(episodes["episodes"], list)
 
 
-def test_context_ontology_delete_group(live_kamiwaza_client) -> None:
+def test_context_ontology_delete_group(
+    live_kamiwaza_client,
+    context_required_llm: str,
+) -> None:
+    assert context_required_llm
     service = _context_service(live_kamiwaza_client)
     ontology_id = _create_temp_ontology(service, prefix="sdk-context-ont-delete-group")
     group_id = f"sdk-group-{uuid4().hex[:8]}"

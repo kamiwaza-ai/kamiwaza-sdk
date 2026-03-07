@@ -9,7 +9,6 @@ Tests cover:
 
 from __future__ import annotations
 
-import os
 from uuid import uuid4
 
 import pytest
@@ -148,10 +147,6 @@ def test_delete_nonexistent_extension_typed(live_kamiwaza_client) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(
-    os.environ.get("KAMIWAZA_TEST_EXTENSION_CRUD") != "1",
-    reason="Set KAMIWAZA_TEST_EXTENSION_CRUD=1 to run extension create/delete tests",
-)
 def test_extension_crud_lifecycle_typed(live_kamiwaza_client) -> None:
     """Full create -> get -> list -> delete cycle via typed SDK service."""
     if not _k8s_available(live_kamiwaza_client):
@@ -187,10 +182,6 @@ def test_extension_crud_lifecycle_typed(live_kamiwaza_client) -> None:
                 pass
 
 
-@pytest.mark.skipif(
-    os.environ.get("KAMIWAZA_TEST_EXTENSION_CRUD") != "1",
-    reason="Set KAMIWAZA_TEST_EXTENSION_CRUD=1 to run extension create/delete tests",
-)
 def test_extension_crud_lifecycle_raw(live_kamiwaza_client) -> None:
     """Full create -> get -> list -> delete cycle via raw HTTP API."""
     if not _k8s_available(live_kamiwaza_client):
