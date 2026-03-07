@@ -365,18 +365,7 @@ def test_catalog_container_v2_endpoints(live_kamiwaza_client) -> None:
 
     try:
         encoded_container = _encode_urn(container_urn)
-        try:
-            v2_container = client.get(f"/catalog/containers/v2/{encoded_container}")
-        except APIError as exc:
-            detail = None
-            if isinstance(exc.response_data, dict):
-                detail = exc.response_data.get("detail")
-            if exc.status_code == 400 and detail == "container_urn must start with 'urn:li:container:'":
-                pytest.skip(
-                    "Server defect: /catalog/containers/v2 endpoints reject simple container URNs "
-                    "(see docs-local/0.10.0/00-server-defects.md)"
-                )
-            raise
+        v2_container = client.get(f"/catalog/containers/v2/{encoded_container}")
         assert v2_container.get("urn") == container_urn
 
         v2_updated = client.patch(
