@@ -82,11 +82,19 @@ _TEXT_BODY_MARKERS = (
     "application/graphql",
     "text/",
 )
+CONTEXT_TEST_LLM_REPO = os.environ.get(
+    "KAMIWAZA_CONTEXT_LLM_REPO",
+    "mlx-community/Qwen3-4B-4bit",
+)
+CONTEXT_TEST_LLM_DEPLOY_TIMEOUT_SECONDS = float(
+    os.environ.get("KAMIWAZA_CONTEXT_LLM_DEPLOY_TIMEOUT_SECONDS", "600")
+)
 EMBEDDING_TEST_MODEL_REPO = os.environ.get(
     "KAMIWAZA_TEST_EMBEDDING_MODEL_REPO",
     "sentence-transformers/all-MiniLM-L6-v2",
 )
 EMBEDDING_TEST_MODEL_HUB = os.environ.get("KAMIWAZA_TEST_EMBEDDING_MODEL_HUB", "hf")
+EMBEDDING_TEST_PROVIDER = os.environ.get("KAMIWAZA_TEST_EMBEDDING_PROVIDER", "").strip()
 EMBEDDING_TEST_DEPLOY_TIMEOUT_SECONDS = float(
     os.environ.get("KAMIWAZA_TEST_EMBEDDING_DEPLOY_TIMEOUT_SECONDS", "240")
 )
@@ -98,6 +106,10 @@ EMBEDDING_TEST_DEPLOY_NUDGE_SECONDS = float(
 )
 EMBEDDING_TEST_DEPLOY_CONTEXT = int(
     os.environ.get("KAMIWAZA_TEST_EMBEDDING_DEPLOY_CONTEXT", "8192")
+)
+EMBEDDING_TEST_PROBE_TEXT = os.environ.get(
+    "KAMIWAZA_TEST_EMBEDDING_PROBE_TEXT",
+    "sdk embedding probe",
 )
 _EMBEDDING_NAME_PATTERNS = re.compile(
     r"(?i)(bge|e5[-_]|nomic[-_]?embed|gte[-_]|all[-_]minilm|"
@@ -440,12 +452,26 @@ def _classify_platform_model_type(purpose: str | None, model_name: str) -> str:
     return "llm"
 
 
-def _active_embedding_deployment(client: KamiwazaClient) -> dict[str, str] | None:
+def _platform_deployment_ready(deployment: object) -> bool:
+    deployment_status = str(getattr(deployment, "status", "")).upper()
+    if deployment_status != "DEPLOYED":
+        return False
+    instances = getattr(deployment, "instances", []) or []
+    return any(
+        str(getattr(instance, "status", "")).upper() == "DEPLOYED"
+        for instance in instances
+    )
+
+
+def _active_model_deployments(
+    client: KamiwazaClient, *, desired_type: str
+) -> list[dict[str, str]]:
     try:
         deployments = client.serving.list_active_deployments()
     except APIError:
-        return None
+        return []
 
+    active_deployments: list[dict[str, str]] = []
     for deployment in deployments:
         purpose: str | None = None
         model_name = str(getattr(deployment, "m_name", "") or "")
@@ -460,17 +486,95 @@ def _active_embedding_deployment(client: KamiwazaClient) -> dict[str, str] | Non
             model_name = str(getattr(model, "name", "") or model_name)
             repo_model_id = str(getattr(model, "repo_modelId", "") or "")
 
-        if _classify_platform_model_type(purpose, model_name) != "embedding":
+        if _classify_platform_model_type(purpose, model_name) != desired_type:
             continue
 
-        return {
-            "deployment_id": str(deployment.id),
-            "model_id": str(deployment.m_id),
-            "model_name": model_name,
-            "repo_model_id": repo_model_id,
-        }
+        active_deployments.append(
+            {
+                "deployment_id": str(deployment.id),
+                "model_id": str(deployment.m_id),
+                "model_name": model_name,
+                "repo_model_id": repo_model_id,
+            }
+        )
 
-    return None
+    return active_deployments
+
+
+def _preferred_active_model_deployment(
+    client: KamiwazaClient,
+    *,
+    desired_type: str,
+    preferred_repo_id: str = "",
+) -> dict[str, str] | None:
+    deployments = _active_model_deployments(client, desired_type=desired_type)
+    preferred_repo_id = preferred_repo_id.strip()
+    if preferred_repo_id:
+        for deployment in deployments:
+            if deployment["repo_model_id"] == preferred_repo_id:
+                return deployment
+    return deployments[0] if deployments else None
+
+
+def _active_embedding_deployment(client: KamiwazaClient) -> dict[str, str] | None:
+    return _preferred_active_model_deployment(
+        client,
+        desired_type="embedding",
+        preferred_repo_id=EMBEDDING_TEST_MODEL_REPO,
+    )
+
+
+def _unique_nonempty_values(*values: str) -> list[str]:
+    unique_values: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        candidate = str(value or "").strip()
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        unique_values.append(candidate)
+    return unique_values
+
+
+def _embedding_provider_candidates(client: KamiwazaClient) -> list[str]:
+    if EMBEDDING_TEST_PROVIDER:
+        return [EMBEDDING_TEST_PROVIDER]
+
+    try:
+        available = client.embedding.get_providers()
+    except APIError:
+        available = []
+
+    ordered = [
+        provider
+        for provider in ("sentence_transformers", "huggingface_embedding")
+        if provider in available
+    ]
+    ordered.extend(provider for provider in available if provider not in ordered)
+    if ordered:
+        return ordered
+    return ["sentence_transformers", "huggingface_embedding"]
+
+
+def _probe_embedding_target(
+    client: KamiwazaClient, *, model: str, provider_type: str
+) -> str | None:
+    try:
+        response = client.post(
+            "/embedding/generate",
+            json={
+                "text": EMBEDDING_TEST_PROBE_TEXT,
+                "model": model,
+                "provider_type": provider_type,
+            },
+        )
+    except APIError as exc:
+        return _api_error_detail(exc)
+
+    embedding = response.get("embedding") if isinstance(response, dict) else None
+    if isinstance(embedding, list) and embedding:
+        return None
+    return "embedding endpoint returned no embedding data"
 
 
 def _maybe_request_embedding_download_and_deploy(
@@ -909,6 +1013,99 @@ def embedding_model_prerequisite(
         "No active platform embedding deployment was found and the test harness "
         f"could not confirm one after attempting deployment ({'; '.join(details)})."
     )
+
+
+@pytest.fixture(scope="session")
+def embedding_test_target(
+    live_kamiwaza_session_client: KamiwazaClient,
+    embedding_model_prerequisite: dict[str, str],
+) -> dict[str, str]:
+    """Pick an embedding endpoint target, preferring the active platform model."""
+    client = live_kamiwaza_session_client
+    provider_candidates = _embedding_provider_candidates(client)
+    model_candidates = _unique_nonempty_values(
+        embedding_model_prerequisite.get("repo_model_id", ""),
+        embedding_model_prerequisite.get("model_name", ""),
+        EMBEDDING_TEST_MODEL_REPO,
+    )
+
+    failures: list[str] = []
+    for model in model_candidates:
+        for provider_type in provider_candidates:
+            probe_error = _probe_embedding_target(
+                client,
+                model=model,
+                provider_type=provider_type,
+            )
+            if probe_error is None:
+                return {
+                    "model": model,
+                    "provider_type": provider_type,
+                }
+            failures.append(f"{model}/{provider_type}: {probe_error}")
+
+    pytest.skip(
+        "Embedding deployment is present, but the embedding endpoint could not use "
+        f"any preferred test target ({'; '.join(failures)})."
+    )
+
+
+@pytest.fixture(scope="session")
+def context_llm_prerequisite(
+    live_kamiwaza_session_client: KamiwazaClient,
+    ensure_repo_ready,
+) -> Iterator[str]:
+    """Ensure a usable LLM deployment exists for context ontology operations."""
+    client = live_kamiwaza_session_client
+
+    existing = _preferred_active_model_deployment(
+        client,
+        desired_type="llm",
+        preferred_repo_id=CONTEXT_TEST_LLM_REPO,
+    )
+    if existing is not None:
+        yield existing["deployment_id"]
+        return
+
+    model = ensure_repo_ready(client, CONTEXT_TEST_LLM_REPO)
+    configs = client.models.get_model_configs(model.id)
+    if not configs:
+        pytest.fail(
+            f"No model configs available for context LLM repo '{CONTEXT_TEST_LLM_REPO}'"
+        )
+    default_config = next((config for config in configs if config.default), configs[0])
+
+    deployment_id = client.serving.deploy_model(
+        model_id=str(model.id),
+        m_config_id=default_config.id,
+        lb_port=0,
+        autoscaling=False,
+        min_copies=1,
+        starting_copies=1,
+    )
+    deployment = client.serving.wait_for_deployment(
+        deployment_id,
+        poll_interval=5,
+        timeout=CONTEXT_TEST_LLM_DEPLOY_TIMEOUT_SECONDS,
+    )
+    if not _platform_deployment_ready(deployment):
+        pytest.fail(
+            "Context ontology prerequisite deployment is not ready: "
+            f"deployment_id={deployment.id}, status={deployment.status}, "
+            f"instance_statuses={[instance.status for instance in deployment.instances]}"
+        )
+
+    created_deployment_id = str(deployment.id)
+    try:
+        yield created_deployment_id
+    finally:
+        try:
+            client.serving.stop_deployment(
+                deployment_id=created_deployment_id,
+                force=True,
+            )
+        except Exception:
+            pass
 
 
 @pytest.fixture(autouse=True)

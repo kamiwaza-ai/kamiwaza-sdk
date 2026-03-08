@@ -24,13 +24,6 @@ DEFAULT_WORKROOM_ID = os.getenv(
     "KAMIWAZA_CONTEXT_WORKROOM_ID",
     ContextService.DEFAULT_WORKROOM_ID,
 )
-DEFAULT_CONTEXT_LLM_REPO = os.getenv(
-    "KAMIWAZA_CONTEXT_LLM_REPO",
-    "mlx-community/Qwen3-4B-4bit",
-)
-DEFAULT_CONTEXT_LLM_DEPLOY_TIMEOUT_SECONDS = float(
-    os.getenv("KAMIWAZA_CONTEXT_LLM_DEPLOY_TIMEOUT_SECONDS", "600")
-)
 TEST_VECTOR = [round(index * 0.01, 4) for index in range(1, 33)]
 
 
@@ -47,24 +40,6 @@ def _context_service(live_kamiwaza_client) -> ContextService:
     service = live_kamiwaza_client.context
     assert isinstance(service, ContextService)
     return service
-
-
-def _deployment_ready(deployment) -> bool:
-    deployment_status = str(getattr(deployment, "status", "")).upper()
-    if deployment_status != "DEPLOYED":
-        return False
-    instances = getattr(deployment, "instances", []) or []
-    return any(
-        str(getattr(instance, "status", "")).upper() == "DEPLOYED"
-        for instance in instances
-    )
-
-
-def _find_existing_ready_deployment(client) -> str | None:
-    for deployment in client.serving.list_deployments():
-        if _deployment_ready(deployment):
-            return str(deployment.id)
-    return None
 
 
 def _wait_for_vectordb_ready(
@@ -258,53 +233,9 @@ def shared_context_service(
 
 
 @pytest.fixture(scope="session")
-def context_required_llm(
-    shared_context_service: ContextService, ensure_repo_ready
-) -> str:
-    """Ensure a deployed platform LLM exists for ontology operations."""
-    client = shared_context_service.client
-
-    existing_deployment_id = _find_existing_ready_deployment(client)
-    if existing_deployment_id:
-        yield existing_deployment_id
-        return
-
-    model = ensure_repo_ready(client, DEFAULT_CONTEXT_LLM_REPO)
-    configs = client.models.get_model_configs(model.id)
-    if not configs:
-        pytest.fail(
-            f"No model configs available for context LLM repo '{DEFAULT_CONTEXT_LLM_REPO}'"
-        )
-    default_config = next((config for config in configs if config.default), configs[0])
-
-    created_deployment_id = client.serving.deploy_model(
-        model_id=str(model.id),
-        m_config_id=default_config.id,
-        lb_port=0,
-        autoscaling=False,
-        min_copies=1,
-        starting_copies=1,
-    )
-    deployment = client.serving.wait_for_deployment(
-        created_deployment_id,
-        poll_interval=5,
-        timeout=DEFAULT_CONTEXT_LLM_DEPLOY_TIMEOUT_SECONDS,
-    )
-    if not _deployment_ready(deployment):
-        pytest.fail(
-            "Context ontology prerequisite deployment is not ready: "
-            f"deployment_id={deployment.id}, status={deployment.status}, "
-            f"instance_statuses={[instance.status for instance in deployment.instances]}"
-        )
-
-    deployment_id = deployment.id
-    try:
-        yield str(deployment_id)
-    finally:
-        try:
-            client.serving.stop_deployment(deployment_id=deployment_id, force=True)
-        except Exception:
-            pass
+def context_required_llm(context_llm_prerequisite: str) -> str:
+    """Expose the shared context LLM prerequisite for context tests."""
+    return context_llm_prerequisite
 
 
 @pytest.fixture(scope="session")

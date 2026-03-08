@@ -11,8 +11,6 @@ Tests cover:
 
 from __future__ import annotations
 
-import os
-
 import pytest
 
 from kamiwaza_sdk.exceptions import APIError
@@ -24,17 +22,12 @@ pytestmark = [
     pytest.mark.requires_embedding_model,
 ]
 
-# Default embedding model - small and commonly available
-# Note: nomic-ai/nomic-embed-text-v1.5 requires trust_remote_code=True on server
-# Using simpler model that works out of the box
-DEFAULT_MODEL = os.getenv(
-    "KAMIWAZA_TEST_EMBEDDING_MODEL_REPO",
-    "sentence-transformers/all-MiniLM-L6-v2",
-)
-DEFAULT_PROVIDER = os.getenv(
-    "KAMIWAZA_TEST_EMBEDDING_PROVIDER",
-    "sentence_transformers",
-)
+
+def _embedder(live_kamiwaza_client, embedding_test_target: dict[str, str]):
+    return live_kamiwaza_client.embedding.get_embedder(
+        model=embedding_test_target["model"],
+        provider_type=embedding_test_target["provider_type"],
+    )
 
 
 class TestEmbeddingHealth:
@@ -68,11 +61,11 @@ class TestEmbeddingProviders:
 class TestEmbeddingChunking:
     """Tests for text chunking operations."""
 
-    def test_chunk_text_simple(self, live_kamiwaza_client) -> None:
+    def test_chunk_text_simple(
+        self, live_kamiwaza_client, embedding_test_target: dict[str, str]
+    ) -> None:
         """TS6.002: POST /embedding/chunk - Basic text chunking."""
-        embedder = live_kamiwaza_client.embedding.get_embedder(
-            model=DEFAULT_MODEL, provider_type=DEFAULT_PROVIDER
-        )
+        embedder = _embedder(live_kamiwaza_client, embedding_test_target)
 
         text = "This is a test sentence for chunking. " * 50
         try:
@@ -87,11 +80,11 @@ class TestEmbeddingChunking:
                 pytest.skip(f"Embedding model not available: {exc}")
             raise
 
-    def test_chunk_text_with_metadata(self, live_kamiwaza_client) -> None:
+    def test_chunk_text_with_metadata(
+        self, live_kamiwaza_client, embedding_test_target: dict[str, str]
+    ) -> None:
         """TS6.002: POST /embedding/chunk - Chunking with metadata."""
-        embedder = live_kamiwaza_client.embedding.get_embedder(
-            model=DEFAULT_MODEL, provider_type=DEFAULT_PROVIDER
-        )
+        embedder = _embedder(live_kamiwaza_client, embedding_test_target)
 
         text = "This is a test sentence for chunking with metadata. " * 50
         try:
@@ -116,11 +109,11 @@ class TestEmbeddingChunking:
 class TestEmbeddingGeneration:
     """Tests for embedding generation operations."""
 
-    def test_create_embedding_post(self, live_kamiwaza_client) -> None:
+    def test_create_embedding_post(
+        self, live_kamiwaza_client, embedding_test_target: dict[str, str]
+    ) -> None:
         """TS6.003: POST /embedding/generate - Generate embedding."""
-        embedder = live_kamiwaza_client.embedding.get_embedder(
-            model=DEFAULT_MODEL, provider_type=DEFAULT_PROVIDER
-        )
+        embedder = _embedder(live_kamiwaza_client, embedding_test_target)
 
         try:
             result = embedder.create_embedding(text="Hello, world!")
@@ -135,11 +128,11 @@ class TestEmbeddingGeneration:
                 pytest.skip(f"Embedding model not available: {exc}")
             raise
 
-    def test_get_embedding(self, live_kamiwaza_client) -> None:
+    def test_get_embedding(
+        self, live_kamiwaza_client, embedding_test_target: dict[str, str]
+    ) -> None:
         """TS6.004: GET /embedding/generate/{text} - Get embedding via GET."""
-        embedder = live_kamiwaza_client.embedding.get_embedder(
-            model=DEFAULT_MODEL, provider_type=DEFAULT_PROVIDER
-        )
+        embedder = _embedder(live_kamiwaza_client, embedding_test_target)
 
         try:
             result = embedder.get_embedding(text="Hello, world!")
@@ -156,11 +149,11 @@ class TestEmbeddingGeneration:
 class TestEmbeddingBatch:
     """Tests for batch embedding operations."""
 
-    def test_embed_chunks_batch(self, live_kamiwaza_client) -> None:
+    def test_embed_chunks_batch(
+        self, live_kamiwaza_client, embedding_test_target: dict[str, str]
+    ) -> None:
         """TS6.001: POST /embedding/batch - Batch embedding generation."""
-        embedder = live_kamiwaza_client.embedding.get_embedder(
-            model=DEFAULT_MODEL, provider_type=DEFAULT_PROVIDER
-        )
+        embedder = _embedder(live_kamiwaza_client, embedding_test_target)
 
         chunks = [
             "This is the first test chunk.",
@@ -186,11 +179,11 @@ class TestEmbeddingBatch:
 class TestEmbeddingIntegrated:
     """End-to-end embedding workflow tests."""
 
-    def test_chunk_and_embed_workflow(self, live_kamiwaza_client) -> None:
+    def test_chunk_and_embed_workflow(
+        self, live_kamiwaza_client, embedding_test_target: dict[str, str]
+    ) -> None:
         """Test complete chunking and embedding workflow."""
-        embedder = live_kamiwaza_client.embedding.get_embedder(
-            model=DEFAULT_MODEL, provider_type=DEFAULT_PROVIDER
-        )
+        embedder = _embedder(live_kamiwaza_client, embedding_test_target)
 
         # Sample text
         text = """
