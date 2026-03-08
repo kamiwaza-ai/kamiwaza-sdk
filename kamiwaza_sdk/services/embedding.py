@@ -62,6 +62,8 @@ class EmbeddingProvider:
                     metadata=response.get("metadata", [])
                 )
             return response
+        except APIError:
+            raise
         except Exception as e:
             raise APIError(f"Operation failed: {str(e)}")
 
@@ -90,6 +92,8 @@ class EmbeddingProvider:
             
             logger.info(f"Successfully generated embeddings for {total_chunks} chunks")
             return result
+        except APIError:
+            raise
         except Exception as e:
             logger.error(f"Failed to generate embeddings: {str(e)}")
             raise APIError(f"Operation failed: {str(e)}")
@@ -115,6 +119,8 @@ class EmbeddingProvider:
                 response['embedding'] = [float(x) for x in response['embedding']]
             
             return EmbeddingOutput.model_validate(response)
+        except APIError:
+            raise
         except Exception as e:
             raise APIError(f"Operation failed: {str(e)}")
 
@@ -196,6 +202,8 @@ class EmbeddingService(BaseService):
         """Get list of available embedding providers"""
         try:
             return self.client.get("/embedding/providers")
+        except APIError:
+            raise
         except Exception as e:
             raise APIError(f"Failed to get providers: {str(e)}")
 

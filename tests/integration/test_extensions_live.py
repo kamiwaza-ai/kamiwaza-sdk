@@ -24,7 +24,6 @@ pytestmark = [
     pytest.mark.integration,
     pytest.mark.live,
     pytest.mark.withoutresponses,
-    pytest.mark.requires_embedding_model,
 ]
 
 
