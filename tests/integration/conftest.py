@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import base64
+import json
 import os
 import shutil
 import socket
 import subprocess
 import sys
+import tempfile
+import threading
 import time
 from pathlib import Path
-from typing import Callable, Iterator
+from typing import Any, Callable, Iterator
 from urllib.parse import urlparse
 
 import urllib3
@@ -52,6 +56,161 @@ RUNTIME_HOST_ALIAS = os.environ.get("KAMIWAZA_DOCKER_HOST_ALIAS", "host.docker.i
 
 _COMPOSE_ENV_CACHE: dict[str, str] | None = None
 _COMPOSE_ENV_ERROR: str | None = None
+_HTTP_TRACE_FLAG = "KAMIWAZA_HTTP_TRACE"
+_HTTP_TRACE_FILE_ENV = "KAMIWAZA_HTTP_TRACE_FILE"
+_TEXT_BODY_MARKERS = (
+    "application/json",
+    "application/problem+json",
+    "application/x-www-form-urlencoded",
+    "application/xml",
+    "application/yaml",
+    "application/javascript",
+    "application/x-ndjson",
+    "application/graphql",
+    "text/",
+)
+
+
+def _http_trace_enabled() -> bool:
+    flag = os.environ.get(_HTTP_TRACE_FLAG, "").strip().lower()
+    if flag in {"1", "true", "yes", "on"}:
+        return True
+    return bool(os.environ.get(_HTTP_TRACE_FILE_ENV, "").strip())
+
+
+def _trace_body_payload(
+    body: bytes | str | None,
+    *,
+    content_type: str = "",
+    encoding: str | None = None,
+) -> dict[str, Any]:
+    if body is None:
+        return {"encoding": "none", "size": 0, "body": None}
+
+    if isinstance(body, str):
+        raw = body.encode(encoding or "utf-8", errors="replace")
+        return {
+            "encoding": "utf-8",
+            "size": len(raw),
+            "body": body,
+        }
+
+    raw = bytes(body)
+    lowered = content_type.lower()
+    is_text = any(marker in lowered for marker in _TEXT_BODY_MARKERS)
+    if not lowered:
+        try:
+            decoded = raw.decode(encoding or "utf-8")
+        except UnicodeDecodeError:
+            decoded = None
+        else:
+            return {
+                "encoding": encoding or "utf-8",
+                "size": len(raw),
+                "body": decoded,
+            }
+    if is_text:
+        return {
+            "encoding": encoding or "utf-8",
+            "size": len(raw),
+            "body": raw.decode(encoding or "utf-8", errors="replace"),
+        }
+    return {
+        "encoding": "base64",
+        "size": len(raw),
+        "body": base64.b64encode(raw).decode("ascii"),
+    }
+
+
+def _trace_request_body(prepared_request: requests.PreparedRequest) -> dict[str, Any]:
+    body = prepared_request.body
+    if body is None:
+        return {"encoding": "none", "size": 0, "body": None}
+    if isinstance(body, (bytes, str)):
+        return _trace_body_payload(
+            body,
+            content_type=prepared_request.headers.get("Content-Type", ""),
+        )
+    return {
+        "encoding": "unavailable",
+        "size": None,
+        "body": repr(body),
+    }
+
+
+class _HTTPTraceWriter:
+    def __init__(self, path: Path):
+        self.path = path
+        self._lock = threading.Lock()
+        self._sequence = 0
+
+    def write(self, event_type: str, **payload: Any) -> None:
+        with self._lock:
+            self._sequence += 1
+            record = {
+                "seq": self._sequence,
+                "ts": time.time(),
+                "event": event_type,
+                **payload,
+            }
+            with self.path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, sort_keys=True))
+                handle.write("\n")
+
+
+def _wrap_streaming_response(
+    response: requests.Response,
+    writer: _HTTPTraceWriter,
+    *,
+    request_id: int,
+    started_at: float,
+) -> requests.Response:
+    original_iter_content = response.iter_content
+    original_close = response.close
+    buffered = bytearray()
+    finalized = False
+    completed = False
+
+    def finalize() -> None:
+        nonlocal finalized
+        if finalized:
+            return
+        finalized = True
+        writer.write(
+            "response-body",
+            request_id=request_id,
+            streamed=True,
+            complete=completed,
+            elapsed_ms=round((time.time() - started_at) * 1000, 3),
+            body=_trace_body_payload(
+                bytes(buffered),
+                content_type=response.headers.get("Content-Type", ""),
+                encoding=response.encoding,
+            ),
+        )
+
+    def traced_iter_content(*args: Any, **kwargs: Any):
+        nonlocal completed
+        try:
+            for chunk in original_iter_content(*args, **kwargs):
+                if isinstance(chunk, str):
+                    buffered.extend(chunk.encode(response.encoding or "utf-8", errors="replace"))
+                elif chunk is not None:
+                    buffered.extend(chunk)
+                yield chunk
+            completed = True
+        finally:
+            finalize()
+
+    def traced_close() -> None:
+        try:
+            original_close()
+        finally:
+            finalize()
+
+    response.iter_content = traced_iter_content  # type: ignore[assignment]
+    response.close = traced_close  # type: ignore[assignment]
+    return response
 
 
 def _docker_info_ok(env: dict[str, str]) -> tuple[bool, str]:
@@ -262,6 +421,99 @@ def _resolve_kz_login_password() -> str | None:
         if password:
             return password
     return None
+
+
+@pytest.fixture(scope="session", autouse=True)
+def http_trace_logging() -> Iterator[None]:
+    """Optionally trace all HTTP traffic made through requests to a JSONL file."""
+
+    if not _http_trace_enabled():
+        yield
+        return
+
+    trace_path_value = os.environ.get(_HTTP_TRACE_FILE_ENV, "").strip()
+    if trace_path_value:
+        trace_path = Path(trace_path_value).expanduser()
+        trace_path.parent.mkdir(parents=True, exist_ok=True)
+        trace_path.write_text("", encoding="utf-8")
+    else:
+        fd, temp_path = tempfile.mkstemp(prefix="kamiwaza-http-trace-", suffix=".jsonl")
+        os.close(fd)
+        trace_path = Path(temp_path)
+        os.environ[_HTTP_TRACE_FILE_ENV] = str(trace_path)
+
+    writer = _HTTPTraceWriter(trace_path)
+    original_send = requests.sessions.Session.send
+    next_request_id = 0
+
+    print(f"HTTP trace enabled: {trace_path}")
+
+    def traced_send(session, request, **kwargs):
+        nonlocal next_request_id
+        next_request_id += 1
+        request_id = next_request_id
+        started_at = time.time()
+        writer.write(
+            "request",
+            request_id=request_id,
+            method=request.method,
+            url=request.url,
+            headers=list(request.headers.items()),
+            body=_trace_request_body(request),
+            stream=bool(kwargs.get("stream")),
+            verify=kwargs.get("verify"),
+            allow_redirects=kwargs.get("allow_redirects"),
+        )
+        try:
+            response = original_send(session, request, **kwargs)
+        except requests.RequestException as exc:
+            writer.write(
+                "request-exception",
+                request_id=request_id,
+                elapsed_ms=round((time.time() - started_at) * 1000, 3),
+                exception_type=type(exc).__name__,
+                message=str(exc),
+            )
+            raise
+
+        writer.write(
+            "response-head",
+            request_id=request_id,
+            elapsed_ms=round((time.time() - started_at) * 1000, 3),
+            status_code=response.status_code,
+            reason=response.reason,
+            url=response.url,
+            headers=list(response.headers.items()),
+            streamed=bool(kwargs.get("stream")),
+        )
+
+        if kwargs.get("stream"):
+            return _wrap_streaming_response(
+                response,
+                writer,
+                request_id=request_id,
+                started_at=started_at,
+            )
+
+        writer.write(
+            "response-body",
+            request_id=request_id,
+            streamed=False,
+            complete=True,
+            elapsed_ms=round((time.time() - started_at) * 1000, 3),
+            body=_trace_body_payload(
+                response.content,
+                content_type=response.headers.get("Content-Type", ""),
+                encoding=response.encoding,
+            ),
+        )
+        return response
+
+    requests.sessions.Session.send = traced_send
+    try:
+        yield
+    finally:
+        requests.sessions.Session.send = original_send
 
 
 def _password_auth_works(base_url: str, username: str, password: str) -> tuple[bool, str]:
