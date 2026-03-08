@@ -98,7 +98,7 @@ def test_list_extensions_typed(live_kamiwaza_client) -> None:
     for ext in extensions:
         assert isinstance(ext, Extension)
         assert ext.name
-        assert ext.type in ("app", "tool")
+        assert ext.type in ("app", "tool", "service")
 
 
 def test_list_extensions_raw(live_kamiwaza_client) -> None:
