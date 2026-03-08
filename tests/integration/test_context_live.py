@@ -54,7 +54,10 @@ def _deployment_ready(deployment) -> bool:
     if deployment_status != "DEPLOYED":
         return False
     instances = getattr(deployment, "instances", []) or []
-    return any(str(getattr(instance, "status", "")).upper() == "DEPLOYED" for instance in instances)
+    return any(
+        str(getattr(instance, "status", "")).upper() == "DEPLOYED"
+        for instance in instances
+    )
 
 
 def _find_existing_ready_deployment(client) -> str | None:
@@ -255,7 +258,9 @@ def shared_context_service(
 
 
 @pytest.fixture(scope="session")
-def context_required_llm(shared_context_service: ContextService, ensure_repo_ready) -> str:
+def context_required_llm(
+    shared_context_service: ContextService, ensure_repo_ready
+) -> str:
     """Ensure a deployed platform LLM exists for ontology operations."""
     client = shared_context_service.client
 
@@ -267,7 +272,9 @@ def context_required_llm(shared_context_service: ContextService, ensure_repo_rea
     model = ensure_repo_ready(client, DEFAULT_CONTEXT_LLM_REPO)
     configs = client.models.get_model_configs(model.id)
     if not configs:
-        pytest.fail(f"No model configs available for context LLM repo '{DEFAULT_CONTEXT_LLM_REPO}'")
+        pytest.fail(
+            f"No model configs available for context LLM repo '{DEFAULT_CONTEXT_LLM_REPO}'"
+        )
     default_config = next((config for config in configs if config.default), configs[0])
 
     created_deployment_id = client.serving.deploy_model(
@@ -463,6 +470,7 @@ def test_context_vectordb_query_vectors_global(
     assert isinstance(queried["results"], list)
 
 
+@pytest.mark.requires_embedding_model
 def test_context_ontology_lifecycle_global(
     live_kamiwaza_client,
     context_required_llm: str,
@@ -482,6 +490,7 @@ def test_context_ontology_lifecycle_global(
         _safe_delete_ontology(service, ontology_id)
 
 
+@pytest.mark.requires_embedding_model
 def test_context_ontology_add_knowledge(
     live_kamiwaza_client,
     shared_ontology: str,
@@ -501,6 +510,7 @@ def test_context_ontology_add_knowledge(
         _safe_delete_group(service, ontology_id=ontology_id, group_id=group_id)
 
 
+@pytest.mark.requires_embedding_model
 def test_context_ontology_add_entity(
     live_kamiwaza_client,
     shared_ontology: str,
@@ -526,6 +536,7 @@ def test_context_ontology_add_entity(
         _safe_delete_group(service, ontology_id=ontology_id, group_id=group_id)
 
 
+@pytest.mark.requires_embedding_model
 def test_context_ontology_search_knowledge(
     live_kamiwaza_client,
     shared_ontology: str,
@@ -542,6 +553,7 @@ def test_context_ontology_search_knowledge(
     assert isinstance(search["facts"], list)
 
 
+@pytest.mark.requires_embedding_model
 def test_context_ontology_get_memory(
     live_kamiwaza_client,
     shared_ontology: str,
@@ -558,6 +570,7 @@ def test_context_ontology_get_memory(
     assert isinstance(memory["facts"], list)
 
 
+@pytest.mark.requires_embedding_model
 def test_context_ontology_get_episodes(
     live_kamiwaza_client,
     shared_ontology: str,
@@ -574,6 +587,7 @@ def test_context_ontology_get_episodes(
     assert isinstance(episodes["episodes"], list)
 
 
+@pytest.mark.requires_embedding_model
 def test_context_ontology_delete_group(
     live_kamiwaza_client,
     context_required_llm: str,
@@ -598,6 +612,7 @@ def test_context_ontology_delete_group(
         _safe_delete_ontology(service, ontology_id)
 
 
+@pytest.mark.requires_embedding_model
 def test_context_workroom_lists_and_job_creation(live_kamiwaza_client) -> None:
     service = _context_service(live_kamiwaza_client)
     workroom_id = DEFAULT_WORKROOM_ID
@@ -652,6 +667,7 @@ def test_context_workroom_lists_and_job_creation(live_kamiwaza_client) -> None:
                 pass
 
 
+@pytest.mark.requires_embedding_model
 def test_context_workroom_pipeline_followup_access(live_kamiwaza_client) -> None:
     service = _context_service(live_kamiwaza_client)
     workroom_id = DEFAULT_WORKROOM_ID
@@ -722,6 +738,7 @@ def test_context_workroom_collection_lifecycle(
             )
 
 
+@pytest.mark.requires_embedding_model
 def test_context_search_contract(
     live_kamiwaza_client,
     shared_workroom_vectordb: str,
@@ -734,6 +751,7 @@ def test_context_search_contract(
     assert isinstance(search.get("results"), list)
 
 
+@pytest.mark.requires_embedding_model
 def test_context_retrieve_contract(
     live_kamiwaza_client,
     shared_workroom_vectordb: str,
@@ -746,6 +764,7 @@ def test_context_retrieve_contract(
     assert isinstance(retrieve.get("sources"), list)
 
 
+@pytest.mark.requires_embedding_model
 def test_context_agentic_search_contract(live_kamiwaza_client) -> None:
     service = _context_service(live_kamiwaza_client)
     workroom_id = DEFAULT_WORKROOM_ID

@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -15,10 +16,9 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 from urllib.parse import urlparse
 
-import urllib3
-
 import pytest
 import requests
+import urllib3
 from huggingface_hub import snapshot_download
 
 from kamiwaza_sdk import KamiwazaClient
@@ -53,8 +53,18 @@ CATALOG_POSTGRES = {
 CATALOG_KAFKA_BOOTSTRAP = os.environ.get(
     "CATALOG_STACK_KAFKA_BOOTSTRAP", "localhost:29092"
 )
-PODMAN_MACHINE_SOCKET = Path.home() / ".local" / "share" / "containers" / "podman" / "machine" / "podman.sock"
-RUNTIME_HOST_ALIAS = os.environ.get("KAMIWAZA_DOCKER_HOST_ALIAS", "host.docker.internal")
+PODMAN_MACHINE_SOCKET = (
+    Path.home()
+    / ".local"
+    / "share"
+    / "containers"
+    / "podman"
+    / "machine"
+    / "podman.sock"
+)
+RUNTIME_HOST_ALIAS = os.environ.get(
+    "KAMIWAZA_DOCKER_HOST_ALIAS", "host.docker.internal"
+)
 
 _COMPOSE_ENV_CACHE: dict[str, str] | None = None
 _COMPOSE_ENV_ERROR: str | None = None
@@ -71,6 +81,27 @@ _TEXT_BODY_MARKERS = (
     "application/x-ndjson",
     "application/graphql",
     "text/",
+)
+EMBEDDING_TEST_MODEL_REPO = os.environ.get(
+    "KAMIWAZA_TEST_EMBEDDING_MODEL_REPO",
+    "sentence-transformers/all-MiniLM-L6-v2",
+)
+EMBEDDING_TEST_MODEL_HUB = os.environ.get("KAMIWAZA_TEST_EMBEDDING_MODEL_HUB", "hf")
+EMBEDDING_TEST_DEPLOY_TIMEOUT_SECONDS = float(
+    os.environ.get("KAMIWAZA_TEST_EMBEDDING_DEPLOY_TIMEOUT_SECONDS", "240")
+)
+EMBEDDING_TEST_DEPLOY_POLL_SECONDS = float(
+    os.environ.get("KAMIWAZA_TEST_EMBEDDING_DEPLOY_POLL_SECONDS", "5")
+)
+EMBEDDING_TEST_DEPLOY_NUDGE_SECONDS = float(
+    os.environ.get("KAMIWAZA_TEST_EMBEDDING_DEPLOY_NUDGE_SECONDS", "20")
+)
+EMBEDDING_TEST_DEPLOY_CONTEXT = int(
+    os.environ.get("KAMIWAZA_TEST_EMBEDDING_DEPLOY_CONTEXT", "8192")
+)
+_EMBEDDING_NAME_PATTERNS = re.compile(
+    r"(?i)(bge|e5[-_]|nomic[-_]?embed|gte[-_]|all[-_]minilm|"
+    r"instructor|jina[-_]?embed|text[-_]?embedding|embed)"
 )
 
 
@@ -197,7 +228,9 @@ def _wrap_streaming_response(
         try:
             for chunk in original_iter_content(*args, **kwargs):
                 if isinstance(chunk, str):
-                    buffered.extend(chunk.encode(response.encoding or "utf-8", errors="replace"))
+                    buffered.extend(
+                        chunk.encode(response.encoding or "utf-8", errors="replace")
+                    )
                 elif chunk is not None:
                     buffered.extend(chunk)
                 yield chunk
@@ -383,6 +416,135 @@ def _verify_ssl_enabled() -> bool:
     return os.environ.get("KAMIWAZA_VERIFY_SSL", "true").lower() != "false"
 
 
+def _api_error_detail(exc: APIError) -> str:
+    if isinstance(exc.response_data, dict):
+        detail = exc.response_data.get("detail")
+        if isinstance(detail, str) and detail.strip():
+            return detail.strip()
+    if exc.response_text and exc.response_text.strip():
+        return exc.response_text.strip()
+    return str(exc)
+
+
+def _classify_platform_model_type(purpose: str | None, model_name: str) -> str:
+    if purpose:
+        lowered = purpose.lower()
+        if "embed" in lowered:
+            return "embedding"
+        if lowered in {"vl", "vision"}:
+            return "vl"
+        return "llm"
+
+    if _EMBEDDING_NAME_PATTERNS.search(model_name):
+        return "embedding"
+    return "llm"
+
+
+def _active_embedding_deployment(client: KamiwazaClient) -> dict[str, str] | None:
+    try:
+        deployments = client.serving.list_active_deployments()
+    except APIError:
+        return None
+
+    for deployment in deployments:
+        purpose: str | None = None
+        model_name = str(getattr(deployment, "m_name", "") or "")
+        repo_model_id = ""
+
+        try:
+            model = client.models.get_model(deployment.m_id)
+        except Exception:
+            model = None
+        if model is not None:
+            purpose = getattr(model, "purpose", None)
+            model_name = str(getattr(model, "name", "") or model_name)
+            repo_model_id = str(getattr(model, "repo_modelId", "") or "")
+
+        if _classify_platform_model_type(purpose, model_name) != "embedding":
+            continue
+
+        return {
+            "deployment_id": str(deployment.id),
+            "model_id": str(deployment.m_id),
+            "model_name": model_name,
+            "repo_model_id": repo_model_id,
+        }
+
+    return None
+
+
+def _maybe_request_embedding_download_and_deploy(
+    client: KamiwazaClient,
+    *,
+    repo_id: str,
+    hub: str,
+) -> str | None:
+    try:
+        response = client.post(
+            "/models/download_and_deploy",
+            json={
+                "model": repo_id,
+                "hub": hub,
+                "deploy_after_download": True,
+            },
+        )
+    except APIError as exc:
+        return _api_error_detail(exc)
+
+    if isinstance(response, dict):
+        for key in ("message", "detail", "status"):
+            value = response.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return None
+
+
+def _maybe_nudge_embedding_deploy(
+    client: KamiwazaClient, *, repo_id: str
+) -> str | None:
+    try:
+        response = client.post(
+            f"/models/deploy_after_download/{repo_id}",
+            json={"novice_selected_context": EMBEDDING_TEST_DEPLOY_CONTEXT},
+        )
+    except APIError as exc:
+        return _api_error_detail(exc)
+
+    if isinstance(response, dict):
+        for key in ("message", "detail", "status"):
+            value = response.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return None
+
+
+def _wait_for_active_embedding_deployment(
+    client: KamiwazaClient,
+    *,
+    repo_id: str,
+    timeout_seconds: float,
+    poll_seconds: float,
+    nudge_after_seconds: float,
+) -> tuple[dict[str, str] | None, str | None]:
+    deadline = time.monotonic() + timeout_seconds
+    nudge_deadline = time.monotonic() + max(0.0, nudge_after_seconds)
+    nudged = False
+    last_message: str | None = None
+
+    while time.monotonic() < deadline:
+        deployment = _active_embedding_deployment(client)
+        if deployment is not None:
+            return deployment, last_message
+
+        if not nudged and time.monotonic() >= nudge_deadline:
+            last_message = _maybe_nudge_embedding_deploy(client, repo_id=repo_id)
+            nudged = True
+
+        time.sleep(poll_seconds)
+
+    return None, last_message
+
+
 class _NoCacheTokenStore(TokenStore):
     """Disable token persistence/loading during credential validation checks."""
 
@@ -405,7 +567,9 @@ def _resolve_kz_login_password() -> str | None:
     ]
     kamiwaza_root = os.environ.get("KAMIWAZA_ROOT")
     if kamiwaza_root:
-        candidates.append(Path(kamiwaza_root).expanduser() / "deploy" / "scripts" / "kz-login")
+        candidates.append(
+            Path(kamiwaza_root).expanduser() / "deploy" / "scripts" / "kz-login"
+        )
 
     for script in candidates:
         if not script.exists():
@@ -519,7 +683,9 @@ def http_trace_logging() -> Iterator[None]:
         requests.sessions.Session.send = original_send
 
 
-def _password_auth_works(base_url: str, username: str, password: str) -> tuple[bool, str]:
+def _password_auth_works(
+    base_url: str, username: str, password: str
+) -> tuple[bool, str]:
     """Validate username/password by calling /auth/users/me."""
 
     client = KamiwazaClient(base_url)
@@ -676,6 +842,93 @@ def live_kamiwaza_client(
         "Unable to build authenticated live client. "
         "Provide username/password (kz-login-backed) or KAMIWAZA_API_KEY."
     )
+
+
+@pytest.fixture(scope="session")
+def live_kamiwaza_session_client(
+    live_server_available: str,
+    live_session_api_key: str,
+    resolved_live_password: str,
+    live_username: str,
+) -> KamiwazaClient:
+    """Session-scoped authenticated client for shared live prerequisites."""
+    os.environ.setdefault("KAMIWAZA_VERIFY_SSL", "false")
+
+    api_key = live_session_api_key.strip()
+    if api_key:
+        return KamiwazaClient(live_server_available, api_key=api_key)
+
+    username = live_username.strip()
+    password = resolved_live_password.strip()
+    if username and password:
+        client = KamiwazaClient(live_server_available)
+        client.authenticator = UserPasswordAuthenticator(
+            username, password, client._auth_service, token_store=_NoCacheTokenStore()
+        )
+        return client
+
+    pytest.skip(
+        "Unable to build authenticated live client. "
+        "Provide username/password (kz-login-backed) or KAMIWAZA_API_KEY."
+    )
+
+
+@pytest.fixture(scope="session")
+def embedding_model_prerequisite(
+    live_kamiwaza_session_client: KamiwazaClient,
+) -> dict[str, str]:
+    """Ensure the live platform has an active embedding deployment or skip once."""
+    client = live_kamiwaza_session_client
+
+    deployment = _active_embedding_deployment(client)
+    if deployment is not None:
+        return deployment
+
+    request_message = _maybe_request_embedding_download_and_deploy(
+        client,
+        repo_id=EMBEDDING_TEST_MODEL_REPO,
+        hub=EMBEDDING_TEST_MODEL_HUB,
+    )
+
+    deployment, wait_message = _wait_for_active_embedding_deployment(
+        client,
+        repo_id=EMBEDDING_TEST_MODEL_REPO,
+        timeout_seconds=EMBEDDING_TEST_DEPLOY_TIMEOUT_SECONDS,
+        poll_seconds=EMBEDDING_TEST_DEPLOY_POLL_SECONDS,
+        nudge_after_seconds=EMBEDDING_TEST_DEPLOY_NUDGE_SECONDS,
+    )
+    if deployment is not None:
+        return deployment
+
+    details = [f"repo={EMBEDDING_TEST_MODEL_REPO}"]
+    if request_message:
+        details.append(f"download_and_deploy={request_message}")
+    if wait_message and wait_message != request_message:
+        details.append(f"deploy_after_download={wait_message}")
+    pytest.skip(
+        "No active platform embedding deployment was found and the test harness "
+        f"could not confirm one after attempting deployment ({'; '.join(details)})."
+    )
+
+
+@pytest.fixture(autouse=True)
+def _require_embedding_model_for_marked_tests(request: pytest.FixtureRequest) -> None:
+    if "requires_embedding_model" in request.keywords:
+        request.getfixturevalue("embedding_model_prerequisite")
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Run embedding-dependent live tests as a contiguous block near the front."""
+    embedding_items = [
+        item for item in items if "requires_embedding_model" in item.keywords
+    ]
+    if not embedding_items:
+        return
+
+    other_items = [
+        item for item in items if "requires_embedding_model" not in item.keywords
+    ]
+    items[:] = embedding_items + other_items
 
 
 @pytest.fixture(scope="session")

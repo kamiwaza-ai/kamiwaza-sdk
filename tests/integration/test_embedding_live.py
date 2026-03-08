@@ -8,19 +8,33 @@ Tests cover:
 - TS6.005: GET /embedding/health
 - TS6.006: GET /embedding/providers
 """
+
 from __future__ import annotations
+
+import os
 
 import pytest
 
 from kamiwaza_sdk.exceptions import APIError
 
-pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.live,
+    pytest.mark.withoutresponses,
+    pytest.mark.requires_embedding_model,
+]
 
 # Default embedding model - small and commonly available
 # Note: nomic-ai/nomic-embed-text-v1.5 requires trust_remote_code=True on server
 # Using simpler model that works out of the box
-DEFAULT_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-DEFAULT_PROVIDER = "sentence_transformers"
+DEFAULT_MODEL = os.getenv(
+    "KAMIWAZA_TEST_EMBEDDING_MODEL_REPO",
+    "sentence-transformers/all-MiniLM-L6-v2",
+)
+DEFAULT_PROVIDER = os.getenv(
+    "KAMIWAZA_TEST_EMBEDDING_PROVIDER",
+    "sentence_transformers",
+)
 
 
 class TestEmbeddingHealth:
@@ -57,17 +71,13 @@ class TestEmbeddingChunking:
     def test_chunk_text_simple(self, live_kamiwaza_client) -> None:
         """TS6.002: POST /embedding/chunk - Basic text chunking."""
         embedder = live_kamiwaza_client.embedding.get_embedder(
-            model=DEFAULT_MODEL,
-            provider_type=DEFAULT_PROVIDER
+            model=DEFAULT_MODEL, provider_type=DEFAULT_PROVIDER
         )
 
         text = "This is a test sentence for chunking. " * 50
         try:
             chunks = embedder.chunk_text(
-                text=text,
-                max_length=512,
-                overlap=32,
-                return_metadata=False
+                text=text, max_length=512, overlap=32, return_metadata=False
             )
             assert isinstance(chunks, list)
             assert len(chunks) > 0
@@ -80,26 +90,22 @@ class TestEmbeddingChunking:
     def test_chunk_text_with_metadata(self, live_kamiwaza_client) -> None:
         """TS6.002: POST /embedding/chunk - Chunking with metadata."""
         embedder = live_kamiwaza_client.embedding.get_embedder(
-            model=DEFAULT_MODEL,
-            provider_type=DEFAULT_PROVIDER
+            model=DEFAULT_MODEL, provider_type=DEFAULT_PROVIDER
         )
 
         text = "This is a test sentence for chunking with metadata. " * 50
         try:
             result = embedder.chunk_text(
-                text=text,
-                max_length=512,
-                overlap=32,
-                return_metadata=True
+                text=text, max_length=512, overlap=32, return_metadata=True
             )
             # Should return ChunkResponse with metadata
-            assert hasattr(result, 'chunks')
+            assert hasattr(result, "chunks")
             assert isinstance(result.chunks, list)
             assert len(result.chunks) > 0
             # Should have offsets when metadata is requested
-            if hasattr(result, 'offsets') and result.offsets:
+            if hasattr(result, "offsets") and result.offsets:
                 assert isinstance(result.offsets, list)
-            if hasattr(result, 'token_counts') and result.token_counts:
+            if hasattr(result, "token_counts") and result.token_counts:
                 assert isinstance(result.token_counts, list)
         except APIError as exc:
             if exc.status_code == 500:
@@ -113,14 +119,13 @@ class TestEmbeddingGeneration:
     def test_create_embedding_post(self, live_kamiwaza_client) -> None:
         """TS6.003: POST /embedding/generate - Generate embedding."""
         embedder = live_kamiwaza_client.embedding.get_embedder(
-            model=DEFAULT_MODEL,
-            provider_type=DEFAULT_PROVIDER
+            model=DEFAULT_MODEL, provider_type=DEFAULT_PROVIDER
         )
 
         try:
             result = embedder.create_embedding(text="Hello, world!")
             assert result is not None
-            assert hasattr(result, 'embedding')
+            assert hasattr(result, "embedding")
             assert isinstance(result.embedding, list)
             assert len(result.embedding) > 0
             # Embeddings are vectors of floats
@@ -133,14 +138,13 @@ class TestEmbeddingGeneration:
     def test_get_embedding(self, live_kamiwaza_client) -> None:
         """TS6.004: GET /embedding/generate/{text} - Get embedding via GET."""
         embedder = live_kamiwaza_client.embedding.get_embedder(
-            model=DEFAULT_MODEL,
-            provider_type=DEFAULT_PROVIDER
+            model=DEFAULT_MODEL, provider_type=DEFAULT_PROVIDER
         )
 
         try:
             result = embedder.get_embedding(text="Hello, world!")
             assert result is not None
-            assert hasattr(result, 'embedding')
+            assert hasattr(result, "embedding")
             assert isinstance(result.embedding, list)
             assert len(result.embedding) > 0
         except APIError as exc:
@@ -155,8 +159,7 @@ class TestEmbeddingBatch:
     def test_embed_chunks_batch(self, live_kamiwaza_client) -> None:
         """TS6.001: POST /embedding/batch - Batch embedding generation."""
         embedder = live_kamiwaza_client.embedding.get_embedder(
-            model=DEFAULT_MODEL,
-            provider_type=DEFAULT_PROVIDER
+            model=DEFAULT_MODEL, provider_type=DEFAULT_PROVIDER
         )
 
         chunks = [
@@ -186,8 +189,7 @@ class TestEmbeddingIntegrated:
     def test_chunk_and_embed_workflow(self, live_kamiwaza_client) -> None:
         """Test complete chunking and embedding workflow."""
         embedder = live_kamiwaza_client.embedding.get_embedder(
-            model=DEFAULT_MODEL,
-            provider_type=DEFAULT_PROVIDER
+            model=DEFAULT_MODEL, provider_type=DEFAULT_PROVIDER
         )
 
         # Sample text
@@ -202,10 +204,7 @@ class TestEmbeddingIntegrated:
         try:
             # Step 1: Chunk the text
             chunks = embedder.chunk_text(
-                text=text,
-                max_length=256,
-                overlap=32,
-                return_metadata=False
+                text=text, max_length=256, overlap=32, return_metadata=False
             )
             assert isinstance(chunks, list)
             assert len(chunks) > 0

@@ -20,7 +20,12 @@ from kamiwaza_sdk.schemas.extensions import (
     ExtensionServiceSpec,
 )
 
-pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.live,
+    pytest.mark.withoutresponses,
+    pytest.mark.requires_embedding_model,
+]
 
 
 def _unique(prefix: str) -> str:

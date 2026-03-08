@@ -70,6 +70,7 @@ markers = [
     "e2e: full workflow tests",
     "slow: intentionally slow tests",
     "withoutresponses: tests needing real network access",
+    "requires_embedding_model: live tests that require an active platform embedding deployment",
 ]
 
 [tool.black]
