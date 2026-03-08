@@ -10,6 +10,7 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Callable, Iterator
 from urllib.parse import urlparse
@@ -23,6 +24,7 @@ from huggingface_hub import snapshot_download
 from kamiwaza_sdk import KamiwazaClient
 from kamiwaza_sdk.authentication import UserPasswordAuthenticator
 from kamiwaza_sdk.exceptions import APIError, AuthenticationError
+from kamiwaza_sdk.schemas.auth import PATCreate
 from kamiwaza_sdk.token_store import StoredToken, TokenStore
 
 DOCKER_COMPOSE_FILE = Path(__file__).parent / "docker" / "docker-compose.yml"
@@ -56,6 +58,7 @@ RUNTIME_HOST_ALIAS = os.environ.get("KAMIWAZA_DOCKER_HOST_ALIAS", "host.docker.i
 
 _COMPOSE_ENV_CACHE: dict[str, str] | None = None
 _COMPOSE_ENV_ERROR: str | None = None
+_LIVE_PASSWORD_CACHE: dict[tuple[str, str, str, str], tuple[str, str | None]] = {}
 _HTTP_TRACE_FLAG = "KAMIWAZA_HTTP_TRACE"
 _HTTP_TRACE_FILE_ENV = "KAMIWAZA_HTTP_TRACE_FILE"
 _TEXT_BODY_MARKERS = (
@@ -533,6 +536,81 @@ def _password_auth_works(base_url: str, username: str, password: str) -> tuple[b
         return False, str(exc)
 
 
+def _resolve_live_password_once(
+    *,
+    live_server_available: str,
+    live_api_key: str,
+    live_username: str,
+    configured_password: str,
+) -> tuple[str, str | None]:
+    """
+    Resolve password auth at most once for a given session configuration.
+
+    Pytest does not cache skipped fixture setup. Without this cache, a lockout or
+    bad fallback password can trigger dozens of extra password grants as each test
+    retries the same session-scoped fixture chain.
+    """
+
+    cache_key = (
+        live_server_available,
+        live_api_key.strip(),
+        live_username.strip(),
+        configured_password.strip(),
+    )
+    cached = _LIVE_PASSWORD_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    if live_api_key.strip():
+        result = ("", None)
+        _LIVE_PASSWORD_CACHE[cache_key] = result
+        return result
+
+    username = live_username.strip()
+    configured_password = configured_password.strip()
+    if not username:
+        result = ("", None)
+        _LIVE_PASSWORD_CACHE[cache_key] = result
+        return result
+
+    errors: list[str] = []
+
+    # The kube-backed password is the authoritative dev credential. If kz-login
+    # is available, do not also churn through a stale local default password.
+    fallback_password = _resolve_kz_login_password()
+    if fallback_password:
+        ok, error = _password_auth_works(
+            live_server_available,
+            username,
+            fallback_password,
+        )
+        if ok:
+            os.environ["KAMIWAZA_PASSWORD"] = fallback_password
+            result = (fallback_password, None)
+            _LIVE_PASSWORD_CACHE[cache_key] = result
+            return result
+        errors.append(f"kz-login password failed: {error}")
+    else:
+        errors.append("kz-login fallback unavailable")
+        if configured_password:
+            ok, error = _password_auth_works(
+                live_server_available,
+                username,
+                configured_password,
+            )
+            if ok:
+                result = (configured_password, None)
+                _LIVE_PASSWORD_CACHE[cache_key] = result
+                return result
+            errors.append(f"configured password failed: {error}")
+        else:
+            errors.append("configured password is empty")
+
+    result = ("", "; ".join(errors))
+    _LIVE_PASSWORD_CACHE[cache_key] = result
+    return result
+
+
 @pytest.fixture(scope="session")
 def live_server_available(live_base_url: str) -> str:
     """Ensure a running Kamiwaza server is reachable before running live tests."""
@@ -574,12 +652,16 @@ def qwen_snapshot_dir(hf_cache_dir: Path) -> Path:
 @pytest.fixture
 def live_kamiwaza_client(
     live_server_available: str,
-    live_api_key: str,
+    live_session_api_key: str,
     resolved_live_password: str,
     live_username: str,
 ) -> KamiwazaClient:
     """Provide an authenticated client for integration tests."""
     os.environ.setdefault("KAMIWAZA_VERIFY_SSL", "false")
+
+    api_key = live_session_api_key.strip()
+    if api_key:
+        return KamiwazaClient(live_server_available, api_key=api_key)
 
     username = live_username.strip()
     password = resolved_live_password.strip()
@@ -589,10 +671,6 @@ def live_kamiwaza_client(
             username, password, client._auth_service, token_store=_NoCacheTokenStore()
         )
         return client
-
-    api_key = live_api_key.strip()
-    if api_key:
-        return KamiwazaClient(live_server_available, api_key=api_key)
 
     pytest.skip(
         "Unable to build authenticated live client. "
@@ -612,48 +690,70 @@ def resolved_live_password(
     then explicit configured password as fallback.
     """
 
+    password, error = _resolve_live_password_once(
+        live_server_available=live_server_available,
+        live_api_key=live_api_key,
+        live_username=live_username,
+        configured_password=str(pytestconfig.getoption("live_password")),
+    )
+    if password or live_api_key.strip():
+        return password
+
     username = live_username.strip()
-    configured_password = str(pytestconfig.getoption("live_password")).strip()
-    if not username:
-        return ""
-
-    errors: list[str] = []
-
-    # Prefer kube-derived password for dev clusters; explicit passwords remain fallback.
-    fallback_password = _resolve_kz_login_password()
-    if fallback_password:
-        ok, error = _password_auth_works(
-            live_server_available,
-            username,
-            fallback_password,
-        )
-        if ok:
-            os.environ["KAMIWAZA_PASSWORD"] = fallback_password
-            return fallback_password
-        errors.append(f"kz-login password failed: {error}")
-    else:
-        errors.append("kz-login fallback unavailable")
-
-    if configured_password:
-        ok, error = _password_auth_works(
-            live_server_available,
-            username,
-            configured_password,
-        )
-        if ok:
-            return configured_password
-        errors.append(f"configured password failed: {error}")
-    else:
-        errors.append("configured password is empty")
-
-    if live_api_key.strip():
-        # Defer to API key in live_kamiwaza_client when password auth cannot be established.
-        return ""
-
     pytest.skip(
         "Unable to authenticate live integration client via username/password "
-        f"(user='{username}', details: {'; '.join(errors)})"
+        f"(user='{username}', details: {error})"
     )
+
+
+@pytest.fixture(scope="session")
+def live_session_api_key(
+    live_server_available: str,
+    live_api_key: str,
+    resolved_live_password: str,
+    live_username: str,
+) -> Iterator[str]:
+    """
+    Prefer a session PAT for general integration traffic.
+
+    Auth-specific tests still use live_username/live_password directly, but the
+    shared client fixture should not re-run password grants across the whole suite.
+    """
+
+    api_key = live_api_key.strip()
+    if api_key:
+        yield api_key
+        return
+
+    username = live_username.strip()
+    password = resolved_live_password.strip()
+    if not username or not password:
+        yield ""
+        return
+
+    bootstrap_client = KamiwazaClient(live_server_available)
+    bootstrap_client.authenticator = UserPasswordAuthenticator(
+        username,
+        password,
+        bootstrap_client._auth_service,
+        token_store=_NoCacheTokenStore(),
+    )
+
+    pat_response = bootstrap_client.auth.create_pat(
+        PATCreate(
+            name=f"sdk-integration-{uuid.uuid4().hex[:10]}",
+            ttl_seconds=4 * 60 * 60,
+            scope="openid",
+            aud="kamiwaza-platform",
+        )
+    )
+    try:
+        yield pat_response.token
+    finally:
+        try:
+            bootstrap_client.auth.revoke_pat(pat_response.pat.jti)
+        except (AuthenticationError, APIError):
+            pass
 
 
 @pytest.fixture(scope="session")

@@ -224,30 +224,30 @@ def _safe_delete_group(
 @pytest.fixture(scope="session")
 def shared_context_service(
     live_server_available: str,
-    live_api_key: str,
+    live_session_api_key: str,
     resolved_live_password: str,
     live_username: str,
 ) -> ContextService:
     """Session-scoped context service client for shared provisioning fixtures."""
     os.environ.setdefault("KAMIWAZA_VERIFY_SSL", "false")
 
-    username = live_username.strip()
-    password = resolved_live_password.strip()
-    if username and password:
+    api_key = live_session_api_key.strip()
+    if api_key:
+        client = KamiwazaClient(live_server_available, api_key=api_key)
+    else:
+        username = live_username.strip()
+        password = resolved_live_password.strip()
+        if not username or not password:
+            pytest.skip(
+                "Unable to build authenticated context client. "
+                "Provide username/password (kz-login-backed) or KAMIWAZA_API_KEY."
+            )
         client = KamiwazaClient(live_server_available)
         client.authenticator = UserPasswordAuthenticator(
             username,
             password,
             client._auth_service,
         )
-    else:
-        api_key = live_api_key.strip()
-        if not api_key:
-            pytest.skip(
-                "Unable to build authenticated context client. "
-                "Provide username/password (kz-login-backed) or KAMIWAZA_API_KEY."
-            )
-        client = KamiwazaClient(live_server_available, api_key=api_key)
 
     service = client.context
     assert isinstance(service, ContextService)
