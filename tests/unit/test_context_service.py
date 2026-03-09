@@ -616,29 +616,6 @@ def test_upload_file_sends_files_and_optional_params(dummy_client):
     assert file_info[2] == "text/plain"
 
 
-def test_agentic_search_includes_optional_fields(dummy_client):
-    responses = {("post", "/context/agentic/search"): {"results": []}}
-    client = dummy_client(responses)
-    service = ContextService(client)
-
-    service.agentic_search(
-        workroom_id="ffffffff-ffff-ffff-ffff-ffffffffffff",
-        query="hello",
-        vectordb_ids=["v1"],
-        collection="default",
-        ontology_id="o1",
-        group_ids=["g1"],
-    )
-
-    method, path, kwargs = client.calls[0]
-    assert (method, path) == ("post", "/context/agentic/search")
-    payload = kwargs["json"]
-    assert payload["query"] == "hello"
-    assert payload["vectordb_ids"] == ["v1"]
-    assert payload["ontology_id"] == "o1"
-    assert payload["group_ids"] == ["g1"]
-
-
 def test_retrieve_builds_payload(dummy_client):
     responses = {("post", "/context/retrieve"): {"query": "q"}}
     client = dummy_client(responses)

@@ -515,37 +515,6 @@ class ContextService(BaseService):
             headers=self._merge_headers(workroom_id=workroom_id),
         )
 
-    def agentic_search(
-        self,
-        *,
-        workroom_id: str,
-        query: str,
-        vectordb_ids: list[str] | None = None,
-        collection: str = "default",
-        ontology_id: str | None = None,
-        group_ids: list[str] | None = None,
-        max_iterations: int = 3,
-        relevance_threshold: float = 0.7,
-        top_k: int = 10,
-    ) -> dict[str, Any]:
-        payload: dict[str, Any] = {
-            "query": query,
-            "vectordb_ids": vectordb_ids or [],
-            "collection": collection,
-            "max_iterations": max_iterations,
-            "relevance_threshold": relevance_threshold,
-            "top_k": top_k,
-        }
-        if ontology_id is not None:
-            payload["ontology_id"] = ontology_id
-        if group_ids is not None:
-            payload["group_ids"] = group_ids
-        return self.client.post(
-            f"{self._BASE_PATH}/agentic/search",
-            json=payload,
-            headers=self._merge_headers(workroom_id=workroom_id),
-        )
-
     def upload_file(
         self,
         *,

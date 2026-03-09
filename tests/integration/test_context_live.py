@@ -694,15 +694,3 @@ def test_context_retrieve_contract(
     retrieve = service.retrieve(workroom_id=workroom_id, query="hello context")
     assert isinstance(retrieve.get("sources"), list)
 
-
-@pytest.mark.requires_embedding_model
-def test_context_agentic_search_contract(live_kamiwaza_client) -> None:
-    service = _context_service(live_kamiwaza_client)
-    workroom_id = DEFAULT_WORKROOM_ID
-
-    # Agentic search should degrade gracefully even with no workroom-scoped VectorDB.
-    agentic = service.agentic_search(
-        workroom_id=workroom_id,
-        query="hello context",
-    )
-    assert isinstance(agentic.get("results"), list)
