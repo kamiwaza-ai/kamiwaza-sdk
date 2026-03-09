@@ -389,9 +389,18 @@ class ContextService(BaseService):
 
     # Collections + pipelines + search + upload
 
-    def list_collections(self, *, workroom_id: str) -> list[dict[str, Any]]:
+    def list_collections(
+        self,
+        *,
+        workroom_id: str,
+        vectordb_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        params: dict[str, Any] | None = None
+        if vectordb_id is not None:
+            params = {"vectordb_id": vectordb_id}
         return self.client.get(
             f"{self._BASE_PATH}/collections/",
+            params=params,
             headers=self._merge_headers(workroom_id=workroom_id),
         )
 
@@ -402,27 +411,48 @@ class ContextService(BaseService):
         name: str,
         dimension: int = 384,
         description: str | None = None,
+        vectordb_id: str | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {"name": name, "dimension": dimension}
         if description is not None:
             payload["description"] = description
+        if vectordb_id is not None:
+            payload["vectordb_id"] = vectordb_id
         return self.client.post(
             f"{self._BASE_PATH}/collections/",
             json=payload,
             headers=self._merge_headers(workroom_id=workroom_id),
         )
 
-    def get_collection(self, *, workroom_id: str, collection_name: str) -> dict[str, Any]:
+    def get_collection(
+        self,
+        *,
+        workroom_id: str,
+        collection_name: str,
+        vectordb_id: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] | None = None
+        if vectordb_id is not None:
+            params = {"vectordb_id": vectordb_id}
         return self.client.get(
             f"{self._BASE_PATH}/collections/{collection_name}",
+            params=params,
             headers=self._merge_headers(workroom_id=workroom_id),
         )
 
     def delete_collection(
-        self, *, workroom_id: str, collection_name: str
+        self,
+        *,
+        workroom_id: str,
+        collection_name: str,
+        vectordb_id: str | None = None,
     ) -> dict[str, Any] | None:
+        params: dict[str, Any] | None = None
+        if vectordb_id is not None:
+            params = {"vectordb_id": vectordb_id}
         return self.client.delete(
             f"{self._BASE_PATH}/collections/{collection_name}",
+            params=params,
             headers=self._merge_headers(workroom_id=workroom_id),
         )
 
@@ -481,12 +511,15 @@ class ContextService(BaseService):
         collection_name: str | None = None,
         top_k: int = 10,
         score_threshold: float | None = None,
+        vectordb_id: str | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {"query": query, "top_k": top_k}
         if collection_name is not None:
             payload["collection_name"] = collection_name
         if score_threshold is not None:
             payload["score_threshold"] = score_threshold
+        if vectordb_id is not None:
+            payload["vectordb_id"] = vectordb_id
         return self.client.post(
             f"{self._BASE_PATH}/search",
             json=payload,
@@ -501,6 +534,7 @@ class ContextService(BaseService):
         collection_names: list[str] | None = None,
         top_k: int = 5,
         score_threshold: float = 0.7,
+        vectordb_id: str | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "query": query,
@@ -509,6 +543,8 @@ class ContextService(BaseService):
         }
         if collection_names is not None:
             payload["collection_names"] = collection_names
+        if vectordb_id is not None:
+            payload["vectordb_id"] = vectordb_id
         return self.client.post(
             f"{self._BASE_PATH}/retrieve",
             json=payload,

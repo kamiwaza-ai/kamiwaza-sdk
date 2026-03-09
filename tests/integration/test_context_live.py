@@ -177,11 +177,13 @@ def _safe_delete_collection(
     *,
     workroom_id: str,
     collection_name: str,
+    vectordb_id: str | None = None,
 ) -> None:
     try:
         service.delete_collection(
             workroom_id=workroom_id,
             collection_name=collection_name,
+            vectordb_id=vectordb_id,
         )
     except APIError:
         pass
@@ -639,13 +641,17 @@ def test_context_workroom_collection_lifecycle(
     created = False
 
     try:
-        collections = service.list_collections(workroom_id=workroom_id)
+        collections = service.list_collections(
+            workroom_id=workroom_id,
+            vectordb_id=shared_workroom_vectordb,
+        )
         assert isinstance(collections, list)
 
         created_collection = service.create_collection(
             workroom_id=workroom_id,
             name=collection_name,
             dimension=384,
+            vectordb_id=shared_workroom_vectordb,
         )
         assert created_collection["display_name"] == collection_name
         created = True
@@ -653,12 +659,14 @@ def test_context_workroom_collection_lifecycle(
         fetched = service.get_collection(
             workroom_id=workroom_id,
             collection_name=collection_name,
+            vectordb_id=shared_workroom_vectordb,
         )
         assert fetched["display_name"] == collection_name
 
         service.delete_collection(
             workroom_id=workroom_id,
             collection_name=collection_name,
+            vectordb_id=shared_workroom_vectordb,
         )
     finally:
         if created:
@@ -666,6 +674,7 @@ def test_context_workroom_collection_lifecycle(
                 service,
                 workroom_id=workroom_id,
                 collection_name=collection_name,
+                vectordb_id=shared_workroom_vectordb,
             )
 
 
@@ -678,7 +687,11 @@ def test_context_search_contract(
     workroom_id = DEFAULT_WORKROOM_ID
     assert shared_workroom_vectordb
 
-    search = service.search(workroom_id=workroom_id, query="hello context")
+    search = service.search(
+        workroom_id=workroom_id,
+        query="hello context",
+        vectordb_id=shared_workroom_vectordb,
+    )
     assert isinstance(search.get("results"), list)
 
 
@@ -691,6 +704,9 @@ def test_context_retrieve_contract(
     workroom_id = DEFAULT_WORKROOM_ID
     assert shared_workroom_vectordb
 
-    retrieve = service.retrieve(workroom_id=workroom_id, query="hello context")
+    retrieve = service.retrieve(
+        workroom_id=workroom_id,
+        query="hello context",
+        vectordb_id=shared_workroom_vectordb,
+    )
     assert isinstance(retrieve.get("sources"), list)
-
