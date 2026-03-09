@@ -417,7 +417,12 @@ def test_catalog_container_link_sets_dataset_container_urn(live_kamiwaza_client,
             name=f"sdk-catalog-{uuid4().hex[:8]}",
             platform="integration",
         )
-        container_urn = containers.create(container_payload)
+        try:
+            container_urn = containers.create(container_payload)
+        except APIError as exc:
+            if exc.status_code in {401, 403}:
+                pytest.skip("Catalog container endpoints require admin credentials")
+            raise
         containers.add_dataset(container_urn, target)
         time.sleep(4)  # allow catalog ingestion/indexing to propagate container link
         dataset = _fetch_dataset(live_kamiwaza_client, target)
