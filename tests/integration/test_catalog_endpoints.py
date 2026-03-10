@@ -4,6 +4,8 @@ import time
 from urllib.parse import quote
 from uuid import uuid4
 
+import os
+
 import pytest
 from pydantic import SecretStr
 
@@ -97,9 +99,15 @@ def _delete_secret_by_urn(client, urn: str) -> None:
         pass
 
 
-def _wait_for_urn_in_list(fetch, expected_urn: str, label: str, *, required: bool = True) -> bool:
-    attempts = 5
-    delay = 2
+def _wait_for_urn_in_list(
+    fetch,
+    expected_urn: str,
+    label: str,
+    *,
+    required: bool = True,
+    attempts: int = 15,
+    delay: float = 2.0,
+) -> bool:
     last_urns: list[str | None] = []
     for attempt in range(attempts):
         items = fetch()
@@ -123,6 +131,38 @@ def test_catalog_metadata_and_health(live_kamiwaza_client) -> None:
 
     health = client.get("/catalog/health")
     assert health.get("status") == "ok"
+
+
+def test_catalog_container_endpoints_require_admin_user(live_server_available, tmp_path) -> None:
+    """Ensure catalog container endpoints are admin-protected.
+
+    Uses a conventional non-admin credential pair (testuser/testpass). If the
+    user is not configured in the environment, this test xfails.
+    """
+
+    from kamiwaza_sdk import KamiwazaClient
+    from kamiwaza_sdk.authentication import UserPasswordAuthenticator
+    from kamiwaza_sdk.exceptions import AuthenticationError
+    from kamiwaza_sdk.token_store import FileTokenStore
+
+    os.environ.setdefault("KAMIWAZA_VERIFY_SSL", "false")
+
+    client = KamiwazaClient(live_server_available)
+    client.authenticator = UserPasswordAuthenticator(
+        "testuser",
+        "testpass",
+        client._auth_service,
+        token_store=FileTokenStore(path=tmp_path / "token.json"),
+    )
+
+    try:
+        client.get("/catalog/containers/")
+    except AuthenticationError:
+        pytest.xfail("Non-admin test user testuser/testpass not configured")
+    except APIError as exc:
+        assert exc.status_code in (401, 403)
+    else:  # pragma: no cover - indicates test user is unexpectedly privileged
+        pytest.fail("Non-admin user unexpectedly accessed /catalog/containers/")
 
 
 def test_catalog_dataset_schema_endpoints(live_kamiwaza_client) -> None:
@@ -173,20 +213,12 @@ def test_catalog_dataset_schema_endpoints(live_kamiwaza_client) -> None:
         assert schema_response.get("name") == "sdk-schema"
 
         encoded = _encode_urn(dataset_urn)
-        try:
-            client.put(
-                f"/catalog/datasets/v2/{encoded}/schema",
-                json=schema.model_dump(),
-            )
-            v2_schema = client.get(f"/catalog/datasets/v2/{encoded}/schema")
-            assert v2_schema.get("name") == "sdk-schema"
-        except APIError as exc:
-            if exc.status_code == 404:
-                pytest.skip(
-                    "Server defect: dataset v2 endpoints do not resolve newly created datasets "
-                    "(see docs-local/0.10.0/00-server-defects.md)"
-                )
-            raise
+        client.put(
+            f"/catalog/datasets/v2/{encoded}/schema",
+            json=schema.model_dump(),
+        )
+        v2_schema = client.get(f"/catalog/datasets/v2/{encoded}/schema")
+        assert v2_schema.get("name") == "sdk-schema"
     finally:
         if dataset_urn:
             _delete_dataset(client, dataset_urn)
@@ -207,15 +239,7 @@ def test_catalog_dataset_variant_endpoints(live_kamiwaza_client) -> None:
         )
 
         encoded = _encode_urn(dataset_urn)
-        try:
-            v2_dataset = client.get(f"/catalog/datasets/v2/{encoded}")
-        except APIError as exc:
-            if exc.status_code == 404:
-                pytest.skip(
-                    "Server defect: dataset v2 endpoints do not resolve newly created datasets "
-                    "(see docs-local/0.10.0/00-server-defects.md)"
-                )
-            raise
+        v2_dataset = client.get(f"/catalog/datasets/v2/{encoded}")
         assert v2_dataset.get("urn") == dataset_urn
 
         update_payload = DatasetUpdate(description="SDK updated").model_dump(exclude_none=True)
@@ -245,15 +269,7 @@ def test_catalog_dataset_delete_variants(live_kamiwaza_client) -> None:
 
     try:
         encoded_v2 = _encode_urn(dataset_v2)
-        try:
-            client.delete(f"/catalog/datasets/v2/{encoded_v2}")
-        except APIError as exc:
-            if exc.status_code == 404:
-                pytest.skip(
-                    "Server defect: dataset v2 endpoints do not resolve newly created datasets "
-                    "(see docs-local/0.10.0/00-server-defects.md)"
-                )
-            raise
+        client.delete(f"/catalog/datasets/v2/{encoded_v2}")
 
         encoded_path = _encode_urn(dataset_path)
         client.delete(f"/catalog/datasets/{encoded_path}")
@@ -261,16 +277,12 @@ def test_catalog_dataset_delete_variants(live_kamiwaza_client) -> None:
         _delete_dataset(client, dataset_v2)
         _delete_dataset(client, dataset_path)
 
-
-def test_catalog_container_endpoints(live_kamiwaza_client) -> None:
+def test_catalog_container_list_query(live_kamiwaza_client) -> None:
     client = live_kamiwaza_client
     _require_catalog_admin(client)
 
-    dataset_urn = _create_dataset(client, _unique("sdk-container-dataset"))
-    container_name = _unique("sdk-container")
+    container_name = _unique("sdk-container-query")
     container_urn = _create_container(client, container_name)
-    container_v2 = _create_container(client, _unique("sdk-container-v2"))
-    container_path = _create_container(client, _unique("sdk-container-path"))
 
     try:
         found = _wait_for_urn_in_list(
@@ -284,16 +296,20 @@ def test_catalog_container_endpoints(live_kamiwaza_client) -> None:
                 "Server defect: container list query does not return newly created container "
                 "(see docs-local/0.10.0/00-server-defects.md)"
             )
+    finally:
+        _delete_container(client, container_urn)
 
-        try:
-            by_urn = client.get("/catalog/containers/by-urn", params={"urn": container_urn})
-        except APIError as exc:
-            if exc.status_code == 500:
-                pytest.skip(
-                    "Server defect: container retrieval by URN raises 500 "
-                    "(see docs-local/0.10.0/00-server-defects.md)"
-                )
-            raise
+
+def test_catalog_container_by_urn_and_path_endpoints(live_kamiwaza_client) -> None:
+    client = live_kamiwaza_client
+    _require_catalog_admin(client)
+
+    dataset_urn = _create_dataset(client, _unique("sdk-container-dataset"))
+    container_urn = _create_container(client, _unique("sdk-container"))
+    container_path = _create_container(client, _unique("sdk-container-path"))
+
+    try:
+        by_urn = client.get("/catalog/containers/by-urn", params={"urn": container_urn})
         assert by_urn.get("urn") == container_urn
 
         updated = client.patch(
@@ -304,15 +320,6 @@ def test_catalog_container_endpoints(live_kamiwaza_client) -> None:
         assert updated.get("description") == "SDK updated"
 
         encoded_container = _encode_urn(container_urn)
-        v2_container = client.get(f"/catalog/containers/v2/{encoded_container}")
-        assert v2_container.get("urn") == container_urn
-
-        v2_updated = client.patch(
-            f"/catalog/containers/v2/{encoded_container}",
-            json=ContainerUpdate(tags=["sdk-tag"]).model_dump(exclude_none=True),
-        )
-        assert "sdk-tag" in (v2_updated.get("tags") or [])
-
         path_container = client.get(f"/catalog/containers/{encoded_container}")
         assert path_container.get("urn") == container_urn
 
@@ -342,23 +349,44 @@ def test_catalog_container_endpoints(live_kamiwaza_client) -> None:
             f"/catalog/containers/{encoded_container}/datasets/{encoded_dataset}",
         )
 
-        client.post(
-            f"/catalog/containers/v2/{encoded_container}/datasets",
-            json=add_payload,
-        )
-        client.delete(
-            f"/catalog/containers/v2/{encoded_container}/datasets/{encoded_dataset}",
-        )
-
-        encoded_v2 = _encode_urn(container_v2)
-        client.delete(f"/catalog/containers/v2/{encoded_v2}")
-
         encoded_path = _encode_urn(container_path)
         client.delete(f"/catalog/containers/{encoded_path}")
     finally:
         _delete_container(client, container_urn)
-        _delete_container(client, container_v2)
         _delete_container(client, container_path)
+        _delete_dataset(client, dataset_urn)
+
+def test_catalog_container_v2_endpoints(live_kamiwaza_client) -> None:
+    client = live_kamiwaza_client
+    _require_catalog_admin(client)
+
+    dataset_urn = _create_dataset(client, _unique("sdk-container-v2-dataset"))
+    container_urn = _create_container(client, _unique("sdk-container-v2"))
+
+    try:
+        encoded_container = _encode_urn(container_urn)
+        v2_container = client.get(f"/catalog/containers/v2/{encoded_container}")
+        assert v2_container.get("urn") == container_urn
+
+        v2_updated = client.patch(
+            f"/catalog/containers/v2/{encoded_container}",
+            json=ContainerUpdate(tags=["sdk-tag"]).model_dump(exclude_none=True),
+        )
+        assert "sdk-tag" in (v2_updated.get("tags") or [])
+
+        add_payload = {"dataset_urn": dataset_urn}
+        client.post(
+            f"/catalog/containers/v2/{encoded_container}/datasets",
+            json=add_payload,
+        )
+        encoded_dataset = _encode_urn(dataset_urn)
+        client.delete(
+            f"/catalog/containers/v2/{encoded_container}/datasets/{encoded_dataset}",
+        )
+
+        client.delete(f"/catalog/containers/v2/{encoded_container}")
+    finally:
+        _delete_container(client, container_urn)
         _delete_dataset(client, dataset_urn)
 
 

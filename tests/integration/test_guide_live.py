@@ -12,7 +12,7 @@ import pytest
 from kamiwaza_sdk.exceptions import APIError
 from kamiwaza_sdk.schemas.guide import ModelGuide
 
-pytestmark = [pytest.mark.integration, pytest.mark.withoutresponses]
+pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
 
 
 class TestGuideReadOperations:

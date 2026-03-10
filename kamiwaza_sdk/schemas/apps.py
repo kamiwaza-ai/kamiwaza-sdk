@@ -31,9 +31,11 @@ class AppTemplate(BaseModel):
     id: UUID
     name: str
     version: Optional[str] = None
+    display_name: Optional[str] = None
     source_type: TemplateSource
     visibility: TemplateVisibility
     compose_yml: str
+    template_type: Optional[str] = None
     risk_tier: RiskTier
     verified: bool = False
     strip_path_prefix: Optional[bool] = None

@@ -15,7 +15,7 @@ from uuid import UUID
 from kamiwaza_sdk.exceptions import APIError
 from kamiwaza_sdk.schemas.models.model import CreateModelConfig, ModelConfig
 
-pytestmark = [pytest.mark.integration, pytest.mark.withoutresponses]
+pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
 
 CANONICAL_REPO = "mlx-community/Qwen3-4B-4bit"
 
@@ -157,11 +157,7 @@ class TestModelConfigValidation:
     """Tests for model config validation behavior."""
 
     def test_create_config_requires_model_id(self, live_kamiwaza_client) -> None:
-        """Test model config creation behavior with non-existent model_id.
-
-        Note: API behavior changed - configs can now be created with any model_id.
-        The validation happens when the config is actually used, not at creation time.
-        """
+        """Creating a config for a non-existent model_id should return 404."""
         from uuid import uuid4
 
         fake_model_id = uuid4()
@@ -171,20 +167,12 @@ class TestModelConfigValidation:
             default=False
         )
 
-        created_config = None
         try:
-            # API now allows creating configs with non-existent model IDs
-            created_config = live_kamiwaza_client.models.create_model_config(create_payload)
-            assert created_config is not None
-            assert created_config.m_id == fake_model_id
-            assert created_config.name == "test-config-fake-model"
-        finally:
-            # Clean up
-            if created_config:
-                try:
-                    live_kamiwaza_client.models.delete_model_config(created_config.id)
-                except APIError:
-                    pass
+            live_kamiwaza_client.models.create_model_config(create_payload)
+        except APIError as exc:
+            assert exc.status_code == 404
+        else:
+            pytest.fail("Expected server to reject a non-existent model_id when creating configs")
 
     def test_get_nonexistent_config(self, live_kamiwaza_client) -> None:
         """Test that getting a non-existent config returns appropriate error."""

@@ -9,7 +9,6 @@ Tests cover:
 
 from __future__ import annotations
 
-import os
 from uuid import uuid4
 
 import pytest
@@ -21,7 +20,11 @@ from kamiwaza_sdk.schemas.extensions import (
     ExtensionServiceSpec,
 )
 
-pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.live,
+    pytest.mark.withoutresponses,
+]
 
 
 def _unique(prefix: str) -> str:
@@ -95,7 +98,7 @@ def test_list_extensions_typed(live_kamiwaza_client) -> None:
     for ext in extensions:
         assert isinstance(ext, Extension)
         assert ext.name
-        assert ext.type in ("app", "tool")
+        assert ext.type in ("app", "tool", "service")
 
 
 def test_list_extensions_raw(live_kamiwaza_client) -> None:
@@ -148,10 +151,6 @@ def test_delete_nonexistent_extension_typed(live_kamiwaza_client) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(
-    os.environ.get("KAMIWAZA_TEST_EXTENSION_CRUD") != "1",
-    reason="Set KAMIWAZA_TEST_EXTENSION_CRUD=1 to run extension create/delete tests",
-)
 def test_extension_crud_lifecycle_typed(live_kamiwaza_client) -> None:
     """Full create -> get -> list -> delete cycle via typed SDK service."""
     if not _k8s_available(live_kamiwaza_client):
@@ -187,10 +186,6 @@ def test_extension_crud_lifecycle_typed(live_kamiwaza_client) -> None:
                 pass
 
 
-@pytest.mark.skipif(
-    os.environ.get("KAMIWAZA_TEST_EXTENSION_CRUD") != "1",
-    reason="Set KAMIWAZA_TEST_EXTENSION_CRUD=1 to run extension create/delete tests",
-)
 def test_extension_crud_lifecycle_raw(live_kamiwaza_client) -> None:
     """Full create -> get -> list -> delete cycle via raw HTTP API."""
     if not _k8s_available(live_kamiwaza_client):

@@ -154,14 +154,3 @@ def test_apps_remote_catalog_endpoints(live_kamiwaza_client) -> None:
 
     remote_apps = client.get("/apps/remote/apps")
     assert isinstance(remote_apps, list)
-
-    try:
-        garden = client.get("/apps/kamiwaza_garden")
-    except APIError as exc:
-        if exc.status_code == 500:
-            pytest.skip(
-                "Server defect: /apps/kamiwaza_garden raises 500 "
-                "(see docs-local/0.10.0/00-server-defects.md)"
-            )
-        raise
-    assert isinstance(garden, list)

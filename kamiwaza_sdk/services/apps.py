@@ -207,14 +207,20 @@ class AppService(BaseService):
 
     # Template Operations
 
-    def list_templates(self) -> List[AppTemplate]:
+    def list_templates(self, template_type: Optional[str] = None) -> List[AppTemplate]:
         """
-        List all available application templates.
+        List available application templates.
+
+        Args:
+            template_type: Optional filter for template type. Valid values are
+                "app", "service", or "tool". If omitted, all app templates are
+                returned.
 
         Returns:
             List of AppTemplate objects
         """
-        response = self.client.get("/apps/app_templates")
+        params = {"template_type": template_type} if template_type else None
+        response = self.client.get("/apps/app_templates", params=params)
         return [AppTemplate.model_validate(item) for item in response]
 
     def get_template(self, template_id: UUID) -> AppTemplate:
@@ -238,14 +244,34 @@ class AppService(BaseService):
                 raise NotFoundError(f"Template {template_id} not found")
             raise
 
-    def list_garden_apps(self) -> List[GardenApp]:
+    def delete_template(self, template_id: UUID) -> dict:
+        """
+        Delete an application template by ID.
+
+        Args:
+            template_id: UUID of the template
+
+        Returns:
+            Deletion result payload from the API.
+        """
+        try:
+            return self.client.delete(f"/apps/app_templates/{template_id}")
+        except APIError as e:
+            if "404" in str(e):
+                raise NotFoundError(f"Template {template_id} not found")
+            raise
+
+    def list_garden_apps(self, *, force_refresh: bool = False) -> List[GardenApp]:
         """
         List pre-built applications available in the Kamiwaza garden.
 
+        Note: This is backed by the remote catalog endpoint (`GET /apps/remote/apps`).
+        
         Returns:
             List of GardenApp objects
         """
-        response = self.client.get("/apps/kamiwaza_garden")
+        params = {"force_refresh": "true"} if force_refresh else None
+        response = self.client.get("/apps/remote/apps", params=params)
         return [GardenApp.model_validate(item) for item in response]
 
     def import_garden_apps(self) -> Dict[str, Any]:

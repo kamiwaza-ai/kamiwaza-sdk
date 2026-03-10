@@ -8,6 +8,7 @@ STATE_DIR="${STATE_DIR:-$SCRIPT_DIR/state}"
 DATA_DIR="${DATA_DIR:-$SCRIPT_DIR/data}"
 export STATE_DIR DATA_DIR
 COMPOSE_FILE="${INGESTION_STACK_COMPOSE:-$SCRIPT_DIR/docker-compose.yml}"
+GENERATOR_SCRIPT="${SCRIPT_DIR}/generate-parquet-data.py"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 MINIO_ENDPOINT="${MINIO_ENDPOINT:-http://localhost:19100}"
 MINIO_BUCKET="${MINIO_BUCKET:-kamiwaza-test-bucket}"
@@ -21,6 +22,22 @@ KAFKA_BOOTSTRAP="${KAFKA_EXTERNAL_BOOTSTRAP:-localhost:29092}"
 SEED_MARKER="$STATE_DIR/.seed-complete"
 
 mkdir -p "$STATE_DIR" "$STATE_DIR/test-data"
+
+if [[ ! -d "$DATA_DIR/test-data" ]]; then
+    echo "Catalog test data not found at $DATA_DIR/test-data; generating defaults..."
+    mkdir -p "$DATA_DIR/test-data/objects"
+    cat > "$DATA_DIR/test-data/objects/sample.json" <<'JSON'
+{"source":"sdk-catalog-stack","records":[{"id":1,"store":"downtown"},{"id":2,"store":"uptown"}]}
+JSON
+
+    if [[ -f "$GENERATOR_SCRIPT" ]]; then
+        if "$PYTHON_BIN" "$GENERATOR_SCRIPT" --output-dir "$DATA_DIR/test-data"; then
+            echo "Generated parquet fixtures via $GENERATOR_SCRIPT."
+        else
+            echo "Warning: parquet generation script failed; relying on inline fallback generation." >&2
+        fi
+    fi
+fi
 
 if [[ "${FORCE_SEED:-0}" != "1" && -f "$SEED_MARKER" ]]; then
     echo "Ingestion stack already seeded (set FORCE_SEED=1 to reseed)."
@@ -93,6 +110,11 @@ EOF
     fi
 fi
 
+if [[ ! -f "$FALLBACK_PARQUET" && -f "$INLINE_SMALL" ]]; then
+    cp "$INLINE_SMALL" "$FALLBACK_PARQUET"
+    echo "Copied inline-small.parquet to sales_data_10k.parquet fallback."
+fi
+
 if [[ ! -f "$INLINE_SMALL" && -f "$FALLBACK_PARQUET" ]]; then
     cp "$FALLBACK_PARQUET" "$INLINE_SMALL"
     echo "Copied fallback parquet to inline-small.parquet."
@@ -130,6 +152,35 @@ PY
 compose_exec() {
     docker compose -f "$COMPOSE_FILE" exec -T "$@"
 }
+
+ensure_docker_runtime() {
+    if docker info >/dev/null 2>&1; then
+        return 0
+    fi
+
+    if [[ -n "${KAMIWAZA_DOCKER_HOST:-}" ]]; then
+        export DOCKER_HOST="${KAMIWAZA_DOCKER_HOST}"
+        if docker info >/dev/null 2>&1; then
+            echo "Using container runtime via KAMIWAZA_DOCKER_HOST=${DOCKER_HOST}"
+            return 0
+        fi
+    fi
+
+    local podman_socket="${HOME}/.local/share/containers/podman/machine/podman.sock"
+    if [[ -e "$podman_socket" ]]; then
+        export DOCKER_HOST="unix://${podman_socket}"
+        if docker info >/dev/null 2>&1; then
+            echo "Using Podman socket via DOCKER_HOST=${DOCKER_HOST}"
+            return 0
+        fi
+    fi
+
+    echo "Unable to reach a container runtime with docker CLI." >&2
+    echo "Set KAMIWAZA_DOCKER_HOST or DOCKER_HOST to a reachable Docker/Podman socket." >&2
+    return 1
+}
+
+ensure_docker_runtime
 
 MINIO_HOST=$("$PYTHON_BIN" - <<'PY'
 from urllib.parse import urlparse
