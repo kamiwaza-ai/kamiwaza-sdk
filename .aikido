@@ -1,8 +1,17 @@
 # Aikido Security Scanner Configuration
 # ======================================
-# Excludes paths that are NOT part of the shipped product (the pip-installable wheel).
+# Excludes only truly inert paths where no scan type (SAST, secrets, IaC, deps) is useful.
 # The wheel includes only kamiwaza_sdk/ and kamiwaza_client/ packages, as defined by
 # pyproject.toml [tool.setuptools.packages.find] include/exclude rules.
+#
+# Paths NOT excluded here (intentionally left scannable):
+#   - .github/ (CI/CD — workflow security, secrets in pipelines)
+#   - scripts/, release.sh, Makefile (supply chain — controls what ships in the wheel)
+#   - setup.py, MANIFEST.in (build infrastructure — defines package contents)
+#   - pyproject.toml, uv.lock (dependency manifests — vulnerability scanning)
+#
+# Use Aikido UI-based ignores for granular noise suppression on those paths.
+# See: ENG-1815 for UI-based selective ignore configuration.
 #
 # Aikido path matching uses simple string inclusion — if the configured value appears
 # anywhere in the full file path, it gets excluded. Wildcards/regex are not supported.
@@ -24,17 +33,6 @@ exclude:
     - .ai/
     - CLAUDE.md
 
-    # ── CI/CD ──
-    - .github/
-
-    # ── Build / Release Scripts ──
-    - scripts/
-    - release.sh
-    - Makefile
-    - MANIFEST.in
-    - setup.py
-
     # ── Dev Configuration ──
     - .env.local.example
-    - uv.lock
     - kamiwaza-openapi-spec.json

@@ -76,6 +76,33 @@ require_command() {
     fi
 }
 
+ensure_docker_runtime() {
+    if docker info >/dev/null 2>&1; then
+        return 0
+    fi
+
+    if [[ -n "${KAMIWAZA_DOCKER_HOST:-}" ]]; then
+        export DOCKER_HOST="${KAMIWAZA_DOCKER_HOST}"
+        if docker info >/dev/null 2>&1; then
+            echo "Using container runtime via KAMIWAZA_DOCKER_HOST=${DOCKER_HOST}"
+            return 0
+        fi
+    fi
+
+    local podman_socket="${HOME}/.local/share/containers/podman/machine/podman.sock"
+    if [[ -e "$podman_socket" ]]; then
+        export DOCKER_HOST="unix://${podman_socket}"
+        if docker info >/dev/null 2>&1; then
+            echo "Using Podman socket via DOCKER_HOST=${DOCKER_HOST}"
+            return 0
+        fi
+    fi
+
+    echo "Unable to reach a container runtime with docker CLI." >&2
+    echo "Set KAMIWAZA_DOCKER_HOST or DOCKER_HOST to a reachable Docker/Podman socket." >&2
+    return 1
+}
+
 PYTHON_BIN="${PYTHON_BIN:-}"
 if [[ -z "$PYTHON_BIN" ]]; then
     if [[ -n "${VIRTUAL_ENV:-}" && -x "${VIRTUAL_ENV}/bin/python" ]]; then
@@ -110,6 +137,7 @@ PY
 }
 
 require_command docker
+ensure_docker_runtime
 
 if [[ ! -f "$COMPOSE_FILE" ]]; then
     echo "Missing catalog stack compose file: $COMPOSE_FILE" >&2

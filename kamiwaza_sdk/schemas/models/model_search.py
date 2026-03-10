@@ -1,6 +1,6 @@
 # kamiwaza_sdk/schemas/models/model_search.py
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from typing import List, Optional
 from uuid import UUID
 from .model import Model
@@ -50,6 +50,20 @@ class HubModelFileSearch(BaseModel):
     hub: str
     model: str
     version: Optional[str] = None
+
+    @field_validator("hub")
+    @classmethod
+    def _normalize_hub(cls, value: str) -> str:
+        """Normalize hub identifiers to the server's expected enum-ish strings.
+
+        The server currently expects hub values like "HubsHf"; passing "hf" can
+        trigger a 500 on some builds.
+        """
+        normalized = value.strip()
+        lowered = normalized.lower()
+        if lowered in {"hf", "huggingface", "hubshf"}:
+            return "HubsHf"
+        return normalized
 
     def __str__(self):
         return f"HubModelFileSearch: Hub: {self.hub}, Model: {self.model}, Version: {self.version}"

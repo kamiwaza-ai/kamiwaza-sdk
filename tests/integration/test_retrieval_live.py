@@ -11,14 +11,53 @@ and TS17.002 coverage.
 """
 from __future__ import annotations
 
+import json
 import pytest
 from uuid import uuid4
 
-from kamiwaza_sdk.exceptions import APIError
+from kamiwaza_sdk.exceptions import APIError, DatasetNotFoundError
 from kamiwaza_sdk.services.retrieval import RetrievalService
 from kamiwaza_sdk.schemas.retrieval import RetrievalJobStatus
 
-pytestmark = [pytest.mark.integration, pytest.mark.withoutresponses]
+pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
+
+
+def _ingest_sample_dataset(client, ingestion_environment: dict[str, str]) -> str:
+    bucket = ingestion_environment["bucket"]
+    prefix = ingestion_environment["prefix"]
+    endpoint = ingestion_environment["endpoint"]
+
+    ingest_response = client.ingestion.run_active(
+        "s3",
+        bucket=bucket,
+        prefix=prefix,
+        recursive=True,
+        endpoint_url=endpoint,
+        region="us-east-1",
+        aws_access_key_id="minioadmin",
+        aws_secret_access_key="minioadmin",
+    )
+    urns = ingest_response.urns
+    assert urns, "ingestion did not return dataset URNs"
+    return urns[0]
+
+
+def _inline_payload(dataset_urn: str, endpoint: str) -> dict[str, str]:
+    return {
+        "dataset_urn": dataset_urn,
+        "transport": "inline",
+        "format_hint": "parquet",
+        "credential_override": json.dumps(
+            {
+                "aws_access_key_id": "minioadmin",
+                "aws_secret_access_key": "minioadmin",
+                "endpoint": endpoint,
+                "endpoint_override": endpoint,
+                "endpoint_url": endpoint,
+                "region": "us-east-1",
+            }
+        ),
+    }
 
 
 class TestRetrievalServiceAvailability:
@@ -42,14 +81,8 @@ class TestRetrievalJobStatus:
         """
         fake_job_id = str(uuid4())
 
-        try:
-            # This should raise an error for non-existent job
+        with pytest.raises((DatasetNotFoundError, APIError)):
             live_kamiwaza_client.retrieval.get_job(fake_job_id)
-            pytest.fail("Expected error for non-existent job")
-        except Exception as exc:
-            # The SDK translates 404 to DatasetNotFoundError or APIError
-            # Accept various error types as valid
-            assert exc is not None
 
     def test_get_job_via_direct_api(self, live_kamiwaza_client) -> None:
         """TS17.002: GET /retrieval/jobs/{job_id} - Direct API test.
@@ -80,11 +113,36 @@ class TestRetrievalJobOperations:
     which is covered by test_catalog_ingest_retrieval.py and test_catalog_multi_source.py.
     """
 
-    @pytest.mark.skip(reason="Requires active dataset - see catalog tests for full coverage")
-    def test_create_and_get_job(self, live_kamiwaza_client, catalog_stack_environment) -> None:
-        """Test creating a job and getting its status.
+    def test_create_and_get_job(
+        self,
+        live_kamiwaza_client,
+        ingestion_environment: dict[str, str],
+    ) -> None:
+        """TS17.001 + TS17.002: Create a retrieval job and fetch its status."""
+        client = live_kamiwaza_client
+        endpoint = ingestion_environment["endpoint"]
+        dataset_urn: str | None = None
 
-        This test is skipped by default as it requires the catalog stack.
-        See test_catalog_ingest_retrieval.py for active tests.
-        """
-        pass
+        try:
+            dataset_urn = _ingest_sample_dataset(client, ingestion_environment)
+            job = client.post("/retrieval/jobs", json=_inline_payload(dataset_urn, endpoint))
+
+            job_id = str(job["job_id"])
+            assert job_id
+            assert job["transport"] == "inline"
+
+            direct_status = client.get(f"/retrieval/jobs/{job_id}")
+            assert str(direct_status.get("job_id")) == job_id
+            assert direct_status.get("transport") == "inline"
+            assert direct_status.get("dataset", {}).get("urn") == dataset_urn
+            assert isinstance(direct_status.get("status"), str)
+            assert direct_status["status"]
+
+            typed_status = client.retrieval.get_job(job_id)
+            assert isinstance(typed_status, RetrievalJobStatus)
+            assert str(typed_status.job_id) == job_id
+            assert typed_status.transport.value == "inline"
+            assert typed_status.dataset.urn == dataset_urn
+        finally:
+            if dataset_urn:
+                client.delete("/catalog/datasets/by-urn", params={"urn": dataset_urn})

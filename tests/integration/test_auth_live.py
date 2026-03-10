@@ -10,7 +10,7 @@ from kamiwaza_sdk.authentication import UserPasswordAuthenticator
 from kamiwaza_sdk.exceptions import AuthenticationError
 from kamiwaza_sdk.schemas.auth import PATCreate
 
-pytestmark = [pytest.mark.integration, pytest.mark.withoutresponses]
+pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
 
 
 def test_password_authentication_allows_whoami(

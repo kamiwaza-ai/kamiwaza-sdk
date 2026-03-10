@@ -37,7 +37,11 @@ class DatasetClient(BaseService):
             f"{self._BASE_PATH}/",
             json=payload.model_dump(exclude_none=True),
         )
-        return str(response)
+        urn = str(response)
+        note = getattr(self.client, "_note_recent_dataset_change", None)
+        if callable(note):
+            note(urn)
+        return urn
 
     def list(self, query: Optional[str] = None) -> List[Dataset]:
         params = {"query": query} if query else None
@@ -57,7 +61,11 @@ class DatasetClient(BaseService):
             params={"urn": dataset_urn},
             json=update.model_dump(exclude_none=True),
         )
-        return Dataset.model_validate(response)
+        dataset = Dataset.model_validate(response)
+        note = getattr(self.client, "_note_recent_dataset_change", None)
+        if callable(note):
+            note(dataset.urn)
+        return dataset
 
     def delete(self, dataset_urn: str) -> None:
         self.client.delete(
