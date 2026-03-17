@@ -16,6 +16,7 @@ import pytest
 from uuid import uuid4
 
 from kamiwaza_sdk.exceptions import APIError, DatasetNotFoundError
+from kamiwaza_sdk.schemas.retrieval import RetrievalJobStatus
 from kamiwaza_sdk.services.retrieval import RetrievalService
 
 pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
