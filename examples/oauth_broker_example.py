@@ -175,10 +175,10 @@ def main():
             lease = client.oauth_broker.get_lease_status(token.lease_id)
             print(f"   Lease is valid: {lease.is_valid}")
 
-            # Revoke the lease
-            print("   Revoking lease...")
-            client.oauth_broker.revoke_lease(token.lease_id)
-            print("   Lease revoked")
+            # Expire the lease
+            print("   Expiring lease...")
+            client.oauth_broker.expire_lease(token.lease_id)
+            print("   Lease expired")
 
         elif status.status == "needs_reauth":
             print("   Connection needs reauthorization")

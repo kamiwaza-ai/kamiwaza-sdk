@@ -5,7 +5,7 @@ from enum import Enum
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 
 # ========== Provider and Status Enums ==========
@@ -54,8 +54,8 @@ class AppInstallationUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
     description: str | None = Field(default=None, max_length=1000)
     allowed_tools: list[str] | None = Field(default=None)
-    lifecycle_status: str | None = Field(
-        default=None, description="active, disabled, or deleted"
+    lifecycle_status: Literal["active", "disabled", "deleted"] | None = Field(
+        default=None, description="Lifecycle status of the app installation"
     )
     app_metadata: dict | None = Field(default=None)
 
@@ -69,7 +69,7 @@ class AppInstallationResponse(BaseModel):
     name: str
     description: str | None = None
     owner_user_id: UUID
-    lifecycle_status: str
+    lifecycle_status: Literal["active", "disabled", "deleted"]
     allowed_tools: list[str]
     app_metadata: dict | None = None
     created_at: datetime
@@ -151,8 +151,8 @@ class MintTokenResponse(BaseModel):
 
     model_config = ConfigDict(from_attributes=True, extra="allow")
 
-    access_token: str = Field(
-        ..., description="Provider access token (use directly with provider API)"
+    access_token: SecretStr = Field(
+        ..., description="Provider access token (use .get_secret_value() to access)"
     )
     lease_id: str = Field(..., description="Lease identifier for tracking/revocation")
     expires_in: int = Field(..., description="Token expiry in seconds (from provider)")

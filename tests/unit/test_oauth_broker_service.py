@@ -504,7 +504,7 @@ def test_mint_ephemeral_token(dummy_client):
     )
     result = service.mint_ephemeral_token(request)
 
-    assert result.access_token == "ya29.abc123"
+    assert result.access_token.get_secret_value() == "ya29.abc123"
     assert result.lease_id == "lease-123"
     assert result.expires_in == 3600
     assert result.broker_lease_expires_in == 300
@@ -548,13 +548,13 @@ def test_get_lease_status(dummy_client):
     assert path == "/oauth-broker/tokens/leases/lease-123"
 
 
-def test_revoke_lease(dummy_client):
-    """Test revoking a lease."""
+def test_expire_lease(dummy_client):
+    """Test expiring a lease."""
     responses = {("delete", "/oauth-broker/tokens/leases/lease-123"): None}
     client = dummy_client(responses)
     service = OAuthBrokerService(client)
 
-    service.revoke_lease("lease-123")
+    service.expire_lease("lease-123")
 
     method, path, kwargs = client.calls[0]
     assert method == "delete"

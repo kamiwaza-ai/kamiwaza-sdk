@@ -485,8 +485,8 @@ def test_mint_ephemeral_token(live_kamiwaza_client, test_app):
     assert token.token_type == "Bearer"
     assert len(token.granted_scopes) > 0
 
-    # Cleanup: revoke the lease
-    live_kamiwaza_client.oauth_broker.revoke_lease(token.lease_id)
+    # Cleanup: expire the lease
+    live_kamiwaza_client.oauth_broker.expire_lease(token.lease_id)
 
 
 @pytest.mark.skip(reason="Requires active Google OAuth connection")
@@ -515,12 +515,12 @@ def test_get_lease_status(live_kamiwaza_client, test_app):
         assert lease.revoked_at is None
     finally:
         # Cleanup
-        live_kamiwaza_client.oauth_broker.revoke_lease(token.lease_id)
+        live_kamiwaza_client.oauth_broker.expire_lease(token.lease_id)
 
 
 @pytest.mark.skip(reason="Requires active Google OAuth connection")
-def test_revoke_lease(live_kamiwaza_client, test_app):
-    """Test revoking a token lease."""
+def test_expire_lease(live_kamiwaza_client, test_app):
+    """Test expiring a token lease."""
     # Mint a token first
     request = MintTokenRequest(
         app_installation_id=test_app.id,
@@ -530,8 +530,8 @@ def test_revoke_lease(live_kamiwaza_client, test_app):
     )
     token = live_kamiwaza_client.oauth_broker.mint_ephemeral_token(request)
 
-    # Revoke the lease
-    live_kamiwaza_client.oauth_broker.revoke_lease(token.lease_id)
+    # Expire the lease
+    live_kamiwaza_client.oauth_broker.expire_lease(token.lease_id)
 
     # Verify it's revoked
     lease = live_kamiwaza_client.oauth_broker.get_lease_status(token.lease_id)

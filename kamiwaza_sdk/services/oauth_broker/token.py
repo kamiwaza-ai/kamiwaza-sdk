@@ -39,7 +39,7 @@ class TokenMixin:
             ...     lease_duration=300
             ... )
             >>> token = client.oauth_broker.mint_ephemeral_token(request)
-            >>> # Use token.access_token with provider API
+            >>> # Use token.access_token.get_secret_value() with provider API
         """
         response = self.client.post(
             "/oauth-broker/tokens/mint", json=request.model_dump(exclude_none=True)
@@ -59,12 +59,13 @@ class TokenMixin:
         response = self.client.get(f"/oauth-broker/tokens/leases/{lease_id}")
         return LeaseStatusResponse.model_validate(response)
 
-    def revoke_lease(self, lease_id: str) -> None:
+    def expire_lease(self, lease_id: str) -> None:
         """
-        Revoke a token lease early.
+        Expire a token lease early.
 
         Note: This invalidates the lease tracking but does NOT revoke
-        the token with the provider.
+        the token with the provider. The provider token may remain valid
+        until its own expiry.
 
         Args:
             lease_id: Lease identifier
