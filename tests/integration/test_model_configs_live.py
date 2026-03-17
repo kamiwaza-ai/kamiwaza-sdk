@@ -14,7 +14,7 @@ import pytest
 from kamiwaza_sdk.exceptions import APIError
 from kamiwaza_sdk.schemas.models.model import CreateModelConfig, ModelConfig
 
-pytestmark = [pytest.mark.integration, pytest.mark.withoutresponses]
+pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
 
 CANONICAL_REPO = "mlx-community/Qwen3-4B-4bit"
 

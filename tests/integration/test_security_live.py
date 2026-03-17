@@ -14,7 +14,7 @@ import pytest
 
 from kamiwaza_sdk.exceptions import APIError
 
-pytestmark = [pytest.mark.integration, pytest.mark.withoutresponses]
+pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
 
 
 class TestSecurityPublicConfig:

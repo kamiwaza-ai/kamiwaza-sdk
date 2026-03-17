@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-pytestmark = [pytest.mark.integration, pytest.mark.withoutresponses]
+pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
 
 
 def test_current_user_is_resolvable(live_kamiwaza_client) -> None:

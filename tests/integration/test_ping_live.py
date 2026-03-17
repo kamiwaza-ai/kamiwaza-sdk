@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-pytestmark = [pytest.mark.integration, pytest.mark.withoutresponses]
+pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
 
 
 class TestPingEndpoint:

@@ -5,7 +5,7 @@ from typing import Dict
 
 import pytest
 
-pytestmark = [pytest.mark.integration, pytest.mark.withoutresponses]
+pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
 
 
 def _ingest_sample_dataset(client, ingestion_environment: Dict[str, str]) -> str:

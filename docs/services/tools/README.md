@@ -1,5 +1,20 @@
 # Tool Shed Service
 
+> **DEPRECATED:** The Tool Shed service (`client.tools`) is deprecated and will be removed in a future release. The Docker Compose-based Tool Shed is being replaced by Kubernetes CRD-based extensions. Use the **Extensions API** (`client.extensions`) instead.
+>
+> **Migration guide:**
+>
+> | Legacy (Tool Shed)                                            | New (Extensions API)                                  |
+> |---------------------------------------------------------------|-------------------------------------------------------|
+> | `client.tools.list_deployments()`                             | `client.extensions.list_extensions()`                 |
+> | `client.tools.deploy_from_template(template_name=..., ...)`  | `client.extensions.create_extension(request)`         |
+> | `client.tools.get_deployment(deployment_id)`                  | `client.extensions.get_extension(name)`               |
+> | `client.tools.stop_deployment(deployment_id)`                 | `client.extensions.delete_extension(name)`            |
+>
+> See the [Extensions Service documentation](../extensions/README.md) for full details.
+
+---
+
 The Tool Shed service enables deployment and management of MCP (Model Context Protocol) servers that provide tools and capabilities to AI assistants. These Tool servers can integrate with external services, APIs, and systems to extend AI functionality.
 
 ## Overview
@@ -242,6 +257,7 @@ Tool servers implement the Model Context Protocol (MCP), which standardizes how 
 
 ## See Also
 
-- [Example Notebook](../../../examples/08_app_garden_and_tools.ipynb) - Complete examples of Tool Shed usage
-- [App Service](../apps/README.md) - Deploy containerized applications
+- **[Extensions Service](../extensions/README.md)** - The recommended replacement for Tool Shed (K8s-native extensions)
+- [Example Notebook](../../../examples/08_app_garden_and_tools.ipynb) - Legacy examples of Tool Shed usage
+- [App Service](../apps/README.md) - Deploy containerized applications (also deprecated)
 - [Authentication Guide](../auth/README.md) - Setting up authentication
