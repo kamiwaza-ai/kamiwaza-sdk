@@ -1,5 +1,5 @@
 {
-  "name": "@kamiwaza/extensions-lib",
+  "name": "@kamiwaza-ai/extensions-lib",
   "version": "0.2.0",
   "description": "Kamiwaza extension developer utilities for Next.js auth, identity, and session management",
   "main": "./dist/index.js",
