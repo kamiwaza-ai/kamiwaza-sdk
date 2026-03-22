@@ -8,7 +8,6 @@ Provides standard session endpoints that all App Garden applications need:
 
 from __future__ import annotations
 
-import enum
 import logging
 import os
 import urllib.parse
@@ -91,9 +90,10 @@ def create_session_router(
         # Or with custom prefix
         app.include_router(create_session_router(prefix="/api"))
     """
-    effective_tags: list[str | enum.Enum] = list(tags) if tags else ["session"]
+    if tags is None:
+        tags = ["session"]
 
-    router = APIRouter(prefix=prefix, tags=effective_tags)
+    router = APIRouter(prefix=prefix, tags=tags)
     check_auth = auth_enabled_fn or _auth_enabled
 
     @router.get("/session")
