@@ -1172,7 +1172,15 @@ def live_session_api_key(
     live_username: str,
 ) -> Iterator[str]:
     """
-    Prefer a session PAT for general integration traffic.
+    Session PAT with **admin** scope for integration tests.
+
+    Uses scope="admin" so the PAT carries the admin role required by cluster,
+    model-config, retrieval, and serving endpoints.  Without admin scope the
+    server's scope mapping (scope_mapping.py) resolves to "write" which only
+    includes ["user", "editor", "viewer"] — causing ~22 403 failures.
+
+    See also ``live_session_write_key`` for a write-scoped PAT used by tests
+    that should *not* require admin privileges (authorization-regression guard).
 
     Auth-specific tests still use live_username/live_password directly, but the
     shared client fixture should not re-run password grants across the whole suite.
@@ -1212,6 +1220,75 @@ def live_session_api_key(
             bootstrap_client.auth.revoke_pat(pat_response.pat.jti)
         except (AuthenticationError, APIError):
             pass
+
+
+@pytest.fixture(scope="session")
+def live_session_write_key(
+    live_server_available: str,
+    live_api_key: str,
+    resolved_live_password: str,
+    live_username: str,
+) -> Iterator[str]:
+    """
+    Session PAT with **write** scope for authorization-regression tests.
+
+    Tests using ``live_write_client`` run at write scope (roles: user, editor,
+    viewer — no admin).  If an endpoint that should work for regular users
+    starts requiring admin, these tests will surface the regression as a 403.
+    """
+
+    if live_api_key.strip():
+        yield ""
+        return
+
+    username = live_username.strip()
+    password = resolved_live_password.strip()
+    if not username or not password:
+        yield ""
+        return
+
+    bootstrap_client = KamiwazaClient(live_server_available)
+    bootstrap_client.authenticator = UserPasswordAuthenticator(
+        username,
+        password,
+        bootstrap_client._auth_service,
+        token_store=_NoCacheTokenStore(),
+    )
+
+    pat_response = bootstrap_client.auth.create_pat(
+        PATCreate(
+            name=f"sdk-integration-write-{uuid.uuid4().hex[:10]}",
+            ttl_seconds=4 * 60 * 60,
+            scope="write",
+            aud="kamiwaza-platform",
+        )
+    )
+    try:
+        yield pat_response.token
+    finally:
+        try:
+            bootstrap_client.auth.revoke_pat(pat_response.pat.jti)
+        except (AuthenticationError, APIError):
+            pass
+
+
+@pytest.fixture
+def live_write_client(
+    live_server_available: str,
+    live_session_write_key: str,
+) -> KamiwazaClient:
+    """Client authenticated at write scope (no admin role).
+
+    Use this fixture for tests that verify non-admin endpoints work without
+    elevated privileges.
+    """
+    os.environ.setdefault("KAMIWAZA_VERIFY_SSL", "false")
+
+    api_key = live_session_write_key.strip()
+    if not api_key:
+        pytest.skip("Write-scoped session PAT unavailable")
+
+    return KamiwazaClient(live_server_available, api_key=api_key)
 
 
 @pytest.fixture(scope="session")
