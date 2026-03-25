@@ -1117,14 +1117,10 @@ def _require_embedding_model_for_marked_tests(request: pytest.FixtureRequest) ->
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     """Run explicit smoke tests first, then embedding-dependent tests near the front."""
     smoke_items = [
-        item
-        for item in items
-        if Path(str(item.fspath)).name.startswith("test_00_")
+        item for item in items if Path(str(item.fspath)).name.startswith("test_00_")
     ]
     remaining_items = [
-        item
-        for item in items
-        if not Path(str(item.fspath)).name.startswith("test_00_")
+        item for item in items if not Path(str(item.fspath)).name.startswith("test_00_")
     ]
     embedding_items = [
         item for item in remaining_items if "requires_embedding_model" in item.keywords
@@ -1205,7 +1201,7 @@ def live_session_api_key(
         PATCreate(
             name=f"sdk-integration-{uuid.uuid4().hex[:10]}",
             ttl_seconds=4 * 60 * 60,
-            scope="openid",
+            scope="admin",
             aud="kamiwaza-platform",
         )
     )
