@@ -32,6 +32,8 @@ pytest -m "integration and live" --live-base-url https://localhost/api --live-us
 
 `--live-base-url`, `--live-api-key`, `--live-username`, and `--live-password` override the defaults pulled from `KAMIWAZA_BASE_URL`, `KAMIWAZA_API_KEY`, `KAMIWAZA_USERNAME`, and `KAMIWAZA_PASSWORD`. When no API key is provided the fixtures fall back to password auth (defaulting to `admin` / `kamiwaza`, which may not match your local deployment). Live/integration tests automatically skip when container runtime access, server health, or credentials are missing, so CI can include them as optional jobs.
 
+Some live integration tests exercise admin-only mutation paths. For those tests, prefer supplying an admin-scoped PAT via `KAMIWAZA_API_KEY` instead of relying on the default session PAT minted from username/password bootstrap.
+
 ## Shared Fixtures
 - `dummy_client` – lightweight HTTP stub for unit tests (records calls, replays canned responses).
 - `client_factory` – builds real `KamiwazaClient` instances with consistent defaults.
