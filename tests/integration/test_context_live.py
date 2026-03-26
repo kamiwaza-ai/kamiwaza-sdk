@@ -240,6 +240,30 @@ def context_required_llm(context_llm_prerequisite: str) -> str:
     return context_llm_prerequisite
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _cleanup_stale_sdk_vdbs(shared_context_service: ContextService) -> None:
+    """Delete leftover sdk-* VDB/ontology instances from prior crashed runs."""
+    service = shared_context_service
+    for workroom_id in (None, DEFAULT_WORKROOM_ID):
+        try:
+            vdbs = service.list_vectordbs(workroom_id=workroom_id)
+        except APIError:
+            continue
+        for vdb in vdbs:
+            name = vdb.get("name", "")
+            if name.startswith("sdk-"):
+                _safe_delete_vectordb(
+                    service, vdb["id"], workroom_id=workroom_id
+                )
+        try:
+            ontologies = service.list_ontologies(workroom_id=workroom_id)
+        except APIError:
+            continue
+        for ont in ontologies:
+            if ont.get("name", "").startswith("sdk-"):
+                _safe_delete_ontology(service, ont["id"])
+
+
 @pytest.fixture(scope="session")
 def shared_vectordb(shared_context_service: ContextService) -> str:
     """Shared global VectorDB instance for non-destructive vector tests."""
