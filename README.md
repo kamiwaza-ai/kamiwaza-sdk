@@ -64,6 +64,7 @@ More examples coming soon!
 | `client.openai` | OpenAI API compatible| [OpenAI Service](docs/services/openai/README.md) |
 | `client.apps` | App deployment | [App Service](docs/services/apps/README.md) |
 | `client.tools` | Tool servers (MCP) | [Tool Service](docs/services/tools/README.md) |
+| `client.skills` | Skills Library catalog and package workflows | [Skills Service](docs/services/skills/README.md) |
 | `client.ingestion` | Data ingestion | [Ingestion Service](docs/services/ingestion/README.md) |
 
 ## Auth / User Management (0.9.0)
