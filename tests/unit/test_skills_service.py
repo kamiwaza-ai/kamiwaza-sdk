@@ -10,6 +10,7 @@ from kamiwaza_sdk.client import KamiwazaClient
 from kamiwaza_sdk.exceptions import APIError, NotFoundError
 from kamiwaza_sdk.schemas.skills import (
     SkillLibraryDetailResponse,
+    SkillLibraryExportRequest,
     SkillLibraryListResponse,
     SkillLibraryUpdateRequest,
     SkillPackageDownload,
@@ -187,6 +188,20 @@ def test_import_skill_package_sends_multipart_upload(dummy_client):
     assert kwargs["files"] == {"file": ("skill.zip", b"zip-bytes", "application/zip")}
 
 
+def test_import_skill_package_sanitizes_filename(dummy_client):
+    client = dummy_client({("post", "/skills/import"): _detail_payload()})
+    service = SkillsService(client)
+
+    service.import_skill_package(
+        filename="../../unsafe/skill.zip",
+        file_content=b"zip-bytes",
+    )
+
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("post", "/skills/import")
+    assert kwargs["files"] == {"file": ("skill.zip", b"zip-bytes", "application/zip")}
+
+
 def test_download_skill_package_returns_typed_download(dummy_client):
     skill_id = str(uuid4())
     client = dummy_client(
@@ -300,6 +315,21 @@ def test_update_skill_metadata_puts_json_payload(dummy_client):
     }
 
 
+def test_update_skill_metadata_preserves_explicit_none(dummy_client):
+    payload = _detail_payload()
+    client = dummy_client({("put", f"/skills/{payload['id']}"): payload})
+    service = SkillsService(client)
+
+    service.update_skill_metadata(
+        payload["id"],
+        SkillLibraryUpdateRequest(classification=None),
+    )
+
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("put", f"/skills/{payload['id']}")
+    assert kwargs["json"] == {"classification": None}
+
+
 def test_update_skill_metadata_maps_404(dummy_client):
     skill_id = str(uuid4())
     client = _RaisingClient(
@@ -353,6 +383,33 @@ def test_extract_filename_prefers_rfc5987_value():
     assert filename == "skills-export.zip"
 
 
+def test_extract_filename_sanitizes_path_traversal_segments():
+    filename = SkillsService._extract_filename(
+        'attachment; filename="../../.ssh/authorized_keys"',
+        default="download.zip",
+    )
+
+    assert filename == "authorized_keys"
+
+
+def test_extract_filename_sanitizes_rfc5987_path_traversal():
+    filename = SkillsService._extract_filename(
+        "attachment; filename*=UTF-8''..%2F..%2Fsecrets.zip",
+        default="download.zip",
+    )
+
+    assert filename == "secrets.zip"
+
+
+def test_extract_filename_falls_back_for_empty_value():
+    filename = SkillsService._extract_filename(
+        'attachment; filename=""',
+        default="download.zip",
+    )
+
+    assert filename == "download.zip"
+
+
 def test_skill_detail_schema_accepts_extra_fields():
     payload = _detail_payload()
     payload["extra_field"] = "extra-value"
@@ -375,8 +432,19 @@ def test_skill_package_download_schema_accepts_extra_fields():
     )
 
     assert download.model_extra == {"etag": "abc123"}
+    assert "content=" not in repr(download)
 
 
 def test_update_request_requires_at_least_one_field():
     with pytest.raises(ValidationError, match="At least one field must be provided"):
         SkillLibraryUpdateRequest()
+
+
+def test_update_request_rejects_unknown_fields():
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        SkillLibraryUpdateRequest(unknown_field="value")
+
+
+def test_export_request_rejects_unknown_fields():
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        SkillLibraryExportRequest(skill_ids=[uuid4()], unknown_field="value")

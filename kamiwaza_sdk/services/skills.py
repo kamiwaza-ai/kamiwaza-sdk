@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import os
 import re
 from typing import Sequence
 from urllib.parse import unquote
 from uuid import UUID
+
+import requests
 
 from ..exceptions import APIError, NotFoundError
 from ..schemas.skills import (
@@ -66,9 +69,10 @@ class SkillsService(BaseService):
         content_type: str = "application/zip",
     ) -> SkillLibraryDetailResponse:
         """Import a skill package as a new draft skill."""
+        upload_filename = self._sanitize_filename(filename, default="skill.zip")
         response = self.client.post(
             "/skills/import",
-            files={"file": (filename, file_content, content_type)},
+            files={"file": (upload_filename, file_content, content_type)},
         )
         return SkillLibraryDetailResponse.model_validate(response)
 
@@ -136,7 +140,7 @@ class SkillsService(BaseService):
         try:
             response = self.client.put(
                 f"/skills/{skill_id}",
-                json=update.model_dump(exclude_none=True),
+                json=update.model_dump(exclude_unset=True),
             )
         except APIError as exc:
             if exc.status_code == 404:
@@ -156,7 +160,7 @@ class SkillsService(BaseService):
 
     @staticmethod
     def _parse_download_response(
-        response,
+        response: requests.Response,
         *,
         default_filename: str,
     ) -> SkillPackageDownload:
@@ -181,12 +185,25 @@ class SkillsService(BaseService):
             encoded = star_match.group(1).strip().strip('"')
             parts = encoded.split("'", 2)
             if len(parts) == 3:
-                return unquote(parts[2]) or default
-            return unquote(encoded) or default
+                return SkillsService._sanitize_filename(
+                    unquote(parts[2]),
+                    default=default,
+                )
+            return SkillsService._sanitize_filename(unquote(encoded), default=default)
 
         filename_match = _FILENAME_RE.search(content_disposition)
         if not filename_match:
             return default
 
         filename = filename_match.group(1) or filename_match.group(2) or default
-        return filename.strip().strip('"') or default
+        return SkillsService._sanitize_filename(
+            filename.strip().strip('"'),
+            default=default,
+        )
+
+    @staticmethod
+    def _sanitize_filename(filename: str, *, default: str) -> str:
+        sanitized = os.path.basename(filename.replace("\\", "/")).strip()
+        if sanitized in {"", ".", ".."}:
+            return default
+        return sanitized

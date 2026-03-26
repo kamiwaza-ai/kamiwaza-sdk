@@ -53,6 +53,10 @@ def _skills_service_available(service: SkillsService) -> bool:
 def _skip_for_unavailable_mutation(exc: APIError) -> None:
     if exc.status_code == 403:
         pytest.skip("Skills mutation paths require operator/admin access")
+    if exc.status_code == 404:
+        pytest.skip(
+            "Skills Library mutation endpoints are unavailable in this environment"
+        )
     if exc.status_code == 503:
         pytest.skip("Skills Library storage is unavailable in this environment")
     raise exc

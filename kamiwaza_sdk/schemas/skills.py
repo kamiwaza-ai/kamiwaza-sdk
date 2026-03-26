@@ -77,7 +77,7 @@ class SkillLibraryDetailResponse(BaseModel):
 class SkillLibraryUpdateRequest(BaseModel):
     """Metadata update request for a skill."""
 
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="forbid")
 
     display_name: str | None = Field(default=None, min_length=1, max_length=255)
     category: str | None = Field(default=None, min_length=1, max_length=100)
@@ -90,7 +90,7 @@ class SkillLibraryUpdateRequest(BaseModel):
     @model_validator(mode="after")
     def validate_non_empty(self) -> "SkillLibraryUpdateRequest":
         """Require at least one field when updating metadata."""
-        if not self.model_fields_set:
+        if not self.model_dump(exclude_unset=True):
             raise ValueError("At least one field must be provided")
         return self
 
@@ -98,7 +98,7 @@ class SkillLibraryUpdateRequest(BaseModel):
 class SkillLibraryExportRequest(BaseModel):
     """Request body for exporting one or more skills."""
 
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="forbid")
 
     skill_ids: list[UUID] = Field(min_length=1, max_length=100)
 
@@ -110,7 +110,7 @@ class SkillPackageDownload(BaseModel):
 
     filename: str
     content_type: str
-    content: bytes
+    content: bytes = Field(repr=False)
 
 
 SkillPackageContent = bytes | IO[bytes]
