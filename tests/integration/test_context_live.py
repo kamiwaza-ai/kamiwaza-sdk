@@ -249,7 +249,9 @@ def _is_stale_sdk_resource(resource: dict, max_age: timedelta) -> bool:
     if not created_at:
         return True  # No timestamp — assume stale
     try:
-        age = datetime.now(timezone.utc) - datetime.fromisoformat(created_at)
+        age = datetime.now(timezone.utc) - datetime.fromisoformat(
+            created_at.replace("Z", "+00:00")
+        )
     except (TypeError, ValueError):
         return True
     return age >= max_age
