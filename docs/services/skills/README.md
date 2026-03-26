@@ -139,8 +139,6 @@ bundle = client.skills.export_skills_bundle([first_skill_id, second_skill_id])
 print(bundle.filename)  # skills-export.zip
 ```
 
-This bundle export endpoint is implemented in the backend even though it was not part of the original phase-1 design draft.
-
 ### `delete_skill(skill_id) -> bool`
 
 Soft-delete a skill.

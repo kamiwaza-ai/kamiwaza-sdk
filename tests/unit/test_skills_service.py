@@ -401,6 +401,24 @@ def test_extract_filename_sanitizes_rfc5987_path_traversal():
     assert filename == "secrets.zip"
 
 
+def test_extract_filename_falls_back_without_header():
+    filename = SkillsService._extract_filename(
+        "",
+        default="download.zip",
+    )
+
+    assert filename == "download.zip"
+
+
+def test_extract_filename_falls_back_for_empty_rfc5987_value():
+    filename = SkillsService._extract_filename(
+        "attachment; filename*=UTF-8''",
+        default="download.zip",
+    )
+
+    assert filename == "download.zip"
+
+
 def test_extract_filename_falls_back_for_empty_value():
     filename = SkillsService._extract_filename(
         'attachment; filename=""',
