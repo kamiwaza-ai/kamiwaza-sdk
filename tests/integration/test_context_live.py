@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import os
 import time
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
@@ -240,27 +241,47 @@ def context_required_llm(context_llm_prerequisite: str) -> str:
     return context_llm_prerequisite
 
 
+def _is_stale_sdk_resource(resource: dict, max_age: timedelta) -> bool:
+    """Return True if resource has an sdk-* name and is older than *max_age*."""
+    if not resource.get("name", "").startswith("sdk-") or not resource.get("id"):
+        return False
+    created_at = resource.get("created_at", "")
+    if not created_at:
+        return True  # No timestamp — assume stale
+    try:
+        age = datetime.now(timezone.utc) - datetime.fromisoformat(created_at)
+    except (TypeError, ValueError):
+        return True
+    return age >= max_age
+
+
+_STALE_THRESHOLD = timedelta(minutes=15)
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _cleanup_stale_sdk_vdbs(shared_context_service: ContextService) -> None:
-    """Delete leftover sdk-* VDB/ontology instances from prior crashed runs."""
+    """Delete leftover sdk-* VDB/ontology instances from prior crashed runs.
+
+    Only targets resources older than 15 minutes to avoid interfering with
+    concurrent test sessions or manually-created resources.
+    """
     service = shared_context_service
     for workroom_id in (None, DEFAULT_WORKROOM_ID):
         try:
             vdbs = service.list_vectordbs(workroom_id=workroom_id)
         except APIError:
-            continue
+            vdbs = []
         for vdb in vdbs:
-            name = vdb.get("name", "")
-            if name.startswith("sdk-"):
+            if _is_stale_sdk_resource(vdb, _STALE_THRESHOLD):
                 _safe_delete_vectordb(
                     service, vdb["id"], workroom_id=workroom_id
                 )
         try:
             ontologies = service.list_ontologies(workroom_id=workroom_id)
         except APIError:
-            continue
+            ontologies = []
         for ont in ontologies:
-            if ont.get("name", "").startswith("sdk-"):
+            if _is_stale_sdk_resource(ont, _STALE_THRESHOLD):
                 _safe_delete_ontology(service, ont["id"])
 
 
