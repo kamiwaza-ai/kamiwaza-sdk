@@ -13,16 +13,9 @@ from typing import Dict, List, Optional
 from rich.console import Console
 
 from kamiwaza_extensions.connections import ConnectionInfo, ConnectionManager
+from kamiwaza_extensions.constants import COMPOSE_FILENAMES
 
 console = Console(stderr=True)
-
-# Compose file names checked in order
-_COMPOSE_FILENAMES = (
-    "docker-compose.yml",
-    "docker-compose.yaml",
-    "compose.yml",
-    "compose.yaml",
-)
 
 
 class DevLocalRunner:
@@ -98,12 +91,12 @@ class DevLocalRunner:
             return ext_dir.name
 
     def _find_compose_file(self, ext_dir: Path) -> Path:
-        for name in _COMPOSE_FILENAMES:
+        for name in COMPOSE_FILENAMES:
             candidate = ext_dir / name
             if candidate.exists():
                 return candidate
         raise FileNotFoundError(
-            f"No compose file found in {ext_dir}. Expected one of: {', '.join(_COMPOSE_FILENAMES)}"
+            f"No compose file found in {ext_dir}. Expected one of: {', '.join(COMPOSE_FILENAMES)}"
         )
 
     # ------------------------------------------------------------------
@@ -142,7 +135,7 @@ def build_env_overlay(connection: ConnectionInfo, extension_name: str) -> Dict[s
     url = connection.url
     return {
         "KAMIWAZA_API_URL": url,
-        "KAMIWAZA_PUBLIC_API_URL": url.replace("/api", "") if "/api" in url else url,
+        "KAMIWAZA_PUBLIC_API_URL": url.removesuffix("/api"),
         "KAMIWAZA_ENDPOINT": f"{url}/v1" if not url.endswith("/v1") else url,
         "KAMIWAZA_USE_AUTH": "false",
         "KAMIWAZA_APP_NAME": extension_name,

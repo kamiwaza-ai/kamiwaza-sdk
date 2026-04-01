@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import stat
 import time
 from dataclasses import dataclass
@@ -12,6 +13,9 @@ from typing import List, Optional
 
 from kamiwaza_sdk.token_store import FileTokenStore, StoredToken
 
+# Connection names must be safe for use as directory names
+_CONN_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+
 
 @dataclass
 class ConnectionInfo:
@@ -19,6 +23,15 @@ class ConnectionInfo:
     url: str
     active: bool
     created_at: float
+
+
+def _validate_connection_name(name: str) -> None:
+    """Validate connection name is safe for filesystem paths."""
+    if not _CONN_NAME_RE.match(name):
+        raise ValueError(
+            f"Invalid connection name '{name}'. "
+            "Must contain only letters, digits, hyphens, and underscores."
+        )
 
 
 class ConnectionManager:
@@ -47,6 +60,7 @@ class ConnectionManager:
 
     def add_connection(self, name: str, url: str, token: StoredToken) -> None:
         """Store a new connection with its token. Sets as active if first connection."""
+        _validate_connection_name(name)
         config = self._load_config()
 
         is_first = len(config.get("connections", {})) == 0
@@ -64,6 +78,7 @@ class ConnectionManager:
 
     def remove_connection(self, name: str) -> None:
         """Remove connection and its token file."""
+        _validate_connection_name(name)
         config = self._load_config()
         connections = config.get("connections", {})
 

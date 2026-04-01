@@ -59,6 +59,14 @@ class TestEnvOverlay:
         overlay = build_env_overlay(conn, "my-app")
         assert overlay["KAMIWAZA_PUBLIC_API_URL"] == "https://example.com"
 
+    def test_overlay_does_not_corrupt_mid_url_api(self):
+        """Regression: str.replace('/api', '') corrupted URLs with /api mid-path."""
+        conn = ConnectionInfo(
+            name="test", url="https://example.com/api-gateway/api", active=True, created_at=0.0
+        )
+        overlay = build_env_overlay(conn, "my-app")
+        assert overlay["KAMIWAZA_PUBLIC_API_URL"] == "https://example.com/api-gateway"
+
 
 @pytest.mark.unit
 class TestComposeDetection:

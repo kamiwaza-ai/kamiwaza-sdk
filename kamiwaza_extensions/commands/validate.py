@@ -72,7 +72,9 @@ def run_validate(*, path: Optional[str], json_output: bool) -> None:
 
 
 def _find_compose_file(ext_dir: Path) -> Optional[Path]:
-    for name in ("docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"):
+    from kamiwaza_extensions.constants import COMPOSE_FILENAMES
+
+    for name in COMPOSE_FILENAMES:
         candidate = ext_dir / name
         if candidate.exists():
             return candidate

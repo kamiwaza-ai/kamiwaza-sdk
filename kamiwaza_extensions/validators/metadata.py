@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
@@ -13,13 +12,7 @@ from packaging.version import InvalidVersion, Version
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from kamiwaza_extensions import __version__
-
-
-@dataclass
-class ValidationResult:
-    passed: bool
-    errors: List[str] = field(default_factory=list)
-    warnings: List[str] = field(default_factory=list)
+from kamiwaza_extensions.validators.result import ValidationResult
 
 
 # Semver regex: X.Y.Z with optional pre-release

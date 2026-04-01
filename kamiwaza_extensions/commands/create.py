@@ -7,12 +7,10 @@ from rich.console import Console
 
 console = Console()
 
-VALID_TYPES = ("app", "tool", "service")
-
 
 def run_create(*, type_: str, name: str) -> None:
     """Scaffold a new extension project."""
-    from kamiwaza_extensions.scaffolder import Scaffolder
+    from kamiwaza_extensions.scaffolder import Scaffolder, VALID_TYPES
 
     if type_ not in VALID_TYPES:
         console.print(f"[red]Error:[/red] Invalid type '{type_}'. Must be one of: {', '.join(VALID_TYPES)}")

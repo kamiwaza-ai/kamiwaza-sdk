@@ -59,14 +59,17 @@ def _login_with_api_key(mgr, *, url: str, api_key: str, name: str) -> None:
 
 def _login_with_password(mgr, *, url: str, name: str) -> None:
     from kamiwaza_sdk import KamiwazaClient
+    from kamiwaza_sdk.authentication import UserPasswordAuthenticator
+    from kamiwaza_sdk.schemas.auth import PATCreate
     from kamiwaza_sdk.token_store import StoredToken
 
     username = typer.prompt("Username")
     password = typer.prompt("Password", hide_input=True)
 
-    # Authenticate and create a PAT
-    client = KamiwazaClient(base_url=url, username=username, password=password)
-    pat_response = client.auth.create_pat({"name": f"kz-ext-{name}"})
+    # Authenticate via SDK and create a PAT
+    client = KamiwazaClient(base_url=url)
+    client.authenticator = UserPasswordAuthenticator(username, password, client.auth)
+    pat_response = client.auth.create_pat(PATCreate(name=f"kz-ext-{name}"))
     pat_token = pat_response.token
 
     # Validate the PAT works
@@ -88,9 +91,11 @@ def _validate_connection(url: str, token: str) -> None:
             timeout=10,
         )
         resp.raise_for_status()
-    except requests.RequestException:
-        # Connection validation is best-effort; don't block login
-        pass
+    except requests.RequestException as exc:
+        console.print(
+            f"[yellow]Warning:[/yellow] Could not validate connection to {url}: {exc}\n"
+            "  Credentials were stored, but the server may be unreachable."
+        )
 
 
 def _show_connections(mgr) -> None:

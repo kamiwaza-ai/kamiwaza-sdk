@@ -93,3 +93,15 @@ class TestConnectionManager:
     def test_empty_list(self, mgr):
         assert mgr.list_connections() == []
         assert mgr.get_active_connection() is None
+
+    def test_path_traversal_rejected(self, mgr):
+        with pytest.raises(ValueError, match="Invalid connection name"):
+            mgr.add_connection("../../.ssh", "https://evil.example", _make_token())
+
+    def test_path_traversal_in_remove_rejected(self, mgr):
+        with pytest.raises(ValueError, match="Invalid connection name"):
+            mgr.remove_connection("../etc")
+
+    def test_special_chars_rejected(self, mgr):
+        with pytest.raises(ValueError, match="Invalid connection name"):
+            mgr.add_connection("bad name!", "https://a.example", _make_token())

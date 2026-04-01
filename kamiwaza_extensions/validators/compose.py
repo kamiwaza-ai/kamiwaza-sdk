@@ -3,18 +3,12 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import yaml
 
-
-@dataclass
-class ValidationResult:
-    passed: bool
-    errors: List[str] = field(default_factory=list)
-    warnings: List[str] = field(default_factory=list)
+from kamiwaza_extensions.validators.result import ValidationResult
 
 
 class ComposeValidator:
