@@ -84,8 +84,8 @@ class CreateExtension(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     name: str = Field(..., description="Extension name (K8s DNS label)")
-    type: Literal["app", "tool"] = Field(
-        ..., description="Extension type: 'app' or 'tool'"
+    type: Literal["app", "tool", "service"] = Field(
+        ..., description="Extension type: 'app', 'tool', or 'service'"
     )
     version: str = Field(..., description="Extension version (semver)")
     services: List[ExtensionServiceSpec] = Field(..., min_length=1)
