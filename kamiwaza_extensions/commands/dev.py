@@ -3,12 +3,48 @@
 from __future__ import annotations
 
 import os
+import subprocess
 from typing import Optional
+from urllib.parse import urlparse
 
 import typer
 from rich.console import Console
 
 console = Console(stderr=True)
+
+
+def _detect_kind_registry() -> Optional[str]:
+    """Auto-detect a Kind local registry via the ``local-registry-hosting`` configmap.
+
+    Returns ``localhost:<port>`` if found, else ``None``.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "kubectl", "get", "configmap", "local-registry-hosting",
+                "-n", "kube-public",
+                "-o", "jsonpath={.data.localRegistryHosting\\.v1}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return None
+
+        # Parse the YAML-ish output: host: "host.docker.internal:5001"
+        for line in result.stdout.strip().splitlines():
+            line = line.strip()
+            if line.startswith("host:"):
+                host_val = line.split(":", 1)[1].strip().strip('"').strip("'")
+                # Map host.docker.internal to localhost (it may not resolve on the host)
+                parsed = urlparse(f"//{host_val}")
+                port = parsed.port or 5001
+                console.print(f"[dim]Auto-detected Kind local registry: localhost:{port}[/dim]")
+                return f"localhost:{port}"
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    return None
 
 
 def run_dev_remote(
@@ -74,10 +110,10 @@ def run_dev_remote(
     # 4. Derive registry
     registry = os.environ.get("KAMIWAZA_REGISTRY")
     if not registry:
-        # Convention: registry.{cluster-domain}
+        registry = _detect_kind_registry()
+    if not registry:
+        # Fallback: convention registry.{cluster-domain}
         cluster_url = connection.url.removesuffix("/api")
-        # Extract domain from URL
-        from urllib.parse import urlparse
         parsed = urlparse(cluster_url)
         registry = f"registry.{parsed.hostname}"
 
