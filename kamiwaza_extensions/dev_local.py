@@ -1,8 +1,7 @@
-"""DevLocalRunner — extension detection, env overlay, Docker Compose lifecycle."""
+"""DevLocalRunner — env overlay, Docker Compose lifecycle for local dev."""
 
 from __future__ import annotations
 
-import json
 import os
 import signal
 import subprocess
@@ -13,7 +12,7 @@ from typing import Dict, List, Optional
 from rich.console import Console
 
 from kamiwaza_extensions.connections import ConnectionInfo, ConnectionManager
-from kamiwaza_extensions.constants import COMPOSE_FILENAMES
+from kamiwaza_extensions.extension_detector import ExtensionDetector
 
 console = Console(stderr=True)
 
@@ -23,82 +22,42 @@ class DevLocalRunner:
 
     def __init__(self, config_dir: Optional[Path] = None) -> None:
         self._conn_mgr = ConnectionManager(config_dir=config_dir)
+        self._detector = ExtensionDetector()
 
     def run(self, *, detach: bool = False) -> int:
-        # 1. Find extension
-        ext_dir = self._find_extension()
+        # 1. Detect extension (shared logic)
+        info = self._detector.detect()
 
-        # 2. Read extension name from kamiwaza.json
-        ext_name = self._read_extension_name(ext_dir)
+        # 2. Ensure compose file exists
+        if info.compose_path is None:
+            raise FileNotFoundError(
+                f"No compose file found in {info.path}. "
+                "Expected docker-compose.yml or compose.yml."
+            )
 
-        # 3. Find compose file
-        compose_file = self._find_compose_file(ext_dir)
-
-        # 4. Detect compose command
+        # 3. Detect compose command
         compose_cmd = detect_compose_command()
 
-        # 5. Build env overlay
+        # 4. Build env overlay
         connection = self._conn_mgr.get_active_connection()
         env = os.environ.copy()
         if connection:
-            overlay = build_env_overlay(connection, ext_name)
+            overlay = build_env_overlay(connection, info.name)
             env.update(overlay)
             console.print(f"[dim]Using connection:[/dim] {connection.name} ({connection.url})")
             console.print(f"[dim]KAMIWAZA_USE_AUTH=false (local dev mode)[/dim]")
         else:
             console.print("[yellow]No Kamiwaza connection configured — running in standalone mode[/yellow]")
 
-        # 6. Build command
-        cmd = compose_cmd + ["-f", str(compose_file), "up", "--build"]
+        # 5. Build command
+        cmd = compose_cmd + ["-f", str(info.compose_path), "up", "--build"]
         if detach:
             cmd.append("-d")
 
         console.print(f"[dim]Running:[/dim] {' '.join(cmd)}")
 
-        # 7. Run subprocess with signal forwarding
-        return self._run_subprocess(cmd, env=env, cwd=str(ext_dir))
-
-    # ------------------------------------------------------------------
-    # Extension detection
-    # ------------------------------------------------------------------
-
-    def _find_extension(self) -> Path:
-        cwd = Path.cwd()
-
-        # Check root
-        if (cwd / "kamiwaza.json").exists():
-            return cwd
-
-        # Check one level deep
-        found = [d.parent for d in cwd.glob("*/kamiwaza.json")]
-        if len(found) == 1:
-            return found[0]
-        if len(found) > 1:
-            dirs = ", ".join(str(d.name) for d in found)
-            raise FileNotFoundError(
-                f"Multiple kamiwaza.json found: {dirs}. Run from inside a specific extension directory."
-            )
-
-        raise FileNotFoundError(
-            "No kamiwaza.json found. Run this in an extension directory or use `kz-ext create`."
-        )
-
-    def _read_extension_name(self, ext_dir: Path) -> str:
-        try:
-            with (ext_dir / "kamiwaza.json").open("r") as f:
-                data = json.load(f)
-            return data.get("name", ext_dir.name)
-        except (json.JSONDecodeError, FileNotFoundError):
-            return ext_dir.name
-
-    def _find_compose_file(self, ext_dir: Path) -> Path:
-        for name in COMPOSE_FILENAMES:
-            candidate = ext_dir / name
-            if candidate.exists():
-                return candidate
-        raise FileNotFoundError(
-            f"No compose file found in {ext_dir}. Expected one of: {', '.join(COMPOSE_FILENAMES)}"
-        )
+        # 6. Run subprocess with signal forwarding
+        return self._run_subprocess(cmd, env=env, cwd=str(info.path))
 
     # ------------------------------------------------------------------
     # Subprocess management

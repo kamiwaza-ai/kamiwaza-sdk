@@ -14,7 +14,7 @@ app = typer.Typer(
     help="Kamiwaza extension developer tools.",
 )
 
-dev_app = typer.Typer(help="Local development commands.")
+dev_app = typer.Typer(help="Development commands (local and remote deploy).")
 app.add_typer(dev_app, name="dev")
 
 console = Console(stderr=True)
@@ -147,6 +147,37 @@ def create(
     """Scaffold a new extension project."""
     from kamiwaza_extensions.commands.create import run_create
     run_create(type_=type_, name=name)
+
+
+@dev_app.callback(invoke_without_command=True)
+def dev_callback(
+    ctx: typer.Context,
+    no_build: bool = typer.Option(False, "--no-build", help="Skip image build"),
+    no_push: bool = typer.Option(False, "--no-push", help="Skip registry push"),
+    service: Optional[str] = typer.Option(None, "--service", "-s", help="Build/push one service only"),
+    revision: Optional[str] = typer.Option(None, "--revision", "-r", help="Custom revision tag"),
+) -> None:
+    """Build, push, and deploy extension to Kamiwaza cluster.
+
+    With no subcommand, runs the full remote deploy pipeline.
+    Use 'kz-ext dev local' for local Docker Compose development.
+    """
+    if ctx.invoked_subcommand is not None:
+        return
+    # No subcommand → run remote deploy
+    from kamiwaza_extensions.commands.dev import run_dev_remote
+    try:
+        run_dev_remote(
+            no_build=no_build,
+            no_push=no_push,
+            service=service,
+            revision=revision,
+            verbose=_state.verbose,
+        )
+    except typer.Exit:
+        raise
+    except Exception as exc:
+        _handle_exception(exc)
 
 
 @dev_app.command("local")

@@ -1,0 +1,161 @@
+"""Map transformed compose + metadata to CreateExtension SDK model."""
+
+from __future__ import annotations
+
+import hashlib
+from typing import Any, Dict, List, Optional
+
+from kamiwaza_sdk.schemas.extensions import (
+    CreateExtension,
+    ExtensionPort,
+    ExtensionServiceSpec,
+    KamiwazaIntegrationSpec,
+    NetworkingSpec,
+    ResourceSpec,
+    SecuritySpec,
+)
+
+from kamiwaza_extensions.connections import ConnectionInfo
+
+
+class PayloadBuilder:
+    """Build a ``CreateExtension`` request from extension metadata and
+    a transformed compose dict."""
+
+    def build(
+        self,
+        metadata: Dict[str, Any],
+        transformed_compose: Dict[str, Any],
+        connection: ConnectionInfo,
+        dev_name: str,
+    ) -> CreateExtension:
+        services = self._build_services(transformed_compose)
+        ext_type = self._resolve_type(metadata)
+
+        return CreateExtension(
+            name=dev_name,
+            type=ext_type,
+            version=metadata.get("version", "0.0.0"),
+            services=services,
+            kamiwaza=KamiwazaIntegrationSpec(
+                api_url=connection.url,
+                public_api_url=connection.url.removesuffix("/api"),
+                use_auth="true",
+            ),
+            networking=NetworkingSpec(ingress_enabled=True),
+            security=SecuritySpec(
+                risk_tier=metadata.get("risk_tier", 1),
+                source_type=metadata.get("source_type", "kamiwaza"),
+                verified=metadata.get("verified", False),
+            ),
+        )
+
+    # ------------------------------------------------------------------
+    # Dev naming
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def make_dev_name(extension_name: str, user_id: Optional[str] = None) -> str:
+        """Generate a unique dev deployment name.
+
+        Format: ``{name}-dev-{hash6}`` where *hash6* is derived from the
+        user ID (or ``"local"`` when no user context).
+        """
+        seed = user_id or "local"
+        h = hashlib.sha256(seed.encode()).hexdigest()[:6]
+        return f"{extension_name}-dev-{h}"
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _build_services(
+        self, transformed: Dict[str, Any]
+    ) -> List[ExtensionServiceSpec]:
+        services_dict = transformed.get("services") or {}
+        specs: List[ExtensionServiceSpec] = []
+        primary_assigned = False
+
+        for svc_name, svc in services_dict.items():
+            ports = self._parse_ports(svc.get("ports", []))
+            env = self._parse_env(svc.get("environment", []))
+            resources = self._parse_resources(svc)
+
+            is_primary = False
+            if not primary_assigned and ports:
+                # First service with ports, or named "frontend"
+                is_primary = True
+                primary_assigned = True
+            if svc_name == "frontend" and not primary_assigned:
+                is_primary = True
+                primary_assigned = True
+
+            specs.append(
+                ExtensionServiceSpec(
+                    name=svc_name,
+                    image=svc.get("image", ""),
+                    primary=is_primary,
+                    ports=ports,
+                    env=env if env else None,
+                    replicas=1,
+                    resources=resources,
+                )
+            )
+
+        return specs
+
+    @staticmethod
+    def _parse_ports(ports: List[Any]) -> List[ExtensionPort]:
+        result = []
+        for p in ports:
+            s = str(p)
+            # Strip protocol suffix if present
+            proto = "TCP"
+            if "/" in s:
+                s, proto_str = s.rsplit("/", 1)
+                proto = proto_str.upper() if proto_str.upper() in ("TCP", "UDP") else "TCP"
+            try:
+                result.append(ExtensionPort(container_port=int(s), protocol=proto))
+            except (ValueError, TypeError):
+                continue
+        return result
+
+    @staticmethod
+    def _parse_env(env: Any) -> List[Dict[str, Any]]:
+        """Convert compose env formats to K8s env format."""
+        result = []
+        if isinstance(env, list):
+            for item in env:
+                if isinstance(item, str):
+                    if "=" in item:
+                        key, _, val = item.partition("=")
+                        result.append({"name": key, "value": val})
+                    else:
+                        result.append({"name": item})
+                elif isinstance(item, dict):
+                    for k, v in item.items():
+                        result.append({"name": str(k), "value": str(v)})
+        elif isinstance(env, dict):
+            for k, v in env.items():
+                entry: Dict[str, Any] = {"name": str(k)}
+                if v is not None:
+                    entry["value"] = str(v)
+                result.append(entry)
+        return result
+
+    @staticmethod
+    def _parse_resources(svc: Dict[str, Any]) -> Optional[ResourceSpec]:
+        deploy = svc.get("deploy", {})
+        res = deploy.get("resources", {})
+        limits = res.get("limits")
+        requests = res.get("requests") or res.get("reservations")
+        if limits or requests:
+            return ResourceSpec(limits=limits, requests=requests)
+        return None
+
+    @staticmethod
+    def _resolve_type(metadata: Dict[str, Any]) -> str:
+        t = metadata.get("template_type") or metadata.get("type", "app")
+        if t not in ("app", "tool", "service"):
+            return "app"
+        return t
