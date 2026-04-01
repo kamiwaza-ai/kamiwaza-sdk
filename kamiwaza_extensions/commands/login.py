@@ -89,9 +89,10 @@ def _validate_connection(url: str, token: str, *, verify_ssl: bool = True) -> No
     """Check connection by hitting a lightweight endpoint."""
     import requests
 
+    base = url.removesuffix("/api") if url.endswith("/api") else url
     try:
         resp = requests.get(
-            f"{url}/api/health",
+            f"{base}/api/health",
             headers={"Authorization": f"Bearer {token}"},
             timeout=10,
             verify=verify_ssl,
