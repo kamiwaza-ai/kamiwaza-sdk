@@ -65,7 +65,7 @@ def _login_with_api_key(mgr, *, url: str, api_key: str, name: str, verify_ssl: b
         raise typer.Exit(code=1)
 
     token = StoredToken(access_token=api_key, refresh_token=None, expires_at=0.0)
-    mgr.add_connection(name=name, url=url, token=token)
+    mgr.add_connection(name=name, url=url, token=token, verify_ssl=verify_ssl)
     console.print(f"[green]Connected to {url} as '{name}'[/green]")
 
 
@@ -101,7 +101,7 @@ def _login_with_password(mgr, *, url: str, name: str, verify_ssl: bool = True) -
 
     # Store the PAT — auth already succeeded server-side at this point
     token = StoredToken(access_token=pat_token, refresh_token=None, expires_at=0.0)
-    mgr.add_connection(name=name, url=url, token=token)
+    mgr.add_connection(name=name, url=url, token=token, verify_ssl=verify_ssl)
     console.print(f"[green]Connected to {url} as '{name}'[/green]")
 
 

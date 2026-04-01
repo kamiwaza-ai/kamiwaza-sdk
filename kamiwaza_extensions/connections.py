@@ -23,6 +23,7 @@ class ConnectionInfo:
     url: str
     active: bool
     created_at: float
+    verify_ssl: bool = True
 
 
 def _validate_connection_name(name: str) -> None:
@@ -58,7 +59,7 @@ class ConnectionManager:
     # Public API
     # ------------------------------------------------------------------
 
-    def add_connection(self, name: str, url: str, token: StoredToken) -> None:
+    def add_connection(self, name: str, url: str, token: StoredToken, *, verify_ssl: bool = True) -> None:
         """Store a new connection with its token. Sets as active if first connection."""
         _validate_connection_name(name)
         config = self._load_config()
@@ -68,6 +69,7 @@ class ConnectionManager:
         config.setdefault("connections", {})[name] = {
             "url": url,
             "created_at": time.time(),
+            "verify_ssl": verify_ssl,
         }
 
         if is_first or config.get("active_connection") is None:
@@ -111,6 +113,7 @@ class ConnectionManager:
                 url=info["url"],
                 active=(name == active),
                 created_at=info.get("created_at", 0.0),
+                verify_ssl=info.get("verify_ssl", True),
             ))
         return result
 
@@ -128,6 +131,7 @@ class ConnectionManager:
             url=conn["url"],
             active=True,
             created_at=conn.get("created_at", 0.0),
+            verify_ssl=conn.get("verify_ssl", True),
         )
 
     def set_active(self, name: str) -> None:

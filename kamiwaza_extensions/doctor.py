@@ -141,6 +141,7 @@ class DoctorChecker:
                     f"{conn.url}{path}",
                     headers={"Authorization": f"Bearer {token.access_token}"},
                     timeout=5,
+                    verify=conn.verify_ssl,
                 )
                 if resp.ok:
                     return CheckResult("Kamiwaza connection", "pass", f"{conn.name} ({conn.url})")
