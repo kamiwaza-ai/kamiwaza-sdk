@@ -1,7 +1,8 @@
-"""Docker image push subprocess management."""
+"""Docker/Podman image push subprocess management."""
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 from typing import List, Optional
 
@@ -16,6 +17,11 @@ class ImagePushError(RuntimeError):
     pass
 
 
+def _has_podman() -> bool:
+    """Return True if the ``podman`` CLI is available on PATH."""
+    return shutil.which("podman") is not None
+
+
 class ImagePusher:
     """Push Docker images to a container registry."""
 
@@ -24,28 +30,35 @@ class ImagePusher:
         image_refs: List[str],
         registry: str,
         token: Optional[str] = None,
+        insecure: bool = False,
         verbose: bool = False,
     ) -> None:
         """Push all images to the registry.
 
-        If *token* is provided, authenticates with the registry first
-        via ``docker login`` (password passed on stdin, not CLI args).
+        If *token* is provided, authenticates with the registry first.
+        When *insecure* is True and Podman is available, ``--tls-verify=false``
+        is passed to bypass self-signed certificate errors.
         """
+        use_podman = insecure and _has_podman()
         if token:
-            self.login_registry(registry, token)
+            self._login_registry(registry, token, use_podman=use_podman)
 
         for ref in image_refs:
             short = ref.rsplit("/", 1)[-1] if "/" in ref else ref
             console.print(f"  Pushing [bold]{short}[/bold]...")
-            self._docker_push(ref, verbose=verbose)
+            self._push(ref, use_podman=use_podman, verbose=verbose)
             console.print(f"  [green]\u2713[/green] {short}")
 
     @staticmethod
-    def login_registry(registry: str, token: str) -> None:
+    def _login_registry(registry: str, token: str, *, use_podman: bool = False) -> None:
         """Authenticate with the container registry using a PAT via stdin."""
+        cli = "podman" if use_podman else "docker"
+        cmd = [cli, "login", registry, "-u", "token", "--password-stdin"]
+        if use_podman:
+            cmd.insert(2, "--tls-verify=false")
         try:
             proc = subprocess.run(
-                ["docker", "login", registry, "-u", "token", "--password-stdin"],
+                cmd,
                 input=token,
                 capture_output=True,
                 text=True,
@@ -57,17 +70,21 @@ class ImagePusher:
                 )
         except FileNotFoundError:
             raise ImagePushError(
-                "Docker not found. Install Docker Desktop or ensure 'docker' is on PATH."
+                f"{cli} not found. Install Docker/Podman or ensure '{cli}' is on PATH."
             )
 
     @staticmethod
-    def _docker_push(image_ref: str, *, verbose: bool = False) -> None:
+    def _push(image_ref: str, *, use_podman: bool = False, verbose: bool = False) -> None:
+        cli = "podman" if use_podman else "docker"
+        cmd = [cli, "push", image_ref]
+        if use_podman:
+            cmd.insert(2, "--tls-verify=false")
         try:
             if verbose:
-                subprocess.run(["docker", "push", image_ref], check=True)
+                subprocess.run(cmd, check=True)
             else:
                 result = subprocess.run(
-                    ["docker", "push", image_ref],
+                    cmd,
                     capture_output=True,
                     text=True,
                 )
@@ -77,5 +94,5 @@ class ImagePusher:
                     )
         except FileNotFoundError:
             raise ImagePushError(
-                "Docker not found. Install Docker Desktop or ensure 'docker' is on PATH."
+                f"{cli} not found. Install Docker/Podman or ensure '{cli}' is on PATH."
             )

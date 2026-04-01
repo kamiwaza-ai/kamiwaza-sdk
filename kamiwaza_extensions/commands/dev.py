@@ -137,6 +137,7 @@ def run_dev_remote(
                 image_refs,
                 registry=registry,
                 token=token.access_token,
+                insecure=not connection.verify_ssl,
                 verbose=verbose,
             )
         except ImagePushError as exc:
