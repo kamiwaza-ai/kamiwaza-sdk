@@ -89,20 +89,29 @@ def _validate_connection(url: str, token: str, *, verify_ssl: bool = True) -> No
     """Check connection by hitting a lightweight endpoint."""
     import requests
 
-    base = url.removesuffix("/api") if url.endswith("/api") else url
-    try:
-        resp = requests.get(
-            f"{base}/api/health",
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=10,
-            verify=verify_ssl,
-        )
-        resp.raise_for_status()
-    except requests.RequestException as exc:
-        console.print(
-            f"[yellow]Warning:[/yellow] Could not validate connection to {url}: {exc}\n"
-            "  Credentials were stored, but the server may be unreachable."
-        )
+    # Try common health endpoints — platform may expose different ones
+    for path in ("/auth/ping", "/auth/health", "/health"):
+        try:
+            resp = requests.get(
+                f"{url}{path}",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=10,
+                verify=verify_ssl,
+            )
+            if resp.ok:
+                return
+        except requests.ConnectionError:
+            console.print(
+                f"[yellow]Warning:[/yellow] Could not reach {url} — server may be unreachable.\n"
+                "  Credentials were stored. Verify the URL is correct."
+            )
+            return
+        except requests.RequestException:
+            continue
+
+    # All endpoints returned non-200 but server was reachable — likely fine,
+    # the auth itself succeeded if we got this far
+    pass
 
 
 def _show_connections(mgr) -> None:

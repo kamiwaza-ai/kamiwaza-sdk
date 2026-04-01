@@ -107,8 +107,10 @@ kz-ext --version
 ### Quick Start
 
 ```bash
-# 1. Authenticate with your Kamiwaza instance
-kz-ext login https://your-instance.example.com/api
+# 1. Authenticate (defaults to https://kamiwaza.test/api)
+kz-ext login
+# Or specify a URL:  kz-ext login https://your-instance.example.com/api
+# For self-signed certs:  kz-ext login --no-verify-ssl
 
 # 2. Scaffold a new extension
 kz-ext create --type app --name my-app
@@ -125,7 +127,7 @@ kz-ext dev local
 
 | Command | Description |
 |---------|-------------|
-| `kz-ext login <url>` | Authenticate with a Kamiwaza instance. Supports `--api-key`, `--name`, `--list`, `--use`. |
+| `kz-ext login [url]` | Authenticate with a Kamiwaza instance (default: `https://kamiwaza.test/api`). Supports `--api-key`, `--name`, `--list`, `--use`, `--no-verify-ssl`. |
 | `kz-ext create --type <type> --name <name>` | Scaffold a new extension. Types: `app` (Next.js + FastAPI), `tool` (FastMCP), `service` (minimal). |
 | `kz-ext validate [path]` | Validate `kamiwaza.json` and `docker-compose.yml`. Use `--json` for machine-readable output. |
 | `kz-ext dev local` | Run the extension locally via Docker Compose with Kamiwaza env vars injected. |
