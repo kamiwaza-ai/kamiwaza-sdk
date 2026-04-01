@@ -24,6 +24,9 @@ dependencies = [
     "httpx",
     "openai>=1.0",
     "huggingface_hub>=0.23",
+    "typer>=0.9.0",
+    "pyyaml>=6.0",
+    "packaging>=23.0",
 ]
 
 [project.urls]
@@ -33,12 +36,16 @@ Homepage = "https://github.com/kamiwaza/kamiwaza-sdk"
 requires = ["setuptools>=45", "wheel"]
 build-backend = "setuptools.build_meta"
 
+[project.scripts]
+kz-ext = "kamiwaza_extensions.cli:app"
+
 [tool.setuptools.packages.find]
-include = ["kamiwaza_sdk*", "kamiwaza_client*"]
+include = ["kamiwaza_sdk*", "kamiwaza_client*", "kamiwaza_extensions*"]
 exclude = ["tests*", "examples*"]
 
 [tool.setuptools.package-data]
 kamiwaza_sdk = ["py.typed"]
+kamiwaza_extensions = ["templates/**/*", "templates/**/.*"]
 
 [dependency-groups]
 dev = [

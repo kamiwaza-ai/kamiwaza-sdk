@@ -1,0 +1,14 @@
+{
+    "name": "{{name}}",
+    "version": "{{version}}",
+    "type": "service",
+    "source_type": "user_repo",
+    "visibility": "private",
+    "description": "{{description}}",
+    "risk_tier": 0,
+    "verified": false,
+    "kz_ext_version": "{{kz_ext_version}}",
+    "tags": [],
+    "env_defaults": {},
+    "required_env_vars": []
+}

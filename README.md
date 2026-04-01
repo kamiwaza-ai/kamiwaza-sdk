@@ -90,4 +90,69 @@ pytest -m integration
 > deployment returns HTTP 500 while Ray-backed transport is being stabilised.
 
 
+## Extension Developer Tools (`kz-ext`)
+
+The `kz-ext` CLI helps extension developers scaffold, validate, and run Kamiwaza extensions locally.
+
+### Installation
+
+```bash
+# Install the SDK (includes extension tools)
+pip install kamiwaza-sdk
+
+# Verify
+kz-ext --version
+```
+
+### Quick Start
+
+```bash
+# 1. Authenticate (local dev — uses https://kamiwaza.test/api, skips SSL verify)
+kz-ext login --dev
+# Or specify a URL:  kz-ext login https://your-instance.example.com/api
+# For self-signed certs:  kz-ext login --no-verify-ssl
+
+# 2. Scaffold a new extension
+mkdir my-app && cd my-app
+kz-ext create --type app --name my-app
+
+# 3. Validate the extension metadata
+kz-ext validate
+
+# 4. Run locally with Docker Compose
+kz-ext dev local
+```
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `kz-ext login [url]` | Authenticate with a Kamiwaza instance (default: `https://kamiwaza.test/api`). Supports `--api-key`, `--name`, `--list`, `--use`, `--no-verify-ssl`. |
+| `kz-ext create --type <type> --name <name>` | Scaffold a new extension in the current (empty) directory. Types: `app` (Next.js + FastAPI), `tool` (FastMCP), `service` (minimal). |
+| `kz-ext validate [path]` | Validate `kamiwaza.json` and `docker-compose.yml`. Use `--json` for machine-readable output. |
+| `kz-ext dev local` | Run the extension locally via Docker Compose with Kamiwaza env vars injected. |
+| `kz-ext doctor` | Check your development environment (Python, Docker, Compose, connection health, runtime libs). |
+
+### Extension Types
+
+- **App** (`--type app`): Full-stack extension with Next.js frontend and FastAPI backend, pre-wired with `@kamiwaza-ai/extensions-lib` and `kamiwaza-extensions-lib`.
+- **Tool** (`--type tool`): MCP tool server using FastMCP with `kamiwaza-extensions-lib`.
+- **Service** (`--type service`): Minimal containerized service.
+
+### Multi-Connection Support
+
+```bash
+# Add named connections
+kz-ext login https://prod.example.com/api --name prod
+kz-ext login https://staging.example.com/api --name staging
+
+# List connections
+kz-ext login --list
+
+# Switch active connection
+kz-ext login --use staging
+```
+
+---
+
 The Kamiwaza SDK is actively being developed with new features, examples, and documentation being added regularly. Stay tuned for updates including additional example notebooks, enhanced documentation, and expanded functionality across all services.
