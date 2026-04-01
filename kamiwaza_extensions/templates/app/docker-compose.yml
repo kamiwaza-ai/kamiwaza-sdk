@@ -24,5 +24,6 @@ services:
       - KAMIWAZA_ENDPOINT=${KAMIWAZA_ENDPOINT:-}
       - KAMIWAZA_USE_AUTH=${KAMIWAZA_USE_AUTH:-false}
       - KAMIWAZA_APP_NAME=${KAMIWAZA_APP_NAME:-{{name}}}
+      - KAMIWAZA_VERIFY_SSL=${KAMIWAZA_VERIFY_SSL:-}
     volumes:
       - ./backend/app:/app/app

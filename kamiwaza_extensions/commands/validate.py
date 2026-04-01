@@ -21,7 +21,10 @@ def run_validate(*, path: Optional[str], json_output: bool) -> None:
 
     metadata_file = ext_dir / "kamiwaza.json"
     if not metadata_file.exists():
-        console.print(f"[red]Error:[/red] No kamiwaza.json found in {ext_dir}")
+        if json_output:
+            typer.echo(json_mod.dumps({"passed": False, "errors": [f"No kamiwaza.json found in {ext_dir}"], "warnings": []}))
+        else:
+            console.print(f"[red]Error:[/red] No kamiwaza.json found in {ext_dir}")
         raise typer.Exit(code=1)
 
     # Run metadata validation

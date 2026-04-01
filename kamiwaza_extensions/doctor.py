@@ -217,7 +217,7 @@ class DoctorChecker:
             return CheckResult(
                 "CLI version compatibility", "fail",
                 f"{__version__} does not match {specifier_str}",
-                fix=f"Install a compatible version: pip install 'kamiwaza-extensions{specifier_str}'",
+                fix=f"Install a compatible version: pip install 'kamiwaza-sdk{specifier_str}'",
             )
         except (InvalidSpecifier, InvalidVersion) as exc:
             return CheckResult(
