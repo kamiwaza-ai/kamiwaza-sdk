@@ -133,19 +133,20 @@ class DoctorChecker:
                 f"Connection '{conn.name}' has no token",
                 fix=f"Run 'kz-ext login {conn.url}' to re-authenticate",
             )
-        # Try health endpoint
+        # Try health endpoints — platform may expose different ones
         try:
             import requests
-            resp = requests.get(
-                f"{conn.url}/api/health",
-                headers={"Authorization": f"Bearer {token.access_token}"},
-                timeout=5,
-            )
-            if resp.ok:
-                return CheckResult("Kamiwaza connection", "pass", f"{conn.name} ({conn.url})")
+            for path in ("/auth/ping", "/auth/health", "/health"):
+                resp = requests.get(
+                    f"{conn.url}{path}",
+                    headers={"Authorization": f"Bearer {token.access_token}"},
+                    timeout=5,
+                )
+                if resp.ok:
+                    return CheckResult("Kamiwaza connection", "pass", f"{conn.name} ({conn.url})")
             return CheckResult(
                 "Kamiwaza connection", "warn",
-                f"{conn.name}: API returned {resp.status_code}",
+                f"{conn.name}: health endpoints returned {resp.status_code}",
                 fix=f"Check if {conn.url} is reachable",
             )
         except Exception:

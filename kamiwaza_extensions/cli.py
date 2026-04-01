@@ -83,13 +83,14 @@ def _handle_exception(exc: Exception) -> None:
     # Try to import Kamiwaza errors for nicer formatting
     try:
         from kamiwaza_sdk.exceptions import KamiwazaError
-        if isinstance(exc, KamiwazaError):
-            console.print(f"[red]Error:[/red] {exc}")
-            if _state.debug:
-                console.print_exception()
-            raise typer.Exit(code=1) from exc
     except ImportError:
-        pass
+        KamiwazaError = None
+
+    if KamiwazaError is not None and isinstance(exc, KamiwazaError):
+        console.print(f"[red]Error:[/red] {exc}")
+        if _state.debug:
+            console.print_exception()
+        raise typer.Exit(code=1) from exc
 
     console.print(f"[red]Error:[/red] {exc}")
     if _state.debug:

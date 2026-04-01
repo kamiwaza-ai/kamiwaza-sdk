@@ -97,8 +97,8 @@ The `kz-ext` CLI helps extension developers scaffold, validate, and run Kamiwaza
 ### Installation
 
 ```bash
-# Install the SDK with extension tools
-pip install kamiwaza-sdk[extensions]
+# Install the SDK (includes extension tools)
+pip install kamiwaza-sdk
 
 # Verify
 kz-ext --version
