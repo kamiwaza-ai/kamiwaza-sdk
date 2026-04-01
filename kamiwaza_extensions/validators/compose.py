@@ -42,7 +42,7 @@ class ComposeValidator:
             ports = svc_config.get("ports", [])
             for port in ports:
                 port_str = str(port)
-                if ":" in port_str and not port_str.startswith('"'):
+                if ":" in port_str:
                     warnings.append(f"Service '{svc_name}': host port binding '{port_str}' — may conflict in deployment")
 
             # Bind mounts

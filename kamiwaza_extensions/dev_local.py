@@ -134,13 +134,16 @@ class DevLocalRunner:
 def build_env_overlay(connection: ConnectionInfo, extension_name: str) -> Dict[str, str]:
     """Build environment variable overlay from a connection."""
     url = connection.url
-    return {
+    env = {
         "KAMIWAZA_API_URL": url,
         "KAMIWAZA_PUBLIC_API_URL": url.removesuffix("/api"),
         "KAMIWAZA_ENDPOINT": f"{url}/v1" if not url.endswith("/v1") else url,
         "KAMIWAZA_USE_AUTH": "false",
         "KAMIWAZA_APP_NAME": extension_name,
     }
+    if not connection.verify_ssl:
+        env["KAMIWAZA_VERIFY_SSL"] = "false"
+    return env
 
 
 def detect_compose_command() -> List[str]:

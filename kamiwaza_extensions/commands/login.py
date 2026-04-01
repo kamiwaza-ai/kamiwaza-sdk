@@ -133,17 +133,23 @@ def _validate_token(url: str, token: str, *, verify_ssl: bool = True) -> bool:
             return True
         if resp.status_code in (401, 403):
             return False
+        # Server error (500, 502, etc.) — can't confirm token validity
+        console.print(
+            f"[yellow]Warning:[/yellow] Server returned {resp.status_code} during validation. "
+            "Token was not verified — storing credentials anyway."
+        )
+        return True
     except requests.ConnectionError:
         console.print(
             f"[yellow]Warning:[/yellow] Could not reach {url} — server may be unreachable."
         )
         return False
-    except requests.RequestException:
-        pass
-
-    # Non-auth error (404, 500, etc.) — server is up, can't confirm token
-    # but don't block since it might just be a different API version
-    return True
+    except requests.RequestException as exc:
+        console.print(
+            f"[yellow]Warning:[/yellow] Validation request failed: {exc}. "
+            "Token was not verified — storing credentials anyway."
+        )
+        return True
 
 
 def _show_connections(mgr) -> None:

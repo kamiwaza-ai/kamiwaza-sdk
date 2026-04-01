@@ -135,7 +135,6 @@ class DoctorChecker:
             )
         # Try health endpoints — platform may expose different ones
         import requests
-        last_error = None
         for path in ("/auth/ping", "/auth/health", "/health"):
             try:
                 resp = requests.get(
@@ -153,8 +152,7 @@ class DoctorChecker:
                     f"{conn.name}: unreachable ({conn.url})",
                     fix="Check network connectivity or VPN",
                 )
-            except requests.RequestException as exc:
-                last_error = exc
+            except requests.RequestException:
                 continue
 
         # All endpoints responded but none returned 200
