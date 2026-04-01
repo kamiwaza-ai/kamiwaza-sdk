@@ -1,0 +1,12 @@
+services:
+  tool:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - KAMIWAZA_API_URL=${KAMIWAZA_API_URL:-}
+      - KAMIWAZA_ENDPOINT=${KAMIWAZA_ENDPOINT:-}
+      - KAMIWAZA_USE_AUTH=${KAMIWAZA_USE_AUTH:-false}
+      - KAMIWAZA_APP_NAME=${KAMIWAZA_APP_NAME:-{{name}}}
+    volumes:
+      - ./src:/app/src

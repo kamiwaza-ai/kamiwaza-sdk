@@ -1,0 +1,3 @@
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0
+kamiwaza-extensions-lib{{python_runtime_lib_version}}
