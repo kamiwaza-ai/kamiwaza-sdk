@@ -40,12 +40,12 @@ class TestBuild:
             extension_dir=tmp_path,
             compose_data=compose_with_build,
             extension_name="my-app",
-            revision_tag="1.0.0-dev+abc.123",
+            revision_tag="1.0.0-dev-abc.123",
             registry="registry.test",
         )
         assert len(refs) == 2  # backend + frontend (not db)
-        assert "registry.test/my-app-backend:1.0.0-dev+abc.123" in refs
-        assert "registry.test/my-app-frontend:1.0.0-dev+abc.123" in refs
+        assert "registry.test/my-app-backend:1.0.0-dev-abc.123" in refs
+        assert "registry.test/my-app-frontend:1.0.0-dev-abc.123" in refs
 
     @patch("kamiwaza_extensions.image_builder.subprocess.run")
     def test_service_filter(self, mock_run, builder, compose_with_build, tmp_path):

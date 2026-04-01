@@ -22,21 +22,21 @@ class TestGenerateTag:
             RevisionTagger, "get_git_info", return_value=("abc1234", False)
         ):
             tag = tagger.generate_tag("1.0.0", _now=1711900800)
-        assert tag == "1.0.0-dev+abc1234.1711900800"
+        assert tag == "1.0.0-dev-abc1234.1711900800"
 
     def test_dirty_repo_format(self, tagger):
         with patch.object(
             RevisionTagger, "get_git_info", return_value=("abc1234", True)
         ):
             tag = tagger.generate_tag("1.0.0", _now=1711900800)
-        assert tag == "1.0.0-dev+dirty.1711900800"
+        assert tag == "1.0.0-dev-dirty.1711900800"
 
     def test_no_git_format(self, tagger):
         with patch.object(
             RevisionTagger, "get_git_info", return_value=(None, False)
         ):
             tag = tagger.generate_tag("2.3.1", _now=1711900800)
-        assert tag == "2.3.1-dev+nogit.1711900800"
+        assert tag == "2.3.1-dev-nogit.1711900800"
 
     def test_tag_is_docker_compatible(self, tagger):
         """Docker tags: [a-zA-Z0-9_.-]+, max 128 chars."""
@@ -44,7 +44,7 @@ class TestGenerateTag:
             RevisionTagger, "get_git_info", return_value=("abc1234", False)
         ):
             tag = tagger.generate_tag("1.0.0", _now=1711900800)
-        assert re.match(r"^[a-zA-Z0-9_.+-]+$", tag)
+        assert re.match(r"^[a-zA-Z0-9_.-]+$", tag)
         assert len(tag) <= 128
 
     def test_different_timestamps_produce_different_tags(self, tagger):
@@ -61,7 +61,7 @@ class TestGenerateTag:
         ):
             tag = tagger.generate_tag("1.0.0")
         # Should contain a recent epoch — just verify format
-        assert re.match(r"^1\.0\.0-dev\+abc1234\.\d{10}$", tag)
+        assert re.match(r"^1\.0\.0-dev-abc1234\.\d{10}$", tag)
 
 
 class TestGetGitInfo:

@@ -10,10 +10,10 @@ from typing import Optional, Tuple
 class RevisionTagger:
     """Generate unique Docker image tags for dev builds.
 
-    Tag format:
-    - Clean repo:  ``{version}-dev+{sha7}.{epoch}``
-    - Dirty repo:  ``{version}-dev+dirty.{epoch}``
-    - No git:      ``{version}-dev+nogit.{epoch}``
+    Tag format (``+`` replaced with ``-`` for OCI compatibility):
+    - Clean repo:  ``{version}-dev-{sha7}.{epoch}``
+    - Dirty repo:  ``{version}-dev-dirty.{epoch}``
+    - No git:      ``{version}-dev-nogit.{epoch}``
     - Custom:      whatever the caller passes via *custom*
     """
 
@@ -44,7 +44,7 @@ class RevisionTagger:
         else:
             slug = sha
 
-        return f"{version}-dev+{slug}.{ts}"
+        return f"{version}-dev-{slug}.{ts}"
 
     @staticmethod
     def get_git_info() -> Tuple[Optional[str], bool]:

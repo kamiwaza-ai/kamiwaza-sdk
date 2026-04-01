@@ -180,12 +180,12 @@ class TestCleanup:
 class TestFullTransform:
     def test_multi_service(self, transformer, multi_service_compose):
         result = transformer.transform(
-            multi_service_compose, "my-app", "1.0.0-dev+abc.123", "registry.test"
+            multi_service_compose, "my-app", "1.0.0-dev-abc.123", "registry.test"
         )
         # Frontend
         fe = result["services"]["frontend"]
         assert "build" not in fe
-        assert fe["image"] == "registry.test/my-app-frontend:1.0.0-dev+abc.123"
+        assert fe["image"] == "registry.test/my-app-frontend:1.0.0-dev-abc.123"
         assert fe["ports"] == ["3000"]
         assert "networks" not in fe
 
