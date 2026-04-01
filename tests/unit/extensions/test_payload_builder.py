@@ -123,6 +123,23 @@ class TestDevNaming:
         assert "dev-" in name
 
 
+class TestResourceParsing:
+    def test_cpus_converted_to_millicpu(self, builder):
+        svc = {"deploy": {"resources": {"limits": {"cpus": "0.5", "memory": "512M"}}}}
+        res = builder._parse_resources(svc)
+        assert res.limits["cpu"] == "500m"
+        assert "cpus" not in res.limits
+        assert res.limits["memory"] == "512M"
+
+    def test_whole_cpu_converted(self, builder):
+        svc = {"deploy": {"resources": {"limits": {"cpus": "2.0", "memory": "1G"}}}}
+        res = builder._parse_resources(svc)
+        assert res.limits["cpu"] == "2000m"
+
+    def test_no_resources_returns_none(self, builder):
+        assert builder._parse_resources({}) is None
+
+
 class TestResolveType:
     def test_default_app(self, builder):
         assert builder._resolve_type({}) == "app"

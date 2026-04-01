@@ -18,6 +18,26 @@ from kamiwaza_sdk.schemas.extensions import (
 from kamiwaza_extensions.connections import ConnectionInfo
 
 
+def _compose_resources_to_k8s(resources: Dict[str, str]) -> Dict[str, str]:
+    """Translate Docker Compose resource keys to Kubernetes format.
+
+    - ``cpus`` → ``cpu`` (e.g. ``"0.5"`` → ``"500m"``)
+    - ``memory`` passed through as-is (``"512M"`` is valid in both)
+    """
+    out: Dict[str, str] = {}
+    for key, val in resources.items():
+        if key == "cpus":
+            # Convert decimal CPU to millicpu
+            try:
+                millicpu = int(float(val) * 1000)
+                out["cpu"] = f"{millicpu}m"
+            except (ValueError, TypeError):
+                out["cpu"] = val
+        else:
+            out[key] = val
+    return out
+
+
 class PayloadBuilder:
     """Build a ``CreateExtension`` request from extension metadata and
     a transformed compose dict."""
@@ -150,7 +170,10 @@ class PayloadBuilder:
         limits = res.get("limits")
         requests = res.get("requests") or res.get("reservations")
         if limits or requests:
-            return ResourceSpec(limits=limits, requests=requests)
+            return ResourceSpec(
+                limits=_compose_resources_to_k8s(limits) if limits else None,
+                requests=_compose_resources_to_k8s(requests) if requests else None,
+            )
         return None
 
     @staticmethod
