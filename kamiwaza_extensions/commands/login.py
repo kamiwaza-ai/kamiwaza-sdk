@@ -18,6 +18,7 @@ def run_login(
     name: str,
     list_connections: bool,
     use: Optional[str],
+    no_verify_ssl: bool = False,
 ) -> None:
     """Authenticate with a Kamiwaza instance."""
     from kamiwaza_extensions.connections import ConnectionManager
@@ -40,24 +41,28 @@ def run_login(
     # Normalize URL
     url = url.rstrip("/")
 
+    if no_verify_ssl:
+        import os
+        os.environ["KAMIWAZA_VERIFY_SSL"] = "false"
+
     if api_key:
-        _login_with_api_key(mgr, url=url, api_key=api_key, name=name)
+        _login_with_api_key(mgr, url=url, api_key=api_key, name=name, verify_ssl=not no_verify_ssl)
     else:
-        _login_with_password(mgr, url=url, name=name)
+        _login_with_password(mgr, url=url, name=name, verify_ssl=not no_verify_ssl)
 
 
-def _login_with_api_key(mgr, *, url: str, api_key: str, name: str) -> None:
+def _login_with_api_key(mgr, *, url: str, api_key: str, name: str, verify_ssl: bool = True) -> None:
     from kamiwaza_sdk.token_store import StoredToken
 
     # Validate the connection works
-    _validate_connection(url, api_key)
+    _validate_connection(url, api_key, verify_ssl=verify_ssl)
 
     token = StoredToken(access_token=api_key, refresh_token=None, expires_at=0.0)
     mgr.add_connection(name=name, url=url, token=token)
     console.print(f"[green]Connected to {url} as '{name}'[/green]")
 
 
-def _login_with_password(mgr, *, url: str, name: str) -> None:
+def _login_with_password(mgr, *, url: str, name: str, verify_ssl: bool = True) -> None:
     from kamiwaza_sdk import KamiwazaClient
     from kamiwaza_sdk.authentication import UserPasswordAuthenticator
     from kamiwaza_sdk.schemas.auth import PATCreate
@@ -73,14 +78,14 @@ def _login_with_password(mgr, *, url: str, name: str) -> None:
     pat_token = pat_response.token
 
     # Validate the PAT works
-    _validate_connection(url, pat_token)
+    _validate_connection(url, pat_token, verify_ssl=verify_ssl)
 
     token = StoredToken(access_token=pat_token, refresh_token=None, expires_at=0.0)
     mgr.add_connection(name=name, url=url, token=token)
     console.print(f"[green]Connected to {url} as '{name}'[/green]")
 
 
-def _validate_connection(url: str, token: str) -> None:
+def _validate_connection(url: str, token: str, *, verify_ssl: bool = True) -> None:
     """Check connection by hitting a lightweight endpoint."""
     import requests
 
@@ -89,6 +94,7 @@ def _validate_connection(url: str, token: str) -> None:
             f"{url}/api/health",
             headers={"Authorization": f"Bearer {token}"},
             timeout=10,
+            verify=verify_ssl,
         )
         resp.raise_for_status()
     except requests.RequestException as exc:
