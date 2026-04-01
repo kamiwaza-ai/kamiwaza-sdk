@@ -113,10 +113,10 @@ kz-ext login --dev
 # For self-signed certs:  kz-ext login --no-verify-ssl
 
 # 2. Scaffold a new extension
+mkdir my-app && cd my-app
 kz-ext create --type app --name my-app
 
 # 3. Validate the extension metadata
-cd my-app
 kz-ext validate
 
 # 4. Run locally with Docker Compose
@@ -128,7 +128,7 @@ kz-ext dev local
 | Command | Description |
 |---------|-------------|
 | `kz-ext login [url]` | Authenticate with a Kamiwaza instance (default: `https://kamiwaza.test/api`). Supports `--api-key`, `--name`, `--list`, `--use`, `--no-verify-ssl`. |
-| `kz-ext create --type <type> --name <name>` | Scaffold a new extension. Types: `app` (Next.js + FastAPI), `tool` (FastMCP), `service` (minimal). |
+| `kz-ext create --type <type> --name <name>` | Scaffold a new extension in the current (empty) directory. Types: `app` (Next.js + FastAPI), `tool` (FastMCP), `service` (minimal). |
 | `kz-ext validate [path]` | Validate `kamiwaza.json` and `docker-compose.yml`. Use `--json` for machine-readable output. |
 | `kz-ext dev local` | Run the extension locally via Docker Compose with Kamiwaza env vars injected. |
 | `kz-ext doctor` | Check your development environment (Python, Docker, Compose, connection health, runtime libs). |

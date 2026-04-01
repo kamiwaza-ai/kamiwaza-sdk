@@ -11,46 +11,55 @@ from kamiwaza_extensions.cli import app
 runner = CliRunner()
 
 
+def _empty_dir(tmp_path, name="ext"):
+    d = tmp_path / name
+    d.mkdir()
+    return d
+
+
 @pytest.mark.unit
 class TestCreateThenValidateFlow:
     """Test the full create → validate flow through the CLI."""
 
     def test_create_app_then_validate(self, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
-        with patch("subprocess.run"):  # mock git init
+        d = _empty_dir(tmp_path)
+        monkeypatch.chdir(d)
+        with patch("subprocess.run"):
             result = runner.invoke(app, ["create", "--type", "app", "--name", "test-app"])
         assert result.exit_code == 0
         assert "Created" in result.output
 
-        # Now validate the created extension
-        result = runner.invoke(app, ["validate", str(tmp_path / "test-app")])
+        result = runner.invoke(app, ["validate", str(d)])
         assert result.exit_code == 0
         assert "passed" in result.output.lower()
 
     def test_create_tool_then_validate(self, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
+        d = _empty_dir(tmp_path)
+        monkeypatch.chdir(d)
         with patch("subprocess.run"):
             result = runner.invoke(app, ["create", "--type", "tool", "--name", "my-tool"])
         assert result.exit_code == 0
 
-        result = runner.invoke(app, ["validate", str(tmp_path / "tool-my-tool")])
+        result = runner.invoke(app, ["validate", str(d)])
         assert result.exit_code == 0
 
     def test_create_service_then_validate(self, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
+        d = _empty_dir(tmp_path)
+        monkeypatch.chdir(d)
         with patch("subprocess.run"):
             result = runner.invoke(app, ["create", "--type", "service", "--name", "my-svc"])
         assert result.exit_code == 0
 
-        result = runner.invoke(app, ["validate", str(tmp_path / "service-my-svc")])
+        result = runner.invoke(app, ["validate", str(d)])
         assert result.exit_code == 0
 
     def test_create_validates_json_output(self, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
+        d = _empty_dir(tmp_path)
+        monkeypatch.chdir(d)
         with patch("subprocess.run"):
             runner.invoke(app, ["create", "--type", "app", "--name", "json-test"])
 
-        result = runner.invoke(app, ["validate", str(tmp_path / "json-test"), "--json"])
+        result = runner.invoke(app, ["validate", str(d), "--json"])
         assert result.exit_code == 0
         data = json.loads(result.output)
         assert data["passed"] is True
@@ -66,14 +75,15 @@ class TestCLIErrorFlow:
         assert result.exit_code == 1
 
     def test_create_invalid_type(self, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
+        d = _empty_dir(tmp_path)
+        monkeypatch.chdir(d)
         result = runner.invoke(app, ["create", "--type", "bad", "--name", "test"])
         assert result.exit_code == 1
         assert "Invalid type" in result.output
 
-    def test_create_directory_exists(self, tmp_path, monkeypatch):
+    def test_create_non_empty_directory(self, tmp_path, monkeypatch):
+        (tmp_path / "existing.txt").write_text("hello")
         monkeypatch.chdir(tmp_path)
-        (tmp_path / "my-app").mkdir()
         result = runner.invoke(app, ["create", "--type", "app", "--name", "my-app"])
         assert result.exit_code == 1
-        assert "already exists" in result.output
+        assert "not empty" in result.output

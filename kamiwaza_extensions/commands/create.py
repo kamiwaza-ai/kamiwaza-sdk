@@ -19,8 +19,7 @@ def run_create(*, type_: str, name: str) -> None:
     scaffolder = Scaffolder()
     scaffolder.create(type_=type_, name=name)
 
-    console.print(f"\n[green]✓ Created {type_} extension:[/green] {name}/")
+    console.print(f"\n[green]✓ Created {type_} extension:[/green] {name}")
     console.print(f"\n  Next steps:")
-    console.print(f"    cd {name}")
     console.print(f"    kz-ext validate")
     console.print(f"    kz-ext dev local")

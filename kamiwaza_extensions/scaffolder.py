@@ -28,10 +28,15 @@ class Scaffolder:
             raise ValueError(f"Invalid type '{type_}'. Must be one of: {', '.join(VALID_TYPES)}")
 
         name = self._validate_name(name, type_)
-        target = Path.cwd() / name
+        target = Path.cwd()
 
-        if target.exists():
-            raise FileExistsError(f"Directory '{name}' already exists")
+        # Check current directory is empty (ignore hidden files like .git)
+        visible_files = [f for f in target.iterdir() if not f.name.startswith(".")]
+        if visible_files:
+            raise FileExistsError(
+                f"Current directory is not empty ({len(visible_files)} file(s) found). "
+                "Run kz-ext create from an empty directory."
+            )
 
         context = self._build_context(name, type_)
         template_dir = self._get_template_dir(type_)
