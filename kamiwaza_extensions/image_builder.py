@@ -100,6 +100,7 @@ class ImageBuilder:
     ) -> None:
         cmd = [
             "docker", "build",
+            "--load",
             "-t", image_ref,
             "-f", str(dockerfile),
             str(context),
