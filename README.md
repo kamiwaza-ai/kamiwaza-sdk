@@ -107,8 +107,8 @@ kz-ext --version
 ### Quick Start
 
 ```bash
-# 1. Authenticate (defaults to https://kamiwaza.test/api)
-kz-ext login
+# 1. Authenticate (local dev — uses https://kamiwaza.test/api, skips SSL verify)
+kz-ext login --dev
 # Or specify a URL:  kz-ext login https://your-instance.example.com/api
 # For self-signed certs:  kz-ext login --no-verify-ssl
 

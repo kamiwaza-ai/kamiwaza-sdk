@@ -110,9 +110,13 @@ def login(
     list_connections: bool = typer.Option(False, "--list", "-l", help="List stored connections"),
     use: Optional[str] = typer.Option(None, "--use", help="Switch active connection"),
     no_verify_ssl: bool = typer.Option(False, "--no-verify-ssl", help="Disable SSL certificate verification"),
+    dev: bool = typer.Option(False, "--dev", help="Shorthand for local dev: uses https://kamiwaza.test/api with SSL verification off"),
 ) -> None:
     """Authenticate with a Kamiwaza instance."""
     from kamiwaza_extensions.commands.login import run_login
+    if dev:
+        url = url or "https://kamiwaza.test/api"
+        no_verify_ssl = True
     run_login(url=url, api_key=api_key, name=name, list_connections=list_connections, use=use, no_verify_ssl=no_verify_ssl)
 
 
