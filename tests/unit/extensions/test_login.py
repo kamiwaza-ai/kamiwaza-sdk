@@ -49,10 +49,19 @@ class TestLoginCommand:
     def test_login_with_api_key(self):
         with patch("kamiwaza_extensions.connections.ConnectionManager") as MockMgr:
             mgr = MockMgr.return_value
-            with patch("kamiwaza_extensions.commands.login._validate_connection"):
+            with patch("kamiwaza_extensions.commands.login._validate_token", return_value=True):
                 result = runner.invoke(app, ["login", "https://test.example/api", "--api-key", "my-key"])
                 assert result.exit_code == 0
                 mgr.add_connection.assert_called_once()
                 call_kwargs = mgr.add_connection.call_args
                 assert call_kwargs.kwargs["name"] == "default"
                 assert call_kwargs.kwargs["url"] == "https://test.example/api"
+
+    def test_login_with_bad_api_key_rejected(self):
+        with patch("kamiwaza_extensions.connections.ConnectionManager") as MockMgr:
+            mgr = MockMgr.return_value
+            with patch("kamiwaza_extensions.commands.login._validate_token", return_value=False):
+                result = runner.invoke(app, ["login", "https://test.example/api", "--api-key", "bad-key"])
+                assert result.exit_code == 1
+                assert "Could not validate" in result.output
+                mgr.add_connection.assert_not_called()

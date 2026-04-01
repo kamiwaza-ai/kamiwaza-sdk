@@ -41,10 +41,6 @@ def run_login(
     # Normalize URL
     url = url.rstrip("/")
 
-    if no_verify_ssl:
-        import os
-        os.environ["KAMIWAZA_VERIFY_SSL"] = "false"
-
     verify_ssl = not no_verify_ssl
 
     if api_key:
@@ -56,8 +52,8 @@ def run_login(
 def _login_with_api_key(mgr, *, url: str, api_key: str, name: str, verify_ssl: bool = True) -> None:
     from kamiwaza_sdk.token_store import StoredToken
 
-    # Validate before storing — bad key should not be persisted
-    if not _validate_connection(url, api_key, verify_ssl=verify_ssl):
+    # Validate the key works against an auth-required endpoint
+    if not _validate_token(url, api_key, verify_ssl=verify_ssl):
         console.print(
             "[red]Error:[/red] Could not validate connection. "
             "Check the URL and API key are correct."
@@ -79,7 +75,7 @@ def _login_with_password(mgr, *, url: str, name: str, verify_ssl: bool = True) -
     password = typer.prompt("Password", hide_input=True)
 
     # Use an in-memory token store to avoid reading/writing the shared
-    # ~/.kamiwaza/token.json used by the SDK (C1 fix: identity isolation)
+    # ~/.kamiwaza/token.json used by the SDK
     class _MemoryTokenStore(TokenStore):
         def __init__(self):
             self._token = None
@@ -90,14 +86,30 @@ def _login_with_password(mgr, *, url: str, name: str, verify_ssl: bool = True) -
         def clear(self):
             self._token = None
 
-    # Authenticate via SDK and create a PAT
-    client = KamiwazaClient(base_url=url)
-    client.authenticator = UserPasswordAuthenticator(
-        username, password, client.auth,
-        token_store=_MemoryTokenStore(),
-    )
-    pat_response = client.auth.create_pat(PATCreate(name=f"kz-ext-{name}"))
-    pat_token = pat_response.token
+    # Pass verify_ssl explicitly to the SDK client via env var scoped
+    # to this operation only
+    import os
+    old_verify = os.environ.get("KAMIWAZA_VERIFY_SSL")
+    if not verify_ssl:
+        os.environ["KAMIWAZA_VERIFY_SSL"] = "false"
+
+    try:
+        client = KamiwazaClient(base_url=url)
+        client.authenticator = UserPasswordAuthenticator(
+            username, password, client.auth,
+            token_store=_MemoryTokenStore(),
+        )
+        pat_response = client.auth.create_pat(PATCreate(name=f"kz-ext-{name}"))
+        pat_token = pat_response.token
+    except Exception as exc:
+        console.print(f"[red]Error:[/red] Authentication failed: {exc}")
+        raise typer.Exit(code=1) from exc
+    finally:
+        # Restore env var
+        if old_verify is None:
+            os.environ.pop("KAMIWAZA_VERIFY_SSL", None)
+        else:
+            os.environ["KAMIWAZA_VERIFY_SSL"] = old_verify
 
     # Store the PAT — auth already succeeded server-side at this point
     token = StoredToken(access_token=pat_token, refresh_token=None, expires_at=0.0)
@@ -105,34 +117,32 @@ def _login_with_password(mgr, *, url: str, name: str, verify_ssl: bool = True) -
     console.print(f"[green]Connected to {url} as '{name}'[/green]")
 
 
-def _validate_connection(url: str, token: str, *, verify_ssl: bool = True) -> bool:
-    """Check connection by hitting a lightweight endpoint. Returns True if reachable."""
+def _validate_token(url: str, token: str, *, verify_ssl: bool = True) -> bool:
+    """Validate a token by calling an auth-required endpoint. Returns True if valid."""
     import requests
 
-    # Try common health endpoints — platform may expose different ones
-    for path in ("/auth/ping", "/auth/health", "/health"):
-        try:
-            resp = requests.get(
-                f"{url}{path}",
-                headers={"Authorization": f"Bearer {token}"},
-                timeout=10,
-                verify=verify_ssl,
-            )
-            if resp.ok:
-                return True
-            # 401/403 means server is up but token is bad
-            if resp.status_code in (401, 403):
-                return False
-        except requests.ConnectionError:
-            console.print(
-                f"[yellow]Warning:[/yellow] Could not reach {url} — server may be unreachable."
-            )
+    # Use /auth/pats (list PATs) — requires valid auth, not publicly accessible
+    try:
+        resp = requests.get(
+            f"{url}/auth/pats",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=10,
+            verify=verify_ssl,
+        )
+        if resp.ok:
+            return True
+        if resp.status_code in (401, 403):
             return False
-        except requests.RequestException:
-            continue
+    except requests.ConnectionError:
+        console.print(
+            f"[yellow]Warning:[/yellow] Could not reach {url} — server may be unreachable."
+        )
+        return False
+    except requests.RequestException:
+        pass
 
-    # All endpoints returned non-auth errors but server was reachable
-    # (e.g. 404 on all health paths) — token validity is unknown
+    # Non-auth error (404, 500, etc.) — server is up, can't confirm token
+    # but don't block since it might just be a different API version
     return True
 
 

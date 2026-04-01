@@ -44,6 +44,7 @@ class DevLocalRunner:
             overlay = build_env_overlay(connection, ext_name)
             env.update(overlay)
             console.print(f"[dim]Using connection:[/dim] {connection.name} ({connection.url})")
+            console.print(f"[dim]KAMIWAZA_USE_AUTH=false (local dev mode)[/dim]")
         else:
             console.print("[yellow]No Kamiwaza connection configured — running in standalone mode[/yellow]")
 

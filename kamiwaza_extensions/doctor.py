@@ -134,9 +134,10 @@ class DoctorChecker:
                 fix=f"Run 'kz-ext login {conn.url}' to re-authenticate",
             )
         # Try health endpoints — platform may expose different ones
-        try:
-            import requests
-            for path in ("/auth/ping", "/auth/health", "/health"):
+        import requests
+        last_error = None
+        for path in ("/auth/ping", "/auth/health", "/health"):
+            try:
                 resp = requests.get(
                     f"{conn.url}{path}",
                     headers={"Authorization": f"Bearer {token.access_token}"},
@@ -145,17 +146,23 @@ class DoctorChecker:
                 )
                 if resp.ok:
                     return CheckResult("Kamiwaza connection", "pass", f"{conn.name} ({conn.url})")
-            return CheckResult(
-                "Kamiwaza connection", "warn",
-                f"{conn.name}: health endpoints returned {resp.status_code}",
-                fix=f"Check if {conn.url} is reachable",
-            )
-        except Exception:
-            return CheckResult(
-                "Kamiwaza connection", "warn",
-                f"{conn.name}: unreachable ({conn.url})",
-                fix="Check network connectivity or VPN",
-            )
+            except requests.ConnectionError:
+                # Server unreachable — no point trying more paths on same host
+                return CheckResult(
+                    "Kamiwaza connection", "warn",
+                    f"{conn.name}: unreachable ({conn.url})",
+                    fix="Check network connectivity or VPN",
+                )
+            except requests.RequestException as exc:
+                last_error = exc
+                continue
+
+        # All endpoints responded but none returned 200
+        return CheckResult(
+            "Kamiwaza connection", "warn",
+            f"{conn.name}: no health endpoint found",
+            fix=f"Server is reachable but health check failed",
+        )
 
     # ------------------------------------------------------------------
     # Extension context checks

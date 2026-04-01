@@ -34,6 +34,8 @@ def run_validate(*, path: Optional[str], json_output: bool) -> None:
     compose_result = None
     if compose_file:
         compose_result = compose_validator.validate(compose_file, ext_dir)
+    else:
+        meta_result.warnings.append("No docker-compose file found — kz-ext dev local will not work")
 
     # Merge results
     all_errors = meta_result.errors[:]
