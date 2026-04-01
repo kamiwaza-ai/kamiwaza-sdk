@@ -41,11 +41,10 @@ class TestLoginCommand:
             mgr.set_active.assert_called_once_with("staging")
             assert "Switched" in result.output
 
-    def test_login_requires_url(self):
+    def test_login_no_url_uses_default(self):
         with patch("kamiwaza_extensions.connections.ConnectionManager"):
-            result = runner.invoke(app, ["login"])
-            assert result.exit_code == 1
-            assert "URL is required" in result.output
+            result = runner.invoke(app, ["login"], input="\n")  # abort at username prompt
+            assert "kamiwaza.test" in result.output
 
     def test_login_with_api_key(self):
         with patch("kamiwaza_extensions.connections.ConnectionManager") as MockMgr:

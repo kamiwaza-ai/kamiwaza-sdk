@@ -35,8 +35,8 @@ def run_login(
         return
 
     if url is None:
-        console.print("[red]Error:[/red] URL is required. Usage: kz-ext login <url>")
-        raise typer.Exit(code=1)
+        url = "https://kamiwaza.test/api"
+        console.print(f"[dim]Using default URL: {url}[/dim]")
 
     # Normalize URL
     url = url.rstrip("/")

@@ -104,7 +104,7 @@ def _handle_exception(exc: Exception) -> None:
 @app.command()
 @run_with_error_handling
 def login(
-    url: Optional[str] = typer.Argument(None, help="Kamiwaza instance URL"),
+    url: Optional[str] = typer.Argument(None, help="Kamiwaza instance URL [default: https://kamiwaza.test/api]"),
     api_key: Optional[str] = typer.Option(None, "--api-key", help="Authenticate with an existing PAT/API key"),
     name: str = typer.Option("default", "--name", "-n", help="Connection name"),
     list_connections: bool = typer.Option(False, "--list", "-l", help="List stored connections"),
