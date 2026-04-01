@@ -160,6 +160,8 @@ def run_dev_remote(
 
     # 9. Deploy: create or replace
     console.print(f"Deploying to {connection.url}...")
+    if not connection.verify_ssl:
+        os.environ["KAMIWAZA_VERIFY_SSL"] = "false"
     client = KamiwazaClient(
         base_url=connection.url,
         api_key=token.access_token,
