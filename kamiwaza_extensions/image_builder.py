@@ -84,7 +84,7 @@ class ImageBuilder:
             if Path(df).is_absolute():
                 dockerfile = Path(df)
             else:
-                dockerfile = extension_dir / df
+                dockerfile = context / df
         else:
             context = extension_dir
             dockerfile = extension_dir / "Dockerfile"

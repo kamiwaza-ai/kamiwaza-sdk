@@ -99,3 +99,11 @@ class TestResolveBuildConfig:
         )
         assert ctx == tmp_path
         assert df == tmp_path / "backend" / "Dockerfile"
+
+    def test_dict_build_dockerfile_relative_to_context(self, builder, tmp_path):
+        """When context is a subdirectory, dockerfile resolves relative to it."""
+        df, ctx = builder._resolve_build_config(
+            {"context": "./frontend", "dockerfile": "Dockerfile"}, tmp_path
+        )
+        assert ctx == tmp_path / "frontend"
+        assert df == tmp_path / "frontend" / "Dockerfile"
