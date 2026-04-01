@@ -1,6 +1,6 @@
 FROM node:20-alpine AS base
 
-RUN addgroup -S appuser && adduser -S appuser -G appuser
+RUN addgroup -S -g 1001 appuser && adduser -S -u 1001 -G appuser appuser
 
 WORKDIR /app
 
@@ -10,7 +10,7 @@ RUN npm install
 COPY . .
 RUN chown -R appuser:appuser /app
 
-USER appuser
+USER 1001
 
 EXPOSE 3000
 
