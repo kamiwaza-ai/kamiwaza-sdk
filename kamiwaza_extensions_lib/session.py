@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from urllib.parse import quote
+
 from fastapi import APIRouter, Request
 
 from .config import AuthConfig
@@ -55,7 +57,7 @@ def create_session_router(prefix: str = "") -> APIRouter:
 
         base = config.public_api_url.rstrip("/")
         return_to = config.app_url or str(request.base_url).rstrip("/")
-        return {"login_url": f"{base}/auth/login?return_to={return_to}"}
+        return {"login_url": f"{base}/auth/login?return_to={quote(return_to, safe='')}"}
 
     @router.post("/auth/logout")
     async def logout(request: Request) -> dict:

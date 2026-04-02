@@ -65,16 +65,31 @@ class TestSessionEndpoint:
 
 @pytest.mark.unit
 class TestLoginUrlEndpoint:
-    def test_returns_login_url(self, monkeypatch):
+    def test_returns_login_url_with_encoded_return_to(self, monkeypatch):
         client = _make_app(monkeypatch, use_auth="true")
         resp = client.get("/auth/login-url")
 
         assert resp.status_code == 200
         data = resp.json()
+        # return_to should be URL-encoded
         assert data["login_url"] == (
             "https://cluster.test/api/auth/login"
-            "?return_to=https://cluster.test/runtime/apps/my-app"
+            "?return_to=https%3A%2F%2Fcluster.test%2Fruntime%2Fapps%2Fmy-app"
         )
+
+    def test_return_to_with_special_chars_encoded(self, monkeypatch):
+        """Verify URLs with query params / fragments are safely encoded."""
+        client = _make_app(
+            monkeypatch,
+            use_auth="true",
+            app_url="https://cluster.test/apps/my-app?foo=bar&baz=1#section",
+        )
+        resp = client.get("/auth/login-url")
+        data = resp.json()
+        # The entire return_to value should be encoded — no raw & or #
+        assert "&baz" not in data["login_url"]
+        assert "#section" not in data["login_url"]
+        assert "return_to=https%3A" in data["login_url"]
 
     def test_local_dev_returns_null(self, monkeypatch):
         client = _make_app(monkeypatch, use_auth="false")

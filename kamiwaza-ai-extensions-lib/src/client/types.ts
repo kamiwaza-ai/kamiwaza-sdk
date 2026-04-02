@@ -14,6 +14,8 @@ export interface SessionContext {
     session: Session | null;
     loading: boolean;
     error: Error | null;
+    /** Resolved base path for API calls. */
+    basePath: string;
     logout: () => Promise<void>;
     refresh: () => Promise<void>;
 }
@@ -23,8 +25,6 @@ export interface SessionProviderProps {
     children: React.ReactNode;
     /** Override for NEXT_PUBLIC_APP_BASE_PATH. */
     basePath?: string;
-    /** Paths that skip auth checks (e.g., ["/logged-out"]). */
-    publicRoutes?: string[];
     /** Session endpoint path (default: "/session"). */
     sessionEndpoint?: string;
     /** Refresh interval in ms (default: 60000). */
@@ -34,7 +34,7 @@ export interface SessionProviderProps {
 /** Props for AuthGuard. */
 export interface AuthGuardProps {
     children: React.ReactNode;
-    /** Shown while session is loading. */
+    /** Shown while session is loading or auth is being resolved. */
     fallback?: React.ReactNode;
 }
 

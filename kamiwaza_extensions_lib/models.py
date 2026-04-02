@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+import httpx
 from fastapi import Request
 
 from .auth import forward_auth_headers
@@ -93,7 +94,7 @@ async def list_available_models(request: Request) -> list[AvailableModel]:
     client = KamiwazaExtClient.from_env()
     try:
         deployments = await client.get_models(headers=fwd)
-    except Exception:
+    except (httpx.HTTPError, httpx.TimeoutException, OSError):
         return []
 
     if isinstance(deployments, list):

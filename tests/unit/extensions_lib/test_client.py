@@ -1,6 +1,7 @@
 """Tests for kamiwaza_extensions_lib.client."""
 
 import pytest
+import httpx
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from kamiwaza_extensions_lib.client import KamiwazaExtClient
@@ -53,6 +54,22 @@ class TestKamiwazaExtClientInit:
         assert client.api_base == "http://api:7777/api"
         assert client.openai_base == "http://model:8080/v1"
         assert client._default_headers["Authorization"] == "Bearer test"
+
+    def test_default_timeout(self):
+        client = KamiwazaExtClient(api_base="http://api:7777")
+        assert client._timeout == httpx.Timeout(30.0)
+
+    def test_custom_timeout(self):
+        client = KamiwazaExtClient(api_base="http://api:7777", timeout=60.0)
+        assert client._timeout == httpx.Timeout(60.0)
+
+    def test_client_includes_timeout(self):
+        client = KamiwazaExtClient(api_base="http://api:7777", timeout=15.0)
+        async_client = client._client()
+        assert async_client.timeout == httpx.Timeout(15.0)
+        # Clean up
+        import asyncio
+        asyncio.get_event_loop().run_until_complete(async_client.aclose())
 
 
 @pytest.mark.unit

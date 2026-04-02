@@ -7,6 +7,7 @@ const defaultContext: SessionContext = {
     session: null,
     loading: true,
     error: null,
+    basePath: "",
     logout: async () => {},
     refresh: async () => {},
 };

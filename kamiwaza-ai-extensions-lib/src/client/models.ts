@@ -1,22 +1,34 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { useSession } from "./useSession";
 import type { AvailableModel } from "./types";
+
+function parseModel(d: Record<string, unknown>): AvailableModel {
+    const caps = Array.isArray(d.capabilities) ? d.capabilities.filter(
+        (c): c is string => typeof c === "string"
+    ) : [];
+    return {
+        id: String(d.id ?? d.deployment_id ?? ""),
+        name: String(d.name ?? d.model_name ?? ""),
+        repoId: typeof d.repo_id === "string" ? d.repo_id : undefined,
+        type: typeof d.type === "string" ? d.type : undefined,
+        capabilities: caps,
+        status: String(d.status ?? d.phase ?? "unknown"),
+    };
+}
 
 /**
  * Hook that fetches available models from the extension backend.
  *
- * Calls `GET /api/models` (prefixed by base path) and returns typed
- * `AvailableModel` objects.
+ * Calls `GET /api/models` (prefixed by base path from SessionProvider
+ * context) and returns typed `AvailableModel` objects.
  */
 export function useModels(endpoint: string = "/api/models") {
+    const { basePath } = useSession();
     const [models, setModels] = useState<AvailableModel[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<Error | null>(null);
-
-    const basePath = typeof window !== "undefined"
-        ? process.env.NEXT_PUBLIC_APP_BASE_PATH ?? ""
-        : "";
 
     const fetchModels = useCallback(async () => {
         try {
@@ -28,14 +40,7 @@ export function useModels(endpoint: string = "/api/models") {
             const data = await res.json();
 
             const parsed: AvailableModel[] = (Array.isArray(data) ? data : []).map(
-                (d: Record<string, unknown>) => ({
-                    id: String(d.id ?? d.deployment_id ?? ""),
-                    name: String(d.name ?? d.model_name ?? ""),
-                    repoId: d.repo_id as string | undefined,
-                    type: d.type as string | undefined,
-                    capabilities: (d.capabilities as string[]) ?? [],
-                    status: String(d.status ?? d.phase ?? "unknown"),
-                })
+                (d: Record<string, unknown>) => parseModel(d)
             );
             setModels(parsed);
             setError(null);

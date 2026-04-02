@@ -19,17 +19,22 @@ class KamiwazaExtClient:
     lazy service loading.
     """
 
+    #: Default request timeout in seconds.
+    DEFAULT_TIMEOUT = 30.0
+
     def __init__(
         self,
         api_base: str,
         openai_base: str = "",
         headers: Optional[dict[str, str]] = None,
         verify_ssl: bool = True,
+        timeout: float = DEFAULT_TIMEOUT,
     ) -> None:
         self.api_base = api_base.rstrip("/")
         self.openai_base = openai_base.rstrip("/") if openai_base else ""
         self._default_headers = headers or {}
         self._verify_ssl = verify_ssl
+        self._timeout = httpx.Timeout(timeout)
 
     @classmethod
     def from_env(cls) -> KamiwazaExtClient:
@@ -70,8 +75,17 @@ class KamiwazaExtClient:
         )
 
     def _client(self, extra_headers: Optional[dict[str, str]] = None) -> httpx.AsyncClient:
+        """Return a short-lived ``httpx.AsyncClient``.
+
+        .. note::
+            A new client (and TCP connection) is created per call.
+            This is acceptable for v0.1.0 where request volume is low.
+            A future version may introduce connection pooling.
+        """
         headers = {**self._default_headers, **(extra_headers or {})}
-        return httpx.AsyncClient(headers=headers, verify=self._verify_ssl)
+        return httpx.AsyncClient(
+            headers=headers, verify=self._verify_ssl, timeout=self._timeout
+        )
 
     async def chat_completions(
         self,

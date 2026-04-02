@@ -128,7 +128,8 @@ class TestListAvailableModels:
         assert models == []
 
     @pytest.mark.asyncio
-    async def test_returns_empty_on_api_error(self, monkeypatch):
+    async def test_returns_empty_on_http_error(self, monkeypatch):
+        import httpx
         monkeypatch.setenv("KAMIWAZA_API_URL", "http://api:7777/api")
 
         request = MagicMock()
@@ -139,9 +140,30 @@ class TestListAvailableModels:
             "from_env",
         ) as mock_from_env:
             mock_client = AsyncMock()
-            mock_client.get_models = AsyncMock(side_effect=Exception("connection refused"))
+            mock_client.get_models = AsyncMock(
+                side_effect=httpx.ConnectError("connection refused")
+            )
             mock_from_env.return_value = mock_client
 
             models = await list_available_models(request)
 
         assert models == []
+
+    @pytest.mark.asyncio
+    async def test_propagates_programming_errors(self, monkeypatch):
+        """Non-network errors (e.g., TypeError) should NOT be silently swallowed."""
+        monkeypatch.setenv("KAMIWAZA_API_URL", "http://api:7777/api")
+
+        request = MagicMock()
+        request.headers = {}
+
+        with patch.object(
+            __import__("kamiwaza_extensions_lib.client", fromlist=["KamiwazaExtClient"]).KamiwazaExtClient,
+            "from_env",
+        ) as mock_from_env:
+            mock_client = AsyncMock()
+            mock_client.get_models = AsyncMock(side_effect=TypeError("bad arg"))
+            mock_from_env.return_value = mock_client
+
+            with pytest.raises(TypeError):
+                await list_available_models(request)

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SessionCtx } from "./SessionContext";
 import type { Session, SessionProviderProps } from "./types";
 
@@ -11,6 +11,9 @@ function normalizeBase(path: string | undefined): string {
     return cleaned.startsWith("/") ? cleaned : `/${cleaned}`;
 }
 
+/** Maximum backoff interval on repeated failures (5 minutes). */
+const MAX_BACKOFF_MS = 5 * 60_000;
+
 /**
  * Provides session state to the component tree.
  *
@@ -18,6 +21,9 @@ function normalizeBase(path: string | undefined): string {
  * refreshes it.  The base path is read from
  * `NEXT_PUBLIC_APP_BASE_PATH` (or the `basePath` prop) so that
  * session endpoint calls work in all deployment modes.
+ *
+ * On repeated fetch failures the refresh interval backs off
+ * exponentially (capped at 5 minutes) and resets on success.
  */
 export function SessionProvider({
     children,
@@ -28,6 +34,10 @@ export function SessionProvider({
     const [session, setSession] = useState<Session | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<Error | null>(null);
+
+    // Track consecutive failures for backoff
+    const failCountRef = useRef(0);
+    const backoffRef = useRef(refreshInterval);
 
     const base = useMemo(
         () =>
@@ -58,12 +68,21 @@ export function SessionProvider({
                 expiresAt: data.expires_at,
             });
             setError(null);
+            // Reset backoff on success
+            failCountRef.current = 0;
+            backoffRef.current = refreshInterval;
         } catch (err) {
             setError(err instanceof Error ? err : new Error(String(err)));
+            // Increase backoff on failure
+            failCountRef.current += 1;
+            backoffRef.current = Math.min(
+                refreshInterval * 2 ** failCountRef.current,
+                MAX_BACKOFF_MS
+            );
         } finally {
             setLoading(false);
         }
-    }, [base, sessionEndpoint]);
+    }, [base, sessionEndpoint, refreshInterval]);
 
     const logout = useCallback(async () => {
         try {
@@ -90,16 +109,21 @@ export function SessionProvider({
         fetchSession();
     }, [fetchSession]);
 
-    // Periodic refresh
+    // Periodic refresh with backoff
     useEffect(() => {
         if (refreshInterval <= 0) return;
-        const id = setInterval(fetchSession, refreshInterval);
-        return () => clearInterval(id);
+        const tick = () => {
+            fetchSession().then(() => {
+                timerId = setTimeout(tick, backoffRef.current);
+            });
+        };
+        let timerId = setTimeout(tick, backoffRef.current);
+        return () => clearTimeout(timerId);
     }, [fetchSession, refreshInterval]);
 
     const ctx = useMemo(
-        () => ({ session, loading, error, logout, refresh: fetchSession }),
-        [session, loading, error, logout, fetchSession]
+        () => ({ session, loading, error, basePath: base, logout, refresh: fetchSession }),
+        [session, loading, error, base, logout, fetchSession]
     );
 
     return <SessionCtx.Provider value={ctx}>{children}</SessionCtx.Provider>;
