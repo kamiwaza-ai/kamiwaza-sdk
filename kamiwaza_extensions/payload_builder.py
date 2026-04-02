@@ -51,6 +51,8 @@ class PayloadBuilder:
     ) -> CreateExtension:
         services = self._build_services(transformed_compose)
         ext_type = self._resolve_type(metadata)
+        origin = connection.url.removesuffix("/api")
+        tls_reject = "0" if not connection.verify_ssl else "1"
 
         return CreateExtension(
             name=dev_name,
@@ -59,8 +61,10 @@ class PayloadBuilder:
             services=services,
             kamiwaza=KamiwazaIntegrationSpec(
                 api_url=connection.url,
-                public_api_url=connection.url.removesuffix("/api"),
+                public_api_url=connection.url,
+                origin=origin,
                 use_auth="true",
+                tls_reject_unauthorized=tls_reject,
             ),
             networking=NetworkingSpec(ingress_enabled=True),
             security=SecuritySpec(
@@ -135,7 +139,7 @@ class PayloadBuilder:
                 s, proto_str = s.rsplit("/", 1)
                 proto = proto_str.upper() if proto_str.upper() in ("TCP", "UDP") else "TCP"
             try:
-                result.append(ExtensionPort(container_port=int(s), protocol=proto))
+                result.append(ExtensionPort(container_port=int(s), protocol=proto, name="http"))
             except (ValueError, TypeError):
                 continue
         return result

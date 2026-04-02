@@ -57,6 +57,7 @@ class KamiwazaIntegrationSpec(BaseModel):
     public_api_url: Optional[str] = None
     origin: Optional[str] = None
     use_auth: str = Field(default="true")
+    tls_reject_unauthorized: Optional[str] = None
 
 
 class NetworkingSpec(BaseModel):
