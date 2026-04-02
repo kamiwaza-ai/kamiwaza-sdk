@@ -144,6 +144,10 @@ Desktop.ini
 *.tmp
 *.temp
 
+# Node.js (TypeScript runtime library)
+node_modules/
+package-lock.json
+
 # Custom files per instructions
 code.txt
 collated.txt
