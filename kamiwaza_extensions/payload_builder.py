@@ -118,17 +118,21 @@ class PayloadBuilder:
             if is_primary and app_path:
                 env.append({"name": "KAMIWAZA_APP_PATH", "value": app_path})
 
-            specs.append(
-                ExtensionServiceSpec(
-                    name=svc_name,
-                    image=svc.get("image", ""),
-                    primary=is_primary,
-                    ports=ports,
-                    env=env if env else None,
-                    replicas=1,
-                    resources=resources,
-                )
+            health_check = self._default_health_check(svc_name, ports, is_primary)
+
+            spec_kwargs: Dict[str, Any] = dict(
+                name=svc_name,
+                image=svc.get("image", ""),
+                primary=is_primary,
+                ports=ports,
+                env=env if env else None,
+                replicas=1,
+                resources=resources,
             )
+            if health_check:
+                spec_kwargs["healthCheck"] = health_check
+
+            specs.append(ExtensionServiceSpec(**spec_kwargs))
 
         return specs
 
@@ -170,6 +174,42 @@ class PayloadBuilder:
                     entry["value"] = str(v)
                 result.append(entry)
         return result
+
+    @staticmethod
+    def _default_health_check(
+        svc_name: str, ports: List[ExtensionPort], is_primary: bool,
+    ) -> Optional[Dict[str, Any]]:
+        """Generate a default health check based on service type."""
+        if not ports:
+            return None
+        port = ports[0].container_port
+
+        if is_primary or svc_name == "frontend":
+            # Frontend: exec curl with basePath support
+            return {
+                "exec": {
+                    "command": [
+                        "/bin/sh", "-c",
+                        f'curl -fsS -o /dev/null "http://localhost:{port}'
+                        '${NEXT_PUBLIC_APP_BASE_PATH:-${KAMIWAZA_APP_PATH:-/}}"',
+                    ],
+                },
+                "initialDelaySeconds": 10,
+                "periodSeconds": 5,
+                "failureThreshold": 24,
+                "startPeriod": 10,
+                "timeoutSeconds": 5,
+            }
+        else:
+            # Backend: HTTP GET /health
+            return {
+                "httpGet": {"path": "/health", "port": port},
+                "initialDelaySeconds": 10,
+                "periodSeconds": 10,
+                "failureThreshold": 3,
+                "startPeriod": 5,
+                "timeoutSeconds": 5,
+            }
 
     @staticmethod
     def _parse_resources(svc: Dict[str, Any]) -> Optional[ResourceSpec]:
