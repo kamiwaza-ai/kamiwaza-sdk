@@ -84,8 +84,8 @@ class ComposeTransformer:
         if had_build and "image" not in svc:
             svc["image"] = f"{registry}/{extension_name}-{service_name}:{revision_tag}"
         elif had_build and "image" in svc:
-            # Update tag on the existing image field
-            svc["image"] = _update_tag(svc["image"], revision_tag)
+            # Use consistent registry/extension-service:tag format (matches image builder)
+            svc["image"] = f"{registry}/{extension_name}-{service_name}:{revision_tag}"
         elif "image" in svc and not _is_external_image(svc["image"], extension_name):
             svc["image"] = _update_tag(svc["image"], revision_tag)
         # External images (postgres, redis, etc.) are left unchanged.
@@ -143,6 +143,9 @@ def _strip_bind_mounts(volumes: List[Any]) -> List[str]:
 
 def _update_tag(image: str, new_tag: str) -> str:
     """Replace the tag portion of an image reference."""
+    # Don't rewrite digest references
+    if "@sha256:" in image:
+        return image
     last_slash = image.rfind("/")
     last_colon = image.rfind(":")
     if last_colon > last_slash:

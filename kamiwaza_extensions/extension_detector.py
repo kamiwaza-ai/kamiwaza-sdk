@@ -106,6 +106,9 @@ class ExtensionDetector:
                 try:
                     data = yaml.safe_load(candidate.read_text())
                     return candidate, data
-                except yaml.YAMLError:
+                except yaml.YAMLError as exc:
+                    from rich.console import Console
+                    console = Console(stderr=True)
+                    console.print(f"[yellow]Warning:[/yellow] Failed to parse {candidate}: {exc}")
                     return candidate, None
         return None, None

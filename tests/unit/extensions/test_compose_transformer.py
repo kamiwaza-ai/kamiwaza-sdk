@@ -103,7 +103,8 @@ class TestBuildContextRemoval:
             }
         }
         result = transformer.transform(compose, "my-app", "1.0.0-dev", "registry.test")
-        assert result["services"]["api"]["image"] == "kamiwazaai/my-app-api:1.0.0-dev"
+        # When service has both build and image, use consistent registry format (matches image builder)
+        assert result["services"]["api"]["image"] == "registry.test/my-app-api:1.0.0-dev"
 
     def test_dict_build_config(self, transformer):
         compose = {

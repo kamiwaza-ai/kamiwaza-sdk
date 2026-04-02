@@ -115,7 +115,11 @@ def run_dev_remote(
         # Fallback: convention registry.{cluster-domain}
         cluster_url = connection.url.removesuffix("/api")
         parsed = urlparse(cluster_url)
-        registry = f"registry.{parsed.hostname}"
+        if parsed.hostname:
+            registry = f"registry.{parsed.hostname}"
+        else:
+            console.print("[red]Error:[/red] Could not derive registry from connection URL.")
+            raise typer.Exit(code=1)
 
     # Print header
     console.print(f"  Extension:  [bold]{info.name}[/bold] ({info.version})")
@@ -186,7 +190,7 @@ def run_dev_remote(
 
     # 8. Build API payload
     payload_builder = PayloadBuilder()
-    dev_name = PayloadBuilder.make_dev_name(info.name)
+    dev_name = PayloadBuilder.make_dev_name(info.name, user_id=token.access_token)
     payload = payload_builder.build(
         metadata=info.metadata,
         transformed_compose=transformed,
@@ -212,10 +216,16 @@ def run_dev_remote(
             console.print("  [dim]Replacing existing deployment...[/dim]")
             try:
                 client.extensions.delete_extension(dev_name)
-            except Exception:
-                pass  # Best-effort delete
+            except Exception as del_exc:
+                console.print(f"  [dim]Delete failed: {del_exc}[/dim]")
+            # Wait for deletion to complete
             import time
-            time.sleep(2)  # Brief wait for deletion to propagate
+            for _ in range(10):
+                time.sleep(1)
+                try:
+                    client.extensions.get_extension(dev_name)
+                except Exception:
+                    break  # Extension is gone
             try:
                 ext = client.extensions.create_extension(payload)
                 console.print("  [green]\u2713[/green] Extension replaced")
@@ -227,7 +237,11 @@ def run_dev_remote(
             raise typer.Exit(code=1) from exc
 
     # 10. Poll for readiness
-    timeout = int(os.environ.get("KAMIWAZA_DEV_TIMEOUT", "300"))
+    try:
+        timeout = int(os.environ.get("KAMIWAZA_DEV_TIMEOUT", "300"))
+    except ValueError:
+        console.print("[yellow]Warning:[/yellow] Invalid KAMIWAZA_DEV_TIMEOUT, using 300s")
+        timeout = 300
     poller = DeploymentPoller()
     try:
         ext = poller.wait_for_ready(

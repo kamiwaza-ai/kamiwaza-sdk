@@ -99,20 +99,26 @@ class PayloadBuilder:
     ) -> List[ExtensionServiceSpec]:
         services_dict = transformed.get("services") or {}
         specs: List[ExtensionServiceSpec] = []
-        primary_assigned = False
+
+        # Determine primary service: prefer "frontend", fall back to first with ports
+        primary_name = None
+        for svc_name, svc in services_dict.items():
+            ports = self._parse_ports(svc.get("ports", []))
+            if svc_name == "frontend" and ports:
+                primary_name = svc_name
+                break
+        if primary_name is None:
+            for svc_name, svc in services_dict.items():
+                if self._parse_ports(svc.get("ports", [])):
+                    primary_name = svc_name
+                    break
 
         for svc_name, svc in services_dict.items():
             ports = self._parse_ports(svc.get("ports", []))
             env = self._parse_env(svc.get("environment", []))
             resources = self._parse_resources(svc)
 
-            is_primary = False
-            if not primary_assigned and ports:
-                is_primary = True
-                primary_assigned = True
-            if svc_name == "frontend" and not primary_assigned:
-                is_primary = True
-                primary_assigned = True
+            is_primary = (svc_name == primary_name)
 
             # Inject platform env vars for primary service
             if is_primary and app_path:
