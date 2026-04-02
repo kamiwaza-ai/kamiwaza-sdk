@@ -9,10 +9,14 @@ RUN npm install
 
 COPY . .
 RUN npm run build || true
-RUN chown -R appuser:appuser /app
+RUN mkdir -p /tmp/app && chown -R appuser:appuser /app /tmp/app
+
+COPY docker-entrypoint.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 USER 1001
 
 EXPOSE 3000
 
+ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["npm", "run", "start"]
