@@ -57,6 +57,7 @@ class KamiwazaIntegrationSpec(BaseModel):
     public_api_url: Optional[str] = None
     origin: Optional[str] = None
     use_auth: str = Field(default="true")
+    tls_reject_unauthorized: Optional[str] = None
 
 
 class NetworkingSpec(BaseModel):
@@ -84,8 +85,8 @@ class CreateExtension(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     name: str = Field(..., description="Extension name (K8s DNS label)")
-    type: Literal["app", "tool"] = Field(
-        ..., description="Extension type: 'app' or 'tool'"
+    type: Literal["app", "tool", "service"] = Field(
+        ..., description="Extension type: 'app', 'tool', or 'service'"
     )
     version: str = Field(..., description="Extension version (semver)")
     services: List[ExtensionServiceSpec] = Field(..., min_length=1)

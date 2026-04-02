@@ -1,47 +1,15 @@
-"""Tests for DevLocalRunner."""
+"""Tests for DevLocalRunner.
 
-import json
+Extension detection and compose file discovery tests moved to
+test_extension_detector.py (shared ExtensionDetector module).
+"""
+
 from unittest.mock import patch, MagicMock
 
 import pytest
 
 from kamiwaza_extensions.connections import ConnectionInfo
-from kamiwaza_extensions.dev_local import DevLocalRunner, build_env_overlay, detect_compose_command
-
-
-@pytest.mark.unit
-class TestExtensionDetection:
-    def test_finds_extension_at_root(self, tmp_path, monkeypatch):
-        (tmp_path / "kamiwaza.json").write_text(json.dumps({"name": "my-app"}))
-        monkeypatch.chdir(tmp_path)
-        runner = DevLocalRunner(config_dir=tmp_path / ".kamiwaza")
-        ext_dir = runner._find_extension()
-        assert ext_dir == tmp_path
-
-    def test_finds_extension_one_level_deep(self, tmp_path, monkeypatch):
-        sub = tmp_path / "my-app"
-        sub.mkdir()
-        (sub / "kamiwaza.json").write_text(json.dumps({"name": "my-app"}))
-        monkeypatch.chdir(tmp_path)
-        runner = DevLocalRunner(config_dir=tmp_path / ".kamiwaza")
-        ext_dir = runner._find_extension()
-        assert ext_dir == sub
-
-    def test_errors_when_no_extension_found(self, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
-        runner = DevLocalRunner(config_dir=tmp_path / ".kamiwaza")
-        with pytest.raises(FileNotFoundError, match="No kamiwaza.json"):
-            runner._find_extension()
-
-    def test_errors_when_multiple_extensions(self, tmp_path, monkeypatch):
-        for name in ("app-a", "app-b"):
-            d = tmp_path / name
-            d.mkdir()
-            (d / "kamiwaza.json").write_text(json.dumps({"name": name}))
-        monkeypatch.chdir(tmp_path)
-        runner = DevLocalRunner(config_dir=tmp_path / ".kamiwaza")
-        with pytest.raises(FileNotFoundError, match="Multiple"):
-            runner._find_extension()
+from kamiwaza_extensions.dev_local import build_env_overlay, detect_compose_command
 
 
 @pytest.mark.unit
@@ -92,21 +60,5 @@ class TestComposeDetection:
                 detect_compose_command()
 
 
-@pytest.mark.unit
-class TestComposeFileDetection:
-    def test_finds_docker_compose_yml(self, tmp_path):
-        (tmp_path / "docker-compose.yml").write_text("version: '3'")
-        runner = DevLocalRunner(config_dir=tmp_path / ".kamiwaza")
-        result = runner._find_compose_file(tmp_path)
-        assert result.name == "docker-compose.yml"
 
-    def test_finds_compose_yaml(self, tmp_path):
-        (tmp_path / "compose.yaml").write_text("version: '3'")
-        runner = DevLocalRunner(config_dir=tmp_path / ".kamiwaza")
-        result = runner._find_compose_file(tmp_path)
-        assert result.name == "compose.yaml"
-
-    def test_errors_when_no_compose_file(self, tmp_path):
-        runner = DevLocalRunner(config_dir=tmp_path / ".kamiwaza")
-        with pytest.raises(FileNotFoundError, match="No compose file"):
-            runner._find_compose_file(tmp_path)
+# Compose file detection tests are in test_extension_detector.py
