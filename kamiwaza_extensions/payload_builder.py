@@ -185,12 +185,12 @@ class PayloadBuilder:
         port = ports[0].container_port
 
         if is_primary or svc_name == "frontend":
-            # Frontend: exec curl with basePath support
+            # Frontend: exec wget with basePath support (Alpine lacks curl)
             return {
                 "exec": {
                     "command": [
                         "/bin/sh", "-c",
-                        f'curl -fsS -o /dev/null "http://localhost:{port}'
+                        f'wget -qO /dev/null "http://localhost:{port}'
                         '${NEXT_PUBLIC_APP_BASE_PATH:-${KAMIWAZA_APP_PATH:-/}}"',
                     ],
                 },
