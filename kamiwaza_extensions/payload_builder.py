@@ -49,8 +49,9 @@ class PayloadBuilder:
         connection: ConnectionInfo,
         dev_name: str,
     ) -> CreateExtension:
-        services = self._build_services(transformed_compose)
         ext_type = self._resolve_type(metadata)
+        app_path = f"/runtime/apps/{dev_name}" if ext_type == "app" else f"/runtime/{ext_type}s/{dev_name}"
+        services = self._build_services(transformed_compose, app_path=app_path)
         origin = connection.url.removesuffix("/api")
         tls_reject = "0" if not connection.verify_ssl else "1"
 
@@ -94,7 +95,7 @@ class PayloadBuilder:
     # ------------------------------------------------------------------
 
     def _build_services(
-        self, transformed: Dict[str, Any]
+        self, transformed: Dict[str, Any], app_path: str = "",
     ) -> List[ExtensionServiceSpec]:
         services_dict = transformed.get("services") or {}
         specs: List[ExtensionServiceSpec] = []
@@ -107,12 +108,15 @@ class PayloadBuilder:
 
             is_primary = False
             if not primary_assigned and ports:
-                # First service with ports, or named "frontend"
                 is_primary = True
                 primary_assigned = True
             if svc_name == "frontend" and not primary_assigned:
                 is_primary = True
                 primary_assigned = True
+
+            # Inject platform env vars for primary service
+            if is_primary and app_path:
+                env.append({"name": "KAMIWAZA_APP_PATH", "value": app_path})
 
             specs.append(
                 ExtensionServiceSpec(
