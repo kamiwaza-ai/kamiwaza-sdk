@@ -227,7 +227,7 @@ def run_dev_remote(
             raise typer.Exit(code=1) from exc
 
     # 10. Poll for readiness
-    timeout = int(os.environ.get("KAMIWAZA_DEV_TIMEOUT", "120"))
+    timeout = int(os.environ.get("KAMIWAZA_DEV_TIMEOUT", "300"))
     poller = DeploymentPoller()
     try:
         ext = poller.wait_for_ready(
