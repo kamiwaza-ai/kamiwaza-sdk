@@ -56,11 +56,21 @@ function filterResponseHeaders(headers: Headers): Record<string, string> {
  * Returns the resolved URL string or throws on invalid input.
  */
 function resolveTarget(target: string, path: string, search: string): string {
-    // Decode the path to catch encoded traversal (e.g., %2e%2e%2f)
-    const decoded = decodeURIComponent(path);
+    // Decode repeatedly to catch multi-layer encoding (%252e%252e → %2e%2e → ..)
+    let decoded = path;
+    for (let i = 0; i < 3; i++) {
+        const next = decodeURIComponent(decoded);
+        if (next === decoded) break;  // stable — no more encoded layers
+        decoded = next;
+    }
 
     // Reject path traversal sequences
     if (decoded.includes("..")) {
+        throw new Error("Path traversal detected");
+    }
+
+    // Also reject %2e in the raw path as defense-in-depth
+    if (/%2e/i.test(path)) {
         throw new Error("Path traversal detected");
     }
 

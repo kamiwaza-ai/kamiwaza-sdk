@@ -50,14 +50,15 @@ export function SessionProvider({
         [basePath]
     );
 
-    const fetchSession = useCallback(async () => {
+    const fetchSession = useCallback(async (signal?: AbortSignal) => {
         try {
             const url = `${base}${sessionEndpoint}`;
-            const res = await fetch(url, { credentials: "include" });
+            const res = await fetch(url, { credentials: "include", signal });
             if (!res.ok) {
                 throw new Error(`Session fetch failed: ${res.status}`);
             }
             const data = await res.json();
+            if (signal?.aborted) return;
             setSession({
                 userId: data.user_id ?? null,
                 email: data.email ?? null,
@@ -72,6 +73,7 @@ export function SessionProvider({
             failCountRef.current = 0;
             backoffRef.current = refreshInterval;
         } catch (err) {
+            if (signal?.aborted) return;
             setError(err instanceof Error ? err : new Error(String(err)));
             // Increase backoff on failure
             failCountRef.current += 1;
@@ -80,7 +82,7 @@ export function SessionProvider({
                 MAX_BACKOFF_MS
             );
         } finally {
-            setLoading(false);
+            if (!signal?.aborted) setLoading(false);
         }
     }, [base, sessionEndpoint, refreshInterval]);
 
@@ -104,21 +106,28 @@ export function SessionProvider({
         setSession(null);
     }, [base]);
 
-    // Initial fetch
+    // Initial fetch with abort on unmount
     useEffect(() => {
-        fetchSession();
+        const controller = new AbortController();
+        fetchSession(controller.signal);
+        return () => controller.abort();
     }, [fetchSession]);
 
-    // Periodic refresh with backoff
+    // Periodic refresh with backoff and abort on cleanup
     useEffect(() => {
         if (refreshInterval <= 0) return;
+        let controller = new AbortController();
         const tick = () => {
-            fetchSession().then(() => {
+            controller = new AbortController();
+            fetchSession(controller.signal).then(() => {
                 timerId = setTimeout(tick, backoffRef.current);
             });
         };
         let timerId = setTimeout(tick, backoffRef.current);
-        return () => clearTimeout(timerId);
+        return () => {
+            clearTimeout(timerId);
+            controller.abort();
+        };
     }, [fetchSession, refreshInterval]);
 
     const ctx = useMemo(

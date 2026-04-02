@@ -94,7 +94,7 @@ async def list_available_models(request: Request) -> list[AvailableModel]:
     client = KamiwazaExtClient.from_env()
     try:
         deployments = await client.get_models(headers=fwd)
-    except (httpx.HTTPError, httpx.TimeoutException, OSError):
+    except (httpx.HTTPError, OSError):
         return []
 
     if isinstance(deployments, list):

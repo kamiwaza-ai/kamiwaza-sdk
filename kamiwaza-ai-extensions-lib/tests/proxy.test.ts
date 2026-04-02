@@ -24,9 +24,21 @@ describe("resolveTarget", () => {
         ).toThrow("Path traversal detected");
     });
 
-    it("rejects double-encoded traversal", () => {
-        // %252e%252e decodes to %2e%2e which decodes to ..
-        // Our single decodeURIComponent catches %2e%2e → ..
+    it("rejects single-encoded traversal (%2e%2e)", () => {
+        expect(() =>
+            _resolveTarget("http://backend:8000", "/%2e%2e/etc/passwd", "")
+        ).toThrow("Path traversal detected");
+    });
+
+    it("rejects double-encoded traversal (%252e%252e)", () => {
+        // %252e%252e → first decode → %2e%2e → second decode → ..
+        expect(() =>
+            _resolveTarget("http://backend:8000", "/%252e%252e/etc/passwd", "")
+        ).toThrow("Path traversal detected");
+    });
+
+    it("rejects raw %2e in path as defense-in-depth", () => {
+        // Even partial encoded dots are rejected
         expect(() =>
             _resolveTarget("http://backend:8000", "/%2e%2e%2fetc%2fpasswd", "")
         ).toThrow("Path traversal detected");
