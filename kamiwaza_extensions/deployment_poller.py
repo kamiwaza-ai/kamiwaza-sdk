@@ -111,9 +111,12 @@ class DeploymentPoller:
             total = len(statuses)
             summary = f"{ready_count}/{total} ready"
             return ready_count == total, summary
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            # kubectl not available; fall back to API-only check
-            return True, "ready (kubectl unavailable)"
+        except FileNotFoundError:
+            # kubectl not installed — warn and skip pod-readiness gate
+            console.print("  [yellow]Warning:[/yellow] kubectl not found, cannot verify pod readiness")
+            return True, "skipped (no kubectl)"
+        except subprocess.TimeoutExpired:
+            return False, "checking... (kubectl timeout)"
 
     @staticmethod
     def _extract_failure_message(ext: Extension) -> str:

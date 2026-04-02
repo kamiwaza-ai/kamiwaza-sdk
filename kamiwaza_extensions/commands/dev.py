@@ -47,6 +47,31 @@ def _detect_kind_registry() -> Optional[str]:
     return None
 
 
+def _extract_user_id(access_token: str) -> str:
+    """Extract a stable user identifier (``sub`` claim) from a JWT.
+
+    Falls back to hashing the token if decoding fails.
+    """
+    import base64
+    import json as _json
+
+    try:
+        # JWT is header.payload.signature — decode the payload
+        payload_b64 = access_token.split(".")[1]
+        # Add padding if needed
+        padding = 4 - len(payload_b64) % 4
+        if padding != 4:
+            payload_b64 += "=" * padding
+        payload = _json.loads(base64.urlsafe_b64decode(payload_b64))
+        sub = payload.get("sub")
+        if sub:
+            return sub
+    except Exception:
+        pass
+    # Fallback: hash the token itself
+    return access_token
+
+
 def run_dev_remote(
     *,
     no_build: bool = False,
@@ -190,7 +215,7 @@ def run_dev_remote(
 
     # 8. Build API payload
     payload_builder = PayloadBuilder()
-    dev_name = PayloadBuilder.make_dev_name(info.name, user_id=token.access_token)
+    dev_name = PayloadBuilder.make_dev_name(info.name, user_id=_extract_user_id(token.access_token))
     payload = payload_builder.build(
         metadata=info.metadata,
         transformed_compose=transformed,
@@ -200,6 +225,7 @@ def run_dev_remote(
 
     # 9. Deploy: create or replace
     console.print(f"Deploying to {connection.url}...")
+    old_verify_ssl = os.environ.get("KAMIWAZA_VERIFY_SSL")
     if not connection.verify_ssl:
         os.environ["KAMIWAZA_VERIFY_SSL"] = "false"
     client = KamiwazaClient(
@@ -218,20 +244,29 @@ def run_dev_remote(
                 client.extensions.delete_extension(dev_name)
             except Exception as del_exc:
                 console.print(f"  [dim]Delete failed: {del_exc}[/dim]")
-            # Wait for deletion to complete
+            # Wait for deletion, then retry create with backoff
             import time
-            for _ in range(10):
-                time.sleep(1)
+            ext = None
+            for attempt in range(15):
+                time.sleep(2)
                 try:
                     client.extensions.get_extension(dev_name)
+                    # Still exists — keep waiting
+                    continue
                 except Exception:
-                    break  # Extension is gone
-            try:
-                ext = client.extensions.create_extension(payload)
-                console.print("  [green]\u2713[/green] Extension replaced")
-            except APIError as create_exc:
-                console.print(f"[red]Error:[/red] Deploy failed: {create_exc}")
-                raise typer.Exit(code=1) from create_exc
+                    pass  # Deleted
+                try:
+                    ext = client.extensions.create_extension(payload)
+                    console.print("  [green]\u2713[/green] Extension replaced")
+                    break
+                except APIError as retry_exc:
+                    if retry_exc.status_code == 409 and attempt < 14:
+                        continue  # Finalizer still running, retry
+                    console.print(f"[red]Error:[/red] Deploy failed: {retry_exc}")
+                    raise typer.Exit(code=1) from retry_exc
+            if ext is None:
+                console.print("[red]Error:[/red] Timed out waiting for old deployment to be removed")
+                raise typer.Exit(code=1)
         else:
             console.print(f"[red]Error:[/red] Deploy failed: {exc}")
             raise typer.Exit(code=1) from exc
@@ -263,3 +298,9 @@ def run_dev_remote(
         console.print(f"  [blue]{url}[/blue]")
     else:
         console.print(f"  [dim](no external URL reported — check kz-ext status)[/dim]")
+
+    # Restore SSL env var
+    if old_verify_ssl is None:
+        os.environ.pop("KAMIWAZA_VERIFY_SSL", None)
+    else:
+        os.environ["KAMIWAZA_VERIFY_SSL"] = old_verify_ssl
