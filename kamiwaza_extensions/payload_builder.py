@@ -194,10 +194,10 @@ class PayloadBuilder:
                         '${NEXT_PUBLIC_APP_BASE_PATH:-${KAMIWAZA_APP_PATH:-/}}"',
                     ],
                 },
-                "initialDelaySeconds": 10,
-                "periodSeconds": 5,
-                "failureThreshold": 24,
-                "startPeriod": 10,
+                "initialDelaySeconds": 30,
+                "periodSeconds": 10,
+                "failureThreshold": 30,
+                "startPeriod": 300,
                 "timeoutSeconds": 5,
             }
         else:
