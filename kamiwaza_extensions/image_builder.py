@@ -107,9 +107,9 @@ class ImageBuilder:
         ]
         try:
             if verbose:
-                subprocess.run(cmd, check=True)
+                subprocess.run(cmd, check=True, timeout=3600)
             else:
-                result = subprocess.run(cmd, capture_output=True, text=True)
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
                 if result.returncode != 0:
                     # Show last 20 lines of output on failure
                     lines = (result.stdout + result.stderr).strip().splitlines()

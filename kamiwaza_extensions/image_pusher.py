@@ -81,12 +81,13 @@ class ImagePusher:
             cmd.insert(2, "--tls-verify=false")
         try:
             if verbose:
-                subprocess.run(cmd, check=True)
+                subprocess.run(cmd, check=True, timeout=600)
             else:
                 result = subprocess.run(
                     cmd,
                     capture_output=True,
                     text=True,
+                    timeout=600,
                 )
                 if result.returncode != 0:
                     raise ImagePushError(

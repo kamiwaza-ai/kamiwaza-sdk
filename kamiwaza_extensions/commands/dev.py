@@ -68,8 +68,9 @@ def _extract_user_id(access_token: str) -> str:
             return sub
     except Exception:
         pass
-    # Fallback: hash the token itself
-    return access_token
+    # Fallback: hash the token so it's never exposed downstream
+    import hashlib
+    return hashlib.sha256(access_token.encode()).hexdigest()
 
 
 def run_dev_remote(
@@ -223,84 +224,81 @@ def run_dev_remote(
         dev_name=dev_name,
     )
 
-    # 9. Deploy: create or replace
+    # 9. Deploy, poll, and print URL — wrapped in try/finally for SSL env restore
     console.print(f"Deploying to {connection.url}...")
     old_verify_ssl = os.environ.get("KAMIWAZA_VERIFY_SSL")
     if not connection.verify_ssl:
         os.environ["KAMIWAZA_VERIFY_SSL"] = "false"
-    client = KamiwazaClient(
-        base_url=connection.url,
-        api_key=token.access_token,
-    )
-
     try:
-        ext = client.extensions.create_extension(payload)
-        console.print("  [green]\u2713[/green] Extension created")
-    except APIError as exc:
-        if exc.status_code == 409:
-            # Replace: delete existing, then re-create
-            console.print("  [dim]Replacing existing deployment...[/dim]")
-            try:
-                client.extensions.delete_extension(dev_name)
-            except Exception as del_exc:
-                console.print(f"  [dim]Delete failed: {del_exc}[/dim]")
-            # Wait for deletion, then retry create with backoff
-            import time
-            ext = None
-            for attempt in range(15):
-                time.sleep(2)
+        client = KamiwazaClient(
+            base_url=connection.url,
+            api_key=token.access_token,
+        )
+
+        # Create or replace
+        try:
+            ext = client.extensions.create_extension(payload)
+            console.print("  [green]\u2713[/green] Extension created")
+        except APIError as exc:
+            if exc.status_code == 409:
+                # Replace: delete existing, then re-create with retry
+                console.print("  [dim]Replacing existing deployment...[/dim]")
                 try:
-                    client.extensions.get_extension(dev_name)
-                    # Still exists — keep waiting
-                    continue
-                except Exception:
-                    pass  # Deleted
-                try:
-                    ext = client.extensions.create_extension(payload)
-                    console.print("  [green]\u2713[/green] Extension replaced")
-                    break
-                except APIError as retry_exc:
-                    if retry_exc.status_code == 409 and attempt < 14:
-                        continue  # Finalizer still running, retry
-                    console.print(f"[red]Error:[/red] Deploy failed: {retry_exc}")
-                    raise typer.Exit(code=1) from retry_exc
-            if ext is None:
-                console.print("[red]Error:[/red] Timed out waiting for old deployment to be removed")
-                raise typer.Exit(code=1)
-        else:
-            console.print(f"[red]Error:[/red] Deploy failed: {exc}")
+                    client.extensions.delete_extension(dev_name)
+                except Exception as del_exc:
+                    console.print(f"  [dim]Delete failed: {del_exc}[/dim]")
+                import time
+                ext = None
+                for attempt in range(15):
+                    time.sleep(2)
+                    try:
+                        client.extensions.get_extension(dev_name)
+                        continue  # Still exists — keep waiting
+                    except Exception:
+                        pass  # Deleted
+                    try:
+                        ext = client.extensions.create_extension(payload)
+                        console.print("  [green]\u2713[/green] Extension replaced")
+                        break
+                    except APIError as retry_exc:
+                        if retry_exc.status_code == 409 and attempt < 14:
+                            continue  # Finalizer still running, retry
+                        console.print(f"[red]Error:[/red] Deploy failed: {retry_exc}")
+                        raise typer.Exit(code=1) from retry_exc
+                if ext is None:
+                    console.print("[red]Error:[/red] Timed out waiting for old deployment to be removed")
+                    raise typer.Exit(code=1)
+            else:
+                console.print(f"[red]Error:[/red] Deploy failed: {exc}")
+                raise typer.Exit(code=1) from exc
+
+        # 10. Poll for readiness
+        try:
+            timeout = int(os.environ.get("KAMIWAZA_DEV_TIMEOUT", "300"))
+        except ValueError:
+            console.print("[yellow]Warning:[/yellow] Invalid KAMIWAZA_DEV_TIMEOUT, using 300s")
+            timeout = 300
+        poller = DeploymentPoller()
+        try:
+            ext = poller.wait_for_ready(client, dev_name, timeout=timeout)
+        except DeploymentTimeoutError as exc:
+            console.print(f"\n[red]Error:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+        except DeploymentFailedError as exc:
+            console.print(f"\n[red]Error:[/red] {exc}")
             raise typer.Exit(code=1) from exc
 
-    # 10. Poll for readiness
-    try:
-        timeout = int(os.environ.get("KAMIWAZA_DEV_TIMEOUT", "300"))
-    except ValueError:
-        console.print("[yellow]Warning:[/yellow] Invalid KAMIWAZA_DEV_TIMEOUT, using 300s")
-        timeout = 300
-    poller = DeploymentPoller()
-    try:
-        ext = poller.wait_for_ready(
-            client, dev_name, timeout=timeout
-        )
-    except DeploymentTimeoutError as exc:
-        console.print(f"\n[red]Error:[/red] {exc}")
-        raise typer.Exit(code=1) from exc
-    except DeploymentFailedError as exc:
-        console.print(f"\n[red]Error:[/red] {exc}")
-        raise typer.Exit(code=1) from exc
-
-    # 11. Print URL
-    url = ext.endpoints.external if ext.endpoints else None
-    console.print(f"\n  [green]\u2713[/green] Rollout complete")
-    console.print()
-    console.print(f"[bold]{info.name}[/bold] is running at:")
-    if url:
-        console.print(f"  [blue]{url}[/blue]")
-    else:
-        console.print(f"  [dim](no external URL reported — check kz-ext status)[/dim]")
-
-    # Restore SSL env var
-    if old_verify_ssl is None:
-        os.environ.pop("KAMIWAZA_VERIFY_SSL", None)
-    else:
-        os.environ["KAMIWAZA_VERIFY_SSL"] = old_verify_ssl
+        # 11. Print URL
+        url = ext.endpoints.external if ext.endpoints else None
+        console.print(f"\n  [green]\u2713[/green] Rollout complete")
+        console.print()
+        console.print(f"[bold]{info.name}[/bold] is running at:")
+        if url:
+            console.print(f"  [blue]{url}[/blue]")
+        else:
+            console.print(f"  [dim](no external URL reported — check kz-ext status)[/dim]")
+    finally:
+        if old_verify_ssl is None:
+            os.environ.pop("KAMIWAZA_VERIFY_SSL", None)
+        else:
+            os.environ["KAMIWAZA_VERIFY_SSL"] = old_verify_ssl
