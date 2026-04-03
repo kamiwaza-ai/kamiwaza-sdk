@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import ipaddress
 import os
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -12,6 +14,7 @@ import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
+from urllib.parse import urlparse, urlunparse
 
 import requests
 import yaml
@@ -33,6 +36,7 @@ _BRIDGED_AUTH_HEADER_NAMES = (
     "x-workroom-id",
     "x-request-id",
 )
+_DEFAULT_DOCKER_HOST_ALIAS = "host.docker.internal"
 
 
 @dataclass
@@ -40,6 +44,14 @@ class LocalAuthBridge:
     headers: Dict[str, str]
     subject: str
     roles: list[str]
+
+
+@dataclass
+class ConnectionUrls:
+    api_url: str
+    public_api_url: str
+    openai_base: str
+    use_host_alias: bool = False
 
 
 class DevLocalRunner:
@@ -77,6 +89,7 @@ class DevLocalRunner:
         if connection:
             token = self._conn_mgr.get_token(connection.name)
             api_key = token.access_token if token else None
+            urls = resolve_connection_urls(connection.url)
             overlay = build_env_overlay(
                 connection,
                 info.name,
@@ -92,7 +105,11 @@ class DevLocalRunner:
                     bridge_env = build_local_auth_env(bridge.headers, api_key)
                     env.update(bridge_env)
                     services = ((info.compose_data or {}).get("services") or {}).keys()
-                    override_path = write_compose_override(services, bridge_env)
+                    override_path = write_compose_override(
+                        services,
+                        bridge_env,
+                        use_host_alias=urls.use_host_alias,
+                    )
                     compose_files.append(override_path)
                     roles = ", ".join(bridge.roles) or "no roles"
                     console.print(
@@ -118,6 +135,19 @@ class DevLocalRunner:
                     console.print("[dim]KAMIWAZA_USE_AUTH=true (auth-enabled local mode)[/dim]")
             else:
                 console.print("[dim]KAMIWAZA_USE_AUTH=false (local dev mode)[/dim]")
+            if urls.use_host_alias:
+                console.print(
+                    "[dim]Container API routing:[/dim] "
+                    f"{connection.url} -> {urls.api_url}"
+                )
+                if override_path is None:
+                    services = ((info.compose_data or {}).get("services") or {}).keys()
+                    override_path = write_compose_override(
+                        services,
+                        {},
+                        use_host_alias=True,
+                    )
+                    compose_files.append(override_path)
         else:
             console.print("[yellow]No Kamiwaza connection configured — running in standalone mode[/yellow]")
 
@@ -177,11 +207,11 @@ def build_env_overlay(
     api_key: Optional[str] = None,
 ) -> Dict[str, str]:
     """Build environment variable overlay from a connection."""
-    url = connection.url
+    urls = resolve_connection_urls(connection.url)
     env = {
-        "KAMIWAZA_API_URL": url,
-        "KAMIWAZA_PUBLIC_API_URL": url.removesuffix("/api"),
-        "KAMIWAZA_ENDPOINT": f"{url}/v1" if not url.endswith("/v1") else url,
+        "KAMIWAZA_API_URL": urls.api_url,
+        "KAMIWAZA_PUBLIC_API_URL": urls.public_api_url,
+        "KAMIWAZA_ENDPOINT": urls.openai_base,
         "KAMIWAZA_USE_AUTH": "true" if use_auth else "false",
         "KAMIWAZA_APP_NAME": extension_name,
     }
@@ -237,19 +267,33 @@ def build_local_auth_env(headers: Dict[str, str], api_key: str) -> Dict[str, str
 def build_compose_override(
     services: Iterable[str],
     environment: Dict[str, str],
+    *,
+    use_host_alias: bool = False,
 ) -> Dict[str, Any]:
     """Build a Compose override that injects env vars into every service."""
     return {
         "services": {
-            service_name: {"environment": dict(environment)}
+            service_name: _service_override(
+                dict(environment),
+                use_host_alias=use_host_alias,
+            )
             for service_name in services
         }
     }
 
 
-def write_compose_override(services: Iterable[str], environment: Dict[str, str]) -> Path:
+def write_compose_override(
+    services: Iterable[str],
+    environment: Dict[str, str],
+    *,
+    use_host_alias: bool = False,
+) -> Path:
     """Write a temporary Compose override file for bridge env injection."""
-    override = build_compose_override(services, environment)
+    override = build_compose_override(
+        services,
+        environment,
+        use_host_alias=use_host_alias,
+    )
     handle = tempfile.NamedTemporaryFile(
         "w",
         encoding="utf-8",
@@ -344,6 +388,87 @@ def _compact_headers(headers: Dict[str, Any]) -> Dict[str, str]:
 
 def _split_roles(raw: str) -> list[str]:
     return [role.strip() for role in raw.split(",") if role.strip()]
+
+
+def resolve_connection_urls(url: str) -> ConnectionUrls:
+    """Build browser-facing and container-facing URLs from a connection."""
+    parsed = urlparse(url)
+    internal_url = url
+    use_host_alias = False
+
+    hostname = parsed.hostname or ""
+    if hostname and _hostname_resolves_to_loopback(hostname):
+        internal_url = _replace_hostname(url, _docker_host_alias())
+        use_host_alias = True
+
+    public_api_url = url.removesuffix("/api")
+    openai_base = f"{internal_url}/v1" if not internal_url.endswith("/v1") else internal_url
+    return ConnectionUrls(
+        api_url=internal_url,
+        public_api_url=public_api_url,
+        openai_base=openai_base,
+        use_host_alias=use_host_alias,
+    )
+
+
+def _hostname_resolves_to_loopback(hostname: str) -> bool:
+    if hostname == "host.docker.internal":
+        return False
+
+    try:
+        infos = socket.getaddrinfo(hostname, None, proto=socket.IPPROTO_TCP)
+    except socket.gaierror:
+        return False
+
+    addresses = {
+        info[4][0]
+        for info in infos
+        if info[4]
+    }
+    if not addresses:
+        return False
+
+    return all(ipaddress.ip_address(address).is_loopback for address in addresses)
+
+
+def _replace_hostname(url: str, replacement: str) -> str:
+    parsed = urlparse(url)
+    port = f":{parsed.port}" if parsed.port else ""
+    netloc = replacement
+    if parsed.username:
+        creds = parsed.username
+        if parsed.password:
+            creds = f"{creds}:{parsed.password}"
+        netloc = f"{creds}@{netloc}"
+    netloc = f"{netloc}{port}"
+    return urlunparse(parsed._replace(netloc=netloc))
+
+
+def _service_override(
+    environment: Dict[str, str],
+    *,
+    use_host_alias: bool,
+) -> Dict[str, Any]:
+    service: Dict[str, Any] = {}
+    if environment:
+        service["environment"] = environment
+    if use_host_alias:
+        host_alias = _docker_host_alias()
+        if _is_hostname(host_alias):
+            service["extra_hosts"] = [f"{host_alias}:host-gateway"]
+    return service
+
+
+def _docker_host_alias() -> str:
+    return os.environ.get("KAMIWAZA_DOCKER_HOST_ALIAS", _DEFAULT_DOCKER_HOST_ALIAS)
+
+
+def _is_hostname(value: str) -> bool:
+    try:
+        ipaddress.ip_address(value)
+    except ValueError:
+        return True
+    return False
 
 
 def detect_compose_command() -> List[str]:
