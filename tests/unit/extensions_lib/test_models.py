@@ -77,6 +77,27 @@ class TestGetModelClient:
         assert str(client.base_url).rstrip("/").endswith("/v1")
 
     @pytest.mark.asyncio
+    async def test_uses_forwarded_bearer_token_for_authorization(self, monkeypatch):
+        monkeypatch.setenv("KAMIWAZA_ENDPOINT", "http://model:8080/v1")
+
+        request = MagicMock()
+        request.headers = {
+            "authorization": "Bearer user-access-token",
+            "x-user-id": "usr-123",
+            "x-auth-token": "jwt-abc",
+        }
+
+        client = await get_model_client(request)
+        headers = getattr(client, "default_headers", None) or getattr(
+            client, "_default_headers", {}
+        )
+
+        assert headers["Authorization"] == "Bearer user-access-token"
+        assert headers["x-user-id"] == "usr-123"
+        assert headers["x-auth-token"] == "jwt-abc"
+        assert "authorization" not in headers
+
+    @pytest.mark.asyncio
     async def test_raises_without_endpoint(self, monkeypatch):
         monkeypatch.delenv("KAMIWAZA_ENDPOINT", raising=False)
         monkeypatch.delenv("KAMIWAZA_MODEL_URL", raising=False)

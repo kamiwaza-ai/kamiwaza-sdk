@@ -70,10 +70,29 @@ async def get_model_client(request: Request):
         )
 
     fwd = forward_auth_headers(request.headers)
+    auth_header = None
+    passthrough_headers: dict[str, str] = {}
+    for key, value in fwd.items():
+        if key.lower() == "authorization":
+            auth_header = value
+        else:
+            passthrough_headers[key] = value
+
+    # AsyncOpenAI always synthesizes its own Authorization header from api_key.
+    # Reuse the forwarded bearer token there so the on-the-wire header matches
+    # the incoming request instead of being replaced by a placeholder value.
+    api_key = "not-needed-kamiwaza"
+    if auth_header:
+        prefix = "bearer "
+        if auth_header.lower().startswith(prefix):
+            api_key = auth_header[len(prefix):]
+        else:
+            api_key = auth_header
+
     return AsyncOpenAI(
         base_url=config.openai_base,
-        api_key="not-needed-kamiwaza",
-        default_headers=fwd,
+        api_key=api_key,
+        default_headers=passthrough_headers,
     )
 
 
