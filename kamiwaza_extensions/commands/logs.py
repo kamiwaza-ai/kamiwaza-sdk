@@ -11,7 +11,6 @@ from rich.console import Console
 
 console = Console(stderr=True)
 
-_NAMESPACE = "kamiwaza-extensions"
 
 
 def run_logs(
@@ -26,7 +25,7 @@ def run_logs(
     from kamiwaza_sdk.exceptions import APIError
 
     from kamiwaza_extensions.connections import ConnectionManager
-    from kamiwaza_extensions.commands.dev import _extract_user_id
+    from kamiwaza_extensions.constants import EXTENSIONS_NAMESPACE, extract_user_id
 
     # Resolve connection + auth
     conn_mgr = ConnectionManager()
@@ -52,7 +51,7 @@ def run_logs(
         detector = ExtensionDetector()
         info = detector.detect()
         dev_name = PayloadBuilder.make_dev_name(
-            info.name, user_id=_extract_user_id(token.access_token)
+            info.name, user_id=extract_user_id(token.access_token)
         )
     else:
         dev_name = name
@@ -78,8 +77,16 @@ def run_logs(
                         break
                 if pod_name:
                     break
-        except (APIError, Exception):
-            # Status endpoint not available — fall through to label selector
+        except APIError as exc:
+            if exc.status_code == 404:
+                console.print(
+                    f"[red]Error:[/red] Extension '{dev_name}' not found."
+                )
+                console.print(
+                    "  Run: [bold]kz-ext dev[/bold] to deploy first."
+                )
+                raise typer.Exit(code=1) from exc
+            # Other API errors (e.g. 405 for missing status endpoint): fall through
             pass
     finally:
         if old_verify_ssl is None:
@@ -88,13 +95,16 @@ def run_logs(
             os.environ["KAMIWAZA_VERIFY_SSL"] = old_verify_ssl
 
     # Build kubectl command
-    cmd = ["kubectl", "logs", "-n", _NAMESPACE]
+    cmd = ["kubectl", "logs", "-n", EXTENSIONS_NAMESPACE]
 
     if pod_name:
         cmd.append(pod_name)
     else:
         # Use label selector
-        cmd.extend(["-l", f"extensions.kamiwaza.io/deployment-id={dev_name}"])
+        label = f"extensions.kamiwaza.io/deployment-id={dev_name}"
+        if service:
+            label += f",extensions.kamiwaza.io/service={service}"
+        cmd.extend(["-l", label])
 
     if follow:
         cmd.append("--follow")
@@ -104,7 +114,7 @@ def run_logs(
     console.print(f"[dim]$ {' '.join(cmd)}[/dim]")
 
     try:
-        result = subprocess.run(cmd)
+        result = subprocess.run(cmd, timeout=None if follow else 300)
         raise typer.Exit(code=result.returncode)
     except FileNotFoundError:
         console.print(

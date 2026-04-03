@@ -18,7 +18,7 @@ def run_status(*, name: Optional[str] = None, verbose: bool = False) -> None:
     from kamiwaza_sdk.exceptions import APIError
 
     from kamiwaza_extensions.connections import ConnectionManager
-    from kamiwaza_extensions.commands.dev import _extract_user_id
+    from kamiwaza_extensions.constants import extract_user_id
 
     # Resolve connection + auth
     conn_mgr = ConnectionManager()
@@ -44,7 +44,7 @@ def run_status(*, name: Optional[str] = None, verbose: bool = False) -> None:
         detector = ExtensionDetector()
         info = detector.detect()
         dev_name = PayloadBuilder.make_dev_name(
-            info.name, user_id=_extract_user_id(token.access_token)
+            info.name, user_id=extract_user_id(token.access_token)
         )
     else:
         dev_name = name

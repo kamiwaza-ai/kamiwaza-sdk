@@ -10,7 +10,6 @@ from rich.console import Console
 
 console = Console(stderr=True)
 
-_NAMESPACE = "kamiwaza-extensions"
 
 
 def run_shell(
@@ -23,7 +22,7 @@ def run_shell(
     from kamiwaza_sdk.exceptions import APIError
 
     from kamiwaza_extensions.connections import ConnectionManager
-    from kamiwaza_extensions.commands.dev import _extract_user_id
+    from kamiwaza_extensions.constants import EXTENSIONS_NAMESPACE, extract_user_id
 
     # Resolve connection + auth
     conn_mgr = ConnectionManager()
@@ -49,7 +48,7 @@ def run_shell(
         detector = ExtensionDetector()
         info = detector.detect()
         dev_name = PayloadBuilder.make_dev_name(
-            info.name, user_id=_extract_user_id(token.access_token)
+            info.name, user_id=extract_user_id(token.access_token)
         )
     else:
         dev_name = name
@@ -89,9 +88,9 @@ def run_shell(
                 "[yellow]Warning:[/yellow] Could not fetch extension status. "
                 "Trying label selector fallback."
             )
-        except Exception:
+        except Exception as exc:
             console.print(
-                "[yellow]Warning:[/yellow] Could not fetch extension status."
+                f"[yellow]Warning:[/yellow] Could not fetch extension status: {exc}"
             )
     finally:
         if old_verify_ssl is None:
@@ -110,7 +109,7 @@ def run_shell(
 
     cmd = [
         "kubectl", "exec", "-it",
-        "-n", _NAMESPACE,
+        "-n", EXTENSIONS_NAMESPACE,
         pod_name,
         "--", "/bin/sh",
     ]

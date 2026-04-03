@@ -48,29 +48,9 @@ def _detect_kind_registry() -> Optional[str]:
 
 
 def _extract_user_id(access_token: str) -> str:
-    """Extract a stable user identifier (``sub`` claim) from a JWT.
-
-    Falls back to hashing the token if decoding fails.
-    """
-    import base64
-    import json as _json
-
-    try:
-        # JWT is header.payload.signature — decode the payload
-        payload_b64 = access_token.split(".")[1]
-        # Add padding if needed
-        padding = 4 - len(payload_b64) % 4
-        if padding != 4:
-            payload_b64 += "=" * padding
-        payload = _json.loads(base64.urlsafe_b64decode(payload_b64))
-        sub = payload.get("sub")
-        if sub:
-            return sub
-    except Exception:
-        pass
-    # Fallback: hash the token so it's never exposed downstream
-    import hashlib
-    return hashlib.sha256(access_token.encode()).hexdigest()
+    """Extract user ID from a JWT. Deprecated — use constants.extract_user_id."""
+    from kamiwaza_extensions.constants import extract_user_id
+    return extract_user_id(access_token)
 
 
 def _delete_and_recreate(client, dev_name, payload, console) -> "Extension":
@@ -287,15 +267,26 @@ def run_dev_remote(
             # Check if extension already exists
             client.extensions.get_extension(dev_name)
 
-            # Build patch from payload — extract image tags per service
+            # Build patch from payload — extract image, env, replicas per service
             patch_services = []
             for svc in payload.services:
-                parts = svc.image.rsplit(":", 1)
-                tag = parts[1] if len(parts) > 1 else "latest"
-                patch_services.append(PatchServiceSpec(
+                # Split tag after last '/' to avoid confusing registry port with tag
+                image = svc.image
+                slash_pos = image.rfind("/")
+                after_slash = image[slash_pos + 1:] if slash_pos >= 0 else image
+                if ":" in after_slash:
+                    tag = after_slash.rsplit(":", 1)[1]
+                else:
+                    tag = "latest"
+                spec = PatchServiceSpec(
                     name=svc.name,
                     image=ImagePatch(tag=tag),
-                ))
+                )
+                if svc.env:
+                    spec.env = svc.env
+                if svc.replicas is not None and svc.replicas != 1:
+                    spec.replicas = svc.replicas
+                patch_services.append(spec)
             patch = PatchExtension(services=patch_services)
 
             try:

@@ -11,6 +11,8 @@ from rich.console import Console
 from kamiwaza_sdk import KamiwazaClient
 from kamiwaza_sdk.schemas.extensions import Extension, ExtensionStatus
 
+from kamiwaza_extensions.constants import EXTENSIONS_NAMESPACE as _EXTENSIONS_NS
+
 console = Console(stderr=True)
 
 
@@ -143,7 +145,7 @@ class DeploymentPoller:
             result = subprocess.run(
                 [
                     "kubectl", "get", "pods",
-                    "-n", "kamiwaza-extensions",
+                    "-n", _EXTENSIONS_NS,
                     "-l", f"extensions.kamiwaza.io/deployment-id={extension_name}",
                     "-o", "jsonpath={range .items[*]}{.status.containerStatuses[0].ready}{' '}{end}",
                 ],
