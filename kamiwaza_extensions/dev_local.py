@@ -51,7 +51,7 @@ class ConnectionUrls:
     api_url: str
     public_api_url: str
     openai_base: str
-    use_host_alias: bool = False
+    extra_hosts: tuple[str, ...] = ()
 
 
 class DevLocalRunner:
@@ -108,7 +108,7 @@ class DevLocalRunner:
                     override_path = write_compose_override(
                         services,
                         bridge_env,
-                        use_host_alias=urls.use_host_alias,
+                        extra_hosts=urls.extra_hosts,
                     )
                     compose_files.append(override_path)
                     roles = ", ".join(bridge.roles) or "no roles"
@@ -135,17 +135,21 @@ class DevLocalRunner:
                     console.print("[dim]KAMIWAZA_USE_AUTH=true (auth-enabled local mode)[/dim]")
             else:
                 console.print("[dim]KAMIWAZA_USE_AUTH=false (local dev mode)[/dim]")
-            if urls.use_host_alias:
+            if urls.extra_hosts:
+                if connection.url != urls.api_url:
+                    routing_summary = f"{connection.url} -> {urls.api_url}"
+                else:
+                    routing_summary = ", ".join(urls.extra_hosts)
                 console.print(
                     "[dim]Container API routing:[/dim] "
-                    f"{connection.url} -> {urls.api_url}"
+                    f"{routing_summary}"
                 )
                 if override_path is None:
                     services = ((info.compose_data or {}).get("services") or {}).keys()
                     override_path = write_compose_override(
                         services,
                         {},
-                        use_host_alias=True,
+                        extra_hosts=urls.extra_hosts,
                     )
                     compose_files.append(override_path)
         else:
@@ -268,14 +272,15 @@ def build_compose_override(
     services: Iterable[str],
     environment: Dict[str, str],
     *,
-    use_host_alias: bool = False,
+    extra_hosts: Iterable[str] = (),
 ) -> Dict[str, Any]:
     """Build a Compose override that injects env vars into every service."""
+    host_entries = tuple(extra_hosts)
     return {
         "services": {
             service_name: _service_override(
                 dict(environment),
-                use_host_alias=use_host_alias,
+                extra_hosts=host_entries,
             )
             for service_name in services
         }
@@ -286,13 +291,13 @@ def write_compose_override(
     services: Iterable[str],
     environment: Dict[str, str],
     *,
-    use_host_alias: bool = False,
+    extra_hosts: Iterable[str] = (),
 ) -> Path:
     """Write a temporary Compose override file for bridge env injection."""
     override = build_compose_override(
         services,
         environment,
-        use_host_alias=use_host_alias,
+        extra_hosts=extra_hosts,
     )
     handle = tempfile.NamedTemporaryFile(
         "w",
@@ -394,12 +399,17 @@ def resolve_connection_urls(url: str) -> ConnectionUrls:
     """Build browser-facing and container-facing URLs from a connection."""
     parsed = urlparse(url)
     internal_url = url
-    use_host_alias = False
+    extra_hosts: list[str] = []
 
     hostname = parsed.hostname or ""
     if hostname and _hostname_resolves_to_loopback(hostname):
-        internal_url = _replace_hostname(url, _docker_host_alias())
-        use_host_alias = True
+        if _is_localhost_name(hostname):
+            host_alias = _docker_host_alias()
+            internal_url = _replace_hostname(url, host_alias)
+            if _is_hostname(host_alias):
+                extra_hosts.append(f"{host_alias}:host-gateway")
+        elif _is_hostname(hostname):
+            extra_hosts.append(f"{hostname}:host-gateway")
 
     public_api_url = url.removesuffix("/api")
     openai_base = f"{internal_url}/v1" if not internal_url.endswith("/v1") else internal_url
@@ -407,7 +417,7 @@ def resolve_connection_urls(url: str) -> ConnectionUrls:
         api_url=internal_url,
         public_api_url=public_api_url,
         openai_base=openai_base,
-        use_host_alias=use_host_alias,
+        extra_hosts=tuple(extra_hosts),
     )
 
 
@@ -447,15 +457,14 @@ def _replace_hostname(url: str, replacement: str) -> str:
 def _service_override(
     environment: Dict[str, str],
     *,
-    use_host_alias: bool,
+    extra_hosts: Iterable[str],
 ) -> Dict[str, Any]:
     service: Dict[str, Any] = {}
     if environment:
         service["environment"] = environment
-    if use_host_alias:
-        host_alias = _docker_host_alias()
-        if _is_hostname(host_alias):
-            service["extra_hosts"] = [f"{host_alias}:host-gateway"]
+    host_entries = list(extra_hosts)
+    if host_entries:
+        service["extra_hosts"] = host_entries
     return service
 
 
@@ -469,6 +478,15 @@ def _is_hostname(value: str) -> bool:
     except ValueError:
         return True
     return False
+
+
+def _is_localhost_name(hostname: str) -> bool:
+    if hostname == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
 
 
 def detect_compose_command() -> List[str]:

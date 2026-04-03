@@ -67,6 +67,24 @@ class TestEnvOverlay:
         assert overlay["KAMIWAZA_ENDPOINT"] == "https://host.docker.internal:8443/api/v1"
         assert overlay["KAMIWAZA_PUBLIC_API_URL"] == "https://localhost:8443"
 
+    def test_loopback_named_host_preserves_browser_hostname(self):
+        conn = ConnectionInfo(
+            name="test",
+            url="https://kamiwaza.test/api",
+            active=True,
+            created_at=0.0,
+        )
+
+        with patch(
+            "kamiwaza_extensions.dev_local._hostname_resolves_to_loopback",
+            return_value=True,
+        ):
+            overlay = build_env_overlay(conn, "my-app", use_auth=True)
+
+        assert overlay["KAMIWAZA_API_URL"] == "https://kamiwaza.test/api"
+        assert overlay["KAMIWAZA_ENDPOINT"] == "https://kamiwaza.test/api/v1"
+        assert overlay["KAMIWAZA_PUBLIC_API_URL"] == "https://kamiwaza.test"
+
 
 @pytest.mark.unit
 class TestConnectionUrls:
@@ -76,30 +94,42 @@ class TestConnectionUrls:
         assert urls.api_url == "https://example.com/api"
         assert urls.public_api_url == "https://example.com"
         assert urls.openai_base == "https://example.com/api/v1"
-        assert urls.use_host_alias is False
+        assert urls.extra_hosts == ()
 
-    def test_loopback_connection_uses_host_docker_internal(self):
+    def test_loopback_named_host_uses_host_gateway_mapping(self):
         with patch(
             "kamiwaza_extensions.dev_local._hostname_resolves_to_loopback",
             return_value=True,
         ):
             urls = resolve_connection_urls("https://kamiwaza.test/api")
 
-        assert urls.api_url == "https://host.docker.internal/api"
+        assert urls.api_url == "https://kamiwaza.test/api"
         assert urls.public_api_url == "https://kamiwaza.test"
-        assert urls.openai_base == "https://host.docker.internal/api/v1"
-        assert urls.use_host_alias is True
+        assert urls.openai_base == "https://kamiwaza.test/api/v1"
+        assert urls.extra_hosts == ("kamiwaza.test:host-gateway",)
 
-    def test_loopback_connection_honors_docker_host_alias_override(self, monkeypatch):
+    def test_localhost_connection_uses_host_docker_internal(self):
+        with patch(
+            "kamiwaza_extensions.dev_local._hostname_resolves_to_loopback",
+            return_value=True,
+        ):
+            urls = resolve_connection_urls("https://localhost/api")
+
+        assert urls.api_url == "https://host.docker.internal/api"
+        assert urls.openai_base == "https://host.docker.internal/api/v1"
+        assert urls.extra_hosts == ("host.docker.internal:host-gateway",)
+
+    def test_localhost_connection_honors_docker_host_alias_override(self, monkeypatch):
         monkeypatch.setenv("KAMIWAZA_DOCKER_HOST_ALIAS", "kubernetes.docker.internal")
         with patch(
             "kamiwaza_extensions.dev_local._hostname_resolves_to_loopback",
             return_value=True,
         ):
-            urls = resolve_connection_urls("https://kamiwaza.test/api")
+            urls = resolve_connection_urls("https://localhost/api")
 
         assert urls.api_url == "https://kubernetes.docker.internal/api"
         assert urls.openai_base == "https://kubernetes.docker.internal/api/v1"
+        assert urls.extra_hosts == ("kubernetes.docker.internal:host-gateway",)
 
 
 @pytest.mark.unit
@@ -135,7 +165,7 @@ class TestLocalAuthBridge:
         override = build_compose_override(
             ["frontend"],
             {},
-            use_host_alias=True,
+            extra_hosts=["host.docker.internal:host-gateway"],
         )
 
         assert override["services"]["frontend"]["extra_hosts"] == [
@@ -147,7 +177,7 @@ class TestLocalAuthBridge:
         override = build_compose_override(
             ["frontend"],
             {},
-            use_host_alias=True,
+            extra_hosts=["kubernetes.docker.internal:host-gateway"],
         )
 
         assert override["services"]["frontend"]["extra_hosts"] == [
