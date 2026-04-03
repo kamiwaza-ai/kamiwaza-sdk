@@ -73,6 +73,46 @@ def _extract_user_id(access_token: str) -> str:
     return hashlib.sha256(access_token.encode()).hexdigest()
 
 
+def _delete_and_recreate(client, dev_name, payload, console) -> "Extension":
+    """Legacy fallback: delete the old extension and re-create it.
+
+    Used when the platform does not support PATCH.
+    """
+    import time
+
+    from kamiwaza_sdk.exceptions import APIError
+    from kamiwaza_sdk.schemas.extensions import Extension
+
+    console.print("  [dim]Replacing existing deployment...[/dim]")
+    try:
+        client.extensions.delete_extension(dev_name)
+    except Exception as del_exc:
+        console.print(f"  [dim]Delete failed: {del_exc}[/dim]")
+
+    ext: Extension | None = None
+    for attempt in range(15):
+        time.sleep(2)
+        try:
+            client.extensions.get_extension(dev_name)
+            continue  # Still exists — keep waiting
+        except Exception:
+            pass  # Deleted
+        try:
+            ext = client.extensions.create_extension(payload)
+            console.print("  [green]\u2713[/green] Extension replaced")
+            break
+        except APIError as retry_exc:
+            if retry_exc.status_code == 409 and attempt < 14:
+                continue  # Finalizer still running, retry
+            console.print(f"[red]Error:[/red] Deploy failed: {retry_exc}")
+            raise typer.Exit(code=1) from retry_exc
+
+    if ext is None:
+        console.print("[red]Error:[/red] Timed out waiting for old deployment to be removed")
+        raise typer.Exit(code=1)
+    return ext
+
+
 def run_dev_remote(
     *,
     no_build: bool = False,
@@ -235,42 +275,48 @@ def run_dev_remote(
             api_key=token.access_token,
         )
 
-        # Create or replace
+        # Deploy — PATCH if exists, POST if new
+        from kamiwaza_sdk.exceptions import NotFoundError
+        from kamiwaza_sdk.schemas.extensions import (
+            ImagePatch,
+            PatchExtension,
+            PatchServiceSpec,
+        )
+
         try:
+            # Check if extension already exists
+            client.extensions.get_extension(dev_name)
+
+            # Build patch from payload — extract image tags per service
+            patch_services = []
+            for svc in payload.services:
+                parts = svc.image.rsplit(":", 1)
+                tag = parts[1] if len(parts) > 1 else "latest"
+                patch_services.append(PatchServiceSpec(
+                    name=svc.name,
+                    image=ImagePatch(tag=tag),
+                ))
+            patch = PatchExtension(services=patch_services)
+
+            try:
+                ext = client.extensions.patch_extension(dev_name, patch)
+                console.print("  [green]\u2713[/green] Extension updated (zero-downtime)")
+            except APIError as patch_exc:
+                if patch_exc.status_code == 405:
+                    # Platform doesn't support PATCH yet — fall back
+                    console.print(
+                        "  [yellow]Warning:[/yellow] Platform does not support PATCH. "
+                        "Falling back to delete+create."
+                    )
+                    ext = _delete_and_recreate(client, dev_name, payload, console)
+                else:
+                    console.print(f"[red]Error:[/red] Deploy failed: {patch_exc}")
+                    raise typer.Exit(code=1) from patch_exc
+
+        except NotFoundError:
+            # Extension doesn't exist — create
             ext = client.extensions.create_extension(payload)
             console.print("  [green]\u2713[/green] Extension created")
-        except APIError as exc:
-            if exc.status_code == 409:
-                # Replace: delete existing, then re-create with retry
-                console.print("  [dim]Replacing existing deployment...[/dim]")
-                try:
-                    client.extensions.delete_extension(dev_name)
-                except Exception as del_exc:
-                    console.print(f"  [dim]Delete failed: {del_exc}[/dim]")
-                import time
-                ext = None
-                for attempt in range(15):
-                    time.sleep(2)
-                    try:
-                        client.extensions.get_extension(dev_name)
-                        continue  # Still exists — keep waiting
-                    except Exception:
-                        pass  # Deleted
-                    try:
-                        ext = client.extensions.create_extension(payload)
-                        console.print("  [green]\u2713[/green] Extension replaced")
-                        break
-                    except APIError as retry_exc:
-                        if retry_exc.status_code == 409 and attempt < 14:
-                            continue  # Finalizer still running, retry
-                        console.print(f"[red]Error:[/red] Deploy failed: {retry_exc}")
-                        raise typer.Exit(code=1) from retry_exc
-                if ext is None:
-                    console.print("[red]Error:[/red] Timed out waiting for old deployment to be removed")
-                    raise typer.Exit(code=1)
-            else:
-                console.print(f"[red]Error:[/red] Deploy failed: {exc}")
-                raise typer.Exit(code=1) from exc
 
         # 10. Poll for readiness
         try:

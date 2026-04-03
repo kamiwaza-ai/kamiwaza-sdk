@@ -34,6 +34,9 @@ class TestCLISkeleton:
         assert "doctor" in result.output
         assert "create" in result.output
         assert "dev" in result.output
+        assert "status" in result.output
+        assert "logs" in result.output
+        assert "shell" in result.output
 
     def test_dev_local_subcommand_listed(self):
         result = runner.invoke(app, ["dev", "--help"])
