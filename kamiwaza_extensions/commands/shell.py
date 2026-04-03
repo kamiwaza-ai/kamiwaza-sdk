@@ -54,11 +54,9 @@ def run_shell(
         dev_name = name
 
     # Get pod name via status endpoint
+    from kamiwaza_extensions.constants import ssl_env_override
     pod_name = None
-    old_verify_ssl = os.environ.get("KAMIWAZA_VERIFY_SSL")
-    if not connection.verify_ssl:
-        os.environ["KAMIWAZA_VERIFY_SSL"] = "false"
-    try:
+    with ssl_env_override(connection):
         client = KamiwazaClient(
             base_url=connection.url, api_key=token.access_token
         )
@@ -85,19 +83,12 @@ def run_shell(
                 raise typer.Exit(code=1) from exc
             # Other errors: try to proceed without pod name
             console.print(
-                "[yellow]Warning:[/yellow] Could not fetch extension status. "
-                "Trying label selector fallback."
+                f"[yellow]Warning:[/yellow] Could not fetch extension status: {exc}"
             )
         except Exception as exc:
             console.print(
-                f"[yellow]Warning:[/yellow] Could not fetch extension status: {exc}"
+                f"[yellow]Warning:[/yellow] Could not determine target pod: {exc}"
             )
-    finally:
-        if old_verify_ssl is None:
-            os.environ.pop("KAMIWAZA_VERIFY_SSL", None)
-        else:
-            os.environ["KAMIWAZA_VERIFY_SSL"] = old_verify_ssl
-
     if pod_name is None:
         console.print(
             "[red]Error:[/red] No running pod found"

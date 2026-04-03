@@ -1,4 +1,13 @@
-"""Shared constants for kamiwaza-extensions."""
+"""Shared constants and utilities for kamiwaza-extensions."""
+
+from __future__ import annotations
+
+import contextlib
+import os
+from typing import TYPE_CHECKING, Generator
+
+if TYPE_CHECKING:
+    from kamiwaza_extensions.connections import ConnectionInfo
 
 COMPOSE_FILENAMES = (
     "docker-compose.yml",
@@ -8,6 +17,21 @@ COMPOSE_FILENAMES = (
 )
 
 EXTENSIONS_NAMESPACE = "kamiwaza-extensions"
+
+
+@contextlib.contextmanager
+def ssl_env_override(connection: "ConnectionInfo") -> Generator[None, None, None]:
+    """Temporarily set KAMIWAZA_VERIFY_SSL=false if the connection disables SSL."""
+    old = os.environ.get("KAMIWAZA_VERIFY_SSL")
+    if not connection.verify_ssl:
+        os.environ["KAMIWAZA_VERIFY_SSL"] = "false"
+    try:
+        yield
+    finally:
+        if old is None:
+            os.environ.pop("KAMIWAZA_VERIFY_SSL", None)
+        else:
+            os.environ["KAMIWAZA_VERIFY_SSL"] = old
 
 
 def extract_user_id(access_token: str) -> str:

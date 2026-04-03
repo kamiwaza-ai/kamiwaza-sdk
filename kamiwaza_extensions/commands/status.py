@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from typing import Optional
 
 import typer
@@ -49,10 +48,8 @@ def run_status(*, name: Optional[str] = None, verbose: bool = False) -> None:
     else:
         dev_name = name
 
-    old_verify_ssl = os.environ.get("KAMIWAZA_VERIFY_SSL")
-    if not connection.verify_ssl:
-        os.environ["KAMIWAZA_VERIFY_SSL"] = "false"
-    try:
+    from kamiwaza_extensions.constants import ssl_env_override
+    with ssl_env_override(connection):
         client = KamiwazaClient(
             base_url=connection.url, api_key=token.access_token
         )
@@ -112,9 +109,3 @@ def run_status(*, name: Optional[str] = None, verbose: bool = False) -> None:
                 )
 
             console.print(evt_table)
-
-    finally:
-        if old_verify_ssl is None:
-            os.environ.pop("KAMIWAZA_VERIFY_SSL", None)
-        else:
-            os.environ["KAMIWAZA_VERIFY_SSL"] = old_verify_ssl

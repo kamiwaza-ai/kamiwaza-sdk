@@ -56,7 +56,7 @@ def _delete_and_recreate(client, dev_name, payload, console) -> "Extension":
     """
     import time
 
-    from kamiwaza_sdk.exceptions import APIError
+    from kamiwaza_sdk.exceptions import APIError, NotFoundError
     from kamiwaza_sdk.schemas.extensions import Extension
 
     console.print("  [dim]Replacing existing deployment...[/dim]")
@@ -71,8 +71,8 @@ def _delete_and_recreate(client, dev_name, payload, console) -> "Extension":
         try:
             client.extensions.get_extension(dev_name)
             continue  # Still exists — keep waiting
-        except Exception:
-            pass  # Deleted
+        except NotFoundError:
+            pass  # Deleted — proceed to create
         try:
             ext = client.extensions.create_extension(payload)
             console.print("  [green]\u2713[/green] Extension replaced")
@@ -241,12 +241,10 @@ def run_dev_remote(
         dev_name=dev_name,
     )
 
-    # 9. Deploy, poll, and print URL — wrapped in try/finally for SSL env restore
+    # 9. Deploy, poll, and print URL
+    from kamiwaza_extensions.constants import ssl_env_override
     console.print(f"Deploying to {connection.url}...")
-    old_verify_ssl = os.environ.get("KAMIWAZA_VERIFY_SSL")
-    if not connection.verify_ssl:
-        os.environ["KAMIWAZA_VERIFY_SSL"] = "false"
-    try:
+    with ssl_env_override(connection):
         client = KamiwazaClient(
             base_url=connection.url,
             api_key=token.access_token,
@@ -331,8 +329,3 @@ def run_dev_remote(
             console.print(f"  [blue]{url}[/blue]")
         else:
             console.print(f"  [dim](no external URL reported — check kz-ext status)[/dim]")
-    finally:
-        if old_verify_ssl is None:
-            os.environ.pop("KAMIWAZA_VERIFY_SSL", None)
-        else:
-            os.environ["KAMIWAZA_VERIFY_SSL"] = old_verify_ssl
