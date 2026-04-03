@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 _RESOURCE_DEFAULTS: List[tuple[re.Pattern, Dict[str, str]]] = [
     (re.compile(r"postgres|mysql|mariadb", re.I), {"cpus": "0.5", "memory": "512M"}),
     (re.compile(r"redis|valkey", re.I), {"cpus": "0.25", "memory": "256M"}),
-    (re.compile(r"frontend|nginx|caddy", re.I), {"cpus": "0.5", "memory": "512M"}),
+    (re.compile(r"frontend|nginx|caddy", re.I), {"cpus": "2.0", "memory": "1G"}),
 ]
 _DEFAULT_LIMITS = {"cpus": "1.0", "memory": "1G"}
 
