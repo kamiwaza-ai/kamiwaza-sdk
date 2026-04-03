@@ -1,5 +1,6 @@
 """Tests for kamiwaza_extensions_lib.auth."""
 
+import json
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -65,6 +66,37 @@ class TestForwardAuthHeaders:
         result = forward_auth_headers(headers)
         assert "x-user-id" in result
         assert "x-auth-token" in result
+
+    def test_uses_local_dev_bridge_when_request_has_no_auth_headers(self, monkeypatch):
+        monkeypatch.setenv("KAMIWAZA_USE_AUTH", "true")
+        monkeypatch.setenv("KAMIWAZA_LOCAL_DEV_AUTH_BRIDGE", "true")
+        monkeypatch.setenv(
+            "KAMIWAZA_LOCAL_DEV_AUTH_HEADERS_JSON",
+            json.dumps(
+                {
+                    "authorization": "Bearer pat-123",
+                    "x-user-id": "usr-123",
+                    "x-user-roles": "user,editor",
+                }
+            ),
+        )
+
+        result = forward_auth_headers({})
+
+        assert result["authorization"] == "Bearer pat-123"
+        assert result["x-user-id"] == "usr-123"
+
+    def test_request_headers_win_over_local_dev_bridge(self, monkeypatch):
+        monkeypatch.setenv("KAMIWAZA_USE_AUTH", "true")
+        monkeypatch.setenv("KAMIWAZA_LOCAL_DEV_AUTH_BRIDGE", "true")
+        monkeypatch.setenv(
+            "KAMIWAZA_LOCAL_DEV_AUTH_HEADERS_JSON",
+            json.dumps({"x-user-id": "bridge-user"}),
+        )
+
+        result = forward_auth_headers({"x-user-id": "request-user"})
+
+        assert result == {"x-user-id": "request-user"}
 
 
 @pytest.mark.unit

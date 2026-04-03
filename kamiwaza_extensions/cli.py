@@ -180,11 +180,63 @@ def dev_callback(
         _handle_exception(exc)
 
 
+@app.command()
+@run_with_error_handling
+def status(
+    name: Optional[str] = typer.Option(None, "--name", "-n", help="Extension name (default: auto-detect)"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show extra detail"),
+) -> None:
+    """Show extension deployment status."""
+    from kamiwaza_extensions.commands.status import run_status
+    run_status(name=name, verbose=verbose)
+
+
+@app.command()
+@run_with_error_handling
+def logs(
+    name: Optional[str] = typer.Option(None, "--name", "-n", help="Extension name (default: auto-detect)"),
+    service: Optional[str] = typer.Option(None, "--service", "-s", help="Target a specific service"),
+    follow: bool = typer.Option(False, "--follow", "-f", help="Follow log output"),
+    tail: Optional[int] = typer.Option(None, "--tail", "-t", help="Number of recent lines to show"),
+) -> None:
+    """Stream logs from extension pods."""
+    from kamiwaza_extensions.commands.logs import run_logs
+    run_logs(name=name, service=service, follow=follow, tail=tail)
+
+
+@app.command()
+@run_with_error_handling
+def shell(
+    name: Optional[str] = typer.Option(None, "--name", "-n", help="Extension name (default: auto-detect)"),
+    service: Optional[str] = typer.Option(None, "--service", "-s", help="Target a specific service's pod"),
+) -> None:
+    """Open an interactive shell in an extension pod."""
+    from kamiwaza_extensions.commands.shell import run_shell
+    run_shell(name=name, service=service)
+
+
 @dev_app.command("local")
 @run_with_error_handling
 def dev_local(
     detach: bool = typer.Option(False, "--detach", "-d", help="Run in background"),
+    use_auth: bool = typer.Option(
+        False,
+        "--auth",
+        help="Run with KAMIWAZA_USE_AUTH=true instead of local anonymous mode",
+    ),
+    use_auth_bridge: bool = typer.Option(
+        True,
+        "--auth-bridge/--no-auth-bridge",
+        help=(
+            "When --auth is enabled, reuse the active kz-ext connection to bridge "
+            "real Kamiwaza identity into localhost requests"
+        ),
+    ),
 ) -> None:
     """Run extension locally with Docker Compose."""
     from kamiwaza_extensions.commands.dev_local import run_dev_local
-    run_dev_local(detach=detach)
+    run_dev_local(
+        detach=detach,
+        use_auth=use_auth,
+        use_auth_bridge=use_auth_bridge,
+    )

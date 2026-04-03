@@ -1,4 +1,5 @@
 import type { ProxyConfig } from "./types";
+import { getLocalDevAuthHeaders } from "./localDevAuth";
 
 /** Headers to forward from the incoming request to the backend. */
 const FORWARD_REQUEST_HEADERS = new Set([
@@ -12,6 +13,17 @@ const FORWARD_REQUEST_HEADERS = new Set([
     "x-request-id",
     "cookie",
     "content-type",
+]);
+
+const AUTH_REQUEST_HEADERS = new Set([
+    "authorization",
+    "x-auth-token",
+    "x-user-id",
+    "x-user-email",
+    "x-user-name",
+    "x-user-roles",
+    "x-workroom-id",
+    "x-request-id",
 ]);
 
 /** Response headers that must NOT be forwarded to the client. */
@@ -32,11 +44,19 @@ type RouteHandler = (
 
 function buildForwardHeaders(incoming: Headers): Record<string, string> {
     const out: Record<string, string> = {};
+    let hasAuthHeaders = false;
     for (const name of FORWARD_REQUEST_HEADERS) {
         const val = incoming.get(name);
-        if (val) out[name] = val;
+        if (!val) continue;
+        out[name] = val;
+        if (AUTH_REQUEST_HEADERS.has(name)) {
+            hasAuthHeaders = true;
+        }
     }
-    return out;
+    if (hasAuthHeaders) {
+        return out;
+    }
+    return { ...out, ...getLocalDevAuthHeaders() };
 }
 
 function filterResponseHeaders(headers: Headers): Record<string, string> {

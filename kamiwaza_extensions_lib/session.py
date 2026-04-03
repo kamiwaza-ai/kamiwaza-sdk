@@ -8,8 +8,9 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Request
 
+from .auth import forward_auth_headers
 from .config import AuthConfig
-from .identity import Identity, get_identity
+from .identity import get_identity
 
 
 def _decode_jwt_exp(token: str) -> int | None:
@@ -41,13 +42,15 @@ def _decode_jwt_exp(token: str) -> int | None:
 
 
 def _session_expires_at(request: Request) -> int | None:
-    auth_token = request.headers.get("x-auth-token")
+    headers = {k.lower(): v for k, v in forward_auth_headers(request.headers).items()}
+
+    auth_token = headers.get("x-auth-token")
     if auth_token:
         expires_at = _decode_jwt_exp(auth_token)
         if expires_at is not None:
             return expires_at
 
-    authorization = request.headers.get("authorization")
+    authorization = headers.get("authorization")
     if not authorization:
         return None
 

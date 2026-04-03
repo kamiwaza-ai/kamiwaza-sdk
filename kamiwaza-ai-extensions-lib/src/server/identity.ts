@@ -1,4 +1,5 @@
 import type { Identity } from "./types";
+import { getLocalDevAuthHeaders } from "./localDevAuth";
 
 /**
  * Extract user identity from platform-injected request headers.
@@ -11,10 +12,11 @@ import type { Identity } from "./types";
 export function extractIdentity(
     headers: Headers | { get(name: string): string | null }
 ): Identity | null {
-    const userId = headers.get("x-user-id");
+    const bridgeHeaders = getLocalDevAuthHeaders();
+    const userId = headers.get("x-user-id") ?? bridgeHeaders["x-user-id"] ?? null;
     if (!userId) return null;
 
-    const rolesRaw = headers.get("x-user-roles") ?? "";
+    const rolesRaw = headers.get("x-user-roles") ?? bridgeHeaders["x-user-roles"] ?? "";
     const roles = rolesRaw
         .split(",")
         .map((r) => r.trim())
@@ -22,10 +24,10 @@ export function extractIdentity(
 
     return {
         userId,
-        email: headers.get("x-user-email"),
-        name: headers.get("x-user-name"),
+        email: headers.get("x-user-email") ?? bridgeHeaders["x-user-email"] ?? null,
+        name: headers.get("x-user-name") ?? bridgeHeaders["x-user-name"] ?? null,
         roles,
-        workroomId: headers.get("x-workroom-id"),
+        workroomId: headers.get("x-workroom-id") ?? bridgeHeaders["x-workroom-id"] ?? null,
         isAuthenticated: true,
     };
 }

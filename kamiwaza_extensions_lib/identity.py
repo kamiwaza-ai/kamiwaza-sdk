@@ -7,6 +7,8 @@ from typing import Optional
 
 from fastapi import Request
 
+from .local_dev import get_local_dev_auth_headers
+
 
 # Headers set by Kamiwaza ForwardAuth on authenticated requests.
 _HEADER_USER_ID = "x-user-id"
@@ -66,4 +68,7 @@ async def get_identity(request: Request) -> Identity:
     headers are present, ``is_authenticated`` is ``False`` and all
     fields are ``None``.
     """
-    return identity_from_headers(dict(request.headers))
+    identity = identity_from_headers(dict(request.headers))
+    if identity.is_authenticated:
+        return identity
+    return identity_from_headers(get_local_dev_auth_headers())

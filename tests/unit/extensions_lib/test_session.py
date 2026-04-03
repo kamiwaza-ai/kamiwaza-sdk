@@ -121,6 +121,31 @@ class TestSessionEndpoint:
         assert resp.json()["is_authenticated"] is False
         assert resp.json()["expires_at"] is None
 
+    def test_local_auth_bridge_populates_session_without_request_headers(self, monkeypatch):
+        client = _make_app(monkeypatch, use_auth="true")
+        monkeypatch.setenv("KAMIWAZA_LOCAL_DEV_AUTH_BRIDGE", "true")
+        monkeypatch.setenv(
+            "KAMIWAZA_LOCAL_DEV_AUTH_HEADERS_JSON",
+            json.dumps(
+                {
+                    "authorization": f"Bearer {_make_jwt(1711901200)}",
+                    "x-user-id": "usr-123",
+                    "x-user-name": "Alice",
+                    "x-user-roles": "user,editor",
+                }
+            ),
+        )
+
+        resp = client.get("/session")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["user_id"] == "usr-123"
+        assert data["name"] == "Alice"
+        assert data["roles"] == ["user", "editor"]
+        assert data["is_authenticated"] is True
+        assert data["expires_at"] == 1711901200
+
 
 @pytest.mark.unit
 class TestLoginUrlEndpoint:

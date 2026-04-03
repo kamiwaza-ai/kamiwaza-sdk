@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from typing import Optional
 
 from fastapi import Depends, HTTPException, Request
 
 from .config import AuthConfig
 from .identity import Identity, get_identity
+from .local_dev import forward_or_bridge_auth_headers
 
 # Headers to forward when calling other Kamiwaza services.
 _FORWARD_HEADERS = frozenset(
@@ -29,9 +29,10 @@ def forward_auth_headers(headers: Mapping[str, str]) -> dict[str, str]:
     """Extract auth-related headers for forwarding to other services.
 
     Returns a dict containing only the platform auth / identity headers.
-    Safe to call with any mapping (returns empty dict when nothing matches).
+    Safe to call with any mapping. In auth-enabled localhost dev mode,
+    falls back to the bridge headers injected by ``kz-ext dev local --auth``.
     """
-    return {k: v for k, v in headers.items() if k.lower() in _FORWARD_HEADERS}
+    return forward_or_bridge_auth_headers(headers)
 
 
 async def require_auth(request: Request) -> Identity:

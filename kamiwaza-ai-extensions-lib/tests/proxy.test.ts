@@ -121,6 +121,8 @@ describe("createProxyHandlers", () => {
 
     afterEach(() => {
         vi.unstubAllGlobals();
+        delete process.env.KAMIWAZA_LOCAL_DEV_AUTH_BRIDGE;
+        delete process.env.KAMIWAZA_LOCAL_DEV_AUTH_HEADERS_JSON;
     });
 
     it("forwards GET requests to target", async () => {
@@ -224,5 +226,28 @@ describe("createProxyHandlers", () => {
         // Non-auth headers should NOT be forwarded
         expect(init.headers["accept"]).toBeUndefined();
         expect(init.headers["user-agent"]).toBeUndefined();
+    });
+
+    it("uses local dev auth bridge headers when request auth is absent", async () => {
+        process.env.KAMIWAZA_LOCAL_DEV_AUTH_BRIDGE = "true";
+        process.env.KAMIWAZA_LOCAL_DEV_AUTH_HEADERS_JSON = JSON.stringify({
+            authorization: "Bearer pat-123",
+            "x-user-id": "usr-123",
+            "x-user-roles": "user,editor",
+        });
+
+        const { GET } = createProxyHandlers({ target: "http://backend:8000" });
+        const request = new Request("http://localhost:3000/api/data", {
+            headers: {
+                "content-type": "application/json",
+            },
+        });
+
+        await GET(request);
+
+        const [, init] = fetchSpy.mock.calls[0];
+        expect(init.headers["content-type"]).toBe("application/json");
+        expect(init.headers["authorization"]).toBe("Bearer pat-123");
+        expect(init.headers["x-user-id"]).toBe("usr-123");
     });
 });

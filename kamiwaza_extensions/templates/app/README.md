@@ -13,6 +13,9 @@ kz-ext login <your-instance-url>
 
 # Start local development
 kz-ext dev local
+
+# Run as the active Kamiwaza connection user on localhost
+kz-ext dev local --auth
 ```
 
 ## Structure

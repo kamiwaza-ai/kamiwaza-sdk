@@ -1,7 +1,12 @@
-import { describe, it, expect } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { extractIdentity } from "../src/server/identity";
 
 describe("extractIdentity", () => {
+    afterEach(() => {
+        delete process.env.KAMIWAZA_LOCAL_DEV_AUTH_BRIDGE;
+        delete process.env.KAMIWAZA_LOCAL_DEV_AUTH_HEADERS_JSON;
+    });
+
     it("returns full identity from headers", () => {
         const headers = new Headers({
             "x-user-id": "usr-123",
@@ -82,5 +87,23 @@ describe("extractIdentity", () => {
         expect(identity).not.toBeNull();
         expect(identity!.userId).toBe("usr-123");
         expect(identity!.name).toBe("Alice");
+    });
+
+    it("falls back to the local dev auth bridge when headers are absent", () => {
+        process.env.KAMIWAZA_LOCAL_DEV_AUTH_BRIDGE = "true";
+        process.env.KAMIWAZA_LOCAL_DEV_AUTH_HEADERS_JSON = JSON.stringify({
+            "x-user-id": "usr-123",
+            "x-user-email": "alice@example.com",
+            "x-user-name": "Alice",
+            "x-user-roles": "user,editor",
+        });
+
+        const identity = extractIdentity(new Headers());
+
+        expect(identity).not.toBeNull();
+        expect(identity!.userId).toBe("usr-123");
+        expect(identity!.email).toBe("alice@example.com");
+        expect(identity!.name).toBe("Alice");
+        expect(identity!.roles).toEqual(["user", "editor"]);
     });
 });

@@ -7,6 +7,7 @@
 ```bash
 kz-ext login <your-instance-url>
 kz-ext dev local
+kz-ext dev local --auth
 ```
 
 ## Structure

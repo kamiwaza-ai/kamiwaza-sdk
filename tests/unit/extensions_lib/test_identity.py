@@ -1,5 +1,6 @@
 """Tests for kamiwaza_extensions_lib.identity."""
 
+import json
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
@@ -152,3 +153,27 @@ class TestGetIdentity:
         identity = await get_identity(request)
 
         assert identity.is_authenticated is False
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_local_dev_bridge_headers(self, monkeypatch):
+        monkeypatch.setenv("KAMIWAZA_USE_AUTH", "true")
+        monkeypatch.setenv("KAMIWAZA_LOCAL_DEV_AUTH_BRIDGE", "true")
+        monkeypatch.setenv(
+            "KAMIWAZA_LOCAL_DEV_AUTH_HEADERS_JSON",
+            json.dumps(
+                {
+                    "x-user-id": "usr-123",
+                    "x-user-name": "Alice",
+                    "x-user-roles": "user,editor",
+                }
+            ),
+        )
+        request = MagicMock()
+        request.headers = {}
+
+        identity = await get_identity(request)
+
+        assert identity.user_id == "usr-123"
+        assert identity.name == "Alice"
+        assert identity.roles == ["user", "editor"]
+        assert identity.is_authenticated is True

@@ -121,6 +121,11 @@ kz-ext validate
 
 # 4. Run locally with Docker Compose
 kz-ext dev local
+
+# 5. Run locally as the active Kamiwaza connection user
+kz-ext dev local --auth
+# For raw redirect testing without the local auth bridge:
+kz-ext dev local --auth --no-auth-bridge
 ```
 
 ### Commands
@@ -130,7 +135,7 @@ kz-ext dev local
 | `kz-ext login [url]` | Authenticate with a Kamiwaza instance (default: `https://kamiwaza.test/api`). Supports `--api-key`, `--name`, `--list`, `--use`, `--no-verify-ssl`. |
 | `kz-ext create --type <type> --name <name>` | Scaffold a new extension in the current (empty) directory. Types: `app` (Next.js + FastAPI), `tool` (FastMCP), `service` (minimal). |
 | `kz-ext validate [path]` | Validate `kamiwaza.json` and `docker-compose.yml`. Use `--json` for machine-readable output. |
-| `kz-ext dev local` | Run the extension locally via Docker Compose with Kamiwaza env vars injected. |
+| `kz-ext dev local [--auth]` | Run the extension locally via Docker Compose with Kamiwaza env vars injected. `--auth` now bridges the active `kz-ext` connection into localhost requests so the app sees a real Kamiwaza user without a separate header-inject proxy. Use `--no-auth-bridge` with `--auth` for raw redirect testing. |
 | `kz-ext doctor` | Check your development environment (Python, Docker, Compose, connection health, runtime libs). |
 
 ### Extension Types
