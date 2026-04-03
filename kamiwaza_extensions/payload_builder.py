@@ -191,14 +191,18 @@ class PayloadBuilder:
         port = ports[0].container_port
 
         if is_primary or svc_name == "frontend":
-            # Frontend: exec wget with basePath support (Alpine lacks curl)
+            # Frontend: use node to resolve basePath env vars reliably
+            # (shell-based wget probes fail with nested ${} on Alpine)
+            probe_script = (
+                "const base=(process.env.NEXT_PUBLIC_APP_BASE_PATH"
+                "||process.env.KAMIWAZA_APP_PATH||'').replace(/\\/$/,'')||'/';"
+                f"require('http').get({{host:'127.0.0.1',port:{port},path:base}},"
+                "(res)=>process.exit(res.statusCode===200?0:1))"
+                ".on('error',()=>process.exit(1));"
+            )
             return {
                 "exec": {
-                    "command": [
-                        "/bin/sh", "-c",
-                        f'wget -qO /dev/null "http://localhost:{port}'
-                        '${NEXT_PUBLIC_APP_BASE_PATH:-${KAMIWAZA_APP_PATH:-/}}"',
-                    ],
+                    "command": ["node", "-e", probe_script],
                 },
                 "initialDelaySeconds": 30,
                 "periodSeconds": 10,
