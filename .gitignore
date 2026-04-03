@@ -9,6 +9,9 @@ env/
 .venv/
 .env/
 
+# Packed npm tarballs
+*.tgz
+
 # Python
 __pycache__/
 *.py[cod]
