@@ -135,6 +135,45 @@ class TestKamiwazaExtClientMethods:
             result = await client.get_models()
 
             mock_instance.get.assert_called_once_with(
-                "http://api:7777/api/serving/deployments/active"
+                "http://api:7777/api/serving/deployments"
+            )
+            assert result == [{"id": "d1", "model_name": "llama"}]
+
+    @pytest.mark.asyncio
+    async def test_get_models_falls_back_to_legacy_active_endpoint(self):
+        client = KamiwazaExtClient(
+            api_base="http://api:7777/api",
+            openai_base="",
+        )
+
+        not_found_request = httpx.Request("GET", "http://api:7777/api/serving/deployments")
+        not_found_response = httpx.Response(404, request=not_found_request)
+        fallback_response = MagicMock()
+        fallback_response.raise_for_status = MagicMock()
+        fallback_response.json.return_value = [{"id": "d1", "model_name": "llama"}]
+
+        with patch("kamiwaza_extensions_lib.client.httpx.AsyncClient") as MockClient:
+            mock_instance = AsyncMock()
+            mock_instance.get = AsyncMock(
+                side_effect=[
+                    httpx.HTTPStatusError(
+                        "Not Found",
+                        request=not_found_request,
+                        response=not_found_response,
+                    ),
+                    fallback_response,
+                ]
+            )
+            mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+            mock_instance.__aexit__ = AsyncMock(return_value=False)
+            MockClient.return_value = mock_instance
+
+            result = await client.get_models()
+
+            assert mock_instance.get.await_args_list[0].args == (
+                "http://api:7777/api/serving/deployments",
+            )
+            assert mock_instance.get.await_args_list[1].args == (
+                "http://api:7777/api/serving/deployments/active",
             )
             assert result == [{"id": "d1", "model_name": "llama"}]

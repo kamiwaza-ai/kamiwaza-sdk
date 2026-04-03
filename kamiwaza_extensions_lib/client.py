@@ -113,14 +113,33 @@ class KamiwazaExtClient:
     async def get_models(
         self, headers: Optional[dict[str, str]] = None
     ) -> list[dict]:
-        """List active model deployments from the platform API."""
+        """List model deployments from the platform API.
+
+        Prefers the newer ``/serving/deployments`` endpoint and falls back
+        to the older ``/serving/deployments/active`` shape when needed.
+        """
         if not self.api_base:
             raise RuntimeError(
                 "KAMIWAZA_API_URL not configured. "
                 "Are you running inside a Kamiwaza deployment?"
             )
-        url = f"{self.api_base}/serving/deployments/active"
         async with self._client(headers) as client:
-            resp = await client.get(url)
-            resp.raise_for_status()
-            return resp.json()
+            urls = (
+                f"{self.api_base}/serving/deployments",
+                f"{self.api_base}/serving/deployments/active",
+            )
+            last_error: Exception | None = None
+            for index, url in enumerate(urls):
+                try:
+                    resp = await client.get(url)
+                    resp.raise_for_status()
+                    return resp.json()
+                except httpx.HTTPStatusError as exc:
+                    is_last = index == len(urls) - 1
+                    if exc.response.status_code != 404 or is_last:
+                        raise
+                    last_error = exc
+
+            if last_error is not None:
+                raise last_error
+            return []
