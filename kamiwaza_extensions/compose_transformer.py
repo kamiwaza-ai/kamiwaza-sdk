@@ -7,13 +7,23 @@ import re
 from typing import Any, Dict, List, Optional
 
 
-# Default resource limits by service pattern
-_RESOURCE_DEFAULTS: List[tuple[re.Pattern, Dict[str, str]]] = [
-    (re.compile(r"postgres|mysql|mariadb", re.I), {"cpus": "0.5", "memory": "512M"}),
-    (re.compile(r"redis|valkey", re.I), {"cpus": "0.25", "memory": "256M"}),
-    (re.compile(r"frontend|nginx|caddy", re.I), {"cpus": "2.0", "memory": "1G"}),
+# Default resource limits/requests by service pattern.
+# Limits = ceiling (burst during build), requests = reservation (steady state).
+_RESOURCE_DEFAULTS: List[tuple[re.Pattern, Dict[str, Dict[str, str]]]] = [
+    (re.compile(r"postgres|mysql|mariadb", re.I), {
+        "limits": {"cpus": "0.5", "memory": "512M"},
+    }),
+    (re.compile(r"redis|valkey", re.I), {
+        "limits": {"cpus": "0.25", "memory": "256M"},
+    }),
+    (re.compile(r"frontend|nginx|caddy", re.I), {
+        "limits": {"cpus": "2.0", "memory": "1G"},
+        "reservations": {"cpus": "0.25", "memory": "256M"},
+    }),
 ]
-_DEFAULT_LIMITS = {"cpus": "1.0", "memory": "1G"}
+_DEFAULT_LIMITS: Dict[str, Dict[str, str]] = {
+    "limits": {"cpus": "1.0", "memory": "1G"},
+}
 
 
 class ComposeTransformer:
@@ -182,8 +192,11 @@ def _ensure_resource_limits(svc: Dict[str, Any]) -> None:
 
     # Determine defaults from image name or service content
     hint = svc.get("image", "")
-    for pattern, limits in _RESOURCE_DEFAULTS:
+    defaults = _DEFAULT_LIMITS
+    for pattern, res_defaults in _RESOURCE_DEFAULTS:
         if pattern.search(hint):
-            resources["limits"] = dict(limits)
-            return
-    resources["limits"] = dict(_DEFAULT_LIMITS)
+            defaults = res_defaults
+            break
+    resources["limits"] = dict(defaults["limits"])
+    if "reservations" in defaults and "reservations" not in resources:
+        resources["reservations"] = dict(defaults["reservations"])
