@@ -140,6 +140,35 @@ class TestKamiwazaExtClientMethods:
             assert result == [{"id": "d1", "model_name": "llama"}]
 
     @pytest.mark.asyncio
+    async def test_get_models_filters_out_stopped_deployments(self):
+        client = KamiwazaExtClient(
+            api_base="http://api:7777/api",
+            openai_base="",
+        )
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.return_value = [
+            {"id": "dep-1", "status": "DEPLOYED"},
+            {"id": "dep-2", "status": "STOPPED"},
+            {"id": "dep-3", "status": "running"},
+        ]
+
+        with patch("kamiwaza_extensions_lib.client.httpx.AsyncClient") as MockClient:
+            mock_instance = AsyncMock()
+            mock_instance.get = AsyncMock(return_value=mock_response)
+            mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+            mock_instance.__aexit__ = AsyncMock(return_value=False)
+            MockClient.return_value = mock_instance
+
+            result = await client.get_models()
+
+        assert result == [
+            {"id": "dep-1", "status": "DEPLOYED"},
+            {"id": "dep-3", "status": "running"},
+        ]
+
+    @pytest.mark.asyncio
     async def test_get_models_falls_back_to_legacy_active_endpoint(self):
         client = KamiwazaExtClient(
             api_base="http://api:7777/api",

@@ -9,6 +9,8 @@ import httpx
 
 from .config import AuthConfig
 
+_ACTIVE_DEPLOYMENT_STATUSES = {"deployed", "running", "ready", "active"}
+
 
 class KamiwazaExtClient:
     """Async HTTP client for the two things extensions need:
@@ -113,7 +115,7 @@ class KamiwazaExtClient:
     async def get_models(
         self, headers: Optional[dict[str, str]] = None
     ) -> list[dict]:
-        """List model deployments from the platform API.
+        """List active model deployments from the platform API.
 
         Prefers the newer ``/serving/deployments`` endpoint and falls back
         to the older ``/serving/deployments/active`` shape when needed.
@@ -133,7 +135,13 @@ class KamiwazaExtClient:
                 try:
                     resp = await client.get(url)
                     resp.raise_for_status()
-                    return resp.json()
+                    data = resp.json()
+                    if isinstance(data, list):
+                        return [
+                            item for item in data
+                            if not isinstance(item, dict) or _is_active_deployment(item)
+                        ]
+                    return data
                 except httpx.HTTPStatusError as exc:
                     is_last = index == len(urls) - 1
                     if exc.response.status_code != 404 or is_last:
@@ -143,3 +151,10 @@ class KamiwazaExtClient:
             if last_error is not None:
                 raise last_error
             return []
+
+
+def _is_active_deployment(item: dict) -> bool:
+    status = str(item.get("status", item.get("phase", ""))).strip().lower()
+    if not status:
+        return True
+    return status in _ACTIVE_DEPLOYMENT_STATUSES
