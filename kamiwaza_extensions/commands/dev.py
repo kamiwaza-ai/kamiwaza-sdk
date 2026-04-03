@@ -47,10 +47,6 @@ def _detect_kind_registry() -> Optional[str]:
     return None
 
 
-def _extract_user_id(access_token: str) -> str:
-    """Extract user ID from a JWT. Deprecated — use constants.extract_user_id."""
-    from kamiwaza_extensions.constants import extract_user_id
-    return extract_user_id(access_token)
 
 
 def _delete_and_recreate(client, dev_name, payload, console) -> "Extension":
@@ -236,7 +232,8 @@ def run_dev_remote(
 
     # 8. Build API payload
     payload_builder = PayloadBuilder()
-    dev_name = PayloadBuilder.make_dev_name(info.name, user_id=_extract_user_id(token.access_token))
+    from kamiwaza_extensions.constants import extract_user_id
+    dev_name = PayloadBuilder.make_dev_name(info.name, user_id=extract_user_id(token.access_token))
     payload = payload_builder.build(
         metadata=info.metadata,
         transformed_compose=transformed,
@@ -284,7 +281,7 @@ def run_dev_remote(
                 )
                 if svc.env:
                     spec.env = svc.env
-                if svc.replicas is not None and svc.replicas != 1:
+                if svc.replicas is not None:
                     spec.replicas = svc.replicas
                 patch_services.append(spec)
             patch = PatchExtension(services=patch_services)

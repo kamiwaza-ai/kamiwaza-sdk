@@ -86,8 +86,12 @@ def run_logs(
                     "  Run: [bold]kz-ext dev[/bold] to deploy first."
                 )
                 raise typer.Exit(code=1) from exc
-            # Other API errors (e.g. 405 for missing status endpoint): fall through
-            pass
+            if exc.status_code in (405, 501):
+                pass  # Status endpoint not supported — fall through to label selector
+            else:
+                console.print(f"[yellow]Warning:[/yellow] Status fetch failed: {exc}")
+        except Exception as exc:
+            console.print(f"[yellow]Warning:[/yellow] Status fetch failed: {exc}")
     finally:
         if old_verify_ssl is None:
             os.environ.pop("KAMIWAZA_VERIFY_SSL", None)

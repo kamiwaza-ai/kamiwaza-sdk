@@ -122,15 +122,24 @@ class TestDeployPatchLogic:
             assert exc.status_code == 405
 
     def test_image_tag_extraction(self):
-        """Verify tag is extracted correctly from image formats used by PayloadBuilder."""
+        """Verify tag is extracted correctly from image formats used by PayloadBuilder.
+
+        Uses the same slash-then-colon algorithm as dev.py to avoid the
+        registry-port pitfall (e.g. localhost:5001/app being misread).
+        """
         test_cases = [
             ("registry.test/app:v1.0.0", "v1.0.0"),
             ("registry.test/app:latest", "latest"),
             ("registry.test/app", "latest"),  # no tag → default to latest
             ("registry.test:5000/app:v2", "v2"),
+            ("registry.test:5000/app", "latest"),  # port but no tag
             ("localhost:5001/myapp-backend:1.0.0-gabc1234", "1.0.0-gabc1234"),
         ]
         for image, expected_tag in test_cases:
-            parts = image.rsplit(":", 1)
-            tag = parts[1] if len(parts) > 1 else "latest"
+            slash_pos = image.rfind("/")
+            after_slash = image[slash_pos + 1:] if slash_pos >= 0 else image
+            if ":" in after_slash:
+                tag = after_slash.rsplit(":", 1)[1]
+            else:
+                tag = "latest"
             assert tag == expected_tag, f"For image '{image}' expected '{expected_tag}' got '{tag}'"

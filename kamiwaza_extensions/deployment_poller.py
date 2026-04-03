@@ -113,12 +113,21 @@ class DeploymentPoller:
         Returns ``(None, "")`` if the endpoint is not available (404/405),
         otherwise ``(all_ready, summary_string)``.
         """
+        from kamiwaza_sdk.exceptions import APIError
+
         try:
             status: ExtensionStatus = client.extensions.get_extension_status(
                 extension_name
             )
+        except APIError as exc:
+            if exc.status_code in (404, 405, 501):
+                # Status endpoint not available — caller will fall back
+                return None, ""
+            # Auth errors, server errors — log and fall back
+            console.print(f"[dim]Status endpoint error: {exc}[/dim]")
+            return None, ""
         except Exception:
-            # Status endpoint not available — caller will fall back
+            # Network errors etc. — fall back silently
             return None, ""
 
         if status.rolling_update:
