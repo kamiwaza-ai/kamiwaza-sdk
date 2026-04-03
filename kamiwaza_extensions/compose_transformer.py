@@ -114,12 +114,44 @@ class ComposeTransformer:
         svc.pop("container_name", None)
         svc.pop("networks", None)
 
+        # 7. Strip env vars with unexpanded ${} references — these are
+        #    docker-compose variable substitutions that don't work in K8s.
+        #    The operator injects the real values via ConfigMap.
+        if "environment" in svc:
+            svc["environment"] = _strip_shell_refs(svc["environment"])
+
         return svc
 
 
 # ------------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------------
+
+
+def _strip_shell_refs(env: Any) -> Any:
+    """Remove env entries whose values contain unexpanded ``${...}`` references.
+
+    Docker-compose ``${VAR:-default}`` syntax is meaningless in K8s — the
+    operator injects the real values via ConfigMap.  Keeping them would
+    shadow the operator values with literal ``${...}`` strings.
+    """
+    if isinstance(env, dict):
+        return {k: v for k, v in env.items() if not _has_shell_ref(v)}
+    if isinstance(env, list):
+        return [e for e in env if not _has_shell_ref(_env_entry_value(e))]
+    return env
+
+
+def _has_shell_ref(value: Any) -> bool:
+    return isinstance(value, str) and "${" in value
+
+
+def _env_entry_value(entry: Any) -> Any:
+    if isinstance(entry, str) and "=" in entry:
+        return entry.split("=", 1)[1]
+    if isinstance(entry, dict):
+        return entry.get("value", "")
+    return entry
 
 
 def _strip_host_ports(ports: List[Any]) -> List[str]:
