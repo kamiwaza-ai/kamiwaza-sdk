@@ -92,7 +92,7 @@ pytest -m integration
 
 ## Extension Developer Tools (`kz-ext`)
 
-The `kz-ext` CLI helps extension developers scaffold, validate, and run Kamiwaza extensions locally.
+The `kz-ext` CLI helps extension developers scaffold, validate, build, deploy, and debug Kamiwaza extensions.
 
 ### Installation
 
@@ -121,6 +121,17 @@ kz-ext validate
 
 # 4. Run locally with Docker Compose
 kz-ext dev local
+
+# 5. Deploy to a Kamiwaza cluster (build, push, deploy — one command)
+kz-ext dev
+
+# 6. Iterate: change code, re-run (zero-downtime update via PATCH)
+kz-ext dev
+
+# 7. Inspect the running extension
+kz-ext status
+kz-ext logs --service backend --follow
+kz-ext shell --service backend
 ```
 
 ### Commands
@@ -131,7 +142,22 @@ kz-ext dev local
 | `kz-ext create --type <type> --name <name>` | Scaffold a new extension in the current (empty) directory. Types: `app` (Next.js + FastAPI), `tool` (FastMCP), `service` (minimal). |
 | `kz-ext validate [path]` | Validate `kamiwaza.json` and `docker-compose.yml`. Use `--json` for machine-readable output. |
 | `kz-ext dev local` | Run the extension locally via Docker Compose with Kamiwaza env vars injected. |
-| `kz-ext doctor` | Check your development environment (Python, Docker, Compose, connection health, runtime libs). |
+| `kz-ext dev` | Build, push, and deploy to a Kamiwaza cluster. Uses zero-downtime PATCH updates for existing extensions. Supports `--no-build`, `--no-push`, `--service`, `--revision`. |
+| `kz-ext status` | Show deployment status: phase, per-service readiness, URL, and recent K8s events. Supports `--name`. |
+| `kz-ext logs` | Stream logs from deployed extension pods. Supports `--service`, `--follow`, `--tail`, `--name`. |
+| `kz-ext shell` | Open an interactive shell in a running extension container. Supports `--service`, `--name`. |
+| `kz-ext doctor` | Check your development environment (Python, Docker, Compose, kubectl, connection health, runtime libs). |
+
+### Development Workflow
+
+The typical edit-deploy-test cycle:
+
+1. **`kz-ext dev`** builds Docker images with a unique dev tag, pushes to the cluster registry, and deploys via the platform API.
+2. On the **first run**, it creates a new extension (POST). On **subsequent runs**, it patches the existing deployment with new image tags (PATCH), triggering a Kubernetes rolling update with zero downtime.
+3. **`kz-ext status`** shows whether the rollout is complete, per-service readiness, and any issues (image pull failures, OOM kills, probe failures).
+4. **`kz-ext logs`** and **`kz-ext shell`** give direct access to running pods for debugging.
+
+No version bumps, registry builds, or manual redeploy steps required during development.
 
 ### Extension Types
 
