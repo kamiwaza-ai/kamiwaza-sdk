@@ -194,8 +194,9 @@ class PayloadBuilder:
             # Frontend: use node to resolve basePath env vars reliably
             # (shell-based wget probes fail with nested ${} on Alpine)
             probe_script = (
-                "const base=(process.env.NEXT_PUBLIC_APP_BASE_PATH"
-                "||process.env.KAMIWAZA_APP_PATH||'').replace(/\\/$/,'')||'/';"
+                "const v=s=>(s&&!s.includes('${'))?s:'';"
+                "const base=(v(process.env.NEXT_PUBLIC_APP_BASE_PATH)"
+                "||v(process.env.KAMIWAZA_APP_PATH)||'').replace(/\\/$/,'')||'/';"
                 f"require('http').get({{host:'127.0.0.1',port:{port},path:base}},"
                 "(res)=>process.exit(res.statusCode===200?0:1))"
                 ".on('error',()=>process.exit(1));"
