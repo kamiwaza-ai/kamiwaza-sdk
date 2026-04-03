@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useSession } from "./useSession";
 import type { AvailableModel } from "./types";
 
@@ -29,30 +29,40 @@ export function useModels(endpoint: string = "/api/models") {
     const [models, setModels] = useState<AvailableModel[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<Error | null>(null);
+    const controllerRef = useRef<AbortController | null>(null);
 
     const fetchModels = useCallback(async () => {
+        controllerRef.current?.abort();
+        const controller = new AbortController();
+        controllerRef.current = controller;
+
         try {
             setLoading(true);
             const res = await fetch(`${basePath}${endpoint}`, {
                 credentials: "include",
+                signal: controller.signal,
             });
+            if (controller.signal.aborted) return;
             if (!res.ok) throw new Error(`Model fetch failed: ${res.status}`);
             const data = await res.json();
 
+            if (controller.signal.aborted) return;
             const parsed: AvailableModel[] = (Array.isArray(data) ? data : []).map(
                 (d: Record<string, unknown>) => parseModel(d)
             );
             setModels(parsed);
             setError(null);
         } catch (err) {
+            if (controller.signal.aborted) return;
             setError(err instanceof Error ? err : new Error(String(err)));
         } finally {
-            setLoading(false);
+            if (!controller.signal.aborted) setLoading(false);
         }
     }, [basePath, endpoint]);
 
     useEffect(() => {
         fetchModels();
+        return () => controllerRef.current?.abort();
     }, [fetchModels]);
 
     return { models, loading, error, refresh: fetchModels };

@@ -13,6 +13,13 @@ from .identity import Identity, get_identity
 
 
 def _decode_jwt_exp(token: str) -> int | None:
+    """Extract the ``exp`` claim from a JWT **without** signature verification.
+
+    This is intentional — the token has already been validated by the
+    platform's ForwardAuth layer before reaching the extension.  We only
+    read the expiry so the frontend can display a countdown / trigger a
+    refresh.  Do NOT use this for access-control decisions.
+    """
     parts = token.split(".")
     if len(parts) < 2:
         return None

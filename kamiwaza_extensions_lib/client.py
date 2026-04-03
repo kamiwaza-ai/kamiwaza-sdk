@@ -80,7 +80,9 @@ class KamiwazaExtClient:
         .. note::
             A new client (and TCP connection) is created per call.
             This is acceptable for v0.1.0 where request volume is low.
-            A future version may introduce connection pooling.
+            A future version should introduce a shared client with
+            connection pooling to avoid port exhaustion under load.
+            See: https://github.com/kamiwaza-ai/kamiwaza-sdk/issues/63
         """
         headers = {**self._default_headers, **(extra_headers or {})}
         return httpx.AsyncClient(

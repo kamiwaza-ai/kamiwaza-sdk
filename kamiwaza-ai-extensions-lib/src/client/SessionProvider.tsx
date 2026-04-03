@@ -116,15 +116,22 @@ export function SessionProvider({
     // Periodic refresh with backoff and abort on cleanup
     useEffect(() => {
         if (refreshInterval <= 0) return;
+        let cancelled = false;
+        let timerId: ReturnType<typeof setTimeout>;
         let controller = new AbortController();
+
         const tick = () => {
             controller = new AbortController();
-            fetchSession(controller.signal).then(() => {
-                timerId = setTimeout(tick, backoffRef.current);
+            fetchSession(controller.signal).finally(() => {
+                if (!cancelled) {
+                    timerId = setTimeout(tick, backoffRef.current);
+                }
             });
         };
-        let timerId = setTimeout(tick, backoffRef.current);
+        timerId = setTimeout(tick, backoffRef.current);
+
         return () => {
+            cancelled = true;
             clearTimeout(timerId);
             controller.abort();
         };

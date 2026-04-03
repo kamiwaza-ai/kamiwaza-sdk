@@ -67,6 +67,9 @@ def require_role(role: str) -> Callable:
     """
 
     async def _dependency(identity: Identity = Depends(require_auth)) -> Identity:
+        config = AuthConfig.from_env()
+        if not config.use_auth:
+            return identity
         if role.lower() not in {r.lower() for r in identity.roles}:
             raise HTTPException(
                 status_code=403,

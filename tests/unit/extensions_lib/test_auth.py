@@ -145,3 +145,17 @@ class TestRequireRole:
         dep = require_role("admin")
         result = await dep(identity=identity)
         assert result.user_id == "usr-123"
+
+    @pytest.mark.asyncio
+    async def test_local_dev_mode_skips_role_check(self, monkeypatch):
+        monkeypatch.setenv("KAMIWAZA_USE_AUTH", "false")
+        identity = Identity(
+            user_id=None,
+            roles=[],
+            is_authenticated=False,
+        )
+
+        dep = require_role("admin")
+        result = await dep(identity=identity)
+        # Should not raise 403 — local dev mode bypasses role enforcement
+        assert result.is_authenticated is False
