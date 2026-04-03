@@ -1,10 +1,23 @@
 """Tests for kamiwaza_extensions_lib.session."""
 
+import base64
+import json
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from kamiwaza_extensions_lib.session import create_session_router
+
+
+def _make_jwt(exp: int) -> str:
+    header = base64.urlsafe_b64encode(
+        json.dumps({"alg": "none", "typ": "JWT"}).encode("utf-8")
+    ).decode("utf-8").rstrip("=")
+    payload = base64.urlsafe_b64encode(
+        json.dumps({"exp": exp}).encode("utf-8")
+    ).decode("utf-8").rstrip("=")
+    return f"{header}.{payload}.sig"
 
 
 def _make_app(monkeypatch, use_auth: str = "true", **env_overrides) -> TestClient:
@@ -24,6 +37,7 @@ def _make_app(monkeypatch, use_auth: str = "true", **env_overrides) -> TestClien
 class TestSessionEndpoint:
     def test_authenticated_session(self, monkeypatch):
         client = _make_app(monkeypatch)
+        token = _make_jwt(1711900800)
         resp = client.get(
             "/session",
             headers={
@@ -32,6 +46,7 @@ class TestSessionEndpoint:
                 "x-user-name": "Alice",
                 "x-user-roles": "admin,user",
                 "x-workroom-id": "wrk-456",
+                "x-auth-token": token,
             },
         )
 
@@ -43,6 +58,7 @@ class TestSessionEndpoint:
         assert data["roles"] == ["admin", "user"]
         assert data["workroom_id"] == "wrk-456"
         assert data["is_authenticated"] is True
+        assert data["expires_at"] == 1711900800
 
     def test_unauthenticated_session_with_auth_enabled(self, monkeypatch):
         client = _make_app(monkeypatch, use_auth="true")
@@ -52,6 +68,7 @@ class TestSessionEndpoint:
         data = resp.json()
         assert data["is_authenticated"] is False
         assert data["user_id"] is None
+        assert data["expires_at"] is None
 
     def test_local_dev_mode_returns_anonymous(self, monkeypatch):
         client = _make_app(monkeypatch, use_auth="false")
@@ -61,6 +78,48 @@ class TestSessionEndpoint:
         data = resp.json()
         assert data["is_authenticated"] is False
         assert data["name"] == "Anonymous"
+        assert data["expires_at"] is None
+
+    def test_uses_authorization_header_when_auth_token_missing(self, monkeypatch):
+        client = _make_app(monkeypatch)
+        token = _make_jwt(1711900900)
+        resp = client.get(
+            "/session",
+            headers={
+                "x-user-id": "usr-123",
+                "authorization": f"Bearer {token}",
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["expires_at"] == 1711900900
+
+    def test_invalid_token_omits_expiry(self, monkeypatch):
+        client = _make_app(monkeypatch)
+        resp = client.get(
+            "/session",
+            headers={
+                "x-user-id": "usr-123",
+                "x-auth-token": "not-a-jwt",
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["expires_at"] is None
+
+    def test_anonymous_session_ignores_bearer_expiry(self, monkeypatch):
+        client = _make_app(monkeypatch)
+        token = _make_jwt(1711901000)
+        resp = client.get(
+            "/session",
+            headers={
+                "authorization": f"Bearer {token}",
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["is_authenticated"] is False
+        assert resp.json()["expires_at"] is None
 
 
 @pytest.mark.unit
