@@ -43,7 +43,13 @@ class ComposeTransformer:
         """
         out = copy.deepcopy(compose_data)
 
-        for svc_name, svc in (out.get("services") or {}).items():
+        # Drop services that have a profiles key (local-only services)
+        services = out.get("services") or {}
+        profiled = [name for name, svc in services.items() if svc.get("profiles")]
+        for name in profiled:
+            del services[name]
+
+        for svc_name, svc in services.items():
             out["services"][svc_name] = self.transform_service(
                 svc,
                 svc_name,
