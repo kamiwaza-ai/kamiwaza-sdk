@@ -37,11 +37,21 @@ describe("resolveTarget", () => {
         ).toThrow("Path traversal detected");
     });
 
-    it("rejects raw %2e in path as defense-in-depth", () => {
-        // Even partial encoded dots are rejected
+    it("rejects encoded dot-dot (%2e%2e) in path", () => {
         expect(() =>
             _resolveTarget("http://backend:8000", "/%2e%2e%2fetc%2fpasswd", "")
         ).toThrow("Path traversal detected");
+    });
+
+    it("allows single encoded dot in path (e.g., version numbers)", () => {
+        // /api/v1%2e2/users should NOT be rejected — only .. sequences
+        const url = _resolveTarget("http://backend:8000", "/api/v1.2/users", "");
+        expect(url).toBe("http://backend:8000/api/v1.2/users");
+    });
+
+    it("preserves target path prefix", () => {
+        const url = _resolveTarget("http://backend:8000/api/v1", "/users", "");
+        expect(url).toBe("http://backend:8000/api/v1/users");
     });
 
     it("rejects scheme injection in path", () => {

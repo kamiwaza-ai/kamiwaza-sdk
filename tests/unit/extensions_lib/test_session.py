@@ -206,6 +206,39 @@ class TestLogoutEndpoint:
 
 
 @pytest.mark.unit
+class TestOpenRedirectProtection:
+    def test_rejects_host_header_injection_without_origin(self, monkeypatch):
+        """Without KAMIWAZA_APP_URL or KAMIWAZA_ORIGIN, login-url should 500."""
+        monkeypatch.setenv("KAMIWAZA_USE_AUTH", "true")
+        monkeypatch.setenv("KAMIWAZA_PUBLIC_API_URL", "https://cluster.test/api")
+        monkeypatch.delenv("KAMIWAZA_APP_URL", raising=False)
+        monkeypatch.setenv("KAMIWAZA_APP_URL", "")
+        monkeypatch.setenv("KAMIWAZA_ORIGIN", "")
+
+        app = FastAPI()
+        app.include_router(create_session_router())
+        client = TestClient(app, raise_server_exceptions=False)
+
+        resp = client.get("/auth/login-url")
+        assert resp.status_code == 500
+
+    def test_allows_base_url_matching_origin(self, monkeypatch):
+        """When KAMIWAZA_ORIGIN matches request origin, fallback is safe."""
+        monkeypatch.setenv("KAMIWAZA_USE_AUTH", "true")
+        monkeypatch.setenv("KAMIWAZA_PUBLIC_API_URL", "https://cluster.test/api")
+        monkeypatch.setenv("KAMIWAZA_APP_URL", "")
+        monkeypatch.setenv("KAMIWAZA_ORIGIN", "http://testserver")
+
+        app = FastAPI()
+        app.include_router(create_session_router())
+        client = TestClient(app)
+
+        resp = client.get("/auth/login-url")
+        assert resp.status_code == 200
+        assert "return_to=http%3A%2F%2Ftestserver" in resp.json()["login_url"]
+
+
+@pytest.mark.unit
 class TestSessionRouterWithPrefix:
     def test_prefix_applied(self, monkeypatch):
         monkeypatch.setenv("KAMIWAZA_USE_AUTH", "false")

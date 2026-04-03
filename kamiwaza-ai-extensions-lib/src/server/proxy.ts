@@ -1,7 +1,12 @@
 import type { ProxyConfig } from "./types";
 import { getLocalDevAuthHeaders } from "./localDevAuth";
 
-/** Headers to forward from the incoming request to the backend. */
+/** Headers to forward from the incoming request to the backend.
+ *  Auth is header-based (Authorization / X-*), not cookie-based,
+ *  so cookies are intentionally excluded to avoid leaking browser
+ *  session cookies to the backend while stripping set-cookie from
+ *  responses.
+ */
 const FORWARD_REQUEST_HEADERS = new Set([
     "authorization",
     "x-auth-token",
@@ -11,7 +16,6 @@ const FORWARD_REQUEST_HEADERS = new Set([
     "x-user-roles",
     "x-workroom-id",
     "x-request-id",
-    "cookie",
     "content-type",
 ]);
 
@@ -89,8 +93,8 @@ function resolveTarget(target: string, path: string, search: string): string {
         throw new Error("Path traversal detected");
     }
 
-    // Also reject %2e in the raw path as defense-in-depth
-    if (/%2e/i.test(path)) {
+    // Also reject encoded dot-dot (%2e%2e or mixed) in the raw path
+    if (/%2e[./\\%]|[./\\]%2e/i.test(path)) {
         throw new Error("Path traversal detected");
     }
 
@@ -102,11 +106,13 @@ function resolveTarget(target: string, path: string, search: string): string {
     // Normalize: ensure path starts with /
     const safePath = path.startsWith("/") ? path : `/${path}`;
 
-    const targetOrigin = new URL(target).origin;
-    const resolved = new URL(`${targetOrigin}${safePath}${search}`);
+    // Preserve any path prefix in the target (e.g., http://backend:8000/api/v1)
+    const targetUrl = new URL(target);
+    const targetBase = `${targetUrl.origin}${targetUrl.pathname.replace(/\/+$/, "")}`;
+    const resolved = new URL(`${targetBase}${safePath}${search}`);
 
     // Final origin check — resolved URL must match the configured target
-    if (resolved.origin !== targetOrigin) {
+    if (resolved.origin !== targetUrl.origin) {
         throw new Error("Resolved URL origin mismatch");
     }
 

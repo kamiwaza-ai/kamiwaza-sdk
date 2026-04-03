@@ -164,6 +164,36 @@ describe("AuthGuard", () => {
         expect(screen.queryByText("Protected")).toBeNull();
     });
 
+    it("fails CLOSED on login-url fetch error (does NOT render children)", async () => {
+        fetchSpy.mockRejectedValue(new Error("Network error"));
+
+        renderWithSession(
+            {
+                loading: false,
+                session: {
+                    userId: null,
+                    email: null,
+                    name: null,
+                    roles: [],
+                    workroomId: null,
+                    isAuthenticated: false,
+                },
+            },
+            <AuthGuard fallback={<div>Loading...</div>}>
+                <div>Protected</div>
+            </AuthGuard>
+        );
+
+        // Wait for the fetch to reject
+        await waitFor(() => {
+            expect(fetchSpy).toHaveBeenCalled();
+        });
+
+        // Must show fallback, NOT children — fail closed
+        expect(screen.getByText("Loading...")).toBeDefined();
+        expect(screen.queryByText("Protected")).toBeNull();
+    });
+
     it("uses basePath from session context for login URL fetch", async () => {
         fetchSpy.mockResolvedValue({
             ok: true,

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { useSession } from "./useSession";
 import type { AuthGuardProps } from "./types";
 
@@ -12,13 +12,12 @@ import type { AuthGuardProps } from "./types";
  * - If not authenticated and auth is enabled: redirects to login.
  * - If not authenticated and no login URL (local dev): renders children.
  *
- * Children are NEVER rendered to unauthenticated users in production
- * — the component stays in the fallback state until auth is fully resolved.
+ * Fails **closed**: on any error determining auth state, the component
+ * stays on fallback rather than rendering protected content.
  */
 export function AuthGuard({ children, fallback = null }: AuthGuardProps) {
     const { session, loading, basePath } = useSession();
     const [resolved, setResolved] = useState(false);
-    const abortRef = useRef<AbortController | null>(null);
 
     useEffect(() => {
         if (loading) return;
@@ -29,8 +28,6 @@ export function AuthGuard({ children, fallback = null }: AuthGuardProps) {
 
         // Session loaded but user is not authenticated — fetch login URL.
         const controller = new AbortController();
-        abortRef.current = controller;
-
         const loginUrlEndpoint = `${basePath}/auth/login-url`;
 
         fetch(loginUrlEndpoint, {
@@ -50,9 +47,10 @@ export function AuthGuard({ children, fallback = null }: AuthGuardProps) {
             })
             .catch((err) => {
                 if (controller.signal.aborted) return;
-                // Can't determine auth state — allow rendering as best-effort
-                console.warn("AuthGuard: failed to fetch login URL", err);
-                setResolved(true);
+                // Fail CLOSED: keep showing fallback. Do not render children
+                // when we can't determine auth state — this prevents an auth
+                // bypass via transient network errors or targeted DoS.
+                console.error("AuthGuard: failed to fetch login URL — staying on fallback", err);
             });
 
         return () => {
@@ -60,7 +58,6 @@ export function AuthGuard({ children, fallback = null }: AuthGuardProps) {
         };
     }, [session, loading, basePath]);
 
-    // Show fallback until we know the user is authed or in local dev mode
     if (loading || !resolved) {
         return <>{fallback}</>;
     }

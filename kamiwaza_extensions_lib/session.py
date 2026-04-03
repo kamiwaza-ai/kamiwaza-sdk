@@ -6,7 +6,7 @@ import base64
 import json
 from urllib.parse import quote
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 
 from .auth import forward_auth_headers
 from .config import AuthConfig
@@ -60,6 +60,32 @@ def _session_expires_at(request: Request) -> int | None:
     return _decode_jwt_exp(authorization.strip())
 
 
+def _safe_app_url(config: AuthConfig, request: Request) -> str:
+    """Return the app URL, rejecting attacker-controlled Host headers.
+
+    Prefers ``KAMIWAZA_APP_URL`` (set by the operator in deployed mode).
+    Falls back to ``request.base_url`` only when it matches the
+    configured ``KAMIWAZA_ORIGIN``.  If neither is safe, raises so we
+    never emit a redirect to an attacker-controlled domain.
+    """
+    if config.app_url:
+        return config.app_url.rstrip("/")
+
+    derived = str(request.base_url).rstrip("/")
+    if config.origin:
+        origin = config.origin.rstrip("/")
+        if derived.startswith(origin):
+            return derived
+
+    raise HTTPException(
+        status_code=500,
+        detail=(
+            "Cannot determine safe redirect URL. "
+            "Set KAMIWAZA_APP_URL or KAMIWAZA_ORIGIN."
+        ),
+    )
+
+
 def create_session_router(prefix: str = "") -> APIRouter:
     """Create a FastAPI router with session management endpoints.
 
@@ -109,7 +135,7 @@ def create_session_router(prefix: str = "") -> APIRouter:
             return {"login_url": None}
 
         base = config.public_api_url.rstrip("/")
-        return_to = config.app_url or str(request.base_url).rstrip("/")
+        return_to = _safe_app_url(config, request)
         return {"login_url": f"{base}/auth/login?return_to={quote(return_to, safe='')}"}
 
     @router.post("/auth/logout")
@@ -119,7 +145,7 @@ def create_session_router(prefix: str = "") -> APIRouter:
             return {"logout_url": None, "redirect_url": None}
 
         base = config.public_api_url.rstrip("/")
-        app_url = config.app_url or str(request.base_url).rstrip("/")
+        app_url = _safe_app_url(config, request)
         return {
             "logout_url": f"{base}/auth/logout",
             "redirect_url": f"{app_url}/logged-out",
