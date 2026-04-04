@@ -11,7 +11,6 @@ from rich.console import Console
 console = Console(stderr=True)
 
 
-
 def run_logs(
     *,
     name: Optional[str] = None,
@@ -21,7 +20,7 @@ def run_logs(
 ) -> None:
     """Stream logs from extension pods."""
     from kamiwaza_sdk import KamiwazaClient
-    from kamiwaza_sdk.exceptions import APIError
+    from kamiwaza_sdk.exceptions import APIError, NotFoundError
 
     from kamiwaza_extensions.connections import ConnectionManager
     from kamiwaza_extensions.constants import EXTENSIONS_NAMESPACE, extract_user_id
@@ -37,9 +36,7 @@ def run_logs(
 
     token = conn_mgr.get_token()
     if token is None:
-        console.print(
-            "[red]Error:[/red] Token expired. Run: [bold]kz-ext login[/bold]"
-        )
+        console.print("[red]Error:[/red] Token expired. Run: [bold]kz-ext login[/bold]")
         raise typer.Exit(code=1)
 
     # Resolve extension name
@@ -57,11 +54,10 @@ def run_logs(
 
     # Try to get pod names via status endpoint
     from kamiwaza_extensions.constants import ssl_env_override
+
     pod_name = None
     with ssl_env_override(connection):
-        client = KamiwazaClient(
-            base_url=connection.url, api_key=token.access_token
-        )
+        client = KamiwazaClient(base_url=connection.url, api_key=token.access_token)
         try:
             status = client.extensions.get_extension_status(dev_name)
             # Find target pods
@@ -74,14 +70,14 @@ def run_logs(
                         break
                 if pod_name:
                     break
+        except NotFoundError as exc:
+            console.print(f"[red]Error:[/red] Extension '{dev_name}' not found.")
+            console.print("  Run: [bold]kz-ext dev[/bold] to deploy first.")
+            raise typer.Exit(code=1) from exc
         except APIError as exc:
             if exc.status_code == 404:
-                console.print(
-                    f"[red]Error:[/red] Extension '{dev_name}' not found."
-                )
-                console.print(
-                    "  Run: [bold]kz-ext dev[/bold] to deploy first."
-                )
+                console.print(f"[red]Error:[/red] Extension '{dev_name}' not found.")
+                console.print("  Run: [bold]kz-ext dev[/bold] to deploy first.")
                 raise typer.Exit(code=1) from exc
             if exc.status_code in (405, 501):
                 pass  # Status endpoint not supported — fall through to label selector
@@ -113,9 +109,7 @@ def run_logs(
         result = subprocess.run(cmd, timeout=None if follow else 300)
         raise typer.Exit(code=result.returncode)
     except FileNotFoundError:
-        console.print(
-            "[red]Error:[/red] kubectl not found. Install it to view logs."
-        )
+        console.print("[red]Error:[/red] kubectl not found. Install it to view logs.")
         raise typer.Exit(code=1)
     except KeyboardInterrupt:
         raise typer.Exit(code=0)

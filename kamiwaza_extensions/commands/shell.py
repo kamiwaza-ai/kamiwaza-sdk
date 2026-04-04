@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 from typing import Optional
 
 import typer
@@ -10,6 +11,51 @@ from rich.console import Console
 
 console = Console(stderr=True)
 
+
+def _find_running_pod_via_kubectl(
+    dev_name: str,
+    service: Optional[str],
+) -> Optional[str]:
+    """Use kubectl label selection as a fallback pod lookup."""
+    from kamiwaza_extensions.constants import EXTENSIONS_NAMESPACE
+
+    label = f"extensions.kamiwaza.io/deployment-id={dev_name}"
+    if service:
+        label += f",extensions.kamiwaza.io/service={service}"
+
+    try:
+        result = subprocess.run(
+            [
+                "kubectl",
+                "get",
+                "pods",
+                "-n",
+                EXTENSIONS_NAMESPACE,
+                "-l",
+                label,
+                "-o",
+                "jsonpath={range .items[*]}{.metadata.name}{'\\t'}{.status.phase}{'\\n'}{end}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except FileNotFoundError:
+        console.print(
+            "[red]Error:[/red] kubectl not found. Install it to open a shell."
+        )
+        raise typer.Exit(code=1)
+    except subprocess.TimeoutExpired:
+        return None
+
+    if result.returncode != 0:
+        return None
+
+    for line in result.stdout.splitlines():
+        pod_name, _, phase = line.partition("\t")
+        if pod_name and phase == "Running":
+            return pod_name
+    return None
 
 
 def run_shell(
@@ -19,7 +65,7 @@ def run_shell(
 ) -> None:
     """Open an interactive shell in an extension pod."""
     from kamiwaza_sdk import KamiwazaClient
-    from kamiwaza_sdk.exceptions import APIError
+    from kamiwaza_sdk.exceptions import APIError, NotFoundError
 
     from kamiwaza_extensions.connections import ConnectionManager
     from kamiwaza_extensions.constants import EXTENSIONS_NAMESPACE, extract_user_id
@@ -35,9 +81,7 @@ def run_shell(
 
     token = conn_mgr.get_token()
     if token is None:
-        console.print(
-            "[red]Error:[/red] Token expired. Run: [bold]kz-ext login[/bold]"
-        )
+        console.print("[red]Error:[/red] Token expired. Run: [bold]kz-ext login[/bold]")
         raise typer.Exit(code=1)
 
     # Resolve extension name
@@ -55,11 +99,10 @@ def run_shell(
 
     # Get pod name via status endpoint
     from kamiwaza_extensions.constants import ssl_env_override
+
     pod_name = None
     with ssl_env_override(connection):
-        client = KamiwazaClient(
-            base_url=connection.url, api_key=token.access_token
-        )
+        client = KamiwazaClient(base_url=connection.url, api_key=token.access_token)
         try:
             status = client.extensions.get_extension_status(dev_name)
             # Find target pod: prefer --service, else primary/first running pod
@@ -72,14 +115,14 @@ def run_shell(
                         break
                 if pod_name:
                     break
+        except NotFoundError as exc:
+            console.print(f"[red]Error:[/red] Extension '{dev_name}' not found.")
+            console.print("  Run: [bold]kz-ext dev[/bold] to deploy first.")
+            raise typer.Exit(code=1) from exc
         except APIError as exc:
             if exc.status_code == 404:
-                console.print(
-                    f"[red]Error:[/red] Extension '{dev_name}' not found."
-                )
-                console.print(
-                    "  Run: [bold]kz-ext dev[/bold] to deploy first."
-                )
+                console.print(f"[red]Error:[/red] Extension '{dev_name}' not found.")
+                console.print("  Run: [bold]kz-ext dev[/bold] to deploy first.")
                 raise typer.Exit(code=1) from exc
             # Other errors: try to proceed without pod name
             console.print(
@@ -90,6 +133,8 @@ def run_shell(
                 f"[yellow]Warning:[/yellow] Could not determine target pod: {exc}"
             )
     if pod_name is None:
+        pod_name = _find_running_pod_via_kubectl(dev_name, service)
+    if pod_name is None:
         console.print(
             "[red]Error:[/red] No running pod found"
             + (f" for service '{service}'" if service else "")
@@ -99,10 +144,14 @@ def run_shell(
         raise typer.Exit(code=1)
 
     cmd = [
-        "kubectl", "exec", "-it",
-        "-n", EXTENSIONS_NAMESPACE,
+        "kubectl",
+        "exec",
+        "-it",
+        "-n",
+        EXTENSIONS_NAMESPACE,
         pod_name,
-        "--", "/bin/sh",
+        "--",
+        "/bin/sh",
     ]
     console.print(f"[dim]$ {' '.join(cmd)}[/dim]")
 

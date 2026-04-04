@@ -160,3 +160,29 @@ def test_logs_falls_back_to_label_selector(mock_conn_cls, mock_client_cls, mock_
     cmd = mock_run.call_args[0][0]
     assert "-l" in cmd
     assert "extensions.kamiwaza.io/deployment-id=myapp-dev-abc123" in cmd
+
+
+@patch("kamiwaza_extensions.commands.logs.subprocess.run")
+@patch("kamiwaza_sdk.KamiwazaClient")
+@patch("kamiwaza_extensions.connections.ConnectionManager")
+def test_logs_not_found_exits_without_kubectl(mock_conn_cls, mock_client_cls, mock_run):
+    """Missing extensions should not fall through to kubectl logs."""
+    from kamiwaza_sdk.exceptions import NotFoundError
+
+    mock_conn = MagicMock()
+    mock_conn.get_active_connection.return_value = MagicMock(
+        url="https://cluster.test/api", verify_ssl=True
+    )
+    mock_conn.get_token.return_value = MagicMock(access_token="tok")
+    mock_conn_cls.return_value = mock_conn
+
+    mock_client = MagicMock()
+    mock_client.extensions.get_extension_status.side_effect = NotFoundError("missing")
+    mock_client_cls.return_value = mock_client
+
+    from kamiwaza_extensions.commands.logs import run_logs
+
+    with pytest.raises((SystemExit, ClickExit)):
+        run_logs(name="myapp-dev-abc123")
+
+    mock_run.assert_not_called()
