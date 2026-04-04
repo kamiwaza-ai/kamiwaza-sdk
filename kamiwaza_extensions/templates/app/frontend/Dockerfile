@@ -8,7 +8,7 @@ COPY package.json package-lock.json* ./
 RUN npm install
 
 COPY . .
-RUN npm run build || true
+RUN npm run build
 RUN mkdir -p /tmp/app && chown -R appuser:appuser /app /tmp/app
 
 COPY docker-entrypoint.sh /usr/local/bin/

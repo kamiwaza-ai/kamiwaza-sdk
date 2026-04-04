@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Optional
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import Request
@@ -11,6 +12,8 @@ from fastapi import Request
 from .auth import forward_auth_headers
 from .config import AuthConfig
 from .client import KamiwazaExtClient
+
+_ACTIVE_DEPLOYMENT_STATUSES = {"deployed", "running", "ready", "active"}
 
 
 @dataclass
@@ -33,9 +36,9 @@ class AvailableModel:
         extra = {k: v for k, v in data.items() if k not in known}
         return cls(
             id=str(data.get("id", data.get("deployment_id", ""))),
-            name=data.get("name", data.get("model_name", "")),
+            name=data.get("name", data.get("model_name", data.get("m_name", ""))),
             repo_id=data.get("repo_id"),
-            type=data.get("type"),
+            type=data.get("type") or _infer_model_type(data),
             capabilities=data.get("capabilities", []),
             status=data.get("status", data.get("phase", "unknown")),
             _extra=extra,
@@ -63,13 +66,14 @@ async def get_model_client(request: Request):
         )
 
     config = AuthConfig.from_env()
-    if not config.openai_base:
+    fwd = forward_auth_headers(request.headers)
+    openai_base = await _resolve_openai_base(config, fwd)
+    if not openai_base:
         raise RuntimeError(
             "KAMIWAZA_ENDPOINT not configured. "
             "Are you running inside a Kamiwaza deployment?"
         )
 
-    fwd = forward_auth_headers(request.headers)
     auth_header = None
     passthrough_headers: dict[str, str] = {}
     for key, value in fwd.items():
@@ -90,9 +94,10 @@ async def get_model_client(request: Request):
             api_key = auth_header
 
     return AsyncOpenAI(
-        base_url=config.openai_base,
+        base_url=openai_base,
         api_key=api_key,
         default_headers=passthrough_headers,
+        http_client=httpx.AsyncClient(verify=config.verify_ssl),
     )
 
 
@@ -117,5 +122,123 @@ async def list_available_models(request: Request) -> list[AvailableModel]:
         return []
 
     if isinstance(deployments, list):
-        return [AvailableModel.from_dict(d) for d in deployments]
+        public_base = _public_base_url(config)
+        models: list[AvailableModel] = []
+        for deployment in deployments:
+            if not _is_active_deployment(deployment):
+                continue
+            model_data = dict(deployment)
+            model_data.setdefault("type", _infer_model_type(model_data))
+            model_data.setdefault("capabilities", _infer_capabilities(model_data))
+            endpoint = _deployment_openai_base(model_data, public_base)
+            if endpoint:
+                model_data.setdefault("endpoint", endpoint)
+            models.append(AvailableModel.from_dict(model_data))
+        return models
     return []
+
+
+async def _resolve_openai_base(
+    config: AuthConfig,
+    forwarded_headers: dict[str, str],
+) -> str:
+    public_base = _public_base_url(config)
+    if config.api_url:
+        client = KamiwazaExtClient.from_env()
+        try:
+            deployments = await client.get_models(headers=forwarded_headers)
+        except (httpx.HTTPError, OSError):
+            deployments = []
+
+        if isinstance(deployments, list):
+            for deployment in deployments:
+                if not _is_openai_compatible(deployment):
+                    continue
+                endpoint = _deployment_openai_base(deployment, public_base)
+                if endpoint:
+                    return endpoint
+
+    return config.openai_base
+
+
+def _public_base_url(config: AuthConfig) -> str:
+    if config.public_api_url:
+        return config.public_api_url.rstrip("/")
+    if config.api_url:
+        return config.api_url.removesuffix("/api").rstrip("/")
+    return ""
+
+
+def _is_active_deployment(data: dict[str, Any]) -> bool:
+    status = str(data.get("status", data.get("phase", ""))).strip().lower()
+    if not status:
+        return True
+    return status in _ACTIVE_DEPLOYMENT_STATUSES
+
+
+def _is_openai_compatible(data: dict[str, Any]) -> bool:
+    if not _is_active_deployment(data):
+        return False
+    model_type = _infer_model_type(data)
+    if model_type != "chat":
+        return False
+    access_path = str(data.get("access_path") or "").strip()
+    if not access_path:
+        return True
+    return access_path.startswith("/runtime/models")
+
+
+def _infer_model_type(data: dict[str, Any]) -> Optional[str]:
+    explicit = data.get("type")
+    if explicit:
+        return str(explicit)
+
+    access_path = str(data.get("access_path") or "").lower()
+    engine = str(data.get("engine_name") or data.get("engine") or "").lower()
+    container = str(data.get("container") or "").lower()
+    name = str(data.get("m_name") or data.get("model_name") or data.get("name") or "").lower()
+
+    if "transcribe" in engine or "transcribe" in name:
+        return "audio"
+    if "embedding" in access_path or "embedding" in container or "embedding" in name:
+        return "embedding"
+    if access_path.startswith("/runtime/models"):
+        return "chat"
+    return None
+
+
+def _infer_capabilities(data: dict[str, Any]) -> list[str]:
+    model_type = _infer_model_type(data)
+    if model_type == "chat":
+        return ["chat.completions"]
+    if model_type == "embedding":
+        return ["embeddings"]
+    if model_type == "audio":
+        return ["audio.transcriptions"]
+    return []
+
+
+def _deployment_openai_base(data: dict[str, Any], public_base: str) -> str:
+    endpoint = str(data.get("endpoint") or "").rstrip("/")
+    if endpoint:
+        return endpoint
+
+    access_path = str(data.get("access_path") or "").strip()
+    if access_path and public_base:
+        path = access_path if access_path.startswith("/") else f"/{access_path}"
+        path = path.rstrip("/")
+        if path.endswith("/v1"):
+            return f"{public_base}{path}"
+        return f"{public_base}{path}/v1"
+
+    lb_port = data.get("lb_port")
+    if public_base and lb_port:
+        parsed = urlparse(public_base)
+        scheme = parsed.scheme or "https"
+        host = parsed.hostname
+        if host:
+            if lb_port == 443:
+                return f"{scheme}://{host}/v1"
+            return f"{scheme}://{host}:{lb_port}/v1"
+
+    return ""

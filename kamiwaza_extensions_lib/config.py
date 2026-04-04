@@ -6,6 +6,23 @@ import os
 from dataclasses import dataclass
 
 
+def _read_verify_ssl() -> bool:
+    """Read SSL verification setting from environment.
+
+    Checks ``KAMIWAZA_VERIFY_SSL`` first (Python convention: "false"/"0" = off).
+    Falls back to ``KAMIWAZA_TLS_REJECT_UNAUTHORIZED`` (Node.js convention:
+    "0" = don't reject = don't verify, "1" = verify).
+    """
+    explicit = os.environ.get("KAMIWAZA_VERIFY_SSL")
+    if explicit is not None:
+        return explicit.lower() not in ("false", "0", "no")
+    tls_reject = os.environ.get("KAMIWAZA_TLS_REJECT_UNAUTHORIZED")
+    if tls_reject is not None:
+        # "0" means don't reject unauthorized certs = don't verify
+        return tls_reject.strip() != "0"
+    return True
+
+
 @dataclass
 class AuthConfig:
     """Configuration read from KAMIWAZA_* environment variables.
@@ -41,6 +58,5 @@ class AuthConfig:
             not in ("false", "0", "no"),
             origin=os.environ.get("KAMIWAZA_ORIGIN", ""),
             api_key=os.environ.get("KAMIWAZA_API_KEY", ""),
-            verify_ssl=os.environ.get("KAMIWAZA_VERIFY_SSL", "true").lower()
-            not in ("false", "0", "no"),
+            verify_ssl=_read_verify_ssl(),
         )

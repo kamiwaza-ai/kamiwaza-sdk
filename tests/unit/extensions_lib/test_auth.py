@@ -5,7 +5,11 @@ from unittest.mock import MagicMock, patch
 
 from fastapi import HTTPException
 
-from kamiwaza_extensions_lib.auth import forward_auth_headers, require_auth, require_role
+from kamiwaza_extensions_lib.auth import (
+    forward_auth_headers,
+    require_auth,
+    require_role,
+)
 from kamiwaza_extensions_lib.identity import Identity
 
 
@@ -14,6 +18,7 @@ class TestForwardAuthHeaders:
     def test_extracts_auth_headers(self):
         headers = {
             "Authorization": "Bearer token123",
+            "Cookie": "access_token=abc123; other=value",
             "X-Auth-Token": "jwt-abc",
             "X-User-Id": "usr-123",
             "X-User-Email": "alice@example.com",
@@ -29,6 +34,7 @@ class TestForwardAuthHeaders:
 
         assert result == {
             "Authorization": "Bearer token123",
+            "Cookie": "access_token=abc123; other=value",
             "X-Auth-Token": "jwt-abc",
             "X-User-Id": "usr-123",
             "X-User-Email": "alice@example.com",

@@ -55,14 +55,20 @@ def transformed_compose():
 
 
 class TestBuild:
-    def test_produces_valid_payload(self, builder, metadata, transformed_compose, connection):
-        payload = builder.build(metadata, transformed_compose, connection, "my-app-dev-abc123")
+    def test_produces_valid_payload(
+        self, builder, metadata, transformed_compose, connection
+    ):
+        payload = builder.build(
+            metadata, transformed_compose, connection, "my-app-dev-abc123"
+        )
         assert payload.name == "my-app-dev-abc123"
         assert payload.type == "app"
         assert payload.version == "1.0.0"
         assert len(payload.services) == 2
 
-    def test_primary_service_assigned(self, builder, metadata, transformed_compose, connection):
+    def test_primary_service_assigned(
+        self, builder, metadata, transformed_compose, connection
+    ):
         payload = builder.build(metadata, transformed_compose, connection, "test")
         primaries = [s for s in payload.services if s.primary]
         assert len(primaries) == 1
@@ -74,12 +80,16 @@ class TestBuild:
         assert len(fe.ports) == 1
         assert fe.ports[0].container_port == 3000
 
-    def test_kamiwaza_integration(self, builder, metadata, transformed_compose, connection):
+    def test_kamiwaza_integration(
+        self, builder, metadata, transformed_compose, connection
+    ):
         payload = builder.build(metadata, transformed_compose, connection, "test")
         assert payload.kamiwaza.api_url == "https://cluster.kamiwaza.test/api"
         assert payload.kamiwaza.use_auth == "true"
 
-    def test_security_from_metadata(self, builder, metadata, transformed_compose, connection):
+    def test_security_from_metadata(
+        self, builder, metadata, transformed_compose, connection
+    ):
         payload = builder.build(metadata, transformed_compose, connection, "test")
         assert payload.security.risk_tier == 1
 
@@ -149,3 +159,32 @@ class TestResolveType:
 
     def test_service_type(self, builder):
         assert builder._resolve_type({"template_type": "service"}) == "service"
+
+
+class TestHealthChecks:
+    def test_frontend_uses_node_probe(
+        self, builder, metadata, transformed_compose, connection
+    ):
+        payload = builder.build(metadata, transformed_compose, connection, "test")
+        frontend = next(s for s in payload.services if s.name == "frontend")
+
+        health_check = frontend.model_dump()["healthCheck"]
+        assert health_check["exec"]["command"][0] == "node"
+
+    def test_non_frontend_primary_uses_http_probe(self, builder, metadata, connection):
+        transformed = {
+            "services": {
+                "backend": {
+                    "image": "registry.test/my-app-backend:1.0.0-dev",
+                    "ports": ["8000"],
+                },
+            },
+        }
+
+        payload = builder.build(metadata, transformed, connection, "test")
+        backend = payload.services[0]
+
+        health_check = backend.model_dump()["healthCheck"]
+        assert backend.primary is True
+        assert health_check["httpGet"] == {"path": "/health", "port": 8000}
+        assert "exec" not in health_check

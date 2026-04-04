@@ -188,3 +188,37 @@ def dev_local(
     """Run extension locally with Docker Compose."""
     from kamiwaza_extensions.commands.dev_local import run_dev_local
     run_dev_local(detach=detach)
+
+
+@app.command()
+@run_with_error_handling
+def status(
+    name: Optional[str] = typer.Option(None, "--name", "-n", help="Extension name (auto-detected if omitted)"),
+) -> None:
+    """Show extension deployment status."""
+    from kamiwaza_extensions.commands.status import run_status
+    run_status(name=name, verbose=_state.verbose)
+
+
+@app.command()
+@run_with_error_handling
+def logs(
+    service: Optional[str] = typer.Option(None, "--service", "-s", help="Filter to one service"),
+    follow: bool = typer.Option(False, "--follow", "-f", help="Stream continuously"),
+    tail: Optional[int] = typer.Option(None, "--tail", help="Number of recent lines to show"),
+    name: Optional[str] = typer.Option(None, "--name", "-n", help="Extension name (auto-detected if omitted)"),
+) -> None:
+    """Stream logs from a deployed extension."""
+    from kamiwaza_extensions.commands.logs import run_logs
+    run_logs(service=service, follow=follow, tail=tail, name=name)
+
+
+@app.command()
+@run_with_error_handling
+def shell(
+    service: Optional[str] = typer.Option(None, "--service", "-s", help="Target service"),
+    name: Optional[str] = typer.Option(None, "--name", "-n", help="Extension name (auto-detected if omitted)"),
+) -> None:
+    """Exec into a running extension container."""
+    from kamiwaza_extensions.commands.shell import run_shell
+    run_shell(service=service, name=name)

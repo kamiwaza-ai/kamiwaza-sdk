@@ -6,7 +6,12 @@ import logging
 from typing import List
 
 from ..exceptions import APIError, NotFoundError
-from ..schemas.extensions import CreateExtension, Extension
+from ..schemas.extensions import (
+    CreateExtension,
+    Extension,
+    ExtensionStatus,
+    PatchExtension,
+)
 from .base_service import BaseService
 
 
@@ -63,6 +68,52 @@ class ExtensionService(BaseService):
             json=request.model_dump(),
         )
         return Extension.model_validate(response)
+
+    def patch_extension(self, name: str, request: PatchExtension) -> Extension:
+        """PATCH /extensions/{name} — update an existing extension.
+
+        Args:
+            name: CR name of the extension.
+            request: Partial update specification.
+
+        Returns:
+            The updated Extension.
+
+        Raises:
+            NotFoundError: If extension does not exist.
+            APIError: If update fails.
+        """
+        try:
+            response = self.client.patch(
+                f"/extensions/{name}",
+                json=request.model_dump(exclude_none=True),
+            )
+            return Extension.model_validate(response)
+        except APIError as e:
+            if e.status_code == 404:
+                raise NotFoundError(f"Extension '{name}' not found") from e
+            raise
+
+    def get_extension_status(self, name: str) -> ExtensionStatus:
+        """GET /extensions/{name}/status — get detailed deployment status.
+
+        Args:
+            name: CR name of the extension.
+
+        Returns:
+            Detailed deployment status with per-service and pod info.
+
+        Raises:
+            NotFoundError: If extension does not exist.
+            APIError: If request fails.
+        """
+        try:
+            response = self.client.get(f"/extensions/{name}/status")
+            return ExtensionStatus.model_validate(response)
+        except APIError as e:
+            if e.status_code == 404:
+                raise NotFoundError(f"Extension '{name}' not found") from e
+            raise
 
     def delete_extension(self, name: str) -> bool:
         """Delete an extension by name.
