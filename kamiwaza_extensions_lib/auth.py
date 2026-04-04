@@ -14,6 +14,7 @@ from .identity import Identity, get_identity
 _FORWARD_HEADERS = frozenset(
     {
         "authorization",
+        "cookie",
         "x-auth-token",
         "x-user-id",
         "x-user-email",

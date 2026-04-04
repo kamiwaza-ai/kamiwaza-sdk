@@ -10,6 +10,13 @@ import httpx
 from .config import AuthConfig
 
 _ACTIVE_DEPLOYMENT_STATUSES = {"deployed", "running", "ready", "active"}
+_PLATFORM_AUTH_HEADER_KEYS = {
+    "authorization",
+    "cookie",
+    "x-auth-token",
+    "x-workroom-id",
+    "x-request-id",
+}
 
 
 class KamiwazaExtClient:
@@ -76,7 +83,12 @@ class KamiwazaExtClient:
             verify_ssl=config.verify_ssl,
         )
 
-    def _client(self, extra_headers: Optional[dict[str, str]] = None) -> httpx.AsyncClient:
+    def _client(
+        self,
+        extra_headers: Optional[dict[str, str]] = None,
+        *,
+        follow_redirects: bool = False,
+    ) -> httpx.AsyncClient:
         """Return a short-lived ``httpx.AsyncClient``.
 
         .. note::
@@ -88,8 +100,36 @@ class KamiwazaExtClient:
         """
         headers = {**self._default_headers, **(extra_headers or {})}
         return httpx.AsyncClient(
-            headers=headers, verify=self._verify_ssl, timeout=self._timeout
+            headers=headers,
+            verify=self._verify_ssl,
+            timeout=self._timeout,
+            follow_redirects=follow_redirects,
         )
+
+    @staticmethod
+    def _platform_auth_headers(
+        headers: Optional[dict[str, str]] = None,
+    ) -> dict[str, str]:
+        """Keep only platform-safe auth headers for backend-to-platform calls.
+
+        ``X-User-*`` identity headers are hop-bound and can trigger stricter
+        ForwardAuth validation on platform APIs. For model discovery we forward
+        only bearer/session auth plus safe request scoping headers.
+        """
+        filtered: dict[str, str] = {}
+        for key, value in (headers or {}).items():
+            if key.lower() in _PLATFORM_AUTH_HEADER_KEYS:
+                filtered[key] = value
+
+        has_authorization = any(
+            key.lower() == "authorization" and value for key, value in filtered.items()
+        )
+        if not has_authorization:
+            for key, value in filtered.items():
+                if key.lower() == "x-auth-token" and value:
+                    filtered["Authorization"] = f"Bearer {value}"
+                    break
+        return filtered
 
     async def chat_completions(
         self,
@@ -112,9 +152,7 @@ class KamiwazaExtClient:
             resp.raise_for_status()
             return resp
 
-    async def get_models(
-        self, headers: Optional[dict[str, str]] = None
-    ) -> list[dict]:
+    async def get_models(self, headers: Optional[dict[str, str]] = None) -> list[dict]:
         """List active model deployments from the platform API.
 
         Prefers the newer ``/serving/deployments`` endpoint and falls back
@@ -125,7 +163,8 @@ class KamiwazaExtClient:
                 "KAMIWAZA_API_URL not configured. "
                 "Are you running inside a Kamiwaza deployment?"
             )
-        async with self._client(headers) as client:
+        auth_headers = self._platform_auth_headers(headers)
+        async with self._client(auth_headers) as client:
             urls = (
                 f"{self.api_base}/serving/deployments",
                 f"{self.api_base}/serving/deployments/active",
@@ -138,7 +177,8 @@ class KamiwazaExtClient:
                     data = resp.json()
                     if isinstance(data, list):
                         return [
-                            item for item in data
+                            item
+                            for item in data
                             if not isinstance(item, dict) or _is_active_deployment(item)
                         ]
                     return data

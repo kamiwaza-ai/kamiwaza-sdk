@@ -69,6 +69,7 @@ class TestKamiwazaExtClientInit:
         assert async_client.timeout == httpx.Timeout(15.0)
         # Clean up
         import asyncio
+
         asyncio.get_event_loop().run_until_complete(async_client.aclose())
 
 
@@ -111,7 +112,10 @@ class TestKamiwazaExtClientMethods:
 
             mock_instance.post.assert_called_once_with(
                 "http://model:8080/v1/chat/completions",
-                json={"model": "gpt-4", "messages": [{"role": "user", "content": "hi"}]},
+                json={
+                    "model": "gpt-4",
+                    "messages": [{"role": "user", "content": "hi"}],
+                },
             )
 
     @pytest.mark.asyncio
@@ -138,6 +142,42 @@ class TestKamiwazaExtClientMethods:
                 "http://api:7777/api/serving/deployments"
             )
             assert result == [{"id": "d1", "model_name": "llama"}]
+
+    @pytest.mark.asyncio
+    async def test_get_models_strips_forwarded_user_headers_and_promotes_auth_token(
+        self,
+    ):
+        client = KamiwazaExtClient(
+            api_base="http://api:7777/api",
+            openai_base="",
+        )
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.return_value = []
+
+        with patch("kamiwaza_extensions_lib.client.httpx.AsyncClient") as MockClient:
+            mock_instance = AsyncMock()
+            mock_instance.get = AsyncMock(return_value=mock_response)
+            mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+            mock_instance.__aexit__ = AsyncMock(return_value=False)
+            MockClient.return_value = mock_instance
+
+            await client.get_models(
+                headers={
+                    "X-User-Id": "usr-123",
+                    "X-User-Roles": "admin,user",
+                    "X-Auth-Token": "jwt-abc",
+                    "X-Workroom-Id": "wrk-123",
+                }
+            )
+
+            forwarded_headers = MockClient.call_args.kwargs["headers"]
+            assert forwarded_headers["Authorization"] == "Bearer jwt-abc"
+            assert forwarded_headers["X-Auth-Token"] == "jwt-abc"
+            assert forwarded_headers["X-Workroom-Id"] == "wrk-123"
+            assert "X-User-Id" not in forwarded_headers
+            assert "X-User-Roles" not in forwarded_headers
 
     @pytest.mark.asyncio
     async def test_get_models_filters_out_stopped_deployments(self):
@@ -175,7 +215,9 @@ class TestKamiwazaExtClientMethods:
             openai_base="",
         )
 
-        not_found_request = httpx.Request("GET", "http://api:7777/api/serving/deployments")
+        not_found_request = httpx.Request(
+            "GET", "http://api:7777/api/serving/deployments"
+        )
         not_found_response = httpx.Response(404, request=not_found_request)
         fallback_response = MagicMock()
         fallback_response.raise_for_status = MagicMock()
