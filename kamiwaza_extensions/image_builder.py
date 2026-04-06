@@ -158,9 +158,10 @@ class ImageBuilder:
         """
         patched_file = None
         try:
-            # Read original Dockerfile and append SDK overlay
+            # Read original Dockerfile and apply SDK overlay
+            from kamiwaza_extensions.sdk_override import apply_build_overlay
             original_content = dockerfile.read_text()
-            patched_content = original_content.rstrip() + "\n\n" + override.overlay_steps
+            patched_content = apply_build_overlay(original_content, override)
 
             fd = tempfile.NamedTemporaryFile(
                 mode="w", suffix=".Dockerfile", prefix="kz-sdk-", delete=False,

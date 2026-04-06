@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import os
+import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -122,6 +123,14 @@ def validate_sdk_override(spec: SdkOverrideSpec) -> ValidationResult:
         result.errors.append(f"SDK repo not found: {spec.sdk_repo}")
         return result
 
+    # H6: Reject paths with '=' which break Docker --build-context parsing
+    if "=" in str(spec.sdk_repo):
+        result.errors.append(
+            f"SDK repo path contains '=' which is incompatible with Docker "
+            f"--build-context: {spec.sdk_repo}"
+        )
+        return result
+
     if spec.python and not spec.python_lib_path.is_dir():
         result.errors.append(
             f"Python runtime lib not found: {spec.python_lib_path}"
@@ -192,6 +201,9 @@ def build_typescript_lib(spec: SdkOverrideSpec) -> bool:
         stderr = e.stderr.decode() if e.stderr else ""
         console.print(f"[red]  TypeScript build failed: {stderr[-200:]}[/red]")
         return False
+    except subprocess.TimeoutExpired:
+        console.print("[red]  TypeScript build timed out (120s)[/red]")
+        return False
     except FileNotFoundError:
         console.print("[red]  npm not found — cannot build TypeScript lib[/red]")
         return False
@@ -200,6 +212,19 @@ def build_typescript_lib(spec: SdkOverrideSpec) -> bool:
 # ------------------------------------------------------------------
 # Compose override generation (local dev — volume mounts)
 # ------------------------------------------------------------------
+
+
+_PYTHON_LIB_COPY = (
+    'SITE=$(python -c "import kamiwaza_extensions_lib as m, os;'
+    ' print(os.path.dirname(m.__file__))")'
+    ' && cp -r /sdk/kamiwaza_extensions_lib/* "$SITE/"'
+)
+
+_TS_LIB_INSTALL = (
+    "TARBALL=$(cd /sdk/kamiwaza-ai-extensions-lib"
+    " && npm pack --pack-destination /tmp 2>/dev/null | tail -1)"
+    ' && cd /app && npm install "/tmp/$TARBALL"'
+)
 
 
 def detect_service_type(
@@ -239,32 +264,42 @@ def generate_compose_override(
 
     Adds volume mounts and install command overrides so containers use
     the local SDK runtime libraries instead of published packages.
+    Only overrides services that have a ``build`` key (skips pre-built
+    images like redis/postgres).
     """
     override_services: dict = {}
     services = compose_data.get("services", {})
 
     for svc_name, svc_config in services.items():
+        # Skip services without a build context (pre-built images)
+        if "build" not in svc_config:
+            continue
+
         svc_type = detect_service_type(svc_name, svc_config)
         svc_override: dict = {}
 
-        # Volume mount: SDK repo → /sdk (read-only)
-        sdk_mount = f"{spec.sdk_repo}:/sdk:ro"
-        svc_override["volumes"] = [sdk_mount]
+        # Volume mount: SDK repo → /sdk (read-only, long-form for path safety)
+        svc_override["volumes"] = [{
+            "type": "bind",
+            "source": str(spec.sdk_repo),
+            "target": "/sdk",
+            "read_only": True,
+        }]
 
         if svc_type == "backend" and spec.python:
-            svc_override["entrypoint"] = ["/bin/sh", "-c"]
-            svc_override["command"] = [
-                'SITE=$(python -c "import kamiwaza_extensions_lib as m, os; print(os.path.dirname(m.__file__))")'
-                " && cp -r /sdk/kamiwaza_extensions_lib/* \"$SITE/\""
-                " && exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+            # Use exec "$@" to preserve the original Dockerfile CMD
+            svc_override["entrypoint"] = [
+                "/bin/sh", "-c",
+                _PYTHON_LIB_COPY + ' && exec "$@"',
+                "--",
             ]
 
         elif svc_type == "frontend" and spec.typescript:
+            # Frontend templates use ENTRYPOINT (not CMD), so $@ may be empty.
+            # Use `exec npm start` as a safe fallback for any Next.js app.
             svc_override["entrypoint"] = ["/bin/sh", "-c"]
             svc_override["command"] = [
-                "cd /sdk/kamiwaza-ai-extensions-lib && npm pack --pack-destination /tmp"
-                " && cd /app && npm install /tmp/kamiwaza-ai-extensions-lib-*.tgz"
-                " && exec node /app/start.mjs"
+                _TS_LIB_INSTALL + " && exec npm start"
             ]
 
         if svc_override:
@@ -283,8 +318,38 @@ class BuildOverride:
     """Override instructions for a single service's Docker build."""
 
     service_name: str
-    overlay_steps: str  # Dockerfile lines appended to the original
+    overlay_steps: str  # Dockerfile lines appended/inserted into the original
     additional_build_contexts: Dict[str, str]
+    insert_before_build: bool = False  # Insert before npm/next build line
+
+
+_PYTHON_OVERLAY = (
+    "# --- SDK override: install local Python runtime lib ---\n"
+    "USER root\n"
+    "COPY --from=sdk kamiwaza_extensions_lib /tmp/kamiwaza_extensions_lib\n"
+    'RUN SITE=$(python -c "import kamiwaza_extensions_lib as m, os;'
+    ' print(os.path.dirname(m.__file__))")'
+    ' && rm -rf "$SITE"'
+    ' && cp -r /tmp/kamiwaza_extensions_lib "$SITE"'
+    " && rm -rf /tmp/kamiwaza_extensions_lib\n"
+    "USER 1001\n"
+)
+
+_TS_OVERLAY = (
+    "# --- SDK override: install local TypeScript runtime lib ---\n"
+    "USER root\n"
+    "COPY --from=sdk kamiwaza-ai-extensions-lib /tmp/kamiwaza-ai-extensions-lib\n"
+    "RUN TARBALL=$(cd /tmp/kamiwaza-ai-extensions-lib"
+    " && npm pack --pack-destination /tmp 2>/dev/null | tail -1)"
+    ' && cd /app && npm install "/tmp/$TARBALL"'
+    " && rm -rf /tmp/kamiwaza-ai-extensions-lib*\n"
+    "USER 1001\n"
+)
+
+# Patterns that indicate the TS lib must be installed BEFORE this line
+_TS_BUILD_PATTERNS = re.compile(
+    r"^\s*RUN\s+.*(?:npm\s+run\s+build|next\s+build|yarn\s+build)", re.IGNORECASE
+)
 
 
 def generate_build_overrides(
@@ -293,10 +358,10 @@ def generate_build_overrides(
 ) -> List[BuildOverride]:
     """Generate build overrides to bake local SDK source into images.
 
-    For each service with a build context, produces Dockerfile overlay steps
-    that are appended to the original Dockerfile.  The overlay copies the
-    local runtime lib from the ``sdk`` build context and installs it over
-    the published version.
+    For each service with a build context, produces Dockerfile overlay steps.
+    For frontend services, if the Dockerfile contains a build step
+    (``npm run build``, ``next build``), the overlay is inserted before that
+    step so the local lib is compiled into the bundle.
     """
     overrides: List[BuildOverride] = []
     services = compose_data.get("services", {})
@@ -308,39 +373,38 @@ def generate_build_overrides(
         svc_type = detect_service_type(svc_name, svc_config)
 
         if svc_type == "backend" and spec.python:
-            overlay = (
-                "# --- SDK override: install local Python runtime lib ---\n"
-                "USER root\n"
-                "COPY --from=sdk kamiwaza_extensions_lib /tmp/kamiwaza_extensions_lib\n"
-                'RUN SITE=$(python -c "import kamiwaza_extensions_lib as m, os; print(os.path.dirname(m.__file__))")'
-                " && rm -rf \"$SITE\""
-                " && cp -r /tmp/kamiwaza_extensions_lib \"$SITE\""
-                " && rm -rf /tmp/kamiwaza_extensions_lib\n"
-                "USER 1001\n"
-            )
             overrides.append(BuildOverride(
                 service_name=svc_name,
-                overlay_steps=overlay,
+                overlay_steps=_PYTHON_OVERLAY,
                 additional_build_contexts={"sdk": str(spec.sdk_repo)},
             ))
 
         elif svc_type == "frontend" and spec.typescript:
-            overlay = (
-                "# --- SDK override: install local TypeScript runtime lib ---\n"
-                "USER root\n"
-                "COPY --from=sdk kamiwaza-ai-extensions-lib /tmp/kamiwaza-ai-extensions-lib\n"
-                "RUN cd /tmp/kamiwaza-ai-extensions-lib && npm pack --pack-destination /tmp"
-                " && cd /app && npm install /tmp/kamiwaza-ai-extensions-lib-*.tgz"
-                " && rm -rf /tmp/kamiwaza-ai-extensions-lib*\n"
-                "USER 1001\n"
-            )
             overrides.append(BuildOverride(
                 service_name=svc_name,
-                overlay_steps=overlay,
+                overlay_steps=_TS_OVERLAY,
                 additional_build_contexts={"sdk": str(spec.sdk_repo)},
+                insert_before_build=True,
             ))
 
     return overrides
+
+
+def apply_build_overlay(dockerfile_content: str, overlay: BuildOverride) -> str:
+    """Apply a build overlay to Dockerfile content.
+
+    If ``overlay.insert_before_build`` is True, scans for a ``RUN npm run build``
+    (or similar) line and inserts the overlay before it. Otherwise appends.
+    """
+    if overlay.insert_before_build:
+        lines = dockerfile_content.splitlines(keepends=True)
+        for i, line in enumerate(lines):
+            if _TS_BUILD_PATTERNS.match(line):
+                # Insert overlay before this line
+                return "".join(lines[:i]) + "\n" + overlay.overlay_steps + "\n" + "".join(lines[i:])
+
+    # No build line found or not insert_before_build — append at end
+    return dockerfile_content.rstrip() + "\n\n" + overlay.overlay_steps
 
 
 def check_buildkit_available() -> bool:

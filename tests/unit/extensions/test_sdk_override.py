@@ -10,6 +10,7 @@ from kamiwaza_extensions.sdk_override import (
     BuildOverride,
     SdkOverrideSpec,
     ValidationResult,
+    apply_build_overlay,
     detect_service_type,
     generate_build_overrides,
     generate_compose_override,
@@ -274,56 +275,68 @@ class TestGenerateComposeOverride:
         spec = self._make_spec(tmp_path)
         compose = {
             "services": {
-                "frontend": {"ports": ["3000:3000"]},
-                "backend": {"ports": ["8000:8000"]},
+                "frontend": {"build": "./frontend", "ports": ["3000:3000"]},
+                "backend": {"build": "./backend", "ports": ["8000:8000"]},
             }
         }
         override = generate_compose_override(spec, compose)
         services = override["services"]
 
-        # Backend gets copy override
-        assert "kamiwaza_extensions_lib" in services["backend"]["command"][0]
-        assert f"{tmp_path}:/sdk:ro" in services["backend"]["volumes"]
+        # Backend uses exec "$@" pattern — entrypoint set, no command
+        assert "kamiwaza_extensions_lib" in services["backend"]["entrypoint"][2]
+        assert 'exec "$@"' in services["backend"]["entrypoint"][2]
+        assert "command" not in services["backend"]
 
-        # Frontend gets npm pack override
+        # Frontend gets npm pack + exec npm start
         assert "npm pack" in services["frontend"]["command"][0]
-        assert f"{tmp_path}:/sdk:ro" in services["frontend"]["volumes"]
 
     def test_python_only(self, tmp_path):
         spec = self._make_spec(tmp_path, typescript=False)
         compose = {
             "services": {
-                "frontend": {"ports": ["3000:3000"]},
-                "backend": {"ports": ["8000:8000"]},
+                "frontend": {"build": "./frontend", "ports": ["3000:3000"]},
+                "backend": {"build": "./backend", "ports": ["8000:8000"]},
             }
         }
         override = generate_compose_override(spec, compose)
         services = override["services"]
 
-        assert "kamiwaza_extensions_lib" in services["backend"]["command"][0]
-        # Frontend still gets the volume mount but no command override
-        assert "command" not in services["frontend"]
+        assert "kamiwaza_extensions_lib" in services["backend"]["entrypoint"][2]
+        # Frontend not in override (no TS override, no build-less service)
+        assert "frontend" not in services or "command" not in services.get("frontend", {})
 
     def test_typescript_only(self, tmp_path):
         spec = self._make_spec(tmp_path, python=False)
         compose = {
             "services": {
-                "frontend": {"ports": ["3000:3000"]},
-                "backend": {"ports": ["8000:8000"]},
+                "frontend": {"build": "./frontend", "ports": ["3000:3000"]},
+                "backend": {"build": "./backend", "ports": ["8000:8000"]},
             }
         }
         override = generate_compose_override(spec, compose)
         services = override["services"]
 
         assert "npm pack" in services["frontend"]["command"][0]
-        assert "command" not in services["backend"]
+        assert "backend" not in services or "entrypoint" not in services.get("backend", {})
 
     def test_volume_mount_is_readonly(self, tmp_path):
         spec = self._make_spec(tmp_path)
-        compose = {"services": {"backend": {"ports": ["8000:8000"]}}}
+        compose = {"services": {"backend": {"build": ".", "ports": ["8000:8000"]}}}
         override = generate_compose_override(spec, compose)
         volumes = override["services"]["backend"]["volumes"]
-        assert any(":ro" in v for v in volumes)
+        assert any(isinstance(v, dict) and v.get("read_only") for v in volumes)
+
+    def test_skips_services_without_build(self, tmp_path):
+        spec = self._make_spec(tmp_path)
+        compose = {
+            "services": {
+                "backend": {"build": "./backend", "ports": ["8000:8000"]},
+                "redis": {"image": "redis:7"},
+            }
+        }
+        override = generate_compose_override(spec, compose)
+        assert "redis" not in override["services"]
+        assert "backend" in override["services"]
 
     def test_empty_services(self, tmp_path):
         spec = self._make_spec(tmp_path)
@@ -395,6 +408,89 @@ class TestGenerateBuildOverrides:
     def test_empty_services(self, tmp_path):
         spec = self._make_spec(tmp_path)
         assert generate_build_overrides(spec, {"services": {}}) == []
+
+    def test_frontend_has_insert_before_build(self, tmp_path):
+        spec = self._make_spec(tmp_path)
+        compose = {"services": {"frontend": {"build": ".", "ports": ["3000:3000"]}}}
+        overrides = generate_build_overrides(spec, compose)
+        assert overrides[0].insert_before_build is True
+
+    def test_backend_does_not_insert_before_build(self, tmp_path):
+        spec = self._make_spec(tmp_path)
+        compose = {"services": {"backend": {"build": ".", "ports": ["8000:8000"]}}}
+        overrides = generate_build_overrides(spec, compose)
+        assert overrides[0].insert_before_build is False
+
+
+# ------------------------------------------------------------------
+# apply_build_overlay
+# ------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestApplyBuildOverlay:
+    def test_appends_when_no_build_line(self):
+        dockerfile = "FROM node:20\nCOPY . .\nENTRYPOINT [\"node\", \"start.mjs\"]\n"
+        overlay = BuildOverride(
+            service_name="frontend",
+            overlay_steps="# overlay\nRUN echo hello\n",
+            additional_build_contexts={},
+            insert_before_build=True,
+        )
+        result = apply_build_overlay(dockerfile, overlay)
+        assert result.endswith("RUN echo hello\n")
+
+    def test_inserts_before_npm_run_build(self):
+        dockerfile = "FROM node:20\nCOPY . .\nRUN npm run build\nCMD [\"npm\", \"start\"]\n"
+        overlay = BuildOverride(
+            service_name="frontend",
+            overlay_steps="# SDK override\nRUN echo injected\n",
+            additional_build_contexts={},
+            insert_before_build=True,
+        )
+        result = apply_build_overlay(dockerfile, overlay)
+        lines = result.splitlines()
+        build_idx = next(i for i, l in enumerate(lines) if "npm run build" in l)
+        inject_idx = next(i for i, l in enumerate(lines) if "echo injected" in l)
+        assert inject_idx < build_idx
+
+    def test_inserts_before_next_build(self):
+        dockerfile = "FROM node:20\nCOPY . .\nRUN next build\n"
+        overlay = BuildOverride(
+            service_name="frontend",
+            overlay_steps="# SDK\n",
+            additional_build_contexts={},
+            insert_before_build=True,
+        )
+        result = apply_build_overlay(dockerfile, overlay)
+        assert result.index("# SDK") < result.index("next build")
+
+    def test_appends_when_insert_before_build_false(self):
+        dockerfile = "FROM python:3.10\nRUN pip install .\n"
+        overlay = BuildOverride(
+            service_name="backend",
+            overlay_steps="# overlay\n",
+            additional_build_contexts={},
+            insert_before_build=False,
+        )
+        result = apply_build_overlay(dockerfile, overlay)
+        assert result.endswith("# overlay\n")
+
+
+# ------------------------------------------------------------------
+# validate_sdk_override — path safety
+# ------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestValidatePathSafety:
+    def test_path_with_equals_rejected(self, tmp_path):
+        bad_path = tmp_path / "foo=bar"
+        bad_path.mkdir()
+        spec = SdkOverrideSpec(sdk_repo=bad_path)
+        result = validate_sdk_override(spec)
+        assert not result.ok
+        assert any("=" in e for e in result.errors)
 
 
 # ------------------------------------------------------------------

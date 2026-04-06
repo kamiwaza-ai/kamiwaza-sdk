@@ -188,7 +188,7 @@ kz-ext dev local   # reads .kz-ext/local.yaml automatically
 
 **How it works:**
 
-- **`kz-ext dev local --sdk-repo`**: Mounts the SDK repo into containers at runtime and overrides the published package installs with local source (pip editable install for Python, npm pack + install for TypeScript).
+- **`kz-ext dev local --sdk-repo`**: Mounts the SDK repo into containers at runtime and overrides the published packages with local source (copies Python lib files over installed package, npm pack + install for TypeScript).
 - **`kz-ext dev --sdk-repo`**: Bakes the local runtime libraries into Docker images at build time using BuildKit additional build contexts. The resulting images contain your local lib code and are pushed to the cluster normally.
 - **`kz-ext doctor`**: Validates the SDK override configuration — checks that the SDK repo exists, Python and TypeScript libs are present, and `dist/` is built.
 

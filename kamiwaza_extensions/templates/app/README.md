@@ -6,7 +6,7 @@
 
 ```bash
 # Install the Kamiwaza CLI
-pip install kamiwaza-extensions
+pip install kamiwaza-sdk
 
 # Login to your Kamiwaza instance
 kz-ext login <your-instance-url>

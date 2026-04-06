@@ -68,7 +68,6 @@ class DevLocalRunner:
 
         # 5. Resolve SDK override
         override_spec = resolve_sdk_override(sdk_repo, info.path)
-        sdk_override_file: Optional[str] = None
 
         if override_spec:
             validation = validate_sdk_override(override_spec)
@@ -100,40 +99,41 @@ class DevLocalRunner:
         # 6. Check ports and remap if needed
         remaps: Dict[str, Tuple[int, int]] = {}
         patched_compose_file: Optional[str] = None
-
-        if info.compose_data:
-            remaps = resolve_port_conflicts(info.compose_data)
-            if remaps:
-                for svc, (orig, new) in remaps.items():
-                    console.print(
-                        f"[yellow]Port {orig} in use — remapping {svc} to {new}[/yellow]"
-                    )
-
-        # If ports need remapping, write a patched copy of the compose file
-        # (compose override files append ports rather than replacing them)
-        if remaps and info.compose_data:
-            patched = apply_port_remaps(info.compose_data, remaps)
-            fd = tempfile.NamedTemporaryFile(
-                mode="w", suffix=".yml", prefix="kz-ports-", delete=False
-            )
-            yaml.dump(patched, fd, default_flow_style=False)
-            fd.close()
-            patched_compose_file = fd.name
-            compose_file_arg = patched_compose_file
-        else:
-            compose_file_arg = str(info.compose_path)
-
-        # 7. Generate SDK override compose file
-        if override_spec and info.compose_data:
-            sdk_override_data = generate_compose_override(override_spec, info.compose_data)
-            fd = tempfile.NamedTemporaryFile(
-                mode="w", suffix=".yml", prefix="kz-sdk-", delete=False
-            )
-            yaml.dump(sdk_override_data, fd, default_flow_style=False)
-            fd.close()
-            sdk_override_file = fd.name
+        sdk_override_file: Optional[str] = None
 
         try:
+            if info.compose_data:
+                remaps = resolve_port_conflicts(info.compose_data)
+                if remaps:
+                    for svc, (orig, new) in remaps.items():
+                        console.print(
+                            f"[yellow]Port {orig} in use — remapping {svc} to {new}[/yellow]"
+                        )
+
+            # If ports need remapping, write a patched copy of the compose file
+            # (compose override files append ports rather than replacing them)
+            if remaps and info.compose_data:
+                patched = apply_port_remaps(info.compose_data, remaps)
+                fd = tempfile.NamedTemporaryFile(
+                    mode="w", suffix=".yml", prefix="kz-ports-", delete=False
+                )
+                yaml.dump(patched, fd, default_flow_style=False)
+                fd.close()
+                patched_compose_file = fd.name
+                compose_file_arg = patched_compose_file
+            else:
+                compose_file_arg = str(info.compose_path)
+
+            # 7. Generate SDK override compose file
+            if override_spec and info.compose_data:
+                sdk_override_data = generate_compose_override(override_spec, info.compose_data)
+                fd = tempfile.NamedTemporaryFile(
+                    mode="w", suffix=".yml", prefix="kz-sdk-", delete=False
+                )
+                yaml.dump(sdk_override_data, fd, default_flow_style=False)
+                fd.close()
+                sdk_override_file = fd.name
+
             # 8. Build command
             cmd = compose_cmd + ["-f", compose_file_arg]
             if sdk_override_file:

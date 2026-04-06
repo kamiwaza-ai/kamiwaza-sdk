@@ -15,9 +15,10 @@ from kamiwaza_extensions_lib import (
 
 app = FastAPI(title="{{name}}")
 
+cors_origin = os.environ.get("KAMIWAZA_ORIGIN", "http://localhost:3000")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=[cors_origin],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
