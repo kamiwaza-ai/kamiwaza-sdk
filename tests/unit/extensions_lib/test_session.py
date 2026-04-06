@@ -171,6 +171,38 @@ class TestLogoutEndpoint:
             "https://cluster.test/runtime/apps/my-app/logged-out"
         )
 
+    def test_uses_configured_ssl_verification_for_logout_post(self, monkeypatch):
+        calls = {}
+
+        class FakeAsyncClient:
+            def __init__(self, *, verify, timeout):
+                calls["verify"] = verify
+                calls["timeout"] = timeout
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def post(self, url, headers=None):
+                calls["url"] = url
+                calls["headers"] = headers or {}
+
+        import httpx
+
+        monkeypatch.setenv("KAMIWAZA_VERIFY_SSL", "false")
+        monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+        client = _make_app(monkeypatch, use_auth="true")
+
+        resp = client.post("/auth/logout", headers={"x-auth-token": "token-123"})
+
+        assert resp.status_code == 200
+        assert calls["verify"] is False
+        assert calls["timeout"] == 5
+        assert calls["url"] == "https://cluster.test/api/auth/logout"
+        assert calls["headers"]["x-auth-token"] == "token-123"
+
     def test_local_dev_returns_null(self, monkeypatch):
         client = _make_app(monkeypatch, use_auth="false")
         resp = client.post("/auth/logout")

@@ -1,0 +1,4 @@
+# Default reviewer for all files. Requested on every PR but does NOT
+# require approval to merge (require_code_owner_review is false in
+# the org ruleset).
+* @jxstanford

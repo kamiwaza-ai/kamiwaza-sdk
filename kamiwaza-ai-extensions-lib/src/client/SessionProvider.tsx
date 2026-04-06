@@ -14,6 +14,18 @@ function normalizeBase(path: string | undefined): string {
 /** Maximum backoff interval on repeated failures (5 minutes). */
 const MAX_BACKOFF_MS = 5 * 60_000;
 
+/** Validate a redirect URL is safe (relative path or same origin). */
+function isSafeRedirect(url: string): boolean {
+    // Allow relative paths (but not protocol-relative //evil.com)
+    if (url.startsWith("/") && !url.startsWith("//")) return true;
+    try {
+        const parsed = new URL(url, window.location.origin);
+        return parsed.origin === window.location.origin;
+    } catch {
+        return false;
+    }
+}
+
 /**
  * Provides session state to the component tree.
  *
@@ -95,8 +107,11 @@ export function SessionProvider({
             });
             if (res.ok) {
                 const data = await res.json();
-                if (data.logout_url) {
-                    window.location.href = data.logout_url;
+                // Prefer redirect_url (app's logged-out page) over logout_url
+                // (platform endpoint that requires POST and can't be GET-navigated)
+                const target = data.redirect_url || data.logout_url;
+                if (target && isSafeRedirect(target)) {
+                    window.location.href = target;
                     return;
                 }
             }

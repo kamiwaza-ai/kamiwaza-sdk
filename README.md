@@ -156,8 +156,8 @@ kz-ext publish --stage prod
 | `kz-ext login [url]` | Authenticate with a Kamiwaza instance (default: `https://kamiwaza.test/api`). Supports `--api-key`, `--name`, `--list`, `--use`, `--no-verify-ssl`. |
 | `kz-ext create --type <type> --name <name>` | Scaffold a new extension in the current (empty) directory. Types: `app` (Next.js + FastAPI), `tool` (FastMCP), `service` (minimal). |
 | `kz-ext validate [path]` | Validate `kamiwaza.json` and `docker-compose.yml`. Use `--json` for machine-readable output. |
-| `kz-ext dev local` | Run the extension locally via Docker Compose with Kamiwaza env vars injected. |
-| `kz-ext dev` | Build, push, and deploy to a Kamiwaza cluster. Uses zero-downtime PATCH updates for existing extensions. Supports `--no-build`, `--no-push`, `--service`, `--revision`. |
+| `kz-ext dev local` | Run the extension locally via Docker Compose with Kamiwaza env vars injected. Auto-detects port conflicts and remaps to available ports. Supports `--sdk-repo`, `--detach`. |
+| `kz-ext dev` | Build, push, and deploy to a Kamiwaza cluster. Uses zero-downtime PATCH updates for existing extensions. Supports `--no-build`, `--no-push`, `--service`, `--revision`, `--sdk-repo`. |
 | `kz-ext status` | Show deployment status: phase, per-service readiness, URL, and recent K8s events. Supports `--name`. |
 | `kz-ext logs` | Stream logs from deployed extension pods. Supports `--service`, `--follow`, `--tail`, `--name`. |
 | `kz-ext shell` | Open an interactive shell in a running extension container. Supports `--service`, `--name`. |
@@ -204,6 +204,49 @@ Requires `OPENAI_API_KEY` (or `ANTHROPIC_API_KEY`) for AI-powered conversion. Fa
 - **App** (`--type app`): Full-stack extension with Next.js frontend and FastAPI backend, pre-wired with `@kamiwaza-ai/extensions-lib` and `kamiwaza-extensions-lib`.
 - **Tool** (`--type tool`): MCP tool server using FastMCP with `kamiwaza-extensions-lib`.
 - **Service** (`--type service`): Minimal containerized service.
+
+### Local SDK Development (`--sdk-repo`)
+
+When iterating on the runtime libraries themselves (`kamiwaza-extensions-lib` or `@kamiwaza-ai/extensions-lib`), use `--sdk-repo` to override the published packages with your local SDK source:
+
+```bash
+# Via CLI flag
+kz-ext dev local --sdk-repo ~/repos/kamiwaza-sdk
+
+# Or via repo-local config (gitignored)
+mkdir -p .kz-ext
+cat > .kz-ext/local.yaml << 'EOF'
+sdk_repo: /Users/you/repos/kamiwaza-sdk
+runtime_libs:
+  python: local       # override Python lib (default: local when sdk_repo is set)
+  typescript: local   # override TypeScript lib
+build_typescript: true  # auto-build TS package if dist/ is missing or stale
+EOF
+
+kz-ext dev local   # reads .kz-ext/local.yaml automatically
+```
+
+**How it works:**
+
+- **`kz-ext dev local --sdk-repo`**: Mounts the SDK repo into containers at runtime and overrides the published packages with local source (copies Python lib files over installed package, npm pack + install for TypeScript).
+- **`kz-ext dev --sdk-repo`**: Bakes the local runtime libraries into Docker images at build time using BuildKit additional build contexts. The resulting images contain your local lib code and are pushed to the cluster normally.
+- **`kz-ext doctor`**: Validates the SDK override configuration — checks that the SDK repo exists, Python and TypeScript libs are present, and `dist/` is built.
+
+The override is ephemeral — it never modifies your extension repo's `docker-compose.yml` or Dockerfiles.
+
+### Port Auto-Detection
+
+`kz-ext dev local` automatically detects occupied ports and remaps to the next available:
+
+```
+$ kz-ext dev local
+Port 3000 in use — remapping frontend to 3001
+Port 8000 in use — remapping backend to 8001
+frontend: http://localhost:3001
+backend:  http://localhost:8001
+```
+
+This lets you run multiple extensions simultaneously without port conflicts.
 
 ### Multi-Connection Support
 
