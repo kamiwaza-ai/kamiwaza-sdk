@@ -158,7 +158,8 @@ class ImageBuilder:
            ``--build-context sdk=<path>`` to overlay the local SDK lib.
         """
         # Use a local-only tag (no registry prefix) so Docker doesn't try to pull
-        base_tag = f"kz-sdk-base:{image_ref.rsplit('/', 1)[-1]}"
+        local_name = image_ref.rsplit("/", 1)[-1].replace(":", "-")
+        base_tag = f"kz-sdk-base:{local_name}"
         wrapper_file = None
 
         try:
