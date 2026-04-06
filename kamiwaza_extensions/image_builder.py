@@ -157,7 +157,8 @@ class ImageBuilder:
         3. Build the wrapper with ``--build-arg BASE_IMAGE=<base>`` and
            ``--build-context sdk=<path>`` to overlay the local SDK lib.
         """
-        base_tag = f"{image_ref}-base"
+        # Use a local-only tag (no registry prefix) so Docker doesn't try to pull
+        base_tag = f"kz-sdk-base:{image_ref.rsplit('/', 1)[-1]}"
         wrapper_file = None
 
         try:
@@ -200,8 +201,8 @@ class ImageBuilder:
             ]
             for ctx_name, ctx_path in override.additional_build_contexts.items():
                 wrapper_cmd.extend(["--build-context", f"{ctx_name}={ctx_path}"])
-            # Use a minimal context (the wrapper doesn't need the source)
-            wrapper_cmd.append(context.anchor if hasattr(context, "anchor") else "/")
+            # Wrapper needs a build context dir — use the original
+            wrapper_cmd.append(str(context))
 
             if verbose:
                 subprocess.run(wrapper_cmd, check=True, timeout=3600, env=env)
