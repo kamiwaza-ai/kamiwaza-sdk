@@ -281,8 +281,8 @@ class TestGenerateComposeOverride:
         override = generate_compose_override(spec, compose)
         services = override["services"]
 
-        # Backend gets pip install override
-        assert "pip install -e /sdk/kamiwaza_extensions_lib" in services["backend"]["command"][0]
+        # Backend gets copy override
+        assert "kamiwaza_extensions_lib" in services["backend"]["command"][0]
         assert f"{tmp_path}:/sdk:ro" in services["backend"]["volumes"]
 
         # Frontend gets npm pack override
@@ -300,7 +300,7 @@ class TestGenerateComposeOverride:
         override = generate_compose_override(spec, compose)
         services = override["services"]
 
-        assert "pip install" in services["backend"]["command"][0]
+        assert "kamiwaza_extensions_lib" in services["backend"]["command"][0]
         # Frontend still gets the volume mount but no command override
         assert "command" not in services["frontend"]
 
@@ -355,7 +355,7 @@ class TestGenerateBuildOverrides:
         assert names == {"frontend", "backend"}
 
         backend = [o for o in overrides if o.service_name == "backend"][0]
-        assert "pip install" in backend.overlay_steps
+        assert "kamiwaza_extensions_lib" in backend.overlay_steps
         assert "sdk" in backend.additional_build_contexts
 
         frontend = [o for o in overrides if o.service_name == "frontend"][0]

@@ -254,7 +254,8 @@ def generate_compose_override(
         if svc_type == "backend" and spec.python:
             svc_override["entrypoint"] = ["/bin/sh", "-c"]
             svc_override["command"] = [
-                "pip install -e /sdk/kamiwaza_extensions_lib --no-deps"
+                'SITE=$(python -c "import kamiwaza_extensions_lib as m, os; print(os.path.dirname(m.__file__))")'
+                " && cp -r /sdk/kamiwaza_extensions_lib/* \"$SITE/\""
                 " && exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
             ]
 
@@ -311,7 +312,9 @@ def generate_build_overrides(
                 "# --- SDK override: install local Python runtime lib ---\n"
                 "USER root\n"
                 "COPY --from=sdk kamiwaza_extensions_lib /tmp/kamiwaza_extensions_lib\n"
-                "RUN pip install --no-cache-dir /tmp/kamiwaza_extensions_lib --no-deps"
+                'RUN SITE=$(python -c "import kamiwaza_extensions_lib as m, os; print(os.path.dirname(m.__file__))")'
+                " && rm -rf \"$SITE\""
+                " && cp -r /tmp/kamiwaza_extensions_lib \"$SITE\""
                 " && rm -rf /tmp/kamiwaza_extensions_lib\n"
                 "USER 1001\n"
             )
