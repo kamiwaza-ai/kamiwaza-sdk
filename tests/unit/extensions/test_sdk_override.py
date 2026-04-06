@@ -355,11 +355,11 @@ class TestGenerateBuildOverrides:
         assert names == {"frontend", "backend"}
 
         backend = [o for o in overrides if o.service_name == "backend"][0]
-        assert "pip install" in backend.wrapper_dockerfile_content
+        assert "pip install" in backend.overlay_steps
         assert "sdk" in backend.additional_build_contexts
 
         frontend = [o for o in overrides if o.service_name == "frontend"][0]
-        assert "npm pack" in frontend.wrapper_dockerfile_content
+        assert "npm pack" in frontend.overlay_steps
 
     def test_python_only(self, tmp_path):
         spec = self._make_spec(tmp_path, typescript=False)
@@ -385,12 +385,12 @@ class TestGenerateBuildOverrides:
         assert len(overrides) == 1
         assert overrides[0].service_name == "backend"
 
-    def test_wrapper_uses_base_image_arg(self, tmp_path):
+    def test_overlay_uses_copy_from_sdk(self, tmp_path):
         spec = self._make_spec(tmp_path)
         compose = {"services": {"backend": {"build": ".", "ports": ["8000:8000"]}}}
         overrides = generate_build_overrides(spec, compose)
-        assert "ARG BASE_IMAGE" in overrides[0].wrapper_dockerfile_content
-        assert "FROM ${BASE_IMAGE}" in overrides[0].wrapper_dockerfile_content
+        assert "COPY --from=sdk" in overrides[0].overlay_steps
+        assert "USER root" in overrides[0].overlay_steps
 
     def test_empty_services(self, tmp_path):
         spec = self._make_spec(tmp_path)

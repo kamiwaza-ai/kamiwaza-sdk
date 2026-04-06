@@ -282,7 +282,7 @@ class BuildOverride:
     """Override instructions for a single service's Docker build."""
 
     service_name: str
-    wrapper_dockerfile_content: str
+    overlay_steps: str  # Dockerfile lines appended to the original
     additional_build_contexts: Dict[str, str]
 
 
@@ -292,9 +292,10 @@ def generate_build_overrides(
 ) -> List[BuildOverride]:
     """Generate build overrides to bake local SDK source into images.
 
-    For each service with a build context, produces a wrapper Dockerfile
-    that extends the original build and overlays the local runtime lib.
-    Uses Docker BuildKit additional build contexts (``--build-context``).
+    For each service with a build context, produces Dockerfile overlay steps
+    that are appended to the original Dockerfile.  The overlay copies the
+    local runtime lib from the ``sdk`` build context and installs it over
+    the published version.
     """
     overrides: List[BuildOverride] = []
     services = compose_data.get("services", {})
@@ -306,10 +307,8 @@ def generate_build_overrides(
         svc_type = detect_service_type(svc_name, svc_config)
 
         if svc_type == "backend" and spec.python:
-            wrapper = (
-                "# Auto-generated SDK override wrapper\n"
-                "ARG BASE_IMAGE\n"
-                "FROM ${BASE_IMAGE}\n"
+            overlay = (
+                "# --- SDK override: install local Python runtime lib ---\n"
                 "USER root\n"
                 "COPY --from=sdk kamiwaza_extensions_lib /tmp/kamiwaza_extensions_lib\n"
                 "RUN pip install --no-cache-dir /tmp/kamiwaza_extensions_lib --no-deps"
@@ -318,15 +317,13 @@ def generate_build_overrides(
             )
             overrides.append(BuildOverride(
                 service_name=svc_name,
-                wrapper_dockerfile_content=wrapper,
+                overlay_steps=overlay,
                 additional_build_contexts={"sdk": str(spec.sdk_repo)},
             ))
 
         elif svc_type == "frontend" and spec.typescript:
-            wrapper = (
-                "# Auto-generated SDK override wrapper\n"
-                "ARG BASE_IMAGE\n"
-                "FROM ${BASE_IMAGE}\n"
+            overlay = (
+                "# --- SDK override: install local TypeScript runtime lib ---\n"
                 "USER root\n"
                 "COPY --from=sdk kamiwaza-ai-extensions-lib /tmp/kamiwaza-ai-extensions-lib\n"
                 "RUN cd /tmp/kamiwaza-ai-extensions-lib && npm pack --pack-destination /tmp"
@@ -336,7 +333,7 @@ def generate_build_overrides(
             )
             overrides.append(BuildOverride(
                 service_name=svc_name,
-                wrapper_dockerfile_content=wrapper,
+                overlay_steps=overlay,
                 additional_build_contexts={"sdk": str(spec.sdk_repo)},
             ))
 

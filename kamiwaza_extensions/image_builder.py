@@ -150,81 +150,55 @@ class ImageBuilder:
         *,
         verbose: bool = False,
     ) -> None:
-        """Build with SDK override: build the base image, then apply a wrapper.
+        """Build with SDK override by appending overlay steps to the Dockerfile.
 
-        1. Build the original Dockerfile to a temporary base tag.
-        2. Write the wrapper Dockerfile to a temp file.
-        3. Build the wrapper with ``--build-arg BASE_IMAGE=<base>`` and
-           ``--build-context sdk=<path>`` to overlay the local SDK lib.
+        Reads the original Dockerfile, appends the SDK install commands, writes
+        to a temp file, and builds with ``--build-context sdk=<path>`` so the
+        COPY --from=sdk directives resolve.  Single build — no two-stage FROM.
         """
-        # Use a local-only tag (no registry prefix) so Docker doesn't try to pull
-        local_name = image_ref.rsplit("/", 1)[-1].replace(":", "-")
-        base_tag = f"kz-sdk-base:{local_name}"
-        wrapper_file = None
-
+        patched_file = None
         try:
-            # Step 1: Build the original image as base
-            base_cmd = [
-                "docker", "build", "--load",
-                "-t", base_tag,
-                "-f", str(dockerfile),
-                str(context),
-            ]
-            env = {**os.environ, "DOCKER_BUILDKIT": "1"}
+            # Read original Dockerfile and append SDK overlay
+            original_content = dockerfile.read_text()
+            patched_content = original_content.rstrip() + "\n\n" + override.overlay_steps
 
-            if verbose:
-                subprocess.run(base_cmd, check=True, timeout=3600, env=env)
-            else:
-                result = subprocess.run(
-                    base_cmd, capture_output=True, text=True, timeout=3600, env=env,
-                )
-                if result.returncode != 0:
-                    lines = (result.stdout + result.stderr).strip().splitlines()
-                    tail = "\n".join(lines[-20:])
-                    raise ImageBuildError(
-                        f"Docker build (base) failed for {image_ref}:\n{tail}"
-                    )
-
-            # Step 2: Write wrapper Dockerfile
             fd = tempfile.NamedTemporaryFile(
-                mode="w", suffix=".Dockerfile", prefix="kz-sdk-wrapper-", delete=False,
+                mode="w", suffix=".Dockerfile", prefix="kz-sdk-", delete=False,
             )
-            fd.write(override.wrapper_dockerfile_content)
+            fd.write(patched_content)
             fd.close()
-            wrapper_file = fd.name
+            patched_file = fd.name
 
-            # Step 3: Build wrapper with build contexts
-            wrapper_cmd = [
+            cmd = [
                 "docker", "build", "--load",
                 "-t", image_ref,
-                "-f", wrapper_file,
-                "--build-arg", f"BASE_IMAGE={base_tag}",
+                "-f", patched_file,
             ]
             for ctx_name, ctx_path in override.additional_build_contexts.items():
-                wrapper_cmd.extend(["--build-context", f"{ctx_name}={ctx_path}"])
-            # Wrapper needs a build context dir — use the original
-            wrapper_cmd.append(str(context))
+                cmd.extend(["--build-context", f"{ctx_name}={ctx_path}"])
+            cmd.append(str(context))
 
-            if verbose:
-                subprocess.run(wrapper_cmd, check=True, timeout=3600, env=env)
-            else:
-                result = subprocess.run(
-                    wrapper_cmd, capture_output=True, text=True, timeout=3600, env=env,
-                )
-                if result.returncode != 0:
-                    lines = (result.stdout + result.stderr).strip().splitlines()
-                    tail = "\n".join(lines[-20:])
-                    raise ImageBuildError(
-                        f"Docker build (SDK wrapper) failed for {image_ref}:\n{tail}"
+            env = {**os.environ, "DOCKER_BUILDKIT": "1"}
+            try:
+                if verbose:
+                    subprocess.run(cmd, check=True, timeout=3600, env=env)
+                else:
+                    result = subprocess.run(
+                        cmd, capture_output=True, text=True, timeout=3600, env=env,
                     )
-
-        except FileNotFoundError:
-            raise ImageBuildError(
-                "Docker not found. Install Docker Desktop or ensure 'docker' is on PATH."
-            )
+                    if result.returncode != 0:
+                        lines = (result.stdout + result.stderr).strip().splitlines()
+                        tail = "\n".join(lines[-20:])
+                        raise ImageBuildError(
+                            f"Docker build (SDK override) failed for {image_ref}:\n{tail}"
+                        )
+            except FileNotFoundError:
+                raise ImageBuildError(
+                    "Docker not found. Install Docker Desktop or ensure 'docker' is on PATH."
+                )
         finally:
-            if wrapper_file:
+            if patched_file:
                 try:
-                    os.unlink(wrapper_file)
+                    os.unlink(patched_file)
                 except OSError:
                     pass
