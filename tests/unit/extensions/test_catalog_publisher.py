@@ -52,15 +52,15 @@ def _s3_get_object_response(body_data):
 
 
 class TestPublishSuccess:
-    @patch("kamiwaza_extensions.catalog_publisher.boto3")
-    def test_publish_full_lifecycle(self, mock_boto3):
+    @patch("boto3.Session")
+    def test_publish_full_lifecycle(self, mock_session_cls):
         """Lock -> backup -> download -> merge -> upload -> verify -> unlock."""
         from kamiwaza_extensions.catalog_publisher import CatalogPublisher
 
         mock_s3 = MagicMock()
         mock_session = MagicMock()
         mock_session.client.return_value = mock_s3
-        mock_boto3.Session.return_value = mock_session
+        mock_session_cls.return_value = mock_session
 
         # Lock: succeed (no PreconditionFailed)
         mock_s3.put_object.return_value = {}
@@ -72,9 +72,10 @@ class TestPublishSuccess:
             {"Error": {"Code": "NoSuchKey", "Message": "Not found"}},
             "GetObject",
         )
-        # First call: backup (NoSuchKey), second call: download (NoSuchKey),
-        # third call: verify download
+        # Call order: stale-lock check (NoSuchKey), backup (NoSuchKey),
+        # download (NoSuchKey), verify re-download
         mock_s3.get_object.side_effect = [
+            no_such_key_error,  # _cleanup_stale_lock
             no_such_key_error,  # _backup_current
             no_such_key_error,  # _download_entries
             _s3_get_object_response([_make_entry()]),  # _verify re-download
@@ -100,20 +101,28 @@ class TestPublishSuccess:
         ]
         assert len(lock_delete_calls) == 1
 
-    @patch("kamiwaza_extensions.catalog_publisher.boto3")
-    def test_publish_with_existing_entries(self, mock_boto3):
+    @patch("boto3.Session")
+    def test_publish_with_existing_entries(self, mock_session_cls):
         """Merge into existing catalog entries."""
         from kamiwaza_extensions.catalog_publisher import CatalogPublisher
 
         mock_s3 = MagicMock()
         mock_session = MagicMock()
         mock_session.client.return_value = mock_s3
-        mock_boto3.Session.return_value = mock_session
+        mock_session_cls.return_value = mock_session
 
         existing = [_make_entry(name="other-app", version="2.0.0")]
         new_entry = _make_entry(name="my-app", version="1.0.0")
 
+        from botocore.exceptions import ClientError
+
+        no_such_key_error = ClientError(
+            {"Error": {"Code": "NoSuchKey", "Message": "Not found"}},
+            "GetObject",
+        )
+
         mock_s3.get_object.side_effect = [
+            no_such_key_error,  # _cleanup_stale_lock
             _s3_get_object_response(existing),  # backup
             _s3_get_object_response(existing),  # download
             _s3_get_object_response(existing + [new_entry]),  # verify
@@ -132,20 +141,28 @@ class TestPublishSuccess:
 
 
 class TestPublishVersionConflict:
-    @patch("kamiwaza_extensions.catalog_publisher.boto3")
-    def test_duplicate_version_rejected_without_force(self, mock_boto3):
+    @patch("boto3.Session")
+    def test_duplicate_version_rejected_without_force(self, mock_session_cls):
         """Merge should reject duplicate version without force."""
         from kamiwaza_extensions.catalog_publisher import CatalogPublisher
 
         mock_s3 = MagicMock()
         mock_session = MagicMock()
         mock_session.client.return_value = mock_s3
-        mock_boto3.Session.return_value = mock_session
+        mock_session_cls.return_value = mock_session
 
         existing_entry = _make_entry(name="my-app", version="1.0.0")
         existing = [existing_entry]
 
+        from botocore.exceptions import ClientError
+
+        no_such_key_error = ClientError(
+            {"Error": {"Code": "NoSuchKey", "Message": "Not found"}},
+            "GetObject",
+        )
+
         mock_s3.get_object.side_effect = [
+            no_such_key_error,  # _cleanup_stale_lock
             _s3_get_object_response(existing),  # backup
             _s3_get_object_response(existing),  # download
         ]
@@ -160,20 +177,28 @@ class TestPublishVersionConflict:
                 force=False,
             )
 
-    @patch("kamiwaza_extensions.catalog_publisher.boto3")
-    def test_duplicate_version_allowed_with_force(self, mock_boto3):
+    @patch("boto3.Session")
+    def test_duplicate_version_allowed_with_force(self, mock_session_cls):
         """force=True should allow overwriting an existing version."""
         from kamiwaza_extensions.catalog_publisher import CatalogPublisher
 
         mock_s3 = MagicMock()
         mock_session = MagicMock()
         mock_session.client.return_value = mock_s3
-        mock_boto3.Session.return_value = mock_session
+        mock_session_cls.return_value = mock_session
 
         existing_entry = _make_entry(name="my-app", version="1.0.0")
         new_entry = _make_entry(name="my-app", version="1.0.0", description="Updated")
 
+        from botocore.exceptions import ClientError
+
+        no_such_key_error = ClientError(
+            {"Error": {"Code": "NoSuchKey", "Message": "Not found"}},
+            "GetObject",
+        )
+
         mock_s3.get_object.side_effect = [
+            no_such_key_error,  # _cleanup_stale_lock
             _s3_get_object_response([existing_entry]),  # backup
             _s3_get_object_response([existing_entry]),  # download
             _s3_get_object_response([new_entry]),  # verify
@@ -197,15 +222,15 @@ class TestPublishVersionConflict:
 
 
 class TestDryRun:
-    @patch("kamiwaza_extensions.catalog_publisher.boto3")
-    def test_dry_run_no_writes(self, mock_boto3):
+    @patch("boto3.Session")
+    def test_dry_run_no_writes(self, mock_session_cls):
         """Dry run should not lock, upload, or modify S3."""
         from kamiwaza_extensions.catalog_publisher import CatalogPublisher
 
         mock_s3 = MagicMock()
         mock_session = MagicMock()
         mock_session.client.return_value = mock_s3
-        mock_boto3.Session.return_value = mock_session
+        mock_session_cls.return_value = mock_session
 
         from botocore.exceptions import ClientError
 
@@ -241,8 +266,8 @@ class TestDryRun:
 
 
 class TestLockFailure:
-    @patch("kamiwaza_extensions.catalog_publisher.boto3")
-    def test_lock_already_held(self, mock_boto3):
+    @patch("boto3.Session")
+    def test_lock_already_held(self, mock_session_cls):
         """Should raise CatalogPublishError with owner info when lock held."""
         from botocore.exceptions import ClientError
 
@@ -254,7 +279,7 @@ class TestLockFailure:
         mock_s3 = MagicMock()
         mock_session = MagicMock()
         mock_session.client.return_value = mock_s3
-        mock_boto3.Session.return_value = mock_session
+        mock_session_cls.return_value = mock_session
 
         # put_object raises PreconditionFailed (lock already exists)
         lock_error = ClientError(
@@ -275,7 +300,7 @@ class TestLockFailure:
         profile = _make_profile()
         publisher = CatalogPublisher(profile)
 
-        with pytest.raises(CatalogPublishError, match="Failed to acquire"):
+        with pytest.raises(CatalogPublishError, match="Publish lock is held by another process"):
             publisher.publish(
                 entry=_make_entry(),
                 extension_type="app",
@@ -288,15 +313,15 @@ class TestLockFailure:
 
 
 class TestLockReleaseOnError:
-    @patch("kamiwaza_extensions.catalog_publisher.boto3")
-    def test_lock_released_on_upload_failure(self, mock_boto3):
+    @patch("boto3.Session")
+    def test_lock_released_on_upload_failure(self, mock_session_cls):
         """Lock should be released even if upload fails."""
         from kamiwaza_extensions.catalog_publisher import CatalogPublisher
 
         mock_s3 = MagicMock()
         mock_session = MagicMock()
         mock_session.client.return_value = mock_s3
-        mock_boto3.Session.return_value = mock_session
+        mock_session_cls.return_value = mock_session
 
         from botocore.exceptions import ClientError
 
@@ -319,6 +344,7 @@ class TestLockReleaseOnError:
 
         mock_s3.put_object.side_effect = put_object_side_effect
         mock_s3.get_object.side_effect = [
+            no_such_key,  # _cleanup_stale_lock
             no_such_key,  # backup
             no_such_key,  # download
         ]
@@ -341,32 +367,32 @@ class TestLockReleaseOnError:
 
 
 class TestCredentialResolution:
-    @patch("kamiwaza_extensions.catalog_publisher.boto3")
-    def test_aws_profile_credentials(self, mock_boto3):
+    @patch("boto3.Session")
+    def test_aws_profile_credentials(self, mock_session_cls):
         from kamiwaza_extensions.catalog_publisher import CatalogPublisher
 
         mock_session = MagicMock()
-        mock_boto3.Session.return_value = mock_session
+        mock_session_cls.return_value = mock_session
 
         profile = _make_profile(catalog_credentials="aws-profile:my-profile")
         CatalogPublisher(profile)
 
-        mock_boto3.Session.assert_called_once_with(profile_name="my-profile")
+        mock_session_cls.assert_called_once_with(profile_name="my-profile")
         mock_session.client.assert_called_once_with(
             "s3", endpoint_url="https://s3.example.com"
         )
 
-    @patch("kamiwaza_extensions.catalog_publisher.boto3")
-    def test_env_credentials(self, mock_boto3):
+    @patch("boto3.Session")
+    def test_env_credentials(self, mock_session_cls):
         from kamiwaza_extensions.catalog_publisher import CatalogPublisher
 
         mock_session = MagicMock()
-        mock_boto3.Session.return_value = mock_session
+        mock_session_cls.return_value = mock_session
 
         profile = _make_profile(catalog_credentials="env")
         CatalogPublisher(profile)
 
-        mock_boto3.Session.assert_called_once_with()
+        mock_session_cls.assert_called_once_with()
 
     def test_sso_credentials_not_implemented(self):
         from kamiwaza_extensions.catalog_publisher import CatalogPublisher
@@ -389,14 +415,14 @@ class TestCredentialResolution:
 
 
 class TestPreviewImageUpload:
-    @patch("kamiwaza_extensions.catalog_publisher.boto3")
-    def test_preview_image_uploaded(self, mock_boto3, tmp_path: Path):
+    @patch("boto3.Session")
+    def test_preview_image_uploaded(self, mock_session_cls, tmp_path: Path):
         from kamiwaza_extensions.catalog_publisher import CatalogPublisher
 
         mock_s3 = MagicMock()
         mock_session = MagicMock()
         mock_session.client.return_value = mock_s3
-        mock_boto3.Session.return_value = mock_session
+        mock_session_cls.return_value = mock_session
 
         from botocore.exceptions import ClientError
 
@@ -407,8 +433,9 @@ class TestPreviewImageUpload:
 
         entry = _make_entry(preview_image="screenshot.png")
 
-        # Lock OK, backup empty, download empty, verify OK
+        # Lock OK, stale-lock check, backup empty, download empty, verify OK
         mock_s3.get_object.side_effect = [
+            no_such_key,  # _cleanup_stale_lock
             no_such_key,  # backup
             no_such_key,  # download
             _s3_get_object_response([entry]),  # verify
@@ -444,8 +471,8 @@ class TestPreviewImageUpload:
 
 
 class TestBackupRestore:
-    @patch("kamiwaza_extensions.catalog_publisher.boto3")
-    def test_restore_backup_on_verify_failure(self, mock_boto3, tmp_path: Path):
+    @patch("boto3.Session")
+    def test_restore_backup_on_verify_failure(self, mock_session_cls, tmp_path: Path):
         """When verification fails, backup should be restored."""
         from kamiwaza_extensions.catalog_publisher import (
             CatalogPublishError,
@@ -455,7 +482,7 @@ class TestBackupRestore:
         mock_s3 = MagicMock()
         mock_session = MagicMock()
         mock_session.client.return_value = mock_s3
-        mock_boto3.Session.return_value = mock_session
+        mock_session_cls.return_value = mock_session
 
         existing = [_make_entry(name="other", version="2.0.0")]
         new_entry = _make_entry()
@@ -467,7 +494,15 @@ class TestBackupRestore:
         os.chdir(tmp_path)
 
         try:
+            from botocore.exceptions import ClientError
+
+            no_such_key_error = ClientError(
+                {"Error": {"Code": "NoSuchKey", "Message": "Not found"}},
+                "GetObject",
+            )
+
             mock_s3.get_object.side_effect = [
+                no_such_key_error,  # _cleanup_stale_lock
                 _s3_get_object_response(existing),  # backup
                 _s3_get_object_response(existing),  # download
                 _s3_get_object_response([{"different": "data"}]),  # verify (mismatch!)
@@ -497,12 +532,12 @@ class TestBackupRestore:
 
 
 class TestInvalidExtensionType:
-    @patch("kamiwaza_extensions.catalog_publisher.boto3")
-    def test_invalid_extension_type_raises(self, mock_boto3):
+    @patch("boto3.Session")
+    def test_invalid_extension_type_raises(self, mock_session_cls):
         from kamiwaza_extensions.catalog_publisher import CatalogPublisher
 
         mock_session = MagicMock()
-        mock_boto3.Session.return_value = mock_session
+        mock_session_cls.return_value = mock_session
 
         profile = _make_profile()
         publisher = CatalogPublisher(profile)

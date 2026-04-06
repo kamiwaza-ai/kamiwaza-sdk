@@ -46,12 +46,19 @@ def build_prompt(analysis: AnalysisResult) -> str:
     """Build the structured prompt for the conversion agent."""
     files_section = ""
     total_chars = 0
+    total_files = len(analysis.file_contents)
+    included_files = 0
     for rel_path, content in sorted(analysis.file_contents.items()):
         entry = f"\n### {rel_path}\n```\n{content}\n```\n"
         if total_chars + len(entry) > _MAX_CONTEXT_SIZE:
             break
         files_section += entry
         total_chars += len(entry)
+        included_files += 1
+
+    omitted = total_files - included_files
+    if omitted > 0:
+        files_section += f"\n*Note: {omitted} file(s) omitted due to context size limits.*\n"
 
     services_section = ""
     for svc in analysis.services:
@@ -189,10 +196,10 @@ def call_llm(prompt: str) -> Optional[str]:
     """Call an LLM and return the response text.
 
     Tries providers in order:
-    1. Anthropic (if ANTHROPIC_API_KEY is set and anthropic is installed)
-    2. OpenAI-compatible (if OPENAI_API_KEY is set and openai is installed)
+    1. OpenAI-compatible (if OPENAI_API_KEY is set and openai is installed)
        — works with OpenAI, Azure, Kamiwaza, vLLM, Ollama, or any
          OpenAI-compatible endpoint. Set OPENAI_BASE_URL to override.
+    2. Anthropic (if ANTHROPIC_API_KEY is set and anthropic is installed)
     3. Returns None if no provider is available.
 
     Override the model with KZ_CONVERT_MODEL env var.
@@ -329,7 +336,14 @@ def apply_plan(plan: ConversionPlan, app_dir: Path, dry_run: bool = False) -> Li
         if not mod.path or not mod.content:
             continue
 
-        target = app_dir / mod.path
+        target = (app_dir / mod.path).resolve()
+        # Security: reject paths that escape the app directory
+        if not target.is_relative_to(app_dir.resolve()):
+            console.print(
+                f"[yellow]Warning:[/yellow] Skipping '{mod.path}' — path escapes app directory"
+            )
+            continue
+
         action_desc = f"{mod.action}: {mod.path}"
         if mod.description:
             action_desc += f" ({mod.description})"

@@ -259,17 +259,18 @@ class AppAnalyzer:
             re.compile(r"""@app\.(get|route)\s*\(\s*['"]/health"""),
             re.compile(r"""router\.(get|route)\s*\(\s*['"]/health"""),
         ]
-        for src in result.app_dir.rglob("*.py"):
-            if ".git" in src.parts or "node_modules" in src.parts:
-                continue
-            try:
-                content = src.read_text(encoding="utf-8")
-                for pat in patterns:
-                    if pat.search(content):
-                        result.has_health_endpoint = True
-                        return
-            except OSError:
-                pass
+        for ext in ("*.py", "*.js", "*.ts", "*.jsx", "*.tsx"):
+            for src in result.app_dir.rglob(ext):
+                if ".git" in src.parts or "node_modules" in src.parts:
+                    continue
+                try:
+                    content = src.read_text(encoding="utf-8")
+                    for pat in patterns:
+                        if pat.search(content):
+                            result.has_health_endpoint = True
+                            return
+                except OSError:
+                    pass
 
     def _infer_description(self, result: AnalysisResult) -> None:
         readme = result.app_dir / "README.md"

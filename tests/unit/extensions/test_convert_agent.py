@@ -166,6 +166,39 @@ class TestApplyPlan:
         applied = apply_plan(plan, tmp_path)
         assert len(applied) == 0
 
+    def test_rejects_path_traversal(self, tmp_path):
+        """Paths that escape app_dir via '..' must be rejected."""
+        from kamiwaza_extensions.convert_agent import apply_plan, ConversionPlan, FileModification
+
+        plan = ConversionPlan(
+            modifications=[
+                FileModification(
+                    path="../../../etc/evil.conf",
+                    action="create",
+                    content="malicious",
+                )
+            ]
+        )
+        applied = apply_plan(plan, tmp_path)
+        assert len(applied) == 0
+        assert not (tmp_path.parent / "etc" / "evil.conf").exists()
+
+    def test_rejects_absolute_path(self, tmp_path):
+        """Absolute paths must be rejected."""
+        from kamiwaza_extensions.convert_agent import apply_plan, ConversionPlan, FileModification
+
+        plan = ConversionPlan(
+            modifications=[
+                FileModification(
+                    path="/tmp/evil.py",
+                    action="create",
+                    content="malicious",
+                )
+            ]
+        )
+        applied = apply_plan(plan, tmp_path)
+        assert len(applied) == 0
+
 
 class TestRunAgent:
     def test_fallback_without_llm(self, monkeypatch):

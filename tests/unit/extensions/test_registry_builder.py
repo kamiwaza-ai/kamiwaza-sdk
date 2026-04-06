@@ -302,6 +302,22 @@ class TestMergeV1:
         with pytest.raises(ValueError, match="newer version"):
             builder.merge_into_registry(entry, existing)
 
+    def test_replace_removes_all_duplicates(self, builder):
+        """v1 merge with multiple same-name entries removes all of them."""
+        existing = [
+            {"name": "app", "version": "1.0.0"},
+            {"name": "app", "version": "1.0.0"},  # accidental duplicate
+            {"name": "other", "version": "1.0.0"},
+        ]
+        entry = {"name": "app", "version": "2.0.0"}
+        result, action = builder.merge_into_registry(entry, existing)
+        assert action == "replace"
+        # Both old "app" entries removed; one new "app" + "other" remain.
+        assert len(result) == 2
+        app_entries = [e for e in result if e["name"] == "app"]
+        assert len(app_entries) == 1
+        assert app_entries[0]["version"] == "2.0.0"
+
     def test_does_not_mutate_existing(self, builder):
         existing = [{"name": "app", "version": "1.0.0"}]
         original = list(existing)
@@ -422,6 +438,30 @@ class TestMergeV2:
         result, action = builder.merge_into_registry(entry, existing)
         assert action == "insert"
         assert len(result) == 3
+
+    def test_superset_replaces_multiple_existing(self, builder):
+        """A wider constraint that is a superset of two existing entries
+        should replace both of them."""
+        existing = [
+            {"name": "app", "version": "1.0.0", "kamiwaza_version": ">=0.8.0,<0.9.0"},
+            {"name": "app", "version": "1.5.0", "kamiwaza_version": ">=0.9.0,<1.0.0"},
+            {"name": "other", "version": "1.0.0"},  # unrelated entry
+        ]
+        entry = {
+            "name": "app",
+            "version": "2.0.0",
+            "kamiwaza_version": ">=0.7.0",
+        }
+        result, action = builder.merge_into_registry(entry, existing)
+        assert action == "replace"
+        # Both app entries replaced by the single new entry; "other" remains.
+        assert len(result) == 2
+        app_entries = [e for e in result if e["name"] == "app"]
+        assert len(app_entries) == 1
+        assert app_entries[0]["version"] == "2.0.0"
+        assert app_entries[0]["kamiwaza_version"] == ">=0.7.0"
+        # Unrelated entry preserved.
+        assert any(e["name"] == "other" for e in result)
 
 
 # ------------------------------------------------------------------

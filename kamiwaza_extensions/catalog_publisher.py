@@ -20,15 +20,6 @@ from rich.console import Console
 from kamiwaza_extensions.profile_manager import PublishProfile
 from kamiwaza_extensions.registry_builder import RegistryBuilder
 
-try:
-    import boto3
-    from botocore.exceptions import ClientError
-except ImportError:
-    raise ImportError(
-        "boto3 is required for catalog publishing. "
-        "Install it with: pip install boto3  (or: pip install kamiwaza-client[extensions])"
-    )
-
 console = Console(stderr=True)
 
 # Maps extension_type to the catalog JSON filename.
@@ -37,6 +28,10 @@ _TYPE_FILE_MAP: Dict[str, str] = {
     "tool": "tools.json",
     "service": "apps.json",  # Services are treated as apps in the catalog
 }
+
+# Lock time-to-live in seconds.  If a lock is older than this, it is
+# considered stale and will be automatically cleaned up.
+LOCK_TTL_SECONDS = 600
 
 
 @dataclass
@@ -66,16 +61,45 @@ class CatalogPublisher:
     backup/restore, and upload verification.
     """
 
-    def __init__(self, profile: PublishProfile, repo_version: int = 2) -> None:
+    def __init__(
+        self,
+        profile: PublishProfile,
+        repo_version: int = 2,
+        extension_dir: Optional[Path] = None,
+    ) -> None:
         """Initialize S3 client from profile credentials.
 
         Args:
             profile: Publish profile with S3 endpoint and credentials.
             repo_version: Catalog schema version (determines garden path).
+            extension_dir: Root directory of the extension project.  Used
+                for placing backup files.  Falls back to ``Path.cwd()`` if
+                not provided.
         """
+        try:
+            import boto3
+            from botocore.exceptions import ClientError
+        except ImportError:
+            raise ImportError(
+                "boto3 is required for catalog publishing. "
+                "Install it with: pip install boto3  "
+                "(or: pip install kamiwaza-client[extensions])"
+            )
+
+        self._boto3 = boto3
+        self._ClientError = ClientError
+
         self._profile = profile
         self._repo_version = repo_version
-        self._garden_dir = f"garden/v{repo_version}/"
+        self._extension_dir = extension_dir if extension_dir is not None else Path.cwd()
+
+        # Build garden directory incorporating the optional catalog_prefix.
+        prefix = profile.catalog_prefix.strip("/")
+        if prefix:
+            self._garden_dir = f"{prefix}/garden/v{repo_version}/"
+        else:
+            self._garden_dir = f"garden/v{repo_version}/"
+
         self._builder = RegistryBuilder()
         self._s3 = self._create_s3_client(profile)
 
@@ -187,6 +211,9 @@ class CatalogPublisher:
     def _acquire_lock(self) -> None:
         """Acquire the publish lock via atomic S3 put (IfNoneMatch).
 
+        Before attempting the conditional PUT, checks for stale locks
+        that have exceeded ``LOCK_TTL_SECONDS`` and removes them.
+
         Raises:
             CatalogPublishError: If the lock is already held.
         """
@@ -198,7 +225,11 @@ class CatalogPublisher:
             "hostname": socket.gethostname(),
             "acquired_at": datetime.now(timezone.utc).isoformat(),
             "pid": os.getpid(),
+            "lock_ttl_seconds": LOCK_TTL_SECONDS,
         })
+
+        # Check for and clean up stale locks before attempting acquisition.
+        self._cleanup_stale_lock(lock_key)
 
         try:
             self._s3.put_object(
@@ -209,14 +240,51 @@ class CatalogPublisher:
                 IfNoneMatch="*",
             )
             console.print("[dim]Lock acquired.[/dim]")
-        except ClientError as exc:
+        except self._ClientError as exc:
             error_code = exc.response.get("Error", {}).get("Code", "")
             if error_code in ("PreconditionFailed", "412"):
-                # Lock already held -- read it and report owner details
                 self._report_lock_holder(lock_key)
+                raise CatalogPublishError(
+                    "Publish lock is held by another process"
+                ) from exc
             raise CatalogPublishError(
                 f"Failed to acquire publish lock: {exc}"
             ) from exc
+
+    def _cleanup_stale_lock(self, lock_key: str) -> None:
+        """Delete the lock object if it has exceeded ``LOCK_TTL_SECONDS``."""
+        try:
+            resp = self._s3.get_object(
+                Bucket=self._profile.catalog_bucket,
+                Key=lock_key,
+            )
+            lock_data = json.loads(resp["Body"].read().decode("utf-8"))
+            acquired_at_str = lock_data.get("acquired_at")
+            if acquired_at_str is None:
+                return
+            acquired_at = datetime.fromisoformat(acquired_at_str)
+            elapsed = (datetime.now(timezone.utc) - acquired_at).total_seconds()
+            if elapsed > LOCK_TTL_SECONDS:
+                console.print(
+                    f"[yellow]Stale lock detected (age {elapsed:.0f}s > "
+                    f"TTL {LOCK_TTL_SECONDS}s). Removing...[/yellow]"
+                )
+                self._s3.delete_object(
+                    Bucket=self._profile.catalog_bucket,
+                    Key=lock_key,
+                )
+        except self._ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") == "NoSuchKey":
+                return  # No existing lock -- nothing to clean up
+            # Non-fatal: if we can't read/delete we'll just let the
+            # conditional PUT fail with the normal error path.
+            console.print(
+                f"[dim]Could not check for stale lock: {exc}[/dim]"
+            )
+        except (json.JSONDecodeError, ValueError):
+            # Lock body is not valid JSON or timestamp is unparseable.
+            # Let the normal acquisition path handle the conflict.
+            pass
 
     def _release_lock(self) -> None:
         """Release the publish lock by deleting the lock object."""
@@ -227,7 +295,7 @@ class CatalogPublisher:
                 Key=lock_key,
             )
             console.print("[dim]Lock released.[/dim]")
-        except ClientError as exc:
+        except self._ClientError as exc:
             console.print(f"[yellow]Warning: failed to release lock: {exc}[/yellow]")
 
     def _report_lock_holder(self, lock_key: str) -> None:
@@ -264,14 +332,17 @@ class CatalogPublisher:
                 Key=s3_key,
             )
             body = resp["Body"].read()
-        except ClientError as exc:
+        except self._ClientError as exc:
             if exc.response.get("Error", {}).get("Code") == "NoSuchKey":
                 console.print(f"[dim]No existing {type_file} to back up.[/dim]")
                 return None
             raise
 
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        backup_dir = Path("build") / "registry-backups" / self._garden_dir / timestamp
+        backup_dir = (
+            self._extension_dir / "build" / "registry-backups"
+            / self._garden_dir / timestamp
+        )
         backup_dir.mkdir(parents=True, exist_ok=True)
         backup_path = backup_dir / type_file
 
@@ -313,7 +384,7 @@ class CatalogPublisher:
                     f"Expected JSON array in {s3_key}, got {type(entries).__name__}"
                 )
             return entries
-        except ClientError as exc:
+        except self._ClientError as exc:
             if exc.response.get("Error", {}).get("Code") == "NoSuchKey":
                 return []
             raise
@@ -393,16 +464,15 @@ class CatalogPublisher:
     # S3 client factory
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _create_s3_client(profile: PublishProfile) -> Any:
+    def _create_s3_client(self, profile: PublishProfile) -> Any:
         """Create a boto3 S3 client from the profile's credential spec."""
         creds = profile.catalog_credentials
 
         if creds.startswith("aws-profile:"):
             profile_name = creds[len("aws-profile:"):]
-            session = boto3.Session(profile_name=profile_name)
+            session = self._boto3.Session(profile_name=profile_name)
         elif creds == "env":
-            session = boto3.Session()
+            session = self._boto3.Session()
         elif creds == "sso":
             raise NotImplementedError(
                 "SSO credential flow is not yet supported. "

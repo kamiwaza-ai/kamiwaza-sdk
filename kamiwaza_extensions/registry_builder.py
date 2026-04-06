@@ -137,18 +137,28 @@ class RegistryBuilder:
             )
 
         # v1 merge: no constraints, single entry per name.
-        idx, existing = matches[0]
-        existing_version = Version(existing["version"])
+        # Defensively handle multiple matches: find the highest existing
+        # version among them, apply the same accept/reject logic, and then
+        # remove *all* matched indices before appending the new entry.
+        best_version = max(Version(m["version"]) for _, m in matches)
 
-        if entry_version > existing_version:
-            result = list(existing_entries)
-            result[idx] = entry
+        if entry_version > best_version:
+            matched_indices = {i for i, _ in matches}
+            result = [
+                e for i, e in enumerate(existing_entries)
+                if i not in matched_indices
+            ]
+            result.append(entry)
             return result, "replace"
 
-        if entry_version == existing_version:
+        if entry_version == best_version:
             if force:
-                result = list(existing_entries)
-                result[idx] = entry
+                matched_indices = {i for i, _ in matches}
+                result = [
+                    e for i, e in enumerate(existing_entries)
+                    if i not in matched_indices
+                ]
+                result.append(entry)
                 return result, "replace"
             raise ValueError(
                 f"Entry '{name}' version {entry_version} already exists. "
@@ -156,7 +166,7 @@ class RegistryBuilder:
             )
 
         raise ValueError(
-            f"Entry '{name}' has newer version {existing_version} in registry "
+            f"Entry '{name}' has newer version {best_version} in registry "
             f"(attempted {entry_version})."
         )
 
@@ -215,17 +225,23 @@ class RegistryBuilder:
         existing_entries: List[Dict[str, Any]],
         force: bool,
     ) -> Tuple[List[Dict[str, Any]], str]:
-        """Handle v2 merge where entries carry ``kamiwaza_version`` constraints."""
+        """Handle v2 merge where entries carry ``kamiwaza_version`` constraints.
+
+        Iterates *all* same-name matches, classifies each relationship,
+        and collects indices to replace.  Rejects if any match is a subset
+        or partial overlap.
+        """
         entry_spec = SpecifierSet(entry_constraint)
+
+        # Indices to remove (equal, superset, or unconstrained matches).
+        replace_indices: List[int] = []
 
         for idx, existing in matches:
             existing_constraint = existing.get("kamiwaza_version")
             if not existing_constraint:
                 # Existing entry has no constraint -- treat as universal.
-                # New entry with a constraint can replace it if version is newer.
-                return self._try_replace(
-                    entry, entry_version, idx, existing, existing_entries, force,
-                )
+                replace_indices.append(idx)
+                continue
 
             existing_spec = SpecifierSet(existing_constraint)
             relationship = _constraint_relationship(entry_spec, existing_spec)
@@ -234,9 +250,8 @@ class RegistryBuilder:
                 continue  # No conflict with this existing entry.
 
             if relationship == "equal" or relationship == "superset":
-                return self._try_replace(
-                    entry, entry_version, idx, existing, existing_entries, force,
-                )
+                replace_indices.append(idx)
+                continue
 
             # subset or partial overlap -- reject
             raise ValueError(
@@ -245,41 +260,34 @@ class RegistryBuilder:
                 "Constraints must be disjoint or identical."
             )
 
-        # No overlap with any existing entry -- insert alongside.
-        return existing_entries + [entry], "insert"
+        if not replace_indices:
+            # No overlap with any existing entry -- insert alongside.
+            return existing_entries + [entry], "insert"
 
-    @staticmethod
-    def _try_replace(
-        entry: Dict[str, Any],
-        entry_version: Version,
-        idx: int,
-        existing: Dict[str, Any],
-        existing_entries: List[Dict[str, Any]],
-        force: bool,
-    ) -> Tuple[List[Dict[str, Any]], str]:
-        """Replace an existing entry if the new version is newer (or force)."""
-        existing_version = Version(existing["version"])
-
-        if entry_version > existing_version:
-            result = list(existing_entries)
-            result[idx] = entry
-            return result, "replace"
-
-        if entry_version == existing_version:
-            if force:
-                result = list(existing_entries)
-                result[idx] = entry
-                return result, "replace"
+        # Validate version against the highest version being replaced.
+        best_version = max(
+            Version(existing_entries[i]["version"]) for i in replace_indices
+        )
+        if entry_version < best_version:
+            raise ValueError(
+                f"Entry '{entry.get('name')}' has newer version {best_version} "
+                f"in registry (attempted {entry_version})."
+            )
+        if entry_version == best_version and not force:
             raise ValueError(
                 f"Entry '{entry.get('name')}' version {entry_version} with "
                 f"constraint '{entry.get('kamiwaza_version')}' already exists. "
                 "Use force=True to overwrite."
             )
 
-        raise ValueError(
-            f"Entry '{entry.get('name')}' has newer version {existing_version} "
-            f"in registry (attempted {entry_version})."
-        )
+        # Remove all replaced indices and append the new entry.
+        indices_to_remove = set(replace_indices)
+        result = [
+            e for i, e in enumerate(existing_entries)
+            if i not in indices_to_remove
+        ]
+        result.append(entry)
+        return result, "replace"
 
 
 # ------------------------------------------------------------------

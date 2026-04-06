@@ -9,7 +9,7 @@ import stat
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 # Profile names must be safe for use as filenames
 _PROFILE_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
@@ -54,16 +54,22 @@ def _secure_dir(path: Path) -> None:
 
 
 def _secure_write(path: Path, data: dict) -> None:
-    """Atomically write JSON with 600 permissions."""
+    """Atomically write JSON with 600 permissions.
+
+    Permissions are set on the temp file *before* the rename so the file
+    is never world-readable, even briefly.
+    """
     _secure_dir(path.parent)
     tmp_path = path.with_suffix(".tmp")
-    with tmp_path.open("w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
-    tmp_path.replace(path)
+    # Open with restrictive mode from the start (0o600)
+    fd = os.open(str(tmp_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
-        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)  # 600
-    except OSError:
-        pass
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    except BaseException:
+        os.close(fd)
+        raise
+    tmp_path.replace(path)
 
 
 def _load_profile_file(path: Path) -> Optional[PublishProfile]:
@@ -160,6 +166,30 @@ class ProfileManager:
             self._collect_profiles(repo_dir, profiles)
 
         return list(profiles.values())
+
+    def list_profiles_with_source(
+        self, extension_dir: Optional[Path] = None
+    ) -> List[Tuple[PublishProfile, str]]:
+        """List all profiles with source indicator ('user' or 'repo').
+
+        Repo-level profiles override user-level by name.
+        """
+        user_profiles: Dict[str, PublishProfile] = {}
+        repo_profiles: Dict[str, PublishProfile] = {}
+
+        self._collect_profiles(self._profiles_dir, user_profiles)
+
+        if extension_dir is not None:
+            repo_dir = Path(extension_dir) / ".kz-ext" / "profiles"
+            self._collect_profiles(repo_dir, repo_profiles)
+
+        merged: Dict[str, Tuple[PublishProfile, str]] = {}
+        for name, profile in user_profiles.items():
+            merged[name] = (profile, "user")
+        for name, profile in repo_profiles.items():
+            merged[name] = (profile, "repo")
+
+        return list(merged.values())
 
     def delete_profile(
         self,

@@ -103,21 +103,9 @@ def _list_profiles(mgr) -> None:
     """List all profiles as a formatted table."""
     from pathlib import Path
 
-    from kamiwaza_extensions.profile_manager import ProfileManager
+    profiles_with_source = mgr.list_profiles_with_source(extension_dir=Path.cwd())
 
-    # We need to determine source for each profile.
-    # Collect user-level and repo-level separately.
-    user_profiles: dict[str, object] = {}
-    repo_profiles: dict[str, object] = {}
-
-    mgr._collect_profiles(mgr._profiles_dir, user_profiles)
-
-    # Try repo-level from cwd
-    cwd = Path.cwd()
-    repo_dir = cwd / ".kz-ext" / "profiles"
-    mgr._collect_profiles(repo_dir, repo_profiles)
-
-    if not user_profiles and not repo_profiles:
+    if not profiles_with_source:
         console.print("No publish profiles found.")
         console.print(
             "  Run [bold]kz-ext config publish-profile <name> --registry ... --catalog-endpoint ... "
@@ -135,15 +123,7 @@ def _list_profiles(mgr) -> None:
     table.add_column("CREDENTIALS")
     table.add_column("SOURCE")
 
-    # Merged view: repo-level wins, but we track source
-    merged: dict[str, tuple[object, str]] = {}
-    for name, profile in user_profiles.items():
-        merged[name] = (profile, "user")
-    for name, profile in repo_profiles.items():
-        merged[name] = (profile, "repo")
-
-    for profile_name in sorted(merged):
-        profile, source = merged[profile_name]
+    for profile, source in sorted(profiles_with_source, key=lambda ps: ps[0].name):
         table.add_row(
             profile.name,
             profile.registry,
@@ -157,8 +137,10 @@ def _list_profiles(mgr) -> None:
 
 def _show_profile(mgr, name: str) -> None:
     """Show details of one profile."""
+    from pathlib import Path
+
     try:
-        profile = mgr.get_profile(name)
+        profile = mgr.get_profile(name, extension_dir=Path.cwd())
     except ValueError:
         console.print(f"[red]Error:[/red] Profile '{name}' not found.")
         raise typer.Exit(code=1)
@@ -179,7 +161,7 @@ def _delete_profile(mgr, name: str, *, repo_level: bool = False) -> None:
     """Delete a profile by name."""
     from pathlib import Path
 
-    extension_dir = Path.cwd() if repo_level else None
+    extension_dir = Path.cwd()
 
     try:
         mgr.delete_profile(name, repo_level=repo_level, extension_dir=extension_dir)
