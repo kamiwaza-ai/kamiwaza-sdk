@@ -2,16 +2,29 @@
 
 from __future__ import annotations
 
+import json
 import re
+import shlex
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import yaml
 from rich.console import Console
 
 console = Console(stderr=True)
+
+_DEFAULT_BACKEND_STARTUP = [
+    "uvicorn",
+    "app.main:app",
+    "--host",
+    "0.0.0.0",
+    "--port",
+    "8000",
+    "--reload",
+]
+_DEFAULT_FRONTEND_STARTUP = ["npm", "start"]
 
 
 # ------------------------------------------------------------------
@@ -220,7 +233,10 @@ def build_typescript_lib(spec: SdkOverrideSpec) -> bool:
 _PYTHON_LIB_COPY = (
     'SITE=$(python -c "import kamiwaza_extensions_lib as m, os;'
     ' print(os.path.dirname(m.__file__))")'
-    ' && cp -r /sdk/kamiwaza_extensions_lib/* "$SITE/"'
+    ' && SITE_PARENT=$(dirname "$SITE")'
+    ' && rm -rf "$SITE"'
+    ' && mkdir -p "$SITE_PARENT"'
+    ' && cp -r /sdk/kamiwaza_extensions_lib "$SITE_PARENT/"'
 )
 
 _TS_LIB_INSTALL = (
@@ -271,12 +287,28 @@ def _resolve_dockerfile(build_spec: Any, extension_dir: Path) -> Optional[Path]:
     return None
 
 
-def _read_dockerfile_startup(dockerfile: Path) -> Optional[str]:
-    """Read the startup command from a Dockerfile.
+@dataclass
+class DockerStartup:
+    """Resolved Dockerfile startup instructions."""
 
-    Returns a shell command string from the last CMD or ENTRYPOINT.
-    Returns None if the Dockerfile can't be read or has no startup command.
-    """
+    entrypoint: Optional[List[str]] = None
+    cmd: Optional[List[str]] = None
+
+
+def _parse_docker_command(instruction: str) -> List[str]:
+    """Parse a Docker CMD/ENTRYPOINT instruction into argv."""
+    if instruction.startswith("["):
+        try:
+            parts = json.loads(instruction)
+        except (json.JSONDecodeError, TypeError):
+            return ["/bin/sh", "-c", instruction]
+        if isinstance(parts, list):
+            return [str(part) for part in parts]
+    return ["/bin/sh", "-c", instruction]
+
+
+def _read_dockerfile_startup(dockerfile: Path) -> Optional[DockerStartup]:
+    """Read CMD and ENTRYPOINT startup instructions from a Dockerfile."""
     if not dockerfile.is_file():
         return None
     try:
@@ -284,29 +316,33 @@ def _read_dockerfile_startup(dockerfile: Path) -> Optional[str]:
     except OSError:
         return None
 
-    startup = None
+    startup = DockerStartup()
     for line in content.splitlines():
         stripped = line.strip()
-        if stripped.startswith("CMD ") or stripped.startswith("ENTRYPOINT "):
-            startup = stripped
-    if not startup:
-        return None
+        if stripped.startswith("ENTRYPOINT "):
+            startup.entrypoint = _parse_docker_command(
+                stripped[len("ENTRYPOINT "):].strip()
+            )
+        elif stripped.startswith("CMD "):
+            startup.cmd = _parse_docker_command(stripped[len("CMD "):].strip())
 
-    # Parse: CMD ["arg1", "arg2"] → "arg1 arg2"
-    #        CMD arg1 arg2 → "arg1 arg2"
-    #        ENTRYPOINT ["node", "/app/start.mjs"] → "node /app/start.mjs"
-    keyword = "CMD " if startup.startswith("CMD ") else "ENTRYPOINT "
-    rest = startup[len(keyword):].strip()
-    if rest.startswith("["):
-        # JSON array form
-        try:
-            import json
-            parts = json.loads(rest)
-            return " ".join(str(p) for p in parts)
-        except (json.JSONDecodeError, TypeError):
-            return rest
-    # Shell form
-    return rest
+    if not startup.entrypoint and not startup.cmd:
+        return None
+    return startup
+
+
+def _startup_argv(
+    startup: Optional[DockerStartup],
+    fallback: List[str],
+) -> List[str]:
+    """Return the argv Docker would execute for startup."""
+    if not startup:
+        return fallback
+    if startup.entrypoint:
+        return startup.entrypoint + (startup.cmd or [])
+    if startup.cmd:
+        return startup.cmd
+    return fallback
 
 
 def generate_compose_override(
@@ -337,30 +373,38 @@ def generate_compose_override(
         svc_type = detect_service_type(svc_name, svc_config)
         svc_override: dict = {}
 
-        # Volume mount: SDK repo → /sdk (read-only, long-form for path safety)
-        svc_override["volumes"] = [{
-            "type": "bind",
-            "source": str(spec.sdk_repo),
-            "target": "/sdk",
-            "read_only": True,
-        }]
-
         # Read the original startup command from the Dockerfile
-        startup_cmd = None
+        startup = None
         if extension_dir:
             df = _resolve_dockerfile(svc_config["build"], extension_dir)
             if df:
-                startup_cmd = _read_dockerfile_startup(df)
+                startup = _read_dockerfile_startup(df)
 
         if svc_type == "backend" and spec.python:
-            exec_cmd = startup_cmd or "uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+            svc_override["volumes"] = [{
+                "type": "bind",
+                "source": str(spec.sdk_repo),
+                "target": "/sdk",
+                "read_only": True,
+            }]
+            exec_cmd = shlex.join(
+                _startup_argv(startup, _DEFAULT_BACKEND_STARTUP)
+            )
             svc_override["entrypoint"] = ["/bin/sh", "-c"]
             svc_override["command"] = [
                 _PYTHON_LIB_COPY + f" && exec {exec_cmd}"
             ]
 
         elif svc_type == "frontend" and spec.typescript:
-            exec_cmd = startup_cmd or "npm start"
+            svc_override["volumes"] = [{
+                "type": "bind",
+                "source": str(spec.sdk_repo),
+                "target": "/sdk",
+                "read_only": True,
+            }]
+            exec_cmd = shlex.join(
+                _startup_argv(startup, _DEFAULT_FRONTEND_STARTUP)
+            )
             svc_override["entrypoint"] = ["/bin/sh", "-c"]
             svc_override["command"] = [
                 _TS_LIB_INSTALL + f" && exec {exec_cmd}"
@@ -396,7 +440,7 @@ _PYTHON_OVERLAY = (
     ' && rm -rf "$SITE"'
     ' && cp -r /tmp/kamiwaza_extensions_lib "$SITE"'
     " && rm -rf /tmp/kamiwaza_extensions_lib\n"
-    "USER 1001\n"
+    "{restore_user_block}"
 )
 
 _TS_OVERLAY = (
@@ -407,7 +451,7 @@ _TS_OVERLAY = (
     " && npm pack --ignore-scripts --pack-destination /tmp 2>/dev/null | tail -1)"
     ' && cd /app && npm install --ignore-scripts "/tmp/$TARBALL"'
     " && rm -rf /tmp/kamiwaza-ai-extensions-lib*\n"
-    "USER 1001\n"
+    "{restore_user_block}"
 )
 
 # Patterns that indicate the TS lib must be installed BEFORE this line
@@ -460,15 +504,51 @@ def apply_build_overlay(dockerfile_content: str, overlay: BuildOverride) -> str:
     If ``overlay.insert_before_build`` is True, scans for a ``RUN npm run build``
     (or similar) line and inserts the overlay before it. Otherwise appends.
     """
+    lines = dockerfile_content.splitlines(keepends=True)
+    insert_idx = None
+
     if overlay.insert_before_build:
-        lines = dockerfile_content.splitlines(keepends=True)
         for i, line in enumerate(lines):
             if _TS_BUILD_PATTERNS.match(line):
-                # Insert overlay before this line
-                return "".join(lines[:i]) + "\n" + overlay.overlay_steps + "\n" + "".join(lines[i:])
+                insert_idx = i
+                break
+
+    user_scope = lines[:insert_idx] if insert_idx is not None else lines
+    overlay_steps = overlay.overlay_steps.replace(
+        "{restore_user_block}",
+        _restore_user_block(_find_active_user(user_scope)),
+    )
+
+    if insert_idx is not None:
+        return (
+            "".join(lines[:insert_idx])
+            + "\n"
+            + overlay_steps
+            + "\n"
+            + "".join(lines[insert_idx:])
+        )
 
     # No build line found or not insert_before_build — append at end
-    return dockerfile_content.rstrip() + "\n\n" + overlay.overlay_steps
+    return dockerfile_content.rstrip() + "\n\n" + overlay_steps
+
+
+def _find_active_user(lines: List[str]) -> Optional[str]:
+    """Return the last USER declared in the given Dockerfile lines."""
+    active_user = None
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("USER "):
+            user = stripped[len("USER "):].strip()
+            if user:
+                active_user = user
+    return active_user
+
+
+def _restore_user_block(user: Optional[str]) -> str:
+    """Render a USER restore directive when the Dockerfile was non-root."""
+    if not user or user.lower() == "root":
+        return ""
+    return f"USER {user}\n"
 
 
 def check_buildkit_available() -> bool:
@@ -497,19 +577,23 @@ def print_override_diagnostics(spec: SdkOverrideSpec) -> None:
     console.print(f"  [dim]SDK repo:[/dim]    {spec.sdk_repo}")
 
     if spec.python:
-        console.print(f"  [dim]Python lib:[/dim]  [green]local[/green] (kamiwaza_extensions_lib/)")
+        console.print(
+            "  [dim]Python lib:[/dim]  [green]local[/green] "
+            "(kamiwaza_extensions_lib/)"
+        )
     else:
-        console.print(f"  [dim]Python lib:[/dim]  published")
+        console.print("  [dim]Python lib:[/dim]  published")
 
     if spec.typescript:
         ts_status = "ok"
         if not spec.typescript_dist_path.is_dir():
             ts_status = "[yellow]missing[/yellow]"
         console.print(
-            f"  [dim]TS lib:[/dim]      [green]local[/green] (kamiwaza-ai-extensions-lib/)"
+            "  [dim]TS lib:[/dim]      [green]local[/green] "
+            "(kamiwaza-ai-extensions-lib/)"
         )
         console.print(f"  [dim]TS dist/:[/dim]    {ts_status}")
     else:
-        console.print(f"  [dim]TS lib:[/dim]      published")
+        console.print("  [dim]TS lib:[/dim]      published")
 
     console.print()

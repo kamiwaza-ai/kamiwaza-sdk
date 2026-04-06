@@ -1,15 +1,11 @@
 """Tests for SDK override config, validation, and compose generation."""
 
-from pathlib import Path
-from unittest.mock import patch
-
 import pytest
 import yaml
 
 from kamiwaza_extensions.sdk_override import (
     BuildOverride,
     SdkOverrideSpec,
-    ValidationResult,
     apply_build_overlay,
     detect_service_type,
     generate_build_overrides,
@@ -307,6 +303,47 @@ class TestGenerateComposeOverride:
         assert "npm pack" in services["frontend"]["command"][0]
         assert "exec node /app/start.mjs" in services["frontend"]["command"][0]
 
+    def test_combines_entrypoint_and_cmd(self, tmp_path):
+        ext_dir = tmp_path / "ext"
+        ext_dir.mkdir()
+        frontend = ext_dir / "frontend"
+        frontend.mkdir()
+        (frontend / "Dockerfile").write_text(
+            'FROM node:20\nENTRYPOINT ["docker-entrypoint.sh"]\n'
+            'CMD ["npm", "run", "start"]\n'
+        )
+
+        spec = self._make_spec(tmp_path, python=False)
+        compose = {
+            "services": {
+                "frontend": {"build": {"context": "./frontend"}, "ports": ["3000:3000"]},
+            }
+        }
+
+        override = generate_compose_override(spec, compose, extension_dir=ext_dir)
+        command = override["services"]["frontend"]["command"][0]
+        assert "exec docker-entrypoint.sh npm run start" in command
+
+    def test_quotes_json_array_cmd_arguments(self, tmp_path):
+        ext_dir = tmp_path / "ext"
+        ext_dir.mkdir()
+        backend = ext_dir / "backend"
+        backend.mkdir()
+        (backend / "Dockerfile").write_text(
+            'FROM python:3.10\nCMD ["bash", "-c", "echo hello world"]\n'
+        )
+
+        spec = self._make_spec(tmp_path, typescript=False)
+        compose = {
+            "services": {
+                "backend": {"build": {"context": "./backend"}, "ports": ["8000:8000"]},
+            }
+        }
+
+        override = generate_compose_override(spec, compose, extension_dir=ext_dir)
+        command = override["services"]["backend"]["command"][0]
+        assert "exec bash -c 'echo hello world'" in command
+
     def test_fallback_without_extension_dir(self, tmp_path):
         spec = self._make_spec(tmp_path)
         compose = {
@@ -330,6 +367,34 @@ class TestGenerateComposeOverride:
         override = generate_compose_override(spec, compose)
         services = override["services"]
         assert "kamiwaza_extensions_lib" in services["backend"]["command"][0]
+        assert "frontend" not in services
+
+    def test_typescript_only(self, tmp_path):
+        spec = self._make_spec(tmp_path, python=False)
+        compose = {
+            "services": {
+                "frontend": {"build": "./frontend", "ports": ["3000:3000"]},
+                "backend": {"build": "./backend", "ports": ["8000:8000"]},
+            }
+        }
+
+        override = generate_compose_override(spec, compose)
+        services = override["services"]
+        assert "npm pack" in services["frontend"]["command"][0]
+        assert "backend" not in services
+
+    def test_python_override_replaces_existing_package(self, tmp_path):
+        spec = self._make_spec(tmp_path, typescript=False)
+        compose = {
+            "services": {
+                "backend": {"build": "./backend", "ports": ["8000:8000"]},
+            }
+        }
+
+        override = generate_compose_override(spec, compose)
+        command = override["services"]["backend"]["command"][0]
+        assert 'rm -rf "$SITE"' in command
+        assert 'cp -r /sdk/kamiwaza_extensions_lib "$SITE_PARENT/"' in command
 
     def test_volume_mount_is_readonly(self, tmp_path):
         spec = self._make_spec(tmp_path)
@@ -462,8 +527,12 @@ class TestApplyBuildOverlay:
         )
         result = apply_build_overlay(dockerfile, overlay)
         lines = result.splitlines()
-        build_idx = next(i for i, l in enumerate(lines) if "npm run build" in l)
-        inject_idx = next(i for i, l in enumerate(lines) if "echo injected" in l)
+        build_idx = next(
+            i for i, line in enumerate(lines) if "npm run build" in line
+        )
+        inject_idx = next(
+            i for i, line in enumerate(lines) if "echo injected" in line
+        )
         assert inject_idx < build_idx
 
     def test_inserts_before_next_build(self):
@@ -487,6 +556,33 @@ class TestApplyBuildOverlay:
         )
         result = apply_build_overlay(dockerfile, overlay)
         assert result.endswith("# overlay\n")
+
+    def test_restores_detected_user_when_appending_overlay(self):
+        dockerfile = "FROM python:3.10\nUSER appuser\n"
+        overlay = BuildOverride(
+            service_name="backend",
+            overlay_steps="# overlay\nUSER root\nRUN echo injected\n{restore_user_block}",
+            additional_build_contexts={},
+            insert_before_build=False,
+        )
+
+        result = apply_build_overlay(dockerfile, overlay)
+        assert "RUN echo injected" in result
+        assert "USER appuser" in result
+
+    def test_keeps_root_before_build_when_no_user_declared_yet(self):
+        dockerfile = "FROM node:20\nCOPY . .\nRUN npm run build\nUSER 1001\n"
+        overlay = BuildOverride(
+            service_name="frontend",
+            overlay_steps="# overlay\nUSER root\nRUN echo injected\n{restore_user_block}",
+            additional_build_contexts={},
+            insert_before_build=True,
+        )
+
+        result = apply_build_overlay(dockerfile, overlay)
+        prefix, _build_line = result.split("RUN npm run build", maxsplit=1)
+        assert "RUN echo injected" in prefix
+        assert "USER 1001" not in prefix
 
 
 # ------------------------------------------------------------------

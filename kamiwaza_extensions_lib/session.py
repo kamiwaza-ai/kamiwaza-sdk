@@ -9,7 +9,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, Request
 
 from .config import AuthConfig
-from .identity import Identity, get_identity
+from .identity import get_identity
 
 
 def _decode_jwt_exp(token: str) -> int | None:
@@ -125,7 +125,10 @@ def create_session_router(prefix: str = "") -> APIRouter:
         try:
             import httpx
             headers = forward_auth_headers(request.headers)
-            async with httpx.AsyncClient(verify=False, timeout=5) as client:
+            async with httpx.AsyncClient(
+                verify=config.verify_ssl,
+                timeout=5,
+            ) as client:
                 await client.post(logout_url, headers=headers)
         except Exception:
             pass  # Best-effort — redirect still happens
