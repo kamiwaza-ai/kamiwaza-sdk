@@ -132,6 +132,21 @@ kz-ext dev
 kz-ext status
 kz-ext logs --service backend --follow
 kz-ext shell --service backend
+
+# 8. Forward a port for direct debugging
+kz-ext port-forward --service backend --port 8000
+
+# 9. Convert an existing app to a Kamiwaza extension
+kz-ext convert /path/to/existing-app
+
+# 10. Publish to an extension catalog
+kz-ext config publish-profile prod \
+  --registry ghcr.io/my-org \
+  --catalog-endpoint https://my-account.r2.cloudflarestorage.com \
+  --catalog-bucket extensions-prod \
+  --catalog-credentials aws-profile:prod
+
+kz-ext publish --stage prod
 ```
 
 ### Commands
@@ -146,6 +161,10 @@ kz-ext shell --service backend
 | `kz-ext status` | Show deployment status: phase, per-service readiness, URL, and recent K8s events. Supports `--name`. |
 | `kz-ext logs` | Stream logs from deployed extension pods. Supports `--service`, `--follow`, `--tail`, `--name`. |
 | `kz-ext shell` | Open an interactive shell in a running extension container. Supports `--service`, `--name`. |
+| `kz-ext port-forward` | Forward a port from a deployed pod to localhost for debugging. Supports `--service`, `--port`, `--name`. |
+| `kz-ext convert <path>` | AI-powered conversion of existing apps to Kamiwaza extensions. Analyzes code, generates `kamiwaza.json`, and wires in SDK integration. Supports `--dry-run`. |
+| `kz-ext publish --stage <profile>` | Build production images, push to registry, and publish to an S3-compatible extension catalog. Supports `--dry-run`, `--force`, `--no-build`, `--no-push`. |
+| `kz-ext config publish-profile` | Create, list, show, or delete named publish profiles. Supports `--list`, `--show`, `--delete`, `--repo-level`. |
 | `kz-ext doctor` | Check your development environment (Python, Docker, Compose, kubectl, connection health, runtime libs). |
 
 ### Development Workflow
@@ -158,6 +177,27 @@ The typical edit-deploy-test cycle:
 4. **`kz-ext logs`** and **`kz-ext shell`** give direct access to running pods for debugging.
 
 No version bumps, registry builds, or manual redeploy steps required during development.
+
+### Publishing
+
+When your extension is ready for release:
+
+1. **Configure a publish profile** with `kz-ext config publish-profile` — specify a container registry and S3-compatible catalog endpoint.
+2. **Bump the version** in `kamiwaza.json`.
+3. **`kz-ext publish --stage prod`** builds production-tagged images, pushes to the profile's registry, and publishes to the catalog.
+4. **`kz-ext publish --stage prod --dry-run`** previews what would happen without making changes.
+
+Publish profiles support multiple environments (dev/staging/prod) and CI via env var overrides (`KZ_PUBLISH_REGISTRY`, `KZ_PUBLISH_CATALOG_ENDPOINT`, etc.).
+
+### Converting Existing Apps
+
+```bash
+kz-ext convert /path/to/existing-app
+```
+
+Uses an AI agent to analyze existing Dockerfiles, compose files, and source code, then generates `kamiwaza.json` and wires in SDK integration (health endpoints, auth middleware, runtime libraries). All changes are git-tracked — review with `git diff`.
+
+Requires `OPENAI_API_KEY` (or `ANTHROPIC_API_KEY`) for AI-powered conversion. Falls back to basic `kamiwaza.json` generation without an API key. Set `OPENAI_BASE_URL` to use any OpenAI-compatible provider (Kamiwaza, vLLM, Ollama, etc.).
 
 ### Extension Types
 
