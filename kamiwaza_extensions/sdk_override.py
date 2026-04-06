@@ -273,6 +273,91 @@ def generate_compose_override(
 
 
 # ------------------------------------------------------------------
+# Build override generation (remote deploy — bake into image)
+# ------------------------------------------------------------------
+
+
+@dataclass
+class BuildOverride:
+    """Override instructions for a single service's Docker build."""
+
+    service_name: str
+    wrapper_dockerfile_content: str
+    additional_build_contexts: Dict[str, str]
+
+
+def generate_build_overrides(
+    spec: SdkOverrideSpec,
+    compose_data: dict,
+) -> List[BuildOverride]:
+    """Generate build overrides to bake local SDK source into images.
+
+    For each service with a build context, produces a wrapper Dockerfile
+    that extends the original build and overlays the local runtime lib.
+    Uses Docker BuildKit additional build contexts (``--build-context``).
+    """
+    overrides: List[BuildOverride] = []
+    services = compose_data.get("services", {})
+
+    for svc_name, svc_config in services.items():
+        if "build" not in svc_config:
+            continue
+
+        svc_type = detect_service_type(svc_name, svc_config)
+
+        if svc_type == "backend" and spec.python:
+            wrapper = (
+                "# Auto-generated SDK override wrapper\n"
+                "ARG BASE_IMAGE\n"
+                "FROM ${BASE_IMAGE}\n"
+                "USER root\n"
+                "COPY --from=sdk kamiwaza_extensions_lib /tmp/kamiwaza_extensions_lib\n"
+                "RUN pip install --no-cache-dir /tmp/kamiwaza_extensions_lib --no-deps"
+                " && rm -rf /tmp/kamiwaza_extensions_lib\n"
+                "USER 1001\n"
+            )
+            overrides.append(BuildOverride(
+                service_name=svc_name,
+                wrapper_dockerfile_content=wrapper,
+                additional_build_contexts={"sdk": str(spec.sdk_repo)},
+            ))
+
+        elif svc_type == "frontend" and spec.typescript:
+            wrapper = (
+                "# Auto-generated SDK override wrapper\n"
+                "ARG BASE_IMAGE\n"
+                "FROM ${BASE_IMAGE}\n"
+                "USER root\n"
+                "COPY --from=sdk kamiwaza-ai-extensions-lib /tmp/kamiwaza-ai-extensions-lib\n"
+                "RUN cd /tmp/kamiwaza-ai-extensions-lib && npm pack --pack-destination /tmp"
+                " && cd /app && npm install /tmp/kamiwaza-ai-extensions-lib-*.tgz"
+                " && rm -rf /tmp/kamiwaza-ai-extensions-lib*\n"
+                "USER 1001\n"
+            )
+            overrides.append(BuildOverride(
+                service_name=svc_name,
+                wrapper_dockerfile_content=wrapper,
+                additional_build_contexts={"sdk": str(spec.sdk_repo)},
+            ))
+
+    return overrides
+
+
+def check_buildkit_available() -> bool:
+    """Check if Docker BuildKit is available (needed for --build-context)."""
+    try:
+        result = subprocess.run(
+            ["docker", "buildx", "version"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return result.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
+# ------------------------------------------------------------------
 # Diagnostics
 # ------------------------------------------------------------------
 

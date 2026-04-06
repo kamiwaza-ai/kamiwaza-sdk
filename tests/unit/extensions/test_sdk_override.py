@@ -7,9 +7,11 @@ import pytest
 import yaml
 
 from kamiwaza_extensions.sdk_override import (
+    BuildOverride,
     SdkOverrideSpec,
     ValidationResult,
     detect_service_type,
+    generate_build_overrides,
     generate_compose_override,
     resolve_sdk_override,
     validate_sdk_override,
@@ -327,3 +329,131 @@ class TestGenerateComposeOverride:
         spec = self._make_spec(tmp_path)
         override = generate_compose_override(spec, {"services": {}})
         assert override == {"services": {}}
+
+
+# ------------------------------------------------------------------
+# generate_build_overrides (remote deploy)
+# ------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestGenerateBuildOverrides:
+    def _make_spec(self, tmp_path, **kwargs):
+        return SdkOverrideSpec(sdk_repo=tmp_path, **kwargs)
+
+    def test_both_libs(self, tmp_path):
+        spec = self._make_spec(tmp_path)
+        compose = {
+            "services": {
+                "frontend": {"build": "./frontend", "ports": ["3000:3000"]},
+                "backend": {"build": "./backend", "ports": ["8000:8000"]},
+            }
+        }
+        overrides = generate_build_overrides(spec, compose)
+        assert len(overrides) == 2
+        names = {o.service_name for o in overrides}
+        assert names == {"frontend", "backend"}
+
+        backend = [o for o in overrides if o.service_name == "backend"][0]
+        assert "pip install" in backend.wrapper_dockerfile_content
+        assert "sdk" in backend.additional_build_contexts
+
+        frontend = [o for o in overrides if o.service_name == "frontend"][0]
+        assert "npm pack" in frontend.wrapper_dockerfile_content
+
+    def test_python_only(self, tmp_path):
+        spec = self._make_spec(tmp_path, typescript=False)
+        compose = {
+            "services": {
+                "frontend": {"build": "./frontend", "ports": ["3000:3000"]},
+                "backend": {"build": "./backend", "ports": ["8000:8000"]},
+            }
+        }
+        overrides = generate_build_overrides(spec, compose)
+        assert len(overrides) == 1
+        assert overrides[0].service_name == "backend"
+
+    def test_skips_services_without_build(self, tmp_path):
+        spec = self._make_spec(tmp_path)
+        compose = {
+            "services": {
+                "backend": {"build": "./backend", "ports": ["8000:8000"]},
+                "redis": {"image": "redis:7"},
+            }
+        }
+        overrides = generate_build_overrides(spec, compose)
+        assert len(overrides) == 1
+        assert overrides[0].service_name == "backend"
+
+    def test_wrapper_uses_base_image_arg(self, tmp_path):
+        spec = self._make_spec(tmp_path)
+        compose = {"services": {"backend": {"build": ".", "ports": ["8000:8000"]}}}
+        overrides = generate_build_overrides(spec, compose)
+        assert "ARG BASE_IMAGE" in overrides[0].wrapper_dockerfile_content
+        assert "FROM ${BASE_IMAGE}" in overrides[0].wrapper_dockerfile_content
+
+    def test_empty_services(self, tmp_path):
+        spec = self._make_spec(tmp_path)
+        assert generate_build_overrides(spec, {"services": {}}) == []
+
+
+# ------------------------------------------------------------------
+# Doctor SDK checks
+# ------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestDoctorSdkChecks:
+    def test_no_config_returns_empty(self, tmp_path, monkeypatch):
+        from kamiwaza_extensions.doctor import DoctorChecker
+        monkeypatch.chdir(tmp_path)
+        checker = DoctorChecker()
+        results = checker._check_sdk_override()
+        assert results == []
+
+    def test_valid_config_returns_checks(self, tmp_path, monkeypatch):
+        from kamiwaza_extensions.doctor import DoctorChecker
+        import time
+
+        # Set up SDK repo structure
+        (tmp_path / "kamiwaza_extensions_lib").mkdir()
+        ts_lib = tmp_path / "kamiwaza-ai-extensions-lib"
+        ts_lib.mkdir()
+        (ts_lib / "src").mkdir()
+        (ts_lib / "src" / "index.ts").write_text("//")
+        time.sleep(0.05)
+        (ts_lib / "dist").mkdir()
+        (ts_lib / "dist" / "index.js").write_text("//")
+
+        # Set up extension with .kz-ext/local.yaml
+        ext_dir = tmp_path / "my-ext"
+        ext_dir.mkdir()
+        (ext_dir / "kamiwaza.json").write_text('{"name": "test", "version": "0.1.0"}')
+        (ext_dir / ".kz-ext").mkdir()
+        import yaml
+        (ext_dir / ".kz-ext" / "local.yaml").write_text(
+            yaml.dump({"sdk_repo": str(tmp_path)})
+        )
+        # Template contract files
+        backend = ext_dir / "backend"
+        backend.mkdir()
+        (backend / "requirements.txt").write_text("kamiwaza-extensions-lib>=0.1.0\n")
+        frontend = ext_dir / "frontend"
+        frontend.mkdir()
+        (frontend / "package.json").write_text(
+            '{"dependencies": {"@kamiwaza-ai/extensions-lib": "^0.2.0"}}'
+        )
+
+        monkeypatch.chdir(ext_dir)
+        checker = DoctorChecker()
+        results = checker._check_sdk_override()
+
+        names = [r.name for r in results]
+        assert "SDK override config" in names
+        assert "SDK repo exists" in names
+        assert "SDK Python lib" in names
+        assert "SDK TypeScript lib" in names
+        assert "SDK TypeScript dist/" in names
+        assert "SDK override contract" in names
+
+        assert all(r.status == "pass" for r in results)

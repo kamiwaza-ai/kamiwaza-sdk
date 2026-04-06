@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -30,6 +32,7 @@ class ImageBuilder:
         registry: str,
         service_filter: Optional[str] = None,
         verbose: bool = False,
+        build_overrides: Optional[List[Any]] = None,
     ) -> List[str]:
         """Build images and return the list of image references.
 
@@ -41,10 +44,18 @@ class ImageBuilder:
             registry: Registry prefix (e.g. ``registry.kamiwaza.test``).
             service_filter: Build only this service (``--service`` flag).
             verbose: Stream full build output.
+            build_overrides: Optional list of ``BuildOverride`` objects from
+                ``sdk_override.generate_build_overrides()``.
 
         Returns:
             List of image references that were built.
         """
+        # Index overrides by service name
+        override_map: Dict[str, Any] = {}
+        if build_overrides:
+            for bo in build_overrides:
+                override_map[bo.service_name] = bo
+
         services = compose_data.get("services") or {}
         built: List[str] = []
 
@@ -57,8 +68,16 @@ class ImageBuilder:
             image_ref = f"{registry}/{extension_name}-{svc_name}:{revision_tag}"
             dockerfile, context = self._resolve_build_config(svc["build"], extension_dir)
 
-            console.print(f"  Building [bold]{svc_name}[/bold]...")
-            self._docker_build(image_ref, dockerfile, context, verbose=verbose)
+            override = override_map.get(svc_name)
+            sdk_label = " (with local SDK libs)" if override else ""
+            console.print(f"  Building [bold]{svc_name}[/bold]{sdk_label}...")
+
+            if override:
+                self._docker_build_with_override(
+                    image_ref, dockerfile, context, override, verbose=verbose,
+                )
+            else:
+                self._docker_build(image_ref, dockerfile, context, verbose=verbose)
             built.append(image_ref)
             console.print(f"  [green]\u2713[/green] {svc_name}  ({image_ref})")
 
@@ -121,3 +140,89 @@ class ImageBuilder:
             raise ImageBuildError(
                 "Docker not found. Install Docker Desktop or ensure 'docker' is on PATH."
             )
+
+    @staticmethod
+    def _docker_build_with_override(
+        image_ref: str,
+        dockerfile: Path,
+        context: Path,
+        override: Any,
+        *,
+        verbose: bool = False,
+    ) -> None:
+        """Build with SDK override: build the base image, then apply a wrapper.
+
+        1. Build the original Dockerfile to a temporary base tag.
+        2. Write the wrapper Dockerfile to a temp file.
+        3. Build the wrapper with ``--build-arg BASE_IMAGE=<base>`` and
+           ``--build-context sdk=<path>`` to overlay the local SDK lib.
+        """
+        base_tag = f"{image_ref}-base"
+        wrapper_file = None
+
+        try:
+            # Step 1: Build the original image as base
+            base_cmd = [
+                "docker", "build", "--load",
+                "-t", base_tag,
+                "-f", str(dockerfile),
+                str(context),
+            ]
+            env = {**os.environ, "DOCKER_BUILDKIT": "1"}
+
+            if verbose:
+                subprocess.run(base_cmd, check=True, timeout=3600, env=env)
+            else:
+                result = subprocess.run(
+                    base_cmd, capture_output=True, text=True, timeout=3600, env=env,
+                )
+                if result.returncode != 0:
+                    lines = (result.stdout + result.stderr).strip().splitlines()
+                    tail = "\n".join(lines[-20:])
+                    raise ImageBuildError(
+                        f"Docker build (base) failed for {image_ref}:\n{tail}"
+                    )
+
+            # Step 2: Write wrapper Dockerfile
+            fd = tempfile.NamedTemporaryFile(
+                mode="w", suffix=".Dockerfile", prefix="kz-sdk-wrapper-", delete=False,
+            )
+            fd.write(override.wrapper_dockerfile_content)
+            fd.close()
+            wrapper_file = fd.name
+
+            # Step 3: Build wrapper with build contexts
+            wrapper_cmd = [
+                "docker", "build", "--load",
+                "-t", image_ref,
+                "-f", wrapper_file,
+                "--build-arg", f"BASE_IMAGE={base_tag}",
+            ]
+            for ctx_name, ctx_path in override.additional_build_contexts.items():
+                wrapper_cmd.extend(["--build-context", f"{ctx_name}={ctx_path}"])
+            # Use a minimal context (the wrapper doesn't need the source)
+            wrapper_cmd.append(context.anchor if hasattr(context, "anchor") else "/")
+
+            if verbose:
+                subprocess.run(wrapper_cmd, check=True, timeout=3600, env=env)
+            else:
+                result = subprocess.run(
+                    wrapper_cmd, capture_output=True, text=True, timeout=3600, env=env,
+                )
+                if result.returncode != 0:
+                    lines = (result.stdout + result.stderr).strip().splitlines()
+                    tail = "\n".join(lines[-20:])
+                    raise ImageBuildError(
+                        f"Docker build (SDK wrapper) failed for {image_ref}:\n{tail}"
+                    )
+
+        except FileNotFoundError:
+            raise ImageBuildError(
+                "Docker not found. Install Docker Desktop or ensure 'docker' is on PATH."
+            )
+        finally:
+            if wrapper_file:
+                try:
+                    os.unlink(wrapper_file)
+                except OSError:
+                    pass

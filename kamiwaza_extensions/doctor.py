@@ -46,6 +46,10 @@ class DoctorChecker:
         ext_results = self._check_extension_context()
         results.extend(ext_results)
 
+        # SDK override checks (if configured)
+        sdk_results = self._check_sdk_override()
+        results.extend(sdk_results)
+
         return results
 
     # ------------------------------------------------------------------
@@ -249,3 +253,131 @@ class DoctorChecker:
             "@kamiwaza-ai/extensions-lib not found in package.json",
             fix='Add "@kamiwaza-ai/extensions-lib": "^0.2.0" to package.json dependencies',
         )
+
+    # ------------------------------------------------------------------
+    # SDK override checks
+    # ------------------------------------------------------------------
+
+    def _check_sdk_override(self) -> List[CheckResult]:
+        """Check SDK override configuration if present."""
+        from kamiwaza_extensions.sdk_override import (
+            resolve_sdk_override,
+            validate_sdk_override,
+        )
+
+        results: List[CheckResult] = []
+        cwd = Path.cwd()
+
+        spec = resolve_sdk_override(None, cwd)
+        if spec is None:
+            return results  # No override configured — skip
+
+        results.append(CheckResult(
+            "SDK override config", "pass",
+            f"Loaded from .kz-ext/local.yaml (sdk_repo: {spec.sdk_repo})",
+        ))
+
+        validation = validate_sdk_override(spec)
+
+        # SDK repo exists
+        if spec.sdk_repo.is_dir():
+            results.append(CheckResult("SDK repo exists", "pass", str(spec.sdk_repo)))
+        else:
+            results.append(CheckResult(
+                "SDK repo exists", "fail", f"Not found: {spec.sdk_repo}",
+                fix=f"Check path in .kz-ext/local.yaml",
+            ))
+            return results  # Can't check further
+
+        # Python lib
+        if spec.python:
+            if spec.python_lib_path.is_dir():
+                results.append(CheckResult(
+                    "SDK Python lib", "pass",
+                    "kamiwaza_extensions_lib/ found",
+                ))
+            else:
+                results.append(CheckResult(
+                    "SDK Python lib", "fail",
+                    "kamiwaza_extensions_lib/ not found in SDK repo",
+                ))
+
+        # TypeScript lib
+        if spec.typescript:
+            if spec.typescript_lib_path.is_dir():
+                results.append(CheckResult(
+                    "SDK TypeScript lib", "pass",
+                    "kamiwaza-ai-extensions-lib/ found",
+                ))
+            else:
+                results.append(CheckResult(
+                    "SDK TypeScript lib", "fail",
+                    "kamiwaza-ai-extensions-lib/ not found in SDK repo",
+                ))
+
+            # dist/ check
+            if spec.typescript_lib_path.is_dir():
+                if spec.typescript_dist_path.is_dir():
+                    # Check staleness via validation warnings
+                    stale = any("stale" in w for w in validation.warnings)
+                    if stale:
+                        results.append(CheckResult(
+                            "SDK TypeScript dist/", "warn",
+                            "dist/ exists but may be stale (src/ is newer)",
+                            fix=f"cd {spec.typescript_lib_path} && npm run build",
+                        ))
+                    else:
+                        results.append(CheckResult(
+                            "SDK TypeScript dist/", "pass", "Built and up to date",
+                        ))
+                else:
+                    results.append(CheckResult(
+                        "SDK TypeScript dist/", "warn",
+                        "dist/ not found — will be built on first run",
+                        fix=f"cd {spec.typescript_lib_path} && npm install && npm run build",
+                    ))
+
+        # Template contract check
+        ext_dir = cwd
+        metadata_path = ext_dir / "kamiwaza.json"
+        if not metadata_path.exists():
+            found = list(ext_dir.glob("*/kamiwaza.json"))
+            if found:
+                ext_dir = found[0].parent
+
+        contract_ok = True
+        req_file = ext_dir / "backend" / "requirements.txt"
+        if not req_file.exists():
+            req_file = ext_dir / "requirements.txt"
+        if req_file.exists():
+            content = req_file.read_text()
+            if "kamiwaza-extensions-lib" not in content:
+                contract_ok = False
+
+        pkg_file = ext_dir / "frontend" / "package.json"
+        if not pkg_file.exists():
+            pkg_file = ext_dir / "package.json"
+        if pkg_file.exists():
+            try:
+                with pkg_file.open() as f:
+                    data = json.load(f)
+                deps = {**data.get("dependencies", {}), **data.get("devDependencies", {})}
+                if "@kamiwaza-ai/extensions-lib" not in deps:
+                    contract_ok = False
+            except (json.JSONDecodeError, FileNotFoundError):
+                pass
+
+        if contract_ok:
+            results.append(CheckResult(
+                "SDK override contract", "pass",
+                "requirements.txt and package.json reference runtime libs",
+            ))
+        else:
+            results.append(CheckResult(
+                "SDK override contract", "warn",
+                "Non-standard install — SDK override may need manual configuration",
+                fix="Ensure requirements.txt has kamiwaza-extensions-lib and "
+                    "package.json has @kamiwaza-ai/extensions-lib",
+            ))
+
+        return results

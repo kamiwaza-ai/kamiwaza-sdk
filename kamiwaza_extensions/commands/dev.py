@@ -96,6 +96,7 @@ def run_dev_remote(
     service: Optional[str] = None,
     revision: Optional[str] = None,
     verbose: bool = False,
+    sdk_repo: Optional[str] = None,
 ) -> None:
     """Build, push, and deploy extension to a Kamiwaza cluster."""
     from kamiwaza_sdk import KamiwazaClient
@@ -178,6 +179,55 @@ def run_dev_remote(
         registry=registry,
     )
 
+    # 5b. Resolve SDK override for build
+    build_overrides = None
+    if sdk_repo and not no_build:
+        from kamiwaza_extensions.sdk_override import (
+            SdkOverrideSpec,
+            build_typescript_lib,
+            check_buildkit_available,
+            generate_build_overrides,
+            print_override_diagnostics,
+            resolve_sdk_override,
+            validate_sdk_override,
+        )
+
+        override_spec = resolve_sdk_override(sdk_repo, info.path)
+        if override_spec:
+            validation = validate_sdk_override(override_spec)
+            for err in validation.errors:
+                console.print(f"[red]SDK override error: {err}[/red]")
+            for warn in validation.warnings:
+                console.print(f"[yellow]SDK override: {warn}[/yellow]")
+
+            if not validation.ok:
+                console.print("[red]SDK override disabled due to errors above[/red]")
+            elif not check_buildkit_available():
+                console.print(
+                    "[red]Error:[/red] SDK override for remote deploy requires Docker BuildKit.\n"
+                    "  Fix: Upgrade Docker to 20.10+ or set DOCKER_BUILDKIT=1\n"
+                    "  Alternatively, use [bold]kz-ext dev local --sdk-repo[/bold] for local dev."
+                )
+                raise typer.Exit(code=1)
+            else:
+                # Build TS if needed
+                if override_spec.typescript and (
+                    override_spec.build_typescript
+                    or not override_spec.typescript_dist_path.is_dir()
+                ):
+                    if not build_typescript_lib(override_spec):
+                        console.print("[yellow]Continuing without TypeScript override[/yellow]")
+                        override_spec = SdkOverrideSpec(
+                            sdk_repo=override_spec.sdk_repo,
+                            python=override_spec.python,
+                            typescript=False,
+                            build_typescript=False,
+                        )
+
+                print_override_diagnostics(override_spec)
+                build_overrides = generate_build_overrides(override_spec, info.compose_data)
+        console.print()
+
     # 6. Build images
     if not no_build:
         console.print("Building images...")
@@ -191,6 +241,7 @@ def run_dev_remote(
                 registry=registry,
                 service_filter=service,
                 verbose=verbose,
+                build_overrides=build_overrides,
             )
         except ImageBuildError as exc:
             console.print(f"\n[red]Error:[/red] {exc}")
