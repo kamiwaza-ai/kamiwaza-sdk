@@ -241,6 +241,16 @@ def port_forward(
 
 @app.command()
 @run_with_error_handling
+def bump(
+    level: str = typer.Option("patch", "--level", "-l", help="Bump level: major, minor, or patch"),
+) -> None:
+    """Bump extension version in kamiwaza.json."""
+    from kamiwaza_extensions.commands.bump import run_bump
+    run_bump(level=level)
+
+
+@app.command()
+@run_with_error_handling
 def convert(
     path: str = typer.Argument(..., help="Path to existing app directory"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview without modifying files"),
