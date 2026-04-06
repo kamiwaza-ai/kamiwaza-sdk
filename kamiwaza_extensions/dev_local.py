@@ -126,7 +126,9 @@ class DevLocalRunner:
 
             # 7. Generate SDK override compose file
             if override_spec and info.compose_data:
-                sdk_override_data = generate_compose_override(override_spec, info.compose_data)
+                sdk_override_data = generate_compose_override(
+                    override_spec, info.compose_data, extension_dir=info.path,
+                )
                 fd = tempfile.NamedTemporaryFile(
                     mode="w", suffix=".yml", prefix="kz-sdk-", delete=False
                 )

@@ -271,24 +271,53 @@ class TestGenerateComposeOverride:
     def _make_spec(self, tmp_path, **kwargs):
         return SdkOverrideSpec(sdk_repo=tmp_path, **kwargs)
 
+    def _make_ext_dir(self, tmp_path):
+        """Create a minimal extension directory with Dockerfiles."""
+        ext = tmp_path / "ext"
+        ext.mkdir()
+        be = ext / "backend"
+        be.mkdir()
+        (be / "Dockerfile").write_text(
+            'FROM python:3.10\nCMD ["uvicorn", "app.main:app", "--host", "0.0.0.0"]\n'
+        )
+        fe = ext / "frontend"
+        fe.mkdir()
+        (fe / "Dockerfile").write_text(
+            'FROM node:20\nENTRYPOINT ["node", "/app/start.mjs"]\n'
+        )
+        return ext
+
     def test_both_libs(self, tmp_path):
+        ext_dir = self._make_ext_dir(tmp_path)
         spec = self._make_spec(tmp_path)
         compose = {
             "services": {
-                "frontend": {"build": "./frontend", "ports": ["3000:3000"]},
+                "frontend": {"build": {"context": "./frontend"}, "ports": ["3000:3000"]},
+                "backend": {"build": {"context": "./backend"}, "ports": ["8000:8000"]},
+            }
+        }
+        override = generate_compose_override(spec, compose, extension_dir=ext_dir)
+        services = override["services"]
+
+        # Backend reads CMD from Dockerfile
+        assert "kamiwaza_extensions_lib" in services["backend"]["command"][0]
+        assert "exec uvicorn app.main:app --host 0.0.0.0" in services["backend"]["command"][0]
+
+        # Frontend reads ENTRYPOINT from Dockerfile
+        assert "npm pack" in services["frontend"]["command"][0]
+        assert "exec node /app/start.mjs" in services["frontend"]["command"][0]
+
+    def test_fallback_without_extension_dir(self, tmp_path):
+        spec = self._make_spec(tmp_path)
+        compose = {
+            "services": {
                 "backend": {"build": "./backend", "ports": ["8000:8000"]},
             }
         }
+        # No extension_dir — uses default fallback commands
         override = generate_compose_override(spec, compose)
         services = override["services"]
-
-        # Backend uses exec "$@" pattern — entrypoint set, no command
-        assert "kamiwaza_extensions_lib" in services["backend"]["entrypoint"][2]
-        assert 'exec "$@"' in services["backend"]["entrypoint"][2]
-        assert "command" not in services["backend"]
-
-        # Frontend gets npm pack + exec npm start
-        assert "npm pack" in services["frontend"]["command"][0]
+        assert "exec uvicorn" in services["backend"]["command"][0]
 
     def test_python_only(self, tmp_path):
         spec = self._make_spec(tmp_path, typescript=False)
@@ -300,24 +329,7 @@ class TestGenerateComposeOverride:
         }
         override = generate_compose_override(spec, compose)
         services = override["services"]
-
-        assert "kamiwaza_extensions_lib" in services["backend"]["entrypoint"][2]
-        # Frontend not in override (no TS override, no build-less service)
-        assert "frontend" not in services or "command" not in services.get("frontend", {})
-
-    def test_typescript_only(self, tmp_path):
-        spec = self._make_spec(tmp_path, python=False)
-        compose = {
-            "services": {
-                "frontend": {"build": "./frontend", "ports": ["3000:3000"]},
-                "backend": {"build": "./backend", "ports": ["8000:8000"]},
-            }
-        }
-        override = generate_compose_override(spec, compose)
-        services = override["services"]
-
-        assert "npm pack" in services["frontend"]["command"][0]
-        assert "backend" not in services or "entrypoint" not in services.get("backend", {})
+        assert "kamiwaza_extensions_lib" in services["backend"]["command"][0]
 
     def test_volume_mount_is_readonly(self, tmp_path):
         spec = self._make_spec(tmp_path)

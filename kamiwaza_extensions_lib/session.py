@@ -117,8 +117,21 @@ def create_session_router(prefix: str = "") -> APIRouter:
 
         base = config.public_api_url.rstrip("/")
         app_url = config.app_url or str(request.base_url).rstrip("/")
+        logout_url = f"{base}/auth/logout"
+
+        # Terminate the platform session server-side so the user is
+        # actually logged out (the client only redirects to redirect_url).
+        from .auth import forward_auth_headers
+        try:
+            import httpx
+            headers = forward_auth_headers(request.headers)
+            async with httpx.AsyncClient(verify=False, timeout=5) as client:
+                await client.post(logout_url, headers=headers)
+        except Exception:
+            pass  # Best-effort — redirect still happens
+
         return {
-            "logout_url": f"{base}/auth/logout",
+            "logout_url": logout_url,
             "redirect_url": f"{app_url}/logged-out",
         }
 

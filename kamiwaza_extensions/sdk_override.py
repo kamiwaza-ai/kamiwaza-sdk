@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-import copy
-import os
 import re
 import subprocess
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 from rich.console import Console
@@ -82,7 +79,13 @@ def resolve_sdk_override(
             raw_repo = config.get("sdk_repo")
             if not raw_repo:
                 return None
-            sdk_repo = Path(raw_repo).expanduser().resolve()
+            # Resolve relative to the config file's directory, not CWD
+            repo_path = Path(raw_repo).expanduser()
+            if not repo_path.is_absolute():
+                repo_path = (config_path.parent / repo_path).resolve()
+            else:
+                repo_path = repo_path.resolve()
+            sdk_repo = repo_path
 
             libs = config.get("runtime_libs", {})
             python = libs.get("python", "local") == "local"
@@ -222,8 +225,8 @@ _PYTHON_LIB_COPY = (
 
 _TS_LIB_INSTALL = (
     "TARBALL=$(cd /sdk/kamiwaza-ai-extensions-lib"
-    " && npm pack --pack-destination /tmp 2>/dev/null | tail -1)"
-    ' && cd /app && npm install "/tmp/$TARBALL"'
+    " && npm pack --ignore-scripts --pack-destination /tmp 2>/dev/null | tail -1)"
+    ' && cd /app && npm install --ignore-scripts "/tmp/$TARBALL"'
 )
 
 
@@ -256,9 +259,60 @@ def detect_service_type(
     return "backend"
 
 
+def _resolve_dockerfile(build_spec: Any, extension_dir: Path) -> Optional[Path]:
+    """Resolve the Dockerfile path from a compose build spec."""
+    if isinstance(build_spec, str):
+        return extension_dir / build_spec / "Dockerfile"
+    elif isinstance(build_spec, dict):
+        ctx = build_spec.get("context", ".")
+        context = extension_dir / ctx
+        df = build_spec.get("dockerfile", "Dockerfile")
+        return Path(df) if Path(df).is_absolute() else context / df
+    return None
+
+
+def _read_dockerfile_startup(dockerfile: Path) -> Optional[str]:
+    """Read the startup command from a Dockerfile.
+
+    Returns a shell command string from the last CMD or ENTRYPOINT.
+    Returns None if the Dockerfile can't be read or has no startup command.
+    """
+    if not dockerfile.is_file():
+        return None
+    try:
+        content = dockerfile.read_text()
+    except OSError:
+        return None
+
+    startup = None
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("CMD ") or stripped.startswith("ENTRYPOINT "):
+            startup = stripped
+    if not startup:
+        return None
+
+    # Parse: CMD ["arg1", "arg2"] → "arg1 arg2"
+    #        CMD arg1 arg2 → "arg1 arg2"
+    #        ENTRYPOINT ["node", "/app/start.mjs"] → "node /app/start.mjs"
+    keyword = "CMD " if startup.startswith("CMD ") else "ENTRYPOINT "
+    rest = startup[len(keyword):].strip()
+    if rest.startswith("["):
+        # JSON array form
+        try:
+            import json
+            parts = json.loads(rest)
+            return " ".join(str(p) for p in parts)
+        except (json.JSONDecodeError, TypeError):
+            return rest
+    # Shell form
+    return rest
+
+
 def generate_compose_override(
     spec: SdkOverrideSpec,
     compose_data: dict,
+    extension_dir: Optional[Path] = None,
 ) -> dict:
     """Generate a compose override dict for local SDK development.
 
@@ -266,6 +320,11 @@ def generate_compose_override(
     the local SDK runtime libraries instead of published packages.
     Only overrides services that have a ``build`` key (skips pre-built
     images like redis/postgres).
+
+    When *extension_dir* is provided, reads each service's Dockerfile to
+    determine the correct startup command.  Docker Compose clears the
+    image's CMD when ``entrypoint`` is overridden, so the original startup
+    command must be provided explicitly.
     """
     override_services: dict = {}
     services = compose_data.get("services", {})
@@ -286,20 +345,25 @@ def generate_compose_override(
             "read_only": True,
         }]
 
+        # Read the original startup command from the Dockerfile
+        startup_cmd = None
+        if extension_dir:
+            df = _resolve_dockerfile(svc_config["build"], extension_dir)
+            if df:
+                startup_cmd = _read_dockerfile_startup(df)
+
         if svc_type == "backend" and spec.python:
-            # Use exec "$@" to preserve the original Dockerfile CMD
-            svc_override["entrypoint"] = [
-                "/bin/sh", "-c",
-                _PYTHON_LIB_COPY + ' && exec "$@"',
-                "--",
+            exec_cmd = startup_cmd or "uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+            svc_override["entrypoint"] = ["/bin/sh", "-c"]
+            svc_override["command"] = [
+                _PYTHON_LIB_COPY + f" && exec {exec_cmd}"
             ]
 
         elif svc_type == "frontend" and spec.typescript:
-            # Frontend templates use ENTRYPOINT (not CMD), so $@ may be empty.
-            # Use `exec npm start` as a safe fallback for any Next.js app.
+            exec_cmd = startup_cmd or "npm start"
             svc_override["entrypoint"] = ["/bin/sh", "-c"]
             svc_override["command"] = [
-                _TS_LIB_INSTALL + " && exec npm start"
+                _TS_LIB_INSTALL + f" && exec {exec_cmd}"
             ]
 
         if svc_override:
@@ -340,8 +404,8 @@ _TS_OVERLAY = (
     "USER root\n"
     "COPY --from=sdk kamiwaza-ai-extensions-lib /tmp/kamiwaza-ai-extensions-lib\n"
     "RUN TARBALL=$(cd /tmp/kamiwaza-ai-extensions-lib"
-    " && npm pack --pack-destination /tmp 2>/dev/null | tail -1)"
-    ' && cd /app && npm install "/tmp/$TARBALL"'
+    " && npm pack --ignore-scripts --pack-destination /tmp 2>/dev/null | tail -1)"
+    ' && cd /app && npm install --ignore-scripts "/tmp/$TARBALL"'
     " && rm -rf /tmp/kamiwaza-ai-extensions-lib*\n"
     "USER 1001\n"
 )
