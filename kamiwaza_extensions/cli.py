@@ -184,10 +184,15 @@ def dev_callback(
 @run_with_error_handling
 def dev_local(
     detach: bool = typer.Option(False, "--detach", "-d", help="Run in background"),
+    sdk_repo: Optional[str] = typer.Option(
+        None,
+        "--sdk-repo",
+        help="Path to local kamiwaza-sdk checkout for runtime lib override",
+    ),
 ) -> None:
     """Run extension locally with Docker Compose."""
     from kamiwaza_extensions.commands.dev_local import run_dev_local
-    run_dev_local(detach=detach)
+    run_dev_local(detach=detach, sdk_repo=sdk_repo)
 
 
 @app.command()

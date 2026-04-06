@@ -27,7 +27,21 @@ class DevLocalRunner:
         self._conn_mgr = ConnectionManager(config_dir=config_dir)
         self._detector = ExtensionDetector()
 
-    def run(self, *, detach: bool = False) -> int:
+    def run(
+        self,
+        *,
+        detach: bool = False,
+        sdk_repo: Optional[str] = None,
+    ) -> int:
+        from kamiwaza_extensions.sdk_override import (
+            SdkOverrideSpec,
+            build_typescript_lib,
+            generate_compose_override,
+            print_override_diagnostics,
+            resolve_sdk_override,
+            validate_sdk_override,
+        )
+
         # 1. Detect extension (shared logic)
         info = self._detector.detect()
 
@@ -52,7 +66,38 @@ class DevLocalRunner:
         else:
             console.print("[yellow]No Kamiwaza connection configured — running in standalone mode[/yellow]")
 
-        # 5. Check ports and remap if needed
+        # 5. Resolve SDK override
+        override_spec = resolve_sdk_override(sdk_repo, info.path)
+        sdk_override_file: Optional[str] = None
+
+        if override_spec:
+            validation = validate_sdk_override(override_spec)
+            for err in validation.errors:
+                console.print(f"[red]SDK override error: {err}[/red]")
+            for warn in validation.warnings:
+                console.print(f"[yellow]SDK override: {warn}[/yellow]")
+
+            if not validation.ok:
+                console.print("[red]SDK override disabled due to errors above[/red]")
+                override_spec = None
+            else:
+                # Build TypeScript if needed
+                if override_spec.typescript and (
+                    override_spec.build_typescript
+                    or not override_spec.typescript_dist_path.is_dir()
+                ):
+                    if not build_typescript_lib(override_spec):
+                        console.print("[yellow]Continuing without TypeScript override[/yellow]")
+                        override_spec = SdkOverrideSpec(
+                            sdk_repo=override_spec.sdk_repo,
+                            python=override_spec.python,
+                            typescript=False,
+                            build_typescript=False,
+                        )
+
+                print_override_diagnostics(override_spec)
+
+        # 6. Check ports and remap if needed
         remaps: Dict[str, Tuple[int, int]] = {}
         patched_compose_file: Optional[str] = None
 
@@ -78,12 +123,22 @@ class DevLocalRunner:
         else:
             compose_file_arg = str(info.compose_path)
 
+        # 7. Generate SDK override compose file
+        if override_spec and info.compose_data:
+            sdk_override_data = generate_compose_override(override_spec, info.compose_data)
+            fd = tempfile.NamedTemporaryFile(
+                mode="w", suffix=".yml", prefix="kz-sdk-", delete=False
+            )
+            yaml.dump(sdk_override_data, fd, default_flow_style=False)
+            fd.close()
+            sdk_override_file = fd.name
+
         try:
-            # 6. Build command
+            # 8. Build command
             cmd = compose_cmd + ["-f", compose_file_arg]
-            if patched_compose_file:
-                # Temp file lives outside the project — tell compose where to
-                # resolve relative paths (build contexts, volumes, etc.)
+            if sdk_override_file:
+                cmd += ["-f", sdk_override_file]
+            if patched_compose_file or sdk_override_file:
                 cmd += ["--project-directory", str(info.path)]
             cmd += ["up", "--build"]
             if detach:
@@ -91,17 +146,18 @@ class DevLocalRunner:
 
             console.print(f"[dim]Running:[/dim] {' '.join(cmd)}")
 
-            # 7. Print access URLs
+            # 9. Print access URLs
             self._print_urls(info.compose_data, remaps)
 
-            # 8. Run subprocess with signal forwarding
+            # 10. Run subprocess with signal forwarding
             return self._run_subprocess(cmd, env=env, cwd=str(info.path))
         finally:
-            if patched_compose_file:
-                try:
-                    os.unlink(patched_compose_file)
-                except OSError:
-                    pass
+            for tmp in (patched_compose_file, sdk_override_file):
+                if tmp:
+                    try:
+                        os.unlink(tmp)
+                    except OSError:
+                        pass
 
     # ------------------------------------------------------------------
     # URL display
