@@ -219,12 +219,15 @@ def call_llm(prompt: str) -> Optional[str]:
                 "Install with: pip install kamiwaza-sdk[convert][/dim]"
             )
         else:
-            return _call_openai_compatible(
+            result = _call_openai_compatible(
                 prompt,
                 api_key=openai_key,
                 base_url=os.environ.get("OPENAI_BASE_URL"),
                 model=model_override or os.environ.get("OPENAI_MODEL", "gpt-4o"),
             )
+            if result is not None:
+                return result
+            # OpenAI call failed — fall through to Anthropic
 
     # --- Anthropic (fallback) ---
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
@@ -237,11 +240,13 @@ def call_llm(prompt: str) -> Optional[str]:
                 "Install with: pip install kamiwaza-sdk[convert][/dim]"
             )
         else:
-            return _call_anthropic(
+            result = _call_anthropic(
                 prompt,
                 api_key=anthropic_key,
                 model=model_override or "claude-sonnet-4-20250514",
             )
+            if result is not None:
+                return result
 
     return None
 

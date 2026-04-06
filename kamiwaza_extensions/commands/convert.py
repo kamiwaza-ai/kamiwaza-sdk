@@ -16,7 +16,6 @@ def run_convert(
     *,
     path: str,
     dry_run: bool = False,
-    verbose: bool = False,
 ) -> None:
     """Analyze and convert an existing app to a Kamiwaza extension."""
     from kamiwaza_extensions.app_analyzer import AppAnalyzer

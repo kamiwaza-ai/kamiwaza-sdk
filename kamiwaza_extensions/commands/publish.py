@@ -159,21 +159,14 @@ def run_publish(
 
     registry = profile.registry
 
-    # Determine the image tag: prod uses bare version, stage/dev add suffix
-    known_stages = ("prod", "stage", "dev")
-    if stage not in known_stages:
-        console.print(
-            f"[yellow]Warning:[/yellow] Unknown stage '{stage}'. "
-            f"Valid stages: {', '.join(known_stages)}. Treating as 'prod'."
-        )
-    effective_stage = stage if stage in known_stages else "prod"
-
-    if effective_stage == "prod":
+    # Determine the image tag: "prod" uses bare version, all others add suffix.
+    # The stage name comes from the profile name, so "staging", "qa", etc. work.
+    if stage == "prod":
         image_tag = version
-    elif effective_stage == "stage":
-        image_tag = f"{version}-stage"
+        effective_stage = "prod"
     else:
-        image_tag = f"{version}-dev"
+        image_tag = f"{version}-{stage}"
+        effective_stage = stage
 
     # 4. Transform compose (uses the stage-aware image tag)
     transformer = ComposeTransformer()
@@ -319,14 +312,3 @@ def run_publish(
     if image_refs:
         console.print(f"  Images:  {', '.join(image_refs)}")
     console.print(f"  Catalog: {result.catalog_file}")
-
-
-def _catalog_s3_key(ext_type: str) -> str:
-    """Return the S3 key path portion for the catalog file."""
-    type_file_map = {
-        "app": "apps.json",
-        "tool": "tools.json",
-        "service": "apps.json",
-    }
-    type_file = type_file_map.get(ext_type, "apps.json")
-    return f"garden/v2/{type_file}"

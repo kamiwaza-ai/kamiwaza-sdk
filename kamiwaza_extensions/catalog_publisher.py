@@ -160,10 +160,19 @@ class CatalogPublisher:
             # Verify upload
             if not self._verify_upload(type_file, merged):
                 console.print(
-                    "[red]Upload verification failed, restoring backup...[/red]"
+                    "[red]Upload verification failed, restoring...[/red]"
                 )
                 if backup_path is not None:
                     self._restore_backup(type_file, backup_path)
+                else:
+                    # First publish — no backup to restore; delete the bad file
+                    try:
+                        s3_key = f"{self._garden_dir}{type_file}"
+                        self._s3.delete_object(
+                            Bucket=self._profile.catalog_bucket, Key=s3_key,
+                        )
+                    except Exception:
+                        pass
                 raise CatalogPublishError(
                     "Upload verification failed: re-downloaded content does not "
                     "match what was uploaded."

@@ -37,12 +37,10 @@ publish = [
 ]
 convert = [
     "anthropic>=0.30.0",
-    "openai>=1.0",
 ]
 all = [
     "boto3>=1.28.0",
     "anthropic>=0.30.0",
-    "openai>=1.0",
 ]
 
 [project.urls]

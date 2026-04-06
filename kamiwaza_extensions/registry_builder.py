@@ -25,12 +25,12 @@ _STAGE_SUFFIXES = {
 }
 
 # Synthetic versions used to probe specifier overlap.  We test a broad
-# range in small increments so that "pragmatic disjointness" works for
-# real-world Kamiwaza version constraints (typically >=0.x.0 ranges).
+# range so that "pragmatic disjointness" works for real-world Kamiwaza
+# version constraints.  Covers 0.0.0 through 19.9.2 (600 versions).
 _PROBE_VERSIONS = [
     Version(f"{major}.{minor}.{patch}")
-    for major in range(6)
-    for minor in range(20)
+    for major in range(20)
+    for minor in range(10)
     for patch in range(3)
 ]
 
@@ -323,6 +323,11 @@ def _constraint_relationship(
     """
     a_matches = {v for v in _PROBE_VERSIONS if v in a}
     b_matches = {v for v in _PROBE_VERSIONS if v in b}
+
+    # If either specifier matched nothing in our probe range, we cannot
+    # reliably classify.  Treat as overlap (safe — forces manual review).
+    if not a_matches or not b_matches:
+        return "overlap"
 
     if a_matches == b_matches:
         return "equal"

@@ -131,6 +131,10 @@ def run_port_forward(
 
     if resolved_port is None:
         resolved_port = _COMMON_PORTS[0]
+        console.print(
+            f"[yellow]Warning:[/yellow] Could not detect port for '{svc_name}'. "
+            f"Defaulting to {resolved_port}. Use --port to specify."
+        )
 
     # Build kubectl command
     cmd = [

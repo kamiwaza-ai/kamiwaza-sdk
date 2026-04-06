@@ -247,7 +247,7 @@ def convert(
 ) -> None:
     """Convert an existing app to a Kamiwaza extension."""
     from kamiwaza_extensions.commands.convert import run_convert
-    run_convert(path=path, dry_run=dry_run, verbose=_state.verbose)
+    run_convert(path=path, dry_run=dry_run)
 
 
 @app.command()
