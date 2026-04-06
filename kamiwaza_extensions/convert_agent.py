@@ -216,7 +216,7 @@ def call_llm(prompt: str) -> Optional[str]:
         except ImportError:
             console.print(
                 "[dim]OPENAI_API_KEY is set but openai package is not installed. "
-                "Install with: pip install openai[/dim]"
+                "Install with: pip install kamiwaza-sdk[convert][/dim]"
             )
         else:
             return _call_openai_compatible(
@@ -234,7 +234,7 @@ def call_llm(prompt: str) -> Optional[str]:
         except ImportError:
             console.print(
                 "[dim]ANTHROPIC_API_KEY is set but anthropic package is not installed. "
-                "Install with: pip install anthropic[/dim]"
+                "Install with: pip install kamiwaza-sdk[convert][/dim]"
             )
         else:
             return _call_anthropic(
@@ -334,6 +334,13 @@ def apply_plan(plan: ConversionPlan, app_dir: Path, dry_run: bool = False) -> Li
     applied = []
     for mod in plan.modifications:
         if not mod.path or not mod.content:
+            continue
+
+        allowed_actions = ("create", "modify", "append")
+        if mod.action not in allowed_actions:
+            console.print(
+                f"[yellow]Warning:[/yellow] Unknown action '{mod.action}' for '{mod.path}' — skipping"
+            )
             continue
 
         target = (app_dir / mod.path).resolve()

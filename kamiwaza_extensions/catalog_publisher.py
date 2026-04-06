@@ -83,7 +83,7 @@ class CatalogPublisher:
             raise ImportError(
                 "boto3 is required for catalog publishing. "
                 "Install it with: pip install boto3  "
-                "(or: pip install kamiwaza-client[extensions])"
+                "(or: pip install kamiwaza-sdk[publish])"
             )
 
         self._boto3 = boto3
@@ -189,8 +189,11 @@ class CatalogPublisher:
                 dry_run=False,
                 backup_path=backup_path,
             )
+        except CatalogPublishError:
+            # CatalogPublishError from verify failure already restored backup.
+            raise
         except Exception:
-            # On any failure, attempt to restore backup before re-raising
+            # On any other failure, attempt to restore backup before re-raising.
             if backup_path is not None:
                 try:
                     self._restore_backup(type_file, backup_path)
@@ -282,9 +285,18 @@ class CatalogPublisher:
                 f"[dim]Could not check for stale lock: {exc}[/dim]"
             )
         except (json.JSONDecodeError, ValueError):
-            # Lock body is not valid JSON or timestamp is unparseable.
-            # Let the normal acquisition path handle the conflict.
-            pass
+            # Lock body is corrupted — treat as stale and remove it to
+            # prevent permanent contention.
+            console.print(
+                "[yellow]Warning: corrupted lock file detected. Removing...[/yellow]"
+            )
+            try:
+                self._s3.delete_object(
+                    Bucket=self._profile.catalog_bucket,
+                    Key=lock_key,
+                )
+            except Exception:
+                pass
 
     def _release_lock(self) -> None:
         """Release the publish lock by deleting the lock object."""

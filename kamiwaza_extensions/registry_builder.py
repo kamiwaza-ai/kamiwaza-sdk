@@ -299,8 +299,11 @@ def _normalize_preview_image(path: str) -> str:
     """Ensure preview image path has ``images/`` prefix."""
     if path.startswith("images/"):
         return path
-    # Strip leading "./" or "/" before prefixing.
-    stripped = path.lstrip("./")
+    # Strip leading "./" or "/" prefix (not lstrip which strips characters).
+    stripped = path
+    while stripped.startswith("./"):
+        stripped = stripped[2:]
+    stripped = stripped.lstrip("/")
     if stripped.startswith("images/"):
         return stripped
     return f"images/{stripped}"

@@ -231,15 +231,29 @@ class TestPublishDryRun:
         mock_transformer.transform.return_value = {"services": {}}
         mock_transformer_cls.return_value = mock_transformer
 
+        # Dry-run still calls registry builder + catalog publisher to check for conflicts
+        mock_reg_builder = MagicMock()
+        mock_reg_builder.build_entry.return_value = {"name": "my-app", "version": "1.0.0"}
+        mock_reg_builder_cls.return_value = mock_reg_builder
+
+        mock_publisher = MagicMock()
+        mock_publisher.publish.return_value = _make_publish_result(dry_run=True)
+        mock_publisher_cls.return_value = mock_publisher
+
         from kamiwaza_extensions.commands.publish import run_publish
 
         run_publish(stage="dev", dry_run=True)
 
-        # Build, push, registry_builder, and catalog_publisher should NOT be instantiated
+        # Build and push should NOT be called
         mock_builder_cls.return_value.build.assert_not_called()
         mock_pusher_cls.return_value.push.assert_not_called()
-        mock_reg_builder_cls.return_value.build_entry.assert_not_called()
-        mock_publisher_cls.return_value.publish.assert_not_called()
+
+        # But registry builder and catalog publisher ARE called (with dry_run=True)
+        mock_reg_builder.build_entry.assert_called_once()
+        mock_publisher.publish.assert_called_once()
+        # Verify dry_run=True was passed
+        call_kwargs = mock_publisher.publish.call_args[1]
+        assert call_kwargs.get("dry_run") is True
 
 
 # ------------------------------------------------------------------

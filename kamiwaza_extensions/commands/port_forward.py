@@ -150,8 +150,6 @@ def run_port_forward(
     # Replace the current process with kubectl port-forward
     try:
         os.execvp("kubectl", cmd)
-    except FileNotFoundError:
-        console.print(
-            "[red]Error:[/red] kubectl not found. Install it to use port-forward."
-        )
-        raise typer.Exit(code=1)
+    except OSError as exc:
+        console.print(f"[red]Error:[/red] Failed to run kubectl: {exc}")
+        raise typer.Exit(code=1) from exc

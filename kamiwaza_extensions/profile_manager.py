@@ -61,14 +61,11 @@ def _secure_write(path: Path, data: dict) -> None:
     """
     _secure_dir(path.parent)
     tmp_path = path.with_suffix(".tmp")
-    # Open with restrictive mode from the start (0o600)
+    # Open with restrictive mode from the start (0o600).
+    # os.fdopen takes ownership of the fd — do NOT close fd manually after.
     fd = os.open(str(tmp_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-    except BaseException:
-        os.close(fd)
-        raise
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
     tmp_path.replace(path)
 
 

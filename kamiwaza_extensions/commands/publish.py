@@ -37,9 +37,18 @@ def _resolve_preview_image(
     preview = metadata.get("preview_image")
     if not preview:
         return None
-    resolved = extension_dir / preview
+    resolved = (extension_dir / preview).resolve()
+    # Security: reject paths that escape the extension directory
+    if not resolved.is_relative_to(extension_dir.resolve()):
+        console.print(
+            f"[yellow]Warning:[/yellow] preview_image '{preview}' escapes extension directory — ignored"
+        )
+        return None
     if resolved.exists():
         return resolved
+    console.print(
+        f"[yellow]Warning:[/yellow] preview_image '{preview}' not found — skipping"
+    )
     return None
 
 
@@ -150,31 +159,70 @@ def run_publish(
 
     registry = profile.registry
 
-    # 4. Transform compose
+    # Determine the image tag: prod uses bare version, stage/dev add suffix
+    known_stages = ("prod", "stage", "dev")
+    if stage not in known_stages:
+        console.print(
+            f"[yellow]Warning:[/yellow] Unknown stage '{stage}'. "
+            f"Valid stages: {', '.join(known_stages)}. Treating as 'prod'."
+        )
+    effective_stage = stage if stage in known_stages else "prod"
+
+    if effective_stage == "prod":
+        image_tag = version
+    elif effective_stage == "stage":
+        image_tag = f"{version}-stage"
+    else:
+        image_tag = f"{version}-dev"
+
+    # 4. Transform compose (uses the stage-aware image tag)
     transformer = ComposeTransformer()
     transformed = transformer.transform(
         info.compose_data,
         extension_name=info.name,
-        revision_tag=version,
+        revision_tag=image_tag,
         registry=registry,
     )
 
-    # -- Dry-run path --
+    # -- Dry-run path (still runs merge check to detect conflicts) --
     if dry_run:
         short_names = _collect_buildable_image_names(
-            info.compose_data, info.name, version, registry
+            info.compose_data, info.name, image_tag, registry
         )
         console.print(
             f"  Would build images:    {', '.join(short_names) if short_names else '(none)'}"
         )
         console.print(f"  Would push to:         {registry}/")
-        catalog_file = f"{profile.catalog_bucket}/{_catalog_s3_key(ext_type)}"
-        console.print(f"  Would publish to:      {catalog_file}")
+
+        # Run merge check so dry-run detects version conflicts
+        reg_builder = RegistryBuilder()
+        entry = reg_builder.build_entry(
+            metadata=info.metadata,
+            transformed_compose=transformed,
+            registry=registry,
+            version=version,
+            stage=effective_stage,
+        )
+        try:
+            publisher = CatalogPublisher(profile, extension_dir=info.path)
+            result = publisher.publish(
+                entry=entry,
+                extension_type=ext_type,
+                force=force,
+                dry_run=True,
+            )
+            console.print(
+                f"  Would publish to:      {result.catalog_file} ({result.action})"
+            )
+        except (CatalogPublishError, ValueError) as exc:
+            console.print(f"\n[red]Error:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+
         console.print()
         console.print("[dim]No changes made (dry-run mode).[/dim]")
         return
 
-    # 5. Build images
+    # 5. Build images (using stage-aware tag)
     image_refs: List[str] = []
     if not no_build:
         console.print("  Building images...", end="")
@@ -184,7 +232,7 @@ def run_publish(
                 extension_dir=info.path,
                 compose_data=info.compose_data,
                 extension_name=info.name,
-                revision_tag=version,
+                revision_tag=image_tag,
                 registry=registry,
                 verbose=verbose,
             )
@@ -195,17 +243,17 @@ def run_publish(
 
         if image_refs:
             console.print(
-                f"    [green]\u2713[/green] {len(image_refs)} image(s) built ({version})"
+                f"    [green]\u2713[/green] {len(image_refs)} image(s) built ({image_tag})"
             )
         else:
             console.print("    [yellow]![/yellow] No images to build")
     else:
         console.print("  [dim]Skipping build (--no-build)[/dim]")
         image_refs = _collect_image_refs(
-            info.compose_data, info.name, version, registry
+            info.compose_data, info.name, image_tag, registry
         )
 
-    # 6. Push images
+    # 6. Push images (same stage-aware tag)
     if not no_push and image_refs:
         console.print("  Pushing images...", end="")
         try:
@@ -234,7 +282,7 @@ def run_publish(
         transformed_compose=transformed,
         registry=registry,
         version=version,
-        stage=stage if stage in ("prod", "stage", "dev") else "prod",
+        stage=effective_stage,
     )
 
     # 8. Publish to catalog
