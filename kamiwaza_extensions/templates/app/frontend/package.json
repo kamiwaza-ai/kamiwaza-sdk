@@ -8,14 +8,17 @@
         "start": "next start"
     },
     "dependencies": {
+        "@kamiwaza-ai/extensions-lib": "{{ts_runtime_lib_version}}",
+        "autoprefixer": "^10.4.27",
         "next": "^14.0.0",
+        "postcss": "^8.5.8",
         "react": "^18.0.0",
         "react-dom": "^18.0.0",
-        "@kamiwaza-ai/extensions-lib": "{{ts_runtime_lib_version}}"
+        "tailwindcss": "^3.4.19"
     },
     "devDependencies": {
-        "typescript": "^5.0.0",
+        "@types/node": "^20.0.0",
         "@types/react": "^18.0.0",
-        "@types/node": "^20.0.0"
+        "typescript": "^5.0.0"
     }
 }

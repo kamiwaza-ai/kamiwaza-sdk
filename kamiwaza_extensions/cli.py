@@ -156,6 +156,11 @@ def dev_callback(
     no_push: bool = typer.Option(False, "--no-push", help="Skip registry push"),
     service: Optional[str] = typer.Option(None, "--service", "-s", help="Build/push one service only"),
     revision: Optional[str] = typer.Option(None, "--revision", "-r", help="Custom revision tag"),
+    sdk_repo: Optional[str] = typer.Option(
+        None,
+        "--sdk-repo",
+        help="Path to local kamiwaza-sdk checkout — bakes local runtime libs into images",
+    ),
 ) -> None:
     """Build, push, and deploy extension to Kamiwaza cluster.
 
@@ -173,6 +178,7 @@ def dev_callback(
             service=service,
             revision=revision,
             verbose=_state.verbose,
+            sdk_repo=sdk_repo,
         )
     except typer.Exit:
         raise
@@ -184,10 +190,15 @@ def dev_callback(
 @run_with_error_handling
 def dev_local(
     detach: bool = typer.Option(False, "--detach", "-d", help="Run in background"),
+    sdk_repo: Optional[str] = typer.Option(
+        None,
+        "--sdk-repo",
+        help="Path to local kamiwaza-sdk checkout for runtime lib override",
+    ),
 ) -> None:
     """Run extension locally with Docker Compose."""
     from kamiwaza_extensions.commands.dev_local import run_dev_local
-    run_dev_local(detach=detach)
+    run_dev_local(detach=detach, sdk_repo=sdk_repo)
 
 
 @app.command()

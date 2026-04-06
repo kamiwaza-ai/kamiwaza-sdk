@@ -8,15 +8,12 @@ COPY package.json package-lock.json* ./
 RUN npm install
 
 COPY . .
-RUN npm run build
 RUN mkdir -p /tmp/app && chown -R appuser:appuser /app /tmp/app
-
-COPY docker-entrypoint.sh /usr/local/bin/
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 USER 1001
 
 EXPOSE 3000
 
-ENTRYPOINT ["docker-entrypoint.sh"]
-CMD ["npm", "run", "start"]
+# Build happens at runtime via start.mjs so KAMIWAZA_APP_PATH
+# (injected by the operator) is available for Next.js basePath.
+ENTRYPOINT ["node", "/app/start.mjs"]
