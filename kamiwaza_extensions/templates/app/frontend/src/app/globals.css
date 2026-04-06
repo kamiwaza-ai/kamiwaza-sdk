@@ -1,0 +1,123 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-kw-bg text-kw-text-primary font-mono;
+  }
+
+  /* CRT scanline overlay */
+  body::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 9999;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0, 0, 0, 0.06) 2px,
+      rgba(0, 0, 0, 0.06) 4px
+    );
+  }
+
+  /* CRT vignette */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 9998;
+    background: radial-gradient(
+      ellipse at center,
+      transparent 60%,
+      rgba(0, 0, 0, 0.35) 100%
+    );
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-heading;
+  }
+
+  pre {
+    @apply font-mono;
+  }
+
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-kw-bg;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-kw-elevated rounded;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #555;
+  }
+}
+
+@layer components {
+  .card {
+    @apply bg-kw-surface border border-kw-elevated rounded-lg p-4
+           transition-all duration-200 hover:border-kw-primary/30
+           hover:shadow-glow-teal;
+  }
+
+  .card-title {
+    @apply font-heading text-sm font-semibold uppercase tracking-widest
+           text-kw-primary mb-3 flex items-center gap-2;
+  }
+
+  .card-title::before {
+    content: ">";
+    @apply text-kw-primary/50 font-mono;
+  }
+
+  .json-pre {
+    @apply bg-kw-bg rounded border border-kw-elevated p-3
+           text-xs leading-relaxed text-kw-text-secondary
+           overflow-x-auto max-h-80 font-mono whitespace-pre-wrap break-words;
+  }
+
+  .btn {
+    @apply px-4 py-2 rounded font-heading text-xs uppercase
+           tracking-wider font-semibold transition-all duration-200
+           border cursor-pointer;
+  }
+
+  .btn-primary {
+    @apply btn border-kw-primary text-kw-primary bg-kw-primary/10
+           hover:bg-kw-primary/20 hover:shadow-glow-teal;
+  }
+
+  .btn-secondary {
+    @apply btn border-kw-secondary text-kw-secondary bg-kw-secondary/10
+           hover:bg-kw-secondary/20 hover:shadow-glow-blue;
+  }
+
+  .btn-danger {
+    @apply btn border-kw-error text-kw-error bg-kw-error/10
+           hover:bg-kw-error/20 hover:shadow-glow-error;
+  }
+
+  .status-dot {
+    @apply inline-block w-2 h-2 rounded-full flex-shrink-0;
+  }
+
+  .terminal-header {
+    @apply text-kw-primary font-heading text-2xl font-bold tracking-tight;
+  }
+
+  .terminal-header::before {
+    content: "$ ";
+    @apply text-kw-primary/40 font-mono;
+  }
+
+  .inline-code {
+    @apply text-kw-info bg-kw-elevated px-1.5 py-0.5 rounded text-xs font-mono;
+  }
+}

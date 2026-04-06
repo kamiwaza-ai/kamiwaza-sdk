@@ -6,3 +6,4 @@ node_modules/
 dist/
 *.egg-info/
 .venv/
+.kz-ext/

@@ -6,7 +6,7 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - NEXT_PUBLIC_API_URL=http://backend:8000
+      - BACKEND_URL=http://backend:8000
     volumes:
       - ./frontend/src:/app/src
     depends_on:
@@ -24,6 +24,7 @@ services:
       - KAMIWAZA_ENDPOINT=${KAMIWAZA_ENDPOINT:-}
       - KAMIWAZA_USE_AUTH=${KAMIWAZA_USE_AUTH:-false}
       - KAMIWAZA_APP_NAME=${KAMIWAZA_APP_NAME:-{{name}}}
+      - KAMIWAZA_API_KEY=${KAMIWAZA_API_KEY:-}
       - KAMIWAZA_VERIFY_SSL=${KAMIWAZA_VERIFY_SSL:-}
     volumes:
       - ./backend/app:/app/app
