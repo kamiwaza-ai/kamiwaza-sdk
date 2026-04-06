@@ -95,8 +95,11 @@ export function SessionProvider({
             });
             if (res.ok) {
                 const data = await res.json();
-                if (data.logout_url) {
-                    window.location.href = data.logout_url;
+                // Prefer redirect_url (app's logged-out page) over logout_url
+                // (platform endpoint that requires POST and can't be GET-navigated)
+                const target = data.redirect_url || data.logout_url;
+                if (target) {
+                    window.location.href = target;
                     return;
                 }
             }
