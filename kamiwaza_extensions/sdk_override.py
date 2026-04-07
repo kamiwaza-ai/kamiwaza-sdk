@@ -230,20 +230,23 @@ def build_typescript_lib(spec: SdkOverrideSpec) -> bool:
 # ------------------------------------------------------------------
 
 
-_PYTHON_LIB_COPY = (
-    'SITE=$(python -c "import kamiwaza_extensions_lib as m, os;'
-    ' print(os.path.dirname(m.__file__))")'
-    ' && SITE_PARENT=$(dirname "$SITE")'
-    ' && rm -rf "$SITE"'
-    ' && mkdir -p "$SITE_PARENT"'
-    ' && cp -r /sdk/kamiwaza_extensions_lib "$SITE_PARENT/"'
-)
+_PYTHON_LIB_COPY = 'export PYTHONPATH="/sdk${PYTHONPATH:+:$PYTHONPATH}"'
 
 _TS_LIB_INSTALL = (
     "TARBALL=$(cd /sdk/kamiwaza-ai-extensions-lib"
     " && npm pack --ignore-scripts --pack-destination /tmp 2>/dev/null | tail -1)"
     ' && cd /app && npm install --ignore-scripts "/tmp/$TARBALL"'
 )
+
+
+def _escape_compose_shell_vars(command: str) -> str:
+    """Escape shell variable syntax so Docker Compose preserves it.
+
+    Compose interpolates ``$VAR`` and ``${VAR}`` when it parses YAML. Local
+    SDK override commands intentionally rely on those variables being expanded
+    later inside the container shell, so they must be emitted as ``$$...``.
+    """
+    return command.replace("$", "$$")
 
 
 def detect_service_type(
@@ -392,7 +395,7 @@ def generate_compose_override(
             )
             svc_override["entrypoint"] = ["/bin/sh", "-c"]
             svc_override["command"] = [
-                _PYTHON_LIB_COPY + f" && exec {exec_cmd}"
+                _escape_compose_shell_vars(_PYTHON_LIB_COPY) + f" && exec {exec_cmd}"
             ]
 
         elif svc_type == "frontend" and spec.typescript:
@@ -407,7 +410,7 @@ def generate_compose_override(
             )
             svc_override["entrypoint"] = ["/bin/sh", "-c"]
             svc_override["command"] = [
-                _TS_LIB_INSTALL + f" && exec {exec_cmd}"
+                _escape_compose_shell_vars(_TS_LIB_INSTALL) + f" && exec {exec_cmd}"
             ]
 
         if svc_override:
