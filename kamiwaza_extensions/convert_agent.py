@@ -349,6 +349,8 @@ def apply_plan(plan: ConversionPlan, app_dir: Path, dry_run: bool = False) -> Li
     Returns list of applied change descriptions.
     """
     applied = []
+    # Resolve once to avoid TOCTOU with symlinks changing between iterations
+    resolved_app_dir = app_dir.resolve()
     for mod in plan.modifications:
         if not mod.path or not mod.content:
             continue
@@ -362,7 +364,7 @@ def apply_plan(plan: ConversionPlan, app_dir: Path, dry_run: bool = False) -> Li
 
         target = (app_dir / mod.path).resolve()
         # Security: reject paths that escape the app directory
-        if not target.is_relative_to(app_dir.resolve()):
+        if not target.is_relative_to(resolved_app_dir):
             console.print(
                 f"[yellow]Warning:[/yellow] Skipping '{mod.path}' — path escapes app directory"
             )

@@ -24,14 +24,14 @@ _STAGE_SUFFIXES = {
     "dev": "-dev",
 }
 
-# Synthetic versions used to probe specifier overlap.  We test a broad
-# range so that "pragmatic disjointness" works for real-world Kamiwaza
-# version constraints.  Covers 0.0.0 through 19.9.2 (600 versions).
+# Synthetic versions used to probe specifier overlap.  Covers 0.0.0
+# through 29.19.9 (6000 versions) so that constraints like ==0.8.5,
+# <0.8.4, >=20.0.0 hit at least one probe.
 _PROBE_VERSIONS = [
     Version(f"{major}.{minor}.{patch}")
-    for major in range(20)
-    for minor in range(10)
-    for patch in range(3)
+    for major in range(30)
+    for minor in range(20)
+    for patch in range(10)
 ]
 
 
@@ -58,13 +58,16 @@ class RegistryBuilder:
                 ``ComposeTransformer``.
             registry: Docker registry prefix (e.g. ``"kamiwazaai"``).
             version: Semver version string for this release.
-            stage: One of ``"prod"``, ``"stage"``, ``"dev"``.
+            stage: One of ``"prod"``, ``"stage"``, ``"dev"``, or any custom name.
 
         Returns:
             A dict matching the Kamiwaza catalog entry schema.
         """
+        extension_name = metadata.get("name", "")
         compose_yml = yaml.dump(transformed_compose, default_flow_style=False)
-        compose_yml = self.transform_image_tags(compose_yml, registry, version, stage)
+        compose_yml = self.transform_image_tags(
+            compose_yml, registry, version, stage, extension_name=extension_name,
+        )
         # Parse back to dict for reliable image extraction (avoids env var false positives)
         tagged_compose = yaml.safe_load(compose_yml) or {}
         docker_images = self.extract_docker_images(tagged_compose)
@@ -178,26 +181,33 @@ class RegistryBuilder:
         registry: str,
         version: str,
         stage: str,
+        extension_name: str = "",
     ) -> str:
         """Rewrite image tags in a compose YAML string for the target stage.
 
-        Only images whose prefix matches *registry* are transformed.
-        External images (postgres, redis, etc.) pass through unchanged.
+        Only images matching ``{registry}/{extension_name}-*`` are
+        transformed.  Shared org images (``{registry}/other-thing:2.0``)
+        and external images (postgres, redis) are left unchanged.
 
-        Tag format per stage:
-        - ``prod``: ``{registry}/{name}:{version}``
-        - ``stage``: ``{registry}/{name}:{version}-stage``
-        - ``dev``: ``{registry}/{name}:{version}-dev``
-        - Custom stages (e.g., ``staging``): ``{registry}/{name}:{version}-staging``
+        If *extension_name* is empty, falls back to matching all images
+        with the *registry* prefix (legacy behaviour).
         """
         suffix = _STAGE_SUFFIXES.get(stage, f"-{stage}")
-        escaped = re.escape(registry)
-        # Match image lines: "image: registry/name:tag"
-        # Capture the registry/name portion, then replace the tag.
-        pattern = re.compile(
-            rf"(image:\s*){escaped}(/[^:\s]+):([^\s]+)"
-        )
         new_tag = f"{version}{suffix}"
+        escaped_reg = re.escape(registry)
+
+        if extension_name:
+            escaped_ext = re.escape(extension_name)
+            # Only match: registry/extension-name-service:tag
+            pattern = re.compile(
+                rf"(image:\s*){escaped_reg}/({escaped_ext}-[^:\s]+):([^\s]+)"
+            )
+            return pattern.sub(rf"\g<1>{registry}/\2:{new_tag}", compose_yml)
+
+        # Fallback: match any image with the registry prefix
+        pattern = re.compile(
+            rf"(image:\s*){escaped_reg}(/[^:\s]+):([^\s]+)"
+        )
         return pattern.sub(rf"\g<1>{registry}\2:{new_tag}", compose_yml)
 
     def extract_docker_images(

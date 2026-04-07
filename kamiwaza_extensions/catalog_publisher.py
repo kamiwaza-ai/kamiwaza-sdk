@@ -31,6 +31,9 @@ _TYPE_FILE_MAP: Dict[str, str] = {
 
 # Lock time-to-live in seconds.  If a lock is older than this, it is
 # considered stale and will be automatically cleaned up.
+# Assumption: both the lock writer and the staleness checker use UTC
+# wall-clock time.  NTP clock jumps or manual clock changes may cause
+# premature or delayed cleanup — use a generous TTL margin for CI.
 LOCK_TTL_SECONDS = int(os.environ.get("KZ_LOCK_TTL_SECONDS", "600"))
 
 
@@ -226,10 +229,11 @@ class CatalogPublisher:
                 try:
                     self._restore_backup(type_file, backup_path)
                     console.print("[yellow]Restored backup after publish failure.[/yellow]")
-                except Exception:
+                except Exception as restore_exc:
                     console.print(
-                        "[red]Warning: failed to restore backup at "
-                        f"{backup_path}[/red]"
+                        f"[red]CRITICAL: failed to restore backup at "
+                        f"{backup_path} — catalog may be in an inconsistent state. "
+                        f"Restore manually from the backup file. Error: {restore_exc}[/red]"
                     )
             raise
         finally:
@@ -484,7 +488,11 @@ class CatalogPublisher:
         s3_key: str,
         force: bool,
     ) -> PublishResult:
-        """Perform merge logic without any S3 writes."""
+        """Perform merge logic without any S3 writes.
+
+        Note: this reads from S3 to check for version conflicts (GET
+        requests are side-effect-free).  No PUT/DELETE calls are made.
+        """
         console.print("[yellow]Dry run -- no S3 writes will be performed.[/yellow]")
 
         existing = self._download_entries(type_file)

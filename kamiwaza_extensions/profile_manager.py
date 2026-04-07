@@ -50,7 +50,12 @@ def _secure_dir(path: Path) -> None:
     try:
         os.chmod(path, stat.S_IRWXU)  # 700
     except OSError:
-        pass
+        import warnings
+        warnings.warn(
+            f"Could not set 700 permissions on {path} — "
+            "credential files may be readable by other users",
+            stacklevel=2,
+        )
 
 
 def _secure_write(path: Path, data: dict) -> None:
