@@ -31,7 +31,7 @@ _TYPE_FILE_MAP: Dict[str, str] = {
 
 # Lock time-to-live in seconds.  If a lock is older than this, it is
 # considered stale and will be automatically cleaned up.
-LOCK_TTL_SECONDS = 600
+LOCK_TTL_SECONDS = int(os.environ.get("KZ_LOCK_TTL_SECONDS", "600"))
 
 
 @dataclass
@@ -185,8 +185,27 @@ class CatalogPublisher:
                 # Strip any leading "images/" since _upload_preview_image adds the prefix
                 if remote_name.startswith("images/"):
                     remote_name = remote_name[len("images/"):]
-                self._upload_preview_image(preview_image_path, remote_name)
-                images_pushed.append(remote_name)
+                try:
+                    self._upload_preview_image(preview_image_path, remote_name)
+                    images_pushed.append(remote_name)
+                except Exception as img_exc:
+                    console.print(
+                        f"[red]Preview image upload failed: {img_exc}[/red]"
+                    )
+                    # Roll back the catalog entry
+                    if backup_path is not None:
+                        self._restore_backup(type_file, backup_path)
+                    else:
+                        try:
+                            s3_key = f"{self._garden_dir}{type_file}"
+                            self._s3.delete_object(
+                                Bucket=self._profile.catalog_bucket, Key=s3_key,
+                            )
+                        except Exception:
+                            pass
+                    raise CatalogPublishError(
+                        f"Preview image upload failed: {img_exc}"
+                    ) from img_exc
 
             return PublishResult(
                 extension_name=entry.get("name", ""),
@@ -225,6 +244,13 @@ class CatalogPublisher:
 
         Before attempting the conditional PUT, checks for stale locks
         that have exceeded ``LOCK_TTL_SECONDS`` and removes them.
+
+        Note: There is a known TOCTOU window between stale lock deletion
+        and the conditional PUT.  Two processes may both detect a stale
+        lock, both delete it, and both attempt acquisition.  The
+        ``IfNoneMatch='*'`` conditional PUT ensures only one succeeds —
+        the other receives PreconditionFailed and reports the conflict.
+        This is safe; at worst a stale lock cleanup races benignly.
 
         Raises:
             CatalogPublishError: If the lock is already held.
@@ -332,7 +358,7 @@ class CatalogPublisher:
             console.print(f"  Hostname: {lock_data.get('hostname', 'unknown')}")
             console.print(f"  Acquired: {lock_data.get('acquired_at', 'unknown')}")
             console.print(f"  PID:      {lock_data.get('pid', 'unknown')}")
-        except Exception:
+        except (self._ClientError, json.JSONDecodeError, KeyError):
             console.print("[red]Publish lock is held (could not read details).[/red]")
 
     # ------------------------------------------------------------------

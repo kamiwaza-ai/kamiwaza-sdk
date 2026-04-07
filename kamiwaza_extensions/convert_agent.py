@@ -253,9 +253,9 @@ def call_llm(prompt: str) -> Optional[str]:
 
 def _call_anthropic(prompt: str, *, api_key: str, model: str) -> Optional[str]:
     """Call the Anthropic Messages API."""
-    try:
-        import anthropic
+    import anthropic
 
+    try:
         client = anthropic.Anthropic(api_key=api_key)
         response = client.messages.create(
             model=model,
@@ -263,8 +263,11 @@ def _call_anthropic(prompt: str, *, api_key: str, model: str) -> Optional[str]:
             messages=[{"role": "user", "content": prompt}],
         )
         return response.content[0].text
-    except Exception as exc:
+    except (anthropic.APIError, anthropic.APIConnectionError) as exc:
         console.print(f"[yellow]Warning:[/yellow] Anthropic API call failed: {exc}")
+        return None
+    except Exception as exc:
+        console.print(f"[yellow]Warning:[/yellow] Unexpected error in Anthropic call: {exc}")
         return None
 
 
@@ -276,9 +279,9 @@ def _call_openai_compatible(
     model: str = "gpt-4o",
 ) -> Optional[str]:
     """Call any OpenAI-compatible chat completions API."""
-    try:
-        import openai
+    import openai
 
+    try:
         kwargs: Dict[str, Any] = {"api_key": api_key}
         if base_url:
             kwargs["base_url"] = base_url
@@ -290,8 +293,11 @@ def _call_openai_compatible(
             messages=[{"role": "user", "content": prompt}],
         )
         return response.choices[0].message.content
-    except Exception as exc:
+    except (openai.APIError, openai.APIConnectionError) as exc:
         console.print(f"[yellow]Warning:[/yellow] OpenAI-compatible API call failed: {exc}")
+        return None
+    except Exception as exc:
+        console.print(f"[yellow]Warning:[/yellow] Unexpected error in OpenAI call: {exc}")
         return None
 
 
@@ -313,22 +319,28 @@ def parse_response(response_text: str) -> ConversionPlan:
             summary="Conversion plan could not be generated automatically.",
         )
 
-    modifications = []
-    for mod in data.get("modifications", []):
-        modifications.append(
-            FileModification(
-                path=mod.get("path", ""),
-                action=mod.get("action", "modify"),
-                content=mod.get("content", ""),
-                description=mod.get("description", ""),
+    try:
+        modifications = []
+        for mod in data.get("modifications", []):
+            modifications.append(
+                FileModification(
+                    path=mod.get("path", ""),
+                    action=mod.get("action", "modify"),
+                    content=mod.get("content", ""),
+                    description=mod.get("description", ""),
+                )
             )
-        )
 
-    return ConversionPlan(
-        modifications=modifications,
-        manual_items=data.get("manual_items", []),
-        summary=data.get("summary", ""),
-    )
+        return ConversionPlan(
+            modifications=modifications,
+            manual_items=data.get("manual_items", []),
+            summary=data.get("summary", ""),
+        )
+    except (TypeError, AttributeError, KeyError):
+        return ConversionPlan(
+            manual_items=["LLM returned unexpected response shape. Review the app manually."],
+            summary="Conversion plan could not be generated automatically.",
+        )
 
 
 def apply_plan(plan: ConversionPlan, app_dir: Path, dry_run: bool = False) -> List[str]:

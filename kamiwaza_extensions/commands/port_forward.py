@@ -136,6 +136,12 @@ def run_port_forward(
             f"Defaulting to {resolved_port}. Use --port to specify."
         )
 
+    if not (1 <= resolved_port <= 65535):
+        console.print(
+            f"[red]Error:[/red] Invalid port {resolved_port}. Must be 1-65535."
+        )
+        raise typer.Exit(code=1)
+
     # Build kubectl command
     cmd = [
         "kubectl",

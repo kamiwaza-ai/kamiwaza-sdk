@@ -65,7 +65,9 @@ class RegistryBuilder:
         """
         compose_yml = yaml.dump(transformed_compose, default_flow_style=False)
         compose_yml = self.transform_image_tags(compose_yml, registry, version, stage)
-        docker_images = self.extract_docker_images(compose_yml)
+        # Parse back to dict for reliable image extraction (avoids env var false positives)
+        tagged_compose = yaml.safe_load(compose_yml) or {}
+        docker_images = self.extract_docker_images(tagged_compose)
 
         extra_images = metadata.get("extra_docker_images") or []
         if extra_images:
@@ -186,8 +188,9 @@ class RegistryBuilder:
         - ``prod``: ``{registry}/{name}:{version}``
         - ``stage``: ``{registry}/{name}:{version}-stage``
         - ``dev``: ``{registry}/{name}:{version}-dev``
+        - Custom stages (e.g., ``staging``): ``{registry}/{name}:{version}-staging``
         """
-        suffix = _STAGE_SUFFIXES.get(stage, "")
+        suffix = _STAGE_SUFFIXES.get(stage, f"-{stage}")
         escaped = re.escape(registry)
         # Match image lines: "image: registry/name:tag"
         # Capture the registry/name portion, then replace the tag.
@@ -197,14 +200,34 @@ class RegistryBuilder:
         new_tag = f"{version}{suffix}"
         return pattern.sub(rf"\g<1>{registry}\2:{new_tag}", compose_yml)
 
-    def extract_docker_images(self, compose_yml: str) -> List[str]:
-        """Extract all ``image:`` references from a compose YAML string.
+    def extract_docker_images(
+        self, compose_data_or_yml: Any,
+    ) -> List[str]:
+        """Extract all service image references from compose data.
+
+        Accepts either a compose dict or a YAML string.  When a dict is
+        provided, images are read directly from ``services[*].image``
+        fields — avoiding false positives from environment variables or
+        comments that happen to contain the word ``image:``.
 
         Returns a deduplicated list preserving first-occurrence order.
         """
-        pattern = re.compile(r"image:\s*(.+)")
-        images: List[str] = []
-        seen: set[str] = set()
+        # Dict path — preferred
+        if isinstance(compose_data_or_yml, dict):
+            images: List[str] = []
+            seen: set[str] = set()
+            for _svc_name, svc in (compose_data_or_yml.get("services") or {}).items():
+                img = svc.get("image")
+                if img and img not in seen:
+                    seen.add(img)
+                    images.append(img)
+            return images
+
+        # String fallback (legacy callers)
+        compose_yml = str(compose_data_or_yml)
+        pattern = re.compile(r"^\s+image:\s*(.+)", re.MULTILINE)
+        images = []
+        seen = set()
         for match in pattern.finditer(compose_yml):
             img = match.group(1).strip()
             if img and img not in seen:

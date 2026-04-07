@@ -224,6 +224,17 @@ class TestTransformImageTags:
         )
         assert "registry.example.com/app:1.0.0" in result
 
+    def test_custom_stage_name(self, builder):
+        """Custom stage names (staging, qa, etc.) should produce -{stage} suffix."""
+        yml = "image: kamiwazaai/my-app:old"
+        result = builder.transform_image_tags(yml, "kamiwazaai", "1.0.0", "staging")
+        assert "kamiwazaai/my-app:1.0.0-staging" in result
+
+    def test_custom_stage_qa(self, builder):
+        yml = "image: kamiwazaai/my-app:old"
+        result = builder.transform_image_tags(yml, "kamiwazaai", "2.0.0", "qa")
+        assert "kamiwazaai/my-app:2.0.0-qa" in result
+
 
 # ------------------------------------------------------------------
 # extract_docker_images
@@ -231,28 +242,49 @@ class TestTransformImageTags:
 
 
 class TestExtractDockerImages:
-    def test_extracts_images(self, builder):
-        yml = (
-            "services:\n"
-            "  web:\n"
-            "    image: kamiwazaai/web:1.0\n"
-            "  db:\n"
-            "    image: postgres:15\n"
-        )
-        images = builder.extract_docker_images(yml)
+    def test_extracts_images_from_dict(self, builder):
+        compose = {
+            "services": {
+                "web": {"image": "kamiwazaai/web:1.0"},
+                "db": {"image": "postgres:15"},
+            }
+        }
+        images = builder.extract_docker_images(compose)
         assert images == ["kamiwazaai/web:1.0", "postgres:15"]
 
-    def test_deduplicates(self, builder):
-        yml = (
-            "image: kamiwazaai/web:1.0\n"
-            "image: kamiwazaai/web:1.0\n"
-        )
-        images = builder.extract_docker_images(yml)
+    def test_deduplicates_from_dict(self, builder):
+        # Two services with same image
+        compose = {
+            "services": {
+                "web1": {"image": "kamiwazaai/web:1.0"},
+                "web2": {"image": "kamiwazaai/web:1.0"},
+            }
+        }
+        images = builder.extract_docker_images(compose)
         assert images == ["kamiwazaai/web:1.0"]
 
     def test_empty_when_no_images(self, builder):
-        yml = "services:\n  web:\n    build: .\n"
-        assert builder.extract_docker_images(yml) == []
+        compose = {"services": {"web": {"build": "."}}}
+        assert builder.extract_docker_images(compose) == []
+
+    def test_ignores_env_var_with_image_in_name(self, builder):
+        """Env vars like DOCKER_IMAGE should not be extracted."""
+        compose = {
+            "services": {
+                "web": {
+                    "image": "kamiwazaai/web:1.0",
+                    "environment": {"DOCKER_IMAGE": "foo:bar"},
+                }
+            }
+        }
+        images = builder.extract_docker_images(compose)
+        assert images == ["kamiwazaai/web:1.0"]
+
+    def test_string_fallback(self, builder):
+        """String input still works via regex fallback."""
+        yml = "services:\n  web:\n    image: kamiwazaai/web:1.0\n"
+        images = builder.extract_docker_images(yml)
+        assert images == ["kamiwazaai/web:1.0"]
 
 
 # ------------------------------------------------------------------

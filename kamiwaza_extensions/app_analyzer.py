@@ -186,23 +186,27 @@ class AppAnalyzer:
         except OSError:
             return None, None
 
-        # Find FROM instructions
+        # Use the LAST FROM instruction (final stage in multi-stage builds)
+        last_image = None
         for line in content.splitlines():
             line = line.strip()
             if line.upper().startswith("FROM "):
-                image = line.split()[1].lower()
-                if "python" in image:
-                    return image, "python"
-                if "node" in image or "bun" in image:
-                    return image, "node"
-                if "golang" in image or "go" in image:
-                    return image, "go"
-                if "rust" in image:
-                    return image, "rust"
-                if "ruby" in image:
-                    return image, "ruby"
-                return image, None
-        return None, None
+                last_image = line.split()[1].lower()
+
+        if last_image is None:
+            return None, None
+
+        if "python" in last_image:
+            return last_image, "python"
+        if "node" in last_image or "bun" in last_image:
+            return last_image, "node"
+        if "golang" in last_image or "go" in last_image:
+            return last_image, "go"
+        if "rust" in last_image:
+            return last_image, "rust"
+        if "ruby" in last_image:
+            return last_image, "ruby"
+        return last_image, None
 
     def _check_deployment_compat(self, result: AnalysisResult) -> None:
         if not result.compose_data:

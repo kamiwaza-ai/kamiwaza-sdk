@@ -164,6 +164,7 @@ kz-ext publish --stage prod
 | `kz-ext port-forward` | Forward a port from a deployed pod to localhost for debugging. Supports `--service`, `--port`, `--name`. |
 | `kz-ext convert <path>` | AI-powered conversion of existing apps to Kamiwaza extensions. Analyzes code, generates `kamiwaza.json`, and wires in SDK integration. Supports `--dry-run`. |
 | `kz-ext publish --stage <profile>` | Build production images, push to registry, and publish to an S3-compatible extension catalog. Supports `--dry-run`, `--force`, `--no-build`, `--no-push`. |
+| `kz-ext bump` | Bump extension version in `kamiwaza.json`. Defaults to patch. Supports `--level major\|minor\|patch`. |
 | `kz-ext config publish-profile` | Create, list, show, or delete named publish profiles. Supports `--list`, `--show`, `--delete`, `--repo-level`. |
 | `kz-ext doctor` | Check your development environment (Python, Docker, Compose, kubectl, connection health, runtime libs). |
 
@@ -183,7 +184,7 @@ No version bumps, registry builds, or manual redeploy steps required during deve
 When your extension is ready for release:
 
 1. **Configure a publish profile** with `kz-ext config publish-profile` — specify a container registry and S3-compatible catalog endpoint.
-2. **Bump the version** in `kamiwaza.json`.
+2. **Bump the version** with `kz-ext bump` (or `kz-ext bump --level minor`).
 3. **`kz-ext publish --stage prod`** builds production-tagged images, pushes to the profile's registry, and publishes to the catalog.
 4. **`kz-ext publish --stage prod --dry-run`** previews what would happen without making changes.
 
