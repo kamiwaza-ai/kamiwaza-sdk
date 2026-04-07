@@ -117,6 +117,7 @@ class TestScaffolder:
         assert "const STANDALONE_SERVER = path.join(STANDALONE_DIR, \"server.js\");" in start_mjs
         assert "await prepareStandaloneRuntime();" in start_mjs
         assert "startExitCode = await runNodeArgs(" in start_mjs
+        assert 'HOSTNAME: "0.0.0.0"' in start_mjs
 
     def test_git_init_called(self, tmp_path, monkeypatch, scaffolder):
         d = self._empty_dir(tmp_path)
