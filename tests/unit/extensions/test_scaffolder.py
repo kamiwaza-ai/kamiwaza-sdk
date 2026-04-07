@@ -107,6 +107,17 @@ class TestScaffolder:
         assert "test-app" in main_py
         assert "{{name}}" not in main_py
 
+    def test_app_template_uses_standalone_frontend_runtime(self, tmp_path, monkeypatch, scaffolder):
+        d = self._empty_dir(tmp_path)
+        monkeypatch.chdir(d)
+        with patch("subprocess.run"):
+            scaffolder.create(type_="app", name="test-app")
+
+        start_mjs = (d / "frontend" / "start.mjs").read_text()
+        assert "const STANDALONE_SERVER = path.join(STANDALONE_DIR, \"server.js\");" in start_mjs
+        assert "await prepareStandaloneRuntime();" in start_mjs
+        assert "startExitCode = await runNodeArgs(" in start_mjs
+
     def test_git_init_called(self, tmp_path, monkeypatch, scaffolder):
         d = self._empty_dir(tmp_path)
         monkeypatch.chdir(d)

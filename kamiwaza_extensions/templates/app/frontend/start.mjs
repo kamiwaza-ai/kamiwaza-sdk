@@ -1,4 +1,4 @@
-import { cp, mkdir, readdir, rm, symlink } from "node:fs/promises";
+import { access, cp, mkdir, readdir, rm, symlink } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { spawn } from "node:child_process";
@@ -6,6 +6,13 @@ import { spawn } from "node:child_process";
 const APP_DIR = "/app";
 const RUNTIME_DIR = "/tmp/app-runtime";
 const NEXT_CLI = path.join(APP_DIR, "node_modules/next/dist/bin/next");
+const NEXT_STATIC_DIR = path.join(RUNTIME_DIR, ".next", "static");
+const PUBLIC_DIR = path.join(RUNTIME_DIR, "public");
+const STANDALONE_DIR = path.join(RUNTIME_DIR, ".next", "standalone");
+const STANDALONE_NEXT_DIR = path.join(STANDALONE_DIR, ".next");
+const STANDALONE_STATIC_DIR = path.join(STANDALONE_NEXT_DIR, "static");
+const STANDALONE_PUBLIC_DIR = path.join(STANDALONE_DIR, "public");
+const STANDALONE_SERVER = path.join(STANDALONE_DIR, "server.js");
 const SIGNAL_EXIT_CODES = {
   SIGINT: 130,
   SIGTERM: 143,
@@ -25,6 +32,15 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
 
 function isExpandedValue(s) {
   return s && !s.includes("${");
+}
+
+async function pathExists(target) {
+  try {
+    await access(target);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function resolveBasePath() {
@@ -59,6 +75,10 @@ function runNext(command, cwd, env) {
     args.push("--hostname", "0.0.0.0", "--port", process.env.PORT || "3000");
   }
 
+  return runNodeArgs(args, cwd, env);
+}
+
+function runNodeArgs(args, cwd, env) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, args, {
       cwd,
@@ -86,6 +106,17 @@ function runNext(command, cwd, env) {
   });
 }
 
+async function prepareStandaloneRuntime() {
+  if (await pathExists(NEXT_STATIC_DIR)) {
+    await mkdir(STANDALONE_NEXT_DIR, { recursive: true });
+    await cp(NEXT_STATIC_DIR, STANDALONE_STATIC_DIR, { recursive: true, force: true });
+  }
+
+  if (await pathExists(PUBLIC_DIR)) {
+    await cp(PUBLIC_DIR, STANDALONE_PUBLIC_DIR, { recursive: true, force: true });
+  }
+}
+
 async function main() {
   const basePath = resolveBasePath();
   const env = {
@@ -107,7 +138,21 @@ async function main() {
     process.exit(buildExitCode);
   }
 
-  const startExitCode = await runNext("start", RUNTIME_DIR, env);
+  let startExitCode;
+  if (await pathExists(STANDALONE_SERVER)) {
+    await prepareStandaloneRuntime();
+    startExitCode = await runNodeArgs(
+      [STANDALONE_SERVER],
+      STANDALONE_DIR,
+      {
+        ...env,
+        HOSTNAME: process.env.HOSTNAME || "0.0.0.0",
+        PORT: process.env.PORT || "3000",
+      },
+    );
+  } else {
+    startExitCode = await runNext("start", RUNTIME_DIR, env);
+  }
   process.exit(startExitCode);
 }
 
