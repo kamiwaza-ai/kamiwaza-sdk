@@ -202,10 +202,15 @@ class CatalogPublisher:
             # Upload preview image
             images_pushed: List[str] = []
             if preview_image_path is not None:
+                import posixpath
                 remote_name = entry.get("preview_image", preview_image_path.name)
                 # Strip any leading "images/" since _upload_preview_image adds the prefix
                 if remote_name.startswith("images/"):
                     remote_name = remote_name[len("images/"):]
+                # Sanitize: normalize and reject path traversal
+                remote_name = posixpath.normpath(remote_name)
+                if remote_name.startswith("..") or "/" in remote_name:
+                    remote_name = posixpath.basename(remote_name)
                 try:
                     self._upload_preview_image(preview_image_path, remote_name)
                     images_pushed.append(remote_name)
@@ -407,7 +412,7 @@ class CatalogPublisher:
                 return None
             raise
 
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ")
         # Sanitize garden_dir to prevent path traversal via catalog_prefix
         safe_garden = self._garden_dir.replace("..", "_").strip("/")
         backup_dir = (
@@ -484,11 +489,19 @@ class CatalogPublisher:
         actual = self._download_entries(type_file)
         return actual == expected
 
+    _MAX_PREVIEW_SIZE = 10 * 1024 * 1024  # 10 MB
+
     def _upload_preview_image(self, local_path: Path, remote_name: str) -> None:
         """Upload a preview image to the garden images directory."""
         if not local_path.exists():
             raise CatalogPublishError(
                 f"Preview image not found: {local_path}"
+            )
+        file_size = local_path.stat().st_size
+        if file_size > self._MAX_PREVIEW_SIZE:
+            raise CatalogPublishError(
+                f"Preview image too large ({file_size / 1024 / 1024:.1f} MB). "
+                f"Maximum is {self._MAX_PREVIEW_SIZE / 1024 / 1024:.0f} MB."
             )
 
         s3_key = f"{self._garden_dir}images/{remote_name}"

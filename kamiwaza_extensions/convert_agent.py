@@ -256,7 +256,7 @@ def _call_anthropic(prompt: str, *, api_key: str, model: str) -> Optional[str]:
     import anthropic
 
     try:
-        client = anthropic.Anthropic(api_key=api_key)
+        client = anthropic.Anthropic(api_key=api_key, timeout=120.0)
         response = client.messages.create(
             model=model,
             max_tokens=8192,
@@ -282,7 +282,7 @@ def _call_openai_compatible(
     import openai
 
     try:
-        kwargs: Dict[str, Any] = {"api_key": api_key}
+        kwargs: Dict[str, Any] = {"api_key": api_key, "timeout": 120.0}
         if base_url:
             kwargs["base_url"] = base_url
 

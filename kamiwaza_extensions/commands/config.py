@@ -12,22 +12,17 @@ console = Console(stderr=True)
 
 
 def publish_profile(
-    name: Optional[str] = typer.Argument(None, help="Profile name"),
-    registry: Optional[str] = typer.Option(None, "--registry", help="Docker registry URL"),
-    catalog_endpoint: Optional[str] = typer.Option(
-        None, "--catalog-endpoint", help="S3-compatible catalog endpoint URL"
-    ),
-    catalog_bucket: Optional[str] = typer.Option(
-        None, "--catalog-bucket", help="Bucket name for catalog JSON"
-    ),
-    catalog_credentials: Optional[str] = typer.Option(
-        None, "--catalog-credentials", help="Credential spec (e.g. aws-profile:prod, env, sso)"
-    ),
-    catalog_prefix: str = typer.Option("", "--catalog-prefix", help="Key prefix within bucket"),
-    repo_level: bool = typer.Option(False, "--repo-level", help="Store profile in repo .kz-ext/ dir"),
-    list_profiles: bool = typer.Option(False, "--list", "-l", help="List all publish profiles"),
-    show: Optional[str] = typer.Option(None, "--show", help="Show details for a profile"),
-    delete: Optional[str] = typer.Option(None, "--delete", help="Delete a profile"),
+    *,
+    name: Optional[str] = None,
+    registry: Optional[str] = None,
+    catalog_endpoint: Optional[str] = None,
+    catalog_bucket: Optional[str] = None,
+    catalog_credentials: Optional[str] = None,
+    catalog_prefix: str = "",
+    repo_level: bool = False,
+    list_profiles: bool = False,
+    show: Optional[str] = None,
+    delete: Optional[str] = None,
 ) -> None:
     """Create, list, show, or delete publish profiles."""
     from kamiwaza_extensions.profile_manager import ProfileManager, PublishProfile
