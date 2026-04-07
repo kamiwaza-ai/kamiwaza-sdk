@@ -159,8 +159,17 @@ def run_publish(
 
     registry = profile.registry
 
+    # Validate and normalize stage name (used in Docker tags)
+    import re as _re
+    stage = stage.lower()
+    if not _re.match(r"^[a-z0-9][a-z0-9._-]*$", stage):
+        console.print(
+            f"[red]Error:[/red] Invalid stage name '{stage}'. "
+            "Must be lowercase alphanumeric (with hyphens, dots, underscores)."
+        )
+        raise typer.Exit(code=1)
+
     # Determine the image tag: "prod" uses bare version, all others add suffix.
-    # The stage name comes from the profile name, so "staging", "qa", etc. work.
     if stage == "prod":
         image_tag = version
         effective_stage = "prod"
@@ -249,12 +258,16 @@ def run_publish(
     # 6. Push images (same stage-aware tag)
     if not no_push and image_refs:
         console.print("  Pushing images...", end="")
+        # Registry auth: use explicit token from env if provided,
+        # otherwise rely on Docker's credential store (docker login).
+        import os as _os
+        registry_token = _os.environ.get("KZ_PUBLISH_DOCKER_TOKEN") or _os.environ.get("DOCKER_TOKEN")
         try:
             pusher = ImagePusher()
             pusher.push(
                 image_refs,
                 registry=registry,
-                token=None,
+                token=registry_token,
                 insecure=False,
                 verbose=verbose,
             )

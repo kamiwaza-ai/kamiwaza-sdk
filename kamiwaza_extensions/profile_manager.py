@@ -83,7 +83,12 @@ def _load_profile_file(path: Path) -> Optional[PublishProfile]:
             data = json.load(f)
         if not isinstance(data, dict):
             return None
-        return PublishProfile(**data)
+        profile = PublishProfile(**data)
+        # Validate required fields are non-empty
+        for field in ("name", "registry", "catalog_endpoint", "catalog_bucket", "catalog_credentials"):
+            if not getattr(profile, field, None):
+                return None
+        return profile
     except (json.JSONDecodeError, OSError, TypeError):
         return None
 

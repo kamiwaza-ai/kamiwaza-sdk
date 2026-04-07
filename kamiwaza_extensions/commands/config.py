@@ -83,9 +83,13 @@ def publish_profile(
 
     extension_dir = None
     if repo_level:
-        from pathlib import Path
-
-        extension_dir = Path.cwd()
+        # Use the extension root (where kamiwaza.json lives), not cwd
+        try:
+            from kamiwaza_extensions.extension_detector import ExtensionDetector
+            extension_dir = ExtensionDetector().detect().path
+        except Exception:
+            from pathlib import Path
+            extension_dir = Path.cwd()
 
     saved_path = mgr.save_profile(profile, repo_level=repo_level, extension_dir=extension_dir)
 

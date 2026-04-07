@@ -198,7 +198,7 @@ kz-ext convert /path/to/existing-app
 
 Uses an AI agent to analyze existing Dockerfiles, compose files, and source code, then generates `kamiwaza.json` and wires in SDK integration (health endpoints, auth middleware, runtime libraries). All changes are git-tracked — review with `git diff`.
 
-Requires `OPENAI_API_KEY` (or `ANTHROPIC_API_KEY`) for AI-powered conversion. Falls back to basic `kamiwaza.json` generation without an API key. Set `OPENAI_BASE_URL` to use any OpenAI-compatible provider (Kamiwaza, vLLM, Ollama, etc.).
+Optionally uses `OPENAI_API_KEY` (or `ANTHROPIC_API_KEY`) for AI-powered conversion. Falls back to basic `kamiwaza.json` generation without an API key. Set `OPENAI_BASE_URL` to use any OpenAI-compatible provider (Kamiwaza, vLLM, Ollama, etc.). Set `KZ_PUBLISH_DOCKER_TOKEN` or `DOCKER_TOKEN` for registry auth during publish.
 
 ### Extension Types
 

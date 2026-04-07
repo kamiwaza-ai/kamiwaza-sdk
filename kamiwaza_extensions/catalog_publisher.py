@@ -106,6 +106,21 @@ class CatalogPublisher:
         else:
             self._garden_dir = f"garden/v{repo_version}/"
 
+        # Validate endpoint to prevent SSRF via env var override
+        endpoint = profile.catalog_endpoint
+        if endpoint:
+            from urllib.parse import urlparse
+            parsed = urlparse(endpoint)
+            if parsed.scheme not in ("https", "http"):
+                raise ValueError(
+                    f"Invalid catalog endpoint scheme '{parsed.scheme}' — must be http or https"
+                )
+            # Warn (but don't block) http:// for non-localhost
+            if parsed.scheme == "http" and parsed.hostname not in ("localhost", "127.0.0.1", "::1"):
+                console.print(
+                    f"[yellow]Warning:[/yellow] Catalog endpoint uses HTTP (not HTTPS): {endpoint}"
+                )
+
         self._builder = RegistryBuilder()
         self._s3 = self._create_s3_client(profile)
 
@@ -393,10 +408,17 @@ class CatalogPublisher:
             raise
 
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        # Sanitize garden_dir to prevent path traversal via catalog_prefix
+        safe_garden = self._garden_dir.replace("..", "_").strip("/")
         backup_dir = (
             self._extension_dir / "build" / "registry-backups"
-            / self._garden_dir / timestamp
+            / safe_garden / timestamp
         )
+        # Verify backup stays within extension_dir
+        if not backup_dir.resolve().is_relative_to(self._extension_dir.resolve()):
+            raise CatalogPublishError(
+                f"Backup path escapes extension directory: {backup_dir}"
+            )
         backup_dir.mkdir(parents=True, exist_ok=True)
         backup_path = backup_dir / type_file
 

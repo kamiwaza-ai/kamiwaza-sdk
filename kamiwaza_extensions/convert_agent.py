@@ -216,7 +216,7 @@ def call_llm(prompt: str) -> Optional[str]:
         except ImportError:
             console.print(
                 "[dim]OPENAI_API_KEY is set but openai package is not installed. "
-                "Install with: pip install kamiwaza-sdk[convert][/dim]"
+                "Install with: pip install openai[/dim]"
             )
         else:
             result = _call_openai_compatible(
@@ -362,7 +362,7 @@ def apply_plan(plan: ConversionPlan, app_dir: Path, dry_run: bool = False) -> Li
             )
             continue
 
-        target = (app_dir / mod.path).resolve()
+        target = (resolved_app_dir / mod.path).resolve()
         # Security: reject paths that escape the app directory
         if not target.is_relative_to(resolved_app_dir):
             console.print(
