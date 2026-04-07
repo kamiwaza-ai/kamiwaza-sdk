@@ -3,14 +3,30 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Generator, List, Optional
 
 import yaml
 
 from kamiwaza_extensions import __version__
+
+_SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv"}
+
+
+def _walk_files(root: Path, extensions: tuple[str, ...] | None = None) -> Generator[Path, None, None]:
+    """Walk *root* yielding files, pruning ``_SKIP_DIRS`` in-place.
+
+    Much faster than ``rglob`` on JS projects with large ``node_modules``.
+    """
+    for dirpath, dirnames, filenames in os.walk(root):
+        # Prune in-place so os.walk doesn't descend
+        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
+        for fname in filenames:
+            if extensions is None or any(fname.endswith(ext) for ext in extensions):
+                yield Path(dirpath) / fname
 
 
 @dataclass
@@ -163,9 +179,7 @@ class AppAnalyzer:
             return
 
         # Fallback: find Dockerfiles in subdirectories
-        for dockerfile in sorted(result.app_dir.rglob("Dockerfile")):
-            if ".git" in dockerfile.parts or "node_modules" in dockerfile.parts:
-                continue
+        for dockerfile in sorted(_walk_files(result.app_dir, ("Dockerfile",))):
             parent = dockerfile.parent
             svc_name = parent.name if parent != result.app_dir else "app"
             base_image, language = self._detect_language(dockerfile)
@@ -196,15 +210,19 @@ class AppAnalyzer:
         if last_image is None:
             return None, None
 
-        if "python" in last_image:
+        # Extract the base image name (before : tag) for matching.
+        # e.g., "python:3.11-slim" → "python", "ghcr.io/org/my-python:1" → "my-python"
+        base = last_image.split(":")[0].rsplit("/", 1)[-1]
+
+        if "python" in base:
             return last_image, "python"
-        if "node" in last_image or "bun" in last_image:
+        if "node" in base or "bun" in base:
             return last_image, "node"
-        if "golang" in last_image or "go" in last_image:
+        if base in ("golang", "go") or base.startswith("golang"):
             return last_image, "go"
-        if "rust" in last_image:
+        if "rust" in base:
             return last_image, "rust"
-        if "ruby" in last_image:
+        if "ruby" in base:
             return last_image, "ruby"
         return last_image, None
 
@@ -233,9 +251,7 @@ class AppAnalyzer:
 
     def _detect_sdk_integration(self, result: AnalysisResult) -> None:
         # Python runtime lib
-        for req_file in result.app_dir.rglob("requirements.txt"):
-            if ".git" in req_file.parts or "node_modules" in req_file.parts:
-                continue
+        for req_file in _walk_files(result.app_dir, ("requirements.txt",)):
             try:
                 content = req_file.read_text(encoding="utf-8")
                 if "kamiwaza-extensions-lib" in content or "kamiwaza_extensions_lib" in content:
@@ -245,9 +261,7 @@ class AppAnalyzer:
                 pass
 
         # TypeScript runtime lib
-        for pkg_file in result.app_dir.rglob("package.json"):
-            if ".git" in pkg_file.parts or "node_modules" in pkg_file.parts:
-                continue
+        for pkg_file in _walk_files(result.app_dir, ("package.json",)):
             try:
                 content = pkg_file.read_text(encoding="utf-8")
                 if "@kamiwaza-ai/extensions-lib" in content:
@@ -263,18 +277,15 @@ class AppAnalyzer:
             re.compile(r"""@app\.(get|route)\s*\(\s*['"]/health"""),
             re.compile(r"""router\.(get|route)\s*\(\s*['"]/health"""),
         ]
-        for ext in ("*.py", "*.js", "*.ts", "*.jsx", "*.tsx"):
-            for src in result.app_dir.rglob(ext):
-                if ".git" in src.parts or "node_modules" in src.parts:
-                    continue
-                try:
-                    content = src.read_text(encoding="utf-8")
-                    for pat in patterns:
-                        if pat.search(content):
-                            result.has_health_endpoint = True
-                            return
-                except OSError:
-                    pass
+        for src in _walk_files(result.app_dir, (".py", ".js", ".ts", ".jsx", ".tsx")):
+            try:
+                content = src.read_text(encoding="utf-8")
+                for pat in patterns:
+                    if pat.search(content):
+                        result.has_health_endpoint = True
+                        return
+            except OSError:
+                pass
 
     def _infer_description(self, result: AnalysisResult) -> None:
         readme = result.app_dir / "README.md"

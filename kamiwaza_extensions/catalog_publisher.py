@@ -34,7 +34,10 @@ _TYPE_FILE_MAP: Dict[str, str] = {
 # Assumption: both the lock writer and the staleness checker use UTC
 # wall-clock time.  NTP clock jumps or manual clock changes may cause
 # premature or delayed cleanup — use a generous TTL margin for CI.
-LOCK_TTL_SECONDS = int(os.environ.get("KZ_LOCK_TTL_SECONDS", "600"))
+try:
+    LOCK_TTL_SECONDS = int(os.environ.get("KZ_LOCK_TTL_SECONDS", "600"))
+except ValueError:
+    LOCK_TTL_SECONDS = 600
 
 
 @dataclass

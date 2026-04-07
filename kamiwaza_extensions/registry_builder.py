@@ -10,7 +10,7 @@ with version-constraint-aware conflict resolution.
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 from packaging.specifiers import SpecifierSet
@@ -24,15 +24,22 @@ _STAGE_SUFFIXES = {
     "dev": "-dev",
 }
 
-# Synthetic versions used to probe specifier overlap.  Covers 0.0.0
-# through 29.19.9 (6000 versions) so that constraints like ==0.8.5,
-# <0.8.4, >=20.0.0 hit at least one probe.
-_PROBE_VERSIONS = [
-    Version(f"{major}.{minor}.{patch}")
-    for major in range(30)
-    for minor in range(20)
-    for patch in range(10)
-]
+# Lazy-initialized probe versions for constraint overlap detection.
+# Built on first use to avoid ~50ms import-time cost.
+_PROBE_VERSIONS: Optional[List[Version]] = None
+
+
+def _get_probe_versions() -> List[Version]:
+    """Return (and lazily create) synthetic versions 0.0.0–29.19.9."""
+    global _PROBE_VERSIONS
+    if _PROBE_VERSIONS is None:
+        _PROBE_VERSIONS = [
+            Version(f"{major}.{minor}.{patch}")
+            for major in range(30)
+            for minor in range(20)
+            for patch in range(10)
+        ]
+    return _PROBE_VERSIONS
 
 
 class RegistryBuilder:
@@ -354,8 +361,9 @@ def _constraint_relationship(
     versions against both specifier sets and classify based on the
     overlap of satisfied versions.
     """
-    a_matches = {v for v in _PROBE_VERSIONS if v in a}
-    b_matches = {v for v in _PROBE_VERSIONS if v in b}
+    probes = _get_probe_versions()
+    a_matches = {v for v in probes if v in a}
+    b_matches = {v for v in probes if v in b}
 
     # If either specifier matched nothing in our probe range, we cannot
     # reliably classify.  Treat as overlap (safe — forces manual review).

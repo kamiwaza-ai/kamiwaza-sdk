@@ -19,6 +19,7 @@ def run_port_forward(
     name: Optional[str] = None,
     service: Optional[str] = None,
     port: Optional[int] = None,
+    local_port: Optional[int] = None,
 ) -> None:
     """Forward a local port to a running extension pod."""
     from kamiwaza_sdk import KamiwazaClient
@@ -142,18 +143,25 @@ def run_port_forward(
         )
         raise typer.Exit(code=1)
 
-    # Build kubectl command
+    # Build kubectl command — support different local:remote ports
+    fwd_local = local_port if local_port is not None else resolved_port
+    if not (1 <= fwd_local <= 65535):
+        console.print(
+            f"[red]Error:[/red] Invalid local port {fwd_local}. Must be 1-65535."
+        )
+        raise typer.Exit(code=1)
+
     cmd = [
         "kubectl",
         "port-forward",
         "-n",
         EXTENSIONS_NAMESPACE,
         f"pod/{pod_name}",
-        f"{resolved_port}:{resolved_port}",
+        f"{fwd_local}:{resolved_port}",
     ]
 
     console.print(
-        f"Forwarding localhost:{resolved_port} → {svc_name}:{resolved_port}"
+        f"Forwarding localhost:{fwd_local} → {svc_name}:{resolved_port}"
     )
     console.print(f"[dim]$ {' '.join(cmd)}[/dim]")
 

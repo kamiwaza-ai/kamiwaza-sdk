@@ -56,9 +56,12 @@ def run_bump(*, level: str = "patch") -> None:
     old_version = data.get("version", info.version)
     data["version"] = new_version
 
-    with kamiwaza_json_path.open("w", encoding="utf-8") as f:
+    # Atomic write via temp file + rename
+    tmp_path = kamiwaza_json_path.with_suffix(".tmp")
+    with tmp_path.open("w", encoding="utf-8") as f:
         json.dump(data, f, indent=4)
         f.write("\n")
+    tmp_path.replace(kamiwaza_json_path)
 
     console.print(
         f"[green]\u2713[/green] Bumped version: "

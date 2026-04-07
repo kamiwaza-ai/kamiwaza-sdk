@@ -242,12 +242,13 @@ def shell(
 @run_with_error_handling
 def port_forward(
     service: Optional[str] = typer.Option(None, "--service", "-s", help="Target service"),
-    port: Optional[int] = typer.Option(None, "--port", "-p", help="Port to forward"),
+    port: Optional[int] = typer.Option(None, "--port", "-p", help="Remote container port"),
+    local_port: Optional[int] = typer.Option(None, "--local-port", help="Local port (defaults to same as --port)"),
     name: Optional[str] = typer.Option(None, "--name", "-n", help="Extension name (auto-detected if omitted)"),
 ) -> None:
     """Forward a local port to an extension pod."""
     from kamiwaza_extensions.commands.port_forward import run_port_forward
-    run_port_forward(service=service, port=port, name=name)
+    run_port_forward(service=service, port=port, local_port=local_port, name=name)
 
 
 @app.command()
