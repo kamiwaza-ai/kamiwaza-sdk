@@ -100,6 +100,11 @@ The `kz-ext` CLI helps extension developers scaffold, validate, build, deploy, a
 # Install the SDK (includes extension tools)
 pip install kamiwaza-sdk
 
+# Optional extras for publishing and AI-powered conversion:
+pip install kamiwaza-sdk[publish]    # Adds boto3 for kz-ext publish
+pip install kamiwaza-sdk[convert]    # Adds anthropic for kz-ext convert (OpenAI is included by default)
+pip install kamiwaza-sdk[all]        # Both
+
 # Verify
 kz-ext --version
 ```

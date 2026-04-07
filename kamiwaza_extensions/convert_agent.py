@@ -397,6 +397,9 @@ def run_agent(analysis: AnalysisResult, dry_run: bool = False) -> ConversionPlan
     Returns the ConversionPlan (applied or not depending on dry_run).
     """
     prompt = build_prompt(analysis)
+    console.print(
+        "  [dim]Note: source code will be sent to an external LLM provider for analysis.[/dim]"
+    )
     console.print("  [dim]Calling AI agent...[/dim]")
     response = call_llm(prompt)
 

@@ -521,3 +521,42 @@ class TestPublishNoCompose:
 
         with pytest.raises((SystemExit, ClickExit)):
             run_publish(stage="dev")
+
+# ------------------------------------------------------------------
+# Preview image path traversal
+# ------------------------------------------------------------------
+
+
+class TestResolvePreviewImage:
+    def test_rejects_path_traversal(self, tmp_path):
+        from kamiwaza_extensions.commands.publish import _resolve_preview_image
+
+        result = _resolve_preview_image(
+            {"preview_image": "../../etc/passwd"}, tmp_path
+        )
+        assert result is None
+
+    def test_returns_existing_image(self, tmp_path):
+        from kamiwaza_extensions.commands.publish import _resolve_preview_image
+
+        (tmp_path / "images").mkdir()
+        (tmp_path / "images" / "preview.png").write_bytes(b"PNG")
+        result = _resolve_preview_image(
+            {"preview_image": "images/preview.png"}, tmp_path
+        )
+        assert result is not None
+        assert result.name == "preview.png"
+
+    def test_returns_none_for_missing_image(self, tmp_path):
+        from kamiwaza_extensions.commands.publish import _resolve_preview_image
+
+        result = _resolve_preview_image(
+            {"preview_image": "images/nonexistent.png"}, tmp_path
+        )
+        assert result is None
+
+    def test_returns_none_when_no_preview(self, tmp_path):
+        from kamiwaza_extensions.commands.publish import _resolve_preview_image
+
+        result = _resolve_preview_image({}, tmp_path)
+        assert result is None
