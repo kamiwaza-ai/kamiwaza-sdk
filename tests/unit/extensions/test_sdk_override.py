@@ -296,7 +296,7 @@ class TestGenerateComposeOverride:
         services = override["services"]
 
         # Backend reads CMD from Dockerfile
-        assert "kamiwaza_extensions_lib" in services["backend"]["command"][0]
+        assert 'export PYTHONPATH="/sdk$${PYTHONPATH:+:$$PYTHONPATH}"' in services["backend"]["command"][0]
         assert "exec uvicorn app.main:app --host 0.0.0.0" in services["backend"]["command"][0]
 
         # Frontend reads ENTRYPOINT from Dockerfile
@@ -366,7 +366,7 @@ class TestGenerateComposeOverride:
         }
         override = generate_compose_override(spec, compose)
         services = override["services"]
-        assert "kamiwaza_extensions_lib" in services["backend"]["command"][0]
+        assert 'export PYTHONPATH="/sdk$${PYTHONPATH:+:$$PYTHONPATH}"' in services["backend"]["command"][0]
         assert "frontend" not in services
 
     def test_typescript_only(self, tmp_path):
@@ -383,7 +383,7 @@ class TestGenerateComposeOverride:
         assert "npm pack" in services["frontend"]["command"][0]
         assert "backend" not in services
 
-    def test_python_override_replaces_existing_package(self, tmp_path):
+    def test_python_override_prefers_local_sdk_via_pythonpath(self, tmp_path):
         spec = self._make_spec(tmp_path, typescript=False)
         compose = {
             "services": {
@@ -393,8 +393,20 @@ class TestGenerateComposeOverride:
 
         override = generate_compose_override(spec, compose)
         command = override["services"]["backend"]["command"][0]
-        assert 'rm -rf "$SITE"' in command
-        assert 'cp -r /sdk/kamiwaza_extensions_lib "$SITE_PARENT/"' in command
+        assert 'export PYTHONPATH="/sdk$${PYTHONPATH:+:$$PYTHONPATH}"' in command
+
+    def test_typescript_override_escapes_tarball_for_compose(self, tmp_path):
+        spec = self._make_spec(tmp_path, python=False)
+        compose = {
+            "services": {
+                "frontend": {"build": "./frontend", "ports": ["3000:3000"]},
+            }
+        }
+
+        override = generate_compose_override(spec, compose)
+        command = override["services"]["frontend"]["command"][0]
+        assert "TARBALL=$$(cd /sdk/kamiwaza-ai-extensions-lib" in command
+        assert 'npm install --ignore-scripts "/tmp/$$TARBALL"' in command
 
     def test_volume_mount_is_readonly(self, tmp_path):
         spec = self._make_spec(tmp_path)
