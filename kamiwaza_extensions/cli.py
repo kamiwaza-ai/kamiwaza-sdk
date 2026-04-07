@@ -17,6 +17,9 @@ app = typer.Typer(
 dev_app = typer.Typer(help="Development commands (local and remote deploy).")
 app.add_typer(dev_app, name="dev")
 
+config_app = typer.Typer(help="Configuration commands.")
+app.add_typer(config_app, name="config")
+
 console = Console(stderr=True)
 
 # ---------------------------------------------------------------------------
@@ -233,3 +236,91 @@ def shell(
     """Exec into a running extension container."""
     from kamiwaza_extensions.commands.shell import run_shell
     run_shell(service=service, name=name)
+
+
+@app.command("port-forward")
+@run_with_error_handling
+def port_forward(
+    service: Optional[str] = typer.Option(None, "--service", "-s", help="Target service"),
+    port: Optional[int] = typer.Option(None, "--port", "-p", help="Remote container port"),
+    local_port: Optional[int] = typer.Option(None, "--local-port", help="Local port (defaults to same as --port)"),
+    name: Optional[str] = typer.Option(None, "--name", "-n", help="Extension name (auto-detected if omitted)"),
+) -> None:
+    """Forward a local port to an extension pod."""
+    from kamiwaza_extensions.commands.port_forward import run_port_forward
+    run_port_forward(service=service, port=port, local_port=local_port, name=name)
+
+
+@app.command()
+@run_with_error_handling
+def bump(
+    level: str = typer.Option("patch", "--level", "-l", help="Bump level: major, minor, or patch"),
+) -> None:
+    """Bump extension version in kamiwaza.json."""
+    from kamiwaza_extensions.commands.bump import run_bump
+    run_bump(level=level)
+
+
+@app.command()
+@run_with_error_handling
+def convert(
+    path: str = typer.Argument(..., help="Path to existing app directory"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview without modifying files"),
+) -> None:
+    """Convert an existing app to a Kamiwaza extension."""
+    from kamiwaza_extensions.commands.convert import run_convert
+    run_convert(path=path, dry_run=dry_run)
+
+
+@app.command()
+@run_with_error_handling
+def publish(
+    stage: str = typer.Option(..., "--stage", help="Named publish profile to use"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview without making changes"),
+    force: bool = typer.Option(False, "--force", help="Overwrite existing version in catalog"),
+    no_build: bool = typer.Option(False, "--no-build", help="Skip Docker image build"),
+    no_push: bool = typer.Option(False, "--no-push", help="Skip Docker image push"),
+) -> None:
+    """Publish extension to catalog."""
+    from kamiwaza_extensions.commands.publish import run_publish
+    run_publish(stage=stage, dry_run=dry_run, force=force, no_build=no_build, no_push=no_push, verbose=_state.verbose)
+
+
+# ---------------------------------------------------------------------------
+# Config subcommands
+# ---------------------------------------------------------------------------
+
+@config_app.command("publish-profile")
+@run_with_error_handling
+def config_publish_profile(
+    name: Optional[str] = typer.Argument(None, help="Profile name"),
+    registry: Optional[str] = typer.Option(None, "--registry", help="Docker registry URL"),
+    catalog_endpoint: Optional[str] = typer.Option(
+        None, "--catalog-endpoint", help="S3-compatible catalog endpoint URL"
+    ),
+    catalog_bucket: Optional[str] = typer.Option(
+        None, "--catalog-bucket", help="Bucket name for catalog JSON"
+    ),
+    catalog_credentials: Optional[str] = typer.Option(
+        None, "--catalog-credentials", help="Credential spec (e.g. aws-profile:prod, env, sso)"
+    ),
+    catalog_prefix: str = typer.Option("", "--catalog-prefix", help="Key prefix within bucket"),
+    repo_level: bool = typer.Option(False, "--repo-level", help="Store profile in repo .kz-ext/ dir"),
+    list_profiles: bool = typer.Option(False, "--list", "-l", help="List all publish profiles"),
+    show: Optional[str] = typer.Option(None, "--show", help="Show details for a profile"),
+    delete: Optional[str] = typer.Option(None, "--delete", help="Delete a profile"),
+) -> None:
+    """Create, list, show, or delete publish profiles."""
+    from kamiwaza_extensions.commands.config import publish_profile
+    publish_profile(
+        name=name,
+        registry=registry,
+        catalog_endpoint=catalog_endpoint,
+        catalog_bucket=catalog_bucket,
+        catalog_credentials=catalog_credentials,
+        catalog_prefix=catalog_prefix,
+        repo_level=repo_level,
+        list_profiles=list_profiles,
+        show=show,
+        delete=delete,
+    )

@@ -1,0 +1,195 @@
+"""Unit tests for AppAnalyzer."""
+
+import json
+import textwrap
+
+import pytest
+import yaml
+
+pytestmark = pytest.mark.unit
+
+
+class TestAnalyze:
+    """Test the full analysis pipeline."""
+
+    def test_analyze_basic_app(self, tmp_path):
+        """Analyze a minimal app with compose and Dockerfiles."""
+        from kamiwaza_extensions.app_analyzer import AppAnalyzer
+
+        # Create compose
+        compose = {
+            "services": {
+                "backend": {
+                    "build": {"context": "./backend", "dockerfile": "Dockerfile"},
+                    "ports": ["8000:8000"],
+                    "volumes": ["./backend/app:/app/app"],
+                },
+                "frontend": {
+                    "build": "./frontend",
+                    "ports": ["3000:3000"],
+                },
+            }
+        }
+        (tmp_path / "docker-compose.yml").write_text(yaml.dump(compose))
+
+        # Create Dockerfiles
+        (tmp_path / "backend").mkdir()
+        (tmp_path / "backend" / "Dockerfile").write_text("FROM python:3.11\n")
+        (tmp_path / "frontend").mkdir()
+        (tmp_path / "frontend" / "Dockerfile").write_text("FROM node:20\n")
+
+        analyzer = AppAnalyzer()
+        result = analyzer.analyze(tmp_path)
+
+        # tmp_path names have underscores which get sanitized to hyphens
+        import re
+        expected = re.sub(r"[^a-z0-9-]", "-", tmp_path.name.lower()).strip("-")
+        expected = re.sub(r"-+", "-", expected)
+        assert result.app_name == expected
+        assert len(result.services) == 2
+        assert result.compose_path is not None
+
+        backend = next(s for s in result.services if s.name == "backend")
+        assert backend.language == "python"
+        assert 8000 in backend.ports
+
+        frontend = next(s for s in result.services if s.name == "frontend")
+        assert frontend.language == "node"
+
+    def test_detect_host_ports(self, tmp_path):
+        from kamiwaza_extensions.app_analyzer import AppAnalyzer
+
+        compose = {"services": {"app": {"ports": ["8080:8000"]}}}
+        (tmp_path / "docker-compose.yml").write_text(yaml.dump(compose))
+
+        result = AppAnalyzer().analyze(tmp_path)
+        assert len(result.has_host_ports) == 1
+        assert "8080:8000" in result.has_host_ports[0]
+
+    def test_detect_bind_mounts(self, tmp_path):
+        from kamiwaza_extensions.app_analyzer import AppAnalyzer
+
+        compose = {"services": {"app": {"volumes": ["./src:/app/src"]}}}
+        (tmp_path / "docker-compose.yml").write_text(yaml.dump(compose))
+
+        result = AppAnalyzer().analyze(tmp_path)
+        assert len(result.has_bind_mounts) == 1
+
+    def test_detect_missing_resource_limits(self, tmp_path):
+        from kamiwaza_extensions.app_analyzer import AppAnalyzer
+
+        compose = {"services": {"app": {"image": "myapp:latest"}}}
+        (tmp_path / "docker-compose.yml").write_text(yaml.dump(compose))
+
+        result = AppAnalyzer().analyze(tmp_path)
+        assert "app" in result.missing_resource_limits
+
+    def test_detect_health_endpoint(self, tmp_path):
+        from kamiwaza_extensions.app_analyzer import AppAnalyzer
+
+        (tmp_path / "docker-compose.yml").write_text(yaml.dump({"services": {"app": {}}}))
+        (tmp_path / "app").mkdir()
+        (tmp_path / "app" / "main.py").write_text(
+            '@app.get("/health")\nasync def health():\n    return {"status": "ok"}\n'
+        )
+
+        result = AppAnalyzer().analyze(tmp_path)
+        assert result.has_health_endpoint is True
+
+    def test_no_health_endpoint(self, tmp_path):
+        from kamiwaza_extensions.app_analyzer import AppAnalyzer
+
+        (tmp_path / "docker-compose.yml").write_text(yaml.dump({"services": {"app": {}}}))
+
+        result = AppAnalyzer().analyze(tmp_path)
+        assert result.has_health_endpoint is False
+
+    def test_detect_python_runtime_lib(self, tmp_path):
+        from kamiwaza_extensions.app_analyzer import AppAnalyzer
+
+        (tmp_path / "docker-compose.yml").write_text(yaml.dump({"services": {"app": {}}}))
+        (tmp_path / "backend").mkdir()
+        (tmp_path / "backend" / "requirements.txt").write_text(
+            "fastapi\nkamiwaza-extensions-lib>=0.1.0\n"
+        )
+
+        result = AppAnalyzer().analyze(tmp_path)
+        assert result.has_python_runtime_lib is True
+
+    def test_detect_ts_runtime_lib(self, tmp_path):
+        from kamiwaza_extensions.app_analyzer import AppAnalyzer
+
+        (tmp_path / "docker-compose.yml").write_text(yaml.dump({"services": {"app": {}}}))
+        (tmp_path / "frontend").mkdir()
+        pkg = {"dependencies": {"@kamiwaza-ai/extensions-lib": "^0.2.0"}}
+        (tmp_path / "frontend" / "package.json").write_text(json.dumps(pkg))
+
+        result = AppAnalyzer().analyze(tmp_path)
+        assert result.has_ts_runtime_lib is True
+
+    def test_infer_tool_type_from_name(self, tmp_path):
+        from kamiwaza_extensions.app_analyzer import AppAnalyzer
+
+        tool_dir = tmp_path / "tool-webscraper"
+        tool_dir.mkdir()
+        (tool_dir / "docker-compose.yml").write_text(yaml.dump({"services": {"app": {}}}))
+
+        result = AppAnalyzer().analyze(tool_dir)
+        assert result.extension_type == "tool"
+
+    def test_infer_description_from_readme(self, tmp_path):
+        from kamiwaza_extensions.app_analyzer import AppAnalyzer
+
+        (tmp_path / "docker-compose.yml").write_text(yaml.dump({"services": {"app": {}}}))
+        (tmp_path / "README.md").write_text("# My Cool App\nThis is a cool app.\n")
+
+        result = AppAnalyzer().analyze(tmp_path)
+        assert result.description == "My Cool App"
+
+    def test_nonexistent_directory(self):
+        from kamiwaza_extensions.app_analyzer import AppAnalyzer
+
+        with pytest.raises(FileNotFoundError):
+            AppAnalyzer().analyze("/nonexistent/path")
+
+    def test_no_compose_file(self, tmp_path):
+        from kamiwaza_extensions.app_analyzer import AppAnalyzer
+
+        result = AppAnalyzer().analyze(tmp_path)
+        assert result.compose_path is None
+        assert result.compose_data is None
+
+
+class TestGenerateKamiwazaJson:
+    def test_basic_generation(self, tmp_path):
+        from kamiwaza_extensions.app_analyzer import AppAnalyzer
+
+        (tmp_path / "docker-compose.yml").write_text(yaml.dump({"services": {"app": {}}}))
+
+        analyzer = AppAnalyzer()
+        result = analyzer.analyze(tmp_path)
+        kamiwaza = analyzer.generate_kamiwaza_json(result)
+
+        assert kamiwaza["name"] == result.app_name
+        assert kamiwaza["version"] == "0.1.0"
+        assert kamiwaza["source_type"] == "user_repo"
+        assert kamiwaza["risk_tier"] == 0
+        assert kamiwaza["verified"] is False
+        assert "kz_ext_version" in kamiwaza
+
+
+class TestSanitizeName:
+    def test_lowercase(self):
+        from kamiwaza_extensions.app_analyzer import AppAnalyzer
+
+        assert AppAnalyzer._sanitize_name("MyApp") == "myapp"
+
+    def test_special_chars(self):
+        from kamiwaza_extensions.app_analyzer import AppAnalyzer
+
+        assert AppAnalyzer._sanitize_name("my_app@v2") == "my-app-v2"
+
+    def test_empty(self):
+        from kamiwaza_extensions.app_analyzer import AppAnalyzer
+
+        assert AppAnalyzer._sanitize_name("") == "my-extension"

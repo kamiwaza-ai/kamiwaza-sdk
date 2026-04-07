@@ -28,6 +28,19 @@ dependencies = [
     "pyyaml>=6.0",
     "packaging>=23.0",
     "fastapi>=0.100.0",
+    "rich>=13.0",
+]
+
+[project.optional-dependencies]
+publish = [
+    "boto3>=1.28.0",
+]
+convert = [
+    "anthropic>=0.30.0",
+]
+all = [
+    "boto3>=1.28.0",
+    "anthropic>=0.30.0",
 ]
 
 [project.urls]
