@@ -115,11 +115,11 @@ def test_apps_deploy_and_deployment_error_paths(live_kamiwaza_client) -> None:
     session_payload = {"session_token": f"sdk-session-{uuid4().hex}"}
     with pytest.raises(APIError) as exc:
         client.post("/apps/sessions/heartbeat", json=session_payload)
-    assert exc.value.status_code == 404
+    assert exc.value.status_code == 401
 
     with pytest.raises(APIError) as exc:
         client.post("/apps/sessions/end", json={**session_payload, "reason": "sdk-test"})
-    assert exc.value.status_code == 404
+    assert exc.value.status_code == 401
 
     deployments = client.get("/apps/deployments")
     assert isinstance(deployments, list)

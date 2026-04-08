@@ -185,17 +185,20 @@ class KamiwazaClient:
                         f"Unauthenticated request failed for {endpoint}: {response.text}"
                     )
                 logger.warning(f"Received 401 Unauthorized. Response: {response.text}")
-                if self.authenticator:
-                    if not did_refresh:
-                        did_refresh = True
-                        self.authenticator.refresh_token(self.session)
-                        continue
+                
+                # If the backend is rejecting an app-level session token, do not refresh the core SDK token
+                if "Invalid session token" not in response.text:
+                    if self.authenticator:
+                        if not did_refresh:
+                            did_refresh = True
+                            self.authenticator.refresh_token(self.session)
+                            continue
+                        raise AuthenticationError(
+                            "Authentication failed after token refresh."
+                        )
                     raise AuthenticationError(
-                        "Authentication failed after token refresh."
+                        "Authentication failed. No authenticator provided."
                     )
-                raise AuthenticationError(
-                    "Authentication failed. No authenticator provided."
-                )
 
             if response.status_code >= 400:
                 content_type = response.headers.get("content-type", "")
