@@ -19,6 +19,10 @@ from kamiwaza_extensions.scaffolder import Scaffolder
 REPO_ROOT = Path(__file__).resolve().parents[3]
 EXAMPLE_DIR = REPO_ROOT / "examples" / "chatbot-app"
 LOCAL_TS_LIB = REPO_ROOT / "kamiwaza-ai-extensions-lib"
+LOCAL_TS_RUNTIME_ENTRYPOINTS = (
+    LOCAL_TS_LIB / "dist" / "client" / "index.js",
+    LOCAL_TS_LIB / "dist" / "server" / "index.js",
+)
 
 SYNC_FILES = [
     Path(".gitignore"),
@@ -87,6 +91,21 @@ def _run(command: list[str], cwd: Path) -> None:
             f"Command failed in {cwd}: {' '.join(command)}\n"
             f"stdout:\n{result.stdout}\n"
             f"stderr:\n{result.stderr}"
+        )
+
+
+def _ensure_local_ts_runtime_built() -> None:
+    if all(entrypoint.exists() for entrypoint in LOCAL_TS_RUNTIME_ENTRYPOINTS):
+        return
+
+    _run(["npm", "install"], LOCAL_TS_LIB)
+    _run(["npm", "run", "build"], LOCAL_TS_LIB)
+
+    missing_entrypoints = [str(entrypoint) for entrypoint in LOCAL_TS_RUNTIME_ENTRYPOINTS if not entrypoint.exists()]
+    if missing_entrypoints:
+        raise AssertionError(
+            "Local TypeScript runtime build did not produce expected entrypoints:\n"
+            + "\n".join(missing_entrypoints)
         )
 
 
@@ -196,6 +215,7 @@ def test_app_starter_and_example_build_against_local_sdk_repo(
         extension_dir = _copy_example(tmp_path)
 
     frontend_dir = extension_dir / "frontend"
+    _ensure_local_ts_runtime_built()
     _point_frontend_to_local_runtime(frontend_dir)
 
     _run(["npm", "install"], frontend_dir)
