@@ -26,6 +26,18 @@ function isSafeRedirect(url: string): boolean {
     }
 }
 
+function resolveLoggedOutPath(base: string): string {
+    return base ? `${base}/logged-out` : "/logged-out";
+}
+
+export function navigateBrowser(target: string): void {
+    window.location.assign(target);
+}
+
+export function resolveLogoutRedirectTarget(base: string, data: { redirect_url?: unknown }): string {
+    return (typeof data.redirect_url === "string" && data.redirect_url) || resolveLoggedOutPath(base);
+}
+
 /**
  * Provides session state to the component tree.
  *
@@ -107,11 +119,10 @@ export function SessionProvider({
             });
             if (res.ok) {
                 const data = await res.json();
-                // Prefer redirect_url (app's logged-out page) over logout_url
-                // (platform endpoint that requires POST and can't be GET-navigated)
-                const target = data.redirect_url || data.logout_url;
+                // Never GET-navigate to logout_url — it points at a POST endpoint.
+                const target = resolveLogoutRedirectTarget(base, data);
                 if (target && isSafeRedirect(target)) {
-                    window.location.href = target;
+                    navigateBrowser(target);
                     return;
                 }
             }
