@@ -33,6 +33,8 @@ class TestScaffolder:
         assert (d / "backend" / "Dockerfile").exists()
         assert (d / "backend" / "requirements.txt").exists()
         assert (d / ".gitignore").exists()
+        assert (d / "AGENTS.md").exists()
+        assert (d / "CLAUDE.md").exists()
 
         meta = json.loads((d / "kamiwaza.json").read_text())
         assert meta["name"] == "my-app"
@@ -106,6 +108,14 @@ class TestScaffolder:
         main_py = (d / "backend" / "app" / "main.py").read_text()
         assert "test-app" in main_py
         assert "{{name}}" not in main_py
+
+        page_tsx = (d / "frontend" / "src" / "app" / "page.tsx").read_text()
+        assert "Select a Kamiwaza model" in page_tsx
+        assert "This starter already includes" in page_tsx
+
+        readme = (d / "README.md").read_text()
+        assert "AGENTS.md" in readme
+        assert "CLAUDE.md" in readme
 
     def test_app_template_uses_standalone_frontend_runtime(self, tmp_path, monkeypatch, scaffolder):
         d = self._empty_dir(tmp_path)

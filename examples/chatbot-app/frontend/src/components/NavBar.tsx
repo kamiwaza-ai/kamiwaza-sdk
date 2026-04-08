@@ -9,7 +9,7 @@ export function NavBar({ currentPath }: { currentPath?: string }) {
   return (
     <nav className="flex items-center gap-6 border-b border-kw-elevated pb-4 mb-8">
       <span className="font-heading text-xs font-bold uppercase tracking-widest text-kw-primary">
-        {{name}}
+        chatbot-app
       </span>
       <div className="flex gap-4">
         {links.map((link) => (

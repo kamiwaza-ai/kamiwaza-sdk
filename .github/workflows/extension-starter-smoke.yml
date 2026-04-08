@@ -1,0 +1,39 @@
+name: Extension Starter Smoke
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'kamiwaza_extensions/templates/app/**'
+      - 'examples/chatbot-app/**'
+      - 'kamiwaza_extensions_lib/**'
+      - 'kamiwaza-ai-extensions-lib/**'
+      - 'tests/unit/extensions/test_app_starter_smoke.py'
+      - 'tests/unit/extensions/test_scaffolder.py'
+      - '.github/workflows/extension-starter-smoke.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: Starter Smoke Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          version: "0.7.5"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Run scaffold regression and smoke tests
+        run: uv run pytest tests/unit/extensions/test_scaffolder.py tests/unit/extensions/test_app_starter_smoke.py

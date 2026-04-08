@@ -171,7 +171,7 @@ class TestListAvailableModels:
     @pytest.mark.asyncio
     async def test_returns_typed_models(self, monkeypatch):
         monkeypatch.setenv("KAMIWAZA_API_URL", "http://api:7777/api")
-        monkeypatch.setenv("KAMIWAZA_PUBLIC_API_URL", "https://kamiwaza.test")
+        monkeypatch.setenv("KAMIWAZA_PUBLIC_API_URL", "https://kamiwaza.test/api")
 
         request = MagicMock()
         request.headers = {"x-user-id": "usr-123"}
@@ -212,6 +212,35 @@ class TestListAvailableModels:
         assert models[0]._extra["endpoint"] == "https://kamiwaza.test/runtime/models/dep-1/v1"
         assert models[1].type == "audio"
         assert models[1].capabilities == ["audio.transcriptions"]
+
+    @pytest.mark.asyncio
+    async def test_normalizes_endpoint_field_from_platform_payload(self, monkeypatch):
+        monkeypatch.setenv("KAMIWAZA_API_URL", "http://api:7777/api")
+
+        request = MagicMock()
+        request.headers = {"x-user-id": "usr-123"}
+
+        mock_deployments = [
+            {
+                "id": "dep-1",
+                "m_name": "llama-3",
+                "status": "DEPLOYED",
+                "engine_name": "mlx",
+                "endpoint": "https://kamiwaza.test/api/runtime/models/dep-1/v1",
+            }
+        ]
+
+        with patch.object(
+            __import__("kamiwaza_extensions_lib.client", fromlist=["KamiwazaExtClient"]).KamiwazaExtClient,
+            "from_env",
+        ) as mock_from_env:
+            mock_client = AsyncMock()
+            mock_client.get_models = AsyncMock(return_value=mock_deployments)
+            mock_from_env.return_value = mock_client
+
+            models = await list_available_models(request)
+
+        assert models[0]._extra["endpoint"] == "https://kamiwaza.test/runtime/models/dep-1/v1"
 
     @pytest.mark.asyncio
     async def test_returns_empty_when_no_api_url(self, monkeypatch):

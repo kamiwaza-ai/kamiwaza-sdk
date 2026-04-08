@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Optional
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 import httpx
 from fastapi import Request
@@ -132,7 +132,7 @@ async def list_available_models(request: Request) -> list[AvailableModel]:
             model_data.setdefault("capabilities", _infer_capabilities(model_data))
             endpoint = _deployment_openai_base(model_data, public_base)
             if endpoint:
-                model_data.setdefault("endpoint", endpoint)
+                model_data["endpoint"] = endpoint
             models.append(AvailableModel.from_dict(model_data))
         return models
     return []
@@ -163,10 +163,22 @@ async def _resolve_openai_base(
 
 def _public_base_url(config: AuthConfig) -> str:
     if config.public_api_url:
-        return config.public_api_url.rstrip("/")
+        return config.public_api_url.removesuffix("/api").rstrip("/")
     if config.api_url:
         return config.api_url.removesuffix("/api").rstrip("/")
     return ""
+
+
+def _normalize_openai_endpoint(endpoint: str) -> str:
+    if not endpoint:
+        return ""
+
+    parsed = urlparse(endpoint.rstrip("/"))
+    if parsed.path.startswith("/api/runtime/models/"):
+        parsed = parsed._replace(
+            path=parsed.path.replace("/api/runtime/models/", "/runtime/models/", 1)
+        )
+    return urlunparse(parsed).rstrip("/")
 
 
 def _is_active_deployment(data: dict[str, Any]) -> bool:
@@ -221,7 +233,7 @@ def _infer_capabilities(data: dict[str, Any]) -> list[str]:
 def _deployment_openai_base(data: dict[str, Any], public_base: str) -> str:
     endpoint = str(data.get("endpoint") or "").rstrip("/")
     if endpoint:
-        return endpoint
+        return _normalize_openai_endpoint(endpoint)
 
     access_path = str(data.get("access_path") or "").strip()
     if access_path and public_base:
