@@ -12,7 +12,7 @@ export default function LoggedOutPage() {
                         Logged out
                     </h1>
                     <p className="text-kw-text-secondary text-sm mb-6 leading-relaxed">
-                        You have been logged out of {{name}}.
+                        You have been logged out of chatbot-app.
                     </p>
                     <Link href="/" className="btn-primary inline-block">
                         Back to Chat

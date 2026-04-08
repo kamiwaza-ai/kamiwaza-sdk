@@ -16,8 +16,8 @@ const firaCode = Fira_Code({
 });
 
 export const metadata: Metadata = {
-  title: "{{name}} | Kamiwaza Extension",
-  description: "{{description}}",
+  title: "chatbot-app | Kamiwaza Extension",
+  description: "A Kamiwaza app extension",
   icons: {
     icon: "/kmza-icon.png",
     shortcut: "/kmza-icon.png",

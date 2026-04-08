@@ -367,9 +367,9 @@ function Dashboard() {
 
             <header className="mb-8 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
                 <div>
-                    <h1 className="terminal-header">{{name}}</h1>
+                    <h1 className="terminal-header">chatbot-app</h1>
                     <p className="text-kw-text-secondary text-sm mt-3 max-w-3xl leading-relaxed">
-                        {{description}}. This starter already includes explicit
+                        A Kamiwaza app extension. This starter already includes explicit
                         model selection, in-memory chat history, and authenticated
                         requests through the extension backend.
                     </p>

@@ -43,6 +43,7 @@ The `/examples` directory contains Jupyter notebooks demonstrating various use c
 6. [Web Agent](examples/06_web-agent.ipynb) - Build an AI agent that can browse and interact with web pages
 7. [RAG Demo](examples/07_kamiwaza_rag_demo.ipynb) - Retrieval Augmented Generation using Kamiwaza's vector database and embedding services
 8. [App Garden and Tool Shed](examples/08_app_garden_and_tools.ipynb) - Deploy containerized applications and MCP Tool servers
+9. [Reference Chatbot App](examples/chatbot-app) - A buildable Kamiwaza extension app that mirrors the default `kz-ext create --type app` starter
 
 More examples coming soon!
 
@@ -120,6 +121,11 @@ kz-ext login --dev
 # 2. Scaffold a new extension
 mkdir my-app && cd my-app
 kz-ext create --type app --name my-app
+
+# The generated app is already a working AI starter with:
+# - explicit model selection
+# - a simple chat UI
+# - AGENTS.md and CLAUDE.md for coding assistants
 
 # 3. Validate the extension metadata
 kz-ext validate
@@ -208,6 +214,7 @@ Optionally uses `OPENAI_API_KEY` (or `ANTHROPIC_API_KEY`) for AI-powered convers
 ### Extension Types
 
 - **App** (`--type app`): Full-stack extension with Next.js frontend and FastAPI backend, pre-wired with `@kamiwaza-ai/extensions-lib` and `kamiwaza-extensions-lib`.
+- The app starter includes a working authenticated chat flow so developers can customize a real extension instead of starting from a status dashboard.
 - **Tool** (`--type tool`): MCP tool server using FastMCP with `kamiwaza-extensions-lib`.
 - **Service** (`--type service`): Minimal containerized service.
 

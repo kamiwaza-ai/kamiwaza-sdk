@@ -1,4 +1,4 @@
-"""FastAPI backend for {{name}}."""
+"""FastAPI backend for chatbot-app."""
 
 import logging
 import os
@@ -18,7 +18,7 @@ from kamiwaza_extensions_lib import (
 )
 from openai import APIStatusError, AsyncOpenAI
 
-app = FastAPI(title="{{name}}")
+app = FastAPI(title="chatbot-app")
 logger = logging.getLogger(__name__)
 
 cors_origin = os.environ.get("KAMIWAZA_ORIGIN", "http://localhost:3000")
@@ -36,7 +36,7 @@ app.include_router(create_session_router())
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "app": "{{name}}"}
+    return {"status": "ok", "app": "chatbot-app"}
 
 
 @app.get("/api/info")
