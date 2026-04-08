@@ -98,8 +98,13 @@ class Scaffolder:
 
             dest.parent.mkdir(parents=True, exist_ok=True)
 
-            # Read and substitute
-            content = src.read_text(encoding="utf-8")
+            # Render templated text files and preserve binary assets byte-for-byte.
+            try:
+                content = src.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                dest.write_bytes(src.read_bytes())
+                continue
+
             for key, val in context.items():
                 content = content.replace(key, val)
             dest.write_text(content, encoding="utf-8")

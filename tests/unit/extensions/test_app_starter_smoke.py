@@ -31,6 +31,7 @@ SYNC_FILES = [
     Path("frontend/Dockerfile"),
     Path("frontend/next.config.js"),
     Path("frontend/package.json"),
+    Path("frontend/public/kmza-icon.png"),
     Path("frontend/postcss.config.js"),
     Path("frontend/src/app/api/[...path]/route.ts"),
     Path("frontend/src/app/auth/login-url/route.ts"),
@@ -46,6 +47,10 @@ SYNC_FILES = [
     Path("frontend/tailwind.config.ts"),
     Path("frontend/tsconfig.json"),
 ]
+
+BINARY_SYNC_FILES = {
+    Path("frontend/public/kmza-icon.png"),
+}
 
 
 def _scaffold_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str = "chatbot-app") -> Path:
@@ -160,7 +165,12 @@ def test_chatbot_example_matches_scaffolded_app_core_files(tmp_path, monkeypatch
     scaffolded = _scaffold_app(tmp_path, monkeypatch)
 
     for relative_path in SYNC_FILES:
-        assert (scaffolded / relative_path).read_text() == (EXAMPLE_DIR / relative_path).read_text()
+        scaffolded_path = scaffolded / relative_path
+        example_path = EXAMPLE_DIR / relative_path
+        if relative_path in BINARY_SYNC_FILES:
+            assert scaffolded_path.read_bytes() == example_path.read_bytes()
+        else:
+            assert scaffolded_path.read_text() == example_path.read_text()
 
 
 @pytest.mark.slow

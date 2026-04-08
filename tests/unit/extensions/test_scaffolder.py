@@ -1,6 +1,7 @@
 """Tests for Scaffolder."""
 
 import json
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -35,11 +36,31 @@ class TestScaffolder:
         assert (d / ".gitignore").exists()
         assert (d / "AGENTS.md").exists()
         assert (d / "CLAUDE.md").exists()
+        assert (d / "frontend" / "public" / "kmza-icon.png").exists()
 
         meta = json.loads((d / "kamiwaza.json").read_text())
         assert meta["name"] == "my-app"
         assert meta["type"] == "app"
         assert meta["version"] == "0.1.0"
+
+    def test_binary_template_assets_are_copied_without_rendering(self, tmp_path, monkeypatch, scaffolder):
+        d = self._empty_dir(tmp_path)
+        monkeypatch.chdir(d)
+        with patch("subprocess.run"):
+            scaffolder.create(type_="app", name="logo-app")
+
+        source_logo = (
+            Path(__file__).resolve().parents[3]
+            / "kamiwaza_extensions"
+            / "templates"
+            / "app"
+            / "frontend"
+            / "public"
+            / "kmza-icon.png"
+        )
+        scaffolded_logo = d / "frontend" / "public" / "kmza-icon.png"
+
+        assert scaffolded_logo.read_bytes() == source_logo.read_bytes()
 
     def test_create_tool_auto_prefix(self, tmp_path, monkeypatch, scaffolder):
         d = self._empty_dir(tmp_path)

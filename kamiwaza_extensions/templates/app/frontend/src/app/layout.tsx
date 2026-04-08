@@ -18,6 +18,11 @@ const firaCode = Fira_Code({
 export const metadata: Metadata = {
   title: "{{name}} | Kamiwaza Extension",
   description: "{{description}}",
+  icons: {
+    icon: "/kmza-icon.png",
+    shortcut: "/kmza-icon.png",
+    apple: "/kmza-icon.png",
+  },
 };
 
 export default function RootLayout({
