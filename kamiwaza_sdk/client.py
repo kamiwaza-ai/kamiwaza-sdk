@@ -39,6 +39,8 @@ logger = logging.getLogger(__name__)
 class KamiwazaClient:
     _RECENT_DATASET_TTL_SECONDS = 30.0
     _RECENT_DATASET_MAX = 1024
+    _APP_SESSION_ENDPOINT_PREFIX = "apps/sessions"
+    _APP_SESSION_INVALID_TOKEN_DETAIL = "Invalid session token"
 
     # Retry window for PUT-after-create/update schema operations.
     # Total sleep time sums to 5.0s.
@@ -134,6 +136,35 @@ class KamiwazaClient:
             return False
         return True
 
+    @staticmethod
+    def _response_detail(response: requests.Response) -> Optional[str]:
+        try:
+            payload = response.json()
+        except ValueError:
+            return None
+
+        if not isinstance(payload, dict):
+            return None
+
+        detail = payload.get("detail")
+        if not isinstance(detail, str):
+            return None
+        return detail.strip()
+
+    @classmethod
+    def _is_app_session_invalid_token_response(
+        cls,
+        path: str,
+        response: requests.Response,
+    ) -> bool:
+        if not path.startswith(cls._APP_SESSION_ENDPOINT_PREFIX):
+            return False
+        detail = cls._response_detail(response)
+        return (
+            isinstance(detail, str)
+            and detail.casefold() == cls._APP_SESSION_INVALID_TOKEN_DETAIL.casefold()
+        )
+
     def _request(
         self,
         method: str,
@@ -185,9 +216,9 @@ class KamiwazaClient:
                         f"Unauthenticated request failed for {endpoint}: {response.text}"
                     )
                 logger.warning(f"Received 401 Unauthorized. Response: {response.text}")
-                
+
                 # If the backend is rejecting an app-level session token, do not refresh the core SDK token
-                if "Invalid session token" not in response.text:
+                if not self._is_app_session_invalid_token_response(path, response):
                     if self.authenticator:
                         if not did_refresh:
                             did_refresh = True
