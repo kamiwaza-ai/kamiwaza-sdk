@@ -157,7 +157,8 @@ class KamiwazaClient:
         path: str,
         response: requests.Response,
     ) -> bool:
-        if not path.startswith(cls._APP_SESSION_ENDPOINT_PREFIX):
+        app_session_prefix = cls._APP_SESSION_ENDPOINT_PREFIX
+        if path != app_session_prefix and not path.startswith(f"{app_session_prefix}/"):
             return False
         detail = cls._response_detail(response)
         return (

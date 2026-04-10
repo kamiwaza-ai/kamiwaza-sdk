@@ -149,3 +149,34 @@ def test_401_invalid_session_token_outside_app_sessions_refreshes_sdk_auth(
     assert result == {"ok": True}
     assert authenticator.authenticate_calls == 1
     assert authenticator.refresh_calls == 1
+
+
+def test_401_invalid_session_token_for_non_session_prefix_refreshes_sdk_auth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    responses = iter(
+        [
+            _StubResponse(
+                status_code=401,
+                text='{"detail":"Invalid session token"}',
+                json_data={"detail": "Invalid session token"},
+            ),
+            _StubResponse(
+                status_code=200,
+                text='{"ok":true}',
+                json_data={"ok": True},
+            ),
+        ]
+    )
+    authenticator = _StubAuthenticator()
+    client = KamiwazaClient(
+        base_url="https://example.test/api",
+        authenticator=authenticator,
+    )
+    monkeypatch.setattr(client.session, "request", lambda *_args, **_kwargs: next(responses))
+
+    result = client.get("/apps/sessions-invalid/heartbeat")
+
+    assert result == {"ok": True}
+    assert authenticator.authenticate_calls == 1
+    assert authenticator.refresh_calls == 1
