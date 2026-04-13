@@ -40,6 +40,8 @@ class KamiwazaClient:
     _RECENT_DATASET_TTL_SECONDS = 30.0
     _RECENT_DATASET_MAX = 1024
     _APP_SESSION_ENDPOINT_PREFIX = "apps/sessions"
+    # Keep this pinned to the backend's current session-auth detail string until
+    # the API exposes a structured error code for app-session 401 responses.
     _APP_SESSION_INVALID_TOKEN_DETAIL = "Invalid session token"
 
     # Retry window for PUT-after-create/update schema operations.
@@ -231,6 +233,7 @@ class KamiwazaClient:
                     raise AuthenticationError(
                         "Authentication failed. No authenticator provided."
                     )
+                # Fall through so app-session 401s raise APIError(401) below.
 
             if response.status_code >= 400:
                 content_type = response.headers.get("content-type", "")

@@ -102,6 +102,29 @@ def test_401_invalid_session_token_does_not_refresh_sdk_auth(
 ) -> None:
     response = _StubResponse(
         status_code=401,
+        text='{"detail":"Invalid session token"}',
+        json_data={"detail": "Invalid session token"},
+    )
+    authenticator = _StubAuthenticator()
+    client = KamiwazaClient(
+        base_url="https://example.test/api",
+        authenticator=authenticator,
+    )
+    monkeypatch.setattr(client.session, "request", lambda *_args, **_kwargs: response)
+
+    with pytest.raises(APIError) as exc_info:
+        client.post("/apps/sessions/heartbeat", json={"session_token": "sdk-session"})
+
+    assert exc_info.value.status_code == 401
+    assert authenticator.authenticate_calls == 1
+    assert authenticator.refresh_calls == 0
+
+
+def test_401_invalid_session_token_match_is_case_insensitive_for_app_sessions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response = _StubResponse(
+        status_code=401,
         text='{"detail":"invalid SESSION token"}',
         json_data={"detail": "invalid SESSION token"},
     )
@@ -151,7 +174,38 @@ def test_401_invalid_session_token_outside_app_sessions_refreshes_sdk_auth(
     assert authenticator.refresh_calls == 1
 
 
-def test_401_invalid_session_token_for_non_session_prefix_refreshes_sdk_auth(
+def test_401_non_matching_detail_for_app_sessions_refreshes_sdk_auth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    responses = iter(
+        [
+            _StubResponse(
+                status_code=401,
+                text='{"detail":"Core token expired"}',
+                json_data={"detail": "Core token expired"},
+            ),
+            _StubResponse(
+                status_code=200,
+                text='{"ok":true}',
+                json_data={"ok": True},
+            ),
+        ]
+    )
+    authenticator = _StubAuthenticator()
+    client = KamiwazaClient(
+        base_url="https://example.test/api",
+        authenticator=authenticator,
+    )
+    monkeypatch.setattr(client.session, "request", lambda *_args, **_kwargs: next(responses))
+
+    result = client.post("/apps/sessions/heartbeat", json={"session_token": "sdk-session"})
+
+    assert result == {"ok": True}
+    assert authenticator.authenticate_calls == 1
+    assert authenticator.refresh_calls == 1
+
+
+def test_401_invalid_session_token_for_apps_sessions_lookalike_prefix_refreshes_sdk_auth(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     responses = iter(
