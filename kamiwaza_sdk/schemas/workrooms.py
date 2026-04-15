@@ -5,7 +5,13 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class WorkroomResponseModel(BaseModel):
+    """Base response model with forward-compatible parsing."""
+
+    model_config = ConfigDict(extra="allow")
 
 
 class WorkroomType(str, Enum):
@@ -53,7 +59,7 @@ class UpdateWorkroom(BaseModel):
     scg_references: Optional[List[str]] = None
 
 
-class Workroom(BaseModel):
+class Workroom(WorkroomResponseModel):
     """Full workroom entity returned by the API."""
 
     id: UUID
@@ -72,7 +78,7 @@ class Workroom(BaseModel):
     deleted_at: Optional[datetime] = None
 
 
-class DeleteWorkroomResponse(BaseModel):
+class DeleteWorkroomResponse(WorkroomResponseModel):
     """Response from delete/purge operation."""
 
     workroom_id: UUID
@@ -80,7 +86,7 @@ class DeleteWorkroomResponse(BaseModel):
     message: str
 
 
-class ExportManifestItem(BaseModel):
+class ExportManifestItem(WorkroomResponseModel):
     """A single item in the export manifest."""
 
     type: str = Field(..., description="Resource type: metadata, dataset, etc.")
@@ -92,14 +98,14 @@ class ExportManifestItem(BaseModel):
     )
 
 
-class ExportManifest(BaseModel):
+class ExportManifest(WorkroomResponseModel):
     """Categorized list of workroom contents with export eligibility."""
 
     workroom_id: UUID
     items: List[ExportManifestItem]
 
 
-class IngestionSummary(BaseModel):
+class IngestionSummary(WorkroomResponseModel):
     """Aggregated ingestion statistics for a workroom."""
 
     workroom_id: UUID

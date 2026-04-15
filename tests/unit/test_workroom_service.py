@@ -142,6 +142,21 @@ def test_create_excludes_none_fields(dummy_client):
     assert "labels" not in payload
 
 
+def test_create_serializes_uuid_attributes(dummy_client):
+    responses = {("post", "/workrooms/"): _workroom_response()}
+    client = dummy_client(responses)
+    service = WorkroomService(client)
+    mission_id = uuid.uuid4()
+
+    service.create(
+        "My WR",
+        "persistent",
+        attributes={"mission_id": mission_id},
+    )
+
+    assert client.calls[0][2]["json"]["attributes"]["mission_id"] == str(mission_id)
+
+
 # =============================================================================
 # List
 # =============================================================================
@@ -341,6 +356,20 @@ def test_update_validates_payload_fields(dummy_client):
         service.update(WORKROOM_ID, name="")
 
 
+def test_update_serializes_uuid_attributes(dummy_client):
+    responses = {("patch", f"/workrooms/{WORKROOM_UUID}"): _workroom_response()}
+    client = dummy_client(responses)
+    service = WorkroomService(client)
+    template_id = uuid.uuid4()
+
+    service.update(
+        WORKROOM_ID,
+        attributes={"template_id": template_id},
+    )
+
+    assert client.calls[0][2]["json"]["attributes"]["template_id"] == str(template_id)
+
+
 # =============================================================================
 # Delete
 # =============================================================================
@@ -391,6 +420,18 @@ def test_delete_global_workroom_raises_api_error(dummy_client):
     with pytest.raises(APIError) as exc_info:
         service.delete(global_id)
     assert exc_info.value.status_code == 403
+
+
+def test_delete_handles_no_content_response(dummy_client):
+    client = dummy_client({})
+    client.delete = lambda path, **kwargs: client.calls.append(("delete", path, kwargs)) or None  # noqa: E731
+    service = WorkroomService(client)
+
+    result = service.delete(WORKROOM_ID)
+
+    assert result.workroom_id == WORKROOM_UUID
+    assert result.status == "deleted"
+    assert result.message == ""
 
 
 # =============================================================================
@@ -635,6 +676,18 @@ def test_admin_delete_not_found_raises(dummy_client):
         service.admin_delete(WORKROOM_ID)
 
 
+def test_admin_delete_handles_no_content_response(dummy_client):
+    client = dummy_client({})
+    client.delete = lambda path, **kwargs: client.calls.append(("delete", path, kwargs)) or None  # noqa: E731
+    service = WorkroomService(client)
+
+    result = service.admin_delete(WORKROOM_ID)
+
+    assert result.workroom_id == WORKROOM_UUID
+    assert result.status == "deleted"
+    assert result.message == ""
+
+
 # =============================================================================
 # Schema validation
 # =============================================================================
@@ -656,6 +709,30 @@ def test_workroom_schema_handles_nulls():
     assert wr.description is None
     assert wr.labels is None
     assert wr.updated_at is None
+
+
+def test_response_models_allow_extra_fields():
+    wr = Workroom.model_validate(_workroom_response(unexpected_field="ok"))
+    delete_response = DeleteWorkroomResponse.model_validate(
+        {**_delete_response(), "audit_id": "evt-1"}
+    )
+    manifest = ExportManifest.model_validate(
+        {
+            **_manifest_response(),
+            "generated_at": "2025-01-01T00:00:00Z",
+        }
+    )
+    summary = IngestionSummary.model_validate(
+        {
+            **_ingestion_response(),
+            "extra": {"notes": 1},
+        }
+    )
+
+    assert wr.id == WORKROOM_UUID
+    assert delete_response.status == "deleted"
+    assert len(manifest.items) == 3
+    assert summary.total_sources == 5
 
 
 def test_workroom_type_enum():

@@ -73,7 +73,7 @@ class WorkroomService(BaseService):
         )
         response = self.client.post(
             "/workrooms/",
-            json=payload.model_dump(exclude_none=True),
+            json=payload.model_dump(exclude_none=True, mode="json"),
         )
         return Workroom.model_validate(response)
 
@@ -156,7 +156,7 @@ class WorkroomService(BaseService):
         try:
             response = self.client.patch(
                 f"/workrooms/{wid}",
-                json=payload.model_dump(exclude_unset=True),
+                json=payload.model_dump(exclude_unset=True, mode="json"),
             )
             return Workroom.model_validate(response)
         except APIError as e:
@@ -180,6 +180,12 @@ class WorkroomService(BaseService):
         wid = self._ensure_uuid(workroom_id)
         try:
             response = self.client.delete(f"/workrooms/{wid}")
+            if response is None:
+                return DeleteWorkroomResponse(
+                    workroom_id=wid,
+                    status="deleted",
+                    message="",
+                )
             return DeleteWorkroomResponse.model_validate(response)
         except APIError as e:
             if e.status_code == 404:
@@ -357,6 +363,12 @@ class WorkroomService(BaseService):
         wid = self._ensure_uuid(workroom_id)
         try:
             response = self.client.delete(f"/admin/workrooms/{wid}")
+            if response is None:
+                return DeleteWorkroomResponse(
+                    workroom_id=wid,
+                    status="deleted",
+                    message="",
+                )
             return DeleteWorkroomResponse.model_validate(response)
         except APIError as e:
             if e.status_code == 404:

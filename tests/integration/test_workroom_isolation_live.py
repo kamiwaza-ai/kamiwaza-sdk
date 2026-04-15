@@ -81,7 +81,8 @@ def _list_deployments(sdk: KamiwazaClient, workroom_id: str | None = None) -> li
     params = {}
     if workroom_id is not None:
         params["workroom_id"] = workroom_id
-    return sdk.get("/apps/deployments", params=params)
+    resp = sdk.get("/apps/deployments", params=params)
+    return resp if isinstance(resp, list) else resp.get("items", [])
 
 
 def _list_extensions(sdk: KamiwazaClient, workroom_id: str) -> list:
