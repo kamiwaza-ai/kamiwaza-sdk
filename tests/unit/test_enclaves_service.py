@@ -149,6 +149,26 @@ def test_get_update_delete_connector_round_trip(dummy_client):
     assert client.calls[2][2]["expect_json"] is False
 
 
+def test_update_connector_preserves_explicit_none_fields(dummy_client):
+    connector_id = uuid4()
+    connector = _connector_response(connector_id)
+    responses = {
+        ("put", f"/enclaves/connectors/{connector_id}"): connector,
+    }
+    client = dummy_client(responses)
+    service = EnclavesService(client)
+
+    service.connectors.update(
+        connector_id,
+        ConnectorUpdate(description=None, default_security_marking=None),
+    )
+
+    assert client.calls[0][2]["json"] == {
+        "description": None,
+        "default_security_marking": None,
+    }
+
+
 def test_trigger_ingest_posts_request(dummy_client):
     connector_id = uuid4()
     responses = {
@@ -288,6 +308,41 @@ def test_trigger_response_requires_status(dummy_client):
 
     with pytest.raises(ValidationError):
         service.connectors.trigger_ingest(connector_id)
+
+
+def test_connector_response_tolerates_missing_optional_fields(dummy_client):
+    connector_id = uuid4()
+    connector = _connector_response(connector_id)
+    connector.pop("description")
+    connector.pop("default_security_marking")
+    connector.pop("last_ingestion_at")
+    connector.pop("last_success_at")
+    connector.pop("updated_at")
+    connector.pop("updated_by")
+    responses = {("get", f"/enclaves/connectors/{connector_id}"): connector}
+    client = dummy_client(responses)
+    service = EnclavesService(client)
+
+    result = service.connectors.get(connector_id)
+
+    assert result.description is None
+    assert result.default_security_marking is None
+    assert result.last_ingestion_at is None
+    assert result.updated_by is None
+
+
+def test_document_record_tolerates_missing_job_id(dummy_client):
+    source_id = uuid4()
+    document_id = uuid4()
+    document = _document_record(document_id, source_id=source_id)
+    document.pop("job_id")
+    responses = {("get", f"/enclaves/documents/{document_id}"): document}
+    client = dummy_client(responses)
+    service = EnclavesService(client)
+
+    result = service.documents.get(document_id, source_id=source_id)
+
+    assert result.job_id is None
 
 
 def test_connector_api_errors_propagate(dummy_client):

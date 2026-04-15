@@ -61,7 +61,7 @@ class ConnectorClient(BaseService):
     def update(self, connector_id: UUID | str, payload: ConnectorUpdate) -> ConnectorResponse:
         response = self.client.put(
             f"{self._BASE_PATH}/{_ensure_uuid(connector_id, field='connector_id')}",
-            json=payload.model_dump(mode="json", exclude_none=True),
+            json=payload.model_dump(mode="json", exclude_unset=True),
         )
         return ConnectorResponse.model_validate(response)
 

@@ -54,20 +54,20 @@ class ConnectorResponse(EnclaveBaseModel):
     name: str
     source_type: str
     connector_type: str
-    description: Optional[str]
+    description: Optional[str] = None
     tags: List[str]
     allowed_roles: List[str]
     require_encryption: bool
     enabled: bool
     system_high: str
-    default_security_marking: Optional[str]
-    last_ingestion_at: Optional[datetime]
-    last_success_at: Optional[datetime]
+    default_security_marking: Optional[str] = None
+    last_ingestion_at: Optional[datetime] = None
+    last_success_at: Optional[datetime] = None
     error_count: int
     created_at: datetime
     created_by: str
-    updated_at: Optional[datetime]
-    updated_by: Optional[str]
+    updated_at: Optional[datetime] = None
+    updated_by: Optional[str] = None
 
 
 class ConnectorListResponse(EnclaveBaseModel):
@@ -100,7 +100,7 @@ class RejectedDocument(EnclaveBaseModel):
 class DocumentRecord(EnclaveBaseModel):
     id: UUID
     source_id: UUID
-    job_id: UUID
+    job_id: Optional[UUID] = None
     source_ref: str
     item_type: str
     title: Optional[str] = None
