@@ -60,13 +60,13 @@ class Workroom(BaseModel):
     tenant_id: str
     owner_user_id: str
     name: str
-    type: str
+    type: WorkroomType
     description: Optional[str] = None
     labels: Optional[List[str]] = None
     classification: Optional[str] = None
     attributes: Optional[Dict[str, Any]] = None
     scg_references: Optional[List[str]] = None
-    status: str
+    status: WorkroomStatus
     created_at: datetime
     updated_at: Optional[datetime] = None
     deleted_at: Optional[datetime] = None

@@ -1,18 +1,21 @@
-# kamiwaza_sdk/services/workrooms.py
-
-from typing import List, Optional, Union
-from uuid import UUID
 import logging
+from pathlib import Path
+from typing import Any, BinaryIO, List, Optional, Union
+from uuid import UUID
 
-from .base_service import BaseService
+from ..exceptions import APIError, NotFoundError
 from ..schemas.workrooms import (
     CreateWorkroom,
     DeleteWorkroomResponse,
     ExportManifest,
     IngestionSummary,
+    UpdateWorkroom,
     Workroom,
 )
-from ..exceptions import APIError, NotFoundError
+from .base_service import BaseService
+
+_UNSET = object()
+_EXPORT_CHUNK_SIZE = 64 * 1024
 
 
 class WorkroomService(BaseService):
@@ -87,7 +90,7 @@ class WorkroomService(BaseService):
         if include_archived:
             params["include_archived"] = "true"
         response = self.client.get("/workrooms/", params=params)
-        return [Workroom.model_validate(item) for item in response["items"]]
+        return self._parse_workroom_items(response, endpoint="/workrooms/")
 
     def get(self, workroom_id: Union[str, UUID]) -> Workroom:
         """Get a workroom by ID.
@@ -114,12 +117,12 @@ class WorkroomService(BaseService):
         self,
         workroom_id: Union[str, UUID],
         *,
-        name: Optional[str] = None,
-        description: Optional[str] = None,
-        labels: Optional[List[str]] = None,
-        classification: Optional[str] = None,
-        attributes: Optional[dict] = None,
-        scg_references: Optional[List[str]] = None,
+        name: Optional[str] | object = _UNSET,
+        description: Optional[str] | object = _UNSET,
+        labels: Optional[List[str]] | object = _UNSET,
+        classification: Optional[str] | object = _UNSET,
+        attributes: Optional[dict] | object = _UNSET,
+        scg_references: Optional[List[str]] | object = _UNSET,
     ) -> Workroom:
         """Partial update of workroom metadata.
 
@@ -140,19 +143,20 @@ class WorkroomService(BaseService):
             APIError: If validation fails (400) or workroom is read-only (409).
         """
         wid = self._ensure_uuid(workroom_id)
-        fields = {
-            "name": name,
-            "description": description,
-            "labels": labels,
-            "classification": classification,
-            "attributes": attributes,
-            "scg_references": scg_references,
-        }
-        payload = {k: v for k, v in fields.items() if v is not None}
+        payload = UpdateWorkroom(
+            **self._provided_fields(
+                name=name,
+                description=description,
+                labels=labels,
+                classification=classification,
+                attributes=attributes,
+                scg_references=scg_references,
+            )
+        )
         try:
             response = self.client.patch(
                 f"/workrooms/{wid}",
-                json=payload,
+                json=payload.model_dump(exclude_unset=True),
             )
             return Workroom.model_validate(response)
         except APIError as e:
@@ -236,24 +240,45 @@ class WorkroomService(BaseService):
                 raise NotFoundError(f"Workroom {wid} not found")
             raise
 
-    def export_bundle(self, workroom_id: Union[str, UUID]) -> bytes:
+    def export_bundle(
+        self,
+        workroom_id: Union[str, UUID],
+        *,
+        output_path: str | Path | None = None,
+        file_obj: BinaryIO | None = None,
+    ) -> bytes | Path | BinaryIO:
         """Download a ZIP bundle of exportable workroom contents.
 
         Args:
             workroom_id: UUID of the workroom.
+            output_path: Optional path to stream the ZIP archive to disk.
+            file_obj: Optional writable binary file-like object to stream into.
 
         Returns:
-            Raw bytes of the ZIP archive.
+            Raw bytes of the ZIP archive, the written output path, or the
+            provided file-like object after streaming completes.
 
         Raises:
             NotFoundError: If workroom not found.
+            ValueError: If both output_path and file_obj are provided.
         """
         wid = self._ensure_uuid(workroom_id)
+        if output_path is not None and file_obj is not None:
+            raise ValueError("Provide either output_path or file_obj, not both")
         try:
             response = self.client.post(
                 f"/workrooms/{wid}/export",
                 expect_json=False,
+                stream=output_path is not None or file_obj is not None,
             )
+            if output_path is not None:
+                destination = Path(output_path)
+                with destination.open("wb") as handle:
+                    self._write_response_stream(response, handle)
+                return destination
+            if file_obj is not None:
+                self._write_response_stream(response, file_obj)
+                return file_obj
             return response.content
         except APIError as e:
             if e.status_code == 404:
@@ -306,11 +331,13 @@ class WorkroomService(BaseService):
         Returns:
             List of Workroom objects.
         """
+        if limit < 1 or limit > 1000:
+            raise ValueError("limit must be between 1 and 1000")
         params: dict = {"skip": skip, "limit": limit}
         if include_deleted:
             params["include_deleted"] = "true"
         response = self.client.get("/admin/workrooms/", params=params)
-        return [Workroom.model_validate(item) for item in response["items"]]
+        return self._parse_workroom_items(response, endpoint="/admin/workrooms/")
 
     def admin_delete(
         self, workroom_id: Union[str, UUID]
@@ -344,5 +371,39 @@ class WorkroomService(BaseService):
     def _ensure_uuid(value: Union[str, UUID]) -> UUID:
         """Coerce string to UUID if needed."""
         if isinstance(value, str):
-            return UUID(value)
+            try:
+                return UUID(value)
+            except ValueError as exc:
+                raise ValueError(f"Invalid workroom UUID: {value!r}") from exc
         return value
+
+    @staticmethod
+    def _provided_fields(**fields: object) -> dict[str, object]:
+        return {
+            key: value
+            for key, value in fields.items()
+            if value is not _UNSET
+        }
+
+    @staticmethod
+    def _parse_workroom_items(
+        response: Any,
+        *,
+        endpoint: str,
+    ) -> List[Workroom]:
+        if not isinstance(response, dict):
+            raise APIError(
+                f"Malformed response from {endpoint}: expected object payload",
+            )
+        items = response.get("items", [])
+        if not isinstance(items, list):
+            raise APIError(
+                f"Malformed response from {endpoint}: expected 'items' list",
+            )
+        return [Workroom.model_validate(item) for item in items]
+
+    @staticmethod
+    def _write_response_stream(response: Any, handle: BinaryIO) -> None:
+        for chunk in response.iter_content(chunk_size=_EXPORT_CHUNK_SIZE):
+            if chunk:
+                handle.write(chunk)

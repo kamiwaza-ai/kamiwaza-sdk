@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import io
 import uuid
 
 import pytest
+from pydantic import ValidationError
 
 from kamiwaza_sdk.exceptions import APIError, NotFoundError
 from kamiwaza_sdk.schemas.workrooms import (
@@ -10,7 +12,9 @@ from kamiwaza_sdk.schemas.workrooms import (
     DeleteWorkroomResponse,
     ExportManifest,
     IngestionSummary,
+    UpdateWorkroom,
     Workroom,
+    WorkroomStatus,
     WorkroomType,
 )
 from kamiwaza_sdk.services.workrooms import WorkroomService
@@ -195,6 +199,23 @@ def test_list_empty_returns_empty(dummy_client):
     assert result == []
 
 
+def test_list_missing_items_returns_empty(dummy_client):
+    responses = {("get", "/workrooms/"): {}}
+    client = dummy_client(responses)
+    service = WorkroomService(client)
+
+    assert service.list() == []
+
+
+def test_list_rejects_non_list_items(dummy_client):
+    responses = {("get", "/workrooms/"): {"items": "oops"}}
+    client = dummy_client(responses)
+    service = WorkroomService(client)
+
+    with pytest.raises(APIError, match="expected 'items' list"):
+        service.list()
+
+
 # =============================================================================
 # Get
 # =============================================================================
@@ -286,6 +307,38 @@ def test_update_not_found_raises(dummy_client):
 
     with pytest.raises(NotFoundError):
         service.update(WORKROOM_ID, name="X")
+
+
+def test_update_uses_schema_and_can_clear_fields(dummy_client):
+    responses = {
+        ("patch", f"/workrooms/{WORKROOM_UUID}"): _workroom_response(
+            description=None,
+            labels=[],
+        )
+    }
+    client = dummy_client(responses)
+    service = WorkroomService(client)
+
+    result = service.update(
+        WORKROOM_ID,
+        description=None,
+        labels=[],
+    )
+
+    payload = client.calls[0][2]["json"]
+    assert payload["description"] is None
+    assert payload["labels"] == []
+    assert result.description is None
+    assert result.labels == []
+
+
+def test_update_validates_payload_fields(dummy_client):
+    responses = {("patch", f"/workrooms/{WORKROOM_UUID}"): _workroom_response()}
+    client = dummy_client(responses)
+    service = WorkroomService(client)
+
+    with pytest.raises(ValidationError):
+        service.update(WORKROOM_ID, name="")
 
 
 # =============================================================================
@@ -419,6 +472,58 @@ def test_export_bundle_calls_post_with_no_json(dummy_client):
     assert client.calls[0][2].get("expect_json") is False
 
 
+def test_export_bundle_streams_to_output_path(dummy_client, tmp_path):
+    responses = {("post", f"/workrooms/{WORKROOM_UUID}/export"): _workroom_response()}
+    client = dummy_client(responses)
+    chunks = [b"PK\x03\x04", b"zipdata"]
+
+    class DummyResponse:
+        def iter_content(self, chunk_size=0):
+            assert chunk_size > 0
+            yield from chunks
+
+    client.post = lambda path, **kwargs: (  # noqa: E731
+        client.calls.append(("post", path, kwargs)) or DummyResponse()
+    )
+    service = WorkroomService(client)
+    output_path = tmp_path / "bundle.zip"
+
+    result = service.export_bundle(WORKROOM_ID, output_path=output_path)
+
+    assert result == output_path
+    assert output_path.read_bytes() == b"".join(chunks)
+    assert client.calls[0][2]["stream"] is True
+
+
+def test_export_bundle_streams_to_file_object(dummy_client):
+    responses = {("post", f"/workrooms/{WORKROOM_UUID}/export"): _workroom_response()}
+    client = dummy_client(responses)
+
+    class DummyResponse:
+        def iter_content(self, chunk_size=0):
+            assert chunk_size > 0
+            yield b"chunk-1"
+            yield b"chunk-2"
+
+    client.post = lambda path, **kwargs: (  # noqa: E731
+        client.calls.append(("post", path, kwargs)) or DummyResponse()
+    )
+    service = WorkroomService(client)
+    buffer = io.BytesIO()
+
+    result = service.export_bundle(WORKROOM_ID, file_obj=buffer)
+
+    assert result is buffer
+    assert buffer.getvalue() == b"chunk-1chunk-2"
+
+
+def test_export_bundle_rejects_multiple_stream_targets(dummy_client):
+    service = WorkroomService(dummy_client({}))
+
+    with pytest.raises(ValueError, match="either output_path or file_obj"):
+        service.export_bundle(WORKROOM_ID, output_path="bundle.zip", file_obj=io.BytesIO())
+
+
 # =============================================================================
 # Ingestion Summary
 # =============================================================================
@@ -487,6 +592,21 @@ def test_admin_list_defaults(dummy_client):
     assert "include_deleted" not in params
 
 
+def test_admin_list_missing_items_returns_empty(dummy_client):
+    responses = {("get", "/admin/workrooms/"): {}}
+    client = dummy_client(responses)
+    service = WorkroomService(client)
+
+    assert service.admin_list() == []
+
+
+def test_admin_list_validates_limit_range(dummy_client):
+    service = WorkroomService(dummy_client({}))
+
+    with pytest.raises(ValueError, match="between 1 and 1000"):
+        service.admin_list(limit=0)
+
+
 # =============================================================================
 # Admin Delete
 # =============================================================================
@@ -525,7 +645,8 @@ def test_workroom_schema_parses_full_response():
 
     assert wr.id == WORKROOM_UUID
     assert wr.name == "Test Workroom"
-    assert wr.status == "active"
+    assert wr.status == WorkroomStatus.active
+    assert wr.type == WorkroomType.persistent
 
 
 def test_workroom_schema_handles_nulls():
@@ -551,6 +672,13 @@ def test_create_workroom_schema_validation():
     assert "description" not in dumped
 
 
+def test_update_workroom_schema_uses_exclude_unset():
+    payload = UpdateWorkroom(description=None)
+
+    dumped = payload.model_dump(exclude_unset=True)
+    assert dumped == {"description": None}
+
+
 # =============================================================================
 # Client integration
 # =============================================================================
@@ -558,14 +686,19 @@ def test_create_workroom_schema_validation():
 
 def test_client_workrooms_property():
     """Verify the WorkroomService is accessible via client.workrooms."""
-    from kamiwaza_sdk.services.workrooms import WorkroomService
+    from kamiwaza_sdk import KamiwazaClient
+    from kamiwaza_sdk.services import WorkroomService
 
-    responses = {("get", "/workrooms/"): {"items": []}}
-    # Use a DummyAPIClient directly
-    from tests.conftest import DummyAPIClient
-    client = DummyAPIClient(responses)
+    client = KamiwazaClient("https://kamiwaza.test/api", api_key="test-token")
 
-    # Simulate KamiwazaClient lazy property by attaching WorkroomService
-    service = WorkroomService(client)
+    service = client.workrooms
+
     assert isinstance(service, WorkroomService)
-    assert service.list() == []
+    assert client.workrooms is service
+
+
+def test_ensure_uuid_raises_contextual_value_error(dummy_client):
+    service = WorkroomService(dummy_client({}))
+
+    with pytest.raises(ValueError, match="Invalid workroom UUID"):
+        service.get("not-a-uuid")
