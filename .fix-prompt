@@ -1,0 +1,9 @@
+You are in /tmp/lifecycle-devloop-t44gh2 on the PR branch for kamiwaza-ai/kamiwaza-sdk#41.
+Base: develop. The following CI checks are FAILING: Coverage Check, Ruff Lint, Mypy Type Check
+
+Steps:
+1. Run: git diff origin/develop...HEAD to see all changes
+2. Read the failing test output or lint errors if available
+3. Diagnose root cause and fix the code
+4. Do NOT run git commit — only edit files. The automation handles commits.
+5. If you cannot fix the issue, create a file called CANNOT_FIX with the reason.
