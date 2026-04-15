@@ -13,3 +13,23 @@ from .retrieval import RetrievalService
 from .apps import AppService
 from .tools import ToolService
 from .context import ContextService
+from .workrooms import WorkroomService
+
+__all__ = [
+    "ActivityService",
+    "AppService",
+    "AuthService",
+    "AuthzService",
+    "CatalogService",
+    "ClusterService",
+    "ContextService",
+    "EmbeddingService",
+    "IngestionService",
+    "LabService",
+    "ModelService",
+    "PromptsService",
+    "RetrievalService",
+    "ServingService",
+    "ToolService",
+    "WorkroomService",
+]

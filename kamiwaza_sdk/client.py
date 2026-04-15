@@ -31,6 +31,7 @@ from .services.openai import OpenAIService
 from .services.apps import AppService
 from .services.tools import ToolService
 from .services.context import ContextService
+from .services.workrooms import WorkroomService
 
 logger = logging.getLogger(__name__)
 
@@ -406,3 +407,9 @@ class KamiwazaClient:
 
             self._extensions = ExtensionService(self)
         return self._extensions
+
+    @property
+    def workrooms(self):
+        if not hasattr(self, '_workrooms'):
+            self._workrooms = WorkroomService(self)
+        return self._workrooms
