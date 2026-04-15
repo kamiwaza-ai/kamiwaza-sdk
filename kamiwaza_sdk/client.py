@@ -408,7 +408,27 @@ class KamiwazaClient:
         return self._ingestion
 
     @property
+    def context(self):
+        if not hasattr(self, "_context"):
+            self._context = ContextService(self)
+        return self._context
+
+    @property
+    def skills(self):
+        if not hasattr(self, "_skills"):
+            self._skills = SkillsService(self)
+        return self._skills
+
+    @property
+    def extensions(self):
+        if not hasattr(self, "_extensions"):
+            from .services.extensions import ExtensionService
+
+            self._extensions = ExtensionService(self)
+        return self._extensions
+
+    @property
     def enclaves(self):
-        if not hasattr(self, '_enclaves'):
+        if not hasattr(self, "_enclaves"):
             self._enclaves = EnclavesService(self)
         return self._enclaves

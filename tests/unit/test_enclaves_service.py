@@ -4,7 +4,9 @@ from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
 import pytest
+from pydantic import ValidationError
 
+from kamiwaza_sdk.exceptions import APIError
 from kamiwaza_sdk.schemas.enclaves import ConnectorCreate, ConnectorUpdate, IndexDocumentRequest
 from kamiwaza_sdk.services.enclaves import EnclavesService
 
@@ -131,10 +133,10 @@ def test_get_update_delete_connector_round_trip(dummy_client):
     responses = {
         ("get", f"/enclaves/connectors/{connector_id}"): connector,
         ("put", f"/enclaves/connectors/{connector_id}"): connector,
-        ("delete", f"/enclaves/connectors/{connector_id}"): connector,
     }
     client = dummy_client(responses)
     service = EnclavesService(client)
+    client.delete = lambda path, **kwargs: client.calls.append(("delete", path, kwargs)) or None  # noqa: E731
 
     fetched = service.connectors.get(connector_id)
     updated = service.connectors.update(connector_id, ConnectorUpdate(name="new-name"))
@@ -142,8 +144,9 @@ def test_get_update_delete_connector_round_trip(dummy_client):
 
     assert fetched.id == connector_id
     assert updated.id == connector_id
-    assert deleted.id == connector_id
+    assert deleted is None
     assert client.calls[1][2]["json"]["name"] == "new-name"
+    assert client.calls[2][2]["expect_json"] is False
 
 
 def test_trigger_ingest_posts_request(dummy_client):
@@ -161,6 +164,17 @@ def test_trigger_ingest_posts_request(dummy_client):
         "post",
         f"/enclaves/connectors/{connector_id}/trigger_ingest",
     )
+
+
+def test_connector_operations_validate_uuid_inputs(dummy_client):
+    client = dummy_client({})
+    service = EnclavesService(client)
+
+    with pytest.raises(APIError, match="Invalid connector_id"):
+        service.connectors.get("not-a-uuid")
+
+    with pytest.raises(APIError, match="Invalid connector_id"):
+        service.connectors.trigger_ingest("still-not-a-uuid")
 
 
 def test_create_document_posts_payload(dummy_client):
@@ -215,6 +229,30 @@ def test_list_documents_sets_system_high_header(dummy_client):
     assert kwargs["headers"]["X-User-System-High"] == "U"
 
 
+def test_list_documents_preserves_caller_supplied_system_high_header(dummy_client):
+    source_id = uuid4()
+    document = _document_record(source_id=source_id)
+    responses = {
+        ("get", "/enclaves/documents/"): {
+            "items": [document],
+            "total": 1,
+            "limit": 5,
+            "offset": 0,
+            "rejections": [],
+        }
+    }
+    client = dummy_client(responses)
+    service = EnclavesService(client)
+
+    service.documents.list(
+        source_id,
+        headers={"X-User-System-High": "TS"},
+        system_high="U",
+    )
+
+    assert client.calls[0][2]["headers"]["X-User-System-High"] == "TS"
+
+
 def test_get_document_passes_source_id_and_header(dummy_client):
     source_id = uuid4()
     document_id = uuid4()
@@ -230,3 +268,47 @@ def test_get_document_passes_source_id_and_header(dummy_client):
     assert (method, path) == ("get", f"/enclaves/documents/{document_id}")
     assert kwargs["params"] == {"source_id": str(source_id)}
     assert kwargs["headers"]["X-User-System-High"] == "U"
+
+
+def test_get_document_validates_ids(dummy_client):
+    service = EnclavesService(dummy_client({}))
+
+    with pytest.raises(APIError, match="Invalid source_id"):
+        service.documents.list("not-a-uuid")
+
+    with pytest.raises(APIError, match="Invalid document_id"):
+        service.documents.get("not-a-uuid", source_id=uuid4())
+
+
+def test_trigger_response_requires_status(dummy_client):
+    connector_id = uuid4()
+    responses = {("post", f"/enclaves/connectors/{connector_id}/trigger_ingest"): {}}
+    client = dummy_client(responses)
+    service = EnclavesService(client)
+
+    with pytest.raises(ValidationError):
+        service.connectors.trigger_ingest(connector_id)
+
+
+def test_connector_api_errors_propagate(dummy_client):
+    client = dummy_client({})
+    client.get = lambda path, **kwargs: (_ for _ in ()).throw(APIError("boom", status_code=404, response_text=""))  # noqa: E731
+    service = EnclavesService(client)
+
+    with pytest.raises(APIError) as exc_info:
+        service.connectors.get(uuid4())
+
+    assert exc_info.value.status_code == 404
+
+
+def test_client_retains_existing_service_properties(client_factory):
+    from kamiwaza_sdk.services.context import ContextService
+    from kamiwaza_sdk.services.extensions import ExtensionService
+    from kamiwaza_sdk.services.skills import SkillsService
+
+    client = client_factory(api_key="test-token")
+
+    assert isinstance(client.context, ContextService)
+    assert isinstance(client.skills, SkillsService)
+    assert isinstance(client.extensions, ExtensionService)
+    assert isinstance(client.enclaves, EnclavesService)

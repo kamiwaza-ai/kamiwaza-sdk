@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 from uuid import UUID
 
+from ..exceptions import APIError
 from .base_service import BaseService
 from ..schemas.enclaves import (
     ConnectorCreate,
@@ -54,22 +55,27 @@ class ConnectorClient(BaseService):
         return ConnectorResponse.model_validate(response)
 
     def get(self, connector_id: UUID | str) -> ConnectorResponse:
-        response = self.client.get(f"{self._BASE_PATH}/{connector_id}")
+        response = self.client.get(f"{self._BASE_PATH}/{_ensure_uuid(connector_id, field='connector_id')}")
         return ConnectorResponse.model_validate(response)
 
     def update(self, connector_id: UUID | str, payload: ConnectorUpdate) -> ConnectorResponse:
         response = self.client.put(
-            f"{self._BASE_PATH}/{connector_id}",
+            f"{self._BASE_PATH}/{_ensure_uuid(connector_id, field='connector_id')}",
             json=payload.model_dump(mode="json", exclude_none=True),
         )
         return ConnectorResponse.model_validate(response)
 
-    def delete(self, connector_id: UUID | str) -> ConnectorResponse:
-        response = self.client.delete(f"{self._BASE_PATH}/{connector_id}")
-        return ConnectorResponse.model_validate(response)
+    def delete(self, connector_id: UUID | str) -> None:
+        self.client.delete(
+            f"{self._BASE_PATH}/{_ensure_uuid(connector_id, field='connector_id')}",
+            expect_json=False,
+        )
+        return None
 
     def trigger_ingest(self, connector_id: UUID | str) -> TriggerResponse:
-        response = self.client.post(f"{self._BASE_PATH}/{connector_id}/trigger_ingest")
+        response = self.client.post(
+            f"{self._BASE_PATH}/{_ensure_uuid(connector_id, field='connector_id')}/trigger_ingest"
+        )
         return TriggerResponse.model_validate(response)
 
 
@@ -97,7 +103,7 @@ class DocumentClient(BaseService):
         system_high: str | None = None,
         headers: Optional[Dict[str, str]] = None,
     ) -> DocumentListResponse:
-        params: Dict[str, Any] = {"source_id": str(source_id)}
+        params: Dict[str, Any] = {"source_id": str(_ensure_uuid(source_id, field="source_id"))}
         if limit is not None:
             params["limit"] = limit
         if offset is not None:
@@ -126,12 +132,12 @@ class DocumentClient(BaseService):
         system_high: str | None = None,
         headers: Optional[Dict[str, str]] = None,
     ) -> DocumentRecord:
-        params = {"source_id": str(source_id)}
+        params = {"source_id": str(_ensure_uuid(source_id, field="source_id"))}
         request_headers = dict(headers or {})
         if system_high:
             request_headers.setdefault(self._SYSTEM_HIGH_HEADER, system_high)
         response = self.client.get(
-            f"{self._BASE_PATH}/{document_id}",
+            f"{self._BASE_PATH}/{_ensure_uuid(document_id, field='document_id')}",
             params=params,
             headers=request_headers or None,
         )
@@ -145,3 +151,12 @@ class EnclavesService(BaseService):
         super().__init__(client)
         self.connectors = ConnectorClient(client)
         self.documents = DocumentClient(client)
+
+
+def _ensure_uuid(value: UUID | str, *, field: str) -> UUID:
+    if isinstance(value, UUID):
+        return value
+    try:
+        return UUID(value)
+    except ValueError as exc:
+        raise APIError(f"Invalid {field}: expected UUID, got {value!r}") from exc

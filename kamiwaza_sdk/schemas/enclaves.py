@@ -78,7 +78,7 @@ class ConnectorListResponse(EnclaveBaseModel):
 
 
 class TriggerResponse(EnclaveBaseModel):
-    status: str = "queued"
+    status: str
 
 
 class IndexDocumentRequest(EnclaveBaseModel):
