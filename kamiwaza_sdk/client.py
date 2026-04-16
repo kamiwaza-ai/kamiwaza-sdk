@@ -32,6 +32,7 @@ from .services.apps import AppService
 from .services.tools import ToolService
 from .services.context import ContextService
 from .services.skills import SkillsService
+from .services.enclaves import EnclavesService
 
 logger = logging.getLogger(__name__)
 
@@ -425,3 +426,9 @@ class KamiwazaClient:
 
             self._extensions = ExtensionService(self)
         return self._extensions
+
+    @property
+    def enclaves(self):
+        if not hasattr(self, "_enclaves"):
+            self._enclaves = EnclavesService(self)
+        return self._enclaves
