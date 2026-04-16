@@ -41,8 +41,13 @@ class TokenMixin:
             >>> token = client.oauth_broker.mint_ephemeral_token(request)
             >>> # Use token.access_token.get_secret_value() with provider API
         """
+        # Use mode="json" so UUID/datetime fields on MintTokenRequest are
+        # serialised to JSON-native types (strings) before requests.post()
+        # hands the dict to json.dumps(); otherwise a raw UUID raises
+        # TypeError at runtime.
         response = self.client.post(
-            "/oauth-broker/tokens/mint", json=request.model_dump(exclude_none=True)
+            "/oauth-broker/tokens/mint",
+            json=request.model_dump(mode="json", exclude_none=True),
         )
         return MintTokenResponse.model_validate(response)
 

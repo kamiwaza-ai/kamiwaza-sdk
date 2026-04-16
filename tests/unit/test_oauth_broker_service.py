@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -17,6 +18,15 @@ from kamiwaza_sdk.schemas.oauth_broker import (
 from kamiwaza_sdk.services.oauth_broker import OAuthBrokerService
 
 pytestmark = pytest.mark.unit
+
+
+def _assert_json_serialisable(payload: object) -> None:
+    """Assert that ``payload`` round-trips through ``json.dumps`` without
+    raising. The DummyAPIClient stub records kwargs verbatim, so a raw UUID
+    / datetime hiding in ``kwargs["json"]`` would otherwise pass tests but
+    crash at runtime when ``requests`` calls ``json.dumps()``.
+    """
+    json.dumps(payload)
 
 
 # ========== App Installation Tests ==========
@@ -230,6 +240,11 @@ def test_create_tool_policy(dummy_client):
     assert method == "post"
     assert path == "/oauth-broker/tool-policies"
     assert kwargs["json"]["tool_id"] == "test-tool"
+    # Guard against regression to raw UUID in the payload — requests.post
+    # would feed this to json.dumps() in production and raise TypeError.
+    assert kwargs["json"]["app_installation_id"] == app_id
+    assert isinstance(kwargs["json"]["app_installation_id"], str)
+    _assert_json_serialisable(kwargs["json"])
 
 
 def test_list_tool_policies(dummy_client):
@@ -514,6 +529,11 @@ def test_mint_ephemeral_token(dummy_client):
     assert path == "/oauth-broker/tokens/mint"
     assert kwargs["json"]["tool_id"] == "test-tool"
     assert kwargs["json"]["lease_duration"] == 300
+    # Guard against regression to raw UUID in the payload — requests.post
+    # would feed this to json.dumps() in production and raise TypeError.
+    assert kwargs["json"]["app_installation_id"] == app_id
+    assert isinstance(kwargs["json"]["app_installation_id"], str)
+    _assert_json_serialisable(kwargs["json"])
 
 
 def test_get_lease_status(dummy_client):
@@ -740,6 +760,41 @@ def test_drive_get_file(dummy_client):
     assert path == "/oauth-broker/proxy/google/drive/files/file1"
     assert kwargs["params"]["app_id"] == app_id
     assert kwargs["params"]["tool_id"] == "drive-reader"
+
+
+@pytest.mark.parametrize(
+    "malicious_file_id",
+    [
+        "../../../etc/passwd",
+        "..",
+        "foo/bar",
+        "foo\\bar",
+        "foo?bar",
+        "foo#frag",
+        "",
+        "foo bar",
+        "foo\nbar",
+    ],
+)
+def test_drive_get_file_rejects_path_traversal(dummy_client, malicious_file_id):
+    """Unsafe file_id values must be rejected before reaching the client.
+
+    Regression guard for the path-traversal issue in drive_get_file: the
+    method previously interpolated file_id directly into the URL, letting a
+    caller steer the request at arbitrary broker paths.
+    """
+    client = dummy_client({})
+    service = OAuthBrokerService(client)
+
+    with pytest.raises(ValueError):
+        service.drive_get_file(
+            app_id=uuid.uuid4(),
+            tool_id="drive-reader",
+            file_id=malicious_file_id,
+        )
+
+    # No request should have been dispatched.
+    assert client.calls == []
 
 
 def test_calendar_list_calendars(dummy_client):

@@ -9,6 +9,7 @@ This mirrors the server-side routing design.
 from __future__ import annotations
 
 from typing import Any, Literal
+from urllib.parse import quote
 from uuid import UUID
 
 from ...schemas.oauth_broker import (
@@ -203,9 +204,28 @@ class ProxyMixin:
 
         Returns:
             Drive API response
+
+        Raises:
+            ValueError: If ``file_id`` is empty or contains characters that
+                cannot appear in a Google Drive file ID.
         """
+        # Reject obviously malformed IDs before they reach the URL. Google
+        # Drive file IDs are URL-safe base64-ish (letters, digits, '-', '_').
+        # Anything else (including '/', '.', '..' path-traversal attempts,
+        # whitespace, or control characters) is rejected. The subsequent
+        # quote() call is a defence-in-depth belt to complement the braces.
+        if not file_id or any(
+            c in file_id for c in ("/", "\\", "\x00", "..", " ", "\t", "\n", "\r", "?", "#")
+        ):
+            raise ValueError(
+                "file_id contains characters that are not permitted in a "
+                "Google Drive file ID"
+            )
+        # URL-encode with an empty safe set so no path-traversal characters
+        # can leak through even if the whitelist above is later relaxed.
+        safe_file_id = quote(file_id, safe="")
         response = self.client.get(
-            f"/oauth-broker/proxy/google/drive/files/{file_id}",
+            f"/oauth-broker/proxy/google/drive/files/{safe_file_id}",
             params={"app_id": str(app_id), "tool_id": tool_id},
         )
         return response

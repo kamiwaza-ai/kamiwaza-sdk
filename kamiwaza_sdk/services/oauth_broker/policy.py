@@ -38,8 +38,12 @@ class PolicyMixin:
             ... )
             >>> created = client.oauth_broker.create_tool_policy(policy)
         """
+        # Use mode="json" so the UUID app_installation_id is coerced to a
+        # string before the underlying HTTP client hands the dict to
+        # json.dumps(); a raw UUID value would otherwise raise TypeError.
         response = self.client.post(
-            "/oauth-broker/tool-policies", json=policy.model_dump(exclude_none=True)
+            "/oauth-broker/tool-policies",
+            json=policy.model_dump(mode="json", exclude_none=True),
         )
         return ToolPolicyResponse.model_validate(response)
 
