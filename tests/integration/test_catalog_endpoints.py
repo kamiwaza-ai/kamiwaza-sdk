@@ -349,7 +349,7 @@ def test_catalog_container_list_query(live_kamiwaza_client) -> None:
         if not found:
             pytest.skip(
                 "Server defect: container list query does not return newly created container "
-                "(see docs-local/0.10.0/00-server-defects.md)"
+                "(see docs-local/00-server-defects.md)"
             )
     finally:
         _delete_container(client, container_urn)

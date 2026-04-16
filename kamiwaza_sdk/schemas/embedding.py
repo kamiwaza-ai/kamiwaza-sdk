@@ -36,10 +36,10 @@ class EmbeddingConfig(BaseModel):
 
     model_config = ConfigDict()
         
-    def model_dump(self):
-        # Override model_dump to ensure UUID is converted to string
-        data = super().model_dump()
-        data['id'] = str(data['id'])
+    def model_dump(self, **kwargs):  # type: ignore[override]
+        data = super().model_dump(**kwargs)
+        if data.get('id'):
+            data['id'] = str(data['id'])
         return data
     
 

@@ -30,13 +30,13 @@ class TestNodeEndpoints:
         except AuthenticationError:
             pytest.skip(
                 "Server defect: /api/node/node_status requires authentication in this deployment "
-                "(see docs-local/0.10.0/00-server-defects.md)"
+                "(see docs-local/00-server-defects.md)"
             )
         except APIError as exc:
             if exc.status_code in (404, 401):
                 pytest.skip(
                     "Server defect: /api/node/node_status not routed through /api in cluster mode "
-                    "(see docs-local/0.10.0/00-server-defects.md)"
+                    "(see docs-local/00-server-defects.md)"
                 )
             raise
 

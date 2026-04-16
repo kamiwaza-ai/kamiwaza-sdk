@@ -50,19 +50,34 @@ def oauth_broker_available(client) -> bool:
 
 
 def google_oauth_configured(client) -> bool:
-    """Check if Google OAuth is configured."""
+    """Check if Google OAuth credentials are configured on the broker.
+
+    Creates a temporary app installation, attempts to start a Google auth
+    flow, then cleans up.  Returns False when the broker responds with a
+    4xx/5xx (typically 400 or 422 when OAUTH_BROKER_GOOGLE_* env vars are
+    not set on the server).
+    """
+    app = None
     try:
         app = client.oauth_broker.create_app_installation(
             AppInstallationCreate(
-                name=f"test-check-{uuid.uuid4().hex[:8]}",
-                description="Configuration check",
+                name=f"test-google-check-{uuid.uuid4().hex[:8]}",
+                description="Google OAuth configuration probe",
             )
         )
-        # Clean up
-        client.oauth_broker.delete_app_installation(app.id)
+        client.oauth_broker.start_google_auth(
+            app.id,
+            ["https://www.googleapis.com/auth/gmail.readonly"],
+        )
         return True
     except APIError:
         return False
+    finally:
+        if app is not None:
+            try:
+                client.oauth_broker.delete_app_installation(app.id)
+            except APIError:
+                pass
 
 
 # ========== Fixtures ==========

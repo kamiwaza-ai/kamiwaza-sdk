@@ -54,7 +54,7 @@ def test_serving_deployments_and_instances(live_kamiwaza_client) -> None:
         if exc_info.value.status_code == 500:
             pytest.skip(
                 "Server defect: missing model instance returns 500 instead of 404 "
-                "(see docs-local/0.10.0/00-server-defects.md)"
+                "(see docs-local/00-server-defects.md)"
             )
         assert exc_info.value.status_code == 404
 
@@ -84,7 +84,7 @@ def test_serving_deployment_status_and_log_patterns(live_kamiwaza_client) -> Non
         if exc.status_code == 404:
             pytest.skip(
                 "No deployment logs yet; /logs/patterns returned 404 "
-                "(see docs-local/0.10.0/00-server-defects.md if unexpected)"
+                "(see docs-local/00-server-defects.md if unexpected)"
             )
         raise
 
@@ -117,7 +117,7 @@ def test_serving_engine_logs(live_kamiwaza_client) -> None:
         if exc.status_code in (400, 500):
             pytest.skip(
                 "Server defect: engine logs unavailable for vllm "
-                "(see docs-local/0.10.0/00-server-defects.md)"
+                "(see docs-local/00-server-defects.md)"
             )
         raise
 
