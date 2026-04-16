@@ -50,7 +50,7 @@ class ConnectorClient(BaseService):
     def create(self, payload: ConnectorCreate) -> ConnectorResponse:
         response = self.client.post(
             f"{self._BASE_PATH}/",
-            json=payload.model_dump(mode="json", exclude_none=True),
+            json=payload.model_dump(mode="json", exclude_unset=True),
         )
         return ConnectorResponse.model_validate(response)
 
@@ -88,7 +88,7 @@ class DocumentClient(BaseService):
     def create(self, payload: IndexDocumentRequest) -> DocumentRecord:
         response = self.client.post(
             f"{self._BASE_PATH}/",
-            json=payload.model_dump(mode="json", exclude_none=True),
+            json=payload.model_dump(mode="json", exclude_unset=True),
         )
         return DocumentRecord.model_validate(response)
 
@@ -113,9 +113,11 @@ class DocumentClient(BaseService):
         if tag:
             params["tag"] = tag
 
-        request_headers = dict(headers or {})
-        if system_high:
-            request_headers.setdefault(self._SYSTEM_HIGH_HEADER, system_high)
+        request_headers = _merge_system_high_header(
+            headers=headers,
+            system_high=system_high,
+            header_name=self._SYSTEM_HIGH_HEADER,
+        )
 
         response = self.client.get(
             f"{self._BASE_PATH}/",
@@ -133,9 +135,11 @@ class DocumentClient(BaseService):
         headers: Optional[Dict[str, str]] = None,
     ) -> DocumentRecord:
         params = {"source_id": str(_ensure_uuid(source_id, field="source_id"))}
-        request_headers = dict(headers or {})
-        if system_high:
-            request_headers.setdefault(self._SYSTEM_HIGH_HEADER, system_high)
+        request_headers = _merge_system_high_header(
+            headers=headers,
+            system_high=system_high,
+            header_name=self._SYSTEM_HIGH_HEADER,
+        )
         response = self.client.get(
             f"{self._BASE_PATH}/{_ensure_uuid(document_id, field='document_id')}",
             params=params,
@@ -159,4 +163,22 @@ def _ensure_uuid(value: UUID | str, *, field: str) -> UUID:
     try:
         return UUID(value)
     except ValueError as exc:
-        raise APIError(f"Invalid {field}: expected UUID, got {value!r}") from exc
+        raise ValueError(f"Invalid {field}: expected UUID, got {value!r}") from exc
+
+
+def _merge_system_high_header(
+    *,
+    headers: Optional[Dict[str, str]],
+    system_high: Optional[str],
+    header_name: str,
+) -> Optional[Dict[str, str]]:
+    request_headers = dict(headers or {})
+    if not system_high:
+        return request_headers or None
+
+    for existing_name in request_headers:
+        if existing_name.lower() == header_name.lower():
+            return request_headers
+
+    request_headers[header_name] = system_high
+    return request_headers

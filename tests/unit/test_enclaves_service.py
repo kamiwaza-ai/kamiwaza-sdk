@@ -127,6 +127,27 @@ def test_create_connector_posts_payload(dummy_client):
     assert kwargs["json"]["connection_config"] == {"bucket": "demo"}
 
 
+def test_create_connector_preserves_explicit_none_fields(dummy_client):
+    connector = _connector_response()
+    responses = {("post", "/enclaves/connectors/"): connector}
+    client = dummy_client(responses)
+    service = EnclavesService(client)
+
+    payload = ConnectorCreate(
+        name="demo-connector",
+        source_type="s3",
+        connector_type="s3",
+        description=None,
+        default_security_marking=None,
+        connection_config={"bucket": "demo"},
+    )
+
+    service.connectors.create(payload)
+
+    assert client.calls[0][2]["json"]["description"] is None
+    assert client.calls[0][2]["json"]["default_security_marking"] is None
+
+
 def test_get_update_delete_connector_round_trip(dummy_client):
     connector_id = uuid4()
     connector = _connector_response(connector_id)
@@ -190,10 +211,10 @@ def test_connector_operations_validate_uuid_inputs(dummy_client):
     client = dummy_client({})
     service = EnclavesService(client)
 
-    with pytest.raises(APIError, match="Invalid connector_id"):
+    with pytest.raises(ValueError, match="Invalid connector_id"):
         service.connectors.get("not-a-uuid")
 
-    with pytest.raises(APIError, match="Invalid connector_id"):
+    with pytest.raises(ValueError, match="Invalid connector_id"):
         service.connectors.trigger_ingest("still-not-a-uuid")
 
 
@@ -216,6 +237,25 @@ def test_create_document_posts_payload(dummy_client):
     method, path, kwargs = client.calls[0]
     assert (method, path) == ("post", "/enclaves/documents/")
     assert kwargs["json"]["metadata"] == {"foo": "bar"}
+
+
+def test_create_document_preserves_explicit_none_fields(dummy_client):
+    document = _document_record()
+    responses = {("post", "/enclaves/documents/"): document}
+    client = dummy_client(responses)
+    service = EnclavesService(client)
+
+    request = IndexDocumentRequest(
+        source_id=uuid4(),
+        source_ref="s3://bucket/key.txt",
+        item_type="document",
+        security_marking=None,
+    )
+
+    service.documents.create(request)
+
+    assert "security_marking" in client.calls[0][2]["json"]
+    assert client.calls[0][2]["json"]["security_marking"] is None
 
 
 def test_list_documents_sets_system_high_header(dummy_client):
@@ -273,6 +313,30 @@ def test_list_documents_preserves_caller_supplied_system_high_header(dummy_clien
     assert client.calls[0][2]["headers"]["X-User-System-High"] == "TS"
 
 
+def test_list_documents_preserves_case_insensitive_caller_header(dummy_client):
+    source_id = uuid4()
+    document = _document_record(source_id=source_id)
+    responses = {
+        ("get", "/enclaves/documents/"): {
+            "items": [document],
+            "total": 1,
+            "limit": 5,
+            "offset": 0,
+            "rejections": [],
+        }
+    }
+    client = dummy_client(responses)
+    service = EnclavesService(client)
+
+    service.documents.list(
+        source_id,
+        headers={"x-user-system-high": "TS"},
+        system_high="U",
+    )
+
+    assert client.calls[0][2]["headers"] == {"x-user-system-high": "TS"}
+
+
 def test_get_document_passes_source_id_and_header(dummy_client):
     source_id = uuid4()
     document_id = uuid4()
@@ -293,10 +357,10 @@ def test_get_document_passes_source_id_and_header(dummy_client):
 def test_get_document_validates_ids(dummy_client):
     service = EnclavesService(dummy_client({}))
 
-    with pytest.raises(APIError, match="Invalid source_id"):
+    with pytest.raises(ValueError, match="Invalid source_id"):
         service.documents.list("not-a-uuid")
 
-    with pytest.raises(APIError, match="Invalid document_id"):
+    with pytest.raises(ValueError, match="Invalid document_id"):
         service.documents.get("not-a-uuid", source_id=uuid4())
 
 
