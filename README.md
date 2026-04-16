@@ -121,10 +121,12 @@ if status.status == "connected":
 ### Environment Variables
 
 ```bash
-# OAuth Broker requires Google OAuth credentials
+# OAuth Broker requires Google OAuth credentials (server-side env vars on the
+# Kamiwaza host — the SDK does not read these itself).
 export OAUTH_BROKER_GOOGLE_CLIENT_ID="your-client-id.apps.googleusercontent.com"
 export OAUTH_BROKER_GOOGLE_CLIENT_SECRET="your-client-secret"
-export OAUTH_BROKER_GOOGLE_REDIRECT_URI="https://your-domain.com/oauth/google/callback"
+# Must match the broker's callback route exactly.
+export OAUTH_BROKER_GOOGLE_REDIRECT_URI="https://your-domain.com/oauth-broker/auth/google/callback"
 ```
 
 For more examples, see `examples/oauth_broker_example.py`.

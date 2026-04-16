@@ -302,6 +302,12 @@ def test_delete_tool_policy(live_kamiwaza_client, test_app):
 
 def test_start_google_auth(live_kamiwaza_client, test_app):
     """Test starting Google OAuth flow."""
+    # Broker-only deployments without Google creds should skip, not fail red —
+    # the module docstring guarantees Google-dependent tests are skipped when
+    # OAUTH_BROKER_GOOGLE_* server env vars are unset.
+    if not google_oauth_configured(live_kamiwaza_client):
+        pytest.skip("Google OAuth not configured on broker")
+
     scopes = [
         "https://www.googleapis.com/auth/gmail.readonly",
         "https://www.googleapis.com/auth/gmail.compose",
