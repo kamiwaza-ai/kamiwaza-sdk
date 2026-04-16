@@ -17,7 +17,10 @@ class EmbeddingInput(BaseModel):
 
     def model_dump(self, **kwargs):  # type: ignore[override]
         data = super().model_dump(**kwargs)
-        if data['id']:
+        # `id` may be absent when the caller passes ``exclude={'id'}`` or an
+        # ``include=`` set that omits it; guard the UUID -> str coercion so
+        # kwargs pass-through doesn't raise KeyError on those paths.
+        if data.get('id'):
             data['id'] = str(data['id'])
         return data
 
