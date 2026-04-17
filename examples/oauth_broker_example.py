@@ -82,8 +82,8 @@ def main():
             print(f"   Connected as: {status.external_email}")
             print(f"   Granted scopes: {', '.join(status.granted_scopes or [])}")
 
-            # Step 4: Create tool policy
-            print("\n4. Creating tool policy...")
+            # Step 4: Create tool policies
+            print("\n4. Creating tool policies...")
             policy = client.oauth_broker.create_tool_policy(
                 ToolPolicyCreate(
                     app_installation_id=app.id,
@@ -100,6 +100,35 @@ def main():
                 )
             )
             print(f"   Created policy for tool: {policy.tool_id}")
+
+            drive_policy = client.oauth_broker.create_tool_policy(
+                ToolPolicyCreate(
+                    app_installation_id=app.id,
+                    tool_id="drive-reader",
+                    provider="google",
+                    allowed_operations=["drive.files.list", "drive.files.get"],
+                    allowed_scope_subset=[
+                        "https://www.googleapis.com/auth/drive.readonly"
+                    ],
+                )
+            )
+            print(f"   Created policy for tool: {drive_policy.tool_id}")
+
+            calendar_policy = client.oauth_broker.create_tool_policy(
+                ToolPolicyCreate(
+                    app_installation_id=app.id,
+                    tool_id="calendar-reader",
+                    provider="google",
+                    allowed_operations=[
+                        "calendar.calendarList.list",
+                        "calendar.events.list",
+                    ],
+                    allowed_scope_subset=[
+                        "https://www.googleapis.com/auth/calendar.readonly"
+                    ],
+                )
+            )
+            print(f"   Created policy for tool: {calendar_policy.tool_id}")
 
             # Step 5: Use Gmail proxy endpoints
             print("\n5. Using Gmail proxy endpoints...")

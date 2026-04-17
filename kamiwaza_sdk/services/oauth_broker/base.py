@@ -46,7 +46,7 @@ class OAuthBrokerService(BaseService, ProxyMixin, TokenMixin, PolicyMixin):
             >>> installation = client.oauth_broker.create_app_installation(app)
         """
         response = self.client.post(
-            "/oauth-broker/apps", json=app.model_dump(exclude_none=True)
+            "/oauth-broker/apps", json=app.model_dump(mode="json", exclude_none=True)
         )
         return AppInstallationResponse.model_validate(response)
 
@@ -96,7 +96,7 @@ class OAuthBrokerService(BaseService, ProxyMixin, TokenMixin, PolicyMixin):
         """
         response = self.client.patch(
             f"/oauth-broker/apps/{app_id}",
-            json=update.model_dump(exclude_none=True),
+            json=update.model_dump(mode="json", exclude_none=True),
         )
         return AppInstallationResponse.model_validate(response)
 
