@@ -204,7 +204,7 @@ class TestApplyPlan:
 
 
 class TestRunAgent:
-    def test_fallback_without_llm(self, monkeypatch):
+    def test_fallback_without_llm_creates_basic_scaffold(self, monkeypatch, tmp_path):
         from kamiwaza_extensions.app_analyzer import AnalysisResult
         from kamiwaza_extensions.convert_agent import run_agent
 
@@ -212,13 +212,94 @@ class TestRunAgent:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
         result = AnalysisResult(
-            app_dir=Path("/tmp/test"),
+            app_dir=tmp_path,
             app_name="test",
         )
         plan = run_agent(result)
-        assert plan.success is False
-        assert "unavailable" in plan.summary.lower()
+        assert plan.success is True
+        assert "basic" in plan.summary.lower()
         assert len(plan.manual_items) > 0
+        assert (tmp_path / "kamiwaza.json").exists()
+        assert (tmp_path / "CONVERT_NOTES.md").exists()
+
+    def test_existing_kamiwaza_json_is_not_overwritten(self, monkeypatch, tmp_path):
+        from kamiwaza_extensions.app_analyzer import AnalysisResult
+        from kamiwaza_extensions.convert_agent import run_agent
+
+        existing = {
+            "name": "custom-name",
+            "version": "9.9.9",
+            "source_type": "user_repo",
+            "visibility": "private",
+            "description": "custom",
+            "risk_tier": 1,
+            "verified": False,
+            "kz_ext_version": ">=0.1.0,<1.0.0",
+        }
+        (tmp_path / "kamiwaza.json").write_text(json.dumps(existing) + "\n")
+        (tmp_path / "index.html").write_text("<html><body>Hello</body></html>")
+        analysis = AnalysisResult(
+            app_dir=tmp_path,
+            app_name="demo",
+            extension_type="app",
+            conversion_mode="generic",
+            file_contents={"index.html": "<html><body>Hello</body></html>"},
+            candidate_entrypoints=["index.html"],
+            runtime_hints=["static-html"],
+        )
+
+        responses = iter([
+            json.dumps({
+                "extension_type": "app",
+                "conversion_mode": "add_minimal_wrapper",
+                "primary_service": "web",
+                "required_files": ["docker-compose.yml", "CONVERT_NOTES.md"],
+                "runtime_summary": "Static HTML site served by nginx",
+                "manual_items": [],
+            }),
+            json.dumps({
+                "modifications": [
+                    {
+                        "path": "kamiwaza.json",
+                        "action": "modify",
+                        "content": json.dumps({"name": "llm-name", "version": "0.1.0"}),
+                        "description": "Overwrite manifest",
+                    },
+                    {
+                        "path": "docker-compose.yml",
+                        "action": "create",
+                        "content": (
+                            "services:\n"
+                            "  web:\n"
+                            "    image: nginxinc/nginx-unprivileged:stable-alpine\n"
+                            "    ports:\n"
+                            "      - \"8080:8080\"\n"
+                            "    deploy:\n"
+                            "      resources:\n"
+                            "        limits:\n"
+                            "          cpus: \"1.0\"\n"
+                            "          memory: \"1G\"\n"
+                        ),
+                        "description": "Compose only",
+                    },
+                ],
+                "manual_items": [],
+                "summary": "Attempted overwrite",
+            }),
+        ])
+
+        monkeypatch.setattr(
+            "kamiwaza_extensions.convert_agent.call_llm",
+            lambda prompt: next(responses, None),
+        )
+
+        plan = run_agent(analysis, dry_run=False)
+
+        assert plan.success is True
+        persisted = json.loads((tmp_path / "kamiwaza.json").read_text())
+        assert persisted["name"] == "custom-name"
+        assert persisted["version"] == "9.9.9"
+        assert any("preserving the existing manifest" in item for item in plan.manual_items)
 
     def test_validation_repair_loop_applies_fixed_plan(self, monkeypatch, tmp_path):
         from kamiwaza_extensions.app_analyzer import AnalysisResult

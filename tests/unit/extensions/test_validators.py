@@ -320,3 +320,84 @@ class TestPlatformRuntimeValidator:
 
         assert result.passed
         assert result.errors == []
+
+    def test_flags_unprivileged_nginx_when_final_user_is_root(self, tmp_path, validator):
+        compose = {
+            "services": {
+                "web": {
+                    "build": ".",
+                    "ports": ["8080:8080"],
+                },
+            },
+        }
+        (tmp_path / "Dockerfile").write_text(
+            "FROM nginxinc/nginx-unprivileged:stable-alpine\n"
+            "USER root\n"
+            "COPY nginx.conf /etc/nginx/conf.d/default.conf\n"
+            "EXPOSE 8080\n"
+        )
+        (tmp_path / "nginx.conf").write_text(
+            "server {\n"
+            "    listen 8080;\n"
+            "    client_body_temp_path /tmp/client_temp;\n"
+            "}\n"
+        )
+        f = tmp_path / "docker-compose.yml"
+        self._write_compose(f, compose)
+
+        result = validator.validate(f, tmp_path)
+
+        assert not result.passed
+        assert any("does not switch to a non-root user" in err for err in result.errors)
+
+    def test_uses_compose_build_context_for_nginx_config_lookup(self, tmp_path, validator):
+        compose = {
+            "services": {
+                "web": {
+                    "build": {
+                        "context": ".",
+                        "dockerfile": "docker/Dockerfile",
+                    },
+                    "ports": ["8080:8080"],
+                },
+            },
+        }
+        (tmp_path / "docker").mkdir()
+        (tmp_path / "docker" / "Dockerfile").write_text(
+            "FROM nginxinc/nginx-unprivileged:stable-alpine\n"
+            "COPY nginx.conf /etc/nginx/conf.d/default.conf\n"
+            "EXPOSE 8080\n"
+        )
+        (tmp_path / "nginx.conf").write_text(
+            "server {\n"
+            "    listen 8080;\n"
+            "    client_body_temp_path /tmp/client_temp;\n"
+            "}\n"
+        )
+        f = tmp_path / "docker-compose.yml"
+        self._write_compose(f, compose)
+
+        result = validator.validate(f, tmp_path)
+
+        assert result.passed
+        assert result.errors == []
+
+    def test_rejects_build_path_that_escapes_extension_dir(self, tmp_path, validator):
+        compose = {
+            "services": {
+                "web": {
+                    "build": {
+                        "context": "..",
+                        "dockerfile": "Dockerfile",
+                    },
+                    "ports": ["8080:8080"],
+                },
+            },
+        }
+        f = tmp_path / "docker-compose.yml"
+        self._write_compose(f, compose)
+
+        result = validator.validate(f, tmp_path)
+
+        assert result.passed
+        assert any("escapes the extension directory" in warning for warning in result.warnings)

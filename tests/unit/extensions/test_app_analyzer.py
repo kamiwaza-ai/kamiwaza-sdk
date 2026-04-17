@@ -186,6 +186,28 @@ class TestAnalyze:
         assert "package.json" in result.detected_manifests
         assert "node-package" in result.runtime_hints
 
+    def test_excludes_common_secret_bearing_files_from_context(self, tmp_path):
+        from kamiwaza_extensions.app_analyzer import AppAnalyzer
+
+        (tmp_path / "index.html").write_text("<html><body>Hello</body></html>")
+        (tmp_path / ".env").write_text("API_KEY=secret\n")
+        (tmp_path / "credentials.json").write_text("{\"token\": \"secret\"}\n")
+
+        result = AppAnalyzer().analyze(tmp_path)
+
+        assert "index.html" in result.file_contents
+        assert ".env" not in result.file_contents
+        assert "credentials.json" not in result.file_contents
+
+    def test_detects_additional_language_manifests(self, tmp_path):
+        from kamiwaza_extensions.app_analyzer import AppAnalyzer
+
+        (tmp_path / "go.mod").write_text("module demo\n")
+
+        result = AppAnalyzer().analyze(tmp_path)
+
+        assert "go.mod" in result.detected_manifests
+
 
 class TestGenerateKamiwazaJson:
     def test_basic_generation(self, tmp_path):

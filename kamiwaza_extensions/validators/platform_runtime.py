@@ -6,7 +6,7 @@ import re
 import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import yaml
 
@@ -60,8 +60,15 @@ class PlatformRuntimeValidator:
                         "Kamiwaza deploys extensions as non-root, prefer 8080+"
                     )
 
-            dockerfile_path = _resolve_dockerfile_path(svc_config, ext_dir)
-            if dockerfile_path is None or not dockerfile_path.exists():
+            dockerfile_path, build_context, build_path_escaped = _resolve_build_paths(svc_config, ext_dir)
+            if build_path_escaped:
+                warnings.append(
+                    f"Service '{svc_name}': build path escapes the extension directory and was not inspected"
+                )
+                continue
+            if dockerfile_path is None:
+                continue
+            if not dockerfile_path.exists():
                 continue
 
             dockerfile_text = dockerfile_path.read_text(encoding="utf-8")
@@ -73,7 +80,7 @@ class PlatformRuntimeValidator:
             base_image = _resolve_effective_base_image(stages, final_stage)
             effective_user = _resolve_effective_user(stages, final_stage)
             final_text = _resolve_stage_text(stages, final_stage)
-            build_context = dockerfile_path.parent
+            nginx_texts = _load_nginx_config_texts(build_context) if build_context else []
 
             for port in _parse_exposed_ports(final_text):
                 if port < 1024:
@@ -82,13 +89,12 @@ class PlatformRuntimeValidator:
                         "Kamiwaza deploys extensions as non-root"
                     )
 
-            if _is_rootful_nginx_image(base_image):
-                if not _is_non_root_user(effective_user):
+            if _is_nginx_image(base_image):
+                if not _has_non_root_runtime_user(base_image, effective_user):
                     errors.append(
                         f"Service '{svc_name}': nginx-based Dockerfile does not switch to a non-root user"
                     )
 
-                nginx_texts = _load_nginx_config_texts(build_context)
                 combined_text = "\n".join([final_text, *nginx_texts])
                 if not _TMP_PATH_RE.search(combined_text):
                     errors.append(
@@ -136,15 +142,32 @@ def _parse_service_ports(svc_config: Dict[str, Any]) -> List[int]:
     return parsed
 
 
-def _resolve_dockerfile_path(svc_config: Dict[str, Any], ext_dir: Path) -> Optional[Path]:
+def _resolve_build_paths(
+    svc_config: Dict[str, Any], ext_dir: Path
+) -> Tuple[Optional[Path], Optional[Path], bool]:
     build = svc_config.get("build")
     if isinstance(build, dict):
         context = build.get("context", ".")
         dockerfile = build.get("dockerfile", "Dockerfile")
-        return ext_dir / context / dockerfile
+        build_context = _resolve_relative_to_ext_dir(ext_dir, context)
+        if build_context is None:
+            return None, None, True
+        dockerfile_path = _resolve_relative_to_ext_dir(build_context, dockerfile)
+        return dockerfile_path, build_context, dockerfile_path is None
     if isinstance(build, str):
-        return ext_dir / build / "Dockerfile"
-    return None
+        build_context = _resolve_relative_to_ext_dir(ext_dir, build)
+        if build_context is None:
+            return None, None, True
+        dockerfile_path = _resolve_relative_to_ext_dir(build_context, "Dockerfile")
+        return dockerfile_path, build_context, dockerfile_path is None
+    return None, None, False
+
+
+def _resolve_relative_to_ext_dir(root: Path, relative_path: Any) -> Optional[Path]:
+    candidate = (root / str(relative_path)).resolve()
+    if not candidate.is_relative_to(root.resolve()):
+        return None
+    return candidate
 
 
 def _parse_dockerfile_stages(text: str) -> List[_DockerStage]:
@@ -186,7 +209,7 @@ def _logical_dockerfile_lines(text: str) -> List[str]:
     for raw_line in text.splitlines():
         line = raw_line.rstrip()
         if current:
-            current += line.lstrip()
+            current += " " + line.lstrip()
         else:
             current = line
 
@@ -339,9 +362,19 @@ def _is_non_root_user(user: Optional[str]) -> bool:
     return True
 
 
-def _is_rootful_nginx_image(base_image: str) -> bool:
+def _is_nginx_image(base_image: str) -> bool:
+    return "nginx" in base_image.lower()
+
+
+def _has_non_root_runtime_user(base_image: str, user: Optional[str]) -> bool:
+    if user is not None:
+        return _is_non_root_user(user)
+    return _default_image_user_is_non_root(base_image)
+
+
+def _default_image_user_is_non_root(base_image: str) -> bool:
     lower = base_image.lower()
-    return "nginx" in lower and "unprivileged" not in lower
+    return "unprivileged" in lower or "nonroot" in lower or "non-root" in lower
 
 
 def _is_rootful_httpd_image(base_image: str) -> bool:

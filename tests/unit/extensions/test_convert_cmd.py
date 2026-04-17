@@ -96,3 +96,15 @@ class TestRunConvert:
         run_convert(path=str(app_dir), dry_run=False)
         # Verify agent was called
         mock_agent.assert_called_once()
+
+    def test_no_llm_fallback_still_creates_manifest(self, monkeypatch, tmp_path):
+        from kamiwaza_extensions.commands.convert import run_convert
+
+        (tmp_path / "index.html").write_text("<html><body>Hello</body></html>")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        run_convert(path=str(tmp_path), dry_run=False)
+
+        assert (tmp_path / "kamiwaza.json").exists()
+        assert (tmp_path / "CONVERT_NOTES.md").exists()

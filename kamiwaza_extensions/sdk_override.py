@@ -369,6 +369,8 @@ def _read_dockerfile_startup(dockerfile: Path) -> Optional[DockerStartup]:
 
 def _read_final_base_image(dockerfile: Optional[Path]) -> Optional[str]:
     """Return the final FROM image name from a Dockerfile, if readable."""
+    from kamiwaza_extensions.validators.platform_runtime import _parse_from_instruction
+
     if not dockerfile or not dockerfile.is_file():
         return None
 
@@ -381,9 +383,9 @@ def _read_final_base_image(dockerfile: Optional[Path]) -> Optional[str]:
     for line in content.splitlines():
         stripped = line.strip()
         if stripped.upper().startswith("FROM "):
-            parts = stripped.split()
-            if len(parts) >= 2:
-                last_image = parts[1].lower()
+            base_ref, _alias = _parse_from_instruction(stripped)
+            if base_ref:
+                last_image = base_ref.lower()
     return last_image
 
 

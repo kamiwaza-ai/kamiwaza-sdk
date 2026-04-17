@@ -207,7 +207,7 @@ Publish profiles support multiple environments (dev/staging/prod) and CI via env
 kz-ext convert /path/to/existing-app
 ```
 
-Uses an AI agent to analyze existing Dockerfiles, compose files, and source code, then generates `kamiwaza.json` and wires in SDK integration (health endpoints, auth middleware, runtime libraries). The conversion flow now validates generated output against the Kamiwaza runtime contract as well, including non-root execution, unprivileged HTTP ports, and read-only-root-filesystem-friendly web wrappers. All changes are git-tracked — review with `git diff`.
+Uses an AI agent to analyze existing Dockerfiles, compose files, and size-capped source context, then generates `kamiwaza.json` and wires in SDK integration (health endpoints, auth middleware, runtime libraries). Common secret-bearing files such as `.env`, credential JSON files, and private key files are excluded from that context. The conversion flow now validates generated output against the Kamiwaza runtime contract as well, including non-root execution, unprivileged HTTP ports, and read-only-root-filesystem-friendly web wrappers. All changes are git-tracked — review with `git diff`.
 
 Optionally uses `OPENAI_API_KEY` (or `ANTHROPIC_API_KEY`) for AI-powered conversion. Falls back to basic `kamiwaza.json` generation without an API key. Set `OPENAI_BASE_URL` to use any OpenAI-compatible provider (Kamiwaza, vLLM, Ollama, etc.). Set `KZ_PUBLISH_DOCKER_TOKEN` or `DOCKER_TOKEN` for registry auth during publish.
 

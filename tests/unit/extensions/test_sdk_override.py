@@ -548,6 +548,26 @@ class TestGenerateBuildOverrides:
         overrides = generate_build_overrides(spec, compose, extension_dir=ext_dir)
         assert overrides == []
 
+    def test_static_nginx_service_skips_sdk_override_with_platform_from(self, tmp_path):
+        ext_dir = tmp_path / "ext"
+        ext_dir.mkdir()
+        web = ext_dir / "web"
+        web.mkdir()
+        (web / "Dockerfile").write_text(
+            "FROM --platform=linux/amd64 nginx:alpine\n"
+            "COPY index.html /usr/share/nginx/html/index.html\n"
+        )
+
+        spec = self._make_spec(tmp_path)
+        compose = {
+            "services": {
+                "mihari-demo": {"build": {"context": "./web"}, "ports": ["8080:80"]},
+            }
+        }
+
+        overrides = generate_build_overrides(spec, compose, extension_dir=ext_dir)
+        assert overrides == []
+
 
 # ------------------------------------------------------------------
 # apply_build_overlay

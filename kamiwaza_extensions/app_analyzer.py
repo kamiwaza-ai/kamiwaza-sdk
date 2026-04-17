@@ -12,7 +12,18 @@ import yaml
 
 from kamiwaza_extensions import __version__
 
-_SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv"}
+_SKIP_DIRS = {
+    ".git",
+    "node_modules",
+    "__pycache__",
+    ".venv",
+    "venv",
+    ".next",
+    "build",
+    "dist",
+    "target",
+    "coverage",
+}
 _MANIFEST_FILES = {
     "package.json",
     "requirements.txt",
@@ -28,6 +39,9 @@ _MANIFEST_FILES = {
     "README.md",
     "nginx.conf",
     "Caddyfile",
+    "go.mod",
+    "Cargo.toml",
+    "Gemfile",
 }
 _ENTRYPOINT_NAMES = {
     "main.py",
@@ -55,6 +69,26 @@ _CONTEXT_SUFFIXES = (
 )
 _MAX_REPO_TREE_ENTRIES = 40
 _MAX_CONTEXT_FILES = 80
+_MAX_CONTEXT_FILE_SIZE = 10000
+_SENSITIVE_FILE_NAMES = {
+    ".env",
+    ".npmrc",
+    ".pypirc",
+    "credentials.json",
+    "credential.json",
+    "secret.json",
+    "secrets.json",
+    "id_rsa",
+    "id_ed25519",
+}
+_SENSITIVE_FILE_SUFFIXES = (
+    ".key",
+    ".pem",
+    ".p12",
+    ".pfx",
+    ".der",
+)
+_SENSITIVE_NAME_TOKENS = ("secret", "credential")
 
 
 def _walk_files(root: Path, extensions: tuple[str, ...] | None = None) -> Generator[Path, None, None]:
@@ -459,8 +493,8 @@ class AppAnalyzer:
                 content = path.read_text(encoding="utf-8")
                 rel = str(path.relative_to(result.app_dir))
                 # Limit file size to avoid blowing up the LLM context
-                if len(content) > 10000:
-                    content = content[:10000] + "\n... (truncated)"
+                if len(content) > _MAX_CONTEXT_FILE_SIZE:
+                    content = content[:_MAX_CONTEXT_FILE_SIZE] + "\n... (truncated)"
                 result.file_contents[rel] = content
             except (OSError, UnicodeDecodeError):
                 pass
@@ -500,6 +534,17 @@ def _is_entrypoint(path: Path) -> bool:
 
 
 def _is_context_file(path: Path) -> bool:
+    if _is_sensitive_context_file(path):
+        return False
     if _is_dockerfile(path) or _is_manifest(path) or _is_entrypoint(path):
         return True
     return path.suffix.lower() in _CONTEXT_SUFFIXES
+
+
+def _is_sensitive_context_file(path: Path) -> bool:
+    name = path.name.lower()
+    if name in _SENSITIVE_FILE_NAMES or name.startswith(".env."):
+        return True
+    if path.suffix.lower() in _SENSITIVE_FILE_SUFFIXES:
+        return True
+    return any(token in name for token in _SENSITIVE_NAME_TOKENS)

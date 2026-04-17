@@ -28,7 +28,19 @@ console = Console(stderr=True)
 # Max total content size sent to LLM (characters)
 _MAX_CONTEXT_SIZE = 50000
 _MAX_REPAIR_ATTEMPTS = 2
-_STAGING_SKIP_DIRS = (".git", "node_modules", "__pycache__", ".venv", "venv")
+_MAX_PREVIOUS_MODIFICATIONS = 20
+_STAGING_SKIP_DIRS = (
+    ".git",
+    "node_modules",
+    "__pycache__",
+    ".venv",
+    "venv",
+    ".next",
+    "build",
+    "dist",
+    "target",
+    "coverage",
+)
 
 
 @dataclass
@@ -171,7 +183,7 @@ Warnings:
         previous_plan_section = f"""
 ## Previous Proposed Modifications
 ```json
-{json.dumps(_plan_to_dict(previous_plan), indent=2)}
+{json.dumps(_summarize_previous_plan(previous_plan), indent=2)}
 ```
 """
 
@@ -450,23 +462,15 @@ def apply_plan(plan: ConversionPlan, app_dir: Path, dry_run: bool = False) -> Li
 def run_agent(analysis: AnalysisResult, dry_run: bool = False) -> ConversionPlan:
     """Run the full conversion agent with staged validation and repair."""
     console.print(
-        "  [dim]Note: source code will be sent to an external LLM provider for analysis.[/dim]"
+        "  [dim]Note: size-capped source context will be sent to an external LLM provider for analysis; "
+        "common secret-bearing files such as .env, credentials, and key files are excluded.[/dim]"
     )
     console.print(f"  [dim]Conversion mode: {analysis.conversion_mode}[/dim]")
     console.print("  [dim]Calling AI agent...[/dim]")
 
     strategy_text = call_llm(build_strategy_prompt(analysis))
     if strategy_text is None:
-        return ConversionPlan(
-            success=False,
-            mode=analysis.conversion_mode,
-            summary="LLM unavailable — convert cannot produce a validated extension automatically.",
-            manual_items=[
-                "Set ANTHROPIC_API_KEY or OPENAI_API_KEY for full AI-powered conversion.",
-                "For other providers, set OPENAI_API_KEY + OPENAI_BASE_URL (any OpenAI-compatible API).",
-            ],
-            errors=["LLM unavailable."],
-        )
+        return _apply_basic_fallback(analysis, dry_run=dry_run)
 
     strategy = parse_strategy_response(strategy_text)
     if strategy is None:
@@ -512,6 +516,7 @@ def run_agent(analysis: AnalysisResult, dry_run: bool = False) -> ConversionPlan
         if not plan.success:
             return plan
 
+        _preserve_existing_kamiwaza_json(plan, analysis)
         _ensure_supporting_files(plan, analysis, metadata_seed, strategy)
         last_validation = _validate_plan_in_staging(plan, analysis.app_dir)
         if last_validation.passed:
@@ -623,6 +628,56 @@ def _default_metadata(analysis: AnalysisResult, strategy: ConversionStrategy) ->
     return metadata
 
 
+def _apply_basic_fallback(analysis: AnalysisResult, *, dry_run: bool) -> ConversionPlan:
+    """Apply the documented non-LLM fallback scaffold."""
+    strategy = ConversionStrategy(
+        extension_type=analysis.extension_type,
+        conversion_mode=analysis.conversion_mode,
+        primary_service=analysis.services[0].name if analysis.services else "app",
+        runtime_summary=analysis.description or "Basic metadata-only fallback",
+    )
+    metadata_seed = _default_metadata(analysis, strategy)
+    plan = ConversionPlan(
+        mode=analysis.conversion_mode,
+        strategy=strategy,
+        summary="LLM unavailable — created a basic Kamiwaza scaffold only.",
+        manual_items=[
+            "Set ANTHROPIC_API_KEY or OPENAI_API_KEY for full AI-powered conversion.",
+            "For other providers, set OPENAI_API_KEY + OPENAI_BASE_URL (any OpenAI-compatible API).",
+            "Review kamiwaza.json, then rerun convert with an LLM to attempt compose and runtime integration.",
+        ],
+    )
+    _ensure_supporting_files(plan, analysis, metadata_seed, strategy)
+    apply_plan(plan, analysis.app_dir, dry_run=dry_run)
+    if dry_run:
+        plan.summary = f"[Dry run] {plan.summary}"
+    return plan
+
+
+def _preserve_existing_kamiwaza_json(plan: ConversionPlan, analysis: AnalysisResult) -> None:
+    """Do not overwrite an existing manifest during conversion."""
+    metadata_path = analysis.app_dir / "kamiwaza.json"
+    if not metadata_path.exists():
+        return
+
+    kept: List[FileModification] = []
+    skipped_metadata_change = False
+    for mod in plan.modifications:
+        if mod.path == "kamiwaza.json":
+            skipped_metadata_change = True
+            continue
+        kept.append(mod)
+
+    if skipped_metadata_change:
+        plan.modifications = kept
+        plan.manual_items = _merge_manual_items(
+            plan.manual_items,
+            [
+                "kamiwaza.json already exists; preserving the existing manifest and skipping AI-proposed metadata changes.",
+            ],
+        )
+
+
 def _ensure_supporting_files(
     plan: ConversionPlan,
     analysis: AnalysisResult,
@@ -680,7 +735,10 @@ def _build_convert_notes(plan: ConversionPlan, strategy: ConversionStrategy) -> 
 
 
 def _validate_plan_in_staging(plan: ConversionPlan, app_dir: Path) -> ValidationSummary:
-    from kamiwaza_extensions.validators.compose import ComposeValidator
+    from kamiwaza_extensions.validators.compose import (
+        ComposeValidator,
+        is_missing_resource_limits_warning,
+    )
     from kamiwaza_extensions.validators.metadata import MetadataValidator
     from kamiwaza_extensions.validators.platform_runtime import PlatformRuntimeValidator
 
@@ -713,7 +771,7 @@ def _validate_plan_in_staging(plan: ConversionPlan, app_dir: Path) -> Validation
             errors.extend(compose_result.errors)
             warnings.extend(compose_result.warnings)
             for warning in compose_result.warnings:
-                if "no resource limits defined" in warning.lower():
+                if is_missing_resource_limits_warning(warning):
                     errors.append(f"Blocking conversion warning: {warning}")
             if compose_result.passed:
                 runtime_result = PlatformRuntimeValidator().validate(compose_path, staged_root)
@@ -748,6 +806,28 @@ def _plan_to_dict(plan: ConversionPlan) -> Dict[str, Any]:
         "manual_items": plan.manual_items,
         "summary": plan.summary,
     }
+
+
+def _summarize_previous_plan(plan: ConversionPlan) -> Dict[str, Any]:
+    summarized_mods = []
+    for mod in plan.modifications[:_MAX_PREVIOUS_MODIFICATIONS]:
+        summarized_mods.append(
+            {
+                "path": mod.path,
+                "action": mod.action,
+                "description": mod.description,
+                "content_chars": len(mod.content or ""),
+            }
+        )
+    omitted = max(0, len(plan.modifications) - len(summarized_mods))
+    summary: Dict[str, Any] = {
+        "modifications": summarized_mods,
+        "manual_items": plan.manual_items,
+        "summary": plan.summary,
+    }
+    if omitted:
+        summary["omitted_modifications"] = omitted
+    return summary
 
 
 def _strategy_to_dict(strategy: ConversionStrategy) -> Dict[str, Any]:
