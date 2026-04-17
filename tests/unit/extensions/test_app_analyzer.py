@@ -199,6 +199,21 @@ class TestAnalyze:
         assert ".env" not in result.file_contents
         assert "credentials.json" not in result.file_contents
 
+    def test_excludes_common_secret_bearing_files_from_repo_inventory(self, tmp_path):
+        from kamiwaza_extensions.app_analyzer import AppAnalyzer
+
+        (tmp_path / "index.html").write_text("<html><body>Hello</body></html>")
+        (tmp_path / ".env").write_text("API_KEY=secret\n")
+        (tmp_path / "credentials.json").write_text("{\"token\": \"secret\"}\n")
+        (tmp_path / "id_rsa").write_text("private-key\n")
+
+        result = AppAnalyzer().analyze(tmp_path)
+
+        assert "index.html" in result.repo_tree
+        assert ".env" not in result.repo_tree
+        assert "credentials.json" not in result.repo_tree
+        assert "id_rsa" not in result.repo_tree
+
     def test_keeps_legit_source_with_secret_like_names(self, tmp_path):
         from kamiwaza_extensions.app_analyzer import AppAnalyzer
 

@@ -293,6 +293,42 @@ class TestPlatformRuntimeValidator:
         assert not result.passed
         assert any("/tmp paths" in err for err in result.errors)
 
+    def test_flags_image_only_rootful_nginx_service(self, tmp_path, validator):
+        compose = {
+            "services": {
+                "web": {
+                    "image": "nginx:alpine",
+                    "ports": ["8080:8080"],
+                },
+            },
+        }
+        f = tmp_path / "docker-compose.yml"
+        self._write_compose(f, compose)
+
+        result = validator.validate(f, tmp_path)
+
+        assert not result.passed
+        assert any("image-only nginx service" in err for err in result.errors)
+        assert any("could not be inspected" in warning for warning in result.warnings)
+
+    def test_warns_for_image_only_unprivileged_nginx_service(self, tmp_path, validator):
+        compose = {
+            "services": {
+                "web": {
+                    "image": "nginxinc/nginx-unprivileged:stable-alpine",
+                    "ports": ["8080:8080"],
+                },
+            },
+        }
+        f = tmp_path / "docker-compose.yml"
+        self._write_compose(f, compose)
+
+        result = validator.validate(f, tmp_path)
+
+        assert result.passed
+        assert result.errors == []
+        assert any("could not be inspected" in warning for warning in result.warnings)
+
     def test_allows_unprivileged_nginx_with_tmp_runtime_paths(self, tmp_path, validator):
         compose = {
             "services": {

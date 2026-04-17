@@ -589,6 +589,36 @@ class TestGenerateBuildOverrides:
         overrides = generate_build_overrides(spec, compose, extension_dir=ext_dir)
         assert overrides == []
 
+    def test_multistage_node_to_nginx_frontend_gets_build_override(self, tmp_path):
+        ext_dir = tmp_path / "ext"
+        ext_dir.mkdir()
+        web = ext_dir / "web"
+        web.mkdir()
+        (web / "Dockerfile").write_text(
+            "FROM node:20 AS build\n"
+            "WORKDIR /app\n"
+            "COPY package.json package-lock.json ./\n"
+            "RUN npm ci\n"
+            "COPY . .\n"
+            "RUN npm run build\n"
+            "FROM nginx:alpine\n"
+            "COPY --from=build /app/dist /usr/share/nginx/html\n"
+        )
+
+        spec = self._make_spec(tmp_path, python=False)
+        compose = {
+            "services": {
+                "frontend": {"build": {"context": "./web"}, "ports": ["8080:80"]},
+            }
+        }
+
+        overrides = generate_build_overrides(spec, compose, extension_dir=ext_dir)
+
+        assert len(overrides) == 1
+        assert overrides[0].service_name == "frontend"
+        assert "npm pack" in overrides[0].overlay_steps
+        assert overrides[0].insert_before_build is True
+
 
 # ------------------------------------------------------------------
 # apply_build_overlay

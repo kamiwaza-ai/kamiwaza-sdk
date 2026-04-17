@@ -792,22 +792,6 @@ def _find_compose_file(ext_dir: Path) -> Optional[Path]:
     return None
 
 
-def _plan_to_dict(plan: ConversionPlan) -> Dict[str, Any]:
-    return {
-        "modifications": [
-            {
-                "path": mod.path,
-                "action": mod.action,
-                "content": mod.content,
-                "description": mod.description,
-            }
-            for mod in plan.modifications
-        ],
-        "manual_items": plan.manual_items,
-        "summary": plan.summary,
-    }
-
-
 def _summarize_previous_plan(plan: ConversionPlan) -> Dict[str, Any]:
     summarized_mods = []
     for mod in plan.modifications[:_MAX_PREVIOUS_MODIFICATIONS]:

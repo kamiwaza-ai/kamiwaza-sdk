@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
 from dataclasses import dataclass, field
@@ -19,6 +20,18 @@ _NGINX_CONF_LISTEN_RE = re.compile(
     r"(?mi)^\s*listen\s+(?:(?:\[[^\]]+\]|[^\s;:]+):)?(?P<port>\d+)\b"
 )
 _TMP_PATH_RE = re.compile(r"(?<!\S)/tmp(?:/|\b)")
+_CONFIG_SKIP_DIRS = {
+    ".git",
+    "node_modules",
+    "__pycache__",
+    ".venv",
+    "venv",
+    ".next",
+    "build",
+    "dist",
+    "target",
+    "coverage",
+}
 
 
 @dataclass
@@ -69,6 +82,11 @@ class PlatformRuntimeValidator:
                 )
                 continue
             if dockerfile_path is None:
+                image_errors, image_warnings = _validate_image_only_service(
+                    svc_name, str(svc_config.get("image") or ""),
+                )
+                errors.extend(image_errors)
+                warnings.extend(image_warnings)
                 continue
             if not dockerfile_path.exists():
                 continue
@@ -332,15 +350,20 @@ def _load_nginx_config_texts(build_context: Path) -> List[str]:
         return []
 
     texts: List[str] = []
-    for path in build_context.rglob("*.conf"):
-        rel = path.relative_to(build_context)
-        rel_str = str(rel).lower()
-        if (
-            rel.name == "default.conf"
-            or "nginx" in rel_str
-            or "conf.d" in rel.parts
-        ):
-            texts.append(path.read_text(encoding="utf-8"))
+    for dirpath, dirnames, filenames in os.walk(build_context):
+        dirnames[:] = [d for d in dirnames if d not in _CONFIG_SKIP_DIRS]
+        for filename in filenames:
+            if not filename.endswith(".conf"):
+                continue
+            path = Path(dirpath) / filename
+            rel = path.relative_to(build_context)
+            rel_str = str(rel).lower()
+            if (
+                rel.name == "default.conf"
+                or "nginx" in rel_str
+                or "conf.d" in rel.parts
+            ):
+                texts.append(path.read_text(encoding="utf-8"))
     return texts
 
 
@@ -370,7 +393,8 @@ def _is_non_root_user(user: Optional[str]) -> bool:
 
 
 def _is_nginx_image(base_image: str) -> bool:
-    return "nginx" in base_image.lower()
+    base = _image_basename(base_image)
+    return base == "nginx" or base.startswith("nginx-")
 
 
 def _has_non_root_runtime_user(base_image: str, user: Optional[str]) -> bool:
@@ -385,8 +409,48 @@ def _default_image_user_is_non_root(base_image: str) -> bool:
 
 
 def _is_rootful_httpd_image(base_image: str) -> bool:
-    lower = base_image.lower()
-    return "httpd" in lower or "apache" in lower
+    base = _image_basename(base_image)
+    return (
+        base == "httpd"
+        or base.startswith("httpd-")
+        or base == "apache"
+        or base.startswith("apache-")
+    )
+
+
+def _validate_image_only_service(
+    svc_name: str,
+    image_ref: str,
+) -> Tuple[List[str], List[str]]:
+    if not image_ref:
+        return [], []
+
+    errors: List[str] = []
+    warnings: List[str] = []
+
+    if _is_nginx_image(image_ref):
+        if not _has_non_root_runtime_user(image_ref, user=None):
+            errors.append(
+                f"Service '{svc_name}': image-only nginx service '{image_ref}' is likely rootful; "
+                "use an unprivileged image or provide a Dockerfile that switches users"
+            )
+        warnings.append(
+            f"Service '{svc_name}': image-only nginx service '{image_ref}' could not be inspected "
+            "for listen ports or writable /tmp runtime paths"
+        )
+    elif _is_rootful_httpd_image(image_ref) and not _has_non_root_runtime_user(image_ref, user=None):
+        errors.append(
+            f"Service '{svc_name}': image-only HTTP server image '{image_ref}' is likely rootful; "
+            "use a non-root image or provide a Dockerfile that switches users"
+        )
+
+    return errors, warnings
+
+
+def _image_basename(image_ref: str) -> str:
+    ref = image_ref.split("@", 1)[0]
+    name = ref.rsplit("/", 1)[-1]
+    return name.split(":", 1)[0].lower()
 
 
 def _dedupe(items: List[str]) -> List[str]:

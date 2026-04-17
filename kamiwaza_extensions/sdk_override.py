@@ -311,6 +311,47 @@ def detect_service_runtime(
     return detect_service_type(svc_name, svc_config)
 
 
+def _detect_build_service_runtime(
+    svc_name: str,
+    svc_config: dict,
+    *,
+    extension_dir: Optional[Path] = None,
+) -> str:
+    """Classify a service for build-time SDK overlay insertion.
+
+    Multi-stage frontends often compile in a Node/Bun stage and ship from a
+    static final image such as nginx. Those should still receive the
+    TypeScript overlay during ``kz-ext dev --sdk-repo`` because the local SDK
+    must be installed before the frontend bundle is built.
+    """
+    dockerfile = None
+    if extension_dir is not None and "build" in svc_config:
+        dockerfile = _resolve_dockerfile(svc_config["build"], extension_dir)
+
+    stage_bases = _read_dockerfile_stage_bases(dockerfile)
+    if not stage_bases:
+        return detect_service_runtime(
+            svc_name, svc_config, extension_dir=extension_dir,
+        )
+
+    final_base = _image_basename(stage_bases[-1])
+    if "python" in final_base:
+        return "backend"
+    if "node" in final_base or "bun" in final_base:
+        return "frontend"
+    if any(token in final_base for token in ("nginx", "caddy", "httpd", "apache")):
+        if any(
+            "node" in _image_basename(base) or "bun" in _image_basename(base)
+            for base in stage_bases[:-1]
+        ):
+            return "frontend"
+        return "static"
+
+    return detect_service_runtime(
+        svc_name, svc_config, extension_dir=extension_dir,
+    )
+
+
 def _resolve_dockerfile(build_spec: Any, extension_dir: Path) -> Optional[Path]:
     """Resolve the Dockerfile path from a compose build spec."""
     if isinstance(build_spec, str):
@@ -369,18 +410,25 @@ def _read_dockerfile_startup(dockerfile: Path) -> Optional[DockerStartup]:
 
 def _read_final_base_image(dockerfile: Optional[Path]) -> Optional[str]:
     """Return the final FROM image name from a Dockerfile, if readable."""
+    stage_bases = _read_dockerfile_stage_bases(dockerfile)
+    if not stage_bases:
+        return None
+    return stage_bases[-1]
+
+
+def _read_dockerfile_stage_bases(dockerfile: Optional[Path]) -> List[str]:
+    """Return effective base images for each Dockerfile stage."""
     from kamiwaza_extensions.validators.platform_runtime import parse_from_instruction
 
     if not dockerfile or not dockerfile.is_file():
-        return None
+        return []
 
     try:
         content = dockerfile.read_text()
     except OSError:
-        return None
+        return []
 
     stages: List[tuple[str, Optional[str]]] = []
-    alias_map: dict[str, str] = {}
     for line in content.splitlines():
         stripped = line.strip()
         if stripped.upper().startswith("FROM "):
@@ -388,18 +436,31 @@ def _read_final_base_image(dockerfile: Optional[Path]) -> Optional[str]:
             if base_ref:
                 base = base_ref.lower()
                 stages.append((base, alias.lower() if alias else None))
-                if alias:
-                    alias_map[alias.lower()] = base
 
     if not stages:
-        return None
+        return []
 
-    final_image = stages[-1][0]
-    seen: set[str] = set()
-    while final_image in alias_map and final_image not in seen:
-        seen.add(final_image)
-        final_image = alias_map[final_image]
-    return final_image
+    alias_map = {
+        alias: index for index, (_base, alias) in enumerate(stages) if alias
+    }
+
+    def resolve_stage_base(index: int, seen: Optional[set[str]] = None) -> str:
+        base_ref = stages[index][0]
+        key = base_ref.lower()
+        alias_idx = alias_map.get(key)
+        seen = seen or set()
+        if alias_idx is None or key in seen:
+            return base_ref
+        seen.add(key)
+        return resolve_stage_base(alias_idx, seen)
+
+    return [resolve_stage_base(index) for index in range(len(stages))]
+
+
+def _image_basename(image_ref: str) -> str:
+    ref = image_ref.split("@", 1)[0]
+    name = ref.rsplit("/", 1)[-1]
+    return name.split(":", 1)[0].lower()
 
 
 def _startup_argv(
@@ -552,7 +613,7 @@ def generate_build_overrides(
         if "build" not in svc_config:
             continue
 
-        svc_type = detect_service_runtime(
+        svc_type = _detect_build_service_runtime(
             svc_name, svc_config, extension_dir=extension_dir,
         )
 

@@ -410,6 +410,10 @@ class AppAnalyzer:
         """Collect lightweight repo structure hints for generic conversion."""
         entries = []
         for entry in sorted(result.app_dir.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
+            if entry.name in _SKIP_DIRS:
+                continue
+            if entry.is_file() and _is_sensitive_context_file(entry):
+                continue
             label = f"{entry.name}/" if entry.is_dir() else entry.name
             entries.append(label)
             if len(entries) >= _MAX_REPO_TREE_ENTRIES:
@@ -421,6 +425,8 @@ class AppAnalyzer:
         runtime_hints: set[str] = set()
 
         for path in _walk_files(result.app_dir):
+            if _is_sensitive_context_file(path):
+                continue
             rel = str(path.relative_to(result.app_dir))
             name = path.name
 
