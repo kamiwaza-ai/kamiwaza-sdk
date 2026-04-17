@@ -15,7 +15,9 @@ from kamiwaza_extensions.validators.result import ValidationResult
 _INLINE_NGINX_LISTEN_RE = re.compile(
     r"(?i)(?:^|\s)(?:echo|printf)\s+['\"][^'\"]*?\blisten\s+(?P<port>\d+)\b"
 )
-_NGINX_CONF_LISTEN_RE = re.compile(r"(?mi)^\s*listen\s+(?:\[::\]:)?(?P<port>\d+)\b")
+_NGINX_CONF_LISTEN_RE = re.compile(
+    r"(?mi)^\s*listen\s+(?:(?:\[[^\]]+\]|[^\s;:]+):)?(?P<port>\d+)\b"
+)
 _TMP_PATH_RE = re.compile(r"(?<!\S)/tmp(?:/|\b)")
 
 
@@ -226,7 +228,7 @@ def _logical_dockerfile_lines(text: str) -> List[str]:
     return logical_lines
 
 
-def _parse_from_instruction(line: str) -> tuple[Optional[str], Optional[str]]:
+def parse_from_instruction(line: str) -> tuple[Optional[str], Optional[str]]:
     try:
         tokens = shlex.split(line, comments=False, posix=True)
     except ValueError:
@@ -251,6 +253,11 @@ def _parse_from_instruction(line: str) -> tuple[Optional[str], Optional[str]]:
         idx += 1
 
     return base_ref, alias
+
+
+def _parse_from_instruction(line: str) -> tuple[Optional[str], Optional[str]]:
+    """Backward-compatible wrapper for internal callers/tests."""
+    return parse_from_instruction(line)
 
 
 def _resolve_effective_base_image(stages: List[_DockerStage], index: int, seen: Optional[set[str]] = None) -> str:

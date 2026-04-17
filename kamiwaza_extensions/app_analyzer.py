@@ -88,7 +88,7 @@ _SENSITIVE_FILE_SUFFIXES = (
     ".pfx",
     ".der",
 )
-_SENSITIVE_NAME_TOKENS = ("secret", "credential")
+_SENSITIVE_STEMS = {"secret", "secrets", "credential", "credentials"}
 
 
 def _walk_files(root: Path, extensions: tuple[str, ...] | None = None) -> Generator[Path, None, None]:
@@ -547,4 +547,4 @@ def _is_sensitive_context_file(path: Path) -> bool:
         return True
     if path.suffix.lower() in _SENSITIVE_FILE_SUFFIXES:
         return True
-    return any(token in name for token in _SENSITIVE_NAME_TOKENS)
+    return path.stem.lower() in _SENSITIVE_STEMS

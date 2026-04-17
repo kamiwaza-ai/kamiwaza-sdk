@@ -199,6 +199,19 @@ class TestAnalyze:
         assert ".env" not in result.file_contents
         assert "credentials.json" not in result.file_contents
 
+    def test_keeps_legit_source_with_secret_like_names(self, tmp_path):
+        from kamiwaza_extensions.app_analyzer import AppAnalyzer
+
+        (tmp_path / "secret_manager.py").write_text("def load_secret(): pass\n")
+        (tmp_path / "credential_store.py").write_text("def load_credentials(): pass\n")
+        (tmp_path / "secrets_test.py").write_text("def test_secret(): pass\n")
+
+        result = AppAnalyzer().analyze(tmp_path)
+
+        assert "secret_manager.py" in result.file_contents
+        assert "credential_store.py" in result.file_contents
+        assert "secrets_test.py" in result.file_contents
+
     def test_detects_additional_language_manifests(self, tmp_path):
         from kamiwaza_extensions.app_analyzer import AppAnalyzer
 

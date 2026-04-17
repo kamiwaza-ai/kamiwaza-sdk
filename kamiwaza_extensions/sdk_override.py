@@ -369,7 +369,7 @@ def _read_dockerfile_startup(dockerfile: Path) -> Optional[DockerStartup]:
 
 def _read_final_base_image(dockerfile: Optional[Path]) -> Optional[str]:
     """Return the final FROM image name from a Dockerfile, if readable."""
-    from kamiwaza_extensions.validators.platform_runtime import _parse_from_instruction
+    from kamiwaza_extensions.validators.platform_runtime import parse_from_instruction
 
     if not dockerfile or not dockerfile.is_file():
         return None
@@ -379,14 +379,27 @@ def _read_final_base_image(dockerfile: Optional[Path]) -> Optional[str]:
     except OSError:
         return None
 
-    last_image = None
+    stages: List[tuple[str, Optional[str]]] = []
+    alias_map: dict[str, str] = {}
     for line in content.splitlines():
         stripped = line.strip()
         if stripped.upper().startswith("FROM "):
-            base_ref, _alias = _parse_from_instruction(stripped)
+            base_ref, alias = parse_from_instruction(stripped)
             if base_ref:
-                last_image = base_ref.lower()
-    return last_image
+                base = base_ref.lower()
+                stages.append((base, alias.lower() if alias else None))
+                if alias:
+                    alias_map[alias.lower()] = base
+
+    if not stages:
+        return None
+
+    final_image = stages[-1][0]
+    seen: set[str] = set()
+    while final_image in alias_map and final_image not in seen:
+        seen.add(final_image)
+        final_image = alias_map[final_image]
+    return final_image
 
 
 def _startup_argv(

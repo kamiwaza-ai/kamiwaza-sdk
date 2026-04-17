@@ -281,4 +281,18 @@ def _should_use_node_frontend_probe(svc_name: str, svc: Dict[str, Any]) -> bool:
         if "node" in text or "next" in text:
             return True
 
+    image = str(svc.get("image", "")).lower()
+    if any(token in image for token in ("nginx", "caddy", "httpd", "apache", "static")):
+        return False
+
+    ports = svc.get("ports", [])
+    for port in ports:
+        port_str = str(port).split("/", 1)[0]
+        try:
+            container_port = int(port_str.rsplit(":", 1)[-1])
+        except ValueError:
+            continue
+        if container_port in {3000, 3001, 4173, 5173}:
+            return True
+
     return False

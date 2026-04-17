@@ -31,6 +31,54 @@ def _write_extension_files(tmp_path, compose, dockerfile_text, extra_files=None)
 
 
 class TestRunValidate:
+    def test_missing_manifest_exits_with_json_error(self, tmp_path, capsys):
+        import typer
+
+        from kamiwaza_extensions.commands.validate import run_validate
+
+        with pytest.raises(typer.Exit):
+            run_validate(path=str(tmp_path), json_output=True)
+
+        output = json.loads(capsys.readouterr().out)
+        assert output["passed"] is False
+        assert any("No kamiwaza.json found" in err for err in output["errors"])
+
+    def test_invalid_manifest_emits_failed_json(self, tmp_path, capsys):
+        import typer
+
+        from kamiwaza_extensions.commands.validate import run_validate
+
+        (tmp_path / "kamiwaza.json").write_text("{bad json")
+
+        with pytest.raises(typer.Exit):
+            run_validate(path=str(tmp_path), json_output=True)
+
+        output = json.loads(capsys.readouterr().out)
+        assert output["passed"] is False
+        assert output["errors"]
+
+    def test_warnings_only_do_not_fail_validation(self, tmp_path, capsys):
+        from kamiwaza_extensions.commands.validate import run_validate
+
+        compose = {
+            "services": {
+                "web": {
+                    "image": "nginx:alpine",
+                    "ports": ["8080:8080"],
+                    "deploy": {"resources": {"limits": {"cpus": "1.0", "memory": "1G"}}},
+                },
+            },
+        }
+        (tmp_path / "kamiwaza.json").write_text(json.dumps(_valid_metadata()))
+        (tmp_path / "docker-compose.yml").write_text(yaml.dump(compose))
+
+        run_validate(path=str(tmp_path), json_output=True)
+
+        output = json.loads(capsys.readouterr().out)
+        assert output["passed"] is True
+        assert output["errors"] == []
+        assert output["warnings"]
+
     def test_validate_fails_on_platform_incompatible_runtime(self, tmp_path, capsys):
         import typer
 

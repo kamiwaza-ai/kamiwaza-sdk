@@ -401,3 +401,85 @@ class TestPlatformRuntimeValidator:
 
         assert result.passed
         assert any("escapes the extension directory" in warning for warning in result.warnings)
+
+    def test_allows_ipv4_bound_nginx_listen_port(self, tmp_path, validator):
+        compose = {
+            "services": {
+                "web": {
+                    "build": ".",
+                    "ports": ["8080:8080"],
+                },
+            },
+        }
+        (tmp_path / "Dockerfile").write_text(
+            "FROM nginxinc/nginx-unprivileged:stable-alpine\n"
+            "COPY nginx.conf /etc/nginx/conf.d/default.conf\n"
+            "EXPOSE 8080\n"
+        )
+        (tmp_path / "nginx.conf").write_text(
+            "server {\n"
+            "    listen 127.0.0.1:8080;\n"
+            "    client_body_temp_path /tmp/client_temp;\n"
+            "}\n"
+        )
+        f = tmp_path / "docker-compose.yml"
+        self._write_compose(f, compose)
+
+        result = validator.validate(f, tmp_path)
+
+        assert result.passed
+        assert not any("privileged port 127" in err for err in result.errors)
+
+    def test_allows_wildcard_bound_nginx_listen_port(self, tmp_path, validator):
+        compose = {
+            "services": {
+                "web": {
+                    "build": ".",
+                    "ports": ["8080:8080"],
+                },
+            },
+        }
+        (tmp_path / "Dockerfile").write_text(
+            "FROM nginxinc/nginx-unprivileged:stable-alpine\n"
+            "COPY nginx.conf /etc/nginx/conf.d/default.conf\n"
+            "EXPOSE 8080\n"
+        )
+        (tmp_path / "nginx.conf").write_text(
+            "server {\n"
+            "    listen *:8080;\n"
+            "    client_body_temp_path /tmp/client_temp;\n"
+            "}\n"
+        )
+        f = tmp_path / "docker-compose.yml"
+        self._write_compose(f, compose)
+
+        result = validator.validate(f, tmp_path)
+
+        assert result.passed
+
+    def test_allows_localhost_bound_nginx_listen_port(self, tmp_path, validator):
+        compose = {
+            "services": {
+                "web": {
+                    "build": ".",
+                    "ports": ["8080:8080"],
+                },
+            },
+        }
+        (tmp_path / "Dockerfile").write_text(
+            "FROM nginxinc/nginx-unprivileged:stable-alpine\n"
+            "COPY nginx.conf /etc/nginx/conf.d/default.conf\n"
+            "EXPOSE 8080\n"
+        )
+        (tmp_path / "nginx.conf").write_text(
+            "server {\n"
+            "    listen localhost:8080;\n"
+            "    client_body_temp_path /tmp/client_temp;\n"
+            "}\n"
+        )
+        f = tmp_path / "docker-compose.yml"
+        self._write_compose(f, compose)
+
+        result = validator.validate(f, tmp_path)
+
+        assert result.passed
