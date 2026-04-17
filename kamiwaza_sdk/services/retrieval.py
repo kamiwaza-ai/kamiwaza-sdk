@@ -97,8 +97,6 @@ class RetrievalService(BaseService):
         credential_override: Optional[str] = None,
         **options,
     ) -> RetrievalJob:
-        from pydantic import SecretStr
-
         secret_override = SecretStr(credential_override) if credential_override else None
         request = RetrievalRequest(
             dataset_urn=dataset_urn,

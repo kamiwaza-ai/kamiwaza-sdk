@@ -27,10 +27,11 @@ from ...schemas.oauth_broker import (
 # injection.
 _SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9._-]+\Z")
 
-# Calendar IDs can be email addresses (e.g. "user@gmail.com") or the
-# literal string "primary".  We allow alphanumerics plus the characters
-# that appear in email addresses: @, ., _, and -.
-_SAFE_CALENDAR_ID_RE = re.compile(r"^[a-zA-Z0-9@._-]+\Z")
+# Calendar IDs can be email addresses (e.g. "user@gmail.com"), group or
+# holiday calendar IDs (e.g. "en.usa#holiday@group.v.calendar.google.com"),
+# or the literal string "primary".  We allow alphanumerics plus the
+# characters that appear in these identifiers: @, ., _, -, and #.
+_SAFE_CALENDAR_ID_RE = re.compile(r"^[a-zA-Z0-9@._#-]+\Z")
 
 
 def _validate_safe_id(value: str, label: str) -> None:
@@ -52,14 +53,16 @@ def _validate_safe_id(value: str, label: str) -> None:
 def _validate_calendar_id(value: str) -> None:
     """Validate that *value* is a safe calendar identifier.
 
-    Calendar IDs can be email addresses (e.g. ``user@gmail.com``) or
-    the literal ``"primary"``.  Raises ``ValueError`` when *value* is
-    empty or contains characters outside ``[a-zA-Z0-9@._-]``.
+    Calendar IDs can be email addresses (e.g. ``user@gmail.com``),
+    group/holiday IDs (e.g.
+    ``en.usa#holiday@group.v.calendar.google.com``), or the literal
+    ``"primary"``.  Raises ``ValueError`` when *value* is empty or
+    contains characters outside ``[a-zA-Z0-9@._#-]``.
     """
     if not value or not _SAFE_CALENDAR_ID_RE.match(value):
         raise ValueError(
             "calendar_id contains characters that are not permitted "
-            "(must match [a-zA-Z0-9@._-]+)"
+            "(must match [a-zA-Z0-9@._#-]+)"
         )
 
 

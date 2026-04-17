@@ -931,3 +931,34 @@ def test_calendar_list_events(dummy_client):
     assert kwargs["params"]["time_min"] == time_min
     assert kwargs["params"]["time_max"] == time_max
     assert kwargs["params"]["max_results"] == 50
+
+
+def test_calendar_list_events_with_hash_in_calendar_id(dummy_client):
+    """Test that calendar IDs containing '#' (e.g. Google holiday calendars) are accepted.
+
+    Google's calendarList.list returns public/holiday calendar IDs like
+    ``en.usa#holiday@group.v.calendar.google.com``.  These must round-trip
+    through ``calendar_list_events()`` without being rejected by the
+    calendar-ID validator.
+    """
+    app_id = str(uuid.uuid4())
+    holiday_cal_id = "en.usa#holiday@group.v.calendar.google.com"
+
+    response = {"items": [{"id": "event1", "summary": "Independence Day"}]}
+    responses = {("get", "/oauth-broker/proxy/google/calendar/events"): response}
+    client = dummy_client(responses)
+    service = OAuthBrokerService(client)
+
+    result = service.calendar_list_events(
+        app_id=uuid.UUID(app_id),
+        tool_id="calendar-reader",
+        calendar_id=holiday_cal_id,
+    )
+
+    assert "items" in result
+    assert len(result["items"]) == 1
+
+    method, path, kwargs = client.calls[0]
+    assert method == "get"
+    assert path == "/oauth-broker/proxy/google/calendar/events"
+    assert kwargs["params"]["calendar_id"] == holiday_cal_id

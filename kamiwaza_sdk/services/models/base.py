@@ -1,4 +1,4 @@
-from typing import List, Union
+from typing import List, Optional, Union
 from uuid import UUID
 from ...schemas.models.model import Model, CreateModel
 from ...schemas.guide import ModelGuide
@@ -110,7 +110,7 @@ class ModelService(BaseService,
         response = self.client._request("GET", "/models/", params={"load_files": load_files})
         return [Model.model_validate(item) for item in response]
 
-    def get_model_by_repo_id(self, repo_id: str) -> Model:
+    def get_model_by_repo_id(self, repo_id: str) -> Optional[Model]:
         """
         Retrieve a model by its repo_modelId by searching through the models list.
         
@@ -124,7 +124,7 @@ class ModelService(BaseService,
         for model in models:
             if model.repo_modelId == repo_id:
                 return model
-        return None  # type: ignore[return-value]
+        return None
 
     def auto_selector(self) -> ModelAutoSelector:
         """Return a helper that can recommend models/variants based on guide data."""
