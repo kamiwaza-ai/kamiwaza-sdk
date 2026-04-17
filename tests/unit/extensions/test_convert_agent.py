@@ -39,6 +39,8 @@ class TestBuildPrompt:
         prompt = build_prompt(result)
         assert "index.html" in prompt
         assert "static-html" in prompt
+        assert "non-root" in prompt.lower()
+        assert "8080" in prompt
 
 
 class TestParseResponse:
@@ -247,8 +249,13 @@ class TestRunAgent:
                     {
                         "path": "Dockerfile",
                         "action": "create",
-                        "content": "FROM nginx:alpine\nCOPY index.html /usr/share/nginx/html/index.html\nRUN printf 'ok' > /usr/share/nginx/html/health\nEXPOSE 8080\n",
-                        "description": "Serve the static site",
+                        "content": (
+                            "FROM nginx:alpine\n"
+                            "COPY index.html /usr/share/nginx/html/index.html\n"
+                            "RUN printf 'ok' > /usr/share/nginx/html/health\n"
+                            "EXPOSE 80\n"
+                        ),
+                        "description": "Initial rootful nginx wrapper",
                     },
                     {
                         "path": "docker-compose.yml",
@@ -258,9 +265,14 @@ class TestRunAgent:
                             "  web:\n"
                             "    build: .\n"
                             "    ports:\n"
-                            "      - \"8080:8080\"\n"
+                            "      - \"8080:80\"\n"
+                            "    deploy:\n"
+                            "      resources:\n"
+                            "        limits:\n"
+                            "          cpus: \"1.0\"\n"
+                            "          memory: \"1G\"\n"
                         ),
-                        "description": "Initial compose without limits to trigger repair",
+                        "description": "Initial compose that should fail platform validation",
                     },
                 ],
                 "manual_items": [],
@@ -272,13 +284,37 @@ class TestRunAgent:
                         "path": "Dockerfile",
                         "action": "create",
                         "content": (
-                            "FROM nginx:alpine\n"
+                            "FROM nginxinc/nginx-unprivileged:stable-alpine\n"
                             "COPY index.html /usr/share/nginx/html/index.html\n"
-                            "RUN printf 'ok' > /usr/share/nginx/html/health\n"
-                            "RUN sed -i 's/listen       80;/listen       8080;/' /etc/nginx/conf.d/default.conf\n"
+                            "COPY nginx.conf /etc/nginx/conf.d/default.conf\n"
                             "EXPOSE 8080\n"
                         ),
-                        "description": "Serve the static site on port 8080",
+                        "description": "Serve the static site with a non-root nginx runtime",
+                    },
+                    {
+                        "path": "nginx.conf",
+                        "action": "create",
+                        "content": (
+                            "server {\n"
+                            "    listen 8080;\n"
+                            "    server_name localhost;\n"
+                            "    root /usr/share/nginx/html;\n"
+                            "    index index.html;\n"
+                            "    location = /health {\n"
+                            "        access_log off;\n"
+                            "        return 200 'ok';\n"
+                            "    }\n"
+                            "    location / {\n"
+                            "        try_files $uri $uri/ /index.html;\n"
+                            "    }\n"
+                            "    client_body_temp_path /tmp/client_temp;\n"
+                            "    proxy_temp_path /tmp/proxy_temp;\n"
+                            "    fastcgi_temp_path /tmp/fastcgi_temp;\n"
+                            "    uwsgi_temp_path /tmp/uwsgi_temp;\n"
+                            "    scgi_temp_path /tmp/scgi_temp;\n"
+                            "}\n"
+                        ),
+                        "description": "Configure nginx for port 8080 and writable temp paths",
                     },
                     {
                         "path": "docker-compose.yml",
@@ -314,8 +350,11 @@ class TestRunAgent:
         assert (tmp_path / "kamiwaza.json").exists()
         assert (tmp_path / "docker-compose.yml").exists()
         assert (tmp_path / "Dockerfile").exists()
+        assert (tmp_path / "nginx.conf").exists()
         assert (tmp_path / "CONVERT_NOTES.md").exists()
         assert "limits" in (tmp_path / "docker-compose.yml").read_text()
+        assert "nginxinc/nginx-unprivileged" in (tmp_path / "Dockerfile").read_text()
+        assert "listen 8080;" in (tmp_path / "nginx.conf").read_text()
 
     def test_failed_validation_returns_errors_without_writing(self, monkeypatch, tmp_path):
         from kamiwaza_extensions.app_analyzer import AnalysisResult

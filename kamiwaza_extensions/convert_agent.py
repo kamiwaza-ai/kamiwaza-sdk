@@ -116,9 +116,13 @@ Description: {analysis.description or 'No description'}
 - If the repo is not containerized, generate the thinnest viable containerization and docker-compose setup.
 - Always target a valid repo with `kamiwaza.json`, a compose file, resource limits, and `CONVERT_NOTES.md`.
 - Use `type=app` unless there is strong evidence the repo is an MCP/tool or generic background service.
+- Kamiwaza deploys extension containers as non-root and expects compatibility with a read-only root filesystem.
+- Primary HTTP services should listen on an unprivileged in-container port; prefer `8080` unless the repo clearly requires something else.
+- Static/web-server wrappers must use writable runtime paths under `/tmp` when the server needs temp, cache, or pid files.
 - Python backend runtime library: `kamiwaza-extensions-lib` is appropriate when there is an actual Python application backend.
 - TypeScript runtime library: `@kamiwaza-ai/extensions-lib` is appropriate for real Node/Next frontends.
 - Pure static HTML/CSS/JS sites do not need Kamiwaza runtime libraries; they do need a container, compose, resource limits, and a healthable HTTP path.
+- If the detected runtime is a poor fit for these constraints, a minimal runtime swap is allowed if it preserves app behavior better than patching a broken root-only setup.
 - Keep user source intact. Prefer additive wrappers/config over rewrites.
 
 Return ONLY JSON with this shape:
@@ -207,10 +211,14 @@ Detected conversion mode: {analysis.conversion_mode}
 - Create or update a compose file so `kz-ext validate` will not fail and `kz-ext dev local` has a clear path.
 - Ensure each compose service defines `deploy.resources.limits`.
 - Ensure the primary HTTP service has a healthable HTTP path at `/health`.
+- Generated services must be compatible with Kamiwaza's non-root, read-only-root-filesystem runtime contract.
+- Prefer an unprivileged in-container HTTP port such as `8080`.
+- For nginx/static web servers, configure writable temp/pid paths under `/tmp` when needed.
 - Generate `CONVERT_NOTES.md` summarizing what changed and any remaining manual follow-ups.
 - Only add Kamiwaza runtime libraries when they fit the actual stack.
 - Avoid deleting user source files unless a generated wrapper/config file supersedes them.
 - Keep the output small and practical: wrappers/config/dockerization are fine; full framework rewrites are not.
+- Safe minimal runtime swaps are allowed when they materially improve deploy success on Kamiwaza.
 
 Return ONLY JSON with this shape:
 ```json
@@ -674,6 +682,7 @@ def _build_convert_notes(plan: ConversionPlan, strategy: ConversionStrategy) -> 
 def _validate_plan_in_staging(plan: ConversionPlan, app_dir: Path) -> ValidationSummary:
     from kamiwaza_extensions.validators.compose import ComposeValidator
     from kamiwaza_extensions.validators.metadata import MetadataValidator
+    from kamiwaza_extensions.validators.platform_runtime import PlatformRuntimeValidator
 
     with tempfile.TemporaryDirectory(prefix="kz-ext-convert-") as tmp_dir:
         staged_root = Path(tmp_dir) / app_dir.name
@@ -706,6 +715,10 @@ def _validate_plan_in_staging(plan: ConversionPlan, app_dir: Path) -> Validation
             for warning in compose_result.warnings:
                 if "no resource limits defined" in warning.lower():
                     errors.append(f"Blocking conversion warning: {warning}")
+            if compose_result.passed:
+                runtime_result = PlatformRuntimeValidator().validate(compose_path, staged_root)
+                errors.extend(runtime_result.errors)
+                warnings.extend(runtime_result.warnings)
 
         if not (staged_root / "CONVERT_NOTES.md").exists():
             errors.append("CONVERT_NOTES.md was not generated.")

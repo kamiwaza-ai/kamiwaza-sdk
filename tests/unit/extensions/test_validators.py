@@ -6,6 +6,7 @@ import pytest
 
 from kamiwaza_extensions.validators.metadata import MetadataValidator
 from kamiwaza_extensions.validators.compose import ComposeValidator
+from kamiwaza_extensions.validators.platform_runtime import PlatformRuntimeValidator
 
 
 def _valid_metadata() -> dict:
@@ -238,3 +239,84 @@ class TestComposeValidator:
         result = validator.validate(f, tmp_path)
         # yaml.safe_load might not error on all bad yaml; check it doesn't crash
         assert isinstance(result, ComposeValidator.__init__.__class__) or True
+
+
+@pytest.mark.unit
+class TestPlatformRuntimeValidator:
+    @pytest.fixture
+    def validator(self):
+        return PlatformRuntimeValidator()
+
+    def _write_compose(self, path, data):
+        import yaml
+
+        path.write_text(yaml.dump(data))
+
+    def test_flags_privileged_port_and_rootful_nginx(self, tmp_path, validator):
+        compose = {
+            "services": {
+                "web": {
+                    "build": ".",
+                    "ports": ["8080:80"],
+                },
+            },
+        }
+        (tmp_path / "Dockerfile").write_text(
+            "FROM nginx:alpine\nCOPY index.html /usr/share/nginx/html/index.html\nEXPOSE 80\n"
+        )
+        f = tmp_path / "docker-compose.yml"
+        self._write_compose(f, compose)
+
+        result = validator.validate(f, tmp_path)
+
+        assert not result.passed
+        assert any("container port 80 is privileged" in err for err in result.errors)
+        assert any("does not switch to a non-root user" in err for err in result.errors)
+
+    def test_flags_nginx_without_tmp_runtime_paths(self, tmp_path, validator):
+        compose = {
+            "services": {
+                "web": {
+                    "build": ".",
+                    "ports": ["8080:8080"],
+                },
+            },
+        }
+        (tmp_path / "Dockerfile").write_text(
+            "FROM nginx:alpine\nUSER 1001\nCOPY index.html /usr/share/nginx/html/index.html\nEXPOSE 8080\n"
+        )
+        f = tmp_path / "docker-compose.yml"
+        self._write_compose(f, compose)
+
+        result = validator.validate(f, tmp_path)
+
+        assert not result.passed
+        assert any("/tmp paths" in err for err in result.errors)
+
+    def test_allows_unprivileged_nginx_with_tmp_runtime_paths(self, tmp_path, validator):
+        compose = {
+            "services": {
+                "web": {
+                    "build": ".",
+                    "ports": ["8080:8080"],
+                },
+            },
+        }
+        (tmp_path / "Dockerfile").write_text(
+            "FROM nginxinc/nginx-unprivileged:stable-alpine\n"
+            "COPY nginx.conf /etc/nginx/conf.d/default.conf\n"
+            "EXPOSE 8080\n"
+        )
+        (tmp_path / "nginx.conf").write_text(
+            "server {\n"
+            "    listen 8080;\n"
+            "    client_body_temp_path /tmp/client_temp;\n"
+            "}\n"
+        )
+        f = tmp_path / "docker-compose.yml"
+        self._write_compose(f, compose)
+
+        result = validator.validate(f, tmp_path)
+
+        assert result.passed
+        assert result.errors == []

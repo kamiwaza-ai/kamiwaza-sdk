@@ -16,6 +16,7 @@ def run_validate(*, path: Optional[str], json_output: bool) -> None:
     """Validate extension metadata and compose files."""
     from kamiwaza_extensions.validators.metadata import MetadataValidator
     from kamiwaza_extensions.validators.compose import ComposeValidator
+    from kamiwaza_extensions.validators.platform_runtime import PlatformRuntimeValidator
 
     ext_dir = Path(path) if path else Path.cwd()
 
@@ -33,10 +34,14 @@ def run_validate(*, path: Optional[str], json_output: bool) -> None:
 
     # Run compose validation
     compose_validator = ComposeValidator()
+    runtime_validator = PlatformRuntimeValidator()
     compose_file = _find_compose_file(ext_dir)
     compose_result = None
+    runtime_result = None
     if compose_file:
         compose_result = compose_validator.validate(compose_file, ext_dir)
+        if compose_result.passed:
+            runtime_result = runtime_validator.validate(compose_file, ext_dir)
     else:
         meta_result.warnings.append("No docker-compose file found — kz-ext dev local will not work")
 
@@ -46,6 +51,9 @@ def run_validate(*, path: Optional[str], json_output: bool) -> None:
     if compose_result:
         all_errors.extend(compose_result.errors)
         all_warnings.extend(compose_result.warnings)
+    if runtime_result:
+        all_errors.extend(runtime_result.errors)
+        all_warnings.extend(runtime_result.warnings)
 
     passed = len(all_errors) == 0
 

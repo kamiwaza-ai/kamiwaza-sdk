@@ -166,7 +166,7 @@ kz-ext publish --stage prod
 |---------|-------------|
 | `kz-ext login [url]` | Authenticate with a Kamiwaza instance (default: `https://kamiwaza.test/api`). Supports `--api-key`, `--name`, `--list`, `--use`, `--no-verify-ssl`. |
 | `kz-ext create --type <type> --name <name>` | Scaffold a new extension in the current (empty) directory. Types: `app` (Next.js + FastAPI), `tool` (FastMCP), `service` (minimal). |
-| `kz-ext validate [path]` | Validate `kamiwaza.json` and `docker-compose.yml`. Use `--json` for machine-readable output. |
+| `kz-ext validate [path]` | Validate `kamiwaza.json`, `docker-compose.yml`, and clear platform-runtime incompatibilities such as privileged ports or root-only web containers. Use `--json` for machine-readable output. |
 | `kz-ext dev local` | Run the extension locally via Docker Compose with Kamiwaza env vars injected. Auto-detects port conflicts and remaps to available ports. Supports `--sdk-repo`, `--detach`. |
 | `kz-ext dev` | Build, push, and deploy to a Kamiwaza cluster. Uses zero-downtime PATCH updates for existing extensions. Supports `--no-build`, `--no-push`, `--service`, `--revision`, `--sdk-repo`. |
 | `kz-ext status` | Show deployment status: phase, per-service readiness, URL, and recent K8s events. Supports `--name`. |
@@ -207,7 +207,7 @@ Publish profiles support multiple environments (dev/staging/prod) and CI via env
 kz-ext convert /path/to/existing-app
 ```
 
-Uses an AI agent to analyze existing Dockerfiles, compose files, and source code, then generates `kamiwaza.json` and wires in SDK integration (health endpoints, auth middleware, runtime libraries). All changes are git-tracked — review with `git diff`.
+Uses an AI agent to analyze existing Dockerfiles, compose files, and source code, then generates `kamiwaza.json` and wires in SDK integration (health endpoints, auth middleware, runtime libraries). The conversion flow now validates generated output against the Kamiwaza runtime contract as well, including non-root execution, unprivileged HTTP ports, and read-only-root-filesystem-friendly web wrappers. All changes are git-tracked — review with `git diff`.
 
 Optionally uses `OPENAI_API_KEY` (or `ANTHROPIC_API_KEY`) for AI-powered conversion. Falls back to basic `kamiwaza.json` generation without an API key. Set `OPENAI_BASE_URL` to use any OpenAI-compatible provider (Kamiwaza, vLLM, Ollama, etc.). Set `KZ_PUBLISH_DOCKER_TOKEN` or `DOCKER_TOKEN` for registry auth during publish.
 
