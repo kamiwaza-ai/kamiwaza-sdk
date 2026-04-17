@@ -1,7 +1,6 @@
 """Unit tests for AppAnalyzer."""
 
 import json
-import textwrap
 
 import pytest
 import yaml
@@ -158,6 +157,88 @@ class TestAnalyze:
         result = AppAnalyzer().analyze(tmp_path)
         assert result.compose_path is None
         assert result.compose_data is None
+
+    def test_collects_html_context_for_generic_repo(self, tmp_path):
+        from kamiwaza_extensions.app_analyzer import AppAnalyzer
+
+        (tmp_path / "index.html").write_text("<html><body>Hello</body></html>")
+        (tmp_path / "styles.css").write_text("body { color: red; }")
+
+        result = AppAnalyzer().analyze(tmp_path)
+
+        assert result.conversion_mode == "generic"
+        assert "index.html" in result.file_contents
+        assert "static-html" in result.runtime_hints
+        assert "index.html" in result.candidate_entrypoints
+
+    def test_collects_root_package_json_for_generic_repo(self, tmp_path):
+        from kamiwaza_extensions.app_analyzer import AppAnalyzer
+
+        pkg = {"name": "demo", "scripts": {"start": "vite"}}
+        (tmp_path / "package.json").write_text(json.dumps(pkg))
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "main.ts").write_text("console.log('hi');")
+
+        result = AppAnalyzer().analyze(tmp_path)
+
+        assert result.conversion_mode == "generic"
+        assert "package.json" in result.file_contents
+        assert "package.json" in result.detected_manifests
+        assert "node-package" in result.runtime_hints
+
+    def test_excludes_common_secret_bearing_files_from_context(self, tmp_path):
+        from kamiwaza_extensions.app_analyzer import AppAnalyzer
+
+        (tmp_path / "index.html").write_text("<html><body>Hello</body></html>")
+        (tmp_path / ".env").write_text("API_KEY=secret\n")
+        (tmp_path / ".envrc").write_text("export API_KEY=secret\n")
+        (tmp_path / "credentials.json").write_text("{\"token\": \"secret\"}\n")
+
+        result = AppAnalyzer().analyze(tmp_path)
+
+        assert "index.html" in result.file_contents
+        assert ".env" not in result.file_contents
+        assert ".envrc" not in result.file_contents
+        assert "credentials.json" not in result.file_contents
+
+    def test_excludes_common_secret_bearing_files_from_repo_inventory(self, tmp_path):
+        from kamiwaza_extensions.app_analyzer import AppAnalyzer
+
+        (tmp_path / "index.html").write_text("<html><body>Hello</body></html>")
+        (tmp_path / ".env").write_text("API_KEY=secret\n")
+        (tmp_path / ".envrc").write_text("export API_KEY=secret\n")
+        (tmp_path / "credentials.json").write_text("{\"token\": \"secret\"}\n")
+        (tmp_path / "id_rsa").write_text("private-key\n")
+
+        result = AppAnalyzer().analyze(tmp_path)
+
+        assert "index.html" in result.repo_tree
+        assert ".env" not in result.repo_tree
+        assert ".envrc" not in result.repo_tree
+        assert "credentials.json" not in result.repo_tree
+        assert "id_rsa" not in result.repo_tree
+
+    def test_keeps_legit_source_with_secret_like_names(self, tmp_path):
+        from kamiwaza_extensions.app_analyzer import AppAnalyzer
+
+        (tmp_path / "secret_manager.py").write_text("def load_secret(): pass\n")
+        (tmp_path / "credential_store.py").write_text("def load_credentials(): pass\n")
+        (tmp_path / "secrets_test.py").write_text("def test_secret(): pass\n")
+
+        result = AppAnalyzer().analyze(tmp_path)
+
+        assert "secret_manager.py" in result.file_contents
+        assert "credential_store.py" in result.file_contents
+        assert "secrets_test.py" in result.file_contents
+
+    def test_detects_additional_language_manifests(self, tmp_path):
+        from kamiwaza_extensions.app_analyzer import AppAnalyzer
+
+        (tmp_path / "go.mod").write_text("module demo\n")
+
+        result = AppAnalyzer().analyze(tmp_path)
+
+        assert "go.mod" in result.detected_manifests
 
 
 class TestGenerateKamiwazaJson:

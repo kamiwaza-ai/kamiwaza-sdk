@@ -49,7 +49,7 @@ def _detect_kind_registry() -> Optional[str]:
 
 
 
-def _delete_and_recreate(client, dev_name, payload, console) -> "Extension":
+def _delete_and_recreate(client, dev_name, payload, console):
     """Legacy fallback: delete the old extension and re-create it.
 
     Used when the platform does not support PATCH.
@@ -225,7 +225,9 @@ def run_dev_remote(
                         )
 
                 print_override_diagnostics(override_spec)
-                build_overrides = generate_build_overrides(override_spec, info.compose_data)
+                build_overrides = generate_build_overrides(
+                    override_spec, info.compose_data, extension_dir=info.path,
+                )
         console.print()
 
     # 6. Build images
@@ -373,10 +375,10 @@ def run_dev_remote(
 
         # 11. Print URL
         url = ext.endpoints.external if ext.endpoints else None
-        console.print(f"\n  [green]\u2713[/green] Rollout complete")
+        console.print("\n  [green]\u2713[/green] Rollout complete")
         console.print()
         console.print(f"[bold]{info.name}[/bold] is running at:")
         if url:
             console.print(f"  [blue]{url}[/blue]")
         else:
-            console.print(f"  [dim](no external URL reported — check kz-ext status)[/dim]")
+            console.print("  [dim](no external URL reported — check kz-ext status)[/dim]")

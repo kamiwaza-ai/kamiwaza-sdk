@@ -4,11 +4,18 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import List
 
 import yaml
 
 from kamiwaza_extensions.validators.result import ValidationResult
+
+MISSING_RESOURCE_LIMITS_TEXT = "no resource limits defined"
+
+
+def is_missing_resource_limits_warning(message: str) -> bool:
+    """Return True when *message* is the compose missing-limits warning."""
+    return MISSING_RESOURCE_LIMITS_TEXT in message.lower()
 
 
 class ComposeValidator:
@@ -57,9 +64,9 @@ class ComposeValidator:
             if isinstance(deploy, dict):
                 resources = deploy.get("resources", {})
                 if not resources or not isinstance(resources, dict) or not resources.get("limits"):
-                    warnings.append(f"Service '{svc_name}': no resource limits defined")
+                    warnings.append(f"Service '{svc_name}': {MISSING_RESOURCE_LIMITS_TEXT}")
             else:
-                warnings.append(f"Service '{svc_name}': no resource limits defined")
+                warnings.append(f"Service '{svc_name}': {MISSING_RESOURCE_LIMITS_TEXT}")
 
             # Explicit container_name
             if "container_name" in svc_config:

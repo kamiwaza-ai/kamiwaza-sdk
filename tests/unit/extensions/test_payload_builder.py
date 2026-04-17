@@ -171,6 +171,45 @@ class TestHealthChecks:
         health_check = frontend.model_dump()["healthCheck"]
         assert health_check["exec"]["command"][0] == "node"
 
+    def test_generic_frontend_without_node_hints_uses_root_http_probe(
+        self, builder, metadata, connection
+    ):
+        transformed = {
+            "services": {
+                "frontend": {
+                    "image": "registry.test/my-app-frontend:1.0.0-dev",
+                    "ports": ["8080"],
+                },
+            },
+        }
+
+        payload = builder.build(metadata, transformed, connection, "test")
+        frontend = payload.services[0]
+
+        health_check = frontend.model_dump()["healthCheck"]
+        assert frontend.primary is True
+        assert health_check["httpGet"] == {"path": "/", "port": 8080}
+        assert "exec" not in health_check
+
+    def test_frontend_port_3000_without_explicit_hints_uses_node_probe(
+        self, builder, metadata, connection
+    ):
+        transformed = {
+            "services": {
+                "frontend": {
+                    "image": "registry.test/my-app-frontend:1.0.0-dev",
+                    "ports": ["3000"],
+                },
+            },
+        }
+
+        payload = builder.build(metadata, transformed, connection, "test")
+        frontend = payload.services[0]
+
+        health_check = frontend.model_dump()["healthCheck"]
+        assert frontend.primary is True
+        assert health_check["exec"]["command"][0] == "node"
+
     def test_non_frontend_primary_uses_http_probe(self, builder, metadata, connection):
         transformed = {
             "services": {

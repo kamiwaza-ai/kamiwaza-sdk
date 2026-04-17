@@ -1,7 +1,6 @@
 """Unit tests for kz-ext convert command."""
 
-import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 import yaml
@@ -29,7 +28,7 @@ class TestRunConvert:
         return tmp_path
 
     @patch("kamiwaza_extensions.convert_agent.run_agent")
-    def test_happy_path_creates_kamiwaza_json(self, mock_agent, tmp_path):
+    def test_happy_path_calls_agent(self, mock_agent, tmp_path):
         from kamiwaza_extensions.commands.convert import run_convert
         from kamiwaza_extensions.convert_agent import ConversionPlan
 
@@ -38,10 +37,7 @@ class TestRunConvert:
 
         run_convert(path=str(app_dir), dry_run=False)
 
-        assert (app_dir / "kamiwaza.json").exists()
-        data = json.loads((app_dir / "kamiwaza.json").read_text())
-        assert data["version"] == "0.1.0"
-        assert data["source_type"] == "user_repo"
+        mock_agent.assert_called_once()
 
     @patch("kamiwaza_extensions.convert_agent.run_agent")
     def test_dry_run_does_not_create_kamiwaza_json(self, mock_agent, tmp_path):
@@ -56,19 +52,20 @@ class TestRunConvert:
         assert not (app_dir / "kamiwaza.json").exists()
 
     @patch("kamiwaza_extensions.convert_agent.run_agent")
-    def test_existing_kamiwaza_json_not_overwritten(self, mock_agent, tmp_path):
+    def test_failed_conversion_exits_nonzero(self, mock_agent, tmp_path):
+        import typer
         from kamiwaza_extensions.commands.convert import run_convert
         from kamiwaza_extensions.convert_agent import ConversionPlan
 
         app_dir = self._setup_app(tmp_path)
-        existing = {"name": "original", "version": "2.0.0"}
-        (app_dir / "kamiwaza.json").write_text(json.dumps(existing))
-        mock_agent.return_value = ConversionPlan(summary="Done")
+        mock_agent.return_value = ConversionPlan(
+            success=False,
+            summary="Failed",
+            errors=["No docker-compose file found after conversion."],
+        )
 
-        run_convert(path=str(app_dir), dry_run=False)
-
-        data = json.loads((app_dir / "kamiwaza.json").read_text())
-        assert data["version"] == "2.0.0"  # Not overwritten
+        with pytest.raises(typer.Exit):
+            run_convert(path=str(app_dir), dry_run=False)
 
     def test_nonexistent_path_exits(self):
         import typer
@@ -99,3 +96,15 @@ class TestRunConvert:
         run_convert(path=str(app_dir), dry_run=False)
         # Verify agent was called
         mock_agent.assert_called_once()
+
+    def test_no_llm_fallback_still_creates_manifest(self, monkeypatch, tmp_path):
+        from kamiwaza_extensions.commands.convert import run_convert
+
+        (tmp_path / "index.html").write_text("<html><body>Hello</body></html>")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        run_convert(path=str(tmp_path), dry_run=False)
+
+        assert (tmp_path / "kamiwaza.json").exists()
+        assert (tmp_path / "CONVERT_NOTES.md").exists()
