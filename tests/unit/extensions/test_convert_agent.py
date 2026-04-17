@@ -1,6 +1,7 @@
 """Unit tests for the convert agent."""
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -11,7 +12,6 @@ class TestBuildPrompt:
     def test_includes_app_name(self):
         from kamiwaza_extensions.app_analyzer import AnalysisResult, ServiceInfo
         from kamiwaza_extensions.convert_agent import build_prompt
-        from pathlib import Path
 
         result = AnalysisResult(
             app_dir=Path("/tmp/myapp"),
@@ -25,20 +25,20 @@ class TestBuildPrompt:
         assert "python" in prompt
         assert "kamiwaza-extensions-lib" in prompt
 
-    def test_includes_compatibility_issues(self):
+    def test_includes_repo_inventory_hints(self):
         from kamiwaza_extensions.app_analyzer import AnalysisResult
         from kamiwaza_extensions.convert_agent import build_prompt
-        from pathlib import Path
 
         result = AnalysisResult(
             app_dir=Path("/tmp/myapp"),
             app_name="myapp",
-            has_host_ports=["backend: 8000:8000"],
-            missing_resource_limits=["backend"],
+            repo_tree=["index.html", "assets/", "package.json"],
+            candidate_entrypoints=["index.html"],
+            runtime_hints=["static-html", "node-package"],
         )
         prompt = build_prompt(result)
-        assert "8000:8000" in prompt
-        assert "Missing resource limits" in prompt
+        assert "index.html" in prompt
+        assert "static-html" in prompt
 
 
 class TestParseResponse:
@@ -63,6 +63,7 @@ class TestParseResponse:
         assert plan.modifications[0].action == "modify"
         assert len(plan.manual_items) == 1
         assert plan.summary == "Added SDK integration"
+        assert plan.success is True
 
     def test_parse_json_in_code_block(self):
         from kamiwaza_extensions.convert_agent import parse_response
@@ -70,18 +71,20 @@ class TestParseResponse:
         response = '```json\n{"modifications": [], "manual_items": [], "summary": "ok"}\n```'
         plan = parse_response(response)
         assert plan.summary == "ok"
+        assert plan.success is True
 
     def test_parse_invalid_json(self):
         from kamiwaza_extensions.convert_agent import parse_response
 
         plan = parse_response("this is not json")
+        assert plan.success is False
         assert len(plan.manual_items) > 0
         assert "could not be parsed" in plan.summary.lower() or "could not be parsed" in plan.manual_items[0].lower()
 
 
 class TestApplyPlan:
     def test_create_file(self, tmp_path):
-        from kamiwaza_extensions.convert_agent import apply_plan, ConversionPlan, FileModification
+        from kamiwaza_extensions.convert_agent import ConversionPlan, FileModification, apply_plan
 
         plan = ConversionPlan(
             modifications=[
@@ -99,7 +102,7 @@ class TestApplyPlan:
         assert json.loads((tmp_path / "kamiwaza.json").read_text()) == {"name": "test"}
 
     def test_modify_file(self, tmp_path):
-        from kamiwaza_extensions.convert_agent import apply_plan, ConversionPlan, FileModification
+        from kamiwaza_extensions.convert_agent import ConversionPlan, FileModification, apply_plan
 
         (tmp_path / "requirements.txt").write_text("fastapi\n")
         plan = ConversionPlan(
@@ -116,7 +119,7 @@ class TestApplyPlan:
         assert "kamiwaza-extensions-lib" in (tmp_path / "requirements.txt").read_text()
 
     def test_append_to_file(self, tmp_path):
-        from kamiwaza_extensions.convert_agent import apply_plan, ConversionPlan, FileModification
+        from kamiwaza_extensions.convert_agent import ConversionPlan, FileModification, apply_plan
 
         (tmp_path / "main.py").write_text("# existing\n")
         plan = ConversionPlan(
@@ -128,13 +131,13 @@ class TestApplyPlan:
                 )
             ]
         )
-        applied = apply_plan(plan, tmp_path)
+        apply_plan(plan, tmp_path)
         content = (tmp_path / "main.py").read_text()
         assert "existing" in content
         assert "new stuff" in content
 
     def test_dry_run_does_not_write(self, tmp_path):
-        from kamiwaza_extensions.convert_agent import apply_plan, ConversionPlan, FileModification
+        from kamiwaza_extensions.convert_agent import ConversionPlan, FileModification, apply_plan
 
         plan = ConversionPlan(
             modifications=[
@@ -147,7 +150,7 @@ class TestApplyPlan:
         assert not (tmp_path / "new_file.py").exists()
 
     def test_creates_parent_dirs(self, tmp_path):
-        from kamiwaza_extensions.convert_agent import apply_plan, ConversionPlan, FileModification
+        from kamiwaza_extensions.convert_agent import ConversionPlan, FileModification, apply_plan
 
         plan = ConversionPlan(
             modifications=[
@@ -158,7 +161,7 @@ class TestApplyPlan:
         assert (tmp_path / "deep" / "nested" / "file.py").exists()
 
     def test_skips_empty_content(self, tmp_path):
-        from kamiwaza_extensions.convert_agent import apply_plan, ConversionPlan, FileModification
+        from kamiwaza_extensions.convert_agent import ConversionPlan, FileModification, apply_plan
 
         plan = ConversionPlan(
             modifications=[FileModification(path="", action="create", content="")]
@@ -167,8 +170,7 @@ class TestApplyPlan:
         assert len(applied) == 0
 
     def test_rejects_path_traversal(self, tmp_path):
-        """Paths that escape app_dir via '..' must be rejected."""
-        from kamiwaza_extensions.convert_agent import apply_plan, ConversionPlan, FileModification
+        from kamiwaza_extensions.convert_agent import ConversionPlan, FileModification, apply_plan
 
         plan = ConversionPlan(
             modifications=[
@@ -184,8 +186,7 @@ class TestApplyPlan:
         assert not (tmp_path.parent / "etc" / "evil.conf").exists()
 
     def test_rejects_absolute_path(self, tmp_path):
-        """Absolute paths must be rejected."""
-        from kamiwaza_extensions.convert_agent import apply_plan, ConversionPlan, FileModification
+        from kamiwaza_extensions.convert_agent import ConversionPlan, FileModification, apply_plan
 
         plan = ConversionPlan(
             modifications=[
@@ -202,18 +203,167 @@ class TestApplyPlan:
 
 class TestRunAgent:
     def test_fallback_without_llm(self, monkeypatch):
-        """When anthropic is not available, returns fallback plan."""
         from kamiwaza_extensions.app_analyzer import AnalysisResult
         from kamiwaza_extensions.convert_agent import run_agent
-        from pathlib import Path
 
-        # Ensure no API key
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
         result = AnalysisResult(
             app_dir=Path("/tmp/test"),
             app_name="test",
         )
         plan = run_agent(result)
-        assert "unavailable" in plan.summary.lower() or "basic" in plan.summary.lower()
+        assert plan.success is False
+        assert "unavailable" in plan.summary.lower()
         assert len(plan.manual_items) > 0
+
+    def test_validation_repair_loop_applies_fixed_plan(self, monkeypatch, tmp_path):
+        from kamiwaza_extensions.app_analyzer import AnalysisResult
+        from kamiwaza_extensions.convert_agent import run_agent
+
+        (tmp_path / "index.html").write_text("<html><body>Hello</body></html>")
+        analysis = AnalysisResult(
+            app_dir=tmp_path,
+            app_name="demo",
+            extension_type="app",
+            conversion_mode="generic",
+            file_contents={"index.html": "<html><body>Hello</body></html>"},
+            candidate_entrypoints=["index.html"],
+            runtime_hints=["static-html"],
+        )
+
+        responses = iter([
+            json.dumps({
+                "extension_type": "app",
+                "conversion_mode": "add_minimal_wrapper",
+                "primary_service": "web",
+                "required_files": ["Dockerfile", "docker-compose.yml", "kamiwaza.json", "CONVERT_NOTES.md"],
+                "runtime_summary": "Static HTML site served by nginx",
+                "manual_items": [],
+            }),
+            json.dumps({
+                "modifications": [
+                    {
+                        "path": "Dockerfile",
+                        "action": "create",
+                        "content": "FROM nginx:alpine\nCOPY index.html /usr/share/nginx/html/index.html\nRUN printf 'ok' > /usr/share/nginx/html/health\nEXPOSE 8080\n",
+                        "description": "Serve the static site",
+                    },
+                    {
+                        "path": "docker-compose.yml",
+                        "action": "create",
+                        "content": (
+                            "services:\n"
+                            "  web:\n"
+                            "    build: .\n"
+                            "    ports:\n"
+                            "      - \"8080:8080\"\n"
+                        ),
+                        "description": "Initial compose without limits to trigger repair",
+                    },
+                ],
+                "manual_items": [],
+                "summary": "Created initial static-site conversion",
+            }),
+            json.dumps({
+                "modifications": [
+                    {
+                        "path": "Dockerfile",
+                        "action": "create",
+                        "content": (
+                            "FROM nginx:alpine\n"
+                            "COPY index.html /usr/share/nginx/html/index.html\n"
+                            "RUN printf 'ok' > /usr/share/nginx/html/health\n"
+                            "RUN sed -i 's/listen       80;/listen       8080;/' /etc/nginx/conf.d/default.conf\n"
+                            "EXPOSE 8080\n"
+                        ),
+                        "description": "Serve the static site on port 8080",
+                    },
+                    {
+                        "path": "docker-compose.yml",
+                        "action": "create",
+                        "content": (
+                            "services:\n"
+                            "  web:\n"
+                            "    build: .\n"
+                            "    ports:\n"
+                            "      - \"8080:8080\"\n"
+                            "    deploy:\n"
+                            "      resources:\n"
+                            "        limits:\n"
+                            "          cpus: \"1.0\"\n"
+                            "          memory: \"1G\"\n"
+                        ),
+                        "description": "Compose with resource limits",
+                    },
+                ],
+                "manual_items": [],
+                "summary": "Created validated static-site conversion",
+            }),
+        ])
+
+        monkeypatch.setattr(
+            "kamiwaza_extensions.convert_agent.call_llm",
+            lambda prompt: next(responses, None),
+        )
+
+        plan = run_agent(analysis, dry_run=False)
+
+        assert plan.success is True
+        assert (tmp_path / "kamiwaza.json").exists()
+        assert (tmp_path / "docker-compose.yml").exists()
+        assert (tmp_path / "Dockerfile").exists()
+        assert (tmp_path / "CONVERT_NOTES.md").exists()
+        assert "limits" in (tmp_path / "docker-compose.yml").read_text()
+
+    def test_failed_validation_returns_errors_without_writing(self, monkeypatch, tmp_path):
+        from kamiwaza_extensions.app_analyzer import AnalysisResult
+        from kamiwaza_extensions.convert_agent import run_agent
+
+        (tmp_path / "index.html").write_text("<html><body>Hello</body></html>")
+        analysis = AnalysisResult(
+            app_dir=tmp_path,
+            app_name="demo",
+            extension_type="app",
+            conversion_mode="generic",
+            file_contents={"index.html": "<html><body>Hello</body></html>"},
+        )
+
+        responses = iter([
+            json.dumps({
+                "extension_type": "app",
+                "conversion_mode": "containerize_repo_root",
+                "primary_service": "web",
+                "required_files": ["docker-compose.yml"],
+                "runtime_summary": "Static HTML site",
+                "manual_items": [],
+            }),
+            json.dumps({
+                "modifications": [],
+                "manual_items": [],
+                "summary": "No-op response",
+            }),
+            json.dumps({
+                "modifications": [],
+                "manual_items": [],
+                "summary": "No-op response",
+            }),
+            json.dumps({
+                "modifications": [],
+                "manual_items": [],
+                "summary": "No-op response",
+            }),
+        ])
+
+        monkeypatch.setattr(
+            "kamiwaza_extensions.convert_agent.call_llm",
+            lambda prompt: next(responses, None),
+        )
+
+        plan = run_agent(analysis, dry_run=False)
+
+        assert plan.success is False
+        assert plan.errors
+        assert not (tmp_path / "kamiwaza.json").exists()
+        assert not (tmp_path / "CONVERT_NOTES.md").exists()

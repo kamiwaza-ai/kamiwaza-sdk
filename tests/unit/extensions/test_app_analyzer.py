@@ -1,7 +1,6 @@
 """Unit tests for AppAnalyzer."""
 
 import json
-import textwrap
 
 import pytest
 import yaml
@@ -158,6 +157,34 @@ class TestAnalyze:
         result = AppAnalyzer().analyze(tmp_path)
         assert result.compose_path is None
         assert result.compose_data is None
+
+    def test_collects_html_context_for_generic_repo(self, tmp_path):
+        from kamiwaza_extensions.app_analyzer import AppAnalyzer
+
+        (tmp_path / "index.html").write_text("<html><body>Hello</body></html>")
+        (tmp_path / "styles.css").write_text("body { color: red; }")
+
+        result = AppAnalyzer().analyze(tmp_path)
+
+        assert result.conversion_mode == "generic"
+        assert "index.html" in result.file_contents
+        assert "static-html" in result.runtime_hints
+        assert "index.html" in result.candidate_entrypoints
+
+    def test_collects_root_package_json_for_generic_repo(self, tmp_path):
+        from kamiwaza_extensions.app_analyzer import AppAnalyzer
+
+        pkg = {"name": "demo", "scripts": {"start": "vite"}}
+        (tmp_path / "package.json").write_text(json.dumps(pkg))
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "main.ts").write_text("console.log('hi');")
+
+        result = AppAnalyzer().analyze(tmp_path)
+
+        assert result.conversion_mode == "generic"
+        assert "package.json" in result.file_contents
+        assert "package.json" in result.detected_manifests
+        assert "node-package" in result.runtime_hints
 
 
 class TestGenerateKamiwazaJson:

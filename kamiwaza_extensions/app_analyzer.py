@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import re
 from dataclasses import dataclass, field
@@ -14,6 +13,48 @@ import yaml
 from kamiwaza_extensions import __version__
 
 _SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv"}
+_MANIFEST_FILES = {
+    "package.json",
+    "requirements.txt",
+    "pyproject.toml",
+    "Pipfile",
+    "Pipfile.lock",
+    "poetry.lock",
+    "uv.lock",
+    "vite.config.js",
+    "vite.config.ts",
+    "webpack.config.js",
+    "webpack.config.ts",
+    "README.md",
+    "nginx.conf",
+    "Caddyfile",
+}
+_ENTRYPOINT_NAMES = {
+    "main.py",
+    "app.py",
+    "server.py",
+    "index.html",
+    "index.js",
+    "index.ts",
+    "main.js",
+    "main.ts",
+}
+_CONTEXT_SUFFIXES = (
+    ".py",
+    ".js",
+    ".jsx",
+    ".ts",
+    ".tsx",
+    ".html",
+    ".css",
+    ".json",
+    ".yaml",
+    ".yml",
+    ".md",
+    ".conf",
+)
+_MAX_REPO_TREE_ENTRIES = 40
+_MAX_CONTEXT_FILES = 80
 
 
 def _walk_files(root: Path, extensions: tuple[str, ...] | None = None) -> Generator[Path, None, None]:
@@ -65,12 +106,17 @@ class AnalysisResult:
 
     # File contents (for LLM context)
     file_contents: Dict[str, str] = field(default_factory=dict)
+    repo_tree: List[str] = field(default_factory=list)
+    detected_manifests: List[str] = field(default_factory=list)
+    candidate_entrypoints: List[str] = field(default_factory=list)
+    runtime_hints: List[str] = field(default_factory=list)
 
     # Description
     description: str = ""
 
     # Inferred type
     extension_type: str = "app"
+    conversion_mode: str = "structured"
 
 
 class AppAnalyzer:
@@ -94,7 +140,9 @@ class AppAnalyzer:
         self._detect_health_endpoint(result)
         self._infer_description(result)
         self._infer_type(result)
+        self._gather_repo_inventory(result)
         self._gather_file_contents(result)
+        self._infer_conversion_mode(result)
 
         return result
 
@@ -179,7 +227,9 @@ class AppAnalyzer:
             return
 
         # Fallback: find Dockerfiles in subdirectories
-        for dockerfile in sorted(_walk_files(result.app_dir, ("Dockerfile",))):
+        for dockerfile in sorted(
+            path for path in _walk_files(result.app_dir) if _is_dockerfile(path)
+        ):
             parent = dockerfile.parent
             svc_name = parent.name if parent != result.app_dir else "app"
             base_image, language = self._detect_language(dockerfile)
@@ -322,6 +372,58 @@ class AppAnalyzer:
                         pass
             result.extension_type = "app"
 
+    def _gather_repo_inventory(self, result: AnalysisResult) -> None:
+        """Collect lightweight repo structure hints for generic conversion."""
+        entries = []
+        for entry in sorted(result.app_dir.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
+            label = f"{entry.name}/" if entry.is_dir() else entry.name
+            entries.append(label)
+            if len(entries) >= _MAX_REPO_TREE_ENTRIES:
+                break
+        result.repo_tree = entries
+
+        manifests: List[str] = []
+        entrypoints: List[str] = []
+        runtime_hints: set[str] = set()
+
+        for path in _walk_files(result.app_dir):
+            rel = str(path.relative_to(result.app_dir))
+            name = path.name
+
+            if _is_manifest(path):
+                manifests.append(rel)
+            if _is_entrypoint(path):
+                entrypoints.append(rel)
+
+            suffix = path.suffix.lower()
+            if suffix == ".html":
+                runtime_hints.add("static-html")
+            elif suffix in (".js", ".jsx", ".ts", ".tsx"):
+                runtime_hints.add("javascript-or-typescript")
+            elif suffix == ".py":
+                runtime_hints.add("python")
+
+            if name == "package.json":
+                runtime_hints.add("node-package")
+            elif name in {"requirements.txt", "pyproject.toml", "Pipfile"}:
+                runtime_hints.add("python-package")
+            elif name == "nginx.conf":
+                runtime_hints.add("nginx")
+            elif name == "Caddyfile":
+                runtime_hints.add("caddy")
+            elif _is_dockerfile(path):
+                runtime_hints.add("dockerized")
+
+        for svc in result.services:
+            if svc.language:
+                runtime_hints.add(f"{svc.language}-service")
+            if svc.base_image and any(token in svc.base_image for token in ("nginx", "caddy", "httpd")):
+                runtime_hints.add("static-web-server")
+
+        result.detected_manifests = manifests[:_MAX_CONTEXT_FILES]
+        result.candidate_entrypoints = entrypoints[:_MAX_CONTEXT_FILES]
+        result.runtime_hints = sorted(runtime_hints)
+
     def _gather_file_contents(self, result: AnalysisResult) -> None:
         """Read key files to provide as context for the LLM agent."""
         targets = []
@@ -335,21 +437,11 @@ class AppAnalyzer:
             if svc.dockerfile:
                 targets.append(svc.dockerfile)
 
-        # Key source files (main.py, app.py, server.py, index.ts, etc.)
-        for pattern in [
-            "*/main.py", "*/app.py", "*/server.py", "main.py", "app.py",
-            "*/src/app/layout.tsx", "*/src/app/layout.jsx",
-            "*/src/app/page.tsx", "*/src/index.ts", "*/src/index.js",
-        ]:
-            for f in result.app_dir.glob(pattern):
-                if ".git" not in f.parts and "node_modules" not in f.parts:
-                    targets.append(f)
-
-        # Dependency files
-        for pattern in ["*/requirements.txt", "requirements.txt", "*/package.json"]:
-            for f in result.app_dir.glob(pattern):
-                if ".git" not in f.parts and "node_modules" not in f.parts:
-                    targets.append(f)
+        for path in _walk_files(result.app_dir):
+            if _is_context_file(path):
+                targets.append(path)
+            if len(targets) >= _MAX_CONTEXT_FILES:
+                break
 
         # README
         readme = result.app_dir / "README.md"
@@ -373,6 +465,15 @@ class AppAnalyzer:
             except (OSError, UnicodeDecodeError):
                 pass
 
+    def _infer_conversion_mode(self, result: AnalysisResult) -> None:
+        if result.compose_path or result.services:
+            result.conversion_mode = "structured"
+            return
+        if result.file_contents or result.detected_manifests or result.candidate_entrypoints:
+            result.conversion_mode = "generic"
+            return
+        result.conversion_mode = "generic"
+
     @staticmethod
     def _sanitize_name(name: str) -> str:
         """Sanitize directory name for use as extension name."""
@@ -381,3 +482,24 @@ class AppAnalyzer:
         name = re.sub(r"-+", "-", name)
         name = name.strip("-")
         return name or "my-extension"
+
+
+def _is_dockerfile(path: Path) -> bool:
+    return path.name == "Dockerfile" or path.name.startswith("Dockerfile.")
+
+
+def _is_manifest(path: Path) -> bool:
+    return path.name in _MANIFEST_FILES
+
+
+def _is_entrypoint(path: Path) -> bool:
+    if path.name in _ENTRYPOINT_NAMES:
+        return True
+    rel = path.as_posix()
+    return rel.endswith("/src/index.ts") or rel.endswith("/src/index.js") or rel.endswith("/src/main.ts") or rel.endswith("/src/main.js")
+
+
+def _is_context_file(path: Path) -> bool:
+    if _is_dockerfile(path) or _is_manifest(path) or _is_entrypoint(path):
+        return True
+    return path.suffix.lower() in _CONTEXT_SUFFIXES

@@ -129,7 +129,7 @@ class PayloadBuilder:
             if not verify_ssl:
                 env.append({"name": "KAMIWAZA_VERIFY_SSL", "value": "false"})
 
-            health_check = self._default_health_check(svc_name, ports)
+            health_check = self._default_health_check(svc_name, svc, ports)
 
             spec_kwargs: Dict[str, Any] = dict(
                 name=svc_name,
@@ -188,14 +188,14 @@ class PayloadBuilder:
 
     @staticmethod
     def _default_health_check(
-        svc_name: str, ports: List[ExtensionPort],
+        svc_name: str, svc: Dict[str, Any], ports: List[ExtensionPort],
     ) -> Optional[Dict[str, Any]]:
         """Generate a default health check based on service type."""
         if not ports:
             return None
         port = ports[0].container_port
 
-        if svc_name == "frontend":
+        if _should_use_node_frontend_probe(svc_name, svc):
             # Frontend: use node to resolve basePath env vars reliably
             # (shell-based wget probes fail with nested ${} on Alpine)
             probe_script = (
@@ -246,3 +246,39 @@ class PayloadBuilder:
         if t not in ("app", "tool", "service"):
             return "app"
         return t
+
+
+def _should_use_node_frontend_probe(svc_name: str, svc: Dict[str, Any]) -> bool:
+    """Use the Node-based probe only for likely Node/Next frontends.
+
+    Generic/static web services may still be called "frontend", so avoid
+    forcing a Node probe unless the compose service carries Node-like hints.
+    """
+    if svc_name != "frontend":
+        return False
+
+    env = svc.get("environment", {})
+    env_keys: List[str] = []
+    if isinstance(env, dict):
+        env_keys = [str(key) for key in env.keys()]
+    elif isinstance(env, list):
+        for item in env:
+            if isinstance(item, str):
+                key, _, _ = item.partition("=")
+                env_keys.append(key or item)
+            elif isinstance(item, dict):
+                env_keys.extend(str(key) for key in item.keys())
+
+    if any(key == "BACKEND_URL" or key.startswith("NEXT_PUBLIC_") for key in env_keys):
+        return True
+
+    for key in ("command", "entrypoint"):
+        value = svc.get(key)
+        if isinstance(value, list):
+            text = " ".join(str(part) for part in value).lower()
+        else:
+            text = str(value).lower()
+        if "node" in text or "next" in text:
+            return True
+
+    return False

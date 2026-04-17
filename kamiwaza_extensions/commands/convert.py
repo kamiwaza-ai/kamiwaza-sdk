@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
-from typing import Optional
 
 import typer
 from rich.console import Console
@@ -36,6 +34,8 @@ def run_convert(
 
     # Print analysis summary
     console.print(f"    Type:              [bold]{analysis.extension_type}[/bold]")
+    mode_label = "generic AI fallback" if analysis.conversion_mode == "generic" else "structured"
+    console.print(f"    Mode:              [bold]{mode_label}[/bold]")
     if analysis.services:
         svc_names = ", ".join(s.name for s in analysis.services)
         console.print(f"    Services:          {svc_names}")
@@ -75,26 +75,12 @@ def run_convert(
 
     console.print()
 
-    # 2. Generate kamiwaza.json (always — even in dry-run)
-    kamiwaza_json_path = app_dir / "kamiwaza.json"
-    kamiwaza_data = analyzer.generate_kamiwaza_json(analysis)
-
-    if kamiwaza_json_path.exists():
-        console.print("    [yellow]\u26a0[/yellow] kamiwaza.json already exists — skipping generation")
-    elif dry_run:
-        console.print("    [dim]Would create kamiwaza.json[/dim]")
-    else:
-        kamiwaza_json_path.write_text(
-            json.dumps(kamiwaza_data, indent=4) + "\n", encoding="utf-8"
-        )
-        console.print("    [green]\u2713[/green] Created kamiwaza.json")
-
-    # 3. Run AI agent for file modifications
+    # 2. Run AI agent for file modifications
     console.print()
     plan = run_agent(analysis, dry_run=dry_run)
 
-    # 4. Print results
-    if plan.modifications:
+    # 3. Print results
+    if plan.success and plan.modifications:
         console.print()
         if dry_run:
             console.print("  [bold]Would modify:[/bold]")
@@ -102,7 +88,6 @@ def run_convert(
             console.print("  [bold]Files modified:[/bold]")
 
         for mod in plan.modifications:
-            target = app_dir / mod.path
             if mod.action == "create":
                 icon = "[green]\u2713[/green]" if not dry_run else "[dim]\u2713[/dim]"
                 action = "created" if not dry_run else "would create"
@@ -111,6 +96,12 @@ def run_convert(
                 action = "modified" if not dry_run else "would modify"
             desc = f" ({mod.description})" if mod.description else ""
             console.print(f"    {icon} {mod.path} — {action}{desc}")
+
+    if plan.errors:
+        console.print()
+        console.print("  [bold red]Conversion failed:[/bold red]")
+        for err in plan.errors:
+            console.print(f"    [red]\u2717[/red] {err}")
 
     if plan.manual_items:
         console.print()
@@ -122,7 +113,10 @@ def run_convert(
         console.print()
         console.print(f"  [dim]{plan.summary}[/dim]")
 
-    # 5. Next steps
+    if not plan.success:
+        raise typer.Exit(code=1)
+
+    # 4. Next steps
     console.print()
     console.print("  [bold]Next steps:[/bold]")
     console.print("    git diff                    # Review all changes")
