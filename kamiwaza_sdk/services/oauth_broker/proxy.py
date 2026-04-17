@@ -13,11 +13,6 @@ from typing import Any, Literal
 from urllib.parse import quote
 from uuid import UUID
 
-# Google Drive file IDs and tool identifiers use URL-safe base64-ish
-# characters: letters, digits, hyphens, and underscores.  Anything else
-# is rejected upfront to prevent path-traversal / query-string injection.
-_SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+\Z")
-
 from ...schemas.oauth_broker import (
     DriveListFilesRequest,
     GmailGetMessageRequest,
@@ -26,19 +21,45 @@ from ...schemas.oauth_broker import (
     GmailSendRequest,
 )
 
+# Google Drive file IDs and tool identifiers use URL-safe base64-ish
+# characters: letters, digits, hyphens, underscores, and dots.  Anything
+# else is rejected upfront to prevent path-traversal / query-string
+# injection.
+_SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9._-]+\Z")
+
+# Calendar IDs can be email addresses (e.g. "user@gmail.com") or the
+# literal string "primary".  We allow alphanumerics plus the characters
+# that appear in email addresses: @, ., _, and -.
+_SAFE_CALENDAR_ID_RE = re.compile(r"^[a-zA-Z0-9@._-]+\Z")
+
 
 def _validate_safe_id(value: str, label: str) -> None:
-    """Validate that *value* contains only URL-safe base64 characters.
+    """Validate that *value* contains only URL-safe identifier characters.
 
-    Raises ``ValueError`` when *value* is empty or contains characters
-    outside ``[a-zA-Z0-9_-]``.  This is used as a whitelist gate for
-    identifiers (``tool_id``, ``file_id``, ``lease_id``) that are
-    interpolated into URLs or query strings.
+    Raises ``ValueError`` when *value* is empty, contains characters
+    outside ``[a-zA-Z0-9._-]``, or equals ``..`` (path traversal).
+    This is used as a whitelist gate for identifiers (``tool_id``,
+    ``file_id``, ``lease_id``) that are interpolated into URLs or
+    query strings.
     """
-    if not value or not _SAFE_ID_RE.match(value):
+    if not value or not _SAFE_ID_RE.match(value) or value == "..":
         raise ValueError(
             f"{label} contains characters that are not permitted "
-            f"(must match [a-zA-Z0-9_-]+)"
+            f"(must match [a-zA-Z0-9._-]+)"
+        )
+
+
+def _validate_calendar_id(value: str) -> None:
+    """Validate that *value* is a safe calendar identifier.
+
+    Calendar IDs can be email addresses (e.g. ``user@gmail.com``) or
+    the literal ``"primary"``.  Raises ``ValueError`` when *value* is
+    empty or contains characters outside ``[a-zA-Z0-9@._-]``.
+    """
+    if not value or not _SAFE_CALENDAR_ID_RE.match(value):
+        raise ValueError(
+            "calendar_id contains characters that are not permitted "
+            "(must match [a-zA-Z0-9@._-]+)"
         )
 
 
@@ -304,6 +325,7 @@ class ProxyMixin:
             ... )
         """
         _validate_safe_id(tool_id, "tool_id")
+        _validate_calendar_id(calendar_id)
         params = {
             "app_id": str(app_id),
             "tool_id": tool_id,

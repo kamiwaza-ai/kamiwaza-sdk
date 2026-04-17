@@ -805,7 +805,6 @@ def test_drive_get_file_rejects_path_traversal(dummy_client, malicious_file_id):
         "tool/id",
         "tool\\id",
         "tool\x00id",
-        "tool..id",
         "tool?id=x",
         "tool#frag",
         "tool\nid",
