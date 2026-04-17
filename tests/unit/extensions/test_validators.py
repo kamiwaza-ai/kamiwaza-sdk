@@ -418,6 +418,74 @@ class TestPlatformRuntimeValidator:
         assert result.passed
         assert result.errors == []
 
+    def test_uses_copied_nginx_config_source_not_filename_heuristic(self, tmp_path, validator):
+        compose = {
+            "services": {
+                "web": {
+                    "build": ".",
+                    "ports": ["8080:8080"],
+                },
+            },
+        }
+        (tmp_path / "Dockerfile").write_text(
+            "FROM nginxinc/nginx-unprivileged:stable-alpine\n"
+            "COPY site.conf /etc/nginx/conf.d/default.conf\n"
+            "EXPOSE 8080\n"
+        )
+        (tmp_path / "site.conf").write_text(
+            "server {\n"
+            "    listen 80;\n"
+            "    client_body_temp_path /tmp/client_temp;\n"
+            "}\n"
+        )
+        (tmp_path / "nginx-preview.conf").write_text(
+            "server {\n"
+            "    listen 8080;\n"
+            "    client_body_temp_path /tmp/client_temp;\n"
+            "}\n"
+        )
+        f = tmp_path / "docker-compose.yml"
+        self._write_compose(f, compose)
+
+        result = validator.validate(f, tmp_path)
+
+        assert not result.passed
+        assert any("privileged port 80" in err for err in result.errors)
+
+    def test_ignores_unrelated_nginx_named_config_files(self, tmp_path, validator):
+        compose = {
+            "services": {
+                "web": {
+                    "build": ".",
+                    "ports": ["8080:8080"],
+                },
+            },
+        }
+        (tmp_path / "Dockerfile").write_text(
+            "FROM nginxinc/nginx-unprivileged:stable-alpine\n"
+            "COPY site.conf /etc/nginx/conf.d/default.conf\n"
+            "EXPOSE 8080\n"
+        )
+        (tmp_path / "site.conf").write_text(
+            "server {\n"
+            "    listen 8080;\n"
+            "    client_body_temp_path /tmp/client_temp;\n"
+            "}\n"
+        )
+        (tmp_path / "nginx-preview.conf").write_text(
+            "server {\n"
+            "    listen 80;\n"
+            "    client_body_temp_path /tmp/client_temp;\n"
+            "}\n"
+        )
+        f = tmp_path / "docker-compose.yml"
+        self._write_compose(f, compose)
+
+        result = validator.validate(f, tmp_path)
+
+        assert result.passed
+        assert result.errors == []
+
     def test_rejects_build_path_that_escapes_extension_dir(self, tmp_path, validator):
         compose = {
             "services": {
@@ -465,6 +533,38 @@ class TestPlatformRuntimeValidator:
 
         assert result.passed
         assert not any("privileged port 127" in err for err in result.errors)
+
+    def test_ignores_heredoc_body_when_parsing_dockerfile(self, tmp_path, validator):
+        compose = {
+            "services": {
+                "web": {
+                    "build": ".",
+                    "ports": ["8080:8080"],
+                },
+            },
+        }
+        (tmp_path / "Dockerfile").write_text(
+            "FROM nginxinc/nginx-unprivileged:stable-alpine\n"
+            "RUN cat <<'EOF' >/tmp/banner\n"
+            "FROM python:3.11\n"
+            "USER root\n"
+            "EOF\n"
+            "COPY nginx.conf /etc/nginx/conf.d/default.conf\n"
+            "EXPOSE 8080\n"
+        )
+        (tmp_path / "nginx.conf").write_text(
+            "server {\n"
+            "    listen 8080;\n"
+            "    client_body_temp_path /tmp/client_temp;\n"
+            "}\n"
+        )
+        f = tmp_path / "docker-compose.yml"
+        self._write_compose(f, compose)
+
+        result = validator.validate(f, tmp_path)
+
+        assert result.passed
+        assert result.errors == []
 
     def test_allows_wildcard_bound_nginx_listen_port(self, tmp_path, validator):
         compose = {

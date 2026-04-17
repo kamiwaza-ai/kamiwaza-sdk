@@ -217,9 +217,11 @@ class PayloadBuilder:
                 "timeoutSeconds": 5,
             }
         else:
-            # Backend: HTTP GET /health
+            # Generic frontends usually serve "/" even when they lack a
+            # dedicated /health endpoint; backend-style services still use /health.
+            path = "/" if svc_name == "frontend" else "/health"
             return {
-                "httpGet": {"path": "/health", "port": port},
+                "httpGet": {"path": path, "port": port},
                 "initialDelaySeconds": 10,
                 "periodSeconds": 10,
                 "failureThreshold": 3,

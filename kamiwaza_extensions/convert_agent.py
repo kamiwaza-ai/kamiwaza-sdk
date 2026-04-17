@@ -624,6 +624,9 @@ def _render_context_files(analysis: AnalysisResult) -> str:
 def _default_metadata(analysis: AnalysisResult, strategy: ConversionStrategy) -> Dict[str, Any]:
     analyzer = AppAnalyzer()
     metadata = analyzer.generate_kamiwaza_json(analysis)
+    existing_metadata = _load_existing_kamiwaza_json(analysis.app_dir / "kamiwaza.json")
+    if existing_metadata:
+        metadata.update(existing_metadata)
     metadata["type"] = strategy.extension_type
     return metadata
 
@@ -655,9 +658,18 @@ def _apply_basic_fallback(analysis: AnalysisResult, *, dry_run: bool) -> Convers
 
 
 def _preserve_existing_kamiwaza_json(plan: ConversionPlan, analysis: AnalysisResult) -> None:
-    """Do not overwrite an existing manifest during conversion."""
+    """Preserve an existing valid manifest, but allow repairs for invalid ones."""
     metadata_path = analysis.app_dir / "kamiwaza.json"
     if not metadata_path.exists():
+        return
+    if not _is_valid_existing_kamiwaza_json(metadata_path):
+        if any(mod.path == "kamiwaza.json" for mod in plan.modifications):
+            plan.manual_items = _merge_manual_items(
+                plan.manual_items,
+                [
+                    "Existing kamiwaza.json is invalid; keeping AI-proposed metadata repairs so conversion can pass validation.",
+                ],
+            )
         return
 
     kept: List[FileModification] = []
@@ -676,6 +688,22 @@ def _preserve_existing_kamiwaza_json(plan: ConversionPlan, analysis: AnalysisRes
                 "kamiwaza.json already exists; preserving the existing manifest and skipping AI-proposed metadata changes.",
             ],
         )
+
+
+def _load_existing_kamiwaza_json(path: Path) -> Optional[Dict[str, Any]]:
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return None
+
+    return data if isinstance(data, dict) else None
+
+
+def _is_valid_existing_kamiwaza_json(path: Path) -> bool:
+    from kamiwaza_extensions.validators.metadata import MetadataValidator
+
+    return MetadataValidator().validate(path).passed
 
 
 def _ensure_supporting_files(

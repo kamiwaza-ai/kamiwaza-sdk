@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shlex
@@ -20,6 +21,7 @@ _NGINX_CONF_LISTEN_RE = re.compile(
     r"(?mi)^\s*listen\s+(?:(?:\[[^\]]+\]|[^\s;:]+):)?(?P<port>\d+)\b"
 )
 _TMP_PATH_RE = re.compile(r"(?<!\S)/tmp(?:/|\b)")
+_HEREDOC_RE = re.compile(r"<<(?P<strip>-?)(?P<quote>['\"]?)(?P<marker>[A-Za-z_][A-Za-z0-9_]*)\2")
 _CONFIG_SKIP_DIRS = {
     ".git",
     "node_modules",
@@ -91,7 +93,13 @@ class PlatformRuntimeValidator:
             if not dockerfile_path.exists():
                 continue
 
-            dockerfile_text = dockerfile_path.read_text(encoding="utf-8")
+            try:
+                dockerfile_text = dockerfile_path.read_text(encoding="utf-8")
+            except OSError:
+                warnings.append(
+                    f"Service '{svc_name}': Dockerfile could not be read for runtime validation"
+                )
+                continue
             stages = _parse_dockerfile_stages(dockerfile_text)
             if not stages:
                 continue
@@ -100,7 +108,7 @@ class PlatformRuntimeValidator:
             base_image = _resolve_effective_base_image(stages, final_stage)
             effective_user = _resolve_effective_user(stages, final_stage)
             final_text = _resolve_stage_text(stages, final_stage)
-            nginx_texts = _load_nginx_config_texts(build_context) if build_context else []
+            nginx_texts = _load_nginx_config_texts(build_context, final_text) if build_context else []
 
             for port in _parse_exposed_ports(final_text):
                 if port < 1024:
@@ -129,7 +137,7 @@ class PlatformRuntimeValidator:
                             "prefer 8080+"
                         )
 
-            if _is_rootful_httpd_image(base_image) and not _is_non_root_user(effective_user):
+            if _is_rootful_httpd_image(base_image) and not _has_non_root_runtime_user(base_image, effective_user):
                 errors.append(
                     f"Service '{svc_name}': HTTP server image does not switch to a non-root user"
                 )
@@ -225,8 +233,11 @@ def _parse_dockerfile_stages(text: str) -> List[_DockerStage]:
 def _logical_dockerfile_lines(text: str) -> List[str]:
     logical_lines: List[str] = []
     current = ""
+    lines = text.splitlines()
+    idx = 0
 
-    for raw_line in text.splitlines():
+    while idx < len(lines):
+        raw_line = lines[idx]
         line = raw_line.rstrip()
         if current:
             current += " " + line.lstrip()
@@ -235,15 +246,35 @@ def _logical_dockerfile_lines(text: str) -> List[str]:
 
         if current.endswith("\\"):
             current = current[:-1]
+            idx += 1
             continue
 
         logical_lines.append(current)
+        heredoc_markers = _extract_heredoc_markers(current)
         current = ""
+        idx += 1
+
+        if heredoc_markers:
+            marker_index = 0
+            while idx < len(lines) and marker_index < len(heredoc_markers):
+                candidate = lines[idx].rstrip()
+                marker, strip_tabs = heredoc_markers[marker_index]
+                compare = candidate.lstrip("\t") if strip_tabs else candidate
+                if compare == marker:
+                    marker_index += 1
+                idx += 1
 
     if current:
         logical_lines.append(current)
 
     return logical_lines
+
+
+def _extract_heredoc_markers(line: str) -> List[Tuple[str, bool]]:
+    markers: List[Tuple[str, bool]] = []
+    for match in _HEREDOC_RE.finditer(line):
+        markers.append((match.group("marker"), match.group("strip") == "-"))
+    return markers
 
 
 def parse_from_instruction(line: str) -> tuple[Optional[str], Optional[str]]:
@@ -345,26 +376,117 @@ def _parse_exposed_ports(text: str) -> List[int]:
     return ports
 
 
-def _load_nginx_config_texts(build_context: Path) -> List[str]:
+def _load_nginx_config_texts(build_context: Path, final_text: str) -> List[str]:
     if not build_context.exists():
         return []
 
     texts: List[str] = []
-    for dirpath, dirnames, filenames in os.walk(build_context):
+    for path in sorted(_find_nginx_config_paths(build_context, final_text)):
+        try:
+            texts.append(path.read_text(encoding="utf-8"))
+        except OSError:
+            continue
+    return texts
+
+
+def _find_nginx_config_paths(build_context: Path, final_text: str) -> set[Path]:
+    paths: set[Path] = set()
+    for line in final_text.splitlines():
+        stripped = line.strip()
+        if not stripped.upper().startswith(("COPY ", "ADD ")):
+            continue
+        paths.update(_extract_nginx_config_sources(build_context, stripped))
+    return paths
+
+
+def _extract_nginx_config_sources(build_context: Path, instruction: str) -> set[Path]:
+    command, _, remainder = instruction.partition(" ")
+    if command.upper() not in {"COPY", "ADD"} or not remainder.strip():
+        return set()
+
+    rest = remainder.strip()
+    from_stage = False
+    while rest.startswith("--"):
+        flag, _, next_rest = rest.partition(" ")
+        if not next_rest:
+            return set()
+        if flag.startswith("--from"):
+            from_stage = True
+        rest = next_rest.lstrip()
+
+    if from_stage:
+        return set()
+
+    sources, dest = _parse_copy_arguments(rest)
+    if not sources or not _is_nginx_config_destination(dest):
+        return set()
+
+    resolved: set[Path] = set()
+    for source in sources:
+        resolved.update(_resolve_copy_source_paths(build_context, source))
+    return resolved
+
+
+def _parse_copy_arguments(text: str) -> Tuple[List[str], str]:
+    stripped = text.strip()
+    if stripped.startswith("["):
+        try:
+            items = json.loads(stripped)
+        except json.JSONDecodeError:
+            return [], ""
+        if not isinstance(items, list) or len(items) < 2:
+            return [], ""
+        values = [str(item) for item in items]
+        return values[:-1], values[-1]
+
+    try:
+        tokens = shlex.split(stripped, comments=False, posix=True)
+    except ValueError:
+        tokens = stripped.split()
+    if len(tokens) < 2:
+        return [], ""
+    return tokens[:-1], tokens[-1]
+
+
+def _is_nginx_config_destination(dest: str) -> bool:
+    lower = dest.lower()
+    return (
+        lower.startswith("/etc/nginx/")
+        or "/nginx/conf.d/" in lower
+        or ("/nginx/conf/" in lower and lower.endswith(".conf"))
+        or lower.endswith("/nginx.conf")
+    )
+
+
+def _resolve_copy_source_paths(build_context: Path, source: str) -> set[Path]:
+    if not source or source == ".":
+        return set()
+
+    candidates: set[Path] = set()
+    if any(token in source for token in "*?["):
+        for match in build_context.glob(source):
+            candidates.update(_collect_config_paths(match))
+        return candidates
+
+    candidate = _resolve_relative_to_ext_dir(build_context, source)
+    if candidate is None:
+        return set()
+    return _collect_config_paths(candidate)
+
+
+def _collect_config_paths(path: Path) -> set[Path]:
+    if path.is_file():
+        return {path}
+    if not path.is_dir():
+        return set()
+
+    paths: set[Path] = set()
+    for dirpath, dirnames, filenames in os.walk(path):
         dirnames[:] = [d for d in dirnames if d not in _CONFIG_SKIP_DIRS]
         for filename in filenames:
-            if not filename.endswith(".conf"):
-                continue
-            path = Path(dirpath) / filename
-            rel = path.relative_to(build_context)
-            rel_str = str(rel).lower()
-            if (
-                rel.name == "default.conf"
-                or "nginx" in rel_str
-                or "conf.d" in rel.parts
-            ):
-                texts.append(path.read_text(encoding="utf-8"))
-    return texts
+            if filename.endswith(".conf") or filename == "nginx.conf":
+                paths.add(Path(dirpath) / filename)
+    return paths
 
 
 def _parse_nginx_listen_ports(final_text: str, config_texts: Iterable[str]) -> List[int]:

@@ -72,6 +72,7 @@ _MAX_CONTEXT_FILES = 80
 _MAX_CONTEXT_FILE_SIZE = 10000
 _SENSITIVE_FILE_NAMES = {
     ".env",
+    ".envrc",
     ".npmrc",
     ".pypirc",
     "credentials.json",

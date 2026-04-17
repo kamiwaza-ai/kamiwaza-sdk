@@ -171,7 +171,7 @@ class TestHealthChecks:
         health_check = frontend.model_dump()["healthCheck"]
         assert health_check["exec"]["command"][0] == "node"
 
-    def test_generic_frontend_without_node_hints_uses_http_probe(
+    def test_generic_frontend_without_node_hints_uses_root_http_probe(
         self, builder, metadata, connection
     ):
         transformed = {
@@ -188,7 +188,7 @@ class TestHealthChecks:
 
         health_check = frontend.model_dump()["healthCheck"]
         assert frontend.primary is True
-        assert health_check["httpGet"] == {"path": "/health", "port": 8080}
+        assert health_check["httpGet"] == {"path": "/", "port": 8080}
         assert "exec" not in health_check
 
     def test_frontend_port_3000_without_explicit_hints_uses_node_probe(

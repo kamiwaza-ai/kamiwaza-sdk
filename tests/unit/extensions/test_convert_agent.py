@@ -301,6 +301,95 @@ class TestRunAgent:
         assert persisted["version"] == "9.9.9"
         assert any("preserving the existing manifest" in item for item in plan.manual_items)
 
+    def test_invalid_existing_kamiwaza_json_can_be_repaired(self, monkeypatch, tmp_path):
+        from kamiwaza_extensions.app_analyzer import AnalysisResult
+        from kamiwaza_extensions.convert_agent import run_agent
+
+        existing = {
+            "name": "demo",
+            "version": "not-semver",
+            "source_type": "user_repo",
+            "visibility": "private",
+            "description": "broken",
+            "risk_tier": 1,
+            "verified": False,
+        }
+        (tmp_path / "kamiwaza.json").write_text(json.dumps(existing) + "\n")
+        (tmp_path / "index.html").write_text("<html><body>Hello</body></html>")
+        analysis = AnalysisResult(
+            app_dir=tmp_path,
+            app_name="demo",
+            extension_type="app",
+            conversion_mode="generic",
+            file_contents={"index.html": "<html><body>Hello</body></html>"},
+            candidate_entrypoints=["index.html"],
+            runtime_hints=["static-html"],
+        )
+
+        responses = iter([
+            json.dumps({
+                "extension_type": "app",
+                "conversion_mode": "add_minimal_wrapper",
+                "primary_service": "web",
+                "required_files": ["docker-compose.yml", "CONVERT_NOTES.md", "kamiwaza.json"],
+                "runtime_summary": "Static HTML site served by nginx",
+                "manual_items": [],
+            }),
+            json.dumps({
+                "modifications": [
+                    {
+                        "path": "kamiwaza.json",
+                        "action": "modify",
+                        "content": json.dumps({
+                            "name": "demo",
+                            "version": "0.1.0",
+                            "type": "app",
+                            "source_type": "user_repo",
+                            "visibility": "private",
+                            "description": "repaired manifest",
+                            "risk_tier": 1,
+                            "verified": False,
+                            "kz_ext_version": ">=0.12.0,<1.0.0",
+                        }, indent=4)
+                        + "\n",
+                        "description": "Repair invalid manifest",
+                    },
+                    {
+                        "path": "docker-compose.yml",
+                        "action": "create",
+                        "content": (
+                            "services:\n"
+                            "  web:\n"
+                            "    image: nginxinc/nginx-unprivileged:stable-alpine\n"
+                            "    ports:\n"
+                            "      - \"8080:8080\"\n"
+                            "    deploy:\n"
+                            "      resources:\n"
+                            "        limits:\n"
+                            "          cpus: \"1.0\"\n"
+                            "          memory: \"1G\"\n"
+                        ),
+                        "description": "Use an unprivileged static web runtime",
+                    },
+                ],
+                "manual_items": [],
+                "summary": "Repair existing manifest and add runtime wrapper",
+            }),
+        ])
+
+        monkeypatch.setattr(
+            "kamiwaza_extensions.convert_agent.call_llm",
+            lambda prompt: next(responses, None),
+        )
+
+        plan = run_agent(analysis, dry_run=False)
+
+        assert plan.success is True
+        persisted = json.loads((tmp_path / "kamiwaza.json").read_text())
+        assert persisted["version"] == "0.1.0"
+        assert persisted["description"] == "repaired manifest"
+        assert any("keeping AI-proposed metadata repairs" in item for item in plan.manual_items)
+
     def test_validation_repair_loop_applies_fixed_plan(self, monkeypatch, tmp_path):
         from kamiwaza_extensions.app_analyzer import AnalysisResult
         from kamiwaza_extensions.convert_agent import run_agent
