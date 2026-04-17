@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
+from urllib.parse import quote
 
 from ...schemas.oauth_broker import (
     LeaseStatusResponse,
     MintTokenRequest,
     MintTokenResponse,
 )
+
+_SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+\Z")
 
 
 class TokenMixin:
@@ -60,8 +64,20 @@ class TokenMixin:
 
         Returns:
             Lease status including expiry and validity
+
+        Raises:
+            ValueError: If ``lease_id`` is empty or contains characters
+                outside ``[a-zA-Z0-9_-]``.
         """
-        response = self.client.get(f"/oauth-broker/tokens/leases/{lease_id}")
+        if not lease_id or not _SAFE_ID_RE.match(lease_id):
+            raise ValueError(
+                "lease_id contains characters that are not permitted "
+                "(must match [a-zA-Z0-9_-]+)"
+            )
+        safe_lease_id = quote(lease_id, safe="")
+        response = self.client.get(
+            f"/oauth-broker/tokens/leases/{safe_lease_id}"
+        )
         return LeaseStatusResponse.model_validate(response)
 
     def expire_lease(self, lease_id: str) -> None:
@@ -74,5 +90,15 @@ class TokenMixin:
 
         Args:
             lease_id: Lease identifier
+
+        Raises:
+            ValueError: If ``lease_id`` is empty or contains characters
+                outside ``[a-zA-Z0-9_-]``.
         """
-        self.client.delete(f"/oauth-broker/tokens/leases/{lease_id}")
+        if not lease_id or not _SAFE_ID_RE.match(lease_id):
+            raise ValueError(
+                "lease_id contains characters that are not permitted "
+                "(must match [a-zA-Z0-9_-]+)"
+            )
+        safe_lease_id = quote(lease_id, safe="")
+        self.client.delete(f"/oauth-broker/tokens/leases/{safe_lease_id}")

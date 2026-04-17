@@ -797,6 +797,82 @@ def test_drive_get_file_rejects_path_traversal(dummy_client, malicious_file_id):
     assert client.calls == []
 
 
+@pytest.mark.parametrize(
+    "malicious_tool_id",
+    [
+        "",
+        "tool id",
+        "tool/id",
+        "tool\\id",
+        "tool\x00id",
+        "tool..id",
+        "tool?id=x",
+        "tool#frag",
+        "tool\nid",
+        "valid-id\n",
+        "valid-id\r",
+    ],
+)
+def test_proxy_methods_reject_invalid_tool_id(dummy_client, malicious_tool_id):
+    """Malformed tool_id values must be rejected before reaching the client.
+
+    Guards against query-string injection / log-poisoning via tool_id
+    across all proxy methods.
+    """
+    client = dummy_client({})
+    service = OAuthBrokerService(client)
+    app_id = uuid.uuid4()
+
+    with pytest.raises(ValueError):
+        service.gmail_search(app_id=app_id, tool_id=malicious_tool_id, query="test")
+
+    with pytest.raises(ValueError):
+        service.gmail_list_labels(app_id=app_id, tool_id=malicious_tool_id)
+
+    with pytest.raises(ValueError):
+        service.drive_list_files(app_id=app_id, tool_id=malicious_tool_id)
+
+    with pytest.raises(ValueError):
+        service.calendar_list_calendars(app_id=app_id, tool_id=malicious_tool_id)
+
+    # No request should have been dispatched.
+    assert client.calls == []
+
+
+@pytest.mark.parametrize(
+    "malicious_lease_id",
+    [
+        "../../../etc/passwd",
+        "..",
+        "foo/bar",
+        "foo\\bar",
+        "",
+        "foo bar",
+        "foo\nbar",
+        "foo\x00bar",
+        "valid-lease\n",
+        "valid-lease\r",
+    ],
+)
+def test_lease_methods_reject_path_traversal(dummy_client, malicious_lease_id):
+    """Unsafe lease_id values must be rejected before reaching the client.
+
+    Guards against path-traversal via lease_id in get_lease_status and
+    expire_lease.
+    """
+    client = dummy_client({})
+    service = OAuthBrokerService(client)
+
+    with pytest.raises(ValueError):
+        service.get_lease_status(malicious_lease_id)
+
+    with pytest.raises(ValueError):
+        service.expire_lease(malicious_lease_id)
+
+    # No request should have been dispatched.
+    assert client.calls == []
+
+
 def test_calendar_list_calendars(dummy_client):
     """Test Calendar list calendars proxy."""
     app_id = str(uuid.uuid4())

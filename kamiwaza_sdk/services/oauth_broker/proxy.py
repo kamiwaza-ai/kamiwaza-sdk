@@ -8,9 +8,15 @@ This mirrors the server-side routing design.
 
 from __future__ import annotations
 
+import re
 from typing import Any, Literal
 from urllib.parse import quote
 from uuid import UUID
+
+# Google Drive file IDs and tool identifiers use URL-safe base64-ish
+# characters: letters, digits, hyphens, and underscores.  Anything else
+# is rejected upfront to prevent path-traversal / query-string injection.
+_SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+\Z")
 
 from ...schemas.oauth_broker import (
     DriveListFilesRequest,
@@ -19,6 +25,21 @@ from ...schemas.oauth_broker import (
     GmailSearchRequest,
     GmailSendRequest,
 )
+
+
+def _validate_safe_id(value: str, label: str) -> None:
+    """Validate that *value* contains only URL-safe base64 characters.
+
+    Raises ``ValueError`` when *value* is empty or contains characters
+    outside ``[a-zA-Z0-9_-]``.  This is used as a whitelist gate for
+    identifiers (``tool_id``, ``file_id``, ``lease_id``) that are
+    interpolated into URLs or query strings.
+    """
+    if not value or not _SAFE_ID_RE.match(value):
+        raise ValueError(
+            f"{label} contains characters that are not permitted "
+            f"(must match [a-zA-Z0-9_-]+)"
+        )
 
 
 class ProxyMixin:
@@ -51,6 +72,7 @@ class ProxyMixin:
             ...     max_results=20
             ... )
         """
+        _validate_safe_id(tool_id, "tool_id")
         request = GmailSearchRequest(query=query, max_results=max_results)
         response = self.client.post(
             "/oauth-broker/proxy/google/gmail/search",
@@ -74,6 +96,7 @@ class ProxyMixin:
         Returns:
             Gmail API response
         """
+        _validate_safe_id(tool_id, "tool_id")
         request = GmailGetMessageRequest(message_id=message_id, msg_format=msg_format)
         response = self.client.post(
             "/oauth-broker/proxy/google/gmail/getMessage",
@@ -96,6 +119,7 @@ class ProxyMixin:
         Returns:
             Gmail API response
         """
+        _validate_safe_id(tool_id, "tool_id")
         request = GmailSendRequest(raw_message=raw_message)
         response = self.client.post(
             "/oauth-broker/proxy/google/gmail/send",
@@ -115,6 +139,7 @@ class ProxyMixin:
         Returns:
             Gmail API response
         """
+        _validate_safe_id(tool_id, "tool_id")
         response = self.client.get(
             "/oauth-broker/proxy/google/gmail/labels",
             params={"app_id": str(app_id), "tool_id": tool_id},
@@ -148,6 +173,7 @@ class ProxyMixin:
         Returns:
             Gmail API response
         """
+        _validate_safe_id(tool_id, "tool_id")
         request = GmailModifyRequest(
             message_id=message_id, add_labels=add_labels, remove_labels=remove_labels
         )
@@ -183,6 +209,7 @@ class ProxyMixin:
             ...     page_size=20
             ... )
         """
+        _validate_safe_id(tool_id, "tool_id")
         request = DriveListFilesRequest(query=query, page_size=page_size)
         response = self.client.post(
             "/oauth-broker/proxy/google/drive/listFiles",
@@ -209,18 +236,12 @@ class ProxyMixin:
             ValueError: If ``file_id`` is empty or contains characters that
                 cannot appear in a Google Drive file ID.
         """
+        _validate_safe_id(tool_id, "tool_id")
         # Reject obviously malformed IDs before they reach the URL. Google
         # Drive file IDs are URL-safe base64-ish (letters, digits, '-', '_').
-        # Anything else (including '/', '.', '..' path-traversal attempts,
-        # whitespace, or control characters) is rejected. The subsequent
-        # quote() call is a defence-in-depth belt to complement the braces.
-        if not file_id or any(
-            c in file_id for c in ("/", "\\", "\x00", "..", " ", "\t", "\n", "\r", "?", "#")
-        ):
-            raise ValueError(
-                "file_id contains characters that are not permitted in a "
-                "Google Drive file ID"
-            )
+        # A whitelist regex is strictly safer than the previous blacklist;
+        # the subsequent quote() call remains as defence-in-depth.
+        _validate_safe_id(file_id, "file_id")
         # URL-encode with an empty safe set so no path-traversal characters
         # can leak through even if the whitelist above is later relaxed.
         safe_file_id = quote(file_id, safe="")
@@ -243,6 +264,7 @@ class ProxyMixin:
         Returns:
             Calendar API response
         """
+        _validate_safe_id(tool_id, "tool_id")
         response = self.client.get(
             "/oauth-broker/proxy/google/calendar/calendars",
             params={"app_id": str(app_id), "tool_id": tool_id},
@@ -281,6 +303,7 @@ class ProxyMixin:
             ...     max_results=50
             ... )
         """
+        _validate_safe_id(tool_id, "tool_id")
         params = {
             "app_id": str(app_id),
             "tool_id": tool_id,
