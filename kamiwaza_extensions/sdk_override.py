@@ -278,6 +278,39 @@ def detect_service_type(
     return "backend"
 
 
+def detect_service_runtime(
+    svc_name: str,
+    svc_config: dict,
+    *,
+    extension_dir: Optional[Path] = None,
+) -> str:
+    """Classify a service runtime for SDK override purposes.
+
+    Returns one of:
+    - ``frontend`` for likely Node/Next-style services
+    - ``backend`` for likely Python/backend services
+    - ``static`` for generic web servers such as nginx/caddy/httpd
+
+    When the Dockerfile is available, prefer its final base image over naming
+    heuristics so converted static apps do not get a Python SDK overlay.
+    """
+    dockerfile = None
+    if extension_dir is not None and "build" in svc_config:
+        dockerfile = _resolve_dockerfile(svc_config["build"], extension_dir)
+
+    base_image = _read_final_base_image(dockerfile) if dockerfile else None
+    if base_image:
+        base = base_image.split(":")[0].rsplit("/", 1)[-1]
+        if "python" in base:
+            return "backend"
+        if "node" in base or "bun" in base:
+            return "frontend"
+        if any(token in base for token in ("nginx", "caddy", "httpd", "apache")):
+            return "static"
+
+    return detect_service_type(svc_name, svc_config)
+
+
 def _resolve_dockerfile(build_spec: Any, extension_dir: Path) -> Optional[Path]:
     """Resolve the Dockerfile path from a compose build spec."""
     if isinstance(build_spec, str):
@@ -334,6 +367,26 @@ def _read_dockerfile_startup(dockerfile: Path) -> Optional[DockerStartup]:
     return startup
 
 
+def _read_final_base_image(dockerfile: Optional[Path]) -> Optional[str]:
+    """Return the final FROM image name from a Dockerfile, if readable."""
+    if not dockerfile or not dockerfile.is_file():
+        return None
+
+    try:
+        content = dockerfile.read_text()
+    except OSError:
+        return None
+
+    last_image = None
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped.upper().startswith("FROM "):
+            parts = stripped.split()
+            if len(parts) >= 2:
+                last_image = parts[1].lower()
+    return last_image
+
+
 def _startup_argv(
     startup: Optional[DockerStartup],
     fallback: List[str],
@@ -373,7 +426,9 @@ def generate_compose_override(
         if "build" not in svc_config:
             continue
 
-        svc_type = detect_service_type(svc_name, svc_config)
+        svc_type = detect_service_runtime(
+            svc_name, svc_config, extension_dir=extension_dir,
+        )
         svc_override: dict = {}
 
         # Read the original startup command from the Dockerfile
@@ -466,6 +521,7 @@ _TS_BUILD_PATTERNS = re.compile(
 def generate_build_overrides(
     spec: SdkOverrideSpec,
     compose_data: dict,
+    extension_dir: Optional[Path] = None,
 ) -> List[BuildOverride]:
     """Generate build overrides to bake local SDK source into images.
 
@@ -481,7 +537,9 @@ def generate_build_overrides(
         if "build" not in svc_config:
             continue
 
-        svc_type = detect_service_type(svc_name, svc_config)
+        svc_type = detect_service_runtime(
+            svc_name, svc_config, extension_dir=extension_dir,
+        )
 
         if svc_type == "backend" and spec.python:
             overrides.append(BuildOverride(

@@ -432,6 +432,25 @@ class TestGenerateComposeOverride:
         override = generate_compose_override(spec, {"services": {}})
         assert override == {"services": {}}
 
+    def test_static_nginx_service_gets_no_override(self, tmp_path):
+        ext_dir = tmp_path / "ext"
+        ext_dir.mkdir()
+        web = ext_dir / "web"
+        web.mkdir()
+        (web / "Dockerfile").write_text(
+            "FROM nginx:alpine\nCOPY index.html /usr/share/nginx/html/index.html\n"
+        )
+
+        spec = self._make_spec(tmp_path)
+        compose = {
+            "services": {
+                "mihari-demo": {"build": {"context": "./web"}, "ports": ["8080:80"]},
+            }
+        }
+
+        override = generate_compose_override(spec, compose, extension_dir=ext_dir)
+        assert override == {"services": {}}
+
 
 # ------------------------------------------------------------------
 # generate_build_overrides (remote deploy)
@@ -509,6 +528,25 @@ class TestGenerateBuildOverrides:
         compose = {"services": {"backend": {"build": ".", "ports": ["8000:8000"]}}}
         overrides = generate_build_overrides(spec, compose)
         assert overrides[0].insert_before_build is False
+
+    def test_static_nginx_service_skips_sdk_override(self, tmp_path):
+        ext_dir = tmp_path / "ext"
+        ext_dir.mkdir()
+        web = ext_dir / "web"
+        web.mkdir()
+        (web / "Dockerfile").write_text(
+            "FROM nginx:alpine\nCOPY index.html /usr/share/nginx/html/index.html\n"
+        )
+
+        spec = self._make_spec(tmp_path)
+        compose = {
+            "services": {
+                "mihari-demo": {"build": {"context": "./web"}, "ports": ["8080:80"]},
+            }
+        }
+
+        overrides = generate_build_overrides(spec, compose, extension_dir=ext_dir)
+        assert overrides == []
 
 
 # ------------------------------------------------------------------
