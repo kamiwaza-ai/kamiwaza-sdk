@@ -96,7 +96,7 @@ class PolicyMixin:
         """
         response = self.client.patch(
             f"/oauth-broker/tool-policies/{policy_id}",
-            json=update.model_dump(exclude_none=True),
+            json=update.model_dump(mode="json", exclude_none=True),
         )
         return ToolPolicyResponse.model_validate(response)
 
