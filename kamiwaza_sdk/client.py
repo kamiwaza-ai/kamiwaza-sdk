@@ -138,9 +138,10 @@ class KamiwazaClient:
         *,
         expect_json: bool = True,
         skip_auth: bool = False,
+        absolute_url: str | None = None,
         **kwargs,
     ):
-        url = f"{self.base_url}/{endpoint.lstrip('/')}"
+        url = absolute_url or f"{self.base_url}/{endpoint.lstrip('/')}"
         path = endpoint.lstrip("/")
         self.logger.debug(f"Making {method} request to {url}")
 

@@ -2,10 +2,10 @@
 
 from datetime import datetime
 from enum import Enum
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, SecretStr
 
 
 # ========== Provider and Status Enums ==========
@@ -25,6 +25,40 @@ class ConnectionStatus(str, Enum):
     DISCONNECTED = "disconnected"
     NEEDS_REAUTH = "needs_reauth"
     REVOKED = "revoked"
+
+
+def _coerce_provider(v: object) -> Provider | str:
+    """Accept known ``Provider`` members or fall back to a raw string.
+
+    This prevents ``ValidationError`` when the server introduces a new
+    provider (e.g. ``"slack"``) that the SDK does not yet enumerate.
+    """
+    if isinstance(v, Provider):
+        return v
+    if isinstance(v, str):
+        try:
+            return Provider(v)
+        except ValueError:
+            return v
+    return v  # type: ignore[return-value]
+
+
+def _coerce_connection_status(v: object) -> ConnectionStatus | str:
+    """Accept known ``ConnectionStatus`` members or fall back to a raw string."""
+    if isinstance(v, ConnectionStatus):
+        return v
+    if isinstance(v, str):
+        try:
+            return ConnectionStatus(v)
+        except ValueError:
+            return v
+    return v  # type: ignore[return-value]
+
+
+FlexibleProvider = Annotated[Provider | str, BeforeValidator(_coerce_provider)]
+FlexibleConnectionStatus = Annotated[
+    ConnectionStatus | str, BeforeValidator(_coerce_connection_status)
+]
 
 
 # ========== App Installation Schemas ==========
@@ -97,12 +131,12 @@ class ConnectionResponse(BaseModel):
     id: UUID
     app_installation_id: UUID
     user_id: UUID
-    provider: Provider
+    provider: FlexibleProvider
     external_user_id: str | None = None
     external_email: str | None = None
     granted_scopes: list[str]
     expires_at: datetime
-    status: ConnectionStatus
+    status: FlexibleConnectionStatus
     created_at: datetime
     updated_at: datetime | None = None
     last_used_at: datetime | None = None
@@ -114,8 +148,8 @@ class ConnectionStatusResponse(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
-    status: ConnectionStatus
-    provider: Provider
+    status: FlexibleConnectionStatus
+    provider: FlexibleProvider
     external_email: str | None = None
     granted_scopes: list[str] | None = None
     expires_at: datetime | None = None
@@ -171,7 +205,7 @@ class LeaseStatusResponse(BaseModel):
     lease_id: str
     app_installation_id: UUID
     tool_id: str
-    provider: Provider
+    provider: FlexibleProvider
     granted_scopes: list[str]
     issued_at: datetime
     expires_at: datetime
@@ -189,7 +223,7 @@ class GoogleAuthStartResponse(BaseModel):
         ..., description="URL to redirect user to for Google authorization"
     )
     state: str = Field(..., description="CSRF protection state parameter")
-    provider: Provider = Field(default=Provider.GOOGLE, description="Provider name")
+    provider: FlexibleProvider = Field(default=Provider.GOOGLE, description="Provider name")
 
 
 # ========== Tool Policy Schemas ==========
@@ -239,7 +273,7 @@ class ToolPolicyResponse(BaseModel):
     id: UUID
     app_installation_id: UUID
     tool_id: str
-    provider: Provider
+    provider: FlexibleProvider
     allowed_operations: list[str]
     allowed_scope_subset: list[str]
     policy_metadata: dict | None = None

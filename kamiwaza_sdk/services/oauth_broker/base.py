@@ -96,7 +96,7 @@ class OAuthBrokerService(BaseService, ProxyMixin, TokenMixin, PolicyMixin):
         """
         response = self.client.patch(
             f"/oauth-broker/apps/{app_id}",
-            json=update.model_dump(mode="json", exclude_none=True),
+            json=update.model_dump(mode="json", exclude_unset=True),
         )
         return AppInstallationResponse.model_validate(response)
 
@@ -160,8 +160,9 @@ class OAuthBrokerService(BaseService, ProxyMixin, TokenMixin, PolicyMixin):
         # Build an absolute URL by stripping the ``/api`` suffix from
         # ``base_url`` so that strict reverse proxies, WAFs, or load
         # balancers that reject literal ``..`` segments are not a problem.
-        # We bypass ``_request`` (which prepends ``base_url``) and hit
-        # the session directly.
+        # We pass ``absolute_url`` to ``_request`` so all standard error
+        # handling (typed APIError, 401 token refresh, NonAPIResponseError
+        # for HTML pages) is preserved.
         base = self.client.base_url.rstrip("/")
         if base.endswith("/api"):
             root = base[: -len("/api")]
@@ -176,12 +177,11 @@ class OAuthBrokerService(BaseService, ProxyMixin, TokenMixin, PolicyMixin):
         if scope:
             params["scope"] = scope
 
-        if self.client.authenticator:
-            self.client.authenticator.authenticate(self.client.session)
-
-        resp = self.client.session.request("GET", url, params=params)
-        resp.raise_for_status()
-        return ConnectionResponse.model_validate(resp.json())
+        response = self.client._request(
+            "GET", "/oauth-broker/auth/google/callback",
+            absolute_url=url, params=params,
+        )
+        return ConnectionResponse.model_validate(response)
 
     # ========== Connection Management ==========
 

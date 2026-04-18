@@ -400,7 +400,13 @@ def test_start_google_auth(dummy_client):
 
 
 def test_handle_google_callback():
-    """Test handling Google OAuth callback."""
+    """Test handling Google OAuth callback.
+
+    ``handle_google_callback`` now routes through ``client._request``
+    (with ``absolute_url``) instead of hitting ``session.request``
+    directly, so it inherits typed APIError, 401 refresh, and
+    NonAPIResponseError handling.
+    """
     connection_id = str(uuid.uuid4())
     app_id = str(uuid.uuid4())
     user_id = str(uuid.uuid4())
@@ -423,13 +429,9 @@ def test_handle_google_callback():
         "last_refreshed_at": None,
     }
 
-    mock_response = MagicMock()
-    mock_response.json.return_value = response_data
-    mock_response.raise_for_status = MagicMock()
-
     client = MagicMock()
     client.base_url = "https://example.com/api"
-    client.session.request.return_value = mock_response
+    client._request.return_value = response_data
 
     service = OAuthBrokerService(client)
 
@@ -442,9 +444,10 @@ def test_handle_google_callback():
     assert result.status == "connected"
     assert result.external_email == "user@example.com"
 
-    client.session.request.assert_called_once_with(
+    client._request.assert_called_once_with(
         "GET",
-        "https://example.com/oauth-broker/auth/google/callback",
+        "/oauth-broker/auth/google/callback",
+        absolute_url="https://example.com/oauth-broker/auth/google/callback",
         params={
             "code": "auth_code",
             "state": "xyz.abc.def",
