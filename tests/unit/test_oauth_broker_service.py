@@ -775,7 +775,7 @@ def test_drive_get_file(dummy_client):
     [
         "../../../etc/passwd",
         "..",
-        "foo/bar",
+        "foo/../bar",
         "foo\\bar",
         "foo?bar",
         "foo#frag",
@@ -810,7 +810,6 @@ def test_drive_get_file_rejects_path_traversal(dummy_client, malicious_file_id):
     [
         "",
         "tool id",
-        "tool/id",
         "tool\\id",
         "tool\x00id",
         "tool?id=x",
@@ -818,6 +817,8 @@ def test_drive_get_file_rejects_path_traversal(dummy_client, malicious_file_id):
         "tool\nid",
         "valid-id\n",
         "valid-id\r",
+        "../traversal",
+        "foo/../bar",
     ],
 )
 def test_proxy_methods_reject_invalid_tool_id(dummy_client, malicious_tool_id):
@@ -851,7 +852,7 @@ def test_proxy_methods_reject_invalid_tool_id(dummy_client, malicious_tool_id):
     [
         "../../../etc/passwd",
         "..",
-        "foo/bar",
+        "foo/../bar",
         "foo\\bar",
         "",
         "foo bar",
@@ -970,3 +971,66 @@ def test_calendar_list_events_with_hash_in_calendar_id(dummy_client):
     assert method == "get"
     assert path == "/oauth-broker/proxy/google/calendar/events"
     assert kwargs["params"]["calendar_id"] == holiday_cal_id
+
+
+def test_calendar_list_events_with_plus_in_calendar_id(dummy_client):
+    """Test that calendar IDs containing '+' (plus-addressed emails) are accepted."""
+    app_id = str(uuid.uuid4())
+    plus_cal_id = "team+ops@example.com"
+
+    response = {"items": []}
+    responses = {("get", "/oauth-broker/proxy/google/calendar/events"): response}
+    client = dummy_client(responses)
+    service = OAuthBrokerService(client)
+
+    result = service.calendar_list_events(
+        app_id=uuid.UUID(app_id),
+        tool_id="calendar-reader",
+        calendar_id=plus_cal_id,
+    )
+
+    assert "items" in result
+    method, path, kwargs = client.calls[0]
+    assert kwargs["params"]["calendar_id"] == plus_cal_id
+
+
+@pytest.mark.parametrize(
+    "invalid_calendar_id",
+    [
+        "",
+        "cal id with space",
+        "cal\nid",
+        "cal\x00id",
+        "cal?id=x",
+    ],
+)
+def test_calendar_list_events_rejects_invalid_calendar_id(dummy_client, invalid_calendar_id):
+    """Invalid calendar IDs must be rejected before reaching the client."""
+    client = dummy_client({})
+    service = OAuthBrokerService(client)
+
+    with pytest.raises(ValueError):
+        service.calendar_list_events(
+            app_id=uuid.uuid4(),
+            tool_id="calendar-reader",
+            calendar_id=invalid_calendar_id,
+        )
+
+    assert client.calls == []
+
+
+def test_proxy_accepts_namespaced_tool_id(dummy_client):
+    """Tool IDs with slashes and colons (namespaced IDs) should be accepted."""
+    app_id = str(uuid.uuid4())
+    response = {"items": []}
+    responses = {("get", "/oauth-broker/proxy/google/gmail/labels"): response}
+    client = dummy_client(responses)
+    service = OAuthBrokerService(client)
+
+    result = service.gmail_list_labels(
+        app_id=uuid.UUID(app_id), tool_id="google/gmail:reader"
+    )
+
+    assert "items" in result
+    method, path, kwargs = client.calls[0]
+    assert kwargs["params"]["tool_id"] == "google/gmail:reader"
