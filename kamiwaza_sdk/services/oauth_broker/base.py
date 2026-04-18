@@ -156,15 +156,33 @@ class OAuthBrokerService(BaseService, ProxyMixin, TokenMixin, PolicyMixin):
             This is typically called automatically by the OAuth redirect handler.
             OAuth callback arrives as GET redirect from provider.
         """
-        # OAuth callback arrives as GET redirect from provider
-        response = self.client.get(
-            "/oauth-broker/auth/google/callback",
-            params={
-                "code": code,
-                "state": state,
-                **({"scope": scope} if scope else {}),
-            },
-        )
+        # The callback route is at the server root, not under /api.
+        base = self.client.base_url
+        if base.endswith("/api"):
+            base = base[: -len("/api")]
+        elif base.endswith("/api/"):
+            base = base[: -len("/api/")]
+
+        url = f"{base}/oauth-broker/auth/google/callback"
+        params = {
+            "code": code,
+            "state": state,
+            **({"scope": scope} if scope else {}),
+        }
+
+        if self.client.authenticator:
+            self.client.authenticator.authenticate(self.client.session)
+
+        resp = self.client.session.get(url, params=params)
+        if resp.status_code >= 400:
+            from ...exceptions import APIError
+
+            raise APIError(
+                f"API request failed with status {resp.status_code}: {resp.text}",
+                status_code=resp.status_code,
+                response_text=resp.text,
+            )
+        response = resp.json()
         return ConnectionResponse.model_validate(response)
 
     # ========== Connection Management ==========

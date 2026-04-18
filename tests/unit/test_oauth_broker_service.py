@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import datetime, timedelta, timezone
+from unittest.mock import MagicMock, Mock
 
 import pytest
 
@@ -398,7 +399,7 @@ def test_start_google_auth(dummy_client):
     assert kwargs["params"]["scopes"] == "https://www.googleapis.com/auth/gmail.readonly"
 
 
-def test_handle_google_callback(dummy_client):
+def test_handle_google_callback():
     """Test handling Google OAuth callback."""
     connection_id = str(uuid.uuid4())
     app_id = str(uuid.uuid4())
@@ -406,7 +407,7 @@ def test_handle_google_callback(dummy_client):
     now = datetime.now(timezone.utc).isoformat()
     expires = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
 
-    response = {
+    response_data = {
         "id": connection_id,
         "app_installation_id": app_id,
         "user_id": user_id,
@@ -421,8 +422,16 @@ def test_handle_google_callback(dummy_client):
         "last_used_at": None,
         "last_refreshed_at": None,
     }
-    responses = {("get", "/oauth-broker/auth/google/callback"): response}
-    client = dummy_client(responses)
+
+    mock_resp = Mock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = response_data
+
+    client = MagicMock()
+    client.base_url = "https://example.com/api"
+    client.authenticator = None
+    client.session.get.return_value = mock_resp
+
     service = OAuthBrokerService(client)
 
     result = service.handle_google_callback(
@@ -434,11 +443,10 @@ def test_handle_google_callback(dummy_client):
     assert result.status == "connected"
     assert result.external_email == "user@example.com"
 
-    method, path, kwargs = client.calls[0]
-    assert method == "get"
-    assert path == "/oauth-broker/auth/google/callback"
-    assert kwargs["params"]["code"] == "auth_code"
-    assert kwargs["params"]["state"] == "xyz.abc.def"
+    call_args = client.session.get.call_args
+    assert call_args[0][0] == "https://example.com/oauth-broker/auth/google/callback"
+    assert call_args[1]["params"]["code"] == "auth_code"
+    assert call_args[1]["params"]["state"] == "xyz.abc.def"
 
 
 # ========== Connection Management Tests ==========
