@@ -5,7 +5,6 @@ from __future__ import annotations
 from uuid import UUID
 
 from ..base_service import BaseService
-from ...exceptions import APIError
 from ...schemas.oauth_broker import (
     AppInstallationCreate,
     AppInstallationListResponse,
@@ -158,14 +157,15 @@ class OAuthBrokerService(BaseService, ProxyMixin, TokenMixin, PolicyMixin):
             OAuth callback arrives as GET redirect from provider.
         """
         # The callback route is mounted at the server root, not under /api.
-        # Strip the /api suffix so we hit the correct path.
+        # Use a relative ``../`` prefix so that ``_request`` (which prepends
+        # ``base_url``) resolves to the non-/api path after URL normalisation
+        # performed by the ``requests`` library.
         base = self.client.base_url
-        if base.endswith("/api"):
-            base = base[: -len("/api")]
-        elif base.endswith("/api/"):
-            base = base[: -len("/api/")]
+        if base.endswith("/api") or base.endswith("/api/"):
+            endpoint = "../oauth-broker/auth/google/callback"
+        else:
+            endpoint = "oauth-broker/auth/google/callback"
 
-        url = f"{base}/oauth-broker/auth/google/callback"
         params: dict[str, str] = {
             "code": code,
             "state": state,
@@ -173,17 +173,7 @@ class OAuthBrokerService(BaseService, ProxyMixin, TokenMixin, PolicyMixin):
         if scope:
             params["scope"] = scope
 
-        if self.client.authenticator:
-            self.client.authenticator.authenticate(self.client.session)
-
-        resp = self.client.session.get(url, params=params)
-        if resp.status_code >= 400:
-            raise APIError(
-                f"API request failed with status {resp.status_code}: {resp.text}",
-                status_code=resp.status_code,
-                response_text=resp.text,
-            )
-        response = resp.json()
+        response = self.client._request("GET", endpoint, params=params)
         return ConnectionResponse.model_validate(response)
 
     # ========== Connection Management ==========

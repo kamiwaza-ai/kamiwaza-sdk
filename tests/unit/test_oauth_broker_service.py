@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock, Mock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -423,14 +423,9 @@ def test_handle_google_callback():
         "last_refreshed_at": None,
     }
 
-    mock_resp = Mock()
-    mock_resp.status_code = 200
-    mock_resp.json.return_value = response_data
-
     client = MagicMock()
     client.base_url = "https://example.com/api"
-    client.authenticator = None
-    client.session.get.return_value = mock_resp
+    client._request.return_value = response_data
 
     service = OAuthBrokerService(client)
 
@@ -443,10 +438,15 @@ def test_handle_google_callback():
     assert result.status == "connected"
     assert result.external_email == "user@example.com"
 
-    call_args = client.session.get.call_args
-    assert call_args[0][0] == "https://example.com/oauth-broker/auth/google/callback"
-    assert call_args[1]["params"]["code"] == "auth_code"
-    assert call_args[1]["params"]["state"] == "xyz.abc.def"
+    client._request.assert_called_once_with(
+        "GET",
+        "../oauth-broker/auth/google/callback",
+        params={
+            "code": "auth_code",
+            "state": "xyz.abc.def",
+            "scope": "https://www.googleapis.com/auth/gmail.readonly",
+        },
+    )
 
 
 # ========== Connection Management Tests ==========
