@@ -1,3 +1,4 @@
+# ruff: noqa: F401
 from .models import ModelService
 from .serving import ServingService
 from .catalog import CatalogService
