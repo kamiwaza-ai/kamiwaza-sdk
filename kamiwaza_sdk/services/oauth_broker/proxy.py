@@ -20,34 +20,13 @@ from ...schemas.oauth_broker import (
     GmailSearchRequest,
     GmailSendRequest,
 )
-
-# Google Drive file IDs and tool identifiers use URL-safe base64-ish
-# characters: letters, digits, hyphens, underscores, and dots.  Anything
-# else is rejected upfront to prevent path-traversal / query-string
-# injection.
-_SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9._-]+\Z")
+from ._validation import _validate_safe_id
 
 # Calendar IDs can be email addresses (e.g. "user@gmail.com"), group or
 # holiday calendar IDs (e.g. "en.usa#holiday@group.v.calendar.google.com"),
 # or the literal string "primary".  We allow alphanumerics plus the
 # characters that appear in these identifiers: @, ., _, -, and #.
 _SAFE_CALENDAR_ID_RE = re.compile(r"^[a-zA-Z0-9@._#-]+\Z")
-
-
-def _validate_safe_id(value: str, label: str) -> None:
-    """Validate that *value* contains only URL-safe identifier characters.
-
-    Raises ``ValueError`` when *value* is empty, contains characters
-    outside ``[a-zA-Z0-9._-]``, or equals ``..`` (path traversal).
-    This is used as a whitelist gate for identifiers (``tool_id``,
-    ``file_id``, ``lease_id``) that are interpolated into URLs or
-    query strings.
-    """
-    if not value or not _SAFE_ID_RE.match(value) or value == "..":
-        raise ValueError(
-            f"{label} contains characters that are not permitted "
-            f"(must match [a-zA-Z0-9._-]+)"
-        )
 
 
 def _validate_calendar_id(value: str) -> None:

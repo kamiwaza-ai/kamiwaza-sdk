@@ -156,7 +156,8 @@ class OAuthBrokerService(BaseService, ProxyMixin, TokenMixin, PolicyMixin):
             This is typically called automatically by the OAuth redirect handler.
             OAuth callback arrives as GET redirect from provider.
         """
-        # The callback route is at the server root, not under /api.
+        # The callback route is mounted at the server root, not under /api.
+        # Strip the /api suffix so we hit the correct path.
         base = self.client.base_url
         if base.endswith("/api"):
             base = base[: -len("/api")]
@@ -164,11 +165,12 @@ class OAuthBrokerService(BaseService, ProxyMixin, TokenMixin, PolicyMixin):
             base = base[: -len("/api/")]
 
         url = f"{base}/oauth-broker/auth/google/callback"
-        params = {
+        params: dict[str, str] = {
             "code": code,
             "state": state,
-            **({"scope": scope} if scope else {}),
         }
+        if scope:
+            params["scope"] = scope
 
         if self.client.authenticator:
             self.client.authenticator.authenticate(self.client.session)

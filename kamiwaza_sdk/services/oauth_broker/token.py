@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from typing import Any
 from urllib.parse import quote
 
@@ -11,8 +10,7 @@ from ...schemas.oauth_broker import (
     MintTokenRequest,
     MintTokenResponse,
 )
-
-_SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9._-]+\Z")
+from ._validation import _validate_safe_id
 
 
 class TokenMixin:
@@ -69,11 +67,7 @@ class TokenMixin:
             ValueError: If ``lease_id`` is empty or contains characters
                 outside ``[a-zA-Z0-9._-]``.
         """
-        if not lease_id or not _SAFE_ID_RE.match(lease_id) or lease_id == "..":
-            raise ValueError(
-                "lease_id contains characters that are not permitted "
-                "(must match [a-zA-Z0-9._-]+)"
-            )
+        _validate_safe_id(lease_id, "lease_id")
         safe_lease_id = quote(lease_id, safe="")
         response = self.client.get(
             f"/oauth-broker/tokens/leases/{safe_lease_id}"
@@ -95,10 +89,6 @@ class TokenMixin:
             ValueError: If ``lease_id`` is empty or contains characters
                 outside ``[a-zA-Z0-9._-]``.
         """
-        if not lease_id or not _SAFE_ID_RE.match(lease_id) or lease_id == "..":
-            raise ValueError(
-                "lease_id contains characters that are not permitted "
-                "(must match [a-zA-Z0-9._-]+)"
-            )
+        _validate_safe_id(lease_id, "lease_id")
         safe_lease_id = quote(lease_id, safe="")
         self.client.delete(f"/oauth-broker/tokens/leases/{safe_lease_id}")
