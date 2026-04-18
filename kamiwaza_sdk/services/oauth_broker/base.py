@@ -5,6 +5,7 @@ from __future__ import annotations
 from uuid import UUID
 
 from ..base_service import BaseService
+from ...exceptions import APIError
 from ...schemas.oauth_broker import (
     AppInstallationCreate,
     AppInstallationListResponse,
@@ -177,8 +178,6 @@ class OAuthBrokerService(BaseService, ProxyMixin, TokenMixin, PolicyMixin):
 
         resp = self.client.session.get(url, params=params)
         if resp.status_code >= 400:
-            from ...exceptions import APIError
-
             raise APIError(
                 f"API request failed with status {resp.status_code}: {resp.text}",
                 status_code=resp.status_code,
