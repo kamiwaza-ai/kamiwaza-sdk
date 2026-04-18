@@ -219,6 +219,8 @@ class LeaseStatusResponse(BaseModel):
 class GoogleAuthStartResponse(BaseModel):
     """Response when initiating Google OAuth flow."""
 
+    model_config = ConfigDict(extra="allow")
+
     auth_url: str = Field(
         ..., description="URL to redirect user to for Google authorization"
     )
