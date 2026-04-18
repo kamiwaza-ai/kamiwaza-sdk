@@ -157,14 +157,17 @@ class OAuthBrokerService(BaseService, ProxyMixin, TokenMixin, PolicyMixin):
             OAuth callback arrives as GET redirect from provider.
         """
         # The callback route is mounted at the server root, not under /api.
-        # Use a relative ``../`` prefix so that ``_request`` (which prepends
-        # ``base_url``) resolves to the non-/api path after URL normalisation
-        # performed by the ``requests`` library.
-        base = self.client.base_url
-        if base.endswith("/api") or base.endswith("/api/"):
-            endpoint = "../oauth-broker/auth/google/callback"
+        # Build an absolute URL by stripping the ``/api`` suffix from
+        # ``base_url`` so that strict reverse proxies, WAFs, or load
+        # balancers that reject literal ``..`` segments are not a problem.
+        # We bypass ``_request`` (which prepends ``base_url``) and hit
+        # the session directly.
+        base = self.client.base_url.rstrip("/")
+        if base.endswith("/api"):
+            root = base[: -len("/api")]
         else:
-            endpoint = "oauth-broker/auth/google/callback"
+            root = base
+        url = f"{root}/oauth-broker/auth/google/callback"
 
         params: dict[str, str] = {
             "code": code,
@@ -173,8 +176,12 @@ class OAuthBrokerService(BaseService, ProxyMixin, TokenMixin, PolicyMixin):
         if scope:
             params["scope"] = scope
 
-        response = self.client._request("GET", endpoint, params=params)
-        return ConnectionResponse.model_validate(response)
+        if self.client.authenticator:
+            self.client.authenticator.authenticate(self.client.session)
+
+        resp = self.client.session.request("GET", url, params=params)
+        resp.raise_for_status()
+        return ConnectionResponse.model_validate(resp.json())
 
     # ========== Connection Management ==========
 

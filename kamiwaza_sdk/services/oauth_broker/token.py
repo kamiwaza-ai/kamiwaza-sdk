@@ -64,8 +64,8 @@ class TokenMixin:
             Lease status including expiry and validity
 
         Raises:
-            ValueError: If ``lease_id`` is empty or contains characters
-                outside ``[a-zA-Z0-9._-]``.
+            ValueError: If ``lease_id`` is empty or contains unsafe
+                characters.
         """
         _validate_safe_id(lease_id, "lease_id")
         safe_lease_id = quote(lease_id, safe="")
@@ -86,8 +86,8 @@ class TokenMixin:
             lease_id: Lease identifier
 
         Raises:
-            ValueError: If ``lease_id`` is empty or contains characters
-                outside ``[a-zA-Z0-9._-]``.
+            ValueError: If ``lease_id`` is empty or contains unsafe
+                characters.
         """
         _validate_safe_id(lease_id, "lease_id")
         safe_lease_id = quote(lease_id, safe="")

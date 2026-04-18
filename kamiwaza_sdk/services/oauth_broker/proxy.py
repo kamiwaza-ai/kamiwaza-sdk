@@ -20,7 +20,7 @@ from ...schemas.oauth_broker import (
     GmailSearchRequest,
     GmailSendRequest,
 )
-from ._validation import _validate_safe_id
+from ._validation import _validate_query_param_id, _validate_safe_id
 
 # Calendar IDs can be email addresses (e.g. "user@gmail.com"), plus-addressed
 # emails (e.g. "team+ops@example.com"), group or holiday calendar IDs
@@ -77,7 +77,7 @@ class ProxyMixin:
             ...     max_results=20
             ... )
         """
-        _validate_safe_id(tool_id, "tool_id")
+        _validate_query_param_id(tool_id, "tool_id")
         request = GmailSearchRequest(query=query, max_results=max_results)
         response = self.client.post(
             "/oauth-broker/proxy/google/gmail/search",
@@ -101,7 +101,7 @@ class ProxyMixin:
         Returns:
             Gmail API response
         """
-        _validate_safe_id(tool_id, "tool_id")
+        _validate_query_param_id(tool_id, "tool_id")
         request = GmailGetMessageRequest(message_id=message_id, msg_format=msg_format)
         response = self.client.post(
             "/oauth-broker/proxy/google/gmail/getMessage",
@@ -124,7 +124,7 @@ class ProxyMixin:
         Returns:
             Gmail API response
         """
-        _validate_safe_id(tool_id, "tool_id")
+        _validate_query_param_id(tool_id, "tool_id")
         request = GmailSendRequest(raw_message=raw_message)
         response = self.client.post(
             "/oauth-broker/proxy/google/gmail/send",
@@ -144,7 +144,7 @@ class ProxyMixin:
         Returns:
             Gmail API response
         """
-        _validate_safe_id(tool_id, "tool_id")
+        _validate_query_param_id(tool_id, "tool_id")
         response = self.client.get(
             "/oauth-broker/proxy/google/gmail/labels",
             params={"app_id": str(app_id), "tool_id": tool_id},
@@ -178,7 +178,7 @@ class ProxyMixin:
         Returns:
             Gmail API response
         """
-        _validate_safe_id(tool_id, "tool_id")
+        _validate_query_param_id(tool_id, "tool_id")
         request = GmailModifyRequest(
             message_id=message_id, add_labels=add_labels, remove_labels=remove_labels
         )
@@ -214,7 +214,7 @@ class ProxyMixin:
             ...     page_size=20
             ... )
         """
-        _validate_safe_id(tool_id, "tool_id")
+        _validate_query_param_id(tool_id, "tool_id")
         request = DriveListFilesRequest(query=query, page_size=page_size)
         response = self.client.post(
             "/oauth-broker/proxy/google/drive/listFiles",
@@ -241,7 +241,7 @@ class ProxyMixin:
             ValueError: If ``file_id`` is empty or contains characters that
                 cannot appear in a Google Drive file ID.
         """
-        _validate_safe_id(tool_id, "tool_id")
+        _validate_query_param_id(tool_id, "tool_id")
         # Reject obviously malformed IDs before they reach the URL. Google
         # Drive file IDs are URL-safe base64-ish (letters, digits, '-', '_').
         # A whitelist regex is strictly safer than the previous blacklist;
@@ -269,7 +269,7 @@ class ProxyMixin:
         Returns:
             Calendar API response
         """
-        _validate_safe_id(tool_id, "tool_id")
+        _validate_query_param_id(tool_id, "tool_id")
         response = self.client.get(
             "/oauth-broker/proxy/google/calendar/calendars",
             params={"app_id": str(app_id), "tool_id": tool_id},
@@ -308,7 +308,7 @@ class ProxyMixin:
             ...     max_results=50
             ... )
         """
-        _validate_safe_id(tool_id, "tool_id")
+        _validate_query_param_id(tool_id, "tool_id")
         _validate_calendar_id(calendar_id)
         params = {
             "app_id": str(app_id),

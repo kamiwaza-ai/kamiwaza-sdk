@@ -423,9 +423,13 @@ def test_handle_google_callback():
         "last_refreshed_at": None,
     }
 
+    mock_response = MagicMock()
+    mock_response.json.return_value = response_data
+    mock_response.raise_for_status = MagicMock()
+
     client = MagicMock()
     client.base_url = "https://example.com/api"
-    client._request.return_value = response_data
+    client.session.request.return_value = mock_response
 
     service = OAuthBrokerService(client)
 
@@ -438,9 +442,9 @@ def test_handle_google_callback():
     assert result.status == "connected"
     assert result.external_email == "user@example.com"
 
-    client._request.assert_called_once_with(
+    client.session.request.assert_called_once_with(
         "GET",
-        "../oauth-broker/auth/google/callback",
+        "https://example.com/oauth-broker/auth/google/callback",
         params={
             "code": "auth_code",
             "state": "xyz.abc.def",
@@ -587,6 +591,45 @@ def test_expire_lease(dummy_client):
     method, path, kwargs = client.calls[0]
     assert method == "delete"
     assert path == "/oauth-broker/tokens/leases/lease-123"
+
+
+def test_get_lease_status_accepts_base64_lease_id(dummy_client):
+    """Lease IDs containing base64 characters (=, +) must be accepted.
+
+    The broker may emit opaque base64-encoded lease IDs.  These should
+    pass validation and be percent-encoded in the URL path.
+    """
+    app_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    expires = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
+    # A lease ID with base64 padding and plus character
+    base64_lease = "abc+def/ghi=jkl=="
+
+    response = {
+        "lease_id": base64_lease,
+        "app_installation_id": app_id,
+        "tool_id": "test-tool",
+        "provider": "google",
+        "granted_scopes": ["https://www.googleapis.com/auth/gmail.readonly"],
+        "issued_at": now,
+        "expires_at": expires,
+        "revoked_at": None,
+        "is_valid": True,
+    }
+    # The lease ID will be percent-encoded in the URL path
+    encoded_lease = "abc%2Bdef%2Fghi%3Djkl%3D%3D"
+    responses = {("get", f"/oauth-broker/tokens/leases/{encoded_lease}"): response}
+    client = dummy_client(responses)
+    service = OAuthBrokerService(client)
+
+    result = service.get_lease_status(base64_lease)
+
+    assert result.lease_id == base64_lease
+    assert result.is_valid is True
+
+    method, path, kwargs = client.calls[0]
+    assert method == "get"
+    assert path == f"/oauth-broker/tokens/leases/{encoded_lease}"
 
 
 # ========== Proxy Endpoint Tests ==========
@@ -809,11 +852,7 @@ def test_drive_get_file_rejects_path_traversal(dummy_client, malicious_file_id):
     "malicious_tool_id",
     [
         "",
-        "tool id",
-        "tool\\id",
         "tool\x00id",
-        "tool?id=x",
-        "tool#frag",
         "tool\nid",
         "valid-id\n",
         "valid-id\r",
@@ -824,8 +863,11 @@ def test_drive_get_file_rejects_path_traversal(dummy_client, malicious_file_id):
 def test_proxy_methods_reject_invalid_tool_id(dummy_client, malicious_tool_id):
     """Malformed tool_id values must be rejected before reaching the client.
 
-    Guards against query-string injection / log-poisoning via tool_id
-    across all proxy methods.
+    Guards against control-character injection / log-poisoning and
+    path-traversal via tool_id across all proxy methods.  tool_id is
+    passed as a query parameter and the server accepts arbitrary
+    printable strings, so spaces and punctuation are intentionally
+    allowed.
     """
     client = dummy_client({})
     service = OAuthBrokerService(client)
@@ -1034,3 +1076,38 @@ def test_proxy_accepts_namespaced_tool_id(dummy_client):
     assert "items" in result
     method, path, kwargs = client.calls[0]
     assert kwargs["params"]["tool_id"] == "google/gmail:reader"
+
+
+@pytest.mark.parametrize(
+    "tool_id",
+    [
+        "Gmail Reader",
+        "tool?id=x",
+        "tool#frag",
+        "tool\\id",
+        "My Tool (v2)",
+        "résumé-tool",
+    ],
+)
+def test_proxy_accepts_tool_id_with_spaces_and_punctuation(dummy_client, tool_id):
+    """Tool IDs with spaces and punctuation are accepted by the server.
+
+    The server-side schema for ``ToolPolicyCreate.tool_id`` and
+    ``AppInstallationCreate.allowed_tools`` accepts arbitrary strings.
+    Since ``tool_id`` is sent as a query parameter (URL-encoded by the
+    ``requests`` library), these values are safe and must not be rejected
+    by the client-side validator.
+    """
+    app_id = str(uuid.uuid4())
+    response = {"items": []}
+    responses = {("get", "/oauth-broker/proxy/google/gmail/labels"): response}
+    client = dummy_client(responses)
+    service = OAuthBrokerService(client)
+
+    result = service.gmail_list_labels(
+        app_id=uuid.UUID(app_id), tool_id=tool_id,
+    )
+
+    assert "items" in result
+    method, path, kwargs = client.calls[0]
+    assert kwargs["params"]["tool_id"] == tool_id
