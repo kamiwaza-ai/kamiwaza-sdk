@@ -143,21 +143,20 @@ class KamiwazaClient:
         **kwargs,
     ):
         if absolute_url:
-            base_netloc = urlparse(self.base_url).netloc
-            abs_netloc = urlparse(absolute_url).netloc
-            if abs_netloc != base_netloc:
+            base_parsed = urlparse(self.base_url)
+            abs_parsed = urlparse(absolute_url)
+            if abs_parsed.netloc != base_parsed.netloc or abs_parsed.scheme != base_parsed.scheme:
                 raise ValueError(
-                    f"absolute_url must target the same host as base_url "
-                    f"({base_netloc})"
+                    f"absolute_url must target the same origin as base_url "
+                    f"({base_parsed.scheme}://{base_parsed.netloc})"
                 )
 
         url = absolute_url or f"{self.base_url}/{endpoint.lstrip('/')}"
         path = endpoint.lstrip("/")
         self.logger.debug(f"Making {method} request to {url}")
 
-        # Ensure headers are present
-        if "headers" not in kwargs:
-            kwargs["headers"] = {}
+        # Ensure headers are a fresh dict so we never mutate caller-provided mappings
+        kwargs["headers"] = dict(kwargs.get("headers") or {})
 
         # Ensure authentication is set up (except for auth endpoints)
         if self.authenticator and not skip_auth:

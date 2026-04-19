@@ -92,10 +92,23 @@ def test_absolute_url_rejects_different_host(monkeypatch: pytest.MonkeyPatch) ->
     response = _StubResponse(status_code=200, json_data={})
     client = _make_client_with_response(monkeypatch, response)
 
-    with pytest.raises(ValueError, match="same host"):
+    with pytest.raises(ValueError, match="same origin"):
         client._request(
             "GET", "/endpoint",
             absolute_url="https://evil.example.com/steal",
+        )
+
+
+def test_absolute_url_rejects_scheme_downgrade(monkeypatch: pytest.MonkeyPatch) -> None:
+    """absolute_url with http:// against an https:// base_url must be
+    rejected to prevent transport-security downgrade."""
+    response = _StubResponse(status_code=200, json_data={})
+    client = _make_client_with_response(monkeypatch, response)
+
+    with pytest.raises(ValueError, match="same origin"):
+        client._request(
+            "GET", "/endpoint",
+            absolute_url="http://example.test/callback",
         )
 
 
@@ -132,3 +145,30 @@ def test_skip_auth_strips_authorization_header(monkeypatch: pytest.MonkeyPatch) 
     # The per-request headers must set Authorization to None so that
     # requests.Session removes it from the merged result.
     assert captured_kwargs["headers"]["Authorization"] is None
+
+
+def test_skip_auth_with_none_headers_does_not_crash(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Passing headers=None with skip_auth=True must not raise TypeError."""
+    captured_kwargs: dict = {}
+
+    def _capture_request(*args, **kwargs):
+        captured_kwargs.update(kwargs)
+        return _StubResponse(status_code=200, json_data={"ok": True})
+
+    client = KamiwazaClient(base_url="https://example.test/api")
+    monkeypatch.setattr(client.session, "request", _capture_request)
+
+    client._request("GET", "/public-endpoint", skip_auth=True, headers=None)
+
+    assert captured_kwargs["headers"]["Authorization"] is None
+
+
+def test_request_does_not_mutate_caller_headers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_request must not modify the caller-provided headers dict."""
+    response = _StubResponse(status_code=200, json_data={"ok": True})
+    client = _make_client_with_response(monkeypatch, response)
+
+    caller_headers = {"X-Custom": "value"}
+    client._request("GET", "/endpoint", skip_auth=True, headers=caller_headers)
+
+    assert "Authorization" not in caller_headers
