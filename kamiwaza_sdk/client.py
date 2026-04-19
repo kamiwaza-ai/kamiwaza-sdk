@@ -160,6 +160,116 @@ class KamiwazaClient:
         )
         return should_retry, dataset_urn_for_schema
 
+    def _handle_401(self, response, endpoint: str, skip_auth: bool, did_refresh: bool) -> None:
+        if skip_auth:
+            raise AuthenticationError(
+                f"Unauthenticated request failed for {endpoint}: {response.text}"
+            )
+        logger.warning(f"Received 401 Unauthorized. Response: {response.text}")
+        if self.authenticator:
+            if not did_refresh:
+                self.authenticator.refresh_token(self.session)
+                return
+            raise AuthenticationError("Authentication failed after token refresh.")
+        raise AuthenticationError("Authentication failed. No authenticator provided.")
+
+    def _handle_error_response(
+        self,
+        response,
+        path: str,
+        schema_retry: bool,
+        retry_idx: int,
+        dataset_urn_for_schema: str | None,
+    ) -> int:
+        content_type = response.headers.get("content-type", "")
+        response_text = response.text
+        payload: Any | None = None
+        if "application/json" in content_type.lower():
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = None
+
+        if response.status_code == 404:
+            lowered = content_type.lower()
+            if "text/html" in lowered or "Dashboard" in response_text:
+                raise NonAPIResponseError(
+                    f"Received 404 with HTML response. "
+                    f"Your base URL is '{self.base_url}' - did you forget to append '/api'?"
+                )
+
+        if schema_retry and response.status_code == 404 and retry_idx < len(
+            self._DATASET_SCHEMA_PUT_RETRY_DELAYS_SECONDS
+        ):
+            detail = payload.get("detail") if isinstance(payload, dict) else None
+            if detail == "Dataset not found or schema could not be updated":
+                delay = self._DATASET_SCHEMA_PUT_RETRY_DELAYS_SECONDS[retry_idx]
+                retry_idx += 1
+                self.logger.debug(
+                    "Retrying dataset schema update after 404 (attempt %s/%s, delay=%.2fs): %s",
+                    retry_idx,
+                    len(self._DATASET_SCHEMA_PUT_RETRY_DELAYS_SECONDS),
+                    delay,
+                    dataset_urn_for_schema,
+                )
+                time.sleep(delay)
+                return retry_idx
+
+        message = f"API request failed with status {response.status_code}: {response_text}"
+        if response.status_code == 501 and (
+            path.startswith("vectordb") or path.startswith("context/vectordb")
+        ):
+            raise VectorDBUnavailableError(
+                "VectorDB backend is not configured",
+                status_code=response.status_code,
+                response_text=response_text,
+                response_data=payload,
+            )
+        self.logger.error(f"Request failed: {response_text}")
+        raise APIError(
+            message,
+            status_code=response.status_code,
+            response_text=response_text,
+            response_data=payload,
+        )
+
+    def _parse_success_response(self, response, expect_json: bool):
+        if not expect_json:
+            return response
+
+        if response.status_code == 204:
+            return None
+
+        if 200 <= response.status_code < 300:
+            try:
+                return response.json()
+            except ValueError:
+                content_type = response.headers.get("content-type", "").lower()
+                if "text/html" in content_type or "Dashboard" in response.text:
+                    raise NonAPIResponseError(
+                        f"Received HTML response instead of JSON. "
+                        f"Your base URL is '{self.base_url}' - did you forget to append '/api'?"
+                    )
+                raise APIError(
+                    f"Failed to parse JSON response. Content-Type: {content_type}, "
+                    f"Response: {response.text[:200]}...",
+                    status_code=response.status_code,
+                    response_text=response.text,
+                )
+
+        if response.status_code == 404:
+            content_type = response.headers.get("content-type", "").lower()
+            if "text/html" in content_type or "Dashboard" in response.text:
+                raise NonAPIResponseError(
+                    f"Received 404 with HTML response. "
+                    f"Your base URL is '{self.base_url}' - did you forget to append '/api'?"
+                )
+        raise APIError(
+            f"Unexpected status code {response.status_code}: {response.text}",
+            status_code=response.status_code,
+            response_text=response.text,
+        )
+
     def _request(
         self,
         method: str,
@@ -177,10 +287,8 @@ class KamiwazaClient:
         path = endpoint.lstrip("/")
         self.logger.debug(f"Making {method} request to {url}")
 
-        # Ensure headers are a fresh dict so we never mutate caller-provided mappings
         kwargs["headers"] = dict(kwargs.get("headers") or {})
 
-        # Ensure authentication is set up (except for auth endpoints)
         if self.authenticator and not skip_auth:
             self.authenticator.authenticate(self.session)
 
@@ -195,7 +303,6 @@ class KamiwazaClient:
 
         while True:
             try:
-                # Debug headers
                 self.logger.debug(f"Request headers: {self.session.headers}")
                 response = self.session.request(method, url, **kwargs)
                 self.logger.debug(f"Response status: {response.status_code}")
@@ -204,111 +311,19 @@ class KamiwazaClient:
                 raise APIError(f"An error occurred while making the request: {e}")
 
             if response.status_code == 401:
-                if skip_auth:
-                    raise AuthenticationError(
-                        f"Unauthenticated request failed for {endpoint}: {response.text}"
-                    )
-                logger.warning(f"Received 401 Unauthorized. Response: {response.text}")
-                if self.authenticator:
-                    if not did_refresh:
-                        did_refresh = True
-                        self.authenticator.refresh_token(self.session)
-                        continue
-                    raise AuthenticationError("Authentication failed after token refresh.")
-                raise AuthenticationError("Authentication failed. No authenticator provided.")
+                self._handle_401(response, endpoint, skip_auth, did_refresh)
+                did_refresh = True
+                continue
 
             if response.status_code >= 400:
-                content_type = response.headers.get("content-type", "")
-                response_text = response.text
-                payload: Any | None = None
-                if "application/json" in content_type.lower():
-                    try:
-                        payload = response.json()
-                    except ValueError:
-                        payload = None
-                if response.status_code == 404:
-                    lowered = content_type.lower()
-                    if "text/html" in lowered or "Dashboard" in response_text:
-                        raise NonAPIResponseError(
-                            f"Received 404 with HTML response. "
-                            f"Your base URL is '{self.base_url}' - did you forget to append '/api'?"
-                        )
-
-                if schema_retry and response.status_code == 404 and retry_idx < len(
-                    self._DATASET_SCHEMA_PUT_RETRY_DELAYS_SECONDS
-                ):
-                    detail = payload.get("detail") if isinstance(payload, dict) else None
-                    if detail == "Dataset not found or schema could not be updated":
-                        delay = self._DATASET_SCHEMA_PUT_RETRY_DELAYS_SECONDS[retry_idx]
-                        retry_idx += 1
-                        self.logger.debug(
-                            "Retrying dataset schema update after 404 (attempt %s/%s, delay=%.2fs): %s",
-                            retry_idx,
-                            len(self._DATASET_SCHEMA_PUT_RETRY_DELAYS_SECONDS),
-                            delay,
-                            dataset_urn_for_schema,
-                        )
-                        time.sleep(delay)
-                        continue
-
-                message = f"API request failed with status {response.status_code}: {response_text}"
-                if response.status_code == 501 and (
-                    path.startswith("vectordb") or path.startswith("context/vectordb")
-                ):
-                    raise VectorDBUnavailableError(
-                        "VectorDB backend is not configured",
-                        status_code=response.status_code,
-                        response_text=response_text,
-                        response_data=payload,
-                    )
-                self.logger.error(f"Request failed: {response_text}")
-                raise APIError(
-                    message,
-                    status_code=response.status_code,
-                    response_text=response_text,
-                    response_data=payload,
+                retry_idx = self._handle_error_response(
+                    response, path, schema_retry, retry_idx, dataset_urn_for_schema
                 )
+                continue
 
             break
 
-        if not expect_json:
-            return response
-
-        if response.status_code == 204:
-            return None
-
-        if 200 <= response.status_code < 300:
-            # Try to parse JSON
-            try:
-                return response.json()
-            except ValueError:
-                # Check if we got an HTML response (likely the dashboard)
-                content_type = response.headers.get("content-type", "").lower()
-                if "text/html" in content_type or "Dashboard" in response.text:
-                    raise NonAPIResponseError(
-                        f"Received HTML response instead of JSON. "
-                        f"Your base URL is '{self.base_url}' - did you forget to append '/api'?"
-                    )
-                raise APIError(
-                    f"Failed to parse JSON response. Content-Type: {content_type}, "
-                    f"Response: {response.text[:200]}...",
-                    status_code=response.status_code,
-                    response_text=response.text,
-                )
-
-        # For non-2xx status codes, check if it's an HTML error page
-        if response.status_code == 404:
-            content_type = response.headers.get("content-type", "").lower()
-            if "text/html" in content_type or "Dashboard" in response.text:
-                raise NonAPIResponseError(
-                    f"Received 404 with HTML response. "
-                    f"Your base URL is '{self.base_url}' - did you forget to append '/api'?"
-                )
-        raise APIError(
-            f"Unexpected status code {response.status_code}: {response.text}",
-            status_code=response.status_code,
-            response_text=response.text,
-        )
+        return self._parse_success_response(response, expect_json)
 
     def get(self, endpoint: str, **kwargs):
         return self._request("GET", endpoint, **kwargs)
