@@ -13,7 +13,11 @@ from __future__ import annotations
 import pytest
 import requests
 
-from kamiwaza_sdk.authentication import ApiKeyAuthenticator, Authenticator
+from kamiwaza_sdk.authentication import (
+    ApiKeyAuthenticator,
+    Authenticator,
+    OAuthAuthenticator,
+)
 from kamiwaza_sdk.client import KamiwazaClient
 from kamiwaza_sdk.exceptions import AuthenticationError
 
@@ -222,3 +226,72 @@ def test_401_no_authenticator_raises_without_retry(
 
     assert "No authenticator provided" in str(exc_info.value)
     assert len(calls) == 1
+
+
+def test_401_detail_surfaces_json_detail_field(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """JSON ``{"detail": "..."}`` bodies surface just the detail string."""
+    detail = "Invalid session token"
+    # Raw text also contains JSON wrapping, but the raised message should be
+    # the unwrapped detail (no braces, no ``detail`` key).
+    response = _StubResponse(
+        status_code=401,
+        text=f'{{"detail":"{detail}"}}',
+        json_data={"detail": detail},
+    )
+    client, _ = _client_with_responses(
+        monkeypatch, [response], authenticator=ApiKeyAuthenticator("pat-token")
+    )
+
+    with pytest.raises(AuthenticationError) as exc_info:
+        client.get("/apps/sessions/heartbeat")
+
+    message = str(exc_info.value)
+    assert detail in message
+    # JSON scaffolding should be stripped — we surface only the detail value.
+    assert '"detail"' not in message
+
+
+def test_401_detail_truncates_non_json_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-JSON bodies (e.g. proxy HTML pages) are truncated to <=500 chars.
+
+    Uses a distinctive filler character (``Z``) that cannot appear in the
+    constant error-message prefix so the count assertion cleanly measures
+    the embedded body's contribution.
+    """
+    huge_body = "Z" * 5000
+    response = _StubResponse(
+        status_code=401,
+        text=huge_body,
+        content_type="text/html",
+        # json_data=None -> response.json() raises ValueError
+    )
+    client, _ = _client_with_responses(
+        monkeypatch, [response], authenticator=ApiKeyAuthenticator("pat-token")
+    )
+
+    with pytest.raises(AuthenticationError) as exc_info:
+        client.get("/gateway-guarded")
+
+    message = str(exc_info.value)
+    # The body contribution must be capped at the max length. No ``Z`` appears
+    # in the constant prefix, so message.count("Z") is exactly the truncated
+    # body length.
+    assert message.count("Z") == 500
+    assert "Z" * 500 in message  # present up to the cap
+
+
+def test_oauth_authenticator_cannot_refresh() -> None:
+    """OAuth refresh is a placeholder; ``can_refresh`` must return False.
+
+    Otherwise a 401 would trigger ``refresh_token`` and raise
+    ``NotImplementedError`` instead of a clean ``AuthenticationError``
+    carrying the server's actual response.
+    """
+    auth = OAuthAuthenticator(
+        client_id="cid", client_secret="csecret", auth_service=None
+    )
+    assert auth.can_refresh() is False

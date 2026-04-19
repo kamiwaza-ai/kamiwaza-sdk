@@ -35,6 +35,30 @@ from .services.skills import SkillsService
 
 logger = logging.getLogger(__name__)
 
+_AUTH_ERROR_DETAIL_MAX_LEN = 500
+
+
+def _extract_server_detail(response, max_len: int = _AUTH_ERROR_DETAIL_MAX_LEN) -> str:
+    """Extract a short, embeddable description of a server error response.
+
+    Prefers the JSON ``detail`` field (FastAPI convention) so the caller sees
+    the server's actual message. Falls back to the serialized JSON body, then
+    raw text. Output is always truncated to ``max_len`` characters to prevent
+    multi-KB proxy/gateway HTML error pages from bloating log lines and
+    exception strings.
+    """
+    try:
+        body = response.json()
+    except (ValueError, AttributeError):
+        return (response.text or "")[:max_len]
+
+    if isinstance(body, dict) and "detail" in body:
+        detail = body["detail"]
+        if isinstance(detail, str):
+            return detail[:max_len]
+        return str(detail)[:max_len]
+    return str(body)[:max_len]
+
 
 class KamiwazaClient:
     _RECENT_DATASET_TTL_SECONDS = 30.0
@@ -182,9 +206,12 @@ class KamiwazaClient:
             if response.status_code == 401:
                 if skip_auth:
                     raise AuthenticationError(
-                        f"Unauthenticated request failed for {endpoint}: {response.text}"
+                        f"Unauthenticated request failed for {endpoint}: "
+                        f"{_extract_server_detail(response)}"
                     )
-                logger.warning(f"Received 401 Unauthorized. Response: {response.text}")
+                logger.warning(
+                    f"Received 401 Unauthorized. Response: {response.text}"
+                )
                 if self.authenticator:
                     # Only attempt a refresh-and-retry if the authenticator can
                     # actually obtain new credentials. PAT/API-key auth cannot,
@@ -207,7 +234,7 @@ class KamiwazaClient:
                     if did_refresh:
                         raise AuthenticationError(
                             f"Authentication failed after token refresh for "
-                            f"{endpoint}: {response.text}"
+                            f"{endpoint}: {_extract_server_detail(response)}"
                         )
                     # Non-refreshable authenticator (e.g. PAT): surface the
                     # server's actual response so callers can distinguish
@@ -215,7 +242,8 @@ class KamiwazaClient:
                     # (e.g. app session-token endpoints returning 401 for an
                     # unknown session token).
                     raise AuthenticationError(
-                        f"Authentication failed for {endpoint}: {response.text}"
+                        f"Authentication failed for {endpoint}: "
+                        f"{_extract_server_detail(response)}"
                     )
                 raise AuthenticationError(
                     "Authentication failed. No authenticator provided."

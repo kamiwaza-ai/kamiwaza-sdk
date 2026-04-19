@@ -1160,7 +1160,17 @@ def resolved_live_password(
     """
     Resolve live password with kube-derived credentials first (kz-login),
     then explicit configured password as fallback.
+
+    Fast-path: when ``KAMIWAZA_API_KEY`` is present and validates against
+    ``/auth/users/me``, skip the password resolver entirely. The valid PAT
+    is the only credential the integration suite needs, and running
+    ``kz-login`` on every session just to fill an unused string can trip
+    Keycloak rate limits / account lockout across many test runs.
     """
+
+    env_api_key = live_api_key.strip()
+    if env_api_key and _api_key_auth_works(live_server_available, env_api_key)[0]:
+        return ""
 
     password, error = _resolve_live_password_once(
         live_server_available=live_server_available,
@@ -1168,7 +1178,7 @@ def resolved_live_password(
         live_username=live_username,
         configured_password=str(pytestconfig.getoption("live_password")),
     )
-    if password or live_api_key.strip():
+    if password or env_api_key:
         return password
 
     username = live_username.strip()

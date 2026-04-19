@@ -182,3 +182,13 @@ class OAuthAuthenticator(Authenticator):
 
     def refresh_token(self, session: requests.Session) -> None:  # pragma: no cover - not implemented
         raise NotImplementedError("OAuth authentication is not yet implemented.")
+
+    def can_refresh(self) -> bool:
+        """Placeholder: OAuth refresh is not yet implemented.
+
+        Returning ``False`` prevents the HTTP 401 handler from invoking
+        ``refresh_token`` (which would raise ``NotImplementedError``) and
+        lets the client surface a clean ``AuthenticationError`` instead.
+        Flip this back to the default ``True`` once OAuth refresh lands.
+        """
+        return False

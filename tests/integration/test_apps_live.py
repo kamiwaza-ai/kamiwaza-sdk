@@ -5,6 +5,7 @@ from uuid import uuid4
 
 import pytest
 
+from kamiwaza_sdk import KamiwazaClient
 from kamiwaza_sdk.exceptions import APIError, AuthenticationError
 
 pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
@@ -71,7 +72,9 @@ def test_apps_template_crud_and_images(live_kamiwaza_client) -> None:
                 pass
 
 
-def test_apps_deploy_and_deployment_error_paths(live_kamiwaza_client) -> None:
+def test_apps_deploy_and_deployment_error_paths(
+    live_kamiwaza_client, live_server_available
+) -> None:
     client = live_kamiwaza_client
     bogus_id = uuid4()
 
@@ -115,17 +118,20 @@ def test_apps_deploy_and_deployment_error_paths(live_kamiwaza_client) -> None:
     # App session endpoints use a dedicated session-token auth dependency
     # (server PR #1376, ENG-2902). Tokens must be supplied via the
     # ``Authorization: Bearer`` or ``X-App-Session-Token`` header and must
-    # match a deployment's hashed token in the database. A bogus token is
-    # rejected at the auth boundary with 401 "Invalid session token" — the
-    # SDK surfaces this as ``AuthenticationError`` because the client's PAT
-    # authenticator cannot recover (no-op refresh). This is a negative
-    # auth-boundary test: no deployment is involved, so 404 is not reachable.
+    # match a deployment's hashed token in the database. Server precedence
+    # validates ``Authorization: Bearer`` *first*, so if we sent this request
+    # with the test's PAT attached the 401 would be for "no deployment
+    # matches the PAT owner" rather than a true session-token rejection —
+    # a false positive. Build a throwaway client with **no authenticator**
+    # so only the ``X-App-Session-Token`` header drives the auth decision.
     bogus_session_token = f"sdk-session-{uuid4().hex}"
     session_headers = {"X-App-Session-Token": bogus_session_token}
+    anon_client = KamiwazaClient(live_server_available)
+    anon_client.authenticator = None  # defeat env-PAT fallback
     with pytest.raises(AuthenticationError):
-        client.post("/apps/sessions/heartbeat", headers=session_headers)
+        anon_client.post("/apps/sessions/heartbeat", headers=session_headers)
     with pytest.raises(AuthenticationError):
-        client.post(
+        anon_client.post(
             "/apps/sessions/end",
             headers=session_headers,
             json={"reason": "sdk-test"},
