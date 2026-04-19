@@ -165,11 +165,14 @@ def test_skip_auth_with_none_headers_does_not_crash(monkeypatch: pytest.MonkeyPa
 
 def test_skip_auth_does_not_send_session_cookies(monkeypatch: pytest.MonkeyPatch) -> None:
     """When skip_auth=True, session-level cookies (e.g. access_token set by
-    UserPasswordAuthenticator) must not be sent to public endpoints."""
-    captured_kwargs: dict = {}
+    UserPasswordAuthenticator) must not be sent to public endpoints.
+
+    cookies={} does NOT suppress session cookies in the requests library —
+    Session.request() merges them.  The fix clears session.cookies so the
+    merge has nothing to include.
+    """
 
     def _capture_request(*args, **kwargs):
-        captured_kwargs.update(kwargs)
         return _StubResponse(status_code=200, json_data={"ok": True})
 
     client = KamiwazaClient(base_url="https://example.test/api")
@@ -178,7 +181,7 @@ def test_skip_auth_does_not_send_session_cookies(monkeypatch: pytest.MonkeyPatch
 
     client._request("GET", "/public/callback", skip_auth=True)
 
-    assert captured_kwargs.get("cookies") == {}
+    assert len(client.session.cookies) == 0
 
 
 def test_request_does_not_mutate_caller_headers(monkeypatch: pytest.MonkeyPatch) -> None:
