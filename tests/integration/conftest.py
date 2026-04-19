@@ -806,6 +806,25 @@ def _password_auth_works(
         return False, str(exc)
 
 
+def _api_key_auth_works(base_url: str, api_key: str) -> tuple[bool, str]:
+    """Validate a PAT/API key by calling /auth/users/me.
+
+    Stale PATs left over from a prior platform install (e.g. ``.env.local`` from
+    before Keycloak's signing keys were rotated during a reinstall) will parse
+    as valid JWTs but fail verification with 401 ``Not authenticated`` because
+    the signing ``kid`` is unknown to the new platform. Probing /auth/users/me
+    lets the fixture chain detect that case and fall through to password-based
+    PAT creation instead of handing every test a dead token.
+    """
+
+    client = KamiwazaClient(base_url, api_key=api_key)
+    try:
+        client.auth.get_current_user()
+        return True, ""
+    except (AuthenticationError, APIError) as exc:
+        return False, str(exc)
+
+
 def _resolve_live_password_once(
     *,
     live_server_available: str,
@@ -1179,12 +1198,29 @@ def live_session_api_key(
 
     Auth-specific tests still use live_username/live_password directly, but the
     shared client fixture should not re-run password grants across the whole suite.
+
+    Env-supplied ``KAMIWAZA_API_KEY`` values are validated against
+    ``/auth/users/me`` before use. Stale PATs left behind by a prior platform
+    install (same ``.env.local``, new Keycloak signing keys after an
+    ``install-dev.sh`` reinstall) would otherwise poison every test with the
+    generic ``AuthenticationError: Authentication failed after token refresh``
+    signature. If the env PAT fails probe, fall through to password-based PAT
+    creation instead.
     """
 
     api_key = live_api_key.strip()
     if api_key:
-        yield api_key
-        return
+        ok, error = _api_key_auth_works(live_server_available, api_key)
+        if ok:
+            yield api_key
+            return
+        # Stale PAT (e.g. signed by a pre-reinstall Keycloak key). Fall through
+        # to password-based PAT creation so the rest of the suite can run.
+        print(
+            f"\n[live_session_api_key] env KAMIWAZA_API_KEY rejected by platform "
+            f"({error}); falling back to password-based PAT creation.",
+            flush=True,
+        )
 
     username = live_username.strip()
     password = resolved_live_password.strip()
@@ -1232,7 +1268,10 @@ def live_session_write_key(
     starts requiring admin, these tests will surface the regression as a 403.
     """
 
-    if live_api_key.strip():
+    # Only skip when the env PAT is usable — otherwise a stale env PAT would
+    # also prevent the write-scope regression guard from running.
+    api_key = live_api_key.strip()
+    if api_key and _api_key_auth_works(live_server_available, api_key)[0]:
         yield ""
         return
 
