@@ -179,7 +179,7 @@ class OAuthBrokerService(BaseService, ProxyMixin, TokenMixin, PolicyMixin):
 
         response = self.client._request(
             "GET", "/oauth-broker/auth/google/callback",
-            absolute_url=url, params=params,
+            absolute_url=url, params=params, skip_auth=True,
         )
         return ConnectionResponse.model_validate(response)
 

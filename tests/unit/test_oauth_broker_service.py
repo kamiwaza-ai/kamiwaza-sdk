@@ -402,10 +402,10 @@ def test_start_google_auth(dummy_client):
 def test_handle_google_callback():
     """Test handling Google OAuth callback.
 
-    ``handle_google_callback`` now routes through ``client._request``
-    (with ``absolute_url``) instead of hitting ``session.request``
-    directly, so it inherits typed APIError, 401 refresh, and
-    NonAPIResponseError handling.
+    ``handle_google_callback`` routes through ``client._request``
+    (with ``absolute_url`` and ``skip_auth=True``) so it inherits
+    typed APIError and NonAPIResponseError handling without triggering
+    authenticator token refresh on a public redirect endpoint.
     """
     connection_id = str(uuid.uuid4())
     app_id = str(uuid.uuid4())
@@ -453,6 +453,7 @@ def test_handle_google_callback():
             "state": "xyz.abc.def",
             "scope": "https://www.googleapis.com/auth/gmail.readonly",
         },
+        skip_auth=True,
     )
 
 
@@ -1230,7 +1231,7 @@ def test_update_tool_policy_excludes_unset_fields(dummy_client):
 def test_proxy_accepts_namespaced_tool_id(dummy_client):
     """Tool IDs with slashes and colons (namespaced IDs) should be accepted."""
     app_id = str(uuid.uuid4())
-    response = {"items": []}
+    response = {"labels": []}
     responses = {("get", "/oauth-broker/proxy/google/gmail/labels"): response}
     client = dummy_client(responses)
     service = OAuthBrokerService(client)
@@ -1239,7 +1240,7 @@ def test_proxy_accepts_namespaced_tool_id(dummy_client):
         app_id=uuid.UUID(app_id), tool_id="google/gmail:reader"
     )
 
-    assert "items" in result
+    assert "labels" in result
     method, path, kwargs = client.calls[0]
     assert kwargs["params"]["tool_id"] == "google/gmail:reader"
 
