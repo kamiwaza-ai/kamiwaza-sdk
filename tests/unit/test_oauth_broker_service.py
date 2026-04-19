@@ -1064,6 +1064,169 @@ def test_calendar_list_events_rejects_invalid_calendar_id(dummy_client, invalid_
     assert client.calls == []
 
 
+# ========== H2 Regression Guard: Enum Coercion ==========
+
+
+def test_connection_response_accepts_unknown_provider():
+    """Unknown provider values must be preserved as raw strings on response models.
+
+    Regression guard for H2: if the server adds a new provider (e.g.
+    ``"slack"``), ``ConnectionResponse.model_validate()`` must not raise
+    ``ValidationError``.  The ``FlexibleProvider`` before-validator should
+    fall back to the raw string.
+    """
+    from kamiwaza_sdk.schemas.oauth_broker import ConnectionResponse, Provider
+
+    now = datetime.now(timezone.utc).isoformat()
+    conn_id = str(uuid.uuid4())
+    app_id = str(uuid.uuid4())
+    user_id = str(uuid.uuid4())
+    expires = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+
+    data = {
+        "id": conn_id,
+        "app_installation_id": app_id,
+        "user_id": user_id,
+        "provider": "slack",
+        "external_user_id": "U123",
+        "external_email": "user@example.com",
+        "granted_scopes": ["chat:read"],
+        "expires_at": expires,
+        "status": "connected",
+        "created_at": now,
+    }
+    result = ConnectionResponse.model_validate(data)
+    assert result.provider == "slack"
+    assert isinstance(result.provider, str)
+
+    data_google = {**data, "provider": "google"}
+    result_google = ConnectionResponse.model_validate(data_google)
+    assert result_google.provider == Provider.GOOGLE
+    assert result_google.provider == "google"
+
+
+def test_connection_status_response_accepts_unknown_status():
+    """Unknown connection status values must be preserved as raw strings.
+
+    Regression guard for H2: ensures ``FlexibleConnectionStatus``
+    before-validator falls back to raw string for unknown statuses.
+    """
+    from kamiwaza_sdk.schemas.oauth_broker import ConnectionStatus, ConnectionStatusResponse
+
+    data = {
+        "status": "pending_verification",
+        "provider": "google",
+        "external_email": "user@example.com",
+    }
+    result = ConnectionStatusResponse.model_validate(data)
+    assert result.status == "pending_verification"
+    assert isinstance(result.status, str)
+
+    data_known = {**data, "status": "connected"}
+    result_known = ConnectionStatusResponse.model_validate(data_known)
+    assert result_known.status == ConnectionStatus.CONNECTED
+
+
+# ========== H3 Regression Guard: PATCH exclude_unset ==========
+
+
+def test_update_app_installation_excludes_unset_fields(dummy_client):
+    """PATCH body must omit unset fields and include explicitly set None values.
+
+    Regression guard for H3: ``update_app_installation`` uses
+    ``exclude_unset=True`` so that callers can (a) omit fields they don't
+    want to touch and (b) explicitly set a field to ``None`` to clear it.
+    """
+    app_id = str(uuid.uuid4())
+    user_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+
+    response = {
+        "id": app_id,
+        "name": "Updated App",
+        "description": None,
+        "owner_user_id": user_id,
+        "lifecycle_status": "active",
+        "allowed_tools": [],
+        "app_metadata": None,
+        "created_at": now,
+        "updated_at": now,
+        "deleted_at": None,
+    }
+    responses = {("patch", f"/oauth-broker/apps/{app_id}"): response}
+    client = dummy_client(responses)
+    service = OAuthBrokerService(client)
+
+    update_only_name = AppInstallationUpdate(name="Updated App")
+    service.update_app_installation(uuid.UUID(app_id), update_only_name)
+
+    _, _, kwargs = client.calls[0]
+    assert "name" in kwargs["json"]
+    assert "description" not in kwargs["json"], (
+        "Unset fields must not appear in PATCH body"
+    )
+    assert "allowed_tools" not in kwargs["json"]
+
+    client.calls.clear()
+
+    update_clear_desc = AppInstallationUpdate(name="Updated App", description=None)
+    service.update_app_installation(uuid.UUID(app_id), update_clear_desc)
+
+    _, _, kwargs2 = client.calls[0]
+    assert "description" in kwargs2["json"], (
+        "Explicitly set None must appear in PATCH body to clear the field"
+    )
+    assert kwargs2["json"]["description"] is None
+
+
+def test_update_tool_policy_excludes_unset_fields(dummy_client):
+    """PATCH body must omit unset fields and include explicitly set None values.
+
+    Regression guard for H3: same semantics as app installation update.
+    """
+    policy_id = str(uuid.uuid4())
+    app_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+
+    response = {
+        "id": policy_id,
+        "app_installation_id": app_id,
+        "tool_id": "test-tool",
+        "provider": "google",
+        "allowed_operations": ["gmail.search"],
+        "allowed_scope_subset": [],
+        "policy_metadata": None,
+        "created_at": now,
+        "updated_at": now,
+    }
+    responses = {("patch", f"/oauth-broker/tool-policies/{policy_id}"): response}
+    client = dummy_client(responses)
+    service = OAuthBrokerService(client)
+
+    update_ops_only = ToolPolicyUpdate(allowed_operations=["gmail.search"])
+    service.update_tool_policy(uuid.UUID(policy_id), update_ops_only)
+
+    _, _, kwargs = client.calls[0]
+    assert "allowed_operations" in kwargs["json"]
+    assert "policy_metadata" not in kwargs["json"], (
+        "Unset fields must not appear in PATCH body"
+    )
+    assert "allowed_scope_subset" not in kwargs["json"]
+
+    client.calls.clear()
+
+    update_clear_meta = ToolPolicyUpdate(
+        allowed_operations=["gmail.search"], policy_metadata=None
+    )
+    service.update_tool_policy(uuid.UUID(policy_id), update_clear_meta)
+
+    _, _, kwargs2 = client.calls[0]
+    assert "policy_metadata" in kwargs2["json"], (
+        "Explicitly set None must appear in PATCH body to clear the field"
+    )
+    assert kwargs2["json"]["policy_metadata"] is None
+
+
 def test_proxy_accepts_namespaced_tool_id(dummy_client):
     """Tool IDs with slashes and colons (namespaced IDs) should be accepted."""
     app_id = str(uuid.uuid4())
