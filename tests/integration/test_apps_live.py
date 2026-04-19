@@ -128,9 +128,16 @@ def test_apps_deploy_and_deployment_error_paths(
     session_headers = {"X-App-Session-Token": bogus_session_token}
     anon_client = KamiwazaClient(live_server_available)
     anon_client.authenticator = None  # defeat env-PAT fallback
-    with pytest.raises(AuthenticationError):
+    # Match on the server's session-token rejection detail
+    # (``_extract_session_token`` raises 401 with ``"Invalid session token"``).
+    # A pure-anon 401 produced by the SDK itself says "No authenticator
+    # provided.", so matching on "session token" confirms the request
+    # actually reached the server's session-token dependency rather than
+    # being short-circuited anywhere else in the stack.
+    session_token_pattern = r"(?i)session token"
+    with pytest.raises(AuthenticationError, match=session_token_pattern):
         anon_client.post("/apps/sessions/heartbeat", headers=session_headers)
-    with pytest.raises(AuthenticationError):
+    with pytest.raises(AuthenticationError, match=session_token_pattern):
         anon_client.post(
             "/apps/sessions/end",
             headers=session_headers,

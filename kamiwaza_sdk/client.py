@@ -210,7 +210,8 @@ class KamiwazaClient:
                         f"{_extract_server_detail(response)}"
                     )
                 logger.warning(
-                    f"Received 401 Unauthorized. Response: {response.text}"
+                    f"Received 401 Unauthorized. Response: "
+                    f"{_extract_server_detail(response)}"
                 )
                 if self.authenticator:
                     # Only attempt a refresh-and-retry if the authenticator can

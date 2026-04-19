@@ -69,6 +69,14 @@ RUNTIME_HOST_ALIAS = os.environ.get(
 _COMPOSE_ENV_CACHE: dict[str, str] | None = None
 _COMPOSE_ENV_ERROR: str | None = None
 _LIVE_PASSWORD_CACHE: dict[tuple[str, str, str, str], tuple[str, str | None]] = {}
+# Memoize PAT probe (``GET /auth/users/me``) results for the session.
+# ``_api_key_auth_works`` is called once in ``resolved_live_password``,
+# once in ``live_session_api_key``, and once in ``live_session_write_key``
+# (plus any future fixture that needs to validate a PAT). Without caching,
+# the same PAT gets probed against Keycloak three times per session, which
+# is noise at best and a lockout vector at worst. Cache both success and
+# failure so a bad PAT doesn't keep re-probing either.
+_API_KEY_PROBE_CACHE: dict[tuple[str, str], tuple[bool, str]] = {}
 _HTTP_TRACE_FLAG = "KAMIWAZA_HTTP_TRACE"
 _HTTP_TRACE_FILE_ENV = "KAMIWAZA_HTTP_TRACE_FILE"
 _TEXT_BODY_MARKERS = (
@@ -815,14 +823,26 @@ def _api_key_auth_works(base_url: str, api_key: str) -> tuple[bool, str]:
     the signing ``kid`` is unknown to the new platform. Probing /auth/users/me
     lets the fixture chain detect that case and fall through to password-based
     PAT creation instead of handing every test a dead token.
+
+    Result (success or failure) is memoized on ``(base_url, api_key)`` for the
+    session, symmetric with ``_LIVE_PASSWORD_CACHE``. Multiple fixtures probe
+    the same PAT per session and we don't want to hammer Keycloak for it.
     """
+
+    cache_key = (base_url, api_key)
+    cached = _API_KEY_PROBE_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
 
     client = KamiwazaClient(base_url, api_key=api_key)
     try:
         client.auth.get_current_user()
-        return True, ""
+        result: tuple[bool, str] = (True, "")
     except (AuthenticationError, APIError) as exc:
-        return False, str(exc)
+        result = (False, str(exc))
+
+    _API_KEY_PROBE_CACHE[cache_key] = result
+    return result
 
 
 def _resolve_live_password_once(
@@ -1161,17 +1181,16 @@ def resolved_live_password(
     Resolve live password with kube-derived credentials first (kz-login),
     then explicit configured password as fallback.
 
-    Fast-path: when ``KAMIWAZA_API_KEY`` is present and validates against
-    ``/auth/users/me``, skip the password resolver entirely. The valid PAT
-    is the only credential the integration suite needs, and running
-    ``kz-login`` on every session just to fill an unused string can trip
-    Keycloak rate limits / account lockout across many test runs.
+    Session-scoped and backed by ``_LIVE_PASSWORD_CACHE`` inside
+    ``_resolve_live_password_once`` so kz-login / password grants run at most
+    once per session. Password-authentication tests
+    (``test_password_authentication_allows_whoami``, PAT-lifecycle, CLI login)
+    consume this fixture directly, so it must always resolve a real password
+    when one is available — returning an empty short-circuit string here
+    regresses those tests.
     """
 
     env_api_key = live_api_key.strip()
-    if env_api_key and _api_key_auth_works(live_server_available, env_api_key)[0]:
-        return ""
-
     password, error = _resolve_live_password_once(
         live_server_available=live_server_available,
         live_api_key=live_api_key,
@@ -1226,9 +1245,13 @@ def live_session_api_key(
             return
         # Stale PAT (e.g. signed by a pre-reinstall Keycloak key). Fall through
         # to password-based PAT creation so the rest of the suite can run.
+        # Cap the error text so a gateway 502/503 HTML body (or any other
+        # verbose non-401 failure surfaced via ``APIError.__str__``) doesn't
+        # flood CI logs / pytest output.
+        truncated_error = error if len(error) <= 500 else error[:500] + "... [truncated]"
         print(
             f"\n[live_session_api_key] env KAMIWAZA_API_KEY rejected by platform "
-            f"({error}); falling back to password-based PAT creation.",
+            f"({truncated_error}); falling back to password-based PAT creation.",
             flush=True,
         )
 
