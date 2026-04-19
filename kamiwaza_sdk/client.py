@@ -167,6 +167,10 @@ class KamiwazaClient:
             # unauthenticated endpoints (OAuth callbacks, login) don't
             # receive stale credentials from prior authenticated calls.
             kwargs["headers"]["Authorization"] = None
+            # Also suppress session-level cookies (e.g. access_token set
+            # by UserPasswordAuthenticator.authenticate) so they are not
+            # leaked to public endpoints.
+            kwargs.setdefault("cookies", {})
 
         raw_params = kwargs.get("params")
         params: dict[str, Any] = raw_params if isinstance(raw_params, dict) else {}

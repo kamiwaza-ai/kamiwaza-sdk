@@ -163,6 +163,24 @@ def test_skip_auth_with_none_headers_does_not_crash(monkeypatch: pytest.MonkeyPa
     assert captured_kwargs["headers"]["Authorization"] is None
 
 
+def test_skip_auth_does_not_send_session_cookies(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When skip_auth=True, session-level cookies (e.g. access_token set by
+    UserPasswordAuthenticator) must not be sent to public endpoints."""
+    captured_kwargs: dict = {}
+
+    def _capture_request(*args, **kwargs):
+        captured_kwargs.update(kwargs)
+        return _StubResponse(status_code=200, json_data={"ok": True})
+
+    client = KamiwazaClient(base_url="https://example.test/api")
+    client.session.cookies.set("access_token", "stale-bearer")
+    monkeypatch.setattr(client.session, "request", _capture_request)
+
+    client._request("GET", "/public/callback", skip_auth=True)
+
+    assert captured_kwargs.get("cookies") == {}
+
+
 def test_request_does_not_mutate_caller_headers(monkeypatch: pytest.MonkeyPatch) -> None:
     """_request must not modify the caller-provided headers dict."""
     response = _StubResponse(status_code=200, json_data={"ok": True})
