@@ -132,6 +132,34 @@ class KamiwazaClient:
             return False
         return True
 
+    def _validate_absolute_url(self, absolute_url: str) -> None:
+        base_parsed = urlparse(self.base_url)
+        abs_parsed = urlparse(absolute_url)
+        if abs_parsed.netloc != base_parsed.netloc or abs_parsed.scheme != base_parsed.scheme:
+            raise ValueError(
+                f"absolute_url must target the same origin as base_url "
+                f"({base_parsed.scheme}://{base_parsed.netloc})"
+            )
+
+    def _apply_skip_auth(self, kwargs: dict) -> None:
+        kwargs["headers"]["Authorization"] = None
+        self.session.cookies.pop("access_token", None)
+
+    def _check_dataset_schema_retry(
+        self, method: str, path: str, kwargs: dict
+    ) -> tuple[bool, str | None]:
+        raw_params = kwargs.get("params")
+        params: dict[str, Any] = raw_params if isinstance(raw_params, dict) else {}
+        dataset_urn_for_schema = (
+            params.get("urn") if path.rstrip("/") == "catalog/datasets/by-urn/schema" else None
+        )
+        should_retry = (
+            method.upper() == "PUT"
+            and dataset_urn_for_schema is not None
+            and self._dataset_recently_changed(str(dataset_urn_for_schema))
+        )
+        return should_retry, dataset_urn_for_schema
+
     def _request(
         self,
         method: str,
@@ -143,13 +171,7 @@ class KamiwazaClient:
         **kwargs,
     ):
         if absolute_url:
-            base_parsed = urlparse(self.base_url)
-            abs_parsed = urlparse(absolute_url)
-            if abs_parsed.netloc != base_parsed.netloc or abs_parsed.scheme != base_parsed.scheme:
-                raise ValueError(
-                    f"absolute_url must target the same origin as base_url "
-                    f"({base_parsed.scheme}://{base_parsed.netloc})"
-                )
+            self._validate_absolute_url(absolute_url)
 
         url = absolute_url or f"{self.base_url}/{endpoint.lstrip('/')}"
         path = endpoint.lstrip("/")
@@ -163,25 +185,10 @@ class KamiwazaClient:
             self.authenticator.authenticate(self.session)
 
         if skip_auth:
-            # Suppress any session-level Authorization header so that
-            # unauthenticated endpoints (OAuth callbacks, login) don't
-            # receive stale credentials from prior authenticated calls.
-            kwargs["headers"]["Authorization"] = None
-            # Clear session cookies (e.g. access_token set by
-            # UserPasswordAuthenticator.authenticate) so requests.Session
-            # doesn't merge them into the outgoing request.  The next
-            # authenticated call will re-populate them via authenticate().
-            self.session.cookies.clear()
+            self._apply_skip_auth(kwargs)
 
-        raw_params = kwargs.get("params")
-        params: dict[str, Any] = raw_params if isinstance(raw_params, dict) else {}
-        dataset_urn_for_schema = (
-            params.get("urn") if path.rstrip("/") == "catalog/datasets/by-urn/schema" else None
-        )
-        schema_retry = (
-            method.upper() == "PUT"
-            and dataset_urn_for_schema
-            and self._dataset_recently_changed(str(dataset_urn_for_schema))
+        schema_retry, dataset_urn_for_schema = self._check_dataset_schema_retry(
+            method, path, kwargs
         )
         retry_idx = 0
         did_refresh = False
