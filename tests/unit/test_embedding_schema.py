@@ -11,7 +11,7 @@ from uuid import uuid4
 
 import pytest
 
-from kamiwaza_sdk.schemas.embedding import EmbeddingInput
+from kamiwaza_sdk.schemas.embedding import EmbeddingConfig, EmbeddingInput
 
 pytestmark = pytest.mark.unit
 
@@ -57,3 +57,27 @@ def test_model_dump_mode_json_coerces_uuid():
     dumped = EmbeddingInput(id=id_, text="hello").model_dump(mode="json")
 
     assert dumped["id"] == str(id_)
+
+
+# -- EmbeddingConfig.model_dump regression tests --
+
+
+def test_embedding_config_model_dump_coerces_uuid():
+    cfg = EmbeddingConfig(provider_type="openai", model="text-embedding-3-small")
+    dumped = cfg.model_dump()
+
+    assert isinstance(dumped["id"], str)
+
+
+def test_embedding_config_model_dump_exclude_none():
+    cfg = EmbeddingConfig(provider_type="openai", model="text-embedding-3-small")
+    dumped = cfg.model_dump(exclude_none=True)
+
+    assert "device" not in dumped
+
+
+def test_embedding_config_model_dump_exclude_id():
+    cfg = EmbeddingConfig(provider_type="openai", model="text-embedding-3-small")
+    dumped = cfg.model_dump(exclude={"id"})
+
+    assert "id" not in dumped

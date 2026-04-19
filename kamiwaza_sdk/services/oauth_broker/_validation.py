@@ -39,12 +39,10 @@ def _validate_query_param_id(value: str, label: str) -> None:
     because query-parameter values are automatically URL-encoded by the
     ``requests`` library and never interpolated into URL paths.  The
     server-side schema accepts arbitrary strings for fields such as
-    ``tool_id`` (e.g. ``"Gmail Reader"``), so we only reject values
-    that are empty, contain control characters, or contain ``..``
-    path-traversal sequences.
+    ``tool_id`` (e.g. ``"Gmail Reader"``, ``"team..reader"``), so we
+    only reject values that are empty or contain control characters.
     """
-    if not value or _CONTROL_CHAR_RE.search(value) or ".." in value:
+    if not value or _CONTROL_CHAR_RE.search(value):
         raise ValueError(
-            f"{label} must be a non-empty string without control "
-            f"characters or path-traversal sequences"
+            f"{label} must be a non-empty string without control characters"
         )

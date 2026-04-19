@@ -36,12 +36,12 @@ class EmbeddingConfig(BaseModel):
 
     model_config = ConfigDict()
         
-    def model_dump(self, **kwargs):  # type: ignore[override]
+    def model_dump(self, **kwargs: Any) -> dict[str, Any]:  # type: ignore[override]
         data = super().model_dump(**kwargs)
         if data.get('id'):
             data['id'] = str(data['id'])
         return data
-    
+
 
 class ChunkResponse(BaseModel):
     chunks: List[str]

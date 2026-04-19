@@ -860,18 +860,16 @@ def test_drive_get_file_rejects_path_traversal(dummy_client, malicious_file_id):
         "tool\nid",
         "valid-id\n",
         "valid-id\r",
-        "../traversal",
-        "foo/../bar",
     ],
 )
 def test_proxy_methods_reject_invalid_tool_id(dummy_client, malicious_tool_id):
     """Malformed tool_id values must be rejected before reaching the client.
 
-    Guards against control-character injection / log-poisoning and
-    path-traversal via tool_id across all proxy methods.  tool_id is
-    passed as a query parameter and the server accepts arbitrary
-    printable strings, so spaces and punctuation are intentionally
-    allowed.
+    Guards against control-character injection / log-poisoning via
+    tool_id across all proxy methods.  tool_id is passed as a query
+    parameter (URL-encoded by ``requests``), so path-traversal
+    sequences like ``..`` are harmless and intentionally allowed to
+    match the server-side schema contract.
     """
     client = dummy_client({})
     service = OAuthBrokerService(client)
@@ -1276,5 +1274,36 @@ def test_proxy_accepts_tool_id_with_spaces_and_punctuation(dummy_client, tool_id
     )
 
     assert "items" in result
+    method, path, kwargs = client.calls[0]
+    assert kwargs["params"]["tool_id"] == tool_id
+
+
+@pytest.mark.parametrize(
+    "tool_id",
+    [
+        "team..reader",
+        "../traversal",
+        "foo/../bar",
+    ],
+)
+def test_proxy_accepts_tool_id_with_dotdot(dummy_client, tool_id):
+    """Tool IDs containing ``..`` are accepted for query-parameter contexts.
+
+    ``..`` is a path-traversal concern only when interpolated into URL
+    paths.  ``tool_id`` is sent as a query parameter (URL-encoded by
+    ``requests``), so ``..`` sequences are harmless and must not be
+    rejected — the server schema accepts arbitrary strings.
+    """
+    app_id = str(uuid.uuid4())
+    response = {"labels": []}
+    responses = {("get", "/oauth-broker/proxy/google/gmail/labels"): response}
+    client = dummy_client(responses)
+    service = OAuthBrokerService(client)
+
+    result = service.gmail_list_labels(
+        app_id=uuid.UUID(app_id), tool_id=tool_id,
+    )
+
+    assert "labels" in result
     method, path, kwargs = client.calls[0]
     assert kwargs["params"]["tool_id"] == tool_id
