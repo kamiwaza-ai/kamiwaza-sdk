@@ -160,9 +160,11 @@ class OAuthBrokerService(BaseService, ProxyMixin, TokenMixin, PolicyMixin):
         # Build an absolute URL by stripping the ``/api`` suffix from
         # ``base_url`` so that strict reverse proxies, WAFs, or load
         # balancers that reject literal ``..`` segments are not a problem.
-        # We pass ``absolute_url`` to ``_request`` so all standard error
-        # handling (typed APIError, 401 token refresh, NonAPIResponseError
-        # for HTML pages) is preserved.
+        # We pass ``absolute_url`` to ``_request`` so standard error
+        # handling (typed APIError, NonAPIResponseError for HTML pages)
+        # is preserved.  ``skip_auth=True`` means a 401 surfaces as
+        # ``AuthenticationError`` without retry — correct for a public
+        # redirect endpoint.
         base = self.client.base_url.rstrip("/")
         if base.endswith("/api"):
             root = base[: -len("/api")]

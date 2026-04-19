@@ -81,3 +81,54 @@ def test_501_non_vectordb_path_raises_api_error(monkeypatch: pytest.MonkeyPatch)
 
     assert not isinstance(exc_info.value, VectorDBUnavailableError)
     assert exc_info.value.status_code == 501
+
+
+# ========== absolute_url same-origin guard ==========
+
+
+def test_absolute_url_rejects_different_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    """absolute_url that targets a different host must be rejected to
+    prevent credential leakage via SSRF."""
+    response = _StubResponse(status_code=200, json_data={})
+    client = _make_client_with_response(monkeypatch, response)
+
+    with pytest.raises(ValueError, match="same host"):
+        client._request(
+            "GET", "/endpoint",
+            absolute_url="https://evil.example.com/steal",
+        )
+
+
+def test_absolute_url_accepts_same_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    """absolute_url targeting the same host as base_url should succeed."""
+    response = _StubResponse(status_code=200, json_data={"ok": True})
+    client = _make_client_with_response(monkeypatch, response)
+
+    result = client._request(
+        "GET", "/endpoint",
+        absolute_url="https://example.test/oauth-broker/callback",
+    )
+    assert result == {"ok": True}
+
+
+# ========== skip_auth strips Authorization header ==========
+
+
+def test_skip_auth_strips_authorization_header(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When skip_auth=True, the session-level Authorization header must
+    not be sent — otherwise stale credentials leak to public endpoints."""
+    captured_kwargs: dict = {}
+
+    def _capture_request(*args, **kwargs):
+        captured_kwargs.update(kwargs)
+        return _StubResponse(status_code=200, json_data={"ok": True})
+
+    client = KamiwazaClient(base_url="https://example.test/api")
+    client.session.headers["Authorization"] = "Bearer stale-token"
+    monkeypatch.setattr(client.session, "request", _capture_request)
+
+    client._request("GET", "/public-endpoint", skip_auth=True)
+
+    # The per-request headers must set Authorization to None so that
+    # requests.Session removes it from the merged result.
+    assert captured_kwargs["headers"]["Authorization"] is None

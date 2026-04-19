@@ -5,6 +5,7 @@ import logging
 import os
 import time
 from typing import Any, Optional
+from urllib.parse import urlparse
 
 import requests  # type: ignore[import-untyped]
 
@@ -141,6 +142,15 @@ class KamiwazaClient:
         absolute_url: str | None = None,
         **kwargs,
     ):
+        if absolute_url:
+            base_netloc = urlparse(self.base_url).netloc
+            abs_netloc = urlparse(absolute_url).netloc
+            if abs_netloc != base_netloc:
+                raise ValueError(
+                    f"absolute_url must target the same host as base_url "
+                    f"({base_netloc})"
+                )
+
         url = absolute_url or f"{self.base_url}/{endpoint.lstrip('/')}"
         path = endpoint.lstrip("/")
         self.logger.debug(f"Making {method} request to {url}")
@@ -152,6 +162,12 @@ class KamiwazaClient:
         # Ensure authentication is set up (except for auth endpoints)
         if self.authenticator and not skip_auth:
             self.authenticator.authenticate(self.session)
+
+        if skip_auth:
+            # Suppress any session-level Authorization header so that
+            # unauthenticated endpoints (OAuth callbacks, login) don't
+            # receive stale credentials from prior authenticated calls.
+            kwargs["headers"]["Authorization"] = None
 
         raw_params = kwargs.get("params")
         params: dict[str, Any] = raw_params if isinstance(raw_params, dict) else {}
