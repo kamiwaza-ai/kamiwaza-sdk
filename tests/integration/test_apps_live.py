@@ -5,7 +5,7 @@ from uuid import uuid4
 
 import pytest
 
-from kamiwaza_sdk.exceptions import APIError
+from kamiwaza_sdk.exceptions import APIError, AuthenticationError
 
 pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
 
@@ -112,14 +112,24 @@ def test_apps_deploy_and_deployment_error_paths(live_kamiwaza_client) -> None:
     except APIError as exc:
         assert exc.status_code == 404
 
-    session_payload = {"session_token": f"sdk-session-{uuid4().hex}"}
-    with pytest.raises(APIError) as exc:
-        client.post("/apps/sessions/heartbeat", json=session_payload)
-    assert exc.value.status_code == 404
-
-    with pytest.raises(APIError) as exc:
-        client.post("/apps/sessions/end", json={**session_payload, "reason": "sdk-test"})
-    assert exc.value.status_code == 404
+    # App session endpoints use a dedicated session-token auth dependency
+    # (server PR #1376, ENG-2902). Tokens must be supplied via the
+    # ``Authorization: Bearer`` or ``X-App-Session-Token`` header and must
+    # match a deployment's hashed token in the database. A bogus token is
+    # rejected at the auth boundary with 401 "Invalid session token" — the
+    # SDK surfaces this as ``AuthenticationError`` because the client's PAT
+    # authenticator cannot recover (no-op refresh). This is a negative
+    # auth-boundary test: no deployment is involved, so 404 is not reachable.
+    bogus_session_token = f"sdk-session-{uuid4().hex}"
+    session_headers = {"X-App-Session-Token": bogus_session_token}
+    with pytest.raises(AuthenticationError):
+        client.post("/apps/sessions/heartbeat", headers=session_headers)
+    with pytest.raises(AuthenticationError):
+        client.post(
+            "/apps/sessions/end",
+            headers=session_headers,
+            json={"reason": "sdk-test"},
+        )
 
     deployments = client.get("/apps/deployments")
     assert isinstance(deployments, list)

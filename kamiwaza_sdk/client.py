@@ -186,12 +186,36 @@ class KamiwazaClient:
                     )
                 logger.warning(f"Received 401 Unauthorized. Response: {response.text}")
                 if self.authenticator:
-                    if not did_refresh:
+                    # Only attempt a refresh-and-retry if the authenticator can
+                    # actually obtain new credentials. PAT/API-key auth cannot,
+                    # so a retry is wasted and the "after token refresh" error
+                    # message is misleading when it fails. Duck-typed: accept
+                    # either a callable method or a plain attribute/property;
+                    # default to True for legacy authenticators that don't
+                    # expose the hook at all.
+                    can_refresh_attr = getattr(
+                        self.authenticator, "can_refresh", True
+                    )
+                    can_refresh = (
+                        can_refresh_attr() if callable(can_refresh_attr)
+                        else bool(can_refresh_attr)
+                    )
+                    if can_refresh and not did_refresh:
                         did_refresh = True
                         self.authenticator.refresh_token(self.session)
                         continue
+                    if did_refresh:
+                        raise AuthenticationError(
+                            f"Authentication failed after token refresh for "
+                            f"{endpoint}: {response.text}"
+                        )
+                    # Non-refreshable authenticator (e.g. PAT): surface the
+                    # server's actual response so callers can distinguish
+                    # invalid PAT from endpoint-specific auth boundary errors
+                    # (e.g. app session-token endpoints returning 401 for an
+                    # unknown session token).
                     raise AuthenticationError(
-                        "Authentication failed after token refresh."
+                        f"Authentication failed for {endpoint}: {response.text}"
                     )
                 raise AuthenticationError(
                     "Authentication failed. No authenticator provided."
