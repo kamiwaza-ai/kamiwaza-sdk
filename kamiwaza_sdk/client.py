@@ -36,6 +36,21 @@ from .services.skills import SkillsService
 logger = logging.getLogger(__name__)
 
 _AUTH_ERROR_DETAIL_MAX_LEN = 500
+_AUTH_ERROR_DETAIL_TRUNCATED_SUFFIX = "... [truncated]"
+
+
+def _truncate_with_suffix(
+    value: str, max_len: int = _AUTH_ERROR_DETAIL_MAX_LEN
+) -> str:
+    """Truncate ``value`` to ``max_len`` chars, appending a suffix when cut.
+
+    A naked slice is ambiguous — a 500-char return is indistinguishable from
+    a legitimately short body that happens to fit. The suffix makes the
+    truncation explicit to anyone reading logs or exception messages.
+    """
+    if len(value) <= max_len:
+        return value
+    return value[:max_len] + _AUTH_ERROR_DETAIL_TRUNCATED_SUFFIX
 
 
 def _extract_server_detail(response, max_len: int = _AUTH_ERROR_DETAIL_MAX_LEN) -> str:
@@ -43,21 +58,22 @@ def _extract_server_detail(response, max_len: int = _AUTH_ERROR_DETAIL_MAX_LEN) 
 
     Prefers the JSON ``detail`` field (FastAPI convention) so the caller sees
     the server's actual message. Falls back to the serialized JSON body, then
-    raw text. Output is always truncated to ``max_len`` characters to prevent
-    multi-KB proxy/gateway HTML error pages from bloating log lines and
-    exception strings.
+    raw text. Output is always truncated to ``max_len`` characters (with an
+    explicit ``... [truncated]`` suffix when cut) to prevent multi-KB
+    proxy/gateway HTML error pages from bloating log lines and exception
+    strings.
     """
     try:
         body = response.json()
     except (ValueError, AttributeError):
-        return (response.text or "")[:max_len]
+        return _truncate_with_suffix(response.text or "", max_len)
 
     if isinstance(body, dict) and "detail" in body:
         detail = body["detail"]
         if isinstance(detail, str):
-            return detail[:max_len]
-        return str(detail)[:max_len]
-    return str(body)[:max_len]
+            return _truncate_with_suffix(detail, max_len)
+        return _truncate_with_suffix(str(detail), max_len)
+    return _truncate_with_suffix(str(body), max_len)
 
 
 class KamiwazaClient:

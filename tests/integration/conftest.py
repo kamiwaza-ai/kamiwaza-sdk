@@ -70,12 +70,12 @@ _COMPOSE_ENV_CACHE: dict[str, str] | None = None
 _COMPOSE_ENV_ERROR: str | None = None
 _LIVE_PASSWORD_CACHE: dict[tuple[str, str, str, str], tuple[str, str | None]] = {}
 # Memoize PAT probe (``GET /auth/users/me``) results for the session.
-# ``_api_key_auth_works`` is called once in ``resolved_live_password``,
-# once in ``live_session_api_key``, and once in ``live_session_write_key``
-# (plus any future fixture that needs to validate a PAT). Without caching,
-# the same PAT gets probed against Keycloak three times per session, which
-# is noise at best and a lockout vector at worst. Cache both success and
-# failure so a bad PAT doesn't keep re-probing either.
+# ``_api_key_auth_works`` is called once in ``live_session_api_key`` and
+# once in ``live_session_write_key`` (plus any future fixture that needs
+# to validate a PAT). Without caching, the same PAT gets probed against
+# Keycloak on every call, which is noise at best and a lockout vector at
+# worst. Cache both success and failure so a bad PAT doesn't keep
+# re-probing either.
 _API_KEY_PROBE_CACHE: dict[tuple[str, str], tuple[bool, str]] = {}
 _HTTP_TRACE_FLAG = "KAMIWAZA_HTTP_TRACE"
 _HTTP_TRACE_FILE_ENV = "KAMIWAZA_HTTP_TRACE_FILE"

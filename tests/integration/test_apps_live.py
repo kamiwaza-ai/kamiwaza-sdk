@@ -130,18 +130,26 @@ def test_apps_deploy_and_deployment_error_paths(
     anon_client.authenticator = None  # defeat env-PAT fallback
     # Match on the server's session-token rejection detail
     # (``_extract_session_token`` raises 401 with ``"Invalid session token"``).
-    # A pure-anon 401 produced by the SDK itself says "No authenticator
-    # provided.", so matching on "session token" confirms the request
-    # actually reached the server's session-token dependency rather than
-    # being short-circuited anywhere else in the stack.
-    session_token_pattern = r"(?i)session token"
+    # We must pass ``skip_auth=True`` so the SDK takes the branch that embeds
+    # the server's ``_extract_server_detail`` in the raised exception; without
+    # it, the ``authenticator is None`` short-circuit would raise
+    # ``"Authentication failed. No authenticator provided."`` — which never
+    # sees the server's 401 detail, so no match on "invalid session token"
+    # could possibly succeed. The exact string is contract-pinned by the unit
+    # test ``test_401_detail_surfaces_json_detail_field``.
+    session_token_pattern = r"(?i)invalid session token"
     with pytest.raises(AuthenticationError, match=session_token_pattern):
-        anon_client.post("/apps/sessions/heartbeat", headers=session_headers)
+        anon_client.post(
+            "/apps/sessions/heartbeat",
+            headers=session_headers,
+            skip_auth=True,
+        )
     with pytest.raises(AuthenticationError, match=session_token_pattern):
         anon_client.post(
             "/apps/sessions/end",
             headers=session_headers,
             json={"reason": "sdk-test"},
+            skip_auth=True,
         )
 
     deployments = client.get("/apps/deployments")

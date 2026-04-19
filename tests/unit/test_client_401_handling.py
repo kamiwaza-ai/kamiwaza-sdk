@@ -282,6 +282,9 @@ def test_401_detail_truncates_non_json_body(
     # body length.
     assert message.count("Z") == 500
     assert "Z" * 500 in message  # present up to the cap
+    # Silent truncation is ambiguous — the suffix makes it obvious to anyone
+    # reading logs that the body was cut. Must trail the ``Z`` run.
+    assert "... [truncated]" in message
 
 
 def test_oauth_authenticator_cannot_refresh() -> None:
