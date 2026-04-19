@@ -831,11 +831,6 @@ def _resolve_live_password_once(
     if cached is not None:
         return cached
 
-    if live_api_key.strip():
-        result = ("", None)
-        _LIVE_PASSWORD_CACHE[cache_key] = result
-        return result
-
     username = live_username.strip()
     configured_password = configured_password.strip()
     if not username:
