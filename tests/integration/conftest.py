@@ -69,6 +69,14 @@ RUNTIME_HOST_ALIAS = os.environ.get(
 _COMPOSE_ENV_CACHE: dict[str, str] | None = None
 _COMPOSE_ENV_ERROR: str | None = None
 _LIVE_PASSWORD_CACHE: dict[tuple[str, str, str, str], tuple[str, str | None]] = {}
+# Memoize PAT probe (``GET /auth/users/me``) results for the session.
+# ``_api_key_auth_works`` is called once in ``live_session_api_key`` and
+# once in ``live_session_write_key`` (plus any future fixture that needs
+# to validate a PAT). Without caching, the same PAT gets probed against
+# Keycloak on every call, which is noise at best and a lockout vector at
+# worst. Cache both success and failure so a bad PAT doesn't keep
+# re-probing either.
+_API_KEY_PROBE_CACHE: dict[tuple[str, str], tuple[bool, str]] = {}
 _HTTP_TRACE_FLAG = "KAMIWAZA_HTTP_TRACE"
 _HTTP_TRACE_FILE_ENV = "KAMIWAZA_HTTP_TRACE_FILE"
 _TEXT_BODY_MARKERS = (
@@ -806,6 +814,37 @@ def _password_auth_works(
         return False, str(exc)
 
 
+def _api_key_auth_works(base_url: str, api_key: str) -> tuple[bool, str]:
+    """Validate a PAT/API key by calling /auth/users/me.
+
+    Stale PATs left over from a prior platform install (e.g. ``.env.local`` from
+    before Keycloak's signing keys were rotated during a reinstall) will parse
+    as valid JWTs but fail verification with 401 ``Not authenticated`` because
+    the signing ``kid`` is unknown to the new platform. Probing /auth/users/me
+    lets the fixture chain detect that case and fall through to password-based
+    PAT creation instead of handing every test a dead token.
+
+    Result (success or failure) is memoized on ``(base_url, api_key)`` for the
+    session, symmetric with ``_LIVE_PASSWORD_CACHE``. Multiple fixtures probe
+    the same PAT per session and we don't want to hammer Keycloak for it.
+    """
+
+    cache_key = (base_url, api_key)
+    cached = _API_KEY_PROBE_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    client = KamiwazaClient(base_url, api_key=api_key)
+    try:
+        client.auth.get_current_user()
+        result: tuple[bool, str] = (True, "")
+    except (AuthenticationError, APIError) as exc:
+        result = (False, str(exc))
+
+    _API_KEY_PROBE_CACHE[cache_key] = result
+    return result
+
+
 def _resolve_live_password_once(
     *,
     live_server_available: str,
@@ -830,11 +869,6 @@ def _resolve_live_password_once(
     cached = _LIVE_PASSWORD_CACHE.get(cache_key)
     if cached is not None:
         return cached
-
-    if live_api_key.strip():
-        result = ("", None)
-        _LIVE_PASSWORD_CACHE[cache_key] = result
-        return result
 
     username = live_username.strip()
     configured_password = configured_password.strip()
@@ -1146,15 +1180,24 @@ def resolved_live_password(
     """
     Resolve live password with kube-derived credentials first (kz-login),
     then explicit configured password as fallback.
+
+    Session-scoped and backed by ``_LIVE_PASSWORD_CACHE`` inside
+    ``_resolve_live_password_once`` so kz-login / password grants run at most
+    once per session. Password-authentication tests
+    (``test_password_authentication_allows_whoami``, PAT-lifecycle, CLI login)
+    consume this fixture directly, so it must always resolve a real password
+    when one is available — returning an empty short-circuit string here
+    regresses those tests.
     """
 
+    env_api_key = live_api_key.strip()
     password, error = _resolve_live_password_once(
         live_server_available=live_server_available,
         live_api_key=live_api_key,
         live_username=live_username,
         configured_password=str(pytestconfig.getoption("live_password")),
     )
-    if password or live_api_key.strip():
+    if password or env_api_key:
         return password
 
     username = live_username.strip()
@@ -1184,12 +1227,33 @@ def live_session_api_key(
 
     Auth-specific tests still use live_username/live_password directly, but the
     shared client fixture should not re-run password grants across the whole suite.
+
+    Env-supplied ``KAMIWAZA_API_KEY`` values are validated against
+    ``/auth/users/me`` before use. Stale PATs left behind by a prior platform
+    install (same ``.env.local``, new Keycloak signing keys after an
+    ``install-dev.sh`` reinstall) would otherwise poison every test with the
+    generic ``AuthenticationError: Authentication failed after token refresh``
+    signature. If the env PAT fails probe, fall through to password-based PAT
+    creation instead.
     """
 
     api_key = live_api_key.strip()
     if api_key:
-        yield api_key
-        return
+        ok, error = _api_key_auth_works(live_server_available, api_key)
+        if ok:
+            yield api_key
+            return
+        # Stale PAT (e.g. signed by a pre-reinstall Keycloak key). Fall through
+        # to password-based PAT creation so the rest of the suite can run.
+        # Cap the error text so a gateway 502/503 HTML body (or any other
+        # verbose non-401 failure surfaced via ``APIError.__str__``) doesn't
+        # flood CI logs / pytest output.
+        truncated_error = error if len(error) <= 500 else error[:500] + "... [truncated]"
+        print(
+            f"\n[live_session_api_key] env KAMIWAZA_API_KEY rejected by platform "
+            f"({truncated_error}); falling back to password-based PAT creation.",
+            flush=True,
+        )
 
     username = live_username.strip()
     password = resolved_live_password.strip()
@@ -1237,7 +1301,10 @@ def live_session_write_key(
     starts requiring admin, these tests will surface the regression as a 403.
     """
 
-    if live_api_key.strip():
+    # Only skip when the env PAT is usable — otherwise a stale env PAT would
+    # also prevent the write-scope regression guard from running.
+    api_key = live_api_key.strip()
+    if api_key and _api_key_auth_works(live_server_available, api_key)[0]:
         yield ""
         return
 

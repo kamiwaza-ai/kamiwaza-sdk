@@ -6,7 +6,7 @@ import logging
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta, timezone
 import time
-from typing import Optional, TYPE_CHECKING
+from typing import Optional
 
 import requests
 
@@ -33,6 +33,18 @@ class Authenticator(ABC):
         """Return the active access token, refreshing when necessary."""
         return None
 
+    def can_refresh(self) -> bool:
+        """Whether ``refresh_token`` can actually obtain new credentials.
+
+        Defaults to ``True`` for strategies that exchange credentials for
+        short-lived tokens (password/OAuth). ``ApiKeyAuthenticator`` overrides
+        this to ``False`` because a PAT/API-key cannot be refreshed client-side.
+        The HTTP layer uses this to avoid a pointless retry on 401 and to
+        surface the server's actual response instead of a misleading
+        "after token refresh" message.
+        """
+        return True
+
 
 class ApiKeyAuthenticator(Authenticator):
     """Simple bearer token authenticator backed by a PAT/API key."""
@@ -45,6 +57,10 @@ class ApiKeyAuthenticator(Authenticator):
 
     def refresh_token(self, session: requests.Session) -> None:  # pragma: no cover - nothing to refresh
         pass
+
+    def can_refresh(self) -> bool:
+        """PATs/API keys cannot be refreshed client-side."""
+        return False
 
     def get_access_token(self, session: requests.Session) -> Optional[str]:
         return self.api_key
@@ -166,3 +182,13 @@ class OAuthAuthenticator(Authenticator):
 
     def refresh_token(self, session: requests.Session) -> None:  # pragma: no cover - not implemented
         raise NotImplementedError("OAuth authentication is not yet implemented.")
+
+    def can_refresh(self) -> bool:
+        """Placeholder: OAuth refresh is not yet implemented.
+
+        Returning ``False`` prevents the HTTP 401 handler from invoking
+        ``refresh_token`` (which would raise ``NotImplementedError``) and
+        lets the client surface a clean ``AuthenticationError`` instead.
+        Flip this back to the default ``True`` once OAuth refresh lands.
+        """
+        return False
