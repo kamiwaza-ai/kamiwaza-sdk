@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 import re
 import shutil
@@ -20,10 +21,11 @@ import pytest
 import requests
 import urllib3
 from huggingface_hub import snapshot_download
+from requests.adapters import HTTPAdapter
 
 from kamiwaza_sdk import KamiwazaClient
 from kamiwaza_sdk.authentication import UserPasswordAuthenticator
-from kamiwaza_sdk.exceptions import APIError, AuthenticationError
+from kamiwaza_sdk.exceptions import APIError, AuthenticationError, KamiwazaError
 from kamiwaza_sdk.schemas.auth import PATCreate
 from kamiwaza_sdk.token_store import StoredToken, TokenStore
 
@@ -68,7 +70,7 @@ RUNTIME_HOST_ALIAS = os.environ.get(
 
 _COMPOSE_ENV_CACHE: dict[str, str] | None = None
 _COMPOSE_ENV_ERROR: str | None = None
-_LIVE_PASSWORD_CACHE: dict[tuple[str, str, str, str], tuple[str, str | None]] = {}
+_LIVE_PASSWORD_CACHE: dict[tuple[str, str, str], tuple[str, str | None]] = {}
 # Memoize PAT probe (``GET /auth/users/me``) results for the session.
 # ``_api_key_auth_works`` is called once in ``live_session_api_key`` and
 # once in ``live_session_write_key`` (plus any future fixture that needs
@@ -77,6 +79,27 @@ _LIVE_PASSWORD_CACHE: dict[tuple[str, str, str, str], tuple[str, str | None]] = 
 # worst. Cache both success and failure so a bad PAT doesn't keep
 # re-probing either.
 _API_KEY_PROBE_CACHE: dict[tuple[str, str], tuple[bool, str]] = {}
+_PROBE_TIMEOUT_SECONDS = 10.0
+_PROBE_ERROR_TRUNCATE = 200
+_logger = logging.getLogger(__name__)
+
+
+class _TimeoutHTTPAdapter(HTTPAdapter):
+    """HTTPAdapter that applies a default timeout to every request."""
+
+    def __init__(self, *args: Any, timeout: float = _PROBE_TIMEOUT_SECONDS, **kwargs: Any):
+        self._timeout = timeout
+        super().__init__(*args, **kwargs)
+
+    def send(self, request, **kwargs):  # type: ignore[override]
+        kwargs.setdefault("timeout", self._timeout)
+        return super().send(request, **kwargs)
+
+
+def _mount_probe_timeout(client: KamiwazaClient) -> None:
+    adapter = _TimeoutHTTPAdapter(timeout=_PROBE_TIMEOUT_SECONDS)
+    client.session.mount("http://", adapter)
+    client.session.mount("https://", adapter)
 _HTTP_TRACE_FLAG = "KAMIWAZA_HTTP_TRACE"
 _HTTP_TRACE_FILE_ENV = "KAMIWAZA_HTTP_TRACE_FILE"
 _TEXT_BODY_MARKERS = (
@@ -801,6 +824,7 @@ def _password_auth_works(
     """Validate username/password by calling /auth/users/me."""
 
     client = KamiwazaClient(base_url)
+    _mount_probe_timeout(client)
     client.authenticator = UserPasswordAuthenticator(
         username,
         password,
@@ -810,8 +834,10 @@ def _password_auth_works(
     try:
         client.auth.get_current_user()
         return True, ""
-    except (AuthenticationError, APIError) as exc:
+    except (KamiwazaError, requests.RequestException) as exc:
         return False, str(exc)
+    finally:
+        client.session.close()
 
 
 def _api_key_auth_works(base_url: str, api_key: str) -> tuple[bool, str]:
@@ -824,9 +850,9 @@ def _api_key_auth_works(base_url: str, api_key: str) -> tuple[bool, str]:
     lets the fixture chain detect that case and fall through to password-based
     PAT creation instead of handing every test a dead token.
 
-    Result (success or failure) is memoized on ``(base_url, api_key)`` for the
-    session, symmetric with ``_LIVE_PASSWORD_CACHE``. Multiple fixtures probe
-    the same PAT per session and we don't want to hammer Keycloak for it.
+    Results are memoized per ``(base_url, api_key)`` so the session-scoped
+    ``live_session_api_key`` and ``live_session_write_key`` fixtures don't each
+    issue their own probe round-trip.
     """
 
     cache_key = (base_url, api_key)
@@ -835,12 +861,14 @@ def _api_key_auth_works(base_url: str, api_key: str) -> tuple[bool, str]:
         return cached
 
     client = KamiwazaClient(base_url, api_key=api_key)
+    _mount_probe_timeout(client)
     try:
         client.auth.get_current_user()
-        result: tuple[bool, str] = (True, "")
-    except (AuthenticationError, APIError) as exc:
+        result = (True, "")
+    except (KamiwazaError, requests.RequestException) as exc:
         result = (False, str(exc))
-
+    finally:
+        client.session.close()
     _API_KEY_PROBE_CACHE[cache_key] = result
     return result
 
@@ -848,7 +876,6 @@ def _api_key_auth_works(base_url: str, api_key: str) -> tuple[bool, str]:
 def _resolve_live_password_once(
     *,
     live_server_available: str,
-    live_api_key: str,
     live_username: str,
     configured_password: str,
 ) -> tuple[str, str | None]:
@@ -862,7 +889,6 @@ def _resolve_live_password_once(
 
     cache_key = (
         live_server_available,
-        live_api_key.strip(),
         live_username.strip(),
         configured_password.strip(),
     )
@@ -879,8 +905,10 @@ def _resolve_live_password_once(
 
     errors: list[str] = []
 
-    # The kube-backed password is the authoritative dev credential. If kz-login
-    # is available, do not also churn through a stale local default password.
+    # The kube-backed password is the authoritative dev credential. Try it first
+    # when available, then fall through to the configured password if kz-login
+    # returned a stale/invalid value (e.g. freshly-rotated admin password not
+    # yet propagated to the cached fallback).
     fallback_password = _resolve_kz_login_password()
     if fallback_password:
         ok, error = _password_auth_works(
@@ -896,19 +924,20 @@ def _resolve_live_password_once(
         errors.append(f"kz-login password failed: {error}")
     else:
         errors.append("kz-login fallback unavailable")
-        if configured_password:
-            ok, error = _password_auth_works(
-                live_server_available,
-                username,
-                configured_password,
-            )
-            if ok:
-                result = (configured_password, None)
-                _LIVE_PASSWORD_CACHE[cache_key] = result
-                return result
-            errors.append(f"configured password failed: {error}")
-        else:
-            errors.append("configured password is empty")
+
+    if configured_password:
+        ok, error = _password_auth_works(
+            live_server_available,
+            username,
+            configured_password,
+        )
+        if ok:
+            result = (configured_password, None)
+            _LIVE_PASSWORD_CACHE[cache_key] = result
+            return result
+        errors.append(f"configured password failed: {error}")
+    else:
+        errors.append("configured password is empty")
 
     result = ("", "; ".join(errors))
     _LIVE_PASSWORD_CACHE[cache_key] = result
@@ -1193,7 +1222,6 @@ def resolved_live_password(
     env_api_key = live_api_key.strip()
     password, error = _resolve_live_password_once(
         live_server_available=live_server_available,
-        live_api_key=live_api_key,
         live_username=live_username,
         configured_password=str(pytestconfig.getoption("live_password")),
     )
@@ -1248,11 +1276,13 @@ def live_session_api_key(
         # Cap the error text so a gateway 502/503 HTML body (or any other
         # verbose non-401 failure surfaced via ``APIError.__str__``) doesn't
         # flood CI logs / pytest output.
-        truncated_error = error if len(error) <= 500 else error[:500] + "... [truncated]"
-        print(
-            f"\n[live_session_api_key] env KAMIWAZA_API_KEY rejected by platform "
-            f"({truncated_error}); falling back to password-based PAT creation.",
-            flush=True,
+        truncated = error[:_PROBE_ERROR_TRUNCATE]
+        if len(error) > _PROBE_ERROR_TRUNCATE:
+            truncated += "..."
+        _logger.warning(
+            "env KAMIWAZA_API_KEY rejected by platform (%s); "
+            "falling back to password-based PAT creation.",
+            truncated,
         )
 
     username = live_username.strip()
