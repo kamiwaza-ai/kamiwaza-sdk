@@ -71,6 +71,13 @@ RUNTIME_HOST_ALIAS = os.environ.get(
 _COMPOSE_ENV_CACHE: dict[str, str] | None = None
 _COMPOSE_ENV_ERROR: str | None = None
 _LIVE_PASSWORD_CACHE: dict[tuple[str, str, str], tuple[str, str | None]] = {}
+# Memoize PAT probe (``GET /auth/users/me``) results for the session.
+# ``_api_key_auth_works`` is called once in ``live_session_api_key`` and
+# once in ``live_session_write_key`` (plus any future fixture that needs
+# to validate a PAT). Without caching, the same PAT gets probed against
+# Keycloak on every call, which is noise at best and a lockout vector at
+# worst. Cache both success and failure so a bad PAT doesn't keep
+# re-probing either.
 _API_KEY_PROBE_CACHE: dict[tuple[str, str], tuple[bool, str]] = {}
 _PROBE_TIMEOUT_SECONDS = 10.0
 _PROBE_ERROR_TRUNCATE = 200
@@ -1202,14 +1209,23 @@ def resolved_live_password(
     """
     Resolve live password with kube-derived credentials first (kz-login),
     then explicit configured password as fallback.
+
+    Session-scoped and backed by ``_LIVE_PASSWORD_CACHE`` inside
+    ``_resolve_live_password_once`` so kz-login / password grants run at most
+    once per session. Password-authentication tests
+    (``test_password_authentication_allows_whoami``, PAT-lifecycle, CLI login)
+    consume this fixture directly, so it must always resolve a real password
+    when one is available — returning an empty short-circuit string here
+    regresses those tests.
     """
 
+    env_api_key = live_api_key.strip()
     password, error = _resolve_live_password_once(
         live_server_available=live_server_available,
         live_username=live_username,
         configured_password=str(pytestconfig.getoption("live_password")),
     )
-    if password or live_api_key.strip():
+    if password or env_api_key:
         return password
 
     username = live_username.strip()
@@ -1257,6 +1273,9 @@ def live_session_api_key(
             return
         # Stale PAT (e.g. signed by a pre-reinstall Keycloak key). Fall through
         # to password-based PAT creation so the rest of the suite can run.
+        # Cap the error text so a gateway 502/503 HTML body (or any other
+        # verbose non-401 failure surfaced via ``APIError.__str__``) doesn't
+        # flood CI logs / pytest output.
         truncated = error[:_PROBE_ERROR_TRUNCATE]
         if len(error) > _PROBE_ERROR_TRUNCATE:
             truncated += "..."

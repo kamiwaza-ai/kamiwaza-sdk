@@ -5,7 +5,8 @@ from uuid import uuid4
 
 import pytest
 
-from kamiwaza_sdk.exceptions import APIError
+from kamiwaza_sdk import KamiwazaClient
+from kamiwaza_sdk.exceptions import APIError, AuthenticationError
 
 pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
 
@@ -71,7 +72,9 @@ def test_apps_template_crud_and_images(live_kamiwaza_client) -> None:
                 pass
 
 
-def test_apps_deploy_and_deployment_error_paths(live_kamiwaza_client) -> None:
+def test_apps_deploy_and_deployment_error_paths(
+    live_kamiwaza_client, live_server_available
+) -> None:
     client = live_kamiwaza_client
     bogus_id = uuid4()
 
@@ -112,14 +115,42 @@ def test_apps_deploy_and_deployment_error_paths(live_kamiwaza_client) -> None:
     except APIError as exc:
         assert exc.status_code == 404
 
-    session_payload = {"session_token": f"sdk-session-{uuid4().hex}"}
-    with pytest.raises(APIError) as exc:
-        client.post("/apps/sessions/heartbeat", json=session_payload)
-    assert exc.value.status_code == 404
-
-    with pytest.raises(APIError) as exc:
-        client.post("/apps/sessions/end", json={**session_payload, "reason": "sdk-test"})
-    assert exc.value.status_code == 404
+    # App session endpoints use a dedicated session-token auth dependency
+    # (server PR #1376, ENG-2902). Tokens must be supplied via the
+    # ``Authorization: Bearer`` or ``X-App-Session-Token`` header and must
+    # match a deployment's hashed token in the database. Server precedence
+    # validates ``Authorization: Bearer`` *first*, so if we sent this request
+    # with the test's PAT attached the 401 would be for "no deployment
+    # matches the PAT owner" rather than a true session-token rejection —
+    # a false positive. Build a throwaway client with **no authenticator**
+    # so only the ``X-App-Session-Token`` header drives the auth decision.
+    bogus_session_token = f"sdk-session-{uuid4().hex}"
+    session_headers = {"X-App-Session-Token": bogus_session_token}
+    anon_client = KamiwazaClient(live_server_available)
+    anon_client.authenticator = None  # defeat env-PAT fallback
+    # Match on the server's session-token rejection detail
+    # (``_extract_session_token`` raises 401 with ``"Invalid session token"``).
+    # We must pass ``skip_auth=True`` so the SDK takes the branch that embeds
+    # the server's ``_extract_server_detail`` in the raised exception; without
+    # it, the ``authenticator is None`` short-circuit would raise
+    # ``"Authentication failed. No authenticator provided."`` — which never
+    # sees the server's 401 detail, so no match on "invalid session token"
+    # could possibly succeed. The exact string is contract-pinned by the unit
+    # test ``test_401_detail_surfaces_json_detail_field``.
+    session_token_pattern = r"(?i)invalid session token"
+    with pytest.raises(AuthenticationError, match=session_token_pattern):
+        anon_client.post(
+            "/apps/sessions/heartbeat",
+            headers=session_headers,
+            skip_auth=True,
+        )
+    with pytest.raises(AuthenticationError, match=session_token_pattern):
+        anon_client.post(
+            "/apps/sessions/end",
+            headers=session_headers,
+            json={"reason": "sdk-test"},
+            skip_auth=True,
+        )
 
     deployments = client.get("/apps/deployments")
     assert isinstance(deployments, list)
