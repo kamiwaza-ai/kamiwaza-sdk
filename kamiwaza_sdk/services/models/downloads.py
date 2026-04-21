@@ -451,120 +451,96 @@ class ModelDownloadMixin:
         sys.stdout.write(progress_str)
         sys.stdout.flush()
         
-    def download_and_deploy_model(self, repo_id: str, quantization: str = 'q6_k', 
-                                wait_for_download: bool = True, 
+    def _verify_existing_downloads(self, repo_id: str, quantization: str) -> None:
+        """Check if model files are already downloaded when no active downloads found."""
+        try:
+            model = self.get_model_by_repo_id(repo_id)  # type: ignore[attr-defined]
+            if not (model and hasattr(model, 'm_files') and model.m_files):
+                return
+
+            from ...utils.quant_manager import QuantizationManager
+            quant_manager = QuantizationManager()
+            gguf_files = [f for f in model.m_files if f.name and f.name.lower().endswith('.gguf')]
+            target_files = quant_manager.filter_files_by_quantization(gguf_files, quantization)
+
+            if not target_files:
+                print(f"Warning: No files found matching quantization {quantization}. Proceeding anyway...")
+                return
+
+            downloaded_files = [f for f in target_files if hasattr(f, 'download') and f.download]
+            if downloaded_files and len(downloaded_files) == len(target_files):
+                print(f"Model files for {repo_id} are already downloaded.")
+            else:
+                print("Warning: Some files may not be fully downloaded. Proceeding anyway...")
+        except Exception as e:
+            print(f"Note: Could not verify download status: {str(e)}. Proceeding anyway...")
+
+    def _await_download(self, repo_id: str, quantization: str, timeout: Optional[int]) -> None:
+        """Wait for active downloads or verify existing files."""
+        time.sleep(2)
+        status_list = self.check_download_status(repo_id)
+
+        if status_list:
+            print("Waiting for download to complete...")
+            self.wait_for_download(repo_id, timeout=timeout)
+            time.sleep(3)
+        else:
+            self._verify_existing_downloads(repo_id, quantization)
+
+    def _deploy_with_retries(self, repo_id: str, max_retries: int = 3, base_delay: int = 5) -> Any:
+        """Deploy model with exponential backoff retries."""
+        for attempt in range(max_retries):
+            try:
+                if attempt == 0:
+                    time.sleep(2)
+                return self.client.serving.deploy_model(repo_id=repo_id)
+            except Exception as e:
+                if attempt + 1 >= max_retries:
+                    raise ValueError(
+                        f"Failed to deploy model after {max_retries} attempts: {str(e)}"
+                    )
+                delay = base_delay * (2 ** attempt)
+                print(f"Deployment attempt {attempt + 1} failed: {str(e)}")
+                print(f"Retrying in {delay} seconds...")
+                time.sleep(delay)
+
+    def download_and_deploy_model(self, repo_id: str, quantization: str = 'q6_k',
+                                wait_for_download: bool = True,
                                 timeout: Optional[int] = None) -> Dict[str, Any]:
         """
         Download a model and deploy it in a single operation.
-        
+
         This method handles both the download and deployment of a model, with these steps:
         1. Initiate model download
         2. Wait for download to complete (optional)
         3. Deploy the model
-        
+
         Args:
             repo_id (str): The repository ID of the model to download and deploy
             quantization (str, optional): The quantization format to use. Defaults to 'q6_k'.
             wait_for_download (bool, optional): Whether to wait for download completion. Defaults to True.
             timeout (Optional[int], optional): Maximum seconds to wait for download. Defaults to None.
-            
+
         Returns:
             Dict[str, Any]: A dictionary with information about the deployment.
         """
-        import time
-        
         try:
-            # Step 1: Initiate download for the model
             print(f"Initiating download for {repo_id} with quantization {quantization}...")
             self.initiate_model_download(repo_id, quantization)
-            
-            # Step 2: Wait for download to complete if requested
-            if wait_for_download:
-                # Wait a moment for download to start
-                time.sleep(2)
-                
-                # Check if there are active downloads
-                status_list = self.check_download_status(repo_id)
-                
-                if status_list:
-                    print("Waiting for download to complete...")
-                    # Use our simplified wait_for_download method
-                    status_list = self.wait_for_download(repo_id, timeout=timeout)
-                    
-                    # Add a small delay after download completes to ensure file system is ready
-                    time.sleep(3)
-                else:
-                    # If no active downloads, check if the files are already downloaded
-                    # This requires the model to be in our database now
-                    try:
-                        model = self.get_model_by_repo_id(repo_id)  # type: ignore[attr-defined]
-                        if model and hasattr(model, 'm_files') and model.m_files:
-                            files = model.m_files
-                            # Use quant_manager to filter files by quantization
-                            from ...utils.quant_manager import QuantizationManager
-                            quant_manager = QuantizationManager()
-                            
-                            # Only consider GGUF files
-                            gguf_files = [f for f in files if f.name and f.name.lower().endswith('.gguf')]
-                            
-                            # Filter by quantization
-                            target_files = quant_manager.filter_files_by_quantization(gguf_files, quantization)
-                            
-                            if target_files:
-                                downloaded_files = [f for f in target_files if hasattr(f, 'download') and f.download]
-                                if downloaded_files and len(downloaded_files) == len(target_files):
-                                    print(f"Model files for {repo_id} are already downloaded.")
-                                else:
-                                    print("Warning: Some files may not be fully downloaded. Proceeding anyway...")
-                            else:
-                                print(f"Warning: No files found matching quantization {quantization}. Proceeding anyway...")
-                    except Exception as e:
-                        print(f"Note: Could not verify download status: {str(e)}. Proceeding anyway...")
-            
-            # Step 3: Get the model (should be in our database now)
-            model = self.get_model_by_repo_id(repo_id)  # type: ignore[attr-defined]
 
+            if wait_for_download:
+                self._await_download(repo_id, quantization, timeout)
+
+            model = self.get_model_by_repo_id(repo_id)  # type: ignore[attr-defined]
             if not model:
                 raise ValueError(f"Could not find model {repo_id} in the database after download.")
-            
-            # Step 4: Deploy the model
+
             print(f"Deploying model {repo_id}...")
-            
-            # Add retry logic for deployment
-            max_deploy_retries = 3
-            deploy_retry_count = 0
-            deploy_base_delay = 5  # seconds
-            
-            while deploy_retry_count < max_deploy_retries:
-                try:
-                    # Add a small delay before first deployment attempt
-                    if deploy_retry_count == 0:
-                        time.sleep(2)
-                    
-                    deployment_id = self.client.serving.deploy_model(repo_id=repo_id)
-                    break  # Deployment successful, exit the retry loop
-                except Exception as e:
-                    deploy_retry_count += 1
-                    
-                    if deploy_retry_count >= max_deploy_retries:
-                        # All retries failed
-                        raise ValueError(f"Failed to deploy model after {max_deploy_retries} attempts: {str(e)}")
-                    
-                    # Calculate delay with exponential backoff
-                    deploy_retry_delay = deploy_base_delay * (2 ** (deploy_retry_count - 1))
-                    print(f"Deployment attempt {deploy_retry_count} failed: {str(e)}")
-                    print(f"Retrying in {deploy_retry_delay} seconds...")
-                    
-                    # Wait before retrying
-                    time.sleep(deploy_retry_delay)
-            
-            # Model is deployed
+            deployment_id = self._deploy_with_retries(repo_id)
             print(f"Model {repo_id} successfully deployed!")
-            
-            # Get files from the model
+
             files = model.m_files if hasattr(model, 'm_files') and model.m_files else []
-            
-            # Create result dictionary with deployment information
+
             result = {
                 "model": model,
                 "target_files": [f for f in files if f.name and f.name.lower().endswith('.gguf')],
@@ -576,28 +552,23 @@ class ModelDownloadMixin:
                 "any_downloading": False,
                 "deployment_id": deployment_id
             }
-            
-            # Simple custom string representation
+
             class EnhancedDeploymentResult(dict):
                 def __str__(self):
                     model_name = self["model"].name if self["model"].name else self["model"].repo_modelId
                     return f"Model {model_name} downloaded and deployed successfully. Deployment ID: {self['deployment_id']}"
-                
-                # Use ProgressFormatter for any formatting if needed
+
                 def _format_details(self):
-                    """Format additional details about the deployment if needed."""
                     files = self.get("downloaded_files", [])
                     if not files:
                         return "No files"
-                    
                     total_size = sum(getattr(f, 'size', 0) or 0 for f in files)
                     return f"{len(files)} files, {ProgressFormatter.format_size(total_size)} total"
-            
+
             return EnhancedDeploymentResult(result)
-            
+
         except Exception as e:
             print(f"Error downloading and deploying model: {str(e)}")
-            # Re-raise the exception to let the caller handle it
             raise
     
     def get_model_download_status(self, repo_id: str, 
