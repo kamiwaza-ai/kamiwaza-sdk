@@ -10,7 +10,9 @@ import re
 # and ``+`` are needed because the broker may emit opaque base64-encoded
 # lease IDs.  Values are always percent-encoded with ``quote(…, safe="")``
 # before interpolation, so these extra characters are safe.
-_SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9._:/%+=\-]+\Z")
+# ``%`` is intentionally excluded: callers must pass decoded IDs so that
+# ``quote(…, safe="")`` can encode them correctly without double-encoding.
+_SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9._:/+=\-]+\Z")
 
 # Control characters (including null, newline, carriage return) that must
 # never appear in any identifier, even one passed as a query parameter.
@@ -21,14 +23,16 @@ def _validate_safe_id(value: str, label: str) -> None:
     """Validate that *value* contains only safe identifier characters.
 
     Raises ``ValueError`` when *value* is empty, contains characters
-    outside ``[a-zA-Z0-9._:/%+=\\-]``, or contains ``..`` (path traversal).
+    outside ``[a-zA-Z0-9._:/+=\\-]``, or contains ``..`` (path traversal).
     This is used as a whitelist gate for identifiers (``file_id``,
-    ``lease_id``) that are interpolated into URL paths.
+    ``lease_id``) that are interpolated into URL paths.  Callers must
+    pass decoded (non-percent-encoded) values; ``%`` is rejected to
+    prevent double-encoding by the downstream ``quote(…, safe="")``.
     """
     if not value or not _SAFE_ID_RE.match(value) or ".." in value:
         raise ValueError(
             f"{label} contains characters that are not permitted "
-            f"(must match [a-zA-Z0-9._:/%+=\\-]+)"
+            f"(must match [a-zA-Z0-9._:/+=\\-]+)"
         )
 
 

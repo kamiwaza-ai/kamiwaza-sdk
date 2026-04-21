@@ -925,6 +925,32 @@ def test_lease_methods_reject_path_traversal(dummy_client, malicious_lease_id):
     assert client.calls == []
 
 
+@pytest.mark.parametrize(
+    "pre_encoded_lease_id",
+    [
+        "abc%2Bdef",
+        "foo%20bar",
+        "id%3Dwith%3Dequals",
+    ],
+)
+def test_lease_methods_reject_pre_encoded_ids(dummy_client, pre_encoded_lease_id):
+    """Pre-encoded IDs (containing ``%``) must be rejected.
+
+    ``quote(…, safe="")`` would double-encode ``%XX`` sequences into
+    ``%25XX``, producing a wrong URL.  Callers must pass decoded values.
+    """
+    client = dummy_client({})
+    service = OAuthBrokerService(client)
+
+    with pytest.raises(ValueError):
+        service.get_lease_status(pre_encoded_lease_id)
+
+    with pytest.raises(ValueError):
+        service.expire_lease(pre_encoded_lease_id)
+
+    assert client.calls == []
+
+
 def test_calendar_list_calendars(dummy_client):
     """Test Calendar list calendars proxy."""
     app_id = str(uuid.uuid4())

@@ -261,13 +261,6 @@ class KamiwazaClient:
                     response_text=response.text,
                 )
 
-        if response.status_code == 404:
-            content_type = response.headers.get("content-type", "").lower()
-            if "text/html" in content_type or "Dashboard" in response.text:
-                raise NonAPIResponseError(
-                    f"Received 404 with HTML response. "
-                    f"Your base URL is '{self.base_url}' - did you forget to append '/api'?"
-                )
         raise APIError(
             f"Unexpected status code {response.status_code}: {response.text}",
             status_code=response.status_code,

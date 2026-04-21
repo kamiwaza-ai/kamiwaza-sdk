@@ -39,23 +39,27 @@ def oauth_broker_available(client) -> bool:
 
     Returns:
         True if broker is reachable, False otherwise.
+
+    Raises:
+        APIError: For unexpected errors (e.g. 500, 401, 403) so that
+            real regressions surface as test failures instead of skips.
     """
     try:
         client.oauth_broker.list_app_installations()
         return True
     except APIError as e:
-        if e.status_code == 404:
+        if e.status_code in (404, 501):
             return False
-        return False
+        raise
 
 
 def google_oauth_configured(client) -> bool:
     """Check if Google OAuth credentials are configured on the broker.
 
     Creates a temporary app installation, attempts to start a Google auth
-    flow, then cleans up.  Returns False when the broker responds with a
-    4xx/5xx (typically 400 or 422 when OAUTH_BROKER_GOOGLE_* env vars are
-    not set on the server).
+    flow, then cleans up.  Returns False only when the broker responds
+    with 400 or 422 (Google creds not configured).  Other errors (500,
+    401, 403) are re-raised so real regressions surface as failures.
     """
     app = None
     try:
@@ -70,8 +74,10 @@ def google_oauth_configured(client) -> bool:
             ["https://www.googleapis.com/auth/gmail.readonly"],
         )
         return True
-    except APIError:
-        return False
+    except APIError as e:
+        if e.status_code in (400, 422):
+            return False
+        raise
     finally:
         if app is not None:
             try:
