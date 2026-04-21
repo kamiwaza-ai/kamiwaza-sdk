@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from urllib.parse import urlparse, urlunparse
 from uuid import UUID
 
 from ..base_service import BaseService
@@ -165,11 +166,11 @@ class OAuthBrokerService(BaseService, ProxyMixin, TokenMixin, PolicyMixin):
         # is preserved.  ``skip_auth=True`` means a 401 surfaces as
         # ``AuthenticationError`` without retry — correct for a public
         # redirect endpoint.
-        base = self.client.base_url.rstrip("/")
-        if base.endswith("/api"):
-            root = base[: -len("/api")]
-        else:
-            root = base
+        parsed = urlparse(self.client.base_url)
+        path = parsed.path.rstrip("/")
+        if path.endswith("/api"):
+            path = path[: -len("/api")] or "/"
+        root = urlunparse((parsed.scheme, parsed.netloc, path.rstrip("/"), "", "", ""))
         url = f"{root}/oauth-broker/auth/google/callback"
 
         params: dict[str, str] = {

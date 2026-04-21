@@ -230,6 +230,93 @@ def test_debug_log_masks_authorization_header(monkeypatch: pytest.MonkeyPatch) -
         assert "***" in msg
 
 
+# ========== 401 → refresh → retry success path ==========
+
+
+def test_401_triggers_refresh_then_retries_successfully(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A 401 on the first attempt must trigger authenticator.refresh_token
+    and then retry the request.  On a 200 retry the result is returned."""
+    call_count = 0
+
+    def _mock_request(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return _StubResponse(status_code=401, text="Unauthorized")
+        return _StubResponse(status_code=200, json_data={"retried": True})
+
+    refresh_calls: list[object] = []
+
+    class _StubAuthenticator:
+        def authenticate(self, session):
+            session.headers["Authorization"] = "Bearer fresh-token"
+
+        def refresh_token(self, session):
+            refresh_calls.append(session)
+            session.headers["Authorization"] = "Bearer refreshed-token"
+
+    client = KamiwazaClient(base_url="https://example.test/api")
+    client.authenticator = _StubAuthenticator()  # type: ignore[assignment]
+    monkeypatch.setattr(client.session, "request", _mock_request)
+
+    result = client._request("GET", "/protected")
+
+    assert result == {"retried": True}
+    assert call_count == 2
+    assert len(refresh_calls) == 1
+
+
+def test_401_after_refresh_raises_authentication_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """If the retry after refresh also returns 401, an AuthenticationError
+    must be raised rather than retrying infinitely."""
+    from kamiwaza_sdk.exceptions import AuthenticationError
+
+    def _always_401(*args, **kwargs):
+        return _StubResponse(status_code=401, text="Unauthorized")
+
+    class _StubAuthenticator:
+        def authenticate(self, session):
+            pass
+
+        def refresh_token(self, session):
+            pass
+
+    client = KamiwazaClient(base_url="https://example.test/api")
+    client.authenticator = _StubAuthenticator()  # type: ignore[assignment]
+    monkeypatch.setattr(client.session, "request", _always_401)
+
+    with pytest.raises(AuthenticationError, match="after token refresh"):
+        client._request("GET", "/protected")
+
+
+def test_skip_auth_401_does_not_invoke_refresh(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When skip_auth=True a 401 must raise immediately without calling
+    refresh_token — it's a public endpoint that doesn't use credentials."""
+    from kamiwaza_sdk.exceptions import AuthenticationError
+
+    def _always_401(*args, **kwargs):
+        return _StubResponse(status_code=401, text="Unauthorized")
+
+    refresh_called = False
+
+    class _StubAuthenticator:
+        def authenticate(self, session):
+            pass
+
+        def refresh_token(self, session):
+            nonlocal refresh_called
+            refresh_called = True
+
+    client = KamiwazaClient(base_url="https://example.test/api")
+    client.authenticator = _StubAuthenticator()  # type: ignore[assignment]
+    monkeypatch.setattr(client.session, "request", _always_401)
+
+    with pytest.raises(AuthenticationError, match="Unauthenticated"):
+        client._request("GET", "/public-endpoint", skip_auth=True)
+
+    assert not refresh_called
+
+
 def test_request_does_not_mutate_caller_headers(monkeypatch: pytest.MonkeyPatch) -> None:
     """_request must not modify the caller-provided headers dict."""
     response = _StubResponse(status_code=200, json_data={"ok": True})

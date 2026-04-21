@@ -457,6 +457,43 @@ def test_handle_google_callback():
     )
 
 
+@pytest.mark.parametrize(
+    "base_url, expected_root",
+    [
+        ("https://example.com/api", "https://example.com"),
+        ("https://example.com/api/", "https://example.com"),
+        ("https://example.com:8443/api", "https://example.com:8443"),
+        ("https://example.com/prefix/api", "https://example.com/prefix"),
+        ("https://example.com", "https://example.com"),
+        ("https://example.com/v2", "https://example.com/v2"),
+    ],
+)
+def test_handle_google_callback_url_construction(base_url, expected_root):
+    """handle_google_callback must construct the callback URL by stripping
+    only the trailing /api path segment, using urlparse for robustness."""
+    now = datetime.now(timezone.utc).isoformat()
+    expires = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+    client = MagicMock()
+    client.base_url = base_url
+    client._request.return_value = {
+        "id": str(uuid.uuid4()),
+        "app_installation_id": str(uuid.uuid4()),
+        "user_id": str(uuid.uuid4()),
+        "provider": "google",
+        "status": "connected",
+        "granted_scopes": ["https://www.googleapis.com/auth/gmail.readonly"],
+        "expires_at": expires,
+        "created_at": now,
+    }
+
+    service = OAuthBrokerService(client)
+    service.handle_google_callback(code="code", state="state")
+
+    expected_url = f"{expected_root}/oauth-broker/auth/google/callback"
+    _, call_kwargs = client._request.call_args
+    assert call_kwargs["absolute_url"] == expected_url
+
+
 # ========== Connection Management Tests ==========
 
 
