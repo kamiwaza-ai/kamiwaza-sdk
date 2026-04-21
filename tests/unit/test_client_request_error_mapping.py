@@ -183,6 +183,53 @@ def test_skip_auth_does_not_send_session_cookies(monkeypatch: pytest.MonkeyPatch
     assert client.session.cookies.get("lb_affinity") == "node-3"
 
 
+def test_skip_auth_handles_duplicate_access_token_cookies(monkeypatch: pytest.MonkeyPatch) -> None:
+    """If multiple access_token cookies exist at different paths,
+    RequestsCookieJar.pop() raises CookieConflictError.  _apply_skip_auth
+    must handle this gracefully and clear all of them."""
+
+    def _capture_request(*args, **kwargs):
+        return _StubResponse(status_code=200, json_data={"ok": True})
+
+    client = KamiwazaClient(base_url="https://example.test/api")
+    client.session.cookies.set("access_token", "root-scoped", path="/")
+    client.session.cookies.set("access_token", "api-scoped", path="/api")
+    client.session.cookies.set("lb_affinity", "node-3")
+    monkeypatch.setattr(client.session, "request", _capture_request)
+
+    client._request("GET", "/public/callback", skip_auth=True)
+
+    assert all(c.name != "access_token" for c in client.session.cookies)
+    assert client.session.cookies.get("lb_affinity") == "node-3"
+
+
+def test_debug_log_masks_authorization_header(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Authorization header must be masked in debug logs to prevent
+    token leakage into CI logs and support bundles."""
+    import logging
+
+    response = _StubResponse(status_code=200, json_data={"ok": True})
+    client = _make_client_with_response(monkeypatch, response)
+    client.session.headers["Authorization"] = "Bearer secret-token-value"
+
+    log_messages: list[str] = []
+    handler = logging.Handler()
+    handler.emit = lambda record: log_messages.append(record.getMessage())  # type: ignore[assignment]
+    client.logger.addHandler(handler)
+    client.logger.setLevel(logging.DEBUG)
+
+    try:
+        client._request("GET", "/endpoint")
+    finally:
+        client.logger.removeHandler(handler)
+
+    header_logs = [m for m in log_messages if "Request headers" in m]
+    assert header_logs, "Expected at least one 'Request headers' log"
+    for msg in header_logs:
+        assert "secret-token-value" not in msg
+        assert "***" in msg
+
+
 def test_request_does_not_mutate_caller_headers(monkeypatch: pytest.MonkeyPatch) -> None:
     """_request must not modify the caller-provided headers dict."""
     response = _StubResponse(status_code=200, json_data={"ok": True})

@@ -143,7 +143,11 @@ class KamiwazaClient:
 
     def _apply_skip_auth(self, kwargs: dict) -> None:
         kwargs["headers"]["Authorization"] = None
-        self.session.cookies.pop("access_token", None)
+        try:
+            self.session.cookies.pop("access_token", None)
+        except requests.cookies.CookieConflictError:
+            for c in [c for c in self.session.cookies if c.name == "access_token"]:
+                self.session.cookies.clear(c.domain, c.path, c.name)
 
     def _check_dataset_schema_retry(
         self, method: str, path: str, kwargs: dict
@@ -303,7 +307,11 @@ class KamiwazaClient:
 
         while True:
             try:
-                self.logger.debug(f"Request headers: {self.session.headers}")
+                self.logger.debug(
+                    "Request headers: %s",
+                    {k: ("***" if k.lower() == "authorization" else v)
+                     for k, v in self.session.headers.items()},
+                )
                 response = self.session.request(method, url, **kwargs)
                 self.logger.debug(f"Response status: {response.status_code}")
             except requests.RequestException as e:
