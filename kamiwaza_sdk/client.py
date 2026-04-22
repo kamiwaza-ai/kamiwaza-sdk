@@ -36,7 +36,13 @@ from .services.oauth_broker import OAuthBrokerService
 from .services.context import ContextService
 
 logger = logging.getLogger(__name__)
-_BEARER_RE = re.compile(r"Bearer\s+\S+", re.IGNORECASE)
+_BEARER_RE = re.compile(
+    r"Bearer\s+\S+"                                  # Bearer <token>
+    r'|"(?:access_token|id_token)"\s*:\s*"[^"]*"'    # "access_token": "..."
+    r"|token=[^\s&,;]+"                               # token=<value>
+    r"|eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"  # bare JWT
+    , re.IGNORECASE,
+)
 
 
 class KamiwazaClient:
@@ -136,7 +142,20 @@ class KamiwazaClient:
 
     @staticmethod
     def _sanitize_response_text(text: str, max_len: int = 200) -> str:
-        sanitized = _BEARER_RE.sub("Bearer ***", text)
+        def _redact(match: re.Match) -> str:
+            value = match.group(0)
+            if value.lower().startswith("bearer"):
+                return "Bearer ***"
+            if value.lower().startswith('"access_token"'):
+                return '"access_token": "[REDACTED]"'
+            if value.lower().startswith('"id_token"'):
+                return '"id_token": "[REDACTED]"'
+            if value.lower().startswith("token="):
+                return "token=[REDACTED]"
+            # Bare JWT shape
+            return "[REDACTED]"
+
+        sanitized = _BEARER_RE.sub(_redact, text)
         if len(sanitized) > max_len:
             return sanitized[:max_len] + "..."
         return sanitized
@@ -232,23 +251,24 @@ class KamiwazaClient:
                 time.sleep(delay)
                 return retry_idx
 
-        message = f"API request failed with status {response.status_code}: {response_text}"
+        sanitized_text = self._sanitize_response_text(response_text)
+        message = f"API request failed with status {response.status_code}: {sanitized_text}"
         if response.status_code == 501 and (
             path.startswith("vectordb") or path.startswith("context/vectordb")
         ):
             raise VectorDBUnavailableError(
                 "VectorDB backend is not configured",
                 status_code=response.status_code,
-                response_text=response_text,
+                response_text=sanitized_text,
                 response_data=payload,
             )
         self.logger.error(
-            "Request failed: %s", self._sanitize_response_text(response_text)
+            "Request failed: %s", sanitized_text
         )
         raise APIError(
             message,
             status_code=response.status_code,
-            response_text=response_text,
+            response_text=sanitized_text,
             response_data=payload,
         )
 
@@ -269,17 +289,19 @@ class KamiwazaClient:
                         f"Received HTML response instead of JSON. "
                         f"Your base URL is '{self.base_url}' - did you forget to append '/api'?"
                     )
+                sanitized = self._sanitize_response_text(response.text[:200])
                 raise APIError(
                     f"Failed to parse JSON response. Content-Type: {content_type}, "
-                    f"Response: {response.text[:200]}...",
+                    f"Response: {sanitized}...",
                     status_code=response.status_code,
-                    response_text=response.text,
+                    response_text=sanitized,
                 )
 
+        sanitized = self._sanitize_response_text(response.text)
         raise APIError(
-            f"Unexpected status code {response.status_code}: {response.text}",
+            f"Unexpected status code {response.status_code}: {sanitized}",
             status_code=response.status_code,
-            response_text=response.text,
+            response_text=sanitized,
         )
 
     def _request(

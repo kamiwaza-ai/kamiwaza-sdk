@@ -376,3 +376,155 @@ def test_request_does_not_mutate_caller_headers(monkeypatch: pytest.MonkeyPatch)
     client._request("GET", "/endpoint", skip_auth=True, headers=caller_headers)
 
     assert "Authorization" not in caller_headers
+
+
+# ========== Token redaction in APIError messages ==========
+
+
+_FAKE_JWT = (
+    "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9"
+    ".eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIn0"
+    ".Sfl_KxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+)
+
+
+def test_api_error_message_redacts_bearer_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    """C1: str(APIError) from a 4xx/5xx whose body contains a Bearer token
+    must NOT leak the raw token."""
+    body = f"Error: invalid Bearer {_FAKE_JWT} for scope read"
+    response = _StubResponse(
+        status_code=500,
+        text=body,
+        json_data=None,
+        content_type="text/plain",
+    )
+    client = _make_client_with_response(monkeypatch, response)
+
+    with pytest.raises(APIError) as exc_info:
+        client._request("GET", "/some/endpoint")
+
+    assert "eyJ" not in str(exc_info.value)
+    assert "Bearer ***" in str(exc_info.value)
+
+
+def test_api_error_response_text_attr_is_sanitized(monkeypatch: pytest.MonkeyPatch) -> None:
+    """M1: The response_text attribute stored on APIError must also be
+    sanitized so callers who inspect exc.response_text don't see raw tokens."""
+    body = f"Bearer {_FAKE_JWT}"
+    response = _StubResponse(
+        status_code=403,
+        text=body,
+        json_data=None,
+        content_type="text/plain",
+    )
+    client = _make_client_with_response(monkeypatch, response)
+
+    with pytest.raises(APIError) as exc_info:
+        client._request("GET", "/endpoint")
+
+    assert "eyJ" not in (exc_info.value.response_text or "")
+    assert "Bearer ***" in (exc_info.value.response_text or "")
+
+
+def test_parse_success_json_failure_redacts_bearer(monkeypatch: pytest.MonkeyPatch) -> None:
+    """H1: When JSON parsing fails on a 2xx, the error message must redact
+    any bearer tokens present in the response body."""
+    body = f"not-json Bearer {_FAKE_JWT} leftover"
+    response = _StubResponse(
+        status_code=200,
+        text=body,
+        json_data=None,
+        content_type="application/json",
+    )
+    # Make .json() raise ValueError to simulate parse failure
+    response.json = lambda: (_ for _ in ()).throw(ValueError("bad json"))  # type: ignore[assignment]
+
+    client = _make_client_with_response(monkeypatch, response)
+
+    with pytest.raises(APIError) as exc_info:
+        client._request("GET", "/endpoint")
+
+    assert "eyJ" not in str(exc_info.value)
+    assert "Bearer ***" in str(exc_info.value)
+
+
+def test_unexpected_status_code_redacts_bearer(monkeypatch: pytest.MonkeyPatch) -> None:
+    """H2: The 'unexpected status code' path must redact bearer tokens."""
+    body = f"unexpected Bearer {_FAKE_JWT}"
+
+    class _WeirdResponse:
+        status_code = 299  # technically not >= 400 but outside normal success
+        text = body
+        headers = {"content-type": "text/plain"}
+        cookies = {}
+
+        def json(self):
+            raise ValueError
+
+    # We need a response that passes the 400 check but falls through
+    # _parse_success_response to the final raise.  status_code=200 with
+    # invalid json and non-HTML content-type triggers H1; to hit H2 we need
+    # status_code outside 200-299 that is also < 400 — which can't reach
+    # _parse_success_response through _request.  So we test via the method directly.
+    client = KamiwazaClient(base_url="https://example.test/api")
+    weird = _WeirdResponse()
+
+    with pytest.raises(APIError) as exc_info:
+        client._parse_success_response(weird, expect_json=True)
+
+    assert "eyJ" not in str(exc_info.value)
+
+
+def test_redacts_access_token_json_field(monkeypatch: pytest.MonkeyPatch) -> None:
+    """H3: _sanitize_response_text must redact \"access_token\": \"...\" patterns."""
+    body = '{"error": "bad", "access_token": "eyJsZWFrZWQ.payload.sig"}'
+    response = _StubResponse(
+        status_code=500,
+        text=body,
+        json_data=None,
+        content_type="text/plain",
+    )
+    client = _make_client_with_response(monkeypatch, response)
+
+    with pytest.raises(APIError) as exc_info:
+        client._request("GET", "/endpoint")
+
+    assert "eyJsZWFrZWQ" not in str(exc_info.value)
+    assert '"access_token": "[REDACTED]"' in str(exc_info.value)
+
+
+def test_redacts_bare_jwt_shape(monkeypatch: pytest.MonkeyPatch) -> None:
+    """H3: _sanitize_response_text must redact bare JWT-shaped strings
+    (eyJ...eyJ...sig) even without a Bearer prefix."""
+    body = f"token was {_FAKE_JWT} and expired"
+    response = _StubResponse(
+        status_code=500,
+        text=body,
+        json_data=None,
+        content_type="text/plain",
+    )
+    client = _make_client_with_response(monkeypatch, response)
+
+    with pytest.raises(APIError) as exc_info:
+        client._request("GET", "/endpoint")
+
+    assert "eyJ" not in str(exc_info.value)
+    assert "[REDACTED]" in str(exc_info.value)
+
+
+def test_redacts_token_equals_pattern(monkeypatch: pytest.MonkeyPatch) -> None:
+    """H3: _sanitize_response_text must redact token=<value> patterns."""
+    body = "callback failed token=eyJhbGciOiJIUzI1NiJ9.secret.sig"
+    response = _StubResponse(
+        status_code=500,
+        text=body,
+        json_data=None,
+        content_type="text/plain",
+    )
+    client = _make_client_with_response(monkeypatch, response)
+
+    with pytest.raises(APIError) as exc_info:
+        client._request("GET", "/endpoint")
+
+    assert "eyJ" not in str(exc_info.value)
+    assert "token=[REDACTED]" in str(exc_info.value)
