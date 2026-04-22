@@ -317,6 +317,56 @@ def test_skip_auth_401_does_not_invoke_refresh(monkeypatch: pytest.MonkeyPatch) 
     assert not refresh_called
 
 
+def test_error_log_redacts_bearer_token_in_response_body(monkeypatch: pytest.MonkeyPatch) -> None:
+    """If a 4xx/5xx response body echoes a bearer token, it must be
+    redacted in log output and exception messages to prevent token
+    leakage into CI logs and support bundles."""
+    import logging
+
+    token_body = 'Error: invalid Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.secret for scope'
+    response = _StubResponse(
+        status_code=403,
+        text=token_body,
+        json_data=None,
+        content_type="text/plain",
+    )
+    client = _make_client_with_response(monkeypatch, response)
+
+    log_messages: list[str] = []
+    handler = logging.Handler()
+    handler.emit = lambda record: log_messages.append(record.getMessage())  # type: ignore[assignment]
+    client.logger.addHandler(handler)
+    client.logger.setLevel(logging.DEBUG)
+
+    try:
+        with pytest.raises(APIError):
+            client._request("GET", "/protected")
+    finally:
+        client.logger.removeHandler(handler)
+
+    error_logs = [m for m in log_messages if "Request failed" in m]
+    assert error_logs, "Expected 'Request failed' log"
+    for msg in error_logs:
+        assert "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9" not in msg
+        assert "Bearer ***" in msg
+
+
+def test_401_redacts_bearer_token_in_response_body(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A 401 response that echoes a bearer token must have it redacted
+    in the AuthenticationError message."""
+    from kamiwaza_sdk.exceptions import AuthenticationError
+
+    token_body = "Rejected Bearer eyJsZWFrZWQ.token for this endpoint"
+    response = _StubResponse(status_code=401, text=token_body)
+    client = _make_client_with_response(monkeypatch, response)
+
+    with pytest.raises(AuthenticationError) as exc_info:
+        client._request("GET", "/public-endpoint", skip_auth=True)
+
+    assert "eyJsZWFrZWQ" not in str(exc_info.value)
+    assert "Bearer ***" in str(exc_info.value)
+
+
 def test_request_does_not_mutate_caller_headers(monkeypatch: pytest.MonkeyPatch) -> None:
     """_request must not modify the caller-provided headers dict."""
     response = _StubResponse(status_code=200, json_data={"ok": True})

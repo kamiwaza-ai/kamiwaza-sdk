@@ -3,6 +3,7 @@
 from collections import OrderedDict
 import logging
 import os
+import re
 import time
 from typing import Any, Optional
 from urllib.parse import urlparse
@@ -35,6 +36,7 @@ from .services.oauth_broker import OAuthBrokerService
 from .services.context import ContextService
 
 logger = logging.getLogger(__name__)
+_BEARER_RE = re.compile(r"Bearer\s+\S+", re.IGNORECASE)
 
 
 class KamiwazaClient:
@@ -132,6 +134,13 @@ class KamiwazaClient:
             return False
         return True
 
+    @staticmethod
+    def _sanitize_response_text(text: str, max_len: int = 200) -> str:
+        sanitized = _BEARER_RE.sub("Bearer ***", text)
+        if len(sanitized) > max_len:
+            return sanitized[:max_len] + "..."
+        return sanitized
+
     def _validate_absolute_url(self, absolute_url: str) -> None:
         base_parsed = urlparse(self.base_url)
         abs_parsed = urlparse(absolute_url)
@@ -167,9 +176,13 @@ class KamiwazaClient:
     def _handle_401(self, response, endpoint: str, skip_auth: bool, did_refresh: bool) -> None:
         if skip_auth:
             raise AuthenticationError(
-                f"Unauthenticated request failed for {endpoint}: {response.text}"
+                f"Unauthenticated request failed for {endpoint}: "
+                f"{self._sanitize_response_text(response.text)}"
             )
-        logger.warning(f"Received 401 Unauthorized. Response: {response.text}")
+        logger.warning(
+            "Received 401 Unauthorized. Response: %s",
+            self._sanitize_response_text(response.text),
+        )
         if self.authenticator:
             if not did_refresh:
                 self.authenticator.refresh_token(self.session)
@@ -229,7 +242,9 @@ class KamiwazaClient:
                 response_text=response_text,
                 response_data=payload,
             )
-        self.logger.error(f"Request failed: {response_text}")
+        self.logger.error(
+            "Request failed: %s", self._sanitize_response_text(response_text)
+        )
         raise APIError(
             message,
             status_code=response.status_code,
