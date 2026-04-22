@@ -301,7 +301,7 @@ class GmailSearchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     query: str
-    max_results: int = Field(default=10, ge=1, le=200)
+    max_results: int = Field(default=10, ge=1, le=500)
 
 
 class GmailGetMessageRequest(BaseModel):
@@ -337,4 +337,4 @@ class DriveListFilesRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     query: str | None = None
-    page_size: int = Field(default=10, ge=1, le=200)
+    page_size: int = Field(default=10, ge=1, le=1000)

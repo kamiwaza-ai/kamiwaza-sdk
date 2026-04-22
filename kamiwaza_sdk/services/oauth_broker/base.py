@@ -156,6 +156,13 @@ class OAuthBrokerService(BaseService, ProxyMixin, TokenMixin, PolicyMixin):
         Note:
             This is typically called automatically by the OAuth redirect handler.
             OAuth callback arrives as GET redirect from provider.
+
+        Security consideration:
+            The authorization code is sent as a query parameter (GET), which
+            means it may appear in server access logs and intermediary proxy
+            logs.  This is inherent to the OAuth 2.0 authorization-code
+            redirect flow and matches the server-side route.  The code is
+            single-use and short-lived, limiting exposure.
         """
         # The callback route is mounted at the server root, not under /api.
         # Build an absolute URL by stripping the ``/api`` suffix from
