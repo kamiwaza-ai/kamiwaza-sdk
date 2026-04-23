@@ -37,10 +37,10 @@ from .services.context import ContextService
 
 logger = logging.getLogger(__name__)
 _BEARER_RE = re.compile(
-    r"Bearer\s+\S+"                                  # Bearer <token>
-    r'|"(?:access_token|id_token)"\s*:\s*"[^"]*"'    # "access_token": "..."
-    r"|token=[^\s&,;]+"                               # token=<value>
-    r"|eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"  # bare JWT
+    r"Bearer(?:\s+|%20)\S+"                                        # Bearer <token> or URL-encoded
+    r'|"(?:access_token|id_token|refresh_token)"\s*:\s*"[^"]*"'   # JSON token fields
+    r"|(?:access_|refresh_|id_)?token=[^\s&,;]+"                   # query-param token variants
+    r"|eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"     # bare JWT
     , re.IGNORECASE,
 )
 
@@ -144,15 +144,18 @@ class KamiwazaClient:
     def _sanitize_response_text(text: str, max_len: int = 200) -> str:
         def _redact(match: re.Match) -> str:
             value = match.group(0)
-            if value.lower().startswith("bearer"):
+            lowered = value.lower()
+            if lowered.startswith("bearer"):
                 return "Bearer ***"
-            if value.lower().startswith('"access_token"'):
+            if lowered.startswith('"access_token"'):
                 return '"access_token": "[REDACTED]"'
-            if value.lower().startswith('"id_token"'):
+            if lowered.startswith('"id_token"'):
                 return '"id_token": "[REDACTED]"'
-            if value.lower().startswith("token="):
-                return "token=[REDACTED]"
-            # Bare JWT shape
+            if lowered.startswith('"refresh_token"'):
+                return '"refresh_token": "[REDACTED]"'
+            if "token=" in lowered:
+                prefix = value[:value.index("=") + 1]
+                return f"{prefix}[REDACTED]"
             return "[REDACTED]"
 
         sanitized = _BEARER_RE.sub(_redact, text)
@@ -289,7 +292,7 @@ class KamiwazaClient:
                         f"Received HTML response instead of JSON. "
                         f"Your base URL is '{self.base_url}' - did you forget to append '/api'?"
                     )
-                sanitized = self._sanitize_response_text(response.text[:200])
+                sanitized = self._sanitize_response_text(response.text)
                 raise APIError(
                     f"Failed to parse JSON response. Content-Type: {content_type}, "
                     f"Response: {sanitized}...",
@@ -345,8 +348,9 @@ class KamiwazaClient:
                 response = self.session.request(method, url, **kwargs)
                 self.logger.debug(f"Response status: {response.status_code}")
             except requests.RequestException as e:
-                logger.error(f"Request failed: {e}")
-                raise APIError(f"An error occurred while making the request: {e}")
+                sanitized_err = self._sanitize_response_text(str(e))
+                logger.error("Request failed: %s", sanitized_err)
+                raise APIError(f"An error occurred while making the request: {sanitized_err}")
 
             if response.status_code == 401:
                 self._handle_401(response, endpoint, skip_auth, did_refresh)

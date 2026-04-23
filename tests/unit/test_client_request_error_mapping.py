@@ -453,7 +453,7 @@ def test_unexpected_status_code_redacts_bearer(monkeypatch: pytest.MonkeyPatch) 
     body = f"unexpected Bearer {_FAKE_JWT}"
 
     class _WeirdResponse:
-        status_code = 299  # technically not >= 400 but outside normal success
+        status_code = 350
         text = body
         headers = {"content-type": "text/plain"}
         cookies = {}
@@ -461,11 +461,6 @@ def test_unexpected_status_code_redacts_bearer(monkeypatch: pytest.MonkeyPatch) 
         def json(self):
             raise ValueError
 
-    # We need a response that passes the 400 check but falls through
-    # _parse_success_response to the final raise.  status_code=200 with
-    # invalid json and non-HTML content-type triggers H1; to hit H2 we need
-    # status_code outside 200-299 that is also < 400 — which can't reach
-    # _parse_success_response through _request.  So we test via the method directly.
     client = KamiwazaClient(base_url="https://example.test/api")
     weird = _WeirdResponse()
 
@@ -473,6 +468,8 @@ def test_unexpected_status_code_redacts_bearer(monkeypatch: pytest.MonkeyPatch) 
         client._parse_success_response(weird, expect_json=True)
 
     assert "eyJ" not in str(exc_info.value)
+    assert "Bearer ***" in str(exc_info.value)
+    assert "eyJ" not in (exc_info.value.response_text or "")
 
 
 def test_redacts_access_token_json_field(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -528,3 +525,96 @@ def test_redacts_token_equals_pattern(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert "eyJ" not in str(exc_info.value)
     assert "token=[REDACTED]" in str(exc_info.value)
+
+
+def test_redacts_refresh_token_json_field(monkeypatch: pytest.MonkeyPatch) -> None:
+    """refresh_token JSON fields must be redacted like access_token."""
+    body = f'{{"error": "bad", "refresh_token": "{_FAKE_JWT}"}}'
+    response = _StubResponse(
+        status_code=500,
+        text=body,
+        json_data=None,
+        content_type="text/plain",
+    )
+    client = _make_client_with_response(monkeypatch, response)
+
+    with pytest.raises(APIError) as exc_info:
+        client._request("GET", "/endpoint")
+
+    assert "eyJ" not in str(exc_info.value)
+    assert '"refresh_token": "[REDACTED]"' in str(exc_info.value)
+
+
+def test_redacts_url_encoded_bearer(monkeypatch: pytest.MonkeyPatch) -> None:
+    """URL-encoded Bearer%20<token> must be redacted."""
+    body = f"redirect had Bearer%20{_FAKE_JWT} in path"
+    response = _StubResponse(
+        status_code=500,
+        text=body,
+        json_data=None,
+        content_type="text/plain",
+    )
+    client = _make_client_with_response(monkeypatch, response)
+
+    with pytest.raises(APIError) as exc_info:
+        client._request("GET", "/endpoint")
+
+    assert "eyJ" not in str(exc_info.value)
+    assert "Bearer ***" in str(exc_info.value)
+
+
+def test_redacts_access_token_query_param(monkeypatch: pytest.MonkeyPatch) -> None:
+    """access_token=<value> query params must be redacted."""
+    body = f"callback?access_token={_FAKE_JWT}&state=abc"
+    response = _StubResponse(
+        status_code=500,
+        text=body,
+        json_data=None,
+        content_type="text/plain",
+    )
+    client = _make_client_with_response(monkeypatch, response)
+
+    with pytest.raises(APIError) as exc_info:
+        client._request("GET", "/endpoint")
+
+    assert "eyJ" not in str(exc_info.value)
+    assert "access_token=[REDACTED]" in str(exc_info.value)
+
+
+def test_request_exception_message_is_sanitized(monkeypatch: pytest.MonkeyPatch) -> None:
+    """RequestException branch must sanitize str(e) before logging/raising."""
+    import requests as req
+
+    def _raise_request_exception(*args, **kwargs):
+        raise req.RequestException(
+            f"connection failed token={_FAKE_JWT}&redirect=http://evil"
+        )
+
+    client = KamiwazaClient(base_url="https://example.test/api")
+    monkeypatch.setattr(client.session, "request", _raise_request_exception)
+
+    with pytest.raises(APIError) as exc_info:
+        client._request("GET", "/endpoint")
+
+    assert "eyJ" not in str(exc_info.value)
+    assert "token=[REDACTED]" in str(exc_info.value)
+
+
+def test_h1_boundary_token_at_200_byte_offset_is_redacted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Token straddling the 200-byte boundary must still be fully redacted."""
+    padding = "X" * 190
+    body = f"{padding}Bearer {_FAKE_JWT} end"
+    response = _StubResponse(
+        status_code=200,
+        text=body,
+        json_data=None,
+        content_type="application/json",
+    )
+    response.json = lambda: (_ for _ in ()).throw(ValueError("bad json"))  # type: ignore[assignment]
+    client = _make_client_with_response(monkeypatch, response)
+
+    with pytest.raises(APIError) as exc_info:
+        client._request("GET", "/endpoint")
+
+    assert "eyJ" not in str(exc_info.value)
+    assert "eyJ" not in (exc_info.value.response_text or "")
