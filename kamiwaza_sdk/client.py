@@ -37,10 +37,12 @@ from .services.context import ContextService
 
 logger = logging.getLogger(__name__)
 _BEARER_RE = re.compile(
-    r"Bearer(?:\s+|%20)\S+"                                        # Bearer <token> or URL-encoded
-    r'|"(?:access_token|id_token|refresh_token)"\s*:\s*"[^"]*"'   # JSON token fields
-    r"|(?:access_|refresh_|id_)?token=[^\s&,;]+"                   # query-param token variants
-    r"|eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"     # bare JWT
+    r"Bearer(?:\s+|%20)\S+"                                                  # Bearer <token> or URL-encoded
+    r'|"(?:access_token|id_token|refresh_token)"\s*:\s*"[^"]*"'             # JSON token fields
+    r'|\\"(?:access_token|id_token|refresh_token)\\"\s*:\s*\\"[^"\\]*\\"'   # escaped JSON token fields
+    r"|(?:access_|refresh_|id_)?token=[^\s&,;]+"                             # query-param token variants
+    r"|(?:code|client_secret|assertion)=[^\s&,;]+"                           # OAuth-specific query params
+    r"|eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"               # bare JWT
     , re.IGNORECASE,
 )
 
@@ -142,18 +144,20 @@ class KamiwazaClient:
 
     @staticmethod
     def _sanitize_response_text(text: str, max_len: int = 200) -> str:
+        text = text[:65536]  # bound worst-case regex cost on pathological bodies
+
         def _redact(match: re.Match) -> str:
             value = match.group(0)
             lowered = value.lower()
             if lowered.startswith("bearer"):
                 return "Bearer ***"
-            if lowered.startswith('"access_token"'):
+            if lowered.startswith('"access_token"') or lowered.startswith('\\"access_token\\"'):
                 return '"access_token": "[REDACTED]"'
-            if lowered.startswith('"id_token"'):
+            if lowered.startswith('"id_token"') or lowered.startswith('\\"id_token\\"'):
                 return '"id_token": "[REDACTED]"'
-            if lowered.startswith('"refresh_token"'):
+            if lowered.startswith('"refresh_token"') or lowered.startswith('\\"refresh_token\\"'):
                 return '"refresh_token": "[REDACTED]"'
-            if "token=" in lowered:
+            if "=" in lowered:
                 prefix = value[:value.index("=") + 1]
                 return f"{prefix}[REDACTED]"
             return "[REDACTED]"

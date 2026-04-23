@@ -543,6 +543,7 @@ def test_redacts_refresh_token_json_field(monkeypatch: pytest.MonkeyPatch) -> No
 
     assert "eyJ" not in str(exc_info.value)
     assert '"refresh_token": "[REDACTED]"' in str(exc_info.value)
+    assert "eyJ" not in (exc_info.value.response_text or "")
 
 
 def test_redacts_url_encoded_bearer(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -561,6 +562,7 @@ def test_redacts_url_encoded_bearer(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert "eyJ" not in str(exc_info.value)
     assert "Bearer ***" in str(exc_info.value)
+    assert "eyJ" not in (exc_info.value.response_text or "")
 
 
 def test_redacts_access_token_query_param(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -579,6 +581,7 @@ def test_redacts_access_token_query_param(monkeypatch: pytest.MonkeyPatch) -> No
 
     assert "eyJ" not in str(exc_info.value)
     assert "access_token=[REDACTED]" in str(exc_info.value)
+    assert "eyJ" not in (exc_info.value.response_text or "")
 
 
 def test_request_exception_message_is_sanitized(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -602,7 +605,7 @@ def test_request_exception_message_is_sanitized(monkeypatch: pytest.MonkeyPatch)
 
 def test_h1_boundary_token_at_200_byte_offset_is_redacted(monkeypatch: pytest.MonkeyPatch) -> None:
     """Token straddling the 200-byte boundary must still be fully redacted."""
-    padding = "X" * 190
+    padding = "X" * 195
     body = f"{padding}Bearer {_FAKE_JWT} end"
     response = _StubResponse(
         status_code=200,
