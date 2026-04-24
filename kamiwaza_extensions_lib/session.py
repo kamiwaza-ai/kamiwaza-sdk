@@ -11,6 +11,28 @@ from fastapi import APIRouter, Request
 from .config import AuthConfig
 from .identity import anonymous_identity, get_identity
 
+# Fields that are safe to expose in /session responses. Anything on
+# ``Identity`` not in this set — notably ``auth_token`` (a Bearer
+# credential), ``system_high`` (a classification flag), and
+# ``request_id`` — MUST NOT cross the HTTP boundary to the browser.
+# Allowlist (not denylist) so new Identity fields default to *private*.
+SESSION_PUBLIC_FIELDS = frozenset(
+    {
+        "user_id",
+        "email",
+        "name",
+        "roles",
+        "workroom_id",
+        "workroom_role",
+        "is_authenticated",
+    }
+)
+
+
+def _public_session_payload(identity) -> dict:
+    """Project the public subset of an Identity for the /session response."""
+    return identity.model_dump(include=SESSION_PUBLIC_FIELDS)
+
 
 def _decode_jwt_exp(token: str) -> int | None:
     """Extract the ``exp`` claim from a JWT **without** signature verification.
@@ -80,9 +102,9 @@ def create_session_router(prefix: str = "") -> APIRouter:
 
         if not config.use_auth and not identity.is_authenticated:
             # Unified anonymous shape with require_auth (§4.8 P5).
-            return {**anonymous_identity().model_dump(), "expires_at": None}
+            return {**_public_session_payload(anonymous_identity()), "expires_at": None}
 
-        return {**identity.model_dump(), "expires_at": expires_at}
+        return {**_public_session_payload(identity), "expires_at": expires_at}
 
     @router.get("/auth/login-url")
     async def login_url(request: Request) -> dict:

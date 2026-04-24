@@ -15,7 +15,7 @@ from __future__ import annotations
 from typing import Optional
 
 from fastapi import Request
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
 
 from .errors import MisboundAuthError
 
@@ -34,12 +34,14 @@ _HEADER_REQUEST_ID = "x-request-id"
 class Identity(BaseModel):
     """User identity extracted from platform headers.
 
-    Pydantic model — supports ``.model_dump()`` for JSON serialization
-    and pass-through of unknown fields via ``extra="allow"`` for
-    forward compatibility as the envelope evolves.
-    """
+    Pydantic model — supports ``.model_dump()`` for JSON serialization.
 
-    model_config = ConfigDict(extra="allow")
+    ``extra`` defaults to ``"ignore"``; unknown kwargs are dropped at
+    construction.  This is deliberate: Identity is only constructed
+    internally with explicit kwargs (see ``identity_from_headers`` and
+    ``extract_identity``), so surfacing untrusted extras via
+    ``model_dump()`` would be a leak, not a feature.
+    """
 
     user_id: Optional[str] = None
     email: Optional[str] = None
