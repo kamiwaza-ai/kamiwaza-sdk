@@ -53,6 +53,21 @@ class Identity(BaseModel):
     is_authenticated: bool = False
 
 
+#: Canonical display name used for the anonymous Identity under USE_AUTH=false.
+#: Shared by ``require_auth`` and the ``/session`` endpoint so the frontend sees
+#: a consistent placeholder (§4.8 P5).
+ANONYMOUS_NAME = "Anonymous"
+
+
+def anonymous_identity() -> "Identity":
+    """Return the canonical anonymous Identity used under ``USE_AUTH=false``.
+
+    Guarantees ``require_auth()`` and the ``/session`` endpoint produce a
+    byte-identical Identity shape for local dev (§4.2.12 P5).
+    """
+    return Identity(name=ANONYMOUS_NAME, is_authenticated=False)
+
+
 def _parse_roles(raw: str) -> list[str]:
     """Split comma-separated roles, filtering blanks."""
     return [r.strip() for r in raw.split(",") if r.strip()]

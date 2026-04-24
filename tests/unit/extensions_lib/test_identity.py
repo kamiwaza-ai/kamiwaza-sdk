@@ -190,3 +190,68 @@ class TestIdentityPydantic:
         assert dumped["user_id"] is None
         assert dumped["is_authenticated"] is False
         assert dumped["roles"] == []
+
+
+@pytest.mark.unit
+class TestAnonymousIdentity:
+    """TS-7: unified anonymous shape under USE_AUTH=false (§4.8 P5)."""
+
+    def test_returns_named_anonymous_identity(self):
+        from kamiwaza_extensions_lib.identity import Identity, anonymous_identity
+
+        identity = anonymous_identity()
+        assert isinstance(identity, Identity)
+        assert identity.name == "Anonymous"
+        assert identity.user_id is None
+        assert identity.email is None
+        assert identity.is_authenticated is False
+        assert identity.roles == []
+
+    def test_require_auth_returns_anonymous_under_use_auth_false(self, monkeypatch):
+        """require_auth() under USE_AUTH=false yields Identity(name='Anonymous')."""
+        import asyncio
+
+        from kamiwaza_extensions_lib.auth import require_auth
+
+        monkeypatch.setenv("KAMIWAZA_USE_AUTH", "false")
+        request = MagicMock()
+        request.headers = {}
+
+        identity = asyncio.get_event_loop().run_until_complete(require_auth(request))
+        assert identity.name == "Anonymous"
+        assert identity.is_authenticated is False
+
+    def test_require_auth_and_session_produce_matching_identity(self, monkeypatch):
+        """Under USE_AUTH=false with no envelope, both paths yield the same
+        Identity shape (byte-identical ``Identity.model_dump()`` subset)."""
+        import asyncio
+
+        from fastapi.testclient import TestClient
+        from fastapi import FastAPI
+
+        from kamiwaza_extensions_lib.auth import require_auth
+        from kamiwaza_extensions_lib.session import create_session_router
+
+        monkeypatch.setenv("KAMIWAZA_USE_AUTH", "false")
+
+        # /session path
+        app = FastAPI()
+        app.include_router(create_session_router())
+        client = TestClient(app)
+        session_body = client.get("/session").json()
+
+        # require_auth path
+        request = MagicMock()
+        request.headers = {}
+        identity = asyncio.get_event_loop().run_until_complete(require_auth(request))
+        identity_fields = identity.model_dump()
+
+        # Every Identity field in /session response must match require_auth's output
+        identity_keys_in_session = {
+            k: session_body[k] for k in identity_fields if k in session_body
+        }
+        assert identity_keys_in_session == {
+            k: identity_fields[k] for k in identity_keys_in_session
+        }
+        assert session_body["name"] == "Anonymous"
+        assert session_body["is_authenticated"] is False

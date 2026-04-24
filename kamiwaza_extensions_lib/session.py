@@ -9,7 +9,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, Request
 
 from .config import AuthConfig
-from .identity import get_identity
+from .identity import anonymous_identity, get_identity
 
 
 def _decode_jwt_exp(token: str) -> int | None:
@@ -79,25 +79,10 @@ def create_session_router(prefix: str = "") -> APIRouter:
         expires_at = _session_expires_at(request) if identity.is_authenticated else None
 
         if not config.use_auth and not identity.is_authenticated:
-            return {
-                "user_id": None,
-                "email": None,
-                "name": "Anonymous",
-                "roles": [],
-                "workroom_id": None,
-                "is_authenticated": False,
-                "expires_at": None,
-            }
+            # Unified anonymous shape with require_auth (§4.8 P5).
+            return {**anonymous_identity().model_dump(), "expires_at": None}
 
-        return {
-            "user_id": identity.user_id,
-            "email": identity.email,
-            "name": identity.name,
-            "roles": identity.roles,
-            "workroom_id": identity.workroom_id,
-            "is_authenticated": identity.is_authenticated,
-            "expires_at": expires_at,
-        }
+        return {**identity.model_dump(), "expires_at": expires_at}
 
     @router.get("/auth/login-url")
     async def login_url(request: Request) -> dict:

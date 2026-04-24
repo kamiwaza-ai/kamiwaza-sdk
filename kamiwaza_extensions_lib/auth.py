@@ -8,7 +8,7 @@ from typing import Optional
 from fastapi import Depends, HTTPException, Request
 
 from .config import AuthConfig
-from .identity import Identity, get_identity
+from .identity import Identity, anonymous_identity, get_identity
 
 # Headers to forward when calling other Kamiwaza services.
 _FORWARD_HEADERS = frozenset(
@@ -48,7 +48,8 @@ async def require_auth(request: Request) -> Identity:
     identity = await get_identity(request)
     config = AuthConfig.from_env()
     if not config.use_auth:
-        return identity
+        # Local dev — unified anonymous shape, matching /session (§4.8 P5).
+        return identity if identity.is_authenticated else anonymous_identity()
     if not identity.is_authenticated:
         raise HTTPException(status_code=401, detail="Authentication required")
     return identity
