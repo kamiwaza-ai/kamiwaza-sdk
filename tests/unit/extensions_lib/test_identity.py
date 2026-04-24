@@ -152,3 +152,41 @@ class TestGetIdentity:
         identity = await get_identity(request)
 
         assert identity.is_authenticated is False
+
+
+@pytest.mark.unit
+class TestIdentityPydantic:
+    """TS-6: Identity.model_dump() produces dict with all envelope fields."""
+
+    def test_model_dump_round_trip(self):
+        identity = identity_from_headers(
+            {
+                "x-user-id": "usr-123",
+                "x-user-email": "alice@example.com",
+                "x-user-name": "Alice",
+                "x-user-roles": "admin,user",
+                "x-workroom-id": "wrk-456",
+                "x-user-workroom-role": "editor",
+                "x-auth-token": "jwt-abc",
+                "x-request-id": "req-789",
+                "x-user-system-high": "true",
+            }
+        )
+        dumped = identity.model_dump()
+        assert dumped["user_id"] == "usr-123"
+        assert dumped["email"] == "alice@example.com"
+        assert dumped["name"] == "Alice"
+        assert dumped["roles"] == ["admin", "user"]
+        assert dumped["workroom_id"] == "wrk-456"
+        assert dumped["workroom_role"] == "editor"
+        assert dumped["auth_token"] == "jwt-abc"
+        assert dumped["request_id"] == "req-789"
+        assert dumped["system_high"] is True
+        assert dumped["is_authenticated"] is True
+
+    def test_model_dump_for_anonymous(self):
+        identity = identity_from_headers({})
+        dumped = identity.model_dump()
+        assert dumped["user_id"] is None
+        assert dumped["is_authenticated"] is False
+        assert dumped["roles"] == []

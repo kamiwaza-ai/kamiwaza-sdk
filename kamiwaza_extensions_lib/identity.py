@@ -12,10 +12,10 @@ Two entry points:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import Optional
 
 from fastapi import Request
+from pydantic import BaseModel, ConfigDict, Field
 
 from .errors import MisboundAuthError
 
@@ -31,14 +31,20 @@ _HEADER_AUTH_TOKEN = "x-auth-token"
 _HEADER_REQUEST_ID = "x-request-id"
 
 
-@dataclass
-class Identity:
-    """User identity extracted from platform headers."""
+class Identity(BaseModel):
+    """User identity extracted from platform headers.
+
+    Pydantic model — supports ``.model_dump()`` for JSON serialization
+    and pass-through of unknown fields via ``extra="allow"`` for
+    forward compatibility as the envelope evolves.
+    """
+
+    model_config = ConfigDict(extra="allow")
 
     user_id: Optional[str] = None
     email: Optional[str] = None
     name: Optional[str] = None
-    roles: list[str] = field(default_factory=list)
+    roles: list[str] = Field(default_factory=list)
     system_high: bool = False
     workroom_id: Optional[str] = None
     workroom_role: Optional[str] = None
