@@ -14,10 +14,15 @@ console = Console()
 
 
 # ---------------------------------------------------------------------------
-# UAC-9d B3 fix — warn when the minted PAT's roles are a strict subset of the
+# §4.8 B3 fix — warn when the minted PAT's roles are a strict subset of the
 # UI role-set. Platform-side fix is tracked separately; this surface catches
 # the surprising case where a user with admin roles logs in and is silently
-# given a non-admin PAT (see §4.8 B3).
+# given a non-admin PAT.
+#
+# Correctness note: the UI role-set must be captured against the
+# *password session* (via client.auth.get_current_user), NOT against the
+# just-minted PAT — the PAT only reports its own scoped roles, so a
+# self-referential comparison can never show a downgrade.
 # ---------------------------------------------------------------------------
 
 
@@ -44,27 +49,21 @@ def _decode_pat_roles(token: str) -> set[str]:
     return {str(r) for r in roles if isinstance(r, str)}
 
 
-def _fetch_ui_roles(url: str, pat_token: str, *, verify_ssl: bool = True) -> set[str]:
-    """Best-effort fetch of the user's full role-set via ``/auth/whoami``.
+def _capture_ui_roles(client) -> set[str]:
+    """Best-effort capture of the caller's UI role-set via the SDK's
+    already-authenticated password session.
+
+    Must be called *before* PAT mint — otherwise the returned roles
+    describe the PAT's scoped subset, defeating the comparison.
 
     Returns an empty set on any failure; the caller must treat empty as
     "unknown" and skip the warning.
     """
-    import requests
-
     try:
-        resp = requests.get(
-            f"{url}/auth/whoami",
-            headers={"Authorization": f"Bearer {pat_token}"},
-            timeout=5,
-            verify=verify_ssl,
-        )
-        if not resp.ok:
-            return set()
-        body = resp.json()
-    except (requests.RequestException, ValueError):
+        user = client.auth.get_current_user()
+    except Exception:
         return set()
-    roles = body.get("roles", []) if isinstance(body, dict) else []
+    roles = getattr(user, "roles", None) or []
     if not isinstance(roles, list):
         return set()
     return {str(r) for r in roles if isinstance(r, str)}
@@ -76,14 +75,13 @@ def _warn_if_roles_downgraded(
     """Emit a warning when ``ui_roles`` is a strict superset of ``pat_roles``.
 
     Silent on: equal sets, PAT superset (unusual), empty UI set (unknown).
-    Uses plain ``print`` so ``capsys`` can observe in tests.
+    Uses ``typer.echo`` so ``CliRunner`` / ``capsys`` capture the output
+    through Click's normal stdout path.
     """
-    if not ui_roles:
+    if not ui_roles or not pat_roles < ui_roles:
         return
     missing = ui_roles - pat_roles
-    if not missing or not pat_roles < ui_roles:
-        return
-    print(
+    typer.echo(
         f"Warning: minted PAT is scoped to {sorted(pat_roles)} but your UI "
         f"role-set also includes {sorted(missing)}. Some admin-gated calls "
         f"may fail; platform-side fix tracked as a follow-on (§4.8 B3)."
@@ -178,6 +176,10 @@ def _login_with_password(mgr, *, url: str, name: str, verify_ssl: bool = True) -
             username, password, client.auth,
             token_store=_MemoryTokenStore(),
         )
+        # Capture the UI role-set against the password session BEFORE minting
+        # the PAT. Post-mint the only credential we have is the scoped PAT,
+        # which would reflect only its own roles (§4.8 B3).
+        ui_roles = _capture_ui_roles(client)
         pat_response = client.auth.create_pat(PATCreate(name=f"kz-ext-{name}"))
         pat_token = pat_response.token
     except Exception as exc:
@@ -196,9 +198,10 @@ def _login_with_password(mgr, *, url: str, name: str, verify_ssl: bool = True) -
     console.print(f"[green]Connected to {url} as '{name}'[/green]")
 
     # §4.8 B3: surface the role-set downgrade case — silent on failure.
+    # `ui_roles` was captured above against the password session.
     _warn_if_roles_downgraded(
         pat_roles=_decode_pat_roles(pat_token),
-        ui_roles=_fetch_ui_roles(url, pat_token, verify_ssl=verify_ssl),
+        ui_roles=ui_roles,
     )
 
 

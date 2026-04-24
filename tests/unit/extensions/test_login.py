@@ -44,45 +44,86 @@ class TestPATRoleDecoding:
 
 
 @pytest.mark.unit
+class TestCaptureUIRoles:
+    """TS-32: UI roles come from the password-session /auth/users/me call,
+    not from the just-minted PAT (which would be self-referential)."""
+
+    def test_reads_roles_from_sdk_current_user(self):
+        from kamiwaza_extensions.commands.login import _capture_ui_roles
+
+        user = MagicMock()
+        user.roles = ["member", "admin"]
+        client = MagicMock()
+        client.auth.get_current_user.return_value = user
+
+        assert _capture_ui_roles(client) == {"member", "admin"}
+        client.auth.get_current_user.assert_called_once_with()
+
+    def test_returns_empty_on_sdk_exception(self):
+        from kamiwaza_extensions.commands.login import _capture_ui_roles
+
+        client = MagicMock()
+        client.auth.get_current_user.side_effect = RuntimeError("network")
+
+        assert _capture_ui_roles(client) == set()
+
+    def test_returns_empty_when_roles_missing(self):
+        from kamiwaza_extensions.commands.login import _capture_ui_roles
+
+        user = MagicMock()
+        user.roles = None
+        client = MagicMock()
+        client.auth.get_current_user.return_value = user
+
+        assert _capture_ui_roles(client) == set()
+
+    def test_returns_empty_when_roles_not_a_list(self):
+        from kamiwaza_extensions.commands.login import _capture_ui_roles
+
+        user = MagicMock()
+        user.roles = "admin"  # wrong shape
+        client = MagicMock()
+        client.auth.get_current_user.return_value = user
+
+        assert _capture_ui_roles(client) == set()
+
+
+@pytest.mark.unit
 class TestRoleSetWarning:
     """TS-32: warn when UI role-set is a strict superset of PAT role-set."""
 
-    def test_warns_on_strict_superset(self, capsys):
+    def _run(self, **kwargs) -> str:
+        """Invoke the helper via a CliRunner so typer.echo is captured."""
+        import typer
         from kamiwaza_extensions.commands.login import _warn_if_roles_downgraded
 
-        _warn_if_roles_downgraded(
-            pat_roles={"member"},
-            ui_roles={"member", "admin"},
-        )
-        out = capsys.readouterr().out
+        app = typer.Typer()
+
+        @app.command()
+        def _cmd() -> None:
+            _warn_if_roles_downgraded(**kwargs)
+
+        return runner.invoke(app, []).output
+
+    def test_warns_on_strict_superset(self):
+        out = self._run(pat_roles={"member"}, ui_roles={"member", "admin"})
         assert "admin" in out
         assert "PAT" in out or "role" in out.lower()
 
-    def test_quiet_when_equal(self, capsys):
-        from kamiwaza_extensions.commands.login import _warn_if_roles_downgraded
+    def test_quiet_when_equal(self):
+        assert self._run(
+            pat_roles={"member", "admin"}, ui_roles={"member", "admin"}
+        ) == ""
 
-        _warn_if_roles_downgraded(
-            pat_roles={"member", "admin"},
-            ui_roles={"member", "admin"},
-        )
-        assert capsys.readouterr().out == ""
-
-    def test_quiet_when_pat_is_superset(self, capsys):
+    def test_quiet_when_pat_is_superset(self):
         """PAT roles larger than UI — unusual but not a downgrade; no warning."""
-        from kamiwaza_extensions.commands.login import _warn_if_roles_downgraded
+        assert self._run(
+            pat_roles={"member", "admin"}, ui_roles={"member"}
+        ) == ""
 
-        _warn_if_roles_downgraded(
-            pat_roles={"member", "admin"},
-            ui_roles={"member"},
-        )
-        assert capsys.readouterr().out == ""
-
-    def test_quiet_when_ui_roles_empty(self, capsys):
-        """If /whoami failed or returned nothing, don't guess — stay silent."""
-        from kamiwaza_extensions.commands.login import _warn_if_roles_downgraded
-
-        _warn_if_roles_downgraded(pat_roles={"member"}, ui_roles=set())
-        assert capsys.readouterr().out == ""
+    def test_quiet_when_ui_roles_empty(self):
+        """If capture failed or returned nothing, don't guess — stay silent."""
+        assert self._run(pat_roles={"member"}, ui_roles=set()) == ""
 
 
 @pytest.mark.unit
