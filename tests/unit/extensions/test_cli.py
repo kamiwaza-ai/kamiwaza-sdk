@@ -93,3 +93,20 @@ class TestErrorHandling:
         with pytest.raises(ClickExit) as exc_info:
             failing_func()
         assert exc_info.value.exit_code == expected_code
+
+    def test_unknown_runtime_lib_subclass_falls_back_to_failure(self):
+        """A custom KamiwazaRuntimeError subclass with an unmapped class_name
+        should exit with the generic FAILURE code (1), not silently crash."""
+        from kamiwaza_extensions import cli
+        from kamiwaza_extensions_lib.errors import KamiwazaRuntimeError
+
+        class CustomRuntimeError(KamiwazaRuntimeError):
+            class_name = "some_novel_class_name_not_in_catalog"
+
+        @cli.run_with_error_handling
+        def failing_func():
+            raise CustomRuntimeError("surprise")
+
+        with pytest.raises(ClickExit) as exc_info:
+            failing_func()
+        assert exc_info.value.exit_code == 1  # ExitCode.FAILURE

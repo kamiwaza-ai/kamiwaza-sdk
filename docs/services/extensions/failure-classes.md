@@ -71,16 +71,16 @@ doesn't match the extension's expected runtime context.
 
 **Typical causes:**
 
-- Running a local-dev envelope against a production-signed extension (rare;
-extensions no longer verify HMAC as of 2026-04-23, but shape mismatches
-still apply).
+- Running a local-dev envelope against a production-deployed extension.
+  Note: extensions are pass-through consumers of the envelope — they do
+  not verify the HMAC signature (see design §4.2.7 for rationale), but
+  shape mismatches still apply.
 - Envelope fields present but all empty — platform misconfiguration.
 
 **Fix:**
 
-1. Compare `request.headers` against the list in
-  `kamiwaza-sdk/docs/extensions/non-sdk-flow.md` (when available) or
-   `kamiwaza_extensions_lib/identity.py`.
+1. Compare `request.headers` against the header list in
+   `kamiwaza_extensions_lib/identity.py` (``_HEADER_USER_ID``, etc.).
 2. Check that `X-User-Id` and `X-Workroom-Id` are non-empty strings, not
   placeholder tokens.
 3. Verify the deployment environment — a PR preview env often has different
@@ -106,13 +106,15 @@ workroom viewer.
    membership.
 2. The platform enforces workroom membership at data-access time; the
   extension should surface a friendly error, not try to work around it.
-3. Code example:
+3. When the runtime lib raises ``OutOfEnvelopeAccessError`` directly, catch
+   it at the top of your request handler:
 
 ```python
 from kamiwaza_extensions_lib.errors import OutOfEnvelopeAccessError
 
 try:
-    result = client.workrooms.get_resource(identity.workroom_id, resource_id)
+    # ...call a runtime-lib helper that enforces envelope scope...
+    pass
 except OutOfEnvelopeAccessError:
     return JSONResponse(
         {"error": {"class": "out_of_envelope_access",
@@ -120,6 +122,13 @@ except OutOfEnvelopeAccessError:
         status_code=403,
     )
 ```
+
+As of this writing the runtime lib does not automatically translate
+platform HTTP 403s into ``OutOfEnvelopeAccessError``. If you call the
+SDK directly (`client.workrooms.*`, `client.models.*`, etc.), treat a
+403 response as an out-of-envelope condition and return the same 403
+JSON shape shown above. A future mapper is tracked under the runtime-lib
+backlog.
 
 ## `platform_outage` — exit 13
 
