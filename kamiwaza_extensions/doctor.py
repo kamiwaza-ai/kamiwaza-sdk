@@ -6,6 +6,8 @@ import json
 import subprocess
 import sys
 from dataclasses import dataclass
+from functools import lru_cache
+from importlib import resources
 from pathlib import Path
 from typing import List, Literal, Optional
 
@@ -14,6 +16,17 @@ from packaging.version import InvalidVersion, Version
 
 from kamiwaza_extensions import __version__
 from kamiwaza_extensions.connections import ConnectionManager
+
+
+@lru_cache(maxsize=1)
+def _uac_9d_hints() -> list[dict]:
+    """Load UAC-9d class hints from the runtime lib's canonical JSON."""
+    data = json.loads(
+        resources.files("kamiwaza_extensions_lib")
+        .joinpath("exception_names.json")
+        .read_text(encoding="utf-8")
+    )
+    return list(data["classes"])
 
 
 @dataclass
@@ -50,7 +63,32 @@ class DoctorChecker:
         sdk_results = self._check_sdk_override()
         results.extend(sdk_results)
 
+        # UAC-9d reference hints (always emitted)
+        results.extend(self._uac_9d_reference_hints())
+
         return results
+
+    # ------------------------------------------------------------------
+    # UAC-9d reference hints
+    # ------------------------------------------------------------------
+
+    def _uac_9d_reference_hints(self) -> List[CheckResult]:
+        """Reference entries for each UAC-9d runtime-lib exception class.
+
+        These are always-pass informational entries; they surface the
+        canonical doctor_hint so extension authors seeing an exception
+        in their logs can find the matching diagnosis + fix in
+        ``kz-ext doctor`` output (§4.2.8 DoctorUACFailureHints).
+        """
+        return [
+            CheckResult(
+                name=f"UAC-9d: {entry['name']}",
+                status="pass",
+                message=entry["doctor_hint"],
+                fix=entry["doctor_hint"],
+            )
+            for entry in _uac_9d_hints()
+        ]
 
     # ------------------------------------------------------------------
     # System checks
