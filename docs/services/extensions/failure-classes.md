@@ -1,4 +1,4 @@
-# UAC-9d Failure Classes — Runbook
+# Extension Failure Classes — Runbook
 
 When an extension cannot serve a request, the runtime libs raise one of four
 canonical exception classes. Each class has a stable name, a CLI exit code,
@@ -7,18 +7,20 @@ its typical causes, and how to fix it.
 
 ## At a glance
 
-| Class name | Python / TS exception | CLI exit code | `kz-ext doctor` hint |
-|------------|----------------------|---------------|----------------------|
-| `misbound_auth` | `MisboundAuthError` | 10 | Required envelope header missing or malformed |
-| `unexpected_context` | `UnexpectedContextError` | 11 | Envelope shape wrong for this context |
-| `out_of_envelope_access` | `OutOfEnvelopeAccessError` | 12 | Cross-workroom / out-of-scope access attempt |
-| `platform_outage` | `PlatformOutageError` | 13 | Platform API unreachable or returning 5xx |
+
+| Class name               | Python / TS exception      | CLI exit code | `kz-ext doctor` hint                          |
+| ------------------------ | -------------------------- | ------------- | --------------------------------------------- |
+| `misbound_auth`          | `MisboundAuthError`        | 10            | Required envelope header missing or malformed |
+| `unexpected_context`     | `UnexpectedContextError`   | 11            | Envelope shape wrong for this context         |
+| `out_of_envelope_access` | `OutOfEnvelopeAccessError` | 12            | Cross-workroom / out-of-scope access attempt  |
+| `platform_outage`        | `PlatformOutageError`      | 13            | Platform API unreachable or returning 5xx     |
+
 
 The `class_name` strings are canonical — they appear in:
 
 - The JSON body returned by non-SDK extensions (under `{"error": {"class": ...}}`).
 - `kamiwaza_extensions_lib/exception_names.json` (single source of truth).
-- `kz-ext doctor` output (as `UAC-9d: <class_name>` reference entries).
+- `kz-ext doctor` output (as `Failure class: <class_name>` reference entries).
 
 ## `misbound_auth` — exit 10
 
@@ -28,18 +30,18 @@ is missing or empty at the time the runtime lib tried to parse the request.
 **Typical causes:**
 
 - The request reached the extension pod *without* passing through Traefik
-  (e.g., direct in-cluster call, port-forward, or misconfigured ingress).
+(e.g., direct in-cluster call, port-forward, or misconfigured ingress).
 - The platform ForwardAuth layer is not injecting the envelope correctly
-  (transient platform outage or misconfiguration).
+(transient platform outage or misconfiguration).
 - Local development with `KAMIWAZA_USE_AUTH=true` but no platform to populate
-  the envelope — expected failure mode.
+the envelope — expected failure mode.
 
 **Fix:**
 
 1. Confirm the request is reaching the extension *through* Traefik. Check
-   ingress rules and the request URL.
+  ingress rules and the request URL.
 2. Run `kz-ext doctor` — a failed `Kamiwaza connection` check often precedes
-   `misbound_auth`.
+  `misbound_auth`.
 3. For local dev, set `KAMIWAZA_USE_AUTH=false` and restart the extension.
 
 **Code example:**
@@ -70,19 +72,19 @@ doesn't match the extension's expected runtime context.
 **Typical causes:**
 
 - Running a local-dev envelope against a production-signed extension (rare;
-  extensions no longer verify HMAC as of 2026-04-23, but shape mismatches
-  still apply).
+extensions no longer verify HMAC as of 2026-04-23, but shape mismatches
+still apply).
 - Envelope fields present but all empty — platform misconfiguration.
 
 **Fix:**
 
 1. Compare `request.headers` against the list in
-   `kamiwaza-sdk/docs/extensions/non-sdk-flow.md` (when available) or
+  `kamiwaza-sdk/docs/extensions/non-sdk-flow.md` (when available) or
    `kamiwaza_extensions_lib/identity.py`.
 2. Check that `X-User-Id` and `X-Workroom-Id` are non-empty strings, not
-   placeholder tokens.
+  placeholder tokens.
 3. Verify the deployment environment — a PR preview env often has different
-   envelope provenance than staging or prod.
+  envelope provenance than staging or prod.
 
 ## `out_of_envelope_access` — exit 12
 
@@ -92,18 +94,18 @@ does not cover — typically a cross-workroom access attempt.
 **Typical causes:**
 
 - The extension is resolving a workroom ID from user input and calling the
-  platform, but the caller does not have membership in that workroom.
+platform, but the caller does not have membership in that workroom.
 - A stale token referencing a deleted workroom.
 - Extension logic that assumes admin-like access when the caller is a
-  workroom viewer.
+workroom viewer.
 
 **Fix:**
 
 1. Always thread the request's `Identity.workroom_id` through platform API
-   calls — don't substitute a workroom ID from user input without re-checking
+  calls — don't substitute a workroom ID from user input without re-checking
    membership.
 2. The platform enforces workroom membership at data-access time; the
-   extension should surface a friendly error, not try to work around it.
+  extension should surface a friendly error, not try to work around it.
 3. Code example:
 
 ```python
@@ -127,25 +129,25 @@ except OutOfEnvelopeAccessError:
 
 - Platform is down or degraded (check Kamiwaza status).
 - Network partition between the extension and the platform — especially in
-  split-cluster deployments.
+split-cluster deployments.
 - Upstream model-access boundary is failing (5xx propagation).
 
 **Fix:**
 
 1. Run `kz-ext doctor` — the `Kamiwaza connection` check will fail in the
-   same direction.
+  same direction.
 2. Check the platform status page / oncall channels.
 3. For transient failures, the runtime lib's `TokenRefreshMiddleware` already
-   retries once on 401 mid-stream. A double failure surfaces as
+  retries once on 401 mid-stream. A double failure surfaces as
    `PlatformOutageError`.
 4. Do **not** catch and swallow — let it bubble to the top-level error
-   handler so the exit code is preserved.
+  handler so the exit code is preserved.
 
 ## How the exit codes flow
 
 1. The runtime lib raises a `KamiwazaRuntimeError` subclass.
 2. If the exception bubbles into a `kz-ext` subcommand, the CLI's top-level
-   `_handle_exception` catches it and calls `exit_code_for(exc.class_name)`.
+  `_handle_exception` catches it and calls `exit_code_for(exc.class_name)`.
 3. The process exits with the canonical code from `exception_names.json`.
 
 CI and operators can key off the exit code alone:
@@ -180,3 +182,4 @@ drifts from either the `ExitCode` enum or the `kz-ext doctor` output.
 - `§4.2.8 DoctorUACFailureHints + ExitCodeMap`
 - `§5 Q6 Security implications and auth interactions`
 - Linear: [ENG-3885](https://linear.app/kamiwaza/issue/ENG-3885)
+

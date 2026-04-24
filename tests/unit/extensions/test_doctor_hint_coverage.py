@@ -44,7 +44,7 @@ class TestDoctorHintCoverage:
         messages_by_name = {r.name: (r.message, r.fix) for r in results}
 
         for entry in exception_classes:
-            expected_name = f"UAC-9d: {entry['name']}"
+            expected_name = f"Failure class: {entry['name']}"
             assert expected_name in names, (
                 f"Doctor missing CheckResult for class {entry['name']!r} "
                 f"(expected a result named {expected_name!r})"

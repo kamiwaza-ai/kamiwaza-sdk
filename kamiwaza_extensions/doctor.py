@@ -82,7 +82,7 @@ class DoctorChecker:
         """
         return [
             CheckResult(
-                name=f"UAC-9d: {entry['name']}",
+                name=f"Failure class: {entry['name']}",
                 status="pass",
                 message=entry["doctor_hint"],
                 fix=entry["doctor_hint"],
