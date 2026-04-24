@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import json
 from typing import Optional
 
 import typer
@@ -9,6 +11,83 @@ from rich.console import Console
 from rich.table import Table
 
 console = Console()
+
+
+# ---------------------------------------------------------------------------
+# UAC-9d B3 fix — warn when the minted PAT's roles are a strict subset of the
+# UI role-set. Platform-side fix is tracked separately; this surface catches
+# the surprising case where a user with admin roles logs in and is silently
+# given a non-admin PAT (see §4.8 B3).
+# ---------------------------------------------------------------------------
+
+
+def _decode_pat_roles(token: str) -> set[str]:
+    """Extract the ``roles`` claim from a PAT JWT payload.
+
+    Signature is **not** verified — the platform already authenticated
+    the caller by the time we reach this code. We only read the payload
+    to compare against the UI role-set for B3 diagnostics.
+    """
+    parts = token.split(".")
+    if len(parts) < 2:
+        return set()
+    payload_b64 = parts[1]
+    padding = "=" * (-len(payload_b64) % 4)
+    try:
+        decoded = base64.urlsafe_b64decode(f"{payload_b64}{padding}")
+        claims = json.loads(decoded.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+        return set()
+    roles = claims.get("roles", [])
+    if not isinstance(roles, list):
+        return set()
+    return {str(r) for r in roles if isinstance(r, str)}
+
+
+def _fetch_ui_roles(url: str, pat_token: str, *, verify_ssl: bool = True) -> set[str]:
+    """Best-effort fetch of the user's full role-set via ``/auth/whoami``.
+
+    Returns an empty set on any failure; the caller must treat empty as
+    "unknown" and skip the warning.
+    """
+    import requests
+
+    try:
+        resp = requests.get(
+            f"{url}/auth/whoami",
+            headers={"Authorization": f"Bearer {pat_token}"},
+            timeout=5,
+            verify=verify_ssl,
+        )
+        if not resp.ok:
+            return set()
+        body = resp.json()
+    except (requests.RequestException, ValueError):
+        return set()
+    roles = body.get("roles", []) if isinstance(body, dict) else []
+    if not isinstance(roles, list):
+        return set()
+    return {str(r) for r in roles if isinstance(r, str)}
+
+
+def _warn_if_roles_downgraded(
+    *, pat_roles: set[str], ui_roles: set[str]
+) -> None:
+    """Emit a warning when ``ui_roles`` is a strict superset of ``pat_roles``.
+
+    Silent on: equal sets, PAT superset (unusual), empty UI set (unknown).
+    Uses plain ``print`` so ``capsys`` can observe in tests.
+    """
+    if not ui_roles:
+        return
+    missing = ui_roles - pat_roles
+    if not missing or not pat_roles < ui_roles:
+        return
+    print(
+        f"Warning: minted PAT is scoped to {sorted(pat_roles)} but your UI "
+        f"role-set also includes {sorted(missing)}. Some admin-gated calls "
+        f"may fail; platform-side fix tracked as a follow-on (§4.8 B3)."
+    )
 
 
 def run_login(
@@ -115,6 +194,12 @@ def _login_with_password(mgr, *, url: str, name: str, verify_ssl: bool = True) -
     token = StoredToken(access_token=pat_token, refresh_token=None, expires_at=0.0)
     mgr.add_connection(name=name, url=url, token=token, verify_ssl=verify_ssl)
     console.print(f"[green]Connected to {url} as '{name}'[/green]")
+
+    # §4.8 B3: surface the role-set downgrade case — silent on failure.
+    _warn_if_roles_downgraded(
+        pat_roles=_decode_pat_roles(pat_token),
+        ui_roles=_fetch_ui_roles(url, pat_token, verify_ssl=verify_ssl),
+    )
 
 
 def _validate_token(url: str, token: str, *, verify_ssl: bool = True) -> bool:

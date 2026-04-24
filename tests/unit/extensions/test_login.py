@@ -1,5 +1,8 @@
 """Tests for the login command."""
 
+import base64
+import json
+
 import pytest
 from unittest.mock import patch, MagicMock
 from typer.testing import CliRunner
@@ -7,6 +10,79 @@ from typer.testing import CliRunner
 from kamiwaza_extensions.cli import app
 
 runner = CliRunner()
+
+
+def _encode_jwt(payload: dict) -> str:
+    """Produce a JWT-shaped string with *payload* as the body (no signature)."""
+    header = base64.urlsafe_b64encode(b'{"alg":"none","typ":"JWT"}').rstrip(b"=").decode()
+    body = (
+        base64.urlsafe_b64encode(json.dumps(payload).encode()).rstrip(b"=").decode()
+    )
+    return f"{header}.{body}.signature-ignored"
+
+
+@pytest.mark.unit
+class TestPATRoleDecoding:
+    """TS-32: decode PAT roles claim (no signature verification)."""
+
+    def test_returns_roles_from_jwt_body(self):
+        from kamiwaza_extensions.commands.login import _decode_pat_roles
+
+        token = _encode_jwt({"sub": "u1", "roles": ["member", "editor"]})
+        assert _decode_pat_roles(token) == {"member", "editor"}
+
+    def test_returns_empty_when_no_roles_claim(self):
+        from kamiwaza_extensions.commands.login import _decode_pat_roles
+
+        token = _encode_jwt({"sub": "u1"})
+        assert _decode_pat_roles(token) == set()
+
+    def test_returns_empty_on_malformed_token(self):
+        from kamiwaza_extensions.commands.login import _decode_pat_roles
+
+        assert _decode_pat_roles("not-a-jwt") == set()
+
+
+@pytest.mark.unit
+class TestRoleSetWarning:
+    """TS-32: warn when UI role-set is a strict superset of PAT role-set."""
+
+    def test_warns_on_strict_superset(self, capsys):
+        from kamiwaza_extensions.commands.login import _warn_if_roles_downgraded
+
+        _warn_if_roles_downgraded(
+            pat_roles={"member"},
+            ui_roles={"member", "admin"},
+        )
+        out = capsys.readouterr().out
+        assert "admin" in out
+        assert "PAT" in out or "role" in out.lower()
+
+    def test_quiet_when_equal(self, capsys):
+        from kamiwaza_extensions.commands.login import _warn_if_roles_downgraded
+
+        _warn_if_roles_downgraded(
+            pat_roles={"member", "admin"},
+            ui_roles={"member", "admin"},
+        )
+        assert capsys.readouterr().out == ""
+
+    def test_quiet_when_pat_is_superset(self, capsys):
+        """PAT roles larger than UI — unusual but not a downgrade; no warning."""
+        from kamiwaza_extensions.commands.login import _warn_if_roles_downgraded
+
+        _warn_if_roles_downgraded(
+            pat_roles={"member", "admin"},
+            ui_roles={"member"},
+        )
+        assert capsys.readouterr().out == ""
+
+    def test_quiet_when_ui_roles_empty(self, capsys):
+        """If /whoami failed or returned nothing, don't guess — stay silent."""
+        from kamiwaza_extensions.commands.login import _warn_if_roles_downgraded
+
+        _warn_if_roles_downgraded(pat_roles={"member"}, ui_roles=set())
+        assert capsys.readouterr().out == ""
 
 
 @pytest.mark.unit
