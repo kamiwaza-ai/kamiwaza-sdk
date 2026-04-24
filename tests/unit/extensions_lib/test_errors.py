@@ -93,6 +93,16 @@ class TestExtractIdentity:
         with pytest.raises(MisboundAuthError):
             extract_identity({"x-user-id": "usr-123", "x-workroom-id": ""})
 
+    def test_raises_when_required_header_is_whitespace_only(self):
+        """Whitespace-only header values are semantically empty."""
+        from kamiwaza_extensions_lib.errors import MisboundAuthError
+        from kamiwaza_extensions_lib.identity import extract_identity
+
+        with pytest.raises(MisboundAuthError):
+            extract_identity({"x-user-id": "   ", "x-workroom-id": "wrk-1"})
+        with pytest.raises(MisboundAuthError):
+            extract_identity({"x-user-id": "usr-1", "x-workroom-id": "\t\n "})
+
     def test_happy_path_returns_authenticated_identity(self):
         from kamiwaza_extensions_lib.identity import extract_identity
 

@@ -105,16 +105,22 @@ def identity_from_headers(headers: dict[str, str]) -> Identity:
     )
 
 
+def _stripped(headers: dict[str, str], key: str) -> Optional[str]:
+    """Return the stripped header value or None if absent / blank."""
+    return (headers.get(key) or "").strip() or None
+
+
 def extract_identity(headers: dict[str, str]) -> Identity:
     """Strict header parsing for UAC-9d.
 
     Raises ``MisboundAuthError`` when ``X-User-Id`` or ``X-Workroom-Id``
-    is missing or empty — the request did not reach the extension via
-    Traefik, or the platform did not populate the envelope.
+    is missing or empty (including whitespace-only values — the request
+    did not reach the extension via Traefik, or the platform did not
+    populate the envelope).
     """
     lower = _lower(headers)
-    user_id = lower.get(_HEADER_USER_ID) or None
-    workroom_id = lower.get(_HEADER_WORKROOM_ID) or None
+    user_id = _stripped(lower, _HEADER_USER_ID)
+    workroom_id = _stripped(lower, _HEADER_WORKROOM_ID)
     if not user_id:
         raise MisboundAuthError("Required envelope header X-User-Id missing or empty")
     if not workroom_id:
@@ -123,14 +129,14 @@ def extract_identity(headers: dict[str, str]) -> Identity:
         )
     return Identity(
         user_id=user_id,
-        email=lower.get(_HEADER_USER_EMAIL) or None,
-        name=lower.get(_HEADER_USER_NAME) or None,
+        email=_stripped(lower, _HEADER_USER_EMAIL),
+        name=_stripped(lower, _HEADER_USER_NAME),
         roles=_parse_roles(lower.get(_HEADER_USER_ROLES, "")),
         system_high=_parse_bool(lower.get(_HEADER_USER_SYSTEM_HIGH, "")),
         workroom_id=workroom_id,
-        workroom_role=lower.get(_HEADER_USER_WORKROOM_ROLE) or None,
-        auth_token=lower.get(_HEADER_AUTH_TOKEN) or None,
-        request_id=lower.get(_HEADER_REQUEST_ID) or None,
+        workroom_role=_stripped(lower, _HEADER_USER_WORKROOM_ROLE),
+        auth_token=_stripped(lower, _HEADER_AUTH_TOKEN),
+        request_id=_stripped(lower, _HEADER_REQUEST_ID),
         is_authenticated=True,
     )
 

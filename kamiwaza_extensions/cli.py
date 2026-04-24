@@ -8,6 +8,8 @@ import typer
 from rich.console import Console
 
 from kamiwaza_extensions import __version__
+from kamiwaza_extensions.exit_codes import exit_code_for
+from kamiwaza_extensions_lib.errors import KamiwazaRuntimeError
 
 app = typer.Typer(
     name="kz-ext",
@@ -84,20 +86,16 @@ def _handle_exception(exc: Exception) -> None:
     # UAC-9d runtime-lib exceptions map to their canonical exit codes
     # (§4.2.7 / §4.2.8). Keep this branch above the generic fallback so
     # the exit code carries meaning for extension authors and CI.
-    try:
-        from kamiwaza_extensions.exit_codes import exit_code_for
-        from kamiwaza_extensions_lib.errors import KamiwazaRuntimeError
-    except ImportError:
-        KamiwazaRuntimeError = None  # type: ignore[assignment]
-        exit_code_for = None  # type: ignore[assignment]
-
-    if KamiwazaRuntimeError is not None and isinstance(exc, KamiwazaRuntimeError):
+    if isinstance(exc, KamiwazaRuntimeError):
         console.print(f"[red]Error:[/red] {exc}")
         if _state.debug:
             console.print_exception()
         raise typer.Exit(code=int(exit_code_for(exc.class_name))) from exc
 
-    # Try to import Kamiwaza errors for nicer formatting
+    # Try to import Kamiwaza SDK errors for nicer formatting. This import
+    # stays lazy because kamiwaza_sdk is a sibling package and some install
+    # flavours (e.g. a stripped-down `kamiwaza-extensions-only` wheel) may
+    # ship without it.
     try:
         from kamiwaza_sdk.exceptions import KamiwazaError
     except ImportError:

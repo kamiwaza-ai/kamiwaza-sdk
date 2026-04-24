@@ -37,9 +37,16 @@ class TestDoctorHintCoverage:
             )
 
     def test_doctor_surfaces_hint_for_each_class(self, exception_classes):
+        """Call the hint-emitting method directly rather than ``run_all()``.
+
+        ``run_all()`` shells out to docker, probes HTTP endpoints, and walks
+        cwd for ``kamiwaza.json`` — 20-30s of subprocess timeouts on machines
+        without Docker. For a contract test focused on the hint surface, we
+        only need the hint slice.
+        """
         from kamiwaza_extensions.doctor import DoctorChecker
 
-        results = DoctorChecker().run_all()
+        results = DoctorChecker()._uac_9d_reference_hints()
         names = {r.name for r in results}
         messages_by_name = {r.name: (r.message, r.fix) for r in results}
 
