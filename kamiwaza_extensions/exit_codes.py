@@ -8,7 +8,10 @@ Design reference: §4.2.8 `DoctorUACFailureHints` + `ExitCodeMap`.
 
 from __future__ import annotations
 
+import json
 from enum import IntEnum
+from functools import lru_cache
+from importlib import resources
 
 
 class ExitCode(IntEnum):
@@ -27,3 +30,23 @@ class ExitCode(IntEnum):
     CLUSTER_UNREACHABLE = 21
     CRD_PATCH_UNSUPPORTED = 22
     CLUSTER_NOT_READY = 23
+
+
+@lru_cache(maxsize=1)
+def _exception_name_to_exit_code() -> dict[str, int]:
+    """Load class-name → exit-code map from the runtime lib's canonical JSON."""
+    data = json.loads(
+        resources.files("kamiwaza_extensions_lib")
+        .joinpath("exception_names.json")
+        .read_text(encoding="utf-8")
+    )
+    return {entry["name"]: entry["exit_code"] for entry in data["classes"]}
+
+
+def exit_code_for(class_name: str) -> ExitCode:
+    """Return the ExitCode for a runtime-lib exception ``class_name``.
+
+    Unknown class names fall back to ``ExitCode.FAILURE``.
+    """
+    code = _exception_name_to_exit_code().get(class_name)
+    return ExitCode(code) if code is not None else ExitCode.FAILURE

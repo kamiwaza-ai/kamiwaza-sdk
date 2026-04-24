@@ -1,0 +1,24 @@
+{
+  "classes": [
+    {
+      "name": "misbound_auth",
+      "exit_code": 10,
+      "doctor_hint": "Required envelope header missing or malformed. Verify the request reached the extension via Traefik (not a direct in-cluster call) and that the platform is healthy."
+    },
+    {
+      "name": "unexpected_context",
+      "exit_code": 11,
+      "doctor_hint": "Envelope headers missing or wrong shape; check you are running in the expected context (local dev vs. cluster)."
+    },
+    {
+      "name": "out_of_envelope_access",
+      "exit_code": 12,
+      "doctor_hint": "Extension attempted cross-workroom or out-of-scope access. Verify the X-Workroom-Id and user permissions."
+    },
+    {
+      "name": "platform_outage",
+      "exit_code": 13,
+      "doctor_hint": "Platform API unreachable or returning 5xx. Try `kz-ext doctor` and check platform status."
+    }
+  ]
+}
