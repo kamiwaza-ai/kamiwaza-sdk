@@ -946,16 +946,39 @@ def _resolve_live_password_once(
 
 @pytest.fixture(scope="session")
 def live_server_available(live_base_url: str) -> str:
-    """Ensure a running Kamiwaza server is reachable before running live tests."""
+    """Ensure a running Kamiwaza server is reachable before running live tests.
+
+    Retries a few times before skipping: a ``pytest.skip`` raised from a
+    session-scoped fixture is cached for every dependent test, so a single
+    slow request against a cold platform can cascade into a whole-suite skip.
+    """
 
     health_url = f"{live_base_url}/ping"
     os.environ.setdefault("KAMIWAZA_VERIFY_SSL", "false")
     if not _verify_ssl_enabled():
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-    try:
-        response = requests.get(health_url, timeout=5, verify=_verify_ssl_enabled())
-    except requests.RequestException as exc:  # pragma: no cover - network guard
-        pytest.skip(f"Kamiwaza server unavailable at {live_base_url}: {exc}")
+
+    attempts = 3
+    per_attempt_timeout = 10
+    backoff_seconds = 2
+    last_exc: Exception | None = None
+    response: requests.Response | None = None
+    for attempt in range(attempts):
+        try:
+            response = requests.get(
+                health_url,
+                timeout=per_attempt_timeout,
+                verify=_verify_ssl_enabled(),
+            )
+            break
+        except requests.RequestException as exc:  # pragma: no cover - network guard
+            last_exc = exc
+            if attempt < attempts - 1:
+                time.sleep(backoff_seconds)
+    if response is None:
+        pytest.skip(
+            f"Kamiwaza server unavailable at {live_base_url} after {attempts} attempts: {last_exc}"
+        )
     if response.status_code >= 500:
         pytest.skip(
             f"Kamiwaza server unhealthy at {health_url}: {response.status_code}"
