@@ -90,8 +90,13 @@ def run_publish(
     verbose: bool = False,
 ) -> None:
     """Build, push, and publish extension to catalog."""
-    from kamiwaza_extensions.catalog_publisher import CatalogPublisher, CatalogPublishError
+    from kamiwaza_extensions.catalog_publisher import (
+        CatalogDedupError,
+        CatalogPublishError,
+        CatalogPublisher,
+    )
     from kamiwaza_extensions.compose_transformer import ComposeTransformer
+    from kamiwaza_extensions.exit_codes import ExitCode
     from kamiwaza_extensions.extension_detector import ExtensionDetector
     from kamiwaza_extensions.image_builder import ImageBuilder, ImageBuildError
     from kamiwaza_extensions.image_pusher import ImagePusher, ImagePushError
@@ -216,6 +221,9 @@ def run_publish(
             console.print(
                 f"  Would publish to:      {result.catalog_file} ({result.action})"
             )
+        except CatalogDedupError as exc:
+            console.print(f"\n[red]Error:[/red] {exc}")
+            raise typer.Exit(code=int(ExitCode.VALIDATION)) from exc
         except (CatalogPublishError, ValueError) as exc:
             console.print(f"\n[red]Error:[/red] {exc}")
             raise typer.Exit(code=1) from exc
@@ -304,6 +312,10 @@ def run_publish(
             dry_run=False,
             preview_image_path=preview_image_path,
         )
+    except CatalogDedupError as exc:
+        console.print("  [red]\u2717 publish rejected[/red]")
+        console.print(f"\n[red]Error:[/red] {exc}")
+        raise typer.Exit(code=int(ExitCode.VALIDATION)) from exc
     except CatalogPublishError as exc:
         console.print(f"  [red]\u2717 publish failed[/red]")
         console.print(f"\n[red]Error:[/red] {exc}")
