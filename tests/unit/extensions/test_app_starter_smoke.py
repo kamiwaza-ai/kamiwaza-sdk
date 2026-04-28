@@ -192,6 +192,108 @@ def test_chatbot_example_matches_scaffolded_app_core_files(tmp_path, monkeypatch
             assert scaffolded_path.read_text() == example_path.read_text()
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "compose_path",
+    [
+        Path("kamiwaza_extensions/templates/app/docker-compose.yml"),
+        Path("examples/chatbot-app/docker-compose.yml"),
+    ],
+)
+def test_compose_does_not_pin_host_ports(compose_path):
+    # ENG-3889 P2: bare container-port specs let Docker auto-assign the
+    # host port so `docker compose up` does not collide with kind-cluster
+    # ports on developer laptops running Kamiwaza locally.
+    import yaml
+
+    data = yaml.safe_load((REPO_ROOT / compose_path).read_text())
+    services = data.get("services", {})
+    assert services, f"{compose_path} has no services"
+
+    for svc_name, svc_config in services.items():
+        for port_spec in svc_config.get("ports", []):
+            assert ":" not in str(port_spec), (
+                f"{compose_path}::{svc_name} has a host:container port mapping "
+                f"({port_spec!r}); use a bare container port to avoid host-port "
+                f"collisions on developer laptops."
+            )
+
+
+@pytest.mark.unit
+def test_anonymous_identity_byte_identical_between_require_auth_and_session(
+    tmp_path, monkeypatch,
+):
+    """ENG-3889 P5: under USE_AUTH=false, ``require_auth()`` and ``/session``
+    must return the same canonical anonymous Identity so the frontend sees
+    a single shape (§4.8 P5).
+    """
+    import asyncio
+
+    from kamiwaza_extensions_lib.auth import require_auth
+    from kamiwaza_extensions_lib.identity import Identity, anonymous_identity
+
+    monkeypatch.setenv("KAMIWAZA_USE_AUTH", "false")
+
+    # Drive require_auth() against a header-less request (USE_AUTH=false path).
+    extension_dir = _scaffold_app(tmp_path, monkeypatch, name="anon-shape-app")
+    module = _load_backend_module(extension_dir / "backend", "anon_shape_main")
+    try:
+        client = TestClient(module.app)
+        response = client.get("/session")
+        assert response.status_code == 200
+
+        from fastapi import Request
+
+        scope = {
+            "type": "http",
+            "method": "GET",
+            "path": "/api/health",
+            "headers": [],
+        }
+        request = Request(scope)
+        identity_from_require = asyncio.run(require_auth(request))
+    finally:
+        sys.modules.pop("anon_shape_main", None)
+
+    canonical = anonymous_identity()
+    # Public-fields subset surfaced by /session — must match the runtime lib's
+    # canonical Anonymous identity exactly.
+    public_fields = {
+        "user_id", "email", "name", "roles", "workroom_id",
+        "workroom_role", "is_authenticated",
+    }
+    canonical_public = canonical.model_dump(include=public_fields)
+    session_public = {k: response.json().get(k) for k in public_fields}
+    assert session_public == canonical_public
+
+    # require_auth() returns the full Identity (a model_dump match is the
+    # strongest equality we can assert without relying on Identity hashability)
+    assert isinstance(identity_from_require, Identity)
+    assert identity_from_require.model_dump() == canonical.model_dump()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "page_path",
+    [
+        Path("kamiwaza_extensions/templates/app/frontend/src/app/page.tsx"),
+        Path("examples/chatbot-app/frontend/src/app/page.tsx"),
+    ],
+)
+def test_home_short_circuits_authguard_for_anonymous_session(page_path):
+    """ENG-3889 P6: the scaffold's Home component must skip AuthGuard when
+    ``/session`` reports the canonical ``Anonymous`` identity, so first-load
+    under USE_AUTH=false does not stick on 'Verifying session…'.
+    """
+    src = (REPO_ROOT / page_path).read_text()
+    # Cheap but sufficient — the short-circuit relies on these two predicates
+    # being present together. If either disappears the local-dev render path
+    # silently regresses to the AuthGuard round-trip.
+    assert "isAnonymousLocalDev" in src
+    assert 'name === "Anonymous"' in src
+    assert "isAuthenticated === false" in src
+
+
 @pytest.mark.slow
 @pytest.mark.parametrize(
     ("source_name", "factory"),
