@@ -1,9 +1,16 @@
 """Tests for kamiwaza_extensions_lib.identity."""
 
-import pytest
-from unittest.mock import AsyncMock, MagicMock
+import asyncio
+from unittest.mock import MagicMock
 
-from kamiwaza_extensions_lib.identity import Identity, get_identity, identity_from_headers
+import pytest
+
+from kamiwaza_extensions_lib.identity import (
+    Identity,
+    anonymous_identity,
+    get_identity,
+    identity_from_headers,
+)
 
 
 class TestIdentityFromHeaders:
@@ -199,8 +206,6 @@ class TestIdentityPydantic:
     def test_unknown_kwargs_dropped_dont_leak_via_model_dump(self):
         """extra='ignore' guard: future Pydantic-default changes can't silently
         turn Identity into an extra-leaking surface."""
-        from kamiwaza_extensions_lib.identity import Identity
-
         identity = Identity(user_id="u", secret_field="should-be-dropped")  # type: ignore[call-arg]
         dumped = identity.model_dump()
         assert "secret_field" not in dumped
@@ -218,8 +223,6 @@ class TestAnonymousIdentity:
     """TS-7: unified anonymous shape under USE_AUTH=false (§4.8 P5)."""
 
     def test_returns_named_anonymous_identity(self):
-        from kamiwaza_extensions_lib.identity import Identity, anonymous_identity
-
         identity = anonymous_identity()
         assert isinstance(identity, Identity)
         assert identity.name == "Anonymous"
@@ -230,25 +233,21 @@ class TestAnonymousIdentity:
 
     def test_require_auth_returns_anonymous_under_use_auth_false(self, monkeypatch):
         """require_auth() under USE_AUTH=false yields Identity(name='Anonymous')."""
-        import asyncio
-
         from kamiwaza_extensions_lib.auth import require_auth
 
         monkeypatch.setenv("KAMIWAZA_USE_AUTH", "false")
         request = MagicMock()
         request.headers = {}
 
-        identity = asyncio.get_event_loop().run_until_complete(require_auth(request))
+        identity = asyncio.run(require_auth(request))
         assert identity.name == "Anonymous"
         assert identity.is_authenticated is False
 
     def test_require_auth_and_session_produce_matching_identity(self, monkeypatch):
         """Under USE_AUTH=false with no envelope, both paths yield the same
         Identity shape (byte-identical ``Identity.model_dump()`` subset)."""
-        import asyncio
-
-        from fastapi.testclient import TestClient
         from fastapi import FastAPI
+        from fastapi.testclient import TestClient
 
         from kamiwaza_extensions_lib.auth import require_auth
         from kamiwaza_extensions_lib.session import create_session_router
@@ -264,7 +263,7 @@ class TestAnonymousIdentity:
         # require_auth path
         request = MagicMock()
         request.headers = {}
-        identity = asyncio.get_event_loop().run_until_complete(require_auth(request))
+        identity = asyncio.run(require_auth(request))
         identity_fields = identity.model_dump()
 
         # Every Identity field in /session response must match require_auth's output

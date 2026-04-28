@@ -83,7 +83,7 @@ def _session_expires_at(request: Request) -> int | None:
 
     prefix = "bearer "
     if authorization.lower().startswith(prefix):
-        return _decode_jwt_exp(authorization[len(prefix):].strip())
+        return _decode_jwt_exp(authorization[len(prefix) :].strip())
     return _decode_jwt_exp(authorization.strip())
 
 
@@ -128,7 +128,7 @@ def create_session_router(prefix: str = "") -> APIRouter:
         # as "logged out" so the frontend's SessionProvider routes to
         # the login flow rather than appearing authenticated.
         try:
-            identity = extract_identity(dict(request.headers))
+            identity = extract_identity(request.headers)
         except MisboundAuthError:
             return {
                 **_public_session_payload(identity_from_headers({})),
@@ -162,8 +162,10 @@ def create_session_router(prefix: str = "") -> APIRouter:
         # Terminate the platform session server-side so the user is
         # actually logged out (the client only redirects to redirect_url).
         from .auth import forward_auth_headers
+
         try:
             import httpx
+
             headers = forward_auth_headers(request.headers)
             async with httpx.AsyncClient(
                 verify=config.verify_ssl,

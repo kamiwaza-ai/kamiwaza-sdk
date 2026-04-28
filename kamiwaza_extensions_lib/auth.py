@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Mapping
-from typing import Optional
 
 from fastapi import Depends, HTTPException, Request
 
@@ -54,7 +53,7 @@ async def require_auth(request: Request) -> Identity:
     Otherwise, parses the platform envelope strictly via
     ``extract_identity`` — a request that reaches the extension without
     a complete envelope (e.g. missing ``X-Workroom-Id``) is rejected
-    with HTTP 401 carrying the canonical ``MisboundAuthError`` message.
+    with HTTP 401 carrying a scrubbed user-facing detail.
     Without this strict path the new ``MisboundAuthError`` class would
     be defined but never raised on the auth surface the rest of the
     codebase actually uses.
@@ -69,7 +68,7 @@ async def require_auth(request: Request) -> Identity:
         identity = await get_identity(request)
         return identity if identity.is_authenticated else anonymous_identity()
     try:
-        return extract_identity(dict(request.headers))
+        return extract_identity(request.headers)
     except MisboundAuthError as exc:
         # The raw exception text names the missing header — useful for
         # operators triaging a misconfigured platform, harmful as a 401

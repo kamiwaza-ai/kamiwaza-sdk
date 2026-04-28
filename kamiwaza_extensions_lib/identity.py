@@ -19,6 +19,7 @@ serialized error responses) would leak the credential.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Optional
 
 from fastapi import Request
@@ -89,7 +90,7 @@ def _parse_roles(raw: str) -> list[str]:
     return [r.strip() for r in raw.split(",") if r.strip()]
 
 
-def _lower(headers: dict[str, str]) -> dict[str, str]:
+def _lower(headers: Mapping[str, str]) -> dict[str, str]:
     return {k.lower(): v for k, v in headers.items()}
 
 
@@ -114,8 +115,8 @@ def _project_identity_fields(lower: dict[str, str]) -> dict:
     }
 
 
-def identity_from_headers(headers: dict[str, str]) -> Identity:
-    """Build an Identity from a plain header dict.  Permissive — never raises.
+def identity_from_headers(headers: Mapping[str, str]) -> Identity:
+    """Build an Identity from request headers.  Permissive — never raises.
 
     Missing fields become ``None``/defaults; ``is_authenticated`` reflects
     whether ``x-user-id`` was supplied.
@@ -130,7 +131,7 @@ def identity_from_headers(headers: dict[str, str]) -> Identity:
     )
 
 
-def extract_identity(headers: dict[str, str]) -> Identity:
+def extract_identity(headers: Mapping[str, str]) -> Identity:
     """Strict header parsing for UAC-9d.
 
     Raises ``MisboundAuthError`` when ``X-User-Id`` or ``X-Workroom-Id``
@@ -160,4 +161,4 @@ async def get_identity(request: Request) -> Identity:
 
     Never raises; see ``identity_from_headers``.
     """
-    return identity_from_headers(dict(request.headers))
+    return identity_from_headers(request.headers)

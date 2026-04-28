@@ -7,6 +7,27 @@ import pytest
 
 
 @pytest.mark.unit
+class TestPackageExports:
+    def test_runtime_public_surface_reexported_from_package_root(self):
+        """Package root exports the runtime-lib UAC-9d public surface."""
+        import kamiwaza_extensions_lib as lib
+
+        expected_exports = {
+            "KamiwazaRuntimeError",
+            "MisboundAuthError",
+            "UnexpectedContextError",
+            "OutOfEnvelopeAccessError",
+            "PlatformOutageError",
+            "extract_identity",
+            "anonymous_identity",
+        }
+
+        assert expected_exports <= set(lib.__all__)
+        for name in expected_exports:
+            assert getattr(lib, name) is not None
+
+
+@pytest.mark.unit
 class TestRuntimeErrorHierarchy:
     def test_base_class_has_class_name(self):
         from kamiwaza_extensions_lib.errors import KamiwazaRuntimeError

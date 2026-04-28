@@ -10,23 +10,44 @@ and 20+ service modules.
 
 __version__ = "0.1.0"
 
-from .identity import Identity, get_identity
-from .auth import require_auth, require_role, forward_auth_headers
-from .session import create_session_router
-from .config import AuthConfig
+from .auth import forward_auth_headers, require_auth, require_role
 from .client import KamiwazaExtClient
+from .config import AuthConfig
+from .errors import (
+    KamiwazaRuntimeError,
+    MisboundAuthError,
+    OutOfEnvelopeAccessError,
+    PlatformOutageError,
+    UnexpectedContextError,
+)
+from .identity import (
+    Identity,
+    anonymous_identity,
+    extract_identity,
+    get_identity,
+    identity_from_headers,
+)
 from .models import AvailableModel, get_model_client, list_available_models
+from .session import create_session_router
 
 __all__ = [
-    "Identity",
-    "get_identity",
+    "AuthConfig",
+    "AvailableModel",
     "require_auth",
     "require_role",
     "forward_auth_headers",
     "create_session_router",
-    "AuthConfig",
     "KamiwazaExtClient",
-    "AvailableModel",
+    "Identity",
+    "identity_from_headers",
+    "get_identity",
+    "extract_identity",
+    "anonymous_identity",
+    "KamiwazaRuntimeError",
+    "MisboundAuthError",
+    "UnexpectedContextError",
+    "OutOfEnvelopeAccessError",
+    "PlatformOutageError",
     "get_model_client",
     "list_available_models",
 ]
