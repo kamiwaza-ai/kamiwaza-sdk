@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Mapping
 from typing import Optional
 
@@ -10,6 +11,8 @@ from fastapi import Depends, HTTPException, Request
 from .config import AuthConfig
 from .errors import MisboundAuthError
 from .identity import Identity, anonymous_identity, extract_identity, get_identity
+
+logger = logging.getLogger(__name__)
 
 # Headers to forward when calling other Kamiwaza services. The set must
 # stay aligned with the envelope ``Identity`` reads (kept in
@@ -68,7 +71,22 @@ async def require_auth(request: Request) -> Identity:
     try:
         return extract_identity(dict(request.headers))
     except MisboundAuthError as exc:
-        raise HTTPException(status_code=401, detail=str(exc)) from exc
+        # The raw exception text names the missing header — useful for
+        # operators triaging a misconfigured platform, harmful as a 401
+        # response body (information disclosure to clients). Log full
+        # context server-side; return a scrubbed user-facing detail with
+        # the canonical class name in WWW-Authenticate per RFC 6750.
+        logger.warning(
+            "MisboundAuthError on %s %s: %s",
+            request.method,
+            request.url.path,
+            exc,
+        )
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication required",
+            headers={"WWW-Authenticate": f'Bearer error="{exc.class_name}"'},
+        ) from exc
 
 
 def require_role(role: str) -> Callable:

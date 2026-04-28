@@ -131,7 +131,41 @@ class TestRequireAuth:
         with pytest.raises(HTTPException) as exc_info:
             await require_auth(request)
         assert exc_info.value.status_code == 401
-        assert "X-Workroom-Id" in exc_info.value.detail
+
+    @pytest.mark.asyncio
+    async def test_missing_user_id_rejected_under_strict_auth(self, monkeypatch):
+        """Symmetry counterpart to the workroom-id test: missing X-User-Id
+        with X-Workroom-Id present must also reject (PR re-review request)."""
+        monkeypatch.setenv("KAMIWAZA_USE_AUTH", "true")
+        request = MagicMock()
+        request.headers = {"x-workroom-id": "wrk-456"}  # no x-user-id
+
+        with pytest.raises(HTTPException) as exc_info:
+            await require_auth(request)
+        assert exc_info.value.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_401_detail_does_not_leak_envelope_internals(self, monkeypatch):
+        """The 401 body should be scrubbed to the canonical "Authentication
+        required" — the raw exception text naming the missing header is
+        useful for server-side triage, harmful as an HTTP response body
+        (PR re-review Medium #1)."""
+        monkeypatch.setenv("KAMIWAZA_USE_AUTH", "true")
+        request = MagicMock()
+        request.method = "GET"
+        request.url.path = "/protected"
+        request.headers = {"x-user-id": "usr-123"}  # missing workroom-id
+
+        with pytest.raises(HTTPException) as exc_info:
+            await require_auth(request)
+        assert exc_info.value.detail == "Authentication required"
+        # Per-header detail leaked into the public 401 body would be a
+        # regression — these strings come from MisboundAuthError messages.
+        assert "X-Workroom-Id" not in str(exc_info.value.detail)
+        assert "X-User-Id" not in str(exc_info.value.detail)
+        # Canonical class name lives in WWW-Authenticate per RFC 6750.
+        assert exc_info.value.headers is not None
+        assert 'error="misbound_auth"' in exc_info.value.headers["WWW-Authenticate"]
 
     @pytest.mark.asyncio
     async def test_whitespace_only_workroom_id_rejected(self, monkeypatch):

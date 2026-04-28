@@ -90,6 +90,38 @@ class TestSessionEndpoint:
         assert "system_high" not in data
         assert "request_id" not in data
 
+    def test_malformed_envelope_reported_as_logged_out(self, monkeypatch):
+        """PR re-review High #1: a request with X-User-Id but no X-Workroom-Id
+        triggers MisboundAuthError on require_auth (HTTP 401), so /session must
+        also report this as logged-out — otherwise the frontend appears
+        authenticated while every API call returns 401 (split-brain)."""
+        client = _make_app(monkeypatch, use_auth="true")
+        resp = client.get(
+            "/session",
+            headers={"x-user-id": "usr-123"},  # missing x-workroom-id
+        )
+
+        # Endpoint returns 200 (so the SessionProvider doesn't crash) but
+        # the body matches the no-envelope/logged-out shape.
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["is_authenticated"] is False
+        assert data["user_id"] is None
+        assert data["workroom_id"] is None
+        assert data["expires_at"] is None
+
+    def test_whitespace_only_envelope_reported_as_logged_out(self, monkeypatch):
+        """Symmetry with require_auth: whitespace-only headers don't satisfy
+        the strict envelope check."""
+        client = _make_app(monkeypatch, use_auth="true")
+        resp = client.get(
+            "/session",
+            headers={"x-user-id": "usr-123", "x-workroom-id": "   "},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["is_authenticated"] is False
+
     def test_unauthenticated_session_with_auth_enabled(self, monkeypatch):
         client = _make_app(monkeypatch, use_auth="true")
         resp = client.get("/session")
@@ -117,6 +149,7 @@ class TestSessionEndpoint:
             "/session",
             headers={
                 "x-user-id": "usr-123",
+                "x-workroom-id": "wrk-456",  # required for strict envelope check
                 "authorization": f"Bearer {token}",
             },
         )

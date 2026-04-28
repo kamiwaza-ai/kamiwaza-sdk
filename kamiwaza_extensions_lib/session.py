@@ -9,7 +9,13 @@ from urllib.parse import quote
 from fastapi import APIRouter, Request
 
 from .config import AuthConfig
-from .identity import anonymous_identity, get_identity
+from .errors import MisboundAuthError
+from .identity import (
+    anonymous_identity,
+    extract_identity,
+    get_identity,
+    identity_from_headers,
+)
 
 # Fields that are safe to expose in /session responses. Anything on
 # ``Identity`` not in this set — notably ``system_high`` (a classification
@@ -99,14 +105,39 @@ def create_session_router(prefix: str = "") -> APIRouter:
     @router.get("/session")
     async def session(request: Request) -> dict:
         config = AuthConfig.from_env()
-        identity = await get_identity(request)
-        expires_at = _session_expires_at(request) if identity.is_authenticated else None
 
-        if not config.use_auth and not identity.is_authenticated:
-            # Unified anonymous shape with require_auth (§4.8 P5).
-            return {**_public_session_payload(anonymous_identity()), "expires_at": None}
+        # USE_AUTH=false: permissive — local dev returns anonymous when no
+        # envelope is present, otherwise reflects whatever headers were set.
+        if not config.use_auth:
+            identity = await get_identity(request)
+            if not identity.is_authenticated:
+                return {
+                    **_public_session_payload(anonymous_identity()),
+                    "expires_at": None,
+                }
+            return {
+                **_public_session_payload(identity),
+                "expires_at": _session_expires_at(request),
+            }
 
-        return {**_public_session_payload(identity), "expires_at": expires_at}
+        # USE_AUTH=true: validate the envelope strictly so /session and
+        # require_auth report the same auth state. Without this symmetry,
+        # a malformed envelope (e.g., X-User-Id present but X-Workroom-Id
+        # missing) shows a logged-in /session while every protected call
+        # returns 401 — frontend split-brain. Treat malformed envelopes
+        # as "logged out" so the frontend's SessionProvider routes to
+        # the login flow rather than appearing authenticated.
+        try:
+            identity = extract_identity(dict(request.headers))
+        except MisboundAuthError:
+            return {
+                **_public_session_payload(identity_from_headers({})),
+                "expires_at": None,
+            }
+        return {
+            **_public_session_payload(identity),
+            "expires_at": _session_expires_at(request),
+        }
 
     @router.get("/auth/login-url")
     async def login_url(request: Request) -> dict:
