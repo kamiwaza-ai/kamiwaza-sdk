@@ -1,0 +1,42 @@
+name: Require Linear issue
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  pull-requests: read
+
+jobs:
+  check-linear-issue:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check for Linear issue ID
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const title = pr.title || '';
+            const body = pr.body || '';
+            const branch = pr.head.ref || '';
+
+            // Match Linear issue IDs: PROJECT-123 (2-10 uppercase letters, dash, digits)
+            const pattern = /\b[A-Z]{2,10}-\d+\b/;
+
+            const found =
+              pattern.test(title) ||
+              pattern.test(body) ||
+              pattern.test(branch);
+
+            if (!found) {
+              core.setFailed(
+                'No Linear issue ID found. Include a Linear issue ID (e.g., KAM-123) ' +
+                'in the PR title, description, or branch name.'
+              );
+            } else {
+              const match =
+                title.match(pattern) ||
+                body.match(pattern) ||
+                branch.match(pattern);
+              core.info(`Found Linear issue: ${match[0]}`);
+            }

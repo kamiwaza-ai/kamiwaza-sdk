@@ -27,6 +27,20 @@ dependencies = [
     "typer>=0.9.0",
     "pyyaml>=6.0",
     "packaging>=23.0",
+    "fastapi>=0.100.0",
+    "rich>=13.0",
+]
+
+[project.optional-dependencies]
+publish = [
+    "boto3>=1.28.0",
+]
+convert = [
+    "anthropic>=0.30.0",
+]
+all = [
+    "boto3>=1.28.0",
+    "anthropic>=0.30.0",
 ]
 
 [project.urls]
@@ -40,16 +54,18 @@ build-backend = "setuptools.build_meta"
 kz-ext = "kamiwaza_extensions.cli:app"
 
 [tool.setuptools.packages.find]
-include = ["kamiwaza_sdk*", "kamiwaza_client*", "kamiwaza_extensions*"]
+include = ["kamiwaza_sdk*", "kamiwaza_client*", "kamiwaza_extensions*", "kamiwaza_extensions_lib*"]
 exclude = ["tests*", "examples*"]
 
 [tool.setuptools.package-data]
 kamiwaza_sdk = ["py.typed"]
 kamiwaza_extensions = ["templates/**/*", "templates/**/.*"]
+kamiwaza_extensions_lib = ["py.typed"]
 
 [dependency-groups]
 dev = [
     "pytest>=7.0",
+    "pytest-asyncio>=0.23",
     "pytest-cov>=4.0",
     "pytest-responses>=0.5",
     "boto3>=1.34",

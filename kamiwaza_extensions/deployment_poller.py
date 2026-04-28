@@ -9,7 +9,9 @@ from typing import Optional
 from rich.console import Console
 
 from kamiwaza_sdk import KamiwazaClient
-from kamiwaza_sdk.schemas.extensions import Extension
+from kamiwaza_sdk.schemas.extensions import Extension, ExtensionStatus
+
+from kamiwaza_extensions.constants import EXTENSIONS_NAMESPACE as _EXTENSIONS_NS
 
 console = Console(stderr=True)
 
@@ -54,6 +56,7 @@ class DeploymentPoller:
         deadline = time.monotonic() + timeout
         last_phase: Optional[str] = None
         last_ready: Optional[str] = None
+        use_status_endpoint = True
 
         while time.monotonic() < deadline:
             ext = client.extensions.get_extension(extension_name)
@@ -70,7 +73,23 @@ class DeploymentPoller:
                 )
 
             if phase == "Running":
-                # Verify pods are actually ready via kubectl
+                # Try status endpoint for richer readiness info
+                if use_status_endpoint:
+                    ready, summary = self._check_via_status_endpoint(
+                        client, extension_name
+                    )
+                    if ready is not None:
+                        if summary != last_ready:
+                            console.print(f"  [dim]Pods: {summary}[/dim]")
+                            last_ready = summary
+                        if ready:
+                            return ext
+                        time.sleep(poll_interval)
+                        continue
+                    # Status endpoint not available — disable and fall through
+                    use_status_endpoint = False
+
+                # Fallback: verify pods via kubectl
                 ready, summary = self._check_pods_ready(extension_name)
                 if summary != last_ready:
                     console.print(f"  [dim]Pods: {summary}[/dim]")
@@ -86,13 +105,56 @@ class DeploymentPoller:
         )
 
     @staticmethod
+    def _check_via_status_endpoint(
+        client: KamiwazaClient, extension_name: str
+    ) -> tuple[Optional[bool], str]:
+        """Try the /status endpoint for per-service readiness.
+
+        Returns ``(None, "")`` if the endpoint is not available (404/405),
+        otherwise ``(all_ready, summary_string)``.
+        """
+        from kamiwaza_sdk.exceptions import APIError
+
+        try:
+            status: ExtensionStatus = client.extensions.get_extension_status(
+                extension_name
+            )
+        except APIError as exc:
+            if exc.status_code in (404, 405, 501):
+                # Status endpoint not available — caller will fall back
+                return None, ""
+            # Auth errors, server errors — log and fall back
+            console.print(f"[dim]Status endpoint error: {exc}[/dim]")
+            return None, ""
+        except Exception:
+            # Network errors etc. — fall back silently
+            return None, ""
+
+        if status.rolling_update:
+            parts = [
+                f"{svc.name} {svc.ready_replicas}/{svc.replicas} ready"
+                for svc in status.services
+            ]
+            return False, "Rolling out... " + ", ".join(parts)
+
+        total_ready = sum(svc.ready_replicas for svc in status.services)
+        total_desired = sum(svc.replicas for svc in status.services)
+        all_ready = total_ready == total_desired and total_desired > 0
+
+        parts = [
+            f"{svc.name} {svc.ready_replicas}/{svc.replicas} ready"
+            for svc in status.services
+        ]
+        return all_ready, ", ".join(parts) if parts else "no services"
+
+    @staticmethod
     def _check_pods_ready(extension_name: str) -> tuple[bool, str]:
         """Check if all pods for the extension are ready via kubectl."""
         try:
             result = subprocess.run(
                 [
                     "kubectl", "get", "pods",
-                    "-n", "kamiwaza-extensions",
+                    "-n", _EXTENSIONS_NS,
                     "-l", f"extensions.kamiwaza.io/deployment-id={extension_name}",
                     "-o", "jsonpath={range .items[*]}{.status.containerStatuses[0].ready}{' '}{end}",
                 ],

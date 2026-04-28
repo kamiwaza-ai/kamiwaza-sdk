@@ -9,6 +9,9 @@ env/
 .venv/
 .env/
 
+# Packed npm tarballs
+*.tgz
+
 # Python
 __pycache__/
 *.py[cod]
@@ -143,6 +146,10 @@ Desktop.ini
 # Temporary files
 *.tmp
 *.temp
+
+# Node.js (TypeScript runtime library)
+node_modules/
+package-lock.json
 
 # Custom files per instructions
 code.txt

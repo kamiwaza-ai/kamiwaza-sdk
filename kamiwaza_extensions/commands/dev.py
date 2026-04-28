@@ -47,30 +47,46 @@ def _detect_kind_registry() -> Optional[str]:
     return None
 
 
-def _extract_user_id(access_token: str) -> str:
-    """Extract a stable user identifier (``sub`` claim) from a JWT.
 
-    Falls back to hashing the token if decoding fails.
+
+def _delete_and_recreate(client, dev_name, payload, console):
+    """Legacy fallback: delete the old extension and re-create it.
+
+    Used when the platform does not support PATCH.
     """
-    import base64
-    import json as _json
+    import time
 
+    from kamiwaza_sdk.exceptions import APIError, NotFoundError
+    from kamiwaza_sdk.schemas.extensions import Extension
+
+    console.print("  [dim]Replacing existing deployment...[/dim]")
     try:
-        # JWT is header.payload.signature — decode the payload
-        payload_b64 = access_token.split(".")[1]
-        # Add padding if needed
-        padding = 4 - len(payload_b64) % 4
-        if padding != 4:
-            payload_b64 += "=" * padding
-        payload = _json.loads(base64.urlsafe_b64decode(payload_b64))
-        sub = payload.get("sub")
-        if sub:
-            return sub
-    except Exception:
-        pass
-    # Fallback: hash the token so it's never exposed downstream
-    import hashlib
-    return hashlib.sha256(access_token.encode()).hexdigest()
+        client.extensions.delete_extension(dev_name)
+    except Exception as del_exc:
+        console.print(f"  [dim]Delete failed: {del_exc}[/dim]")
+
+    ext: Extension | None = None
+    for attempt in range(15):
+        time.sleep(2)
+        try:
+            client.extensions.get_extension(dev_name)
+            continue  # Still exists — keep waiting
+        except NotFoundError:
+            pass  # Deleted — proceed to create
+        try:
+            ext = client.extensions.create_extension(payload)
+            console.print("  [green]\u2713[/green] Extension replaced")
+            break
+        except APIError as retry_exc:
+            if retry_exc.status_code == 409 and attempt < 14:
+                continue  # Finalizer still running, retry
+            console.print(f"[red]Error:[/red] Deploy failed: {retry_exc}")
+            raise typer.Exit(code=1) from retry_exc
+
+    if ext is None:
+        console.print("[red]Error:[/red] Timed out waiting for old deployment to be removed")
+        raise typer.Exit(code=1)
+    return ext
 
 
 def run_dev_remote(
@@ -80,6 +96,7 @@ def run_dev_remote(
     service: Optional[str] = None,
     revision: Optional[str] = None,
     verbose: bool = False,
+    sdk_repo: Optional[str] = None,
 ) -> None:
     """Build, push, and deploy extension to a Kamiwaza cluster."""
     from kamiwaza_sdk import KamiwazaClient
@@ -162,6 +179,57 @@ def run_dev_remote(
         registry=registry,
     )
 
+    # 5b. Resolve SDK override for build
+    build_overrides = None
+    if sdk_repo and not no_build:
+        from kamiwaza_extensions.sdk_override import (
+            SdkOverrideSpec,
+            build_typescript_lib,
+            check_buildkit_available,
+            generate_build_overrides,
+            print_override_diagnostics,
+            resolve_sdk_override,
+            validate_sdk_override,
+        )
+
+        override_spec = resolve_sdk_override(sdk_repo, info.path)
+        if override_spec:
+            validation = validate_sdk_override(override_spec)
+            for err in validation.errors:
+                console.print(f"[red]SDK override error: {err}[/red]")
+            for warn in validation.warnings:
+                console.print(f"[yellow]SDK override: {warn}[/yellow]")
+
+            if not validation.ok:
+                console.print("[red]SDK override disabled due to errors above[/red]")
+            elif not check_buildkit_available():
+                console.print(
+                    "[red]Error:[/red] SDK override for remote deploy requires Docker BuildKit.\n"
+                    "  Fix: Upgrade Docker to 20.10+ or set DOCKER_BUILDKIT=1\n"
+                    "  Alternatively, use [bold]kz-ext dev local --sdk-repo[/bold] for local dev."
+                )
+                raise typer.Exit(code=1)
+            else:
+                # Build TS if needed
+                if override_spec.typescript and (
+                    override_spec.build_typescript
+                    or not override_spec.typescript_dist_path.is_dir()
+                ):
+                    if not build_typescript_lib(override_spec):
+                        console.print("[yellow]Continuing without TypeScript override[/yellow]")
+                        override_spec = SdkOverrideSpec(
+                            sdk_repo=override_spec.sdk_repo,
+                            python=override_spec.python,
+                            typescript=False,
+                            build_typescript=False,
+                        )
+
+                print_override_diagnostics(override_spec)
+                build_overrides = generate_build_overrides(
+                    override_spec, info.compose_data, extension_dir=info.path,
+                )
+        console.print()
+
     # 6. Build images
     if not no_build:
         console.print("Building images...")
@@ -175,6 +243,7 @@ def run_dev_remote(
                 registry=registry,
                 service_filter=service,
                 verbose=verbose,
+                build_overrides=build_overrides,
             )
         except ImageBuildError as exc:
             console.print(f"\n[red]Error:[/red] {exc}")
@@ -216,7 +285,8 @@ def run_dev_remote(
 
     # 8. Build API payload
     payload_builder = PayloadBuilder()
-    dev_name = PayloadBuilder.make_dev_name(info.name, user_id=_extract_user_id(token.access_token))
+    from kamiwaza_extensions.constants import extract_user_id
+    dev_name = PayloadBuilder.make_dev_name(info.name, user_id=extract_user_id(token.access_token))
     payload = payload_builder.build(
         metadata=info.metadata,
         transformed_compose=transformed,
@@ -224,53 +294,68 @@ def run_dev_remote(
         dev_name=dev_name,
     )
 
-    # 9. Deploy, poll, and print URL — wrapped in try/finally for SSL env restore
+    # 9. Deploy, poll, and print URL
+    from kamiwaza_extensions.constants import ssl_env_override
     console.print(f"Deploying to {connection.url}...")
-    old_verify_ssl = os.environ.get("KAMIWAZA_VERIFY_SSL")
-    if not connection.verify_ssl:
-        os.environ["KAMIWAZA_VERIFY_SSL"] = "false"
-    try:
+    with ssl_env_override(connection):
         client = KamiwazaClient(
             base_url=connection.url,
             api_key=token.access_token,
         )
 
-        # Create or replace
+        # Deploy — PATCH if exists, POST if new
+        from kamiwaza_sdk.exceptions import NotFoundError
+        from kamiwaza_sdk.schemas.extensions import (
+            ImagePatch,
+            PatchExtension,
+            PatchServiceSpec,
+        )
+
         try:
+            # Check if extension already exists
+            client.extensions.get_extension(dev_name)
+
+            # Build patch from payload — extract image, env, replicas per service
+            patch_services = []
+            for svc in payload.services:
+                # Split tag after last '/' to avoid confusing registry port with tag
+                image = svc.image
+                slash_pos = image.rfind("/")
+                after_slash = image[slash_pos + 1:] if slash_pos >= 0 else image
+                if ":" in after_slash:
+                    tag = after_slash.rsplit(":", 1)[1]
+                else:
+                    tag = "latest"
+                spec = PatchServiceSpec(
+                    name=svc.name,
+                    image=ImagePatch(tag=tag),
+                )
+                if svc.env:
+                    spec.env = svc.env
+                if svc.replicas is not None:
+                    spec.replicas = svc.replicas
+                patch_services.append(spec)
+            patch = PatchExtension(services=patch_services)
+
+            try:
+                ext = client.extensions.patch_extension(dev_name, patch)
+                console.print("  [green]\u2713[/green] Extension updated (zero-downtime)")
+            except APIError as patch_exc:
+                if patch_exc.status_code == 405:
+                    # Platform doesn't support PATCH yet — fall back
+                    console.print(
+                        "  [yellow]Warning:[/yellow] Platform does not support PATCH. "
+                        "Falling back to delete+create."
+                    )
+                    ext = _delete_and_recreate(client, dev_name, payload, console)
+                else:
+                    console.print(f"[red]Error:[/red] Deploy failed: {patch_exc}")
+                    raise typer.Exit(code=1) from patch_exc
+
+        except NotFoundError:
+            # Extension doesn't exist — create
             ext = client.extensions.create_extension(payload)
             console.print("  [green]\u2713[/green] Extension created")
-        except APIError as exc:
-            if exc.status_code == 409:
-                # Replace: delete existing, then re-create with retry
-                console.print("  [dim]Replacing existing deployment...[/dim]")
-                try:
-                    client.extensions.delete_extension(dev_name)
-                except Exception as del_exc:
-                    console.print(f"  [dim]Delete failed: {del_exc}[/dim]")
-                import time
-                ext = None
-                for attempt in range(15):
-                    time.sleep(2)
-                    try:
-                        client.extensions.get_extension(dev_name)
-                        continue  # Still exists — keep waiting
-                    except Exception:
-                        pass  # Deleted
-                    try:
-                        ext = client.extensions.create_extension(payload)
-                        console.print("  [green]\u2713[/green] Extension replaced")
-                        break
-                    except APIError as retry_exc:
-                        if retry_exc.status_code == 409 and attempt < 14:
-                            continue  # Finalizer still running, retry
-                        console.print(f"[red]Error:[/red] Deploy failed: {retry_exc}")
-                        raise typer.Exit(code=1) from retry_exc
-                if ext is None:
-                    console.print("[red]Error:[/red] Timed out waiting for old deployment to be removed")
-                    raise typer.Exit(code=1)
-            else:
-                console.print(f"[red]Error:[/red] Deploy failed: {exc}")
-                raise typer.Exit(code=1) from exc
 
         # 10. Poll for readiness
         try:
@@ -290,15 +375,10 @@ def run_dev_remote(
 
         # 11. Print URL
         url = ext.endpoints.external if ext.endpoints else None
-        console.print(f"\n  [green]\u2713[/green] Rollout complete")
+        console.print("\n  [green]\u2713[/green] Rollout complete")
         console.print()
         console.print(f"[bold]{info.name}[/bold] is running at:")
         if url:
             console.print(f"  [blue]{url}[/blue]")
         else:
-            console.print(f"  [dim](no external URL reported — check kz-ext status)[/dim]")
-    finally:
-        if old_verify_ssl is None:
-            os.environ.pop("KAMIWAZA_VERIFY_SSL", None)
-        else:
-            os.environ["KAMIWAZA_VERIFY_SSL"] = old_verify_ssl
+            console.print("  [dim](no external URL reported — check kz-ext status)[/dim]")

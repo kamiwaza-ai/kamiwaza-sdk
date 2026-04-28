@@ -36,6 +36,46 @@ from .services.enclaves import EnclavesService
 
 logger = logging.getLogger(__name__)
 
+_AUTH_ERROR_DETAIL_MAX_LEN = 500
+_AUTH_ERROR_DETAIL_TRUNCATED_SUFFIX = "... [truncated]"
+
+
+def _truncate_with_suffix(
+    value: str, max_len: int = _AUTH_ERROR_DETAIL_MAX_LEN
+) -> str:
+    """Truncate ``value`` to ``max_len`` chars, appending a suffix when cut.
+
+    A naked slice is ambiguous — a 500-char return is indistinguishable from
+    a legitimately short body that happens to fit. The suffix makes the
+    truncation explicit to anyone reading logs or exception messages.
+    """
+    if len(value) <= max_len:
+        return value
+    return value[:max_len] + _AUTH_ERROR_DETAIL_TRUNCATED_SUFFIX
+
+
+def _extract_server_detail(response, max_len: int = _AUTH_ERROR_DETAIL_MAX_LEN) -> str:
+    """Extract a short, embeddable description of a server error response.
+
+    Prefers the JSON ``detail`` field (FastAPI convention) so the caller sees
+    the server's actual message. Falls back to the serialized JSON body, then
+    raw text. Output is always truncated to ``max_len`` characters (with an
+    explicit ``... [truncated]`` suffix when cut) to prevent multi-KB
+    proxy/gateway HTML error pages from bloating log lines and exception
+    strings.
+    """
+    try:
+        body = response.json()
+    except (ValueError, AttributeError):
+        return _truncate_with_suffix(response.text or "", max_len)
+
+    if isinstance(body, dict) and "detail" in body:
+        detail = body["detail"]
+        if isinstance(detail, str):
+            return _truncate_with_suffix(detail, max_len)
+        return _truncate_with_suffix(str(detail), max_len)
+    return _truncate_with_suffix(str(body), max_len)
+
 
 class KamiwazaClient:
     _RECENT_DATASET_TTL_SECONDS = 30.0
@@ -183,16 +223,45 @@ class KamiwazaClient:
             if response.status_code == 401:
                 if skip_auth:
                     raise AuthenticationError(
-                        f"Unauthenticated request failed for {endpoint}: {response.text}"
+                        f"Unauthenticated request failed for {endpoint}: "
+                        f"{_extract_server_detail(response)}"
                     )
-                logger.warning(f"Received 401 Unauthorized. Response: {response.text}")
+                logger.warning(
+                    f"Received 401 Unauthorized. Response: "
+                    f"{_extract_server_detail(response)}"
+                )
                 if self.authenticator:
-                    if not did_refresh:
+                    # Only attempt a refresh-and-retry if the authenticator can
+                    # actually obtain new credentials. PAT/API-key auth cannot,
+                    # so a retry is wasted and the "after token refresh" error
+                    # message is misleading when it fails. Duck-typed: accept
+                    # either a callable method or a plain attribute/property;
+                    # default to True for legacy authenticators that don't
+                    # expose the hook at all.
+                    can_refresh_attr = getattr(
+                        self.authenticator, "can_refresh", True
+                    )
+                    can_refresh = (
+                        can_refresh_attr() if callable(can_refresh_attr)
+                        else bool(can_refresh_attr)
+                    )
+                    if can_refresh and not did_refresh:
                         did_refresh = True
                         self.authenticator.refresh_token(self.session)
                         continue
+                    if did_refresh:
+                        raise AuthenticationError(
+                            f"Authentication failed after token refresh for "
+                            f"{endpoint}: {_extract_server_detail(response)}"
+                        )
+                    # Non-refreshable authenticator (e.g. PAT): surface the
+                    # server's actual response so callers can distinguish
+                    # invalid PAT from endpoint-specific auth boundary errors
+                    # (e.g. app session-token endpoints returning 401 for an
+                    # unknown session token).
                     raise AuthenticationError(
-                        "Authentication failed after token refresh."
+                        f"Authentication failed for {endpoint}: "
+                        f"{_extract_server_detail(response)}"
                     )
                 raise AuthenticationError(
                     "Authentication failed. No authenticator provided."

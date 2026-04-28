@@ -7,13 +7,23 @@ import re
 from typing import Any, Dict, List, Optional
 
 
-# Default resource limits by service pattern
-_RESOURCE_DEFAULTS: List[tuple[re.Pattern, Dict[str, str]]] = [
-    (re.compile(r"postgres|mysql|mariadb", re.I), {"cpus": "0.5", "memory": "512M"}),
-    (re.compile(r"redis|valkey", re.I), {"cpus": "0.25", "memory": "256M"}),
-    (re.compile(r"frontend|nginx|caddy", re.I), {"cpus": "0.5", "memory": "512M"}),
+# Default resource limits/requests by service pattern.
+# Limits = ceiling (burst during build), requests = reservation (steady state).
+_RESOURCE_DEFAULTS: List[tuple[re.Pattern, Dict[str, Dict[str, str]]]] = [
+    (re.compile(r"postgres|mysql|mariadb", re.I), {
+        "limits": {"cpus": "0.5", "memory": "512M"},
+    }),
+    (re.compile(r"redis|valkey", re.I), {
+        "limits": {"cpus": "0.25", "memory": "256M"},
+    }),
+    (re.compile(r"frontend|nginx|caddy", re.I), {
+        "limits": {"cpus": "2.0", "memory": "1G"},
+        "reservations": {"cpus": "0.25", "memory": "256M"},
+    }),
 ]
-_DEFAULT_LIMITS = {"cpus": "1.0", "memory": "1G"}
+_DEFAULT_LIMITS: Dict[str, Dict[str, str]] = {
+    "limits": {"cpus": "1.0", "memory": "1G"},
+}
 
 
 class ComposeTransformer:
@@ -43,7 +53,13 @@ class ComposeTransformer:
         """
         out = copy.deepcopy(compose_data)
 
-        for svc_name, svc in (out.get("services") or {}).items():
+        # Drop services that have a profiles key (local-only services)
+        services = out.get("services") or {}
+        profiled = [name for name, svc in services.items() if svc.get("profiles")]
+        for name in profiled:
+            del services[name]
+
+        for svc_name, svc in services.items():
             out["services"][svc_name] = self.transform_service(
                 svc,
                 svc_name,
@@ -98,12 +114,43 @@ class ComposeTransformer:
         svc.pop("container_name", None)
         svc.pop("networks", None)
 
+        # 7. Strip env vars with unexpanded ${} references — these are
+        #    docker-compose variable substitutions that don't work in K8s.
+        #    The operator injects the real values via ConfigMap.
+        if "environment" in svc:
+            svc["environment"] = _strip_shell_refs(svc["environment"])
+
         return svc
 
 
 # ------------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------------
+
+
+def _strip_shell_refs(env: Any) -> Any:
+    """Remove env entries whose values contain ``${...}`` references.
+
+    Docker-compose ``${VAR:-default}`` syntax is only resolved by
+    docker-compose itself.  In K8s these appear as literal strings and
+    either shadow operator-injected values or point at compose services
+    that don't exist in the cluster.  Plain values (no ``${``) pass
+    through unchanged — those are intentional overrides.
+    """
+    if isinstance(env, dict):
+        return {k: v for k, v in env.items()
+                if not (isinstance(v, str) and "${" in v)}
+    if isinstance(env, list):
+        return [e for e in env if not _entry_has_shell_ref(e)]
+    return env
+
+
+def _entry_has_shell_ref(entry: Any) -> bool:
+    if isinstance(entry, str) and "=" in entry:
+        return "${" in entry.split("=", 1)[1]
+    if isinstance(entry, dict):
+        return "${" in str(entry.get("value", ""))
+    return False
 
 
 def _strip_host_ports(ports: List[Any]) -> List[str]:
@@ -176,8 +223,11 @@ def _ensure_resource_limits(svc: Dict[str, Any]) -> None:
 
     # Determine defaults from image name or service content
     hint = svc.get("image", "")
-    for pattern, limits in _RESOURCE_DEFAULTS:
+    defaults = _DEFAULT_LIMITS
+    for pattern, res_defaults in _RESOURCE_DEFAULTS:
         if pattern.search(hint):
-            resources["limits"] = dict(limits)
-            return
-    resources["limits"] = dict(_DEFAULT_LIMITS)
+            defaults = res_defaults
+            break
+    resources["limits"] = dict(defaults["limits"])
+    if "reservations" in defaults and "reservations" not in resources:
+        resources["reservations"] = dict(defaults["reservations"])

@@ -1,0 +1,557 @@
+"""App analyzer — gather context from existing apps for conversion."""
+
+from __future__ import annotations
+
+import os
+import re
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Dict, Generator, List, Optional
+
+import yaml
+
+from kamiwaza_extensions import __version__
+
+_SKIP_DIRS = {
+    ".git",
+    "node_modules",
+    "__pycache__",
+    ".venv",
+    "venv",
+    ".next",
+    "build",
+    "dist",
+    "target",
+    "coverage",
+}
+_MANIFEST_FILES = {
+    "package.json",
+    "requirements.txt",
+    "pyproject.toml",
+    "Pipfile",
+    "Pipfile.lock",
+    "poetry.lock",
+    "uv.lock",
+    "vite.config.js",
+    "vite.config.ts",
+    "webpack.config.js",
+    "webpack.config.ts",
+    "README.md",
+    "nginx.conf",
+    "Caddyfile",
+    "go.mod",
+    "Cargo.toml",
+    "Gemfile",
+}
+_ENTRYPOINT_NAMES = {
+    "main.py",
+    "app.py",
+    "server.py",
+    "index.html",
+    "index.js",
+    "index.ts",
+    "main.js",
+    "main.ts",
+}
+_CONTEXT_SUFFIXES = (
+    ".py",
+    ".js",
+    ".jsx",
+    ".ts",
+    ".tsx",
+    ".html",
+    ".css",
+    ".json",
+    ".yaml",
+    ".yml",
+    ".md",
+    ".conf",
+)
+_MAX_REPO_TREE_ENTRIES = 40
+_MAX_CONTEXT_FILES = 80
+_MAX_CONTEXT_FILE_SIZE = 10000
+_SENSITIVE_FILE_NAMES = {
+    ".env",
+    ".envrc",
+    ".npmrc",
+    ".pypirc",
+    "credentials.json",
+    "credential.json",
+    "secret.json",
+    "secrets.json",
+    "id_rsa",
+    "id_ed25519",
+}
+_SENSITIVE_FILE_SUFFIXES = (
+    ".key",
+    ".pem",
+    ".p12",
+    ".pfx",
+    ".der",
+)
+_SENSITIVE_STEMS = {"secret", "secrets", "credential", "credentials"}
+
+
+def _walk_files(root: Path, extensions: tuple[str, ...] | None = None) -> Generator[Path, None, None]:
+    """Walk *root* yielding files, pruning ``_SKIP_DIRS`` in-place.
+
+    Much faster than ``rglob`` on JS projects with large ``node_modules``.
+    """
+    for dirpath, dirnames, filenames in os.walk(root):
+        # Prune in-place so os.walk doesn't descend
+        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
+        for fname in filenames:
+            if extensions is None or any(fname.endswith(ext) for ext in extensions):
+                yield Path(dirpath) / fname
+
+
+@dataclass
+class ServiceInfo:
+    """Detected service from compose or Dockerfiles."""
+
+    name: str
+    dockerfile: Optional[Path] = None
+    base_image: Optional[str] = None
+    language: Optional[str] = None  # "python", "node", "go", etc.
+    ports: List[int] = field(default_factory=list)
+    has_build_context: bool = False
+    build_context: Optional[str] = None
+
+
+@dataclass
+class AnalysisResult:
+    """Results of analyzing an existing app."""
+
+    # Discovered structure
+    app_dir: Path
+    app_name: str
+    services: List[ServiceInfo] = field(default_factory=list)
+    compose_path: Optional[Path] = None
+    compose_data: Optional[Dict[str, Any]] = None
+
+    # Compatibility checks
+    has_host_ports: List[str] = field(default_factory=list)
+    has_bind_mounts: List[str] = field(default_factory=list)
+    missing_resource_limits: List[str] = field(default_factory=list)
+    has_health_endpoint: bool = False
+
+    # SDK integration status
+    has_python_runtime_lib: bool = False
+    has_ts_runtime_lib: bool = False
+
+    # File contents (for LLM context)
+    file_contents: Dict[str, str] = field(default_factory=dict)
+    repo_tree: List[str] = field(default_factory=list)
+    detected_manifests: List[str] = field(default_factory=list)
+    candidate_entrypoints: List[str] = field(default_factory=list)
+    runtime_hints: List[str] = field(default_factory=list)
+
+    # Description
+    description: str = ""
+
+    # Inferred type
+    extension_type: str = "app"
+    conversion_mode: str = "structured"
+
+
+class AppAnalyzer:
+    """Analyze an existing containerized app for Kamiwaza extension conversion."""
+
+    def analyze(self, app_dir: Path) -> AnalysisResult:
+        """Run full analysis on the given directory."""
+        app_dir = Path(app_dir).resolve()
+        if not app_dir.is_dir():
+            raise FileNotFoundError(f"Directory not found: {app_dir}")
+
+        result = AnalysisResult(
+            app_dir=app_dir,
+            app_name=self._sanitize_name(app_dir.name),
+        )
+
+        self._find_compose(result)
+        self._find_dockerfiles(result)
+        self._check_deployment_compat(result)
+        self._detect_sdk_integration(result)
+        self._detect_health_endpoint(result)
+        self._infer_description(result)
+        self._infer_type(result)
+        self._gather_repo_inventory(result)
+        self._gather_file_contents(result)
+        self._infer_conversion_mode(result)
+
+        return result
+
+    def generate_kamiwaza_json(self, result: AnalysisResult) -> Dict[str, Any]:
+        """Generate kamiwaza.json content from analysis results."""
+        major = __version__.split(".")[0]
+        next_major = str(int(major) + 1)
+        return {
+            "name": result.app_name,
+            "version": "0.1.0",
+            "type": result.extension_type,
+            "source_type": "user_repo",
+            "visibility": "private",
+            "description": result.description or f"A Kamiwaza {result.extension_type} extension",
+            "risk_tier": 0,
+            "verified": False,
+            "kz_ext_version": f">={__version__},<{next_major}.0.0",
+            "tags": [],
+            "env_defaults": {},
+            "required_env_vars": [],
+        }
+
+    # ------------------------------------------------------------------
+    # Private analysis steps
+    # ------------------------------------------------------------------
+
+    def _find_compose(self, result: AnalysisResult) -> None:
+        compose_names = (
+            "docker-compose.yml",
+            "docker-compose.yaml",
+            "compose.yml",
+            "compose.yaml",
+        )
+        for name in compose_names:
+            path = result.app_dir / name
+            if path.exists():
+                result.compose_path = path
+                try:
+                    result.compose_data = yaml.safe_load(path.read_text(encoding="utf-8"))
+                except (yaml.YAMLError, OSError):
+                    pass
+                break
+
+    def _find_dockerfiles(self, result: AnalysisResult) -> None:
+        # From compose services first
+        if result.compose_data:
+            for svc_name, svc in (result.compose_data.get("services") or {}).items():
+                info = ServiceInfo(name=svc_name)
+
+                # Build context
+                build = svc.get("build")
+                if isinstance(build, str):
+                    info.has_build_context = True
+                    info.build_context = build
+                    df = result.app_dir / build / "Dockerfile"
+                    if df.exists():
+                        info.dockerfile = df
+                elif isinstance(build, dict):
+                    info.has_build_context = True
+                    ctx = build.get("context", ".")
+                    info.build_context = ctx
+                    df_name = build.get("dockerfile", "Dockerfile")
+                    df = result.app_dir / ctx / df_name
+                    if df.exists():
+                        info.dockerfile = df
+
+                # Ports
+                for port_spec in svc.get("ports", []):
+                    port_str = str(port_spec)
+                    # Extract container port
+                    parts = port_str.split(":")
+                    try:
+                        info.ports.append(int(parts[-1]))
+                    except ValueError:
+                        pass
+
+                # Detect language from Dockerfile
+                if info.dockerfile and info.dockerfile.exists():
+                    info.base_image, info.language = self._detect_language(info.dockerfile)
+
+                result.services.append(info)
+            return
+
+        # Fallback: find Dockerfiles in subdirectories
+        for dockerfile in sorted(
+            path for path in _walk_files(result.app_dir) if _is_dockerfile(path)
+        ):
+            parent = dockerfile.parent
+            svc_name = parent.name if parent != result.app_dir else "app"
+            base_image, language = self._detect_language(dockerfile)
+            result.services.append(
+                ServiceInfo(
+                    name=svc_name,
+                    dockerfile=dockerfile,
+                    base_image=base_image,
+                    language=language,
+                    has_build_context=True,
+                    build_context=str(parent.relative_to(result.app_dir)),
+                )
+            )
+
+    def _detect_language(self, dockerfile: Path) -> tuple[Optional[str], Optional[str]]:
+        try:
+            content = dockerfile.read_text(encoding="utf-8")
+        except OSError:
+            return None, None
+
+        # Use the LAST FROM instruction (final stage in multi-stage builds)
+        last_image = None
+        for line in content.splitlines():
+            line = line.strip()
+            if line.upper().startswith("FROM "):
+                last_image = line.split()[1].lower()
+
+        if last_image is None:
+            return None, None
+
+        # Extract the base image name (before : tag) for matching.
+        # e.g., "python:3.11-slim" → "python", "ghcr.io/org/my-python:1" → "my-python"
+        base = last_image.split(":")[0].rsplit("/", 1)[-1]
+
+        if "python" in base:
+            return last_image, "python"
+        if "node" in base or "bun" in base:
+            return last_image, "node"
+        if base in ("golang", "go") or base.startswith("golang"):
+            return last_image, "go"
+        if "rust" in base:
+            return last_image, "rust"
+        if "ruby" in base:
+            return last_image, "ruby"
+        return last_image, None
+
+    def _check_deployment_compat(self, result: AnalysisResult) -> None:
+        if not result.compose_data:
+            return
+
+        for svc_name, svc in (result.compose_data.get("services") or {}).items():
+            # Host ports
+            for port_spec in svc.get("ports", []):
+                port_str = str(port_spec)
+                if ":" in port_str:
+                    result.has_host_ports.append(f"{svc_name}: {port_str}")
+
+            # Bind mounts
+            for vol in svc.get("volumes", []):
+                vol_str = str(vol)
+                if vol_str.startswith("./") or vol_str.startswith("/") or vol_str.startswith("../"):
+                    result.has_bind_mounts.append(f"{svc_name}: {vol_str}")
+
+            # Resource limits
+            deploy = svc.get("deploy", {})
+            resources = deploy.get("resources", {})
+            if not resources.get("limits"):
+                result.missing_resource_limits.append(svc_name)
+
+    def _detect_sdk_integration(self, result: AnalysisResult) -> None:
+        # Python runtime lib
+        for req_file in _walk_files(result.app_dir, ("requirements.txt",)):
+            try:
+                content = req_file.read_text(encoding="utf-8")
+                if "kamiwaza-extensions-lib" in content or "kamiwaza_extensions_lib" in content:
+                    result.has_python_runtime_lib = True
+                    break
+            except OSError:
+                pass
+
+        # TypeScript runtime lib
+        for pkg_file in _walk_files(result.app_dir, ("package.json",)):
+            try:
+                content = pkg_file.read_text(encoding="utf-8")
+                if "@kamiwaza-ai/extensions-lib" in content:
+                    result.has_ts_runtime_lib = True
+                    break
+            except OSError:
+                pass
+
+    def _detect_health_endpoint(self, result: AnalysisResult) -> None:
+        # Look for /health endpoint in Python or JS files
+        patterns = [
+            re.compile(r"""['"]/health['"]"""),
+            re.compile(r"""@app\.(get|route)\s*\(\s*['"]/health"""),
+            re.compile(r"""router\.(get|route)\s*\(\s*['"]/health"""),
+        ]
+        for src in _walk_files(result.app_dir, (".py", ".js", ".ts", ".jsx", ".tsx")):
+            try:
+                content = src.read_text(encoding="utf-8")
+                for pat in patterns:
+                    if pat.search(content):
+                        result.has_health_endpoint = True
+                        return
+            except OSError:
+                pass
+
+    def _infer_description(self, result: AnalysisResult) -> None:
+        readme = result.app_dir / "README.md"
+        if readme.exists():
+            try:
+                lines = readme.read_text(encoding="utf-8").splitlines()
+                for line in lines:
+                    line = line.strip()
+                    if line and not line.startswith("#"):
+                        result.description = line[:200]
+                        return
+                    if line.startswith("# "):
+                        result.description = line.lstrip("# ").strip()[:200]
+                        return
+            except OSError:
+                pass
+
+    def _infer_type(self, result: AnalysisResult) -> None:
+        name = result.app_name.lower()
+        if name.startswith("tool-") or name.startswith("mcp-"):
+            result.extension_type = "tool"
+        elif name.startswith("service-"):
+            result.extension_type = "service"
+        else:
+            # Check for MCP patterns
+            for svc in result.services:
+                if svc.dockerfile and svc.dockerfile.exists():
+                    try:
+                        content = svc.dockerfile.read_text(encoding="utf-8")
+                        if "mcp" in content.lower() or "FastMCP" in content:
+                            result.extension_type = "tool"
+                            return
+                    except OSError:
+                        pass
+            result.extension_type = "app"
+
+    def _gather_repo_inventory(self, result: AnalysisResult) -> None:
+        """Collect lightweight repo structure hints for generic conversion."""
+        entries = []
+        for entry in sorted(result.app_dir.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
+            if entry.name in _SKIP_DIRS:
+                continue
+            if entry.is_file() and _is_sensitive_context_file(entry):
+                continue
+            label = f"{entry.name}/" if entry.is_dir() else entry.name
+            entries.append(label)
+            if len(entries) >= _MAX_REPO_TREE_ENTRIES:
+                break
+        result.repo_tree = entries
+
+        manifests: List[str] = []
+        entrypoints: List[str] = []
+        runtime_hints: set[str] = set()
+
+        for path in _walk_files(result.app_dir):
+            if _is_sensitive_context_file(path):
+                continue
+            rel = str(path.relative_to(result.app_dir))
+            name = path.name
+
+            if _is_manifest(path):
+                manifests.append(rel)
+            if _is_entrypoint(path):
+                entrypoints.append(rel)
+
+            suffix = path.suffix.lower()
+            if suffix == ".html":
+                runtime_hints.add("static-html")
+            elif suffix in (".js", ".jsx", ".ts", ".tsx"):
+                runtime_hints.add("javascript-or-typescript")
+            elif suffix == ".py":
+                runtime_hints.add("python")
+
+            if name == "package.json":
+                runtime_hints.add("node-package")
+            elif name in {"requirements.txt", "pyproject.toml", "Pipfile"}:
+                runtime_hints.add("python-package")
+            elif name == "nginx.conf":
+                runtime_hints.add("nginx")
+            elif name == "Caddyfile":
+                runtime_hints.add("caddy")
+            elif _is_dockerfile(path):
+                runtime_hints.add("dockerized")
+
+        for svc in result.services:
+            if svc.language:
+                runtime_hints.add(f"{svc.language}-service")
+            if svc.base_image and any(token in svc.base_image for token in ("nginx", "caddy", "httpd")):
+                runtime_hints.add("static-web-server")
+
+        result.detected_manifests = manifests[:_MAX_CONTEXT_FILES]
+        result.candidate_entrypoints = entrypoints[:_MAX_CONTEXT_FILES]
+        result.runtime_hints = sorted(runtime_hints)
+
+    def _gather_file_contents(self, result: AnalysisResult) -> None:
+        """Read key files to provide as context for the LLM agent."""
+        targets = []
+
+        # Compose file
+        if result.compose_path:
+            targets.append(result.compose_path)
+
+        # Dockerfiles
+        for svc in result.services:
+            if svc.dockerfile:
+                targets.append(svc.dockerfile)
+
+        for path in _walk_files(result.app_dir):
+            if _is_context_file(path):
+                targets.append(path)
+            if len(targets) >= _MAX_CONTEXT_FILES:
+                break
+
+        # README
+        readme = result.app_dir / "README.md"
+        if readme.exists():
+            targets.append(readme)
+
+        # Deduplicate and read
+        seen = set()
+        for path in targets:
+            path = path.resolve()
+            if path in seen:
+                continue
+            seen.add(path)
+            try:
+                content = path.read_text(encoding="utf-8")
+                rel = str(path.relative_to(result.app_dir))
+                # Limit file size to avoid blowing up the LLM context
+                if len(content) > _MAX_CONTEXT_FILE_SIZE:
+                    content = content[:_MAX_CONTEXT_FILE_SIZE] + "\n... (truncated)"
+                result.file_contents[rel] = content
+            except (OSError, UnicodeDecodeError):
+                pass
+
+    def _infer_conversion_mode(self, result: AnalysisResult) -> None:
+        if result.compose_path or result.services:
+            result.conversion_mode = "structured"
+            return
+        if result.file_contents or result.detected_manifests or result.candidate_entrypoints:
+            result.conversion_mode = "generic"
+            return
+        result.conversion_mode = "generic"
+
+    @staticmethod
+    def _sanitize_name(name: str) -> str:
+        """Sanitize directory name for use as extension name."""
+        name = name.lower().strip()
+        name = re.sub(r"[^a-z0-9-]", "-", name)
+        name = re.sub(r"-+", "-", name)
+        name = name.strip("-")
+        return name or "my-extension"
+
+
+def _is_dockerfile(path: Path) -> bool:
+    return path.name == "Dockerfile" or path.name.startswith("Dockerfile.")
+
+
+def _is_manifest(path: Path) -> bool:
+    return path.name in _MANIFEST_FILES
+
+
+def _is_entrypoint(path: Path) -> bool:
+    if path.name in _ENTRYPOINT_NAMES:
+        return True
+    rel = path.as_posix()
+    return rel.endswith("/src/index.ts") or rel.endswith("/src/index.js") or rel.endswith("/src/main.ts") or rel.endswith("/src/main.js")
+
+
+def _is_context_file(path: Path) -> bool:
+    if _is_sensitive_context_file(path):
+        return False
+    if _is_dockerfile(path) or _is_manifest(path) or _is_entrypoint(path):
+        return True
+    return path.suffix.lower() in _CONTEXT_SUFFIXES
+
+
+def _is_sensitive_context_file(path: Path) -> bool:
+    name = path.name.lower()
+    if name in _SENSITIVE_FILE_NAMES or name.startswith(".env."):
+        return True
+    if path.suffix.lower() in _SENSITIVE_FILE_SUFFIXES:
+        return True
+    return path.stem.lower() in _SENSITIVE_STEMS
