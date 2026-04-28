@@ -8,6 +8,8 @@ import typer
 from rich.console import Console
 
 from kamiwaza_extensions import __version__
+from kamiwaza_extensions.exit_codes import exit_code_for
+from kamiwaza_extensions_lib.errors import KamiwazaRuntimeError
 
 app = typer.Typer(
     name="kz-ext",
@@ -81,7 +83,19 @@ def run_with_error_handling(func):
 
 
 def _handle_exception(exc: Exception) -> None:
-    # Try to import Kamiwaza errors for nicer formatting
+    # UAC-9d runtime-lib exceptions map to their canonical exit codes
+    # (§4.2.7 / §4.2.8). Keep this branch above the generic fallback so
+    # the exit code carries meaning for extension authors and CI.
+    if isinstance(exc, KamiwazaRuntimeError):
+        console.print(f"[red]Error:[/red] {exc}")
+        if _state.debug:
+            console.print_exception()
+        raise typer.Exit(code=int(exit_code_for(exc.class_name))) from exc
+
+    # Try to import Kamiwaza SDK errors for nicer formatting. This import
+    # stays lazy because kamiwaza_sdk is a sibling package and some install
+    # flavours (e.g. a stripped-down `kamiwaza-extensions-only` wheel) may
+    # ship without it.
     try:
         from kamiwaza_sdk.exceptions import KamiwazaError
     except ImportError:
@@ -119,7 +133,15 @@ def login(
     if dev:
         url = url or "https://kamiwaza.test/api"
         no_verify_ssl = True
-    run_login(url=url, api_key=api_key, name=name, list_connections=list_connections, use=use, no_verify_ssl=no_verify_ssl)
+    run_login(
+        url=url,
+        api_key=api_key,
+        name=name,
+        list_connections=list_connections,
+        use=use,
+        no_verify_ssl=no_verify_ssl,
+        verbose=_state.verbose,
+    )
 
 
 @app.command()

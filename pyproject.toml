@@ -60,7 +60,7 @@ exclude = ["tests*", "examples*"]
 [tool.setuptools.package-data]
 kamiwaza_sdk = ["py.typed"]
 kamiwaza_extensions = ["templates/**/*", "templates/**/.*"]
-kamiwaza_extensions_lib = ["py.typed"]
+kamiwaza_extensions_lib = ["py.typed", "exception_names.json"]
 
 [dependency-groups]
 dev = [

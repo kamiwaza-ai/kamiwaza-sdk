@@ -1,8 +1,10 @@
 """Tests for kamiwaza_extensions_lib.client."""
 
-import pytest
-import httpx
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import httpx
+import pytest
 
 from kamiwaza_extensions_lib.client import KamiwazaExtClient
 
@@ -68,9 +70,7 @@ class TestKamiwazaExtClientInit:
         async_client = client._client()
         assert async_client.timeout == httpx.Timeout(15.0)
         # Clean up
-        import asyncio
-
-        asyncio.get_event_loop().run_until_complete(async_client.aclose())
+        asyncio.run(async_client.aclose())
 
 
 @pytest.mark.unit
@@ -106,7 +106,7 @@ class TestKamiwazaExtClientMethods:
             mock_instance.__aexit__ = AsyncMock(return_value=False)
             MockClient.return_value = mock_instance
 
-            result = await client.chat_completions(
+            await client.chat_completions(
                 {"model": "gpt-4", "messages": [{"role": "user", "content": "hi"}]}
             )
 

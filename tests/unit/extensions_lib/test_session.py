@@ -60,6 +60,68 @@ class TestSessionEndpoint:
         assert data["is_authenticated"] is True
         assert data["expires_at"] == 1711900800
 
+    def test_authenticated_session_does_not_leak_sensitive_fields(self, monkeypatch):
+        """Guard against regressions: /session MUST NOT expose the Bearer
+        credential (``auth_token``), classification flag (``system_high``),
+        or correlation tracer (``request_id``) to the browser."""
+        client = _make_app(monkeypatch)
+        resp = client.get(
+            "/session",
+            headers={
+                "x-user-id": "usr-123",
+                "x-user-email": "alice@example.com",
+                "x-user-name": "Alice",
+                "x-user-roles": "admin",
+                "x-workroom-id": "wrk-456",
+                "x-user-workroom-role": "editor",
+                "x-auth-token": "secret-bearer-jwt",
+                "x-user-system-high": "true",
+                "x-request-id": "req-abc",
+            },
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        # Positive: public fields present
+        assert data["user_id"] == "usr-123"
+        assert data["workroom_role"] == "editor"
+        # Negative: private fields absent
+        assert "auth_token" not in data
+        assert "system_high" not in data
+        assert "request_id" not in data
+
+    def test_malformed_envelope_reported_as_logged_out(self, monkeypatch):
+        """PR re-review High #1: a request with X-User-Id but no X-Workroom-Id
+        triggers MisboundAuthError on require_auth (HTTP 401), so /session must
+        also report this as logged-out — otherwise the frontend appears
+        authenticated while every API call returns 401 (split-brain)."""
+        client = _make_app(monkeypatch, use_auth="true")
+        resp = client.get(
+            "/session",
+            headers={"x-user-id": "usr-123"},  # missing x-workroom-id
+        )
+
+        # Endpoint returns 200 (so the SessionProvider doesn't crash) but
+        # the body matches the no-envelope/logged-out shape.
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["is_authenticated"] is False
+        assert data["user_id"] is None
+        assert data["workroom_id"] is None
+        assert data["expires_at"] is None
+
+    def test_whitespace_only_envelope_reported_as_logged_out(self, monkeypatch):
+        """Symmetry with require_auth: whitespace-only headers don't satisfy
+        the strict envelope check."""
+        client = _make_app(monkeypatch, use_auth="true")
+        resp = client.get(
+            "/session",
+            headers={"x-user-id": "usr-123", "x-workroom-id": "   "},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["is_authenticated"] is False
+
     def test_unauthenticated_session_with_auth_enabled(self, monkeypatch):
         client = _make_app(monkeypatch, use_auth="true")
         resp = client.get("/session")
@@ -87,6 +149,7 @@ class TestSessionEndpoint:
             "/session",
             headers={
                 "x-user-id": "usr-123",
+                "x-workroom-id": "wrk-456",  # required for strict envelope check
                 "authorization": f"Bearer {token}",
             },
         )

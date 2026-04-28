@@ -69,3 +69,44 @@ class TestErrorHandling:
 
         with pytest.raises(ClickExit):
             failing_func()
+
+    # TS-8: RuntimeLibException → exit code matches exit_code_for(class_name)
+    @pytest.mark.parametrize(
+        "error_cls, expected_code",
+        [
+            ("MisboundAuthError", 10),
+            ("UnexpectedContextError", 11),
+            ("OutOfEnvelopeAccessError", 12),
+            ("PlatformOutageError", 13),
+        ],
+    )
+    def test_runtime_lib_exception_maps_to_exit_code(self, error_cls, expected_code):
+        from kamiwaza_extensions import cli
+        import kamiwaza_extensions_lib.errors as errors_module
+
+        cls = getattr(errors_module, error_cls)
+
+        @cli.run_with_error_handling
+        def failing_func():
+            raise cls("boom")
+
+        with pytest.raises(ClickExit) as exc_info:
+            failing_func()
+        assert exc_info.value.exit_code == expected_code
+
+    def test_unknown_runtime_lib_subclass_falls_back_to_failure(self):
+        """A custom KamiwazaRuntimeError subclass with an unmapped class_name
+        should exit with the generic FAILURE code (1), not silently crash."""
+        from kamiwaza_extensions import cli
+        from kamiwaza_extensions_lib.errors import KamiwazaRuntimeError
+
+        class CustomRuntimeError(KamiwazaRuntimeError):
+            class_name = "some_novel_class_name_not_in_catalog"
+
+        @cli.run_with_error_handling
+        def failing_func():
+            raise CustomRuntimeError("surprise")
+
+        with pytest.raises(ClickExit) as exc_info:
+            failing_func()
+        assert exc_info.value.exit_code == 1  # ExitCode.FAILURE
