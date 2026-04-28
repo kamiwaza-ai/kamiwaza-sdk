@@ -192,6 +192,100 @@ def test_chatbot_example_matches_scaffolded_app_core_files(tmp_path, monkeypatch
             assert scaffolded_path.read_text() == example_path.read_text()
 
 
+def _exercise_backend_chat_error_path(
+    extension_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    module_name: str,
+) -> None:
+    """Drive the chat endpoint into APIStatusError and assert sanitization.
+
+    The starter must NEVER echo upstream model-service body content (which
+    can contain hostnames, paths, or stack traces) back to the browser
+    (ENG-3919). Verified by injecting a sensitive ``exc.body`` and asserting
+    the response detail does not leak it.
+    """
+    import httpx
+    from openai import APIStatusError
+
+    module = _load_backend_module(extension_dir / "backend", module_name)
+
+    async def fake_list_available_models(_request):
+        return [
+            SimpleNamespace(
+                id="dep-1",
+                name="Qwen smoke",
+                repo_id=None,
+                _extra={"endpoint": "https://kamiwaza.test/runtime/models/dep-1/v1"},
+            )
+        ]
+
+    sensitive_body = {
+        "detail": "Internal hostname db-internal.svc unreachable at /v1/chat/completions",
+        "stack": "Traceback ... internal_module.run_inference",
+    }
+    fake_response = httpx.Response(
+        503,
+        request=httpx.Request("POST", "https://kamiwaza.test/runtime/models/dep-1/v1"),
+    )
+
+    class FakeCompletions:
+        async def create(self, model, messages):
+            raise APIStatusError(
+                message="upstream failed", response=fake_response, body=sensitive_body,
+            )
+
+    class FakeChatClient:
+        def __init__(self):
+            self.chat = type("ChatNamespace", (), {"completions": FakeCompletions()})()
+
+    async def fake_build_chat_client(_request, _endpoint):
+        return FakeChatClient()
+
+    monkeypatch.setattr(module, "list_available_models", fake_list_available_models)
+    monkeypatch.setattr(module, "_build_chat_client", fake_build_chat_client)
+    module.app.dependency_overrides[module.require_auth] = lambda: object()
+
+    try:
+        client = TestClient(module.app)
+        response = client.post(
+            "/api/chat",
+            json={
+                "model": "dep-1",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+    finally:
+        module.app.dependency_overrides.clear()
+        sys.modules.pop(module_name, None)
+
+    assert response.status_code == 503
+    detail = response.json().get("detail", "")
+    # Generic, status-code-based message — no upstream content leaked.
+    assert "503" in detail
+    assert "db-internal.svc" not in detail
+    assert "Traceback" not in detail
+    assert "/v1/chat/completions" not in detail
+    assert "internal_module" not in detail
+
+
+@pytest.mark.unit
+def test_template_sanitizes_upstream_model_errors(tmp_path, monkeypatch):
+    # Template path (used for new scaffolds going forward).
+    extension_dir = _scaffold_app(tmp_path, monkeypatch, name="sanitize-template-app")
+    _exercise_backend_chat_error_path(
+        extension_dir, monkeypatch, module_name="sanitize_template_main",
+    )
+
+
+@pytest.mark.unit
+def test_example_sanitizes_upstream_model_errors(tmp_path, monkeypatch):
+    # Example path (the checked-in chatbot-app).
+    extension_dir = _copy_example(tmp_path)
+    _exercise_backend_chat_error_path(
+        extension_dir, monkeypatch, module_name="sanitize_example_main",
+    )
+
+
 @pytest.mark.slow
 @pytest.mark.parametrize(
     ("source_name", "factory"),
