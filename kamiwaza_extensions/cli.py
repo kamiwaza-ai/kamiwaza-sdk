@@ -133,7 +133,15 @@ def login(
     if dev:
         url = url or "https://kamiwaza.test/api"
         no_verify_ssl = True
-    run_login(url=url, api_key=api_key, name=name, list_connections=list_connections, use=use, no_verify_ssl=no_verify_ssl)
+    run_login(
+        url=url,
+        api_key=api_key,
+        name=name,
+        list_connections=list_connections,
+        use=use,
+        no_verify_ssl=no_verify_ssl,
+        verbose=_state.verbose,
+    )
 
 
 @app.command()

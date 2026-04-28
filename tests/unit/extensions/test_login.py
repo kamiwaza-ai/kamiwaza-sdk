@@ -42,6 +42,26 @@ class TestPATRoleDecoding:
 
         assert _decode_pat_roles("not-a-jwt") == set()
 
+    def test_returns_empty_for_none_token(self):
+        """If create_pat returns no token (or a non-string), decoding must
+        not crash — login already stored the connection and a NoneType
+        AttributeError here would surprise the user (PR review High #4)."""
+        from kamiwaza_extensions.commands.login import _decode_pat_roles
+
+        assert _decode_pat_roles(None) == set()
+        assert _decode_pat_roles(123) == set()  # type: ignore[arg-type]
+
+    def test_returns_empty_for_oversized_payload(self):
+        """Defensive cap on attacker-controlled JWT payload size (Medium Low #1)."""
+        from kamiwaza_extensions.commands.login import (
+            _PAT_PAYLOAD_MAX_BYTES,
+            _decode_pat_roles,
+        )
+
+        bloated = "a" * (_PAT_PAYLOAD_MAX_BYTES + 1)
+        token = f"hdr.{bloated}.sig"
+        assert _decode_pat_roles(token) == set()
+
 
 @pytest.mark.unit
 class TestCaptureUIRoles:
@@ -87,10 +107,35 @@ class TestCaptureUIRoles:
 
         assert _capture_ui_roles(client) == set()
 
+    def test_verbose_emits_diagnostic_on_sdk_exception(self, capsys):
+        """PR review High #3: silent failure masks the B3 warning. Under
+        --verbose, operators should see why the role-set capture failed."""
+        from kamiwaza_extensions.commands.login import _capture_ui_roles
+
+        client = MagicMock()
+        client.auth.get_current_user.side_effect = RuntimeError("network down")
+
+        assert _capture_ui_roles(client, verbose=True) == set()
+        out = capsys.readouterr().out
+        # Diagnostic surfaces the exception type AND message
+        assert "RuntimeError" in out
+        assert "network down" in out
+
+    def test_quiet_mode_emits_no_diagnostic_on_failure(self, capsys):
+        """Default behavior must remain silent — the warning is best-effort
+        and we don't pollute stdout when nothing went wrong from the user's POV."""
+        from kamiwaza_extensions.commands.login import _capture_ui_roles
+
+        client = MagicMock()
+        client.auth.get_current_user.side_effect = RuntimeError("network down")
+
+        assert _capture_ui_roles(client) == set()
+        assert capsys.readouterr().out == ""
+
 
 @pytest.mark.unit
 class TestRoleSetWarning:
-    """TS-32: warn when UI role-set is a strict superset of PAT role-set."""
+    """TS-32: warn when UI role-set has roles the PAT is missing."""
 
     def _run(self, **kwargs) -> str:
         """Invoke the helper via a CliRunner so typer.echo is captured."""
@@ -109,6 +154,14 @@ class TestRoleSetWarning:
         out = self._run(pat_roles={"member"}, ui_roles={"member", "admin"})
         assert "admin" in out
         assert "PAT" in out or "role" in out.lower()
+
+    def test_warns_on_overlapping_disjoint(self):
+        """PR review High #6: pat={a,b}, ui={a,c} — c is a real downgrade
+        even though pat is not a strict subset. Pre-fix this case was silent."""
+        out = self._run(pat_roles={"a", "b"}, ui_roles={"a", "c"})
+        assert "c" in out
+        # Confirm the missing-set in the message is just {c}, not the full set
+        assert "['c']" in out
 
     def test_quiet_when_equal(self):
         assert self._run(
