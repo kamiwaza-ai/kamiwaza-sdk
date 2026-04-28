@@ -176,12 +176,34 @@ class DevLocalRunner:
         for svc_name, svc_config in services.items():
             ports = svc_config.get("ports", [])
             for port_spec in ports:
-                host_port, _ = parse_port_mapping(str(port_spec))
+                host_port, container_port = parse_port_mapping(str(port_spec))
                 if host_port is None:
-                    continue
+                    # Bare-port spec (e.g. "3000") — Docker assigns the host
+                    # port. Resolve it via `docker compose port`. (ENG-3889 P2)
+                    if container_port is not None:
+                        host_port = self._docker_compose_port(svc_name, container_port)
+                    if host_port is None:
+                        continue
                 if svc_name in remaps:
                     host_port = remaps[svc_name][1]
                 console.print(f"[dim]{svc_name}:[/dim] http://localhost:{host_port}")
+
+    @staticmethod
+    def _docker_compose_port(service: str, container_port: int) -> Optional[int]:
+        """Look up the host port Docker assigned to ``service:container_port``."""
+        try:
+            result = subprocess.run(
+                ["docker", "compose", "port", service, str(container_port)],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode != 0:
+                return None
+            line = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else ""
+            if ":" in line:
+                return int(line.rsplit(":", 1)[1])
+        except (FileNotFoundError, subprocess.TimeoutExpired, ValueError, IndexError):
+            return None
+        return None
 
     # ------------------------------------------------------------------
     # Subprocess management
@@ -230,13 +252,23 @@ def build_env_overlay(connection: ConnectionInfo, extension_name: str) -> Dict[s
 
 
 def parse_port_mapping(port_spec: str) -> Tuple[Optional[int], Optional[int]]:
-    """Parse a compose port mapping like '3000:3000' into (host_port, container_port).
+    """Parse a compose port mapping into ``(host_port, container_port)``.
 
-    Returns (None, None) for container-only specs like '3000'.
+    Examples::
+
+        '3000:3000'      -> (3000, 3000)
+        '8080:3000'      -> (8080, 3000)
+        '127.0.0.1:3000:3000' -> (3000, 3000)
+        '8000:8000/tcp'  -> (8000, 8000)
+        '3000'           -> (None, 3000)   # bare container port; host auto-assigned
+        ''               -> (None, None)
     """
     port_spec = str(port_spec).strip()
     # Remove protocol suffix if present (e.g., "8000:8000/tcp")
     port_spec = port_spec.split("/")[0]
+
+    if not port_spec:
+        return None, None
 
     if ":" in port_spec:
         parts = port_spec.rsplit(":", 1)
@@ -244,7 +276,12 @@ def parse_port_mapping(port_spec: str) -> Tuple[Optional[int], Optional[int]]:
             return int(parts[0].split(":")[-1]), int(parts[1])
         except (ValueError, IndexError):
             return None, None
-    return None, None
+
+    # Bare container-port spec — host port is auto-assigned by Docker.
+    try:
+        return None, int(port_spec)
+    except ValueError:
+        return None, None
 
 
 def is_port_available(port: int, host: str = "0.0.0.0") -> bool:

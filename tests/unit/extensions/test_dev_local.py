@@ -78,7 +78,10 @@ class TestParsePortMapping:
         assert parse_port_mapping("8080:3000") == (8080, 3000)
 
     def test_container_only(self):
-        assert parse_port_mapping("3000") == (None, None)
+        # Bare container-port spec — host port is auto-assigned by Docker.
+        # (ENG-3889 P2: scaffolded compose now uses bare specs to avoid
+        # host-port collisions with the kind-cluster control plane.)
+        assert parse_port_mapping("3000") == (None, 3000)
 
     def test_with_protocol(self):
         assert parse_port_mapping("8000:8000/tcp") == (8000, 8000)
@@ -87,7 +90,7 @@ class TestParsePortMapping:
         assert parse_port_mapping("127.0.0.1:3000:3000") == (3000, 3000)
 
     def test_integer_input(self):
-        assert parse_port_mapping(3000) == (None, None)
+        assert parse_port_mapping(3000) == (None, 3000)
 
     def test_empty_string(self):
         assert parse_port_mapping("") == (None, None)
