@@ -8,7 +8,8 @@ from typing import Optional
 from fastapi import Depends, HTTPException, Request
 
 from .config import AuthConfig
-from .identity import Identity, anonymous_identity, get_identity
+from .errors import MisboundAuthError
+from .identity import Identity, anonymous_identity, extract_identity, get_identity
 
 # Headers to forward when calling other Kamiwaza services.
 _FORWARD_HEADERS = frozenset(
@@ -41,18 +42,27 @@ async def require_auth(request: Request) -> Identity:
     When ``KAMIWAZA_USE_AUTH`` is ``false`` (local dev), returns an
     anonymous identity without raising.
 
+    Otherwise, parses the platform envelope strictly via
+    ``extract_identity`` — a request that reaches the extension without
+    a complete envelope (e.g. missing ``X-Workroom-Id``) is rejected
+    with HTTP 401 carrying the canonical ``MisboundAuthError`` message.
+    Without this strict path the new ``MisboundAuthError`` class would
+    be defined but never raised on the auth surface the rest of the
+    codebase actually uses.
+
     Raises:
-        HTTPException(401): If auth is enabled and the user is not
-            authenticated.
+        HTTPException(401): If auth is enabled and the request envelope
+            is missing or malformed.
     """
-    identity = await get_identity(request)
     config = AuthConfig.from_env()
     if not config.use_auth:
         # Local dev — unified anonymous shape, matching /session (§4.8 P5).
+        identity = await get_identity(request)
         return identity if identity.is_authenticated else anonymous_identity()
-    if not identity.is_authenticated:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    return identity
+    try:
+        return extract_identity(dict(request.headers))
+    except MisboundAuthError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
 
 
 def require_role(role: str) -> Callable:

@@ -76,13 +76,19 @@ class TestForwardAuthHeaders:
 @pytest.mark.unit
 class TestRequireAuth:
     @pytest.mark.asyncio
-    async def test_authenticated_request(self):
+    async def test_authenticated_request(self, monkeypatch):
+        monkeypatch.setenv("KAMIWAZA_USE_AUTH", "true")
         request = MagicMock()
-        request.headers = {"x-user-id": "usr-123", "x-user-email": "a@b.com"}
+        request.headers = {
+            "x-user-id": "usr-123",
+            "x-user-email": "a@b.com",
+            "x-workroom-id": "wrk-456",
+        }
 
         identity = await require_auth(request)
 
         assert identity.user_id == "usr-123"
+        assert identity.workroom_id == "wrk-456"
         assert identity.is_authenticated is True
 
     @pytest.mark.asyncio
@@ -90,6 +96,34 @@ class TestRequireAuth:
         monkeypatch.setenv("KAMIWAZA_USE_AUTH", "true")
         request = MagicMock()
         request.headers = {}
+
+        with pytest.raises(HTTPException) as exc_info:
+            await require_auth(request)
+        assert exc_info.value.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_missing_workroom_id_rejected_under_strict_auth(self, monkeypatch):
+        """Critical: a request with X-User-Id but no X-Workroom-Id MUST NOT
+        reach protected handlers. Pre-fix, the permissive get_identity()
+        path treated such requests as authenticated with workroom_id=None
+        — exactly the malformed envelope MisboundAuthError exists to catch.
+        """
+        monkeypatch.setenv("KAMIWAZA_USE_AUTH", "true")
+        request = MagicMock()
+        request.headers = {"x-user-id": "usr-123"}  # no x-workroom-id
+
+        with pytest.raises(HTTPException) as exc_info:
+            await require_auth(request)
+        assert exc_info.value.status_code == 401
+        assert "X-Workroom-Id" in exc_info.value.detail
+
+    @pytest.mark.asyncio
+    async def test_whitespace_only_workroom_id_rejected(self, monkeypatch):
+        """Whitespace-only headers must be treated as empty, not as
+        workroom_id="   ", or a misconfigured Traefik bypasses the gate."""
+        monkeypatch.setenv("KAMIWAZA_USE_AUTH", "true")
+        request = MagicMock()
+        request.headers = {"x-user-id": "usr-123", "x-workroom-id": "   "}
 
         with pytest.raises(HTTPException) as exc_info:
             await require_auth(request)
@@ -106,6 +140,19 @@ class TestRequireAuth:
         assert identity.is_authenticated is False
         # Should not raise — local dev mode
 
+    @pytest.mark.asyncio
+    async def test_local_dev_mode_does_not_validate_envelope(self, monkeypatch):
+        """USE_AUTH=false uses the permissive parser — extension authors
+        running locally without a platform must not hit MisboundAuthError."""
+        monkeypatch.setenv("KAMIWAZA_USE_AUTH", "false")
+        request = MagicMock()
+        request.headers = {"x-user-id": "usr-123"}  # no workroom — fine in dev
+
+        identity = await require_auth(request)
+
+        assert identity.user_id == "usr-123"
+        assert identity.workroom_id is None
+
 
 @pytest.mark.unit
 class TestRequireRole:
@@ -115,6 +162,7 @@ class TestRequireRole:
         request = MagicMock()
         request.headers = {
             "x-user-id": "usr-123",
+            "x-workroom-id": "wrk-456",
             "x-user-roles": "admin,user",
         }
 
