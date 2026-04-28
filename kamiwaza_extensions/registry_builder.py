@@ -56,6 +56,7 @@ class RegistryBuilder:
         registry: str,
         version: str,
         stage: str = "prod",
+        revision: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Generate a catalog entry dict from *metadata* and *transformed_compose*.
 
@@ -66,6 +67,9 @@ class RegistryBuilder:
             registry: Docker registry prefix (e.g. ``"kamiwazaai"``).
             version: Semver version string for this release.
             stage: One of ``"prod"``, ``"stage"``, ``"dev"``, or any custom name.
+            revision: Optional revision identifier. When provided, included
+                as a top-level ``revision`` field on the entry; consumed by
+                ``CatalogDedupGuard`` to make CI re-publishes idempotent.
 
         Returns:
             A dict matching the Kamiwaza catalog entry schema.
@@ -92,6 +96,9 @@ class RegistryBuilder:
             "compose_yml": compose_yml,
             "docker_images": docker_images,
         }
+
+        if revision is not None:
+            entry["revision"] = revision
 
         # Optional fields -- only include when present in metadata.
         kamiwaza_version = metadata.get("kamiwaza_version")
