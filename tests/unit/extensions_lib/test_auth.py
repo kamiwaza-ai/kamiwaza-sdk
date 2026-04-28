@@ -24,6 +24,8 @@ class TestForwardAuthHeaders:
             "X-User-Email": "alice@example.com",
             "X-User-Name": "Alice",
             "X-User-Roles": "admin,user",
+            "X-User-System-High": "TS",
+            "X-User-Workroom-Role": "editor",
             "X-Workroom-Id": "wrk-456",
             "X-Request-Id": "req-789",
             "Content-Type": "application/json",
@@ -40,8 +42,22 @@ class TestForwardAuthHeaders:
             "X-User-Email": "alice@example.com",
             "X-User-Name": "Alice",
             "X-User-Roles": "admin,user",
+            "X-User-System-High": "TS",
+            "X-User-Workroom-Role": "editor",
             "X-Workroom-Id": "wrk-456",
             "X-Request-Id": "req-789",
+        }
+
+    def test_forwards_classification_and_workroom_role(self):
+        """Regression guard: the new envelope headers MUST be forwarded so
+        downstream services can re-establish the caller's classification
+        and workroom role when the extension calls another Kamiwaza service."""
+        result = forward_auth_headers(
+            {"X-User-System-High": "U", "X-User-Workroom-Role": "viewer"}
+        )
+        assert result == {
+            "X-User-System-High": "U",
+            "X-User-Workroom-Role": "viewer",
         }
 
     def test_returns_empty_when_no_auth_headers(self):

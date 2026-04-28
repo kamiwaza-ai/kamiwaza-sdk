@@ -11,7 +11,11 @@ from .config import AuthConfig
 from .errors import MisboundAuthError
 from .identity import Identity, anonymous_identity, extract_identity, get_identity
 
-# Headers to forward when calling other Kamiwaza services.
+# Headers to forward when calling other Kamiwaza services. The set must
+# stay aligned with the envelope ``Identity`` reads (kept in
+# kamiwaza_extensions_lib.identity) — silently dropping any platform-set
+# header here would prevent downstream services from re-establishing the
+# caller's workroom role or system-high classification.
 _FORWARD_HEADERS = frozenset(
     {
         "authorization",
@@ -21,6 +25,8 @@ _FORWARD_HEADERS = frozenset(
         "x-user-email",
         "x-user-name",
         "x-user-roles",
+        "x-user-system-high",
+        "x-user-workroom-role",
         "x-workroom-id",
         "x-request-id",
     }
