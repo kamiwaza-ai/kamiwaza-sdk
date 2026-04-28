@@ -192,6 +192,53 @@ def test_chatbot_example_matches_scaffolded_app_core_files(tmp_path, monkeypatch
             assert scaffolded_path.read_text() == example_path.read_text()
 
 
+def _exercise_info_endpoint(
+    extension_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    module_name: str,
+) -> None:
+    """Hit the unauthenticated ``/api/info`` and assert it does not leak
+    cluster-internal URLs (ENG-3920).
+    """
+    # AuthConfig.from_env() reads several KAMIWAZA_* env vars; provide values
+    # that include a sentinel cluster-internal URL so the test fails loudly
+    # if the field is ever re-introduced.
+    sentinel = "http://api:7777/api"
+    monkeypatch.setenv("KAMIWAZA_API_URL", sentinel)
+    monkeypatch.setenv("KAMIWAZA_APP_NAME", "test-app")
+    monkeypatch.setenv("KAMIWAZA_USE_AUTH", "true")
+
+    module = _load_backend_module(extension_dir / "backend", module_name)
+    try:
+        client = TestClient(module.app)
+        response = client.get("/api/info")
+    finally:
+        sys.modules.pop(module_name, None)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "api_url" not in body
+    assert sentinel not in response.text
+    assert body["app_name"] == "test-app"
+    assert body["use_auth"] is True
+
+
+@pytest.mark.unit
+def test_template_info_endpoint_does_not_leak_internal_api_url(tmp_path, monkeypatch):
+    extension_dir = _scaffold_app(tmp_path, monkeypatch, name="info-template-app")
+    _exercise_info_endpoint(
+        extension_dir, monkeypatch, module_name="info_template_main",
+    )
+
+
+@pytest.mark.unit
+def test_example_info_endpoint_does_not_leak_internal_api_url(tmp_path, monkeypatch):
+    extension_dir = _copy_example(tmp_path)
+    _exercise_info_endpoint(
+        extension_dir, monkeypatch, module_name="info_example_main",
+    )
+
+
 @pytest.mark.slow
 @pytest.mark.parametrize(
     ("source_name", "factory"),

@@ -41,10 +41,12 @@ async def health():
 
 @app.get("/api/info")
 async def info():
+    # Unauthenticated endpoint — keep the response narrow. `api_url` would
+    # leak cluster-internal hostnames like `http://api:7777/api` to anyone
+    # who can hit the extension's public surface (ENG-3920).
     config = AuthConfig.from_env()
     return {
         "app_name": config.app_name,
-        "api_url": config.api_url,
         "use_auth": config.use_auth,
     }
 
