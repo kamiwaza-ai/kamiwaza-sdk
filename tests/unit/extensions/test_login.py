@@ -235,3 +235,60 @@ class TestLoginCommand:
                 assert result.exit_code == 1
                 assert "Could not validate" in result.output
                 mgr.add_connection.assert_not_called()
+
+
+@pytest.mark.unit
+class TestLoginPATResponseValidation:
+    """PR re-review Medium #2: a successful auth followed by a missing-token
+    PAT response should surface a distinct error from "Authentication failed",
+    must not store the connection, and should hint at orphan PAT cleanup."""
+
+    def _setup(self, monkeypatch, pat_token):
+        """Patch the SDK client so create_pat returns the given token."""
+        pat_response = MagicMock()
+        pat_response.token = pat_token
+        sdk_client = MagicMock()
+        sdk_client.auth.create_pat.return_value = pat_response
+        sdk_client.auth.get_current_user.return_value = MagicMock(roles=[])
+
+        # Patch construction so KamiwazaClient(...) returns our mock and
+        # the UserPasswordAuthenticator constructor does nothing.
+        monkeypatch.setattr(
+            "kamiwaza_sdk.KamiwazaClient", lambda **kw: sdk_client,
+        )
+        monkeypatch.setattr(
+            "kamiwaza_sdk.authentication.UserPasswordAuthenticator",
+            lambda *a, **kw: MagicMock(),
+        )
+
+    def test_none_pat_token_surfaces_distinct_error(self, monkeypatch):
+        self._setup(monkeypatch, pat_token=None)
+        with patch("kamiwaza_extensions.connections.ConnectionManager") as MockMgr:
+            mgr = MockMgr.return_value
+            result = runner.invoke(
+                app,
+                ["login", "https://test.example/api"],
+                input="alice\nsecret\n",
+            )
+        assert result.exit_code == 1
+        # NOT prefixed with "Authentication failed" — auth succeeded; PAT
+        # mint did not.
+        assert "Authentication failed" not in result.output
+        assert "no token" in result.output.lower() or "did not return" in result.output.lower()
+        # Hint at orphan-PAT cleanup mentions the PAT name
+        assert "kz-ext-default" in result.output
+        # Connection MUST NOT be added with a None access_token
+        mgr.add_connection.assert_not_called()
+
+    def test_empty_pat_token_surfaces_distinct_error(self, monkeypatch):
+        self._setup(monkeypatch, pat_token="")
+        with patch("kamiwaza_extensions.connections.ConnectionManager") as MockMgr:
+            mgr = MockMgr.return_value
+            result = runner.invoke(
+                app,
+                ["login", "https://test.example/api"],
+                input="alice\nsecret\n",
+            )
+        assert result.exit_code == 1
+        assert "Authentication failed" not in result.output
+        mgr.add_connection.assert_not_called()

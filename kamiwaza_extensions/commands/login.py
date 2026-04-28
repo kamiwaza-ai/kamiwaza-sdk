@@ -68,22 +68,23 @@ def _capture_ui_roles(client, *, verbose: bool = False) -> set[str]:
     describe the PAT's scoped subset, defeating the comparison.
 
     Returns an empty set on any failure. When *verbose* is true, emits
-    a dim diagnostic so operators can distinguish "no downgrade
+    a diagnostic via ``typer.echo`` (same output channel as the
+    downgrade warning below) so operators can distinguish "no downgrade
     detected" from "we couldn't tell" (PR review High #3).
     """
     try:
         user = client.auth.get_current_user()
     except Exception as exc:  # noqa: BLE001 — best-effort diagnostic
         if verbose:
-            console.print(
-                f"[dim]Could not fetch UI role-set for B3 check: {type(exc).__name__}: {exc}[/dim]"
+            typer.echo(
+                f"Could not fetch UI role-set for B3 check: {type(exc).__name__}: {exc}"
             )
         return set()
     roles = getattr(user, "roles", None) or []
     if not isinstance(roles, list):
         if verbose:
-            console.print(
-                "[dim]Could not parse UI role-set for B3 check: roles claim was not a list[/dim]"
+            typer.echo(
+                "Could not parse UI role-set for B3 check: roles claim was not a list"
             )
         return set()
     return {str(r) for r in roles if isinstance(r, str)}
@@ -201,6 +202,7 @@ def _login_with_password(
     if not verify_ssl:
         os.environ["KAMIWAZA_VERIFY_SSL"] = "false"
 
+    pat_name = f"kz-ext-{name}"
     try:
         client = KamiwazaClient(base_url=url)
         client.authenticator = UserPasswordAuthenticator(
@@ -211,13 +213,7 @@ def _login_with_password(
         # the PAT. Post-mint the only credential we have is the scoped PAT,
         # which would reflect only its own roles (§4.8 B3).
         ui_roles = _capture_ui_roles(client, verbose=verbose)
-        pat_response = client.auth.create_pat(PATCreate(name=f"kz-ext-{name}"))
-        pat_token = pat_response.token
-        if not isinstance(pat_token, str) or not pat_token:
-            raise RuntimeError(
-                "Platform did not return a token for the new PAT. Try again, "
-                "or contact the platform team."
-            )
+        pat_response = client.auth.create_pat(PATCreate(name=pat_name))
     except Exception as exc:
         console.print(f"[red]Error:[/red] Authentication failed: {exc}")
         raise typer.Exit(code=1) from exc
@@ -227,6 +223,19 @@ def _login_with_password(
             os.environ.pop("KAMIWAZA_VERIFY_SSL", None)
         else:
             os.environ["KAMIWAZA_VERIFY_SSL"] = old_verify
+
+    # Validate the PAT response *outside* the auth catch-all — this branch
+    # represents a successful authentication followed by a PAT-mint failure,
+    # not an auth failure, and the user should see a different error class.
+    pat_token = pat_response.token
+    if not isinstance(pat_token, str) or not pat_token:
+        console.print(
+            f"[red]Error:[/red] Platform accepted credentials but returned no "
+            f"token for the new PAT '{pat_name}'. The PAT may have been "
+            f"created server-side; consider deleting it via the UI before "
+            f"retrying."
+        )
+        raise typer.Exit(code=1)
 
     # Store the PAT — auth already succeeded server-side at this point
     token = StoredToken(access_token=pat_token, refresh_token=None, expires_at=0.0)
