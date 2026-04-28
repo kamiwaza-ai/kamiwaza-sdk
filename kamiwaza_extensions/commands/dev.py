@@ -13,6 +13,30 @@ from rich.console import Console
 console = Console(stderr=True)
 
 
+def _decode_email(access_token: str) -> Optional[str]:
+    """Best-effort extraction of the ``email`` claim from a JWT.
+
+    Returns ``None`` if the token cannot be decoded. Used to populate the
+    ``kamiwaza.ai/deployer`` annotation and the ``deployer`` field of
+    ``.kz-ext/dev-state.json`` (ENG-3887 / §4.2.9).
+    """
+    import base64
+    import json as _json
+
+    try:
+        payload_b64 = access_token.split(".")[1]
+        padding = 4 - len(payload_b64) % 4
+        if padding != 4:
+            payload_b64 += "=" * padding
+        payload = _json.loads(base64.urlsafe_b64decode(payload_b64))
+        email = payload.get("email")
+        if isinstance(email, str) and email:
+            return email
+    except Exception:
+        pass
+    return None
+
+
 def _detect_kind_registry() -> Optional[str]:
     """Auto-detect a Kind local registry via the ``local-registry-hosting`` configmap.
 
@@ -109,6 +133,12 @@ def run_dev_remote(
         DeploymentPoller,
         DeploymentTimeoutError,
     )
+    from kamiwaza_extensions.dev_state import (
+        DevState,
+        mark_step,
+        read_state,
+        resume_message,
+    )
     from kamiwaza_extensions.extension_detector import ExtensionDetector
     from kamiwaza_extensions.image_builder import ImageBuilder, ImageBuildError
     from kamiwaza_extensions.image_pusher import ImagePusher, ImagePushError
@@ -140,6 +170,12 @@ def run_dev_remote(
     # 3. Generate revision tag
     tagger = RevisionTagger()
     rev_tag = tagger.generate_tag(info.version, custom=revision)
+
+    # Read prior dev-state for resume hints (§4.2.9 DevStateFile, ENG-3887).
+    prior_state = read_state(info.path)
+    notice = resume_message(prior_state)
+    if notice:
+        console.print(f"[dim]{notice}[/dim]")
 
     # Warn about dirty tree
     if revision is None:
@@ -287,12 +323,39 @@ def run_dev_remote(
     payload_builder = PayloadBuilder()
     from kamiwaza_extensions.constants import extract_user_id
     dev_name = PayloadBuilder.make_dev_name(info.name, user_id=extract_user_id(token.access_token))
+    deployer_email = _decode_email(token.access_token)
     payload = payload_builder.build(
         metadata=info.metadata,
         transformed_compose=transformed,
         connection=connection,
         dev_name=dev_name,
+        deployer=deployer_email,
+        revision=rev_tag,
     )
+
+    def _record(step: str) -> None:
+        try:
+            mark_step(
+                info.path,
+                step,
+                revision=rev_tag,
+                dev_name=dev_name,
+                cluster=connection.url,
+                extension_name=info.name,
+                deployer=deployer_email or "",
+            )
+        except OSError as state_exc:
+            console.print(
+                f"[dim]Warning: could not write dev-state.json: {state_exc}[/dim]"
+            )
+
+    # Mark prior steps complete based on what's already done by this point
+    # in the function. (Build + push happen above; record them now so a
+    # crash during apply leaves a usable resume hint.)
+    if not no_build:
+        _record("build")
+    if not no_push and image_refs:
+        _record("push")
 
     # 9. Deploy, poll, and print URL
     from kamiwaza_extensions.constants import ssl_env_override
@@ -357,6 +420,8 @@ def run_dev_remote(
             ext = client.extensions.create_extension(payload)
             console.print("  [green]\u2713[/green] Extension created")
 
+        _record("apply")
+
         # 10. Poll for readiness
         try:
             timeout = int(os.environ.get("KAMIWAZA_DEV_TIMEOUT", "300"))
@@ -367,17 +432,25 @@ def run_dev_remote(
         try:
             ext = poller.wait_for_ready(client, dev_name, timeout=timeout)
         except DeploymentTimeoutError as exc:
-            console.print(f"\n[red]Error:[/red] {exc}")
+            # P9: print the dev-suffixed name even on timeout so the user
+            # can locate the partial deployment via kz-ext status.
+            console.print(f"\n[bold]Deployment name:[/bold] {dev_name}")
+            console.print(f"[red]Error:[/red] {exc}")
             raise typer.Exit(code=1) from exc
         except DeploymentFailedError as exc:
-            console.print(f"\n[red]Error:[/red] {exc}")
+            # P9: print the dev-suffixed name on failure too.
+            console.print(f"\n[bold]Deployment name:[/bold] {dev_name}")
+            console.print(f"[red]Error:[/red] {exc}")
             raise typer.Exit(code=1) from exc
 
-        # 11. Print URL
+        _record("poll")
+
+        # 11. Print URL + dev-suffixed name (P9: always show the name on
+        # any terminal state so `kz-ext status <name>` is one copy-paste away).
         url = ext.endpoints.external if ext.endpoints else None
         console.print("\n  [green]\u2713[/green] Rollout complete")
         console.print()
-        console.print(f"[bold]{info.name}[/bold] is running at:")
+        console.print(f"[bold]{info.name}[/bold] is running as [bold]{dev_name}[/bold] at:")
         if url:
             console.print(f"  [blue]{url}[/blue]")
         else:

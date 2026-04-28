@@ -3,7 +3,13 @@
 import pytest
 
 from kamiwaza_extensions.connections import ConnectionInfo
-from kamiwaza_extensions.payload_builder import PayloadBuilder
+from kamiwaza_extensions.payload_builder import (
+    ANNOTATION_BUILD_HOST,
+    ANNOTATION_DEPLOYED_AT,
+    ANNOTATION_DEPLOYER,
+    ANNOTATION_REVISION,
+    PayloadBuilder,
+)
 
 
 @pytest.fixture
@@ -92,6 +98,49 @@ class TestBuild:
     ):
         payload = builder.build(metadata, transformed_compose, connection, "test")
         assert payload.security.risk_tier == 1
+
+
+class TestAnnotations:
+    """ENG-3887 / §4.2.9 — DeployedImageAnnotation on the CRD payload."""
+
+    def test_annotations_present_when_deployer_and_revision_supplied(
+        self, builder, metadata, transformed_compose, connection,
+    ):
+        payload = builder.build(
+            metadata, transformed_compose, connection, "my-app-dev-abc",
+            deployer="jonathan@kamiwaza.ai",
+            revision="1.0.0-dev-a1b2c3d.1714000000",
+        )
+        # `annotations` rides on `extra="allow"` — read via model_extra.
+        annotations = (payload.model_extra or {}).get("annotations")
+        assert annotations is not None
+        assert annotations[ANNOTATION_DEPLOYER] == "jonathan@kamiwaza.ai"
+        assert annotations[ANNOTATION_REVISION] == "1.0.0-dev-a1b2c3d.1714000000"
+        assert ANNOTATION_BUILD_HOST in annotations
+        # ISO-8601 UTC — sanity-check the format
+        assert annotations[ANNOTATION_DEPLOYED_AT].endswith("+00:00")
+
+    def test_no_annotations_when_neither_supplied(
+        self, builder, metadata, transformed_compose, connection,
+    ):
+        # If we have nothing meaningful to attach, don't carry an empty dict
+        # — but `deployed-at` is always present, since "when" is always known.
+        payload = builder.build(
+            metadata, transformed_compose, connection, "my-app-dev-abc",
+        )
+        annotations = (payload.model_extra or {}).get("annotations")
+        # build_annotations always sets `deployed-at`, so the key exists even
+        # without a deployer/revision. Verify deployer/revision are absent.
+        assert annotations is not None
+        assert ANNOTATION_DEPLOYER not in annotations
+        assert ANNOTATION_REVISION not in annotations
+        assert ANNOTATION_DEPLOYED_AT in annotations
+
+    def test_build_annotations_drops_empty_values(self):
+        out = PayloadBuilder.build_annotations(deployer=None, revision=None)
+        assert ANNOTATION_DEPLOYER not in out
+        assert ANNOTATION_REVISION not in out
+        assert ANNOTATION_DEPLOYED_AT in out
 
 
 class TestEnvParsing:
