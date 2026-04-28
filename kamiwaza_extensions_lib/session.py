@@ -12,10 +12,12 @@ from .config import AuthConfig
 from .identity import anonymous_identity, get_identity
 
 # Fields that are safe to expose in /session responses. Anything on
-# ``Identity`` not in this set — notably ``auth_token`` (a Bearer
-# credential), ``system_high`` (a classification flag), and
-# ``request_id`` — MUST NOT cross the HTTP boundary to the browser.
-# Allowlist (not denylist) so new Identity fields default to *private*.
+# ``Identity`` not in this set — notably ``system_high`` (a classification
+# string) and ``request_id`` — MUST NOT cross the HTTP boundary to the
+# browser. The bearer credential (``X-Auth-Token``) is deliberately *not*
+# on the Identity model at all; see kamiwaza_extensions_lib.identity for
+# the rationale. Allowlist (not denylist) so new Identity fields default
+# to *private*.
 SESSION_PUBLIC_FIELDS = frozenset(
     {
         "user_id",
