@@ -367,8 +367,21 @@ def run_dev_remote(
         try:
             ext = poller.wait_for_ready(client, dev_name, timeout=timeout)
         except DeploymentTimeoutError as exc:
+            from kamiwaza_extensions.dev_diagnostics import diagnose_dev_timeout
+            from kamiwaza_extensions.constants import EXTENSIONS_NAMESPACE
+            from kamiwaza_extensions.exit_codes import ExitCode
+
+            diagnosis = diagnose_dev_timeout(dev_name, EXTENSIONS_NAMESPACE)
             console.print(f"\n[red]Error:[/red] {exc}")
-            raise typer.Exit(code=1) from exc
+            console.print(f"  [dim]{diagnosis.message}[/dim]")
+            if diagnosis.fix:
+                console.print(f"  [dim]Fix: {diagnosis.fix}[/dim]")
+            exit_code = (
+                int(ExitCode.CLUSTER_NOT_READY)
+                if diagnosis.category == "operator-not-ready"
+                else 1
+            )
+            raise typer.Exit(code=exit_code) from exc
         except DeploymentFailedError as exc:
             console.print(f"\n[red]Error:[/red] {exc}")
             raise typer.Exit(code=1) from exc
