@@ -136,23 +136,48 @@ class DevLocalRunner:
                 fd.close()
                 sdk_override_file = fd.name
 
-            # 8. Build command
-            cmd = compose_cmd + ["-f", compose_file_arg]
+            # 8. Build the project-identifier prefix (compose binary +
+            # -f / --project-directory args). The same prefix is used for
+            # `compose up` and the post-up `compose port` lookup so they
+            # query the same project even when the user invokes from a
+            # parent directory or with override files (review re-review
+            # PR #84 M1).
+            compose_prefix = compose_cmd + ["-f", compose_file_arg]
             if sdk_override_file:
-                cmd += ["-f", sdk_override_file]
+                compose_prefix += ["-f", sdk_override_file]
             if patched_compose_file or sdk_override_file:
-                cmd += ["--project-directory", str(info.path)]
-            cmd += ["up", "--build"]
+                compose_prefix += ["--project-directory", str(info.path)]
+
+            cmd = list(compose_prefix) + ["up", "--build"]
             if detach:
                 cmd.append("-d")
 
             console.print(f"[dim]Running:[/dim] {' '.join(cmd)}")
 
-            # 9. Print access URLs
-            self._print_urls(info.compose_data, remaps)
+            # 9. Print access URLs (pre-up). For bare-port specs the host
+            # port isn't assigned yet — emit a hint instead so users know
+            # what to expect. Detach mode (10b) re-prints with the resolved
+            # host port after `compose up -d` returns.
+            self._print_urls(info.compose_data, remaps, post_up=False)
 
             # 10. Run subprocess with signal forwarding
-            return self._run_subprocess(cmd, env=env, cwd=str(info.path))
+            rc = self._run_subprocess(cmd, env=env, cwd=str(info.path))
+
+            # 10b. Detach mode only: re-resolve bare-port URLs once Docker
+            # has actually published them. Foreground mode blocks on
+            # compose logs until the user Ctrl+Cs, so there is no
+            # post-up moment to reach. Pass the same compose prefix +
+            # cwd so the port query targets the project that was started.
+            if detach and rc == 0:
+                self._print_urls(
+                    info.compose_data,
+                    remaps,
+                    post_up=True,
+                    compose_cmd=compose_prefix,
+                    cwd=str(info.path),
+                )
+
+            return rc
         finally:
             for tmp in (patched_compose_file, sdk_override_file):
                 if tmp:
@@ -169,19 +194,97 @@ class DevLocalRunner:
         self,
         compose_data: Optional[dict],
         remaps: Dict[str, Tuple[int, int]],
+        *,
+        post_up: bool = False,
+        compose_cmd: Optional[List[str]] = None,
+        cwd: Optional[str] = None,
     ) -> None:
+        """Print per-service access URLs.
+
+        Two modes:
+          * ``post_up=False`` (pre-up, default): runs before the compose
+            subprocess starts. Mapped ports (``"3000:3000"``) resolve to the
+            literal host port. Bare ports (``"3000"``) print a hint —
+            Docker hasn't assigned a host port yet, and querying
+            ``docker compose port`` here returns nothing.
+          * ``post_up=True`` (detach mode only): runs after ``compose up -d``
+            returns. Bare ports query ``docker compose port`` to print the
+            actual auto-assigned host port.
+
+        Foreground (non-detach) mode blocks on compose logs until the user
+        Ctrl+Cs, so there is no post-up moment for it.
+        """
         if not compose_data:
             return
         services = compose_data.get("services", {})
         for svc_name, svc_config in services.items():
             ports = svc_config.get("ports", [])
             for port_spec in ports:
-                host_port, _ = parse_port_mapping(str(port_spec))
+                host_port, container_port = parse_port_mapping(str(port_spec))
                 if host_port is None:
-                    continue
+                    # Bare-port spec (e.g. "3000") — Docker assigns the host
+                    # port (ENG-3889 P2).
+                    if not post_up:
+                        if container_port is not None:
+                            console.print(
+                                f"[dim]{svc_name}:[/dim] container port "
+                                f"{container_port} (host port assigned by Docker; "
+                                "run `docker compose ps` once started)"
+                            )
+                        continue
+                    if container_port is not None:
+                        host_port = self._docker_compose_port(
+                            svc_name, container_port,
+                            compose_cmd=compose_cmd,
+                            cwd=cwd,
+                        )
+                    if host_port is None:
+                        continue
                 if svc_name in remaps:
                     host_port = remaps[svc_name][1]
                 console.print(f"[dim]{svc_name}:[/dim] http://localhost:{host_port}")
+
+    @staticmethod
+    def _docker_compose_port(
+        service: str,
+        container_port: int,
+        compose_cmd: Optional[List[str]] = None,
+        cwd: Optional[str] = None,
+    ) -> Optional[int]:
+        """Look up the host port Docker assigned to ``service:container_port``.
+
+        ``compose_cmd`` should include the same ``-f`` / ``--project-directory``
+        args used to invoke ``compose up`` so the lookup targets the
+        right project. The runtime caller in :meth:`run` passes the
+        full ``compose_prefix`` it built earlier; ad-hoc callers can
+        omit it and the function falls back to ``detect_compose_command()``
+        with no project args (works only when there is one project in
+        the resolved cwd).
+
+        ``cwd`` defaults to the process cwd. Pass the extension dir
+        explicitly when the user invoked from a parent directory or with
+        temp override files — otherwise compose looks for a
+        ``docker-compose.yml`` in the wrong place (review re-review
+        PR #84 M1).
+        """
+        if compose_cmd is None:
+            try:
+                compose_cmd = detect_compose_command()
+            except FileNotFoundError:
+                return None
+        try:
+            result = subprocess.run(
+                [*compose_cmd, "port", service, str(container_port)],
+                capture_output=True, text=True, timeout=10, cwd=cwd,
+            )
+            if result.returncode != 0:
+                return None
+            line = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else ""
+            if ":" in line:
+                return int(line.rsplit(":", 1)[1])
+        except (FileNotFoundError, subprocess.TimeoutExpired, ValueError, IndexError):
+            return None
+        return None
 
     # ------------------------------------------------------------------
     # Subprocess management
@@ -230,13 +333,23 @@ def build_env_overlay(connection: ConnectionInfo, extension_name: str) -> Dict[s
 
 
 def parse_port_mapping(port_spec: str) -> Tuple[Optional[int], Optional[int]]:
-    """Parse a compose port mapping like '3000:3000' into (host_port, container_port).
+    """Parse a compose port mapping into ``(host_port, container_port)``.
 
-    Returns (None, None) for container-only specs like '3000'.
+    Examples::
+
+        '3000:3000'      -> (3000, 3000)
+        '8080:3000'      -> (8080, 3000)
+        '127.0.0.1:3000:3000' -> (3000, 3000)
+        '8000:8000/tcp'  -> (8000, 8000)
+        '3000'           -> (None, 3000)   # bare container port; host auto-assigned
+        ''               -> (None, None)
     """
     port_spec = str(port_spec).strip()
     # Remove protocol suffix if present (e.g., "8000:8000/tcp")
     port_spec = port_spec.split("/")[0]
+
+    if not port_spec:
+        return None, None
 
     if ":" in port_spec:
         parts = port_spec.rsplit(":", 1)
@@ -244,7 +357,12 @@ def parse_port_mapping(port_spec: str) -> Tuple[Optional[int], Optional[int]]:
             return int(parts[0].split(":")[-1]), int(parts[1])
         except (ValueError, IndexError):
             return None, None
-    return None, None
+
+    # Bare container-port spec — host port is auto-assigned by Docker.
+    try:
+        return None, int(port_spec)
+    except ValueError:
+        return None, None
 
 
 def is_port_available(port: int, host: str = "0.0.0.0") -> bool:

@@ -3,8 +3,12 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+    # Host port auto-assigned by Docker — `3000:3000` collided with the
+    # kind-cluster control plane on developer laptops running Kamiwaza
+    # locally. `kz-ext dev local` still discovers the assigned host port
+    # via `docker compose port`. (ENG-3889 P2 / §4.8)
     ports:
-      - "3000:3000"
+      - "3000"
     environment:
       - BACKEND_URL=http://backend:8000
     volumes:
@@ -17,7 +21,7 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     ports:
-      - "8000:8000"
+      - "8000"
     environment:
       - KAMIWAZA_API_URL=${KAMIWAZA_API_URL:-}
       - KAMIWAZA_PUBLIC_API_URL=${KAMIWAZA_PUBLIC_API_URL:-}

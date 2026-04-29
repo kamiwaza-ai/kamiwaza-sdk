@@ -302,10 +302,28 @@ def publish(
     force: bool = typer.Option(False, "--force", help="Overwrite existing version in catalog"),
     no_build: bool = typer.Option(False, "--no-build", help="Skip Docker image build"),
     no_push: bool = typer.Option(False, "--no-push", help="Skip Docker image push"),
+    revision: Optional[str] = typer.Option(
+        None,
+        "--revision",
+        "-r",
+        help=(
+            "Revision identifier (e.g. CI commit SHA). When set, the catalog "
+            "rejects duplicate (name, semver, revision) triples for "
+            "idempotent CI re-publishes; --force overrides."
+        ),
+    ),
 ) -> None:
     """Publish extension to catalog."""
     from kamiwaza_extensions.commands.publish import run_publish
-    run_publish(stage=stage, dry_run=dry_run, force=force, no_build=no_build, no_push=no_push, verbose=_state.verbose)
+    run_publish(
+        stage=stage,
+        dry_run=dry_run,
+        force=force,
+        no_build=no_build,
+        no_push=no_push,
+        verbose=_state.verbose,
+        revision=revision,
+    )
 
 
 # ---------------------------------------------------------------------------

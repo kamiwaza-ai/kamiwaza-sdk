@@ -3,14 +3,147 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
-from typing import Optional
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 import typer
 from rich.console import Console
 
 console = Console(stderr=True)
+
+
+# ---------------------------------------------------------------------------
+# Helpers extracted for unit testing — review re-review PR #84 H1 + H4
+# ---------------------------------------------------------------------------
+
+
+def _build_patch_kwargs(
+    patch_services: List[Any],
+    payload: Any,
+) -> Dict[str, Any]:
+    """Build the kwargs dict for ``PatchExtension(**kwargs)`` from a
+    ``CreateExtension`` payload.
+
+    Carries the ``deployer``/``revision``/``deployed-at`` annotations
+    from the payload's ``model_extra`` so PATCH redeploys refresh CRD
+    metadata — ``kz-ext status`` would otherwise show stale ``Last
+    deployed by`` after the first redeploy (review re-review PR #84 H1).
+    """
+    kwargs: Dict[str, Any] = {"services": patch_services}
+    annotations = (payload.model_extra or {}).get("annotations")
+    if annotations:
+        kwargs["annotations"] = annotations
+    return kwargs
+
+
+# Match the default ``RevisionTagger.generate_tag`` format:
+# ``{version}-dev-{sha7+}.{epoch}`` where the sha portion is the git short
+# SHA (typically 7-12 hex chars). The epoch suffix is the only thing that
+# changes between same-code invocations; stripping it gives us a stable
+# identity we can use as the resume key.
+#
+# Note: the leading ``.+`` is greedy — for pathological revisions like
+# ``feature-dev-foo-dev-abc1234.5`` the regex anchors on the *rightmost*
+# ``-dev-`` occurrence. Determinism preserved (review re-re-re-review M5)
+# so if the user supplied a custom tag containing ``-dev-`` they still
+# get a stable identity, just one anchored at the last segment.
+_CLEAN_REV_RE = re.compile(r"^(.+-dev-[0-9a-f]{4,40})\.\d+$")
+
+
+def _stable_revision_id(rev_tag: str) -> Optional[str]:
+    """Return the stable portion of a revision tag, or ``None`` when
+    resume would be unsafe.
+
+    Three cases (review re-review PR #84 H1 / re-re-review):
+
+      * ``{version}-dev-{sha7+}.{epoch}`` — clean tree at a specific
+        commit. Strip the ``.{epoch}`` suffix; the SHA fully identifies
+        the source code, so two invocations of the same commit produce
+        identical stable ids and can resume each other safely.
+      * ``{version}-dev-dirty.{epoch}`` or ``-dev-nogit.{epoch}`` —
+        the SHA is unknown or the tree is dirty, so two invocations
+        could carry different content under the same ``dirty`` /
+        ``nogit`` slug. Return ``None`` to refuse resume rather than
+        silently redeploy stale code.
+      * Anything else — assume it's a custom ``--revision`` value the
+        user passed explicitly; use it verbatim. The user opted into
+        the identity by pinning, so ``rev-1 == rev-1`` is intentional.
+    """
+    if "-dev-dirty." in rev_tag or "-dev-nogit." in rev_tag:
+        return None
+    m = _CLEAN_REV_RE.match(rev_tag)
+    if m:
+        return m.group(1)
+    return rev_tag
+
+
+def _is_resumable(
+    prior_state: Any,
+    rev_tag: str,
+    connection_url: str,
+    sdk_repo: Optional[str] = None,
+    service: Optional[str] = None,
+    registry: str = "",
+) -> bool:
+    """Return True when the prior dev-state can resume the current run.
+
+    Resume requires every input that selects what gets built/pushed/
+    deployed to match the prior run. If any differs, the prior build
+    artifacts are not the right answer for this invocation:
+
+      * **Source identity** (``rev_tag``) — see :func:`_stable_revision_id`
+        for the clean-sha vs dirty/nogit handling. Different code = full
+        pipeline.
+      * **Cluster** — the prior push points at a specific registry/CR;
+        a new cluster has its own registry, so the cached image isn't
+        there.
+      * **Service filter** (``--service``) — a partial-service first run
+        only built that one service. A later full run would happily
+        deploy un-built services with tags that were never pushed
+        (review re-re-re-review PR #84 H1).
+      * **SDK override** (``--sdk-repo``) — the SDK code is mutable
+        between runs even when the extension's git SHA is unchanged.
+        Skipping build would silently redeploy stale SDK content.
+        Conservatively: any non-equal sdk_repo (including None vs set)
+        invalidates resume.
+      * **Registry** (``KAMIWAZA_REGISTRY`` / derived) — the prior push
+        targeted a specific registry; a different registry means the
+        image isn't there to skip-push to.
+    """
+    if prior_state is None:
+        return False
+    current_id = _stable_revision_id(rev_tag)
+    prior_id = _stable_revision_id(prior_state.last_revision or "")
+    if current_id is None or prior_id is None:
+        return False
+    if current_id != prior_id:
+        return False
+    if prior_state.cluster != connection_url:
+        return False
+    # Service filter, sdk_repo, and registry must all match. None vs ""
+    # are treated as equivalent for service/sdk_repo (older state files
+    # didn't record them — refuse resume on those by mismatching against
+    # current values when current is set).
+    if (prior_state.last_service or None) != (service or None):
+        return False
+    if (prior_state.last_sdk_repo or None) != (sdk_repo or None):
+        return False
+    if prior_state.last_registry != registry:
+        return False
+    return True
+
+
+def _decode_email(access_token: str) -> Optional[str]:
+    """Compatibility shim — the real implementation lives in
+    :mod:`kamiwaza_extensions.dev_state` so ``commands.status`` doesn't
+    reach into a sibling command (review re-re-re-review PR #84 M2).
+    Existing internal callers and tests can still reference this name.
+    """
+    from kamiwaza_extensions.dev_state import decode_email
+
+    return decode_email(access_token)
 
 
 def _detect_kind_registry() -> Optional[str]:
@@ -109,6 +242,12 @@ def run_dev_remote(
         DeploymentPoller,
         DeploymentTimeoutError,
     )
+    from kamiwaza_extensions.dev_state import (
+        DevState,
+        mark_step,
+        read_state,
+        resume_message,
+    )
     from kamiwaza_extensions.extension_detector import ExtensionDetector
     from kamiwaza_extensions.image_builder import ImageBuilder, ImageBuildError
     from kamiwaza_extensions.image_pusher import ImagePusher, ImagePushError
@@ -150,7 +289,8 @@ def run_dev_remote(
                 "-- image tagged with 'dirty'."
             )
 
-    # 4. Derive registry
+    # 4. Derive registry — must happen before the resume check so we can
+    # compare the active registry against the one persisted in dev-state.
     registry = os.environ.get("KAMIWAZA_REGISTRY")
     if not registry:
         registry = _detect_kind_registry()
@@ -163,6 +303,35 @@ def run_dev_remote(
         else:
             console.print("[red]Error:[/red] Could not derive registry from connection URL.")
             raise typer.Exit(code=1)
+
+    # Read prior dev-state for resume hints (§4.2.9 DevStateFile, ENG-3887).
+    # If the prior run wrote matching inputs (revision, cluster, service,
+    # sdk-repo, registry) and got past a step, skip that step on this
+    # invocation. Different revision/cluster/service/sdk-repo/registry =
+    # different image content or destination = full pipeline (review
+    # re-re-re-review PR #84 H1).
+    prior_state = read_state(info.path)
+    notice = resume_message(prior_state)
+    if notice:
+        console.print(f"[dim]{notice}[/dim]")
+    resumable = _is_resumable(
+        prior_state,
+        rev_tag,
+        connection.url,
+        sdk_repo=sdk_repo,
+        service=service,
+        registry=registry,
+    )
+    if resumable and not no_build and prior_state.is_step_complete("build"):
+        console.print(
+            f"[dim]Skipping build — revision {rev_tag} already built in prior run.[/dim]"
+        )
+        no_build = True
+    if resumable and not no_push and prior_state.is_step_complete("push"):
+        console.print(
+            f"[dim]Skipping push — revision {rev_tag} already pushed in prior run.[/dim]"
+        )
+        no_push = True
 
     # Print header
     console.print(f"  Extension:  [bold]{info.name}[/bold] ({info.version})")
@@ -287,12 +456,45 @@ def run_dev_remote(
     payload_builder = PayloadBuilder()
     from kamiwaza_extensions.constants import extract_user_id
     dev_name = PayloadBuilder.make_dev_name(info.name, user_id=extract_user_id(token.access_token))
+    deployer_email = _decode_email(token.access_token)
     payload = payload_builder.build(
         metadata=info.metadata,
         transformed_compose=transformed,
         connection=connection,
         dev_name=dev_name,
+        deployer=deployer_email,
+        revision=rev_tag,
     )
+
+    def _record(step: str) -> None:
+        try:
+            mark_step(
+                info.path,
+                step,
+                revision=rev_tag,
+                dev_name=dev_name,
+                cluster=connection.url,
+                extension_name=info.name,
+                deployer=deployer_email or "",
+                # Persist the resume-key inputs so the next invocation can
+                # detect when service-filter / sdk-repo / registry differ
+                # (review re-re-re-review PR #84 H1).
+                service=service,
+                sdk_repo=sdk_repo,
+                registry=registry,
+            )
+        except OSError as state_exc:
+            console.print(
+                f"[dim]Warning: could not write dev-state.json: {state_exc}[/dim]"
+            )
+
+    # Mark prior steps complete based on what's already done by this point
+    # in the function. (Build + push happen above; record them now so a
+    # crash during apply leaves a usable resume hint.)
+    if not no_build:
+        _record("build")
+    if not no_push and image_refs:
+        _record("push")
 
     # 9. Deploy, poll, and print URL
     from kamiwaza_extensions.constants import ssl_env_override
@@ -335,7 +537,10 @@ def run_dev_remote(
                 if svc.replicas is not None:
                     spec.replicas = svc.replicas
                 patch_services.append(spec)
-            patch = PatchExtension(services=patch_services)
+            # Carries the deployer/revision/deployed-at annotations on
+            # every PATCH so `kz-ext status` reflects the current
+            # redeploy (review re-review PR #84 H1).
+            patch = PatchExtension(**_build_patch_kwargs(patch_services, payload))
 
             try:
                 ext = client.extensions.patch_extension(dev_name, patch)
@@ -357,6 +562,8 @@ def run_dev_remote(
             ext = client.extensions.create_extension(payload)
             console.print("  [green]\u2713[/green] Extension created")
 
+        _record("apply")
+
         # 10. Poll for readiness
         try:
             timeout = int(os.environ.get("KAMIWAZA_DEV_TIMEOUT", "300"))
@@ -367,17 +574,40 @@ def run_dev_remote(
         try:
             ext = poller.wait_for_ready(client, dev_name, timeout=timeout)
         except DeploymentTimeoutError as exc:
-            console.print(f"\n[red]Error:[/red] {exc}")
-            raise typer.Exit(code=1) from exc
+            # P9 (ENG-3887): print the dev-suffixed name even on timeout so
+            # the user can locate the partial deployment via kz-ext status.
+            console.print(f"\n[bold]Deployment name:[/bold] {dev_name}")
+            from kamiwaza_extensions.dev_diagnostics import diagnose_dev_timeout
+            from kamiwaza_extensions.constants import EXTENSIONS_NAMESPACE
+            from kamiwaza_extensions.exit_codes import ExitCode
+
+            diagnosis = diagnose_dev_timeout(
+                dev_name, EXTENSIONS_NAMESPACE, connection_url=connection.url,
+            )
+            console.print(f"[red]Error:[/red] {exc}")
+            console.print(f"  [dim]{diagnosis.message}[/dim]")
+            if diagnosis.fix:
+                console.print(f"  [dim]Fix: {diagnosis.fix}[/dim]")
+            exit_code = (
+                int(ExitCode.CLUSTER_NOT_READY)
+                if diagnosis.category == "operator-not-ready"
+                else 1
+            )
+            raise typer.Exit(code=exit_code) from exc
         except DeploymentFailedError as exc:
-            console.print(f"\n[red]Error:[/red] {exc}")
+            # P9: print the dev-suffixed name on failure too.
+            console.print(f"\n[bold]Deployment name:[/bold] {dev_name}")
+            console.print(f"[red]Error:[/red] {exc}")
             raise typer.Exit(code=1) from exc
 
-        # 11. Print URL
+        _record("poll")
+
+        # 11. Print URL + dev-suffixed name (P9: always show the name on
+        # any terminal state so `kz-ext status <name>` is one copy-paste away).
         url = ext.endpoints.external if ext.endpoints else None
         console.print("\n  [green]\u2713[/green] Rollout complete")
         console.print()
-        console.print(f"[bold]{info.name}[/bold] is running at:")
+        console.print(f"[bold]{info.name}[/bold] is running as [bold]{dev_name}[/bold] at:")
         if url:
             console.print(f"  [blue]{url}[/blue]")
         else:

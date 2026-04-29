@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import socket
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -21,6 +22,11 @@ from kamiwaza_extensions.profile_manager import PublishProfile
 from kamiwaza_extensions.registry_builder import RegistryBuilder
 
 console = Console(stderr=True)
+
+# Revision grammar (Open Q #8 resolution): 1-64 chars, starts with
+# alphanumeric, allows lowercase letters, digits, hyphens, and dots.
+# Compatible with default revision_tagger output and plain Git SHAs.
+REVISION_GRAMMAR = re.compile(r"^[a-z0-9][-a-z0-9.]{0,63}$")
 
 # Maps extension_type to the catalog JSON filename.
 _TYPE_FILE_MAP: Dict[str, str] = {
@@ -58,6 +64,84 @@ class CatalogPublishError(RuntimeError):
     """A catalog publish operation failed."""
 
     pass
+
+
+class CatalogDedupError(ValueError):
+    """A publish was rejected because (name, semver, revision) already exists.
+
+    Maps to ``ExitCode.VALIDATION`` (2) at the CLI boundary so CI re-runs,
+    network retries, and developer re-invocations are idempotent rather
+    than silently overwriting.
+    """
+
+    def __init__(self, name: str, version: str, revision: str) -> None:
+        self.extension_name = name
+        self.version = version
+        self.revision = revision
+        super().__init__(
+            f"Catalog already has '{name}' v{version} at revision "
+            f"'{revision}'. Use --force to override (CI should not)."
+        )
+
+
+class CatalogDedupGuard:
+    """Reject duplicate ``(name, semver, revision)`` triples in the catalog.
+
+    Validates revision grammar early and scans existing entries for the
+    triple before merge proceeds. Stateless — every check is independent.
+    """
+
+    @staticmethod
+    def validate_revision(revision: str) -> None:
+        """Raise ``ValueError`` if ``revision`` does not match the grammar."""
+        if not REVISION_GRAMMAR.match(revision):
+            raise ValueError(
+                f"Invalid revision '{revision}': must match "
+                f"^[a-z0-9][-a-z0-9.]{{0,63}}$"
+            )
+
+    def check(
+        self,
+        existing_entries: List[Dict[str, Any]],
+        new_entry: Dict[str, Any],
+        *,
+        force: bool = False,
+    ) -> None:
+        """Raise ``CatalogDedupError`` if the triple already exists.
+
+        Args:
+            existing_entries: Current catalog array.
+            new_entry: Entry being published.
+            force: If True, log a warning and return without raising.
+
+        Raises:
+            ValueError: If ``new_entry`` has a malformed ``revision``.
+            CatalogDedupError: On a duplicate triple when ``force`` is False.
+        """
+        revision = new_entry.get("revision")
+        # Entries without a revision are not subject to dedup — that's the
+        # ENG-3591 path (release publishes without --revision).
+        if revision is None:
+            return
+
+        self.validate_revision(revision)
+
+        name = new_entry.get("name", "")
+        version = new_entry.get("version", "")
+
+        for existing in existing_entries:
+            if (
+                existing.get("name") == name
+                and existing.get("version") == version
+                and existing.get("revision") == revision
+            ):
+                if force:
+                    console.print(
+                        f"[yellow]Warning:[/yellow] --force overriding catalog "
+                        f"dedup for '{name}' v{version} revision '{revision}'."
+                    )
+                    return
+                raise CatalogDedupError(name, version, revision)
 
 
 class CatalogPublisher:
@@ -135,15 +219,19 @@ class CatalogPublisher:
         force: bool = False,
         dry_run: bool = False,
         preview_image_path: Optional[Path] = None,
+        revision: Optional[str] = None,
     ) -> PublishResult:
         """Full publish flow: lock, backup, download, merge, upload, verify, unlock.
 
         Args:
             entry: Catalog entry dict (from ``RegistryBuilder.build_entry``).
             extension_type: One of ``"app"``, ``"tool"``, or ``"service"``.
-            force: Overwrite existing entry with same version.
+            force: Overwrite existing entry with same (name, semver, revision).
             dry_run: Perform merge logic but skip all S3 writes.
             preview_image_path: Local path to preview image to upload.
+            revision: Optional revision identifier to attach to the entry
+                (CI commit SHA, etc.). When set, the entry is keyed by
+                ``(name, semver, revision)`` triple via ``CatalogDedupGuard``.
 
         Returns:
             A ``PublishResult`` describing what was done.
@@ -151,13 +239,20 @@ class CatalogPublisher:
         Raises:
             CatalogPublishError: On lock contention, upload failure, or
                 verification mismatch.
-            ValueError: On invalid extension_type or merge rejection.
+            CatalogDedupError: On duplicate (name, semver, revision) without ``force``.
+            ValueError: On invalid extension_type or invalid revision grammar.
         """
         if extension_type not in _TYPE_FILE_MAP:
             raise ValueError(
                 f"Invalid extension_type '{extension_type}'. "
                 f"Must be one of: {', '.join(_TYPE_FILE_MAP)}"
             )
+
+        # Attach revision to the entry; validate grammar early so we fail
+        # before acquiring the S3 lock or modifying state.
+        if revision is not None:
+            CatalogDedupGuard.validate_revision(revision)
+            entry = {**entry, "revision": revision}
 
         type_file = _TYPE_FILE_MAP[extension_type]
         s3_key = f"{self._garden_dir}{type_file}"
@@ -171,8 +266,9 @@ class CatalogPublisher:
             # Backup current state
             backup_path = self._backup_current(type_file)
 
-            # Download, merge, upload
+            # Download, dedup-check, merge, upload
             existing = self._download_entries(type_file)
+            CatalogDedupGuard().check(existing, entry, force=force)
             merged, action = self._builder.merge_into_registry(
                 entry, existing, force=force,
             )
@@ -534,6 +630,7 @@ class CatalogPublisher:
         console.print("[yellow]Dry run -- no S3 writes will be performed.[/yellow]")
 
         existing = self._download_entries(type_file)
+        CatalogDedupGuard().check(existing, entry, force=force)
         _merged, action = self._builder.merge_into_registry(
             entry, existing, force=force,
         )

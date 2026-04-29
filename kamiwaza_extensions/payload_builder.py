@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import socket
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from kamiwaza_sdk.schemas.extensions import (
@@ -16,6 +18,12 @@ from kamiwaza_sdk.schemas.extensions import (
 )
 
 from kamiwaza_extensions.connections import ConnectionInfo
+
+# CRD annotation keys — name-spaced under kamiwaza.ai (§4.2.9 / §4.7).
+ANNOTATION_DEPLOYER = "kamiwaza.ai/deployer"
+ANNOTATION_BUILD_HOST = "kamiwaza.ai/build-host"
+ANNOTATION_REVISION = "kamiwaza.ai/revision"
+ANNOTATION_DEPLOYED_AT = "kamiwaza.ai/deployed-at"
 
 
 def _compose_resources_to_k8s(resources: Dict[str, str]) -> Dict[str, str]:
@@ -48,6 +56,9 @@ class PayloadBuilder:
         transformed_compose: Dict[str, Any],
         connection: ConnectionInfo,
         dev_name: str,
+        *,
+        deployer: Optional[str] = None,
+        revision: Optional[str] = None,
     ) -> CreateExtension:
         ext_type = self._resolve_type(metadata)
         app_path = f"/runtime/apps/{dev_name}" if ext_type == "app" else f"/runtime/{ext_type}s/{dev_name}"
@@ -57,7 +68,7 @@ class PayloadBuilder:
         origin = connection.url.removesuffix("/api")
         tls_reject = "0" if not connection.verify_ssl else "1"
 
-        return CreateExtension(
+        kwargs: Dict[str, Any] = dict(
             name=dev_name,
             type=ext_type,
             version=metadata.get("version", "0.0.0"),
@@ -76,6 +87,44 @@ class PayloadBuilder:
                 verified=metadata.get("verified", False),
             ),
         )
+
+        annotations = self.build_annotations(deployer=deployer, revision=revision)
+        if annotations:
+            # `CreateExtension` has `extra="allow"` — annotations ride on the
+            # request body for the platform to attach to the CRD metadata.
+            kwargs["annotations"] = annotations
+
+        return CreateExtension(**kwargs)
+
+    @staticmethod
+    def build_annotations(
+        *,
+        deployer: Optional[str],
+        revision: Optional[str],
+    ) -> Dict[str, str]:
+        """Build the CRD-metadata annotations attached on every dev deploy.
+
+        - ``kamiwaza.ai/deployer``     — email of the deploying user
+        - ``kamiwaza.ai/build-host``   — local hostname of the developer machine
+        - ``kamiwaza.ai/revision``     — revision tag (image tag suffix)
+        - ``kamiwaza.ai/deployed-at``  — ISO-8601 UTC timestamp of the deploy
+
+        Empty values are dropped so consumers can ``in``-check without
+        seeing meaningless empty strings.
+        """
+        out: Dict[str, str] = {}
+        if deployer:
+            out[ANNOTATION_DEPLOYER] = deployer
+        try:
+            host = socket.gethostname()
+        except OSError:
+            host = ""
+        if host:
+            out[ANNOTATION_BUILD_HOST] = host
+        if revision:
+            out[ANNOTATION_REVISION] = revision
+        out[ANNOTATION_DEPLOYED_AT] = datetime.now(timezone.utc).isoformat()
+        return out
 
     # ------------------------------------------------------------------
     # Dev naming

@@ -56,6 +56,7 @@ class RegistryBuilder:
         registry: str,
         version: str,
         stage: str = "prod",
+        revision: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Generate a catalog entry dict from *metadata* and *transformed_compose*.
 
@@ -66,6 +67,9 @@ class RegistryBuilder:
             registry: Docker registry prefix (e.g. ``"kamiwazaai"``).
             version: Semver version string for this release.
             stage: One of ``"prod"``, ``"stage"``, ``"dev"``, or any custom name.
+            revision: Optional revision identifier. When provided, included
+                as a top-level ``revision`` field on the entry; consumed by
+                ``CatalogDedupGuard`` to make CI re-publishes idempotent.
 
         Returns:
             A dict matching the Kamiwaza catalog entry schema.
@@ -92,6 +96,9 @@ class RegistryBuilder:
             "compose_yml": compose_yml,
             "docker_images": docker_images,
         }
+
+        if revision is not None:
+            entry["revision"] = revision
 
         # Optional fields -- only include when present in metadata.
         kamiwaza_version = metadata.get("kamiwaza_version")
@@ -172,8 +179,29 @@ class RegistryBuilder:
                 ]
                 result.append(entry)
                 return result, "replace"
+            # Surface the existing entry's revision when it carries one, so
+            # callers passing --revision against a previously-revisioned
+            # entry get a clear "you'd be replacing rev X with rev Y" message
+            # rather than a flat "already exists". The catalog still holds one
+            # entry per (name, semver) per the design — different revisions of
+            # the same semver are mutually exclusive (§4.2.5).
+            existing_revs = sorted({
+                str(m.get("revision")) for _, m in matches
+                if m.get("revision") is not None
+            })
+            new_rev = entry.get("revision")
+            if existing_revs:
+                rev_msg = (
+                    f" at revision {existing_revs[0]!r}"
+                    if len(existing_revs) == 1
+                    else f" (revisions: {existing_revs})"
+                )
+                if new_rev is not None and new_rev not in existing_revs:
+                    rev_msg += f"; this publish carries revision {new_rev!r}"
+            else:
+                rev_msg = ""
             raise ValueError(
-                f"Entry '{name}' version {entry_version} already exists. "
+                f"Entry '{name}' version {entry_version} already exists{rev_msg}. "
                 "Use force=True to overwrite."
             )
 
