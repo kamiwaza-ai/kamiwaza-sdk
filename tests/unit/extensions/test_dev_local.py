@@ -236,3 +236,98 @@ class TestApplyPortRemaps:
 
 
 # Compose file detection tests are in test_extension_detector.py
+
+
+@pytest.mark.unit
+class TestPrintUrlsBarePort:
+    """ENG-3889 P2 + review PR #84 Critical #3 — bare-port URL discovery
+    must work in both pre-up and post-up modes. The pre-up mode runs
+    *before* `compose up` is launched (Docker hasn't assigned a host port
+    yet) so it must emit a hint. The post-up mode runs after `compose up
+    -d` returns and queries Docker for the actual port."""
+
+    def _runner(self):
+        from kamiwaza_extensions.dev_local import DevLocalRunner
+
+        return DevLocalRunner.__new__(DevLocalRunner)  # bypass __init__
+
+    def _capture_stderr(self, monkeypatch):
+        from io import StringIO
+
+        from rich.console import Console
+
+        buf = StringIO()
+        captured = Console(file=buf, force_terminal=False, no_color=True, width=120)
+        # The module-level `console` writes to stderr — replace it.
+        monkeypatch.setattr("kamiwaza_extensions.dev_local.console", captured)
+        return buf
+
+    def test_pre_up_bare_port_emits_hint_not_localhost_url(self, monkeypatch):
+        runner = self._runner()
+        compose = {"services": {"frontend": {"ports": ["3000"]}}}
+        buf = self._capture_stderr(monkeypatch)
+
+        # `_docker_compose_port` MUST NOT be called pre-up — Docker hasn't
+        # assigned a host port yet, so a query would either return nothing
+        # or hang.
+        called = {"docker_compose_port": False}
+        monkeypatch.setattr(
+            "kamiwaza_extensions.dev_local.DevLocalRunner._docker_compose_port",
+            staticmethod(lambda svc, port: called.__setitem__("docker_compose_port", True) or None),
+        )
+
+        runner._print_urls(compose, {}, post_up=False)
+
+        out = buf.getvalue()
+        assert called["docker_compose_port"] is False
+        assert "container port 3000" in out
+        assert "host port assigned by Docker" in out
+        # No localhost URL printed — we don't know the port yet.
+        assert "http://localhost" not in out
+
+    def test_post_up_bare_port_queries_docker_and_prints_url(self, monkeypatch):
+        runner = self._runner()
+        compose = {"services": {"frontend": {"ports": ["3000"]}}}
+        buf = self._capture_stderr(monkeypatch)
+
+        # Simulate Docker having assigned host port 49152 to container port 3000.
+        monkeypatch.setattr(
+            "kamiwaza_extensions.dev_local.DevLocalRunner._docker_compose_port",
+            staticmethod(lambda svc, port: 49152 if svc == "frontend" and port == 3000 else None),
+        )
+
+        runner._print_urls(compose, {}, post_up=True)
+
+        out = buf.getvalue()
+        assert "http://localhost:49152" in out
+
+    def test_pre_up_mapped_port_still_prints_localhost_url(self, monkeypatch):
+        # Mapped specs (`"3000:3000"`) work pre-up — host port is fixed in
+        # the compose file. This is the original v1 behaviour and must not
+        # regress under the pre/post-up split.
+        runner = self._runner()
+        compose = {"services": {"frontend": {"ports": ["3000:3000"]}}}
+        buf = self._capture_stderr(monkeypatch)
+
+        runner._print_urls(compose, {}, post_up=False)
+
+        out = buf.getvalue()
+        assert "http://localhost:3000" in out
+
+    def test_post_up_bare_port_falls_silent_when_docker_unavailable(self, monkeypatch):
+        # If `docker compose port` returns nothing (e.g. compose still
+        # starting, docker daemon hiccup), don't crash — just print nothing
+        # for that service.
+        runner = self._runner()
+        compose = {"services": {"frontend": {"ports": ["3000"]}}}
+        buf = self._capture_stderr(monkeypatch)
+
+        monkeypatch.setattr(
+            "kamiwaza_extensions.dev_local.DevLocalRunner._docker_compose_port",
+            staticmethod(lambda svc, port: None),
+        )
+
+        runner._print_urls(compose, {}, post_up=True)
+
+        out = buf.getvalue()
+        assert "http://localhost" not in out

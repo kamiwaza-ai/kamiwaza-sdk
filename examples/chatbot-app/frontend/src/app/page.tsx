@@ -553,7 +553,13 @@ function Dashboard() {
 
 export default function Home() {
     // Under USE_AUTH=false the backend's /session returns the canonical
-    // anonymous Identity (`name === "Anonymous"`, `is_authenticated === false`).
+    // anonymous Identity. The wire JSON is snake_case
+    // (`is_authenticated: false`, `name: "Anonymous"`); SessionProvider
+    // translates to camelCase before useSession() exposes it (see
+    // runtime-lib `tests/sessionprovider.test.tsx` "snake_case →
+    // camelCase translation" suite for the contract). We read the
+    // post-translation camelCase shape here.
+    //
     // AuthGuard would otherwise fetch /auth/login-url and wait for it to
     // resolve before rendering — wasted round-trip and a "Verifying session…"
     // flash on every local-dev page load (ENG-3889 P6 / §4.8 P6).

@@ -170,3 +170,149 @@ class TestRegistryBuilderRevision:
             stage="prod",
         )
         assert "revision" not in entry
+
+
+@pytest.mark.unit
+class TestPublishRoundTripWithRevision:
+    """Round-trip integration through merge_into_registry (review PR #84
+    Critical #1). The dedup-only tests above don't exercise the merge
+    layer; this surfaces the actual end-to-end semantics with revisions.
+
+    Catalog model per §4.2.5: one entry per ``(name, semver)``; revision
+    is a tag on that entry. So:
+
+      * Same triple, no force → CatalogDedupError (idempotency).
+      * Same triple, --force → replace (CI re-run safe).
+      * Same (name, semver), different revision, no force → merge layer
+        rejects with a revision-aware error message so the user knows
+        which revision is being replaced.
+      * Same (name, semver), different revision, --force → replace
+        (CI / intentional revision bump).
+    """
+
+    def _merge(
+        self,
+        existing: list[dict],
+        *,
+        revision: str | None,
+        force: bool = False,
+    ) -> tuple[list[dict], str] | type[Exception]:
+        """Run the full ``CatalogDedupGuard.check`` → ``merge_into_registry``
+        sequence the same way ``CatalogPublisher.publish`` does."""
+        from kamiwaza_extensions.registry_builder import RegistryBuilder
+
+        new_entry: dict = {
+            "name": "hello",
+            "version": "1.0.0",
+            "description": "x",
+        }
+        if revision is not None:
+            new_entry["revision"] = revision
+        CatalogDedupGuard().check(existing, new_entry, force=force)
+        merged, action = RegistryBuilder().merge_into_registry(
+            new_entry, existing, force=force,
+        )
+        return merged, action
+
+    def test_first_publish_inserts(self):
+        merged, action = self._merge([], revision="abc123")
+        assert action == "insert"
+        assert merged == [{"name": "hello", "version": "1.0.0", "description": "x", "revision": "abc123"}]
+
+    def test_idempotent_re_publish_same_triple_rejects(self):
+        existing = [{"name": "hello", "version": "1.0.0", "description": "x", "revision": "abc123"}]
+        with pytest.raises(CatalogDedupError):
+            self._merge(existing, revision="abc123")
+
+    def test_idempotent_re_publish_same_triple_with_force_replaces(self):
+        existing = [{"name": "hello", "version": "1.0.0", "description": "x", "revision": "abc123"}]
+        merged, action = self._merge(existing, revision="abc123", force=True)
+        assert action == "replace"
+        assert len(merged) == 1
+        assert merged[0]["revision"] == "abc123"
+
+    def test_different_revision_same_version_no_force_rejects_with_revision_message(self):
+        # The dedup guard passes (different triple) but the merge layer
+        # rejects on duplicate version. The error names the existing
+        # revision so the user knows what they'd be replacing.
+        existing = [{"name": "hello", "version": "1.0.0", "description": "x", "revision": "rev-a"}]
+        with pytest.raises(ValueError) as exc_info:
+            self._merge(existing, revision="rev-b")
+        msg = str(exc_info.value)
+        assert "'rev-a'" in msg
+        assert "'rev-b'" in msg
+        assert "force=True" in msg
+
+    def test_different_revision_same_version_with_force_replaces(self):
+        existing = [{"name": "hello", "version": "1.0.0", "description": "x", "revision": "rev-a"}]
+        merged, action = self._merge(existing, revision="rev-b", force=True)
+        assert action == "replace"
+        assert len(merged) == 1
+        assert merged[0]["revision"] == "rev-b"
+
+    def test_existing_unrevisioned_entry_clear_error_when_publishing_new_revision(self):
+        # An older entry without `revision` (pre-ENG-3884 publish) — the
+        # error should still mention the new publish's revision so the
+        # user understands why the publish was rejected.
+        existing = [{"name": "hello", "version": "1.0.0", "description": "x"}]
+        with pytest.raises(ValueError) as exc_info:
+            self._merge(existing, revision="rev-b")
+        # Existing has no revision string to surface, but the user-facing
+        # message still tells them to use --force.
+        assert "force=True" in str(exc_info.value)
+
+
+@pytest.mark.unit
+class TestPublishRevisionFlag:
+    """The ``--revision`` Typer flag must reach
+    ``CatalogPublisher.publish(revision=...)`` and
+    ``RegistryBuilder.build_entry(revision=...)`` (review Critical #1:
+    "the new contract is unreachable from CI" without the flag wired)."""
+
+    def test_publish_command_threads_revision_kwarg(self, tmp_path):
+        from unittest.mock import MagicMock, patch
+
+        from kamiwaza_extensions.commands.publish import run_publish
+
+        # Reuse fixtures from the sibling test module (cross-import via the
+        # full package path; relative imports break under pytest's rootdir).
+        from tests.unit.extensions.test_publish_cmd import (
+            _make_extension_info,
+            _make_profile,
+            _make_publish_result,
+            _make_validation_result,
+        )
+
+        with (
+            patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher") as PubCls,
+            patch("kamiwaza_extensions.registry_builder.RegistryBuilder") as RBCls,
+            patch("kamiwaza_extensions.image_pusher.ImagePusher"),
+            patch("kamiwaza_extensions.image_builder.ImageBuilder") as BuildCls,
+            patch("kamiwaza_extensions.profile_manager.ProfileManager") as PMCls,
+            patch("kamiwaza_extensions.compose_transformer.ComposeTransformer") as CTCls,
+            patch("kamiwaza_extensions.validators.compose.ComposeValidator") as CVCls,
+            patch("kamiwaza_extensions.validators.metadata.MetadataValidator") as MVCls,
+            patch("kamiwaza_extensions.extension_detector.ExtensionDetector") as DetCls,
+        ):
+            DetCls.return_value.detect.return_value = _make_extension_info(tmp_path)
+            MVCls.return_value.validate.return_value = _make_validation_result()
+            CVCls.return_value.validate.return_value = _make_validation_result()
+            PMCls.return_value.resolve_profile.return_value = _make_profile()
+            CTCls.return_value.transform.return_value = {"services": {}}
+            BuildCls.return_value.build.return_value = []
+
+            rb = MagicMock()
+            rb.build_entry.return_value = {"name": "my-app", "version": "1.0.0"}
+            RBCls.return_value = rb
+
+            pub = MagicMock()
+            pub.publish.return_value = _make_publish_result()
+            PubCls.return_value = pub
+
+            run_publish(stage="dev", revision="ci-sha-abc123")
+
+        # Both build_entry and publish must receive the revision kwarg.
+        rb.build_entry.assert_called_once()
+        assert rb.build_entry.call_args.kwargs["revision"] == "ci-sha-abc123"
+        pub.publish.assert_called_once()
+        assert pub.publish.call_args.kwargs["revision"] == "ci-sha-abc123"

@@ -240,6 +240,19 @@ class DoctorChecker:
         name = "Cluster extension readiness"
         not_ready = int(ExitCode.CLUSTER_NOT_READY)
 
+        # No Kamiwaza connection configured — skip rather than failing on
+        # an unrelated kube-context. Without a connection there's no
+        # cluster the user is *trying* to reach, so a hard fail like
+        # "CRD not installed" would exit doctor non-zero on every
+        # workstation that has kubectl pointed at something else
+        # (review High #1 on PR #84).
+        if self._conn_mgr.get_active_connection() is None:
+            return CheckResult(
+                name, "warn",
+                "No Kamiwaza connection configured; cluster readiness probe skipped",
+                fix="Run 'kz-ext login <url>' to connect, then re-run doctor",
+            )
+
         # kubectl availability — soft skip
         kubectl_check = self._kubectl_available()
         if not kubectl_check:

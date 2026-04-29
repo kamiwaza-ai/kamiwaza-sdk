@@ -148,11 +148,23 @@ class DevLocalRunner:
 
             console.print(f"[dim]Running:[/dim] {' '.join(cmd)}")
 
-            # 9. Print access URLs
-            self._print_urls(info.compose_data, remaps)
+            # 9. Print access URLs (pre-up). For bare-port specs the host
+            # port isn't assigned yet — emit a hint instead so users know
+            # what to expect. Detach mode (10b) re-prints with the resolved
+            # host port after `compose up -d` returns.
+            self._print_urls(info.compose_data, remaps, post_up=False)
 
             # 10. Run subprocess with signal forwarding
-            return self._run_subprocess(cmd, env=env, cwd=str(info.path))
+            rc = self._run_subprocess(cmd, env=env, cwd=str(info.path))
+
+            # 10b. Detach mode only: re-resolve bare-port URLs once Docker
+            # has actually published them. Foreground mode blocks on
+            # compose logs until the user Ctrl+Cs, so there is no
+            # post-up moment to reach.
+            if detach and rc == 0:
+                self._print_urls(info.compose_data, remaps, post_up=True)
+
+            return rc
         finally:
             for tmp in (patched_compose_file, sdk_override_file):
                 if tmp:
@@ -169,7 +181,24 @@ class DevLocalRunner:
         self,
         compose_data: Optional[dict],
         remaps: Dict[str, Tuple[int, int]],
+        *,
+        post_up: bool = False,
     ) -> None:
+        """Print per-service access URLs.
+
+        Two modes:
+          * ``post_up=False`` (pre-up, default): runs before the compose
+            subprocess starts. Mapped ports (``"3000:3000"``) resolve to the
+            literal host port. Bare ports (``"3000"``) print a hint —
+            Docker hasn't assigned a host port yet, and querying
+            ``docker compose port`` here returns nothing.
+          * ``post_up=True`` (detach mode only): runs after ``compose up -d``
+            returns. Bare ports query ``docker compose port`` to print the
+            actual auto-assigned host port.
+
+        Foreground (non-detach) mode blocks on compose logs until the user
+        Ctrl+Cs, so there is no post-up moment for it.
+        """
         if not compose_data:
             return
         services = compose_data.get("services", {})
@@ -179,7 +208,15 @@ class DevLocalRunner:
                 host_port, container_port = parse_port_mapping(str(port_spec))
                 if host_port is None:
                     # Bare-port spec (e.g. "3000") — Docker assigns the host
-                    # port. Resolve it via `docker compose port`. (ENG-3889 P2)
+                    # port (ENG-3889 P2).
+                    if not post_up:
+                        if container_port is not None:
+                            console.print(
+                                f"[dim]{svc_name}:[/dim] container port "
+                                f"{container_port} (host port assigned by Docker; "
+                                "run `docker compose ps` once started)"
+                            )
+                        continue
                     if container_port is not None:
                         host_port = self._docker_compose_port(svc_name, container_port)
                     if host_port is None:

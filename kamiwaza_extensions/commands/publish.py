@@ -88,6 +88,7 @@ def run_publish(
     no_build: bool = False,
     no_push: bool = False,
     verbose: bool = False,
+    revision: Optional[str] = None,
 ) -> None:
     """Build, push, and publish extension to catalog."""
     from kamiwaza_extensions.catalog_publisher import (
@@ -118,8 +119,9 @@ def run_publish(
 
     # Header
     dry_label = " [DRY RUN]" if dry_run else ""
+    rev_label = f" rev=[bold]{revision}[/bold]" if revision else ""
     console.print(
-        f"Publishing [bold]{info.name}[/bold] v{version} "
+        f"Publishing [bold]{info.name}[/bold] v{version}{rev_label} "
         f"to profile [bold]'{stage}'[/bold]...{dry_label}"
     )
     console.print()
@@ -209,6 +211,7 @@ def run_publish(
             registry=registry,
             version=version,
             stage=effective_stage,
+            revision=revision,
         )
         try:
             publisher = CatalogPublisher(profile, extension_dir=info.path)
@@ -217,6 +220,7 @@ def run_publish(
                 extension_type=ext_type,
                 force=force,
                 dry_run=True,
+                revision=revision,
             )
             console.print(
                 f"  Would publish to:      {result.catalog_file} ({result.action})"
@@ -297,6 +301,7 @@ def run_publish(
         registry=registry,
         version=version,
         stage=effective_stage,
+        revision=revision,
     )
 
     # 8. Publish to catalog
@@ -311,6 +316,7 @@ def run_publish(
             force=force,
             dry_run=False,
             preview_image_path=preview_image_path,
+            revision=revision,
         )
     except CatalogDedupError as exc:
         console.print("  [red]\u2717 publish rejected[/red]")
