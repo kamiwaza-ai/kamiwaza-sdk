@@ -102,9 +102,10 @@ class ComposeTransformer:
         elif had_build and "image" in svc:
             # Use consistent registry/extension-service:tag format (matches image builder)
             svc["image"] = f"{registry}/{extension_name}-{service_name}:{revision_tag}"
-        elif "image" in svc and not _is_external_image(svc["image"], extension_name):
-            svc["image"] = _update_tag(svc["image"], revision_tag)
-        # External images (postgres, redis, etc.) are left unchanged.
+        # Services without a build context — both external (postgres, redis)
+        # and prebuilt-internal (e.g. a helper image published from another
+        # repo) — keep their declared image ref verbatim. publish only owns
+        # tags for what it builds and pushes.
 
         # 5. Add resource limits if missing
         _ensure_resource_limits(svc)

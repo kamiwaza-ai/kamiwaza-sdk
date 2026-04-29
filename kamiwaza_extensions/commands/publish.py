@@ -228,7 +228,6 @@ def run_publish(
             version=version,
             stage=stage,
             revision=revision,
-            image_tag_override=revision,
         )
         try:
             publisher = CatalogPublisher(profile, extension_dir=info.path)
@@ -319,7 +318,6 @@ def run_publish(
         version=version,
         stage=stage,
         revision=revision,
-        image_tag_override=revision,
     )
 
     # 8. Publish to catalog

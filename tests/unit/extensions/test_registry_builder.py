@@ -73,31 +73,21 @@ class TestBuildEntry:
         assert "kamiwazaai/my-app-backend:1.0.0" in entry["docker_images"]
         assert "postgres:15" in entry["docker_images"]
 
-    def test_stage_transforms_tags(self, builder, metadata, transformed_compose):
-        entry = builder.build_entry(
-            metadata, transformed_compose, "kamiwazaai", "1.0.0", stage="stage"
-        )
-        images = entry["docker_images"]
-        assert "kamiwazaai/my-app-frontend:1.0.0-stage" in images
-        assert "kamiwazaai/my-app-backend:1.0.0-stage" in images
-        # External image unchanged
-        assert "postgres:15" in images
-
-    def test_dev_stage(self, builder, metadata, transformed_compose):
+    def test_preserves_image_tags_from_transformed_compose(
+        self, builder, metadata, transformed_compose,
+    ):
+        # build_entry trusts ComposeTransformer's output and does not
+        # re-rewrite image tags. Whatever tags appear in transformed_compose
+        # land verbatim in the catalog entry.
         entry = builder.build_entry(
             metadata, transformed_compose, "kamiwazaai", "1.0.0", stage="dev"
         )
         images = entry["docker_images"]
-        assert "kamiwazaai/my-app-frontend:1.0.0-dev" in images
-        assert "kamiwazaai/my-app-backend:1.0.0-dev" in images
-
-    def test_prod_stage_no_suffix(self, builder, metadata, transformed_compose):
-        entry = builder.build_entry(
-            metadata, transformed_compose, "kamiwazaai", "1.0.0", stage="prod"
-        )
-        images = entry["docker_images"]
+        # transformed_compose already carries `:1.0.0` for buildable services.
         assert "kamiwazaai/my-app-frontend:1.0.0" in images
         assert "kamiwazaai/my-app-backend:1.0.0" in images
+        # External image unchanged regardless.
+        assert "postgres:15" in images
 
     def test_kamiwaza_version_included_when_present(
         self, builder, transformed_compose
@@ -182,121 +172,92 @@ class TestBuildEntry:
 
 
 # ------------------------------------------------------------------
-# build_entry with image_tag_override (ENG-3591)
+# build_entry treats ComposeTransformer as canonical (ENG-3591)
 # ------------------------------------------------------------------
 
 
-class TestBuildEntryWithImageTagOverride:
-    """When CI builds an SHA-pinned image tag, ``image_tag_override`` makes
-    the catalog entry reference that exact tag instead of the stage-derived
-    ``{version}{suffix}``. Without the override the regex pass in
-    ``transform_image_tags`` rewrites the tag back to ``{version}-{stage}``,
-    causing installs to pull a tag CI never pushed."""
+class TestBuildEntryRespectsComposeTransformerOutput:
+    """build_entry no longer second-passes the compose YAML through a regex
+    rewrite. Whatever tags ComposeTransformer left in the dict — including
+    revision-overridden buildable-service tags AND verbatim Pattern C
+    image refs (no build context) — flow through to the catalog entry
+    unchanged."""
 
-    def test_override_used_in_docker_images_for_dev(
-        self, builder, metadata, transformed_compose
-    ):
+    def test_revision_pinned_buildable_tags_pass_through(self, builder):
+        # Simulates ComposeTransformer's output for a publish run with
+        # --revision 1.0.0-dev-abc1234.
+        transformed = {
+            "services": {
+                "backend": {"image": "kamiwazaai/my-app-backend:1.0.0-dev-abc1234"},
+                "frontend": {"image": "kamiwazaai/my-app-frontend:1.0.0-dev-abc1234"},
+            },
+        }
         entry = builder.build_entry(
-            metadata,
-            transformed_compose,
+            {"name": "my-app", "description": "x"},
+            transformed,
             "kamiwazaai",
             "1.0.0",
             stage="dev",
-            image_tag_override="1.0.0-dev-abc1234",
         )
         images = entry["docker_images"]
-        assert "kamiwazaai/my-app-frontend:1.0.0-dev-abc1234" in images
         assert "kamiwazaai/my-app-backend:1.0.0-dev-abc1234" in images
-        # Stage-derived tag must not appear.
-        assert "kamiwazaai/my-app-frontend:1.0.0-dev" not in images
-        assert "kamiwazaai/my-app-backend:1.0.0-dev" not in images
-
-    def test_override_used_in_compose_yml(
-        self, builder, metadata, transformed_compose
-    ):
-        entry = builder.build_entry(
-            metadata,
-            transformed_compose,
-            "kamiwazaai",
-            "1.0.0",
-            stage="dev",
-            image_tag_override="1.0.0-dev-abc1234",
-        )
-        # Round-trip the published compose to confirm the override is what
-        # downstream installs will actually pull.
+        assert "kamiwazaai/my-app-frontend:1.0.0-dev-abc1234" in images
+        # Round-trip through compose_yml as well.
         parsed = yaml.safe_load(entry["compose_yml"])
-        assert (
-            parsed["services"]["frontend"]["image"]
-            == "kamiwazaai/my-app-frontend:1.0.0-dev-abc1234"
-        )
         assert (
             parsed["services"]["backend"]["image"]
             == "kamiwazaai/my-app-backend:1.0.0-dev-abc1234"
         )
 
-    def test_override_with_prod_stage(
-        self, builder, metadata, transformed_compose
-    ):
-        # Prod publish that pins to a SHA — keep semver tag accuracy on the
-        # entry (version="1.0.0") while pointing the compose at the pinned ref.
+    def test_pattern_c_image_passes_through_verbatim(self, builder):
+        # An extension whose compose has BOTH a buildable service AND an
+        # internal-named prebuilt service (Pattern C — image: but no build:).
+        # Pre-ENG-3591, build_entry would have rewritten the helper's tag
+        # to the stage-derived default (or the override), pointing the
+        # catalog at a tag publish never pushed. After the fix, the helper's
+        # declared tag is preserved as-is.
+        transformed = {
+            "services": {
+                "backend": {
+                    "image": "kamiwazaai/my-app-backend:1.0.0-dev-abc1234",
+                },
+                "helper": {
+                    # No build context — publish doesn't own this image.
+                    "image": "kamiwazaai/my-app-helper:0.5.0",
+                },
+            },
+        }
         entry = builder.build_entry(
-            metadata,
-            transformed_compose,
-            "kamiwazaai",
-            "1.0.0",
-            stage="prod",
-            image_tag_override="1.0.0-abc1234",
-        )
-        images = entry["docker_images"]
-        assert "kamiwazaai/my-app-frontend:1.0.0-abc1234" in images
-        assert "kamiwazaai/my-app-frontend:1.0.0" not in images
-
-    def test_override_leaves_external_images_untouched(
-        self, builder, metadata, transformed_compose
-    ):
-        entry = builder.build_entry(
-            metadata,
-            transformed_compose,
-            "kamiwazaai",
-            "1.0.0",
-            stage="dev",
-            image_tag_override="1.0.0-dev-abc1234",
-        )
-        # postgres:15 is shared / external — must not be rewritten.
-        assert "postgres:15" in entry["docker_images"]
-
-    def test_override_and_revision_field_set_independently(
-        self, builder, metadata, transformed_compose
-    ):
-        # CI uses revision both for catalog dedup and as the image tag, but
-        # they're independent kwargs on the API. Confirm both land.
-        entry = builder.build_entry(
-            metadata,
-            transformed_compose,
+            {"name": "my-app", "description": "x"},
+            transformed,
             "kamiwazaai",
             "1.0.0",
             stage="dev",
             revision="1.0.0-dev-abc1234",
-            image_tag_override="1.0.0-dev-abc1234",
         )
-        assert entry["revision"] == "1.0.0-dev-abc1234"
-        assert (
-            "kamiwazaai/my-app-frontend:1.0.0-dev-abc1234"
-            in entry["docker_images"]
-        )
+        images = entry["docker_images"]
+        assert "kamiwazaai/my-app-helper:0.5.0" in images
+        # The revision tag must NOT have leaked into the helper ref.
+        assert "kamiwazaai/my-app-helper:1.0.0-dev-abc1234" not in images
 
-    def test_no_override_falls_back_to_stage_suffix(
-        self, builder, metadata, transformed_compose
-    ):
+    def test_external_images_pass_through_verbatim(self, builder):
+        transformed = {
+            "services": {
+                "backend": {"image": "kamiwazaai/my-app-backend:1.0.0-dev"},
+                "db": {"image": "postgres:15"},
+                "cache": {"image": "redis:7"},
+            },
+        }
         entry = builder.build_entry(
-            metadata,
-            transformed_compose,
+            {"name": "my-app", "description": "x"},
+            transformed,
             "kamiwazaai",
             "1.0.0",
             stage="dev",
         )
-        # Default (pre-ENG-3591) behaviour preserved.
-        assert "kamiwazaai/my-app-frontend:1.0.0-dev" in entry["docker_images"]
+        images = entry["docker_images"]
+        assert "postgres:15" in images
+        assert "redis:7" in images
 
 
 # ------------------------------------------------------------------
@@ -370,6 +331,23 @@ class TestTransformImageTags:
             tag_override="2.0.0-abc1234",
         )
         assert "kamiwazaai/my-app-web:2.0.0-abc1234" in result
+
+    def test_tag_override_does_not_rewrite_other_extensions(self, builder):
+        # Multi-tenant registry: a different extension's image happens to
+        # share the same registry but a different name prefix. The override
+        # is scoped to ``extension_name`` and must leave foreign refs alone.
+        yml = (
+            "image: kamiwazaai/my-app-web:old-tag\n"
+            "image: kamiwazaai/some-other-ext-svc:v1.2.3\n"
+        )
+        result = builder.transform_image_tags(
+            yml, "kamiwazaai", "2.0.0", "dev",
+            extension_name="my-app",
+            tag_override="2.0.0-dev-abc1234",
+        )
+        assert "kamiwazaai/my-app-web:2.0.0-dev-abc1234" in result
+        # Foreign extension image untouched.
+        assert "kamiwazaai/some-other-ext-svc:v1.2.3" in result
 
 
 # ------------------------------------------------------------------

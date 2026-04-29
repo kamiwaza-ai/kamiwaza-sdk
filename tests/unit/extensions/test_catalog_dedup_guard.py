@@ -318,11 +318,11 @@ class TestPublishRevisionFlag:
         assert pub.publish.call_args.kwargs["revision"] == "ci-sha-abc123"
 
     def test_publish_command_uses_revision_as_image_tag(self, tmp_path):
-        """ENG-3591: ``--revision`` must override the docker image tag end-
-        to-end, not just appear as a catalog dedup field. Otherwise CI's
-        SHA-pinned tag is recorded in metadata but the published compose
-        still references the mutable ``{version}-{stage}`` tag — so installs
-        would 404 on the image CI actually pushed."""
+        """ENG-3591: ``--revision`` must drive the docker image tag end-to-
+        end. ComposeTransformer (the canonical source of tag rewriting) and
+        ImageBuilder both receive ``revision_tag=<revision>`` so the
+        transformed compose carries the SHA tag and the locally-built image
+        is tagged consistently."""
         from unittest.mock import MagicMock, patch
 
         from kamiwaza_extensions.commands.publish import run_publish
@@ -360,30 +360,27 @@ class TestPublishRevisionFlag:
 
             run_publish(stage="dev", revision="1.0.0-dev-abc1234")
 
-        # ComposeTransformer must build with the revision tag (so the local
-        # in-memory compose carries the SHA tag).
+        # ComposeTransformer is the canonical tag rewriter. It must receive
+        # the revision so the in-memory compose carries the SHA tag.
         assert (
             CTCls.return_value.transform.call_args.kwargs["revision_tag"]
             == "1.0.0-dev-abc1234"
         )
-        # ImageBuilder builds the SHA-tagged image.
+        # ImageBuilder uses the same tag for the locally-built image.
         assert (
             BuildCls.return_value.build.call_args.kwargs["revision_tag"]
             == "1.0.0-dev-abc1234"
         )
-        # And the catalog entry gets the override so transform_image_tags
-        # writes the SHA tag rather than the {version}-{stage} default.
-        assert (
-            rb.build_entry.call_args.kwargs["image_tag_override"]
-            == "1.0.0-dev-abc1234"
-        )
-        # effective_stage is preserved — stage semantics are not broken.
+        # Stage semantics preserved — catalog routing unchanged.
         assert rb.build_entry.call_args.kwargs["stage"] == "dev"
+        # No image_tag_override — that workaround was removed when
+        # ComposeTransformer became the sole tag-rewriting authority.
+        assert "image_tag_override" not in rb.build_entry.call_args.kwargs
 
-    def test_publish_command_dry_run_threads_image_tag_override(self, tmp_path):
-        """``--dry-run`` exercises a separate ``build_entry`` call site that
-        also has to receive ``image_tag_override`` (otherwise dry-run output
-        misrepresents what a real publish would write to the catalog)."""
+    def test_publish_command_dry_run_uses_revision_as_image_tag(self, tmp_path):
+        """``--dry-run`` exercises the same ComposeTransformer call as the
+        real path; the revision must reach ComposeTransformer so the
+        previewed compose mirrors what a real publish would write."""
         from unittest.mock import MagicMock, patch
 
         from kamiwaza_extensions.commands.publish import run_publish
@@ -420,22 +417,20 @@ class TestPublishRevisionFlag:
 
             run_publish(stage="dev", revision="1.0.0-dev-abc1234", dry_run=True)
 
-        # Dry-run must thread the override the same way the real path does.
-        rb.build_entry.assert_called_once()
+        # Same revision must reach ComposeTransformer in the dry-run path.
         assert (
-            rb.build_entry.call_args.kwargs["image_tag_override"]
+            CTCls.return_value.transform.call_args.kwargs["revision_tag"]
             == "1.0.0-dev-abc1234"
         )
         # No build or push side effects in dry-run.
         BuildCls.return_value.build.assert_not_called()
         PusherCls.return_value.push.assert_not_called()
 
-    def test_publish_command_no_revision_keeps_image_tag_override_none(
+    def test_publish_command_no_revision_uses_stage_default_image_tag(
         self, tmp_path,
     ):
-        """Without ``--revision`` the catalog must keep the pre-ENG-3591
-        behaviour: ``image_tag_override`` is None and the regex pass uses
-        the stage suffix."""
+        """Without ``--revision`` ComposeTransformer receives the
+        stage-derived default tag (``{version}-{stage}`` for non-prod)."""
         from unittest.mock import MagicMock, patch
 
         from kamiwaza_extensions.commands.publish import run_publish
@@ -473,7 +468,10 @@ class TestPublishRevisionFlag:
 
             run_publish(stage="dev")
 
-        assert rb.build_entry.call_args.kwargs["image_tag_override"] is None
+        assert (
+            CTCls.return_value.transform.call_args.kwargs["revision_tag"]
+            == "1.0.0-dev"
+        )
 
 
 @pytest.mark.unit

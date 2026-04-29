@@ -57,38 +57,28 @@ class RegistryBuilder:
         version: str,
         stage: str = "prod",
         revision: Optional[str] = None,
-        image_tag_override: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Generate a catalog entry dict from *metadata* and *transformed_compose*.
 
         Args:
             metadata: Parsed ``kamiwaza.json`` contents.
             transformed_compose: Compose dict already processed by
-                ``ComposeTransformer``.
+                ``ComposeTransformer`` (which is the canonical source of
+                image-tag rewriting — services with a ``build`` context
+                are tagged with publish's revision; services without one
+                keep their declared image ref verbatim).
             registry: Docker registry prefix (e.g. ``"kamiwazaai"``).
             version: Semver version string for this release.
             stage: One of ``"prod"``, ``"stage"``, ``"dev"``, or any custom name.
             revision: Optional revision identifier. When provided, included
                 as a top-level ``revision`` field on the entry; consumed by
                 ``CatalogDedupGuard`` to make CI re-publishes idempotent.
-            image_tag_override: When set, the catalog's compose image tags
-                use this exact value instead of the stage-suffixed
-                ``{version}{stage_suffix}``. Required when CI built and
-                pushed a SHA-pinned tag the catalog must reference verbatim.
 
         Returns:
             A dict matching the Kamiwaza catalog entry schema.
         """
-        extension_name = metadata.get("name", "")
         compose_yml = yaml.dump(transformed_compose, default_flow_style=False)
-        compose_yml = self.transform_image_tags(
-            compose_yml, registry, version, stage,
-            extension_name=extension_name,
-            tag_override=image_tag_override,
-        )
-        # Parse back to dict for reliable image extraction (avoids env var false positives)
-        tagged_compose = yaml.safe_load(compose_yml) or {}
-        docker_images = self.extract_docker_images(tagged_compose)
+        docker_images = self.extract_docker_images(transformed_compose)
 
         extra_images = metadata.get("extra_docker_images") or []
         if extra_images:
@@ -236,9 +226,8 @@ class RegistryBuilder:
         with the *registry* prefix (legacy behaviour).
 
         When *tag_override* is provided, that exact tag is written instead
-        of the stage-derived ``{version}{stage_suffix}``. ``version`` and
-        ``stage`` are still used for matching the existing pattern but
-        not for the replacement value.
+        of the stage-derived ``{version}{stage_suffix}`` — ``version`` and
+        ``stage`` are unused in the replacement.
         """
         if tag_override is not None:
             new_tag = tag_override
