@@ -88,10 +88,17 @@ def run_publish(
     no_build: bool = False,
     no_push: bool = False,
     verbose: bool = False,
+    revision: Optional[str] = None,
 ) -> None:
     """Build, push, and publish extension to catalog."""
-    from kamiwaza_extensions.catalog_publisher import CatalogPublisher, CatalogPublishError
+    from kamiwaza_extensions.catalog_publisher import (
+        CatalogDedupError,
+        CatalogDedupGuard,
+        CatalogPublishError,
+        CatalogPublisher,
+    )
     from kamiwaza_extensions.compose_transformer import ComposeTransformer
+    from kamiwaza_extensions.exit_codes import ExitCode
     from kamiwaza_extensions.extension_detector import ExtensionDetector
     from kamiwaza_extensions.image_builder import ImageBuilder, ImageBuildError
     from kamiwaza_extensions.image_pusher import ImagePusher, ImagePushError
@@ -99,6 +106,18 @@ def run_publish(
     from kamiwaza_extensions.registry_builder import RegistryBuilder
     from kamiwaza_extensions.validators.compose import ComposeValidator
     from kamiwaza_extensions.validators.metadata import MetadataValidator
+
+    # 0. Fail fast on bad --revision before any side effects (build, push,
+    # registry tag pollution). Previously this validated inside
+    # CatalogPublisher.publish, after image push had already happened —
+    # invalid revisions like 'foo/bar' or 'BAD CASE' would leak orphan
+    # tags into the registry (review re-review PR #84 M2).
+    if revision is not None:
+        try:
+            CatalogDedupGuard.validate_revision(revision)
+        except ValueError as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(code=int(ExitCode.VALIDATION)) from exc
 
     # 1. Detect extension
     detector = ExtensionDetector()
@@ -113,8 +132,9 @@ def run_publish(
 
     # Header
     dry_label = " [DRY RUN]" if dry_run else ""
+    rev_label = f" rev=[bold]{revision}[/bold]" if revision else ""
     console.print(
-        f"Publishing [bold]{info.name}[/bold] v{version} "
+        f"Publishing [bold]{info.name}[/bold] v{version}{rev_label} "
         f"to profile [bold]'{stage}'[/bold]...{dry_label}"
     )
     console.print()
@@ -204,6 +224,7 @@ def run_publish(
             registry=registry,
             version=version,
             stage=effective_stage,
+            revision=revision,
         )
         try:
             publisher = CatalogPublisher(profile, extension_dir=info.path)
@@ -212,10 +233,14 @@ def run_publish(
                 extension_type=ext_type,
                 force=force,
                 dry_run=True,
+                revision=revision,
             )
             console.print(
                 f"  Would publish to:      {result.catalog_file} ({result.action})"
             )
+        except CatalogDedupError as exc:
+            console.print(f"\n[red]Error:[/red] {exc}")
+            raise typer.Exit(code=int(ExitCode.VALIDATION)) from exc
         except (CatalogPublishError, ValueError) as exc:
             console.print(f"\n[red]Error:[/red] {exc}")
             raise typer.Exit(code=1) from exc
@@ -289,6 +314,7 @@ def run_publish(
         registry=registry,
         version=version,
         stage=effective_stage,
+        revision=revision,
     )
 
     # 8. Publish to catalog
@@ -303,7 +329,12 @@ def run_publish(
             force=force,
             dry_run=False,
             preview_image_path=preview_image_path,
+            revision=revision,
         )
+    except CatalogDedupError as exc:
+        console.print("  [red]\u2717 publish rejected[/red]")
+        console.print(f"\n[red]Error:[/red] {exc}")
+        raise typer.Exit(code=int(ExitCode.VALIDATION)) from exc
     except CatalogPublishError as exc:
         console.print(f"  [red]\u2717 publish failed[/red]")
         console.print(f"\n[red]Error:[/red] {exc}")

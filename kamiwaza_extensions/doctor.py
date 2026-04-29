@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -16,6 +17,29 @@ from packaging.version import InvalidVersion, Version
 
 from kamiwaza_extensions import __version__
 from kamiwaza_extensions.connections import ConnectionManager
+
+
+# kubectl prints distinct stderr for "resource is genuinely absent" vs
+# "I can't even reach the API server / I'm not authorized / wrong context".
+# The former is a real platform-install problem; the latter is a config
+# issue we shouldn't misdiagnose as a broken cluster (review re-review
+# PR #84 H3). Match on the canonical bracketed `(NotFound)` token kubectl
+# emits, plus a word-bounded ``not found`` fallback so the trailing
+# clause in messages like
+# ``Error from server (NotFound): customresourcedefinitions ... not found``
+# still matches even if the bracket form is reformatted upstream. The
+# word boundary prevents the fallback from matching unrelated stderr
+# that happens to contain the substring (review re-re-re-review PR #84 M3).
+_NOT_FOUND_FALLBACK_RE = re.compile(r"\bnot\s+found\b", re.IGNORECASE)
+
+
+def _is_kubectl_not_found_error(stderr: str) -> bool:
+    if not stderr:
+        return False
+    lowered = stderr.lower()
+    if "(notfound)" in lowered:
+        return True
+    return bool(_NOT_FOUND_FALLBACK_RE.search(stderr))
 
 
 @lru_cache(maxsize=1)
@@ -35,6 +59,7 @@ class CheckResult:
     status: Literal["pass", "fail", "warn"]
     message: str
     fix: Optional[str] = None
+    exit_code: Optional[int] = None
 
 
 class DoctorChecker:
@@ -54,6 +79,9 @@ class DoctorChecker:
 
         # Connection checks (if configured)
         results.append(self._check_connection())
+
+        # Cluster extension readiness — operator image / CRD / Deployment
+        results.append(self.cluster_extension_readiness())
 
         # Extension checks (if in extension directory)
         ext_results = self._check_extension_context()
@@ -203,6 +231,289 @@ class DoctorChecker:
             f"{conn.name}: no health endpoint found",
             fix=f"Server is reachable but health check failed",
         )
+
+    # ------------------------------------------------------------------
+    # Cluster extension readiness (B1a / §4.2.8)
+    # ------------------------------------------------------------------
+
+    def cluster_extension_readiness(self) -> CheckResult:
+        """Check that the cluster can actually run extensions.
+
+        Probes (in order):
+          1. ``kamiwazaextensions.extensions.kamiwaza.io`` CRD installed.
+          2. ``extension-operator`` Deployment in ``kamiwaza-system`` is
+             ``Available`` and observed-generation matches.
+          3. Operator image tag is in ``OPERATOR_COMPATIBLE_TAGS`` (warn on
+             mismatch when otherwise Available; fail on ``ImagePullBackOff``
+             surfacing the kubelet error).
+
+        On failure, ``exit_code`` is set to ``ExitCode.CLUSTER_NOT_READY``
+        (23) so the ``doctor`` command can surface it distinctly from the
+        generic CLI failure path.
+        """
+        from kamiwaza_extensions.exit_codes import ExitCode
+        from kamiwaza_extensions.platform_compat import (
+            EXTENSION_CRD,
+            OPERATOR_COMPATIBLE_TAGS,
+            OPERATOR_DEPLOYMENT,
+            OPERATOR_NAMESPACE,
+            is_compatible_tag,
+            is_digest_ref,
+            parse_image_ref,
+        )
+
+        name = "Cluster extension readiness"
+        not_ready = int(ExitCode.CLUSTER_NOT_READY)
+
+        # No Kamiwaza connection configured — skip rather than failing on
+        # an unrelated kube-context. Without a connection there's no
+        # cluster the user is *trying* to reach, so a hard fail like
+        # "CRD not installed" would exit doctor non-zero on every
+        # workstation that has kubectl pointed at something else
+        # (review High #1 on PR #84).
+        connection = self._conn_mgr.get_active_connection()
+        if connection is None:
+            return CheckResult(
+                name, "warn",
+                "No Kamiwaza connection configured; cluster readiness probe skipped",
+                fix="Run 'kz-ext login <url>' to connect, then re-run doctor",
+            )
+
+        # Remote SaaS / non-local connection — the local kube-context has
+        # no verified relationship to the Kamiwaza cluster (the connection
+        # is HTTP-only; ConnectionInfo carries no kube-context binding).
+        # Probing the local context could inspect an unrelated cluster
+        # and emit confidently-wrong guidance like "CRD not installed,
+        # reinstall the platform" (review re-review PR #84 H1). Skip with
+        # a transparent warn instead.
+        from kamiwaza_extensions.platform_compat import is_local_connection
+        if not is_local_connection(connection.url):
+            return CheckResult(
+                name, "warn",
+                f"Connection '{connection.name}' is remote ({connection.url}); "
+                "local kubectl context cannot be verified to target the same cluster — "
+                "probe skipped",
+                fix=(
+                    "Inspect the cluster directly via the platform UI, or run "
+                    "doctor on a host whose kubectl context is bound to the "
+                    "Kamiwaza cluster"
+                ),
+            )
+
+        # kubectl availability — soft skip
+        kubectl_check = self._kubectl_available()
+        if not kubectl_check:
+            return CheckResult(
+                name, "warn",
+                "kubectl not available; cluster readiness probe skipped",
+                fix="Install kubectl and configure access to the target cluster",
+            )
+
+        # 1. CRD presence
+        crd_status, crd_err = self._kubectl_get(["crd", EXTENSION_CRD])
+        if crd_status != 0:
+            # Distinguish "CRD genuinely absent" from "kubectl can't reach
+            # the cluster / auth expired / wrong context" (review re-review
+            # PR #84 H3). Only the former is a CLUSTER_NOT_READY=23 fail
+            # ("reinstall the platform"); the latter is a transient/config
+            # issue we should warn about rather than misdiagnose as a
+            # broken cluster.
+            if _is_kubectl_not_found_error(crd_err):
+                return CheckResult(
+                    name, "fail",
+                    f"Extension CRD '{EXTENSION_CRD}' not installed on cluster",
+                    fix=f"Install or upgrade the kamiwaza platform on this cluster: {crd_err}",
+                    exit_code=not_ready,
+                )
+            return CheckResult(
+                name, "warn",
+                f"Could not query cluster for CRD: {crd_err}",
+                fix=(
+                    "Verify your kubeconfig is valid and points at the "
+                    "Kamiwaza cluster (`kubectl get nodes` to test). "
+                    "kubectl reachability errors are not the same as a "
+                    "missing platform install."
+                ),
+            )
+
+        # 2. Operator Deployment + image
+        deploy_status, deploy_payload = self._kubectl_get_json(
+            ["deploy", OPERATOR_DEPLOYMENT, "-n", OPERATOR_NAMESPACE]
+        )
+        if deploy_status != 0 or not isinstance(deploy_payload, dict):
+            # Same distinction here: "Deployment not found" is a real
+            # platform-install issue; transient kubectl failures are not.
+            err_msg = deploy_payload if isinstance(deploy_payload, str) else ""
+            if _is_kubectl_not_found_error(err_msg):
+                return CheckResult(
+                    name, "fail",
+                    f"extension-operator Deployment not found in '{OPERATOR_NAMESPACE}'",
+                    fix="Re-run the platform installer on this cluster",
+                    exit_code=not_ready,
+                )
+            return CheckResult(
+                name, "warn",
+                f"Could not query cluster for extension-operator Deployment: {err_msg}",
+                fix=(
+                    "Verify your kubeconfig is valid and points at the "
+                    "Kamiwaza cluster (`kubectl get nodes` to test)."
+                ),
+            )
+
+        # Image tag
+        # Match by container name (review re-review PR #84 M3) so a future
+        # sidecar — init container, metrics exporter — doesn't shadow the
+        # operator container at index 0.
+        image_ref = ""
+        try:
+            containers = (
+                deploy_payload.get("spec", {})
+                .get("template", {})
+                .get("spec", {})
+                .get("containers", [])
+            )
+            for container in containers:
+                if container.get("name") == OPERATOR_DEPLOYMENT:
+                    image_ref = container.get("image", "")
+                    break
+            else:
+                if containers:
+                    image_ref = containers[0].get("image", "")
+        except (AttributeError, TypeError):
+            image_ref = ""
+        _, image_tag = parse_image_ref(image_ref) if image_ref else ("", None)
+
+        # ImagePullBackOff detection — most actionable signal
+        backoff_msg = self._operator_pod_backoff_message()
+        if backoff_msg:
+            expected = ", ".join(OPERATOR_COMPATIBLE_TAGS)
+            return CheckResult(
+                name, "fail",
+                f"extension-operator pod is in ImagePullBackOff: {backoff_msg}",
+                fix=(
+                    f"Operator image '{image_ref}' cannot be pulled. "
+                    f"Expected one of: {expected}. "
+                    f"Re-run the platform installer with a published tag."
+                ),
+                exit_code=not_ready,
+            )
+
+        # Available condition
+        status_obj = deploy_payload.get("status", {}) or {}
+        observed_gen = status_obj.get("observedGeneration")
+        spec_gen = deploy_payload.get("metadata", {}).get("generation")
+        conditions = status_obj.get("conditions", []) or []
+        available = any(
+            c.get("type") == "Available" and c.get("status") == "True"
+            for c in conditions
+        )
+        if not available or (observed_gen is not None and observed_gen != spec_gen):
+            return CheckResult(
+                name, "fail",
+                "extension-operator Deployment is not Available",
+                fix=(
+                    "Operator is not ready to reconcile extensions. "
+                    "Inspect: kubectl describe deploy/extension-operator "
+                    f"-n {OPERATOR_NAMESPACE}"
+                ),
+                exit_code=not_ready,
+            )
+
+        # 3. Tag compatibility — warn (not fail) when Available but mismatched.
+        # Digest-pinned refs (`@sha256:...`) are opaque from the tag-name
+        # perspective so we can't determine compat without a registry
+        # round-trip. Treat them as opaque-but-trusted: pass with a note
+        # that compat couldn't be verified, but don't emit a misleading
+        # warning (review re-review PR #84 H1).
+        if image_tag and is_digest_ref(image_tag):
+            return CheckResult(
+                name, "pass",
+                f"CRD installed, extension-operator Available "
+                f"(digest-pinned: {image_tag[:19]}…)",
+            )
+        if not is_compatible_tag(image_tag):
+            expected = ", ".join(OPERATOR_COMPATIBLE_TAGS)
+            return CheckResult(
+                name, "warn",
+                f"extension-operator running '{image_tag}' (Available)",
+                fix=(
+                    f"Tag '{image_tag}' is not in this CLI's compatible set "
+                    f"({expected}). Behavior may diverge from this CLI version."
+                ),
+            )
+
+        return CheckResult(
+            name, "pass",
+            f"CRD installed, extension-operator Available ({image_tag})",
+        )
+
+    @staticmethod
+    def _kubectl_available() -> bool:
+        try:
+            result = subprocess.run(
+                ["kubectl", "version", "--client=true", "-o", "json"],
+                capture_output=True, text=True, timeout=10,
+            )
+            return result.returncode == 0
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return False
+
+    @staticmethod
+    def _kubectl_get(args: list[str]) -> tuple[int, str]:
+        try:
+            result = subprocess.run(
+                ["kubectl", "get", *args],
+                capture_output=True, text=True, timeout=15,
+            )
+            return result.returncode, (result.stderr.strip() or result.stdout.strip())
+        except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+            return 1, str(exc)
+
+    @staticmethod
+    def _kubectl_get_json(args: list[str]) -> tuple[int, object]:
+        try:
+            result = subprocess.run(
+                ["kubectl", "get", *args, "-o", "json"],
+                capture_output=True, text=True, timeout=15,
+            )
+            if result.returncode != 0:
+                return result.returncode, result.stderr.strip()
+            return 0, json.loads(result.stdout)
+        except (FileNotFoundError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
+            return 1, str(exc)
+
+    @staticmethod
+    def _operator_pod_backoff_message() -> Optional[str]:
+        """Return the kubelet ImagePullBackOff message for the operator pod, if any."""
+        from kamiwaza_extensions.platform_compat import (
+            OPERATOR_DEPLOYMENT,
+            OPERATOR_NAMESPACE,
+        )
+
+        try:
+            result = subprocess.run(
+                [
+                    "kubectl", "get", "pods",
+                    "-n", OPERATOR_NAMESPACE,
+                    "-l", f"app.kubernetes.io/name={OPERATOR_DEPLOYMENT}",
+                    "-o", "json",
+                ],
+                capture_output=True, text=True, timeout=15,
+            )
+            if result.returncode != 0:
+                return None
+            payload = json.loads(result.stdout)
+        except (FileNotFoundError, subprocess.TimeoutExpired, json.JSONDecodeError):
+            return None
+
+        for pod in payload.get("items", []):
+            statuses = (pod.get("status", {}) or {}).get("containerStatuses", []) or []
+            for cs in statuses:
+                waiting = (cs.get("state", {}) or {}).get("waiting", {}) or {}
+                reason = waiting.get("reason", "")
+                if reason in ("ImagePullBackOff", "ErrImagePull"):
+                    return waiting.get("message") or reason
+        return None
 
     # ------------------------------------------------------------------
     # Extension context checks
