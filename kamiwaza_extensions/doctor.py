@@ -53,6 +53,51 @@ def _uac_9d_hints() -> list[dict]:
     return list(data["classes"])
 
 
+@lru_cache(maxsize=1)
+def _compatibility_bundle() -> dict:
+    """Load the per-CLI-version compatibility map (ENG-3897 / T2.18).
+
+    The bundle ships with the package so it works in wheel, sdist, and
+    editable installs alike — the file is a package-data resource, not a
+    module import.
+    """
+    return json.loads(
+        resources.files("kamiwaza_extensions")
+        .joinpath("compatibility.json")
+        .read_text(encoding="utf-8")
+    )
+
+
+# Match the leading version-like substring of an npm semver range.
+# Handles caret/tilde/range/exact forms commonly seen in package.json:
+#   ^0.3.0 → 0.3.0
+#   ~0.3   → 0.3
+#   0.1.5  → 0.1.5
+#   >=0.2  → 0.2 (we read whichever lower bound appears first)
+_NPM_VERSION_HEAD_RE = re.compile(r"(\d+(?:\.\d+){0,2})")
+
+
+def _npm_lower_bound(spec: str) -> Optional[Version]:
+    """Best-effort: parse the first version-like substring from an npm range.
+
+    Conservative — returns None on shapes we can't parse (workspace:, git+,
+    URL deps). The CompatibilityBundle check warns rather than errors, so
+    a None result simply means "skip this check, don't crash doctor."
+    """
+    match = _NPM_VERSION_HEAD_RE.search(spec)
+    if not match:
+        return None
+    raw = match.group(1)
+    # Pad to a 3-component version so packaging.Version is happy with "0.3".
+    parts = raw.split(".")
+    while len(parts) < 3:
+        parts.append("0")
+    try:
+        return Version(".".join(parts))
+    except InvalidVersion:
+        return None
+
+
 @dataclass
 class CheckResult:
     name: str
@@ -579,28 +624,93 @@ class DoctorChecker:
             )
 
     def _check_python_runtime_lib(self, req_file: Path) -> CheckResult:
-        content = req_file.read_text()
-        if "kamiwaza-extensions-lib" in content:
-            return CheckResult("Runtime lib (Python)", "pass", "kamiwaza-extensions-lib found in requirements.txt")
+        compat_range = (
+            _compatibility_bundle()
+            .get("runtime_lib_compat", {})
+            .get("python", {})
+            .get("kamiwaza-extensions-lib", "")
+        )
+        # Parse declared specifier from requirements.txt (first matching line).
+        declared_spec: Optional[str] = None
+        declared_pin: Optional[Version] = None
+        for line in req_file.read_text().splitlines():
+            line = line.split("#", 1)[0].strip()
+            if not line.lower().startswith("kamiwaza-extensions-lib"):
+                continue
+            # Strip the package name; remainder is the version specifier.
+            spec_part = line[len("kamiwaza-extensions-lib") :].strip()
+            declared_spec = spec_part or None
+            # If the requirement is an exact pin (==X), capture that for clarity.
+            if spec_part.startswith("=="):
+                try:
+                    declared_pin = Version(spec_part[2:].strip())
+                except InvalidVersion:
+                    pass
+            break
+        if declared_spec is None:
+            return CheckResult(
+                "Runtime lib (Python)", "warn",
+                "kamiwaza-extensions-lib not found in requirements.txt",
+                fix=f"Add 'kamiwaza-extensions-lib{compat_range}' to requirements.txt",
+            )
+        # Compatibility check: does the declared range overlap the supported
+        # window? With a ``==`` pin we can answer precisely; with a range we
+        # accept it for now (proper range-overlap is more code than it's worth
+        # for a warning).
+        if compat_range and declared_pin is not None:
+            try:
+                supported = SpecifierSet(compat_range)
+                if declared_pin not in supported:
+                    return CheckResult(
+                        "Runtime lib (Python)", "warn",
+                        f"kamiwaza-extensions-lib=={declared_pin} is outside CLI compatibility range {compat_range}",
+                        fix=f"Update to 'kamiwaza-extensions-lib{compat_range}'",
+                    )
+            except InvalidSpecifier:
+                pass  # Bundle range malformed — fail open.
         return CheckResult(
-            "Runtime lib (Python)", "warn",
-            "kamiwaza-extensions-lib not found in requirements.txt",
-            fix="Add 'kamiwaza-extensions-lib>=0.1.0' to requirements.txt",
+            "Runtime lib (Python)", "pass",
+            f"kamiwaza-extensions-lib{declared_spec} matches {compat_range or 'any'}",
         )
 
     def _check_ts_runtime_lib(self, pkg_file: Path) -> CheckResult:
+        compat_range = (
+            _compatibility_bundle()
+            .get("runtime_lib_compat", {})
+            .get("typescript", {})
+            .get("@kamiwaza-ai/extensions-lib", "")
+        )
         try:
             with pkg_file.open() as f:
                 data = json.load(f)
             deps = {**data.get("dependencies", {}), **data.get("devDependencies", {})}
-            if "@kamiwaza-ai/extensions-lib" in deps:
-                return CheckResult("Runtime lib (TypeScript)", "pass", "@kamiwaza-ai/extensions-lib found in package.json")
         except (json.JSONDecodeError, FileNotFoundError):
-            pass
+            return CheckResult(
+                "Runtime lib (TypeScript)", "warn",
+                "package.json could not be parsed",
+            )
+        declared = deps.get("@kamiwaza-ai/extensions-lib")
+        if declared is None:
+            return CheckResult(
+                "Runtime lib (TypeScript)", "warn",
+                "@kamiwaza-ai/extensions-lib not found in package.json",
+                fix=f'Add "@kamiwaza-ai/extensions-lib": "{compat_range or "^0.3.0"}" to package.json dependencies',
+            )
+        if compat_range:
+            lower = _npm_lower_bound(declared)
+            try:
+                supported = SpecifierSet(compat_range)
+            except InvalidSpecifier:
+                supported = None
+            if lower is not None and supported is not None and lower not in supported:
+                return CheckResult(
+                    "Runtime lib (TypeScript)", "warn",
+                    f"@kamiwaza-ai/extensions-lib {declared} is outside CLI compatibility range {compat_range}",
+                    fix=f'Update to "@kamiwaza-ai/extensions-lib": "{compat_range}"',
+                )
         return CheckResult(
-            "Runtime lib (TypeScript)", "warn",
-            "@kamiwaza-ai/extensions-lib not found in package.json",
-            fix='Add "@kamiwaza-ai/extensions-lib": "^0.2.0" to package.json dependencies',
+            "Runtime lib (TypeScript)", "pass",
+            f"@kamiwaza-ai/extensions-lib {declared} matches {compat_range or 'any'}",
         )
 
     # ------------------------------------------------------------------
