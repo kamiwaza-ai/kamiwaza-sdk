@@ -55,8 +55,23 @@ def run_status(*, name: Optional[str] = None, verbose: bool = False) -> None:
         # misleading 404. Fall back to the JWT-derived name when the saved
         # cluster doesn't match the active connection so the new cluster
         # is queried for the correct (deterministic) dev name.
+        #
+        # Deployer guard (review re-re-review PR #84 H2): dev names are
+        # per-user (the JWT subject seeds the hash). If user A deployed
+        # from this checkout and user B then runs `kz-ext status` after
+        # logging in as themselves, querying for A's saved name would
+        # return A's deployment to B — confusing in the best case, a
+        # misleading 404 in the worst. Require the saved deployer to
+        # match the current JWT email before reusing the name.
+        from kamiwaza_extensions.commands.dev import _decode_email
+
         state = read_state(info.path)
-        if state and state.last_dev_name and state.cluster == connection.url:
+        current_email = _decode_email(token.access_token)
+        same_cluster = bool(state and state.cluster == connection.url)
+        same_deployer = bool(
+            state and current_email and state.deployer == current_email
+        )
+        if state and state.last_dev_name and same_cluster and same_deployer:
             dev_name = state.last_dev_name
         else:
             dev_name = PayloadBuilder.make_dev_name(

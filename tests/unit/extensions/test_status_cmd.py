@@ -204,7 +204,7 @@ def test_status_uses_dev_state_name_when_cluster_matches(
         url="https://cluster.test/api", verify_ssl=True,
     )
     mock_conn.get_token.return_value = MagicMock(
-        access_token="header.eyJzdWIiOiJ1In0.sig",
+        access_token="header.eyJzdWIiOiAidXNlci1hbGljZSIsICJlbWFpbCI6ICJhbGljZUBleGFtcGxlLmNvbSJ9.sig",
     )
     mock_conn_cls.return_value = mock_conn
 
@@ -238,3 +238,72 @@ def test_status_uses_dev_state_name_when_cluster_matches(
     assert result.exit_code == 0
     called_with = mock_client.extensions.get_extension.call_args[0][0]
     assert called_with == "my-app-dev-saved"
+
+
+
+# ---------------------------------------------------------------------------
+# Review re-re-review PR #84 H2: deployer guard on dev-state reuse
+# ---------------------------------------------------------------------------
+
+
+@patch("kamiwaza_sdk.KamiwazaClient")
+@patch("kamiwaza_extensions.connections.ConnectionManager")
+@patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+@patch("kamiwaza_extensions.dev_state.read_state")
+def test_status_falls_back_to_jwt_when_deployer_mismatches(
+    mock_read_state, mock_detector_cls, mock_conn_cls, mock_client_cls,
+):
+    """Same cluster, but a *different user* is now logged in. Without
+    the deployer guard, `kz-ext status` would query for user A's
+    deployment and return its metadata to user B (or a 404 if A's
+    deployment is gone). Dev names are per-user — fall back to the
+    JWT-derived name so the new user sees their own deployment."""
+    from kamiwaza_extensions.dev_state import DevState
+
+    mock_conn = MagicMock()
+    mock_conn.get_active_connection.return_value = MagicMock(
+        url="https://cluster.test/api", verify_ssl=True,
+    )
+    # JWT carrying email=bob@example.com — different from state.deployer.
+    mock_conn.get_token.return_value = MagicMock(
+        access_token="header.eyJzdWIiOiAidXNlci1ib2IiLCAiZW1haWwiOiAiYm9iQGV4YW1wbGUuY29tIn0.sig",
+    )
+    mock_conn_cls.return_value = mock_conn
+
+    from types import SimpleNamespace
+    mock_detector = MagicMock()
+    mock_detector.detect.return_value = SimpleNamespace(
+        path="/tmp/x", name="my-app", version="1.0.0",
+    )
+    mock_detector_cls.return_value = mock_detector
+
+    # Saved state from user A, same cluster as the active connection.
+    mock_read_state.return_value = DevState(
+        last_dev_name="my-app-dev-userA1",     # alice's deployment
+        last_revision="rev-1",
+        cluster="https://cluster.test/api",     # matches active connection
+        extension_name="my-app",
+        deployer="alice@example.com",           # ≠ bob's JWT
+        last_successful_step="poll",
+    )
+
+    mock_client = MagicMock()
+    ext = MagicMock(
+        name="my-app-dev-userB", phase="Running",
+        endpoints=MagicMock(external=None), services=[], model_extra={},
+    )
+    ext.annotations = {}
+    mock_client.extensions.get_extension.return_value = ext
+    mock_client_cls.return_value = mock_client
+
+    result = runner.invoke(app, ["status"])
+
+    assert result.exit_code == 0
+    called_with = mock_client.extensions.get_extension.call_args[0][0]
+    # Crucially NOT alice's saved name.
+    assert called_with != "my-app-dev-userA1", (
+        f"status surfaced alice's deployment {called_with!r} to bob"
+    )
+    # Bob gets his own JWT-derived name.
+    assert called_with.startswith("my-app-dev-")
+    assert len(called_with.split("-")[-1]) == 6

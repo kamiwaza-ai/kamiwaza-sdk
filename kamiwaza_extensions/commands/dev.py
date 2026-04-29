@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
@@ -37,21 +38,69 @@ def _build_patch_kwargs(
     return kwargs
 
 
-def _is_resumable(prior_state: Any, rev_tag: str, connection_url: str) -> bool:
+# Match the default ``RevisionTagger.generate_tag`` format:
+# ``{version}-dev-{sha7+}.{epoch}`` where the sha portion is the git short
+# SHA (typically 7-12 hex chars). The epoch suffix is the only thing that
+# changes between same-code invocations; stripping it gives us a stable
+# identity we can use as the resume key.
+_CLEAN_REV_RE = re.compile(r"^(.+-dev-[0-9a-f]{4,40})\.\d+$")
+
+
+def _stable_revision_id(rev_tag: str) -> Optional[str]:
+    """Return the stable portion of a revision tag, or ``None`` when
+    resume would be unsafe.
+
+    Three cases (review re-review PR #84 H1 / re-re-review):
+
+      * ``{version}-dev-{sha7+}.{epoch}`` — clean tree at a specific
+        commit. Strip the ``.{epoch}`` suffix; the SHA fully identifies
+        the source code, so two invocations of the same commit produce
+        identical stable ids and can resume each other safely.
+      * ``{version}-dev-dirty.{epoch}`` or ``-dev-nogit.{epoch}`` —
+        the SHA is unknown or the tree is dirty, so two invocations
+        could carry different content under the same ``dirty`` /
+        ``nogit`` slug. Return ``None`` to refuse resume rather than
+        silently redeploy stale code.
+      * Anything else — assume it's a custom ``--revision`` value the
+        user passed explicitly; use it verbatim. The user opted into
+        the identity by pinning, so ``rev-1 == rev-1`` is intentional.
+    """
+    if "-dev-dirty." in rev_tag or "-dev-nogit." in rev_tag:
+        return None
+    m = _CLEAN_REV_RE.match(rev_tag)
+    if m:
+        return m.group(1)
+    return rev_tag
+
+
+def _is_resumable(
+    prior_state: Any,
+    rev_tag: str,
+    connection_url: str,
+    sdk_repo: Optional[str] = None,
+) -> bool:
     """Return True when the prior dev-state can resume the current run.
 
-    Resume requires the same revision (image content identity) AND the
-    same cluster (so the prior push points at the same registry/CR).
-    Different revision → user changed code → full pipeline. Different
-    cluster → the prior push is in another registry, repush is needed
-    (review re-review PR #84 H4).
+    Resume requires:
+      * Same source identity — see :func:`_stable_revision_id` for the
+        clean-sha vs dirty/nogit handling. Different code = full pipeline.
+      * Same cluster — the prior push points at a specific registry/CR;
+        a new cluster has its own registry, so the cached image isn't
+        there.
+      * No active ``--sdk-repo`` override — the SDK code is mutable
+        between runs even when the extension's git SHA is unchanged, so
+        skipping build would silently deploy stale SDK content (review
+        re-review PR #84 H3 / re-re-review).
     """
     if prior_state is None:
         return False
-    return (
-        prior_state.last_revision == rev_tag
-        and prior_state.cluster == connection_url
-    )
+    if sdk_repo is not None:
+        return False
+    current_id = _stable_revision_id(rev_tag)
+    prior_id = _stable_revision_id(prior_state.last_revision or "")
+    if current_id is None or prior_id is None:
+        return False
+    return current_id == prior_id and prior_state.cluster == connection_url
 
 
 def _decode_email(access_token: str) -> Optional[str]:
@@ -230,7 +279,7 @@ def run_dev_remote(
     notice = resume_message(prior_state)
     if notice:
         console.print(f"[dim]{notice}[/dim]")
-    resumable = _is_resumable(prior_state, rev_tag, connection.url)
+    resumable = _is_resumable(prior_state, rev_tag, connection.url, sdk_repo)
     if resumable and not no_build and prior_state.is_step_complete("build"):
         console.print(
             f"[dim]Skipping build — revision {rev_tag} already built in prior run.[/dim]"

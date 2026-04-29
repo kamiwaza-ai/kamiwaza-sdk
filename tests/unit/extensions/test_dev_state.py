@@ -200,6 +200,136 @@ class TestIsResumable:
 
 
 @pytest.mark.unit
+class TestIsResumableStableId:
+    """Review re-re-review PR #84 H1: ``_is_resumable`` keys off a
+    *stable* identity extracted from the revision tag — not the raw
+    timestamped tag. Without this, the default ``kz-ext dev`` workflow
+    (which generates ``{version}-dev-{sha}.{epoch}`` afresh on every
+    invocation) never resumes, defeating the purpose of dev-state."""
+
+    def _state(self, last_revision: str) -> DevState:
+        return DevState(
+            last_run_at="2026-04-28T20:00:00+00:00",
+            last_revision=last_revision,
+            last_dev_name="my-app-dev-abc",
+            last_successful_step="push",
+            cluster="https://cluster.test/api",
+            extension_name="my-app",
+            deployer="alice@example.com",
+        )
+
+    def test_clean_sha_resumes_across_timestamps(self):
+        # Same code (clean tree at sha abc1234) at two different
+        # invocations — must resume. This is the central case the H1
+        # fix exists for: default `kz-ext dev → fail → kz-ext dev` flow
+        # without `--revision`.
+        from kamiwaza_extensions.commands.dev import _is_resumable
+
+        prior = self._state("1.0.0-dev-abc1234.1714000000")
+        new_tag = "1.0.0-dev-abc1234.1714999999"
+        assert _is_resumable(prior, new_tag, "https://cluster.test/api") is True
+
+    def test_clean_sha_changed_does_not_resume(self):
+        # Different sha = different code = full pipeline.
+        from kamiwaza_extensions.commands.dev import _is_resumable
+
+        prior = self._state("1.0.0-dev-abc1234.1714000000")
+        new_tag = "1.0.0-dev-deadbef.1714999999"
+        assert _is_resumable(prior, new_tag, "https://cluster.test/api") is False
+
+    def test_dirty_tree_never_resumes(self):
+        # Two `dirty` invocations could carry different uncommitted
+        # content under the same `dirty` slug — refuse resume rather
+        # than silently redeploy stale code.
+        from kamiwaza_extensions.commands.dev import _is_resumable
+
+        prior = self._state("1.0.0-dev-dirty.1714000000")
+        new_tag = "1.0.0-dev-dirty.1714999999"
+        assert _is_resumable(prior, new_tag, "https://cluster.test/api") is False
+
+    def test_nogit_never_resumes(self):
+        from kamiwaza_extensions.commands.dev import _is_resumable
+
+        prior = self._state("1.0.0-dev-nogit.1714000000")
+        new_tag = "1.0.0-dev-nogit.1714999999"
+        assert _is_resumable(prior, new_tag, "https://cluster.test/api") is False
+
+    def test_custom_revision_pinned_resumes_when_identical(self):
+        # `--revision rev-1` passed on both runs — user explicitly
+        # opted into identity. The custom string is used verbatim.
+        from kamiwaza_extensions.commands.dev import _is_resumable
+
+        prior = self._state("rev-1")
+        assert _is_resumable(prior, "rev-1", "https://cluster.test/api") is True
+
+    def test_stable_revision_id_strips_epoch_for_clean_sha(self):
+        from kamiwaza_extensions.commands.dev import _stable_revision_id
+
+        assert _stable_revision_id("1.0.0-dev-abc1234.1714000000") == "1.0.0-dev-abc1234"
+        assert _stable_revision_id("0.12.1-dev-deadbeef.1") == "0.12.1-dev-deadbeef"
+        # Custom revision (no .epoch suffix) — return as-is.
+        assert _stable_revision_id("rev-1") == "rev-1"
+        # Dirty / nogit return None.
+        assert _stable_revision_id("1.0.0-dev-dirty.1714000000") is None
+        assert _stable_revision_id("1.0.0-dev-nogit.1714000000") is None
+
+
+@pytest.mark.unit
+class TestIsResumableSdkOverride:
+    """Review re-re-review PR #84 H3: ``--sdk-repo`` is a power-user
+    override that mutates the runtime-lib code baked into the image
+    independently of the extension's git SHA. Two runs with the same
+    extension revision but different ``--sdk-repo`` paths produce
+    different image content — skipping build would silently redeploy
+    stale SDK code. Disable resume whenever ``sdk_repo`` is set."""
+
+    def _state(self) -> DevState:
+        return DevState(
+            last_run_at="2026-04-28T20:00:00+00:00",
+            last_revision="1.0.0-dev-abc1234.1714000000",
+            last_dev_name="my-app-dev-abc",
+            last_successful_step="push",
+            cluster="https://cluster.test/api",
+            extension_name="my-app",
+            deployer="alice@example.com",
+        )
+
+    def test_sdk_repo_set_disables_resume(self):
+        from kamiwaza_extensions.commands.dev import _is_resumable
+
+        s = self._state()
+        # Same revision + same cluster — would normally resume — but
+        # sdk_repo is set, so skip.
+        assert _is_resumable(
+            s, "1.0.0-dev-abc1234.1714999999",
+            "https://cluster.test/api",
+            sdk_repo="/Users/dev/kamiwaza-sdk",
+        ) is False
+
+    def test_sdk_repo_none_allows_resume(self):
+        from kamiwaza_extensions.commands.dev import _is_resumable
+
+        s = self._state()
+        assert _is_resumable(
+            s, "1.0.0-dev-abc1234.1714999999",
+            "https://cluster.test/api",
+            sdk_repo=None,
+        ) is True
+
+    def test_sdk_repo_default_argument_omitted(self):
+        # Back-compat: callers that don't pass sdk_repo (legacy unit tests,
+        # internal callers that don't know about override) get the prior
+        # behaviour.
+        from kamiwaza_extensions.commands.dev import _is_resumable
+
+        s = self._state()
+        assert _is_resumable(
+            s, "1.0.0-dev-abc1234.1714999999",
+            "https://cluster.test/api",
+        ) is True
+
+
+@pytest.mark.unit
 class TestBuildPatchKwargsCarriesAnnotations:
     """Review re-review PR #84 H1: PATCH redeploy must refresh the
     deployer/revision/deployed-at annotations. Helper extracted from
