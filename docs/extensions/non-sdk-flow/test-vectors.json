@@ -1,0 +1,65 @@
+[
+  {
+    "case": "happy-path",
+    "headers": {
+      "X-User-Id": "u1",
+      "X-User-Email": "alice@example.com",
+      "X-User-Name": "Alice",
+      "X-User-Roles": "member,editor",
+      "X-User-System-High": "U",
+      "X-Workroom-Id": "w1",
+      "X-User-Workroom-Id": "w1",
+      "X-User-Workroom-Role": "editor",
+      "X-Auth-Token": "ey.fake.jwt",
+      "X-Request-Id": "req-abc",
+      "X-User-Signature": "ignored-by-extensions",
+      "X-User-Signature-Ts": "1714000000000"
+    },
+    "expected_identity": {
+      "user_id": "u1",
+      "email": "alice@example.com",
+      "name": "Alice",
+      "roles": ["member", "editor"],
+      "system_high": "U",
+      "workroom_id": "w1",
+      "workroom_role": "editor",
+      "request_id": "req-abc"
+    }
+  },
+  {
+    "case": "missing-user-id",
+    "headers": {
+      "X-Workroom-Id": "w1",
+      "X-User-Workroom-Id": "w1"
+    },
+    "should_fail_class": "misbound_auth"
+  },
+  {
+    "case": "missing-workroom",
+    "headers": {
+      "X-User-Id": "u1",
+      "X-User-Email": "alice@example.com"
+    },
+    "should_fail_class": "misbound_auth"
+  },
+  {
+    "case": "global-workroom-sentinel",
+    "headers": {
+      "X-User-Id": "u1",
+      "X-User-Email": "ops@example.com",
+      "X-User-Roles": "admin",
+      "X-Workroom-Id": "ffffffff-ffff-ffff-ffff-ffffffffffff",
+      "X-User-Workroom-Id": "ffffffff-ffff-ffff-ffff-ffffffffffff"
+    },
+    "expected_identity": {
+      "user_id": "u1",
+      "email": "ops@example.com",
+      "name": "",
+      "roles": ["admin"],
+      "system_high": "",
+      "workroom_id": "ffffffff-ffff-ffff-ffff-ffffffffffff",
+      "workroom_role": "",
+      "request_id": ""
+    }
+  }
+]
