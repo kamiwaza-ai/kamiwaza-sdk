@@ -28,15 +28,32 @@ class Scaffolder:
             raise ValueError(f"Invalid type '{type_}'. Must be one of: {', '.join(VALID_TYPES)}")
 
         name = self._validate_name(name, type_)
-        target = Path.cwd()
+        cwd = Path.cwd()
+        cwd_visible = [f for f in cwd.iterdir() if not f.name.startswith(".")]
 
-        # Check current directory is empty (ignore hidden files like .git)
-        visible_files = [f for f in target.iterdir() if not f.name.startswith(".")]
-        if visible_files:
-            raise FileExistsError(
-                f"Current directory is not empty ({len(visible_files)} file(s) found). "
-                "Run kz-ext create from an empty directory."
-            )
+        # Empty cwd → preserve historical behavior: scaffold INTO cwd. Users
+        # who already `mkdir foo && cd foo && kz-ext create --name foo` keep
+        # working without behavior change.
+        #
+        # Non-empty cwd → P1 (§4.8 walkthrough): scaffold into cwd/{name},
+        # creating the dir if needed. This removes the "you must create the
+        # dir yourself first" surprise that bit Preston in the 0.12.1 review.
+        if cwd_visible:
+            target = cwd / name
+            if target.exists():
+                target_visible = [
+                    f for f in target.iterdir() if not f.name.startswith(".")
+                ]
+                if target_visible:
+                    raise FileExistsError(
+                        f"Target directory '{target.name}' already exists and is "
+                        f"not empty ({len(target_visible)} file(s) found). "
+                        f"Choose a different name or empty the directory."
+                    )
+            else:
+                target.mkdir()
+        else:
+            target = cwd
 
         context = self._build_context(name, type_)
         template_dir = self._get_template_dir(type_)

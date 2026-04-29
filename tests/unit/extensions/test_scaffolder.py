@@ -92,11 +92,34 @@ class TestScaffolder:
         assert (d / "kamiwaza.json").exists()
         assert (d / "Dockerfile").exists()
 
-    def test_non_empty_directory_error(self, tmp_path, monkeypatch, scaffolder):
+    def test_non_empty_directory_scaffolds_into_named_subdir(
+        self, tmp_path, monkeypatch, scaffolder
+    ):
+        # Updated 2026-04-29 (ENG-3898 P1 §4.8 walkthrough): a non-empty cwd
+        # used to error; it now scaffolds into ./<name>/ instead, matching
+        # the user expectation that --name foo creates foo/.
         d = self._empty_dir(tmp_path)
         (d / "existing-file.txt").write_text("hello")
         monkeypatch.chdir(d)
-        with pytest.raises(FileExistsError, match="not empty"):
+        with patch("subprocess.run"):
+            target = scaffolder.create(type_="app", name="my-app")
+        assert target == d / "my-app"
+        assert (target / "kamiwaza.json").exists()
+        # The pre-existing file in the workspace root is untouched.
+        assert (d / "existing-file.txt").read_text() == "hello"
+
+    def test_non_empty_target_subdir_errors(
+        self, tmp_path, monkeypatch, scaffolder
+    ):
+        # Pre-existing target subdir with content must not be silently
+        # overwritten — error early.
+        d = self._empty_dir(tmp_path)
+        (d / "README.md").write_text("# workspace\n")
+        existing = d / "my-app"
+        existing.mkdir()
+        (existing / "leftover.py").write_text("# something")
+        monkeypatch.chdir(d)
+        with pytest.raises(FileExistsError):
             scaffolder.create(type_="app", name="my-app")
 
     def test_hidden_files_ignored(self, tmp_path, monkeypatch, scaffolder):
