@@ -273,7 +273,7 @@ class TestPrintUrlsBarePort:
         called = {"docker_compose_port": False}
         monkeypatch.setattr(
             "kamiwaza_extensions.dev_local.DevLocalRunner._docker_compose_port",
-            staticmethod(lambda svc, port, compose_cmd=None: called.__setitem__("docker_compose_port", True) or None),
+            staticmethod(lambda svc, port, compose_cmd=None, cwd=None: called.__setitem__("docker_compose_port", True) or None),
         )
 
         runner._print_urls(compose, {}, post_up=False)
@@ -293,7 +293,7 @@ class TestPrintUrlsBarePort:
         # Simulate Docker having assigned host port 49152 to container port 3000.
         monkeypatch.setattr(
             "kamiwaza_extensions.dev_local.DevLocalRunner._docker_compose_port",
-            staticmethod(lambda svc, port, compose_cmd=None: 49152 if svc == "frontend" and port == 3000 else None),
+            staticmethod(lambda svc, port, compose_cmd=None, cwd=None: 49152 if svc == "frontend" and port == 3000 else None),
         )
 
         runner._print_urls(compose, {}, post_up=True)
@@ -324,7 +324,7 @@ class TestPrintUrlsBarePort:
 
         monkeypatch.setattr(
             "kamiwaza_extensions.dev_local.DevLocalRunner._docker_compose_port",
-            staticmethod(lambda svc, port, compose_cmd=None: None),
+            staticmethod(lambda svc, port, compose_cmd=None, cwd=None: None),
         )
 
         runner._print_urls(compose, {}, post_up=True)
@@ -391,3 +391,38 @@ class TestDockerComposePortV1Compat:
         # The actual port query used the detected v2 binary.
         port_calls = [c for c in captured if "port" in c]
         assert port_calls and port_calls[0][:2] == ["docker", "compose"]
+
+    def test_passes_through_project_args_and_cwd(self, monkeypatch):
+        # Review re-review PR #84 M1: when the user invokes from a
+        # parent directory or with override files, the post-up port
+        # query must target the SAME compose project that `compose up`
+        # started — same `-f`/`--project-directory` args and same cwd.
+        from kamiwaza_extensions.dev_local import DevLocalRunner
+
+        captured: dict[str, object] = {}
+
+        def fake_run(cmd, *args, **kwargs):
+            captured["cmd"] = list(cmd)
+            captured["cwd"] = kwargs.get("cwd")
+            return MagicMock(returncode=0, stdout="0.0.0.0:49152\n", stderr="")
+
+        monkeypatch.setattr("subprocess.run", fake_run)
+
+        compose_prefix = [
+            "docker", "compose",
+            "-f", "/tmp/kz-ports-abc.yml",
+            "-f", "/tmp/kz-sdk-xyz.yml",
+            "--project-directory", "/Users/dev/my-app",
+        ]
+        host = DevLocalRunner._docker_compose_port(
+            "frontend", 3000,
+            compose_cmd=compose_prefix,
+            cwd="/Users/dev/my-app",
+        )
+        assert host == 49152
+        # Project-identifier args + `port` + service + container port —
+        # matches the same project that `compose up` was invoked against.
+        assert captured["cmd"] == [
+            *compose_prefix, "port", "frontend", "3000",
+        ]
+        assert captured["cwd"] == "/Users/dev/my-app"

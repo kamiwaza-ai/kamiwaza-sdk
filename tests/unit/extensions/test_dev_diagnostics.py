@@ -220,3 +220,45 @@ class TestOperatorContainerByName:
             d = diagnose_dev_timeout("my-app-dev-abc", "kamiwaza-extensions")
         assert d.category == "operator-not-ready"
         assert "v0.1.1" in d.message
+
+
+@pytest.mark.unit
+class TestDigestPinnedOperatorImage:
+    """Review re-review PR #84 H1: a digest-pinned operator deploy
+    (e.g. `image: ghcr.io/.../extension-operator@sha256:abc...`) is
+    opaque from the tag-name perspective. Without the digest gate, the
+    compat check rejects the digest string and an app-level timeout
+    would be misclassified as operator-not-ready (exit 23 +
+    "reinstall the platform")."""
+
+    def test_digest_pinned_image_does_not_misclassify_app_timeout(self):
+        digest_ref = f"{OPERATOR_IMAGE}@sha256:" + "a" * 64
+        with patch(
+            "subprocess.run",
+            side_effect=_kubectl_stub(_deploy_json(digest_ref), _pods_json()),
+        ):
+            d = diagnose_dev_timeout("my-app-dev-abc", "kamiwaza-extensions")
+        # No "running 'sha256:...' which was not published" message —
+        # the digest gate skips compat check and the run falls through
+        # to app-failure (operator is healthy).
+        assert d.category == "app-failure"
+        assert "sha256" not in d.message
+        assert "my-app-dev-abc" in d.message
+
+    def test_digest_pinned_still_catches_unhealthy_operator(self):
+        # If the operator pod is in ImagePullBackOff (regardless of
+        # whether the spec is digest- or tag-pinned), we still want
+        # operator-not-ready. The digest gate is specifically about
+        # the *compat-name comparison*, not the broader operator-state
+        # checks.
+        digest_ref = f"{OPERATOR_IMAGE}@sha256:" + "a" * 64
+        with patch(
+            "subprocess.run",
+            side_effect=_kubectl_stub(
+                _deploy_json(digest_ref),
+                _pods_json(reason="ImagePullBackOff", message="manifest unknown"),
+            ),
+        ):
+            d = diagnose_dev_timeout("my-app-dev-abc", "kamiwaza-extensions")
+        assert d.category == "operator-not-ready"
+        assert "ImagePullBackOff" in d.message

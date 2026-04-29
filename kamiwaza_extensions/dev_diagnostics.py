@@ -18,6 +18,7 @@ from kamiwaza_extensions.platform_compat import (
     OPERATOR_DEPLOYMENT,
     OPERATOR_NAMESPACE,
     is_compatible_tag,
+    is_digest_ref,
     is_local_connection,
     parse_image_ref,
 )
@@ -91,7 +92,12 @@ def diagnose_dev_timeout(
 
     image_ref = _container_image(deploy)
     _, tag = parse_image_ref(image_ref) if image_ref else ("", None)
-    if tag and not is_compatible_tag(tag):
+    # Digest-pinned refs (`@sha256:...`) are opaque from the tag-name
+    # perspective — we can't infer release-version compat without a
+    # registry round-trip. Skip the compat warning and let the
+    # downstream Available / app-failure checks decide (review re-review
+    # PR #84 H1).
+    if tag and not is_digest_ref(tag) and not is_compatible_tag(tag):
         expected = ", ".join(OPERATOR_COMPATIBLE_TAGS)
         return TimeoutDiagnosis(
             category="operator-not-ready",

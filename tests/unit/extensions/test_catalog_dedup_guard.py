@@ -316,3 +316,84 @@ class TestPublishRevisionFlag:
         assert rb.build_entry.call_args.kwargs["revision"] == "ci-sha-abc123"
         pub.publish.assert_called_once()
         assert pub.publish.call_args.kwargs["revision"] == "ci-sha-abc123"
+
+
+@pytest.mark.unit
+class TestPublishRevisionGrammarValidatedEarly:
+    """Review re-review PR #84 M2: bad ``--revision`` input must reject
+    *before* the build/push side effects so an invalid revision can't
+    leak orphan tags into the registry. The grammar check used to live
+    inside ``CatalogPublisher.publish()`` (after step 5/6) and so a
+    revision like ``foo/bar`` would build + push the image first, then
+    fail at the publish step."""
+
+    def _run_publish_with_invalid_revision(self, revision: str, tmp_path):
+        from unittest.mock import MagicMock, patch
+
+        import typer
+
+        from kamiwaza_extensions.commands.publish import run_publish
+
+        from tests.unit.extensions.test_publish_cmd import (
+            _make_extension_info,
+            _make_profile,
+            _make_validation_result,
+        )
+
+        with (
+            patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher") as PubCls,
+            patch("kamiwaza_extensions.registry_builder.RegistryBuilder") as RBCls,
+            patch("kamiwaza_extensions.image_pusher.ImagePusher") as PusherCls,
+            patch("kamiwaza_extensions.image_builder.ImageBuilder") as BuildCls,
+            patch("kamiwaza_extensions.profile_manager.ProfileManager") as PMCls,
+            patch("kamiwaza_extensions.compose_transformer.ComposeTransformer") as CTCls,
+            patch("kamiwaza_extensions.validators.compose.ComposeValidator") as CVCls,
+            patch("kamiwaza_extensions.validators.metadata.MetadataValidator") as MVCls,
+            patch("kamiwaza_extensions.extension_detector.ExtensionDetector") as DetCls,
+        ):
+            DetCls.return_value.detect.return_value = _make_extension_info(tmp_path)
+            MVCls.return_value.validate.return_value = _make_validation_result()
+            CVCls.return_value.validate.return_value = _make_validation_result()
+            PMCls.return_value.resolve_profile.return_value = _make_profile()
+            CTCls.return_value.transform.return_value = {"services": {}}
+            BuildCls.return_value.build.return_value = []
+            RBCls.return_value.build_entry.return_value = {"name": "x", "version": "1.0.0"}
+            PubCls.return_value.publish.return_value = MagicMock()
+
+            try:
+                # `typer.Exit` is the public name; under the hood it's
+                # `click.exceptions.Exit`. Match either so the test isn't
+                # tied to typer's wrapping detail.
+                with pytest.raises(typer.Exit) as exc_info:
+                    run_publish(stage="dev", revision=revision)
+            finally:
+                build_calls = BuildCls.return_value.build.call_count
+                push_calls = PusherCls.return_value.push.call_count
+                publish_calls = PubCls.return_value.publish.call_count
+
+        return exc_info.value.exit_code, build_calls, push_calls, publish_calls
+
+    @pytest.mark.parametrize(
+        "bad_revision", ["foo/bar", "BAD CASE", "with space", "-leading-dash"],
+    )
+    def test_invalid_revision_rejects_before_build_or_push(self, bad_revision, tmp_path):
+        from unittest.mock import MagicMock  # noqa: F401 — used inside helper
+
+        rc, build_calls, push_calls, publish_calls = self._run_publish_with_invalid_revision(
+            bad_revision, tmp_path,
+        )
+
+        from kamiwaza_extensions.exit_codes import ExitCode
+
+        # Validation exit code (2), not generic 1.
+        assert rc == int(ExitCode.VALIDATION)
+
+        # And critically — none of the side-effecting steps ran.
+        assert build_calls == 0, (
+            f"image build was invoked despite invalid revision {bad_revision!r}"
+        )
+        assert push_calls == 0, (
+            f"image push was invoked despite invalid revision {bad_revision!r} — "
+            "an orphan tag would be left in the registry"
+        )
+        assert publish_calls == 0

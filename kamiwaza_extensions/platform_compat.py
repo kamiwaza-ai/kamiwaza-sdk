@@ -33,7 +33,9 @@ def parse_image_ref(image_ref: str) -> Tuple[str, Optional[str]]:
     """Split an image reference into ``(repository, tag)``.
 
     Handles registries with port numbers like ``ghcr.io/x/y:tag`` and
-    digests like ``ghcr.io/x/y@sha256:...`` (digest returned as the tag).
+    digests like ``ghcr.io/x/y@sha256:...`` (digest returned in the tag
+    slot, prefixed with ``sha256:`` so callers can distinguish it from a
+    release tag — see :func:`is_digest_ref`).
     """
     if "@" in image_ref:
         repo, _, digest = image_ref.partition("@")
@@ -47,8 +49,28 @@ def parse_image_ref(image_ref: str) -> Tuple[str, Optional[str]]:
     return image_ref, None
 
 
+def is_digest_ref(tag: Optional[str]) -> bool:
+    """Return ``True`` if ``tag`` is a digest (e.g. ``sha256:abc123``).
+
+    ``parse_image_ref`` returns the digest in the tag slot for refs like
+    ``ghcr.io/x/y@sha256:...``. A digest is opaque from the tag-name
+    perspective — we can't infer release-version compatibility from it
+    without a registry round-trip — so callers should skip
+    :func:`is_compatible_tag` checks on digest refs (review re-review
+    PR #84 H1: digest-pinned operator deploys were silently
+    misclassified as incompatible).
+    """
+    return tag is not None and tag.startswith("sha256:")
+
+
 def is_compatible_tag(tag: Optional[str]) -> bool:
-    """Return ``True`` if ``tag`` is in ``OPERATOR_COMPATIBLE_TAGS``."""
+    """Return ``True`` if ``tag`` is in ``OPERATOR_COMPATIBLE_TAGS``.
+
+    Note: this returns ``False`` for digest refs (``sha256:...``) even
+    though the underlying image may be perfectly compatible — callers
+    should gate on :func:`is_digest_ref` first and treat digest refs as
+    opaque-but-trusted (skip the compat warning).
+    """
     return tag is not None and tag in OPERATOR_COMPATIBLE_TAGS
 
 

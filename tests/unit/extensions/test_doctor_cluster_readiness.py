@@ -287,3 +287,29 @@ class TestClusterReadinessRequiresLocalConnection:
         ):
             result = checker.cluster_extension_readiness()
         assert result.status == "pass"
+
+
+@pytest.mark.unit
+class TestClusterReadinessDigestPinnedOperator:
+    """Review re-review PR #84 H1: digest-pinned operator deploys must
+    not trigger the compat-mismatch warning. Doctor previously emitted
+    "Tag 'sha256:...' is not in this CLI's compatible set" for any
+    digest-pinned cluster, which is misleading — digest refs are opaque
+    from the tag-name perspective and may well be fully compatible."""
+
+    def test_digest_pinned_image_passes_with_explanatory_message(self, checker_with_connection):
+        checker = checker_with_connection
+        digest_ref = f"{OPERATOR_IMAGE}@sha256:" + "a" * 64
+        with patch(
+            "subprocess.run",
+            side_effect=_stub_kubectl(0, _deploy_payload(digest_ref), _pods_payload()),
+        ):
+            result = checker.cluster_extension_readiness()
+        # Pass (not warn) — digest is opaque so we don't warn about
+        # compat, but the cluster is healthy enough to run extensions.
+        assert result.status == "pass"
+        assert "digest-pinned" in result.message
+        assert "sha256:" in result.message
+        # And explicitly NOT a warning about a tag not being in the
+        # compat set.
+        assert "compatible set" not in (result.fix or "")

@@ -234,6 +234,7 @@ class DoctorChecker:
             OPERATOR_DEPLOYMENT,
             OPERATOR_NAMESPACE,
             is_compatible_tag,
+            is_digest_ref,
             parse_image_ref,
         )
 
@@ -365,7 +366,18 @@ class DoctorChecker:
                 exit_code=not_ready,
             )
 
-        # 3. Tag compatibility — warn (not fail) when Available but mismatched
+        # 3. Tag compatibility — warn (not fail) when Available but mismatched.
+        # Digest-pinned refs (`@sha256:...`) are opaque from the tag-name
+        # perspective so we can't determine compat without a registry
+        # round-trip. Treat them as opaque-but-trusted: pass with a note
+        # that compat couldn't be verified, but don't emit a misleading
+        # warning (review re-review PR #84 H1).
+        if image_tag and is_digest_ref(image_tag):
+            return CheckResult(
+                name, "pass",
+                f"CRD installed, extension-operator Available "
+                f"(digest-pinned: {image_tag[:19]}…)",
+            )
         if not is_compatible_tag(image_tag):
             expected = ", ".join(OPERATOR_COMPATIBLE_TAGS)
             return CheckResult(

@@ -93,6 +93,7 @@ def run_publish(
     """Build, push, and publish extension to catalog."""
     from kamiwaza_extensions.catalog_publisher import (
         CatalogDedupError,
+        CatalogDedupGuard,
         CatalogPublishError,
         CatalogPublisher,
     )
@@ -105,6 +106,18 @@ def run_publish(
     from kamiwaza_extensions.registry_builder import RegistryBuilder
     from kamiwaza_extensions.validators.compose import ComposeValidator
     from kamiwaza_extensions.validators.metadata import MetadataValidator
+
+    # 0. Fail fast on bad --revision before any side effects (build, push,
+    # registry tag pollution). Previously this validated inside
+    # CatalogPublisher.publish, after image push had already happened —
+    # invalid revisions like 'foo/bar' or 'BAD CASE' would leak orphan
+    # tags into the registry (review re-review PR #84 M2).
+    if revision is not None:
+        try:
+            CatalogDedupGuard.validate_revision(revision)
+        except ValueError as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(code=int(ExitCode.VALIDATION)) from exc
 
     # 1. Detect extension
     detector = ExtensionDetector()

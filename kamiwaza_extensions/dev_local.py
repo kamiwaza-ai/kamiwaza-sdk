@@ -136,13 +136,19 @@ class DevLocalRunner:
                 fd.close()
                 sdk_override_file = fd.name
 
-            # 8. Build command
-            cmd = compose_cmd + ["-f", compose_file_arg]
+            # 8. Build the project-identifier prefix (compose binary +
+            # -f / --project-directory args). The same prefix is used for
+            # `compose up` and the post-up `compose port` lookup so they
+            # query the same project even when the user invokes from a
+            # parent directory or with override files (review re-review
+            # PR #84 M1).
+            compose_prefix = compose_cmd + ["-f", compose_file_arg]
             if sdk_override_file:
-                cmd += ["-f", sdk_override_file]
+                compose_prefix += ["-f", sdk_override_file]
             if patched_compose_file or sdk_override_file:
-                cmd += ["--project-directory", str(info.path)]
-            cmd += ["up", "--build"]
+                compose_prefix += ["--project-directory", str(info.path)]
+
+            cmd = list(compose_prefix) + ["up", "--build"]
             if detach:
                 cmd.append("-d")
 
@@ -160,10 +166,15 @@ class DevLocalRunner:
             # 10b. Detach mode only: re-resolve bare-port URLs once Docker
             # has actually published them. Foreground mode blocks on
             # compose logs until the user Ctrl+Cs, so there is no
-            # post-up moment to reach.
+            # post-up moment to reach. Pass the same compose prefix +
+            # cwd so the port query targets the project that was started.
             if detach and rc == 0:
                 self._print_urls(
-                    info.compose_data, remaps, post_up=True, compose_cmd=compose_cmd,
+                    info.compose_data,
+                    remaps,
+                    post_up=True,
+                    compose_cmd=compose_prefix,
+                    cwd=str(info.path),
                 )
 
             return rc
@@ -186,6 +197,7 @@ class DevLocalRunner:
         *,
         post_up: bool = False,
         compose_cmd: Optional[List[str]] = None,
+        cwd: Optional[str] = None,
     ) -> None:
         """Print per-service access URLs.
 
@@ -222,7 +234,9 @@ class DevLocalRunner:
                         continue
                     if container_port is not None:
                         host_port = self._docker_compose_port(
-                            svc_name, container_port, compose_cmd=compose_cmd,
+                            svc_name, container_port,
+                            compose_cmd=compose_cmd,
+                            cwd=cwd,
                         )
                     if host_port is None:
                         continue
@@ -235,14 +249,23 @@ class DevLocalRunner:
         service: str,
         container_port: int,
         compose_cmd: Optional[List[str]] = None,
+        cwd: Optional[str] = None,
     ) -> Optional[int]:
         """Look up the host port Docker assigned to ``service:container_port``.
 
-        ``compose_cmd`` defaults to ``detect_compose_command()`` so v1
-        (``docker-compose``) hosts that lack the v2 plugin still get
-        bare-port URL discovery (review re-review PR #84 M1). Callers
-        already in possession of the detected command should pass it
-        through to avoid the redetection cost.
+        ``compose_cmd`` should include the same ``-f`` / ``--project-directory``
+        args used to invoke ``compose up`` so the lookup targets the
+        right project. The runtime caller in :meth:`run` passes the
+        full ``compose_prefix`` it built earlier; ad-hoc callers can
+        omit it and the function falls back to ``detect_compose_command()``
+        with no project args (works only when there is one project in
+        the resolved cwd).
+
+        ``cwd`` defaults to the process cwd. Pass the extension dir
+        explicitly when the user invoked from a parent directory or with
+        temp override files — otherwise compose looks for a
+        ``docker-compose.yml`` in the wrong place (review re-review
+        PR #84 M1).
         """
         if compose_cmd is None:
             try:
@@ -252,7 +275,7 @@ class DevLocalRunner:
         try:
             result = subprocess.run(
                 [*compose_cmd, "port", service, str(container_port)],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True, text=True, timeout=10, cwd=cwd,
             )
             if result.returncode != 0:
                 return None
