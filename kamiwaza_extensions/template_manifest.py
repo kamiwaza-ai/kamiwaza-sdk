@@ -37,7 +37,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from kamiwaza_extensions import __version__
 
 FileStrategy = Literal["overwrite", "preserve_if_modified", "merge"]
 ShapeName = Literal["app", "tool", "service"]

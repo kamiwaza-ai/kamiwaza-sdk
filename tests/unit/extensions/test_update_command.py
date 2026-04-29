@@ -16,7 +16,6 @@ Replay tests against historical template snapshots (TS-M2-13/14) live in
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -63,14 +62,10 @@ def test_dry_run_on_fresh_scaffold_reports_no_changes(shape: str, tmp_path, monk
 def test_update_on_fresh_scaffold_makes_no_changes(shape: str, tmp_path, monkeypatch):
     scaffold = _make_scaffold(tmp_path, monkeypatch, type_=shape)
     monkeypatch.chdir(scaffold)
-    # Capture file mtimes; a no-op update must not touch them.
-    before_mtimes = {
-        p: p.stat().st_mtime for p in scaffold.rglob("*") if p.is_file()
-    }
     summary = run_update()
+    # Freshly-rendered scaffold has no conflicts and reports zero updates.
     assert summary.conflicts == 0
-    # Nothing besides kamiwaza.json template_version stamping should happen
-    # (and even that is a no-op when the version matches).
+    assert summary.updated == 0
 
 
 # ---------------------------------------------------------------------------

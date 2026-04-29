@@ -33,13 +33,11 @@ import json
 from dataclasses import dataclass
 from importlib import resources as importlib_resources
 from pathlib import Path
-from typing import Optional
 
 import typer
 from rich.console import Console
 from rich.table import Table
 
-from kamiwaza_extensions import __version__
 from kamiwaza_extensions.exit_codes import ExitCode
 from kamiwaza_extensions.scaffolder import Scaffolder
 from kamiwaza_extensions.template_manifest import (
