@@ -57,6 +57,7 @@ class RegistryBuilder:
         version: str,
         stage: str = "prod",
         revision: Optional[str] = None,
+        image_tag_override: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Generate a catalog entry dict from *metadata* and *transformed_compose*.
 
@@ -70,6 +71,10 @@ class RegistryBuilder:
             revision: Optional revision identifier. When provided, included
                 as a top-level ``revision`` field on the entry; consumed by
                 ``CatalogDedupGuard`` to make CI re-publishes idempotent.
+            image_tag_override: When set, the catalog's compose image tags
+                use this exact value instead of the stage-suffixed
+                ``{version}{stage_suffix}``. Required when CI built and
+                pushed a SHA-pinned tag the catalog must reference verbatim.
 
         Returns:
             A dict matching the Kamiwaza catalog entry schema.
@@ -77,7 +82,9 @@ class RegistryBuilder:
         extension_name = metadata.get("name", "")
         compose_yml = yaml.dump(transformed_compose, default_flow_style=False)
         compose_yml = self.transform_image_tags(
-            compose_yml, registry, version, stage, extension_name=extension_name,
+            compose_yml, registry, version, stage,
+            extension_name=extension_name,
+            tag_override=image_tag_override,
         )
         # Parse back to dict for reliable image extraction (avoids env var false positives)
         tagged_compose = yaml.safe_load(compose_yml) or {}
@@ -217,6 +224,7 @@ class RegistryBuilder:
         version: str,
         stage: str,
         extension_name: str = "",
+        tag_override: Optional[str] = None,
     ) -> str:
         """Rewrite image tags in a compose YAML string for the target stage.
 
@@ -226,9 +234,17 @@ class RegistryBuilder:
 
         If *extension_name* is empty, falls back to matching all images
         with the *registry* prefix (legacy behaviour).
+
+        When *tag_override* is provided, that exact tag is written instead
+        of the stage-derived ``{version}{stage_suffix}``. ``version`` and
+        ``stage`` are still used for matching the existing pattern but
+        not for the replacement value.
         """
-        suffix = _STAGE_SUFFIXES.get(stage, f"-{stage}")
-        new_tag = f"{version}{suffix}"
+        if tag_override is not None:
+            new_tag = tag_override
+        else:
+            suffix = _STAGE_SUFFIXES.get(stage, f"-{stage}")
+            new_tag = f"{version}{suffix}"
         escaped_reg = re.escape(registry)
 
         if extension_name:

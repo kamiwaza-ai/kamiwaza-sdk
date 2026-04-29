@@ -317,6 +317,164 @@ class TestPublishRevisionFlag:
         pub.publish.assert_called_once()
         assert pub.publish.call_args.kwargs["revision"] == "ci-sha-abc123"
 
+    def test_publish_command_uses_revision_as_image_tag(self, tmp_path):
+        """ENG-3591: ``--revision`` must override the docker image tag end-
+        to-end, not just appear as a catalog dedup field. Otherwise CI's
+        SHA-pinned tag is recorded in metadata but the published compose
+        still references the mutable ``{version}-{stage}`` tag — so installs
+        would 404 on the image CI actually pushed."""
+        from unittest.mock import MagicMock, patch
+
+        from kamiwaza_extensions.commands.publish import run_publish
+
+        from tests.unit.extensions.test_publish_cmd import (
+            _make_extension_info,
+            _make_profile,
+            _make_publish_result,
+            _make_validation_result,
+        )
+
+        with (
+            patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher") as PubCls,
+            patch("kamiwaza_extensions.registry_builder.RegistryBuilder") as RBCls,
+            patch("kamiwaza_extensions.image_pusher.ImagePusher"),
+            patch("kamiwaza_extensions.image_builder.ImageBuilder") as BuildCls,
+            patch("kamiwaza_extensions.profile_manager.ProfileManager") as PMCls,
+            patch("kamiwaza_extensions.compose_transformer.ComposeTransformer") as CTCls,
+            patch("kamiwaza_extensions.validators.compose.ComposeValidator") as CVCls,
+            patch("kamiwaza_extensions.validators.metadata.MetadataValidator") as MVCls,
+            patch("kamiwaza_extensions.extension_detector.ExtensionDetector") as DetCls,
+        ):
+            DetCls.return_value.detect.return_value = _make_extension_info(tmp_path)
+            MVCls.return_value.validate.return_value = _make_validation_result()
+            CVCls.return_value.validate.return_value = _make_validation_result()
+            PMCls.return_value.resolve_profile.return_value = _make_profile()
+            CTCls.return_value.transform.return_value = {"services": {}}
+            BuildCls.return_value.build.return_value = []
+
+            rb = MagicMock()
+            rb.build_entry.return_value = {"name": "my-app", "version": "1.0.0"}
+            RBCls.return_value = rb
+
+            PubCls.return_value.publish.return_value = _make_publish_result()
+
+            run_publish(stage="dev", revision="1.0.0-dev-abc1234")
+
+        # ComposeTransformer must build with the revision tag (so the local
+        # in-memory compose carries the SHA tag).
+        assert (
+            CTCls.return_value.transform.call_args.kwargs["revision_tag"]
+            == "1.0.0-dev-abc1234"
+        )
+        # ImageBuilder builds the SHA-tagged image.
+        assert (
+            BuildCls.return_value.build.call_args.kwargs["revision_tag"]
+            == "1.0.0-dev-abc1234"
+        )
+        # And the catalog entry gets the override so transform_image_tags
+        # writes the SHA tag rather than the {version}-{stage} default.
+        assert (
+            rb.build_entry.call_args.kwargs["image_tag_override"]
+            == "1.0.0-dev-abc1234"
+        )
+        # effective_stage is preserved — stage semantics are not broken.
+        assert rb.build_entry.call_args.kwargs["stage"] == "dev"
+
+    def test_publish_command_dry_run_threads_image_tag_override(self, tmp_path):
+        """``--dry-run`` exercises a separate ``build_entry`` call site that
+        also has to receive ``image_tag_override`` (otherwise dry-run output
+        misrepresents what a real publish would write to the catalog)."""
+        from unittest.mock import MagicMock, patch
+
+        from kamiwaza_extensions.commands.publish import run_publish
+
+        from tests.unit.extensions.test_publish_cmd import (
+            _make_extension_info,
+            _make_profile,
+            _make_publish_result,
+            _make_validation_result,
+        )
+
+        with (
+            patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher") as PubCls,
+            patch("kamiwaza_extensions.registry_builder.RegistryBuilder") as RBCls,
+            patch("kamiwaza_extensions.image_pusher.ImagePusher") as PusherCls,
+            patch("kamiwaza_extensions.image_builder.ImageBuilder") as BuildCls,
+            patch("kamiwaza_extensions.profile_manager.ProfileManager") as PMCls,
+            patch("kamiwaza_extensions.compose_transformer.ComposeTransformer") as CTCls,
+            patch("kamiwaza_extensions.validators.compose.ComposeValidator") as CVCls,
+            patch("kamiwaza_extensions.validators.metadata.MetadataValidator") as MVCls,
+            patch("kamiwaza_extensions.extension_detector.ExtensionDetector") as DetCls,
+        ):
+            DetCls.return_value.detect.return_value = _make_extension_info(tmp_path)
+            MVCls.return_value.validate.return_value = _make_validation_result()
+            CVCls.return_value.validate.return_value = _make_validation_result()
+            PMCls.return_value.resolve_profile.return_value = _make_profile()
+            CTCls.return_value.transform.return_value = {"services": {}}
+
+            rb = MagicMock()
+            rb.build_entry.return_value = {"name": "my-app", "version": "1.0.0"}
+            RBCls.return_value = rb
+
+            PubCls.return_value.publish.return_value = _make_publish_result()
+
+            run_publish(stage="dev", revision="1.0.0-dev-abc1234", dry_run=True)
+
+        # Dry-run must thread the override the same way the real path does.
+        rb.build_entry.assert_called_once()
+        assert (
+            rb.build_entry.call_args.kwargs["image_tag_override"]
+            == "1.0.0-dev-abc1234"
+        )
+        # No build or push side effects in dry-run.
+        BuildCls.return_value.build.assert_not_called()
+        PusherCls.return_value.push.assert_not_called()
+
+    def test_publish_command_no_revision_keeps_image_tag_override_none(
+        self, tmp_path,
+    ):
+        """Without ``--revision`` the catalog must keep the pre-ENG-3591
+        behaviour: ``image_tag_override`` is None and the regex pass uses
+        the stage suffix."""
+        from unittest.mock import MagicMock, patch
+
+        from kamiwaza_extensions.commands.publish import run_publish
+
+        from tests.unit.extensions.test_publish_cmd import (
+            _make_extension_info,
+            _make_profile,
+            _make_publish_result,
+            _make_validation_result,
+        )
+
+        with (
+            patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher") as PubCls,
+            patch("kamiwaza_extensions.registry_builder.RegistryBuilder") as RBCls,
+            patch("kamiwaza_extensions.image_pusher.ImagePusher"),
+            patch("kamiwaza_extensions.image_builder.ImageBuilder") as BuildCls,
+            patch("kamiwaza_extensions.profile_manager.ProfileManager") as PMCls,
+            patch("kamiwaza_extensions.compose_transformer.ComposeTransformer") as CTCls,
+            patch("kamiwaza_extensions.validators.compose.ComposeValidator") as CVCls,
+            patch("kamiwaza_extensions.validators.metadata.MetadataValidator") as MVCls,
+            patch("kamiwaza_extensions.extension_detector.ExtensionDetector") as DetCls,
+        ):
+            DetCls.return_value.detect.return_value = _make_extension_info(tmp_path)
+            MVCls.return_value.validate.return_value = _make_validation_result()
+            CVCls.return_value.validate.return_value = _make_validation_result()
+            PMCls.return_value.resolve_profile.return_value = _make_profile()
+            CTCls.return_value.transform.return_value = {"services": {}}
+            BuildCls.return_value.build.return_value = []
+
+            rb = MagicMock()
+            rb.build_entry.return_value = {"name": "my-app", "version": "1.0.0"}
+            RBCls.return_value = rb
+
+            PubCls.return_value.publish.return_value = _make_publish_result()
+
+            run_publish(stage="dev")
+
+        assert rb.build_entry.call_args.kwargs["image_tag_override"] is None
+
 
 @pytest.mark.unit
 class TestPublishRevisionGrammarValidatedEarly:

@@ -189,13 +189,16 @@ def run_publish(
         )
         raise typer.Exit(code=1)
 
-    # Determine the image tag: "prod" uses bare version, all others add suffix.
-    if stage == "prod":
+    # Determine the image tag.
+    # --revision (e.g. CI-built SHA-pinned tag) takes precedence over the
+    # stage-derived default. Prod publishes use a bare version when no
+    # revision is supplied, matching the pre-ENG-3591 convention.
+    if revision is not None:
+        image_tag = revision
+    elif stage == "prod":
         image_tag = version
-        effective_stage = "prod"
     else:
         image_tag = f"{version}-{stage}"
-        effective_stage = stage
 
     # 4. Transform compose (uses the stage-aware image tag)
     transformer = ComposeTransformer()
@@ -223,8 +226,9 @@ def run_publish(
             transformed_compose=transformed,
             registry=registry,
             version=version,
-            stage=effective_stage,
+            stage=stage,
             revision=revision,
+            image_tag_override=revision,
         )
         try:
             publisher = CatalogPublisher(profile, extension_dir=info.path)
@@ -313,8 +317,9 @@ def run_publish(
         transformed_compose=transformed,
         registry=registry,
         version=version,
-        stage=effective_stage,
+        stage=stage,
         revision=revision,
+        image_tag_override=revision,
     )
 
     # 8. Publish to catalog

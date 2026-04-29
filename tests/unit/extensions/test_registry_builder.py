@@ -182,6 +182,124 @@ class TestBuildEntry:
 
 
 # ------------------------------------------------------------------
+# build_entry with image_tag_override (ENG-3591)
+# ------------------------------------------------------------------
+
+
+class TestBuildEntryWithImageTagOverride:
+    """When CI builds an SHA-pinned image tag, ``image_tag_override`` makes
+    the catalog entry reference that exact tag instead of the stage-derived
+    ``{version}{suffix}``. Without the override the regex pass in
+    ``transform_image_tags`` rewrites the tag back to ``{version}-{stage}``,
+    causing installs to pull a tag CI never pushed."""
+
+    def test_override_used_in_docker_images_for_dev(
+        self, builder, metadata, transformed_compose
+    ):
+        entry = builder.build_entry(
+            metadata,
+            transformed_compose,
+            "kamiwazaai",
+            "1.0.0",
+            stage="dev",
+            image_tag_override="1.0.0-dev-abc1234",
+        )
+        images = entry["docker_images"]
+        assert "kamiwazaai/my-app-frontend:1.0.0-dev-abc1234" in images
+        assert "kamiwazaai/my-app-backend:1.0.0-dev-abc1234" in images
+        # Stage-derived tag must not appear.
+        assert "kamiwazaai/my-app-frontend:1.0.0-dev" not in images
+        assert "kamiwazaai/my-app-backend:1.0.0-dev" not in images
+
+    def test_override_used_in_compose_yml(
+        self, builder, metadata, transformed_compose
+    ):
+        entry = builder.build_entry(
+            metadata,
+            transformed_compose,
+            "kamiwazaai",
+            "1.0.0",
+            stage="dev",
+            image_tag_override="1.0.0-dev-abc1234",
+        )
+        # Round-trip the published compose to confirm the override is what
+        # downstream installs will actually pull.
+        parsed = yaml.safe_load(entry["compose_yml"])
+        assert (
+            parsed["services"]["frontend"]["image"]
+            == "kamiwazaai/my-app-frontend:1.0.0-dev-abc1234"
+        )
+        assert (
+            parsed["services"]["backend"]["image"]
+            == "kamiwazaai/my-app-backend:1.0.0-dev-abc1234"
+        )
+
+    def test_override_with_prod_stage(
+        self, builder, metadata, transformed_compose
+    ):
+        # Prod publish that pins to a SHA — keep semver tag accuracy on the
+        # entry (version="1.0.0") while pointing the compose at the pinned ref.
+        entry = builder.build_entry(
+            metadata,
+            transformed_compose,
+            "kamiwazaai",
+            "1.0.0",
+            stage="prod",
+            image_tag_override="1.0.0-abc1234",
+        )
+        images = entry["docker_images"]
+        assert "kamiwazaai/my-app-frontend:1.0.0-abc1234" in images
+        assert "kamiwazaai/my-app-frontend:1.0.0" not in images
+
+    def test_override_leaves_external_images_untouched(
+        self, builder, metadata, transformed_compose
+    ):
+        entry = builder.build_entry(
+            metadata,
+            transformed_compose,
+            "kamiwazaai",
+            "1.0.0",
+            stage="dev",
+            image_tag_override="1.0.0-dev-abc1234",
+        )
+        # postgres:15 is shared / external — must not be rewritten.
+        assert "postgres:15" in entry["docker_images"]
+
+    def test_override_and_revision_field_set_independently(
+        self, builder, metadata, transformed_compose
+    ):
+        # CI uses revision both for catalog dedup and as the image tag, but
+        # they're independent kwargs on the API. Confirm both land.
+        entry = builder.build_entry(
+            metadata,
+            transformed_compose,
+            "kamiwazaai",
+            "1.0.0",
+            stage="dev",
+            revision="1.0.0-dev-abc1234",
+            image_tag_override="1.0.0-dev-abc1234",
+        )
+        assert entry["revision"] == "1.0.0-dev-abc1234"
+        assert (
+            "kamiwazaai/my-app-frontend:1.0.0-dev-abc1234"
+            in entry["docker_images"]
+        )
+
+    def test_no_override_falls_back_to_stage_suffix(
+        self, builder, metadata, transformed_compose
+    ):
+        entry = builder.build_entry(
+            metadata,
+            transformed_compose,
+            "kamiwazaai",
+            "1.0.0",
+            stage="dev",
+        )
+        # Default (pre-ENG-3591) behaviour preserved.
+        assert "kamiwazaai/my-app-frontend:1.0.0-dev" in entry["docker_images"]
+
+
+# ------------------------------------------------------------------
 # transform_image_tags
 # ------------------------------------------------------------------
 
@@ -234,6 +352,24 @@ class TestTransformImageTags:
         yml = "image: kamiwazaai/my-app:old"
         result = builder.transform_image_tags(yml, "kamiwazaai", "2.0.0", "qa")
         assert "kamiwazaai/my-app:2.0.0-qa" in result
+
+    def test_tag_override_replaces_stage_derived_tag(self, builder):
+        yml = "image: kamiwazaai/my-app-web:old-tag"
+        result = builder.transform_image_tags(
+            yml, "kamiwazaai", "2.0.0", "dev",
+            tag_override="2.0.0-dev-abc1234",
+        )
+        assert "kamiwazaai/my-app-web:2.0.0-dev-abc1234" in result
+        # The default stage-derived tag must not leak through.
+        assert "kamiwazaai/my-app-web:2.0.0-dev\n" not in result
+
+    def test_tag_override_with_prod_stage(self, builder):
+        yml = "image: kamiwazaai/my-app-web:old-tag"
+        result = builder.transform_image_tags(
+            yml, "kamiwazaai", "2.0.0", "prod",
+            tag_override="2.0.0-abc1234",
+        )
+        assert "kamiwazaai/my-app-web:2.0.0-abc1234" in result
 
 
 # ------------------------------------------------------------------
