@@ -12,6 +12,8 @@ pytestmark = pytest.mark.unit
 def _clear_base_env(monkeypatch):
     monkeypatch.delenv("KAMIWAZA_BASE_URL", raising=False)
     monkeypatch.delenv("KAMIWAZA_BASE_URI", raising=False)
+    monkeypatch.delenv("KAMIWAZA_VERIFY_SSL", raising=False)
+    monkeypatch.delenv("REQUESTS_CA_BUNDLE", raising=False)
 
 
 def test_client_requires_base_url_when_no_env(monkeypatch):
@@ -63,6 +65,16 @@ def test_client_disables_ssl_verification_from_env(monkeypatch):
     assert client.session.verify is False
 
 
+def test_client_disables_ssl_verification_for_falsey_env_values(monkeypatch):
+    _clear_base_env(monkeypatch)
+    monkeypatch.setenv("KAMIWAZA_BASE_URL", "https://env.example/api")
+    monkeypatch.setenv("KAMIWAZA_VERIFY_SSL", " no ")
+
+    client = KamiwazaClient()
+
+    assert client.session.verify is False
+
+
 def test_client_request_forces_verify_false_when_ssl_disabled(monkeypatch):
     _clear_base_env(monkeypatch)
     monkeypatch.setenv("KAMIWAZA_BASE_URL", "https://env.example/api")
@@ -83,6 +95,23 @@ def test_client_request_forces_verify_false_when_ssl_disabled(monkeypatch):
     assert calls[0]["kwargs"]["verify"] is False
 
 
+def test_client_request_does_not_inject_verify_when_ssl_enabled(monkeypatch):
+    _clear_base_env(monkeypatch)
+    monkeypatch.setenv("KAMIWAZA_BASE_URL", "https://env.example/api")
+    client = KamiwazaClient()
+    calls: list[dict[str, object]] = []
+
+    def _fake_request(method: str, url: str, **kwargs: object) -> _NoContentResponse:
+        calls.append({"method": method, "url": url, "kwargs": kwargs})
+        return _NoContentResponse()
+
+    monkeypatch.setattr(client.session, "request", _fake_request)
+
+    client.get("/serving/deployments", expect_json=False)
+
+    assert "verify" not in calls[0]["kwargs"]
+
+
 def test_client_request_preserves_explicit_verify_override(monkeypatch):
     _clear_base_env(monkeypatch)
     monkeypatch.setenv("KAMIWAZA_BASE_URL", "https://env.example/api")
@@ -99,3 +128,58 @@ def test_client_request_preserves_explicit_verify_override(monkeypatch):
     client.get("/serving/deployments", expect_json=False, verify=True)
 
     assert calls[0]["kwargs"]["verify"] is True
+
+
+def test_client_request_preserves_explicit_verify_false(monkeypatch):
+    _clear_base_env(monkeypatch)
+    monkeypatch.setenv("KAMIWAZA_BASE_URL", "https://env.example/api")
+    monkeypatch.setenv("KAMIWAZA_VERIFY_SSL", "false")
+    client = KamiwazaClient()
+    calls: list[dict[str, object]] = []
+
+    def _fake_request(method: str, url: str, **kwargs: object) -> _NoContentResponse:
+        calls.append({"method": method, "url": url, "kwargs": kwargs})
+        return _NoContentResponse()
+
+    monkeypatch.setattr(client.session, "request", _fake_request)
+
+    client.get("/serving/deployments", expect_json=False, verify=False)
+
+    assert calls[0]["kwargs"]["verify"] is False
+
+
+def test_client_request_preserves_explicit_verify_none(monkeypatch):
+    _clear_base_env(monkeypatch)
+    monkeypatch.setenv("KAMIWAZA_BASE_URL", "https://env.example/api")
+    monkeypatch.setenv("KAMIWAZA_VERIFY_SSL", "false")
+    client = KamiwazaClient()
+    calls: list[dict[str, object]] = []
+
+    def _fake_request(method: str, url: str, **kwargs: object) -> _NoContentResponse:
+        calls.append({"method": method, "url": url, "kwargs": kwargs})
+        return _NoContentResponse()
+
+    monkeypatch.setattr(client.session, "request", _fake_request)
+
+    client.get("/serving/deployments", expect_json=False, verify=None)
+
+    assert calls[0]["kwargs"]["verify"] is None
+
+
+def test_client_request_respects_runtime_session_verify_override(monkeypatch):
+    _clear_base_env(monkeypatch)
+    monkeypatch.setenv("KAMIWAZA_BASE_URL", "https://env.example/api")
+    monkeypatch.setenv("KAMIWAZA_VERIFY_SSL", "false")
+    client = KamiwazaClient()
+    client.session.verify = "/tmp/custom-ca.pem"
+    calls: list[dict[str, object]] = []
+
+    def _fake_request(method: str, url: str, **kwargs: object) -> _NoContentResponse:
+        calls.append({"method": method, "url": url, "kwargs": kwargs})
+        return _NoContentResponse()
+
+    monkeypatch.setattr(client.session, "request", _fake_request)
+
+    client.get("/serving/deployments", expect_json=False)
+
+    assert "verify" not in calls[0]["kwargs"]
