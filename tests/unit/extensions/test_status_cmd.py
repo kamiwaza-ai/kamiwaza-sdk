@@ -119,3 +119,122 @@ def test_status_not_found(mock_conn_cls, mock_client_cls):
 
     assert result.exit_code == 1
     assert "not found" in result.output.lower()
+
+
+
+# ---------------------------------------------------------------------------
+# Review re-review PR #84 H2: cluster-mismatch fallback in name resolution
+# ---------------------------------------------------------------------------
+
+
+@patch("kamiwaza_sdk.KamiwazaClient")
+@patch("kamiwaza_extensions.connections.ConnectionManager")
+@patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+@patch("kamiwaza_extensions.dev_state.read_state")
+def test_status_falls_back_to_jwt_when_dev_state_cluster_mismatches(
+    mock_read_state, mock_detector_cls, mock_conn_cls, mock_client_cls,
+):
+    """H2: after `kz-ext login` to a different cluster, `status` must NOT
+    use the saved dev_name from the prior cluster — querying the new
+    cluster for the old name returns a misleading 404. Fall back to the
+    deterministic JWT-derived name so the new cluster is queried for the
+    correct dev name."""
+    from kamiwaza_extensions.dev_state import DevState
+
+    # Active connection is now cluster B.
+    mock_conn = MagicMock()
+    mock_conn.get_active_connection.return_value = MagicMock(
+        url="https://cluster-b.test/api", verify_ssl=True,
+    )
+    mock_conn.get_token.return_value = MagicMock(
+        access_token="header.eyJzdWIiOiJ1c2VyLWIifQ.sig",
+    )
+    mock_conn_cls.return_value = mock_conn
+
+    from types import SimpleNamespace
+
+    mock_detector = MagicMock()
+    mock_detector.detect.return_value = SimpleNamespace(
+        path="/tmp/x", name="my-app", version="1.0.0",
+    )
+    mock_detector_cls.return_value = mock_detector
+
+    # Dev-state from a prior deploy to cluster A.
+    mock_read_state.return_value = DevState(
+        last_dev_name="my-app-dev-old123",
+        last_revision="rev-a",
+        cluster="https://cluster-a.test/api",
+        extension_name="my-app",
+        deployer="alice@example.com",
+        last_successful_step="poll",
+    )
+
+    mock_client = MagicMock()
+    ext = MagicMock(
+        name="my-app-dev-jwt", phase="Running",
+        endpoints=MagicMock(external=None), services=[], model_extra={},
+    )
+    ext.annotations = {}
+    mock_client.extensions.get_extension.return_value = ext
+    mock_client_cls.return_value = mock_client
+
+    result = runner.invoke(app, ["status"])
+
+    assert result.exit_code == 0
+    called_with = mock_client.extensions.get_extension.call_args[0][0]
+    assert called_with != "my-app-dev-old123", (
+        f"status used cluster-A dev_name {called_with!r} despite cluster-B connection"
+    )
+    assert called_with.startswith("my-app-dev-")
+    assert len(called_with.split("-")[-1]) == 6
+
+
+@patch("kamiwaza_sdk.KamiwazaClient")
+@patch("kamiwaza_extensions.connections.ConnectionManager")
+@patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+@patch("kamiwaza_extensions.dev_state.read_state")
+def test_status_uses_dev_state_name_when_cluster_matches(
+    mock_read_state, mock_detector_cls, mock_conn_cls, mock_client_cls,
+):
+    """Sanity check the H2 fix doesn't break the happy path."""
+    from kamiwaza_extensions.dev_state import DevState
+
+    mock_conn = MagicMock()
+    mock_conn.get_active_connection.return_value = MagicMock(
+        url="https://cluster.test/api", verify_ssl=True,
+    )
+    mock_conn.get_token.return_value = MagicMock(
+        access_token="header.eyJzdWIiOiJ1In0.sig",
+    )
+    mock_conn_cls.return_value = mock_conn
+
+    from types import SimpleNamespace
+
+    mock_detector = MagicMock()
+    mock_detector.detect.return_value = SimpleNamespace(
+        path="/tmp/x", name="my-app", version="1.0.0",
+    )
+    mock_detector_cls.return_value = mock_detector
+
+    mock_read_state.return_value = DevState(
+        last_dev_name="my-app-dev-saved",
+        last_revision="rev-1",
+        cluster="https://cluster.test/api",
+        extension_name="my-app",
+        deployer="alice@example.com",
+        last_successful_step="poll",
+    )
+
+    mock_client = MagicMock()
+    ext = MagicMock(
+        name="my-app-dev-saved", phase="Running",
+        endpoints=MagicMock(external=None), services=[], model_extra={},
+    )
+    ext.annotations = {}
+    mock_client.extensions.get_extension.return_value = ext
+    mock_client_cls.return_value = mock_client
+
+    result = runner.invoke(app, ["status"])
+    assert result.exit_code == 0
+    called_with = mock_client.extensions.get_extension.call_args[0][0]
+    assert called_with == "my-app-dev-saved"

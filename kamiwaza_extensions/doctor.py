@@ -18,6 +18,19 @@ from kamiwaza_extensions import __version__
 from kamiwaza_extensions.connections import ConnectionManager
 
 
+# kubectl prints distinct stderr for "resource is genuinely absent" vs
+# "I can't even reach the API server / I'm not authorized / wrong context".
+# The former is a real platform-install problem; the latter is a config
+# issue we shouldn't misdiagnose as a broken cluster (review re-review
+# PR #84 H3). Match on the `(NotFound)` token kubectl emits in
+# `Error from server (NotFound): customresourcedefinitions ... not found`.
+def _is_kubectl_not_found_error(stderr: str) -> bool:
+    if not stderr:
+        return False
+    lowered = stderr.lower()
+    return "(notfound)" in lowered or "not found" in lowered
+
+
 @lru_cache(maxsize=1)
 def _uac_9d_hints() -> list[dict]:
     """Load UAC-9d class hints from the runtime lib's canonical JSON."""
@@ -288,11 +301,28 @@ class DoctorChecker:
         # 1. CRD presence
         crd_status, crd_err = self._kubectl_get(["crd", EXTENSION_CRD])
         if crd_status != 0:
+            # Distinguish "CRD genuinely absent" from "kubectl can't reach
+            # the cluster / auth expired / wrong context" (review re-review
+            # PR #84 H3). Only the former is a CLUSTER_NOT_READY=23 fail
+            # ("reinstall the platform"); the latter is a transient/config
+            # issue we should warn about rather than misdiagnose as a
+            # broken cluster.
+            if _is_kubectl_not_found_error(crd_err):
+                return CheckResult(
+                    name, "fail",
+                    f"Extension CRD '{EXTENSION_CRD}' not installed on cluster",
+                    fix=f"Install or upgrade the kamiwaza platform on this cluster: {crd_err}",
+                    exit_code=not_ready,
+                )
             return CheckResult(
-                name, "fail",
-                f"Extension CRD '{EXTENSION_CRD}' not installed on cluster",
-                fix=f"Install or upgrade the kamiwaza platform on this cluster: {crd_err}",
-                exit_code=not_ready,
+                name, "warn",
+                f"Could not query cluster for CRD: {crd_err}",
+                fix=(
+                    "Verify your kubeconfig is valid and points at the "
+                    "Kamiwaza cluster (`kubectl get nodes` to test). "
+                    "kubectl reachability errors are not the same as a "
+                    "missing platform install."
+                ),
             )
 
         # 2. Operator Deployment + image
@@ -300,11 +330,23 @@ class DoctorChecker:
             ["deploy", OPERATOR_DEPLOYMENT, "-n", OPERATOR_NAMESPACE]
         )
         if deploy_status != 0 or not isinstance(deploy_payload, dict):
+            # Same distinction here: "Deployment not found" is a real
+            # platform-install issue; transient kubectl failures are not.
+            err_msg = deploy_payload if isinstance(deploy_payload, str) else ""
+            if _is_kubectl_not_found_error(err_msg):
+                return CheckResult(
+                    name, "fail",
+                    f"extension-operator Deployment not found in '{OPERATOR_NAMESPACE}'",
+                    fix="Re-run the platform installer on this cluster",
+                    exit_code=not_ready,
+                )
             return CheckResult(
-                name, "fail",
-                f"extension-operator Deployment not found in '{OPERATOR_NAMESPACE}'",
-                fix="Re-run the platform installer on this cluster",
-                exit_code=not_ready,
+                name, "warn",
+                f"Could not query cluster for extension-operator Deployment: {err_msg}",
+                fix=(
+                    "Verify your kubeconfig is valid and points at the "
+                    "Kamiwaza cluster (`kubectl get nodes` to test)."
+                ),
             )
 
         # Image tag

@@ -4,13 +4,54 @@ from __future__ import annotations
 
 import os
 import subprocess
-from typing import Optional
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 import typer
 from rich.console import Console
 
 console = Console(stderr=True)
+
+
+# ---------------------------------------------------------------------------
+# Helpers extracted for unit testing — review re-review PR #84 H1 + H4
+# ---------------------------------------------------------------------------
+
+
+def _build_patch_kwargs(
+    patch_services: List[Any],
+    payload: Any,
+) -> Dict[str, Any]:
+    """Build the kwargs dict for ``PatchExtension(**kwargs)`` from a
+    ``CreateExtension`` payload.
+
+    Carries the ``deployer``/``revision``/``deployed-at`` annotations
+    from the payload's ``model_extra`` so PATCH redeploys refresh CRD
+    metadata — ``kz-ext status`` would otherwise show stale ``Last
+    deployed by`` after the first redeploy (review re-review PR #84 H1).
+    """
+    kwargs: Dict[str, Any] = {"services": patch_services}
+    annotations = (payload.model_extra or {}).get("annotations")
+    if annotations:
+        kwargs["annotations"] = annotations
+    return kwargs
+
+
+def _is_resumable(prior_state: Any, rev_tag: str, connection_url: str) -> bool:
+    """Return True when the prior dev-state can resume the current run.
+
+    Resume requires the same revision (image content identity) AND the
+    same cluster (so the prior push points at the same registry/CR).
+    Different revision → user changed code → full pipeline. Different
+    cluster → the prior push is in another registry, repush is needed
+    (review re-review PR #84 H4).
+    """
+    if prior_state is None:
+        return False
+    return (
+        prior_state.last_revision == rev_tag
+        and prior_state.cluster == connection_url
+    )
 
 
 def _decode_email(access_token: str) -> Optional[str]:
@@ -179,10 +220,27 @@ def run_dev_remote(
     rev_tag = tagger.generate_tag(info.version, custom=revision)
 
     # Read prior dev-state for resume hints (§4.2.9 DevStateFile, ENG-3887).
+    # If the prior run wrote the same revision and got past a step, skip
+    # that step on this invocation. The image content for the same revision
+    # tag is byte-identical (the tag contains the revision SHA), so
+    # rebuild/repush is wasted work and reintroduces the registry/auth
+    # failure modes the state file was meant to avoid (review re-review
+    # PR #84 H4). Different revision = different code = full pipeline.
     prior_state = read_state(info.path)
     notice = resume_message(prior_state)
     if notice:
         console.print(f"[dim]{notice}[/dim]")
+    resumable = _is_resumable(prior_state, rev_tag, connection.url)
+    if resumable and not no_build and prior_state.is_step_complete("build"):
+        console.print(
+            f"[dim]Skipping build — revision {rev_tag} already built in prior run.[/dim]"
+        )
+        no_build = True
+    if resumable and not no_push and prior_state.is_step_complete("push"):
+        console.print(
+            f"[dim]Skipping push — revision {rev_tag} already pushed in prior run.[/dim]"
+        )
+        no_push = True
 
     # Warn about dirty tree
     if revision is None:
@@ -405,7 +463,10 @@ def run_dev_remote(
                 if svc.replicas is not None:
                     spec.replicas = svc.replicas
                 patch_services.append(spec)
-            patch = PatchExtension(services=patch_services)
+            # Carries the deployer/revision/deployed-at annotations on
+            # every PATCH so `kz-ext status` reflects the current
+            # redeploy (review re-review PR #84 H1).
+            patch = PatchExtension(**_build_patch_kwargs(patch_services, payload))
 
             try:
                 ext = client.extensions.patch_extension(dev_name, patch)

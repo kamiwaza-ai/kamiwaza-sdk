@@ -146,3 +146,108 @@ class TestResumeMessage:
         assert msg is not None
         assert "push" in msg
         assert "2026-04-28" in msg
+
+
+
+# ---------------------------------------------------------------------------
+# Review re-review PR #84 H4: actual resume now wired through
+# `_is_resumable` in commands/dev.py. Test the helper directly here.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestIsResumable:
+    def _state(self, **overrides) -> DevState:
+        defaults = dict(
+            last_run_at="2026-04-28T20:00:00+00:00",
+            last_revision="rev-current",
+            last_dev_name="my-app-dev-abc",
+            last_successful_step="push",
+            cluster="https://cluster.test/api",
+            extension_name="my-app",
+            deployer="alice@example.com",
+        )
+        defaults.update(overrides)
+        return DevState(**defaults)
+
+    def test_none_state_is_not_resumable(self):
+        from kamiwaza_extensions.commands.dev import _is_resumable
+
+        assert _is_resumable(None, "rev-x", "https://cluster.test/api") is False
+
+    def test_matching_revision_and_cluster_is_resumable(self):
+        from kamiwaza_extensions.commands.dev import _is_resumable
+
+        s = self._state()
+        assert _is_resumable(s, "rev-current", "https://cluster.test/api") is True
+
+    def test_different_revision_is_not_resumable(self):
+        # Different revision = different code = full pipeline. Skipping
+        # build here would deploy stale image content.
+        from kamiwaza_extensions.commands.dev import _is_resumable
+
+        s = self._state(last_revision="rev-old")
+        assert _is_resumable(s, "rev-current", "https://cluster.test/api") is False
+
+    def test_different_cluster_is_not_resumable(self):
+        # Different cluster = different registry = the prior push is in
+        # the wrong place. Skipping push here would deploy a non-existent
+        # image tag at the new cluster.
+        from kamiwaza_extensions.commands.dev import _is_resumable
+
+        s = self._state(cluster="https://other-cluster.test/api")
+        assert _is_resumable(s, "rev-current", "https://cluster.test/api") is False
+
+
+@pytest.mark.unit
+class TestBuildPatchKwargsCarriesAnnotations:
+    """Review re-review PR #84 H1: PATCH redeploy must refresh the
+    deployer/revision/deployed-at annotations. Helper extracted from
+    commands/dev.py for testability."""
+
+    def _payload_with_annotations(self, annotations: dict | None) -> object:
+        class _FakePayload:
+            def __init__(self, model_extra):
+                self.model_extra = model_extra
+
+        return _FakePayload({"annotations": annotations} if annotations else {})
+
+    def test_carries_annotations_when_present(self):
+        from kamiwaza_extensions.commands.dev import _build_patch_kwargs
+
+        annotations = {
+            "kamiwaza.ai/deployer": "alice@example.com",
+            "kamiwaza.ai/revision": "1.0.0-dev-abc",
+            "kamiwaza.ai/deployed-at": "2026-04-29T10:00:00+00:00",
+        }
+        kwargs = _build_patch_kwargs(
+            patch_services=["svc-a"],
+            payload=self._payload_with_annotations(annotations),
+        )
+        assert kwargs["services"] == ["svc-a"]
+        assert kwargs["annotations"] == annotations
+
+    def test_omits_annotations_when_absent(self):
+        from kamiwaza_extensions.commands.dev import _build_patch_kwargs
+
+        kwargs = _build_patch_kwargs(
+            patch_services=["svc-a"],
+            payload=self._payload_with_annotations(None),
+        )
+        assert "annotations" not in kwargs
+        assert kwargs["services"] == ["svc-a"]
+
+    def test_patchextension_accepts_annotations_via_extra_allow(self):
+        # Sanity: the PatchExtension schema must accept the annotations
+        # kwarg via `extra="allow"`. If a future schema change locks
+        # `extra="forbid"`, this test fails loudly.
+        from kamiwaza_sdk.schemas.extensions import PatchExtension, PatchServiceSpec
+
+        from kamiwaza_extensions.commands.dev import _build_patch_kwargs
+
+        kwargs = _build_patch_kwargs(
+            patch_services=[PatchServiceSpec(name="x")],
+            payload=self._payload_with_annotations({"k": "v"}),
+        )
+        patch = PatchExtension(**kwargs)
+        assert (patch.model_extra or {}).get("annotations") == {"k": "v"}

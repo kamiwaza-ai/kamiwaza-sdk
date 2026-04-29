@@ -313,3 +313,73 @@ class TestClusterReadinessDigestPinnedOperator:
         # And explicitly NOT a warning about a tag not being in the
         # compat set.
         assert "compatible set" not in (result.fix or "")
+
+
+@pytest.mark.unit
+class TestClusterReadinessDistinguishesNotFoundFromUnreachable:
+    """Review re-review PR #84 H3: a non-zero `kubectl get crd` exit
+    can mean either "CRD genuinely absent" or "kubectl can't reach the
+    cluster" (auth expired, kubeconfig broken, wrong context). The
+    former is a real CLUSTER_NOT_READY=23 fail; the latter is a
+    transient/config issue. The probe must distinguish them by parsing
+    stderr — otherwise users with broken kubeconfigs see "reinstall the
+    platform" guidance for an unrelated kubectl problem."""
+
+    def _stub_kubectl_with_crd_error(self, stderr: str):
+        def _run(cmd, *args, **kwargs):
+            if cmd[1] == "version":
+                return MagicMock(returncode=0, stdout="{}", stderr="")
+            if cmd[1] == "get" and cmd[2] == "crd":
+                # Simulate kubectl returning non-zero with the supplied stderr.
+                return MagicMock(returncode=1, stdout="", stderr=stderr)
+            return MagicMock(returncode=1, stdout="", stderr="unhandled")
+        return _run
+
+    def test_crd_genuinely_absent_fails_with_cluster_not_ready(
+        self, checker_with_connection,
+    ):
+        # The canonical "resource doesn't exist" stderr from kubectl.
+        not_found_stderr = (
+            'Error from server (NotFound): customresourcedefinitions.apiextensions.k8s.io '
+            '"kamiwazaextensions.extensions.kamiwaza.io" not found'
+        )
+        with patch(
+            "subprocess.run",
+            side_effect=self._stub_kubectl_with_crd_error(not_found_stderr),
+        ):
+            result = checker_with_connection.cluster_extension_readiness()
+        assert result.status == "fail"
+        assert result.exit_code == int(ExitCode.CLUSTER_NOT_READY)
+        assert "not installed" in result.message.lower()
+
+    @pytest.mark.parametrize(
+        "kubectl_stderr",
+        [
+            # Expired or missing creds.
+            "error: You must be logged in to the server (Unauthorized)",
+            # API server unreachable (VPN dropped, wrong port, etc.).
+            "Unable to connect to the server: dial tcp 10.0.0.1:6443: i/o timeout",
+            # Invalid kubeconfig path.
+            'error: stat /home/user/.kube/config: no such file or directory',
+            # Wrong context selected.
+            'error: context "wrong-cluster" does not exist',
+            # TLS / cert issue.
+            'Unable to connect to the server: x509: certificate signed by unknown authority',
+        ],
+    )
+    def test_kubectl_unreachable_warns_instead_of_failing(
+        self, checker_with_connection, kubectl_stderr,
+    ):
+        # None of these errors should produce a CLUSTER_NOT_READY fail —
+        # they're config/connectivity issues, not platform-install issues.
+        with patch(
+            "subprocess.run",
+            side_effect=self._stub_kubectl_with_crd_error(kubectl_stderr),
+        ):
+            result = checker_with_connection.cluster_extension_readiness()
+        assert result.status == "warn"
+        assert result.exit_code is None
+        assert "could not query" in result.message.lower()
+        # The fix message must point at kubectl/kubeconfig, not platform
+        # reinstall.
+        assert "kubeconfig" in (result.fix or "").lower()

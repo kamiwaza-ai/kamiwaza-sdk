@@ -47,8 +47,16 @@ def run_status(*, name: Optional[str] = None, verbose: bool = False) -> None:
         # Prefer the dev-state file's `last_dev_name` (written by `kz-ext dev`
         # — see §4.2.9 / ENG-3887). Falls back to deriving the name from the
         # current user's JWT, which only matches when the same user deployed.
+        #
+        # Cluster-change guard (review re-review PR #84 H2): the dev-state
+        # captures the cluster the prior deploy hit. After
+        # `kz-ext login <other-cluster>`, the saved name belongs to the OLD
+        # cluster — querying the new cluster for it would return a
+        # misleading 404. Fall back to the JWT-derived name when the saved
+        # cluster doesn't match the active connection so the new cluster
+        # is queried for the correct (deterministic) dev name.
         state = read_state(info.path)
-        if state and state.last_dev_name:
+        if state and state.last_dev_name and state.cluster == connection.url:
             dev_name = state.last_dev_name
         else:
             dev_name = PayloadBuilder.make_dev_name(
