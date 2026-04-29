@@ -18,6 +18,7 @@ from .errors import (
     MisboundAuthError,
     OutOfEnvelopeAccessError,
     PlatformOutageError,
+    StreamInterruptedError,
     UnexpectedContextError,
 )
 from .identity import (
@@ -48,6 +49,7 @@ __all__ = [
     "UnexpectedContextError",
     "OutOfEnvelopeAccessError",
     "PlatformOutageError",
+    "StreamInterruptedError",
     "get_model_client",
     "list_available_models",
 ]

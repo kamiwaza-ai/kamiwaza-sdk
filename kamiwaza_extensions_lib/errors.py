@@ -39,3 +39,16 @@ class PlatformOutageError(KamiwazaRuntimeError):
     """Platform API 5xx or unreachable."""
 
     class_name = "platform_outage"
+
+
+class StreamInterruptedError(KamiwazaRuntimeError):
+    """Upstream streaming response failed after bytes were committed downstream.
+
+    Surfaces from ``TokenRefreshMiddleware`` (ENG-3895) when the upstream
+    connection drops or sends an SSE error frame after the response has
+    already begun flowing to the extension client. By that point, retry is
+    impossible — the HTTP status was committed at first-byte. Extension
+    SDKs should map a connection close mid-stream to this class.
+    """
+
+    class_name = "stream_interrupted"
