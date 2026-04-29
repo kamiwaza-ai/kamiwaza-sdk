@@ -54,12 +54,12 @@
     "expected_identity": {
       "user_id": "u1",
       "email": "ops@example.com",
-      "name": "",
+      "name": null,
       "roles": ["admin"],
-      "system_high": "",
+      "system_high": null,
       "workroom_id": "ffffffff-ffff-ffff-ffff-ffffffffffff",
-      "workroom_role": "",
-      "request_id": ""
+      "workroom_role": null,
+      "request_id": null
     }
   }
 ]
