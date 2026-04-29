@@ -189,32 +189,6 @@ def _strip_bind_mounts(volumes: List[Any]) -> List[str]:
     return kept
 
 
-def _update_tag(image: str, new_tag: str) -> str:
-    """Replace the tag portion of an image reference."""
-    # Don't rewrite digest references
-    if "@sha256:" in image:
-        return image
-    last_slash = image.rfind("/")
-    last_colon = image.rfind(":")
-    if last_colon > last_slash:
-        return image[:last_colon] + ":" + new_tag
-    return image + ":" + new_tag
-
-
-def _is_external_image(image: str, extension_name: str) -> bool:
-    """Return True for images that are NOT part of this extension (e.g., postgres)."""
-    lower = image.lower()
-    # Common external images
-    if any(ext in lower for ext in ("postgres", "mysql", "mariadb", "redis", "valkey",
-                                     "mongo", "rabbitmq", "elasticsearch", "milvus",
-                                     "nginx", "memcached", "minio")):
-        return True
-    # If image doesn't contain the extension name, treat as external
-    if extension_name.lower() not in lower:
-        return True
-    return False
-
-
 def _ensure_resource_limits(svc: Dict[str, Any]) -> None:
     """Add default resource limits if not already specified."""
     deploy = svc.setdefault("deploy", {})

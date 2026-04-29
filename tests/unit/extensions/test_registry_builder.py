@@ -239,6 +239,13 @@ class TestBuildEntryRespectsComposeTransformerOutput:
         assert "kamiwazaai/my-app-helper:0.5.0" in images
         # The revision tag must NOT have leaked into the helper ref.
         assert "kamiwazaai/my-app-helper:1.0.0-dev-abc1234" not in images
+        # Round-trip the published compose YAML to confirm what an installer
+        # would actually see in the catalog entry.
+        parsed = yaml.safe_load(entry["compose_yml"])
+        assert (
+            parsed["services"]["helper"]["image"]
+            == "kamiwazaai/my-app-helper:0.5.0"
+        )
 
     def test_external_images_pass_through_verbatim(self, builder):
         transformed = {
@@ -258,6 +265,10 @@ class TestBuildEntryRespectsComposeTransformerOutput:
         images = entry["docker_images"]
         assert "postgres:15" in images
         assert "redis:7" in images
+        # Round-trip the published compose YAML.
+        parsed = yaml.safe_load(entry["compose_yml"])
+        assert parsed["services"]["db"]["image"] == "postgres:15"
+        assert parsed["services"]["cache"]["image"] == "redis:7"
 
 
 # ------------------------------------------------------------------
@@ -313,41 +324,6 @@ class TestTransformImageTags:
         yml = "image: kamiwazaai/my-app:old"
         result = builder.transform_image_tags(yml, "kamiwazaai", "2.0.0", "qa")
         assert "kamiwazaai/my-app:2.0.0-qa" in result
-
-    def test_tag_override_replaces_stage_derived_tag(self, builder):
-        yml = "image: kamiwazaai/my-app-web:old-tag"
-        result = builder.transform_image_tags(
-            yml, "kamiwazaai", "2.0.0", "dev",
-            tag_override="2.0.0-dev-abc1234",
-        )
-        assert "kamiwazaai/my-app-web:2.0.0-dev-abc1234" in result
-        # The default stage-derived tag must not leak through.
-        assert "kamiwazaai/my-app-web:2.0.0-dev\n" not in result
-
-    def test_tag_override_with_prod_stage(self, builder):
-        yml = "image: kamiwazaai/my-app-web:old-tag"
-        result = builder.transform_image_tags(
-            yml, "kamiwazaai", "2.0.0", "prod",
-            tag_override="2.0.0-abc1234",
-        )
-        assert "kamiwazaai/my-app-web:2.0.0-abc1234" in result
-
-    def test_tag_override_does_not_rewrite_other_extensions(self, builder):
-        # Multi-tenant registry: a different extension's image happens to
-        # share the same registry but a different name prefix. The override
-        # is scoped to ``extension_name`` and must leave foreign refs alone.
-        yml = (
-            "image: kamiwazaai/my-app-web:old-tag\n"
-            "image: kamiwazaai/some-other-ext-svc:v1.2.3\n"
-        )
-        result = builder.transform_image_tags(
-            yml, "kamiwazaai", "2.0.0", "dev",
-            extension_name="my-app",
-            tag_override="2.0.0-dev-abc1234",
-        )
-        assert "kamiwazaai/my-app-web:2.0.0-dev-abc1234" in result
-        # Foreign extension image untouched.
-        assert "kamiwazaai/some-other-ext-svc:v1.2.3" in result
 
 
 # ------------------------------------------------------------------

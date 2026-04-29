@@ -70,6 +70,10 @@ class RegistryBuilder:
             registry: Docker registry prefix (e.g. ``"kamiwazaai"``).
             version: Semver version string for this release.
             stage: One of ``"prod"``, ``"stage"``, ``"dev"``, or any custom name.
+                Currently unused in the body — ``ComposeTransformer`` already
+                applied the stage-derived tag to buildable services. Kept on
+                the signature for call-site compatibility with prior callers
+                of ``RegistryBuilder``.
             revision: Optional revision identifier. When provided, included
                 as a top-level ``revision`` field on the entry; consumed by
                 ``CatalogDedupGuard`` to make CI re-publishes idempotent.
@@ -214,7 +218,6 @@ class RegistryBuilder:
         version: str,
         stage: str,
         extension_name: str = "",
-        tag_override: Optional[str] = None,
     ) -> str:
         """Rewrite image tags in a compose YAML string for the target stage.
 
@@ -224,16 +227,9 @@ class RegistryBuilder:
 
         If *extension_name* is empty, falls back to matching all images
         with the *registry* prefix (legacy behaviour).
-
-        When *tag_override* is provided, that exact tag is written instead
-        of the stage-derived ``{version}{stage_suffix}`` — ``version`` and
-        ``stage`` are unused in the replacement.
         """
-        if tag_override is not None:
-            new_tag = tag_override
-        else:
-            suffix = _STAGE_SUFFIXES.get(stage, f"-{stage}")
-            new_tag = f"{version}{suffix}"
+        suffix = _STAGE_SUFFIXES.get(stage, f"-{stage}")
+        new_tag = f"{version}{suffix}"
         escaped_reg = re.escape(registry)
 
         if extension_name:
