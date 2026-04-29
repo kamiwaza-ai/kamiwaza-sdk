@@ -112,10 +112,12 @@ class KamiwazaClient:
         self.base_url = resolved_base_url.rstrip("/")
         self.session = requests.Session()
         self._recent_datasets: "OrderedDict[str, float]" = OrderedDict()
+        self._verify_ssl_disabled = False
 
         # Check KAMIWAZA_VERIFY_SSL environment variable
         verify_ssl = os.environ.get("KAMIWAZA_VERIFY_SSL", "true").lower()
         if verify_ssl == "false":
+            self._verify_ssl_disabled = True
             self.session.verify = False
             # Suppress SSL warnings when verification is disabled
             import urllib3
@@ -195,6 +197,9 @@ class KamiwazaClient:
         # Ensure authentication is set up (except for auth endpoints)
         if self.authenticator and not skip_auth:
             self.authenticator.authenticate(self.session)
+
+        if self._verify_ssl_disabled and kwargs.get("verify") is None:
+            kwargs["verify"] = False
 
         params = kwargs.get("params") if isinstance(kwargs.get("params"), dict) else {}
         dataset_urn_for_schema = (
