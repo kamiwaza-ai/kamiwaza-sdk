@@ -1,10 +1,20 @@
-/** Server-side identity extracted from platform headers. */
+/** Server-side identity extracted from platform headers.
+ *
+ * Mirrors ``kamiwaza_extensions_lib.identity.Identity`` (Python). Fields use
+ * camelCase per TS convention; the canonical test vectors use snake_case
+ * keys, so test code projects between the two — see
+ * ``tests/identity-parity.test.ts``.
+ */
 export interface Identity {
     userId: string | null;
     email: string | null;
     name: string | null;
     roles: string[];
+    /** Platform classification (e.g. "U", "TS"). NOT a boolean. */
+    systemHigh: string | null;
     workroomId: string | null;
+    workroomRole: string | null;
+    requestId: string | null;
     isAuthenticated: boolean;
 }
 
