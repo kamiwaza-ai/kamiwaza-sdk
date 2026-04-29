@@ -246,11 +246,33 @@ class DoctorChecker:
         # "CRD not installed" would exit doctor non-zero on every
         # workstation that has kubectl pointed at something else
         # (review High #1 on PR #84).
-        if self._conn_mgr.get_active_connection() is None:
+        connection = self._conn_mgr.get_active_connection()
+        if connection is None:
             return CheckResult(
                 name, "warn",
                 "No Kamiwaza connection configured; cluster readiness probe skipped",
                 fix="Run 'kz-ext login <url>' to connect, then re-run doctor",
+            )
+
+        # Remote SaaS / non-local connection — the local kube-context has
+        # no verified relationship to the Kamiwaza cluster (the connection
+        # is HTTP-only; ConnectionInfo carries no kube-context binding).
+        # Probing the local context could inspect an unrelated cluster
+        # and emit confidently-wrong guidance like "CRD not installed,
+        # reinstall the platform" (review re-review PR #84 H1). Skip with
+        # a transparent warn instead.
+        from kamiwaza_extensions.platform_compat import is_local_connection
+        if not is_local_connection(connection.url):
+            return CheckResult(
+                name, "warn",
+                f"Connection '{connection.name}' is remote ({connection.url}); "
+                "local kubectl context cannot be verified to target the same cluster — "
+                "probe skipped",
+                fix=(
+                    "Inspect the cluster directly via the platform UI, or run "
+                    "doctor on a host whose kubectl context is bound to the "
+                    "Kamiwaza cluster"
+                ),
             )
 
         # kubectl availability — soft skip
@@ -285,16 +307,25 @@ class DoctorChecker:
             )
 
         # Image tag
+        # Match by container name (review re-review PR #84 M3) so a future
+        # sidecar — init container, metrics exporter — doesn't shadow the
+        # operator container at index 0.
         image_ref = ""
         try:
-            image_ref = (
+            containers = (
                 deploy_payload.get("spec", {})
                 .get("template", {})
                 .get("spec", {})
-                .get("containers", [{}])[0]
-                .get("image", "")
+                .get("containers", [])
             )
-        except (IndexError, AttributeError, TypeError):
+            for container in containers:
+                if container.get("name") == OPERATOR_DEPLOYMENT:
+                    image_ref = container.get("image", "")
+                    break
+            else:
+                if containers:
+                    image_ref = containers[0].get("image", "")
+        except (AttributeError, TypeError):
             image_ref = ""
         _, image_tag = parse_image_ref(image_ref) if image_ref else ("", None)
 

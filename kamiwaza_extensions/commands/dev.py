@@ -19,6 +19,13 @@ def _decode_email(access_token: str) -> Optional[str]:
     Returns ``None`` if the token cannot be decoded. Used to populate the
     ``kamiwaza.ai/deployer`` annotation and the ``deployer`` field of
     ``.kz-ext/dev-state.json`` (ENG-3887 / §4.2.9).
+
+    SECURITY NOTE: this decodes the JWT *payload only* — no signature
+    verification. The value is treated strictly as display metadata
+    (annotation text, dev-state book-keeping). It MUST NOT be used for
+    any access-control or trust decision; the platform's ForwardAuth
+    layer is the authoritative identity boundary, and the runtime lib's
+    Identity model carries the verified user fields.
     """
     import base64
     import json as _json
@@ -439,7 +446,9 @@ def run_dev_remote(
             from kamiwaza_extensions.constants import EXTENSIONS_NAMESPACE
             from kamiwaza_extensions.exit_codes import ExitCode
 
-            diagnosis = diagnose_dev_timeout(dev_name, EXTENSIONS_NAMESPACE)
+            diagnosis = diagnose_dev_timeout(
+                dev_name, EXTENSIONS_NAMESPACE, connection_url=connection.url,
+            )
             console.print(f"[red]Error:[/red] {exc}")
             console.print(f"  [dim]{diagnosis.message}[/dim]")
             if diagnosis.fix:

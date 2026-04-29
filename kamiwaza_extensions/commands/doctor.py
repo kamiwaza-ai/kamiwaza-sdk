@@ -17,7 +17,8 @@ def run_doctor() -> None:
     checker = DoctorChecker()
     results = checker.run_all()
 
-    fail_exit_code: int | None = None
+    has_failure = False
+    explicit_exit_code: int | None = None
     for result in results:
         if result.status == "pass":
             icon = "[green]✓[/green]"
@@ -25,14 +26,19 @@ def run_doctor() -> None:
             icon = "[yellow]![/yellow]"
         else:
             icon = "[red]✗[/red]"
-            # First failing CheckResult with an explicit exit_code wins; a
-            # generic failure falls back to ExitCode.FAILURE.
-            if fail_exit_code is None:
-                fail_exit_code = result.exit_code or int(ExitCode.FAILURE)
+            has_failure = True
+            # An explicit `exit_code` (e.g. CLUSTER_NOT_READY=23) must win
+            # over the generic FAILURE fallback even when a different,
+            # exit-code-less check failed earlier in the run. The previous
+            # implementation locked in the first failure's code, which let
+            # a generic `fail` shadow a more-specific signal further down
+            # (review re-review PR #84 M2).
+            if result.exit_code is not None and explicit_exit_code is None:
+                explicit_exit_code = result.exit_code
 
         console.print(f"  {icon} {result.name}: {result.message}")
         if result.fix and result.status != "pass":
             console.print(f"      Fix: {result.fix}", style="dim")
 
-    if fail_exit_code is not None:
-        raise typer.Exit(code=fail_exit_code)
+    if has_failure:
+        raise typer.Exit(code=explicit_exit_code or int(ExitCode.FAILURE))

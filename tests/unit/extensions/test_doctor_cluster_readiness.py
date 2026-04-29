@@ -14,17 +14,24 @@ from kamiwaza_extensions.platform_compat import OPERATOR_COMPATIBLE_TAGS, OPERAT
 
 @pytest.fixture
 def checker_with_connection(tmp_path):
-    """A DoctorChecker with an active Kamiwaza connection mocked.
+    """A DoctorChecker with an active *local* Kamiwaza connection mocked.
 
-    The probe gates on connection presence (review PR #84 High #1) so the
-    legacy tests below need a connection to reach the kubectl + CRD path
-    they actually exercise. Tests that want to verify the no-connection
-    short-circuit live in TestClusterReadinessRequiresKamiwazaConnection.
+    The probe gates on:
+      1. connection presence (review PR #84 High #1)
+      2. connection being local-ish (review re-review PR #84 H1) — kubectl
+         can only be assumed to target the same cluster on local-dev URLs
+
+    Both gates are satisfied by a localhost-ish connection URL so the
+    legacy tests below reach the kubectl + CRD probe paths they exercise.
+    Tests that want to verify the no-connection or remote-connection
+    short-circuits live in TestClusterReadinessRequiresKamiwazaConnection
+    and TestClusterReadinessRequiresLocalConnection.
     """
     instance = DoctorChecker(config_dir=tmp_path / ".kamiwaza")
-    instance._conn_mgr.get_active_connection = MagicMock(
-        return_value=MagicMock(name="dev"),
-    )
+    conn = MagicMock(name="dev")
+    conn.url = "https://kamiwaza.test/api"
+    conn.name = "dev"
+    instance._conn_mgr.get_active_connection = MagicMock(return_value=conn)
     return instance
 
 
@@ -215,6 +222,64 @@ class TestClusterReadinessRequiresKamiwazaConnection:
         # Sanity check that the gate doesn't accidentally short-circuit
         # the legacy probe paths.
         checker = checker_with_connection
+        compat = f"{OPERATOR_IMAGE}:{OPERATOR_COMPATIBLE_TAGS[0]}"
+        with patch(
+            "subprocess.run",
+            side_effect=_stub_kubectl(0, _deploy_payload(compat), _pods_payload()),
+        ):
+            result = checker.cluster_extension_readiness()
+        assert result.status == "pass"
+
+
+@pytest.mark.unit
+class TestClusterReadinessRequiresLocalConnection:
+    """Review re-review PR #84 H1: kubectl-based probe targets the local
+    kube-context. For remote Kamiwaza connections (SaaS, customer clusters)
+    the local context has no verified relationship to the Kamiwaza cluster
+    — probing it would inspect a different cluster entirely and could
+    emit confidently-wrong guidance like "CRD not installed; reinstall the
+    platform" for an unrelated reason."""
+
+    def _checker_with_url(self, tmp_path, url: str) -> DoctorChecker:
+        checker = DoctorChecker(config_dir=tmp_path / ".kamiwaza")
+        conn = MagicMock(name="dev")
+        conn.url = url
+        conn.name = "dev"
+        checker._conn_mgr.get_active_connection = MagicMock(return_value=conn)
+        return checker
+
+    @pytest.mark.parametrize(
+        "remote_url",
+        [
+            "https://kamiwaza.cloud/api",
+            "https://customer-prod.kamiwaza.cloud/api",
+            "https://api.example.com/v1",
+        ],
+    )
+    def test_remote_connection_skips_kubectl_probe(self, tmp_path, remote_url):
+        checker = self._checker_with_url(tmp_path, remote_url)
+        with patch("subprocess.run") as mock_run:
+            result = checker.cluster_extension_readiness()
+            # The gate fired before kubectl was probed at all — the local
+            # context could be anything (kind, minikube, unrelated prod
+            # cluster) and we don't want to inspect it.
+            assert mock_run.call_count == 0
+
+        assert result.status == "warn"
+        assert "remote" in result.message.lower()
+        assert remote_url in result.message
+        assert result.exit_code is None
+
+    @pytest.mark.parametrize(
+        "local_url",
+        [
+            "https://kamiwaza.test/api",
+            "http://localhost:7777/api",
+            "https://127.0.0.1:8443/api",
+        ],
+    )
+    def test_local_connection_runs_probe(self, tmp_path, local_url):
+        checker = self._checker_with_url(tmp_path, local_url)
         compat = f"{OPERATOR_IMAGE}:{OPERATOR_COMPATIBLE_TAGS[0]}"
         with patch(
             "subprocess.run",

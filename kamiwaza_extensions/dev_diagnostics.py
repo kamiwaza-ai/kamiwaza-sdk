@@ -18,6 +18,7 @@ from kamiwaza_extensions.platform_compat import (
     OPERATOR_DEPLOYMENT,
     OPERATOR_NAMESPACE,
     is_compatible_tag,
+    is_local_connection,
     parse_image_ref,
 )
 
@@ -31,10 +32,19 @@ class TimeoutDiagnosis:
     fix: Optional[str] = None
 
 
-def diagnose_dev_timeout(extension_name: str, extensions_namespace: str) -> TimeoutDiagnosis:
+def diagnose_dev_timeout(
+    extension_name: str,
+    extensions_namespace: str,
+    connection_url: Optional[str] = None,
+) -> TimeoutDiagnosis:
     """Diagnose a ``DeploymentTimeoutError`` from ``kz-ext dev``.
 
     Order of checks (most actionable first):
+      0. Remote connection (non-local URL) → return ``unknown`` immediately;
+         the local kubectl context has no verified relationship to the
+         Kamiwaza cluster the deploy hit, so probing it would inspect the
+         wrong cluster and could misclassify an app-level timeout as
+         operator-not-ready (review re-review PR #84 H2).
       1. extension-operator Pod in ``ImagePullBackOff`` → operator-not-ready,
          name the kubelet error.
       2. extension-operator image tag not in ``OPERATOR_COMPATIBLE_TAGS`` →
@@ -42,6 +52,21 @@ def diagnose_dev_timeout(extension_name: str, extensions_namespace: str) -> Time
       3. extension-operator Deployment not Available → operator-not-ready.
       4. Otherwise → app-failure (fall through to caller's existing message).
     """
+    # If the connection points at a remote cluster, the local kubectl context
+    # is by definition unrelated. Don't run the operator probes — they'd
+    # inspect the wrong cluster.
+    if connection_url is not None and not is_local_connection(connection_url):
+        return TimeoutDiagnosis(
+            category="unknown",
+            message=(
+                f"Extension '{extension_name}' did not become Ready. The "
+                "Kamiwaza connection is remote, so operator-image diagnosis "
+                "via local kubectl was skipped — this could be operator state "
+                "or an app-level startup failure."
+            ),
+            fix=f"Inspect via the platform UI or `kz-ext logs --name {extension_name}`",
+        )
+
     backoff = _operator_pod_backoff()
     if backoff is not None:
         return TimeoutDiagnosis(
@@ -141,16 +166,31 @@ def _operator_pod_backoff() -> Optional[str]:
 
 
 def _container_image(deploy: dict) -> str:
+    """Return the operator container's image ref.
+
+    Matches by container name (``OPERATOR_DEPLOYMENT``) rather than the
+    first-index assumption — sidecars added later (e.g. an init container,
+    a metrics exporter) would otherwise shadow the operator container and
+    yield an unrelated image string (review re-review PR #84 M3).
+    """
     try:
-        return (
+        containers = (
             deploy.get("spec", {})
             .get("template", {})
             .get("spec", {})
-            .get("containers", [{}])[0]
-            .get("image", "")
+            .get("containers", [])
         )
-    except (IndexError, AttributeError, TypeError):
+        for container in containers:
+            if container.get("name") == OPERATOR_DEPLOYMENT:
+                return container.get("image", "")
+        # Fallback: no container named exactly `extension-operator`. The
+        # first container is still the most likely match for the operator
+        # under typical deploy layouts.
+        if containers:
+            return containers[0].get("image", "")
+    except (AttributeError, TypeError):
         return ""
+    return ""
 
 
 def _deployment_available(deploy: dict) -> bool:

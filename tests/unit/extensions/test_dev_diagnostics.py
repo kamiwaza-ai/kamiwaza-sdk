@@ -11,12 +11,23 @@ from kamiwaza_extensions.dev_diagnostics import diagnose_dev_timeout
 from kamiwaza_extensions.platform_compat import OPERATOR_COMPATIBLE_TAGS, OPERATOR_IMAGE
 
 
-def _deploy_json(image: str, available: bool = True) -> str:
+def _deploy_json(image: str, available: bool = True, *, sidecar_first: bool = False) -> str:
+    """Build the operator Deployment JSON.
+
+    By default the operator container is the only one. When
+    ``sidecar_first`` is True, prepend an unrelated sidecar at index 0 to
+    catch the M3 regression where ``_container_image`` matches by
+    container name rather than first-index assumption.
+    """
+    operator_container = {"name": "extension-operator", "image": image}
+    containers = (
+        [{"name": "metrics-exporter", "image": "prom/node-exporter:1.7"}, operator_container]
+        if sidecar_first
+        else [operator_container]
+    )
     return json.dumps({
         "metadata": {"name": "extension-operator", "generation": 1},
-        "spec": {
-            "template": {"spec": {"containers": [{"image": image}]}},
-        },
+        "spec": {"template": {"spec": {"containers": containers}}},
         "status": {
             "observedGeneration": 1,
             "conditions": [
@@ -118,3 +129,94 @@ class TestDiagnoseDevTimeout:
         ):
             d = diagnose_dev_timeout("my-app-dev-abc", "kamiwaza-extensions")
         assert d.category == "unknown"
+
+
+@pytest.mark.unit
+class TestDiagnoseDevTimeoutSkipsForRemoteConnections:
+    """Review re-review PR #84 H2: when ``run_dev_remote`` deploys to a
+    remote Kamiwaza endpoint, the local kubectl context is by definition
+    unrelated. Probing it would inspect a different cluster and could
+    misclassify an app-level timeout as ``operator-not-ready`` (exit 23
+    + "reinstall the platform"), which is confidently wrong on the
+    remote case."""
+
+    @pytest.mark.parametrize(
+        "remote_url",
+        [
+            "https://kamiwaza.cloud/api",
+            "https://customer-prod.kamiwaza.cloud/api",
+        ],
+    )
+    def test_remote_connection_skips_kubectl_and_returns_unknown(self, remote_url):
+        with patch("subprocess.run") as mock_run:
+            d = diagnose_dev_timeout(
+                "my-app-dev-abc", "kamiwaza-extensions",
+                connection_url=remote_url,
+            )
+            # No kubectl probes — the gate fired first.
+            assert mock_run.call_count == 0
+
+        assert d.category == "unknown"
+        assert "remote" in d.message.lower()
+
+    def test_local_connection_runs_probe_normally(self):
+        compat = f"{OPERATOR_IMAGE}:{OPERATOR_COMPATIBLE_TAGS[0]}"
+        with patch(
+            "subprocess.run",
+            side_effect=_kubectl_stub(_deploy_json(compat), _pods_json()),
+        ):
+            d = diagnose_dev_timeout(
+                "my-app-dev-abc", "kamiwaza-extensions",
+                connection_url="https://kamiwaza.test/api",
+            )
+        # Healthy operator + local connection → app-failure (probe ran)
+        assert d.category == "app-failure"
+
+    def test_no_connection_url_runs_probe_for_back_compat(self):
+        # When no connection_url is supplied (older callers, tests), the
+        # gate is permissive — preserve the pre-fix behaviour. New callers
+        # in run_dev_remote always pass connection_url.
+        compat = f"{OPERATOR_IMAGE}:{OPERATOR_COMPATIBLE_TAGS[0]}"
+        with patch(
+            "subprocess.run",
+            side_effect=_kubectl_stub(_deploy_json(compat), _pods_json()),
+        ):
+            d = diagnose_dev_timeout("my-app-dev-abc", "kamiwaza-extensions")
+        assert d.category == "app-failure"
+
+
+@pytest.mark.unit
+class TestOperatorContainerByName:
+    """Review re-review PR #84 M3: ``_container_image`` matches the
+    operator container by name so a future sidecar at index 0 doesn't
+    shadow the operator container."""
+
+    def test_operator_image_correctly_extracted_when_sidecar_at_index_0(self):
+        compat = f"{OPERATOR_IMAGE}:{OPERATOR_COMPATIBLE_TAGS[0]}"
+        # _deploy_json with sidecar_first=True puts an unrelated sidecar
+        # ahead of the operator. The diagnostic must still pick the
+        # operator's image and classify the run as healthy (app-failure
+        # downstream), not as an unrelated-image operator-not-ready.
+        with patch(
+            "subprocess.run",
+            side_effect=_kubectl_stub(
+                _deploy_json(compat, sidecar_first=True), _pods_json(),
+            ),
+        ):
+            d = diagnose_dev_timeout("my-app-dev-abc", "kamiwaza-extensions")
+        assert d.category == "app-failure"
+
+    def test_operator_image_mismatch_detected_even_with_sidecar(self):
+        # Sidecar at index 0 has a known-good image; operator at index 1
+        # has an incompatible tag. Without the M3 fix this would read the
+        # sidecar's image and miss the mismatch.
+        with patch(
+            "subprocess.run",
+            side_effect=_kubectl_stub(
+                _deploy_json(f"{OPERATOR_IMAGE}:v0.1.1", sidecar_first=True),
+                _pods_json(),
+            ),
+        ):
+            d = diagnose_dev_timeout("my-app-dev-abc", "kamiwaza-extensions")
+        assert d.category == "operator-not-ready"
+        assert "v0.1.1" in d.message

@@ -162,7 +162,9 @@ class DevLocalRunner:
             # compose logs until the user Ctrl+Cs, so there is no
             # post-up moment to reach.
             if detach and rc == 0:
-                self._print_urls(info.compose_data, remaps, post_up=True)
+                self._print_urls(
+                    info.compose_data, remaps, post_up=True, compose_cmd=compose_cmd,
+                )
 
             return rc
         finally:
@@ -183,6 +185,7 @@ class DevLocalRunner:
         remaps: Dict[str, Tuple[int, int]],
         *,
         post_up: bool = False,
+        compose_cmd: Optional[List[str]] = None,
     ) -> None:
         """Print per-service access URLs.
 
@@ -218,7 +221,9 @@ class DevLocalRunner:
                             )
                         continue
                     if container_port is not None:
-                        host_port = self._docker_compose_port(svc_name, container_port)
+                        host_port = self._docker_compose_port(
+                            svc_name, container_port, compose_cmd=compose_cmd,
+                        )
                     if host_port is None:
                         continue
                 if svc_name in remaps:
@@ -226,11 +231,27 @@ class DevLocalRunner:
                 console.print(f"[dim]{svc_name}:[/dim] http://localhost:{host_port}")
 
     @staticmethod
-    def _docker_compose_port(service: str, container_port: int) -> Optional[int]:
-        """Look up the host port Docker assigned to ``service:container_port``."""
+    def _docker_compose_port(
+        service: str,
+        container_port: int,
+        compose_cmd: Optional[List[str]] = None,
+    ) -> Optional[int]:
+        """Look up the host port Docker assigned to ``service:container_port``.
+
+        ``compose_cmd`` defaults to ``detect_compose_command()`` so v1
+        (``docker-compose``) hosts that lack the v2 plugin still get
+        bare-port URL discovery (review re-review PR #84 M1). Callers
+        already in possession of the detected command should pass it
+        through to avoid the redetection cost.
+        """
+        if compose_cmd is None:
+            try:
+                compose_cmd = detect_compose_command()
+            except FileNotFoundError:
+                return None
         try:
             result = subprocess.run(
-                ["docker", "compose", "port", service, str(container_port)],
+                [*compose_cmd, "port", service, str(container_port)],
                 capture_output=True, text=True, timeout=10,
             )
             if result.returncode != 0:

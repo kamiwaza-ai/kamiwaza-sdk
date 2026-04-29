@@ -110,3 +110,92 @@ class TestDoctorRunAll:
             results = checker.run_all()
         assert len(results) >= 4  # At least system checks + connection
         assert all(hasattr(r, "status") for r in results)
+
+
+@pytest.mark.unit
+class TestDoctorCommandExitCodePrecedence:
+    """Review re-review PR #84 M2: an explicit ``CheckResult.exit_code``
+    (e.g. CLUSTER_NOT_READY=23) must win over the generic FAILURE
+    fallback even when an exit-code-less generic failure happens earlier
+    in the run. The previous implementation locked in the first
+    failure's code, masking the more-specific signal."""
+
+    def test_explicit_exit_code_wins_over_earlier_generic_failure(self, monkeypatch):
+        from typer.testing import CliRunner
+
+        from kamiwaza_extensions.cli import app
+        from kamiwaza_extensions.doctor import CheckResult
+
+        # Build a fake DoctorChecker that returns: a generic failure first,
+        # then a structured CLUSTER_NOT_READY=23 failure.
+        results = [
+            CheckResult("Docker installed", "fail", "Not found", fix="x"),
+            CheckResult(
+                "Cluster extension readiness", "fail",
+                "CRD missing", fix="reinstall", exit_code=23,
+            ),
+        ]
+
+        class FakeChecker:
+            def __init__(self, *a, **kw):
+                pass
+
+            def run_all(self):
+                return results
+
+        monkeypatch.setattr(
+            "kamiwaza_extensions.doctor.DoctorChecker", FakeChecker,
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["doctor"])
+        # CLUSTER_NOT_READY (23) wins over the generic 1 from "Docker
+        # installed" failing first.
+        assert result.exit_code == 23
+
+    def test_falls_back_to_failure_when_no_explicit_exit_code(self, monkeypatch):
+        from typer.testing import CliRunner
+
+        from kamiwaza_extensions.cli import app
+        from kamiwaza_extensions.doctor import CheckResult
+
+        results = [CheckResult("Docker installed", "fail", "Not found", fix="x")]
+
+        class FakeChecker:
+            def __init__(self, *a, **kw):
+                pass
+
+            def run_all(self):
+                return results
+
+        monkeypatch.setattr(
+            "kamiwaza_extensions.doctor.DoctorChecker", FakeChecker,
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["doctor"])
+        # Generic FAILURE fallback when no check carries an explicit code.
+        assert result.exit_code == 1
+
+    def test_no_exit_when_all_checks_pass(self, monkeypatch):
+        from typer.testing import CliRunner
+
+        from kamiwaza_extensions.cli import app
+        from kamiwaza_extensions.doctor import CheckResult
+
+        results = [CheckResult("Docker installed", "pass", "ok")]
+
+        class FakeChecker:
+            def __init__(self, *a, **kw):
+                pass
+
+            def run_all(self):
+                return results
+
+        monkeypatch.setattr(
+            "kamiwaza_extensions.doctor.DoctorChecker", FakeChecker,
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["doctor"])
+        assert result.exit_code == 0

@@ -8,6 +8,7 @@ from kamiwaza_extensions.platform_compat import (
     OPERATOR_COMPATIBLE_TAGS,
     OPERATOR_IMAGE,
     is_compatible_tag,
+    is_local_connection,
     parse_image_ref,
     validate_compatible_tag_grammar,
 )
@@ -65,3 +66,43 @@ class TestIsCompatibleTag:
 
     def test_none(self):
         assert is_compatible_tag(None) is False
+
+
+@pytest.mark.unit
+class TestIsLocalConnection:
+    """Review re-review PR #84 H1/H2: kubectl-based probes must skip when
+    the Kamiwaza connection is remote, since local kube-context has no
+    verified relationship to the remote cluster."""
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://localhost:7777/api",
+            "https://127.0.0.1:8443/api",
+            "http://[::1]:7777/api",
+            "https://kamiwaza.test/api",     # kind-cluster convention
+            "http://kamiwaza.local/api",     # mDNS / hosts file
+            "https://Kamiwaza.Test/api",     # case-insensitive
+            "https://my-machine.localhost/api",
+        ],
+    )
+    def test_local_url_returns_true(self, url):
+        assert is_local_connection(url) is True
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://kamiwaza.cloud/api",
+            "https://customer-prod.kamiwaza.cloud/api",
+            "https://10.0.0.5/api",          # internal IP — still remote in our model
+            "https://192.168.1.10/api",      # ditto; opt in via explicit /etc/hosts entry
+            "https://api.example.com/v1",
+        ],
+    )
+    def test_remote_url_returns_false(self, url):
+        assert is_local_connection(url) is False
+
+    def test_none_or_empty_returns_false(self):
+        assert is_local_connection(None) is False
+        assert is_local_connection("") is False
+        assert is_local_connection("not-a-url") is False
