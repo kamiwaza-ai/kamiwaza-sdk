@@ -37,6 +37,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from kamiwaza_extensions import __version__
 
 FileStrategy = Literal["overwrite", "preserve_if_modified", "merge"]
 ShapeName = Literal["app", "tool", "service"]
@@ -85,10 +86,10 @@ class TemplateManifest:
 # Helpers — keep manifest definitions concise and consistent.
 # ---------------------------------------------------------------------------
 
-# v0.11 = the version of `kamiwaza_extensions` that ships M2 (matches
-# pyproject.toml). Most files have been template-owned since the original
-# scaffold, so the bulk of since_version values point at 0.11.
-_M2_VERSION = "0.11.0"
+# Track the CLI's __version__ so manifests don't drift from it on each
+# release (review iteration-1 I9 + Suggestion: hard-coded version was a
+# release-time foot-gun).
+_M2_VERSION = __version__
 
 
 def _owned(path: str, strategy: FileStrategy = "preserve_if_modified") -> TemplateOwnedFile:

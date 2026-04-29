@@ -22,6 +22,42 @@ _NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 VALID_TYPES = ("app", "tool", "service")
 
 
+def build_render_context(name: str, type_: str) -> Dict[str, str]:
+    """Return the placeholder→value substitution map for a given scaffold.
+
+    Lifted from ``Scaffolder._build_context`` so ``commands/update.py`` can
+    rebuild the same context as ``Scaffolder.create()`` without reaching
+    into a private method (the previous ``# noqa: SLF001`` smell — review
+    iteration-1 finding I7). Both ``Scaffolder.create()`` and ``UpdateCommand``
+    must produce byte-identical rendered output for unmodified files; the
+    only way to guarantee that is to share the context source.
+    """
+    major = __version__.split(".")[0]
+    next_major = str(int(major) + 1)
+    return {
+        "{{name}}": name,
+        "{{version}}": "0.1.0",
+        "{{kz_ext_version}}": f">={__version__},<{next_major}.0.0",
+        "{{python_runtime_lib_version}}": ">=0.1.0",
+        "{{ts_runtime_lib_version}}": "^0.2.0",
+        "{{description}}": f"A Kamiwaza {type_} extension",
+        "{{type}}": type_,
+    }
+
+
+def substitute(text: str, context: Dict[str, str]) -> str:
+    """Apply the context's placeholder→value substitutions to ``text``.
+
+    Single source-of-truth replacement helper (review iteration-1 finding
+    I8: ``for k, v in context.items(): text = text.replace(k, v)`` was
+    duplicated three times across scaffolder.py path / scaffolder.py content
+    / update.py render).
+    """
+    for key, val in context.items():
+        text = text.replace(key, val)
+    return text
+
+
 class Scaffolder:
     """Scaffolds new extension projects from bundled templates."""
 
@@ -110,17 +146,10 @@ class Scaffolder:
         return name
 
     def _build_context(self, name: str, type_: str) -> Dict[str, str]:
-        major = __version__.split(".")[0]
-        next_major = str(int(major) + 1)
-        return {
-            "{{name}}": name,
-            "{{version}}": "0.1.0",
-            "{{kz_ext_version}}": f">={__version__},<{next_major}.0.0",
-            "{{python_runtime_lib_version}}": ">=0.1.0",
-            "{{ts_runtime_lib_version}}": "^0.2.0",
-            "{{description}}": f"A Kamiwaza {type_} extension",
-            "{{type}}": type_,
-        }
+        # Thin wrapper around the module-level build_render_context — kept
+        # for backward-compat with anything that still calls it via the
+        # instance. New callers should use build_render_context directly.
+        return build_render_context(name, type_)
 
     def _get_template_dir(self, type_: str) -> Path:
         pkg = importlib_resources.files("kamiwaza_extensions") / "templates" / type_
@@ -136,11 +165,7 @@ class Scaffolder:
                 continue
 
             rel = src.relative_to(template_dir)
-            # Apply context substitution to file path
-            rel_str = str(rel)
-            for key, val in context.items():
-                rel_str = rel_str.replace(key, val)
-            dest = target / rel_str
+            dest = target / substitute(str(rel), context)
 
             dest.parent.mkdir(parents=True, exist_ok=True)
 
@@ -151,9 +176,7 @@ class Scaffolder:
                 dest.write_bytes(src.read_bytes())
                 continue
 
-            for key, val in context.items():
-                content = content.replace(key, val)
-            dest.write_text(content, encoding="utf-8")
+            dest.write_text(substitute(content, context), encoding="utf-8")
 
     def _git_init(self, target: Path) -> None:
         try:

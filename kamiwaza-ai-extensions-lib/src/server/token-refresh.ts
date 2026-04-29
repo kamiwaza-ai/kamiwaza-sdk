@@ -12,8 +12,14 @@
  *    committed. The HTTP status is sealed; we cannot retry. Surfaces as
  *    StreamInterruptedError on the stream consumer.
  *
- * Single-flight refresh is implemented with a module-level Promise cache.
- * Concurrent 401s share the same refresh attempt rather than fanning out.
+ * Each caller invokes ``refresh`` with its own headers (one refresh per
+ * caller, not shared across requests). A previous version cached the
+ * refresh Promise at module scope to deduplicate concurrent refreshes,
+ * but that fanned a single user's refreshed headers out to other concurrent
+ * requests in a multi-tenant Next.js process — a cross-user credential
+ * mixup. The Python sibling (``kamiwaza_extensions_lib.middleware``) takes
+ * the same approach: serializing through an ``asyncio.Lock`` would also
+ * mix users; we just let each caller refresh its own token.
  */
 
 import {
@@ -54,25 +60,6 @@ function passthroughHeaders(src: globalThis.Headers): Headers {
     return out;
 }
 
-let _refreshInFlight: Promise<Headers | null> | null = null;
-
-async function singleFlightRefresh(
-    refresh: RefreshFn,
-    headers: Headers,
-): Promise<Headers | null> {
-    if (_refreshInFlight !== null) {
-        return _refreshInFlight;
-    }
-    _refreshInFlight = (async () => {
-        try {
-            return await refresh(headers);
-        } finally {
-            _refreshInFlight = null;
-        }
-    })();
-    return _refreshInFlight;
-}
-
 /**
  * Stream an upstream response with one transparent token-refresh retry.
  *
@@ -93,7 +80,9 @@ export async function streamWithRefresh(opts: ProxyOpts): Promise<Response> {
         } catch {
             // best-effort; an error here doesn't change the retry decision
         }
-        const newHeaders = await singleFlightRefresh(refresh, headers);
+        // Each caller refreshes with its own headers — no cross-request
+        // Promise cache (see module docstring).
+        const newHeaders = await refresh(headers);
         if (newHeaders === null) {
             throw new PlatformOutageError(
                 "upstream 401 and no refresh token available",
@@ -122,23 +111,44 @@ export async function streamWithRefresh(opts: ProxyOpts): Promise<Response> {
         });
     }
 
-    // Wrap the body in a TransformStream so we can translate post-commit
-    // errors into a clean StreamInterruptedError. The HTTP status is
-    // already sealed at this point; raw fetch errors during streaming
-    // would just appear as a connection close to the client. The
-    // transform lets a server-side handler observe and log the failure.
-    const wrapped = upstream.body.pipeThrough(
-        new TransformStream<Uint8Array, Uint8Array>({
-            transform(chunk, controller) {
-                controller.enqueue(chunk);
-            },
-            flush(_controller) {
-                // normal end-of-stream
-            },
-        }),
-    );
+    // Translate post-commit upstream failures into a typed
+    // StreamInterruptedError. The HTTP status is already sealed (we
+    // returned a Response with ``upstream.status``), so we can't change
+    // the status code; what we can do is fail the body's ReadableStream
+    // with our typed error, so a stream consumer reading with try/catch
+    // surfaces the runtime-lib class rather than a raw network error.
+    //
+    // We consume ``upstream.body`` ourselves (rather than via TransformStream)
+    // so the catch block can shape the upstream rejection into our typed
+    // error before it reaches the consumer's reader.read() rejection.
+    const reader = upstream.body.getReader();
+    const translatedStream = new ReadableStream<Uint8Array>({
+        async pull(controller) {
+            try {
+                const { value, done } = await reader.read();
+                if (done) {
+                    controller.close();
+                    return;
+                }
+                controller.enqueue(value);
+            } catch (err) {
+                controller.error(
+                    new StreamInterruptedError(
+                        `upstream stream aborted mid-flight: ${
+                            err instanceof Error ? err.message : String(err)
+                        }`,
+                    ),
+                );
+            }
+        },
+        cancel(reason) {
+            reader.cancel(reason).catch(() => {
+                // best-effort
+            });
+        },
+    });
 
-    return new Response(wrapped, {
+    return new Response(translatedStream, {
         status: upstream.status,
         headers: passthroughHeaders(upstream.headers),
     });

@@ -61,6 +61,19 @@ class TestCompatibilityBundleResource:
         ts_range = bundle["runtime_lib_compat"]["typescript"]["@kamiwaza-ai/extensions-lib"]
         assert isinstance(ts_range, str) and len(ts_range) > 0
 
+    def test_cli_version_matches_package_version(self, bundle):
+        """Review iteration-1 I9: the bundled cli_version must track
+        kamiwaza_extensions.__version__. Hard-coding makes them drift on
+        every release; this test catches it before publish."""
+        import kamiwaza_extensions
+
+        assert bundle["cli_version"] == kamiwaza_extensions.__version__, (
+            f"compatibility.json declares cli_version={bundle['cli_version']!r} "
+            f"but kamiwaza_extensions.__version__={kamiwaza_extensions.__version__!r}. "
+            "Update kamiwaza_extensions/compatibility.json (or auto-generate it at "
+            "build time) so the doctor probe reports the correct CLI version."
+        )
+
 
 # ---------------------------------------------------------------------------
 # TS-M2-38: Python runtime-lib version probe + warn on out-of-range.

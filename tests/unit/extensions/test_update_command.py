@@ -214,6 +214,19 @@ def test_migrations_apply_before_diff(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+def test_backup_filename_preserves_full_extension(tmp_path, monkeypatch):
+    """Review iteration-1 I12: ``.orig`` is appended to the full filename, not
+    used to replace the trailing extension. ``next.config.js`` must back up to
+    ``next.config.js.orig``, not ``next.config.orig``."""
+    from kamiwaza_extensions.commands.update import _backup
+
+    target = tmp_path / "next.config.js"
+    target.write_text("module.exports = {};\n")
+    _backup(target, "module.exports = {};\n")
+    assert (tmp_path / "next.config.js.orig").exists()
+    assert not (tmp_path / "next.config.orig").exists()
+
+
 def test_update_rewrites_template_version_after_success(tmp_path, monkeypatch):
     """TS-M2-10 — kamiwaza.json's template_version is bumped to current."""
     from kamiwaza_extensions import template_manifest as tm

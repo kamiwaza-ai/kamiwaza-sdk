@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { streamWithRefresh } from "../src/server/token-refresh";
-import { PlatformOutageError } from "../src/server/errors";
+import { PlatformOutageError, StreamInterruptedError } from "../src/server/errors";
 
 // TS-M2-35..36: TypeScript mirror of the Python TokenRefreshMiddleware
 // contract. Pre-commit 401 → refresh + retry; double-401 → PlatformOutageError.
@@ -92,6 +92,54 @@ describe("streamWithRefresh", () => {
                 refresh: async () => null,
             }),
         ).rejects.toThrow(PlatformOutageError);
+    });
+
+    it("post-commit upstream failure surfaces StreamInterruptedError (TS-M2-33 mirror)", async () => {
+        // Build a Response whose body fails AFTER the consumer reads the
+        // first chunk. We gate the error on the first read so the timing
+        // is deterministic across event-loop variations between platforms.
+        let firstRead = false;
+        const failingBody = new ReadableStream<Uint8Array>({
+            pull(controller) {
+                if (!firstRead) {
+                    firstRead = true;
+                    controller.enqueue(new TextEncoder().encode("first-chunk"));
+                    return;
+                }
+                controller.error(new Error("upstream dropped connection"));
+            },
+        });
+        global.fetch = vi.fn(async () => {
+            return new Response(failingBody, { status: 200 });
+        }) as unknown as typeof fetch;
+
+        const response = await streamWithRefresh({
+            url: "https://upstream/v1/chat",
+            method: "POST",
+            headers: { "X-Auth-Token": "tok" },
+            refresh: vi.fn(async () => null),
+        });
+        expect(response.status).toBe(200);
+
+        // Drain via async iteration so the runtime sees the rejection as
+        // a regular for-await throw — mirrors how a route handler would
+        // typically forward the body downstream.
+        const reader = response.body!.getReader();
+        const chunks: string[] = [];
+        let caught: unknown;
+        try {
+            while (true) {
+                const { value, done } = await reader.read();
+                if (done) break;
+                chunks.push(new TextDecoder().decode(value));
+            }
+        } catch (err) {
+            caught = err;
+        }
+
+        expect(chunks).toEqual(["first-chunk"]);
+        expect(caught).toBeInstanceOf(StreamInterruptedError);
+        expect((caught as Error).message).toContain("aborted mid-flight");
     });
 
     it("happy 200 passes through without invoking refresh", async () => {
