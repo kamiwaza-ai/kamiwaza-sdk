@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 from importlib import resources as importlib_resources
@@ -11,6 +12,7 @@ from typing import Dict
 from rich.console import Console
 
 from kamiwaza_extensions import __version__
+from kamiwaza_extensions.template_manifest import current_template_version
 
 console = Console(stderr=True)
 
@@ -58,9 +60,36 @@ class Scaffolder:
         context = self._build_context(name, type_)
         template_dir = self._get_template_dir(type_)
         self._render_template(template_dir, target, context)
+        self._stamp_template_metadata(target, type_)
         self._git_init(target)
 
         return target
+
+    def _stamp_template_metadata(self, target: Path, shape: str) -> None:
+        """Stamp template_version + template_shape into the rendered kamiwaza.json.
+
+        These fields drive ``kz-ext update`` (ENG-3890): the version pins
+        which manifest the scaffold was rendered from, and the shape
+        identifies which manifest registry entry to consult on update.
+
+        Done as a post-render JSON write rather than as template
+        placeholders because the values are CLI-version metadata, not
+        author-visible scaffold fields — adding placeholders would couple
+        every template kamiwaza.json file to the fields we want to set.
+        """
+        meta_path = target / "kamiwaza.json"
+        if not meta_path.exists():
+            return  # Defensive — every shape ships kamiwaza.json today.
+        try:
+            data = json.loads(meta_path.read_text())
+        except json.JSONDecodeError:
+            return
+        data["template_version"] = current_template_version()
+        data["template_shape"] = shape
+        meta_path.write_text(
+            json.dumps(data, indent=4) + "\n",
+            encoding="utf-8",
+        )
 
     def _validate_name(self, name: str, type_: str) -> str:
         name = name.lower().strip()

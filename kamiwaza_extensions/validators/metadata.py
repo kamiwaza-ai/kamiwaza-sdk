@@ -50,6 +50,11 @@ class KamiwazaMetadata(BaseModel):
     category: Optional[str] = None
     preferred_model_type: Optional[str] = None
     strip_path_prefix: Optional[bool] = None
+    # ENG-3890 — stamped by scaffolder, consumed by `kz-ext update` to pick
+    # the right TemplateManifest. Optional so existing scaffolds (created
+    # before M2) load cleanly; ``update`` requires --bootstrap if missing.
+    template_version: Optional[str] = None
+    template_shape: Optional[Literal["app", "tool", "service"]] = None
 
 
 class MetadataValidator:

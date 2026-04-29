@@ -174,6 +174,30 @@ def create(
     run_create(type_=type_, name=name)
 
 
+@app.command()
+@run_with_error_handling
+def update(
+    dry_run: bool = typer.Option(False, "--dry-run", help="Print planned changes; no writes."),
+    force: bool = typer.Option(False, "--force", help="Apply all updates without prompting (still writes .orig backups)."),
+    non_interactive: bool = typer.Option(
+        False, "--non-interactive",
+        help="Fail (non-zero exit) if any conflict would require prompting. CI use.",
+    ),
+    bootstrap: bool = typer.Option(
+        False, "--bootstrap",
+        help="Adopt current state as baseline; only valid when template_version is missing.",
+    ),
+) -> None:
+    """Reconcile a scaffolded extension against the current template (ENG-3890)."""
+    from kamiwaza_extensions.commands.update import run_update
+    run_update(
+        dry_run=dry_run,
+        force=force,
+        non_interactive=non_interactive,
+        bootstrap=bootstrap,
+    )
+
+
 @dev_app.callback(invoke_without_command=True)
 def dev_callback(
     ctx: typer.Context,
