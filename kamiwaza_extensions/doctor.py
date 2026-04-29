@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -22,13 +23,23 @@ from kamiwaza_extensions.connections import ConnectionManager
 # "I can't even reach the API server / I'm not authorized / wrong context".
 # The former is a real platform-install problem; the latter is a config
 # issue we shouldn't misdiagnose as a broken cluster (review re-review
-# PR #84 H3). Match on the `(NotFound)` token kubectl emits in
-# `Error from server (NotFound): customresourcedefinitions ... not found`.
+# PR #84 H3). Match on the canonical bracketed `(NotFound)` token kubectl
+# emits, plus a word-bounded ``not found`` fallback so the trailing
+# clause in messages like
+# ``Error from server (NotFound): customresourcedefinitions ... not found``
+# still matches even if the bracket form is reformatted upstream. The
+# word boundary prevents the fallback from matching unrelated stderr
+# that happens to contain the substring (review re-re-re-review PR #84 M3).
+_NOT_FOUND_FALLBACK_RE = re.compile(r"\bnot\s+found\b", re.IGNORECASE)
+
+
 def _is_kubectl_not_found_error(stderr: str) -> bool:
     if not stderr:
         return False
     lowered = stderr.lower()
-    return "(notfound)" in lowered or "not found" in lowered
+    if "(notfound)" in lowered:
+        return True
+    return bool(_NOT_FOUND_FALLBACK_RE.search(stderr))
 
 
 @lru_cache(maxsize=1)

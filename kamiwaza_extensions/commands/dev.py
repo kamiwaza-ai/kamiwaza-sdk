@@ -43,6 +43,12 @@ def _build_patch_kwargs(
 # SHA (typically 7-12 hex chars). The epoch suffix is the only thing that
 # changes between same-code invocations; stripping it gives us a stable
 # identity we can use as the resume key.
+#
+# Note: the leading ``.+`` is greedy — for pathological revisions like
+# ``feature-dev-foo-dev-abc1234.5`` the regex anchors on the *rightmost*
+# ``-dev-`` occurrence. Determinism preserved (review re-re-re-review M5)
+# so if the user supplied a custom tag containing ``-dev-`` they still
+# get a stable identity, just one anchored at the last segment.
 _CLEAN_REV_RE = re.compile(r"^(.+-dev-[0-9a-f]{4,40})\.\d+$")
 
 
@@ -78,60 +84,66 @@ def _is_resumable(
     rev_tag: str,
     connection_url: str,
     sdk_repo: Optional[str] = None,
+    service: Optional[str] = None,
+    registry: str = "",
 ) -> bool:
     """Return True when the prior dev-state can resume the current run.
 
-    Resume requires:
-      * Same source identity — see :func:`_stable_revision_id` for the
-        clean-sha vs dirty/nogit handling. Different code = full pipeline.
-      * Same cluster — the prior push points at a specific registry/CR;
+    Resume requires every input that selects what gets built/pushed/
+    deployed to match the prior run. If any differs, the prior build
+    artifacts are not the right answer for this invocation:
+
+      * **Source identity** (``rev_tag``) — see :func:`_stable_revision_id`
+        for the clean-sha vs dirty/nogit handling. Different code = full
+        pipeline.
+      * **Cluster** — the prior push points at a specific registry/CR;
         a new cluster has its own registry, so the cached image isn't
         there.
-      * No active ``--sdk-repo`` override — the SDK code is mutable
-        between runs even when the extension's git SHA is unchanged, so
-        skipping build would silently deploy stale SDK content (review
-        re-review PR #84 H3 / re-re-review).
+      * **Service filter** (``--service``) — a partial-service first run
+        only built that one service. A later full run would happily
+        deploy un-built services with tags that were never pushed
+        (review re-re-re-review PR #84 H1).
+      * **SDK override** (``--sdk-repo``) — the SDK code is mutable
+        between runs even when the extension's git SHA is unchanged.
+        Skipping build would silently redeploy stale SDK content.
+        Conservatively: any non-equal sdk_repo (including None vs set)
+        invalidates resume.
+      * **Registry** (``KAMIWAZA_REGISTRY`` / derived) — the prior push
+        targeted a specific registry; a different registry means the
+        image isn't there to skip-push to.
     """
     if prior_state is None:
-        return False
-    if sdk_repo is not None:
         return False
     current_id = _stable_revision_id(rev_tag)
     prior_id = _stable_revision_id(prior_state.last_revision or "")
     if current_id is None or prior_id is None:
         return False
-    return current_id == prior_id and prior_state.cluster == connection_url
+    if current_id != prior_id:
+        return False
+    if prior_state.cluster != connection_url:
+        return False
+    # Service filter, sdk_repo, and registry must all match. None vs ""
+    # are treated as equivalent for service/sdk_repo (older state files
+    # didn't record them — refuse resume on those by mismatching against
+    # current values when current is set).
+    if (prior_state.last_service or None) != (service or None):
+        return False
+    if (prior_state.last_sdk_repo or None) != (sdk_repo or None):
+        return False
+    if prior_state.last_registry != registry:
+        return False
+    return True
 
 
 def _decode_email(access_token: str) -> Optional[str]:
-    """Best-effort extraction of the ``email`` claim from a JWT.
-
-    Returns ``None`` if the token cannot be decoded. Used to populate the
-    ``kamiwaza.ai/deployer`` annotation and the ``deployer`` field of
-    ``.kz-ext/dev-state.json`` (ENG-3887 / §4.2.9).
-
-    SECURITY NOTE: this decodes the JWT *payload only* — no signature
-    verification. The value is treated strictly as display metadata
-    (annotation text, dev-state book-keeping). It MUST NOT be used for
-    any access-control or trust decision; the platform's ForwardAuth
-    layer is the authoritative identity boundary, and the runtime lib's
-    Identity model carries the verified user fields.
+    """Compatibility shim — the real implementation lives in
+    :mod:`kamiwaza_extensions.dev_state` so ``commands.status`` doesn't
+    reach into a sibling command (review re-re-re-review PR #84 M2).
+    Existing internal callers and tests can still reference this name.
     """
-    import base64
-    import json as _json
+    from kamiwaza_extensions.dev_state import decode_email
 
-    try:
-        payload_b64 = access_token.split(".")[1]
-        padding = 4 - len(payload_b64) % 4
-        if padding != 4:
-            payload_b64 += "=" * padding
-        payload = _json.loads(base64.urlsafe_b64decode(payload_b64))
-        email = payload.get("email")
-        if isinstance(email, str) and email:
-            return email
-    except Exception:
-        pass
-    return None
+    return decode_email(access_token)
 
 
 def _detect_kind_registry() -> Optional[str]:
@@ -268,29 +280,6 @@ def run_dev_remote(
     tagger = RevisionTagger()
     rev_tag = tagger.generate_tag(info.version, custom=revision)
 
-    # Read prior dev-state for resume hints (§4.2.9 DevStateFile, ENG-3887).
-    # If the prior run wrote the same revision and got past a step, skip
-    # that step on this invocation. The image content for the same revision
-    # tag is byte-identical (the tag contains the revision SHA), so
-    # rebuild/repush is wasted work and reintroduces the registry/auth
-    # failure modes the state file was meant to avoid (review re-review
-    # PR #84 H4). Different revision = different code = full pipeline.
-    prior_state = read_state(info.path)
-    notice = resume_message(prior_state)
-    if notice:
-        console.print(f"[dim]{notice}[/dim]")
-    resumable = _is_resumable(prior_state, rev_tag, connection.url, sdk_repo)
-    if resumable and not no_build and prior_state.is_step_complete("build"):
-        console.print(
-            f"[dim]Skipping build — revision {rev_tag} already built in prior run.[/dim]"
-        )
-        no_build = True
-    if resumable and not no_push and prior_state.is_step_complete("push"):
-        console.print(
-            f"[dim]Skipping push — revision {rev_tag} already pushed in prior run.[/dim]"
-        )
-        no_push = True
-
     # Warn about dirty tree
     if revision is None:
         sha, dirty = tagger.get_git_info()
@@ -300,7 +289,8 @@ def run_dev_remote(
                 "-- image tagged with 'dirty'."
             )
 
-    # 4. Derive registry
+    # 4. Derive registry — must happen before the resume check so we can
+    # compare the active registry against the one persisted in dev-state.
     registry = os.environ.get("KAMIWAZA_REGISTRY")
     if not registry:
         registry = _detect_kind_registry()
@@ -313,6 +303,35 @@ def run_dev_remote(
         else:
             console.print("[red]Error:[/red] Could not derive registry from connection URL.")
             raise typer.Exit(code=1)
+
+    # Read prior dev-state for resume hints (§4.2.9 DevStateFile, ENG-3887).
+    # If the prior run wrote matching inputs (revision, cluster, service,
+    # sdk-repo, registry) and got past a step, skip that step on this
+    # invocation. Different revision/cluster/service/sdk-repo/registry =
+    # different image content or destination = full pipeline (review
+    # re-re-re-review PR #84 H1).
+    prior_state = read_state(info.path)
+    notice = resume_message(prior_state)
+    if notice:
+        console.print(f"[dim]{notice}[/dim]")
+    resumable = _is_resumable(
+        prior_state,
+        rev_tag,
+        connection.url,
+        sdk_repo=sdk_repo,
+        service=service,
+        registry=registry,
+    )
+    if resumable and not no_build and prior_state.is_step_complete("build"):
+        console.print(
+            f"[dim]Skipping build — revision {rev_tag} already built in prior run.[/dim]"
+        )
+        no_build = True
+    if resumable and not no_push and prior_state.is_step_complete("push"):
+        console.print(
+            f"[dim]Skipping push — revision {rev_tag} already pushed in prior run.[/dim]"
+        )
+        no_push = True
 
     # Print header
     console.print(f"  Extension:  [bold]{info.name}[/bold] ({info.version})")
@@ -457,6 +476,12 @@ def run_dev_remote(
                 cluster=connection.url,
                 extension_name=info.name,
                 deployer=deployer_email or "",
+                # Persist the resume-key inputs so the next invocation can
+                # detect when service-filter / sdk-repo / registry differ
+                # (review re-re-re-review PR #84 H1).
+                service=service,
+                sdk_repo=sdk_repo,
+                registry=registry,
             )
         except OSError as state_exc:
             console.print(

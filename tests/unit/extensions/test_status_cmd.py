@@ -307,3 +307,64 @@ def test_status_falls_back_to_jwt_when_deployer_mismatches(
     # Bob gets his own JWT-derived name.
     assert called_with.startswith("my-app-dev-")
     assert len(called_with.split("-")[-1]) == 6
+
+
+
+# ---------------------------------------------------------------------------
+# Review re-re-re-review PR #84 M4: case-insensitive email comparison
+# ---------------------------------------------------------------------------
+
+
+@patch("kamiwaza_sdk.KamiwazaClient")
+@patch("kamiwaza_extensions.connections.ConnectionManager")
+@patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+@patch("kamiwaza_extensions.dev_state.read_state")
+def test_status_email_match_is_case_insensitive(
+    mock_read_state, mock_detector_cls, mock_conn_cls, mock_client_cls,
+):
+    """Some IdPs vary email casing across token refreshes (`Alice@Example.com`
+    one minute, `alice@example.com` the next). The deployer match should
+    treat both as the same identity rather than silently fall back."""
+    from kamiwaza_extensions.dev_state import DevState
+
+    mock_conn = MagicMock()
+    mock_conn.get_active_connection.return_value = MagicMock(
+        url="https://cluster.test/api", verify_ssl=True,
+    )
+    # JWT carries `Alice@Example.COM` (mixed case).
+    mock_conn.get_token.return_value = MagicMock(
+        access_token="header.eyJzdWIiOiAidXNlci1hbGljZSIsICJlbWFpbCI6ICJBbGljZUBFeGFtcGxlLkNPTSJ9.sig",
+    )
+    mock_conn_cls.return_value = mock_conn
+
+    from types import SimpleNamespace
+    mock_detector = MagicMock()
+    mock_detector.detect.return_value = SimpleNamespace(
+        path="/tmp/x", name="my-app", version="1.0.0",
+    )
+    mock_detector_cls.return_value = mock_detector
+
+    # State has the lowercase form of the same email.
+    mock_read_state.return_value = DevState(
+        last_dev_name="my-app-dev-saved",
+        last_revision="1.0.0-dev-abc.1",
+        cluster="https://cluster.test/api",
+        extension_name="my-app",
+        deployer="alice@example.com",          # ≠ JWT casing
+        last_successful_step="poll",
+    )
+
+    mock_client = MagicMock()
+    ext = MagicMock(
+        name="my-app-dev-saved", phase="Running",
+        endpoints=MagicMock(external=None), services=[], model_extra={},
+    )
+    ext.annotations = {}
+    mock_client.extensions.get_extension.return_value = ext
+    mock_client_cls.return_value = mock_client
+
+    result = runner.invoke(app, ["status"])
+    assert result.exit_code == 0
+    # Saved name reused even though email casing differs.
+    called_with = mock_client.extensions.get_extension.call_args[0][0]
+    assert called_with == "my-app-dev-saved"

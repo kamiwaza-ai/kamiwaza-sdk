@@ -330,6 +330,135 @@ class TestIsResumableSdkOverride:
 
 
 @pytest.mark.unit
+class TestIsResumableServiceFilterAndRegistry:
+    """Review re-re-re-review PR #84 H1: ``_is_resumable`` must include
+    every input that selects what gets built/pushed/deployed. A
+    ``--service``-scoped first run only built that service; a later
+    full run that resumed against it would deploy un-built services
+    with tags that were never pushed. Same hazard for ``--sdk-repo``
+    changes and registry changes."""
+
+    def _state(self, **overrides) -> DevState:
+        defaults = dict(
+            last_run_at="2026-04-28T20:00:00+00:00",
+            last_revision="1.0.0-dev-abc1234.1714000000",
+            last_dev_name="my-app-dev-abc",
+            last_successful_step="push",
+            cluster="https://cluster.test/api",
+            extension_name="my-app",
+            deployer="alice@example.com",
+            last_service=None,
+            last_sdk_repo=None,
+            last_registry="registry.test",
+        )
+        defaults.update(overrides)
+        return DevState(**defaults)
+
+    def test_partial_service_run_invalidates_full_resume(self):
+        # Prior run was `--service backend` (only backend was built).
+        # A later plain `kz-ext dev` (service=None) must NOT skip build —
+        # frontend was never built at this revision.
+        from kamiwaza_extensions.commands.dev import _is_resumable
+
+        prior = self._state(last_service="backend")
+        assert _is_resumable(
+            prior,
+            rev_tag="1.0.0-dev-abc1234.1714999999",
+            connection_url="https://cluster.test/api",
+            registry="registry.test",
+            service=None,
+        ) is False
+
+    def test_same_service_filter_resumes(self):
+        # `--service backend` → fail → `--service backend` again is fine.
+        from kamiwaza_extensions.commands.dev import _is_resumable
+
+        prior = self._state(last_service="backend")
+        assert _is_resumable(
+            prior,
+            rev_tag="1.0.0-dev-abc1234.1714999999",
+            connection_url="https://cluster.test/api",
+            registry="registry.test",
+            service="backend",
+        ) is True
+
+    def test_different_service_filter_invalidates_resume(self):
+        # `--service backend` → fail → `--service frontend` —
+        # frontend was never built at this revision.
+        from kamiwaza_extensions.commands.dev import _is_resumable
+
+        prior = self._state(last_service="backend")
+        assert _is_resumable(
+            prior,
+            rev_tag="1.0.0-dev-abc1234.1714999999",
+            connection_url="https://cluster.test/api",
+            registry="registry.test",
+            service="frontend",
+        ) is False
+
+    def test_sdk_repo_change_invalidates_resume(self):
+        # Prior run had no sdk-repo override; new run does → SDK code
+        # in the image differs, so build must run.
+        from kamiwaza_extensions.commands.dev import _is_resumable
+
+        prior = self._state(last_sdk_repo=None)
+        assert _is_resumable(
+            prior,
+            rev_tag="1.0.0-dev-abc1234.1714999999",
+            connection_url="https://cluster.test/api",
+            registry="registry.test",
+            sdk_repo="/Users/dev/kamiwaza-sdk",
+        ) is False
+
+    def test_sdk_repo_consistent_resumes(self):
+        # Same sdk-repo path on both runs — resume is safe.
+        from kamiwaza_extensions.commands.dev import _is_resumable
+
+        prior = self._state(last_sdk_repo="/Users/dev/kamiwaza-sdk")
+        assert _is_resumable(
+            prior,
+            rev_tag="1.0.0-dev-abc1234.1714999999",
+            connection_url="https://cluster.test/api",
+            registry="registry.test",
+            sdk_repo="/Users/dev/kamiwaza-sdk",
+        ) is True
+
+    def test_registry_change_invalidates_resume(self):
+        # KAMIWAZA_REGISTRY=registry-a → fail →
+        # KAMIWAZA_REGISTRY=registry-b: prior push is in the wrong
+        # registry, so push must run again.
+        from kamiwaza_extensions.commands.dev import _is_resumable
+
+        prior = self._state(last_registry="registry-a")
+        assert _is_resumable(
+            prior,
+            rev_tag="1.0.0-dev-abc1234.1714999999",
+            connection_url="https://cluster.test/api",
+            registry="registry-b",
+        ) is False
+
+    def test_legacy_state_without_resume_inputs_invalidates_when_current_set(self):
+        # An older dev-state file (pre-H1) doesn't carry service /
+        # sdk_repo / registry. Reading drops the unknown keys and
+        # leaves them at default (None / ""). When the current run
+        # supplies a service or sdk_repo, the comparison must fail
+        # (refuse resume) — old state didn't track this input, so we
+        # can't safely conclude the prior run handled it.
+        from kamiwaza_extensions.commands.dev import _is_resumable
+
+        prior = self._state(
+            last_service=None, last_sdk_repo=None, last_registry="",
+        )
+        assert _is_resumable(
+            prior,
+            rev_tag="1.0.0-dev-abc1234.1714999999",
+            connection_url="https://cluster.test/api",
+            registry="registry.test",
+            service="backend",
+        ) is False
+
+
+@pytest.mark.unit
 class TestBuildPatchKwargsCarriesAnnotations:
     """Review re-review PR #84 H1: PATCH redeploy must refresh the
     deployer/revision/deployed-at annotations. Helper extracted from

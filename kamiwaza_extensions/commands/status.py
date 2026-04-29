@@ -63,13 +63,20 @@ def run_status(*, name: Optional[str] = None, verbose: bool = False) -> None:
         # return A's deployment to B — confusing in the best case, a
         # misleading 404 in the worst. Require the saved deployer to
         # match the current JWT email before reusing the name.
-        from kamiwaza_extensions.commands.dev import _decode_email
+        #
+        # decode_email lives in dev_state (review re-re-re-review PR #84
+        # M2) — `commands.status` doesn't reach into `commands.dev`.
+        from kamiwaza_extensions.dev_state import decode_email
 
         state = read_state(info.path)
-        current_email = _decode_email(token.access_token)
+        current_email = decode_email(token.access_token)
         same_cluster = bool(state and state.cluster == connection.url)
+        # Email match is case-insensitive (review re-re-re-review PR #84
+        # M4) — some IdPs vary casing across token refreshes.
         same_deployer = bool(
-            state and current_email and state.deployer == current_email
+            state
+            and current_email
+            and state.deployer.lower() == current_email.lower()
         )
         if state and state.last_dev_name and same_cluster and same_deployer:
             dev_name = state.last_dev_name

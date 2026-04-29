@@ -383,3 +383,47 @@ class TestClusterReadinessDistinguishesNotFoundFromUnreachable:
         # The fix message must point at kubectl/kubeconfig, not platform
         # reinstall.
         assert "kubeconfig" in (result.fix or "").lower()
+
+
+@pytest.mark.unit
+class TestIsKubectlNotFoundErrorPatternStrictness:
+    """Review re-re-re-review PR #84 M3: the not-found detection must
+    not be so broad that unrelated stderr containing the bare substring
+    `not found` flips a connectivity failure into a misleading CRD-
+    absent verdict. Word-bounded and bracketed forms only."""
+
+    @pytest.mark.parametrize(
+        "stderr",
+        [
+            # Canonical kubectl bracket form.
+            'Error from server (NotFound): customresourcedefinitions.apiextensions.k8s.io "x" not found',
+            # Lower-case bracket form.
+            "error: server returned (notfound)",
+            # Just the word-bounded "not found" at end of message.
+            'customresourcedefinitions.apiextensions.k8s.io "x" not found',
+            # With extra whitespace between.
+            'resource not    found',
+        ],
+    )
+    def test_real_not_found_messages_match(self, stderr):
+        from kamiwaza_extensions.doctor import _is_kubectl_not_found_error
+
+        assert _is_kubectl_not_found_error(stderr) is True
+
+    @pytest.mark.parametrize(
+        "stderr",
+        [
+            # Substring 'not found' embedded in unrelated word — should NOT
+            # trigger via the fallback path. (Unlikely but the prior
+            # `"not found" in lowered` substring match would hit them.)
+            "warning: knot foundry not yet initialized",
+            # No 'not' / 'found' tokens.
+            "Unable to connect to the server: dial tcp 10.0.0.1:6443: i/o timeout",
+            # Empty.
+            "",
+        ],
+    )
+    def test_unrelated_stderr_does_not_match(self, stderr):
+        from kamiwaza_extensions.doctor import _is_kubectl_not_found_error
+
+        assert _is_kubectl_not_found_error(stderr) is False

@@ -40,6 +40,13 @@ class DevState:
     cluster: str = ""
     extension_name: str = ""
     deployer: str = ""
+    # Resume-key inputs (review re-re-re-review PR #84 H1). When the next
+    # `kz-ext dev` invocation differs from the prior on any of these,
+    # `_is_resumable` returns False — skipping build/push under a different
+    # set of inputs would silently redeploy stale or never-built images.
+    last_service: Optional[str] = None    # `--service` filter, if any
+    last_sdk_repo: Optional[str] = None   # `--sdk-repo` override path, if any
+    last_registry: str = ""               # KAMIWAZA_REGISTRY / derived
 
     def is_step_complete(self, step: str) -> bool:
         if not self.last_successful_step:
@@ -51,6 +58,43 @@ class DevState:
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), indent=2, sort_keys=True)
+
+
+def decode_email(access_token: str) -> Optional[str]:
+    """Best-effort extraction of the ``email`` claim from a JWT.
+
+    Returns ``None`` if the token cannot be decoded. Used by callers
+    (``commands.dev``, ``commands.status``) to populate the
+    ``kamiwaza.ai/deployer`` annotation, the ``deployer`` field of
+    ``dev-state.json``, and the deployer-match guard in ``kz-ext status``.
+
+    Lifted to ``dev_state`` from ``commands.dev`` so ``commands.status``
+    no longer reaches sideways into a sibling command's internals
+    (review re-re-re-review PR #84 M2).
+
+    SECURITY NOTE: this decodes the JWT *payload only* — no signature
+    verification. The value is treated strictly as display metadata
+    (annotation text, dev-state book-keeping, identity match in
+    ``status``). It MUST NOT be used for any access-control or trust
+    decision; the platform's ForwardAuth layer is the authoritative
+    identity boundary, and the runtime lib's Identity model carries the
+    verified user fields.
+    """
+    import base64
+    import json as _json
+
+    try:
+        payload_b64 = access_token.split(".")[1]
+        padding = 4 - len(payload_b64) % 4
+        if padding != 4:
+            payload_b64 += "=" * padding
+        payload = _json.loads(base64.urlsafe_b64decode(payload_b64))
+        email = payload.get("email")
+        if isinstance(email, str) and email:
+            return email
+    except Exception:
+        pass
+    return None
 
 
 def state_path(extension_dir: Path) -> Path:
@@ -101,12 +145,20 @@ def mark_step(
     cluster: str,
     extension_name: str,
     deployer: str,
+    service: Optional[str] = None,
+    sdk_repo: Optional[str] = None,
+    registry: str = "",
 ) -> DevState:
     """Update the dev-state to record completion of ``step``.
 
     Loads the existing state (or creates a fresh one), updates the
     book-keeping fields, sets ``last_successful_step = step``, and writes
     the result atomically.
+
+    ``service``, ``sdk_repo``, ``registry`` are persisted so the next
+    ``kz-ext dev`` invocation can refuse resume when its inputs differ
+    (review re-re-re-review PR #84 H1) — e.g., a partial-service first
+    run must not let a later full run skip building the un-built service.
     """
     if step not in STEPS:
         raise ValueError(f"Unknown dev step '{step}'; expected one of {STEPS}")
@@ -119,6 +171,9 @@ def mark_step(
     state.cluster = cluster
     state.extension_name = extension_name
     state.deployer = deployer
+    state.last_service = service
+    state.last_sdk_repo = sdk_repo
+    state.last_registry = registry
     write_state(extension_dir, state)
     return state
 
