@@ -43,6 +43,41 @@ class TestCLISkeleton:
         assert result.exit_code == 0
         assert "local" in result.output
 
+    def test_dev_local_help_includes_auth_flag(self):
+        # TS-14 — typer recognises --auth without parsing error
+        result = runner.invoke(app, ["dev", "local", "--help"])
+        assert result.exit_code == 0
+        assert "--auth" in result.output
+
+    def test_dev_local_auth_flag_invokes_runner_with_auth_true(self, monkeypatch):
+        # TS-15 — `kz-ext dev local --auth` calls run_dev_local(auth=True)
+        captured: dict = {}
+
+        def fake_run(*, detach, sdk_repo=None, auth=False):
+            captured["detach"] = detach
+            captured["sdk_repo"] = sdk_repo
+            captured["auth"] = auth
+
+        monkeypatch.setattr(
+            "kamiwaza_extensions.commands.dev_local.run_dev_local", fake_run
+        )
+        result = runner.invoke(app, ["dev", "local", "--auth"])
+        assert result.exit_code == 0
+        assert captured == {"detach": False, "sdk_repo": None, "auth": True}
+
+    def test_dev_local_without_auth_flag_defaults_to_false(self, monkeypatch):
+        captured: dict = {}
+
+        def fake_run(*, detach, sdk_repo=None, auth=False):
+            captured["auth"] = auth
+
+        monkeypatch.setattr(
+            "kamiwaza_extensions.commands.dev_local.run_dev_local", fake_run
+        )
+        result = runner.invoke(app, ["dev", "local"])
+        assert result.exit_code == 0
+        assert captured["auth"] is False
+
     def test_unknown_command(self):
         result = runner.invoke(app, ["nonexistent"])
         assert result.exit_code != 0
