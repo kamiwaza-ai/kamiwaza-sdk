@@ -191,12 +191,13 @@ class KamiwazaClient:
         if self.authenticator and not skip_auth:
             self.authenticator.authenticate(self.session)
 
-        # Requests re-merges REQUESTS_CA_BUNDLE/CURL_CA_BUNDLE when verify is
-        # omitted, so mirror a session-level disable per request while still
-        # allowing callers to re-enable verification explicitly or via
-        # client.session.verify after construction.
-        if "verify" not in kwargs and self.session.verify is False:
-            kwargs["verify"] = False
+        # Always inject session.verify when the caller hasn't supplied an
+        # explicit verify kwarg.  This prevents requests'
+        # merge_environment_settings from overriding session.verify with
+        # REQUESTS_CA_BUNDLE / CURL_CA_BUNDLE – whether session.verify is
+        # False (SSL disabled) or a custom CA path set at runtime.
+        if "verify" not in kwargs:
+            kwargs["verify"] = self.session.verify
 
         return kwargs
 

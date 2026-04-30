@@ -95,7 +95,7 @@ def test_client_request_forces_verify_false_when_ssl_disabled(monkeypatch):
     assert calls[0]["kwargs"]["verify"] is False
 
 
-def test_client_request_does_not_inject_verify_when_ssl_enabled(monkeypatch):
+def test_client_request_injects_session_verify_when_ssl_enabled(monkeypatch):
     _clear_base_env(monkeypatch)
     monkeypatch.setenv("KAMIWAZA_BASE_URL", "https://env.example/api")
     client = KamiwazaClient()
@@ -109,7 +109,7 @@ def test_client_request_does_not_inject_verify_when_ssl_enabled(monkeypatch):
 
     client.get("/serving/deployments", expect_json=False)
 
-    assert "verify" not in calls[0]["kwargs"]
+    assert calls[0]["kwargs"]["verify"] is True
 
 
 def test_client_request_preserves_explicit_verify_override(monkeypatch):
@@ -182,4 +182,32 @@ def test_client_request_respects_runtime_session_verify_override(monkeypatch):
 
     client.get("/serving/deployments", expect_json=False)
 
-    assert "verify" not in calls[0]["kwargs"]
+    assert calls[0]["kwargs"]["verify"] == "/tmp/custom-ca.pem"
+
+
+def test_client_request_custom_ca_beats_env_bundle(monkeypatch):
+    """When KAMIWAZA_VERIFY_SSL=false initially disabled verification but the
+    caller later sets session.verify to a custom CA path, that path must be
+    injected into every request – even when REQUESTS_CA_BUNDLE is set – so
+    that requests' merge_environment_settings cannot override it with the
+    env bundle."""
+    _clear_base_env(monkeypatch)
+    monkeypatch.setenv("KAMIWAZA_BASE_URL", "https://env.example/api")
+    monkeypatch.setenv("KAMIWAZA_VERIFY_SSL", "false")
+    monkeypatch.setenv("REQUESTS_CA_BUNDLE", "/etc/ssl/certs/ca-certificates.crt")
+
+    client = KamiwazaClient()
+    # Caller re-enables verification with a custom CA bundle at runtime.
+    client.session.verify = "/tmp/custom-ca.pem"
+
+    calls: list[dict[str, object]] = []
+
+    def _fake_request(method: str, url: str, **kwargs: object) -> _NoContentResponse:
+        calls.append({"method": method, "url": url, "kwargs": kwargs})
+        return _NoContentResponse()
+
+    monkeypatch.setattr(client.session, "request", _fake_request)
+
+    client.get("/serving/deployments", expect_json=False)
+
+    assert calls[0]["kwargs"]["verify"] == "/tmp/custom-ca.pem"
