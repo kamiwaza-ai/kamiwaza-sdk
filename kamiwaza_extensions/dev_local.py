@@ -159,11 +159,15 @@ class DevLocalRunner:
                 fd.close()
                 sdk_override_file = fd.name
 
-            # 7b. Generate extra_hosts overlay when --auth + named loopback
-            # (e.g. https://kamiwaza.test). Bare loopbacks are handled by
-            # build_env_overlay's URL rewrite so they don't need this.
+            # 7b. Generate extra_hosts overlay when --auth is set. We always
+            # inject host.docker.internal:host-gateway under --auth so
+            # containers on Linux Docker Engine can reach the host (the
+            # bare-loopback URL rewrite to host.docker.internal in
+            # build_env_overlay assumes that name resolves, which is only
+            # implicit on Docker Desktop). Named loopback hostnames
+            # (kamiwaza.test) get their own alias too.
             if auth and connection and info.compose_data:
-                eh_entries = build_compose_extra_hosts(connection)
+                eh_entries = build_compose_extra_hosts(connection, auth=True)
                 if eh_entries:
                     services = info.compose_data.get("services", {})
                     eh_overlay = {
@@ -413,16 +417,32 @@ def build_env_overlay(
     return env
 
 
-def build_compose_extra_hosts(connection: ConnectionInfo) -> List[str]:
+def build_compose_extra_hosts(
+    connection: ConnectionInfo,
+    *,
+    auth: bool = False,
+) -> List[str]:
     """Return compose ``extra_hosts`` entries needed to reach the connection's
     Kamiwaza URL from inside a container.
 
-    Returns ``[]`` for non-loopback URLs and for bare loopbacks (those are
-    handled by ``build_env_overlay``'s URL rewrite). Returns
-    ``["<hostname>:host-gateway"]`` for named loopback hostnames such as
-    ``kamiwaza.test``.
+    When ``auth=True``, always includes ``host.docker.internal:host-gateway``
+    so containers can reach the host on Linux Docker Engine — Docker Desktop
+    resolves this name implicitly, but plain Linux Docker Engine does not
+    unless the alias is in compose's ``extra_hosts``. Without this, the URL
+    rewrite to ``host.docker.internal`` (applied by ``build_env_overlay`` for
+    bare loopbacks) fails on Linux with name-resolution errors. Harmless on
+    Docker Desktop where it's already aliased.
+
+    Named-loopback hostnames (``kamiwaza.test``, ``dev.local``) get their own
+    ``<name>:host-gateway`` entry regardless of ``auth`` so the existing
+    behaviour (no ``--auth``, just running locally against a named loopback)
+    is preserved.
     """
-    return extract_extra_hosts(connection.url)
+    entries: List[str] = []
+    if auth:
+        entries.append("host.docker.internal:host-gateway")
+    entries.extend(extract_extra_hosts(connection.url))
+    return entries
 
 
 def parse_port_mapping(port_spec: str) -> Tuple[Optional[int], Optional[int]]:

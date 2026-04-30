@@ -11,6 +11,7 @@ import { _buildBridgedHeaders, _decodeJwt } from "../src/server/localDevAuth";
 
 const GATE = "KZ_EXT_DEV_LOCAL_AUTH";
 const TOKEN = "KAMIWAZA_BEARER_TOKEN";
+const WORKROOM = "KAMIWAZA_DEV_WORKROOM_ID";
 
 function makeJwt(claims: Record<string, unknown>): string {
     const header = btoa(JSON.stringify({ alg: "none", typ: "JWT" }))
@@ -32,6 +33,7 @@ describe("_buildBridgedHeaders", () => {
         originalEnv = { ...process.env };
         delete process.env[GATE];
         delete process.env[TOKEN];
+        delete process.env[WORKROOM];
         warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     });
 
@@ -64,7 +66,7 @@ describe("_buildBridgedHeaders", () => {
         expect(out).toBe(incoming);
     });
 
-    it("TS-18: gate=1 + token set → injects authorization, x-user-id, x-user-email", () => {
+    it("TS-18: gate=1 + token set → injects authorization, x-user-id, x-user-email, x-workroom-id", () => {
         const token = makeJwt({
             sub: "user-42",
             email: "alice@example.com",
@@ -81,7 +83,31 @@ describe("_buildBridgedHeaders", () => {
         expect(out.get("x-user-id")).toBe("user-42");
         expect(out.get("x-user-email")).toBe("alice@example.com");
         expect(out.get("x-user-name")).toBe("Alice");
-        expect(out.get("x-existing")).toBe("preserved"); // original headers preserved
+        // PR #87 review fix — x-workroom-id is required by strict
+        // extract_identity() under KAMIWAZA_USE_AUTH=true. Defaults to JWT sub.
+        expect(out.get("x-workroom-id")).toBe("user-42");
+        expect(out.get("x-existing")).toBe("preserved");
+    });
+
+    it("respects KAMIWAZA_DEV_WORKROOM_ID override when set", () => {
+        const token = makeJwt({ sub: "user-42" });
+        process.env[GATE] = "1";
+        process.env[TOKEN] = token;
+        process.env[WORKROOM] = "wr-real-123";
+
+        const out = _buildBridgedHeaders(new Headers());
+        expect(out.get("x-workroom-id")).toBe("wr-real-123");
+        expect(out.get("x-user-id")).toBe("user-42");
+    });
+
+    it("treats whitespace-only KAMIWAZA_DEV_WORKROOM_ID as unset", () => {
+        const token = makeJwt({ sub: "user-7" });
+        process.env[GATE] = "1";
+        process.env[TOKEN] = token;
+        process.env[WORKROOM] = "   ";
+
+        const out = _buildBridgedHeaders(new Headers());
+        expect(out.get("x-workroom-id")).toBe("user-7");
     });
 
     it("TS-19: parses realm_access.roles into x-user-roles", () => {
@@ -104,6 +130,8 @@ describe("_buildBridgedHeaders", () => {
         expect(out.get("x-user-email")).toBeNull();
         expect(out.get("x-user-name")).toBeNull();
         expect(out.get("x-user-roles")).toBeNull();
+        // x-workroom-id is always set (required by strict extract_identity)
+        expect(out.get("x-workroom-id")).toBe("user-1");
     });
 
     it("TS-20: malformed token (cannot decode) → warn + pass through", () => {

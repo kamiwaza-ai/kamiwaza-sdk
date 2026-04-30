@@ -131,21 +131,59 @@ class TestBuildComposeExtraHosts:
         # `kamiwaza.test` is detected as loopback by TLD heuristic, no DNS needed
         assert build_compose_extra_hosts(conn) == ["kamiwaza.test:host-gateway"]
 
-    def test_bare_loopback_returns_empty(self):
-        # TS-11
+    def test_bare_loopback_returns_empty_without_auth(self):
+        # TS-11 — auth=False (default): named-loopback only behavior
         conn = ConnectionInfo(
             name="local", url="http://localhost:8000/api", active=True, created_at=0.0
         )
         assert build_compose_extra_hosts(conn) == []
 
-    def test_non_loopback_returns_empty(self, monkeypatch):
-        # TS-10
+    def test_non_loopback_returns_empty_without_auth(self, monkeypatch):
+        # TS-10 — auth=False (default)
         import socket as _socket
         monkeypatch.setattr(_socket, "gethostbyname", lambda h: "1.2.3.4")
         conn = ConnectionInfo(
             name="prod", url="https://api.kamiwaza.ai", active=True, created_at=0.0
         )
         assert build_compose_extra_hosts(conn) == []
+
+    def test_auth_always_includes_host_docker_internal(self):
+        # PR #87 review fix (High #2) — Linux Docker Engine doesn't
+        # auto-resolve host.docker.internal; the alias must be in
+        # extra_hosts. Always include it under --auth so the bare-loopback
+        # URL rewrite to host.docker.internal works on Linux.
+        conn = ConnectionInfo(
+            name="local", url="http://localhost:8000/api", active=True, created_at=0.0
+        )
+        assert build_compose_extra_hosts(conn, auth=True) == [
+            "host.docker.internal:host-gateway"
+        ]
+
+    def test_auth_with_named_loopback_includes_both(self):
+        # Named loopback (kamiwaza.test) keeps its own alias, plus
+        # host.docker.internal for Linux portability.
+        conn = ConnectionInfo(
+            name="dev", url="https://kamiwaza.test/api", active=True, created_at=0.0
+        )
+        assert build_compose_extra_hosts(conn, auth=True) == [
+            "host.docker.internal:host-gateway",
+            "kamiwaza.test:host-gateway",
+        ]
+
+    def test_auth_with_non_loopback_still_includes_host_docker_internal(
+        self, monkeypatch
+    ):
+        # Even when the connection URL isn't a loopback, --auth injects
+        # host.docker.internal:host-gateway. Harmless on non-loopback
+        # connections and keeps the contract consistent.
+        import socket as _socket
+        monkeypatch.setattr(_socket, "gethostbyname", lambda h: "1.2.3.4")
+        conn = ConnectionInfo(
+            name="prod", url="https://api.kamiwaza.ai", active=True, created_at=0.0
+        )
+        assert build_compose_extra_hosts(conn, auth=True) == [
+            "host.docker.internal:host-gateway"
+        ]
 
 
 @pytest.mark.unit

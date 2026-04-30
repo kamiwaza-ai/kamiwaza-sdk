@@ -2,17 +2,23 @@
  * Local-dev auth bridge middleware (ENG-4318).
  *
  * When `kz-ext dev local --auth` runs an extension, the Python runner sets
- * two env vars on the container:
+ * three env vars on the container:
  *
  *   KZ_EXT_DEV_LOCAL_AUTH=1
  *   KAMIWAZA_BEARER_TOKEN=<jwt>
+ *   KAMIWAZA_DEV_WORKROOM_ID=<workroom-id>   (optional — defaults to JWT sub)
  *
  * This module exports a Next.js middleware factory that, when those env
  * vars are present, synthesizes the platform's forwarded-auth envelope
  * headers (`x-user-id`, `x-user-email`, `x-user-name`, `x-user-roles`,
- * `authorization`) from the bearer's JWT claims so the rest of the
- * extension code (proxy, identity extractor, session router, AuthGuard)
- * sees the same input shape it gets in production.
+ * `x-workroom-id`, `authorization`) from the bearer's JWT claims so the
+ * rest of the extension code (proxy, identity extractor, session router,
+ * AuthGuard) sees the same input shape it gets in production.
+ *
+ * `x-workroom-id` is required by the strict `extract_identity()` path used
+ * by `create_session_router()` and `require_auth()` under
+ * `KAMIWAZA_USE_AUTH=true`. Without it, every protected route 401s and
+ * `/session` reports logged-out. See PR #87 review for details.
  *
  * Fail-closed semantics:
  *   - Gate env unset → pass-through (production behaviour).
@@ -39,6 +45,7 @@ export type LocalDevAuthMiddleware = (request: NextRequest) => NextResponse;
 
 const GATE_ENV = "KZ_EXT_DEV_LOCAL_AUTH";
 const TOKEN_ENV = "KAMIWAZA_BEARER_TOKEN";
+const WORKROOM_ENV = "KAMIWAZA_DEV_WORKROOM_ID";
 
 interface JwtClaims {
     sub?: string;
@@ -116,6 +123,17 @@ export function _buildBridgedHeaders(incoming: Headers): Headers {
     const out = new Headers(incoming);
     out.set("authorization", `Bearer ${token}`);
     out.set("x-user-id", claims.sub);
+    // x-workroom-id is required by strict extract_identity() under
+    // KAMIWAZA_USE_AUTH=true (session.py:131, identity.py:149). Without
+    // it, every protected route 401s. Honor an explicit override from
+    // KAMIWAZA_DEV_WORKROOM_ID if the developer wants to test against a
+    // specific workroom; otherwise fall back to the JWT sub so the
+    // strict identity path succeeds and the workroom_id is stable
+    // per-developer. The synthesized workroom_id is only consumed by
+    // the extension's local authz path — it's never sent to the
+    // platform (which only sees the bearer).
+    const workroomOverride = process.env[WORKROOM_ENV]?.trim();
+    out.set("x-workroom-id", workroomOverride || claims.sub);
     if (typeof claims.email === "string" && claims.email) {
         out.set("x-user-email", claims.email);
     }
