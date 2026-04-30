@@ -40,10 +40,13 @@ The Next.js middleware shipped with the app template (and exposed as `createLoca
 
 | Condition | Message | Exit |
 | --- | --- | --- |
+| Extension type is not `app` | `--auth is only supported for \`app\`-type extensions; this extension type is \`<type>\`...` | 2 |
 | No active `kz-ext login` connection | `no active Kamiwaza connection — run \`kz-ext login\` first` | 2 |
 | Active connection has empty bearer | `active connection '<name>' has no stored bearer token — run \`kz-ext login\` again` | 2 |
 | JWT `exp` is in the past | `bearer token expired at <ISO> — run \`kz-ext login\` again` | 2 |
 | Bearer is not a JWT (no `sub` claim) | `active connection '<name>' bearer is not a JWT with a usable \`sub\` claim — \`kz-ext dev local --auth\` requires an interactive login (try \`kz-ext login\` without \`--api-key\`)` | 2 |
+
+**`--auth` is `app`-only in v1:** the bridge mechanism is the Next.js middleware shipped with the app template (`kz-ext create --type app`). For `service`-type and `tool`-type extensions there's no Next.js layer to inject envelope headers, so `--auth` would set `KAMIWAZA_USE_AUTH=true` against a backend that has no way to receive forwarded-auth headers — every request would 401. Run those without `--auth` for v1; a Python-side bridge for service/tool is tracked as a follow-up.
 
 A JWT with no `exp` claim is accepted (the platform validates the bearer at request time and the extension surfaces the platform's 401 directly). However, the bearer **must be a JWT with a usable `sub` claim** — opaque PATs / API keys created via `kz-ext login --api-key` cannot drive the bridge because the middleware needs `sub` to synthesize `x-user-id`. Use an interactive `kz-ext login` for `--auth`-based local dev.
 

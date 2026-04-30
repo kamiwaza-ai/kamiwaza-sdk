@@ -19,6 +19,7 @@ from kamiwaza_extensions.extension_detector import ExtensionDetector
 from kamiwaza_extensions_lib.local_dev import (
     BRIDGE_ENV_VARS,
     BridgeContext,
+    LocalDevAuthError,
     extract_extra_hosts,
     prepare_bridge_context,
     public_api_url_from,
@@ -68,6 +69,24 @@ class DevLocalRunner:
         connection = self._conn_mgr.get_active_connection()
         bridge: Optional[BridgeContext] = None
         if auth:
+            # PR #87 round-5 review High #2 — `--auth` only works for
+            # `app`-type extensions because the bridge mechanism is the
+            # Next.js middleware shipped in the app template. For
+            # `service` and `tool` extensions there's no Next.js layer
+            # to inject envelope headers, so KAMIWAZA_USE_AUTH=true with
+            # no bridge would just 401 every protected route. Refuse
+            # with a clear hint instead of silently misbehaving.
+            ext_type = (info.metadata or {}).get("type", "app")
+            if ext_type != "app":
+                raise LocalDevAuthError(
+                    f"--auth is only supported for `app`-type extensions; "
+                    f"this extension type is `{ext_type}`. The bridge synthesizes "
+                    "envelope headers via the Next.js middleware shipped with "
+                    "the app template — service/tool extensions have no "
+                    "equivalent Python-side bridge in v1. Run without --auth, "
+                    "or wire forwarded-auth headers manually for testing."
+                )
+
             # prepare_bridge_context raises LocalDevAuthError on no
             # connection / missing bearer / expired token. Surface it to
             # the developer and exit non-zero rather than starting compose.
@@ -432,17 +451,36 @@ def build_env_overlay(
     if auth and bridge is None:
         raise ValueError("bridge is required when auth=True")
 
-    url = connection.url
+    # Two URLs, two consumers (PR #87 round-5 review Critical #1):
+    #
+    #   container_url — used by the extension's BACKEND code making
+    #     server-to-platform calls from inside the Docker container.
+    #     Rewrites bare loopbacks to host.docker.internal so the
+    #     container can actually reach the host.
+    #
+    #   browser_url — used as KAMIWAZA_PUBLIC_API_URL, which feeds
+    #     /auth/login-url and /auth/logout redirects sent to the
+    #     developer's BROWSER. The browser cannot resolve
+    #     host.docker.internal; rewriting here would break the auth
+    #     flow and TLS hostname verification for localhost certs.
+    #     Always keep the developer's original host (localhost,
+    #     kamiwaza.test, etc.).
+    container_url = connection.url
     if auth:
-        url = rewrite_bare_loopback_url(url)
+        container_url = rewrite_bare_loopback_url(container_url)
+    browser_url = connection.url
 
     env = {
-        "KAMIWAZA_API_URL": url,
+        "KAMIWAZA_API_URL": container_url,
         # public_api_url_from is the single source of truth for the
         # /api-stripping convention — keeps prepare_bridge_context and
         # build_env_overlay consistent for trailing-slash URLs.
-        "KAMIWAZA_PUBLIC_API_URL": public_api_url_from(url),
-        "KAMIWAZA_ENDPOINT": f"{url}/v1" if not url.endswith("/v1") else url,
+        "KAMIWAZA_PUBLIC_API_URL": public_api_url_from(browser_url),
+        "KAMIWAZA_ENDPOINT": (
+            f"{container_url}/v1"
+            if not container_url.endswith("/v1")
+            else container_url
+        ),
         "KAMIWAZA_USE_AUTH": "true" if auth else "false",
         "KAMIWAZA_APP_NAME": extension_name,
     }

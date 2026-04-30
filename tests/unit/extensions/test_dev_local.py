@@ -80,6 +80,10 @@ class TestEnvOverlay:
 
     def test_auth_true_rewrites_bare_loopback(self):
         # TS-7 — bare loopback URL gets rewritten to host.docker.internal
+        # for the CONTAINER-side env vars only. Round-5 review Critical
+        # #1: KAMIWAZA_PUBLIC_API_URL is consumed by the developer's
+        # BROWSER (via /auth/login-url + /auth/logout redirects), so it
+        # must keep the original loopback host or the auth flow breaks.
         conn = ConnectionInfo(
             name="local", url="http://localhost:8000/api", active=True, created_at=0.0
         )
@@ -89,8 +93,15 @@ class TestEnvOverlay:
             expires_at=None,
         )
         overlay = build_env_overlay(conn, "my-app", auth=True, bridge=bridge)
+        # Container-side: rewritten so backend can reach the host.
         assert overlay["KAMIWAZA_API_URL"] == "http://host.docker.internal:8000/api"
-        assert overlay["KAMIWAZA_PUBLIC_API_URL"] == "http://host.docker.internal:8000"
+        assert (
+            overlay["KAMIWAZA_ENDPOINT"]
+            == "http://host.docker.internal:8000/api/v1"
+        )
+        # Browser-side: NEVER rewritten — host.docker.internal isn't
+        # resolvable from the developer's browser.
+        assert overlay["KAMIWAZA_PUBLIC_API_URL"] == "http://localhost:8000"
 
     def test_auth_true_preserves_named_hostname(self):
         # TS-8 — kamiwaza.test preserved (TLS cert binding)
@@ -110,6 +121,43 @@ class TestEnvOverlay:
         assert overlay["KAMIWAZA_API_URL"] == "https://kamiwaza.test/api"
         assert overlay["KAMIWAZA_PUBLIC_API_URL"] == "https://kamiwaza.test"
         assert overlay["KAMIWAZA_VERIFY_SSL"] == "false"
+
+    def test_auth_true_loopback_public_url_stays_on_original_host(self):
+        # PR #87 round-5 review Critical #1 — pin KAMIWAZA_PUBLIC_API_URL
+        # to the developer's original host across every loopback variant.
+        # The container-side KAMIWAZA_API_URL gets rewritten to
+        # host.docker.internal so the backend can reach the host; the
+        # browser-side KAMIWAZA_PUBLIC_API_URL must keep the original
+        # name or /auth/login-url + /auth/logout redirect to a host the
+        # browser cannot resolve.
+        bridge = BridgeContext(
+            bearer_token="t", user_id="user-1", expires_at=None,
+        )
+        for original_url in [
+            "http://localhost:8000/api",
+            "http://127.0.0.1:8000/api",
+            "https://127.0.0.2:8443/api",
+            "http://[::1]:8000/api",
+        ]:
+            conn = ConnectionInfo(
+                name="local",
+                url=original_url,
+                active=True,
+                created_at=0.0,
+            )
+            overlay = build_env_overlay(
+                conn, "my-app", auth=True, bridge=bridge,
+            )
+            # Container-side IS rewritten
+            assert "host.docker.internal" in overlay["KAMIWAZA_API_URL"], (
+                f"API URL not rewritten for {original_url!r}: "
+                f"{overlay['KAMIWAZA_API_URL']}"
+            )
+            # Browser-side must keep the original loopback host
+            assert "host.docker.internal" not in overlay["KAMIWAZA_PUBLIC_API_URL"], (
+                f"PUBLIC_API_URL leaked container hostname for {original_url!r}: "
+                f"{overlay['KAMIWAZA_PUBLIC_API_URL']}"
+            )
 
 
 @pytest.mark.unit
@@ -227,6 +275,7 @@ class TestRunnerEnvPassthroughOverlay:
         info.path = tmp_path
         info.compose_path = compose_path
         info.compose_data = compose_data
+        info.metadata = {"type": "app"}
 
         # Track every overlay tempfile written by _write_compose_overlay so
         # we can read them after run() returns and the cleanup removes them.
@@ -349,6 +398,7 @@ class TestRunnerEnvPassthroughOverlay:
         info.path = tmp_path
         info.compose_path = compose_path
         info.compose_data = compose_data
+        info.metadata = {"type": "app"}
 
         captured_overlays: dict[str, dict] = {}
         real_write_overlay = dev_local_mod._write_compose_overlay
@@ -423,6 +473,7 @@ class TestRunnerEnvPassthroughOverlay:
         info.path = tmp_path
         info.compose_path = compose_path
         info.compose_data = compose_data
+        info.metadata = {"type": "app"}
 
         runner = DevLocalRunner()
         runner._detector = MagicMock()
@@ -464,6 +515,121 @@ class TestRunnerEnvPassthroughOverlay:
         assert "KZ_EXT_DEV_LOCAL_AUTH" not in captured_env
         assert "KAMIWAZA_BEARER_TOKEN" not in captured_env
         assert "KAMIWAZA_DEV_WORKROOM_ID" not in captured_env
+
+
+@pytest.mark.unit
+class TestRunnerAuthExtensionTypeGate:
+    """PR #87 round-5 review High #2 — `--auth` is only meaningful for
+    `app`-type extensions (the bridge mechanism is the Next.js
+    middleware shipped with the app template). For `service` and `tool`
+    extensions there's no equivalent bridge, so the runner must refuse
+    rather than set USE_AUTH=true and silently 401 every request."""
+
+    @pytest.mark.parametrize("ext_type", ["service", "tool"])
+    def test_runner_rejects_auth_for_non_app_extension_types(
+        self, tmp_path, monkeypatch, ext_type
+    ):
+        import yaml as _yaml
+        from kamiwaza_extensions_lib.local_dev import LocalDevAuthError
+
+        from kamiwaza_extensions import dev_local as dev_local_mod
+        from kamiwaza_extensions.dev_local import DevLocalRunner
+
+        compose_data = {"services": {"server": {"build": "."}}}
+        compose_path = tmp_path / "docker-compose.yml"
+        compose_path.write_text(_yaml.dump(compose_data))
+
+        info = MagicMock()
+        info.name = f"my-{ext_type}"
+        info.path = tmp_path
+        info.compose_path = compose_path
+        info.compose_data = compose_data
+        info.metadata = {"type": ext_type}
+
+        runner = DevLocalRunner()
+        runner._detector = MagicMock()
+        runner._detector.detect.return_value = info
+        runner._conn_mgr = MagicMock()
+
+        monkeypatch.setattr(
+            dev_local_mod,
+            "detect_compose_command",
+            lambda: ["docker", "compose"],
+        )
+
+        # prepare_bridge_context should NEVER get called — the type gate
+        # is supposed to fire first.
+        prepare_called = []
+
+        def fail_if_called(*args, **kwargs):
+            prepare_called.append(True)
+            raise AssertionError("prepare_bridge_context should not run")
+
+        monkeypatch.setattr(
+            dev_local_mod, "prepare_bridge_context", fail_if_called
+        )
+
+        with pytest.raises(LocalDevAuthError, match="only supported for `app`"):
+            runner.run(detach=False, auth=True)
+        assert not prepare_called
+
+    def test_runner_accepts_auth_for_app_extension_type(
+        self, tmp_path, monkeypatch
+    ):
+        """Sanity check: app-type passes the gate (bridge prep is then
+        invoked normally)."""
+        import yaml as _yaml
+
+        from kamiwaza_extensions import dev_local as dev_local_mod
+        from kamiwaza_extensions.dev_local import DevLocalRunner
+        from kamiwaza_extensions_lib.local_dev import BridgeContext
+
+        compose_data = {"services": {"frontend": {"build": "./frontend"}}}
+        compose_path = tmp_path / "docker-compose.yml"
+        compose_path.write_text(_yaml.dump(compose_data))
+
+        info = MagicMock()
+        info.name = "my-app"
+        info.path = tmp_path
+        info.compose_path = compose_path
+        info.compose_data = compose_data
+        info.metadata = {"type": "app"}
+
+        runner = DevLocalRunner()
+        runner._detector = MagicMock()
+        runner._detector.detect.return_value = info
+        runner._conn_mgr = MagicMock()
+        runner._conn_mgr.get_active_connection.return_value = ConnectionInfo(
+            name="dev",
+            url="https://kamiwaza.test/api",
+            active=True,
+            created_at=0.0,
+        )
+
+        from kamiwaza_extensions import sdk_override as sdk_override_mod
+        monkeypatch.setattr(
+            dev_local_mod,
+            "detect_compose_command",
+            lambda: ["docker", "compose"],
+        )
+        monkeypatch.setattr(
+            sdk_override_mod, "resolve_sdk_override", lambda *a, **kw: None
+        )
+        monkeypatch.setattr(
+            dev_local_mod, "resolve_port_conflicts", lambda *a, **kw: {}
+        )
+        monkeypatch.setattr(
+            dev_local_mod,
+            "prepare_bridge_context",
+            lambda connection_manager: BridgeContext(
+                bearer_token="b", user_id="u", expires_at=None,
+            ),
+        )
+        runner._run_subprocess = MagicMock(return_value=0)
+        runner._print_urls = MagicMock()
+
+        rc = runner.run(detach=False, auth=True)
+        assert rc == 0
 
 
 @pytest.mark.unit
