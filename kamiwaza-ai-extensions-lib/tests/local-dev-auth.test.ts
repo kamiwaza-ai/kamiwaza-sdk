@@ -18,14 +18,21 @@ const TOKEN = "KAMIWAZA_BEARER_TOKEN";
 const WORKROOM = "KAMIWAZA_DEV_WORKROOM_ID";
 
 function makeJwt(claims: Record<string, unknown>): string {
-    const header = btoa(JSON.stringify({ alg: "none", typ: "JWT" }))
-        .replace(/=+$/, "")
-        .replace(/\+/g, "-")
-        .replace(/\//g, "_");
-    const payload = btoa(JSON.stringify(claims))
-        .replace(/=+$/, "")
-        .replace(/\+/g, "-")
-        .replace(/\//g, "_");
+    // UTF-8-encode each segment before base64url so the test fixture
+    // round-trips non-ASCII claims correctly. JWT canonical encoding
+    // (RFC 7519) requires UTF-8 — using btoa(JSON.stringify(...))
+    // would silently truncate multi-byte chars.
+    const enc = (obj: unknown): string => {
+        const bytes = new TextEncoder().encode(JSON.stringify(obj));
+        let binary = "";
+        for (const b of bytes) binary += String.fromCharCode(b);
+        return btoa(binary)
+            .replace(/=+$/, "")
+            .replace(/\+/g, "-")
+            .replace(/\//g, "_");
+    };
+    const header = enc({ alg: "none", typ: "JWT" });
+    const payload = enc(claims);
     return `${header}.${payload}.sig`;
 }
 
@@ -231,5 +238,24 @@ describe("_decodeJwt", () => {
         const header = btoa("{}").replace(/=+$/, "");
         const payload = btoa("[]").replace(/=+$/, "");
         expect(_decodeJwt(`${header}.${payload}.sig`)).toBeNull();
+    });
+
+    it("decodes UTF-8 claims (non-ASCII name / email) without mojibake", () => {
+        // PR #87 round-4 review (codex) — atob returns a Latin-1 binary
+        // string; without explicit UTF-8 decoding, claims like `José` or
+        // `名前` come back as mojibake and the bridge injects corrupted
+        // x-user-name / x-user-email headers, silently diverging from
+        // production for developers with UTF-8 identities.
+        const token = makeJwt({
+            sub: "user-utf8",
+            email: "josé@example.com",
+            name: "José 名前 🌸",
+        });
+        const claims = _decodeJwt(token);
+        expect(claims).toEqual({
+            sub: "user-utf8",
+            email: "josé@example.com",
+            name: "José 名前 🌸",
+        });
     });
 });

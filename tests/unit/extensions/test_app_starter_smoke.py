@@ -47,6 +47,12 @@ SYNC_FILES = [
     Path("frontend/src/app/providers.tsx"),
     Path("frontend/src/app/session/route.ts"),
     Path("frontend/src/components/NavBar.tsx"),
+    # ENG-4318 — chatbot example must ship the local-dev auth bridge
+    # middleware so `kz-ext dev local --auth` works against the example
+    # the same way it works against a freshly-scaffolded app. Round-4
+    # review caught the example shipping the env passthrough but not
+    # the middleware to consume it.
+    Path("frontend/src/middleware.ts"),
     Path("frontend/start.mjs"),
     Path("frontend/tailwind.config.ts"),
     Path("frontend/tsconfig.json"),

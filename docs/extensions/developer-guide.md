@@ -112,7 +112,7 @@ original name (so TLS SNI matches your local cert) and get an
 > ```ts
 > // frontend/src/middleware.ts
 > import type { NextRequest } from "next/server";
-> import { createLocalDevAuthMiddleware } from "@kamiwaza-ai/extensions-lib/server";
+> import { createLocalDevAuthMiddleware } from "@kamiwaza-ai/extensions-lib/local-dev-auth";
 >
 > const localDevAuth = createLocalDevAuthMiddleware();
 > export function middleware(request: NextRequest) { return localDevAuth(request); }

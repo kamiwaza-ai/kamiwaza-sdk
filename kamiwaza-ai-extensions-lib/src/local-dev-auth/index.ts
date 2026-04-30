@@ -62,8 +62,18 @@ function base64UrlDecode(input: string): string | null {
     try {
         const padded = input + "=".repeat((4 - (input.length % 4)) % 4);
         const standard = padded.replace(/-/g, "+").replace(/_/g, "/");
-        // atob is universally available (Edge runtime, Node ≥18, browsers).
-        return atob(standard);
+        // atob() returns a Latin-1 binary string. JWT payloads are
+        // canonically UTF-8 (RFC 7519 §2 + §3), so any claim with
+        // non-ASCII bytes (most often `name`, sometimes `email`) would
+        // come back as mojibake if we passed the atob output straight
+        // to JSON.parse. Round-4 review (codex) caught this — decode
+        // the raw bytes as UTF-8 before returning the string.
+        const binary = atob(standard);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) {
+            bytes[i] = binary.charCodeAt(i);
+        }
+        return new TextDecoder("utf-8").decode(bytes);
     } catch {
         return null;
     }
@@ -219,7 +229,7 @@ export function _buildBridgedHeaders(
  * Wire it into your extension's `app/middleware.ts`:
  *
  * ```ts
- * import { createLocalDevAuthMiddleware } from "@kamiwaza-ai/extensions-lib/server";
+ * import { createLocalDevAuthMiddleware } from "@kamiwaza-ai/extensions-lib/local-dev-auth";
  *
  * const localDevAuth = createLocalDevAuthMiddleware();
  * export function middleware(request) { return localDevAuth(request); }

@@ -30,7 +30,7 @@ kz-ext dev local [--detach] [--sdk-repo <path>] [--auth]
 5. For named loopback hostnames (`*.test`, `*.local`, or any host that fails DNS resolution from your machine), generates a compose overlay that adds `extra_hosts: <name>:host-gateway` to every service. The hostname is preserved unchanged so TLS SNI keeps matching your host certificate.
 6. **Always** adds `extra_hosts: host.docker.internal:host-gateway` to the same overlay. Docker Desktop resolves `host.docker.internal` implicitly, but plain Linux Docker Engine does not — without this alias the bare-loopback URL rewrite (step 4) fails on Linux with name-resolution errors. Harmless on Docker Desktop where it's already aliased.
 
-The Next.js middleware shipped with the app template (and exposed as `createLocalDevAuthMiddleware()` from `@kamiwaza-ai/extensions-lib/server`) reads `KZ_EXT_DEV_LOCAL_AUTH` + `KAMIWAZA_BEARER_TOKEN` and synthesizes the platform's forwarded-auth envelope (`Authorization`, `x-user-id`, `x-user-email`, `x-user-name`, `x-user-roles`, `x-workroom-id`) on every inbound request. The rest of the extension code (proxy, identity extractor, session router, `AuthGuard`) sees the same shape it does in production.
+The Next.js middleware shipped with the app template (and exposed as `createLocalDevAuthMiddleware()` from `@kamiwaza-ai/extensions-lib/local-dev-auth`) reads `KZ_EXT_DEV_LOCAL_AUTH` + `KAMIWAZA_BEARER_TOKEN` and synthesizes the platform's forwarded-auth envelope (`Authorization`, `x-user-id`, `x-user-email`, `x-user-name`, `x-user-roles`, `x-workroom-id`) on every inbound request. The rest of the extension code (proxy, identity extractor, session router, `AuthGuard`) sees the same shape it does in production.
 
 `x-workroom-id` is required by `extract_identity()`'s strict path (used by `create_session_router()` and `require_auth()` under `KAMIWAZA_USE_AUTH=true`). The bridge defaults it to the JWT `sub` so the strict path succeeds; set `KAMIWAZA_DEV_WORKROOM_ID` to override with a specific workroom for testing.
 
@@ -60,7 +60,7 @@ The middleware is shipped with the app template, so new extensions get the bridg
 
 ```ts
 import type { NextRequest } from "next/server";
-import { createLocalDevAuthMiddleware } from "@kamiwaza-ai/extensions-lib/server";
+import { createLocalDevAuthMiddleware } from "@kamiwaza-ai/extensions-lib/local-dev-auth";
 
 const localDevAuth = createLocalDevAuthMiddleware();
 export function middleware(request: NextRequest) { return localDevAuth(request); }
