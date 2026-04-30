@@ -7,7 +7,9 @@ from typing import Optional
 import typer
 from rich.console import Console
 
-console = Console()
+# Errors go to stderr so users can cleanly redirect them
+# (`kz-ext dev local --auth 2>errors.log`). Matches the rest of the CLI.
+console = Console(stderr=True)
 
 
 def run_dev_local(

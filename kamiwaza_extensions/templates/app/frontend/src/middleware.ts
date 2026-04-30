@@ -16,7 +16,10 @@
  */
 
 import type { NextRequest } from "next/server";
-import { createLocalDevAuthMiddleware } from "@kamiwaza-ai/extensions-lib/server";
+// Imported from the dedicated `/local-dev-auth` subpath so non-Next
+// consumers of `@kamiwaza-ai/extensions-lib/server` don't pay for a
+// next/server load they never use (PR #87 round-3 review).
+import { createLocalDevAuthMiddleware } from "@kamiwaza-ai/extensions-lib/local-dev-auth";
 
 const localDevAuth = createLocalDevAuthMiddleware();
 

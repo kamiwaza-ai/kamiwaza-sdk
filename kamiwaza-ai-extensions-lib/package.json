@@ -15,6 +15,11 @@
             "types": "./dist/server/index.d.ts",
             "import": "./dist/server/index.js",
             "require": "./dist/server/index.cjs"
+        },
+        "./local-dev-auth": {
+            "types": "./dist/local-dev-auth/index.d.ts",
+            "import": "./dist/local-dev-auth/index.js",
+            "require": "./dist/local-dev-auth/index.cjs"
         }
     },
     "files": [

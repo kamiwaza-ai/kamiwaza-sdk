@@ -470,9 +470,17 @@ def _write_compose_overlay(
     Used to inject ``extra_hosts`` and bridge env vars without touching the
     extension's ``docker-compose.yml`` so existing extensions get the fix
     without re-scaffolding.
+
+    Each service gets a deep-copy of ``per_service`` so a future caller
+    that mutates the input post-call cannot silently corrupt the values
+    written for other services (PR #87 round-3 review defensive coding).
     """
+    import copy
+
     overlay = {
-        "services": {svc: dict(per_service) for svc in services.keys()}
+        "services": {
+            svc: copy.deepcopy(per_service) for svc in services.keys()
+        }
     }
     fd = tempfile.NamedTemporaryFile(
         mode="w", suffix=".yml", prefix=prefix, delete=False,

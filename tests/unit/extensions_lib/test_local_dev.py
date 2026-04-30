@@ -95,6 +95,33 @@ class TestIsLoopbackUrl:
             "https://my-internal-host", resolver=_nxdomain_resolver
         ) is True
 
+    def test_default_resolver_times_out_on_slow_dns(self, monkeypatch):
+        """PR #87 round-3 fix — DNS lookup must be capped via a real
+        wall-clock timeout (ThreadPoolExecutor.future.result), not
+        socket.setdefaulttimeout (which is a no-op for gethostbyname)."""
+        import time as _time
+        from kamiwaza_extensions_lib import local_dev as ld
+
+        # Replace the underlying resolver with one that hangs longer
+        # than the configured cap.
+        def slow_resolver(host):
+            _time.sleep(10.0)  # would block for 10s without the cap
+            return "1.2.3.4"
+
+        monkeypatch.setattr("socket.gethostbyname", slow_resolver)
+        # Tighten the cap so the test runs fast.
+        monkeypatch.setattr(ld, "_DNS_TIMEOUT_S", 0.2)
+
+        start = _time.monotonic()
+        with pytest.raises(OSError, match="exceeded"):
+            ld._default_resolver("slow.example.com")
+        elapsed = _time.monotonic() - start
+        # The cap is 0.2s; allow generous slack for thread scheduling
+        # but the test would block 10s if the timeout were a no-op.
+        assert elapsed < 2.0, (
+            f"DNS timeout cap was not honored — elapsed {elapsed:.2f}s"
+        )
+
     def test_handles_malformed_url(self):
         assert is_loopback_url("not-a-url", resolver=_ok_resolver) is False
         assert is_loopback_url("", resolver=_ok_resolver) is False

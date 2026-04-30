@@ -14,6 +14,7 @@ import base64
 import ipaddress
 import json
 import socket
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -84,17 +85,49 @@ def _hostname(url: str) -> Optional[str]:
 
 
 def _default_resolver(host: str) -> str:
-    """Indirection so monkeypatch on socket.gethostbyname works at call
-    time. Wraps ``getaddrinfo`` with a short timeout so a captive/slow
-    network can't block ``kz-ext dev local --auth`` startup for tens of
-    seconds before the user sees feedback.
+    """Resolve ``host`` with a real wall-clock timeout so a captive or
+    slow network can't block ``kz-ext dev local --auth`` startup for tens
+    of seconds.
+
+    PR #87 round-3 review fix: an earlier draft used
+    ``socket.setdefaulttimeout(_DNS_TIMEOUT_S)`` around
+    ``socket.gethostbyname`` — that is a no-op for the OS resolver path,
+    which goes through libc's ``getaddrinfo`` and ignores the Python-side
+    default timeout. We now run the lookup in a daemon thread and cap
+    wait time with ``Thread.join(timeout=…)``. The thread is daemonized
+    so it dies with the process if the resolver hangs forever — no
+    cleanup overhead, since this codepath only runs during one-shot
+    ``kz-ext dev local --auth`` startup. Indirection also lets tests
+    monkeypatch ``socket.gethostbyname`` at call time.
     """
-    previous = socket.getdefaulttimeout()
-    try:
-        socket.setdefaulttimeout(_DNS_TIMEOUT_S)
-        return socket.gethostbyname(host)
-    finally:
-        socket.setdefaulttimeout(previous)
+    result: list[str] = []
+    error: list[BaseException] = []
+
+    def _run() -> None:
+        try:
+            result.append(socket.gethostbyname(host))
+        except BaseException as exc:  # noqa: BLE001 — propagate to caller
+            error.append(exc)
+
+    thread = threading.Thread(
+        target=_run, name=f"kz-dns-{host}", daemon=True,
+    )
+    thread.start()
+    thread.join(timeout=_DNS_TIMEOUT_S)
+    if thread.is_alive():
+        # Thread is still running — translate to OSError so callers
+        # (`is_loopback_url`) treat the timeout as "unresolvable from
+        # host", which is the same outcome as a real NXDOMAIN and feeds
+        # the loopback heuristic correctly. The thread is daemonized so
+        # it will die with the process.
+        raise OSError(
+            f"DNS lookup for {host!r} exceeded {_DNS_TIMEOUT_S}s"
+        )
+    if error:
+        # Re-raise the original resolver error so OSError-based callers
+        # see exactly what they would have seen without the timeout.
+        raise error[0]
+    return result[0]
 
 
 def _is_loopback_ip(host: str) -> Optional[bool]:

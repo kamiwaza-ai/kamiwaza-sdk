@@ -11,7 +11,7 @@ import {
     _buildBridgedHeaders,
     _decodeJwt,
     _resetWarnOnceState,
-} from "../src/server/localDevAuth";
+} from "../src/local-dev-auth/index";
 
 const GATE = "KZ_EXT_DEV_LOCAL_AUTH";
 const TOKEN = "KAMIWAZA_BEARER_TOKEN";

@@ -278,8 +278,18 @@ class TestRunnerEnvPassthroughOverlay:
                 expires_at=None,
             ),
         )
-        # Don't actually run docker compose — just record the cmd.
-        runner._run_subprocess = MagicMock(return_value=0)
+        # Capture the compose argv so we can assert the overlay file is
+        # actually wired into `compose up` — generating the overlay but
+        # not referencing it would be the same class of "silent no-op"
+        # bug as round-2 Critical #1 (PR #87 round-3 review High #8).
+        captured_subprocess: dict = {}
+
+        def capture_subprocess(cmd, *, env, cwd):
+            captured_subprocess["cmd"] = cmd
+            captured_subprocess["env"] = env
+            return 0
+
+        runner._run_subprocess = capture_subprocess
         runner._print_urls = MagicMock()
 
         rc = runner.run(detach=False, auth=True)
@@ -301,6 +311,26 @@ class TestRunnerEnvPassthroughOverlay:
             assert "KAMIWAZA_BEARER_TOKEN=bearer-xyz" in joined, (
                 f"service {svc!r} missing KAMIWAZA_BEARER_TOKEN"
             )
+
+        # Round-3 review High #8 — assert the overlay path is present in
+        # the compose argv. Generating the overlay but not referencing
+        # it via `-f` would silently no-op the bridge.
+        cmd = captured_subprocess["cmd"]
+        # Find the kz-auth-env-* tempfile that capturing_write_overlay
+        # tracked and confirm it's wired in.
+        auth_env_paths = [
+            arg for arg in cmd if isinstance(arg, str) and "kz-auth-env-" in arg
+        ]
+        assert auth_env_paths, (
+            f"auth-env overlay not wired into compose argv. cmd={cmd!r}"
+        )
+        # And the preceding `-f` flag is what makes compose actually pick
+        # the overlay up — assert the flag-arg pairing is correct.
+        idx = cmd.index(auth_env_paths[0])
+        assert cmd[idx - 1] == "-f", (
+            f"auth-env overlay path {auth_env_paths[0]!r} is in cmd but "
+            f"not preceded by `-f` — compose will ignore it. cmd={cmd!r}"
+        )
 
     def test_runner_does_not_write_auth_env_overlay_without_auth_flag(
         self, tmp_path, monkeypatch
