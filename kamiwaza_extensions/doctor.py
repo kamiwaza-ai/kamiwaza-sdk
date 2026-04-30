@@ -85,13 +85,26 @@ def _spec_bounds(spec_set: SpecifierSet) -> tuple[Optional[Version], Optional[Ve
     contribute to lower; ``<X`` / ``<=X`` contribute to upper. Multiple
     specs of the same direction collapse to the most-restrictive bound
     (max for lower, min for upper).
+
+    Round-5 ultrareview H2: ``~=`` is a *compatible-release* operator and
+    contributes BOTH a lower and an upper bound (PEP 440 §5.5):
+
+      * ``~=X.Y.Z`` → ``>=X.Y.Z, <X.(Y+1)``
+      * ``~=X.Y``   → ``>=X.Y,   <(X+1)``
+      * ``~=X``     → invalid per PEP 440 (must have ≥ 2 release segments)
+
+    The previous implementation treated ``~=`` as lower-only, so a tight
+    pin like ``kamiwaza-extensions-lib~=0.3.0`` (which expands to
+    ``>=0.3.0,<0.4.0`` and is fully inside ``>=0.2,<0.4``) was falsely
+    warned as having no upper bound.
     """
     lower: Optional[Version] = None
     upper: Optional[Version] = None
     for spec in spec_set:
         op = spec.operator
+        raw = spec.version
         try:
-            ver = Version(spec.version)
+            ver = Version(raw)
         except InvalidVersion:
             continue
         if op in (">=", ">", "~="):
@@ -100,7 +113,38 @@ def _spec_bounds(spec_set: SpecifierSet) -> tuple[Optional[Version], Optional[Ve
         elif op in ("<", "<="):
             if upper is None or ver < upper:
                 upper = ver
+        if op == "~=":
+            # Derive the implied upper from the *raw* string — packaging's
+            # Version normalises ``"0.3"`` and ``"0.3.0"`` to equal values,
+            # so we can't recover the segment count from ``ver``.
+            implied_upper = _tilde_eq_upper(raw)
+            if implied_upper is not None and (
+                upper is None or implied_upper < upper
+            ):
+                upper = implied_upper
     return lower, upper
+
+
+def _tilde_eq_upper(raw: str) -> Optional[Version]:
+    """Compute the implied upper bound for a PEP 440 ``~=`` operand.
+
+    Returns ``None`` for malformed input (lets the caller fall through to
+    the original lower-only behavior rather than crash).
+    """
+    # Strip a trailing dev/pre/post release tag — ``~=1.2.dev0`` still
+    # caps at ``2.0`` for X.Y form. We only need the leading release
+    # segments to count them.
+    head = re.match(r"^\s*(\d+(?:\.\d+)*)", raw)
+    if head is None:
+        return None
+    parts = [int(p) for p in head.group(1).split(".")]
+    if len(parts) < 2:
+        return None
+    if len(parts) >= 3:
+        # ~=X.Y.Z[.…] → upper at X.(Y+1)
+        return Version(f"{parts[0]}.{parts[1] + 1}")
+    # ~=X.Y → upper at (X+1)
+    return Version(f"{parts[0] + 1}")
 
 
 def _bounds_outside_supported(
@@ -894,17 +938,19 @@ class DoctorChecker:
                 fix=f'Add "@kamiwaza-ai/extensions-lib": "{compat_range or "^0.3.0"}" to package.json dependencies',
             )
         if compat_range:
-            try:
-                supported = SpecifierSet(compat_range)
-            except InvalidSpecifier:
-                supported = None
-            if supported is not None:
+            # Round-5 C1: parse the bundle's TS range with the npm-semver
+            # parser, not ``SpecifierSet``. The bundle's TS entry uses npm
+            # syntax (whitespace-separated bounds) so it can be rendered
+            # directly into ``frontend/package.json`` — feeding it to
+            # ``SpecifierSet`` (PEP 440, comma-separated) crashed with
+            # ``InvalidSpecifier`` and the doctor silently fell open.
+            supported_lower, supported_upper = _npm_bounds(compat_range)
+            if supported_lower is not None or supported_upper is not None:
                 # Round-4 H3: full-containment check (was: lower-only probe).
                 # Parse npm semver bounds from `declared` and compare both
                 # endpoints against `supported` to catch open-ended specs
                 # like ">=0.2" or "0.2" that admit future major releases.
                 declared_lower, declared_upper = _npm_bounds(declared)
-                supported_lower, supported_upper = _spec_bounds(supported)
                 reason = _bounds_outside_supported(
                     declared_lower,
                     declared_upper,

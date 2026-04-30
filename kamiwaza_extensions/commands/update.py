@@ -499,7 +499,13 @@ def _reconcile_file(
         return FileResult(rel, "missing", "template gone")
 
     if not _is_text(template_path):
-        return _reconcile_binary(rel, template_path, target_path, dry_run=dry_run)
+        return _reconcile_binary(
+            rel,
+            template_path,
+            target_path,
+            strategy=owned.strategy,
+            dry_run=dry_run,
+        )
 
     new_content = _render(template_path, context)
     existing_content = (
@@ -534,16 +540,43 @@ def _reconcile_file(
 
 
 def _reconcile_binary(
-    rel: str, template_path: Path, target_path: Path, *, dry_run: bool
+    rel: str,
+    template_path: Path,
+    target_path: Path,
+    *,
+    strategy: str,
+    dry_run: bool,
 ) -> FileResult:
-    """Binary asset — copy bytes, no diff/merge logic."""
+    """Binary asset — copy bytes, no diff/merge logic.
+
+    Round-5 ultrareview H3: when the manifest classifies the file as
+    ``overwrite``, write a ``.orig`` backup of the existing bytes before
+    replacing them. The text-strategy ``_apply_overwrite`` path already
+    does this (calls ``_backup``); the binary path used to skip it,
+    silently destroying author-customised binary assets like
+    ``frontend/public/kmza-icon.png`` on every ``kz-ext update --force``.
+
+    ``preserve_if_modified`` for binaries is treated as overwrite without
+    backup — preserve-strategy semantics rely on text hashing which has
+    no equivalent for binaries (the scaffolder's ``compute_rendered_hashes``
+    skips binary files for the same reason). Authors who want a backup
+    of a customised binary must re-classify it as ``overwrite`` in the
+    manifest, or the file should not be template-owned at all.
+    """
     new_bytes = template_path.read_bytes()
     existing = target_path.read_bytes() if target_path.exists() else b""
     if existing == new_bytes:
         return FileResult(rel, "no-change")
     if dry_run:
-        return FileResult(rel, "would-update", "binary")
+        reason = "binary (.orig backup)" if (
+            strategy == "overwrite" and existing
+        ) else "binary"
+        return FileResult(rel, "would-update", reason)
     target_path.parent.mkdir(parents=True, exist_ok=True)
+    if strategy == "overwrite" and existing:
+        _backup_bytes(target_path, existing)
+        target_path.write_bytes(new_bytes)
+        return FileResult(rel, "updated", "binary (.orig backup)")
     target_path.write_bytes(new_bytes)
     return FileResult(rel, "updated", "binary")
 
@@ -736,6 +769,17 @@ def _backup(target_path: Path, existing_content: str) -> None:
     # I12).
     backup = target_path.parent / (target_path.name + ".orig")
     backup.write_text(existing_content, encoding="utf-8")
+
+
+def _backup_bytes(target_path: Path, existing_bytes: bytes) -> None:
+    """Binary equivalent of ``_backup`` (round-5 ultrareview H3).
+
+    Same ``.orig`` filename convention; writes raw bytes so binary
+    template-owned assets get a recoverable backup before being
+    overwritten.
+    """
+    backup = target_path.parent / (target_path.name + ".orig")
+    backup.write_bytes(existing_bytes)
 
 
 # ---------------------------------------------------------------------------

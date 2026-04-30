@@ -558,6 +558,71 @@ def test_stamp_version_preserves_merge_added_kamiwaza_fields(tmp_path, monkeypat
     assert refreshed.get("template_version") == "9.9.9-test"
 
 
+def test_overwrite_strategy_binary_writes_orig_backup(tmp_path, monkeypatch):
+    """Round-5 ultrareview H3 — the app manifest classifies
+    ``frontend/public/kmza-icon.png`` as ``overwrite``. When an author
+    has customised the icon and the template ships a new one, the
+    update path must (a) replace the icon and (b) write the existing
+    bytes to ``kmza-icon.png.orig`` so the customisation can be
+    recovered. The previous ``_reconcile_binary`` ignored the strategy
+    and silently overwrote the bytes with no backup, violating the
+    documented overwrite-with-.orig contract.
+    """
+    scaffold = _make_scaffold(tmp_path, monkeypatch, type_="app", name="binbackup")
+    icon = scaffold / "frontend" / "public" / "kmza-icon.png"
+    assert icon.exists(), "scaffolder should ship the kmza-icon binary"
+
+    # Author customises the binary asset (different bytes from the
+    # template) and runs `kz-ext update --force`.
+    custom_bytes = b"\x89PNG\r\n\x1a\n" + b"custom-author-icon-bytes" * 4
+    template_bytes = icon.read_bytes()
+    assert custom_bytes != template_bytes
+    icon.write_bytes(custom_bytes)
+    monkeypatch.chdir(scaffold)
+
+    summary = run_update(force=True)
+
+    # Icon is restored to the template's bytes…
+    assert icon.read_bytes() == template_bytes
+    # …and the author's customised bytes survive in `.orig`.
+    backup = icon.parent / (icon.name + ".orig")
+    assert backup.exists(), (
+        "overwrite-strategy binaries must produce a .orig backup; "
+        "the previous _reconcile_binary path silently overwrote "
+        "author customisations"
+    )
+    assert backup.read_bytes() == custom_bytes
+    # Summary surface mirrors text-overwrite reason for grep-ability.
+    icon_result = next(
+        fr for fr in summary.files
+        if fr.relative_path == "frontend/public/kmza-icon.png"
+    )
+    assert icon_result.action in ("applied", "updated")
+    assert icon_result.reason and ".orig" in icon_result.reason
+
+
+def test_overwrite_strategy_binary_dry_run_announces_backup(tmp_path, monkeypatch):
+    """Round-5 H3 — dry-run reason string surfaces the impending .orig
+    write so an author reviewing ``kz-ext update --dry-run`` output sees
+    that running the update would create a recoverable backup.
+    """
+    scaffold = _make_scaffold(tmp_path, monkeypatch, type_="app", name="binbackup-dry")
+    icon = scaffold / "frontend" / "public" / "kmza-icon.png"
+    icon.write_bytes(b"customised-bytes-x" * 32)
+    monkeypatch.chdir(scaffold)
+
+    summary = run_update(dry_run=True, force=True)
+
+    icon_result = next(
+        fr for fr in summary.files
+        if fr.relative_path == "frontend/public/kmza-icon.png"
+    )
+    assert icon_result.action == "would-update"
+    assert ".orig" in (icon_result.reason or ""), (
+        f"dry-run reason {icon_result.reason!r} should mention .orig backup"
+    )
+
+
 def test_update_rewrites_template_version_after_success(tmp_path, monkeypatch):
     """TS-M2-10 — kamiwaza.json's template_version is bumped to current."""
     from kamiwaza_extensions import template_manifest as tm

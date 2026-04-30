@@ -92,10 +92,19 @@ class TestCompatibilityBundleResource:
         )
 
     def test_typescript_range_is_npm_semver(self, bundle):
-        # Loose check — npm semver is too permissive to validate strictly here,
-        # but it must at least be a non-empty string.
+        # Round-5 C1: this entry is rendered directly into a scaffolded
+        # ``frontend/package.json``. npm/pnpm/yarn use whitespace (not
+        # commas) for AND between bounds — a comma here makes
+        # ``npm install`` fail to parse the spec. The earlier loose
+        # "non-empty string" check let the bug ship.
         ts_range = bundle["runtime_lib_compat"]["typescript"]["@kamiwaza-ai/extensions-lib"]
         assert isinstance(ts_range, str) and len(ts_range) > 0
+        assert "," not in ts_range, (
+            f"TS runtime-lib range {ts_range!r} uses comma syntax — npm semver "
+            "uses whitespace between bounds (e.g. '>=0.2 <0.4'). A comma here "
+            "renders into frontend/package.json and breaks `npm install` on "
+            "fresh scaffolds."
+        )
 
     def test_cli_version_matches_package_version(self, bundle):
         """Review iteration-1 I9: the bundled cli_version must track
@@ -198,6 +207,32 @@ class TestPythonRuntimeLibCheck:
             f"resolve a 0.4+ version that's outside the CLI's compat window)"
         )
 
+    @pytest.mark.parametrize(
+        "spec,expected",
+        [
+            ("kamiwaza-extensions-lib~=0.3.0", "pass"),  # >=0.3.0,<0.4 ⊂ supported
+            ("kamiwaza-extensions-lib~=0.2.0", "pass"),  # >=0.2.0,<0.3 ⊂ supported
+            ("kamiwaza-extensions-lib~=0.3.5", "pass"),  # >=0.3.5,<0.4 ⊂ supported
+            # X.Y form expands to <(X+1), still warns: admits 0.4+.
+            ("kamiwaza-extensions-lib~=0.3",   "warn"),  # >=0.3,<1.0 — too wide
+        ],
+    )
+    def test_tilde_eq_upper_bound_derived(self, checker, tmp_path, spec, expected):
+        """Round-5 H2 — ``~=X.Y.Z`` is a *compatible-release* operator with
+        an implied upper bound at ``<X.(Y+1)``. The previous ``_spec_bounds``
+        treated it as lower-only, so ``~=0.3.0`` (= ``>=0.3.0,<0.4`` and
+        fully inside the supported ``>=0.2,<0.4`` window) was falsely
+        warned. ``~=X.Y`` form still expands to ``<(X+1)`` so ``~=0.3``
+        admits 0.4+ and must continue to warn.
+        """
+        req = tmp_path / "requirements.txt"
+        req.write_text(spec + "\n")
+        result = checker._check_python_runtime_lib(req)
+        assert result.status == expected, (
+            f"declared {spec!r} expected={expected} actual={result.status} "
+            f"(msg: {result.message})"
+        )
+
     def test_fresh_scaffold_pin_falls_within_compat_window(self, checker, tmp_path):
         """PR-86 round-2 H3: a freshly scaffolded project's `requirements.txt`
         pin must already pass `kz-ext doctor`'s compatibility check.
@@ -280,6 +315,36 @@ class TestTypeScriptRuntimeLibCheck:
         assert result.status == expected, (
             f"declared {spec!r} expected={expected} actual={result.status} "
             f"(supported window is `>=0.2,<0.4`)"
+        )
+
+    def test_fresh_scaffold_ts_pin_passes_doctor(self, checker, tmp_path):
+        """Round-5 C1 — the bundled TS pin must (a) be valid npm semver and
+        (b) pass the doctor's containment check when rendered directly into
+        a scaffolded ``frontend/package.json``.
+
+        A regression to PEP 440 comma syntax (``>=0.2,<0.4``) breaks
+        ``npm install`` on fresh scaffolds; a regression to a too-loose
+        spec (``*``) silently widens the supported window. This test
+        catches both.
+        """
+        from kamiwaza_extensions.scaffolder import build_render_context, substitute
+
+        ctx = build_render_context(name="probe", type_="app")
+        rendered_value = substitute("{{ts_runtime_lib_version}}", ctx)
+        # Must not contain a PEP 440 comma — npm semver uses whitespace.
+        assert "," not in rendered_value, (
+            f"rendered TS pin {rendered_value!r} contains a comma; npm "
+            "treats this as invalid syntax."
+        )
+        pkg = tmp_path / "package.json"
+        pkg.write_text(json.dumps({
+            "dependencies": {"@kamiwaza-ai/extensions-lib": rendered_value},
+        }))
+        result = checker._check_ts_runtime_lib(pkg)
+        assert result.status == "pass", (
+            f"fresh scaffold TS pin {rendered_value!r} fails compat check; "
+            "build_render_context's TS runtime-lib version must align with "
+            "compatibility.json's supported window"
         )
 
 

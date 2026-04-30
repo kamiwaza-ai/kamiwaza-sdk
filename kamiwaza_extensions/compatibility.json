@@ -5,7 +5,7 @@
       "kamiwaza-extensions-lib": ">=0.2,<0.4"
     },
     "typescript": {
-      "@kamiwaza-ai/extensions-lib": ">=0.2,<0.4"
+      "@kamiwaza-ai/extensions-lib": ">=0.2 <0.4"
     }
   }
 }

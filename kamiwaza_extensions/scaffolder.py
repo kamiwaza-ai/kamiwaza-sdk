@@ -86,7 +86,10 @@ def _runtime_lib_pins() -> tuple[str, str]:
     fallback doesn't render stricter pins than ``kz-ext doctor`` enforces.
     """
     fallback_py = ">=0.2,<0.4"
-    fallback_ts = ">=0.2,<0.4"
+    # npm semver uses whitespace (not comma) for AND between bounds. Rendered
+    # directly into a scaffolded ``frontend/package.json``; a comma here makes
+    # ``npm install`` fail to parse the spec (round-5 ultrareview C1).
+    fallback_ts = ">=0.2 <0.4"
     try:
         bundle = json.loads(
             (importlib_resources.files("kamiwaza_extensions") / "compatibility.json")
