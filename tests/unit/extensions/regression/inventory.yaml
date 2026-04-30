@@ -1,0 +1,88 @@
+# D210 Extension Developer Experience — 12-issue regression inventory
+#
+# Versioned artifact for UAC-17 / EDX-OPS-2 / INF-O2.
+# Each D210-candidate build replays this checklist; zero regressions accepted at exit.
+#
+# Schema (per system-design §4.2.13):
+#   id           — stable REG-NNN identifier
+#   origin_issue — ENG-NNNN that introduced or fixed the regression-prone behavior
+#   description  — one-line statement of the invariant under test
+#   automated    — true if reproducible via pytest -m extension_regression
+#   test_id      — pytest nodeid-style "<path>::<class-or-function>" (when automated)
+#   runbook_ref  — anchor in regression-manual.md (when not automated)
+#
+# Adding an item: add to this file, mark the target test with
+# @pytest.mark.extension_regression, and the integrity test in
+# test_inventory_integrity.py will enforce the wiring.
+
+- id: "REG-001"
+  origin_issue: "ENG-3068"
+  description: "PATCH update path on kz-ext dev (image-tag rollover preserves CR identity)"
+  automated: true
+  test_id: "tests/unit/extensions/test_dev_patch.py::TestDeployPatchLogic"
+
+- id: "REG-002"
+  origin_issue: "ENG-3718"
+  description: "push-local-extensions does not crash under macOS Bash 3.2 with empty required-repo arrays"
+  automated: false
+  runbook_ref: "docs/extensions/runbook/regression-manual.md#reg-002"
+
+- id: "REG-003"
+  origin_issue: "ENG-3884"
+  description: "CatalogDedupGuard rejects duplicate (name, semver, revision) triples on re-publish"
+  automated: true
+  test_id: "tests/unit/extensions/test_catalog_dedup_guard.py::TestDedupCheck"
+
+- id: "REG-004"
+  origin_issue: "ENG-3885"
+  description: "Runtime-lib exception classes (UAC-9d) map to deterministic CLI exit codes"
+  automated: true
+  test_id: "tests/unit/extensions/test_exit_codes.py::TestExitCodeFor"
+
+- id: "REG-005"
+  origin_issue: "ENG-3887"
+  description: "DevStateFile records last_dev_name + last_revision so kz-ext status can locate prior dev deploys"
+  automated: true
+  test_id: "tests/unit/extensions/test_dev_state.py::TestReadWrite"
+
+- id: "REG-006"
+  origin_issue: "ENG-3888"
+  description: "Cluster readiness probe surfaces operator ImagePullBackOff before kz-ext dev silently times out (B1a/B1b/B1c)"
+  automated: true
+  test_id: "tests/unit/extensions/test_doctor_cluster_readiness.py::TestClusterReadinessFailures"
+
+- id: "REG-007"
+  origin_issue: "ENG-3919"
+  description: "Starter backend sanitizes upstream model errors before returning to clients"
+  automated: true
+  test_id: "tests/unit/extensions/test_app_starter_smoke.py::test_template_sanitizes_upstream_model_errors"
+
+- id: "REG-008"
+  origin_issue: "ENG-3920"
+  description: "Starter backend /api/info does not leak internal cluster URL to unauthenticated callers"
+  automated: true
+  test_id: "tests/unit/extensions/test_app_starter_smoke.py::test_template_info_endpoint_does_not_leak_internal_api_url"
+
+- id: "REG-009"
+  origin_issue: "ENG-3890"
+  description: "kz-ext update reconciles template-owned files via TemplateManifest and preserves author-owned content"
+  automated: true
+  test_id: "tests/unit/extensions/test_template_manifest.py::test_every_template_file_is_classified"
+
+- id: "REG-010"
+  origin_issue: "ENG-3891"
+  description: "Non-SDK flow doc + canonical test vectors define the header-format contract for non-Python/TS extensions"
+  automated: true
+  test_id: "tests/unit/extensions/test_non_sdk_flow.py::TestCanonicalTestVectors"
+
+- id: "REG-011"
+  origin_issue: "ENG-3897"
+  description: "CompatibilityBundle warns on out-of-range CLI ↔ runtime-lib version pairs"
+  automated: true
+  test_id: "tests/unit/extensions/test_compatibility_bundle.py::TestPythonRuntimeLibCheck"
+
+- id: "REG-012"
+  origin_issue: "ENG-3898"
+  description: "CLI polish bundle: kz-ext create empty-cwd convention, kz-ext publish profile list, .ai/extensions developer guide"
+  automated: true
+  test_id: "tests/unit/extensions/test_cli_polish_bundle.py::TestCreateIntoNamedSubdir"

@@ -1,0 +1,4 @@
+# Per-run JSON artifacts; intended for local + CI inspection, not for commit.
+# Sign-off markdown artifacts (sign-off/{scenario}-{date}.md) ARE intended
+# deliverables and should be committed for the D210 UAT packet.
+runs/

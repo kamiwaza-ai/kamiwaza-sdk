@@ -94,6 +94,7 @@ markers = [
     "slow: intentionally slow tests",
     "withoutresponses: tests needing real network access",
     "requires_embedding_model: live tests that require an active platform embedding deployment",
+    "extension_regression: D210 12-issue regression checklist (UAC-17 / EDX-OPS-2). See tests/unit/extensions/regression/inventory.yaml.",
 ]
 
 [tool.black]
