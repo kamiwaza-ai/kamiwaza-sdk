@@ -233,7 +233,8 @@ class KamiwazaClient:
         endpoint: str,
         skip_auth: bool,
         did_refresh: bool,
-    ) -> bool:
+    ) -> None:
+        """Handle a 401 response.  Always raises or returns None (refresh succeeded)."""
         if skip_auth:
             raise AuthenticationError(
                 f"Unauthenticated request failed for {endpoint}: "
@@ -253,7 +254,7 @@ class KamiwazaClient:
         )
         if can_refresh and not did_refresh:
             self.authenticator.refresh_token(self.session)
-            return True
+            return
         if did_refresh:
             raise AuthenticationError(
                 f"Authentication failed after token refresh for "
@@ -399,11 +400,11 @@ class KamiwazaClient:
             response = self._send_request(method, url, kwargs)
 
             if response.status_code == 401:
-                did_refresh = self._handle_unauthorized_response(
+                self._handle_unauthorized_response(
                     response, endpoint, skip_auth, did_refresh
                 )
-                if did_refresh:
-                    continue
+                did_refresh = True
+                continue
 
             if response.status_code >= 400:
                 should_retry, retry_idx = self._retry_dataset_schema_update(
