@@ -159,75 +159,89 @@ def run_scenario(
     results: list[StepResult] = []
     halted_at: int | None = None
 
-    steps = runbook["steps"]
-    for i, step in enumerate(steps):
-        name = step["name"]
-        s0 = time.monotonic()
-        handler = handlers.get(name)
-        if handler is None:
-            results.append(
-                StepResult(
-                    name=name,
-                    status="pending",
-                    duration_s=0.0,
-                    detail="no handler registered (driver not yet implemented)",
+    # All async handlers in a scenario share a single event loop. Creating
+    # a fresh loop per step (the old `asyncio.run` per call) breaks any
+    # cross-step async resource — e.g. an `httpx.AsyncClient` or
+    # `AsyncOpenAI` opened in step 1 and reused in step 2 — because the
+    # client is bound to a now-closed loop. The loop is created lazily on
+    # the first coroutine and torn down in the finally block.
+    loop: asyncio.AbstractEventLoop | None = None
+    try:
+        steps = runbook["steps"]
+        for i, step in enumerate(steps):
+            name = step["name"]
+            s0 = time.monotonic()
+            handler = handlers.get(name)
+            if handler is None:
+                results.append(
+                    StepResult(
+                        name=name,
+                        status="pending",
+                        duration_s=0.0,
+                        detail="no handler registered (driver not yet implemented)",
+                    )
                 )
-            )
-            continue
-        try:
-            detail = handler()
-            # Async handlers return a coroutine; await it so the step
-            # actually runs. Without this, the step records "passed" with
-            # detail "<coroutine object ...>" while the body never executes —
-            # silently false-green sign-off artifacts during T3.3.
-            if inspect.iscoroutine(detail):
-                detail = asyncio.run(detail)
-            detail = detail or ""
-        except pytest.skip.Exception as exc:
-            results.append(
-                StepResult(
-                    name=name,
-                    status="skipped",
-                    duration_s=time.monotonic() - s0,
-                    detail=f"skipped: {exc}",
+                continue
+            try:
+                detail = handler()
+                # Async handlers return a coroutine; await it on the
+                # scenario-level loop so the body actually runs and any
+                # captured async resources stay alive across steps.
+                if inspect.iscoroutine(detail):
+                    if loop is None:
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                    detail = loop.run_until_complete(detail)
+                detail = detail or ""
+            except pytest.skip.Exception as exc:
+                results.append(
+                    StepResult(
+                        name=name,
+                        status="skipped",
+                        duration_s=time.monotonic() - s0,
+                        detail=f"skipped: {exc}",
+                    )
                 )
-            )
-            continue
-        except Exception as exc:  # noqa: BLE001 — record every failure
-            # Catches everything except BaseException-derived control-flow
-            # exceptions (KeyboardInterrupt, SystemExit, pytest.skip — the
-            # last is handled explicitly above). Ctrl-C must propagate so a
-            # long staging step can be aborted cleanly.
-            results.append(
-                StepResult(
-                    name=name,
-                    status="failed",
-                    duration_s=time.monotonic() - s0,
-                    detail=f"{exc.__class__.__name__}: {exc}",
+                continue
+            except Exception as exc:  # noqa: BLE001 — record every failure
+                # Catches everything except BaseException-derived control-flow
+                # exceptions (KeyboardInterrupt, SystemExit, pytest.skip — the
+                # last is handled explicitly above). Ctrl-C must propagate so
+                # a long staging step can be aborted cleanly.
+                results.append(
+                    StepResult(
+                        name=name,
+                        status="failed",
+                        duration_s=time.monotonic() - s0,
+                        detail=f"{exc.__class__.__name__}: {exc}",
+                    )
                 )
-            )
-            halted_at = i
-            break
-        else:
-            results.append(
-                StepResult(
-                    name=name,
-                    status="passed",
-                    duration_s=time.monotonic() - s0,
-                    detail=str(detail),
+                halted_at = i
+                break
+            else:
+                results.append(
+                    StepResult(
+                        name=name,
+                        status="passed",
+                        duration_s=time.monotonic() - s0,
+                        detail=str(detail),
+                    )
                 )
-            )
 
-    if halted_at is not None:
-        for step in steps[halted_at + 1 :]:
-            results.append(
-                StepResult(
-                    name=step["name"],
-                    status="not_reached",
-                    duration_s=0.0,
-                    detail="earlier step failed; this step did not execute",
+        if halted_at is not None:
+            for step in steps[halted_at + 1 :]:
+                results.append(
+                    StepResult(
+                        name=step["name"],
+                        status="not_reached",
+                        duration_s=0.0,
+                        detail="earlier step failed; this step did not execute",
+                    )
                 )
-            )
+    finally:
+        if loop is not None:
+            loop.close()
+            asyncio.set_event_loop(None)
 
     finished = datetime.now(timezone.utc)
     return ScenarioResult(
@@ -310,13 +324,25 @@ def render_sign_off(result: ScenarioResult) -> Path:
         .replace(
             "{{STEPS_TABLE}}",
             "\n".join(
-                f"| `{s.name}` | {s.status} | {s.duration_s:.2f}s | {s.detail or '—'} |"
+                f"| `{s.name}` | {s.status} | {s.duration_s:.2f}s | "
+                f"{_md_cell(s.detail) or '—'} |"
                 for s in result.steps
             ),
         )
     )
     out.write_text(rendered)
     return out
+
+
+def _md_cell(text: str) -> str:
+    """Escape a value for safe inclusion in a Markdown table cell.
+
+    A raw ``|`` or newline in ``StepResult.detail`` (realistic for
+    multi-line exception messages or captured command transcripts) would
+    split the cell or break out of the table row entirely, producing a
+    malformed UAT sign-off artifact.
+    """
+    return text.replace("\\", "\\\\").replace("|", "\\|").replace("\n", "<br>")
 
 
 def _is_unedited_stub(content: str) -> bool:
