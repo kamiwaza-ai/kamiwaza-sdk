@@ -38,13 +38,20 @@ def test_s1_full_loop(staging_url):
     artifact = record_run(result)
     sign_off = render_sign_off(result)
 
-    pending = [s.name for s in result.steps if s.status == "pending"]
-    if pending:
+    # Failures are checked before pending so a failure that follows an
+    # unimplemented step is not silently masked by a skip.
+    if result.failed_steps:
+        failed = [s.name for s in result.failed_steps]
+        pytest.fail(
+            f"S1 failed: artifact={artifact}, sign-off={sign_off}, failed steps={failed}"
+        )
+    if result.pending_steps:
+        pending = [s.name for s in result.pending_steps]
         pytest.skip(
             f"S1 driver has unimplemented steps: {pending}. "
             f"Runbook + sign-off scaffolding rendered at {artifact}, {sign_off}."
         )
     assert result.passed, (
-        f"S1 failed: artifact={artifact}, sign-off={sign_off}, "
-        f"failed steps={[s.name for s in result.steps if s.status != 'passed']}"
+        f"S1 unexpected non-passing result: artifact={artifact}, sign-off={sign_off}, "
+        f"steps={[(s.name, s.status) for s in result.steps]}"
     )

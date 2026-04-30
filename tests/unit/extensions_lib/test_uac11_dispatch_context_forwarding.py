@@ -86,11 +86,14 @@ class TestUAC11DispatchContextForwarding:
             )
 
     @pytest.mark.asyncio
-    async def test_no_user_token_appears_as_dispatch_client_api_key(self, monkeypatch):
-        """Per design §4.4.2 / §4.4.5 (revised 2026-04-23): no user-token
-        passthrough to providers. When the incoming request has no
-        ``Authorization`` header, the AsyncOpenAI api_key must be the
-        runtime-lib's placeholder, not the platform attestation token."""
+    async def test_api_key_is_placeholder_when_no_authorization_header(
+        self, monkeypatch
+    ):
+        """When the incoming request carries no ``Authorization`` header, the
+        AsyncOpenAI api_key must be the runtime-lib's placeholder. There is
+        no user token to leak in this path; the api_key field is otherwise
+        unused (the platform dispatch boundary attests identity from the
+        ForwardAuth envelope)."""
         monkeypatch.setenv("KAMIWAZA_ENDPOINT", "https://kamiwaza.test/api/v1")
 
         request = MagicMock()
@@ -101,12 +104,60 @@ class TestUAC11DispatchContextForwarding:
         client = await get_model_client(request)
         api_key = getattr(client, "api_key", None) or getattr(client, "_api_key", None)
 
-        # When there's no incoming Authorization the placeholder is used.
         assert api_key == "not-needed-kamiwaza", (
             f"UAC-11 §5 R2: client api_key must be the runtime-lib placeholder "
-            f"when no incoming Authorization is present (got {api_key!r}). "
-            f"User-token passthrough to providers is explicitly disallowed "
-            f"by design §4.4.5."
+            f"when no incoming Authorization is present (got {api_key!r})."
+        )
+
+    @pytest.mark.asyncio
+    async def test_api_key_pins_to_incoming_bearer_when_authorization_present(
+        self, monkeypatch
+    ):
+        """When the incoming request *does* carry ``Authorization: Bearer ...``,
+        the AsyncOpenAI client pins the bearer into ``api_key`` so the
+        on-the-wire request matches the gateway-attested bearer rather than
+        the placeholder. The bearer here is the platform-attested envelope
+        token (issued through Traefik), not a raw provider credential — design
+        §4.4.5 forbids forwarding raw user tokens to upstream model providers,
+        but the gateway-attested bearer is the very mechanism the platform
+        uses to attribute the request, so it must round-trip intact."""
+        monkeypatch.setenv("KAMIWAZA_ENDPOINT", "https://kamiwaza.test/api/v1")
+
+        request = MagicMock()
+        request.headers = {
+            **CANONICAL_ENVELOPE,
+            "authorization": "Bearer platform-attested-bearer",
+        }
+
+        client = await get_model_client(request)
+        api_key = getattr(client, "api_key", None) or getattr(client, "_api_key", None)
+
+        assert api_key == "platform-attested-bearer", (
+            f"UAC-11 §5 R2: client api_key must pin to the incoming bearer "
+            f"so the gateway-attested envelope round-trips intact "
+            f"(got {api_key!r})."
+        )
+
+        # The runtime lib must strip the lowercase ``authorization`` it would
+        # otherwise pass through verbatim — AsyncOpenAI synthesizes its own
+        # ``Authorization`` (capital-A) from api_key. Leaving the lowercase
+        # passthrough in place would mean two header entries differing only
+        # by case, an httpx-level ambiguity nothing downstream is meant to
+        # disambiguate.
+        forwarded = getattr(client, "default_headers", None) or getattr(
+            client, "_default_headers", {}
+        )
+        assert "authorization" not in forwarded, (
+            f"UAC-11 §5 R2: lowercase 'authorization' must be stripped from "
+            f"default_headers when api_key carries the bearer; AsyncOpenAI "
+            f"adds the capital-A 'Authorization' itself "
+            f"(got {forwarded.get('authorization')!r})."
+        )
+        assert forwarded.get("Authorization") == "Bearer platform-attested-bearer", (
+            f"UAC-11 §5 R2: the on-the-wire Authorization (capital-A, "
+            f"synthesized by AsyncOpenAI from api_key) must match the "
+            f"incoming gateway-attested bearer "
+            f"(got {forwarded.get('Authorization')!r})."
         )
 
     @pytest.mark.asyncio

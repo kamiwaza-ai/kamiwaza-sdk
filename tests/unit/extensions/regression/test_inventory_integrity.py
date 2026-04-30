@@ -134,7 +134,9 @@ def test_manual_items_resolve_to_runbook_anchors():
 @pytest.mark.unit
 def test_automated_tests_carry_extension_regression_marker():
     """Every automated test_id must carry @pytest.mark.extension_regression
-    (either at module, class, or function level)."""
+    at module, class (decorator or class-body ``pytestmark``), or function
+    level. Drift here means ``pytest -m extension_regression`` silently
+    omits a regression item from the D210-candidate replay."""
     for item in _load_inventory():
         if not item.get("automated"):
             continue
@@ -146,15 +148,29 @@ def test_automated_tests_carry_extension_regression_marker():
         if re.search(r"^pytestmark\s*=.*extension_regression", source, re.MULTILINE):
             continue
 
-        # Otherwise look for a decorator immediately above the target.
+        # Decorators directly above a `class Name:` or `def name(...)`.
         target_pattern = rf"((?:^@[^\n]*\n)+)^(?:class|def) {re.escape(name)}\b"
         m = re.search(target_pattern, source, re.MULTILINE)
-        assert m, (
-            f"{rid}: {name} in {rel_path} has no decorators; expected "
-            f"@pytest.mark.extension_regression"
+        if m and "extension_regression" in m.group(1):
+            continue
+
+        # Class-body `pytestmark` — pytest honors `class X: pytestmark = [...]`
+        # the same way as the module-level form. Scope the search to the
+        # class body so a marker on a sibling class doesn't false-pass.
+        class_body = re.search(
+            rf"^class {re.escape(name)}\b.*?(?=^class |\Z)",
+            source,
+            re.MULTILINE | re.DOTALL,
         )
-        decorators = m.group(1)
-        assert "extension_regression" in decorators, (
-            f"{rid}: {name} in {rel_path} is missing "
-            f"@pytest.mark.extension_regression marker"
+        if class_body and re.search(
+            r"^\s+pytestmark\s*=.*extension_regression",
+            class_body.group(0),
+            re.MULTILINE,
+        ):
+            continue
+
+        pytest.fail(
+            f"{rid}: {name} in {rel_path} is missing the extension_regression "
+            f"marker (looked at module-level pytestmark, decorators above the "
+            f"target, and class-body pytestmark)."
         )

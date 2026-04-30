@@ -17,6 +17,11 @@ under "Regression checklist result".
 with empty array expansion) only reproduces on Bash 3.2, the system shell
 on macOS. CI runners ship Bash 5+ and cannot exercise the regression.
 
+**Where the scripts live:** `scripts/install-dev.sh` and
+`scripts/push-local-extensions.sh` are checked into the **kamiwaza
+platform repo** (sibling of `kamiwaza-sdk`), not into this SDK repo. Run
+the steps below from a `kamiwaza` checkout, not from this repo.
+
 **Steps:**
 
 1. On a macOS workstation (Bash 3.2 — confirm with `bash --version`),
