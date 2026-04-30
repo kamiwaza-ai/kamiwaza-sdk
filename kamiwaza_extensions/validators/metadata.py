@@ -55,6 +55,11 @@ class KamiwazaMetadata(BaseModel):
     # before M2) load cleanly; ``update`` requires --bootstrap if missing.
     template_version: Optional[str] = None
     template_shape: Optional[Literal["app", "tool", "service"]] = None
+    # PR-86 C4 / option (b) — relative_path → "sha256:<hex>" map of
+    # preserve_if_modified file hashes at last write time. ``kz-ext update``
+    # consults this to detect "clean since record" files and silently sweep
+    # them forward instead of conflict-prompting.
+    template_file_hashes: Optional[Dict[str, str]] = None
 
 
 class MetadataValidator:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import subprocess
@@ -12,7 +13,10 @@ from typing import Dict
 from rich.console import Console
 
 from kamiwaza_extensions import __version__
-from kamiwaza_extensions.template_manifest import current_template_version
+from kamiwaza_extensions.template_manifest import (
+    MANIFESTS,
+    current_template_version,
+)
 
 console = Console(stderr=True)
 
@@ -56,6 +60,50 @@ def substitute(text: str, context: Dict[str, str]) -> str:
     for key, val in context.items():
         text = text.replace(key, val)
     return text
+
+
+def hash_text(content: str) -> str:
+    """Return the canonical content hash used by ``kz-ext update``.
+
+    ``sha256:<hex>`` over the UTF-8 bytes of the rendered file content.
+    Used at scaffold-create time to record what was written, then by
+    ``update`` to detect "clean since last write" — see PR-86 C4 / option
+    (b). Stable across Python versions.
+    """
+    return "sha256:" + hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def compute_rendered_hashes(shape: str, context: Dict[str, str]) -> Dict[str, str]:
+    """Hash every ``preserve_if_modified`` file in the shape's manifest,
+    rendered with the given context.
+
+    Keys are manifest ``relative_path`` strings; values are
+    ``sha256:<hex>``. Binary template files are skipped (no
+    preserve-if-modified semantics — they have no diff/merge concept).
+
+    Used by ``Scaffolder.create()`` to seed
+    ``kamiwaza.json.template_file_hashes`` so that the *next* ``kz-ext
+    update`` can detect which files the author hasn't touched and
+    silently sweep them forward to the new template.
+    """
+    manifest = MANIFESTS[shape]  # type: ignore[index]
+    template_root = Path(
+        str(importlib_resources.files("kamiwaza_extensions") / "templates" / shape)
+    )
+    hashes: Dict[str, str] = {}
+    for owned in manifest.files:
+        if owned.strategy != "preserve_if_modified":
+            continue
+        path = template_root / owned.relative_path
+        if not path.exists():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            # Binary: no preserve_if_modified semantics anyway.
+            continue
+        hashes[owned.relative_path] = hash_text(substitute(text, context))
+    return hashes
 
 
 class Scaffolder:
@@ -102,11 +150,15 @@ class Scaffolder:
         return target
 
     def _stamp_template_metadata(self, target: Path, shape: str) -> None:
-        """Stamp template_version + template_shape into the rendered kamiwaza.json.
+        """Stamp template_version + template_shape + template_file_hashes
+        into the rendered kamiwaza.json.
 
-        These fields drive ``kz-ext update`` (ENG-3890): the version pins
-        which manifest the scaffold was rendered from, and the shape
-        identifies which manifest registry entry to consult on update.
+        ``template_version`` + ``template_shape`` drive ``kz-ext update``'s
+        manifest dispatch (ENG-3890). ``template_file_hashes`` (PR-86 C4
+        option b) records the content hash of every preserve_if_modified
+        file we just rendered, so the next update can detect "unchanged
+        since scaffold" and silently sweep clean files forward instead of
+        prompting on every CLI bump.
 
         Done as a post-render JSON write rather than as template
         placeholders because the values are CLI-version metadata, not
@@ -122,6 +174,12 @@ class Scaffolder:
             return
         data["template_version"] = current_template_version()
         data["template_shape"] = shape
+        # Build the same context the scaffolder used so the hashes match
+        # what's actually on disk byte-for-byte.
+        context = build_render_context(
+            name=data.get("name", "extension"), type_=shape
+        )
+        data["template_file_hashes"] = compute_rendered_hashes(shape, context)
         meta_path.write_text(
             json.dumps(data, indent=4) + "\n",
             encoding="utf-8",

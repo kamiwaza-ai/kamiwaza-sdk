@@ -39,7 +39,11 @@ from rich.console import Console
 from rich.table import Table
 
 from kamiwaza_extensions.exit_codes import ExitCode
-from kamiwaza_extensions.scaffolder import build_render_context, substitute
+from kamiwaza_extensions.scaffolder import (
+    build_render_context,
+    hash_text,
+    substitute,
+)
 from kamiwaza_extensions.template_manifest import (
     AUTHOR_OWNED_DENYLIST,
     MANIFESTS,
@@ -79,6 +83,12 @@ class FileResult:
     relative_path: str
     action: str  # "updated", "skipped", "kept", "applied", "renamed", "no-change", "missing"
     reason: str = ""
+    # PR-86 C4 / option (b) — when this strategy step wrote new content,
+    # capture its hash so the post-loop metadata persist can update
+    # ``kamiwaza.json.template_file_hashes`` to match what's now on disk.
+    # ``None`` means "no hash change for this file" (no-change, skipped,
+    # kept, conflict-without-write).
+    new_hash: str | None = None
 
 
 @dataclass
@@ -198,11 +208,19 @@ def _bootstrap(
     target_version = current_template_version()
     metadata["template_version"] = target_version
     metadata["template_shape"] = shape
+    # PR-86 C4 / option (b): bootstrap stamps the *on-disk* content hashes
+    # (not the rendered-template hashes) — the user is adopting whatever
+    # they have right now as the baseline. Future updates compare against
+    # this hash to detect "clean since bootstrap" and auto-update only
+    # those files.
+    target_dir = metadata_path.parent
+    metadata["template_file_hashes"] = _hash_on_disk_files(target_dir, shape)
     summary = UpdateSummary()
     if dry_run:
         console.print(
             f"[cyan]--dry-run:[/cyan] would stamp template_version="
-            f"{target_version!r} + template_shape={shape!r} into kamiwaza.json."
+            f"{target_version!r} + template_shape={shape!r} + "
+            f"{len(metadata['template_file_hashes'])} file hash(es) into kamiwaza.json."
         )
         summary.files.append(
             FileResult("kamiwaza.json", "would-bootstrap", "dry-run")
@@ -211,11 +229,35 @@ def _bootstrap(
     metadata_path.write_text(json.dumps(metadata, indent=4) + "\n", encoding="utf-8")
     console.print(
         f"[green]✓ Bootstrapped[/green] kamiwaza.json — template_version stamped "
-        f"as {target_version!r}, template_shape={shape!r}. Run "
+        f"as {target_version!r}, template_shape={shape!r}, "
+        f"{len(metadata['template_file_hashes'])} file hash(es) recorded. Run "
         "[bold]kz-ext update[/bold] without --bootstrap on the next CLI bump."
     )
     summary.files.append(FileResult("kamiwaza.json", "bootstrap", target_version))
     return summary
+
+
+def _hash_on_disk_files(target_dir: Path, shape: str) -> dict[str, str]:
+    """Hash whatever's currently on disk for each preserve_if_modified file.
+
+    Used by ``_bootstrap`` to record the user's current baseline. Skips
+    files that don't exist on disk (the manifest is shape-wide; some
+    optional files may be absent from a particular project).
+    """
+    manifest = MANIFESTS[shape]  # type: ignore[index]
+    hashes: dict[str, str] = {}
+    for owned in manifest.files:
+        if owned.strategy != "preserve_if_modified":
+            continue
+        path = target_dir / owned.relative_path
+        if not path.exists():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        hashes[owned.relative_path] = hash_text(text)
+    return hashes
 
 
 # ---------------------------------------------------------------------------
@@ -243,6 +285,11 @@ def _reconcile(
         name=metadata.get("name", "extension"),
         type_=manifest.shape,
     )
+    # PR-86 C4 / option (b): pass recorded per-file hashes through so
+    # ``preserve_if_modified`` can detect "clean since last write" and
+    # auto-update untouched files instead of conflict-prompting.
+    recorded_hashes: dict[str, str] = metadata.get("template_file_hashes") or {}
+    new_hashes: dict[str, str] = {}
     author_owned = set(AUTHOR_OWNED_DENYLIST.get(manifest.shape, ()))
     template_root = _template_root(manifest.shape)
     for owned in manifest.files:
@@ -253,14 +300,22 @@ def _reconcile(
             template_root=template_root,
             target_root=cwd,
             context=context,
+            recorded_hashes=recorded_hashes,
             dry_run=dry_run,
             force=force,
             non_interactive=non_interactive,
         )
         _aggregate_action(summary, result)
+        if result.new_hash is not None:
+            new_hashes[result.relative_path] = result.new_hash
 
     _stamp_version(
-        metadata_path, metadata, manifest, recorded_version, dry_run=dry_run
+        metadata_path,
+        metadata,
+        manifest,
+        recorded_version,
+        new_hashes=new_hashes,
+        dry_run=dry_run,
     )
     _print_summary(summary, dry_run=dry_run)
     return summary
@@ -312,11 +367,14 @@ def _stamp_version(
     manifest: TemplateManifest,
     recorded_version: str,
     *,
+    new_hashes: dict[str, str] | None = None,
     dry_run: bool,
 ) -> None:
-    """Rewrite ``kamiwaza.json.template_version`` to the manifest's version.
+    """Persist post-reconcile metadata: ``template_version`` bump (if any)
+    plus refreshed ``template_file_hashes`` for files that were rewritten.
 
-    No-op when the recorded version already matches or under ``--dry-run``.
+    No-op under ``--dry-run``. Always runs when ``new_hashes`` has entries —
+    they need to land even if the version didn't change.
 
     PR-86 review C1 — re-read kamiwaza.json from disk before stamping. The
     in-memory ``metadata`` was loaded BEFORE per-file reconciliation ran, so
@@ -324,16 +382,23 @@ def _stamp_version(
     if we re-serialized the stale dict here. Re-reading is cheap and makes
     template-added fields persist across the version bump.
     """
+    if dry_run:
+        return
     target_version = manifest.template_version
-    if target_version == recorded_version or dry_run:
+    new_hashes = new_hashes or {}
+    if target_version == recorded_version and not new_hashes:
         return
     try:
         on_disk = json.loads(metadata_path.read_text())
     except json.JSONDecodeError:
         # Defensive — fall back to the in-memory dict if disk content is
-        # somehow unparseable. The original behavior is preserved.
+        # somehow unparseable.
         on_disk = metadata
     on_disk["template_version"] = target_version
+    if new_hashes:
+        existing_hashes = dict(on_disk.get("template_file_hashes") or {})
+        existing_hashes.update(new_hashes)
+        on_disk["template_file_hashes"] = existing_hashes
     metadata_path.write_text(
         json.dumps(on_disk, indent=4) + "\n", encoding="utf-8"
     )
@@ -363,6 +428,7 @@ def _reconcile_file(
     template_root: Path,
     target_root: Path,
     context: dict,
+    recorded_hashes: dict[str, str],
     dry_run: bool,
     force: bool,
     non_interactive: bool,
@@ -404,6 +470,7 @@ def _reconcile_file(
         target_path,
         existing_content,
         new_content,
+        recorded_hash=recorded_hashes.get(rel),
         dry_run=dry_run,
         force=force,
         non_interactive=non_interactive,
@@ -433,7 +500,7 @@ def _create_missing(
         return FileResult(rel, "would-update", "creating")
     target_path.parent.mkdir(parents=True, exist_ok=True)
     target_path.write_text(new_content, encoding="utf-8")
-    return FileResult(rel, "updated", "created")
+    return FileResult(rel, "updated", "created", new_hash=hash_text(new_content))
 
 
 def _apply_overwrite(
@@ -449,7 +516,10 @@ def _apply_overwrite(
         return FileResult(rel, "would-update", "overwrite")
     _backup(target_path, existing_content)
     target_path.write_text(new_content, encoding="utf-8")
-    return FileResult(rel, "updated", "overwrite (.orig backup)")
+    return FileResult(
+        rel, "updated", "overwrite (.orig backup)",
+        new_hash=hash_text(new_content),
+    )
 
 
 def _apply_preserve_if_modified(
@@ -458,18 +528,47 @@ def _apply_preserve_if_modified(
     existing_content: str,
     new_content: str,
     *,
+    recorded_hash: str | None,
     dry_run: bool,
     force: bool,
     non_interactive: bool,
 ) -> FileResult:
-    """``preserve_if_modified`` (and v1 ``merge`` for non-JSON files): handle
-    a conflict via force / non-interactive / interactive paths."""
+    """``preserve_if_modified`` (and v1 ``merge`` for non-JSON files).
+
+    PR-86 C4 / option (b): if the on-disk content matches the recorded
+    hash from ``kamiwaza.json.template_file_hashes`` (i.e. unchanged
+    since scaffold or last successful update), the file is "clean" —
+    silently sweep it forward to the new render. The author hasn't
+    touched it; the upgrade is safe.
+
+    Only when the on-disk hash diverges from the recorded hash is this
+    a real conflict; the existing force / non-interactive / interactive
+    paths apply.
+
+    When ``recorded_hash`` is None (an old scaffold pre-dating the hash
+    mechanism), behavior falls back to the v1 always-conflict path.
+    Existing scaffolds opt in via ``--bootstrap``.
+    """
+    if recorded_hash is not None and hash_text(existing_content) == recorded_hash:
+        # Clean since record — auto-update.
+        new_hash = hash_text(new_content)
+        if dry_run:
+            return FileResult(
+                rel, "would-update", "clean since record", new_hash=new_hash
+            )
+        target_path.write_text(new_content, encoding="utf-8")
+        return FileResult(rel, "updated", "clean since record", new_hash=new_hash)
+
+    # Real conflict — author edited (or scaffold pre-dates hash tracking).
     if force:
         if dry_run:
             return FileResult(rel, "would-apply", "force")
         _backup(target_path, existing_content)
         target_path.write_text(new_content, encoding="utf-8")
-        return FileResult(rel, "applied", "force (.orig backup)")
+        return FileResult(
+            rel, "applied", "force (.orig backup)",
+            new_hash=hash_text(new_content),
+        )
     if non_interactive:
         return FileResult(rel, "skipped", "conflict")
     if dry_run:

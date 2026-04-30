@@ -237,6 +237,108 @@ def test_backup_filename_preserves_full_extension(tmp_path, monkeypatch):
     assert not (tmp_path / "next.config.orig").exists()
 
 
+def test_scaffolder_records_template_file_hashes(tmp_path, monkeypatch):
+    """PR-86 C4 / option (b): scaffolder stamps a content hash for every
+    preserve_if_modified template file into kamiwaza.json. These hashes
+    are what `kz-ext update` consults to detect "clean since scaffold"
+    on the next CLI bump."""
+    scaffold = _make_scaffold(tmp_path, monkeypatch, type_="tool")
+    meta = json.loads((scaffold / "kamiwaza.json").read_text())
+    hashes = meta.get("template_file_hashes")
+    assert isinstance(hashes, dict) and hashes, (
+        "scaffolder must populate kamiwaza.json.template_file_hashes — "
+        "without it, kz-ext update cannot detect clean-since-create files"
+    )
+    # tool shape's preserve_if_modified files include kamiwaza.json (merge)
+    # is excluded since merge has its own reconciliation; src/server.py is
+    # the canonical preserve_if_modified file in that shape.
+    assert "src/server.py" in hashes
+    assert hashes["src/server.py"].startswith("sha256:")
+
+
+def test_clean_file_auto_updates_on_template_change(tmp_path, monkeypatch):
+    """PR-86 C4: a preserve_if_modified file that matches the recorded
+    hash (i.e. the author hasn't touched it) auto-updates on a CLI bump
+    instead of conflict-prompting. This is the headline behavior the
+    `preserve_if_modified` strategy is supposed to deliver."""
+    scaffold = _make_scaffold(tmp_path, monkeypatch, type_="tool")
+    target = scaffold / "src" / "server.py"
+    monkeypatch.chdir(scaffold)
+
+    # Simulate a CLI bump: monkeypatch _render so the "new" template render
+    # for src/server.py differs from what the scaffolder originally wrote.
+    from kamiwaza_extensions.commands import update as upd
+
+    real_render = upd._render
+
+    def render_with_new_line(template_path, context):
+        text = real_render(template_path, context)
+        if str(template_path).endswith("src/server.py"):
+            return text + "\n# v0.2 — added comment line\n"
+        return text
+
+    monkeypatch.setattr(upd, "_render", render_with_new_line)
+
+    summary = upd.run_update(non_interactive=True)
+    server_result = next(
+        fr for fr in summary.files if fr.relative_path == "src/server.py"
+    )
+    # Auto-updated, no conflict (new behavior). Reason mentions "clean".
+    assert server_result.action == "updated"
+    assert "clean" in server_result.reason.lower()
+    # File on disk now has the new line.
+    assert "# v0.2 — added comment line" in target.read_text()
+    # Recorded hash was refreshed.
+    refreshed_meta = json.loads((scaffold / "kamiwaza.json").read_text())
+    new_recorded = refreshed_meta["template_file_hashes"]["src/server.py"]
+    import hashlib
+    expected = "sha256:" + hashlib.sha256(target.read_text().encode()).hexdigest()
+    assert new_recorded == expected
+
+
+def test_modified_file_conflicts_on_template_change(tmp_path, monkeypatch):
+    """PR-86 C4: a preserve_if_modified file whose on-disk hash diverges
+    from the recorded hash is a real conflict — the author edited it.
+    Existing --non-interactive (now exits on conflict per C3) still fires."""
+    scaffold = _make_scaffold(tmp_path, monkeypatch, type_="tool")
+    target = scaffold / "src" / "server.py"
+    target.write_text("# my edits\n")
+    monkeypatch.chdir(scaffold)
+    with pytest.raises(typer.Exit):
+        run_update(non_interactive=True)
+    # File untouched.
+    assert target.read_text() == "# my edits\n"
+
+
+def test_bootstrap_records_hashes_from_on_disk_content(tmp_path, monkeypatch):
+    """PR-86 C4: --bootstrap stamps hashes from the *current* on-disk
+    content (the user is adopting whatever they have as the baseline).
+    This lets old scaffolds opt into hash-aware updates."""
+    scaffold = _make_scaffold(tmp_path, monkeypatch, type_="tool")
+    # Strip both template_version and template_file_hashes to simulate an
+    # old scaffold that predates the hash mechanism.
+    meta_path = scaffold / "kamiwaza.json"
+    meta = json.loads(meta_path.read_text())
+    meta.pop("template_version", None)
+    meta.pop("template_file_hashes", None)
+    meta_path.write_text(json.dumps(meta, indent=4) + "\n")
+
+    # Author has customized the file pre-bootstrap.
+    target = scaffold / "src" / "server.py"
+    target.write_text("# bespoke\n")
+    monkeypatch.chdir(scaffold)
+    run_update(bootstrap=True)
+
+    refreshed = json.loads(meta_path.read_text())
+    hashes = refreshed["template_file_hashes"]
+    import hashlib
+    expected = "sha256:" + hashlib.sha256(b"# bespoke\n").hexdigest()
+    assert hashes["src/server.py"] == expected, (
+        "bootstrap must hash on-disk content (the user's actual baseline), "
+        "not a freshly-rendered template"
+    )
+
+
 def test_stamp_version_preserves_merge_added_kamiwaza_fields(tmp_path, monkeypatch):
     """PR-86 review C1 / M8: when _reconcile_json_merge writes new fields to
     kamiwaza.json, _stamp_version's subsequent rewrite must not clobber them.
