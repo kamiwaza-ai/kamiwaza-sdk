@@ -214,9 +214,6 @@ class TestPrepareBridgeContext:
 
         assert isinstance(ctx, BridgeContext)
         assert ctx.bearer_token == token.access_token
-        assert ctx.api_url == "https://kamiwaza.test/api"
-        assert ctx.public_api_url == "https://kamiwaza.test"
-        assert ctx.verify_ssl is True
         assert ctx.expires_at == future_exp
         assert ctx.user_id == "user-42"
 
@@ -257,11 +254,9 @@ class TestPrepareBridgeContext:
 
     def test_accepts_token_without_exp_claim(self, tmp_path):
         """A bearer with no exp claim is still usable — fail-loud is only
-        for definitively-expired tokens, not unparseable ones."""
+        for definitively-expired tokens, not unparseable ones (so long as
+        the JWT has a usable sub claim)."""
         mgr = _make_manager(tmp_path)
-        # StoredToken.expires_at is required (float), but the JWT itself
-        # has no exp claim — verifies we read exp from the JWT, not the
-        # stored metadata.
         far_future = time.time() + 86400
         token = StoredToken(
             access_token=_make_jwt(exp=None, sub="user-1"),
@@ -272,16 +267,36 @@ class TestPrepareBridgeContext:
 
         ctx = prepare_bridge_context(connection_manager=mgr)
         assert ctx.expires_at is None  # no exp claim in JWT
+        assert ctx.user_id == "user-1"
 
-    def test_propagates_verify_ssl_false(self, tmp_path):
+    def test_raises_when_jwt_has_no_sub_claim(self, tmp_path):
+        """PR #87 review (Critical #2) — opaque PATs / API keys decode to
+        empty claims and previously produced a silent no-op auth path
+        (TS middleware bails when sub is missing). Now fail-loud upstream."""
         mgr = _make_manager(tmp_path)
         future_exp = int(time.time()) + 3600
+        # JWT with no sub claim — simulates an opaque PAT or non-JWT bearer
         token = StoredToken(
-            access_token=_make_jwt(exp=future_exp),
+            access_token=_make_jwt(exp=future_exp, sub=None),
             refresh_token=None,
             expires_at=float(future_exp),
         )
-        mgr.add_connection("dev", "https://kamiwaza.test/api", token, verify_ssl=False)
+        mgr.add_connection("default", "https://kamiwaza.test/api", token)
 
-        ctx = prepare_bridge_context(connection_manager=mgr)
-        assert ctx.verify_ssl is False
+        with pytest.raises(LocalDevAuthError, match="not a JWT"):
+            prepare_bridge_context(connection_manager=mgr)
+
+    def test_raises_for_opaque_non_jwt_bearer(self, tmp_path):
+        """A bearer that's not a JWT at all (e.g. a raw PAT string from
+        kz-ext login --api-key) should fail-loud, not silently no-op."""
+        mgr = _make_manager(tmp_path)
+        future_exp = time.time() + 3600
+        token = StoredToken(
+            access_token="kz_pat_random_opaque_string_not_a_jwt",
+            refresh_token=None,
+            expires_at=future_exp,
+        )
+        mgr.add_connection("default", "https://kamiwaza.test/api", token)
+
+        with pytest.raises(LocalDevAuthError, match="not a JWT"):
+            prepare_bridge_context(connection_manager=mgr)

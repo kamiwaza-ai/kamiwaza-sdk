@@ -78,6 +78,30 @@ class TestCLISkeleton:
         assert result.exit_code == 0
         assert captured["auth"] is False
 
+    def test_dev_local_auth_localdevautherror_exits_code_2(self, monkeypatch):
+        """Round-2 review High #11 — LocalDevAuthError raised from the runner
+        must surface as a clean stderr message + exit code 2 (not a stack
+        trace, not exit code 1)."""
+        from kamiwaza_extensions_lib.local_dev import LocalDevAuthError
+
+        from kamiwaza_extensions import dev_local as dev_local_mod
+
+        # Stub the runner to raise the bridge error
+        class StubRunner:
+            def run(self, *, detach, sdk_repo=None, auth=False):
+                raise LocalDevAuthError(
+                    "no active Kamiwaza connection — run `kz-ext login` first"
+                )
+
+        monkeypatch.setattr(
+            dev_local_mod, "DevLocalRunner", lambda *a, **kw: StubRunner()
+        )
+
+        result = runner.invoke(app, ["dev", "local", "--auth"])
+        assert result.exit_code == 2
+        # Developer-facing hint surfaces (not "Traceback:" or stack)
+        assert "Traceback" not in result.output
+
     def test_unknown_command(self):
         result = runner.invoke(app, ["nonexistent"])
         assert result.exit_code != 0

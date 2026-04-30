@@ -81,8 +81,8 @@ the same `Authorization` and `x-user-id` envelope they get when the
 extension is deployed behind the platform gateway. This is the **real
 auth path** — no synthetic dev users — so any mismatch you'd hit in
 production will fail here too. If no usable connection exists, `--auth`
-fails loudly with a `kz-ext login required` message instead of falling
-back to anonymous.
+fails loudly (e.g. `no active Kamiwaza connection — run \`kz-ext login\`
+first`, exit code 2) instead of falling back to anonymous.
 
 `--auth` also injects Docker host-gateway routing so containers can
 reach loopback-bound Kamiwaza URLs on your host (`https://kamiwaza.test`,

@@ -7,7 +7,11 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { _buildBridgedHeaders, _decodeJwt } from "../src/server/localDevAuth";
+import {
+    _buildBridgedHeaders,
+    _decodeJwt,
+    _resetWarnOnceState,
+} from "../src/server/localDevAuth";
 
 const GATE = "KZ_EXT_DEV_LOCAL_AUTH";
 const TOKEN = "KAMIWAZA_BEARER_TOKEN";
@@ -34,12 +38,14 @@ describe("_buildBridgedHeaders", () => {
         delete process.env[GATE];
         delete process.env[TOKEN];
         delete process.env[WORKROOM];
+        _resetWarnOnceState();
         warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     });
 
     afterEach(() => {
         process.env = originalEnv;
         warnSpy.mockRestore();
+        _resetWarnOnceState();
     });
 
     it("TS-16: returns the same headers when gate env is unset", () => {
@@ -157,6 +163,53 @@ describe("_buildBridgedHeaders", () => {
         });
         const out = _buildBridgedHeaders(incoming);
         expect(out).toBe(incoming); // pass-through
+    });
+
+    it("falls back to top-level `roles` claim when realm_access is absent", () => {
+        // Round-2 review Medium #14 — non-Keycloak IdPs use top-level roles.
+        const token = makeJwt({
+            sub: "user-1",
+            roles: ["editor", "viewer"],
+        });
+        process.env[GATE] = "1";
+        process.env[TOKEN] = token;
+
+        const out = _buildBridgedHeaders(new Headers());
+        expect(out.get("x-user-roles")).toBe("editor,viewer");
+    });
+
+    it("prefers realm_access.roles over top-level roles when both present", () => {
+        const token = makeJwt({
+            sub: "user-1",
+            roles: ["top-level"],
+            realm_access: { roles: ["realm-access"] },
+        });
+        process.env[GATE] = "1";
+        process.env[TOKEN] = token;
+
+        const out = _buildBridgedHeaders(new Headers());
+        expect(out.get("x-user-roles")).toBe("realm-access");
+    });
+
+    it("warn-once: missing-token warning emits only once across N requests", () => {
+        // Round-2 review High #9 — middleware re-read env on every request
+        // and re-warned, flooding the log on a Next.js page with parallel
+        // chunk fetches. Throttle to once-per-process.
+        process.env[GATE] = "1";
+        // No token set → triggers the missing-token warn path.
+        for (let i = 0; i < 10; i++) {
+            _buildBridgedHeaders(new Headers());
+        }
+        expect(warnSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("warn-once: undecodable-token warning emits only once across N requests", () => {
+        process.env[GATE] = "1";
+        process.env[TOKEN] = "not-a-jwt";
+        for (let i = 0; i < 10; i++) {
+            _buildBridgedHeaders(new Headers());
+        }
+        expect(warnSpy).toHaveBeenCalledTimes(1);
     });
 });
 

@@ -62,11 +62,8 @@ class TestEnvOverlay:
         )
         bridge = BridgeContext(
             bearer_token="bearer-xyz",
-            api_url="https://example.com/api",
-            public_api_url="https://example.com",
-            verify_ssl=True,
-            expires_at=None,
             user_id="user-1",
+            expires_at=None,
         )
         overlay = build_env_overlay(conn, "my-app", auth=True, bridge=bridge)
         assert overlay["KZ_EXT_DEV_LOCAL_AUTH"] == "1"
@@ -88,11 +85,8 @@ class TestEnvOverlay:
         )
         bridge = BridgeContext(
             bearer_token="t",
-            api_url="http://localhost:8000/api",
-            public_api_url="http://localhost:8000",
-            verify_ssl=True,
+            user_id="user-1",
             expires_at=None,
-            user_id=None,
         )
         overlay = build_env_overlay(conn, "my-app", auth=True, bridge=bridge)
         assert overlay["KAMIWAZA_API_URL"] == "http://host.docker.internal:8000/api"
@@ -109,11 +103,8 @@ class TestEnvOverlay:
         )
         bridge = BridgeContext(
             bearer_token="t",
-            api_url="https://kamiwaza.test/api",
-            public_api_url="https://kamiwaza.test",
-            verify_ssl=False,
+            user_id="user-1",
             expires_at=None,
-            user_id=None,
         )
         overlay = build_env_overlay(conn, "my-app", auth=True, bridge=bridge)
         assert overlay["KAMIWAZA_API_URL"] == "https://kamiwaza.test/api"
@@ -184,6 +175,265 @@ class TestBuildComposeExtraHosts:
         assert build_compose_extra_hosts(conn, auth=True) == [
             "host.docker.internal:host-gateway"
         ]
+
+
+@pytest.mark.unit
+class TestPublicApiUrlConsistency:
+    """Round-2 review High #8 — single source of truth for /api stripping
+    so prepare_bridge_context and build_env_overlay can't drift."""
+
+    def test_trailing_api_slash_does_not_double_slash(self):
+        # Prior bug: url='https://kamiwaza.test/api/' produced
+        # KAMIWAZA_PUBLIC_API_URL='https://kamiwaza.test/' and then
+        # KAMIWAZA_ENDPOINT='https://kamiwaza.test//v1'
+        conn = ConnectionInfo(
+            name="dev",
+            url="https://kamiwaza.test/api/",
+            active=True,
+            created_at=0.0,
+        )
+        overlay = build_env_overlay(conn, "my-app")
+        assert overlay["KAMIWAZA_PUBLIC_API_URL"] == "https://kamiwaza.test"
+
+
+@pytest.mark.unit
+class TestRunnerEnvPassthroughOverlay:
+    """Round-2 review Critical #1 — bridge env vars must reach the
+    container, not just the compose-CLI parent process. Verifies that
+    DevLocalRunner, when --auth is set, generates a compose overlay
+    listing the bridge vars under every service's environment."""
+
+    def test_runner_writes_auth_env_overlay_for_every_service(
+        self, tmp_path, monkeypatch
+    ):
+        import yaml as _yaml
+
+        from kamiwaza_extensions import dev_local as dev_local_mod
+        from kamiwaza_extensions.dev_local import DevLocalRunner
+        from kamiwaza_extensions_lib.local_dev import BridgeContext
+
+        # Synthesize a minimal extension info object for the runner
+        compose_data = {
+            "services": {
+                "frontend": {"build": "./frontend", "ports": ["3000"]},
+                "backend": {"build": "./backend", "ports": ["8000"]},
+            }
+        }
+        compose_path = tmp_path / "docker-compose.yml"
+        compose_path.write_text(_yaml.dump(compose_data))
+
+        info = MagicMock()
+        info.name = "my-app"
+        info.path = tmp_path
+        info.compose_path = compose_path
+        info.compose_data = compose_data
+
+        # Track every overlay tempfile written by _write_compose_overlay so
+        # we can read them after run() returns and the cleanup removes them.
+        captured_overlays: dict[str, dict] = {}
+        real_write_overlay = dev_local_mod._write_compose_overlay
+
+        def capturing_write_overlay(*, prefix, services, per_service):
+            path = real_write_overlay(
+                prefix=prefix, services=services, per_service=per_service
+            )
+            with open(path) as fh:
+                captured_overlays[prefix] = _yaml.safe_load(fh)
+            return path
+
+        monkeypatch.setattr(
+            dev_local_mod, "_write_compose_overlay", capturing_write_overlay
+        )
+
+        # Stub out the parts of run() that hit the real environment
+        runner = DevLocalRunner()
+        runner._detector = MagicMock()
+        runner._detector.detect.return_value = info
+        runner._conn_mgr = MagicMock()
+        runner._conn_mgr.get_active_connection.return_value = ConnectionInfo(
+            name="dev",
+            url="https://kamiwaza.test/api",
+            active=True,
+            created_at=0.0,
+        )
+
+        from kamiwaza_extensions import sdk_override as sdk_override_mod
+        monkeypatch.setattr(
+            dev_local_mod,
+            "detect_compose_command",
+            lambda: ["docker", "compose"],
+        )
+        monkeypatch.setattr(
+            sdk_override_mod, "resolve_sdk_override", lambda *a, **kw: None
+        )
+        monkeypatch.setattr(
+            dev_local_mod, "resolve_port_conflicts", lambda *a, **kw: {}
+        )
+        monkeypatch.setattr(
+            dev_local_mod,
+            "prepare_bridge_context",
+            lambda connection_manager: BridgeContext(
+                bearer_token="bearer-xyz",
+                user_id="user-42",
+                expires_at=None,
+            ),
+        )
+        # Don't actually run docker compose — just record the cmd.
+        runner._run_subprocess = MagicMock(return_value=0)
+        runner._print_urls = MagicMock()
+
+        rc = runner.run(detach=False, auth=True)
+        assert rc == 0
+
+        # The auth-env overlay must declare bridge vars on EVERY service.
+        # If this assertion ever flips, the bridge silently no-ops on
+        # whatever service was missed (round-2 review Critical #1).
+        env_overlay = captured_overlays.get("kz-auth-env-")
+        assert env_overlay is not None, "auth-env overlay was not generated"
+        services = env_overlay["services"]
+        assert set(services.keys()) == {"frontend", "backend"}
+        for svc, cfg in services.items():
+            env_entries = cfg["environment"]
+            joined = "\n".join(env_entries)
+            assert "KZ_EXT_DEV_LOCAL_AUTH=1" in joined, (
+                f"service {svc!r} missing KZ_EXT_DEV_LOCAL_AUTH"
+            )
+            assert "KAMIWAZA_BEARER_TOKEN=bearer-xyz" in joined, (
+                f"service {svc!r} missing KAMIWAZA_BEARER_TOKEN"
+            )
+
+    def test_runner_does_not_write_auth_env_overlay_without_auth_flag(
+        self, tmp_path, monkeypatch
+    ):
+        import yaml as _yaml
+
+        from kamiwaza_extensions import dev_local as dev_local_mod
+        from kamiwaza_extensions.dev_local import DevLocalRunner
+
+        compose_data = {"services": {"frontend": {"build": "./frontend"}}}
+        compose_path = tmp_path / "docker-compose.yml"
+        compose_path.write_text(_yaml.dump(compose_data))
+
+        info = MagicMock()
+        info.name = "my-app"
+        info.path = tmp_path
+        info.compose_path = compose_path
+        info.compose_data = compose_data
+
+        captured_overlays: dict[str, dict] = {}
+        real_write_overlay = dev_local_mod._write_compose_overlay
+
+        def capturing_write_overlay(*, prefix, services, per_service):
+            path = real_write_overlay(
+                prefix=prefix, services=services, per_service=per_service
+            )
+            with open(path) as fh:
+                captured_overlays[prefix] = _yaml.safe_load(fh)
+            return path
+
+        monkeypatch.setattr(
+            dev_local_mod, "_write_compose_overlay", capturing_write_overlay
+        )
+
+        runner = DevLocalRunner()
+        runner._detector = MagicMock()
+        runner._detector.detect.return_value = info
+        runner._conn_mgr = MagicMock()
+        runner._conn_mgr.get_active_connection.return_value = ConnectionInfo(
+            name="dev",
+            url="https://kamiwaza.test/api",
+            active=True,
+            created_at=0.0,
+        )
+
+        from kamiwaza_extensions import sdk_override as sdk_override_mod
+        monkeypatch.setattr(
+            dev_local_mod,
+            "detect_compose_command",
+            lambda: ["docker", "compose"],
+        )
+        monkeypatch.setattr(
+            sdk_override_mod, "resolve_sdk_override", lambda *a, **kw: None
+        )
+        monkeypatch.setattr(
+            dev_local_mod, "resolve_port_conflicts", lambda *a, **kw: {}
+        )
+
+        runner._run_subprocess = MagicMock(return_value=0)
+        runner._print_urls = MagicMock()
+
+        rc = runner.run(detach=False, auth=False)
+        assert rc == 0
+
+        # No bridge-env overlay should be generated under auth=False
+        assert "kz-auth-env-" not in captured_overlays
+
+    def test_runner_strips_pre_existing_bridge_env_when_auth_false(
+        self, tmp_path, monkeypatch
+    ):
+        """High #3 — defense in depth: when --auth is NOT set, the runner
+        scrubs any pre-existing bridge env vars from os.environ.copy() so
+        a stale shell export can't leak into the container."""
+        import yaml as _yaml
+
+        from kamiwaza_extensions import dev_local as dev_local_mod
+        from kamiwaza_extensions.dev_local import DevLocalRunner
+
+        # Simulate the developer having a stale bridge env in their shell
+        monkeypatch.setenv("KZ_EXT_DEV_LOCAL_AUTH", "1")
+        monkeypatch.setenv("KAMIWAZA_BEARER_TOKEN", "stale-token-from-shell")
+        monkeypatch.setenv("KAMIWAZA_DEV_WORKROOM_ID", "stale-workroom")
+
+        compose_data = {"services": {"frontend": {"build": "./frontend"}}}
+        compose_path = tmp_path / "docker-compose.yml"
+        compose_path.write_text(_yaml.dump(compose_data))
+
+        info = MagicMock()
+        info.name = "my-app"
+        info.path = tmp_path
+        info.compose_path = compose_path
+        info.compose_data = compose_data
+
+        runner = DevLocalRunner()
+        runner._detector = MagicMock()
+        runner._detector.detect.return_value = info
+        runner._conn_mgr = MagicMock()
+        runner._conn_mgr.get_active_connection.return_value = ConnectionInfo(
+            name="dev",
+            url="https://kamiwaza.test/api",
+            active=True,
+            created_at=0.0,
+        )
+
+        from kamiwaza_extensions import sdk_override as sdk_override_mod
+        monkeypatch.setattr(
+            dev_local_mod,
+            "detect_compose_command",
+            lambda: ["docker", "compose"],
+        )
+        monkeypatch.setattr(
+            sdk_override_mod, "resolve_sdk_override", lambda *a, **kw: None
+        )
+        monkeypatch.setattr(
+            dev_local_mod, "resolve_port_conflicts", lambda *a, **kw: {}
+        )
+
+        captured_env: dict = {}
+
+        def capture_subprocess(cmd, *, env, cwd):
+            captured_env.update(env)
+            return 0
+
+        runner._run_subprocess = capture_subprocess
+        runner._print_urls = MagicMock()
+
+        rc = runner.run(detach=False, auth=False)
+        assert rc == 0
+
+        # Bridge env vars must NOT appear in the env passed to compose.
+        assert "KZ_EXT_DEV_LOCAL_AUTH" not in captured_env
+        assert "KAMIWAZA_BEARER_TOKEN" not in captured_env
+        assert "KAMIWAZA_DEV_WORKROOM_ID" not in captured_env
 
 
 @pytest.mark.unit

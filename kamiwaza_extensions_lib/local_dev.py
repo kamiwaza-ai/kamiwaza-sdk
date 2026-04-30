@@ -25,7 +25,20 @@ from kamiwaza_extensions.connections import ConnectionManager
 _HOST_DOCKER_INTERNAL = "host.docker.internal"
 # TLDs that are reserved for local / loopback use per RFC 6761 / 6762.
 _LOOPBACK_TLDS = (".test", ".local")
-_BARE_LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
+
+# Default DNS-resolution timeout for the loopback heuristic (seconds).
+# Without this cap, kz-ext dev local --auth could block 5–30s on slow or
+# captive networks before the user gets feedback.
+_DNS_TIMEOUT_S = 2.0
+
+# Env var names the bridge writes into the container. Listed here once so
+# the runner can scrub them from os.environ when --auth is NOT set (defense
+# in depth: a stale shell export must not accidentally activate the bridge
+# or expose a stale token).
+GATE_ENV = "KZ_EXT_DEV_LOCAL_AUTH"
+TOKEN_ENV = "KAMIWAZA_BEARER_TOKEN"
+WORKROOM_ENV = "KAMIWAZA_DEV_WORKROOM_ID"
+BRIDGE_ENV_VARS = (GATE_ENV, TOKEN_ENV, WORKROOM_ENV)
 
 
 class LocalDevAuthError(Exception):
@@ -38,14 +51,16 @@ class LocalDevAuthError(Exception):
 
 @dataclass
 class BridgeContext:
-    """Material the dev_local runner injects into the compose env."""
+    """Material the dev_local runner injects into the compose env.
+
+    Trimmed to what callers actually consume — earlier drafts carried
+    redundant URL fields that drifted from the runner-side rewrite logic
+    (parallel-truth-source risk).
+    """
 
     bearer_token: str
-    api_url: str
-    public_api_url: str
-    verify_ssl: bool
+    user_id: str  # JWT sub — required; bridge fails-loud upstream when missing
     expires_at: Optional[int]  # JWT exp (unix seconds), if present
-    user_id: Optional[str]  # JWT sub, for diagnostics only
 
 
 def _strip_brackets(host: str) -> str:
@@ -69,8 +84,30 @@ def _hostname(url: str) -> Optional[str]:
 
 
 def _default_resolver(host: str) -> str:
-    """Indirection so monkeypatch on socket.gethostbyname works at call time."""
-    return socket.gethostbyname(host)
+    """Indirection so monkeypatch on socket.gethostbyname works at call
+    time. Wraps ``getaddrinfo`` with a short timeout so a captive/slow
+    network can't block ``kz-ext dev local --auth`` startup for tens of
+    seconds before the user sees feedback.
+    """
+    previous = socket.getdefaulttimeout()
+    try:
+        socket.setdefaulttimeout(_DNS_TIMEOUT_S)
+        return socket.gethostbyname(host)
+    finally:
+        socket.setdefaulttimeout(previous)
+
+
+def _is_loopback_ip(host: str) -> Optional[bool]:
+    """True/False if ``host`` parses as an IP literal, else None.
+
+    ``ip_address.is_loopback`` covers the full ``127.0.0.0/8`` range and
+    IPv6 ``::1`` — broader than the previous string-set check that only
+    matched ``127.0.0.1`` exactly.
+    """
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return None
 
 
 def is_loopback_url(
@@ -82,28 +119,30 @@ def is_loopback_url(
     container.
 
     Triggers:
-      - bare loopbacks: ``localhost``, ``127.0.0.1``, ``::1``
+      - bare loopbacks: ``localhost`` (string), any IP in ``127.0.0.0/8`` /
+        IPv6 ``::1`` (via ``ipaddress.is_loopback``)
       - reserved TLDs: ``*.test``, ``*.local``
       - any hostname that fails to resolve via host DNS
 
-    A non-loopback IPv4 (e.g. ``1.2.3.4``) is never a loopback URL even if
-    DNS lookup hits a NXDOMAIN — IPs don't need DNS.
+    A non-loopback IP literal (e.g. ``1.2.3.4``) is never a loopback URL
+    even if DNS lookup hits a NXDOMAIN — IPs don't need DNS.
 
-    ``resolver`` is injectable for tests; defaults to ``socket.gethostbyname``.
+    ``resolver`` is injectable for tests; defaults to a timeout-capped
+    wrapper around ``socket.gethostbyname``.
     """
     host = _hostname(url)
     if host is None:
         return False
-    if host in _BARE_LOOPBACK_HOSTS:
+    if host == "localhost":
         return True
     if host.endswith(_LOOPBACK_TLDS):
         return True
-    # If it's an IP literal we don't need DNS — only loopback IPs matter.
-    try:
-        ipaddress.ip_address(host)
+    # IP literal? Use the full loopback range (127.0.0.0/8 + ::1).
+    ip_loopback = _is_loopback_ip(host)
+    if ip_loopback is True:
+        return True
+    if ip_loopback is False:
         return False
-    except ValueError:
-        pass
     # Hostname — try to resolve. Unresolvable means the developer has it
     # mapped via /etc/hosts on the host but containers can't see that.
     try:
@@ -113,14 +152,30 @@ def is_loopback_url(
         return True
 
 
-def rewrite_bare_loopback_url(url: str) -> str:
-    """Rewrite `localhost` / `127.0.0.1` / `::1` → `host.docker.internal`.
+def is_bare_loopback(host: Optional[str]) -> bool:
+    """True if ``host`` is a bare-loopback address (no TLS-cert binding).
 
-    Named hostnames (`kamiwaza.test`, custom CNAMEs) are preserved unchanged
-    so that TLS SNI matches the developer's host certificate.
+    Bare loopbacks (``localhost``, anything in ``127.0.0.0/8``, ``::1``)
+    are safe to rewrite to ``host.docker.internal`` because they have no
+    cert binding. Named hostnames (``kamiwaza.test``) must be preserved
+    so TLS SNI keeps matching the developer's host certificate.
+    """
+    if host is None:
+        return False
+    if host == "localhost":
+        return True
+    return _is_loopback_ip(host) is True
+
+
+def rewrite_bare_loopback_url(url: str) -> str:
+    """Rewrite ``localhost`` / any ``127.0.0.0/8`` IP / ``::1`` →
+    ``host.docker.internal``.
+
+    Named hostnames (``kamiwaza.test``, custom CNAMEs) are preserved
+    unchanged so that TLS SNI matches the developer's host certificate.
     """
     host = _hostname(url)
-    if host is None or host not in _BARE_LOOPBACK_HOSTS:
+    if not is_bare_loopback(host):
         return url
     parsed = urlparse(url)
     # Reconstruct netloc preserving port + auth.
@@ -133,6 +188,18 @@ def rewrite_bare_loopback_url(url: str) -> str:
             userinfo = f"{userinfo}:{parsed.password}"
         new_netloc = f"{userinfo}@{new_netloc}"
     return urlunparse(parsed._replace(netloc=new_netloc))
+
+
+def public_api_url_from(api_url: str) -> str:
+    """Strip a trailing ``/api`` (and any extra slashes) from an API URL.
+
+    Single source of truth used by both ``prepare_bridge_context`` and the
+    runner's env overlay so they cannot drift on trailing-slash variants
+    (``…/api`` and ``…/api/`` should normalize identically). Returns
+    ``api_url`` unchanged if stripping leaves an empty string.
+    """
+    stripped = api_url.rstrip("/").removesuffix("/api").rstrip("/")
+    return stripped or api_url
 
 
 def extract_extra_hosts(
@@ -152,7 +219,8 @@ def extract_extra_hosts(
     host = _hostname(url)
     if host is None:
         return []
-    if host in _BARE_LOOPBACK_HOSTS:
+    if is_bare_loopback(host):
+        # Bare loopbacks are handled by URL rewrite — no extra_hosts entry.
         return []
     if not is_loopback_url(url, resolver=resolver):
         return []
@@ -199,10 +267,11 @@ def prepare_bridge_context(
       - no active connection (``run `kz-ext login` first``)
       - active connection has no stored bearer
       - JWT ``exp`` is in the past
-
-    Tokens with no ``exp`` claim are accepted — they may be PATs or other
-    non-expiring credentials. The platform validates the bearer at runtime
-    (AC-9 negative-path covers that surface).
+      - bearer is not a JWT (no ``sub`` claim) — opaque PATs / API keys
+        cannot drive the bridge because the TS middleware needs ``sub`` to
+        synthesize ``x-user-id``. Earlier drafts accepted such tokens and
+        produced a silent no-op auth path; we now fail-loud upstream so
+        the developer sees a clear hint instead of hunting through 401s.
     """
     mgr = connection_manager or ConnectionManager()
     connection = mgr.get_active_connection()
@@ -228,18 +297,15 @@ def prepare_bridge_context(
         )
 
     sub = claims.get("sub")
-    user_id = sub if isinstance(sub, str) and sub else None
-
-    api_url = connection.url
-    public_api_url = api_url.removesuffix("/api").rstrip("/")
-    if not public_api_url:
-        public_api_url = api_url
+    if not isinstance(sub, str) or not sub:
+        raise LocalDevAuthError(
+            f"active connection '{connection.name}' bearer is not a JWT "
+            "with a usable `sub` claim — `kz-ext dev local --auth` requires "
+            "an interactive login (try `kz-ext login` without `--api-key`)"
+        )
 
     return BridgeContext(
         bearer_token=bearer,
-        api_url=api_url,
-        public_api_url=public_api_url,
-        verify_ssl=connection.verify_ssl,
+        user_id=sub,
         expires_at=exp,
-        user_id=user_id,
     )

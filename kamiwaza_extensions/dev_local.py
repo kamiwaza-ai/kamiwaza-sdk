@@ -17,9 +17,11 @@ from rich.console import Console
 from kamiwaza_extensions.connections import ConnectionInfo, ConnectionManager
 from kamiwaza_extensions.extension_detector import ExtensionDetector
 from kamiwaza_extensions_lib.local_dev import (
+    BRIDGE_ENV_VARS,
     BridgeContext,
     extract_extra_hosts,
     prepare_bridge_context,
+    public_api_url_from,
     rewrite_bare_loopback_url,
 )
 
@@ -72,6 +74,14 @@ class DevLocalRunner:
             bridge = prepare_bridge_context(connection_manager=self._conn_mgr)
 
         env = os.environ.copy()
+        # Defense-in-depth: when --auth is NOT set, scrub any pre-existing
+        # bridge env vars from the developer's shell (e.g. left over from
+        # another tool) so they cannot accidentally activate the bridge or
+        # leak a stale bearer into the container.
+        if not auth:
+            for var in BRIDGE_ENV_VARS:
+                env.pop(var, None)
+
         if connection:
             overlay = build_env_overlay(
                 connection, info.name, auth=auth, bridge=bridge
@@ -123,6 +133,7 @@ class DevLocalRunner:
         patched_compose_file: Optional[str] = None
         sdk_override_file: Optional[str] = None
         extra_hosts_file: Optional[str] = None
+        auth_env_file: Optional[str] = None
 
         try:
             if info.compose_data:
@@ -169,24 +180,37 @@ class DevLocalRunner:
             if auth and connection and info.compose_data:
                 eh_entries = build_compose_extra_hosts(connection, auth=True)
                 if eh_entries:
-                    services = info.compose_data.get("services", {})
-                    eh_overlay = {
-                        "services": {
-                            svc: {"extra_hosts": list(eh_entries)}
-                            for svc in services.keys()
-                        }
-                    }
-                    fd = tempfile.NamedTemporaryFile(
-                        mode="w",
-                        suffix=".yml",
+                    extra_hosts_file = _write_compose_overlay(
                         prefix="kz-extra-hosts-",
-                        delete=False,
+                        services=info.compose_data.get("services", {}),
+                        per_service={"extra_hosts": list(eh_entries)},
                     )
-                    yaml.dump(eh_overlay, fd, default_flow_style=False)
-                    fd.close()
-                    extra_hosts_file = fd.name
                     console.print(
                         f"[dim]Routing {', '.join(eh_entries)} via host-gateway[/dim]"
+                    )
+
+            # 7c. Generate env-passthrough overlay under --auth so the
+            # bridge env vars actually reach EVERY service inside the
+            # container. The runner sets these on the parent compose-CLI
+            # process via env.update(overlay), but Docker Compose only
+            # propagates env vars into a service's container when the
+            # service explicitly declares them in `environment:` or
+            # `env_file:`. Without this overlay, frontend containers
+            # whose template doesn't list the bridge vars would silently
+            # see the gate as undefined and the bridge would no-op (PR
+            # #87 round-2 review Critical #1, codex + claude consensus).
+            if auth and connection and info.compose_data:
+                services = info.compose_data.get("services", {})
+                # Use list-of-strings form (`KEY=value`) to override any
+                # service-level value the template might already have set.
+                bridge_env_entries = [
+                    f"{var}={env[var]}" for var in BRIDGE_ENV_VARS if var in env
+                ]
+                if bridge_env_entries and services:
+                    auth_env_file = _write_compose_overlay(
+                        prefix="kz-auth-env-",
+                        services=services,
+                        per_service={"environment": list(bridge_env_entries)},
                     )
 
             # 8. Build the project-identifier prefix (compose binary +
@@ -200,7 +224,14 @@ class DevLocalRunner:
                 compose_prefix += ["-f", sdk_override_file]
             if extra_hosts_file:
                 compose_prefix += ["-f", extra_hosts_file]
-            if patched_compose_file or sdk_override_file or extra_hosts_file:
+            if auth_env_file:
+                compose_prefix += ["-f", auth_env_file]
+            if (
+                patched_compose_file
+                or sdk_override_file
+                or extra_hosts_file
+                or auth_env_file
+            ):
                 compose_prefix += ["--project-directory", str(info.path)]
 
             cmd = list(compose_prefix) + ["up", "--build"]
@@ -234,7 +265,12 @@ class DevLocalRunner:
 
             return rc
         finally:
-            for tmp in (patched_compose_file, sdk_override_file, extra_hosts_file):
+            for tmp in (
+                patched_compose_file,
+                sdk_override_file,
+                extra_hosts_file,
+                auth_env_file,
+            ):
                 if tmp:
                     try:
                         os.unlink(tmp)
@@ -402,7 +438,10 @@ def build_env_overlay(
 
     env = {
         "KAMIWAZA_API_URL": url,
-        "KAMIWAZA_PUBLIC_API_URL": url.removesuffix("/api"),
+        # public_api_url_from is the single source of truth for the
+        # /api-stripping convention — keeps prepare_bridge_context and
+        # build_env_overlay consistent for trailing-slash URLs.
+        "KAMIWAZA_PUBLIC_API_URL": public_api_url_from(url),
         "KAMIWAZA_ENDPOINT": f"{url}/v1" if not url.endswith("/v1") else url,
         "KAMIWAZA_USE_AUTH": "true" if auth else "false",
         "KAMIWAZA_APP_NAME": extension_name,
@@ -415,6 +454,32 @@ def build_env_overlay(
         env["KZ_EXT_DEV_LOCAL_AUTH"] = "1"
         env["KAMIWAZA_BEARER_TOKEN"] = bridge.bearer_token
     return env
+
+
+def _write_compose_overlay(
+    *,
+    prefix: str,
+    services: Dict[str, dict],
+    per_service: Dict[str, object],
+) -> str:
+    """Write a compose overlay tempfile that applies ``per_service`` to every
+    service in ``services`` and return its path. Caller is responsible for
+    deleting the file; ``DevLocalRunner.run`` does this in its ``finally``
+    block.
+
+    Used to inject ``extra_hosts`` and bridge env vars without touching the
+    extension's ``docker-compose.yml`` so existing extensions get the fix
+    without re-scaffolding.
+    """
+    overlay = {
+        "services": {svc: dict(per_service) for svc in services.keys()}
+    }
+    fd = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".yml", prefix=prefix, delete=False,
+    )
+    yaml.dump(overlay, fd, default_flow_style=False)
+    fd.close()
+    return fd.name
 
 
 def build_compose_extra_hosts(
