@@ -102,9 +102,10 @@ class ComposeTransformer:
         elif had_build and "image" in svc:
             # Use consistent registry/extension-service:tag format (matches image builder)
             svc["image"] = f"{registry}/{extension_name}-{service_name}:{revision_tag}"
-        elif "image" in svc and not _is_external_image(svc["image"], extension_name):
-            svc["image"] = _update_tag(svc["image"], revision_tag)
-        # External images (postgres, redis, etc.) are left unchanged.
+        # Services without a build context — both external (postgres, redis)
+        # and prebuilt-internal (e.g. a helper image published from another
+        # repo) — keep their declared image ref verbatim. publish only owns
+        # tags for what it builds and pushes.
 
         # 5. Add resource limits if missing
         _ensure_resource_limits(svc)
@@ -186,32 +187,6 @@ def _strip_bind_mounts(volumes: List[Any]) -> List[str]:
                 continue
         kept.append(s)
     return kept
-
-
-def _update_tag(image: str, new_tag: str) -> str:
-    """Replace the tag portion of an image reference."""
-    # Don't rewrite digest references
-    if "@sha256:" in image:
-        return image
-    last_slash = image.rfind("/")
-    last_colon = image.rfind(":")
-    if last_colon > last_slash:
-        return image[:last_colon] + ":" + new_tag
-    return image + ":" + new_tag
-
-
-def _is_external_image(image: str, extension_name: str) -> bool:
-    """Return True for images that are NOT part of this extension (e.g., postgres)."""
-    lower = image.lower()
-    # Common external images
-    if any(ext in lower for ext in ("postgres", "mysql", "mariadb", "redis", "valkey",
-                                     "mongo", "rabbitmq", "elasticsearch", "milvus",
-                                     "nginx", "memcached", "minio")):
-        return True
-    # If image doesn't contain the extension name, treat as external
-    if extension_name.lower() not in lower:
-        return True
-    return False
 
 
 def _ensure_resource_limits(svc: Dict[str, Any]) -> None:

@@ -317,6 +317,217 @@ class TestPublishRevisionFlag:
         pub.publish.assert_called_once()
         assert pub.publish.call_args.kwargs["revision"] == "ci-sha-abc123"
 
+    def test_publish_command_uses_revision_as_image_tag(self, tmp_path):
+        """ENG-3591: ``--revision`` must drive the docker image tag end-to-
+        end. ComposeTransformer (the canonical source of tag rewriting) and
+        ImageBuilder both receive ``revision_tag=<revision>`` so the
+        transformed compose carries the SHA tag and the locally-built image
+        is tagged consistently."""
+        from unittest.mock import MagicMock, patch
+
+        from kamiwaza_extensions.commands.publish import run_publish
+
+        from tests.unit.extensions.test_publish_cmd import (
+            _make_extension_info,
+            _make_profile,
+            _make_publish_result,
+            _make_validation_result,
+        )
+
+        with (
+            patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher") as PubCls,
+            patch("kamiwaza_extensions.registry_builder.RegistryBuilder") as RBCls,
+            patch("kamiwaza_extensions.image_pusher.ImagePusher"),
+            patch("kamiwaza_extensions.image_builder.ImageBuilder") as BuildCls,
+            patch("kamiwaza_extensions.profile_manager.ProfileManager") as PMCls,
+            patch("kamiwaza_extensions.compose_transformer.ComposeTransformer") as CTCls,
+            patch("kamiwaza_extensions.validators.compose.ComposeValidator") as CVCls,
+            patch("kamiwaza_extensions.validators.metadata.MetadataValidator") as MVCls,
+            patch("kamiwaza_extensions.extension_detector.ExtensionDetector") as DetCls,
+        ):
+            DetCls.return_value.detect.return_value = _make_extension_info(tmp_path)
+            MVCls.return_value.validate.return_value = _make_validation_result()
+            CVCls.return_value.validate.return_value = _make_validation_result()
+            PMCls.return_value.resolve_profile.return_value = _make_profile()
+            CTCls.return_value.transform.return_value = {"services": {}}
+            BuildCls.return_value.build.return_value = []
+
+            rb = MagicMock()
+            rb.build_entry.return_value = {"name": "my-app", "version": "1.0.0"}
+            RBCls.return_value = rb
+
+            PubCls.return_value.publish.return_value = _make_publish_result()
+
+            run_publish(stage="dev", revision="1.0.0-dev-abc1234")
+
+        # ComposeTransformer is the canonical tag rewriter. It must receive
+        # the revision so the in-memory compose carries the SHA tag.
+        assert (
+            CTCls.return_value.transform.call_args.kwargs["revision_tag"]
+            == "1.0.0-dev-abc1234"
+        )
+        # ImageBuilder uses the same tag for the locally-built image.
+        assert (
+            BuildCls.return_value.build.call_args.kwargs["revision_tag"]
+            == "1.0.0-dev-abc1234"
+        )
+        # Stage semantics preserved — catalog routing unchanged.
+        assert rb.build_entry.call_args.kwargs["stage"] == "dev"
+        # No image_tag_override — that workaround was removed when
+        # ComposeTransformer became the sole tag-rewriting authority.
+        assert "image_tag_override" not in rb.build_entry.call_args.kwargs
+
+    def test_publish_command_dry_run_uses_revision_as_image_tag(self, tmp_path):
+        """``--dry-run`` exercises the same ComposeTransformer call as the
+        real path; the revision must reach ComposeTransformer so the
+        previewed compose mirrors what a real publish would write."""
+        from unittest.mock import MagicMock, patch
+
+        from kamiwaza_extensions.commands.publish import run_publish
+
+        from tests.unit.extensions.test_publish_cmd import (
+            _make_extension_info,
+            _make_profile,
+            _make_publish_result,
+            _make_validation_result,
+        )
+
+        with (
+            patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher") as PubCls,
+            patch("kamiwaza_extensions.registry_builder.RegistryBuilder") as RBCls,
+            patch("kamiwaza_extensions.image_pusher.ImagePusher") as PusherCls,
+            patch("kamiwaza_extensions.image_builder.ImageBuilder") as BuildCls,
+            patch("kamiwaza_extensions.profile_manager.ProfileManager") as PMCls,
+            patch("kamiwaza_extensions.compose_transformer.ComposeTransformer") as CTCls,
+            patch("kamiwaza_extensions.validators.compose.ComposeValidator") as CVCls,
+            patch("kamiwaza_extensions.validators.metadata.MetadataValidator") as MVCls,
+            patch("kamiwaza_extensions.extension_detector.ExtensionDetector") as DetCls,
+        ):
+            DetCls.return_value.detect.return_value = _make_extension_info(tmp_path)
+            MVCls.return_value.validate.return_value = _make_validation_result()
+            CVCls.return_value.validate.return_value = _make_validation_result()
+            PMCls.return_value.resolve_profile.return_value = _make_profile()
+            CTCls.return_value.transform.return_value = {"services": {}}
+
+            rb = MagicMock()
+            rb.build_entry.return_value = {"name": "my-app", "version": "1.0.0"}
+            RBCls.return_value = rb
+
+            PubCls.return_value.publish.return_value = _make_publish_result()
+
+            run_publish(stage="dev", revision="1.0.0-dev-abc1234", dry_run=True)
+
+        # Same revision must reach ComposeTransformer in the dry-run path.
+        assert (
+            CTCls.return_value.transform.call_args.kwargs["revision_tag"]
+            == "1.0.0-dev-abc1234"
+        )
+        # No build or push side effects in dry-run.
+        BuildCls.return_value.build.assert_not_called()
+        PusherCls.return_value.push.assert_not_called()
+
+    def test_publish_command_no_revision_uses_stage_default_image_tag(
+        self, tmp_path,
+    ):
+        """Without ``--revision`` ComposeTransformer receives the
+        stage-derived default tag (``{version}-{stage}`` for non-prod)."""
+        from unittest.mock import MagicMock, patch
+
+        from kamiwaza_extensions.commands.publish import run_publish
+
+        from tests.unit.extensions.test_publish_cmd import (
+            _make_extension_info,
+            _make_profile,
+            _make_publish_result,
+            _make_validation_result,
+        )
+
+        with (
+            patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher") as PubCls,
+            patch("kamiwaza_extensions.registry_builder.RegistryBuilder") as RBCls,
+            patch("kamiwaza_extensions.image_pusher.ImagePusher"),
+            patch("kamiwaza_extensions.image_builder.ImageBuilder") as BuildCls,
+            patch("kamiwaza_extensions.profile_manager.ProfileManager") as PMCls,
+            patch("kamiwaza_extensions.compose_transformer.ComposeTransformer") as CTCls,
+            patch("kamiwaza_extensions.validators.compose.ComposeValidator") as CVCls,
+            patch("kamiwaza_extensions.validators.metadata.MetadataValidator") as MVCls,
+            patch("kamiwaza_extensions.extension_detector.ExtensionDetector") as DetCls,
+        ):
+            DetCls.return_value.detect.return_value = _make_extension_info(tmp_path)
+            MVCls.return_value.validate.return_value = _make_validation_result()
+            CVCls.return_value.validate.return_value = _make_validation_result()
+            PMCls.return_value.resolve_profile.return_value = _make_profile()
+            CTCls.return_value.transform.return_value = {"services": {}}
+            BuildCls.return_value.build.return_value = []
+
+            rb = MagicMock()
+            rb.build_entry.return_value = {"name": "my-app", "version": "1.0.0"}
+            RBCls.return_value = rb
+
+            PubCls.return_value.publish.return_value = _make_publish_result()
+
+            run_publish(stage="dev")
+
+        assert (
+            CTCls.return_value.transform.call_args.kwargs["revision_tag"]
+            == "1.0.0-dev"
+        )
+
+    def test_publish_command_prod_with_revision_uses_revision_as_image_tag(
+        self, tmp_path,
+    ):
+        """Prod stage publishes normally use bare ``{version}`` as the image
+        tag (no stage suffix). With ``--revision``, the SHA-pinned tag still
+        wins — the revision contract holds end-to-end regardless of stage."""
+        from unittest.mock import MagicMock, patch
+
+        from kamiwaza_extensions.commands.publish import run_publish
+
+        from tests.unit.extensions.test_publish_cmd import (
+            _make_extension_info,
+            _make_profile,
+            _make_publish_result,
+            _make_validation_result,
+        )
+
+        with (
+            patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher") as PubCls,
+            patch("kamiwaza_extensions.registry_builder.RegistryBuilder") as RBCls,
+            patch("kamiwaza_extensions.image_pusher.ImagePusher"),
+            patch("kamiwaza_extensions.image_builder.ImageBuilder") as BuildCls,
+            patch("kamiwaza_extensions.profile_manager.ProfileManager") as PMCls,
+            patch("kamiwaza_extensions.compose_transformer.ComposeTransformer") as CTCls,
+            patch("kamiwaza_extensions.validators.compose.ComposeValidator") as CVCls,
+            patch("kamiwaza_extensions.validators.metadata.MetadataValidator") as MVCls,
+            patch("kamiwaza_extensions.extension_detector.ExtensionDetector") as DetCls,
+        ):
+            DetCls.return_value.detect.return_value = _make_extension_info(tmp_path)
+            MVCls.return_value.validate.return_value = _make_validation_result()
+            CVCls.return_value.validate.return_value = _make_validation_result()
+            PMCls.return_value.resolve_profile.return_value = _make_profile()
+            CTCls.return_value.transform.return_value = {"services": {}}
+            BuildCls.return_value.build.return_value = []
+
+            rb = MagicMock()
+            rb.build_entry.return_value = {"name": "my-app", "version": "1.0.0"}
+            RBCls.return_value = rb
+
+            PubCls.return_value.publish.return_value = _make_publish_result()
+
+            run_publish(stage="prod", revision="1.0.0-abc1234")
+
+        # Revision wins over the bare-version prod default.
+        assert (
+            CTCls.return_value.transform.call_args.kwargs["revision_tag"]
+            == "1.0.0-abc1234"
+        )
+        assert (
+            BuildCls.return_value.build.call_args.kwargs["revision_tag"]
+            == "1.0.0-abc1234"
+        )
+        # Catalog stage still recorded as prod.
+        assert rb.build_entry.call_args.kwargs["stage"] == "prod"
+
 
 @pytest.mark.unit
 class TestPublishRevisionGrammarValidatedEarly:
