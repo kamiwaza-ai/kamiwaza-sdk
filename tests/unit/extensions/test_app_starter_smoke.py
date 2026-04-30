@@ -299,6 +299,7 @@ def _exercise_info_endpoint(
     assert body["use_auth"] is True
 
 
+@pytest.mark.extension_regression
 @pytest.mark.unit
 def test_template_sanitizes_upstream_model_errors(tmp_path, monkeypatch):
     # Template path (used for new scaffolds going forward).
@@ -317,6 +318,7 @@ def test_example_sanitizes_upstream_model_errors(tmp_path, monkeypatch):
     )
 
 
+@pytest.mark.extension_regression
 @pytest.mark.unit
 def test_template_info_endpoint_does_not_leak_internal_api_url(tmp_path, monkeypatch):
     extension_dir = _scaffold_app(tmp_path, monkeypatch, name="info-template-app")

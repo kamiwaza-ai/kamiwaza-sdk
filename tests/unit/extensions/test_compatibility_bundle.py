@@ -124,6 +124,7 @@ class TestCompatibilityBundleResource:
 # TS-M2-38: Python runtime-lib version probe + warn on out-of-range.
 # ---------------------------------------------------------------------------
 
+@pytest.mark.extension_regression
 class TestPythonRuntimeLibCheck:
     @pytest.fixture
     def checker(self, tmp_path):

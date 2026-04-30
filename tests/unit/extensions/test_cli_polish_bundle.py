@@ -26,6 +26,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 # when the cwd is non-empty (TS-M2-43, TS-M2-44).
 # ---------------------------------------------------------------------------
 
+@pytest.mark.extension_regression
 class TestCreateIntoNamedSubdir:
     @pytest.fixture
     def scaffolder(self) -> Scaffolder:

@@ -89,6 +89,7 @@ class TestNonSDKFlowDoc:
         )
 
 
+@pytest.mark.extension_regression
 class TestCanonicalTestVectors:
     """TS-M2-17: test-vectors.json has 4 cases with required fields."""
 

@@ -74,6 +74,7 @@ class TestRegistryShape:
 # without a manifest entry trips this.
 # ---------------------------------------------------------------------------
 
+@pytest.mark.extension_regression
 @pytest.mark.parametrize("shape", ["app", "tool", "service"])
 def test_every_template_file_is_classified(shape: str, template_root: Path):
     shape_dir = template_root / shape

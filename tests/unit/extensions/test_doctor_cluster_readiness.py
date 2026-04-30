@@ -102,6 +102,7 @@ class TestClusterReadinessHappyPath:
         assert result.exit_code is None
 
 
+@pytest.mark.extension_regression
 @pytest.mark.unit
 class TestClusterReadinessFailures:
     # TS-10

@@ -26,6 +26,7 @@ class TestStatePathLocation:
         assert p.name == "dev-state.json"
 
 
+@pytest.mark.extension_regression
 @pytest.mark.unit
 class TestReadWrite:
     def test_read_returns_none_when_missing(self, tmp_path):
