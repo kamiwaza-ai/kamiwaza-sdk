@@ -1,5 +1,52 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { _resolveTarget, _filterResponseHeaders, createProxyHandlers } from "../src/server/proxy";
+import {
+    _resolveTarget,
+    _filterResponseHeaders,
+    _buildForwardHeaders,
+    createProxyHandlers,
+} from "../src/server/proxy";
+
+// Round-3 ultrareview C1 regression test: the FORWARD_REQUEST_HEADERS
+// allowlist must include every envelope field the backend's
+// IdentityExtractor reads. Missing entries silently strip Identity fields
+// on Next.js→backend proxied requests.
+describe("buildForwardHeaders envelope coverage", () => {
+    it("forwards every envelope header the backend's extract_identity reads", () => {
+        const incoming = new Headers({
+            "X-User-Id": "u1",
+            "X-User-Email": "alice@example.com",
+            "X-User-Name": "Alice",
+            "X-User-Roles": "member,editor",
+            "X-User-System-High": "U",
+            "X-Workroom-Id": "w1",
+            "X-User-Workroom-Id": "w1",
+            "X-User-Workroom-Role": "editor",
+            "X-Auth-Token": "ey.fake.jwt",
+            "X-Request-Id": "req-abc",
+        });
+        const out = _buildForwardHeaders(incoming);
+        // Every envelope field that the canonical test-vectors.json
+        // expects must round-trip through the proxy. Compare lower-case
+        // keys since Headers normalizes.
+        const lowercased = Object.fromEntries(
+            Object.entries(out).map(([k, v]) => [k.toLowerCase(), v]),
+        );
+        for (const required of [
+            "x-user-id",
+            "x-user-email",
+            "x-user-name",
+            "x-user-roles",
+            "x-user-system-high",
+            "x-workroom-id",
+            "x-user-workroom-id",
+            "x-user-workroom-role",
+            "x-auth-token",
+            "x-request-id",
+        ]) {
+            expect(lowercased).toHaveProperty(required);
+        }
+    });
+});
 
 describe("resolveTarget", () => {
     it("resolves a normal path", () => {

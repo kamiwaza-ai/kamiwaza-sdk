@@ -81,16 +81,31 @@ _NPM_VERSION_HEAD_RE = re.compile(r"(\d+(?:\.\d+){0,2})")
 def _python_spec_outside_supported(
     declared: SpecifierSet, supported: SpecifierSet
 ) -> Optional[str]:
-    """Return a human reason if ``declared`` allows versions outside ``supported``.
+    """Return a human reason if ``declared`` allows zero overlap with ``supported``.
 
-    PR-86 M6 — strict range-vs-range overlap is hard with PEP 440. We probe:
-      * each ``==`` pin in ``declared`` (must be in ``supported``)
-      * the declared lower bound (``>=``/``>``/``~=``) — if present and not
-        in ``supported``, declare out-of-range
-    Otherwise return None (passes).
+    PR-86 M6 + round-3 H1 — strict range-vs-range overlap is hard with
+    PEP 440 because ``SpecifierSet`` has no built-in intersection.
+
+    Algorithm:
+      * Each ``==`` pin in ``declared`` must be in ``supported`` (otherwise
+        the project's exact pinned version isn't in the supported window).
+      * For range pins, probe ``declared`` against ``supported``'s lower
+        endpoint(s). If ``declared`` admits *any* version that ``supported``
+        also admits, the two ranges overlap and we pass. The probe
+        candidates are the lower bounds extracted from ``supported``, plus
+        the declared lower bound itself (covers the case where ``declared``
+        admits a range that starts below ``supported``).
+
+    This catches:
+      * lower-bound-only declared pins below the supported floor
+        (``>=99.0``)
+      * upper-bound-only declared pins below the supported floor
+        (``<0.2`` — round-3 H1)
+      * ``==`` pins outside the window
+    Returns None when an overlap candidate is found (pass).
     """
     pinned: list[Version] = []
-    lower_bounds: list[Version] = []
+    declared_lower_bounds: list[Version] = []
     for spec in declared:
         op = spec.operator
         try:
@@ -100,14 +115,33 @@ def _python_spec_outside_supported(
         if op == "==":
             pinned.append(ver)
         elif op in (">=", "~=", ">"):
-            lower_bounds.append(ver)
+            declared_lower_bounds.append(ver)
     for ver in pinned:
         if ver not in supported:
             return f"pinned {ver} not in {supported}"
-    for ver in lower_bounds:
-        if ver not in supported:
-            return f"lower bound {ver} not in {supported}"
-    return None
+
+    # Build candidates that, if admitted by ``declared``, prove overlap.
+    candidates: list[Version] = []
+    for spec in supported:
+        try:
+            ver = Version(spec.version)
+        except InvalidVersion:
+            continue
+        if spec.operator in (">=", "~="):
+            candidates.append(ver)
+        # For ``<X`` / ``<=X`` upper bounds in supported, the declared
+        # range overlaps if it admits any version below X. The declared
+        # lower bound itself (if any) is the cleanest probe — if it's
+        # also < X (and ≥ supported's lower), there's overlap.
+    candidates.extend(declared_lower_bounds)
+
+    if not candidates:
+        # No probe points (both ``declared`` and ``supported`` are
+        # upper-bound-only, an unusual shape). Fail open.
+        return None
+    if any(c in declared and c in supported for c in candidates):
+        return None
+    return f"declared {declared} has no overlap with supported {supported}"
 
 
 def _npm_lower_bound(spec: str) -> Optional[Version]:

@@ -174,12 +174,10 @@ describe("streamWithRefresh", () => {
         expect(DEFAULT_MAX_BUFFER_BYTES).toBe(8 * 1024 * 1024);
     });
 
-    it("round-3 H2: bare FormData body is rejected with a guiding error", async () => {
-        // FormData/URLSearchParams need a runtime-generated Content-Type
-        // (multipart boundary) that's environment-fragile to materialize
-        // here. We refuse them and tell the caller to pre-serialize.
-        // The dominant case (forwarding request.body as a ReadableStream)
-        // is unaffected.
+    it("round-3 H2: FormData body is type-rejected (cast bypass throws clear error)", async () => {
+        // ``RetryableBodyInit`` narrows the type signature so a TypeScript
+        // caller cannot pass FormData without an explicit cast. Verify the
+        // runtime guard fires when someone bypasses the type via ``as any``.
         global.fetch = vi.fn(async () => new Response("ok", { status: 200 })) as unknown as typeof fetch;
         const fd = new FormData();
         fd.append("name", "alice");
@@ -188,10 +186,10 @@ describe("streamWithRefresh", () => {
                 url: "https://upstream/v1/chat",
                 method: "POST",
                 headers: { "X-Auth-Token": "tok" },
-                body: fd,
+                body: fd as never as never, // explicit type bypass
                 refresh: async () => null,
             }),
-        ).rejects.toThrow(/FormData.+not supported/i);
+        ).rejects.toThrow(/unsupported body shape/i);
     });
 
     it("post-commit upstream failure surfaces StreamInterruptedError (TS-M2-33 mirror)", async () => {

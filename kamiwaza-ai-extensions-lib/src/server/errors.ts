@@ -9,8 +9,15 @@
  * rename it everywhere — including the JSON registry.
  */
 
+// Explicit ``: string`` annotations on each ``className`` static keep the
+// type wide enough for subclass overrides. Without the annotation,
+// TypeScript infers each value as its literal type
+// (e.g. ``"kamiwaza_runtime_error"``) and TS2417 fires when a subclass
+// tries to override the static with a different literal. Runtime values
+// are unchanged; the JSON registry still pins each class_name string.
+
 export class KamiwazaRuntimeError extends Error {
-    static readonly className = "kamiwaza_runtime_error";
+    static readonly className: string = "kamiwaza_runtime_error";
 
     constructor(message?: string) {
         super(message);
@@ -21,19 +28,19 @@ export class KamiwazaRuntimeError extends Error {
 }
 
 export class MisboundAuthError extends KamiwazaRuntimeError {
-    static readonly className = "misbound_auth";
+    static readonly className: string = "misbound_auth";
 }
 
 export class UnexpectedContextError extends KamiwazaRuntimeError {
-    static readonly className = "unexpected_context";
+    static readonly className: string = "unexpected_context";
 }
 
 export class OutOfEnvelopeAccessError extends KamiwazaRuntimeError {
-    static readonly className = "out_of_envelope_access";
+    static readonly className: string = "out_of_envelope_access";
 }
 
 export class PlatformOutageError extends KamiwazaRuntimeError {
-    static readonly className = "platform_outage";
+    static readonly className: string = "platform_outage";
 }
 
 /**
@@ -45,5 +52,5 @@ export class PlatformOutageError extends KamiwazaRuntimeError {
  * response to this class.
  */
 export class StreamInterruptedError extends KamiwazaRuntimeError {
-    static readonly className = "stream_interrupted";
+    static readonly className: string = "stream_interrupted";
 }

@@ -10,6 +10,7 @@ export {
 export type {
     ProxyOpts,
     RefreshFn,
+    RetryableBodyInit,
     Headers as TokenRefreshHeaders,
 } from "./token-refresh";
 export type { Identity, ProxyConfig, AvailableModel } from "./types";

@@ -30,11 +30,35 @@ import {
 export type Headers = Record<string, string>;
 export type RefreshFn = (current: Headers) => Promise<Headers | null>;
 
+/**
+ * The body shapes ``streamWithRefresh`` accepts (round-3 ultrareview H2).
+ *
+ * Excludes ``FormData`` and ``URLSearchParams`` because materializing
+ * them robustly across Node fetch / undici / jsdom is environment-fragile
+ * — the multipart boundary that ``fetch()`` would generate doesn't
+ * propagate cleanly through ``new Response(body)`` in all runtimes. The
+ * dominant Next.js Route Handler shape (forwarding ``request.body`` as
+ * a ``ReadableStream``) is unaffected.
+ *
+ * Direct multipart/urlencoded callers should pre-serialize:
+ *
+ *     const resp = new Response(formData);
+ *     const bytes = new Uint8Array(await resp.arrayBuffer());
+ *     const contentType = resp.headers.get("Content-Type")!;
+ *     // pass `bytes` as body and set headers["Content-Type"] = contentType.
+ */
+export type RetryableBodyInit =
+    | string
+    | Uint8Array
+    | ArrayBuffer
+    | Blob
+    | ReadableStream<Uint8Array>;
+
 export interface ProxyOpts {
     url: string;
     method: string;
     headers: Headers;
-    body?: BodyInit | null;
+    body?: RetryableBodyInit | null;
     refresh: RefreshFn;
     signal?: AbortSignal;
     /**
@@ -107,7 +131,10 @@ export async function streamWithRefresh(opts: ProxyOpts): Promise<Response> {
     }
     const fetchInit: RequestInit = { method, headers: effectiveHeaders, signal };
     if (materialized !== null) {
-        fetchInit.body = materialized.bytes;
+        // Cast: Uint8Array satisfies fetch's runtime BodyInit, but the
+        // TS lib's BodyInit union doesn't list ArrayBufferView types
+        // directly. The cast is sound — fetch accepts Uint8Array.
+        fetchInit.body = materialized.bytes as unknown as BodyInit;
     }
 
     let upstream = await fetch(url, fetchInit);
@@ -134,7 +161,7 @@ export async function streamWithRefresh(opts: ProxyOpts): Promise<Response> {
         }
         const retryInit: RequestInit = { method, headers: retryHeaders, signal };
         if (materialized !== null) {
-            retryInit.body = materialized.bytes;
+            retryInit.body = materialized.bytes as unknown as BodyInit;
         }
         upstream = await fetch(url, retryInit);
         if (upstream.status === 401) {
@@ -242,7 +269,7 @@ export interface MaterializedBody {
 }
 
 async function _materializeBody(
-    body: BodyInit | null | undefined,
+    body: RetryableBodyInit | null | undefined,
     maxBufferBytes: number,
 ): Promise<MaterializedBody | null> {
     if (body === null || body === undefined) return null;
@@ -296,29 +323,18 @@ async function _materializeBody(
         }
         return { bytes: out, contentType: null };
     }
-    if (body instanceof FormData || body instanceof URLSearchParams) {
-        // Round-3 H2: bare FormData / URLSearchParams need the runtime
-        // to generate a matching Content-Type (multipart boundary etc.)
-        // and that header must reach the upstream. Naive materialization
-        // produces the body bytes but loses the boundary, so the upstream
-        // fails to parse. Rather than attempt to serialize in-line (which
-        // is environment-fragile across Node fetch / undici / jsdom),
-        // refuse the input and tell the caller to pre-serialize.
-        //
-        // The dominant Next.js Route Handler shape is forwarding
-        // ``request.body`` (a ReadableStream) — that path is unaffected.
-        throw new Error(
-            "streamWithRefresh: bare FormData/URLSearchParams bodies are not " +
-                "supported. Serialize via `await new Response(body).arrayBuffer()` " +
-                "and set the Content-Type header from `new Response(body).headers` " +
-                "before calling. (Forwarding `request.body` from a Route Handler " +
-                "works as-is — only direct FormData callers hit this path.)",
-        );
-    }
-    // Fallback: let Response coerce whatever we got.
-    const fallback = new Uint8Array(await new Response(body as BodyInit).arrayBuffer());
-    _ensureUnderLimit(fallback.byteLength, maxBufferBytes);
-    return { bytes: fallback, contentType: null };
+    // ``RetryableBodyInit`` excludes FormData / URLSearchParams (round-3
+    // ultrareview H2 — the type now narrows the API contract instead of
+    // throwing at runtime). If TypeScript callers reached here with one
+    // of those shapes via an ``as any`` cast, we still throw a clear
+    // error rather than coerce silently.
+    throw new Error(
+        "streamWithRefresh: unsupported body shape — accepts string | " +
+            "Uint8Array | ArrayBuffer | Blob | ReadableStream<Uint8Array>. " +
+            "For FormData / URLSearchParams: pre-serialize via " +
+            "`new Response(body).arrayBuffer()` and set the Content-Type " +
+            "from `new Response(body).headers` before calling.",
+    );
 }
 
 function _ensureUnderLimit(size: number, limit: number): void {

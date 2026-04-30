@@ -166,6 +166,15 @@ class TestPythonRuntimeLibCheck:
         result = checker._check_python_runtime_lib(req)
         assert result.status == "warn"
 
+    def test_upper_bound_only_below_supported_warns(self, checker, tmp_path):
+        """Round-3 H1 — an upper-bound-only pin like `<0.2` slips past
+        the lower-bound probe (no >=/> in the spec) but every allowed
+        version is below the supported floor of `>=0.2`. Must warn."""
+        req = tmp_path / "requirements.txt"
+        req.write_text("kamiwaza-extensions-lib<0.2\n")
+        result = checker._check_python_runtime_lib(req)
+        assert result.status == "warn"
+
     def test_fresh_scaffold_pin_falls_within_compat_window(self, checker, tmp_path):
         """PR-86 round-2 H3: a freshly scaffolded project's `requirements.txt`
         pin must already pass `kz-ext doctor`'s compatibility check.
