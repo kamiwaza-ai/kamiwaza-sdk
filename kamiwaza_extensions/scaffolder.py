@@ -9,7 +9,7 @@ import subprocess
 from functools import lru_cache
 from importlib import resources as importlib_resources
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional
 
 from rich.console import Console
 
@@ -27,7 +27,13 @@ _NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 VALID_TYPES = ("app", "tool", "service")
 
 
-def build_render_context(name: str, type_: str) -> Dict[str, str]:
+def build_render_context(
+    name: str,
+    type_: str,
+    *,
+    version: str = "0.1.0",
+    description: Optional[str] = None,
+) -> Dict[str, str]:
     """Return the placeholder→value substitution map for a given scaffold.
 
     Lifted from ``Scaffolder._build_context`` so ``commands/update.py`` can
@@ -36,6 +42,15 @@ def build_render_context(name: str, type_: str) -> Dict[str, str]:
     iteration-1 finding I7). Both ``Scaffolder.create()`` and ``UpdateCommand``
     must produce byte-identical rendered output for unmodified files; the
     only way to guarantee that is to share the context source.
+
+    Round-4 ultrareview C1: ``version`` and ``description`` are now
+    parameters with scaffold-default fallbacks. ``Scaffolder.create()``
+    keeps the defaults (a fresh scaffold renders ``"0.1.0"`` /
+    ``"A Kamiwaza {type} extension"``); ``commands/update.py`` passes
+    ``metadata.version`` / ``metadata.description`` from the project's
+    own ``kamiwaza.json`` so re-rendered files (README.md,
+    frontend/package.json, frontend/src/app/layout.tsx) carry the
+    project's actual values, not the scaffold's stale defaults.
 
     Runtime-lib pins (Py + TS) are read from
     ``kamiwaza_extensions/compatibility.json`` so a fresh scaffold's
@@ -46,13 +61,14 @@ def build_render_context(name: str, type_: str) -> Dict[str, str]:
     major = __version__.split(".")[0]
     next_major = str(int(major) + 1)
     py_pin, ts_pin = _runtime_lib_pins()
+    effective_description = description if description else f"A Kamiwaza {type_} extension"
     return {
         "{{name}}": name,
-        "{{version}}": "0.1.0",
+        "{{version}}": version,
         "{{kz_ext_version}}": f">={__version__},<{next_major}.0.0",
         "{{python_runtime_lib_version}}": py_pin,
         "{{ts_runtime_lib_version}}": ts_pin,
-        "{{description}}": f"A Kamiwaza {type_} extension",
+        "{{description}}": effective_description,
         "{{type}}": type_,
     }
 
@@ -162,6 +178,18 @@ class Scaffolder:
         if cwd_visible:
             target = cwd / name
             if target.exists():
+                # Round-4 ultrareview M4: explicitly handle the case where
+                # ``cwd/<name>`` exists but is a regular file or symlink.
+                # Without this branch ``iterdir()`` raised
+                # ``NotADirectoryError`` from deep in the scaffolder — the
+                # user-facing message we want is the same as for a non-empty
+                # target dir.
+                if not target.is_dir():
+                    raise FileExistsError(
+                        f"Target '{target.name}' exists in {cwd} but is not a "
+                        f"directory (regular file or symlink). Choose a different "
+                        f"name or remove the existing entry."
+                    )
                 target_visible = [
                     f for f in target.iterdir() if not f.name.startswith(".")
                 ]

@@ -175,6 +175,29 @@ class TestPythonRuntimeLibCheck:
         result = checker._check_python_runtime_lib(req)
         assert result.status == "warn"
 
+    @pytest.mark.parametrize(
+        "spec",
+        [
+            "kamiwaza-extensions-lib>=0.2",        # bare lower, unbounded above
+            "kamiwaza-extensions-lib~=0.2",        # ~=0.2 = >=0.2,<1.0 (admits 0.4+)
+            "kamiwaza-extensions-lib>0.2",         # strict lower, no upper
+            "kamiwaza-extensions-lib>=0.2,<0.5",   # upper above supported's 0.4
+        ],
+    )
+    def test_open_ended_or_too_wide_specs_warn(self, checker, tmp_path, spec):
+        """Round-4 H2 — open-ended specs (no upper bound, or upper above
+        supported's ceiling) admit versions outside the supported window.
+        Pip can legally resolve a future 0.4+ release for these declared
+        ranges; the doctor must surface the drift."""
+        req = tmp_path / "requirements.txt"
+        req.write_text(spec + "\n")
+        result = checker._check_python_runtime_lib(req)
+        assert result.status == "warn", (
+            f"declared {spec!r} extends beyond supported `>=0.2,<0.4` but "
+            f"the doctor reported {result.status} (false-negative — could "
+            f"resolve a 0.4+ version that's outside the CLI's compat window)"
+        )
+
     def test_fresh_scaffold_pin_falls_within_compat_window(self, checker, tmp_path):
         """PR-86 round-2 H3: a freshly scaffolded project's `requirements.txt`
         pin must already pass `kz-ext doctor`'s compatibility check.
@@ -229,6 +252,35 @@ class TestTypeScriptRuntimeLibCheck:
         pkg.write_text(json.dumps({"dependencies": {"react": "^18"}}))
         result = checker._check_ts_runtime_lib(pkg)
         assert result.status == "warn"
+
+    @pytest.mark.parametrize(
+        "spec,expected",
+        [
+            (">=0.2", "warn"),         # bare lower, unbounded above
+            (">0.2", "warn"),          # strict lower, no upper
+            (">=0.2,<0.5", "warn"),    # upper above supported's 0.4
+            ("*", "warn"),             # any-version
+            ("^0.2.0", "pass"),        # caret 0.2.0 = >=0.2.0,<0.3.0 ⊂ >=0.2,<0.4
+            ("^0.3.0", "pass"),        # caret 0.3.0 = >=0.3.0,<0.4.0 ⊂ supported
+            ("~0.3.0", "pass"),        # tilde 0.3.0 = >=0.3.0,<0.4.0 ⊂ supported
+            ("0.3.5", "pass"),         # exact pin in window
+        ],
+    )
+    def test_full_containment_check_for_npm_specs(self, checker, tmp_path, spec, expected):
+        """Round-4 H3 — TS check now uses full-containment (was: lower-only
+        probe). Open-ended specs (no upper, or upper above the supported
+        ceiling) warn. Caret/tilde/exact specs that are fully contained
+        pass.
+        """
+        pkg = tmp_path / "package.json"
+        pkg.write_text(json.dumps({
+            "dependencies": {"@kamiwaza-ai/extensions-lib": spec},
+        }))
+        result = checker._check_ts_runtime_lib(pkg)
+        assert result.status == expected, (
+            f"declared {spec!r} expected={expected} actual={result.status} "
+            f"(supported window is `>=0.2,<0.4`)"
+        )
 
 
 # ---------------------------------------------------------------------------

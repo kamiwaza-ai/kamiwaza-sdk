@@ -122,6 +122,34 @@ class TestScaffolder:
         with pytest.raises(FileExistsError):
             scaffolder.create(type_="app", name="my-app")
 
+    def test_target_name_is_a_regular_file_errors_cleanly(
+        self, tmp_path, monkeypatch, scaffolder
+    ):
+        # Round-4 M4: if a regular file (not a directory) with the target
+        # name already exists in a non-empty cwd, the scaffolder used to
+        # crash with NotADirectoryError from iterdir(). Now: surfaces a
+        # clean FileExistsError with a guiding message.
+        d = self._empty_dir(tmp_path)
+        (d / "README.md").write_text("# workspace\n")
+        # `my-app` exists as a regular file, NOT a directory.
+        (d / "my-app").write_text("not a directory\n")
+        monkeypatch.chdir(d)
+        with pytest.raises(FileExistsError, match="not a directory"):
+            scaffolder.create(type_="app", name="my-app")
+
+    def test_target_name_is_a_symlink_errors_cleanly(
+        self, tmp_path, monkeypatch, scaffolder
+    ):
+        # Symlinks to non-directory targets exhibit the same NotADirectoryError
+        # in the original code. Verify the same clean message fires.
+        d = self._empty_dir(tmp_path)
+        (d / "README.md").write_text("# workspace\n")
+        (d / "elsewhere.txt").write_text("target")
+        (d / "my-app").symlink_to(d / "elsewhere.txt")
+        monkeypatch.chdir(d)
+        with pytest.raises(FileExistsError, match="not a directory"):
+            scaffolder.create(type_="app", name="my-app")
+
     def test_hidden_files_ignored(self, tmp_path, monkeypatch, scaffolder):
         """Hidden files like .git should not trigger non-empty check."""
         d = self._empty_dir(tmp_path)

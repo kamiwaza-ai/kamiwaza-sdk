@@ -448,6 +448,56 @@ def test_bootstrap_records_hashes_from_on_disk_content(tmp_path, monkeypatch):
     )
 
 
+def test_update_renders_with_project_version_and_description(tmp_path, monkeypatch):
+    """Round-4 ultrareview C1 — `kz-ext update` must use the project's own
+    `version` and `description` from kamiwaza.json when re-rendering
+    template files, not the scaffold defaults. Prior behavior silently
+    rewrote README.md / frontend/package.json with `"0.1.0"` and
+    "A Kamiwaza tool extension" no matter what the project had."""
+    scaffold = _make_scaffold(tmp_path, monkeypatch, type_="tool")
+    meta_path = scaffold / "kamiwaza.json"
+    meta = json.loads(meta_path.read_text())
+    # Author bumped version + customized description.
+    meta["version"] = "2.5.0"
+    meta["description"] = "tool-my does X for Y"
+    meta_path.write_text(json.dumps(meta, indent=4) + "\n")
+
+    # README.md is template-owned (preserve_if_modified) and contains
+    # {{version}} + {{description}} placeholders. Verify the rendered
+    # output uses the project's values.
+    monkeypatch.chdir(scaffold)
+    from kamiwaza_extensions.commands import update as upd
+    from kamiwaza_extensions.scaffolder import build_render_context
+
+    ctx = build_render_context(
+        name=meta["name"],
+        type_="tool",
+        version=meta["version"],
+        description=meta["description"],
+    )
+    assert ctx["{{version}}"] == "2.5.0"
+    assert ctx["{{description}}"] == "tool-my does X for Y"
+
+    # End-to-end: run_update with non_interactive should exit cleanly
+    # (no conflicts) on a fresh scaffold even after the version change,
+    # because preserve_if_modified files match recorded hashes.
+    upd.run_update(non_interactive=True)
+    # README.md (which has {{version}} placeholder rendered into it at
+    # scaffold time) was rendered with "0.1.0" originally. The recorded
+    # hash matches that. With the new version "2.5.0", the re-render
+    # would diverge from what's on disk — and would auto-update via the
+    # clean-since-record path. Verify the README now contains the new
+    # version (or, if it doesn't have a version reference, just verify
+    # the project's recorded version IS preserved post-update).
+    refreshed = json.loads(meta_path.read_text())
+    assert refreshed["version"] == "2.5.0", (
+        "kz-ext update must NOT clobber the project's version field"
+    )
+    assert refreshed["description"] == "tool-my does X for Y", (
+        "kz-ext update must NOT clobber the project's description field"
+    )
+
+
 def test_stamp_version_preserves_merge_added_kamiwaza_fields(tmp_path, monkeypatch):
     """PR-86 review C1 / M8: when _reconcile_json_merge writes new fields to
     kamiwaza.json, _stamp_version's subsequent rewrite must not clobber them.

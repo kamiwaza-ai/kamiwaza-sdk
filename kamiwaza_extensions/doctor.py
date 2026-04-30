@@ -78,70 +78,188 @@ def _compatibility_bundle() -> dict:
 _NPM_VERSION_HEAD_RE = re.compile(r"(\d+(?:\.\d+){0,2})")
 
 
-def _python_spec_outside_supported(
-    declared: SpecifierSet, supported: SpecifierSet
-) -> Optional[str]:
-    """Return a human reason if ``declared`` allows zero overlap with ``supported``.
+def _spec_bounds(spec_set: SpecifierSet) -> tuple[Optional[Version], Optional[Version]]:
+    """Extract (lower, upper) Version bounds from a ``SpecifierSet``.
 
-    PR-86 M6 + round-3 H1 — strict range-vs-range overlap is hard with
-    PEP 440 because ``SpecifierSet`` has no built-in intersection.
-
-    Algorithm:
-      * Each ``==`` pin in ``declared`` must be in ``supported`` (otherwise
-        the project's exact pinned version isn't in the supported window).
-      * For range pins, probe ``declared`` against ``supported``'s lower
-        endpoint(s). If ``declared`` admits *any* version that ``supported``
-        also admits, the two ranges overlap and we pass. The probe
-        candidates are the lower bounds extracted from ``supported``, plus
-        the declared lower bound itself (covers the case where ``declared``
-        admits a range that starts below ``supported``).
-
-    This catches:
-      * lower-bound-only declared pins below the supported floor
-        (``>=99.0``)
-      * upper-bound-only declared pins below the supported floor
-        (``<0.2`` — round-3 H1)
-      * ``==`` pins outside the window
-    Returns None when an overlap candidate is found (pass).
+    Returns ``(None, None)`` for unbounded sides. ``>=X`` / ``>X`` / ``~=X``
+    contribute to lower; ``<X`` / ``<=X`` contribute to upper. Multiple
+    specs of the same direction collapse to the most-restrictive bound
+    (max for lower, min for upper).
     """
-    pinned: list[Version] = []
-    declared_lower_bounds: list[Version] = []
-    for spec in declared:
+    lower: Optional[Version] = None
+    upper: Optional[Version] = None
+    for spec in spec_set:
         op = spec.operator
         try:
             ver = Version(spec.version)
         except InvalidVersion:
             continue
-        if op == "==":
-            pinned.append(ver)
-        elif op in (">=", "~=", ">"):
-            declared_lower_bounds.append(ver)
+        if op in (">=", ">", "~="):
+            if lower is None or ver > lower:
+                lower = ver
+        elif op in ("<", "<="):
+            if upper is None or ver < upper:
+                upper = ver
+    return lower, upper
+
+
+def _bounds_outside_supported(
+    declared_lower: Optional[Version],
+    declared_upper: Optional[Version],
+    supported_lower: Optional[Version],
+    supported_upper: Optional[Version],
+) -> Optional[str]:
+    """Shared bounds-based containment check for both Python and TS specs.
+
+    Round-4 ultrareview H2 + H3 — declared must be fully contained in
+    supported (every admitted version of declared must also be admitted
+    by supported). Sufficient by checking that declared's bounds don't
+    extend beyond supported's bounds.
+    """
+    if supported_lower is not None:
+        if declared_lower is None:
+            return (
+                f"declared has no lower bound but supported requires "
+                f">={supported_lower}"
+            )
+        if declared_lower < supported_lower:
+            return (
+                f"declared lower bound {declared_lower} is below supported "
+                f"floor {supported_lower}"
+            )
+    if supported_upper is not None:
+        if declared_upper is None:
+            return (
+                f"declared has no upper bound but supported requires "
+                f"<{supported_upper}"
+            )
+        if declared_upper > supported_upper:
+            return (
+                f"declared upper bound {declared_upper} is above supported "
+                f"ceiling {supported_upper}"
+            )
+    return None
+
+
+def _python_spec_outside_supported(
+    declared: SpecifierSet, supported: SpecifierSet
+) -> Optional[str]:
+    """Return a human reason if ``declared`` admits versions outside ``supported``.
+
+    Round-4 ultrareview H2 — the prior implementation only checked
+    *overlap* (does declared admit any supported version?). That misses
+    open-ended specs like ``>=0.2`` or ``~=0.2`` (= ``>=0.2,<1.0``)
+    against ``>=0.2,<0.4``: there IS overlap (0.2 satisfies both), but
+    pip can legally resolve ``0.4+`` which is outside supported.
+
+    The correct check is *full containment*: every version that
+    ``declared`` admits must also be admitted by ``supported``.
+    Sufficient (and conservative) by checking endpoints:
+      * Each ``==`` pin must be in ``supported``.
+      * If ``supported`` has a lower bound, ``declared`` must too AND
+        declared's lower must be ≥ supported's lower. (Otherwise declared
+        admits versions below the floor.)
+      * If ``supported`` has an upper bound, ``declared`` must too AND
+        declared's upper must be ≤ supported's upper. (Otherwise declared
+        admits versions above the ceiling — the round-4 case.)
+
+    Returns ``None`` when ``declared`` is fully contained in ``supported``.
+    """
+    pinned: list[Version] = []
+    for spec in declared:
+        if spec.operator == "==":
+            try:
+                pinned.append(Version(spec.version))
+            except InvalidVersion:
+                pass
     for ver in pinned:
         if ver not in supported:
             return f"pinned {ver} not in {supported}"
+    # If declared is purely a set of == pins, the pinned check above is
+    # sufficient (supported admits each one).
+    has_range = any(spec.operator != "==" for spec in declared)
+    if not has_range and pinned:
+        return None
 
-    # Build candidates that, if admitted by ``declared``, prove overlap.
-    candidates: list[Version] = []
-    for spec in supported:
-        try:
-            ver = Version(spec.version)
-        except InvalidVersion:
+    declared_lower, declared_upper = _spec_bounds(declared)
+    supported_lower, supported_upper = _spec_bounds(supported)
+    return _bounds_outside_supported(
+        declared_lower, declared_upper, supported_lower, supported_upper
+    )
+
+
+def _npm_bounds(spec: str) -> tuple[Optional[Version], Optional[Version]]:
+    """Parse an npm semver spec into ``(lower, upper)`` PEP 440 ``Version``
+    bounds. Round-4 ultrareview H3 — the prior implementation only
+    looked at the leading version token (lower bound), so an
+    open-ended spec like ``">=0.2"`` or ``"0.2"`` (bare/exact) had no
+    detected upper bound. The doctor then passed ``>=0.2`` against a
+    supported ``>=0.2,<0.4`` range even though npm could resolve a
+    future ``0.4+`` release.
+
+    This handles the common npm shapes:
+      * ``^X.Y.Z``    → [X.Y.Z, (X+1).0.0) or, for X=0, [0.Y.Z, 0.(Y+1).0)
+      * ``~X.Y.Z``    → [X.Y.Z, X.(Y+1).0)
+      * ``X.Y.Z``     → exact (lower == upper)
+      * ``>=X,<Y`` (or whitespace-separated) → explicit bounds
+      * ``>=X``, ``<X``, ``>X``, ``<=X`` → single-direction
+      * ``*`` / ``latest`` / unparseable → ``(None, None)`` (fail open)
+    """
+    spec = spec.strip()
+    if not spec or spec in ("*", "latest", "x", "X"):
+        return (None, None)
+    if spec.startswith("^"):
+        v = _npm_lower_bound(spec[1:])
+        if v is None:
+            return (None, None)
+        if v.major > 0:
+            upper = Version(f"{v.major + 1}.0.0")
+        elif v.minor > 0:
+            upper = Version(f"0.{v.minor + 1}.0")
+        else:
+            upper = Version(f"0.0.{v.micro + 1}")
+        return (v, upper)
+    if spec.startswith("~"):
+        v = _npm_lower_bound(spec[1:])
+        if v is None:
+            return (None, None)
+        upper = Version(f"{v.major}.{v.minor + 1}.0")
+        return (v, upper)
+    # Range or exact: split on comma or whitespace.
+    lower: Optional[Version] = None
+    upper: Optional[Version] = None
+    for part in re.split(r"[,\s]+", spec):
+        part = part.strip()
+        if not part:
             continue
-        if spec.operator in (">=", "~="):
-            candidates.append(ver)
-        # For ``<X`` / ``<=X`` upper bounds in supported, the declared
-        # range overlaps if it admits any version below X. The declared
-        # lower bound itself (if any) is the cleanest probe — if it's
-        # also < X (and ≥ supported's lower), there's overlap.
-    candidates.extend(declared_lower_bounds)
-
-    if not candidates:
-        # No probe points (both ``declared`` and ``supported`` are
-        # upper-bound-only, an unusual shape). Fail open.
-        return None
-    if any(c in declared and c in supported for c in candidates):
-        return None
-    return f"declared {declared} has no overlap with supported {supported}"
+        if part.startswith(">="):
+            v = _npm_lower_bound(part[2:])
+            if v is not None:
+                lower = v if lower is None or v > lower else lower
+        elif part.startswith(">"):
+            v = _npm_lower_bound(part[1:])
+            if v is not None:
+                lower = v if lower is None or v > lower else lower
+        elif part.startswith("<="):
+            v = _npm_lower_bound(part[2:])
+            if v is not None:
+                upper = v if upper is None or v < upper else upper
+        elif part.startswith("<"):
+            v = _npm_lower_bound(part[1:])
+            if v is not None:
+                upper = v if upper is None or v < upper else upper
+        elif part.startswith("="):
+            v = _npm_lower_bound(part[1:])
+            if v is not None:
+                lower = v
+                upper = v
+        else:
+            # Bare X.Y.Z → exact pin.
+            v = _npm_lower_bound(part)
+            if v is not None:
+                lower = v
+                upper = v
+    return (lower, upper)
 
 
 def _npm_lower_bound(spec: str) -> Optional[Version]:
@@ -776,17 +894,29 @@ class DoctorChecker:
                 fix=f'Add "@kamiwaza-ai/extensions-lib": "{compat_range or "^0.3.0"}" to package.json dependencies',
             )
         if compat_range:
-            lower = _npm_lower_bound(declared)
             try:
                 supported = SpecifierSet(compat_range)
             except InvalidSpecifier:
                 supported = None
-            if lower is not None and supported is not None and lower not in supported:
-                return CheckResult(
-                    "Runtime lib (TypeScript)", "warn",
-                    f"@kamiwaza-ai/extensions-lib {declared} is outside CLI compatibility range {compat_range}",
-                    fix=f'Update to "@kamiwaza-ai/extensions-lib": "{compat_range}"',
+            if supported is not None:
+                # Round-4 H3: full-containment check (was: lower-only probe).
+                # Parse npm semver bounds from `declared` and compare both
+                # endpoints against `supported` to catch open-ended specs
+                # like ">=0.2" or "0.2" that admit future major releases.
+                declared_lower, declared_upper = _npm_bounds(declared)
+                supported_lower, supported_upper = _spec_bounds(supported)
+                reason = _bounds_outside_supported(
+                    declared_lower,
+                    declared_upper,
+                    supported_lower,
+                    supported_upper,
                 )
+                if reason is not None:
+                    return CheckResult(
+                        "Runtime lib (TypeScript)", "warn",
+                        f"@kamiwaza-ai/extensions-lib {declared} is outside CLI compatibility range {compat_range} ({reason})",
+                        fix=f'Update to "@kamiwaza-ai/extensions-lib": "{compat_range}"',
+                    )
         return CheckResult(
             "Runtime lib (TypeScript)", "pass",
             f"@kamiwaza-ai/extensions-lib {declared} matches {compat_range or 'any'}",

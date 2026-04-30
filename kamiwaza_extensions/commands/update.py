@@ -312,9 +312,17 @@ def _reconcile(
 
     # Reuse the scaffolder's render context so substitutions match what
     # `kz-ext create` would produce today (review iteration-1 I7).
+    #
+    # Round-4 ultrareview C1: forward the project's own ``version`` and
+    # ``description`` from kamiwaza.json so re-rendering README.md,
+    # frontend/package.json, frontend/src/app/layout.tsx etc. doesn't
+    # silently overwrite the project's metadata with scaffold defaults
+    # (``0.1.0`` / "A Kamiwaza {type} extension").
     context = build_render_context(
         name=metadata.get("name", "extension"),
         type_=manifest.shape,
+        version=metadata.get("version", "0.1.0"),
+        description=metadata.get("description"),
     )
     # PR-86 C4 / option (b): pass recorded per-file hashes through so
     # ``preserve_if_modified`` can detect "clean since last write" and
