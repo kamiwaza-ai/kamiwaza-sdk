@@ -51,6 +51,7 @@ class TestRevisionGrammar:
             CatalogDedupGuard.validate_revision(invalid)
 
 
+@pytest.mark.extension_regression
 @pytest.mark.unit
 class TestDedupCheck:
     # TS-22: duplicate (name, semver, revision) → CatalogDedupError → exit 2

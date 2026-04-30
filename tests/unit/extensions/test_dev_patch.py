@@ -16,7 +16,7 @@ from kamiwaza_sdk.schemas.extensions import (
     PatchServiceSpec,
 )
 
-pytestmark = pytest.mark.unit
+pytestmark = [pytest.mark.unit, pytest.mark.extension_regression]
 
 
 def _make_payload():

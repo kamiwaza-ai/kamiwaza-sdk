@@ -33,6 +33,7 @@ class TestExitCode:
         assert ExitCode.CLUSTER_NOT_READY == 23
 
 
+@pytest.mark.extension_regression
 @pytest.mark.unit
 class TestExitCodeFor:
     # TS-2: exit_code_for('misbound_auth')=10; same for all 4 UAC-9d classes
