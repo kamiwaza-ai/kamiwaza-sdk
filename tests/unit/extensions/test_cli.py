@@ -44,10 +44,22 @@ class TestCLISkeleton:
         assert "local" in result.output
 
     def test_dev_local_help_includes_auth_flag(self):
-        # TS-14 — typer recognises --auth without parsing error
-        result = runner.invoke(app, ["dev", "local", "--help"])
+        # TS-14 — typer recognises --auth without parsing error.
+        # Force a wide terminal + disable color so rich/typer's help
+        # renderer doesn't word-wrap or ANSI-style "--auth" out of a
+        # bare-string match (CI runs at default 80 columns and the
+        # boxed help output split the flag across lines).
+        import re
+        result = runner.invoke(
+            app,
+            ["dev", "local", "--help"],
+            env={"COLUMNS": "200", "NO_COLOR": "1", "TERM": "dumb"},
+        )
         assert result.exit_code == 0
-        assert "--auth" in result.output
+        # Strip ANSI escapes + collapse whitespace as belt-and-suspenders.
+        plain = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+        plain = re.sub(r"\s+", " ", plain)
+        assert "--auth" in plain
 
     def test_dev_local_auth_flag_invokes_runner_with_auth_true(self, monkeypatch):
         # TS-15 — `kz-ext dev local --auth` calls run_dev_local(auth=True)
