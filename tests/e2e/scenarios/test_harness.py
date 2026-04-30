@@ -145,6 +145,61 @@ class TestRunScenario:
         assert result.steps[0].status == "passed"
         assert result.steps[0].detail == ""
 
+    def test_async_handler_is_awaited_not_recorded_as_coroutine_object(self):
+        """Regression: previously, an ``async def`` handler returned a
+        coroutine that was never awaited; the step recorded ``passed`` with
+        ``<coroutine object ...>`` as detail and the body never ran. This
+        produced silently false-green sign-off artifacts the moment T3.3
+        plugged in real SDK calls (which are async)."""
+
+        async def async_step():
+            return "actually executed"
+
+        result = run_scenario(
+            _runbook([{"name": "x", "description": "..."}]),
+            {"x": async_step},
+        )
+        assert result.steps[0].status == "passed"
+        assert result.steps[0].detail == "actually executed"
+
+    def test_async_handler_failure_is_recorded(self):
+        """An async handler that raises should record ``failed``, not
+        ``passed`` with a coroutine object."""
+
+        async def async_boom():
+            raise RuntimeError("async kaboom")
+
+        result = run_scenario(
+            _runbook([{"name": "x", "description": "..."}]),
+            {"x": async_boom},
+        )
+        assert result.steps[0].status == "failed"
+        assert "async kaboom" in result.steps[0].detail
+
+    def test_keyboard_interrupt_propagates(self):
+        """Regression: previously ``except BaseException`` swallowed Ctrl-C
+        and recorded it as a failed step, preventing a clean abort. The
+        harness must let ``KeyboardInterrupt`` and ``SystemExit`` propagate."""
+
+        def interrupted():
+            raise KeyboardInterrupt
+
+        with pytest.raises(KeyboardInterrupt):
+            run_scenario(
+                _runbook([{"name": "x", "description": "..."}]),
+                {"x": interrupted},
+            )
+
+    def test_system_exit_propagates(self):
+        def quit_now():
+            raise SystemExit(1)
+
+        with pytest.raises(SystemExit):
+            run_scenario(
+                _runbook([{"name": "x", "description": "..."}]),
+                {"x": quit_now},
+            )
+
 
 # ---------------------------------------------------------------------------
 # record_run — same-day re-runs preserve evidence
@@ -228,14 +283,15 @@ class TestRenderSignOff:
         assert "{{SCENARIO_ID}}" not in text
         assert "Actor: SDK team" in text
 
-    def test_does_not_overwrite_existing_artifact(self, monkeypatch, tmp_path):
+    def test_preserves_human_authored_sign_off(self, monkeypatch, tmp_path):
         """Regression: previously, a same-day re-run would erase a
         human-authored sign-off (e.g. Preston's filled-in markdown). The
-        renderer must now no-op when the per-day artifact exists."""
+        renderer must preserve content once the canonical fill-in markers
+        are gone (the actor has signed it)."""
         sign_off_dir = tmp_path / "sign-off"
         sign_off_dir.mkdir()
         template = sign_off_dir / "TEMPLATE.md"
-        template.write_text("# {{SCENARIO_ID}} stub\n")
+        template.write_text("# {{SCENARIO_ID}} stub — _(fill in)_\n")
         monkeypatch.setattr(harness, "SIGN_OFF_DIR", sign_off_dir)
         monkeypatch.setattr(harness, "SIGN_OFF_TEMPLATE", template)
 
@@ -244,13 +300,62 @@ class TestRenderSignOff:
             {"x": lambda: "ok"},
         )
         out = render_sign_off(result)
-        # Simulate Preston filling it in and committing.
+        # Simulate Preston filling it in (replaces the fill-in marker).
         out.write_text("# S1 — signed off by @preston (PASS)\n")
 
         # Re-render on the same day — must NOT erase Preston's input.
         out2 = render_sign_off(result)
         assert out2 == out
         assert "signed off by @preston" in out.read_text()
+
+    def test_refreshes_unedited_stub_on_rerun(self, monkeypatch, tmp_path):
+        """Regression: my prior fix over-corrected — if the first run produced
+        a stub (because steps failed or were pending) and a later run
+        succeeds, the renderer must update the file. Refresh while the
+        canonical fill-in marker is still present; preserve once it's gone."""
+        sign_off_dir = tmp_path / "sign-off"
+        sign_off_dir.mkdir()
+        template = sign_off_dir / "TEMPLATE.md"
+        template.write_text(
+            "# {{SCENARIO_ID}} — {{SCENARIO_NAME}}\n"
+            "Steps:\n{{STEPS_TABLE}}\n"
+            "| Decision | _(fill in)_ |\n"
+        )
+        monkeypatch.setattr(harness, "SIGN_OFF_DIR", sign_off_dir)
+        monkeypatch.setattr(harness, "SIGN_OFF_TEMPLATE", template)
+
+        # Run 1: some steps pending.
+        result1 = run_scenario(
+            _runbook(
+                [
+                    {"name": "x", "description": "..."},
+                    {"name": "y", "description": "..."},
+                ]
+            ),
+            {"x": lambda: "ok"},  # y is pending
+        )
+        out = render_sign_off(result1)
+        first_text = out.read_text()
+        assert "pending" in first_text, "first render should reflect pending step"
+
+        # Run 2: same day, all green. Stub is still unedited
+        # (fill-in marker present), so renderer should refresh.
+        result2 = run_scenario(
+            _runbook(
+                [
+                    {"name": "x", "description": "..."},
+                    {"name": "y", "description": "..."},
+                ]
+            ),
+            {"x": lambda: "ok", "y": lambda: "also ok"},
+        )
+        out2 = render_sign_off(result2)
+        assert out2 == out, "same-day path"
+        refreshed = out.read_text()
+        assert (
+            "pending" not in refreshed
+        ), "renderer should refresh an unedited stub with the latest run"
+        assert "also ok" in refreshed
 
 
 # ---------------------------------------------------------------------------

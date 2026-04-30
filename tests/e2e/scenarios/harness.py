@@ -25,6 +25,8 @@ Step status semantics:
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import json
 import os
 import time
@@ -173,7 +175,14 @@ def run_scenario(
             )
             continue
         try:
-            detail = handler() or ""
+            detail = handler()
+            # Async handlers return a coroutine; await it so the step
+            # actually runs. Without this, the step records "passed" with
+            # detail "<coroutine object ...>" while the body never executes —
+            # silently false-green sign-off artifacts during T3.3.
+            if inspect.iscoroutine(detail):
+                detail = asyncio.run(detail)
+            detail = detail or ""
         except pytest.skip.Exception as exc:
             results.append(
                 StepResult(
@@ -184,7 +193,11 @@ def run_scenario(
                 )
             )
             continue
-        except BaseException as exc:  # noqa: BLE001 — record every failure
+        except Exception as exc:  # noqa: BLE001 — record every failure
+            # Catches everything except BaseException-derived control-flow
+            # exceptions (KeyboardInterrupt, SystemExit, pytest.skip — the
+            # last is handled explicitly above). Ctrl-C must propagate so a
+            # long staging step can be aborted cleanly.
             results.append(
                 StepResult(
                     name=name,
@@ -232,34 +245,59 @@ def run_scenario(
 def record_run(result: ScenarioResult) -> Path:
     """Persist a scenario result as JSON under ``runs/`` and return the path.
 
-    Filenames include a UTC timestamp (``YYYYMMDD-HHMMSS``) so a same-day
-    re-run never clobbers an earlier run's evidence.
+    Filenames include a UTC timestamp down to microseconds
+    (``YYYYMMDDTHHMMSSffffff``) so a same-day or even same-second re-run
+    never clobbers an earlier run's evidence. If two runs land on identical
+    microseconds (rare; only if ``finished_at`` was hand-set), a numeric
+    suffix disambiguates.
     """
     RUNS_DIR.mkdir(parents=True, exist_ok=True)
-    stamp = result.finished_at.replace(":", "").replace("-", "").split(".", 1)[0]
-    # stamp is now "YYYYMMDDTHHMMSS+0000" or "YYYYMMDDTHHMMSS"; keep only the
-    # YYYYMMDD-HHMMSS portion.
-    date_part, _, time_part = stamp.partition("T")
-    time_part = time_part[:6] if time_part else "000000"
-    out = RUNS_DIR / f"{result.scenario_id.lower()}-{date_part}-{time_part}.json"
+    stamp = _timestamp_suffix(result.finished_at)
+    out = RUNS_DIR / f"{result.scenario_id.lower()}-{stamp}.json"
+    counter = 1
+    while out.exists():
+        out = RUNS_DIR / f"{result.scenario_id.lower()}-{stamp}-{counter}.json"
+        counter += 1
     out.write_text(json.dumps(asdict(result), indent=2) + "\n")
     return out
+
+
+def _timestamp_suffix(iso: str) -> str:
+    """Convert an ISO-8601 timestamp to a filesystem-safe, sortable stamp.
+
+    Uses ``datetime.fromisoformat`` rather than string mangling, so timezone
+    offsets containing ``:`` no longer corrupt the suffix.
+    """
+    dt = datetime.fromisoformat(iso)
+    return dt.strftime("%Y%m%dT%H%M%S%f")
+
+
+# Sentinel substring that marks an unedited sign-off stub. Lives in the
+# ``Sign-off`` table cells of TEMPLATE.md; once the named actor fills the
+# row in, the substring is gone and ``render_sign_off`` treats the file
+# as human-authored.
+_UNEDITED_STUB_MARKER = "_(fill in)_"
 
 
 def render_sign_off(result: ScenarioResult) -> Path:
     """Render the sign-off markdown artifact from the template; return path.
 
-    Renders only when the per-day sign-off file does not already exist.
-    Once the named ``sign_off_actor`` has filled the artifact in (GitHub
-    login + timestamp + decision) and committed it, a same-day re-run will
-    return the existing path without overwriting the human-authored content.
+    Refresh semantics on a same-day re-run:
+      * file does not exist → render fresh stub.
+      * file exists and still contains an unedited fill-in marker
+        (``_(fill in)_``) or unrendered ``{{...}}`` placeholders → refresh
+        with the latest run's step results. The first run can leave a stub
+        that later runs override.
+      * file exists and the fill-in markers have been replaced (i.e. the
+        named ``sign_off_actor`` has signed it) → preserve. A same-day
+        re-run never erases a human-authored sign-off.
     """
     if not SIGN_OFF_TEMPLATE.exists():
         raise FileNotFoundError(f"sign-off template missing: {SIGN_OFF_TEMPLATE}")
     SIGN_OFF_DIR.mkdir(parents=True, exist_ok=True)
     date = result.finished_at.split("T", 1)[0]
     out = SIGN_OFF_DIR / f"{result.scenario_id.lower()}-{date}.md"
-    if out.exists():
+    if out.exists() and not _is_unedited_stub(out.read_text()):
         return out
     template = SIGN_OFF_TEMPLATE.read_text()
     rendered = (
@@ -279,6 +317,13 @@ def render_sign_off(result: ScenarioResult) -> Path:
     )
     out.write_text(rendered)
     return out
+
+
+def _is_unedited_stub(content: str) -> bool:
+    """Heuristic: the file is still an auto-rendered (or literal-template)
+    stub if any unreplaced template placeholder OR the canonical fill-in
+    marker is present. Once the actor signs off, both are gone."""
+    return _UNEDITED_STUB_MARKER in content or "{{" in content
 
 
 def all_runbook_paths() -> Iterable[Path]:
