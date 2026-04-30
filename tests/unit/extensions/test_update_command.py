@@ -92,6 +92,62 @@ def test_default_interactive_prompts_on_conflict(tmp_path, monkeypatch):
     assert server_result.action == "kept"
 
 
+def test_interactive_apply_persists_new_hash(tmp_path, monkeypatch):
+    """Round-6 H1 — when the user resolves a conflict via the interactive
+    prompt by choosing ``apply``, the on-disk content is rewritten to the
+    new template content. The persisted ``template_file_hashes[rel]`` must
+    track that new content so the *next* ``kz-ext update`` recognises the
+    file as clean-since-record (it's now byte-identical to the rendered
+    template) and doesn't re-prompt.
+
+    Without the round-6 H1 fix, ``_prompt_conflict``'s apply branch
+    returned ``FileResult(...)`` with no ``new_hash``; the recorded hash
+    stayed pinned to the pre-apply content, so the very next update
+    would treat the now-clean file as still author-modified and prompt
+    again on every CLI bump — a real UX papercut surfaced by the
+    multi-engine PR review.
+    """
+    scaffold = _make_scaffold(tmp_path, monkeypatch, type_="tool")
+    target = scaffold / "src" / "server.py"
+    template_content = target.read_text()
+    target.write_text("# author edits — will choose 'apply' interactively\n")
+    monkeypatch.chdir(scaffold)
+
+    # First update: conflict → user chooses "apply".
+    with patch("typer.prompt", return_value="a"):
+        first = run_update()
+
+    server_result = next(fr for fr in first.files if fr.relative_path == "src/server.py")
+    assert server_result.action == "applied"
+    # File is now back to template content (the prompt's "apply" semantics).
+    assert target.read_text() == template_content
+
+    # Verify the hash table was updated by inspecting kamiwaza.json.
+    metadata = json.loads((scaffold / "kamiwaza.json").read_text())
+    recorded = metadata.get("template_file_hashes", {}).get("src/server.py")
+    from kamiwaza_extensions.scaffolder import hash_text
+    assert recorded == hash_text(template_content), (
+        "after interactive apply, template_file_hashes must point at the "
+        "newly-applied content; otherwise the next update re-prompts on "
+        "the same already-resolved file"
+    )
+
+    # Second update: file is now byte-identical to the template *and*
+    # the recorded hash matches → no prompt should fire, no conflict.
+    with patch("typer.prompt") as mock_prompt:
+        second = run_update()
+    assert mock_prompt.call_count == 0, (
+        "second update on an interactively-applied file must NOT re-prompt"
+    )
+    second_result = next(
+        fr for fr in second.files if fr.relative_path == "src/server.py"
+    )
+    assert second_result.action in ("no-change", "updated"), (
+        f"expected no-change or clean-update, got {second_result.action} "
+        f"(reason: {second_result.reason})"
+    )
+
+
 def test_force_overwrites_with_orig_backup(tmp_path, monkeypatch):
     """TS-M2-5 — --force applies updates and writes .orig."""
     scaffold = _make_scaffold(tmp_path, monkeypatch, type_="tool")

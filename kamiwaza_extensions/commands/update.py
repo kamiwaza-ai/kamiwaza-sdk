@@ -753,7 +753,18 @@ def _prompt_conflict(
     if choice in ("a", "apply"):
         _backup(target_path, existing_content)
         target_path.write_text(new_content, encoding="utf-8")
-        return FileResult(rel, "applied", "interactive (.orig backup)")
+        # PR-86 round-6 H1: persist the new content's hash so the *next*
+        # ``kz-ext update`` recognises this file as clean-since-record.
+        # Without ``new_hash`` the recorded hash stays pinned to the
+        # pre-apply content; the next run treats the (now-clean) file as
+        # author-modified and re-prompts on every CLI bump. Sibling apply
+        # paths (force at ``_apply_preserve_if_modified``, clean-update,
+        # ``_create_missing``) all set ``new_hash`` — interactive apply was
+        # the lone gap.
+        return FileResult(
+            rel, "applied", "interactive (.orig backup)",
+            new_hash=hash_text(new_content),
+        )
     if choice in ("s", "skip"):
         # Review iteration-1 I2: previously routed to "kept" silently —
         # now distinct so the summary table reflects the user's choice.

@@ -106,6 +106,20 @@ function _hasHeader(headers: Headers, name: string): boolean {
  * Returns a Response whose body streams from the upstream. The caller
  * (typically a Next.js Route Handler) returns this Response directly to
  * the extension client.
+ *
+ * Refresh-callback exception contract (round-6 H2 — parity with the Py
+ * sibling ``stream_with_refresh``):
+ *
+ *   - Returning ``null`` → ``PlatformOutageError`` ("no refresh token
+ *     available") — the documented happy-no-token path.
+ *   - Returning a ``Headers`` map → retry happens with those headers
+ *     (Content-Type from the materialized body is re-injected).
+ *   - **Throwing** any exception → propagates to the caller as-is. We
+ *     deliberately don't wrap into ``PlatformOutageError`` because the
+ *     caller-supplied refresh function is application code that should
+ *     surface its own errors with its own context (e.g. a 5xx from the
+ *     refresh endpoint, a network timeout). Catch + translate at the
+ *     route-handler level if a single class is desirable downstream.
  */
 export async function streamWithRefresh(opts: ProxyOpts): Promise<Response> {
     const { url, method, headers, refresh, signal } = opts;

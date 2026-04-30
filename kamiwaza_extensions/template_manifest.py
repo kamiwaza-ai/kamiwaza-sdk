@@ -26,10 +26,16 @@ fails CI loudly — by design, the contract has to be explicit.
   template-rendered content (i.e. the author modified it).
 * ``preserve_if_modified`` — replace if and only if the on-disk copy is
   unchanged from the prior template; otherwise skip with a warning.
-* ``merge`` — reserved for future smart-merge (e.g. ``kamiwaza.json``
-  field-level merge). v1 treats this identically to ``preserve_if_modified``;
-  the strategy keyword is in the type-system today so future migrations
-  don't have to expand the literal then.
+* ``merge`` — field-level merge for JSON files; falls back to
+  ``preserve_if_modified`` semantics for everything else. v1 implements
+  this for ``kamiwaza.json`` only: rendered keys (the template's field
+  set) seed the result, the on-disk file's values win for collisions,
+  and CLI-controlled fields (``template_version``,
+  ``template_shape``) are reset on every successful update. See
+  ``commands/update._reconcile_json_merge`` for the implementation and
+  ``docs/extensions/cli-reference/update.md`` for the author-facing
+  contract. Non-JSON ``merge`` files behave identically to
+  ``preserve_if_modified`` until a strategy-specific path is added.
 """
 
 from __future__ import annotations
@@ -104,8 +110,9 @@ def _owned(path: str, strategy: FileStrategy = "preserve_if_modified") -> Templa
 _APP_FILES: tuple[TemplateOwnedFile, ...] = (
     # ``kamiwaza.json`` is template-owned at the schema level — author owns
     # the values (name, version, type), template owns the field set.
-    # ``merge`` strategy reserves the slot for a future field-level merge;
-    # v1 treats it as preserve_if_modified.
+    # ``merge`` strategy fans out to the field-level JSON merge path in
+    # ``_reconcile_json_merge`` (rendered seeds the result, existing wins
+    # on collision, manifest-controlled fields are stamped each update).
     _owned("kamiwaza.json", strategy="merge"),
     _owned(".gitignore", strategy="overwrite"),
     _owned("docker-compose.yml"),

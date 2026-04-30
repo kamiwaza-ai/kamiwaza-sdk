@@ -129,10 +129,47 @@ async def stream_with_refresh(
     Returns a ``fastapi.responses.StreamingResponse``. The downstream status
     code is decided BEFORE any bytes are committed, so a 401 retry is safe.
 
+    Body shapes (round-6 H3 — parity with the TS sibling's
+    ``RetryableBodyInit``):
+
+    * ``json=<dict>``         — JSON-encoded request body.
+    * ``content=<bytes>``     — already-encoded body (e.g. SSE, prepared
+      JSON bytes). Streaming/multipart/form-data bodies are not supported
+      because the retry path needs a re-emittable body — passing one of
+      those via the typed ``json``/``content`` kwargs is impossible
+      (the TS sibling rejects them at the type level via
+      ``RetryableBodyInit`` and raises at runtime; the Py guard below
+      mirrors the runtime check).
+    * Either ``json`` or ``content`` may be set (or neither for bodyless
+      methods like ``GET``); both at once is a programmer error and
+      raises ``ValueError`` upfront — without this guard, ``httpx``
+      would silently pick one and the retry path could replay a
+      different body than the first attempt.
+
+    Refresh-callback exception contract (round-6 H2):
+
+    * Returning ``None`` → ``PlatformOutageError`` ("no refresh token
+      available") — the documented happy-no-token path.
+    * Returning a ``dict`` of replacement headers → retry happens with
+      those headers.
+    * **Raising** any exception → propagates to the caller as-is. We
+      deliberately don't wrap into ``PlatformOutageError`` because the
+      caller-supplied refresh function is application code that should
+      surface its own errors with its own context (e.g. a 5xx from the
+      refresh endpoint, a network timeout). The TS sibling
+      (``streamWithRefresh``) takes the same approach.
+
     Imports ``StreamingResponse`` lazily so this module can be imported in
     test contexts that don't pull FastAPI in.
     """
     from fastapi.responses import StreamingResponse
+
+    if json is not None and content is not None:
+        raise ValueError(
+            "stream_with_refresh: pass `json` OR `content`, not both. "
+            "Both shapes occupy the request body and the retry path can't "
+            "decide which to replay; this is a programmer error."
+        )
 
     session = await _open(client, method, url, headers=headers, json=json, content=content)
 

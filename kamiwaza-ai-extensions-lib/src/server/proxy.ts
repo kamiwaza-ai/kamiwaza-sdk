@@ -30,6 +30,18 @@ const FORWARD_REQUEST_HEADERS = new Set([
     "x-request-id",
     "x-user-signature",
     "x-user-signature-ts",
+    // ``cookie`` is forwarded verbatim from the incoming Next.js request
+    // (the browser → Next.js hop) to the backend extension service.
+    // The canonical extension auth surface is the envelope-header pair
+    // (``x-user-id`` + ``authorization``/``x-auth-token``); ``cookie``
+    // is forwarded only because some backend services use the platform
+    // session cookie for compatibility with the legacy SDK proxy. The
+    // response side strips ``set-cookie`` (DENY_RESPONSE_HEADERS), so a
+    // backend service cannot mint or rotate cookies through this proxy.
+    // If your extension doesn't need cookie passthrough, override
+    // ``FORWARD_REQUEST_HEADERS`` in your ProxyConfig — round-6 H4
+    // tracks tightening this default in a follow-up once the legacy
+    // session-cookie consumers are inventoried.
     "cookie",
     "content-type",
 ]);
