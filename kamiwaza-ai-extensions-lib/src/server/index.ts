@@ -1,5 +1,6 @@
 export { extractIdentity, extractIdentityStrict } from "./identity";
 export { createProxyHandlers } from "./proxy";
+export { createLocalDevAuthMiddleware } from "./localDevAuth";
 export { fetchModels } from "./models";
 export {
     streamWithRefresh,
