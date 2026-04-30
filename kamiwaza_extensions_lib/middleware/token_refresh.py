@@ -17,13 +17,18 @@ materializes the response (status + headers) on context-manager entry but
 defers body iteration. Inspecting ``response.status_code`` before iterating
 gives us a pre-commit window in which a 401 retry is feasible.
 
-A single-flight :class:`asyncio.Lock` wraps refresh so concurrent streams
-that all hit 401 at the same time fan in to one refresh attempt.
+Each caller invokes ``refresh`` with its own headers (one refresh per
+caller, not shared across requests). A previous version held an
+``asyncio.Lock`` to serialize refresh calls; that turned out to fan a
+single user's refreshed headers out to other concurrent requests in the
+same process when paired with shared state, and even without shared
+state it created an unnecessary process-wide bottleneck (PR-86 C2).
+The TypeScript sibling (``@kamiwaza-ai/extensions-lib``) takes the same
+no-coordination approach.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Optional
@@ -43,9 +48,13 @@ logger = logging.getLogger(__name__)
 # refresh is possible (e.g. no refresh token, refresh endpoint down).
 RefreshFn = Callable[[dict[str, str]], Awaitable[Optional[dict[str, str]]]]
 
-# Hop-by-hop headers we never proxy back to the extension's caller. content-
-# length and content-encoding stripped because the ASGI server recomputes
-# them from the streamed body.
+# Hop-by-hop headers we never proxy back to the extension's caller.
+# content-length is stripped because the ASGI server recomputes it from the
+# streamed body (or sends Transfer-Encoding: chunked instead). content-
+# encoding is stripped because we forward decoded bytes via aiter_bytes —
+# claiming gzip on already-decoded content would mislead the client. ASGI
+# itself does not compress; we simply mustn't claim a compression we no
+# longer carry (PR-86 M5).
 _HOP_BY_HOP = frozenset({
     "connection",
     "keep-alive",
@@ -58,9 +67,6 @@ _HOP_BY_HOP = frozenset({
     "content-length",
     "content-encoding",
 })
-
-_refresh_lock = asyncio.Lock()
-
 
 def _passthrough(headers: httpx.Headers) -> dict[str, str]:
     return {k: v for k, v in headers.items() if k.lower() not in _HOP_BY_HOP}
@@ -131,11 +137,11 @@ async def stream_with_refresh(
     session = await _open(client, method, url, headers=headers, json=json, content=content)
 
     if session.resp.status_code == 401:
-        # PRE_COMMIT_401 — refresh + retry once. Single-flight: concurrent
-        # 401s wait on the same refresh attempt.
+        # PRE_COMMIT_401 — refresh + retry once. Each caller invokes
+        # refresh() with its own headers; no inter-caller coordination
+        # (mirrors the TS sibling, PR-86 C2).
         await _read_and_close(session)
-        async with _refresh_lock:
-            new_headers = await refresh(headers)
+        new_headers = await refresh(headers)
         if new_headers is None:
             raise PlatformOutageError(
                 "upstream 401 and no refresh token available"

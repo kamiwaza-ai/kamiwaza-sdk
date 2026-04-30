@@ -24,6 +24,7 @@ class ExitCode(IntEnum):
     UNEXPECTED_CONTEXT = 11
     OUT_OF_ENVELOPE_ACCESS = 12
     PLATFORM_OUTAGE = 13
+    STREAM_INTERRUPTED = 14  # PR-86 H5 — added with the runtime-lib class
 
     # Cluster and registry failures
     REGISTRY_AUTH = 20

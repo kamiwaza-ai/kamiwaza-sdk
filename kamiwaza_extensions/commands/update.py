@@ -131,7 +131,7 @@ def run_update(
             "running normal update flow."
         )
 
-    return _reconcile(
+    summary = _reconcile(
         cwd=cwd,
         metadata_path=metadata_path,
         metadata=metadata,
@@ -141,6 +141,18 @@ def run_update(
         force=force,
         non_interactive=non_interactive,
     )
+    # PR-86 C3: --non-interactive must exit non-zero if any conflict was
+    # detected. The design contract (§4.2.3) is "Fail (non-zero exit) if any
+    # conflict would require prompting." Without this, CI runs of `kz-ext
+    # update --non-interactive` silently leave conflicts unreconciled and
+    # report green.
+    if non_interactive and summary.conflicts > 0:
+        console.print(
+            f"[red]Error:[/red] {summary.conflicts} conflict(s) would require "
+            "interactive resolution; --non-interactive refuses to proceed."
+        )
+        raise typer.Exit(code=int(ExitCode.VALIDATION))
+    return summary
 
 
 def _load_and_validate_metadata(cwd: Path) -> tuple[Path, dict, str]:
@@ -305,13 +317,25 @@ def _stamp_version(
     """Rewrite ``kamiwaza.json.template_version`` to the manifest's version.
 
     No-op when the recorded version already matches or under ``--dry-run``.
+
+    PR-86 review C1 — re-read kamiwaza.json from disk before stamping. The
+    in-memory ``metadata`` was loaded BEFORE per-file reconciliation ran, so
+    any fields that ``_reconcile_json_merge`` wrote would be silently lost
+    if we re-serialized the stale dict here. Re-reading is cheap and makes
+    template-added fields persist across the version bump.
     """
     target_version = manifest.template_version
     if target_version == recorded_version or dry_run:
         return
-    metadata["template_version"] = target_version
+    try:
+        on_disk = json.loads(metadata_path.read_text())
+    except json.JSONDecodeError:
+        # Defensive — fall back to the in-memory dict if disk content is
+        # somehow unparseable. The original behavior is preserved.
+        on_disk = metadata
+    on_disk["template_version"] = target_version
     metadata_path.write_text(
-        json.dumps(metadata, indent=4) + "\n", encoding="utf-8"
+        json.dumps(on_disk, indent=4) + "\n", encoding="utf-8"
     )
 
 
@@ -520,7 +544,9 @@ def _prompt_conflict(
         )
     )
     console.print(f"\n[yellow]Conflict:[/yellow] {rel}")
-    console.print(diff or "(no textual diff)")
+    # PR-86 M7: print the diff with markup disabled so a file containing
+    # literal `[red]`-shaped substrings doesn't get rendered as Rich markup.
+    console.print(diff or "(no textual diff)", markup=False)
     choice = typer.prompt(
         "[a]pply / [k]eep / [s]kip", default="k", show_default=True
     ).strip().lower()

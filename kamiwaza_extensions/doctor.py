@@ -12,6 +12,7 @@ from importlib import resources
 from pathlib import Path
 from typing import List, Literal, Optional
 
+from packaging.requirements import InvalidRequirement, Requirement
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
 
@@ -75,6 +76,38 @@ def _compatibility_bundle() -> dict:
 #   0.1.5  → 0.1.5
 #   >=0.2  → 0.2 (we read whichever lower bound appears first)
 _NPM_VERSION_HEAD_RE = re.compile(r"(\d+(?:\.\d+){0,2})")
+
+
+def _python_spec_outside_supported(
+    declared: SpecifierSet, supported: SpecifierSet
+) -> Optional[str]:
+    """Return a human reason if ``declared`` allows versions outside ``supported``.
+
+    PR-86 M6 — strict range-vs-range overlap is hard with PEP 440. We probe:
+      * each ``==`` pin in ``declared`` (must be in ``supported``)
+      * the declared lower bound (``>=``/``>``/``~=``) — if present and not
+        in ``supported``, declare out-of-range
+    Otherwise return None (passes).
+    """
+    pinned: list[Version] = []
+    lower_bounds: list[Version] = []
+    for spec in declared:
+        op = spec.operator
+        try:
+            ver = Version(spec.version)
+        except InvalidVersion:
+            continue
+        if op == "==":
+            pinned.append(ver)
+        elif op in (">=", "~=", ">"):
+            lower_bounds.append(ver)
+    for ver in pinned:
+        if ver not in supported:
+            return f"pinned {ver} not in {supported}"
+    for ver in lower_bounds:
+        if ver not in supported:
+            return f"lower bound {ver} not in {supported}"
+    return None
 
 
 def _npm_lower_bound(spec: str) -> Optional[Version]:
@@ -630,47 +663,59 @@ class DoctorChecker:
             .get("python", {})
             .get("kamiwaza-extensions-lib", "")
         )
-        # Parse declared specifier from requirements.txt (first matching line).
-        declared_spec: Optional[str] = None
-        declared_pin: Optional[Version] = None
+        # PR-86 H7: parse via ``packaging.requirements.Requirement`` so we
+        # don't accidentally match prefix-aliases like
+        # ``kamiwaza-extensions-lib-extras`` and we tolerate PEP 508 extras
+        # / env-markers (``kamiwaza-extensions-lib[extras]>=0.3``).
+        declared_req: Optional[Requirement] = None
         for line in req_file.read_text().splitlines():
             line = line.split("#", 1)[0].strip()
-            if not line.lower().startswith("kamiwaza-extensions-lib"):
+            if not line:
                 continue
-            # Strip the package name; remainder is the version specifier.
-            spec_part = line[len("kamiwaza-extensions-lib") :].strip()
-            declared_spec = spec_part or None
-            # If the requirement is an exact pin (==X), capture that for clarity.
-            if spec_part.startswith("=="):
-                try:
-                    declared_pin = Version(spec_part[2:].strip())
-                except InvalidVersion:
-                    pass
+            try:
+                req = Requirement(line)
+            except InvalidRequirement:
+                continue
+            if req.name.lower() != "kamiwaza-extensions-lib":
+                continue
+            declared_req = req
             break
-        if declared_spec is None:
+        if declared_req is None:
             return CheckResult(
                 "Runtime lib (Python)", "warn",
                 "kamiwaza-extensions-lib not found in requirements.txt",
                 fix=f"Add 'kamiwaza-extensions-lib{compat_range}' to requirements.txt",
             )
-        # Compatibility check: does the declared range overlap the supported
-        # window? With a ``==`` pin we can answer precisely; with a range we
-        # accept it for now (proper range-overlap is more code than it's worth
-        # for a warning).
-        if compat_range and declared_pin is not None:
-            try:
-                supported = SpecifierSet(compat_range)
-                if declared_pin not in supported:
-                    return CheckResult(
-                        "Runtime lib (Python)", "warn",
-                        f"kamiwaza-extensions-lib=={declared_pin} is outside CLI compatibility range {compat_range}",
-                        fix=f"Update to 'kamiwaza-extensions-lib{compat_range}'",
-                    )
-            except InvalidSpecifier:
-                pass  # Bundle range malformed — fail open.
+        declared_spec = str(declared_req.specifier) or ""
+        if not compat_range:
+            return CheckResult(
+                "Runtime lib (Python)", "pass",
+                f"kamiwaza-extensions-lib{declared_spec} matches any (no compat range bundled)",
+            )
+        try:
+            supported = SpecifierSet(compat_range)
+        except InvalidSpecifier:
+            # Bundle range malformed — fail open with the declared spec passing.
+            return CheckResult(
+                "Runtime lib (Python)", "pass",
+                f"kamiwaza-extensions-lib{declared_spec} (compat range unparseable, skipping check)",
+            )
+        # PR-86 M6: range-vs-range overlap. ``declared_req.specifier`` is a
+        # SpecifierSet too — every version that satisfies it MUST also satisfy
+        # ``supported`` for the dependency to be safe. We approximate by
+        # checking the declared spec's lower bound + a few key probe points.
+        out_of_range_reason = _python_spec_outside_supported(
+            declared_req.specifier, supported
+        )
+        if out_of_range_reason is not None:
+            return CheckResult(
+                "Runtime lib (Python)", "warn",
+                f"kamiwaza-extensions-lib{declared_spec} is outside CLI compatibility range {compat_range} ({out_of_range_reason})",
+                fix=f"Update to 'kamiwaza-extensions-lib{compat_range}'",
+            )
         return CheckResult(
             "Runtime lib (Python)", "pass",
-            f"kamiwaza-extensions-lib{declared_spec} matches {compat_range or 'any'}",
+            f"kamiwaza-extensions-lib{declared_spec} matches {compat_range}",
         )
 
     def _check_ts_runtime_lib(self, pkg_file: Path) -> CheckResult:

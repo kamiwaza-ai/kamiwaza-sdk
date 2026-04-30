@@ -94,6 +94,46 @@ describe("streamWithRefresh", () => {
         ).rejects.toThrow(PlatformOutageError);
     });
 
+    it("PR-86 H1/H2: ReadableStream request body is buffered + replayed on retry", async () => {
+        // The TS proxy's most common shape is forwarding `request.body` (a
+        // one-shot ReadableStream) from a Next.js Route Handler. The body
+        // must be replayable for the 401 → refresh → retry flow.
+        let firstSeen = "";
+        let secondSeen = "";
+        let call = 0;
+        global.fetch = vi.fn(async (_url: string | URL, init: RequestInit | undefined) => {
+            call++;
+            const body = await new Response(init?.body as BodyInit).text();
+            if (call === 1) {
+                firstSeen = body;
+                return new Response("expired", { status: 401 });
+            }
+            secondSeen = body;
+            return new Response("ok", { status: 200 });
+        }) as unknown as typeof fetch;
+
+        // Build a streamed body the way Next.js would.
+        const streamBody = new ReadableStream<Uint8Array>({
+            start(controller) {
+                controller.enqueue(new TextEncoder().encode("payload-bytes"));
+                controller.close();
+            },
+        });
+
+        const response = await streamWithRefresh({
+            url: "https://upstream/v1/chat",
+            method: "POST",
+            headers: { "X-Auth-Token": "old" },
+            body: streamBody,
+            refresh: async (h) => ({ ...h, "X-Auth-Token": "new" }),
+        });
+        await response.text();
+
+        expect(response.status).toBe(200);
+        expect(firstSeen).toBe("payload-bytes");
+        expect(secondSeen).toBe("payload-bytes");
+    });
+
     it("post-commit upstream failure surfaces StreamInterruptedError (TS-M2-33 mirror)", async () => {
         // Build a Response whose body fails AFTER the consumer reads the
         // first chunk. We gate the error on the first read so the timing

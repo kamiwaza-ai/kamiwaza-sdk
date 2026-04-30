@@ -8,8 +8,11 @@
 > per system design §4.4.2 — extensions are pass-through consumers of
 > Traefik-populated headers, not crypto verifiers).
 >
-> **See also:** [`examples/extensions/go-reference/`](../../examples/extensions/go-reference/)
-> is a working implementation of this contract.
+> **See also:** A working Go reference implementation of this contract
+> (`examples/extensions/go-reference/`) is planned — tracked as
+> [ENG-3894](https://linear.app/kamiwaza/issue/ENG-3894). Until it lands,
+> the canonical test vectors below + the Python and TypeScript reference
+> implementations are the source of truth.
 
 This document defines the runtime contract a non-SDK extension must implement
 to deploy on the Kamiwaza platform. It is wire-compatible with the Python and

@@ -105,6 +105,31 @@ class TestPythonRuntimeLibCheck:
         result = checker._check_python_runtime_lib(req)
         assert result.status == "warn"
 
+    def test_prefix_alias_does_not_falsely_match(self, checker, tmp_path):
+        """PR-86 H7 — `kamiwaza-extensions-lib-extras` must NOT match the
+        `kamiwaza-extensions-lib` check (substring-prefix bug)."""
+        req = tmp_path / "requirements.txt"
+        req.write_text("kamiwaza-extensions-lib-extras>=1.0\n")
+        result = checker._check_python_runtime_lib(req)
+        assert result.status == "warn"
+        assert "not found" in result.message
+
+    def test_pep508_extras_are_handled(self, checker, tmp_path):
+        """PR-86 H7 — `kamiwaza-extensions-lib[fastapi]>=0.3,<0.4` parses
+        cleanly via packaging.requirements.Requirement."""
+        req = tmp_path / "requirements.txt"
+        req.write_text("kamiwaza-extensions-lib[fastapi]>=0.3,<0.4\n")
+        result = checker._check_python_runtime_lib(req)
+        assert result.status == "pass"
+
+    def test_out_of_range_lower_bound_warns(self, checker, tmp_path):
+        """PR-86 M6 — a range like `>=99.0,<100.0` is clearly outside the
+        supported window, even though it's not a `==` pin."""
+        req = tmp_path / "requirements.txt"
+        req.write_text("kamiwaza-extensions-lib>=99.0,<100.0\n")
+        result = checker._check_python_runtime_lib(req)
+        assert result.status == "warn"
+
 
 # ---------------------------------------------------------------------------
 # TS-M2-39: TypeScript runtime-lib version probe + warn on out-of-range.

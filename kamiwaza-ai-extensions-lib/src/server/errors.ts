@@ -3,9 +3,10 @@
  * ``kamiwaza_extensions_lib.errors`` (Python).
  *
  * Each subclass carries a static ``className`` that matches the canonical
- * identifier in ``kamiwaza_extensions/exception_names.json``, which the
- * CLI's ``DoctorChecker`` and the platform-side audit pipeline both
- * consume. If you rename one, rename it everywhere.
+ * identifier in ``kamiwaza_extensions_lib/exception_names.json`` (PR-86 H4
+ * — earlier comment had the wrong path), which the CLI's ``DoctorChecker``
+ * and the platform-side audit pipeline both consume. If you rename one,
+ * rename it everywhere — including the JSON registry.
  */
 
 export class KamiwazaRuntimeError extends Error {

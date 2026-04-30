@@ -68,9 +68,24 @@ function passthroughHeaders(src: globalThis.Headers): Headers {
  * the extension client.
  */
 export async function streamWithRefresh(opts: ProxyOpts): Promise<Response> {
-    const { url, method, headers, body, refresh, signal } = opts;
+    const { url, method, headers, refresh, signal } = opts;
+    // PR-86 H1/H2: a one-shot ReadableStream body (the common
+    // ``request.body`` case from a Next.js Route Handler) cannot be
+    // re-played on retry, and Node's fetch requires ``duplex: "half"``
+    // when sending a streamed request body. We buffer the body once
+    // up-front so:
+    //   1. fetch() doesn't reject for missing duplex on streams.
+    //   2. The retry path can re-send identical bytes.
+    // Static bodies (string / Buffer / Uint8Array / null) are already
+    // re-playable; we still normalize them to a Uint8Array so the
+    // call-site doesn't have to branch.
+    const bodyBytes = await _materializeBody(opts.body);
+    const fetchInit: RequestInit = { method, headers, signal };
+    if (bodyBytes !== null) {
+        fetchInit.body = bodyBytes;
+    }
 
-    let upstream = await fetch(url, { method, headers, body, signal });
+    let upstream = await fetch(url, fetchInit);
 
     if (upstream.status === 401) {
         // PRE_COMMIT_401 — drain the small error body to release the
@@ -88,12 +103,11 @@ export async function streamWithRefresh(opts: ProxyOpts): Promise<Response> {
                 "upstream 401 and no refresh token available",
             );
         }
-        upstream = await fetch(url, {
-            method,
-            headers: newHeaders,
-            body,
-            signal,
-        });
+        const retryInit: RequestInit = { method, headers: newHeaders, signal };
+        if (bodyBytes !== null) {
+            retryInit.body = bodyBytes;
+        }
+        upstream = await fetch(url, retryInit);
         if (upstream.status === 401) {
             try {
                 await upstream.arrayBuffer();
@@ -153,6 +167,52 @@ export async function streamWithRefresh(opts: ProxyOpts): Promise<Response> {
         headers: passthroughHeaders(upstream.headers),
     });
 }
+
+/**
+ * Buffer a request body to bytes so we can replay it on retry and avoid
+ * Node's ``duplex: "half"`` requirement for streamed bodies (PR-86 H1/H2).
+ *
+ * Accepts everything ``BodyInit`` accepts. Returns ``null`` for null /
+ * undefined so the caller knows to omit ``body`` from the RequestInit.
+ */
+async function _materializeBody(
+    body: BodyInit | null | undefined,
+): Promise<Uint8Array | null> {
+    if (body === null || body === undefined) return null;
+    if (body instanceof Uint8Array) return body;
+    if (body instanceof ArrayBuffer) return new Uint8Array(body);
+    if (typeof body === "string") return new TextEncoder().encode(body);
+    if (body instanceof Blob) {
+        return new Uint8Array(await body.arrayBuffer());
+    }
+    if (body instanceof ReadableStream) {
+        // Drain the stream into a single buffer. Lossless for retry.
+        const chunks: Uint8Array[] = [];
+        const reader = body.getReader();
+        for (;;) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            if (value !== undefined) chunks.push(value);
+        }
+        let total = 0;
+        for (const c of chunks) total += c.byteLength;
+        const out = new Uint8Array(total);
+        let off = 0;
+        for (const c of chunks) {
+            out.set(c, off);
+            off += c.byteLength;
+        }
+        return out;
+    }
+    if (body instanceof FormData || body instanceof URLSearchParams) {
+        // Use the standard Request constructor to serialize these into a
+        // single buffer the same way fetch() would have.
+        return new Uint8Array(await new Response(body).arrayBuffer());
+    }
+    // Fallback: let Response coerce whatever we got.
+    return new Uint8Array(await new Response(body as BodyInit).arrayBuffer());
+}
+
 
 /**
  * Convenience: type-guard to expose StreamInterruptedError from a fetch

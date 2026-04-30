@@ -72,7 +72,10 @@ class TestDoctorExtensionChecks:
 
     def test_python_runtime_lib_found(self, tmp_path):
         req_file = tmp_path / "requirements.txt"
-        req_file.write_text("kamiwaza-extensions-lib>=0.1.0\nfastapi\n")
+        # Use a range that fits the current compat bundle window (>=0.2,<0.4
+        # at time of writing). PR-86 H7/M6 made this check range-vs-range
+        # accurate — `>=0.1.0` would now correctly warn as below the floor.
+        req_file.write_text("kamiwaza-extensions-lib>=0.3.0,<0.4\nfastapi\n")
         checker = DoctorChecker(config_dir=tmp_path / ".kamiwaza")
         result = checker._check_python_runtime_lib(req_file)
         assert result.status == "pass"

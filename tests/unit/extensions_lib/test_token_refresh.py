@@ -167,10 +167,12 @@ async def test_mid_stream_failure_surfaces_stream_interrupted_error():
 
 
 @pytest.mark.asyncio
-async def test_concurrent_401_refreshes_serialize_through_lock():
-    """Stateful handler: 401 if token is "old"; 200 if "new". Ordering of
-    concurrent callers is unconstrained — what we're testing is that the
-    refresh lock prevents *overlapping* refresh-fn invocations."""
+async def test_concurrent_401_refreshes_each_invoke_refresh_independently():
+    """PR-86 C2: each caller invokes refresh() with its own headers.
+
+    Stateful handler: 401 if token is "old"; 200 if "new". 5 concurrent
+    callers each hit 401 first, refresh, retry. We assert all 5 succeed and
+    that refresh is called once per caller — no inter-caller coordination."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         token = request.headers.get("X-Auth-Token", "")
@@ -179,17 +181,12 @@ async def test_concurrent_401_refreshes_serialize_through_lock():
         return httpx.Response(401, content=b'{"error":"expired"}')
 
     transport = httpx.MockTransport(handler)
-    refresh_in_flight = 0
-    lock_witness: list[bool] = []
+    refresh_calls = 0
 
     async def refresh(old):
-        nonlocal refresh_in_flight
-        refresh_in_flight += 1
-        lock_witness.append(refresh_in_flight > 1)
-        # Yield the loop so a competing refresh would surface the overlap
-        # if the lock weren't doing its job.
+        nonlocal refresh_calls
+        refresh_calls += 1
         await asyncio.sleep(0)
-        refresh_in_flight -= 1
         return {**old, "X-Auth-Token": "new"}
 
     async with httpx.AsyncClient(transport=transport) as client:
@@ -206,7 +203,7 @@ async def test_concurrent_401_refreshes_serialize_through_lock():
         statuses = await asyncio.gather(*(call_one() for _ in range(5)))
 
     assert all(s == 200 for s in statuses)
-    # Lock invariant: counter never observed > 1.
-    assert not any(lock_witness), (
-        f"refresh saw overlapping invocations: {lock_witness}"
+    # Each caller got its own refresh — no sharing.
+    assert refresh_calls == 5, (
+        f"expected 5 refresh invocations (one per concurrent caller), got {refresh_calls}"
     )

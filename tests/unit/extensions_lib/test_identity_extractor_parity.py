@@ -8,11 +8,12 @@ consumed bit-identically by:
 
 * this Python parity test
 * the TypeScript runtime-lib parity test (ENG-3893)
-* the Go reference's extractor test (ENG-3894)
+* the Go reference's extractor test — *planned*, not yet shipped (ENG-3894)
 
-If a behavior diverges between languages, this test plus its TS/Go siblings
-will all fail at the same case. The vectors are the contract; the language
-implementations must conform.
+If a behavior diverges between Py and TS, both this test and the TS sibling
+fail at the same case. Go consumer parity is enforced once ENG-3894 ships
+the reference implementation; until then, the vectors are the bit-identical
+contract Py and TS already follow.
 """
 
 from __future__ import annotations

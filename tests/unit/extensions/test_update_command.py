@@ -109,20 +109,30 @@ def test_force_overwrites_with_orig_backup(tmp_path, monkeypatch):
     assert server_result.action == "applied"
 
 
-def test_non_interactive_skips_conflict(tmp_path, monkeypatch):
-    """TS-M2-6 — --non-interactive returns without prompting; conflicts skipped."""
+def test_non_interactive_exits_validation_on_conflict(tmp_path, monkeypatch):
+    """TS-M2-6 / PR-86 C3 — --non-interactive exits non-zero (VALIDATION)
+    when any conflict is detected. The design contract is CI-fails-loudly
+    rather than silently producing a partial update."""
     scaffold = _make_scaffold(tmp_path, monkeypatch, type_="tool")
     target = scaffold / "src" / "server.py"
     target.write_text("# CI-modified\n")
     monkeypatch.chdir(scaffold)
 
-    summary = run_update(non_interactive=True)
+    with pytest.raises(typer.Exit) as exc:
+        run_update(non_interactive=True)
 
-    # File untouched.
+    assert exc.value.exit_code == int(ExitCode.VALIDATION)
+    # File untouched on the way out.
     assert target.read_text() == "# CI-modified\n"
-    server_result = next(fr for fr in summary.files if fr.relative_path == "src/server.py")
-    assert server_result.action == "skipped"
-    assert server_result.reason == "conflict"
+
+
+def test_non_interactive_succeeds_when_no_conflicts(tmp_path, monkeypatch):
+    """PR-86 C3 — --non-interactive does not exit non-zero on a clean
+    scaffold; only conflicts trigger the failure."""
+    scaffold = _make_scaffold(tmp_path, monkeypatch, type_="tool")
+    monkeypatch.chdir(scaffold)
+    summary = run_update(non_interactive=True)
+    assert summary.conflicts == 0
 
 
 # ---------------------------------------------------------------------------
@@ -225,6 +235,66 @@ def test_backup_filename_preserves_full_extension(tmp_path, monkeypatch):
     _backup(target, "module.exports = {};\n")
     assert (tmp_path / "next.config.js.orig").exists()
     assert not (tmp_path / "next.config.orig").exists()
+
+
+def test_stamp_version_preserves_merge_added_kamiwaza_fields(tmp_path, monkeypatch):
+    """PR-86 review C1 / M8: when _reconcile_json_merge writes new fields to
+    kamiwaza.json, _stamp_version's subsequent rewrite must not clobber them.
+
+    Pinning the in-memory ``metadata`` view (loaded pre-reconcile) was the bug;
+    fix re-reads from disk before stamping.
+    """
+    from kamiwaza_extensions import template_manifest as tm
+
+    scaffold = _make_scaffold(tmp_path, monkeypatch, type_="tool")
+    meta_path = scaffold / "kamiwaza.json"
+    # Simulate a scaffold whose recorded version is older than the manifest.
+    meta = json.loads(meta_path.read_text())
+    meta["template_version"] = "0.0.1-old"
+    meta_path.write_text(json.dumps(meta, indent=4) + "\n")
+
+    # Simulate a template change that adds a new kamiwaza.json field by
+    # stubbing _reconcile_json_merge to inject one. This lets us isolate
+    # the C1 regression test from the bundled template's actual content.
+    from kamiwaza_extensions.commands import update as upd
+
+    real_merge = upd._reconcile_json_merge
+
+    def merge_with_field(*, rel, target_path, existing_content, new_content, dry_run):
+        if rel == "kamiwaza.json" and not dry_run:
+            existing = json.loads(existing_content)
+            existing["new_template_field"] = "from-merge"
+            target_path.write_text(json.dumps(existing, indent=4) + "\n")
+            return upd.FileResult(rel, "updated", "json-merge")
+        return real_merge(
+            rel=rel,
+            target_path=target_path,
+            existing_content=existing_content,
+            new_content=new_content,
+            dry_run=dry_run,
+        )
+
+    monkeypatch.setattr(upd, "_reconcile_json_merge", merge_with_field)
+
+    # Force a manifest version that differs from recorded so _stamp_version
+    # actually fires.
+    original = tm.MANIFESTS["tool"]
+    bumped = tm.TemplateManifest(
+        shape=original.shape,
+        template_version="9.9.9-test",
+        files=original.files,
+        migrations=original.migrations,
+    )
+    monkeypatch.setitem(tm.MANIFESTS, "tool", bumped)
+
+    monkeypatch.chdir(scaffold)
+    upd.run_update(non_interactive=True)
+
+    refreshed = json.loads(meta_path.read_text())
+    assert refreshed.get("new_template_field") == "from-merge", (
+        "merge-added field was clobbered by _stamp_version (PR-86 C1 regression)"
+    )
+    assert refreshed.get("template_version") == "9.9.9-test"
 
 
 def test_update_rewrites_template_version_after_success(tmp_path, monkeypatch):

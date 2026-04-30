@@ -37,8 +37,8 @@ kz-ext update [--dry-run] [--force] [--non-interactive] [--bootstrap]
 | Strategy | What it does |
 | --- | --- |
 | `overwrite` | Always replace; write `.orig` backup if the on-disk copy diverges from the prior template render. |
-| `preserve_if_modified` | Replace only if the on-disk copy is unchanged. If modified, prompt (interactive), apply with backup (`--force`), or skip (`--non-interactive`). |
-| `merge` | JSON field-level merge for `kamiwaza.json`. Reserved keyword for future smart-merge of other JSON formats. |
+| `preserve_if_modified` | Replace only if the on-disk copy is unchanged. If modified, prompt (interactive), apply with backup (`--force`), or skip (`--non-interactive`). **Caveat (M2 limitation, pending fix in M3):** v1 compares the on-disk copy against the *current-version* render rather than the recorded-version render. If a new CLI release modifies a `preserve_if_modified` template file, every scaffold will see a conflict on that file even when the author hasn't touched it. Use `--force` or accept the prompt for known-clean files until the recorded-version replay lands. |
+| `merge` | JSON field-level merge for `kamiwaza.json`. Author values win for collisions; template-controlled fields (`template_version`, `template_shape`) are reset from the manifest. **Note:** if the author *deletes* a field that the rendered template still includes, the merge re-adds the field from the rendered side. To remove a template-required field permanently, the template itself must drop it (then `update` will not re-add). Reserved keyword for future smart-merge of other JSON formats. |
 
 ## Errors
 
@@ -48,6 +48,12 @@ kz-ext update [--dry-run] [--force] [--non-interactive] [--bootstrap]
 | `TemplateShapeMismatch` | 2 | "Report as bug; manifest and scaffold are inconsistent." |
 | `UnsupportedMigrationPath` | 2 | "Re-create the project with `kz-ext create` and port your changes." |
 | Conflict in `--non-interactive` | 2 | Resolve manually or rerun without `--non-interactive`. |
+
+## Known limitations (M2)
+
+- **`preserve_if_modified` over-conflicts on template changes.** As described in the strategy table above, v1 compares against current-render only, not recorded-version-render. Tracked for M3 — the fix needs either historical template snapshots bundled with the CLI or scaffold-time content hashes recorded in `kamiwaza.json`.
+- **`compatibility.json.cli_version` is hand-maintained.** A unit test asserts coherence with `kamiwaza_extensions.__version__`, but the JSON itself isn't auto-generated at build time.
+- **`--non-interactive` exits non-zero on first conflict.** This is the documented contract — see [Errors](#errors). If you need partial-update semantics in CI, run without `--non-interactive` against a stub TTY.
 
 ## What `update` does NOT do
 
