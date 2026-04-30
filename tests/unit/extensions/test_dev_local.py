@@ -525,9 +525,25 @@ class TestRunnerAuthExtensionTypeGate:
     extensions there's no equivalent bridge, so the runner must refuse
     rather than set USE_AUTH=true and silently 401 every request."""
 
-    @pytest.mark.parametrize("ext_type", ["service", "tool"])
+    @pytest.mark.parametrize(
+        "metadata,expected_type_in_message",
+        [
+            ({"type": "service"}, "service"),
+            ({"type": "tool"}, "tool"),
+            # PR #87 round-6 review (claude) — legacy extensions use
+            # `template_type` instead of `type`. The shared
+            # ``infer_extension_type`` helper honours the legacy field
+            # so non-app extensions don't silently slip past this gate.
+            ({"template_type": "service"}, "service"),
+            ({"template_type": "tool"}, "tool"),
+            # Name-prefix heuristic catches extensions whose metadata
+            # has neither field set (also via infer_extension_type).
+            ({"name": "tool-icism-parser"}, "tool"),
+            ({"name": "service-milvus"}, "service"),
+        ],
+    )
     def test_runner_rejects_auth_for_non_app_extension_types(
-        self, tmp_path, monkeypatch, ext_type
+        self, tmp_path, monkeypatch, metadata, expected_type_in_message
     ):
         import yaml as _yaml
         from kamiwaza_extensions_lib.local_dev import LocalDevAuthError
@@ -540,11 +556,11 @@ class TestRunnerAuthExtensionTypeGate:
         compose_path.write_text(_yaml.dump(compose_data))
 
         info = MagicMock()
-        info.name = f"my-{ext_type}"
+        info.name = metadata.get("name", f"my-{expected_type_in_message}")
         info.path = tmp_path
         info.compose_path = compose_path
         info.compose_data = compose_data
-        info.metadata = {"type": ext_type}
+        info.metadata = metadata
 
         runner = DevLocalRunner()
         runner._detector = MagicMock()

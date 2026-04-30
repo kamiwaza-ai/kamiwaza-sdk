@@ -24,6 +24,32 @@ class ExtensionInfo:
     compose_data: Optional[Dict[str, Any]] = field(default=None, repr=False)
 
 
+def infer_extension_type(metadata: Dict[str, Any]) -> str:
+    """Determine extension type from metadata or naming convention.
+
+    Checks the modern ``type`` field first, then the legacy
+    ``template_type`` field, and finally falls back to name-prefix
+    heuristics. Returns ``"app"`` only when no signal points elsewhere.
+
+    Single source of truth for type inference — kept here so both the
+    publish path (``commands/publish.py``) and the local-dev runner
+    (``dev_local.py``) honor the same legacy fallbacks. PR #87 round-6
+    review (claude + comprehensive consensus) flagged these two paths
+    drifting; consolidated here.
+    """
+    explicit = metadata.get("type") or metadata.get("template_type")
+    if explicit in ("app", "tool", "service"):
+        return explicit
+
+    name = metadata.get("name", "")
+    if name.startswith("tool-") or name.startswith("mcp-"):
+        return "tool"
+    if name.startswith("service-"):
+        return "service"
+
+    return "app"
+
+
 class ExtensionNotFoundError(FileNotFoundError):
     """No kamiwaza.json found in expected locations."""
 

@@ -15,7 +15,10 @@ import yaml
 from rich.console import Console
 
 from kamiwaza_extensions.connections import ConnectionInfo, ConnectionManager
-from kamiwaza_extensions.extension_detector import ExtensionDetector
+from kamiwaza_extensions.extension_detector import (
+    ExtensionDetector,
+    infer_extension_type,
+)
 from kamiwaza_extensions_lib.local_dev import (
     BRIDGE_ENV_VARS,
     BridgeContext,
@@ -76,7 +79,15 @@ class DevLocalRunner:
             # to inject envelope headers, so KAMIWAZA_USE_AUTH=true with
             # no bridge would just 401 every protected route. Refuse
             # with a clear hint instead of silently misbehaving.
-            ext_type = (info.metadata or {}).get("type", "app")
+            #
+            # PR #87 round-6 review: route the type lookup through the
+            # shared ``infer_extension_type`` helper so the legacy
+            # ``template_type`` fallback (and name-prefix heuristics for
+            # ``tool-``/``service-``/``mcp-``) are honored. Without this,
+            # a legacy extension whose kamiwaza.json carries only
+            # ``template_type: "service"`` would default to ``"app"``
+            # here and silently slip past the gate.
+            ext_type = infer_extension_type(info.metadata or {})
             if ext_type != "app":
                 raise LocalDevAuthError(
                     f"--auth is only supported for `app`-type extensions; "

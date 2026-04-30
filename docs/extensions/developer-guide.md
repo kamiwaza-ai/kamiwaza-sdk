@@ -84,6 +84,13 @@ production will fail here too. If no usable connection exists, `--auth`
 fails loudly (e.g. `no active Kamiwaza connection — run \`kz-ext login\`
 first`, exit code 2) instead of falling back to anonymous.
 
+> **`--auth` is `app`-only in v1.** The bridge mechanism is the Next.js
+> middleware shipped with the app template; `service`/`tool` extensions
+> have no equivalent Python-side bridge yet. Running `--auth` against a
+> non-`app` extension fails fast with a clear message — see the
+> [CLI reference](./cli-reference/dev-local.md#fail-loud-behavior) for
+> the full fail-loud table.
+
 `--auth` also injects Docker host-gateway routing so containers can
 reach loopback-bound Kamiwaza URLs on your host (`https://kamiwaza.test`,
 `http://localhost:8000`, etc.) without extra plumbing. Bare loopbacks

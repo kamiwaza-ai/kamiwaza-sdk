@@ -90,7 +90,7 @@ class TestDoctorExtensionChecks:
     def test_ts_runtime_lib_found(self, tmp_path):
         pkg_file = tmp_path / "package.json"
         pkg_file.write_text(json.dumps({
-            "dependencies": {"@kamiwaza-ai/extensions-lib": "^0.2.0"}
+            "dependencies": {"@kamiwaza-ai/extensions-lib": "^0.4.0"}
         }))
         checker = DoctorChecker(config_dir=tmp_path / ".kamiwaza")
         result = checker._check_ts_runtime_lib(pkg_file)

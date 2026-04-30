@@ -47,6 +47,31 @@ const GATE_ENV = "KZ_EXT_DEV_LOCAL_AUTH";
 const TOKEN_ENV = "KAMIWAZA_BEARER_TOKEN";
 const WORKROOM_ENV = "KAMIWAZA_DEV_WORKROOM_ID";
 
+/**
+ * Forwarded-auth envelope headers that the platform gateway owns in
+ * production. Under the local-dev bridge we MUST clear all of these
+ * before injecting our synthesized values — otherwise a client-supplied
+ * spoof (e.g. `x-user-system-high: 1`) would slip through unchanged and
+ * make local auth tests pass for permissions the user doesn't actually
+ * have. Mirrors the proxy.ts FORWARD_REQUEST_HEADERS allowlist for
+ * envelope fields (intentionally excludes `cookie`, `content-type`,
+ * etc., which are not auth-bearing).
+ */
+const FORWARDED_AUTH_HEADERS = [
+    "authorization",
+    "x-auth-token",
+    "x-user-id",
+    "x-user-email",
+    "x-user-name",
+    "x-user-roles",
+    "x-user-system-high",
+    "x-workroom-id",
+    "x-user-workroom-id",
+    "x-user-workroom-role",
+    "x-user-signature",
+    "x-user-signature-ts",
+];
+
 interface JwtClaims {
     sub?: string;
     email?: string;
@@ -196,7 +221,19 @@ export function _buildBridgedHeaders(
         return incoming;
     }
 
+    // PR #87 round-6 review (codex P2) — sanitize ALL forwarded-auth
+    // envelope headers before bridging. Starting from `new Headers(incoming)`
+    // and only `set()`-ing a subset would preserve client-supplied values
+    // for headers we don't bridge (e.g. a request with no `authorization`
+    // but with `x-user-system-high: 1` or `x-user-workroom-role: admin`
+    // would forward those spoofed values to the backend, making local
+    // auth tests pass in ways production wouldn't — in production the
+    // platform gateway owns the entire envelope). Clear every header in
+    // FORWARDED_AUTH_HEADERS first, then set only the synthesized values.
     const out = new Headers(incoming);
+    for (const header of FORWARDED_AUTH_HEADERS) {
+        out.delete(header);
+    }
     out.set("authorization", `Bearer ${config.token}`);
     out.set("x-user-id", claims.sub);
     // x-workroom-id is required by strict extract_identity() under

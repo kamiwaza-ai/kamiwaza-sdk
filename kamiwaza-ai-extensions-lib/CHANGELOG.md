@@ -3,6 +3,49 @@
 Versions follow semver. Distributed alongside `kamiwaza-sdk` but versioned
 independently.
 
+## [0.4.0] — 2026-04-30 (ENG-4318)
+
+### Added
+
+* New subpath export `@kamiwaza-ai/extensions-lib/local-dev-auth` with
+  `createLocalDevAuthMiddleware()` — Next.js middleware that bridges the
+  developer's identity from `kz-ext login` into a running extension when
+  `kz-ext dev local --auth` sets `KZ_EXT_DEV_LOCAL_AUTH=1` and
+  `KAMIWAZA_BEARER_TOKEN` on the container. Synthesizes the platform's
+  forwarded-auth envelope (`authorization`, `x-user-id`, `x-user-email`,
+  `x-user-name`, `x-user-roles`, `x-workroom-id`) from the bearer's JWT
+  claims so the rest of the extension code (proxy, identity extractor,
+  session router, AuthGuard) sees the same input shape it gets in
+  production.
+* The new export deliberately ships under its own subpath — importing
+  `@kamiwaza-ai/extensions-lib/server` does NOT pull in `next/server`,
+  preserving the package's "Next is an optional peer dep" contract for
+  consumers that only use `fetchModels` / `createProxyHandlers` /
+  `extractIdentity`.
+
+### Behavior notes
+
+* The bridge is a no-op pass-through when the gate env var is unset
+  (production behaviour preserved).
+* When the gate is set, all forwarded-auth envelope headers on the
+  inbound request are cleared before the synthesized values are
+  injected — defends against client-supplied spoofs of fields we don't
+  bridge (e.g. `x-user-system-high`, `x-user-workroom-role`).
+* Inbound requests that already carry an `authorization` header are
+  passed through unchanged (real platform identity always wins over the
+  bridge — defense in depth if the gate accidentally bleeds into a
+  non-dev environment).
+* `KAMIWAZA_DEV_WORKROOM_ID` env var optionally overrides the
+  synthesized `x-workroom-id`; otherwise it defaults to the JWT `sub`
+  so the strict identity path succeeds and `workroom_id` is stable
+  per-developer.
+* JWT decoding is signature-less (the platform validates the bearer at
+  request time) and UTF-8-aware so non-ASCII claims (`name`, `email`)
+  round-trip correctly instead of mojibake.
+* Warnings ("gate enabled but token unset" / "token undecodable") are
+  throttled to once-per-process to avoid log spam under N parallel
+  request chunks on a Next.js page.
+
 ## [0.3.0] — 2026-04-29 (D210 M2)
 
 ### Added

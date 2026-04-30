@@ -172,6 +172,55 @@ describe("_buildBridgedHeaders", () => {
         expect(out).toBe(incoming); // pass-through
     });
 
+    it("clears spoofed envelope headers before bridging (round-6 codex P2)", () => {
+        // A request without `authorization` but with client-supplied
+        // envelope headers (e.g. `x-user-system-high: 1`,
+        // `x-user-roles: admin,owner`, `x-user-workroom-role: admin`)
+        // must not have those spoofed values forwarded to the backend.
+        // Round-6 review: the bridge previously preserved them because
+        // it started from `new Headers(incoming)` and only set a subset.
+        const token = makeJwt({ sub: "user-bridge", email: "u@x" });
+        process.env[GATE] = "1";
+        process.env[TOKEN] = token;
+
+        const incoming = new Headers({
+            // No `authorization` — the bridge will activate.
+            "x-user-id": "spoof-user",
+            "x-user-email": "evil@example.com",
+            "x-user-name": "Spoof",
+            "x-user-roles": "admin,owner",
+            "x-user-system-high": "1",
+            "x-user-workroom-role": "admin",
+            "x-user-workroom-id": "wr-spoof",
+            "x-workroom-id": "wr-spoof",
+            "x-user-signature": "fake-sig",
+            "x-user-signature-ts": "12345",
+            "x-user-id-extra": "should-be-preserved",
+        });
+
+        const out = _buildBridgedHeaders(incoming);
+
+        // Authoritative bridged values
+        expect(out.get("authorization")).toBe(`Bearer ${token}`);
+        expect(out.get("x-user-id")).toBe("user-bridge");
+        expect(out.get("x-user-email")).toBe("u@x");
+        // x-workroom-id falls back to JWT sub (no override env set)
+        expect(out.get("x-workroom-id")).toBe("user-bridge");
+
+        // Spoofed envelope fields the JWT didn't set must be CLEARED,
+        // not preserved from the incoming request.
+        expect(out.get("x-user-roles")).toBeNull();
+        expect(out.get("x-user-system-high")).toBeNull();
+        expect(out.get("x-user-workroom-role")).toBeNull();
+        expect(out.get("x-user-workroom-id")).toBeNull();
+        expect(out.get("x-user-signature")).toBeNull();
+        expect(out.get("x-user-signature-ts")).toBeNull();
+        expect(out.get("x-auth-token")).toBeNull();
+
+        // Non-envelope headers must be preserved
+        expect(out.get("x-user-id-extra")).toBe("should-be-preserved");
+    });
+
     it("falls back to top-level `roles` claim when realm_access is absent", () => {
         // Round-2 review Medium #14 — non-Keycloak IdPs use top-level roles.
         const token = makeJwt({
