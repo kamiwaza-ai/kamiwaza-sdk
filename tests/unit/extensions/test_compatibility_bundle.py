@@ -55,6 +55,42 @@ class TestCompatibilityBundleResource:
         # Must parse cleanly — invalid specifier here would break Doctor.
         SpecifierSet(bundle["runtime_lib_compat"]["python"]["kamiwaza-extensions-lib"])
 
+    def test_bundle_is_in_pyproject_package_data(self):
+        """PR-86 round-2 C1: compatibility.json must be declared in
+        pyproject.toml's [tool.setuptools.package-data] for kamiwaza_extensions
+        — otherwise wheel/sdist installs ship without it and `kz-ext doctor`
+        crashes with FileNotFoundError on every runtime-lib check.
+
+        The earlier coherence test caught content drift; this catches
+        packaging drift."""
+        from pathlib import Path
+
+        pyproject_path = (
+            Path(__file__).resolve().parents[3] / "pyproject.toml"
+        )
+        text = pyproject_path.read_text()
+        # Find the package-data section for kamiwaza_extensions and verify
+        # compatibility.json is listed. We do a coarse string check (no full
+        # TOML parse) to keep this independent of the toml stdlib version.
+        kw_line = next(
+            (
+                line for line in text.splitlines()
+                if line.lstrip().startswith("kamiwaza_extensions ")
+                and "=" in line
+                and "templates" in line  # disambiguate from the "lib" entry
+            ),
+            None,
+        )
+        assert kw_line is not None, (
+            "kamiwaza_extensions package-data entry not found in pyproject.toml"
+        )
+        assert "compatibility.json" in kw_line, (
+            f"compatibility.json missing from kamiwaza_extensions package-data:\n"
+            f"  {kw_line}\n"
+            "Add it so wheel/sdist installs ship the bundle "
+            "(otherwise kz-ext doctor crashes on FileNotFoundError)."
+        )
+
     def test_typescript_range_is_npm_semver(self, bundle):
         # Loose check — npm semver is too permissive to validate strictly here,
         # but it must at least be a non-empty string.
@@ -129,6 +165,29 @@ class TestPythonRuntimeLibCheck:
         req.write_text("kamiwaza-extensions-lib>=99.0,<100.0\n")
         result = checker._check_python_runtime_lib(req)
         assert result.status == "warn"
+
+    def test_fresh_scaffold_pin_falls_within_compat_window(self, checker, tmp_path):
+        """PR-86 round-2 H3: a freshly scaffolded project's `requirements.txt`
+        pin must already pass `kz-ext doctor`'s compatibility check.
+
+        Otherwise every new extension trips a warning the moment it's
+        created — a DX papercut for the headline ``kz-ext create`` flow.
+        """
+        from kamiwaza_extensions.scaffolder import build_render_context, substitute
+
+        ctx = build_render_context(name="probe", type_="tool")
+        # The tool template's requirements.txt uses the placeholder.
+        rendered = substitute(
+            "kamiwaza-extensions-lib{{python_runtime_lib_version}}\n", ctx
+        )
+        req_file = tmp_path / "requirements.txt"
+        req_file.write_text(rendered)
+        result = checker._check_python_runtime_lib(req_file)
+        assert result.status == "pass", (
+            f"fresh scaffold pin {rendered.strip()!r} fails compat check; "
+            f"build_render_context's runtime-lib version must align with "
+            f"compatibility.json's supported window"
+        )
 
 
 # ---------------------------------------------------------------------------

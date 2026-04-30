@@ -3,4 +3,4 @@ uvicorn[standard]>=0.23.0
 httpx>=0.25.0
 openai>=1.0.0
 pyjwt>=2.0.0
-kamiwaza-extensions-lib>=0.1.0
+kamiwaza-extensions-lib>=0.2,<0.4

@@ -141,28 +141,45 @@ def run_update(
             "running normal update flow."
         )
 
-    summary = _reconcile(
+    manifest = get_manifest(template_shape)
+    # PR-86 (round 2) C2: in --non-interactive mode, run a plan-only pass
+    # FIRST. If conflicts exist, exit before writing anything. The previous
+    # implementation ran the full _reconcile (writing clean files + bumping
+    # template_version) and then checked summary.conflicts — leaving the
+    # checkout in a partially-updated state on failure. Worse, the bumped
+    # template_version masks the still-conflicting files on the next
+    # `kz-ext update` run (recorded_version now matches manifest, so the
+    # version check passes).
+    if non_interactive:
+        plan = _reconcile(
+            cwd=cwd,
+            metadata_path=metadata_path,
+            metadata=metadata,
+            manifest=manifest,
+            recorded_version=recorded_version,
+            dry_run=True,  # plan only — no writes
+            force=force,
+            non_interactive=True,
+            quiet=True,  # suppress duplicate summary print
+        )
+        if plan.conflicts > 0:
+            console.print(
+                f"[red]Error:[/red] {plan.conflicts} conflict(s) would require "
+                "interactive resolution; --non-interactive refuses to proceed. "
+                "No files were modified."
+            )
+            raise typer.Exit(code=int(ExitCode.VALIDATION))
+
+    return _reconcile(
         cwd=cwd,
         metadata_path=metadata_path,
         metadata=metadata,
-        manifest=get_manifest(template_shape),
+        manifest=manifest,
         recorded_version=recorded_version,
         dry_run=dry_run,
         force=force,
         non_interactive=non_interactive,
     )
-    # PR-86 C3: --non-interactive must exit non-zero if any conflict was
-    # detected. The design contract (§4.2.3) is "Fail (non-zero exit) if any
-    # conflict would require prompting." Without this, CI runs of `kz-ext
-    # update --non-interactive` silently leave conflicts unreconciled and
-    # report green.
-    if non_interactive and summary.conflicts > 0:
-        console.print(
-            f"[red]Error:[/red] {summary.conflicts} conflict(s) would require "
-            "interactive resolution; --non-interactive refuses to proceed."
-        )
-        raise typer.Exit(code=int(ExitCode.VALIDATION))
-    return summary
 
 
 def _load_and_validate_metadata(cwd: Path) -> tuple[Path, dict, str]:
@@ -275,6 +292,7 @@ def _reconcile(
     dry_run: bool,
     force: bool,
     non_interactive: bool,
+    quiet: bool = False,
 ) -> UpdateSummary:
     summary = UpdateSummary()
     _apply_migrations(cwd, manifest, summary, dry_run=dry_run)
@@ -317,7 +335,8 @@ def _reconcile(
         new_hashes=new_hashes,
         dry_run=dry_run,
     )
-    _print_summary(summary, dry_run=dry_run)
+    if not quiet:
+        _print_summary(summary, dry_run=dry_run)
     return summary
 
 

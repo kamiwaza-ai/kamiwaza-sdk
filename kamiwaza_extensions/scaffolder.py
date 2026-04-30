@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 import subprocess
+from functools import lru_cache
 from importlib import resources as importlib_resources
 from pathlib import Path
 from typing import Dict
@@ -35,18 +36,47 @@ def build_render_context(name: str, type_: str) -> Dict[str, str]:
     iteration-1 finding I7). Both ``Scaffolder.create()`` and ``UpdateCommand``
     must produce byte-identical rendered output for unmodified files; the
     only way to guarantee that is to share the context source.
+
+    Runtime-lib pins (Py + TS) are read from
+    ``kamiwaza_extensions/compatibility.json`` so a fresh scaffold's
+    ``requirements.txt`` / ``package.json`` always matches the doctor's
+    supported window — no first-run warnings on a brand-new scaffold
+    (PR-86 round-2 H3).
     """
     major = __version__.split(".")[0]
     next_major = str(int(major) + 1)
+    py_pin, ts_pin = _runtime_lib_pins()
     return {
         "{{name}}": name,
         "{{version}}": "0.1.0",
         "{{kz_ext_version}}": f">={__version__},<{next_major}.0.0",
-        "{{python_runtime_lib_version}}": ">=0.1.0",
-        "{{ts_runtime_lib_version}}": "^0.2.0",
+        "{{python_runtime_lib_version}}": py_pin,
+        "{{ts_runtime_lib_version}}": ts_pin,
         "{{description}}": f"A Kamiwaza {type_} extension",
         "{{type}}": type_,
     }
+
+
+@lru_cache(maxsize=1)
+def _runtime_lib_pins() -> tuple[str, str]:
+    """Read the bundled ``compatibility.json`` and return (py_pin, ts_pin)
+    suitable for direct rendering into ``requirements.txt`` / ``package.json``.
+
+    Falls back to permissive ranges if the bundle is missing or malformed —
+    the ``test_compatibility_bundle.py`` invariants guard against that
+    actually shipping, so this branch is purely defensive.
+    """
+    try:
+        bundle = json.loads(
+            (importlib_resources.files("kamiwaza_extensions") / "compatibility.json")
+            .read_text(encoding="utf-8")
+        )
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return (">=0.3.0,<0.4.0", "^0.3.0")
+    compat = bundle.get("runtime_lib_compat", {})
+    py = compat.get("python", {}).get("kamiwaza-extensions-lib", ">=0.3.0,<0.4.0")
+    ts = compat.get("typescript", {}).get("@kamiwaza-ai/extensions-lib", "^0.3.0")
+    return (py, ts)
 
 
 def substitute(text: str, context: Dict[str, str]) -> str:

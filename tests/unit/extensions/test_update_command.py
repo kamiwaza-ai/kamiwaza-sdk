@@ -310,6 +310,67 @@ def test_modified_file_conflicts_on_template_change(tmp_path, monkeypatch):
     assert target.read_text() == "# my edits\n"
 
 
+def test_non_interactive_failure_does_not_partially_write(tmp_path, monkeypatch):
+    """PR-86 round-2 C2: a failing --non-interactive update must not leave
+    the scaffold in a partially-updated state. Specifically:
+      * kamiwaza.json.template_version must NOT have been bumped
+      * clean preserve_if_modified files (not the conflicting one) must
+        NOT have been re-written
+
+    The previous implementation ran the full _reconcile (writing files +
+    bumping version) before checking conflicts, leaving silent corruption.
+    """
+    from kamiwaza_extensions import template_manifest as tm
+
+    scaffold = _make_scaffold(tmp_path, monkeypatch, type_="tool")
+    meta_path = scaffold / "kamiwaza.json"
+    pre_meta_text = meta_path.read_text()
+    pre_meta = json.loads(pre_meta_text)
+    pre_version = pre_meta["template_version"]
+
+    # File 1: untouched (would auto-update via clean-since-record path).
+    clean_target = scaffold / "src" / "server.py"
+    # File 2: conflicting (author edited).
+    # Tool template only has src/server.py as preserve_if_modified, so
+    # conflict it via author-edit. Use README.md (also preserve_if_modified)
+    # for the would-be-clean target.
+    readme = scaffold / "README.md"
+    readme_pre_text = readme.read_text()
+
+    # Edit src/server.py to create a conflict.
+    clean_target.write_text("# my edits — conflict\n")
+
+    # Now bump the manifest's template_version so a "clean" file would
+    # otherwise get its hash refreshed (which would still leave evidence
+    # of writes even if version-bump alone is preserved).
+    original = tm.MANIFESTS["tool"]
+    bumped = tm.TemplateManifest(
+        shape=original.shape,
+        template_version="9.9.9-test",
+        files=original.files,
+        migrations=original.migrations,
+    )
+    monkeypatch.setitem(tm.MANIFESTS, "tool", bumped)
+
+    monkeypatch.chdir(scaffold)
+    with pytest.raises(typer.Exit):
+        run_update(non_interactive=True)
+
+    # Post-failure invariants:
+    # 1. kamiwaza.json's template_version is unchanged (NOT 9.9.9-test).
+    refreshed_meta = json.loads(meta_path.read_text())
+    assert refreshed_meta["template_version"] == pre_version, (
+        "non-interactive failure must not have bumped template_version"
+    )
+    # 2. README.md (would-be-clean) was NOT rewritten.
+    assert readme.read_text() == readme_pre_text, (
+        "non-interactive failure must not write any files, including "
+        "would-be-clean preserve_if_modified files"
+    )
+    # 3. The author's edit on src/server.py is preserved (sanity).
+    assert clean_target.read_text() == "# my edits — conflict\n"
+
+
 def test_bootstrap_records_hashes_from_on_disk_content(tmp_path, monkeypatch):
     """PR-86 C4: --bootstrap stamps hashes from the *current* on-disk
     content (the user is adopting whatever they have as the baseline).
