@@ -12,6 +12,7 @@ from importlib import resources
 from pathlib import Path
 from typing import List, Literal, Optional
 
+from packaging.requirements import InvalidRequirement, Requirement
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
 
@@ -51,6 +52,279 @@ def _uac_9d_hints() -> list[dict]:
         .read_text(encoding="utf-8")
     )
     return list(data["classes"])
+
+
+@lru_cache(maxsize=1)
+def _compatibility_bundle() -> dict:
+    """Load the per-CLI-version compatibility map (ENG-3897 / T2.18).
+
+    The bundle ships with the package so it works in wheel, sdist, and
+    editable installs alike — the file is a package-data resource, not a
+    module import.
+    """
+    return json.loads(
+        resources.files("kamiwaza_extensions")
+        .joinpath("compatibility.json")
+        .read_text(encoding="utf-8")
+    )
+
+
+# Match the leading version-like substring of an npm semver range.
+# Handles caret/tilde/range/exact forms commonly seen in package.json:
+#   ^0.3.0 → 0.3.0
+#   ~0.3   → 0.3
+#   0.1.5  → 0.1.5
+#   >=0.2  → 0.2 (we read whichever lower bound appears first)
+_NPM_VERSION_HEAD_RE = re.compile(r"(\d+(?:\.\d+){0,2})")
+
+
+def _spec_bounds(spec_set: SpecifierSet) -> tuple[Optional[Version], Optional[Version]]:
+    """Extract (lower, upper) Version bounds from a ``SpecifierSet``.
+
+    Returns ``(None, None)`` for unbounded sides. ``>=X`` / ``>X`` / ``~=X``
+    contribute to lower; ``<X`` / ``<=X`` contribute to upper. Multiple
+    specs of the same direction collapse to the most-restrictive bound
+    (max for lower, min for upper).
+
+    Round-5 ultrareview H2: ``~=`` is a *compatible-release* operator and
+    contributes BOTH a lower and an upper bound (PEP 440 §5.5):
+
+      * ``~=X.Y.Z`` → ``>=X.Y.Z, <X.(Y+1)``
+      * ``~=X.Y``   → ``>=X.Y,   <(X+1)``
+      * ``~=X``     → invalid per PEP 440 (must have ≥ 2 release segments)
+
+    The previous implementation treated ``~=`` as lower-only, so a tight
+    pin like ``kamiwaza-extensions-lib~=0.3.0`` (which expands to
+    ``>=0.3.0,<0.4.0`` and is fully inside ``>=0.2,<0.4``) was falsely
+    warned as having no upper bound.
+    """
+    lower: Optional[Version] = None
+    upper: Optional[Version] = None
+    for spec in spec_set:
+        op = spec.operator
+        raw = spec.version
+        try:
+            ver = Version(raw)
+        except InvalidVersion:
+            continue
+        if op in (">=", ">", "~="):
+            if lower is None or ver > lower:
+                lower = ver
+        elif op in ("<", "<="):
+            if upper is None or ver < upper:
+                upper = ver
+        if op == "~=":
+            # Derive the implied upper from the *raw* string — packaging's
+            # Version normalises ``"0.3"`` and ``"0.3.0"`` to equal values,
+            # so we can't recover the segment count from ``ver``.
+            implied_upper = _tilde_eq_upper(raw)
+            if implied_upper is not None and (
+                upper is None or implied_upper < upper
+            ):
+                upper = implied_upper
+    return lower, upper
+
+
+def _tilde_eq_upper(raw: str) -> Optional[Version]:
+    """Compute the implied upper bound for a PEP 440 ``~=`` operand.
+
+    Returns ``None`` for malformed input (lets the caller fall through to
+    the original lower-only behavior rather than crash).
+    """
+    # Strip a trailing dev/pre/post release tag — ``~=1.2.dev0`` still
+    # caps at ``2.0`` for X.Y form. We only need the leading release
+    # segments to count them.
+    head = re.match(r"^\s*(\d+(?:\.\d+)*)", raw)
+    if head is None:
+        return None
+    parts = [int(p) for p in head.group(1).split(".")]
+    if len(parts) < 2:
+        return None
+    if len(parts) >= 3:
+        # ~=X.Y.Z[.…] → upper at X.(Y+1)
+        return Version(f"{parts[0]}.{parts[1] + 1}")
+    # ~=X.Y → upper at (X+1)
+    return Version(f"{parts[0] + 1}")
+
+
+def _bounds_outside_supported(
+    declared_lower: Optional[Version],
+    declared_upper: Optional[Version],
+    supported_lower: Optional[Version],
+    supported_upper: Optional[Version],
+) -> Optional[str]:
+    """Shared bounds-based containment check for both Python and TS specs.
+
+    Round-4 ultrareview H2 + H3 — declared must be fully contained in
+    supported (every admitted version of declared must also be admitted
+    by supported). Sufficient by checking that declared's bounds don't
+    extend beyond supported's bounds.
+    """
+    if supported_lower is not None:
+        if declared_lower is None:
+            return (
+                f"declared has no lower bound but supported requires "
+                f">={supported_lower}"
+            )
+        if declared_lower < supported_lower:
+            return (
+                f"declared lower bound {declared_lower} is below supported "
+                f"floor {supported_lower}"
+            )
+    if supported_upper is not None:
+        if declared_upper is None:
+            return (
+                f"declared has no upper bound but supported requires "
+                f"<{supported_upper}"
+            )
+        if declared_upper > supported_upper:
+            return (
+                f"declared upper bound {declared_upper} is above supported "
+                f"ceiling {supported_upper}"
+            )
+    return None
+
+
+def _python_spec_outside_supported(
+    declared: SpecifierSet, supported: SpecifierSet
+) -> Optional[str]:
+    """Return a human reason if ``declared`` admits versions outside ``supported``.
+
+    Round-4 ultrareview H2 — the prior implementation only checked
+    *overlap* (does declared admit any supported version?). That misses
+    open-ended specs like ``>=0.2`` or ``~=0.2`` (= ``>=0.2,<1.0``)
+    against ``>=0.2,<0.4``: there IS overlap (0.2 satisfies both), but
+    pip can legally resolve ``0.4+`` which is outside supported.
+
+    The correct check is *full containment*: every version that
+    ``declared`` admits must also be admitted by ``supported``.
+    Sufficient (and conservative) by checking endpoints:
+      * Each ``==`` pin must be in ``supported``.
+      * If ``supported`` has a lower bound, ``declared`` must too AND
+        declared's lower must be ≥ supported's lower. (Otherwise declared
+        admits versions below the floor.)
+      * If ``supported`` has an upper bound, ``declared`` must too AND
+        declared's upper must be ≤ supported's upper. (Otherwise declared
+        admits versions above the ceiling — the round-4 case.)
+
+    Returns ``None`` when ``declared`` is fully contained in ``supported``.
+    """
+    pinned: list[Version] = []
+    for spec in declared:
+        if spec.operator == "==":
+            try:
+                pinned.append(Version(spec.version))
+            except InvalidVersion:
+                pass
+    for ver in pinned:
+        if ver not in supported:
+            return f"pinned {ver} not in {supported}"
+    # If declared is purely a set of == pins, the pinned check above is
+    # sufficient (supported admits each one).
+    has_range = any(spec.operator != "==" for spec in declared)
+    if not has_range and pinned:
+        return None
+
+    declared_lower, declared_upper = _spec_bounds(declared)
+    supported_lower, supported_upper = _spec_bounds(supported)
+    return _bounds_outside_supported(
+        declared_lower, declared_upper, supported_lower, supported_upper
+    )
+
+
+def _npm_bounds(spec: str) -> tuple[Optional[Version], Optional[Version]]:
+    """Parse an npm semver spec into ``(lower, upper)`` PEP 440 ``Version``
+    bounds. Round-4 ultrareview H3 — the prior implementation only
+    looked at the leading version token (lower bound), so an
+    open-ended spec like ``">=0.2"`` or ``"0.2"`` (bare/exact) had no
+    detected upper bound. The doctor then passed ``>=0.2`` against a
+    supported ``>=0.2,<0.4`` range even though npm could resolve a
+    future ``0.4+`` release.
+
+    This handles the common npm shapes:
+      * ``^X.Y.Z``    → [X.Y.Z, (X+1).0.0) or, for X=0, [0.Y.Z, 0.(Y+1).0)
+      * ``~X.Y.Z``    → [X.Y.Z, X.(Y+1).0)
+      * ``X.Y.Z``     → exact (lower == upper)
+      * ``>=X,<Y`` (or whitespace-separated) → explicit bounds
+      * ``>=X``, ``<X``, ``>X``, ``<=X`` → single-direction
+      * ``*`` / ``latest`` / unparseable → ``(None, None)`` (fail open)
+    """
+    spec = spec.strip()
+    if not spec or spec in ("*", "latest", "x", "X"):
+        return (None, None)
+    if spec.startswith("^"):
+        v = _npm_lower_bound(spec[1:])
+        if v is None:
+            return (None, None)
+        if v.major > 0:
+            upper = Version(f"{v.major + 1}.0.0")
+        elif v.minor > 0:
+            upper = Version(f"0.{v.minor + 1}.0")
+        else:
+            upper = Version(f"0.0.{v.micro + 1}")
+        return (v, upper)
+    if spec.startswith("~"):
+        v = _npm_lower_bound(spec[1:])
+        if v is None:
+            return (None, None)
+        upper = Version(f"{v.major}.{v.minor + 1}.0")
+        return (v, upper)
+    # Range or exact: split on comma or whitespace.
+    lower: Optional[Version] = None
+    upper: Optional[Version] = None
+    for part in re.split(r"[,\s]+", spec):
+        part = part.strip()
+        if not part:
+            continue
+        if part.startswith(">="):
+            v = _npm_lower_bound(part[2:])
+            if v is not None:
+                lower = v if lower is None or v > lower else lower
+        elif part.startswith(">"):
+            v = _npm_lower_bound(part[1:])
+            if v is not None:
+                lower = v if lower is None or v > lower else lower
+        elif part.startswith("<="):
+            v = _npm_lower_bound(part[2:])
+            if v is not None:
+                upper = v if upper is None or v < upper else upper
+        elif part.startswith("<"):
+            v = _npm_lower_bound(part[1:])
+            if v is not None:
+                upper = v if upper is None or v < upper else upper
+        elif part.startswith("="):
+            v = _npm_lower_bound(part[1:])
+            if v is not None:
+                lower = v
+                upper = v
+        else:
+            # Bare X.Y.Z → exact pin.
+            v = _npm_lower_bound(part)
+            if v is not None:
+                lower = v
+                upper = v
+    return (lower, upper)
+
+
+def _npm_lower_bound(spec: str) -> Optional[Version]:
+    """Best-effort: parse the first version-like substring from an npm range.
+
+    Conservative — returns None on shapes we can't parse (workspace:, git+,
+    URL deps). The CompatibilityBundle check warns rather than errors, so
+    a None result simply means "skip this check, don't crash doctor."
+    """
+    match = _NPM_VERSION_HEAD_RE.search(spec)
+    if not match:
+        return None
+    raw = match.group(1)
+    # Pad to a 3-component version so packaging.Version is happy with "0.3".
+    parts = raw.split(".")
+    while len(parts) < 3:
+        parts.append("0")
+    try:
+        return Version(".".join(parts))
+    except InvalidVersion:
+        return None
 
 
 @dataclass
@@ -579,28 +853,119 @@ class DoctorChecker:
             )
 
     def _check_python_runtime_lib(self, req_file: Path) -> CheckResult:
-        content = req_file.read_text()
-        if "kamiwaza-extensions-lib" in content:
-            return CheckResult("Runtime lib (Python)", "pass", "kamiwaza-extensions-lib found in requirements.txt")
+        compat_range = (
+            _compatibility_bundle()
+            .get("runtime_lib_compat", {})
+            .get("python", {})
+            .get("kamiwaza-extensions-lib", "")
+        )
+        # PR-86 H7: parse via ``packaging.requirements.Requirement`` so we
+        # don't accidentally match prefix-aliases like
+        # ``kamiwaza-extensions-lib-extras`` and we tolerate PEP 508 extras
+        # / env-markers (``kamiwaza-extensions-lib[extras]>=0.3``).
+        declared_req: Optional[Requirement] = None
+        for line in req_file.read_text().splitlines():
+            line = line.split("#", 1)[0].strip()
+            if not line:
+                continue
+            try:
+                req = Requirement(line)
+            except InvalidRequirement:
+                continue
+            if req.name.lower() != "kamiwaza-extensions-lib":
+                continue
+            declared_req = req
+            break
+        if declared_req is None:
+            return CheckResult(
+                "Runtime lib (Python)", "warn",
+                "kamiwaza-extensions-lib not found in requirements.txt",
+                fix=f"Add 'kamiwaza-extensions-lib{compat_range}' to requirements.txt",
+            )
+        declared_spec = str(declared_req.specifier) or ""
+        if not compat_range:
+            return CheckResult(
+                "Runtime lib (Python)", "pass",
+                f"kamiwaza-extensions-lib{declared_spec} matches any (no compat range bundled)",
+            )
+        try:
+            supported = SpecifierSet(compat_range)
+        except InvalidSpecifier:
+            # Bundle range malformed — fail open with the declared spec passing.
+            return CheckResult(
+                "Runtime lib (Python)", "pass",
+                f"kamiwaza-extensions-lib{declared_spec} (compat range unparseable, skipping check)",
+            )
+        # PR-86 M6: range-vs-range overlap. ``declared_req.specifier`` is a
+        # SpecifierSet too — every version that satisfies it MUST also satisfy
+        # ``supported`` for the dependency to be safe. We approximate by
+        # checking the declared spec's lower bound + a few key probe points.
+        out_of_range_reason = _python_spec_outside_supported(
+            declared_req.specifier, supported
+        )
+        if out_of_range_reason is not None:
+            return CheckResult(
+                "Runtime lib (Python)", "warn",
+                f"kamiwaza-extensions-lib{declared_spec} is outside CLI compatibility range {compat_range} ({out_of_range_reason})",
+                fix=f"Update to 'kamiwaza-extensions-lib{compat_range}'",
+            )
         return CheckResult(
-            "Runtime lib (Python)", "warn",
-            "kamiwaza-extensions-lib not found in requirements.txt",
-            fix="Add 'kamiwaza-extensions-lib>=0.1.0' to requirements.txt",
+            "Runtime lib (Python)", "pass",
+            f"kamiwaza-extensions-lib{declared_spec} matches {compat_range}",
         )
 
     def _check_ts_runtime_lib(self, pkg_file: Path) -> CheckResult:
+        compat_range = (
+            _compatibility_bundle()
+            .get("runtime_lib_compat", {})
+            .get("typescript", {})
+            .get("@kamiwaza-ai/extensions-lib", "")
+        )
         try:
             with pkg_file.open() as f:
                 data = json.load(f)
             deps = {**data.get("dependencies", {}), **data.get("devDependencies", {})}
-            if "@kamiwaza-ai/extensions-lib" in deps:
-                return CheckResult("Runtime lib (TypeScript)", "pass", "@kamiwaza-ai/extensions-lib found in package.json")
         except (json.JSONDecodeError, FileNotFoundError):
-            pass
+            return CheckResult(
+                "Runtime lib (TypeScript)", "warn",
+                "package.json could not be parsed",
+            )
+        declared = deps.get("@kamiwaza-ai/extensions-lib")
+        if declared is None:
+            return CheckResult(
+                "Runtime lib (TypeScript)", "warn",
+                "@kamiwaza-ai/extensions-lib not found in package.json",
+                fix=f'Add "@kamiwaza-ai/extensions-lib": "{compat_range or "^0.3.0"}" to package.json dependencies',
+            )
+        if compat_range:
+            # Round-5 C1: parse the bundle's TS range with the npm-semver
+            # parser, not ``SpecifierSet``. The bundle's TS entry uses npm
+            # syntax (whitespace-separated bounds) so it can be rendered
+            # directly into ``frontend/package.json`` — feeding it to
+            # ``SpecifierSet`` (PEP 440, comma-separated) crashed with
+            # ``InvalidSpecifier`` and the doctor silently fell open.
+            supported_lower, supported_upper = _npm_bounds(compat_range)
+            if supported_lower is not None or supported_upper is not None:
+                # Round-4 H3: full-containment check (was: lower-only probe).
+                # Parse npm semver bounds from `declared` and compare both
+                # endpoints against `supported` to catch open-ended specs
+                # like ">=0.2" or "0.2" that admit future major releases.
+                declared_lower, declared_upper = _npm_bounds(declared)
+                reason = _bounds_outside_supported(
+                    declared_lower,
+                    declared_upper,
+                    supported_lower,
+                    supported_upper,
+                )
+                if reason is not None:
+                    return CheckResult(
+                        "Runtime lib (TypeScript)", "warn",
+                        f"@kamiwaza-ai/extensions-lib {declared} is outside CLI compatibility range {compat_range} ({reason})",
+                        fix=f'Update to "@kamiwaza-ai/extensions-lib": "{compat_range}"',
+                    )
         return CheckResult(
-            "Runtime lib (TypeScript)", "warn",
-            "@kamiwaza-ai/extensions-lib not found in package.json",
-            fix='Add "@kamiwaza-ai/extensions-lib": "^0.2.0" to package.json dependencies',
+            "Runtime lib (TypeScript)", "pass",
+            f"@kamiwaza-ai/extensions-lib {declared} matches {compat_range or 'any'}",
         )
 
     # ------------------------------------------------------------------

@@ -19,6 +19,11 @@
       "name": "platform_outage",
       "exit_code": 13,
       "doctor_hint": "Platform API unreachable or returning 5xx. Try `kz-ext doctor` and check platform status."
+    },
+    {
+      "name": "stream_interrupted",
+      "exit_code": 14,
+      "doctor_hint": "Upstream streaming response failed after bytes were committed downstream. Most often a network drop mid-stream; check upstream connectivity and the platform's request-timeout settings. Pre-commit 401s would have surfaced as platform_outage; if you see stream_interrupted alongside repeated 401s, refresh-loop your auth path."
     }
   ]
 }

@@ -81,9 +81,21 @@ class TestCLIErrorFlow:
         assert result.exit_code == 1
         assert "Invalid type" in result.output
 
-    def test_create_non_empty_directory(self, tmp_path, monkeypatch):
+    def test_create_non_empty_directory_scaffolds_into_subdir(self, tmp_path, monkeypatch):
+        # Updated 2026-04-29 (ENG-3898 P1 §4.8): non-empty cwd no longer
+        # errors; the scaffolder routes into ./<name>/.
         (tmp_path / "existing.txt").write_text("hello")
         monkeypatch.chdir(tmp_path)
         result = runner.invoke(app, ["create", "--type", "app", "--name", "my-app"])
-        assert result.exit_code == 1
-        assert "not empty" in result.output
+        assert result.exit_code == 0, result.output
+        assert (tmp_path / "my-app" / "kamiwaza.json").exists()
+
+    def test_create_errors_when_target_subdir_has_content(self, tmp_path, monkeypatch):
+        (tmp_path / "existing.txt").write_text("hello")
+        target = tmp_path / "my-app"
+        target.mkdir()
+        (target / "leftover.py").write_text("# ...")
+        monkeypatch.chdir(tmp_path)
+        result = runner.invoke(app, ["create", "--type", "app", "--name", "my-app"])
+        assert result.exit_code != 0
+        assert "already exists" in result.output or "not empty" in result.output

@@ -29,6 +29,21 @@ def publish_profile(
 
     mgr = ProfileManager()
 
+    # P8 (§4.8 walkthrough): `kz-ext config publish-profile list` is the
+    # natural shape users reach for. We route bare-word "list" to the
+    # --list path so users don't hit the misleading "Profile name required"
+    # error when they expected a subcommand. show/delete are NOT routed
+    # this way intentionally — those need a target profile name as their
+    # argument (`--show <name>` / `--delete <name>` are unambiguous; bare
+    # `show` would conflict with creating a profile literally named "show").
+    _no_update_flags = not any([
+        registry, catalog_endpoint, catalog_bucket,
+        catalog_credentials, catalog_prefix,
+    ])
+    if name == "list" and _no_update_flags and not (show or delete):
+        _list_profiles(mgr)
+        return
+
     # --list mode
     if list_profiles:
         _list_profiles(mgr)

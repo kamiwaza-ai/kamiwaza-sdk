@@ -8,7 +8,7 @@ lightweight async library — not the full SDK with its sync HTTP client
 and 20+ service modules.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.3.0"
 
 from .auth import forward_auth_headers, require_auth, require_role
 from .client import KamiwazaExtClient
@@ -18,6 +18,7 @@ from .errors import (
     MisboundAuthError,
     OutOfEnvelopeAccessError,
     PlatformOutageError,
+    StreamInterruptedError,
     UnexpectedContextError,
 )
 from .identity import (
@@ -48,6 +49,7 @@ __all__ = [
     "UnexpectedContextError",
     "OutOfEnvelopeAccessError",
     "PlatformOutageError",
+    "StreamInterruptedError",
     "get_model_client",
     "list_available_models",
 ]

@@ -1,6 +1,21 @@
 import type { ProxyConfig } from "./types";
 
-/** Headers to forward from the incoming request to the backend. */
+/** Headers to forward from the incoming request to the backend.
+ *
+ * Round-3 ultrareview C1 fix: the allowlist was missing
+ * ``x-user-system-high``, ``x-user-workroom-role``, and the
+ * ``x-user-workroom-id`` alias kept by the platform during the
+ * workroom-id migration window. Without them, the Next.js→backend hop
+ * stripped envelope fields that ``IdentityExtractor.extract_identity()``
+ * relies on, so backend-side ``Identity.system_high`` and
+ * ``Identity.workroom_role`` were always ``None`` for proxied requests.
+ *
+ * The HMAC pair (``x-user-signature`` / ``x-user-signature-ts``) is part
+ * of the platform-internal envelope but extensions deliberately don't
+ * verify it (§4.4.2 revised 2026-04-23). We forward them anyway so the
+ * envelope arrives intact at the backend, in case a future
+ * platform-side check inspects them.
+ */
 const FORWARD_REQUEST_HEADERS = new Set([
     "authorization",
     "x-auth-token",
@@ -8,8 +23,25 @@ const FORWARD_REQUEST_HEADERS = new Set([
     "x-user-email",
     "x-user-name",
     "x-user-roles",
+    "x-user-system-high",
     "x-workroom-id",
+    "x-user-workroom-id",
+    "x-user-workroom-role",
     "x-request-id",
+    "x-user-signature",
+    "x-user-signature-ts",
+    // ``cookie`` is forwarded verbatim from the incoming Next.js request
+    // (the browser → Next.js hop) to the backend extension service.
+    // The canonical extension auth surface is the envelope-header pair
+    // (``x-user-id`` + ``authorization``/``x-auth-token``); ``cookie``
+    // is forwarded only because some backend services use the platform
+    // session cookie for compatibility with the legacy SDK proxy. The
+    // response side strips ``set-cookie`` (DENY_RESPONSE_HEADERS), so a
+    // backend service cannot mint or rotate cookies through this proxy.
+    // If your extension doesn't need cookie passthrough, override
+    // ``FORWARD_REQUEST_HEADERS`` in your ProxyConfig — round-6 H4
+    // tracks tightening this default in a follow-up once the legacy
+    // session-cookie consumers are inventoried.
     "cookie",
     "content-type",
 ]);
@@ -164,4 +196,8 @@ export function createProxyHandlers(config: ProxyConfig) {
 }
 
 // Exported for testing
-export { resolveTarget as _resolveTarget, filterResponseHeaders as _filterResponseHeaders };
+export {
+    resolveTarget as _resolveTarget,
+    filterResponseHeaders as _filterResponseHeaders,
+    buildForwardHeaders as _buildForwardHeaders,
+};
