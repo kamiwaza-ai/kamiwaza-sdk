@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from kamiwaza_extensions.connections import ConnectionInfo, ConnectionManager
+from kamiwaza_extensions.connections import ConnectionManager
 from kamiwaza_extensions_lib.local_dev import (
     BridgeContext,
     LocalDevAuthError,

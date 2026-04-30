@@ -18,7 +18,6 @@ from kamiwaza_extensions.connections import ConnectionInfo, ConnectionManager
 from kamiwaza_extensions.extension_detector import ExtensionDetector
 from kamiwaza_extensions_lib.local_dev import (
     BridgeContext,
-    LocalDevAuthError,
     extract_extra_hosts,
     prepare_bridge_context,
     rewrite_bare_loopback_url,

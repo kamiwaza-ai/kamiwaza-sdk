@@ -148,6 +148,11 @@ _APP_FILES: tuple[TemplateOwnedFile, ...] = (
     _owned("frontend/src/app/providers.tsx"),
     _owned("frontend/src/app/logged-out/page.tsx"),
     _owned("frontend/src/components/NavBar.tsx"),
+    # Local-dev auth bridge middleware — pass-through in production so
+    # safe to commit to scaffolded extensions; only synthesizes envelope
+    # headers when KZ_EXT_DEV_LOCAL_AUTH=1 (set by `kz-ext dev local
+    # --auth`). See ENG-4318.
+    _owned("frontend/src/middleware.ts"),
     # Author-owned in spirit — the home page and global stylesheet are
     # where authors will spend most of their time. They're listed in
     # AUTHOR_OWNED_DENYLIST below.

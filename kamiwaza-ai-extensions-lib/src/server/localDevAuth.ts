@@ -25,7 +25,17 @@
  *     non-dev environment, real platform identity wins).
  */
 
-import { NextResponse, type NextRequest, type NextMiddleware } from "next/server";
+import { NextResponse, type NextRequest } from "next/server";
+
+/**
+ * Compatible with Next.js's `middleware` export shape: a single-argument
+ * function that returns a `NextResponse`. Distinct from `NextMiddleware`
+ * (which is the two-argument form Next.js uses internally) — we expose
+ * the single-argument shape so users can write
+ * `export function middleware(req) { return localDevAuth(req); }` without
+ * having to also forward the `NextFetchEvent`.
+ */
+export type LocalDevAuthMiddleware = (request: NextRequest) => NextResponse;
 
 const GATE_ENV = "KZ_EXT_DEV_LOCAL_AUTH";
 const TOKEN_ENV = "KAMIWAZA_BEARER_TOKEN";
@@ -143,8 +153,8 @@ export function _buildBridgedHeaders(incoming: Headers): Headers {
  * Safe to wire unconditionally — the middleware is a pass-through when the
  * gate env var is not set.
  */
-export function createLocalDevAuthMiddleware(): NextMiddleware {
-    return (req: NextRequest) => {
+export function createLocalDevAuthMiddleware(): LocalDevAuthMiddleware {
+    return (req: NextRequest): NextResponse => {
         const bridged = _buildBridgedHeaders(req.headers);
         if (bridged === req.headers) return NextResponse.next();
         return NextResponse.next({ request: { headers: bridged } });

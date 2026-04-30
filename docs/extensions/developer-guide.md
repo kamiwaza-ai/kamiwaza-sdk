@@ -64,12 +64,63 @@ The auto-prefix convention (`tool-` and `service-`) still applies.
 your machine's Docker daemon — no cluster, no Kubernetes. It is the
 quickest feedback loop while iterating.
 
+By default the extension runs in standalone mode (`KAMIWAZA_USE_AUTH=false`):
+all calls into the platform are anonymous. That's enough for iterating on
+UI and pure-extension logic. When you need to exercise the real auth path
+— forwarded-bearer model client, identity middleware, role checks —
+add `--auth`:
+
+```sh
+kz-ext login --url https://kamiwaza.test --no-verify-ssl   # one-time per machine
+kz-ext dev local --auth
+```
+
+`--auth` bridges your active `kz-ext login` connection's bearer into the
+container, so the extension's identity / proxy / model-client paths see
+the same `Authorization` and `x-user-id` envelope they get when the
+extension is deployed behind the platform gateway. This is the **real
+auth path** — no synthetic dev users — so any mismatch you'd hit in
+production will fail here too. If no usable connection exists, `--auth`
+fails loudly with a `kz-ext login required` message instead of falling
+back to anonymous.
+
+`--auth` also injects Docker host-gateway routing so containers can
+reach loopback-bound Kamiwaza URLs on your host (`https://kamiwaza.test`,
+`http://localhost:8000`, etc.) without extra plumbing. Bare loopbacks
+are rewritten to `host.docker.internal`; named hostnames keep their
+original name (so TLS SNI matches your local cert) and get an
+`extra_hosts: <name>:host-gateway` entry in the compose overlay.
+
 > **Frontend hot-reload:** `kz-ext dev local` invokes `next build && next start`,
 > so frontend changes require a re-run. We deliberately ship the
 > production build path locally to keep behavior identical to what
 > deploys to the cluster — `next dev` mode is on the post-v1.0 roadmap.
 > Backend changes still hot-reload via `uvicorn --reload` inside the
 > backend container.
+
+> **`--auth` security note:** the bearer is passed to the container as
+> `KAMIWAZA_BEARER_TOKEN` (visible to anything that can run `docker
+> inspect` on your host). That's acceptable for local dev where you
+> trust your own machine. The bearer is read once at start time — if
+> you rotate the token via `kz-ext login` mid-session, restart
+> `kz-ext dev local --auth` to pick up the new one.
+
+> **Existing extensions:** the bridge depends on a Next.js middleware
+> that the latest app template includes by default. If you scaffolded
+> your extension before this landed, add this one-liner:
+>
+> ```ts
+> // frontend/src/middleware.ts
+> import type { NextRequest } from "next/server";
+> import { createLocalDevAuthMiddleware } from "@kamiwaza-ai/extensions-lib/server";
+>
+> const localDevAuth = createLocalDevAuthMiddleware();
+> export function middleware(request: NextRequest) { return localDevAuth(request); }
+> export const config = { matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"] };
+> ```
+>
+> The middleware is a pass-through whenever the bridge env var is unset
+> (i.e. always in production), so it's safe to commit.
 
 ## `kz-ext dev` — deploy onto a cluster
 
