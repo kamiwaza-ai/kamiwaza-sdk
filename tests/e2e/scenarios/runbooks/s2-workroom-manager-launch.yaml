@@ -1,0 +1,27 @@
+id: "S2"
+name: "App launched from Workroom Manager"
+sign_off_actor: "SDK team"
+uacs:
+  - UAC-9c
+  - UAC-16
+prd_ref: "PRD §EDX-E2E-1 / Appendix A Scenario 2"
+notes: |
+  Platform discoverability (the listing endpoint that surfaces deployed
+  extensions inside Workroom Manager) is platform-side and tracked outside
+  D210; this scenario validates that the extension *side* works once the
+  platform lists it. SDK-team-automated.
+
+steps:
+  - name: scaffold_app
+    description: "kz-ext create --shape app; deploy via kz-ext dev to staging."
+  - name: assert_workroom_scoped_identity_headers
+    description: "Stub a Workroom Manager-style invocation that injects X-Workroom-Id; assert the backend resolves the workroom-scoped identity (UAC-9c)."
+  - name: assert_global_workroom_sentinel_handling
+    description: "Repeat with the all-f UUID global-workroom sentinel; assert IdentityExtractor returns the expected workroom semantics (test-vectors.json case `global-workroom-sentinel`)."
+  - name: assert_workroom_boundary_enforcement
+    description: "Attempt to access a workroom-scoped resource from outside the declared workroom; assert the runtime lib raises OutOfEnvelopeAccessError."
+
+expected_outcomes:
+  - "Workroom-scoped identity surfaces correctly inside the backend regardless of how the platform launches the extension."
+  - "Global-workroom sentinel is honored uniformly with the IdentityExtractor canonical test vectors."
+  - "No platform listing dependency is required to validate the extension side of S2."
