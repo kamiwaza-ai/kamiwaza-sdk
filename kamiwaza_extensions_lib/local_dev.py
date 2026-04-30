@@ -68,13 +68,15 @@ def _hostname(url: str) -> Optional[str]:
     return host or None
 
 
-_DEFAULT_RESOLVER = socket.gethostbyname
+def _default_resolver(host: str) -> str:
+    """Indirection so monkeypatch on socket.gethostbyname works at call time."""
+    return socket.gethostbyname(host)
 
 
 def is_loopback_url(
     url: str,
     *,
-    resolver=_DEFAULT_RESOLVER,
+    resolver=None,
 ) -> bool:
     """Return True if `url`'s hostname is loopback or unresolvable from a
     container.
@@ -105,7 +107,7 @@ def is_loopback_url(
     # Hostname — try to resolve. Unresolvable means the developer has it
     # mapped via /etc/hosts on the host but containers can't see that.
     try:
-        resolver(host)
+        (resolver or _default_resolver)(host)
         return False
     except OSError:
         return True
@@ -136,7 +138,7 @@ def rewrite_bare_loopback_url(url: str) -> str:
 def extract_extra_hosts(
     url: str,
     *,
-    resolver=_DEFAULT_RESOLVER,
+    resolver=None,
 ) -> list[str]:
     """Return compose ``extra_hosts`` entries needed to reach `url` from
     inside a container.

@@ -11,6 +11,7 @@ import pytest
 from kamiwaza_extensions.connections import ConnectionInfo
 from kamiwaza_extensions.dev_local import (
     apply_port_remaps,
+    build_compose_extra_hosts,
     build_env_overlay,
     detect_compose_command,
     find_available_port,
@@ -18,6 +19,7 @@ from kamiwaza_extensions.dev_local import (
     parse_port_mapping,
     resolve_port_conflicts,
 )
+from kamiwaza_extensions_lib.local_dev import BridgeContext
 
 
 @pytest.mark.unit
@@ -42,6 +44,108 @@ class TestEnvOverlay:
         )
         overlay = build_env_overlay(conn, "my-app")
         assert overlay["KAMIWAZA_PUBLIC_API_URL"] == "https://example.com/api-gateway"
+
+    def test_auth_false_preserves_current_behaviour(self):
+        # TS-5 — auth=False is the existing path; no gate, no bearer, USE_AUTH=false
+        conn = ConnectionInfo(
+            name="test", url="https://example.com/api", active=True, created_at=0.0
+        )
+        overlay = build_env_overlay(conn, "my-app", auth=False)
+        assert "KZ_EXT_DEV_LOCAL_AUTH" not in overlay
+        assert "KAMIWAZA_BEARER_TOKEN" not in overlay
+        assert overlay["KAMIWAZA_USE_AUTH"] == "false"
+
+    def test_auth_true_with_bridge_injects_bearer_and_gate(self):
+        # TS-6 — auth=True with bridge: gate, bearer, USE_AUTH=true
+        conn = ConnectionInfo(
+            name="test", url="https://example.com/api", active=True, created_at=0.0
+        )
+        bridge = BridgeContext(
+            bearer_token="bearer-xyz",
+            api_url="https://example.com/api",
+            public_api_url="https://example.com",
+            verify_ssl=True,
+            expires_at=None,
+            user_id="user-1",
+        )
+        overlay = build_env_overlay(conn, "my-app", auth=True, bridge=bridge)
+        assert overlay["KZ_EXT_DEV_LOCAL_AUTH"] == "1"
+        assert overlay["KAMIWAZA_BEARER_TOKEN"] == "bearer-xyz"
+        assert overlay["KAMIWAZA_USE_AUTH"] == "true"
+
+    def test_auth_true_without_bridge_raises(self):
+        # Defensive: caller must pass bridge when auth=True
+        conn = ConnectionInfo(
+            name="test", url="https://example.com/api", active=True, created_at=0.0
+        )
+        with pytest.raises(ValueError, match="bridge"):
+            build_env_overlay(conn, "my-app", auth=True, bridge=None)
+
+    def test_auth_true_rewrites_bare_loopback(self):
+        # TS-7 — bare loopback URL gets rewritten to host.docker.internal
+        conn = ConnectionInfo(
+            name="local", url="http://localhost:8000/api", active=True, created_at=0.0
+        )
+        bridge = BridgeContext(
+            bearer_token="t",
+            api_url="http://localhost:8000/api",
+            public_api_url="http://localhost:8000",
+            verify_ssl=True,
+            expires_at=None,
+            user_id=None,
+        )
+        overlay = build_env_overlay(conn, "my-app", auth=True, bridge=bridge)
+        assert overlay["KAMIWAZA_API_URL"] == "http://host.docker.internal:8000/api"
+        assert overlay["KAMIWAZA_PUBLIC_API_URL"] == "http://host.docker.internal:8000"
+
+    def test_auth_true_preserves_named_hostname(self):
+        # TS-8 — kamiwaza.test preserved (TLS cert binding)
+        conn = ConnectionInfo(
+            name="dev",
+            url="https://kamiwaza.test/api",
+            active=True,
+            created_at=0.0,
+            verify_ssl=False,
+        )
+        bridge = BridgeContext(
+            bearer_token="t",
+            api_url="https://kamiwaza.test/api",
+            public_api_url="https://kamiwaza.test",
+            verify_ssl=False,
+            expires_at=None,
+            user_id=None,
+        )
+        overlay = build_env_overlay(conn, "my-app", auth=True, bridge=bridge)
+        assert overlay["KAMIWAZA_API_URL"] == "https://kamiwaza.test/api"
+        assert overlay["KAMIWAZA_PUBLIC_API_URL"] == "https://kamiwaza.test"
+        assert overlay["KAMIWAZA_VERIFY_SSL"] == "false"
+
+
+@pytest.mark.unit
+class TestBuildComposeExtraHosts:
+    def test_named_loopback_returns_host_gateway(self):
+        # TS-9
+        conn = ConnectionInfo(
+            name="dev", url="https://kamiwaza.test/api", active=True, created_at=0.0
+        )
+        # `kamiwaza.test` is detected as loopback by TLD heuristic, no DNS needed
+        assert build_compose_extra_hosts(conn) == ["kamiwaza.test:host-gateway"]
+
+    def test_bare_loopback_returns_empty(self):
+        # TS-11
+        conn = ConnectionInfo(
+            name="local", url="http://localhost:8000/api", active=True, created_at=0.0
+        )
+        assert build_compose_extra_hosts(conn) == []
+
+    def test_non_loopback_returns_empty(self, monkeypatch):
+        # TS-10
+        import socket as _socket
+        monkeypatch.setattr(_socket, "gethostbyname", lambda h: "1.2.3.4")
+        conn = ConnectionInfo(
+            name="prod", url="https://api.kamiwaza.ai", active=True, created_at=0.0
+        )
+        assert build_compose_extra_hosts(conn) == []
 
 
 @pytest.mark.unit

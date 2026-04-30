@@ -16,6 +16,13 @@ from rich.console import Console
 
 from kamiwaza_extensions.connections import ConnectionInfo, ConnectionManager
 from kamiwaza_extensions.extension_detector import ExtensionDetector
+from kamiwaza_extensions_lib.local_dev import (
+    BridgeContext,
+    LocalDevAuthError,
+    extract_extra_hosts,
+    prepare_bridge_context,
+    rewrite_bare_loopback_url,
+)
 
 console = Console(stderr=True)
 
@@ -32,6 +39,7 @@ class DevLocalRunner:
         *,
         detach: bool = False,
         sdk_repo: Optional[str] = None,
+        auth: bool = False,
     ) -> int:
         from kamiwaza_extensions.sdk_override import (
             SdkOverrideSpec,
@@ -55,14 +63,29 @@ class DevLocalRunner:
         # 3. Detect compose command
         compose_cmd = detect_compose_command()
 
-        # 4. Build env overlay
+        # 4. Build env overlay (with optional --auth bridge)
         connection = self._conn_mgr.get_active_connection()
+        bridge: Optional[BridgeContext] = None
+        if auth:
+            # prepare_bridge_context raises LocalDevAuthError on no
+            # connection / missing bearer / expired token. Surface it to
+            # the developer and exit non-zero rather than starting compose.
+            bridge = prepare_bridge_context(connection_manager=self._conn_mgr)
+
         env = os.environ.copy()
         if connection:
-            overlay = build_env_overlay(connection, info.name)
+            overlay = build_env_overlay(
+                connection, info.name, auth=auth, bridge=bridge
+            )
             env.update(overlay)
             console.print(f"[dim]Using connection:[/dim] {connection.name} ({connection.url})")
-            console.print(f"[dim]KAMIWAZA_USE_AUTH=false (local dev mode)[/dim]")
+            if auth:
+                who = (bridge.user_id if bridge else None) or "?"
+                console.print(
+                    f"[dim]--auth bridge active: forwarding identity for {who}[/dim]"
+                )
+            else:
+                console.print("[dim]KAMIWAZA_USE_AUTH=false (local dev mode)[/dim]")
         else:
             console.print("[yellow]No Kamiwaza connection configured — running in standalone mode[/yellow]")
 
@@ -100,6 +123,7 @@ class DevLocalRunner:
         remaps: Dict[str, Tuple[int, int]] = {}
         patched_compose_file: Optional[str] = None
         sdk_override_file: Optional[str] = None
+        extra_hosts_file: Optional[str] = None
 
         try:
             if info.compose_data:
@@ -136,6 +160,32 @@ class DevLocalRunner:
                 fd.close()
                 sdk_override_file = fd.name
 
+            # 7b. Generate extra_hosts overlay when --auth + named loopback
+            # (e.g. https://kamiwaza.test). Bare loopbacks are handled by
+            # build_env_overlay's URL rewrite so they don't need this.
+            if auth and connection and info.compose_data:
+                eh_entries = build_compose_extra_hosts(connection)
+                if eh_entries:
+                    services = info.compose_data.get("services", {})
+                    eh_overlay = {
+                        "services": {
+                            svc: {"extra_hosts": list(eh_entries)}
+                            for svc in services.keys()
+                        }
+                    }
+                    fd = tempfile.NamedTemporaryFile(
+                        mode="w",
+                        suffix=".yml",
+                        prefix="kz-extra-hosts-",
+                        delete=False,
+                    )
+                    yaml.dump(eh_overlay, fd, default_flow_style=False)
+                    fd.close()
+                    extra_hosts_file = fd.name
+                    console.print(
+                        f"[dim]Routing {', '.join(eh_entries)} via host-gateway[/dim]"
+                    )
+
             # 8. Build the project-identifier prefix (compose binary +
             # -f / --project-directory args). The same prefix is used for
             # `compose up` and the post-up `compose port` lookup so they
@@ -145,7 +195,9 @@ class DevLocalRunner:
             compose_prefix = compose_cmd + ["-f", compose_file_arg]
             if sdk_override_file:
                 compose_prefix += ["-f", sdk_override_file]
-            if patched_compose_file or sdk_override_file:
+            if extra_hosts_file:
+                compose_prefix += ["-f", extra_hosts_file]
+            if patched_compose_file or sdk_override_file or extra_hosts_file:
                 compose_prefix += ["--project-directory", str(info.path)]
 
             cmd = list(compose_prefix) + ["up", "--build"]
@@ -179,7 +231,7 @@ class DevLocalRunner:
 
             return rc
         finally:
-            for tmp in (patched_compose_file, sdk_override_file):
+            for tmp in (patched_compose_file, sdk_override_file, extra_hosts_file):
                 if tmp:
                     try:
                         os.unlink(tmp)
@@ -317,19 +369,61 @@ class DevLocalRunner:
 # ------------------------------------------------------------------
 
 
-def build_env_overlay(connection: ConnectionInfo, extension_name: str) -> Dict[str, str]:
-    """Build environment variable overlay from a connection."""
+def build_env_overlay(
+    connection: ConnectionInfo,
+    extension_name: str,
+    *,
+    auth: bool = False,
+    bridge: Optional[BridgeContext] = None,
+) -> Dict[str, str]:
+    """Build environment variable overlay from a connection.
+
+    When ``auth=True``, ``bridge`` MUST be provided (caller is expected to
+    have validated the active connection via ``prepare_bridge_context``
+    upstream so any ``LocalDevAuthError`` surfaces before container start).
+    Adds ``KZ_EXT_DEV_LOCAL_AUTH=1``, ``KAMIWAZA_BEARER_TOKEN``, and
+    ``KAMIWAZA_USE_AUTH=true`` to the overlay; rewrites bare loopback URLs
+    (``localhost`` / ``127.0.0.1`` / ``::1``) to ``host.docker.internal``
+    so they're reachable from inside the container.
+
+    Named loopback hostnames (``kamiwaza.test``, ``dev.local``) are NEVER
+    rewritten — they keep their TLS-cert-bound name and rely on the compose
+    overlay's ``extra_hosts`` (see ``build_compose_extra_hosts``).
+    """
+    if auth and bridge is None:
+        raise ValueError("bridge is required when auth=True")
+
     url = connection.url
+    if auth:
+        url = rewrite_bare_loopback_url(url)
+
     env = {
         "KAMIWAZA_API_URL": url,
         "KAMIWAZA_PUBLIC_API_URL": url.removesuffix("/api"),
         "KAMIWAZA_ENDPOINT": f"{url}/v1" if not url.endswith("/v1") else url,
-        "KAMIWAZA_USE_AUTH": "false",
+        "KAMIWAZA_USE_AUTH": "true" if auth else "false",
         "KAMIWAZA_APP_NAME": extension_name,
     }
     if not connection.verify_ssl:
         env["KAMIWAZA_VERIFY_SSL"] = "false"
+    if auth:
+        # bridge is non-None here (checked above) — narrow for type checkers.
+        assert bridge is not None
+        env["KZ_EXT_DEV_LOCAL_AUTH"] = "1"
+        env["KAMIWAZA_BEARER_TOKEN"] = bridge.bearer_token
     return env
+
+
+def build_compose_extra_hosts(connection: ConnectionInfo) -> List[str]:
+    """Return compose ``extra_hosts`` entries needed to reach the connection's
+    Kamiwaza URL from inside a container.
+
+    Returns ``[]`` for non-loopback URLs and for bare loopbacks (those are
+    handled by ``build_env_overlay``'s URL rewrite). Returns
+    ``["<hostname>:host-gateway"]`` for named loopback hostnames such as
+    ``kamiwaza.test``.
+    """
+    return extract_extra_hosts(connection.url)
 
 
 def parse_port_mapping(port_spec: str) -> Tuple[Optional[int], Optional[int]]:
