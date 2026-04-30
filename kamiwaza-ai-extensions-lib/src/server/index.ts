@@ -1,7 +1,12 @@
 export { extractIdentity, extractIdentityStrict } from "./identity";
 export { createProxyHandlers } from "./proxy";
 export { fetchModels } from "./models";
-export { streamWithRefresh, asStreamInterrupted } from "./token-refresh";
+export {
+    streamWithRefresh,
+    asStreamInterrupted,
+    BodyTooLargeError,
+    DEFAULT_MAX_BUFFER_BYTES,
+} from "./token-refresh";
 export type {
     ProxyOpts,
     RefreshFn,

@@ -48,6 +48,7 @@ from kamiwaza_extensions.template_manifest import (
     AUTHOR_OWNED_DENYLIST,
     MANIFESTS,
     TemplateManifest,
+    TemplateMigration,
     TemplateOwnedFile,
     current_template_version,
     get_manifest,
@@ -150,6 +151,18 @@ def run_update(
     # template_version masks the still-conflicting files on the next
     # `kz-ext update` run (recorded_version now matches manifest, so the
     # version check passes).
+    #
+    # Round-3 review M1 — the plan→apply approach has a TOCTOU window: an
+    # external writer (file watcher, IDE save, parallel kz-ext invocation)
+    # could mutate disk between the two passes. The apply pass re-reads
+    # ``existing_content`` per file in ``_reconcile_file``, so a clean→dirty
+    # flip becomes a fresh conflict on the apply pass (which then either
+    # silently skips that file in non-interactive mode — without a
+    # corresponding plan-pass conflict count — or auto-updates a file that
+    # the plan said would be a conflict). For CI use this is a non-issue
+    # in practice; documenting that the apply pass is best-effort
+    # idempotent rather than strictly atomic. A single-pass design with
+    # buffered writes would close this; tracked as a follow-up.
     if non_interactive:
         plan = _reconcile(
             cwd=cwd,
@@ -348,8 +361,24 @@ def _apply_migrations(
     v1 manifests register no migrations — this is a hook for future template
     renames. The algorithm runs strictly before any diff so a renamed file
     follows its history rather than appearing as "old gone, new appeared."
+
+    Round-3 review H3: explicitly sort migrations by ``since_version`` so
+    that a manifest tuple containing entries in any order still applies
+    them in semver order. Earlier code relied on tuple-declared order,
+    which silently broke when authors hand-sorted incorrectly. Falls back
+    to declared order for entries with unparseable ``since_version``
+    (defensive — manifest invariant test should catch this earlier).
     """
-    for mig in manifest.migrations:
+    from packaging.version import InvalidVersion, Version
+
+    def _key(mig: TemplateMigration):
+        try:
+            return (0, Version(mig.since_version))
+        except InvalidVersion:
+            # Push unparseable entries to the end with stable relative order.
+            return (1, mig.since_version)
+
+    for mig in sorted(manifest.migrations, key=_key):
         old = cwd / mig.old_path
         new = cwd / mig.new_path
         if not (old.exists() and not new.exists()):
@@ -514,7 +543,15 @@ def _reconcile_binary(
 def _create_missing(
     rel: str, target_path: Path, new_content: str, *, dry_run: bool
 ) -> FileResult:
-    """Target file doesn't exist on disk — create it from the rendered template."""
+    """Target file doesn't exist on disk — create it from the rendered template.
+
+    Records ``new_hash`` because a created file might be a
+    ``preserve_if_modified`` file (the manifest's strategy isn't visible
+    here, but recording the hash keeps the record-table populated for
+    files that ARE preserve_if_modified; spurious entries for other
+    strategies are tolerated since the consume-side only reads
+    preserve-strategy files via ``_apply_preserve_if_modified``).
+    """
     if dry_run:
         return FileResult(rel, "would-update", "creating")
     target_path.parent.mkdir(parents=True, exist_ok=True)
@@ -530,15 +567,19 @@ def _apply_overwrite(
     *,
     dry_run: bool,
 ) -> FileResult:
-    """``overwrite`` strategy: always replace, write ``.orig`` backup."""
+    """``overwrite`` strategy: always replace, write ``.orig`` backup.
+
+    No ``new_hash`` returned — overwrite-strategy files don't participate
+    in the clean-since-record flow (every update is unconditional), so
+    recording a hash for them would just pollute
+    ``template_file_hashes`` with entries that are never consulted.
+    Round-3 review M8.
+    """
     if dry_run:
         return FileResult(rel, "would-update", "overwrite")
     _backup(target_path, existing_content)
     target_path.write_text(new_content, encoding="utf-8")
-    return FileResult(
-        rel, "updated", "overwrite (.orig backup)",
-        new_hash=hash_text(new_content),
-    )
+    return FileResult(rel, "updated", "overwrite (.orig backup)")
 
 
 def _apply_preserve_if_modified(

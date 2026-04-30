@@ -37,6 +37,17 @@ export interface ProxyOpts {
     body?: BodyInit | null;
     refresh: RefreshFn;
     signal?: AbortSignal;
+    /**
+     * Upper bound on the buffered request body, in bytes. Defaults to
+     * ``DEFAULT_MAX_BUFFER_BYTES`` (8 MiB). Round-3 H1: a streamed
+     * ``request.body`` from a Next.js Route Handler is buffered to bytes
+     * up-front so the retry path can replay it. Without a cap, a
+     * multi-hundred-MB upload would balloon process memory. Set higher
+     * if you knowingly proxy large bodies AND accept the memory cost; or
+     * route those endpoints around ``streamWithRefresh`` entirely (it's
+     * sized for short-body chat-completions, not bulk uploads).
+     */
+    maxBufferBytes?: number;
 }
 
 const HOP_BY_HOP = new Set([
@@ -60,6 +71,11 @@ function passthroughHeaders(src: globalThis.Headers): Headers {
     return out;
 }
 
+function _hasHeader(headers: Headers, name: string): boolean {
+    const lower = name.toLowerCase();
+    return Object.keys(headers).some((k) => k.toLowerCase() === lower);
+}
+
 /**
  * Stream an upstream response with one transparent token-refresh retry.
  *
@@ -69,20 +85,29 @@ function passthroughHeaders(src: globalThis.Headers): Headers {
  */
 export async function streamWithRefresh(opts: ProxyOpts): Promise<Response> {
     const { url, method, headers, refresh, signal } = opts;
-    // PR-86 H1/H2: a one-shot ReadableStream body (the common
+    const maxBytes = opts.maxBufferBytes ?? DEFAULT_MAX_BUFFER_BYTES;
+    // Round-3 H1/H2: a one-shot ReadableStream body (the common
     // ``request.body`` case from a Next.js Route Handler) cannot be
     // re-played on retry, and Node's fetch requires ``duplex: "half"``
     // when sending a streamed request body. We buffer the body once
-    // up-front so:
+    // up-front (capped at ``maxBufferBytes``) so:
     //   1. fetch() doesn't reject for missing duplex on streams.
     //   2. The retry path can re-send identical bytes.
-    // Static bodies (string / Buffer / Uint8Array / null) are already
-    // re-playable; we still normalize them to a Uint8Array so the
-    // call-site doesn't have to branch.
-    const bodyBytes = await _materializeBody(opts.body);
-    const fetchInit: RequestInit = { method, headers, signal };
-    if (bodyBytes !== null) {
-        fetchInit.body = bodyBytes;
+    //   3. FormData / URLSearchParams contribute their generated
+    //      Content-Type (multipart boundary etc.) so the upstream sees
+    //      a parseable body.
+    // Static bodies (string / Buffer / Uint8Array) are already replayable;
+    // we still normalize them so the call-site doesn't have to branch.
+    const materialized = await _materializeBody(opts.body, maxBytes);
+    const effectiveHeaders: Headers = { ...headers };
+    if (materialized?.contentType && !_hasHeader(effectiveHeaders, "content-type")) {
+        // FormData/URLSearchParams without a caller-supplied Content-Type:
+        // inject the one fetch() would have generated.
+        effectiveHeaders["Content-Type"] = materialized.contentType;
+    }
+    const fetchInit: RequestInit = { method, headers: effectiveHeaders, signal };
+    if (materialized !== null) {
+        fetchInit.body = materialized.bytes;
     }
 
     let upstream = await fetch(url, fetchInit);
@@ -103,9 +128,13 @@ export async function streamWithRefresh(opts: ProxyOpts): Promise<Response> {
                 "upstream 401 and no refresh token available",
             );
         }
-        const retryInit: RequestInit = { method, headers: newHeaders, signal };
-        if (bodyBytes !== null) {
-            retryInit.body = bodyBytes;
+        const retryHeaders: Headers = { ...newHeaders };
+        if (materialized?.contentType && !_hasHeader(retryHeaders, "content-type")) {
+            retryHeaders["Content-Type"] = materialized.contentType;
+        }
+        const retryInit: RequestInit = { method, headers: retryHeaders, signal };
+        if (materialized !== null) {
+            retryInit.body = materialized.bytes;
         }
         upstream = await fetch(url, retryInit);
         if (upstream.status === 401) {
@@ -169,48 +198,133 @@ export async function streamWithRefresh(opts: ProxyOpts): Promise<Response> {
 }
 
 /**
- * Buffer a request body to bytes so we can replay it on retry and avoid
- * Node's ``duplex: "half"`` requirement for streamed bodies (PR-86 H1/H2).
+ * Default upper bound on buffered request bodies (round-3 H1). 8 MiB is
+ * generous for chat-completions JSON (typical < 100 KB) and small file
+ * uploads, and small enough to fail loudly before a Next.js Route Handler
+ * process balloons on a multi-hundred-MB upload. Override per-call via
+ * ``ProxyOpts.maxBufferBytes``.
+ */
+export const DEFAULT_MAX_BUFFER_BYTES = 8 * 1024 * 1024;
+
+export class BodyTooLargeError extends Error {
+    static readonly className = "body_too_large";
+    constructor(public readonly limit: number) {
+        super(
+            `request body exceeds streamWithRefresh's buffering cap of ${limit} bytes; ` +
+                `pass a larger maxBufferBytes or refactor the route to bypass this helper`,
+        );
+        this.name = "BodyTooLargeError";
+    }
+}
+
+/**
+ * Materialize a request body so the retry path can replay it and Node's
+ * fetch doesn't reject for a missing ``duplex: "half"`` (round-3 H1/H2).
  *
  * Accepts everything ``BodyInit`` accepts. Returns ``null`` for null /
  * undefined so the caller knows to omit ``body`` from the RequestInit.
+ *
+ * Caps total buffered size at ``maxBufferBytes``. Throws
+ * :class:`BodyTooLargeError` early rather than letting a malicious or
+ * mistakenly-large request OOM the process. For ReadableStream input we
+ * enforce the cap incrementally (no reading past the limit) so a 10 GB
+ * body doesn't even get drained.
+ *
+ * For ``FormData`` / ``URLSearchParams`` we *also* return the
+ * ``Content-Type`` header that ``fetch()`` would have stamped (multipart
+ * boundary or ``application/x-www-form-urlencoded``). The caller merges
+ * it into headers before fetch, so the upstream sees a valid body —
+ * round-3 H2.
  */
+export interface MaterializedBody {
+    bytes: Uint8Array;
+    contentType: string | null;
+}
+
 async function _materializeBody(
     body: BodyInit | null | undefined,
-): Promise<Uint8Array | null> {
+    maxBufferBytes: number,
+): Promise<MaterializedBody | null> {
     if (body === null || body === undefined) return null;
-    if (body instanceof Uint8Array) return body;
-    if (body instanceof ArrayBuffer) return new Uint8Array(body);
-    if (typeof body === "string") return new TextEncoder().encode(body);
+
+    // Already-materialized shapes — no Content-Type forced; caller's
+    // headers carry it.
+    if (body instanceof Uint8Array) {
+        _ensureUnderLimit(body.byteLength, maxBufferBytes);
+        return { bytes: body, contentType: null };
+    }
+    if (body instanceof ArrayBuffer) {
+        _ensureUnderLimit(body.byteLength, maxBufferBytes);
+        return { bytes: new Uint8Array(body), contentType: null };
+    }
+    if (typeof body === "string") {
+        const encoded = new TextEncoder().encode(body);
+        _ensureUnderLimit(encoded.byteLength, maxBufferBytes);
+        return { bytes: encoded, contentType: null };
+    }
     if (body instanceof Blob) {
-        return new Uint8Array(await body.arrayBuffer());
+        _ensureUnderLimit(body.size, maxBufferBytes);
+        return {
+            bytes: new Uint8Array(await body.arrayBuffer()),
+            // Blob's type is the Content-Type it was constructed with; fetch
+            // would have set this, so propagate.
+            contentType: body.type || null,
+        };
     }
     if (body instanceof ReadableStream) {
-        // Drain the stream into a single buffer. Lossless for retry.
+        // Drain incrementally so we can fail BEFORE consuming a 10 GB body.
         const chunks: Uint8Array[] = [];
+        let total = 0;
         const reader = body.getReader();
         for (;;) {
             const { value, done } = await reader.read();
             if (done) break;
-            if (value !== undefined) chunks.push(value);
+            if (value === undefined) continue;
+            total += value.byteLength;
+            if (total > maxBufferBytes) {
+                // Cancel upstream so the producer can stop.
+                reader.cancel().catch(() => {});
+                throw new BodyTooLargeError(maxBufferBytes);
+            }
+            chunks.push(value);
         }
-        let total = 0;
-        for (const c of chunks) total += c.byteLength;
         const out = new Uint8Array(total);
         let off = 0;
         for (const c of chunks) {
             out.set(c, off);
             off += c.byteLength;
         }
-        return out;
+        return { bytes: out, contentType: null };
     }
     if (body instanceof FormData || body instanceof URLSearchParams) {
-        // Use the standard Request constructor to serialize these into a
-        // single buffer the same way fetch() would have.
-        return new Uint8Array(await new Response(body).arrayBuffer());
+        // Round-3 H2: bare FormData / URLSearchParams need the runtime
+        // to generate a matching Content-Type (multipart boundary etc.)
+        // and that header must reach the upstream. Naive materialization
+        // produces the body bytes but loses the boundary, so the upstream
+        // fails to parse. Rather than attempt to serialize in-line (which
+        // is environment-fragile across Node fetch / undici / jsdom),
+        // refuse the input and tell the caller to pre-serialize.
+        //
+        // The dominant Next.js Route Handler shape is forwarding
+        // ``request.body`` (a ReadableStream) — that path is unaffected.
+        throw new Error(
+            "streamWithRefresh: bare FormData/URLSearchParams bodies are not " +
+                "supported. Serialize via `await new Response(body).arrayBuffer()` " +
+                "and set the Content-Type header from `new Response(body).headers` " +
+                "before calling. (Forwarding `request.body` from a Route Handler " +
+                "works as-is — only direct FormData callers hit this path.)",
+        );
     }
     // Fallback: let Response coerce whatever we got.
-    return new Uint8Array(await new Response(body as BodyInit).arrayBuffer());
+    const fallback = new Uint8Array(await new Response(body as BodyInit).arrayBuffer());
+    _ensureUnderLimit(fallback.byteLength, maxBufferBytes);
+    return { bytes: fallback, contentType: null };
+}
+
+function _ensureUnderLimit(size: number, limit: number): void {
+    if (size > limit) {
+        throw new BodyTooLargeError(limit);
+    }
 }
 
 

@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { streamWithRefresh } from "../src/server/token-refresh";
+import {
+    streamWithRefresh,
+    BodyTooLargeError,
+    DEFAULT_MAX_BUFFER_BYTES,
+} from "../src/server/token-refresh";
 import { PlatformOutageError, StreamInterruptedError } from "../src/server/errors";
 
 // TS-M2-35..36: TypeScript mirror of the Python TokenRefreshMiddleware
@@ -132,6 +136,62 @@ describe("streamWithRefresh", () => {
         expect(response.status).toBe(200);
         expect(firstSeen).toBe("payload-bytes");
         expect(secondSeen).toBe("payload-bytes");
+    });
+
+    it("round-3 H1: rejects ReadableStream bodies exceeding maxBufferBytes", async () => {
+        // 10 KB cap — a 50 KB stream should be rejected before fetch is called.
+        let fetchCalled = false;
+        global.fetch = vi.fn(async () => {
+            fetchCalled = true;
+            return new Response("ok", { status: 200 });
+        }) as unknown as typeof fetch;
+
+        const oversized = new ReadableStream<Uint8Array>({
+            start(controller) {
+                // Push 50 KB total in 10 KB chunks.
+                for (let i = 0; i < 5; i++) {
+                    controller.enqueue(new Uint8Array(10 * 1024));
+                }
+                controller.close();
+            },
+        });
+
+        await expect(
+            streamWithRefresh({
+                url: "https://upstream/v1/chat",
+                method: "POST",
+                headers: { "X-Auth-Token": "tok" },
+                body: oversized,
+                refresh: async () => null,
+                maxBufferBytes: 10 * 1024,
+            }),
+        ).rejects.toThrow(BodyTooLargeError);
+
+        expect(fetchCalled).toBe(false);
+    });
+
+    it("round-3 H1: default cap is 8 MiB", () => {
+        expect(DEFAULT_MAX_BUFFER_BYTES).toBe(8 * 1024 * 1024);
+    });
+
+    it("round-3 H2: bare FormData body is rejected with a guiding error", async () => {
+        // FormData/URLSearchParams need a runtime-generated Content-Type
+        // (multipart boundary) that's environment-fragile to materialize
+        // here. We refuse them and tell the caller to pre-serialize.
+        // The dominant case (forwarding request.body as a ReadableStream)
+        // is unaffected.
+        global.fetch = vi.fn(async () => new Response("ok", { status: 200 })) as unknown as typeof fetch;
+        const fd = new FormData();
+        fd.append("name", "alice");
+        await expect(
+            streamWithRefresh({
+                url: "https://upstream/v1/chat",
+                method: "POST",
+                headers: { "X-Auth-Token": "tok" },
+                body: fd,
+                refresh: async () => null,
+            }),
+        ).rejects.toThrow(/FormData.+not supported/i);
     });
 
     it("post-commit upstream failure surfaces StreamInterruptedError (TS-M2-33 mirror)", async () => {

@@ -185,6 +185,54 @@ def test_missing_version_without_bootstrap_errors_with_validation_exit(tmp_path,
 # ---------------------------------------------------------------------------
 
 
+def test_migrations_apply_in_version_order_regardless_of_tuple_order(tmp_path, monkeypatch):
+    """Round-3 H3: migrations are sorted by since_version even if the
+    manifest tuple lists them out of order. Without the sort, a manifest
+    where the v0.2 migration is declared before the v0.1 migration would
+    apply v0.2's rename first — silently breaking projects on v0.1."""
+    from kamiwaza_extensions import template_manifest as tm
+    from kamiwaza_extensions.commands import update as upd
+
+    scaffold = _make_scaffold(tmp_path, monkeypatch, type_="tool")
+    # Stage two files matching the OLD paths for both migrations.
+    (scaffold / "src" / "a_v01.py").write_text("# v0.1 file")
+    (scaffold / "src" / "b_v02.py").write_text("# v0.2 file")
+    monkeypatch.chdir(scaffold)
+
+    # Inject migrations in REVERSE version order (v0.2 first, then v0.1).
+    original = tm.MANIFESTS["tool"]
+    later = tm.TemplateMigration(
+        old_path="src/b_v02.py", new_path="src/b_renamed.py", since_version="0.2.0"
+    )
+    earlier = tm.TemplateMigration(
+        old_path="src/a_v01.py", new_path="src/a_renamed.py", since_version="0.1.0"
+    )
+    patched = tm.TemplateManifest(
+        shape=original.shape,
+        template_version=original.template_version,
+        files=original.files,
+        migrations=(later, earlier),  # intentionally reversed
+    )
+    monkeypatch.setitem(tm.MANIFESTS, "tool", patched)
+
+    summary = upd.run_update(non_interactive=True)
+
+    # Both renames happened.
+    assert (scaffold / "src" / "a_renamed.py").exists()
+    assert (scaffold / "src" / "b_renamed.py").exists()
+    # Order in summary.migrations reflects sorted (semver) order:
+    # a_v01.py (since 0.1) before b_v02.py (since 0.2).
+    a_idx = next(
+        i for i, m in enumerate(summary.migrations) if "a_v01.py" in m
+    )
+    b_idx = next(
+        i for i, m in enumerate(summary.migrations) if "b_v02.py" in m
+    )
+    assert a_idx < b_idx, (
+        f"migrations applied in tuple order, not version order: {summary.migrations}"
+    )
+
+
 def test_migrations_apply_before_diff(tmp_path, monkeypatch):
     """TS-M2-9 — TemplateMigration entries run in version order, before diff."""
     from kamiwaza_extensions import template_manifest as tm

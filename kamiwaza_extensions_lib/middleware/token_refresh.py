@@ -176,6 +176,17 @@ async def _drain(session: _UpstreamSession) -> AsyncIterator[bytes]:
         # extension-controlled, so re-emitting the decoded body is the
         # safest default. If a future use case wants byte-for-byte
         # passthrough, plumb a flag.
+        #
+        # Round-3 review M6: cross-language asymmetry. The Python middleware
+        # decodes via ``aiter_bytes`` and strips ``content-encoding`` from
+        # the response headers before downstream sees them; the TS sibling
+        # raw-streams ``upstream.body`` (no decoding) but also strips
+        # ``content-encoding``. Net behavior: downstream clients see
+        # decoded bodies on the Py side and (potentially) compressed
+        # bodies on the TS side, but neither side claims gzip in the
+        # response. Operators reading both sides should know this; a
+        # future revision could either decode in TS or document a
+        # streaming-passthrough mode here.
         async for chunk in session.resp.aiter_bytes():
             yield chunk
     except httpx.HTTPError as exc:

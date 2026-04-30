@@ -62,20 +62,25 @@ def _runtime_lib_pins() -> tuple[str, str]:
     """Read the bundled ``compatibility.json`` and return (py_pin, ts_pin)
     suitable for direct rendering into ``requirements.txt`` / ``package.json``.
 
-    Falls back to permissive ranges if the bundle is missing or malformed —
-    the ``test_compatibility_bundle.py`` invariants guard against that
-    actually shipping, so this branch is purely defensive.
+    Falls back to ranges that match the current bundle if the file is
+    missing or malformed — this defensive path should never execute (the
+    package-data invariant test guards against the file being absent
+    in wheels, the coherence test guards against drift). Round-3 review
+    M4: fallback ranges aligned to the current bundle so a corrupt-bundle
+    fallback doesn't render stricter pins than ``kz-ext doctor`` enforces.
     """
+    fallback_py = ">=0.2,<0.4"
+    fallback_ts = ">=0.2,<0.4"
     try:
         bundle = json.loads(
             (importlib_resources.files("kamiwaza_extensions") / "compatibility.json")
             .read_text(encoding="utf-8")
         )
     except (FileNotFoundError, json.JSONDecodeError, OSError):
-        return (">=0.3.0,<0.4.0", "^0.3.0")
+        return (fallback_py, fallback_ts)
     compat = bundle.get("runtime_lib_compat", {})
-    py = compat.get("python", {}).get("kamiwaza-extensions-lib", ">=0.3.0,<0.4.0")
-    ts = compat.get("typescript", {}).get("@kamiwaza-ai/extensions-lib", "^0.3.0")
+    py = compat.get("python", {}).get("kamiwaza-extensions-lib", fallback_py)
+    ts = compat.get("typescript", {}).get("@kamiwaza-ai/extensions-lib", fallback_ts)
     return (py, ts)
 
 
