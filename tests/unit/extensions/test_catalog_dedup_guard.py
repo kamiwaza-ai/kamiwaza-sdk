@@ -473,6 +473,61 @@ class TestPublishRevisionFlag:
             == "1.0.0-dev"
         )
 
+    def test_publish_command_prod_with_revision_uses_revision_as_image_tag(
+        self, tmp_path,
+    ):
+        """Prod stage publishes normally use bare ``{version}`` as the image
+        tag (no stage suffix). With ``--revision``, the SHA-pinned tag still
+        wins — the revision contract holds end-to-end regardless of stage."""
+        from unittest.mock import MagicMock, patch
+
+        from kamiwaza_extensions.commands.publish import run_publish
+
+        from tests.unit.extensions.test_publish_cmd import (
+            _make_extension_info,
+            _make_profile,
+            _make_publish_result,
+            _make_validation_result,
+        )
+
+        with (
+            patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher") as PubCls,
+            patch("kamiwaza_extensions.registry_builder.RegistryBuilder") as RBCls,
+            patch("kamiwaza_extensions.image_pusher.ImagePusher"),
+            patch("kamiwaza_extensions.image_builder.ImageBuilder") as BuildCls,
+            patch("kamiwaza_extensions.profile_manager.ProfileManager") as PMCls,
+            patch("kamiwaza_extensions.compose_transformer.ComposeTransformer") as CTCls,
+            patch("kamiwaza_extensions.validators.compose.ComposeValidator") as CVCls,
+            patch("kamiwaza_extensions.validators.metadata.MetadataValidator") as MVCls,
+            patch("kamiwaza_extensions.extension_detector.ExtensionDetector") as DetCls,
+        ):
+            DetCls.return_value.detect.return_value = _make_extension_info(tmp_path)
+            MVCls.return_value.validate.return_value = _make_validation_result()
+            CVCls.return_value.validate.return_value = _make_validation_result()
+            PMCls.return_value.resolve_profile.return_value = _make_profile()
+            CTCls.return_value.transform.return_value = {"services": {}}
+            BuildCls.return_value.build.return_value = []
+
+            rb = MagicMock()
+            rb.build_entry.return_value = {"name": "my-app", "version": "1.0.0"}
+            RBCls.return_value = rb
+
+            PubCls.return_value.publish.return_value = _make_publish_result()
+
+            run_publish(stage="prod", revision="1.0.0-abc1234")
+
+        # Revision wins over the bare-version prod default.
+        assert (
+            CTCls.return_value.transform.call_args.kwargs["revision_tag"]
+            == "1.0.0-abc1234"
+        )
+        assert (
+            BuildCls.return_value.build.call_args.kwargs["revision_tag"]
+            == "1.0.0-abc1234"
+        )
+        # Catalog stage still recorded as prod.
+        assert rb.build_entry.call_args.kwargs["stage"] == "prod"
+
 
 @pytest.mark.unit
 class TestPublishRevisionGrammarValidatedEarly:
