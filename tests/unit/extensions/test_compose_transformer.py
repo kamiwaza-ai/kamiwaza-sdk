@@ -131,6 +131,54 @@ class TestExternalImages:
         assert result["services"]["cache"]["image"] == "redis:7-alpine"
 
 
+class TestNonBuildableInternalImages:
+    """Pattern C — services with ``image:`` but no ``build:`` whose image
+    name happens to contain the extension name (e.g. a helper image
+    published from a separate repo). publish does not own these images;
+    their declared tag must pass through verbatim. (ENG-3591: prior to the
+    fix, the override tag was applied here too, pointing the catalog at a
+    tag publish never built or pushed.)"""
+
+    def test_internal_named_helper_preserved(self, transformer):
+        compose = {
+            "services": {
+                "helper": {"image": "kamiwazaai/my-app-helper:0.5.0"},
+            },
+        }
+        result = transformer.transform(
+            compose, "my-app", "1.0.0-dev-abc1234", "kamiwazaai",
+        )
+        # Tag preserved verbatim despite the SHA-pinned revision_tag.
+        assert (
+            result["services"]["helper"]["image"]
+            == "kamiwazaai/my-app-helper:0.5.0"
+        )
+
+    def test_mixed_buildable_and_pattern_c(self, transformer):
+        compose = {
+            "services": {
+                "backend": {"build": "./backend"},
+                "helper": {"image": "kamiwazaai/my-app-helper:0.5.0"},
+                "db": {"image": "postgres:15"},
+            },
+        }
+        result = transformer.transform(
+            compose, "my-app", "1.0.0-dev-abc1234", "kamiwazaai",
+        )
+        # Buildable: rewritten with the revision tag.
+        assert (
+            result["services"]["backend"]["image"]
+            == "kamiwazaai/my-app-backend:1.0.0-dev-abc1234"
+        )
+        # Pattern C: preserved verbatim.
+        assert (
+            result["services"]["helper"]["image"]
+            == "kamiwazaai/my-app-helper:0.5.0"
+        )
+        # External: preserved verbatim.
+        assert result["services"]["db"]["image"] == "postgres:15"
+
+
 class TestResourceLimits:
     def test_adds_default_limits(self, transformer):
         compose = {"services": {"api": {"image": "my-app/api:1"}}}

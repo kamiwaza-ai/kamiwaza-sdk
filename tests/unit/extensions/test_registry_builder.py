@@ -73,31 +73,21 @@ class TestBuildEntry:
         assert "kamiwazaai/my-app-backend:1.0.0" in entry["docker_images"]
         assert "postgres:15" in entry["docker_images"]
 
-    def test_stage_transforms_tags(self, builder, metadata, transformed_compose):
-        entry = builder.build_entry(
-            metadata, transformed_compose, "kamiwazaai", "1.0.0", stage="stage"
-        )
-        images = entry["docker_images"]
-        assert "kamiwazaai/my-app-frontend:1.0.0-stage" in images
-        assert "kamiwazaai/my-app-backend:1.0.0-stage" in images
-        # External image unchanged
-        assert "postgres:15" in images
-
-    def test_dev_stage(self, builder, metadata, transformed_compose):
+    def test_preserves_image_tags_from_transformed_compose(
+        self, builder, metadata, transformed_compose,
+    ):
+        # build_entry trusts ComposeTransformer's output and does not
+        # re-rewrite image tags. Whatever tags appear in transformed_compose
+        # land verbatim in the catalog entry.
         entry = builder.build_entry(
             metadata, transformed_compose, "kamiwazaai", "1.0.0", stage="dev"
         )
         images = entry["docker_images"]
-        assert "kamiwazaai/my-app-frontend:1.0.0-dev" in images
-        assert "kamiwazaai/my-app-backend:1.0.0-dev" in images
-
-    def test_prod_stage_no_suffix(self, builder, metadata, transformed_compose):
-        entry = builder.build_entry(
-            metadata, transformed_compose, "kamiwazaai", "1.0.0", stage="prod"
-        )
-        images = entry["docker_images"]
+        # transformed_compose already carries `:1.0.0` for buildable services.
         assert "kamiwazaai/my-app-frontend:1.0.0" in images
         assert "kamiwazaai/my-app-backend:1.0.0" in images
+        # External image unchanged regardless.
+        assert "postgres:15" in images
 
     def test_kamiwaza_version_included_when_present(
         self, builder, transformed_compose
@@ -179,6 +169,106 @@ class TestBuildEntry:
         }
         entry = builder.build_entry(meta, compose, "reg", "1.0.0")
         assert entry["docker_images"].count("custom/sidecar:latest") == 1
+
+
+# ------------------------------------------------------------------
+# build_entry treats ComposeTransformer as canonical (ENG-3591)
+# ------------------------------------------------------------------
+
+
+class TestBuildEntryRespectsComposeTransformerOutput:
+    """build_entry no longer second-passes the compose YAML through a regex
+    rewrite. Whatever tags ComposeTransformer left in the dict — including
+    revision-overridden buildable-service tags AND verbatim Pattern C
+    image refs (no build context) — flow through to the catalog entry
+    unchanged."""
+
+    def test_revision_pinned_buildable_tags_pass_through(self, builder):
+        # Simulates ComposeTransformer's output for a publish run with
+        # --revision 1.0.0-dev-abc1234.
+        transformed = {
+            "services": {
+                "backend": {"image": "kamiwazaai/my-app-backend:1.0.0-dev-abc1234"},
+                "frontend": {"image": "kamiwazaai/my-app-frontend:1.0.0-dev-abc1234"},
+            },
+        }
+        entry = builder.build_entry(
+            {"name": "my-app", "description": "x"},
+            transformed,
+            "kamiwazaai",
+            "1.0.0",
+            stage="dev",
+        )
+        images = entry["docker_images"]
+        assert "kamiwazaai/my-app-backend:1.0.0-dev-abc1234" in images
+        assert "kamiwazaai/my-app-frontend:1.0.0-dev-abc1234" in images
+        # Round-trip through compose_yml as well.
+        parsed = yaml.safe_load(entry["compose_yml"])
+        assert (
+            parsed["services"]["backend"]["image"]
+            == "kamiwazaai/my-app-backend:1.0.0-dev-abc1234"
+        )
+
+    def test_pattern_c_image_passes_through_verbatim(self, builder):
+        # An extension whose compose has BOTH a buildable service AND an
+        # internal-named prebuilt service (Pattern C — image: but no build:).
+        # Pre-ENG-3591, build_entry would have rewritten the helper's tag
+        # to the stage-derived default (or the override), pointing the
+        # catalog at a tag publish never pushed. After the fix, the helper's
+        # declared tag is preserved as-is.
+        transformed = {
+            "services": {
+                "backend": {
+                    "image": "kamiwazaai/my-app-backend:1.0.0-dev-abc1234",
+                },
+                "helper": {
+                    # No build context — publish doesn't own this image.
+                    "image": "kamiwazaai/my-app-helper:0.5.0",
+                },
+            },
+        }
+        entry = builder.build_entry(
+            {"name": "my-app", "description": "x"},
+            transformed,
+            "kamiwazaai",
+            "1.0.0",
+            stage="dev",
+            revision="1.0.0-dev-abc1234",
+        )
+        images = entry["docker_images"]
+        assert "kamiwazaai/my-app-helper:0.5.0" in images
+        # The revision tag must NOT have leaked into the helper ref.
+        assert "kamiwazaai/my-app-helper:1.0.0-dev-abc1234" not in images
+        # Round-trip the published compose YAML to confirm what an installer
+        # would actually see in the catalog entry.
+        parsed = yaml.safe_load(entry["compose_yml"])
+        assert (
+            parsed["services"]["helper"]["image"]
+            == "kamiwazaai/my-app-helper:0.5.0"
+        )
+
+    def test_external_images_pass_through_verbatim(self, builder):
+        transformed = {
+            "services": {
+                "backend": {"image": "kamiwazaai/my-app-backend:1.0.0-dev"},
+                "db": {"image": "postgres:15"},
+                "cache": {"image": "redis:7"},
+            },
+        }
+        entry = builder.build_entry(
+            {"name": "my-app", "description": "x"},
+            transformed,
+            "kamiwazaai",
+            "1.0.0",
+            stage="dev",
+        )
+        images = entry["docker_images"]
+        assert "postgres:15" in images
+        assert "redis:7" in images
+        # Round-trip the published compose YAML.
+        parsed = yaml.safe_load(entry["compose_yml"])
+        assert parsed["services"]["db"]["image"] == "postgres:15"
+        assert parsed["services"]["cache"]["image"] == "redis:7"
 
 
 # ------------------------------------------------------------------

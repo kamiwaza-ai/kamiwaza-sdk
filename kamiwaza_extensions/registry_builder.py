@@ -63,10 +63,17 @@ class RegistryBuilder:
         Args:
             metadata: Parsed ``kamiwaza.json`` contents.
             transformed_compose: Compose dict already processed by
-                ``ComposeTransformer``.
+                ``ComposeTransformer`` (which is the canonical source of
+                image-tag rewriting — services with a ``build`` context
+                are tagged with publish's revision; services without one
+                keep their declared image ref verbatim).
             registry: Docker registry prefix (e.g. ``"kamiwazaai"``).
             version: Semver version string for this release.
             stage: One of ``"prod"``, ``"stage"``, ``"dev"``, or any custom name.
+                Currently unused in the body — ``ComposeTransformer`` already
+                applied the stage-derived tag to buildable services. Kept on
+                the signature for call-site compatibility with prior callers
+                of ``RegistryBuilder``.
             revision: Optional revision identifier. When provided, included
                 as a top-level ``revision`` field on the entry; consumed by
                 ``CatalogDedupGuard`` to make CI re-publishes idempotent.
@@ -74,14 +81,8 @@ class RegistryBuilder:
         Returns:
             A dict matching the Kamiwaza catalog entry schema.
         """
-        extension_name = metadata.get("name", "")
         compose_yml = yaml.dump(transformed_compose, default_flow_style=False)
-        compose_yml = self.transform_image_tags(
-            compose_yml, registry, version, stage, extension_name=extension_name,
-        )
-        # Parse back to dict for reliable image extraction (avoids env var false positives)
-        tagged_compose = yaml.safe_load(compose_yml) or {}
-        docker_images = self.extract_docker_images(tagged_compose)
+        docker_images = self.extract_docker_images(transformed_compose)
 
         extra_images = metadata.get("extra_docker_images") or []
         if extra_images:
