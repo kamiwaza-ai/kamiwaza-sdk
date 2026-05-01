@@ -44,9 +44,9 @@ class DevState:
     # `kz-ext dev` invocation differs from the prior on any of these,
     # `_is_resumable` returns False — skipping build/push under a different
     # set of inputs would silently redeploy stale or never-built images.
-    last_service: Optional[str] = None    # `--service` filter, if any
-    last_sdk_repo: Optional[str] = None   # `--sdk-repo` override path, if any
-    last_registry: str = ""               # KAMIWAZA_REGISTRY / derived
+    last_service: Optional[str] = None  # `--service` filter, if any
+    last_sdk_repo: Optional[str] = None  # `--sdk-repo` override path, if any
+    last_registry: str = ""  # KAMIWAZA_REGISTRY / derived
 
     def is_step_complete(self, step: str) -> bool:
         if not self.last_successful_step:
@@ -65,7 +65,7 @@ def decode_email(access_token: str) -> Optional[str]:
 
     Returns ``None`` if the token cannot be decoded. Used by callers
     (``commands.dev``, ``commands.status``) to populate the
-    ``kamiwaza.ai/deployer`` annotation, the ``deployer`` field of
+    ``kamiwaza.io/deployer`` annotation, the ``deployer`` field of
     ``dev-state.json``, and the deployer-match guard in ``kz-ext status``.
 
     Lifted to ``dev_state`` from ``commands.dev`` so ``commands.status``

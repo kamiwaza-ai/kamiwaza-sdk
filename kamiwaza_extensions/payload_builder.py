@@ -20,10 +20,18 @@ from kamiwaza_sdk.schemas.extensions import (
 from kamiwaza_extensions.connections import ConnectionInfo
 
 # CRD annotation keys — name-spaced under kamiwaza.ai (§4.2.9 / §4.7).
-ANNOTATION_DEPLOYER = "kamiwaza.ai/deployer"
-ANNOTATION_BUILD_HOST = "kamiwaza.ai/build-host"
-ANNOTATION_REVISION = "kamiwaza.ai/revision"
-ANNOTATION_DEPLOYED_AT = "kamiwaza.ai/deployed-at"
+# Annotation namespace is ``kamiwaza.io/*``, NOT ``kamiwaza.ai/*``. The
+# platform's annotation persister filters incoming Extension CR annotations
+# to the ``kamiwaza.io/*`` namespace; ``kamiwaza.ai/*`` annotations are
+# silently dropped on the platform side, leaving ``kz-ext status`` unable
+# to surface "Last deployed by..." and similar observability fields.
+# (ENG-3901 dry-run finding F-010 — tactical SDK-side workaround until the
+# platform broadens its allow-list. The ``.ai`` namespace was chosen
+# originally for SDK-team-set annotations but is unsupported in practice.)
+ANNOTATION_DEPLOYER = "kamiwaza.io/deployer"
+ANNOTATION_BUILD_HOST = "kamiwaza.io/build-host"
+ANNOTATION_REVISION = "kamiwaza.io/revision"
+ANNOTATION_DEPLOYED_AT = "kamiwaza.io/deployed-at"
 
 
 def _compose_resources_to_k8s(resources: Dict[str, str]) -> Dict[str, str]:
@@ -61,9 +69,15 @@ class PayloadBuilder:
         revision: Optional[str] = None,
     ) -> CreateExtension:
         ext_type = self._resolve_type(metadata)
-        app_path = f"/runtime/apps/{dev_name}" if ext_type == "app" else f"/runtime/{ext_type}s/{dev_name}"
+        app_path = (
+            f"/runtime/apps/{dev_name}"
+            if ext_type == "app"
+            else f"/runtime/{ext_type}s/{dev_name}"
+        )
         services = self._build_services(
-            transformed_compose, app_path=app_path, verify_ssl=connection.verify_ssl,
+            transformed_compose,
+            app_path=app_path,
+            verify_ssl=connection.verify_ssl,
         )
         origin = connection.url.removesuffix("/api")
         tls_reject = "0" if not connection.verify_ssl else "1"
@@ -104,10 +118,10 @@ class PayloadBuilder:
     ) -> Dict[str, str]:
         """Build the CRD-metadata annotations attached on every dev deploy.
 
-        - ``kamiwaza.ai/deployer``     — email of the deploying user
-        - ``kamiwaza.ai/build-host``   — local hostname of the developer machine
-        - ``kamiwaza.ai/revision``     — revision tag (image tag suffix)
-        - ``kamiwaza.ai/deployed-at``  — ISO-8601 UTC timestamp of the deploy
+        - ``kamiwaza.io/deployer``     — email of the deploying user
+        - ``kamiwaza.io/build-host``   — local hostname of the developer machine
+        - ``kamiwaza.io/revision``     — revision tag (image tag suffix)
+        - ``kamiwaza.io/deployed-at``  — ISO-8601 UTC timestamp of the deploy
 
         Empty values are dropped so consumers can ``in``-check without
         seeing meaningless empty strings.
@@ -146,7 +160,9 @@ class PayloadBuilder:
     # ------------------------------------------------------------------
 
     def _build_services(
-        self, transformed: Dict[str, Any], app_path: str = "",
+        self,
+        transformed: Dict[str, Any],
+        app_path: str = "",
         verify_ssl: bool = True,
     ) -> List[ExtensionServiceSpec]:
         services_dict = transformed.get("services") or {}
@@ -170,7 +186,7 @@ class PayloadBuilder:
             env = self._parse_env(svc.get("environment", []))
             resources = self._parse_resources(svc)
 
-            is_primary = (svc_name == primary_name)
+            is_primary = svc_name == primary_name
 
             # Inject platform env vars
             if is_primary and app_path:
@@ -205,9 +221,13 @@ class PayloadBuilder:
             proto = "TCP"
             if "/" in s:
                 s, proto_str = s.rsplit("/", 1)
-                proto = proto_str.upper() if proto_str.upper() in ("TCP", "UDP") else "TCP"
+                proto = (
+                    proto_str.upper() if proto_str.upper() in ("TCP", "UDP") else "TCP"
+                )
             try:
-                result.append(ExtensionPort(container_port=int(s), protocol=proto, name="http"))
+                result.append(
+                    ExtensionPort(container_port=int(s), protocol=proto, name="http")
+                )
             except (ValueError, TypeError):
                 continue
         return result
@@ -237,7 +257,9 @@ class PayloadBuilder:
 
     @staticmethod
     def _default_health_check(
-        svc_name: str, svc: Dict[str, Any], ports: List[ExtensionPort],
+        svc_name: str,
+        svc: Dict[str, Any],
+        ports: List[ExtensionPort],
     ) -> Optional[Dict[str, Any]]:
         """Generate a default health check based on service type."""
         if not ports:
