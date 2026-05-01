@@ -43,6 +43,77 @@ class TestCLISkeleton:
         assert result.exit_code == 0
         assert "local" in result.output
 
+    def test_dev_local_help_includes_auth_flag(self):
+        # TS-14 — typer recognises --auth without parsing error.
+        # Force a wide terminal + disable color so rich/typer's help
+        # renderer doesn't word-wrap or ANSI-style "--auth" out of a
+        # bare-string match (CI runs at default 80 columns and the
+        # boxed help output split the flag across lines).
+        import re
+        result = runner.invoke(
+            app,
+            ["dev", "local", "--help"],
+            env={"COLUMNS": "200", "NO_COLOR": "1", "TERM": "dumb"},
+        )
+        assert result.exit_code == 0
+        # Strip ANSI escapes + collapse whitespace as belt-and-suspenders.
+        plain = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+        plain = re.sub(r"\s+", " ", plain)
+        assert "--auth" in plain
+
+    def test_dev_local_auth_flag_invokes_runner_with_auth_true(self, monkeypatch):
+        # TS-15 — `kz-ext dev local --auth` calls run_dev_local(auth=True)
+        captured: dict = {}
+
+        def fake_run(*, detach, sdk_repo=None, auth=False):
+            captured["detach"] = detach
+            captured["sdk_repo"] = sdk_repo
+            captured["auth"] = auth
+
+        monkeypatch.setattr(
+            "kamiwaza_extensions.commands.dev_local.run_dev_local", fake_run
+        )
+        result = runner.invoke(app, ["dev", "local", "--auth"])
+        assert result.exit_code == 0
+        assert captured == {"detach": False, "sdk_repo": None, "auth": True}
+
+    def test_dev_local_without_auth_flag_defaults_to_false(self, monkeypatch):
+        captured: dict = {}
+
+        def fake_run(*, detach, sdk_repo=None, auth=False):
+            captured["auth"] = auth
+
+        monkeypatch.setattr(
+            "kamiwaza_extensions.commands.dev_local.run_dev_local", fake_run
+        )
+        result = runner.invoke(app, ["dev", "local"])
+        assert result.exit_code == 0
+        assert captured["auth"] is False
+
+    def test_dev_local_auth_localdevautherror_exits_code_2(self, monkeypatch):
+        """Round-2 review High #11 — LocalDevAuthError raised from the runner
+        must surface as a clean stderr message + exit code 2 (not a stack
+        trace, not exit code 1)."""
+        from kamiwaza_extensions_lib.local_dev import LocalDevAuthError
+
+        from kamiwaza_extensions import dev_local as dev_local_mod
+
+        # Stub the runner to raise the bridge error
+        class StubRunner:
+            def run(self, *, detach, sdk_repo=None, auth=False):
+                raise LocalDevAuthError(
+                    "no active Kamiwaza connection — run `kz-ext login` first"
+                )
+
+        monkeypatch.setattr(
+            dev_local_mod, "DevLocalRunner", lambda *a, **kw: StubRunner()
+        )
+
+        result = runner.invoke(app, ["dev", "local", "--auth"])
+        assert result.exit_code == 2
+        # Developer-facing hint surfaces (not "Traceback:" or stack)
+        assert "Traceback" not in result.output
+
     def test_unknown_command(self):
         result = runner.invoke(app, ["nonexistent"])
         assert result.exit_code != 0

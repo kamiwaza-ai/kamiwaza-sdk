@@ -168,7 +168,7 @@ kz-ext publish --stage prod
 | `kz-ext login [url]` | Authenticate with a Kamiwaza instance (default: `https://kamiwaza.test/api`). Supports `--api-key`, `--name`, `--list`, `--use`, `--no-verify-ssl`. |
 | `kz-ext create --type <type> --name <name>` | Scaffold a new extension in the current (empty) directory. Types: `app` (Next.js + FastAPI), `tool` (FastMCP), `service` (minimal). |
 | `kz-ext validate [path]` | Validate `kamiwaza.json`, `docker-compose.yml`, and clear platform-runtime incompatibilities such as privileged ports or root-only web containers. Use `--json` for machine-readable output. |
-| `kz-ext dev local` | Run the extension locally via Docker Compose with Kamiwaza env vars injected. Auto-detects port conflicts and remaps to available ports. Supports `--sdk-repo`, `--detach`. |
+| `kz-ext dev local` | Run the extension locally via Docker Compose with Kamiwaza env vars injected. Auto-detects port conflicts and remaps to available ports. Supports `--sdk-repo`, `--detach`, and `--auth` (bridges the developer's identity from `kz-ext login` and routes loopback Kamiwaza URLs through the host gateway — see [docs/extensions/cli-reference/dev-local.md](docs/extensions/cli-reference/dev-local.md)). |
 | `kz-ext dev` | Build, push, and deploy to a Kamiwaza cluster. Uses zero-downtime PATCH updates for existing extensions. Supports `--no-build`, `--no-push`, `--service`, `--revision`, `--sdk-repo`. |
 | `kz-ext status` | Show deployment status: phase, per-service readiness, URL, and recent K8s events. Supports `--name`. |
 | `kz-ext logs` | Stream logs from deployed extension pods. Supports `--service`, `--follow`, `--tail`, `--name`. |

@@ -8,26 +8,18 @@ from typing import Any, Dict, List, Optional
 import typer
 from rich.console import Console
 
+from kamiwaza_extensions.extension_detector import infer_extension_type
+
 console = Console(stderr=True)
 
 
 def _infer_extension_type(metadata: Dict[str, Any]) -> str:
-    """Determine extension type from metadata or naming convention.
-
-    Checks ``type``, ``template_type``, then falls back to name-prefix
-    heuristics.  Returns ``"app"`` if nothing matches.
+    """Backwards-compatible alias kept for callers that imported the
+    private name. New code should call ``infer_extension_type`` directly
+    from ``kamiwaza_extensions.extension_detector`` (single source of
+    truth, also used by ``DevLocalRunner`` to gate ``--auth``).
     """
-    explicit = metadata.get("type") or metadata.get("template_type")
-    if explicit in ("app", "tool", "service"):
-        return explicit
-
-    name = metadata.get("name", "")
-    if name.startswith("tool-") or name.startswith("mcp-"):
-        return "tool"
-    if name.startswith("service-"):
-        return "service"
-
-    return "app"
+    return infer_extension_type(metadata)
 
 
 def _resolve_preview_image(
@@ -267,7 +259,7 @@ def run_publish(
                 verbose=verbose,
             )
         except ImageBuildError as exc:
-            console.print(f"    [red]\u2717 build failed[/red]")
+            console.print("    [red]\u2717 build failed[/red]")
             console.print(f"\n[red]Error:[/red] {exc}")
             raise typer.Exit(code=1) from exc
 
@@ -300,7 +292,7 @@ def run_publish(
                 verbose=verbose,
             )
         except ImagePushError as exc:
-            console.print(f"    [red]\u2717 push failed[/red]")
+            console.print("    [red]\u2717 push failed[/red]")
             console.print(f"\n[red]Error:[/red] {exc}")
             raise typer.Exit(code=1) from exc
 
@@ -339,11 +331,11 @@ def run_publish(
         console.print(f"\n[red]Error:[/red] {exc}")
         raise typer.Exit(code=int(ExitCode.VALIDATION)) from exc
     except CatalogPublishError as exc:
-        console.print(f"  [red]\u2717 publish failed[/red]")
+        console.print("  [red]\u2717 publish failed[/red]")
         console.print(f"\n[red]Error:[/red] {exc}")
         raise typer.Exit(code=1) from exc
     except ValueError as exc:
-        console.print(f"  [red]\u2717 publish failed[/red]")
+        console.print("  [red]\u2717 publish failed[/red]")
         console.print(f"\n[red]Error:[/red] {exc}")
         raise typer.Exit(code=1) from exc
 

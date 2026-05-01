@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import errno
+import ipaddress
 import os
 import signal
 import socket
@@ -15,7 +17,18 @@ import yaml
 from rich.console import Console
 
 from kamiwaza_extensions.connections import ConnectionInfo, ConnectionManager
-from kamiwaza_extensions.extension_detector import ExtensionDetector
+from kamiwaza_extensions.extension_detector import (
+    ExtensionDetector,
+    infer_extension_type,
+)
+from kamiwaza_extensions_lib.local_dev import (
+    BRIDGE_ENV_VARS,
+    BridgeContext,
+    LocalDevAuthError,
+    extract_extra_hosts,
+    prepare_bridge_context,
+    rewrite_bare_loopback_url,
+)
 
 console = Console(stderr=True)
 
@@ -32,6 +45,7 @@ class DevLocalRunner:
         *,
         detach: bool = False,
         sdk_repo: Optional[str] = None,
+        auth: bool = False,
     ) -> int:
         from kamiwaza_extensions.sdk_override import (
             SdkOverrideSpec,
@@ -55,14 +69,63 @@ class DevLocalRunner:
         # 3. Detect compose command
         compose_cmd = detect_compose_command()
 
-        # 4. Build env overlay
+        # 4. Build env overlay (with optional --auth bridge)
         connection = self._conn_mgr.get_active_connection()
+        bridge: Optional[BridgeContext] = None
+        if auth:
+            # PR #87 round-5 review High #2 — `--auth` only works for
+            # `app`-type extensions because the bridge mechanism is the
+            # Next.js middleware shipped in the app template. For
+            # `service` and `tool` extensions there's no Next.js layer
+            # to inject envelope headers, so KAMIWAZA_USE_AUTH=true with
+            # no bridge would just 401 every protected route. Refuse
+            # with a clear hint instead of silently misbehaving.
+            #
+            # PR #87 round-6 review: route the type lookup through the
+            # shared ``infer_extension_type`` helper so the legacy
+            # ``template_type`` fallback (and name-prefix heuristics for
+            # ``tool-``/``service-``/``mcp-``) are honored. Without this,
+            # a legacy extension whose kamiwaza.json carries only
+            # ``template_type: "service"`` would default to ``"app"``
+            # here and silently slip past the gate.
+            ext_type = infer_extension_type(info.metadata or {})
+            if ext_type != "app":
+                raise LocalDevAuthError(
+                    f"--auth is only supported for `app`-type extensions; "
+                    f"this extension type is `{ext_type}`. The bridge synthesizes "
+                    "envelope headers via the Next.js middleware shipped with "
+                    "the app template — service/tool extensions have no "
+                    "equivalent Python-side bridge in v1. Run without --auth, "
+                    "or wire forwarded-auth headers manually for testing."
+                )
+
+            # prepare_bridge_context raises LocalDevAuthError on no
+            # connection / missing bearer / expired token. Surface it to
+            # the developer and exit non-zero rather than starting compose.
+            bridge = prepare_bridge_context(connection_manager=self._conn_mgr)
+
         env = os.environ.copy()
+        # Defense-in-depth: when --auth is NOT set, scrub any pre-existing
+        # bridge env vars from the developer's shell (e.g. left over from
+        # another tool) so they cannot accidentally activate the bridge or
+        # leak a stale bearer into the container.
+        if not auth:
+            for var in BRIDGE_ENV_VARS:
+                env.pop(var, None)
+
         if connection:
-            overlay = build_env_overlay(connection, info.name)
+            overlay = build_env_overlay(
+                connection, info.name, auth=auth, bridge=bridge
+            )
             env.update(overlay)
             console.print(f"[dim]Using connection:[/dim] {connection.name} ({connection.url})")
-            console.print(f"[dim]KAMIWAZA_USE_AUTH=false (local dev mode)[/dim]")
+            if auth:
+                who = (bridge.user_id if bridge else None) or "?"
+                console.print(
+                    f"[dim]--auth bridge active: forwarding identity for {who}[/dim]"
+                )
+            else:
+                console.print("[dim]KAMIWAZA_USE_AUTH=false (local dev mode)[/dim]")
         else:
             console.print("[yellow]No Kamiwaza connection configured — running in standalone mode[/yellow]")
 
@@ -100,6 +163,8 @@ class DevLocalRunner:
         remaps: Dict[str, Tuple[int, int]] = {}
         patched_compose_file: Optional[str] = None
         sdk_override_file: Optional[str] = None
+        extra_hosts_file: Optional[str] = None
+        auth_env_file: Optional[str] = None
 
         try:
             if info.compose_data:
@@ -136,6 +201,61 @@ class DevLocalRunner:
                 fd.close()
                 sdk_override_file = fd.name
 
+            # 7b. Generate extra_hosts overlay when --auth is set. We always
+            # inject host.docker.internal:host-gateway under --auth so
+            # containers on Linux Docker Engine can reach the host (the
+            # bare-loopback URL rewrite to host.docker.internal in
+            # build_env_overlay assumes that name resolves, which is only
+            # implicit on Docker Desktop). Named loopback hostnames
+            # (kamiwaza.test) get their own alias too.
+            if auth and connection and info.compose_data:
+                eh_entries = build_compose_extra_hosts(connection, auth=True)
+                if eh_entries:
+                    extra_hosts_file = _write_compose_overlay(
+                        prefix="kz-extra-hosts-",
+                        services=info.compose_data.get("services", {}),
+                        per_service={"extra_hosts": list(eh_entries)},
+                    )
+                    console.print(
+                        f"[dim]Routing {', '.join(eh_entries)} via host-gateway[/dim]"
+                    )
+
+            # 7c. Generate env-passthrough overlay under --auth so the
+            # bridge env vars actually reach EVERY service inside the
+            # container. The runner sets these on the parent compose-CLI
+            # process via env.update(overlay), but Docker Compose only
+            # propagates env vars into a service's container when the
+            # service explicitly declares them in `environment:` or
+            # `env_file:`. Without this overlay, frontend containers
+            # whose template doesn't list the bridge vars would silently
+            # see the gate as undefined and the bridge would no-op (PR
+            # #87 round-2 review Critical #1, codex + claude consensus).
+            if auth and connection and info.compose_data:
+                services = info.compose_data.get("services", {})
+                # Use **mapping form** (``{KEY: value}``) for the env
+                # overlay — defense-in-depth against Docker Compose's
+                # ``$`` variable interpolation in list-of-strings form
+                # (``["KEY=value"]``). Round-10 review (Comprehensive H)
+                # raised this; round-11 (Comprehensive H + Claude H)
+                # corrected the rationale: canonical bearers are
+                # base64url-encoded JWTs whose alphabet is
+                # ``[A-Za-z0-9_-]`` so the **on-the-wire** token never
+                # contains ``$``. The defensive concern is the *general
+                # case* — if the bridge ever forwards a non-JWT bearer
+                # (e.g. a future opaque-PAT path) or if an env value
+                # the bridge synthesizes ever contains ``$``, the
+                # mapping form is exempt from interpolation per the
+                # Compose spec and won't silently eat the literal.
+                bridge_env_map = {
+                    var: env[var] for var in BRIDGE_ENV_VARS if var in env
+                }
+                if bridge_env_map and services:
+                    auth_env_file = _write_compose_overlay(
+                        prefix="kz-auth-env-",
+                        services=services,
+                        per_service={"environment": dict(bridge_env_map)},
+                    )
+
             # 8. Build the project-identifier prefix (compose binary +
             # -f / --project-directory args). The same prefix is used for
             # `compose up` and the post-up `compose port` lookup so they
@@ -145,7 +265,16 @@ class DevLocalRunner:
             compose_prefix = compose_cmd + ["-f", compose_file_arg]
             if sdk_override_file:
                 compose_prefix += ["-f", sdk_override_file]
-            if patched_compose_file or sdk_override_file:
+            if extra_hosts_file:
+                compose_prefix += ["-f", extra_hosts_file]
+            if auth_env_file:
+                compose_prefix += ["-f", auth_env_file]
+            if (
+                patched_compose_file
+                or sdk_override_file
+                or extra_hosts_file
+                or auth_env_file
+            ):
                 compose_prefix += ["--project-directory", str(info.path)]
 
             cmd = list(compose_prefix) + ["up", "--build"]
@@ -179,7 +308,12 @@ class DevLocalRunner:
 
             return rc
         finally:
-            for tmp in (patched_compose_file, sdk_override_file):
+            for tmp in (
+                patched_compose_file,
+                sdk_override_file,
+                extra_hosts_file,
+                auth_env_file,
+            ):
                 if tmp:
                     try:
                         os.unlink(tmp)
@@ -317,19 +451,139 @@ class DevLocalRunner:
 # ------------------------------------------------------------------
 
 
-def build_env_overlay(connection: ConnectionInfo, extension_name: str) -> Dict[str, str]:
-    """Build environment variable overlay from a connection."""
-    url = connection.url
+def build_env_overlay(
+    connection: ConnectionInfo,
+    extension_name: str,
+    *,
+    auth: bool = False,
+    bridge: Optional[BridgeContext] = None,
+) -> Dict[str, str]:
+    """Build environment variable overlay from a connection.
+
+    When ``auth=True``, ``bridge`` MUST be provided (caller is expected to
+    have validated the active connection via ``prepare_bridge_context``
+    upstream so any ``LocalDevAuthError`` surfaces before container start).
+    Adds ``KZ_EXT_DEV_LOCAL_AUTH=1``, ``KAMIWAZA_BEARER_TOKEN``, and
+    ``KAMIWAZA_USE_AUTH=true`` to the overlay; rewrites bare loopback URLs
+    (``localhost`` / ``127.0.0.1`` / ``::1``) to ``host.docker.internal``
+    so they're reachable from inside the container.
+
+    Named loopback hostnames (``kamiwaza.test``, ``dev.local``) are NEVER
+    rewritten — they keep their TLS-cert-bound name and rely on the compose
+    overlay's ``extra_hosts`` (see ``build_compose_extra_hosts``).
+    """
+    if auth and bridge is None:
+        raise ValueError("bridge is required when auth=True")
+
+    # Two URLs, two consumers (PR #87 round-5 review Critical #1):
+    #
+    #   container_url — used by the extension's BACKEND code making
+    #     server-to-platform calls from inside the Docker container.
+    #     Rewrites bare loopbacks to host.docker.internal so the
+    #     container can actually reach the host.
+    #
+    #   browser_url — used as KAMIWAZA_PUBLIC_API_URL, which feeds
+    #     /auth/login-url and /auth/logout redirects sent to the
+    #     developer's BROWSER. The browser cannot resolve
+    #     host.docker.internal; rewriting here would break the auth
+    #     flow and TLS hostname verification for localhost certs.
+    #     Always keep the developer's original host (localhost,
+    #     kamiwaza.test, etc.).
+    container_url = connection.url
+    if auth:
+        container_url = rewrite_bare_loopback_url(container_url)
+    browser_url = connection.url
+
     env = {
-        "KAMIWAZA_API_URL": url,
-        "KAMIWAZA_PUBLIC_API_URL": url.removesuffix("/api"),
-        "KAMIWAZA_ENDPOINT": f"{url}/v1" if not url.endswith("/v1") else url,
-        "KAMIWAZA_USE_AUTH": "false",
+        "KAMIWAZA_API_URL": container_url,
+        # KAMIWAZA_PUBLIC_API_URL is the RAW browser-facing API URL —
+        # keep ``/api`` intact. ``session.create_session_router`` reads
+        # ``config.public_api_url`` directly to build
+        # ``${base}/auth/login`` and ``${base}/auth/logout`` redirects;
+        # the platform serves those endpoints under ``/api/auth/*``, so
+        # stripping ``/api`` here produces 404s on every login/logout
+        # under ``--auth`` (PR #87 round-10 codex P2). Browser-display
+        # consumers (``url.public_base_url``) strip ``/api`` on demand —
+        # the env var holds the raw URL.
+        "KAMIWAZA_PUBLIC_API_URL": browser_url.rstrip("/"),
+        "KAMIWAZA_ENDPOINT": (
+            f"{container_url}/v1"
+            if not container_url.endswith("/v1")
+            else container_url
+        ),
+        "KAMIWAZA_USE_AUTH": "true" if auth else "false",
         "KAMIWAZA_APP_NAME": extension_name,
     }
     if not connection.verify_ssl:
         env["KAMIWAZA_VERIFY_SSL"] = "false"
+    if auth:
+        # bridge is non-None here (checked above) — narrow for type checkers.
+        assert bridge is not None
+        env["KZ_EXT_DEV_LOCAL_AUTH"] = "1"
+        env["KAMIWAZA_BEARER_TOKEN"] = bridge.bearer_token
     return env
+
+
+def _write_compose_overlay(
+    *,
+    prefix: str,
+    services: Dict[str, dict],
+    per_service: Dict[str, object],
+) -> str:
+    """Write a compose overlay tempfile that applies ``per_service`` to every
+    service in ``services`` and return its path. Caller is responsible for
+    deleting the file; ``DevLocalRunner.run`` does this in its ``finally``
+    block.
+
+    Used to inject ``extra_hosts`` and bridge env vars without touching the
+    extension's ``docker-compose.yml`` so existing extensions get the fix
+    without re-scaffolding.
+
+    Each service gets a deep-copy of ``per_service`` so a future caller
+    that mutates the input post-call cannot silently corrupt the values
+    written for other services (PR #87 round-3 review defensive coding).
+    """
+    import copy
+
+    overlay = {
+        "services": {
+            svc: copy.deepcopy(per_service) for svc in services.keys()
+        }
+    }
+    fd = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".yml", prefix=prefix, delete=False,
+    )
+    yaml.dump(overlay, fd, default_flow_style=False)
+    fd.close()
+    return fd.name
+
+
+def build_compose_extra_hosts(
+    connection: ConnectionInfo,
+    *,
+    auth: bool = False,
+) -> List[str]:
+    """Return compose ``extra_hosts`` entries needed to reach the connection's
+    Kamiwaza URL from inside a container.
+
+    When ``auth=True``, always includes ``host.docker.internal:host-gateway``
+    so containers can reach the host on Linux Docker Engine — Docker Desktop
+    resolves this name implicitly, but plain Linux Docker Engine does not
+    unless the alias is in compose's ``extra_hosts``. Without this, the URL
+    rewrite to ``host.docker.internal`` (applied by ``build_env_overlay`` for
+    bare loopbacks) fails on Linux with name-resolution errors. Harmless on
+    Docker Desktop where it's already aliased.
+
+    Named-loopback hostnames (``kamiwaza.test``, ``dev.local``) get their own
+    ``<name>:host-gateway`` entry regardless of ``auth`` so the existing
+    behaviour (no ``--auth``, just running locally against a named loopback)
+    is preserved.
+    """
+    entries: List[str] = []
+    if auth:
+        entries.append("host.docker.internal:host-gateway")
+    entries.extend(extract_extra_hosts(connection.url))
+    return entries
 
 
 def parse_port_mapping(port_spec: str) -> Tuple[Optional[int], Optional[int]]:
@@ -370,23 +624,101 @@ def is_port_available(port: int, host: str = "0.0.0.0") -> bool:
 
     Uses connect to detect listeners (catches Docker/other processes bound to
     any interface) and bind without SO_REUSEADDR as a fallback.
+
+    Round-10 review (Comprehensive H): also probes IPv6 loopback so an
+    IPv6-only listener bound to ``[::]`` doesn't falsely appear free.
+    On dual-stack hosts the IPv4 probe usually catches the listener
+    via the v4-mapped binding; on Linux ``net.ipv6.bindv6only=1`` hosts
+    or pure-IPv6 services (some local proxies, kubernetes-style
+    sidecars) the v4 probe misses and ``compose up`` then fails with
+    ``bind: address already in use``.
     """
-    # First check: can we connect? If yes, something is listening.
+    # First check: can we connect via IPv4? If yes, something is listening.
+    # 50ms is plenty for loopback — ECONNREFUSED returns in microseconds
+    # on a free port, and we run this 100× from ``find_available_port``
+    # so the cumulative budget matters (round-12 review, Comprehensive M).
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.settimeout(0.2)
+            sock.settimeout(0.05)
             if sock.connect_ex(("127.0.0.1", port)) == 0:
                 return False
     except OSError:
         pass
 
-    # Second check: can we bind without SO_REUSEADDR?
+    # Same probe over IPv6 loopback for v6-only listeners.
+    if socket.has_ipv6:
+        try:
+            with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as sock:
+                sock.settimeout(0.05)
+                if sock.connect_ex(("::1", port, 0, 0)) == 0:
+                    return False
+        except OSError:
+            pass
+
+    # Bind check: try IPv4 first, then IPv6 if v4 succeeds. Round-11
+    # review (Comprehensive M2): the asymmetry where the connect probe
+    # checked both stacks but the bind only checked v4 meant a port
+    # that's v4-free but v6-occupied could pass ``is_port_available``
+    # and still fail at ``compose up`` bind time. Both must succeed.
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.bind((host, port))
-            return True
     except OSError:
         return False
+    # Round-12 review (Comprehensive H + Claude H): ``socket.has_ipv6``
+    # is a Python build-time constant — it does NOT reflect runtime
+    # availability. On hosts with the kernel-level v6 stack disabled
+    # (``net.ipv6.conf.all.disable_ipv6=1``, hardened Linux servers,
+    # some CI runners), ``socket.socket(AF_INET6, ...)`` or its bind
+    # raises OSError unconditionally for every port. The previous
+    # ``except OSError: return False`` then made every port look
+    # taken and broke ``find_available_port``'s 100-port window. Treat
+    # only EADDRINUSE as "port taken"; other errors (EAFNOSUPPORT,
+    # EADDRNOTAVAIL, etc.) mean v6 is unavailable here — accept the v4
+    # bind as authoritative.
+    if socket.has_ipv6:
+        try:
+            with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as sock:
+                # ``IPV6_V6ONLY=1`` makes the v6 socket reserve ONLY the
+                # v6 stack — without it, on macOS / dual-stack Linux a v6
+                # bind to ``::`` also claims the v4 mapping and races
+                # with the just-released v4 binding above (lingers in
+                # TIME_WAIT for a few hundred ms after socket close,
+                # producing a spurious False from this probe).
+                try:
+                    sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+                except (AttributeError, OSError):
+                    pass
+                # Translate the v4 host arg to the corresponding v6 host.
+                # Round-12 (Comprehensive M1) flagged the unconditional
+                # ``"::"``; round-13 (Claude M3) further narrows non-loopback
+                # v4 IPs to their IPv4-mapped v6 form so caller intent
+                # (e.g. ``192.168.1.5``) isn't silently broadened to
+                # all v6 interfaces. Non-IP hosts (e.g. ``"0.0.0.0"``)
+                # default to the wildcard v6 address.
+                if host == "127.0.0.1":
+                    v6_host = "::1"
+                elif host == "0.0.0.0":
+                    v6_host = "::"
+                else:
+                    try:
+                        v6_host = f"::ffff:{ipaddress.IPv4Address(host)}"
+                    except (ValueError, ipaddress.AddressValueError):
+                        v6_host = "::"
+                sock.bind((v6_host, port, 0, 0))
+        except OSError as exc:
+            if exc.errno == errno.EADDRINUSE:
+                return False
+            # v6 stack unavailable / unusable for any other reason:
+            # the v4 bind already succeeded, so the port is bindable for
+            # the actual workload (Docker Compose binds v4 by default
+            # on hosts with v6 disabled). Round-12 review (Comprehensive H +
+            # Claude H): ``socket.has_ipv6`` is a build-time flag, not a
+            # runtime capability — kernel-disabled v6 hosts (e.g.
+            # ``net.ipv6.conf.all.disable_ipv6=1``) raise EAFNOSUPPORT /
+            # EADDRNOTAVAIL here, which previously made every port look
+            # taken and broke ``find_available_port``.
+    return True
 
 
 def find_available_port(start: int, host: str = "0.0.0.0", max_tries: int = 100) -> int:

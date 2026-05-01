@@ -85,11 +85,22 @@ def _runtime_lib_pins() -> tuple[str, str]:
     M4: fallback ranges aligned to the current bundle so a corrupt-bundle
     fallback doesn't render stricter pins than ``kz-ext doctor`` enforces.
     """
-    fallback_py = ">=0.2,<0.4"
+    # Floor at 0.4 so the corrupt-bundle path still renders a pin that
+    # resolves to a lib version with the public ``url`` module the
+    # scaffolded ``backend/app/main.py`` imports (round-9 codex P1: a
+    # 0.2/0.3 fallback would resolve to a lib without
+    # ``backend_runtime_base`` and break the scaffold's first
+    # ``uv run uvicorn`` boot).
+    fallback_py = ">=0.4,<0.5"
     # npm semver uses whitespace (not comma) for AND between bounds. Rendered
     # directly into a scaffolded ``frontend/package.json``; a comma here makes
     # ``npm install`` fail to parse the spec (round-5 ultrareview C1).
-    fallback_ts = ">=0.2 <0.4"
+    # Floor at 0.4 so the corrupt-bundle path still renders a pin that
+    # resolves to a lib version with the ``/local-dev-auth`` subpath
+    # the scaffolded ``middleware.ts`` imports (PR #87 round-7 codex
+    # observation: a 0.2/0.3 fallback would resolve to a lib without
+    # the export and break the scaffold's first ``next build``).
+    fallback_ts = ">=0.4 <0.5"
     try:
         bundle = json.loads(
             (importlib_resources.files("kamiwaza_extensions") / "compatibility.json")

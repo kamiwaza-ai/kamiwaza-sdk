@@ -503,7 +503,7 @@ class DoctorChecker:
         return CheckResult(
             "Kamiwaza connection", "warn",
             f"{conn.name}: no health endpoint found",
-            fix=f"Server is reachable but health check failed",
+            fix="Server is reachable but health check failed",
         )
 
     # ------------------------------------------------------------------
@@ -935,7 +935,7 @@ class DoctorChecker:
             return CheckResult(
                 "Runtime lib (TypeScript)", "warn",
                 "@kamiwaza-ai/extensions-lib not found in package.json",
-                fix=f'Add "@kamiwaza-ai/extensions-lib": "{compat_range or "^0.3.0"}" to package.json dependencies',
+                fix=f'Add "@kamiwaza-ai/extensions-lib": "{compat_range or "^0.4.0"}" to package.json dependencies',
             )
         if compat_range:
             # Round-5 C1: parse the bundle's TS range with the npm-semver
@@ -999,7 +999,7 @@ class DoctorChecker:
         else:
             results.append(CheckResult(
                 "SDK repo exists", "fail", f"Not found: {spec.sdk_repo}",
-                fix=f"Check path in .kz-ext/local.yaml",
+                fix="Check path in .kz-ext/local.yaml",
             ))
             return results  # Can't check further
 

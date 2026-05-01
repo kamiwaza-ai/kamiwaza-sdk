@@ -1,3 +1,7 @@
+// Note: createLocalDevAuthMiddleware is intentionally NOT re-exported here.
+// It lives at the dedicated `@kamiwaza-ai/extensions-lib/local-dev-auth`
+// subpath so importing from `./server` does not pull `next/server` into
+// non-Next consumers (PR #87 round-3 review: codex P2).
 export { extractIdentity, extractIdentityStrict } from "./identity";
 export { createProxyHandlers } from "./proxy";
 export { fetchModels } from "./models";

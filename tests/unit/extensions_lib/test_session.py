@@ -274,6 +274,73 @@ class TestLogoutEndpoint:
         assert resp.json()["logout_url"] is None
         assert resp.json()["redirect_url"] is None
 
+    def test_logout_post_uses_container_url_under_auth_split(self, monkeypatch):
+        """PR #87 round-8 review High #4 — under ``kz-ext dev local
+        --auth`` the runner sets ``KAMIWAZA_API_URL`` to
+        ``host.docker.internal`` (container-routable) and
+        ``KAMIWAZA_PUBLIC_API_URL`` to ``localhost`` (browser-routable).
+        The internal ``httpx.post(...)`` for server-side session
+        termination MUST use the container-routable host or it silently
+        fails (caught by the broad ``except Exception``); the response
+        body's ``logout_url`` MUST stay browser-routable so the
+        client-side redirect resolves.
+        """
+        calls = {}
+
+        class FakeAsyncClient:
+            def __init__(self, *, verify, timeout):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def post(self, url, headers=None):
+                calls["url"] = url
+
+        import httpx
+
+        monkeypatch.setenv("KAMIWAZA_API_URL", "http://host.docker.internal:8000/api")
+        monkeypatch.setenv("KAMIWAZA_PUBLIC_API_URL", "http://localhost:8000/api")
+        monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+        client = _make_app(
+            monkeypatch,
+            use_auth="true",
+            public_api_url="http://localhost:8000/api",
+        )
+
+        resp = client.post("/auth/logout")
+
+        assert resp.status_code == 200
+        # Server-side POST hits the container-routable host
+        assert calls["url"] == "http://host.docker.internal:8000/api/auth/logout"
+        # Browser-facing logout_url stays on the host the browser sees
+        data = resp.json()
+        assert data["logout_url"] == "http://localhost:8000/api/auth/logout"
+
+    def test_login_url_falls_back_to_api_url_when_public_unset(self, monkeypatch):
+        """PR #87 round-8 review High #5 — legacy deployments without
+        KAMIWAZA_PUBLIC_API_URL must still produce a usable login URL.
+        Without the fallback, ``base`` was the empty string and the
+        response carried a malformed ``/auth/login?...`` relative URL.
+        """
+        client = _make_app(
+            monkeypatch,
+            use_auth="true",
+            public_api_url="",
+        )
+        # _make_app sets KAMIWAZA_API_URL when public is empty by default,
+        # but be explicit:
+        monkeypatch.setenv("KAMIWAZA_PUBLIC_API_URL", "")
+        monkeypatch.setenv("KAMIWAZA_API_URL", "https://cluster.test/api")
+        resp = client.get("/auth/login-url")
+
+        assert resp.status_code == 200
+        login_url = resp.json()["login_url"]
+        assert login_url.startswith("https://cluster.test/api/auth/login?")
+
 
 @pytest.mark.unit
 class TestSessionRouterWithPrefix:

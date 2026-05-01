@@ -1,7 +1,7 @@
 {
     "name": "@kamiwaza-ai/extensions-lib",
-    "version": "0.3.0",
-    "description": "TypeScript runtime library for Kamiwaza extensions — SessionProvider, AuthGuard, identity extraction, proxy utilities",
+    "version": "0.4.0",
+    "description": "TypeScript runtime library for Kamiwaza extensions — SessionProvider, AuthGuard, identity extraction, proxy utilities, local-dev auth bridge",
     "type": "module",
     "main": "./dist/index.js",
     "types": "./dist/index.d.ts",
@@ -15,6 +15,11 @@
             "types": "./dist/server/index.d.ts",
             "import": "./dist/server/index.js",
             "require": "./dist/server/index.cjs"
+        },
+        "./local-dev-auth": {
+            "types": "./dist/local-dev-auth/index.d.ts",
+            "import": "./dist/local-dev-auth/index.js",
+            "require": "./dist/local-dev-auth/index.cjs"
         }
     },
     "files": [

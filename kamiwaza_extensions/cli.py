@@ -244,10 +244,19 @@ def dev_local(
         "--sdk-repo",
         help="Path to local kamiwaza-sdk checkout for runtime lib override",
     ),
+    auth: bool = typer.Option(
+        False,
+        "--auth",
+        help=(
+            "Bridge the developer's identity from the active `kz-ext login` "
+            "connection into the local extension (forwarded bearer; "
+            "fail-loud if no connection)."
+        ),
+    ),
 ) -> None:
     """Run extension locally with Docker Compose."""
-    from kamiwaza_extensions.commands.dev_local import run_dev_local
-    run_dev_local(detach=detach, sdk_repo=sdk_repo)
+    from kamiwaza_extensions.commands import dev_local as _dev_local_cmd
+    _dev_local_cmd.run_dev_local(detach=detach, sdk_repo=sdk_repo, auth=auth)
 
 
 @app.command()

@@ -10,8 +10,16 @@ import httpx
 from fastapi import Request
 
 from .auth import forward_auth_headers
-from .config import AuthConfig
 from .client import KamiwazaExtClient
+from .config import AuthConfig
+# Round-9 review: ``_url`` was renamed to ``url`` (public) in 0.4.0 so
+# scaffolded extensions can import the helpers without coupling to a
+# private path. The underscored aliases below preserve in-tree
+# backward-compat for existing test imports.
+from .url import (
+    backend_runtime_base as _backend_runtime_base,  # noqa: F401
+    public_base_url as _public_base_url,  # noqa: F401
+)
 
 _ACTIVE_DEPLOYMENT_STATUSES = {"deployed", "running", "ready", "active"}
 
@@ -122,6 +130,10 @@ async def list_available_models(request: Request) -> list[AvailableModel]:
         return []
 
     if isinstance(deployments, list):
+        # list_available_models returns endpoints intended for the
+        # frontend / end-user display. Use the public (browser-facing)
+        # base URL so the values surfaced to the UI are the URLs a user
+        # would copy-paste or click — not the container-internal URL.
         public_base = _public_base_url(config)
         models: list[AvailableModel] = []
         for deployment in deployments:
@@ -142,7 +154,15 @@ async def _resolve_openai_base(
     config: AuthConfig,
     forwarded_headers: dict[str, str],
 ) -> str:
-    public_base = _public_base_url(config)
+    # _resolve_openai_base is consumed by get_model_client() which
+    # builds an AsyncOpenAI instance that runs INSIDE the backend
+    # container. Use the container-routable base, not the
+    # browser-facing public URL — under `kz-ext dev local --auth` the
+    # two can diverge (api_url=host.docker.internal, public_api_url=
+    # localhost) and the backend container cannot reach its own
+    # localhost. In production both URLs point at the same gateway so
+    # the priority is a no-op there. PR #87 round-7 review (codex P1).
+    container_base = _backend_runtime_base(config)
     if config.api_url:
         client = KamiwazaExtClient.from_env()
         try:
@@ -154,22 +174,17 @@ async def _resolve_openai_base(
             for deployment in deployments:
                 if not _is_openai_compatible(deployment):
                     continue
-                endpoint = _deployment_openai_base(deployment, public_base)
+                endpoint = _deployment_openai_base(
+                    deployment, container_base, rehost_endpoint=True,
+                )
                 if endpoint:
                     return endpoint
 
     return config.openai_base
 
 
-def _public_base_url(config: AuthConfig) -> str:
-    if config.public_api_url:
-        return config.public_api_url.removesuffix("/api").rstrip("/")
-    if config.api_url:
-        return config.api_url.removesuffix("/api").rstrip("/")
-    return ""
-
-
 def _normalize_openai_endpoint(endpoint: str) -> str:
+    """Strip a leading ``/api`` from ``/api/runtime/models/...`` paths."""
     if not endpoint:
         return ""
 
@@ -178,6 +193,48 @@ def _normalize_openai_endpoint(endpoint: str) -> str:
         parsed = parsed._replace(
             path=parsed.path.replace("/api/runtime/models/", "/runtime/models/", 1)
         )
+    return urlunparse(parsed).rstrip("/")
+
+
+def _rehost_to_container(endpoint: str, container_base: str) -> str:
+    """Re-host a (potentially browser-facing) endpoint onto the
+    container-routable base.
+
+    Round-12 review (codex P2): the platform may emit deployment
+    ``endpoint`` fields with a browser-only host (``localhost``,
+    ``host.docker.internal`` from a different container, etc.). When
+    we're configuring the backend container's AsyncOpenAI client,
+    those URLs are unreachable; swap scheme+netloc onto
+    ``container_base`` while preserving any ingress sub-path
+    (``/foo/runtime/...``) and avoiding the double-prepend the
+    round-9/round-11 template fix already covers.
+
+    Returns the endpoint unchanged if either side lacks a
+    scheme/netloc (e.g. relative URLs, malformed input).
+    """
+    if not endpoint:
+        return ""
+    parsed = urlparse(endpoint.rstrip("/"))
+    if not container_base or not parsed.scheme or not parsed.netloc:
+        return urlunparse(parsed).rstrip("/")
+    target_parsed = urlparse(container_base)
+    if not target_parsed.scheme or not target_parsed.netloc:
+        return urlunparse(parsed).rstrip("/")
+    base_prefix = target_parsed.path.rstrip("/")
+    already_prefixed = base_prefix and (
+        parsed.path == base_prefix
+        or parsed.path.startswith(base_prefix + "/")
+    )
+    merged_path = (
+        parsed.path
+        if (already_prefixed or not base_prefix)
+        else f"{base_prefix}{parsed.path}"
+    )
+    parsed = parsed._replace(
+        scheme=target_parsed.scheme,
+        netloc=target_parsed.netloc,
+        path=merged_path,
+    )
     return urlunparse(parsed).rstrip("/")
 
 
@@ -230,22 +287,42 @@ def _infer_capabilities(data: dict[str, Any]) -> list[str]:
     return []
 
 
-def _deployment_openai_base(data: dict[str, Any], public_base: str) -> str:
+def _deployment_openai_base(
+    data: dict[str, Any],
+    target_base: str,
+    *,
+    rehost_endpoint: bool = False,
+) -> str:
+    """Build the OpenAI-compatible base URL for ``data``, routable from
+    the audience implied by ``target_base``.
+
+    ``rehost_endpoint=True`` swaps a platform-emitted ``endpoint``
+    field's scheme+netloc onto ``target_base`` (round-12 review,
+    codex P2) — used by the backend AsyncOpenAI path so a browser-only
+    endpoint (``http://localhost:8000/...``) doesn't leak into the
+    container's HTTP client. The frontend display path
+    (``list_available_models``) keeps the platform's endpoint
+    verbatim so URLs the user sees match what the platform reports.
+    """
     endpoint = str(data.get("endpoint") or "").rstrip("/")
     if endpoint:
+        if rehost_endpoint:
+            return _rehost_to_container(
+                _normalize_openai_endpoint(endpoint), target_base,
+            )
         return _normalize_openai_endpoint(endpoint)
 
     access_path = str(data.get("access_path") or "").strip()
-    if access_path and public_base:
+    if access_path and target_base:
         path = access_path if access_path.startswith("/") else f"/{access_path}"
         path = path.rstrip("/")
         if path.endswith("/v1"):
-            return f"{public_base}{path}"
-        return f"{public_base}{path}/v1"
+            return f"{target_base}{path}"
+        return f"{target_base}{path}/v1"
 
     lb_port = data.get("lb_port")
-    if public_base and lb_port:
-        parsed = urlparse(public_base)
+    if target_base and lb_port:
+        parsed = urlparse(target_base)
         scheme = parsed.scheme or "https"
         host = parsed.hostname
         if host:

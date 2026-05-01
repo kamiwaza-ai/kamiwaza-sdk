@@ -11,10 +11,16 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 CHANGELOG_PATH = REPO_ROOT / "kamiwaza_extensions_lib" / "CHANGELOG.md"
 
 
-def test_version_is_0_3_0_for_m2():
-    assert kamiwaza_extensions_lib.__version__ == "0.3.0", (
-        "M2 ships the runtime lib as 0.3.0 (signals cross-language parity "
-        "against test-vectors.json). Update both __version__ and CHANGELOG.md "
+def test_version_is_0_4_0_for_m3():
+    # M3 / PR #87 round-9 promoted the round-8 ``_url`` helpers to a
+    # public ``url`` module (and re-exported ``backend_runtime_base`` /
+    # ``public_base_url`` from the package root). Scaffolded extensions
+    # now import the public path, so the compat floor in
+    # ``compatibility.json`` was raised to ``>=0.4,<0.5`` to keep older
+    # versions without the helpers from resolving.
+    assert kamiwaza_extensions_lib.__version__ == "0.4.0", (
+        "M3 ships the runtime lib as 0.4.0 (public url helpers + "
+        "local_dev bridge). Update both __version__ and CHANGELOG.md "
         "if the version is intentionally changing."
     )
 
