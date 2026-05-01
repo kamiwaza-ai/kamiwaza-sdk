@@ -889,6 +889,59 @@ class TestPreInstallStripOverlay:
             "npm install"
         )
 
+    def test_is_typescript_dist_stale_detects_src_newer_than_dist(self, tmp_path):
+        """``--sdk-repo`` must auto-rebuild when src/ has changes that
+        haven't reached dist/. Without this, a ``git pull`` that adds a
+        new subpath export silently produces a "Module not found" at the
+        consumer (PR #87 / F-006: ``dist/local-dev-auth/`` declared in
+        package.json but never built before merge)."""
+        import time
+
+        from kamiwaza_extensions.sdk_override import is_typescript_dist_stale
+
+        ts_lib = tmp_path / "kamiwaza-ai-extensions-lib"
+        ts_lib.mkdir()
+        (ts_lib / "dist").mkdir()
+        (ts_lib / "src").mkdir()
+        (ts_lib / "dist" / "index.js").write_text("//")
+        time.sleep(0.05)
+        (ts_lib / "src" / "index.ts").write_text("// newer")
+
+        spec = SdkOverrideSpec(sdk_repo=tmp_path)
+        assert is_typescript_dist_stale(spec) is True
+
+    def test_is_typescript_dist_stale_returns_false_when_dist_is_fresh(self, tmp_path):
+        import time
+
+        from kamiwaza_extensions.sdk_override import is_typescript_dist_stale
+
+        ts_lib = tmp_path / "kamiwaza-ai-extensions-lib"
+        ts_lib.mkdir()
+        (ts_lib / "src").mkdir()
+        (ts_lib / "dist").mkdir()
+        (ts_lib / "src" / "index.ts").write_text("//")
+        time.sleep(0.05)
+        (ts_lib / "dist" / "index.js").write_text("// newer")
+
+        spec = SdkOverrideSpec(sdk_repo=tmp_path)
+        assert is_typescript_dist_stale(spec) is False
+
+    def test_is_typescript_dist_stale_returns_false_when_dist_is_missing(
+        self, tmp_path
+    ):
+        """Missing dist/ is a different signal — handled separately by the
+        caller. ``is_typescript_dist_stale`` only answers the comparison
+        question when both src/ and dist/ exist."""
+        from kamiwaza_extensions.sdk_override import is_typescript_dist_stale
+
+        ts_lib = tmp_path / "kamiwaza-ai-extensions-lib"
+        ts_lib.mkdir()
+        (ts_lib / "src").mkdir()
+        (ts_lib / "src" / "index.ts").write_text("//")
+
+        spec = SdkOverrideSpec(sdk_repo=tmp_path)
+        assert is_typescript_dist_stale(spec) is False
+
     def test_generate_local_build_dockerfile_patches_skips_when_no_install_line(
         self, tmp_path
     ):

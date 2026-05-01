@@ -52,6 +52,7 @@ class DevLocalRunner:
             build_typescript_lib,
             generate_compose_override,
             generate_local_build_dockerfile_patches,
+            is_typescript_dist_stale,
             print_override_diagnostics,
             resolve_sdk_override,
             validate_sdk_override,
@@ -146,10 +147,18 @@ class DevLocalRunner:
                 console.print("[red]SDK override disabled due to errors above[/red]")
                 override_spec = None
             else:
-                # Build TypeScript if needed
+                # Build TypeScript when explicitly requested, when dist/ is
+                # missing entirely, or when src/ is newer than dist/. The
+                # last case is what makes ``--sdk-repo`` work without
+                # surprise: a stale dist after a ``git pull`` would otherwise
+                # surface as a "Module not found" inside the consumer's
+                # Next.js build, which is hard to diagnose. Treating stale
+                # dist as a build trigger keeps the bind-mounted artifacts
+                # in lockstep with the SDK source the developer is editing.
                 if override_spec.typescript and (
                     override_spec.build_typescript
                     or not override_spec.typescript_dist_path.is_dir()
+                    or is_typescript_dist_stale(override_spec)
                 ):
                     if not build_typescript_lib(override_spec):
                         console.print(

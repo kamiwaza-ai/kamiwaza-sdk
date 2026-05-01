@@ -159,18 +159,31 @@ def validate_sdk_override(spec: SdkOverrideSpec) -> ValidationResult:
             result.warnings.append(
                 f"TypeScript dist/ missing — run: cd {spec.typescript_lib_path} && npm run build"
             )
-        else:
-            # Check staleness: is dist/ older than src/?
-            src_dir = spec.typescript_lib_path / "src"
-            if src_dir.is_dir():
-                dist_mtime = _newest_mtime(spec.typescript_dist_path)
-                src_mtime = _newest_mtime(src_dir)
-                if src_mtime > dist_mtime:
-                    result.warnings.append(
-                        "TypeScript dist/ may be stale (src/ is newer) — consider rebuilding"
-                    )
+        elif is_typescript_dist_stale(spec):
+            result.warnings.append(
+                "TypeScript dist/ is stale (src/ is newer) — will rebuild before bind-mount"
+            )
 
     return result
+
+
+def is_typescript_dist_stale(spec: SdkOverrideSpec) -> bool:
+    """Return True when ``dist/`` exists but is older than ``src/``.
+
+    Used as a trigger for ``build_typescript_lib`` in the ``dev local`` /
+    ``dev`` flows. Treats stale-dist the same as missing-dist: if the
+    developer asked us to bind-mount their local SDK, they want fresh
+    artifacts — anything else turns into a baffling "module not found"
+    at the consumer (e.g. dropped subpath exports between releases —
+    PR #87 → ``dist/local-dev-auth/`` was added to ``package.json``
+    but the dist/ wasn't rebuilt before merge).
+    """
+    if not spec.typescript_dist_path.is_dir():
+        return False
+    src_dir = spec.typescript_lib_path / "src"
+    if not src_dir.is_dir():
+        return False
+    return _newest_mtime(src_dir) > _newest_mtime(spec.typescript_dist_path)
 
 
 def _newest_mtime(directory: Path) -> float:
