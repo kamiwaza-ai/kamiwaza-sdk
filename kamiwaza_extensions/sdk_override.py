@@ -8,7 +8,7 @@ import shlex
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 from rich.console import Console
@@ -648,6 +648,16 @@ class BuildOverride:
     additional_build_contexts: Dict[str, str]
     insert_before_build: bool = False  # Insert before npm/next build line
     pre_install_steps: str = ""  # Inserted before RUN pip install -r requirements.txt
+    # Which install pattern ``apply_build_overlay`` should match for the
+    # ``pre_install_steps`` insert: "python" → ``RUN pip install -r
+    # requirements.txt``, "typescript" → ``RUN npm install`` / ``RUN npm
+    # ci``. None preserves the legacy "try both, Python first" behavior
+    # for callers that don't set it (Codex P2 review on PR #91 round-4 —
+    # without explicit language tagging, a frontend Dockerfile that also
+    # runs ``pip install`` for build tooling would have the TS strip
+    # inserted before the pip line, which is a no-op there because
+    # ``package.json`` hasn't been copied yet).
+    language: Optional[str] = None
 
 
 _PYTHON_OVERLAY = (
@@ -804,6 +814,7 @@ def generate_build_overrides(
                     overlay_steps=_PYTHON_OVERLAY,
                     additional_build_contexts={"sdk": str(spec.sdk_repo)},
                     pre_install_steps=_PYTHON_PRE_INSTALL_STRIP,
+                    language="python",
                 )
             )
 
@@ -821,6 +832,7 @@ def generate_build_overrides(
                     # npm registry yet (ENG-3901 / F-002 round-2 — cluster
                     # deploy hit the same wall as dev local).
                     pre_install_steps=_TS_PRE_INSTALL_STRIP,
+                    language="typescript",
                 )
             )
 
@@ -842,10 +854,22 @@ def apply_build_overlay(dockerfile_content: str, overlay: BuildOverride) -> str:
     """
     content = dockerfile_content
     if overlay.pre_install_steps:
-        # Try Python pattern first, fall through to TS — the
-        # pre_install_steps content is language-specific but the
-        # insertion logic just needs to find the right line.
-        for pattern in (_PYTHON_PIP_INSTALL_PATTERN, _TS_NPM_INSTALL_PATTERN):
+        # Pick the install pattern based on the overlay's declared
+        # language. A frontend Dockerfile that also runs ``pip install``
+        # for build tooling would otherwise have the TS strip inserted
+        # before the pip line (no-op, because package.json hasn't been
+        # copied yet) and the actual ``npm install`` would still hit the
+        # unstripped pin (Codex P2 review on PR #91 round-4).
+        if overlay.language == "python":
+            patterns: Tuple["re.Pattern[str]", ...] = (_PYTHON_PIP_INSTALL_PATTERN,)
+        elif overlay.language == "typescript":
+            patterns = (_TS_NPM_INSTALL_PATTERN,)
+        else:
+            # Legacy fallback for callers that don't declare a language —
+            # try Python first, fall through to TS. Same behavior as
+            # before round-4.
+            patterns = (_PYTHON_PIP_INSTALL_PATTERN, _TS_NPM_INSTALL_PATTERN)
+        for pattern in patterns:
             new_content = _insert_before_install_pattern(
                 content, overlay.pre_install_steps, pattern
             )

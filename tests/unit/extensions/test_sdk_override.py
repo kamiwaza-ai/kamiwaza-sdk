@@ -880,6 +880,70 @@ class TestPreInstallStripOverlay:
         # Only one install line in the patched output.
         assert result.count("RUN npm install") == 1
 
+    def test_apply_build_overlay_routes_strip_by_language(self):
+        """ENG-3901 / round-4 (Codex P2): a frontend Dockerfile that
+        ALSO runs ``pip install`` for build tooling must have the TS
+        strip inserted before ``RUN npm install``, NOT before the pip
+        line. Without the language tag, the legacy "try both, Python
+        first" fallback would no-op the strip there because
+        ``package.json`` isn't yet copied — and the unstripped npm
+        install would then ETARGET on the unpublished pin."""
+        mixed_dockerfile = (
+            "FROM node:20-alpine\nWORKDIR /app\n"
+            # Python tooling first (e.g. for asset pipelines)
+            "RUN apk add python3 py3-pip\n"
+            "COPY tooling-requirements.txt .\n"
+            "RUN pip install -r requirements.txt\n"
+            # Then the actual TS install
+            "COPY package.json package-lock.json ./\n"
+            "RUN npm install\n"
+            "COPY . .\nRUN npm run build\n"
+        )
+        overlay = BuildOverride(
+            service_name="frontend",
+            overlay_steps="",
+            additional_build_contexts={"sdk": "/tmp/sdk"},
+            insert_before_build=True,
+            pre_install_steps=(
+                "# ts-strip\nUSER root\nRUN node -e 'strip'\n{restore_user_block}"
+            ),
+            language="typescript",
+        )
+        result = apply_build_overlay(mixed_dockerfile, overlay)
+        # The strip must land before npm install, NOT before pip install.
+        assert result.index("# ts-strip") > result.index("pip install"), (
+            "TS strip must NOT be inserted before the pip line; the strip "
+            f"would no-op there. Got result:\n{result}"
+        )
+        assert result.index("# ts-strip") < result.index("RUN npm install")
+
+    def test_apply_build_overlay_python_language_skips_npm_pattern(self):
+        """Inverse: a Python overlay must use the pip pattern only —
+        even if the Dockerfile happens to have a later npm install
+        line, the Python strip targets requirements.txt and would
+        no-op there too."""
+        mixed_dockerfile = (
+            "FROM python:3.10-slim\nWORKDIR /app\n"
+            "COPY package.json ./\n"
+            "RUN npm install -g some-tool\n"
+            "COPY requirements.txt .\n"
+            "RUN pip install -r requirements.txt\n"
+        )
+        overlay = BuildOverride(
+            service_name="backend",
+            overlay_steps="",
+            additional_build_contexts={"sdk": "/tmp/sdk"},
+            pre_install_steps=(
+                "# py-strip\nUSER root\nRUN sed -i '/x/d' requirements.txt\n"
+                "{restore_user_block}"
+            ),
+            language="python",
+        )
+        result = apply_build_overlay(mixed_dockerfile, overlay)
+        # Strip lands before pip install, not before npm install.
+        assert result.index("# py-strip") > result.index("RUN npm install")
+        assert result.index("# py-strip") < result.index("pip install")
+
     def test_strip_step_inserted_before_pip_install(self):
         overlay = BuildOverride(
             service_name="backend",
