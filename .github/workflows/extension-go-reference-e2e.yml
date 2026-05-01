@@ -1,0 +1,240 @@
+name: extensions/go-reference-e2e
+
+# D210 §4.2.11 / Linear ENG-3894 / M2 task T2.12.
+#
+# Exercises the full scaffold→build→deploy→invoke→publish loop for the Go
+# reference extension on every D210-bearing PR. M2 exit criterion is "green
+# on 3 consecutive PRs."
+#
+# Two phases:
+#
+#   Phase A (always runs):  cluster-free smoke
+#     - go test (parity vectors from docs/extensions/non-sdk-flow/test-vectors.json)
+#     - kz-ext validate against the example
+#     - docker build (distroless)
+#     - docker compose up + /health + /tools/echo + 401-on-missing-envelope
+#
+#   Phase B (gated):  cluster deploy + invoke + publish
+#     Runs only when ``vars.KAMIWAZA_E2E_ENABLED == 'true'`` *and* the matching
+#     repo secrets are configured (see Phase B job env). Until M2 cluster
+#     infra lands, Phase A is the executable contract; Phase B emits a
+#     ``skipped — cluster not configured`` summary so PR authors see the gap
+#     explicitly rather than silently passing.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+    paths:
+      - 'examples/extensions/go-reference/**'
+      - 'docs/extensions/non-sdk-flow.md'
+      - 'docs/extensions/non-sdk-flow/**'
+      - 'kamiwaza_extensions_lib/identity.py'
+      - 'kamiwaza_extensions_lib/errors.py'
+      - 'tests/unit/extensions_lib/test_identity_extractor_parity.py'
+      - '.github/workflows/extension-go-reference-e2e.yml'
+  push:
+    branches: [main, develop]
+    paths:
+      - 'examples/extensions/go-reference/**'
+      - 'docs/extensions/non-sdk-flow.md'
+      - 'docs/extensions/non-sdk-flow/**'
+
+permissions:
+  contents: read
+
+# D210-bearing PRs trigger via the ``D210`` label as well as path-based
+# changes; the gate below short-circuits everything else so we don't burn CI
+# minutes on unrelated PRs that brush these paths.
+jobs:
+  smoke:
+    name: Phase A — cluster-free smoke
+    runs-on: ubuntu-latest
+    if: >
+      github.event_name == 'push' ||
+      github.event.action != 'labeled' ||
+      github.event.label.name == 'D210'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache-dependency-path: examples/extensions/go-reference/go.mod
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          version: "0.7.5"
+          enable-cache: true
+
+      - name: Install kz-ext + Python parity test deps
+        run: uv sync
+
+      - name: go vet
+        working-directory: examples/extensions/go-reference
+        run: go vet ./...
+
+      - name: go test (parity vectors + middleware/handler coverage)
+        working-directory: examples/extensions/go-reference
+        run: go test -count=1 -race -v ./...
+
+      # Cross-language parity: run the Python parity test on the same
+      # vectors. Divergence between Python and Go fails here OR in `go test`.
+      - name: Python parity test (same vectors)
+        run: uv run pytest tests/unit/extensions_lib/test_identity_extractor_parity.py -v
+
+      - name: kz-ext validate
+        run: uv run kz-ext validate examples/extensions/go-reference
+
+      - name: docker build (distroless)
+        working-directory: examples/extensions/go-reference
+        run: docker build -t go-reference-e2e:ci .
+
+      - name: docker compose smoke (auth-on)
+        working-directory: examples/extensions/go-reference
+        env:
+          KAMIWAZA_USE_AUTH: "true"
+          COMPOSE_PROJECT_NAME: gorefe2e
+        run: |
+          set -euo pipefail
+          docker compose up -d --build
+          # Resolve the mapped host port; we don't pin one (flow doc §6).
+          for _ in $(seq 1 30); do
+            HOST_PORT=$(docker compose port tool 8000 2>/dev/null | cut -d: -f2 || true)
+            if [ -n "${HOST_PORT}" ]; then break; fi
+            sleep 1
+          done
+          if [ -z "${HOST_PORT}" ]; then
+            echo "::error::extension never published a host port"
+            docker compose logs --no-color
+            exit 1
+          fi
+          BASE="http://localhost:${HOST_PORT}"
+
+          # Wait for /health to come back healthy.
+          for _ in $(seq 1 30); do
+            if curl -fsS "${BASE}/health" >/dev/null; then break; fi
+            sleep 1
+          done
+          curl -fsS "${BASE}/health" | tee /tmp/health.json
+          test "$(jq -r .status /tmp/health.json)" = "ok"
+
+          # Happy-path envelope → 200 with a populated identity.
+          curl -fsS -XPOST "${BASE}/tools/echo" \
+            -H "Content-Type: application/json" \
+            -H "X-User-Id: u1" \
+            -H "X-User-Email: alice@example.com" \
+            -H "X-User-Roles: member,editor" \
+            -H "X-Workroom-Id: w1" \
+            -H "X-User-Workroom-Role: editor" \
+            -H "X-Auth-Token: dev-fake-jwt" \
+            -d '{"message":"hello"}' | tee /tmp/echo.json
+          test "$(jq -r .echo /tmp/echo.json)" = "hello"
+          test "$(jq -r .identity.user_id /tmp/echo.json)" = "u1"
+          test "$(jq -r .identity.workroom_id /tmp/echo.json)" = "w1"
+
+          # Missing X-User-Id under auth-on → canonical misbound_auth.
+          STATUS=$(curl -s -o /tmp/err.json -w '%{http_code}' -XPOST "${BASE}/tools/echo" \
+            -H "Content-Type: application/json" \
+            -H "X-Workroom-Id: w1" \
+            -d '{"message":"hello"}')
+          test "${STATUS}" = "401"
+          test "$(jq -r .error.class /tmp/err.json)" = "misbound_auth"
+
+      - name: docker compose logs on failure
+        if: failure()
+        working-directory: examples/extensions/go-reference
+        run: docker compose logs --no-color || true
+
+      - name: docker compose down
+        if: always()
+        working-directory: examples/extensions/go-reference
+        run: docker compose down -v || true
+
+  cluster:
+    name: Phase B — cluster deploy + invoke + publish
+    needs: smoke
+    runs-on: ubuntu-latest
+    # Phase B touches a real cluster with real credentials. Restrict to:
+    #   1. push events to main/develop (always trusted), OR
+    #   2. PRs whose head ref lives in *this* repo (not a fork) and which
+    #      either weren't labeled or carry the D210 label.
+    # Forks never see secrets on `pull_request` so they fail safely without
+    # this gate; the explicit head-repo check defends against a maintainer
+    # labeling a same-repo branch PR with hostile workflow changes.
+    if: >
+      (
+        github.event_name == 'push' ||
+        (github.event.pull_request.head.repo.full_name == github.repository &&
+         (github.event.action != 'labeled' || github.event.label.name == 'D210'))
+      ) &&
+      vars.KAMIWAZA_E2E_ENABLED == 'true'
+    env:
+      KAMIWAZA_API_URL: ${{ secrets.KAMIWAZA_E2E_API_URL }}
+      KAMIWAZA_API_KEY: ${{ secrets.KAMIWAZA_E2E_API_KEY }}
+      KAMIWAZA_PUBLISH_PROFILE: ${{ vars.KAMIWAZA_E2E_PUBLISH_PROFILE }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache-dependency-path: examples/extensions/go-reference/go.mod
+      - uses: astral-sh/setup-uv@v4
+        with:
+          version: "0.7.5"
+          enable-cache: true
+
+      - name: Install kz-ext
+        run: uv sync
+
+      - name: kz-ext login
+        run: uv run kz-ext login "$KAMIWAZA_API_URL" --api-key "$KAMIWAZA_API_KEY" --name e2e --no-verify-ssl
+
+      - name: kz-ext dev (build + push + deploy)
+        working-directory: examples/extensions/go-reference
+        run: uv run kz-ext dev --revision "${GITHUB_SHA::7}"
+
+      - name: invoke deployed extension
+        working-directory: examples/extensions/go-reference
+        run: |
+          set -euo pipefail
+          # The deployed URL is surfaced by `kz-ext status`; we parse the
+          # human-readable output to find the platform-routed URL so the
+          # request actually traverses Traefik ForwardAuth (the only place
+          # the envelope contract is exercised end-to-end).
+          # TODO: replace this regex with `kz-ext status --json` once that
+          # flag exists. Parsing human output is brittle to any cosmetic
+          # CLI change (color codes, table reformat, label rename).
+          STATUS=$(uv run kz-ext status)
+          echo "$STATUS"
+          DEPLOY_URL=$(echo "$STATUS" | grep -Eo 'https?://[^[:space:]]+/extensions/[^[:space:]]+' | head -1)
+          test -n "$DEPLOY_URL" || { echo "::error::no deploy URL in status output"; exit 1; }
+          curl -fsS -k "${DEPLOY_URL}/health"
+          curl -fsS -k -XPOST "${DEPLOY_URL}/tools/echo" \
+            -H "Authorization: Bearer ${KAMIWAZA_API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d '{"message":"e2e"}'
+
+      - name: kz-ext publish
+        working-directory: examples/extensions/go-reference
+        run: uv run kz-ext publish --stage "$KAMIWAZA_PUBLISH_PROFILE" --revision "${GITHUB_SHA::7}"
+
+  cluster-skipped:
+    name: Phase B — skipped (cluster not configured)
+    needs: smoke
+    runs-on: ubuntu-latest
+    # Mirrors the cluster job's eligibility condition; only the
+    # KAMIWAZA_E2E_ENABLED variable flips between the two so they remain
+    # mutually exclusive — keep the predicates in sync.
+    if: >
+      (
+        github.event_name == 'push' ||
+        (github.event.pull_request.head.repo.full_name == github.repository &&
+         (github.event.action != 'labeled' || github.event.label.name == 'D210'))
+      ) &&
+      vars.KAMIWAZA_E2E_ENABLED != 'true'
+    steps:
+      - name: Note skipped phase
+        run: |
+          echo "::notice::Phase B (cluster deploy + invoke + publish) skipped — set repo variable KAMIWAZA_E2E_ENABLED=true and provide KAMIWAZA_E2E_API_URL/KAMIWAZA_E2E_API_KEY/KAMIWAZA_E2E_PUBLISH_PROFILE to enable. Tracked under ENG-3894 / D210 M2 T2.12."
