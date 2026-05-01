@@ -8,7 +8,7 @@ lightweight async library — not the full SDK with its sync HTTP client
 and 20+ service modules.
 """
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 from .auth import forward_auth_headers, require_auth, require_role
 from .client import KamiwazaExtClient
@@ -30,6 +30,7 @@ from .identity import (
 )
 from .models import AvailableModel, get_model_client, list_available_models
 from .session import create_session_router
+from .url import backend_runtime_base, public_base_url
 
 __all__ = [
     "AuthConfig",
@@ -52,4 +53,6 @@ __all__ = [
     "StreamInterruptedError",
     "get_model_client",
     "list_available_models",
+    "backend_runtime_base",
+    "public_base_url",
 ]

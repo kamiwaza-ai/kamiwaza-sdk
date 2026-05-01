@@ -10,8 +10,16 @@ import httpx
 from fastapi import Request
 
 from .auth import forward_auth_headers
-from .config import AuthConfig
 from .client import KamiwazaExtClient
+from .config import AuthConfig
+# Round-9 review: ``_url`` was renamed to ``url`` (public) in 0.4.0 so
+# scaffolded extensions can import the helpers without coupling to a
+# private path. The underscored aliases below preserve in-tree
+# backward-compat for existing test imports.
+from .url import (
+    backend_runtime_base as _backend_runtime_base,  # noqa: F401
+    public_base_url as _public_base_url,  # noqa: F401
+)
 
 _ACTIVE_DEPLOYMENT_STATUSES = {"deployed", "running", "ready", "active"}
 
@@ -171,17 +179,6 @@ async def _resolve_openai_base(
                     return endpoint
 
     return config.openai_base
-
-
-# Round-8 review consolidated these helpers in `_url.py` so the app
-# template + session router + lib all share a single source of truth
-# (Rule of Three was triggered — see `_url.py` for full rationale).
-# Re-exported under their original underscored names for any in-tree
-# caller / test that imported from ``models.py`` directly.
-from ._url import (  # noqa: E402
-    backend_runtime_base as _backend_runtime_base,  # noqa: F401
-    public_base_url as _public_base_url,  # noqa: F401
-)
 
 
 def _normalize_openai_endpoint(endpoint: str) -> str:

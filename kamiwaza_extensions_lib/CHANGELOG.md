@@ -5,6 +5,38 @@ follow semver. The library is distributed alongside `kamiwaza-sdk` but
 versioned independently — extension authors pin against the `[lib]` minor
 range in `requirements.txt`.
 
+## [0.4.0] — 2026-04-30 (D210 M3 — PR #87)
+
+### Added
+
+* **`kamiwaza_extensions_lib.url`** — public URL-resolution helpers
+  (`public_base_url`, `backend_runtime_base`) for scaffolded extensions
+  to import without coupling to a private path. Replaces the round-8
+  internal `_url` module (the underscored module is gone — the renamed
+  public form is the single source of truth). The helpers are
+  re-exported from the package root so callers write
+  `from kamiwaza_extensions_lib import backend_runtime_base`. Round-9
+  review caught the template importing the underscored path; promoting
+  the module is the durable fix.
+* **`kamiwaza_extensions_lib.local_dev`** — opt-in local-auth bridge for
+  `kz-ext dev local --auth`. Provides `prepare_bridge_context`,
+  `BridgeContext`, `LocalDevAuthError`, plus the `host.docker.internal`
+  rewrite + browser-vs-container URL split. The runtime CLI overlay is
+  the public consumer; extension authors do not call this module
+  directly.
+
+### Fixed
+
+* `_strip_api_suffix` now produces identical output for `…/api` and
+  `…/api/` — round-9 review caught a divergence between this helper and
+  the trailing-slash handling in `local_dev.public_api_url_from`.
+
+### Notes
+
+* Compat floor in `kamiwaza_extensions/compatibility.json` raised to
+  `>=0.4,<0.5` so pip cannot resolve a 0.3.x version that lacks the
+  public `url` module against scaffolded extensions.
+
 ## [0.3.0] — 2026-04-29 (D210 M2)
 
 ### Added

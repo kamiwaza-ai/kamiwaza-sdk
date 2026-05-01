@@ -2,18 +2,24 @@
 
 Two distinct base-URL concepts; pick the right one for the call site:
 
-* :func:`public_base_url` — **browser-facing** values surfaced to the
-  frontend / user (model endpoints displayed in the UI, OAuth redirect
-  URLs, ``/auth/login-url`` responses, etc.).
+* :func:`public_base_url` — **browser-facing** runtime URLs (model
+  endpoints displayed in the UI, deployment access paths returned to
+  the frontend). ``/api`` is stripped.
 
-* :func:`backend_runtime_base` — **container-routable** values used by
-  code that runs *inside* the backend container (AsyncOpenAI base URLs,
-  server-to-platform ``/auth/logout`` POSTs, etc.).
+* :func:`backend_runtime_base` — **container-routable** runtime URLs
+  used by code that runs *inside* the backend container (AsyncOpenAI
+  base URLs, server-to-platform runtime calls). ``/api`` is stripped.
+
+Auth endpoints (``/api/auth/login``, ``/api/auth/logout``) live UNDER
+``/api`` and so use the raw URLs directly via inline
+``(public ?: api).rstrip("/")`` precedence in :mod:`session` — they
+intentionally do NOT route through these helpers.
 
 In production both URLs typically point at the same gateway, so the
 priority order is a no-op there. Under ``kz-ext dev local --auth`` the
-two intentionally diverge (``KAMIWAZA_PUBLIC_API_URL=localhost`` for
-browser, ``KAMIWAZA_API_URL=host.docker.internal`` for container).
+two intentionally diverge (``KAMIWAZA_PUBLIC_API_URL=http://localhost:8000``
+for browser, ``KAMIWAZA_API_URL=http://host.docker.internal:8000/api``
+for container).
 
 This module is the single source of truth — any call site that imports
 its own copy of the priority logic risks the round-5/7/8 regressions
@@ -26,8 +32,16 @@ from .config import AuthConfig
 
 
 def _strip_api_suffix(url: str) -> str:
-    """Strip a trailing ``/api`` (and any extra slashes). Empty → empty."""
-    return url.removesuffix("/api").rstrip("/") if url else ""
+    """Strip a trailing ``/api`` (and any extra slashes). Empty → empty.
+
+    Trailing-slash variants normalize identically — ``"…/api"`` and
+    ``"…/api/"`` both produce the same output (round-9 review caught a
+    drift between this helper and ``local_dev.public_api_url_from``
+    on the trailing-slash case).
+    """
+    if not url:
+        return ""
+    return url.rstrip("/").removesuffix("/api").rstrip("/")
 
 
 def public_base_url(config: AuthConfig) -> str:

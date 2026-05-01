@@ -10,13 +10,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from kamiwaza_extensions_lib import (
     AuthConfig,
     Identity,
+    backend_runtime_base,
     create_session_router,
     forward_auth_headers,
     get_model_client,
     list_available_models,
     require_auth,
 )
-from kamiwaza_extensions_lib._url import backend_runtime_base
 from openai import APIStatusError, AsyncOpenAI
 
 app = FastAPI(title="chatbot-app")
@@ -101,9 +101,16 @@ def _normalize_model_endpoint(endpoint: str, access_path: str):
         if backend_base and parsed.scheme and parsed.netloc:
             backend_parsed = urlparse(backend_base)
             if backend_parsed.scheme and backend_parsed.netloc:
+                # Preserve any path prefix carried by ``backend_base`` —
+                # e.g. an ingress sub-path like ``https://gateway/foo``
+                # whose ``/foo`` would otherwise be dropped during the
+                # re-host (round-9 review High: Comprehensive).
+                base_prefix = backend_parsed.path.rstrip("/")
+                merged_path = f"{base_prefix}{parsed.path}" if base_prefix else parsed.path
                 parsed = parsed._replace(
                     scheme=backend_parsed.scheme,
                     netloc=backend_parsed.netloc,
+                    path=merged_path,
                 )
         return urlunparse(parsed).rstrip("/")
 
