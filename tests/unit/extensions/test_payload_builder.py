@@ -316,10 +316,13 @@ class TestHealthChecks:
             "port": 8000,
         }, f"service-type primary must probe / not /health; got {health_check['httpGet']!r}"
 
-    def test_tool_type_primary_uses_root_probe(self, builder, connection):
-        """ENG-3901 / F-013: same fix for tool-type. The tool template
-        ships an MCP server that may or may not declare /health depending
-        on developer implementation; / is the always-safe default."""
+    def test_tool_type_primary_probes_sse(self, builder, connection):
+        """ENG-3901 / F-013 (final): tool primary probes ``/sse`` — the
+        FastMCP SSE endpoint. ``/`` 404s (FastMCP doesn't mount root) and
+        ``/health`` doesn't exist on the stub. The platform API rejects
+        ``tcpSocket`` and ``exec`` probe shapes with opaque 500s, so
+        httpGet ``/sse`` is the only viable choice today even though the
+        K8s probe may time out reading the streamed response body."""
         metadata = {"name": "my-tool", "version": "1.0.0", "type": "tool"}
         transformed = {
             "services": {
@@ -333,7 +336,9 @@ class TestHealthChecks:
         tool = payload.services[0]
         health_check = tool.model_dump()["healthCheck"]
         assert tool.primary is True
-        assert health_check["httpGet"] == {"path": "/", "port": 8080}
+        assert health_check["httpGet"] == {"path": "/sse", "port": 8080}
+        assert "tcpSocket" not in health_check
+        assert "exec" not in health_check
 
     def test_app_type_backend_keeps_health_probe(self, builder, connection):
         """Regression guard: F-013's fix is scoped to service/tool primary.

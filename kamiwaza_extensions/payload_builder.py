@@ -312,13 +312,22 @@ class PayloadBuilder:
                 "startPeriod": 300,
                 "timeoutSeconds": 5,
             }
-        # service / tool primary stubs don't expose /health; probe / instead.
-        # Generic non-primary "frontend"-named services keep / for the same
-        # reason (they typically serve at root). Backends in app-type
-        # extensions ship a real /health route so they keep that path.
-        if (
-            extension_type in ("service", "tool") and is_primary
-        ) or svc_name == "frontend":
+        # Path-selection rules (see docstring). Tool primary probes /sse —
+        # the FastMCP SSE endpoint — even though the response body streams
+        # past the K8s 5s probe timeout. The platform's CR API currently
+        # rejects ``tcpSocket`` and ``exec`` healthCheck shapes with an
+        # opaque 500, leaving httpGet as the only path. /sse is preferable
+        # to /health (404 under FastMCP) — the headers come back 200 even
+        # if the probe times out reading the body, which keeps the pod
+        # restart-loop from firing. Net result: pod runs and serves
+        # requests, but K8s may take longer to mark it Ready. The proper
+        # fix is to teach the platform API to accept tcpSocket/exec
+        # probes (tracked separately).
+        if extension_type == "service" and is_primary:
+            path = "/"
+        elif extension_type == "tool" and is_primary:
+            path = "/sse"
+        elif svc_name == "frontend":
             path = "/"
         else:
             path = "/health"
