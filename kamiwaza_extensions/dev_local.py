@@ -13,7 +13,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 from rich.console import Console
@@ -183,6 +183,11 @@ class DevLocalRunner:
         sdk_build_dockerfiles: List[str] = []
         extra_hosts_file: Optional[str] = None
         auth_env_file: Optional[str] = None
+        # Initialised here (not in 10a) so the ``finally`` cleanup always
+        # has them in scope — even if an exception bubbles out of the
+        # try body before the polling thread would have been spawned.
+        url_poll_thread: Optional[threading.Thread] = None
+        url_poll_stop = threading.Event()
 
         try:
             if info.compose_data:
@@ -238,6 +243,7 @@ class DevLocalRunner:
                 )
                 if df_patches:
                     build_overlay_services: dict = {}
+                    base_services = (info.compose_data or {}).get("services", {})
                     for svc, patched in df_patches.items():
                         df_fd = tempfile.NamedTemporaryFile(
                             mode="w",
@@ -248,9 +254,25 @@ class DevLocalRunner:
                         df_fd.write(patched)
                         df_fd.close()
                         sdk_build_dockerfiles.append(df_fd.name)
-                        build_overlay_services[svc] = {
-                            "build": {"dockerfile": df_fd.name},
-                        }
+                        # Carry forward the original build.context (and any
+                        # other build fields) so the patched Dockerfile is
+                        # built from the same root the scaffold expects —
+                        # COPY paths in the patched Dockerfile resolve
+                        # relative to ``context``. Compose's overlay merge
+                        # would normally preserve unspecified keys, but
+                        # being explicit insulates us from any compose
+                        # version that flips merge semantics for ``build:``
+                        # (Codex P1 review on PR #91).
+                        base_build = (base_services.get(svc) or {}).get("build")
+                        merged_build: Dict[str, Any] = {}
+                        if isinstance(base_build, str):
+                            # Compose short-form ``build: ./frontend`` —
+                            # promote to long-form so context survives.
+                            merged_build["context"] = base_build
+                        elif isinstance(base_build, dict):
+                            merged_build.update(base_build)
+                        merged_build["dockerfile"] = df_fd.name
+                        build_overlay_services[svc] = {"build": merged_build}
                     fd = tempfile.NamedTemporaryFile(
                         mode="w", suffix=".yml", prefix="kz-sdk-build-", delete=False
                     )
@@ -328,7 +350,8 @@ class DevLocalRunner:
                 compose_prefix += ["-f", sdk_override_file]
             # The build patch must apply to the same services the runtime
             # override touches; place it after sdk_override_file so its
-            # ``build.dockerfile_inline`` wins over any earlier build spec.
+            # ``build.dockerfile`` (absolute path to a temp Dockerfile)
+            # wins over any earlier build spec.
             if sdk_build_patch_file:
                 compose_prefix += ["-f", sdk_build_patch_file]
             if extra_hosts_file:
@@ -365,11 +388,18 @@ class DevLocalRunner:
             # actual URL (it scrolls past in the build / Next.js startup
             # logs and is easy to miss). Daemon thread so it dies with
             # the process if compose exits early. (ENG-3901 / F-008)
-            url_poll_thread: Optional[threading.Thread] = None
+            #
+            # The stop event lets the ``finally`` cleanup signal the
+            # poller to exit before unlinking the compose override files
+            # the poller passes to ``docker compose port``. Without it
+            # the poller could wake from ``time.sleep`` after the temp
+            # YAMLs are gone and shell out to compose with stale ``-f``
+            # paths (PR #91 round-2 review High consensus).
             if not detach and self._has_bare_ports(info.compose_data):
                 url_poll_thread = threading.Thread(
                     target=self._poll_and_print_urls,
-                    args=(info.compose_data, remaps, compose_prefix, str(info.path)),
+                    args=(info.compose_data, compose_prefix, str(info.path)),
+                    kwargs={"stop_event": url_poll_stop},
                     daemon=True,
                     name="kz-ext-url-poll",
                 )
@@ -393,6 +423,13 @@ class DevLocalRunner:
 
             return rc
         finally:
+            # Signal the URL-poll thread to stop BEFORE unlinking the
+            # compose override files it depends on; give it a brief join
+            # window so an in-flight ``docker compose port`` call doesn't
+            # see freshly-deleted ``-f`` paths.
+            url_poll_stop.set()
+            if url_poll_thread is not None and url_poll_thread.is_alive():
+                url_poll_thread.join(timeout=2.0)
             cleanup_paths: List[Optional[str]] = [
                 patched_compose_file,
                 sdk_override_file,
@@ -487,9 +524,10 @@ class DevLocalRunner:
     def _poll_and_print_urls(
         self,
         compose_data: dict,
-        remaps: Dict[str, Tuple[int, int]],
         compose_cmd: List[str],
         cwd: str,
+        *,
+        stop_event: Optional[threading.Event] = None,
     ) -> None:
         """Background-thread loop: poll ``docker compose port`` until the
         bare-port host ports are assigned, then print the URLs.
@@ -499,24 +537,43 @@ class DevLocalRunner:
         pull + Next.js build) before giving up silently. The user can
         always fall back to ``docker compose port`` themselves; this is
         a "make the common case easy" affordance, not a hard guarantee.
+
+        If ``stop_event`` is set (the runner's ``finally`` block signals
+        it), the loop returns promptly so the cleanup can unlink the
+        compose override files this thread depends on.
         """
+        if stop_event is None:
+            stop_event = threading.Event()
         # Initial delay so we don't compete with compose's own "Building" /
-        # "Pulling" / "Creating" output for the user's eye.
-        time.sleep(2.0)
+        # "Pulling" / "Creating" output for the user's eye. Use the stop
+        # event's wait so a fast Ctrl+C doesn't have to bleed off this
+        # delay before exiting.
+        if stop_event.wait(2.0):
+            return
         deadline = time.monotonic() + 60.0
-        services_with_bare_ports = [
+        services_with_bare_ports: List[Tuple[str, int]] = [
             (svc_name, container_port)
             for svc_name, svc_config in compose_data.get("services", {}).items()
             for port_spec in svc_config.get("ports", []) or []
             for host_port, container_port in [parse_port_mapping(str(port_spec))]
             if host_port is None and container_port is not None
         ]
-        printed: Dict[str, int] = {}
-        while time.monotonic() < deadline and len(printed) < len(
-            services_with_bare_ports
+        # Key on ``(svc_name, container_port)`` so multi-port services
+        # (e.g. a frontend exposing both 3000 and 4173 for HMR) get every
+        # URL printed, and the loop's completion check actually
+        # terminates rather than spinning to the 60s deadline (Codex P3
+        # / Claude review on PR #91).
+        printed: Dict[Tuple[str, int], int] = {}
+        while (
+            not stop_event.is_set()
+            and time.monotonic() < deadline
+            and len(printed) < len(services_with_bare_ports)
         ):
             for svc_name, container_port in services_with_bare_ports:
-                if svc_name in printed:
+                if stop_event.is_set():
+                    return
+                key = (svc_name, container_port)
+                if key in printed:
                     continue
                 host_port = self._docker_compose_port(
                     svc_name,
@@ -526,15 +583,14 @@ class DevLocalRunner:
                 )
                 if host_port is None:
                     continue
-                if svc_name in remaps:
-                    host_port = remaps[svc_name][1]
                 console.print(
                     f"\n[bold green]{svc_name}:[/bold green] "
                     f"[link]http://localhost:{host_port}[/link]"
                 )
-                printed[svc_name] = host_port
+                printed[key] = host_port
             if len(printed) < len(services_with_bare_ports):
-                time.sleep(1.5)
+                if stop_event.wait(1.5):
+                    return
 
     @staticmethod
     def _docker_compose_port(

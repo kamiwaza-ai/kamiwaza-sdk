@@ -688,12 +688,15 @@ _PYTHON_PRE_INSTALL_STRIP = (
     "{restore_user_block}"
 )
 
-# Drops ``@kamiwaza-ai/extensions-lib`` from the three dependency maps in
-# package.json before ``npm install`` runs. The post-install ``_TS_OVERLAY``
-# (or local-mode bind-mount + npm install) ships the runtime lib via
-# ``npm pack``; removing the dep avoids a hard ETARGET failure when the
-# declared version range isn't on the npm registry yet (mirror of
-# ``_PYTHON_PRE_INSTALL_STRIP`` for the TS side).
+# Drops ``@kamiwaza-ai/extensions-lib`` from every npm dependency-map
+# field (the three documented dep maps + ``optionalDependencies``,
+# ``bundleDependencies`` / ``bundledDependencies``, ``overrides``,
+# ``resolutions``) in package.json before ``npm install`` runs. The
+# post-install ``_TS_OVERLAY`` (or local-mode bind-mount + npm install)
+# ships the runtime lib via ``npm pack``; removing the dep avoids a
+# hard ETARGET failure when the declared version range isn't on the
+# npm registry yet (mirror of ``_PYTHON_PRE_INSTALL_STRIP`` for the TS
+# side).
 #
 # Implementation note: package.json is JSON, so a sed-line-strip would
 # leave dangling commas. Use ``node -e`` (always present in the frontend
@@ -846,15 +849,6 @@ def apply_build_overlay(dockerfile_content: str, overlay: BuildOverride) -> str:
 
     # No build line found or not insert_before_build — append at end
     return content.rstrip() + "\n\n" + overlay_steps
-
-
-def _insert_before_pip_install(dockerfile_content: str, pre_steps: str) -> str:
-    """Backend-specific shim around ``_insert_before_install_pattern``."""
-    return _insert_before_install_pattern(
-        dockerfile_content,
-        pre_steps,
-        _PYTHON_PIP_INSTALL_PATTERN,
-    )
 
 
 def _insert_before_install_pattern(

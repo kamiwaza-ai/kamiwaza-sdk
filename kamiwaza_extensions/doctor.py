@@ -1019,11 +1019,20 @@ class DoctorChecker:
             )
         declared = deps.get("@kamiwaza-ai/extensions-lib")
         if declared is None:
+            # ENG-3901 / F-003: surface CLI version + upgrade hint so a
+            # stale ``kz-ext`` (with a stale bundled compat range) doesn't
+            # silently mislead. Mirrors the Python sibling check above.
             return CheckResult(
                 "Runtime lib (TypeScript)",
                 "warn",
                 "@kamiwaza-ai/extensions-lib not found in package.json",
-                fix=f'Add "@kamiwaza-ai/extensions-lib": "{compat_range or "^0.4.0"}" to package.json dependencies',
+                fix=(
+                    f'Add "@kamiwaza-ai/extensions-lib": '
+                    f'"{compat_range or "^0.4.0"}" to package.json '
+                    f"dependencies (range from kz-ext {__version__}; "
+                    "if this looks stale, upgrade kz-ext first: "
+                    "pip install --upgrade kamiwaza-sdk)"
+                ),
             )
         if compat_range:
             # Round-5 C1: parse the bundle's TS range with the npm-semver
@@ -1046,11 +1055,20 @@ class DoctorChecker:
                     supported_upper,
                 )
                 if reason is not None:
+                    # ENG-3901 / F-003: same CLI-version hint as the
+                    # Python check — a stale ``kz-ext`` ships a stale
+                    # bundle, and the suggested range would be wrong.
                     return CheckResult(
                         "Runtime lib (TypeScript)",
                         "warn",
                         f"@kamiwaza-ai/extensions-lib {declared} is outside CLI compatibility range {compat_range} ({reason})",
-                        fix=f'Update to "@kamiwaza-ai/extensions-lib": "{compat_range}"',
+                        fix=(
+                            f'Update to "@kamiwaza-ai/extensions-lib": '
+                            f'"{compat_range}" '
+                            f"(range from kz-ext {__version__}; "
+                            "if this looks stale, upgrade kz-ext first: "
+                            "pip install --upgrade kamiwaza-sdk)"
+                        ),
                     )
         return CheckResult(
             "Runtime lib (TypeScript)",

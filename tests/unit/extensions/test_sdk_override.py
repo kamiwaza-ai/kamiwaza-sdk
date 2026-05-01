@@ -1064,6 +1064,172 @@ class TestPreInstallStripOverlay:
 
 
 # ------------------------------------------------------------------
+# Pre-install strip steps (PR #91 round-2 review hardening): file-exists
+# guard fails open when the canonical filename is missing, and the TS
+# strip covers every npm dep-map key plus overrides/resolutions.
+# ------------------------------------------------------------------
+
+
+def _extract_run_command(template: str) -> str:
+    """Pull the ``RUN ...`` body out of one of the strip templates.
+
+    The templates contain a ``USER root\\n`` line, then a ``RUN <body>\\n``,
+    then a trailing ``{restore_user_block}`` placeholder. This helper
+    returns just ``<body>`` so a test can hand it to ``bash -c``.
+    """
+    lines = template.splitlines()
+    run_idx = next(i for i, ln in enumerate(lines) if ln.startswith("RUN "))
+    return lines[run_idx][len("RUN ") :]
+
+
+@pytest.mark.unit
+class TestPreInstallStripExecution:
+    """Behavioral coverage for the file-exists guards and the expanded
+    TS strip key set added in the round-2 review of PR #91."""
+
+    def test_python_strip_is_no_op_when_requirements_txt_missing(self, tmp_path):
+        """ENG-3901 / round-2: ``[ -f requirements.txt ]`` guard fails open
+        on non-canonical Dockerfile layouts."""
+        import shutil
+        import subprocess
+
+        from kamiwaza_extensions.sdk_override import _PYTHON_PRE_INSTALL_STRIP
+
+        if not shutil.which("bash"):
+            pytest.skip("bash not available")
+
+        cmd = _extract_run_command(_PYTHON_PRE_INSTALL_STRIP)
+        result = subprocess.run(
+            ["bash", "-c", cmd],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        # No file created, no stderr noise.
+        assert list(tmp_path.iterdir()) == []
+        assert result.stderr == ""
+
+    def test_python_strip_removes_pin_when_requirements_txt_present(self, tmp_path):
+        import shutil
+        import subprocess
+
+        from kamiwaza_extensions.sdk_override import _PYTHON_PRE_INSTALL_STRIP
+
+        if not shutil.which("bash"):
+            pytest.skip("bash not available")
+        # GNU sed is required for ``-i`` without a backup arg + POSIX
+        # character classes. macOS ships BSD sed, so install gnu-sed
+        # locally would be needed; the Dockerfile only runs in Linux
+        # build contexts so we gate to GNU sed only.
+        sed_path = shutil.which("sed")
+        if not sed_path:
+            pytest.skip("sed not available")
+        sed_help = subprocess.run(
+            [sed_path, "--version"], capture_output=True, text=True
+        )
+        if "GNU sed" not in sed_help.stdout:
+            pytest.skip("strip requires GNU sed; this host has BSD sed")
+
+        (tmp_path / "requirements.txt").write_text(
+            "fastapi>=0.100.0\n"
+            "kamiwaza-extensions-lib>=0.4,<0.5\n"
+            "kamiwaza-extensions-lib-extras>=0.1\n"
+        )
+        cmd = _extract_run_command(_PYTHON_PRE_INSTALL_STRIP)
+        result = subprocess.run(
+            ["bash", "-c", cmd],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        kept = (tmp_path / "requirements.txt").read_text()
+        assert "fastapi>=0.100.0" in kept
+        assert "kamiwaza-extensions-lib-extras>=0.1" in kept
+        assert "kamiwaza-extensions-lib>=0.4,<0.5" not in kept
+
+    def test_ts_strip_is_no_op_when_package_json_missing(self, tmp_path):
+        """ENG-3901 / round-2: ``[ -f package.json ]`` guard fails open
+        on non-canonical Dockerfile layouts."""
+        import shutil
+        import subprocess
+
+        from kamiwaza_extensions.sdk_override import _TS_PRE_INSTALL_STRIP
+
+        if not shutil.which("bash") or not shutil.which("node"):
+            pytest.skip("bash + node required")
+
+        cmd = _extract_run_command(_TS_PRE_INSTALL_STRIP)
+        result = subprocess.run(
+            ["bash", "-c", cmd],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        assert list(tmp_path.iterdir()) == []
+        assert result.stderr == ""
+
+    def test_ts_strip_removes_lib_from_every_dep_map_key(self, tmp_path):
+        """ENG-3901 / round-2: ``optionalDependencies``,
+        ``bundleDependencies`` / ``bundledDependencies``, ``overrides``,
+        and ``resolutions`` are all covered alongside the three
+        documented dep maps. Both object and array forms handled."""
+        import json as _json
+        import shutil
+        import subprocess
+
+        from kamiwaza_extensions.sdk_override import _TS_PRE_INSTALL_STRIP
+
+        if not shutil.which("bash") or not shutil.which("node"):
+            pytest.skip("bash + node required")
+
+        package = {
+            "name": "stripper-fixture",
+            "version": "0.0.0",
+            "dependencies": {
+                "@kamiwaza-ai/extensions-lib": "^0.4.0",
+                "react": "^18.0.0",
+            },
+            "devDependencies": {"@kamiwaza-ai/extensions-lib": "^0.4.0"},
+            "peerDependencies": {"@kamiwaza-ai/extensions-lib": "^0.4.0"},
+            "optionalDependencies": {"@kamiwaza-ai/extensions-lib": "^0.4.0"},
+            "bundleDependencies": ["@kamiwaza-ai/extensions-lib", "react"],
+            "bundledDependencies": ["@kamiwaza-ai/extensions-lib"],
+            "overrides": {"@kamiwaza-ai/extensions-lib": "0.4.0"},
+            "resolutions": {"@kamiwaza-ai/extensions-lib": "0.4.0"},
+        }
+        (tmp_path / "package.json").write_text(_json.dumps(package, indent=2))
+
+        cmd = _extract_run_command(_TS_PRE_INSTALL_STRIP)
+        result = subprocess.run(
+            ["bash", "-c", cmd],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        out = _json.loads((tmp_path / "package.json").read_text())
+        for k in (
+            "dependencies",
+            "devDependencies",
+            "peerDependencies",
+            "optionalDependencies",
+            "overrides",
+            "resolutions",
+        ):
+            assert "@kamiwaza-ai/extensions-lib" not in out[k], (
+                f"{k!r} still contains the lib"
+            )
+        assert "@kamiwaza-ai/extensions-lib" not in out["bundleDependencies"]
+        assert "@kamiwaza-ai/extensions-lib" not in out["bundledDependencies"]
+        # Unrelated entries survive.
+        assert out["dependencies"]["react"] == "^18.0.0"
+        assert "react" in out["bundleDependencies"]
+
+
+# ------------------------------------------------------------------
 # validate_sdk_override — path safety
 # ------------------------------------------------------------------
 
