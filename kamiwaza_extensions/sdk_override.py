@@ -764,6 +764,13 @@ def generate_build_overrides(
                     overlay_steps=_TS_OVERLAY,
                     additional_build_contexts={"sdk": str(spec.sdk_repo)},
                     insert_before_build=True,
+                    # Mirror the backend's pre-install strip: drop
+                    # ``@kamiwaza-ai/extensions-lib`` from package.json
+                    # before ``npm install`` runs, otherwise the build
+                    # ETARGET-fails when the pinned version isn't on the
+                    # npm registry yet (ENG-3901 / F-002 round-2 — cluster
+                    # deploy hit the same wall as dev local).
+                    pre_install_steps=_TS_PRE_INSTALL_STRIP,
                 )
             )
 
@@ -775,16 +782,26 @@ def apply_build_overlay(dockerfile_content: str, overlay: BuildOverride) -> str:
 
     Two insertion points, applied in order:
 
-    1. ``pre_install_steps`` (Python backend) — inserted immediately before
-       the first ``RUN ... pip install -r requirements.txt`` line, so the
-       runtime-lib pin can be stripped before the install runs. No-op when
-       the Dockerfile has no matching pip-install line.
+    1. ``pre_install_steps`` — inserted immediately before the first
+       ``RUN ... pip install -r requirements.txt`` (Python) or
+       ``RUN npm install`` (TypeScript) line, so the runtime-lib pin can
+       be stripped before the install runs. No-op when the Dockerfile
+       has no matching install line.
     2. ``overlay_steps`` — inserted before a frontend build line when
        ``insert_before_build`` is True; appended at end otherwise.
     """
     content = dockerfile_content
     if overlay.pre_install_steps:
-        content = _insert_before_pip_install(content, overlay.pre_install_steps)
+        # Try Python pattern first, fall through to TS — the
+        # pre_install_steps content is language-specific but the
+        # insertion logic just needs to find the right line.
+        for pattern in (_PYTHON_PIP_INSTALL_PATTERN, _TS_NPM_INSTALL_PATTERN):
+            new_content = _insert_before_install_pattern(
+                content, overlay.pre_install_steps, pattern
+            )
+            if new_content is not content:
+                content = new_content
+                break
 
     lines = content.splitlines(keepends=True)
     insert_idx = None

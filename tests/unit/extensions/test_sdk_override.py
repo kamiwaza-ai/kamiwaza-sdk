@@ -756,6 +756,46 @@ class TestPreInstallStripOverlay:
         assert len(overrides) == 1
         assert overrides[0].pre_install_steps == _PYTHON_PRE_INSTALL_STRIP
 
+    def test_frontend_override_carries_ts_pre_install_steps(self, tmp_path):
+        """``generate_build_overrides`` (cluster deploy path) must also wire
+        the TS strip step onto every frontend override. Round-2 of F-002:
+        the cluster-deploy build hits the same npm ETARGET as ``dev local``
+        when ``@kamiwaza-ai/extensions-lib`` isn't published, but the dev
+        local fix only landed in ``generate_local_build_dockerfile_patches``
+        — leaving ``kz-ext dev`` broken."""
+        from kamiwaza_extensions.sdk_override import _TS_PRE_INSTALL_STRIP
+
+        spec = SdkOverrideSpec(sdk_repo=tmp_path)
+        compose = {
+            "services": {"frontend": {"build": "./frontend", "ports": ["3000:3000"]}}
+        }
+        overrides = generate_build_overrides(spec, compose)
+        assert len(overrides) == 1
+        assert overrides[0].pre_install_steps == _TS_PRE_INSTALL_STRIP
+
+    def test_apply_build_overlay_inserts_ts_strip_before_npm_install(self):
+        """The overlay applier must locate ``RUN npm install`` (not just
+        ``pip install``) when the pre_install_steps target the frontend."""
+        ts_dockerfile = (
+            "FROM node:20-alpine\nWORKDIR /app\n"
+            "COPY package.json package-lock.json* ./\n"
+            "RUN npm install\nCOPY . .\n"
+            "RUN npm run build\n"
+            'CMD ["node", "/app/start.mjs"]\n'
+        )
+        overlay = BuildOverride(
+            service_name="frontend",
+            overlay_steps="# post-install\nRUN echo post\n",
+            additional_build_contexts={"sdk": "/tmp/sdk"},
+            insert_before_build=True,
+            pre_install_steps=(
+                "# ts-strip\nUSER root\nRUN node -e 'strip'\n{restore_user_block}"
+            ),
+        )
+        result = apply_build_overlay(ts_dockerfile, overlay)
+        assert "# ts-strip" in result
+        assert result.index("# ts-strip") < result.index("RUN npm install")
+
     def test_strip_step_inserted_before_pip_install(self):
         overlay = BuildOverride(
             service_name="backend",
