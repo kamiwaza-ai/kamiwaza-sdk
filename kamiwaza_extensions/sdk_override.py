@@ -682,8 +682,9 @@ _PYTHON_PRE_INSTALL_STRIP = (
     "# site-packages, so the PyPI install is redundant and would fail whenever\n"
     "# the pinned version is not yet published. See sdk_override.py docs.\n"
     "USER root\n"
-    "RUN sed -i -E '/^[[:space:]]*kamiwaza-extensions-lib($|[^A-Za-z0-9_-])/d'"
-    " requirements.txt\n"
+    "RUN if [ -f requirements.txt ]; then"
+    " sed -i -E '/^[[:space:]]*kamiwaza-extensions-lib($|[^A-Za-z0-9_-])/d'"
+    " requirements.txt; fi\n"
     "{restore_user_block}"
 )
 
@@ -701,14 +702,23 @@ _TS_PRE_INSTALL_STRIP = (
     "# --- SDK override: strip @kamiwaza-ai/extensions-lib from package.json ---\n"
     "# The post-install overlay below installs the local runtime-lib source\n"
     "# via ``npm pack``, so the registry install is redundant and would fail\n"
-    "# whenever the pinned version is not yet published.\n"
+    "# whenever the pinned version is not yet published. Covers all five\n"
+    "# dependency-map keys plus ``overrides`` / ``resolutions`` so a pin in\n"
+    "# any of them won't survive the strip. Guarded with a file-exists check\n"
+    "# so non-canonical Dockerfile layouts (no package.json at WORKDIR) fail\n"
+    "# open instead of breaking the build.\n"
     "USER root\n"
-    'RUN node -e "'
+    'RUN if [ -f package.json ]; then node -e "'
     "const fs=require('fs');"
     "const p=JSON.parse(fs.readFileSync('package.json','utf8'));"
-    "for(const k of ['dependencies','devDependencies','peerDependencies'])"
-    "{if(p[k])delete p[k]['@kamiwaza-ai/extensions-lib'];}"
-    "fs.writeFileSync('package.json', JSON.stringify(p,null,2)+'\\n');\"\n"
+    "const N='@kamiwaza-ai/extensions-lib';"
+    "for(const k of ['dependencies','devDependencies','peerDependencies',"
+    "'optionalDependencies','bundleDependencies','bundledDependencies',"
+    "'overrides','resolutions'])"
+    "{if(p[k]&&typeof p[k]==='object'&&!Array.isArray(p[k]))delete p[k][N];"
+    " else if(Array.isArray(p[k]))p[k]=p[k].filter(x=>x!==N);}"
+    "fs.writeFileSync('package.json', JSON.stringify(p,null,2)+'\\n');\";"
+    " fi\n"
     "{restore_user_block}"
 )
 

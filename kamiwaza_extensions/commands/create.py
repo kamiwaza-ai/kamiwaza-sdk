@@ -29,8 +29,8 @@ def run_create(*, type_: str, name: str) -> None:
     # Next.js layer to inject envelope headers, so the bridge doesn't apply.
     # (ENG-3901 dry-run finding F-005.)
     dev_local_cmd = "kz-ext dev local --auth" if type_ == "app" else "kz-ext dev local"
-    console.print(f"\n  Next steps:")
-    console.print(f"    kz-ext validate")
+    console.print("\n  Next steps:")
+    console.print("    kz-ext validate")
     console.print(f"    {dev_local_cmd}")
     # F-007: the scaffold's docker-compose.yml uses an auto-assigned host
     # port (bare `"3000"` not `"3000:3000"`) to avoid colliding with the

@@ -1012,7 +1012,6 @@ class TestApplyPortRemaps:
 
 
 @pytest.mark.unit
-@pytest.mark.unit
 class TestHasBarePorts:
     """Foreground-mode URL polling (ENG-3901 / F-008) only fires when
     there's at least one bare-port spec to resolve. Mapped specs already

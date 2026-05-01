@@ -19,14 +19,13 @@ from kamiwaza_sdk.schemas.extensions import (
 
 from kamiwaza_extensions.connections import ConnectionInfo
 
-# CRD annotation keys — name-spaced under kamiwaza.ai (§4.2.9 / §4.7).
-# Annotation namespace is ``kamiwaza.io/*``, NOT ``kamiwaza.ai/*``. The
-# platform's annotation persister filters incoming Extension CR annotations
+# CRD annotation keys — namespace is ``kamiwaza.io/*`` (NOT ``kamiwaza.ai/*``).
+# The platform's annotation persister filters incoming Extension CR annotations
 # to the ``kamiwaza.io/*`` namespace; ``kamiwaza.ai/*`` annotations are
 # silently dropped on the platform side, leaving ``kz-ext status`` unable
 # to surface "Last deployed by..." and similar observability fields.
 # (ENG-3901 dry-run finding F-010 — tactical SDK-side workaround until the
-# platform broadens its allow-list. The ``.ai`` namespace was chosen
+# platform broadens its allow-list. The ``.ai`` namespace was tried
 # originally for SDK-team-set annotations but is unsupported in practice.)
 ANNOTATION_DEPLOYER = "kamiwaza.io/deployer"
 ANNOTATION_BUILD_HOST = "kamiwaza.io/build-host"
@@ -286,6 +285,15 @@ class PayloadBuilder:
           declare /health. Probing /health on those stubs returns 404
           and the K8s startup probe fails the pod into restart loops.
           Probing ``/`` works because both stubs respond to it.
+
+        Precedence note: the Node-frontend probe (when its detection
+        hits — service name ``frontend`` AND Node-like hints in env)
+        wins over the per-type tool/service rules below. That's the
+        right call because a Node Next.js frontend needs a node probe
+        regardless of extension shape. Realistic conflict only arises
+        if a tool extension's primary is named ``frontend`` AND carries
+        ``NEXT_PUBLIC_*`` env keys — vanishingly rare in practice
+        (the tool template names its primary ``tool``).
         """
         if not ports:
             return None
