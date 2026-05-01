@@ -31,9 +31,7 @@ def run_status(*, name: Optional[str] = None, verbose: bool = False) -> None:
 
     token = conn_mgr.get_token()
     if token is None:
-        console.print(
-            "[red]Error:[/red] Token expired. Run: [bold]kz-ext login[/bold]"
-        )
+        console.print("[red]Error:[/red] Token expired. Run: [bold]kz-ext login[/bold]")
         raise typer.Exit(code=1)
 
     # Resolve extension name
@@ -74,9 +72,7 @@ def run_status(*, name: Optional[str] = None, verbose: bool = False) -> None:
         # Email match is case-insensitive (review re-re-re-review PR #84
         # M4) — some IdPs vary casing across token refreshes.
         same_deployer = bool(
-            state
-            and current_email
-            and state.deployer.lower() == current_email.lower()
+            state and current_email and state.deployer.lower() == current_email.lower()
         )
         if state and state.last_dev_name and same_cluster and same_deployer:
             dev_name = state.last_dev_name
@@ -88,10 +84,9 @@ def run_status(*, name: Optional[str] = None, verbose: bool = False) -> None:
         dev_name = name
 
     from kamiwaza_extensions.constants import ssl_env_override
+
     with ssl_env_override(connection):
-        client = KamiwazaClient(
-            base_url=connection.url, api_key=token.access_token
-        )
+        client = KamiwazaClient(base_url=connection.url, api_key=token.access_token)
 
         # P10 fix: hit /api/extensions/{name} (always present) instead of
         # /api/extensions/{name}/status (404 on every cluster currently
@@ -102,12 +97,8 @@ def run_status(*, name: Optional[str] = None, verbose: bool = False) -> None:
             ext = client.extensions.get_extension(dev_name)
         except APIError as exc:
             if exc.status_code == 404:
-                console.print(
-                    f"[red]Error:[/red] Extension '{dev_name}' not found."
-                )
-                console.print(
-                    "  Run: [bold]kz-ext dev[/bold] to deploy first."
-                )
+                console.print(f"[red]Error:[/red] Extension '{dev_name}' not found.")
+                console.print("  Run: [bold]kz-ext dev[/bold] to deploy first.")
                 raise typer.Exit(code=1) from exc
             raise
 
@@ -119,13 +110,15 @@ def run_status(*, name: Optional[str] = None, verbose: bool = False) -> None:
             console.print(f"URL:        [blue]{url}[/blue]")
 
         # Surface deployer annotation (§4.2.9 DeployedImageAnnotation).
-        deployer = _read_annotation(ext, "kamiwaza.ai/deployer")
+        # Namespace is ``kamiwaza.io/*`` per ENG-3901 / F-010 — the platform's
+        # annotation filter only persists ``kamiwaza.io/*`` keys.
+        deployer = _read_annotation(ext, "kamiwaza.io/deployer")
         if deployer:
             console.print(f"Last deployed by: [bold]{deployer}[/bold]")
-        deployed_at = _read_annotation(ext, "kamiwaza.ai/deployed-at")
+        deployed_at = _read_annotation(ext, "kamiwaza.io/deployed-at")
         if deployed_at:
             console.print(f"Deployed at:      {deployed_at}")
-        revision = _read_annotation(ext, "kamiwaza.ai/revision")
+        revision = _read_annotation(ext, "kamiwaza.io/revision")
         if revision:
             console.print(f"Revision:         {revision}")
         console.print()

@@ -13,7 +13,7 @@ notes: |
 
 steps:
   - name: scaffold_app
-    description: "kz-ext create --shape app; deploy via kz-ext dev to staging."
+    description: "kz-ext create --type app; deploy via kz-ext dev to staging."
   - name: assert_workroom_scoped_identity_headers
     description: "Stub a Workroom Manager-style invocation that injects X-Workroom-Id; assert the backend resolves the workroom-scoped identity (UAC-9c)."
   - name: assert_global_workroom_sentinel_handling

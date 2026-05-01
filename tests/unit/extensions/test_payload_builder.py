@@ -104,10 +104,17 @@ class TestAnnotations:
     """ENG-3887 / §4.2.9 — DeployedImageAnnotation on the CRD payload."""
 
     def test_annotations_present_when_deployer_and_revision_supplied(
-        self, builder, metadata, transformed_compose, connection,
+        self,
+        builder,
+        metadata,
+        transformed_compose,
+        connection,
     ):
         payload = builder.build(
-            metadata, transformed_compose, connection, "my-app-dev-abc",
+            metadata,
+            transformed_compose,
+            connection,
+            "my-app-dev-abc",
             deployer="jonathan@kamiwaza.ai",
             revision="1.0.0-dev-a1b2c3d.1714000000",
         )
@@ -121,12 +128,19 @@ class TestAnnotations:
         assert annotations[ANNOTATION_DEPLOYED_AT].endswith("+00:00")
 
     def test_no_annotations_when_neither_supplied(
-        self, builder, metadata, transformed_compose, connection,
+        self,
+        builder,
+        metadata,
+        transformed_compose,
+        connection,
     ):
         # If we have nothing meaningful to attach, don't carry an empty dict
         # — but `deployed-at` is always present, since "when" is always known.
         payload = builder.build(
-            metadata, transformed_compose, connection, "my-app-dev-abc",
+            metadata,
+            transformed_compose,
+            connection,
+            "my-app-dev-abc",
         )
         annotations = (payload.model_extra or {}).get("annotations")
         # build_annotations always sets `deployed-at`, so the key exists even
@@ -276,3 +290,74 @@ class TestHealthChecks:
         assert backend.primary is True
         assert health_check["httpGet"] == {"path": "/health", "port": 8000}
         assert "exec" not in health_check
+
+    def test_service_type_primary_uses_root_probe(self, builder, connection):
+        """ENG-3901 / F-013: the service template ships a stub
+        (``python -m http.server``) that returns 404 for /health. The
+        K8s startup probe loops the pod into restarts. Service-type
+        primary services must probe ``/`` instead — the stub answers it,
+        and developers who add real /health code can override at the
+        compose level."""
+        metadata = {"name": "my-svc", "version": "1.0.0", "type": "service"}
+        transformed = {
+            "services": {
+                "service": {
+                    "image": "registry.test/my-svc:1.0.0",
+                    "ports": ["8000"],
+                },
+            },
+        }
+        payload = builder.build(metadata, transformed, connection, "test")
+        svc = payload.services[0]
+        health_check = svc.model_dump()["healthCheck"]
+        assert svc.primary is True
+        assert health_check["httpGet"] == {
+            "path": "/",
+            "port": 8000,
+        }, f"service-type primary must probe / not /health; got {health_check['httpGet']!r}"
+
+    def test_tool_type_primary_probes_sse(self, builder, connection):
+        """ENG-3901 / F-013 (final): tool primary probes ``/sse`` — the
+        FastMCP SSE endpoint. ``/`` 404s (FastMCP doesn't mount root) and
+        ``/health`` doesn't exist on the stub. The platform API rejects
+        ``tcpSocket`` and ``exec`` probe shapes with opaque 500s, so
+        httpGet ``/sse`` is the only viable choice today even though the
+        K8s probe may time out reading the streamed response body."""
+        metadata = {"name": "my-tool", "version": "1.0.0", "type": "tool"}
+        transformed = {
+            "services": {
+                "tool": {
+                    "image": "registry.test/my-tool:1.0.0",
+                    "ports": ["8080"],
+                },
+            },
+        }
+        payload = builder.build(metadata, transformed, connection, "test")
+        tool = payload.services[0]
+        health_check = tool.model_dump()["healthCheck"]
+        assert tool.primary is True
+        assert health_check["httpGet"] == {"path": "/sse", "port": 8080}
+        assert "tcpSocket" not in health_check
+        assert "exec" not in health_check
+
+    def test_app_type_backend_keeps_health_probe(self, builder, connection):
+        """Regression guard: F-013's fix is scoped to service/tool primary.
+        The app-type backend (non-primary in app extensions, ships a real
+        FastAPI /health route) must still probe /health."""
+        metadata = {"name": "my-app", "version": "1.0.0", "type": "app"}
+        transformed = {
+            "services": {
+                "frontend": {
+                    "image": "registry.test/my-app-frontend:1.0.0",
+                    "ports": ["3000"],
+                },
+                "backend": {
+                    "image": "registry.test/my-app-backend:1.0.0",
+                    "ports": ["8000"],
+                },
+            },
+        }
+        payload = builder.build(metadata, transformed, connection, "test")
+        backend = next(s for s in payload.services if s.name == "backend")
+        health_check = backend.model_dump()["healthCheck"]
+        assert health_check["httpGet"] == {"path": "/health", "port": 8000}

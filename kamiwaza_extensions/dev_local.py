@@ -10,8 +10,10 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 from rich.console import Console
@@ -51,6 +53,8 @@ class DevLocalRunner:
             SdkOverrideSpec,
             build_typescript_lib,
             generate_compose_override,
+            generate_local_build_dockerfile_patches,
+            is_typescript_dist_stale,
             print_override_diagnostics,
             resolve_sdk_override,
             validate_sdk_override,
@@ -114,11 +118,11 @@ class DevLocalRunner:
                 env.pop(var, None)
 
         if connection:
-            overlay = build_env_overlay(
-                connection, info.name, auth=auth, bridge=bridge
-            )
+            overlay = build_env_overlay(connection, info.name, auth=auth, bridge=bridge)
             env.update(overlay)
-            console.print(f"[dim]Using connection:[/dim] {connection.name} ({connection.url})")
+            console.print(
+                f"[dim]Using connection:[/dim] {connection.name} ({connection.url})"
+            )
             if auth:
                 who = (bridge.user_id if bridge else None) or "?"
                 console.print(
@@ -127,7 +131,9 @@ class DevLocalRunner:
             else:
                 console.print("[dim]KAMIWAZA_USE_AUTH=false (local dev mode)[/dim]")
         else:
-            console.print("[yellow]No Kamiwaza connection configured — running in standalone mode[/yellow]")
+            console.print(
+                "[yellow]No Kamiwaza connection configured — running in standalone mode[/yellow]"
+            )
 
         # 5. Resolve SDK override
         override_spec = resolve_sdk_override(sdk_repo, info.path)
@@ -143,13 +149,23 @@ class DevLocalRunner:
                 console.print("[red]SDK override disabled due to errors above[/red]")
                 override_spec = None
             else:
-                # Build TypeScript if needed
+                # Build TypeScript when explicitly requested, when dist/ is
+                # missing entirely, or when src/ is newer than dist/. The
+                # last case is what makes ``--sdk-repo`` work without
+                # surprise: a stale dist after a ``git pull`` would otherwise
+                # surface as a "Module not found" inside the consumer's
+                # Next.js build, which is hard to diagnose. Treating stale
+                # dist as a build trigger keeps the bind-mounted artifacts
+                # in lockstep with the SDK source the developer is editing.
                 if override_spec.typescript and (
                     override_spec.build_typescript
                     or not override_spec.typescript_dist_path.is_dir()
+                    or is_typescript_dist_stale(override_spec)
                 ):
                     if not build_typescript_lib(override_spec):
-                        console.print("[yellow]Continuing without TypeScript override[/yellow]")
+                        console.print(
+                            "[yellow]Continuing without TypeScript override[/yellow]"
+                        )
                         override_spec = SdkOverrideSpec(
                             sdk_repo=override_spec.sdk_repo,
                             python=override_spec.python,
@@ -163,8 +179,15 @@ class DevLocalRunner:
         remaps: Dict[str, Tuple[int, int]] = {}
         patched_compose_file: Optional[str] = None
         sdk_override_file: Optional[str] = None
+        sdk_build_patch_file: Optional[str] = None
+        sdk_build_dockerfiles: List[str] = []
         extra_hosts_file: Optional[str] = None
         auth_env_file: Optional[str] = None
+        # Initialised here (not in 10a) so the ``finally`` cleanup always
+        # has them in scope — even if an exception bubbles out of the
+        # try body before the polling thread would have been spawned.
+        url_poll_thread: Optional[threading.Thread] = None
+        url_poll_stop = threading.Event()
 
         try:
             if info.compose_data:
@@ -192,7 +215,9 @@ class DevLocalRunner:
             # 7. Generate SDK override compose file
             if override_spec and info.compose_data:
                 sdk_override_data = generate_compose_override(
-                    override_spec, info.compose_data, extension_dir=info.path,
+                    override_spec,
+                    info.compose_data,
+                    extension_dir=info.path,
                 )
                 fd = tempfile.NamedTemporaryFile(
                     mode="w", suffix=".yml", prefix="kz-sdk-", delete=False
@@ -200,6 +225,64 @@ class DevLocalRunner:
                 yaml.dump(sdk_override_data, fd, default_flow_style=False)
                 fd.close()
                 sdk_override_file = fd.name
+
+                # 7a. Patch each Python backend service's Dockerfile to strip
+                # the kamiwaza-extensions-lib pin before pip install runs.
+                # Without this, the build phase fails when the pinned version
+                # is not yet on PyPI; the runtime PYTHONPATH overlay (set in
+                # generate_compose_override above) only kicks in once the
+                # image exists. Patched Dockerfiles are written to temp files
+                # and pointed at via compose's ``build.dockerfile`` (absolute
+                # path). Using ``dockerfile_inline`` would conflict with the
+                # scaffold's explicit ``dockerfile: Dockerfile`` field —
+                # compose treats them as mutually exclusive.
+                df_patches = generate_local_build_dockerfile_patches(
+                    override_spec,
+                    info.compose_data,
+                    info.path,
+                )
+                if df_patches:
+                    build_overlay_services: dict = {}
+                    base_services = (info.compose_data or {}).get("services", {})
+                    for svc, patched in df_patches.items():
+                        df_fd = tempfile.NamedTemporaryFile(
+                            mode="w",
+                            suffix=".Dockerfile",
+                            prefix=f"kz-sdk-df-{svc}-",
+                            delete=False,
+                        )
+                        df_fd.write(patched)
+                        df_fd.close()
+                        sdk_build_dockerfiles.append(df_fd.name)
+                        # Carry forward the original build.context (and any
+                        # other build fields) so the patched Dockerfile is
+                        # built from the same root the scaffold expects —
+                        # COPY paths in the patched Dockerfile resolve
+                        # relative to ``context``. Compose's overlay merge
+                        # would normally preserve unspecified keys, but
+                        # being explicit insulates us from any compose
+                        # version that flips merge semantics for ``build:``
+                        # (Codex P1 review on PR #91).
+                        base_build = (base_services.get(svc) or {}).get("build")
+                        merged_build: Dict[str, Any] = {}
+                        if isinstance(base_build, str):
+                            # Compose short-form ``build: ./frontend`` —
+                            # promote to long-form so context survives.
+                            merged_build["context"] = base_build
+                        elif isinstance(base_build, dict):
+                            merged_build.update(base_build)
+                        merged_build["dockerfile"] = df_fd.name
+                        build_overlay_services[svc] = {"build": merged_build}
+                    fd = tempfile.NamedTemporaryFile(
+                        mode="w", suffix=".yml", prefix="kz-sdk-build-", delete=False
+                    )
+                    yaml.dump(
+                        {"services": build_overlay_services},
+                        fd,
+                        default_flow_style=False,
+                    )
+                    fd.close()
+                    sdk_build_patch_file = fd.name
 
             # 7b. Generate extra_hosts overlay when --auth is set. We always
             # inject host.docker.internal:host-gateway under --auth so
@@ -265,6 +348,12 @@ class DevLocalRunner:
             compose_prefix = compose_cmd + ["-f", compose_file_arg]
             if sdk_override_file:
                 compose_prefix += ["-f", sdk_override_file]
+            # The build patch must apply to the same services the runtime
+            # override touches; place it after sdk_override_file so its
+            # ``build.dockerfile`` (absolute path to a temp Dockerfile)
+            # wins over any earlier build spec.
+            if sdk_build_patch_file:
+                compose_prefix += ["-f", sdk_build_patch_file]
             if extra_hosts_file:
                 compose_prefix += ["-f", extra_hosts_file]
             if auth_env_file:
@@ -272,6 +361,7 @@ class DevLocalRunner:
             if (
                 patched_compose_file
                 or sdk_override_file
+                or sdk_build_patch_file
                 or extra_hosts_file
                 or auth_env_file
             ):
@@ -286,17 +376,42 @@ class DevLocalRunner:
             # 9. Print access URLs (pre-up). For bare-port specs the host
             # port isn't assigned yet — emit a hint instead so users know
             # what to expect. Detach mode (10b) re-prints with the resolved
-            # host port after `compose up -d` returns.
+            # host port after `compose up -d` returns; foreground mode
+            # delegates to a background polling thread (10a) so the URL
+            # surfaces while compose is still streaming logs.
             self._print_urls(info.compose_data, remaps, post_up=False)
+
+            # 10a. Foreground mode: spawn a background thread that polls
+            # ``docker compose port`` until the bare-port assignments are
+            # visible, then prints the URL line. Without this, the user
+            # sees "host port assigned by Docker" but never gets the
+            # actual URL (it scrolls past in the build / Next.js startup
+            # logs and is easy to miss). Daemon thread so it dies with
+            # the process if compose exits early. (ENG-3901 / F-008)
+            #
+            # The stop event lets the ``finally`` cleanup signal the
+            # poller to exit before unlinking the compose override files
+            # the poller passes to ``docker compose port``. Without it
+            # the poller could wake from ``time.sleep`` after the temp
+            # YAMLs are gone and shell out to compose with stale ``-f``
+            # paths (PR #91 round-2 review High consensus).
+            if not detach and self._has_bare_ports(info.compose_data):
+                url_poll_thread = threading.Thread(
+                    target=self._poll_and_print_urls,
+                    args=(info.compose_data, compose_prefix, str(info.path)),
+                    kwargs={"stop_event": url_poll_stop},
+                    daemon=True,
+                    name="kz-ext-url-poll",
+                )
+                url_poll_thread.start()
 
             # 10. Run subprocess with signal forwarding
             rc = self._run_subprocess(cmd, env=env, cwd=str(info.path))
 
             # 10b. Detach mode only: re-resolve bare-port URLs once Docker
-            # has actually published them. Foreground mode blocks on
-            # compose logs until the user Ctrl+Cs, so there is no
-            # post-up moment to reach. Pass the same compose prefix +
-            # cwd so the port query targets the project that was started.
+            # has actually published them. Foreground mode handled by 10a
+            # above. Pass the same compose prefix + cwd so the port query
+            # targets the project that was started.
             if detach and rc == 0:
                 self._print_urls(
                     info.compose_data,
@@ -308,12 +423,22 @@ class DevLocalRunner:
 
             return rc
         finally:
-            for tmp in (
+            # Signal the URL-poll thread to stop BEFORE unlinking the
+            # compose override files it depends on; give it a brief join
+            # window so an in-flight ``docker compose port`` call doesn't
+            # see freshly-deleted ``-f`` paths.
+            url_poll_stop.set()
+            if url_poll_thread is not None and url_poll_thread.is_alive():
+                url_poll_thread.join(timeout=2.0)
+            cleanup_paths: List[Optional[str]] = [
                 patched_compose_file,
                 sdk_override_file,
+                sdk_build_patch_file,
                 extra_hosts_file,
                 auth_env_file,
-            ):
+            ]
+            cleanup_paths.extend(sdk_build_dockerfiles)
+            for tmp in cleanup_paths:
                 if tmp:
                     try:
                         os.unlink(tmp)
@@ -368,7 +493,8 @@ class DevLocalRunner:
                         continue
                     if container_port is not None:
                         host_port = self._docker_compose_port(
-                            svc_name, container_port,
+                            svc_name,
+                            container_port,
                             compose_cmd=compose_cmd,
                             cwd=cwd,
                         )
@@ -377,6 +503,102 @@ class DevLocalRunner:
                 if svc_name in remaps:
                     host_port = remaps[svc_name][1]
                 console.print(f"[dim]{svc_name}:[/dim] http://localhost:{host_port}")
+
+    @staticmethod
+    def _has_bare_ports(compose_data: Optional[dict]) -> bool:
+        """True iff any service in ``compose_data`` has a bare-port spec
+        (e.g. ``"3000"``) whose host port Docker will auto-assign.
+
+        Mapped specs (``"3000:3000"``) are already known and printed by
+        the pre-up pass. Only bare specs need post-up resolution.
+        """
+        if not compose_data:
+            return False
+        for svc_config in compose_data.get("services", {}).values():
+            for port_spec in svc_config.get("ports", []) or []:
+                host_port, _ = parse_port_mapping(str(port_spec))
+                if host_port is None:
+                    return True
+        return False
+
+    def _poll_and_print_urls(
+        self,
+        compose_data: dict,
+        compose_cmd: List[str],
+        cwd: str,
+        *,
+        stop_event: Optional[threading.Event] = None,
+    ) -> None:
+        """Background-thread loop: poll ``docker compose port`` until the
+        bare-port host ports are assigned, then print the URLs.
+
+        Runs in a daemon thread alongside the foreground compose process.
+        Polls at ~1.5s intervals up to ~60s (long enough for a cold image
+        pull + Next.js build) before giving up silently. The user can
+        always fall back to ``docker compose port`` themselves; this is
+        a "make the common case easy" affordance, not a hard guarantee.
+
+        If ``stop_event`` is set (the runner's ``finally`` block signals
+        it), the loop returns promptly so the cleanup can unlink the
+        compose override files this thread depends on.
+        """
+        if stop_event is None:
+            stop_event = threading.Event()
+        # Initial delay so we don't compete with compose's own "Building" /
+        # "Pulling" / "Creating" output for the user's eye. Use the stop
+        # event's wait so a fast Ctrl+C doesn't have to bleed off this
+        # delay before exiting.
+        if stop_event.wait(2.0):
+            return
+        deadline = time.monotonic() + 60.0
+        # Dedupe ``(svc_name, container_port)`` so a (technically illegal
+        # but YAML-valid) duplicate bare-port spec like ``ports: ["3000",
+        # "3000"]`` doesn't make the loop's completion check
+        # (``len(printed) < len(services_with_bare_ports)``) permanently
+        # true and spin until the 60s deadline (Claude review on PR #91).
+        # ``dict.fromkeys`` preserves insertion order; sets would not.
+        services_with_bare_ports: List[Tuple[str, int]] = list(
+            dict.fromkeys(
+                (svc_name, container_port)
+                for svc_name, svc_config in compose_data.get("services", {}).items()
+                for port_spec in svc_config.get("ports", []) or []
+                for host_port, container_port in [parse_port_mapping(str(port_spec))]
+                if host_port is None and container_port is not None
+            )
+        )
+        # Key on ``(svc_name, container_port)`` so multi-port services
+        # (e.g. a frontend exposing both 3000 and 4173 for HMR) get every
+        # URL printed, and the loop's completion check actually
+        # terminates rather than spinning to the 60s deadline (Codex P3
+        # / Claude review on PR #91).
+        printed: Dict[Tuple[str, int], int] = {}
+        while (
+            not stop_event.is_set()
+            and time.monotonic() < deadline
+            and len(printed) < len(services_with_bare_ports)
+        ):
+            for svc_name, container_port in services_with_bare_ports:
+                if stop_event.is_set():
+                    return
+                key = (svc_name, container_port)
+                if key in printed:
+                    continue
+                host_port = self._docker_compose_port(
+                    svc_name,
+                    container_port,
+                    compose_cmd=compose_cmd,
+                    cwd=cwd,
+                )
+                if host_port is None:
+                    continue
+                console.print(
+                    f"\n[bold green]{svc_name}:[/bold green] "
+                    f"[link]http://localhost:{host_port}[/link]"
+                )
+                printed[key] = host_port
+            if len(printed) < len(services_with_bare_ports):
+                if stop_event.wait(1.5):
+                    return
 
     @staticmethod
     def _docker_compose_port(
@@ -409,11 +631,16 @@ class DevLocalRunner:
         try:
             result = subprocess.run(
                 [*compose_cmd, "port", service, str(container_port)],
-                capture_output=True, text=True, timeout=10, cwd=cwd,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                cwd=cwd,
             )
             if result.returncode != 0:
                 return None
-            line = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else ""
+            line = (
+                result.stdout.strip().splitlines()[-1] if result.stdout.strip() else ""
+            )
             if ":" in line:
                 return int(line.rsplit(":", 1)[1])
         except (FileNotFoundError, subprocess.TimeoutExpired, ValueError, IndexError):
@@ -545,13 +772,12 @@ def _write_compose_overlay(
     """
     import copy
 
-    overlay = {
-        "services": {
-            svc: copy.deepcopy(per_service) for svc in services.keys()
-        }
-    }
+    overlay = {"services": {svc: copy.deepcopy(per_service) for svc in services.keys()}}
     fd = tempfile.NamedTemporaryFile(
-        mode="w", suffix=".yml", prefix=prefix, delete=False,
+        mode="w",
+        suffix=".yml",
+        prefix=prefix,
+        delete=False,
     )
     yaml.dump(overlay, fd, default_flow_style=False)
     fd.close()
@@ -729,7 +955,9 @@ def find_available_port(start: int, host: str = "0.0.0.0", max_tries: int = 100)
             break
         if is_port_available(candidate, host):
             return candidate
-    raise RuntimeError(f"No available port found in range {start}–{start + max_tries - 1}")
+    raise RuntimeError(
+        f"No available port found in range {start}–{start + max_tries - 1}"
+    )
 
 
 def resolve_port_conflicts(
@@ -809,7 +1037,11 @@ def detect_compose_command() -> List[str]:
             timeout=10,
         )
         return ["docker", "compose"]
-    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
+    except (
+        subprocess.CalledProcessError,
+        FileNotFoundError,
+        subprocess.TimeoutExpired,
+    ):
         pass
 
     # Try v1 standalone
@@ -821,7 +1053,11 @@ def detect_compose_command() -> List[str]:
             timeout=10,
         )
         return ["docker-compose"]
-    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
+    except (
+        subprocess.CalledProcessError,
+        FileNotFoundError,
+        subprocess.TimeoutExpired,
+    ):
         pass
 
     raise FileNotFoundError(

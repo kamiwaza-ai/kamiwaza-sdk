@@ -26,6 +26,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 # when the cwd is non-empty (TS-M2-43, TS-M2-44).
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.extension_regression
 class TestCreateIntoNamedSubdir:
     @pytest.fixture
@@ -84,6 +85,7 @@ class TestCreateIntoNamedSubdir:
 # work for one release.
 # ---------------------------------------------------------------------------
 
+
 class TestPublishProfileListSubcommand:
     def test_list_as_first_argument_routes_to_list(self, tmp_path, monkeypatch, capsys):
         from kamiwaza_extensions.commands import config as config_cmd
@@ -124,9 +126,9 @@ DEV_GUIDE_PATH = REPO_ROOT / "docs" / "extensions" / "developer-guide.md"
 class TestDeveloperGuide:
     @pytest.fixture(scope="class")
     def text(self) -> str:
-        assert DEV_GUIDE_PATH.exists(), (
-            f"Expected developer guide at {DEV_GUIDE_PATH.relative_to(REPO_ROOT)}"
-        )
+        assert (
+            DEV_GUIDE_PATH.exists()
+        ), f"Expected developer guide at {DEV_GUIDE_PATH.relative_to(REPO_ROOT)}"
         return DEV_GUIDE_PATH.read_text()
 
     def test_has_what_runs_where_section(self, text):
@@ -151,3 +153,84 @@ class TestDeveloperGuide:
             "Developer Guide must mention .ai/extensions/ (P7 §4.8) as the "
             "author-facing AI-context entry point."
         )
+
+
+# ---------------------------------------------------------------------------
+# F-005 / F-007: kz-ext create next-steps banner suggests the right
+# follow-up command for the extension type and warns about the auto-
+# assigned host port. (ENG-3901 dry-run findings.)
+# ---------------------------------------------------------------------------
+
+
+class TestCreateBanner:
+    """The banner printed after ``kz-ext create`` is the very first
+    instruction a developer reads. F-005: for app-type extensions the
+    suggested follow-up is ``kz-ext dev local --auth`` (without ``--auth``
+    they hit the platform login UI by surprise). F-007: the banner must
+    call out the auto-assigned host port so the developer doesn't open
+    localhost:3000 by instinct (which is the platform UI on a sibling
+    install)."""
+
+    @pytest.fixture
+    def banner_lines(self):
+        from io import StringIO
+
+        from rich.console import Console
+
+        from kamiwaza_extensions.commands import create as create_cmd
+
+        def render(type_: str, name: str = "x") -> list[str]:
+            buf = StringIO()
+            captured = Console(file=buf, force_terminal=False, no_color=True, width=120)
+            # Patch the module's console (banner output) and the
+            # Scaffolder.create that run_create calls into. The
+            # Scaffolder is imported lazily inside run_create, so the
+            # patch target is its module path.
+            with (
+                patch.object(create_cmd, "console", captured),
+                patch(
+                    "kamiwaza_extensions.scaffolder.Scaffolder.create",
+                    lambda self, **kw: None,
+                ),
+            ):
+                create_cmd.run_create(type_=type_, name=name)
+            return buf.getvalue().splitlines()
+
+        return render
+
+    def test_app_type_suggests_dev_local_with_auth(self, banner_lines):
+        lines = banner_lines("app")
+        joined = "\n".join(lines)
+        assert (
+            "kz-ext dev local --auth" in joined
+        ), f"app banner should suggest --auth (F-005); got:\n{joined}"
+
+    def test_tool_type_suggests_plain_dev_local(self, banner_lines):
+        lines = banner_lines("tool")
+        joined = "\n".join(lines)
+        assert "kz-ext dev local" in joined
+        # Tools have no Next.js layer, so --auth doesn't apply.
+        assert (
+            "kz-ext dev local --auth" not in joined
+        ), f"tool banner must NOT suggest --auth; got:\n{joined}"
+
+    def test_service_type_suggests_plain_dev_local(self, banner_lines):
+        lines = banner_lines("service")
+        joined = "\n".join(lines)
+        assert "kz-ext dev local" in joined
+        assert (
+            "kz-ext dev local --auth" not in joined
+        ), f"service banner must NOT suggest --auth; got:\n{joined}"
+
+    def test_banner_warns_about_auto_assigned_host_port(self, banner_lines):
+        """F-007: developers instinctively go to localhost:3000 (which is
+        the platform UI on a sibling install) instead of the auto-assigned
+        port the scaffold actually binds. The banner must tell them to
+        watch the kz-ext dev local output for the real URL."""
+        for type_ in ("app", "tool", "service"):
+            lines = banner_lines(type_)
+            joined = "\n".join(lines).lower()
+            assert "auto-assigned" in joined or "host port" in joined, (
+                f"{type_} banner must mention the auto-assigned host port "
+                f"(F-007); got:\n{joined}"
+            )

@@ -63,11 +63,15 @@ class TestReadWrite:
         # reading the same file must drop unknowns rather than crash.
         path = state_path(tmp_path)
         path.parent.mkdir()
-        path.write_text(json.dumps({
-            "last_dev_name": "hello-dev-x",
-            "last_successful_step": "apply",
-            "future_field": "ignored",
-        }))
+        path.write_text(
+            json.dumps(
+                {
+                    "last_dev_name": "hello-dev-x",
+                    "last_successful_step": "apply",
+                    "future_field": "ignored",
+                }
+            )
+        )
         out = read_state(tmp_path)
         assert out is not None
         assert out.last_dev_name == "hello-dev-x"
@@ -79,17 +83,24 @@ class TestMarkStep:
     def test_invalid_step_raises(self, tmp_path):
         with pytest.raises(ValueError, match="Unknown dev step"):
             mark_step(
-                tmp_path, "wrong",
-                revision="x", dev_name="y", cluster="c",
-                extension_name="e", deployer="d",
+                tmp_path,
+                "wrong",
+                revision="x",
+                dev_name="y",
+                cluster="c",
+                extension_name="e",
+                deployer="d",
             )
 
     def test_records_step_and_metadata(self, tmp_path):
         s = mark_step(
-            tmp_path, "build",
-            revision="1.0.0-dev-abc", dev_name="hello-dev-b1",
+            tmp_path,
+            "build",
+            revision="1.0.0-dev-abc",
+            dev_name="hello-dev-b1",
             cluster="https://k.test/api",
-            extension_name="hello", deployer="jonathan@kamiwaza.ai",
+            extension_name="hello",
+            deployer="jonathan@kamiwaza.ai",
         )
         assert s.last_successful_step == "build"
         assert s.last_revision == "1.0.0-dev-abc"
@@ -101,9 +112,13 @@ class TestMarkStep:
     def test_progresses_step_in_order(self, tmp_path):
         for step in STEPS:
             mark_step(
-                tmp_path, step,
-                revision="x", dev_name="y", cluster="c",
-                extension_name="e", deployer="d",
+                tmp_path,
+                step,
+                revision="x",
+                dev_name="y",
+                cluster="c",
+                extension_name="e",
+                deployer="d",
             )
         out = read_state(tmp_path)
         assert out is not None
@@ -147,7 +162,6 @@ class TestResumeMessage:
         assert msg is not None
         assert "push" in msg
         assert "2026-04-28" in msg
-
 
 
 # ---------------------------------------------------------------------------
@@ -266,7 +280,9 @@ class TestIsResumableStableId:
     def test_stable_revision_id_strips_epoch_for_clean_sha(self):
         from kamiwaza_extensions.commands.dev import _stable_revision_id
 
-        assert _stable_revision_id("1.0.0-dev-abc1234.1714000000") == "1.0.0-dev-abc1234"
+        assert (
+            _stable_revision_id("1.0.0-dev-abc1234.1714000000") == "1.0.0-dev-abc1234"
+        )
         assert _stable_revision_id("0.12.1-dev-deadbeef.1") == "0.12.1-dev-deadbeef"
         # Custom revision (no .epoch suffix) — return as-is.
         assert _stable_revision_id("rev-1") == "rev-1"
@@ -301,21 +317,29 @@ class TestIsResumableSdkOverride:
         s = self._state()
         # Same revision + same cluster — would normally resume — but
         # sdk_repo is set, so skip.
-        assert _is_resumable(
-            s, "1.0.0-dev-abc1234.1714999999",
-            "https://cluster.test/api",
-            sdk_repo="/Users/dev/kamiwaza-sdk",
-        ) is False
+        assert (
+            _is_resumable(
+                s,
+                "1.0.0-dev-abc1234.1714999999",
+                "https://cluster.test/api",
+                sdk_repo="/Users/dev/kamiwaza-sdk",
+            )
+            is False
+        )
 
     def test_sdk_repo_none_allows_resume(self):
         from kamiwaza_extensions.commands.dev import _is_resumable
 
         s = self._state()
-        assert _is_resumable(
-            s, "1.0.0-dev-abc1234.1714999999",
-            "https://cluster.test/api",
-            sdk_repo=None,
-        ) is True
+        assert (
+            _is_resumable(
+                s,
+                "1.0.0-dev-abc1234.1714999999",
+                "https://cluster.test/api",
+                sdk_repo=None,
+            )
+            is True
+        )
 
     def test_sdk_repo_default_argument_omitted(self):
         # Back-compat: callers that don't pass sdk_repo (legacy unit tests,
@@ -324,10 +348,14 @@ class TestIsResumableSdkOverride:
         from kamiwaza_extensions.commands.dev import _is_resumable
 
         s = self._state()
-        assert _is_resumable(
-            s, "1.0.0-dev-abc1234.1714999999",
-            "https://cluster.test/api",
-        ) is True
+        assert (
+            _is_resumable(
+                s,
+                "1.0.0-dev-abc1234.1714999999",
+                "https://cluster.test/api",
+            )
+            is True
+        )
 
 
 @pytest.mark.unit
@@ -362,26 +390,32 @@ class TestIsResumableServiceFilterAndRegistry:
         from kamiwaza_extensions.commands.dev import _is_resumable
 
         prior = self._state(last_service="backend")
-        assert _is_resumable(
-            prior,
-            rev_tag="1.0.0-dev-abc1234.1714999999",
-            connection_url="https://cluster.test/api",
-            registry="registry.test",
-            service=None,
-        ) is False
+        assert (
+            _is_resumable(
+                prior,
+                rev_tag="1.0.0-dev-abc1234.1714999999",
+                connection_url="https://cluster.test/api",
+                registry="registry.test",
+                service=None,
+            )
+            is False
+        )
 
     def test_same_service_filter_resumes(self):
         # `--service backend` → fail → `--service backend` again is fine.
         from kamiwaza_extensions.commands.dev import _is_resumable
 
         prior = self._state(last_service="backend")
-        assert _is_resumable(
-            prior,
-            rev_tag="1.0.0-dev-abc1234.1714999999",
-            connection_url="https://cluster.test/api",
-            registry="registry.test",
-            service="backend",
-        ) is True
+        assert (
+            _is_resumable(
+                prior,
+                rev_tag="1.0.0-dev-abc1234.1714999999",
+                connection_url="https://cluster.test/api",
+                registry="registry.test",
+                service="backend",
+            )
+            is True
+        )
 
     def test_different_service_filter_invalidates_resume(self):
         # `--service backend` → fail → `--service frontend` —
@@ -389,13 +423,16 @@ class TestIsResumableServiceFilterAndRegistry:
         from kamiwaza_extensions.commands.dev import _is_resumable
 
         prior = self._state(last_service="backend")
-        assert _is_resumable(
-            prior,
-            rev_tag="1.0.0-dev-abc1234.1714999999",
-            connection_url="https://cluster.test/api",
-            registry="registry.test",
-            service="frontend",
-        ) is False
+        assert (
+            _is_resumable(
+                prior,
+                rev_tag="1.0.0-dev-abc1234.1714999999",
+                connection_url="https://cluster.test/api",
+                registry="registry.test",
+                service="frontend",
+            )
+            is False
+        )
 
     def test_sdk_repo_change_invalidates_resume(self):
         # Prior run had no sdk-repo override; new run does → SDK code
@@ -403,26 +440,32 @@ class TestIsResumableServiceFilterAndRegistry:
         from kamiwaza_extensions.commands.dev import _is_resumable
 
         prior = self._state(last_sdk_repo=None)
-        assert _is_resumable(
-            prior,
-            rev_tag="1.0.0-dev-abc1234.1714999999",
-            connection_url="https://cluster.test/api",
-            registry="registry.test",
-            sdk_repo="/Users/dev/kamiwaza-sdk",
-        ) is False
+        assert (
+            _is_resumable(
+                prior,
+                rev_tag="1.0.0-dev-abc1234.1714999999",
+                connection_url="https://cluster.test/api",
+                registry="registry.test",
+                sdk_repo="/Users/dev/kamiwaza-sdk",
+            )
+            is False
+        )
 
     def test_sdk_repo_consistent_resumes(self):
         # Same sdk-repo path on both runs — resume is safe.
         from kamiwaza_extensions.commands.dev import _is_resumable
 
         prior = self._state(last_sdk_repo="/Users/dev/kamiwaza-sdk")
-        assert _is_resumable(
-            prior,
-            rev_tag="1.0.0-dev-abc1234.1714999999",
-            connection_url="https://cluster.test/api",
-            registry="registry.test",
-            sdk_repo="/Users/dev/kamiwaza-sdk",
-        ) is True
+        assert (
+            _is_resumable(
+                prior,
+                rev_tag="1.0.0-dev-abc1234.1714999999",
+                connection_url="https://cluster.test/api",
+                registry="registry.test",
+                sdk_repo="/Users/dev/kamiwaza-sdk",
+            )
+            is True
+        )
 
     def test_registry_change_invalidates_resume(self):
         # KAMIWAZA_REGISTRY=registry-a → fail →
@@ -431,12 +474,15 @@ class TestIsResumableServiceFilterAndRegistry:
         from kamiwaza_extensions.commands.dev import _is_resumable
 
         prior = self._state(last_registry="registry-a")
-        assert _is_resumable(
-            prior,
-            rev_tag="1.0.0-dev-abc1234.1714999999",
-            connection_url="https://cluster.test/api",
-            registry="registry-b",
-        ) is False
+        assert (
+            _is_resumable(
+                prior,
+                rev_tag="1.0.0-dev-abc1234.1714999999",
+                connection_url="https://cluster.test/api",
+                registry="registry-b",
+            )
+            is False
+        )
 
     def test_legacy_state_without_resume_inputs_invalidates_when_current_set(self):
         # An older dev-state file (pre-H1) doesn't carry service /
@@ -448,15 +494,20 @@ class TestIsResumableServiceFilterAndRegistry:
         from kamiwaza_extensions.commands.dev import _is_resumable
 
         prior = self._state(
-            last_service=None, last_sdk_repo=None, last_registry="",
+            last_service=None,
+            last_sdk_repo=None,
+            last_registry="",
         )
-        assert _is_resumable(
-            prior,
-            rev_tag="1.0.0-dev-abc1234.1714999999",
-            connection_url="https://cluster.test/api",
-            registry="registry.test",
-            service="backend",
-        ) is False
+        assert (
+            _is_resumable(
+                prior,
+                rev_tag="1.0.0-dev-abc1234.1714999999",
+                connection_url="https://cluster.test/api",
+                registry="registry.test",
+                service="backend",
+            )
+            is False
+        )
 
 
 @pytest.mark.unit
@@ -476,9 +527,9 @@ class TestBuildPatchKwargsCarriesAnnotations:
         from kamiwaza_extensions.commands.dev import _build_patch_kwargs
 
         annotations = {
-            "kamiwaza.ai/deployer": "alice@example.com",
-            "kamiwaza.ai/revision": "1.0.0-dev-abc",
-            "kamiwaza.ai/deployed-at": "2026-04-29T10:00:00+00:00",
+            "kamiwaza.io/deployer": "alice@example.com",
+            "kamiwaza.io/revision": "1.0.0-dev-abc",
+            "kamiwaza.io/deployed-at": "2026-04-29T10:00:00+00:00",
         }
         kwargs = _build_patch_kwargs(
             patch_services=["svc-a"],

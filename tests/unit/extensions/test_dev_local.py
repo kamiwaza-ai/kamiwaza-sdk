@@ -4,7 +4,7 @@ Extension detection and compose file discovery tests moved to
 test_extension_detector.py (shared ExtensionDetector module).
 """
 
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -30,7 +30,9 @@ class TestEnvOverlay:
         # can build ``${base}/auth/login`` correctly. Previous round-2
         # behavior stripped ``/api`` here, breaking login redirects
         # under ``--auth`` (codex P2).
-        conn = ConnectionInfo(name="test", url="https://example.com/api", active=True, created_at=0.0)
+        conn = ConnectionInfo(
+            name="test", url="https://example.com/api", active=True, created_at=0.0
+        )
         overlay = build_env_overlay(conn, "my-app")
         assert overlay["KAMIWAZA_API_URL"] == "https://example.com/api"
         assert overlay["KAMIWAZA_PUBLIC_API_URL"] == "https://example.com/api"
@@ -38,7 +40,9 @@ class TestEnvOverlay:
         assert overlay["KAMIWAZA_APP_NAME"] == "my-app"
 
     def test_overlay_without_api_in_url(self):
-        conn = ConnectionInfo(name="test", url="https://example.com", active=True, created_at=0.0)
+        conn = ConnectionInfo(
+            name="test", url="https://example.com", active=True, created_at=0.0
+        )
         overlay = build_env_overlay(conn, "my-app")
         assert overlay["KAMIWAZA_PUBLIC_API_URL"] == "https://example.com"
 
@@ -50,10 +54,15 @@ class TestEnvOverlay:
         demand and that helper has its own mid-path-safe regression
         coverage in ``test_url.py``."""
         conn = ConnectionInfo(
-            name="test", url="https://example.com/api-gateway/api", active=True, created_at=0.0
+            name="test",
+            url="https://example.com/api-gateway/api",
+            active=True,
+            created_at=0.0,
         )
         overlay = build_env_overlay(conn, "my-app")
-        assert overlay["KAMIWAZA_PUBLIC_API_URL"] == "https://example.com/api-gateway/api"
+        assert (
+            overlay["KAMIWAZA_PUBLIC_API_URL"] == "https://example.com/api-gateway/api"
+        )
 
     def test_auth_false_preserves_current_behaviour(self):
         # TS-5 — auth=False is the existing path; no gate, no bearer, USE_AUTH=false
@@ -105,10 +114,7 @@ class TestEnvOverlay:
         overlay = build_env_overlay(conn, "my-app", auth=True, bridge=bridge)
         # Container-side: rewritten so backend can reach the host.
         assert overlay["KAMIWAZA_API_URL"] == "http://host.docker.internal:8000/api"
-        assert (
-            overlay["KAMIWAZA_ENDPOINT"]
-            == "http://host.docker.internal:8000/api/v1"
-        )
+        assert overlay["KAMIWAZA_ENDPOINT"] == "http://host.docker.internal:8000/api/v1"
         # Browser-side: NEVER rewritten — host.docker.internal isn't
         # resolvable from the developer's browser. Round-10: keeps the
         # ``/api`` suffix so session.py's login/logout URLs are correct.
@@ -143,7 +149,9 @@ class TestEnvOverlay:
         # name or /auth/login-url + /auth/logout redirect to a host the
         # browser cannot resolve.
         bridge = BridgeContext(
-            bearer_token="t", user_id="user-1", expires_at=None,
+            bearer_token="t",
+            user_id="user-1",
+            expires_at=None,
         )
         for original_url in [
             "http://localhost:8000/api",
@@ -158,7 +166,10 @@ class TestEnvOverlay:
                 created_at=0.0,
             )
             overlay = build_env_overlay(
-                conn, "my-app", auth=True, bridge=bridge,
+                conn,
+                "my-app",
+                auth=True,
+                bridge=bridge,
             )
             # Container-side IS rewritten
             assert "host.docker.internal" in overlay["KAMIWAZA_API_URL"], (
@@ -192,10 +203,12 @@ class TestBuildComposeExtraHosts:
     def test_non_loopback_returns_empty_without_auth(self, monkeypatch):
         # TS-10 — auth=False (default)
         import socket as _socket
+
         # Round-11 (codex GH High): resolver switched from gethostbyname
         # (IPv4-only) to getaddrinfo (dual-stack); patch the new target.
         monkeypatch.setattr(
-            _socket, "getaddrinfo",
+            _socket,
+            "getaddrinfo",
             lambda *a, **kw: [(0, 0, 0, "", ("1.2.3.4", 0))],
         )
         conn = ConnectionInfo(
@@ -233,10 +246,12 @@ class TestBuildComposeExtraHosts:
         # host.docker.internal:host-gateway. Harmless on non-loopback
         # connections and keeps the contract consistent.
         import socket as _socket
+
         # Round-11 (codex GH High): resolver switched from gethostbyname
         # (IPv4-only) to getaddrinfo (dual-stack); patch the new target.
         monkeypatch.setattr(
-            _socket, "getaddrinfo",
+            _socket,
+            "getaddrinfo",
             lambda *a, **kw: [(0, 0, 0, "", ("1.2.3.4", 0))],
         )
         conn = ConnectionInfo(
@@ -289,7 +304,10 @@ class TestPublicApiUrlConsistency:
         ]
         for url in cases:
             conn = ConnectionInfo(
-                name="t", url=url, active=True, created_at=0.0,
+                name="t",
+                url=url,
+                active=True,
+                created_at=0.0,
             )
             overlay = build_env_overlay(conn, "my-app")
             base = overlay["KAMIWAZA_PUBLIC_API_URL"]
@@ -365,6 +383,7 @@ class TestRunnerEnvPassthroughOverlay:
         )
 
         from kamiwaza_extensions import sdk_override as sdk_override_mod
+
         monkeypatch.setattr(
             dev_local_mod,
             "detect_compose_command",
@@ -419,12 +438,12 @@ class TestRunnerEnvPassthroughOverlay:
                 f"service {svc!r} environment must be a mapping (round-10 "
                 f"review Comprehensive H — list form interpolates `$`)"
             )
-            assert env_map.get("KZ_EXT_DEV_LOCAL_AUTH") == "1", (
-                f"service {svc!r} missing KZ_EXT_DEV_LOCAL_AUTH"
-            )
-            assert env_map.get("KAMIWAZA_BEARER_TOKEN") == "bearer-xyz", (
-                f"service {svc!r} missing KAMIWAZA_BEARER_TOKEN"
-            )
+            assert (
+                env_map.get("KZ_EXT_DEV_LOCAL_AUTH") == "1"
+            ), f"service {svc!r} missing KZ_EXT_DEV_LOCAL_AUTH"
+            assert (
+                env_map.get("KAMIWAZA_BEARER_TOKEN") == "bearer-xyz"
+            ), f"service {svc!r} missing KAMIWAZA_BEARER_TOKEN"
 
         # Round-3 review High #8 — assert the overlay path is present in
         # the compose argv. Generating the overlay but not referencing
@@ -435,9 +454,9 @@ class TestRunnerEnvPassthroughOverlay:
         auth_env_paths = [
             arg for arg in cmd if isinstance(arg, str) and "kz-auth-env-" in arg
         ]
-        assert auth_env_paths, (
-            f"auth-env overlay not wired into compose argv. cmd={cmd!r}"
-        )
+        assert (
+            auth_env_paths
+        ), f"auth-env overlay not wired into compose argv. cmd={cmd!r}"
         # And the preceding `-f` flag is what makes compose actually pick
         # the overlay up — assert the flag-arg pairing is correct.
         idx = cmd.index(auth_env_paths[0])
@@ -492,6 +511,7 @@ class TestRunnerEnvPassthroughOverlay:
         )
 
         from kamiwaza_extensions import sdk_override as sdk_override_mod
+
         monkeypatch.setattr(
             dev_local_mod,
             "detect_compose_command",
@@ -552,6 +572,7 @@ class TestRunnerEnvPassthroughOverlay:
         )
 
         from kamiwaza_extensions import sdk_override as sdk_override_mod
+
         monkeypatch.setattr(
             dev_local_mod,
             "detect_compose_command",
@@ -611,10 +632,10 @@ class TestRunnerAuthExtensionTypeGate:
         self, tmp_path, monkeypatch, metadata, expected_type_in_message
     ):
         import yaml as _yaml
-        from kamiwaza_extensions_lib.local_dev import LocalDevAuthError
 
         from kamiwaza_extensions import dev_local as dev_local_mod
         from kamiwaza_extensions.dev_local import DevLocalRunner
+        from kamiwaza_extensions_lib.local_dev import LocalDevAuthError
 
         compose_data = {"services": {"server": {"build": "."}}}
         compose_path = tmp_path / "docker-compose.yml"
@@ -646,17 +667,13 @@ class TestRunnerAuthExtensionTypeGate:
             prepare_called.append(True)
             raise AssertionError("prepare_bridge_context should not run")
 
-        monkeypatch.setattr(
-            dev_local_mod, "prepare_bridge_context", fail_if_called
-        )
+        monkeypatch.setattr(dev_local_mod, "prepare_bridge_context", fail_if_called)
 
         with pytest.raises(LocalDevAuthError, match="only supported for `app`"):
             runner.run(detach=False, auth=True)
         assert not prepare_called
 
-    def test_runner_accepts_auth_for_app_extension_type(
-        self, tmp_path, monkeypatch
-    ):
+    def test_runner_accepts_auth_for_app_extension_type(self, tmp_path, monkeypatch):
         """Sanity check: app-type passes the gate (bridge prep is then
         invoked normally)."""
         import yaml as _yaml
@@ -688,6 +705,7 @@ class TestRunnerAuthExtensionTypeGate:
         )
 
         from kamiwaza_extensions import sdk_override as sdk_override_mod
+
         monkeypatch.setattr(
             dev_local_mod,
             "detect_compose_command",
@@ -703,7 +721,9 @@ class TestRunnerAuthExtensionTypeGate:
             dev_local_mod,
             "prepare_bridge_context",
             lambda connection_manager: BridgeContext(
-                bearer_token="b", user_id="u", expires_at=None,
+                bearer_token="b",
+                user_id="u",
+                expires_at=None,
             ),
         )
         runner._run_subprocess = MagicMock(return_value=0)
@@ -735,7 +755,6 @@ class TestComposeDetection:
         with patch("subprocess.run", side_effect=FileNotFoundError()):
             with pytest.raises(FileNotFoundError, match="Docker Compose not found"):
                 detect_compose_command()
-
 
 
 @pytest.mark.unit
@@ -850,9 +869,7 @@ class TestIsPortAvailable:
         finally:
             sock.close()
 
-    def test_v6_disabled_runtime_does_not_falsely_report_port_taken(
-        self, monkeypatch
-    ):
+    def test_v6_disabled_runtime_does_not_falsely_report_port_taken(self, monkeypatch):
         """PR #87 round-12 review (codex M1) — ``socket.has_ipv6`` is
         a build-time flag, not a runtime capability. On Linux hosts
         with ``net.ipv6.conf.all.disable_ipv6=1`` (hardened servers,
@@ -995,6 +1012,171 @@ class TestApplyPortRemaps:
 
 
 @pytest.mark.unit
+class TestHasBarePorts:
+    """Foreground-mode URL polling (ENG-3901 / F-008) only fires when
+    there's at least one bare-port spec to resolve. Mapped specs already
+    have a known host port, and services without ports don't need URLs."""
+
+    def _runner(self):
+        from kamiwaza_extensions.dev_local import DevLocalRunner
+
+        return DevLocalRunner.__new__(DevLocalRunner)
+
+    def test_returns_true_when_a_service_has_a_bare_port(self):
+        runner = self._runner()
+        compose = {"services": {"frontend": {"ports": ["3000"]}}}
+        assert runner._has_bare_ports(compose) is True
+
+    def test_returns_false_when_all_ports_are_mapped(self):
+        runner = self._runner()
+        compose = {"services": {"frontend": {"ports": ["3000:3000"]}}}
+        assert runner._has_bare_ports(compose) is False
+
+    def test_returns_false_when_no_services_have_ports(self):
+        runner = self._runner()
+        compose = {"services": {"backend": {"image": "redis:7"}}}
+        assert runner._has_bare_ports(compose) is False
+
+    def test_returns_false_for_empty_compose(self):
+        runner = self._runner()
+        assert runner._has_bare_ports(None) is False
+        assert runner._has_bare_ports({}) is False
+        assert runner._has_bare_ports({"services": {}}) is False
+
+    def test_returns_true_when_one_service_is_mapped_and_another_is_bare(self):
+        runner = self._runner()
+        compose = {
+            "services": {
+                "backend": {"ports": ["8000:8000"]},
+                "frontend": {"ports": ["3000"]},
+            }
+        }
+        assert runner._has_bare_ports(compose) is True
+
+
+@pytest.mark.unit
+class TestPollAndPrintUrls:
+    """The foreground URL-poll daemon thread (ENG-3901 / F-008) drives
+    ``docker compose port`` until every bare-port spec resolves and prints
+    each one. This test class exercises termination semantics, multi-port
+    keying (PR #91 Codex P3 / Claude High), and the threading.Event
+    stop-signal wiring (PR #91 round-2 review High).
+    """
+
+    def _runner(self):
+        from kamiwaza_extensions.dev_local import DevLocalRunner
+
+        return DevLocalRunner.__new__(DevLocalRunner)
+
+    def test_stop_event_set_immediately_returns_fast(self, monkeypatch):
+        """The runner's ``finally`` block sets the stop event before
+        unlinking compose override temp files. The polling thread must
+        wake from its initial 2s wait and exit promptly so the cleanup
+        doesn't race the next ``docker compose port`` call against
+        already-deleted ``-f`` paths."""
+        import threading
+        import time as _time
+
+        runner = self._runner()
+        compose = {"services": {"frontend": {"ports": ["3000"]}}}
+        stop = threading.Event()
+        stop.set()
+
+        # Track whether _docker_compose_port was ever called — it must
+        # not be (the thread should exit during the initial wait).
+        port_calls: list = []
+        monkeypatch.setattr(
+            runner,
+            "_docker_compose_port",
+            lambda *a, **kw: port_calls.append((a, kw)) or 12345,
+        )
+
+        t0 = _time.monotonic()
+        runner._poll_and_print_urls(
+            compose, ["docker", "compose"], "/tmp/x", stop_event=stop
+        )
+        elapsed = _time.monotonic() - t0
+        assert elapsed < 0.5, f"poll didn't fast-exit: {elapsed:.2f}s"
+        assert port_calls == []
+
+    def test_multi_port_service_prints_every_url_and_terminates(self, monkeypatch):
+        """A frontend exposing both 3000 (Next.js) and 4173 (HMR) should
+        get TWO URLs printed, not one — and the loop must terminate as
+        soon as both are resolved, not spin to the 60s deadline."""
+        import threading
+        from kamiwaza_extensions import dev_local
+
+        runner = self._runner()
+        compose = {"services": {"frontend": {"ports": ["3000", "4173"]}}}
+        stop = threading.Event()
+
+        # Skip the 2s initial wait so the test runs fast.
+        monkeypatch.setattr(
+            "kamiwaza_extensions.dev_local.threading.Event.wait",
+            lambda self, _t=None: False,
+        )
+        # Resolve both ports immediately on the first iteration.
+        port_results = {3000: 32001, 4173: 32002}
+        monkeypatch.setattr(
+            runner,
+            "_docker_compose_port",
+            lambda svc, port, **kw: port_results.get(port),
+        )
+
+        printed: list = []
+        monkeypatch.setattr(
+            dev_local.console, "print", lambda *a, **kw: printed.append(a)
+        )
+
+        runner._poll_and_print_urls(
+            compose, ["docker", "compose"], "/tmp/x", stop_event=stop
+        )
+        # Both URLs printed exactly once each.
+        urls = " ".join(str(args) for args in printed)
+        assert "32001" in urls and "32002" in urls
+        assert urls.count("frontend:") == 2
+
+    def test_duplicate_bare_port_specs_do_not_spin_loop(self, monkeypatch):
+        """A duplicate bare-port spec like ``ports: ["3000", "3000"]``
+        is technically illegal compose but valid YAML. Without dedupe,
+        the completion check stayed permanently true (printed has one
+        unique key, services_with_bare_ports has two duplicates) and
+        the loop spun until the 60s deadline. With dedupe it terminates
+        the moment the single URL is resolved (PR #91 round-3 / Claude
+        review)."""
+        import threading
+        from kamiwaza_extensions import dev_local
+
+        runner = self._runner()
+        compose = {"services": {"frontend": {"ports": ["3000", "3000"]}}}
+        stop = threading.Event()
+
+        monkeypatch.setattr(
+            "kamiwaza_extensions.dev_local.threading.Event.wait",
+            lambda self, _t=None: False,
+        )
+        sleeps: list = []
+        monkeypatch.setattr(
+            "kamiwaza_extensions.dev_local.time.sleep",
+            lambda s: sleeps.append(s),
+        )
+        monkeypatch.setattr(
+            runner, "_docker_compose_port", lambda svc, port, **kw: 32001
+        )
+        monkeypatch.setattr(dev_local.console, "print", lambda *a, **kw: None)
+
+        runner._poll_and_print_urls(
+            compose, ["docker", "compose"], "/tmp/x", stop_event=stop
+        )
+        # Loop terminated after one iteration because dedupe collapsed
+        # the two specs to one. Without dedupe it would have hit the
+        # 1.5s sleep (or wait) and re-iterated.
+        assert sleeps == [], (
+            "loop should not have slept once duplicates were collapsed; "
+            f"got sleeps={sleeps}"
+        )
+
+
 class TestPrintUrlsBarePort:
     """ENG-3889 P2 + review PR #84 Critical #3 — bare-port URL discovery
     must work in both pre-up and post-up modes. The pre-up mode runs
@@ -1029,7 +1211,12 @@ class TestPrintUrlsBarePort:
         called = {"docker_compose_port": False}
         monkeypatch.setattr(
             "kamiwaza_extensions.dev_local.DevLocalRunner._docker_compose_port",
-            staticmethod(lambda svc, port, compose_cmd=None, cwd=None: called.__setitem__("docker_compose_port", True) or None),
+            staticmethod(
+                lambda svc, port, compose_cmd=None, cwd=None: called.__setitem__(
+                    "docker_compose_port", True
+                )
+                or None
+            ),
         )
 
         runner._print_urls(compose, {}, post_up=False)
@@ -1049,7 +1236,11 @@ class TestPrintUrlsBarePort:
         # Simulate Docker having assigned host port 49152 to container port 3000.
         monkeypatch.setattr(
             "kamiwaza_extensions.dev_local.DevLocalRunner._docker_compose_port",
-            staticmethod(lambda svc, port, compose_cmd=None, cwd=None: 49152 if svc == "frontend" and port == 3000 else None),
+            staticmethod(
+                lambda svc, port, compose_cmd=None, cwd=None: (
+                    49152 if svc == "frontend" and port == 3000 else None
+                )
+            ),
         )
 
         runner._print_urls(compose, {}, post_up=True)
@@ -1107,7 +1298,9 @@ class TestDockerComposePortV1Compat:
 
         monkeypatch.setattr("subprocess.run", fake_run)
         host = DevLocalRunner._docker_compose_port(
-            "frontend", 3000, compose_cmd=["docker-compose"],
+            "frontend",
+            3000,
+            compose_cmd=["docker-compose"],
         )
         assert host == 49152
         assert captured == [["docker-compose", "port", "frontend", "3000"]]
@@ -1123,7 +1316,9 @@ class TestDockerComposePortV1Compat:
 
         monkeypatch.setattr("subprocess.run", fake_run)
         host = DevLocalRunner._docker_compose_port(
-            "frontend", 3000, compose_cmd=["docker", "compose"],
+            "frontend",
+            3000,
+            compose_cmd=["docker", "compose"],
         )
         assert host == 49152
         assert captured == [["docker", "compose", "port", "frontend", "3000"]]
@@ -1165,13 +1360,18 @@ class TestDockerComposePortV1Compat:
         monkeypatch.setattr("subprocess.run", fake_run)
 
         compose_prefix = [
-            "docker", "compose",
-            "-f", "/tmp/kz-ports-abc.yml",
-            "-f", "/tmp/kz-sdk-xyz.yml",
-            "--project-directory", "/Users/dev/my-app",
+            "docker",
+            "compose",
+            "-f",
+            "/tmp/kz-ports-abc.yml",
+            "-f",
+            "/tmp/kz-sdk-xyz.yml",
+            "--project-directory",
+            "/Users/dev/my-app",
         ]
         host = DevLocalRunner._docker_compose_port(
-            "frontend", 3000,
+            "frontend",
+            3000,
             compose_cmd=compose_prefix,
             cwd="/Users/dev/my-app",
         )
@@ -1179,6 +1379,9 @@ class TestDockerComposePortV1Compat:
         # Project-identifier args + `port` + service + container port —
         # matches the same project that `compose up` was invoked against.
         assert captured["cmd"] == [
-            *compose_prefix, "port", "frontend", "3000",
+            *compose_prefix,
+            "port",
+            "frontend",
+            "3000",
         ]
         assert captured["cwd"] == "/Users/dev/my-app"

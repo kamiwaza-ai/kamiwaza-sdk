@@ -14,7 +14,6 @@ from kamiwaza_extensions.sdk_override import (
     validate_sdk_override,
 )
 
-
 # ------------------------------------------------------------------
 # SdkOverrideSpec
 # ------------------------------------------------------------------
@@ -26,7 +25,10 @@ class TestSdkOverrideSpec:
         spec = SdkOverrideSpec(sdk_repo=tmp_path)
         assert spec.python_lib_path == tmp_path / "kamiwaza_extensions_lib"
         assert spec.typescript_lib_path == tmp_path / "kamiwaza-ai-extensions-lib"
-        assert spec.typescript_dist_path == tmp_path / "kamiwaza-ai-extensions-lib" / "dist"
+        assert (
+            spec.typescript_dist_path
+            == tmp_path / "kamiwaza-ai-extensions-lib" / "dist"
+        )
 
     def test_defaults(self, tmp_path):
         spec = SdkOverrideSpec(sdk_repo=tmp_path)
@@ -57,9 +59,7 @@ class TestResolveSdkOverride:
         # Create config with different path
         config_dir = tmp_path / ".kz-ext"
         config_dir.mkdir()
-        (config_dir / "local.yaml").write_text(
-            yaml.dump({"sdk_repo": "/other/path"})
-        )
+        (config_dir / "local.yaml").write_text(yaml.dump({"sdk_repo": "/other/path"}))
         spec = resolve_sdk_override(str(tmp_path), extension_path=tmp_path)
         assert spec is not None
         assert spec.sdk_repo == tmp_path  # CLI wins
@@ -67,9 +67,7 @@ class TestResolveSdkOverride:
     def test_config_file(self, tmp_path):
         config_dir = tmp_path / ".kz-ext"
         config_dir.mkdir()
-        (config_dir / "local.yaml").write_text(
-            yaml.dump({"sdk_repo": str(tmp_path)})
-        )
+        (config_dir / "local.yaml").write_text(yaml.dump({"sdk_repo": str(tmp_path)}))
         spec = resolve_sdk_override(None, extension_path=tmp_path)
         assert spec is not None
         assert spec.sdk_repo == tmp_path
@@ -78,11 +76,13 @@ class TestResolveSdkOverride:
         config_dir = tmp_path / ".kz-ext"
         config_dir.mkdir()
         (config_dir / "local.yaml").write_text(
-            yaml.dump({
-                "sdk_repo": str(tmp_path),
-                "runtime_libs": {"python": "local", "typescript": "published"},
-                "build_typescript": True,
-            })
+            yaml.dump(
+                {
+                    "sdk_repo": str(tmp_path),
+                    "runtime_libs": {"python": "local", "typescript": "published"},
+                    "build_typescript": True,
+                }
+            )
         )
         spec = resolve_sdk_override(None, extension_path=tmp_path)
         assert spec is not None
@@ -104,9 +104,7 @@ class TestResolveSdkOverride:
     def test_config_without_sdk_repo_returns_none(self, tmp_path):
         config_dir = tmp_path / ".kz-ext"
         config_dir.mkdir()
-        (config_dir / "local.yaml").write_text(
-            yaml.dump({"build_typescript": True})
-        )
+        (config_dir / "local.yaml").write_text(yaml.dump({"build_typescript": True}))
         spec = resolve_sdk_override(None, extension_path=tmp_path)
         assert spec is None
 
@@ -288,7 +286,10 @@ class TestGenerateComposeOverride:
         spec = self._make_spec(tmp_path)
         compose = {
             "services": {
-                "frontend": {"build": {"context": "./frontend"}, "ports": ["3000:3000"]},
+                "frontend": {
+                    "build": {"context": "./frontend"},
+                    "ports": ["3000:3000"],
+                },
                 "backend": {"build": {"context": "./backend"}, "ports": ["8000:8000"]},
             }
         }
@@ -296,8 +297,14 @@ class TestGenerateComposeOverride:
         services = override["services"]
 
         # Backend reads CMD from Dockerfile
-        assert 'export PYTHONPATH="/sdk$${PYTHONPATH:+:$$PYTHONPATH}"' in services["backend"]["command"][0]
-        assert "exec uvicorn app.main:app --host 0.0.0.0" in services["backend"]["command"][0]
+        assert (
+            'export PYTHONPATH="/sdk$${PYTHONPATH:+:$$PYTHONPATH}"'
+            in services["backend"]["command"][0]
+        )
+        assert (
+            "exec uvicorn app.main:app --host 0.0.0.0"
+            in services["backend"]["command"][0]
+        )
 
         # Frontend reads ENTRYPOINT from Dockerfile
         assert "npm pack" in services["frontend"]["command"][0]
@@ -316,7 +323,10 @@ class TestGenerateComposeOverride:
         spec = self._make_spec(tmp_path, python=False)
         compose = {
             "services": {
-                "frontend": {"build": {"context": "./frontend"}, "ports": ["3000:3000"]},
+                "frontend": {
+                    "build": {"context": "./frontend"},
+                    "ports": ["3000:3000"],
+                },
             }
         }
 
@@ -366,7 +376,10 @@ class TestGenerateComposeOverride:
         }
         override = generate_compose_override(spec, compose)
         services = override["services"]
-        assert 'export PYTHONPATH="/sdk$${PYTHONPATH:+:$$PYTHONPATH}"' in services["backend"]["command"][0]
+        assert (
+            'export PYTHONPATH="/sdk$${PYTHONPATH:+:$$PYTHONPATH}"'
+            in services["backend"]["command"][0]
+        )
         assert "frontend" not in services
 
     def test_typescript_only(self, tmp_path):
@@ -513,6 +526,28 @@ class TestGenerateBuildOverrides:
         assert "COPY --from=sdk" in overrides[0].overlay_steps
         assert "USER root" in overrides[0].overlay_steps
 
+    def test_python_overlay_resolves_site_packages_without_importing_runtime_lib(
+        self, tmp_path
+    ):
+        """ENG-3901 / F-002 round-3: the post-install overlay must resolve
+        the site-packages dir via ``sysconfig`` rather than by importing
+        ``kamiwaza_extensions_lib``. The pre-install strip removes the lib
+        from requirements.txt so the import would crash here. Use
+        ``sysconfig.get_paths()['purelib']`` which is always resolvable
+        regardless of what's installed."""
+        spec = self._make_spec(tmp_path)
+        compose = {"services": {"backend": {"build": ".", "ports": ["8000:8000"]}}}
+        overlay = generate_build_overrides(spec, compose)[0].overlay_steps
+        # Must NOT import the lib (would fail post-strip).
+        assert "import kamiwaza_extensions_lib" not in overlay, (
+            f"overlay still resolves site-packages by importing the lib — "
+            f"this crashes when the pre-install strip removes the pin. "
+            f"overlay: {overlay!r}"
+        )
+        # MUST use sysconfig.get_paths()['purelib'].
+        assert "sysconfig" in overlay
+        assert "purelib" in overlay
+
     def test_empty_services(self, tmp_path):
         spec = self._make_spec(tmp_path)
         assert generate_build_overrides(spec, {"services": {}}) == []
@@ -628,7 +663,7 @@ class TestGenerateBuildOverrides:
 @pytest.mark.unit
 class TestApplyBuildOverlay:
     def test_appends_when_no_build_line(self):
-        dockerfile = "FROM node:20\nCOPY . .\nENTRYPOINT [\"node\", \"start.mjs\"]\n"
+        dockerfile = 'FROM node:20\nCOPY . .\nENTRYPOINT ["node", "start.mjs"]\n'
         overlay = BuildOverride(
             service_name="frontend",
             overlay_steps="# overlay\nRUN echo hello\n",
@@ -639,7 +674,7 @@ class TestApplyBuildOverlay:
         assert result.endswith("RUN echo hello\n")
 
     def test_inserts_before_npm_run_build(self):
-        dockerfile = "FROM node:20\nCOPY . .\nRUN npm run build\nCMD [\"npm\", \"start\"]\n"
+        dockerfile = 'FROM node:20\nCOPY . .\nRUN npm run build\nCMD ["npm", "start"]\n'
         overlay = BuildOverride(
             service_name="frontend",
             overlay_steps="# SDK override\nRUN echo injected\n",
@@ -648,12 +683,8 @@ class TestApplyBuildOverlay:
         )
         result = apply_build_overlay(dockerfile, overlay)
         lines = result.splitlines()
-        build_idx = next(
-            i for i, line in enumerate(lines) if "npm run build" in line
-        )
-        inject_idx = next(
-            i for i, line in enumerate(lines) if "echo injected" in line
-        )
+        build_idx = next(i for i, line in enumerate(lines) if "npm run build" in line)
+        inject_idx = next(i for i, line in enumerate(lines) if "echo injected" in line)
         assert inject_idx < build_idx
 
     def test_inserts_before_next_build(self):
@@ -707,6 +738,679 @@ class TestApplyBuildOverlay:
 
 
 # ------------------------------------------------------------------
+# pre_install_steps — strip kamiwaza-extensions-lib before pip install
+# (PR #89 dry-run finding F-002)
+# ------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestPreInstallStripOverlay:
+    """The Python overlay must strip the runtime-lib pin from
+    requirements.txt *before* the scaffold's pip-install step runs, so the
+    docker build doesn't fail when the pinned version isn't on PyPI yet.
+    The post-install overlay then drops local source into site-packages.
+
+    Regression: previously the overlay only appended; pip install would
+    fail before the appended COPY/cp could replace site-packages."""
+
+    SCAFFOLD_DOCKERFILE = (
+        "FROM python:3.10-slim\n"
+        "RUN groupadd -r -g 1001 appuser && useradd -r -u 1001 -g appuser -d /app appuser\n"
+        "WORKDIR /app\n"
+        "COPY requirements.txt .\n"
+        "RUN pip install --no-cache-dir -r requirements.txt\n"
+        "COPY . .\n"
+        "USER 1001\n"
+        'CMD ["uvicorn", "app.main:app"]\n'
+    )
+
+    def test_backend_override_carries_pre_install_steps(self, tmp_path):
+        """``generate_build_overrides`` must wire the strip step onto every
+        Python backend override so ``--sdk-repo`` works against a scaffold
+        whose runtime-lib pin isn't installable from PyPI."""
+        from kamiwaza_extensions.sdk_override import _PYTHON_PRE_INSTALL_STRIP
+
+        spec = SdkOverrideSpec(sdk_repo=tmp_path)
+        compose = {
+            "services": {"backend": {"build": "./backend", "ports": ["8000:8000"]}}
+        }
+        overrides = generate_build_overrides(spec, compose)
+        assert len(overrides) == 1
+        assert overrides[0].pre_install_steps == _PYTHON_PRE_INSTALL_STRIP
+
+    def test_frontend_override_carries_ts_pre_install_steps(self, tmp_path):
+        """``generate_build_overrides`` (cluster deploy path) must also wire
+        the TS strip step onto every frontend override. Round-2 of F-002:
+        the cluster-deploy build hits the same npm ETARGET as ``dev local``
+        when ``@kamiwaza-ai/extensions-lib`` isn't published, but the dev
+        local fix only landed in ``generate_local_build_dockerfile_patches``
+        — leaving ``kz-ext dev`` broken."""
+        from kamiwaza_extensions.sdk_override import _TS_PRE_INSTALL_STRIP
+
+        spec = SdkOverrideSpec(sdk_repo=tmp_path)
+        compose = {
+            "services": {"frontend": {"build": "./frontend", "ports": ["3000:3000"]}}
+        }
+        overrides = generate_build_overrides(spec, compose)
+        assert len(overrides) == 1
+        assert overrides[0].pre_install_steps == _TS_PRE_INSTALL_STRIP
+
+    def test_apply_build_overlay_inserts_ts_strip_before_npm_install(self):
+        """The overlay applier must locate ``RUN npm install`` (not just
+        ``pip install``) when the pre_install_steps target the frontend."""
+        ts_dockerfile = (
+            "FROM node:20-alpine\nWORKDIR /app\n"
+            "COPY package.json package-lock.json* ./\n"
+            "RUN npm install\nCOPY . .\n"
+            "RUN npm run build\n"
+            'CMD ["node", "/app/start.mjs"]\n'
+        )
+        overlay = BuildOverride(
+            service_name="frontend",
+            overlay_steps="# post-install\nRUN echo post\n",
+            additional_build_contexts={"sdk": "/tmp/sdk"},
+            insert_before_build=True,
+            pre_install_steps=(
+                "# ts-strip\nUSER root\nRUN node -e 'strip'\n{restore_user_block}"
+            ),
+        )
+        result = apply_build_overlay(ts_dockerfile, overlay)
+        assert "# ts-strip" in result
+        assert result.index("# ts-strip") < result.index("RUN npm install")
+
+    def test_apply_build_overlay_rewrites_npm_ci_to_npm_install(self):
+        """ENG-3901 / round-3 (Codex P2): when a frontend Dockerfile uses
+        ``RUN npm ci`` (which the install pattern matches), the strip
+        step mutates package.json and leaves package-lock.json out of
+        sync. ``npm ci`` enforces strict parity and would error. The
+        overlay applier must rewrite the line to ``npm install`` so the
+        install proceeds and re-resolves with the mutated package.json.
+        Local-build overrides already break strict reproducibility (we
+        swap in a local source tarball) so looser semantics is consistent."""
+        ts_dockerfile = (
+            "FROM node:20-alpine\nWORKDIR /app\n"
+            "COPY package.json package-lock.json ./\n"
+            "RUN npm ci --no-audit\n"
+            "COPY . .\n"
+            "RUN npm run build\n"
+            'CMD ["node", "/app/start.mjs"]\n'
+        )
+        overlay = BuildOverride(
+            service_name="frontend",
+            overlay_steps="# post-install\nRUN echo post\n",
+            additional_build_contexts={"sdk": "/tmp/sdk"},
+            insert_before_build=True,
+            pre_install_steps=(
+                "# ts-strip\nUSER root\nRUN node -e 'strip'\n{restore_user_block}"
+            ),
+        )
+        result = apply_build_overlay(ts_dockerfile, overlay)
+        # The strip is inserted before the install line, AND the install
+        # line itself is rewritten to ``npm install`` (preserving flags).
+        assert "RUN npm ci" not in result, (
+            "npm ci must be rewritten to npm install to tolerate the "
+            "lockfile mismatch the strip creates"
+        )
+        assert "RUN npm install --no-audit" in result, (
+            "npm install rewrite must preserve trailing flags from the "
+            f"original line; got result:\n{result}"
+        )
+
+    def test_apply_build_overlay_leaves_npm_install_unchanged(self):
+        """Sanity: the npm ci → npm install rewrite must NOT mangle a
+        Dockerfile that already uses ``npm install`` (e.g. by accidentally
+        matching ``ci`` inside another flag like ``--ci-mode``)."""
+        ts_dockerfile = (
+            "FROM node:20-alpine\nWORKDIR /app\n"
+            "COPY package.json ./\n"
+            "RUN npm install --legacy-peer-deps\n"
+            "COPY . .\nRUN npm run build\n"
+        )
+        overlay = BuildOverride(
+            service_name="frontend",
+            overlay_steps="",
+            additional_build_contexts={"sdk": "/tmp/sdk"},
+            insert_before_build=True,
+            pre_install_steps=(
+                "# ts-strip\nUSER root\nRUN node -e 'strip'\n{restore_user_block}"
+            ),
+        )
+        result = apply_build_overlay(ts_dockerfile, overlay)
+        assert "RUN npm install --legacy-peer-deps" in result
+        # Only one install line in the patched output.
+        assert result.count("RUN npm install") == 1
+
+    def test_apply_build_overlay_routes_strip_by_language(self):
+        """ENG-3901 / round-4 (Codex P2): a frontend Dockerfile that
+        ALSO runs ``pip install`` for build tooling must have the TS
+        strip inserted before ``RUN npm install``, NOT before the pip
+        line. Without the language tag, the legacy "try both, Python
+        first" fallback would no-op the strip there because
+        ``package.json`` isn't yet copied — and the unstripped npm
+        install would then ETARGET on the unpublished pin."""
+        mixed_dockerfile = (
+            "FROM node:20-alpine\nWORKDIR /app\n"
+            # Python tooling first (e.g. for asset pipelines)
+            "RUN apk add python3 py3-pip\n"
+            "COPY tooling-requirements.txt .\n"
+            "RUN pip install -r requirements.txt\n"
+            # Then the actual TS install
+            "COPY package.json package-lock.json ./\n"
+            "RUN npm install\n"
+            "COPY . .\nRUN npm run build\n"
+        )
+        overlay = BuildOverride(
+            service_name="frontend",
+            overlay_steps="",
+            additional_build_contexts={"sdk": "/tmp/sdk"},
+            insert_before_build=True,
+            pre_install_steps=(
+                "# ts-strip\nUSER root\nRUN node -e 'strip'\n{restore_user_block}"
+            ),
+            language="typescript",
+        )
+        result = apply_build_overlay(mixed_dockerfile, overlay)
+        # The strip must land before npm install, NOT before pip install.
+        assert result.index("# ts-strip") > result.index("pip install"), (
+            "TS strip must NOT be inserted before the pip line; the strip "
+            f"would no-op there. Got result:\n{result}"
+        )
+        assert result.index("# ts-strip") < result.index("RUN npm install")
+
+    def test_apply_build_overlay_python_language_skips_npm_pattern(self):
+        """Inverse: a Python overlay must use the pip pattern only —
+        even if the Dockerfile happens to have a later npm install
+        line, the Python strip targets requirements.txt and would
+        no-op there too."""
+        mixed_dockerfile = (
+            "FROM python:3.10-slim\nWORKDIR /app\n"
+            "COPY package.json ./\n"
+            "RUN npm install -g some-tool\n"
+            "COPY requirements.txt .\n"
+            "RUN pip install -r requirements.txt\n"
+        )
+        overlay = BuildOverride(
+            service_name="backend",
+            overlay_steps="",
+            additional_build_contexts={"sdk": "/tmp/sdk"},
+            pre_install_steps=(
+                "# py-strip\nUSER root\nRUN sed -i '/x/d' requirements.txt\n"
+                "{restore_user_block}"
+            ),
+            language="python",
+        )
+        result = apply_build_overlay(mixed_dockerfile, overlay)
+        # Strip lands before pip install, not before npm install.
+        assert result.index("# py-strip") > result.index("RUN npm install")
+        assert result.index("# py-strip") < result.index("pip install")
+
+    def test_strip_step_inserted_before_pip_install(self):
+        overlay = BuildOverride(
+            service_name="backend",
+            overlay_steps="# post-install\nRUN echo post\n",
+            additional_build_contexts={"sdk": "/tmp/sdk"},
+            pre_install_steps=(
+                "# strip\nUSER root\nRUN sed -i '/x/d' requirements.txt\n"
+                "{restore_user_block}"
+            ),
+        )
+        result = apply_build_overlay(self.SCAFFOLD_DOCKERFILE, overlay)
+        # Strip must appear in the output and BEFORE the pip install line.
+        assert "# strip" in result
+        assert result.index("# strip") < result.index("pip install")
+        # Post-install overlay still appended.
+        assert result.index("pip install") < result.index("# post-install")
+
+    def test_strip_step_uses_root_then_restores_active_user(self):
+        """The strip overlay must drop into root and restore the user that
+        was active before it. In the scaffold's Dockerfile the pip-install
+        runs as root (no USER set yet), so no restore is needed."""
+        overlay = BuildOverride(
+            service_name="backend",
+            overlay_steps="",
+            additional_build_contexts={"sdk": "/tmp/sdk"},
+            pre_install_steps=("USER root\nRUN echo strip\n{restore_user_block}"),
+        )
+        result = apply_build_overlay(self.SCAFFOLD_DOCKERFILE, overlay)
+        # USER root is set explicitly in the strip block; nothing to restore
+        # because the scaffold has no USER directive before pip install.
+        strip_section, _, _ = result.partition("RUN pip install")
+        assert "USER root" in strip_section
+        # The trailing USER 1001 in the original Dockerfile is untouched.
+        assert result.rstrip().endswith('CMD ["uvicorn", "app.main:app"]')
+
+    def test_strip_step_restores_non_root_user_when_pip_install_runs_as_appuser(self):
+        """A Dockerfile that switches to a non-root user before pip install
+        must have that user restored after the strip block — otherwise the
+        pip install would unexpectedly run as root."""
+        df = (
+            "FROM python:3.10-slim\nRUN useradd -m appuser\nWORKDIR /app\n"
+            "COPY requirements.txt .\nUSER appuser\n"
+            "RUN pip install -r requirements.txt\n"
+        )
+        overlay = BuildOverride(
+            service_name="backend",
+            overlay_steps="",
+            additional_build_contexts={"sdk": "/tmp/sdk"},
+            pre_install_steps=("USER root\nRUN echo strip\n{restore_user_block}"),
+        )
+        result = apply_build_overlay(df, overlay)
+        # The strip's USER root block must be followed by USER appuser
+        # before the pip install line.
+        strip_section, _, after = result.partition("RUN pip install")
+        assert "USER root" in strip_section
+        assert "RUN echo strip" in strip_section
+        assert "USER appuser" in strip_section
+        # The order is: USER appuser (original) -> USER root + strip ->
+        # USER appuser (restore) -> RUN pip install.
+        last_user_before_install = strip_section.rstrip().splitlines()[-1]
+        assert last_user_before_install.strip() == "USER appuser"
+
+    def test_strip_step_is_a_no_op_when_no_pip_install_line(self):
+        """Custom Dockerfile (e.g. poetry-based) without
+        ``RUN ... pip install -r requirements.txt`` should be left alone by
+        the strip step — the post-install overlay still appends as before."""
+        df = "FROM python:3.10-slim\nRUN poetry install\n"
+        overlay = BuildOverride(
+            service_name="backend",
+            overlay_steps="# post-install\nRUN echo post\n",
+            additional_build_contexts={"sdk": "/tmp/sdk"},
+            pre_install_steps=("USER root\nRUN echo strip\n{restore_user_block}"),
+        )
+        result = apply_build_overlay(df, overlay)
+        assert "RUN echo strip" not in result
+        assert result.endswith("# post-install\nRUN echo post\n")
+
+    def test_generate_local_build_dockerfile_patches_handles_backend_and_frontend(
+        self, tmp_path
+    ):
+        """``dev local`` failure path on freshly-scaffolded extensions:
+        BOTH the Python backend (pip install) and the TS frontend
+        (npm install) blow up before the runtime overlay can rescue
+        them when their respective runtime-lib pins aren't published.
+        ``generate_local_build_dockerfile_patches`` must produce a
+        patched Dockerfile per service so the build phase succeeds."""
+        from kamiwaza_extensions.sdk_override import (
+            generate_local_build_dockerfile_patches,
+        )
+
+        ext = tmp_path / "ext"
+        ext.mkdir()
+        backend = ext / "backend"
+        backend.mkdir()
+        (backend / "Dockerfile").write_text(
+            "FROM python:3.10-slim\nWORKDIR /app\nCOPY requirements.txt .\n"
+            "RUN pip install --no-cache-dir -r requirements.txt\nCOPY . .\n"
+        )
+        (backend / "requirements.txt").write_text(
+            "fastapi>=0.100.0\nkamiwaza-extensions-lib>=0.4,<0.5\n"
+        )
+
+        frontend = ext / "frontend"
+        frontend.mkdir()
+        (frontend / "Dockerfile").write_text(
+            "FROM node:20-alpine\nWORKDIR /app\nCOPY package.json .\n"
+            "RUN npm install\nCOPY . .\n"
+        )
+        (frontend / "package.json").write_text(
+            '{"dependencies": {"@kamiwaza-ai/extensions-lib": ">=0.4 <0.5"}}'
+        )
+
+        spec = SdkOverrideSpec(sdk_repo=tmp_path / "sdk")
+        compose = {
+            "services": {
+                "backend": {"build": "./backend", "ports": ["8000:8000"]},
+                "frontend": {"build": "./frontend", "ports": ["3000:3000"]},
+            }
+        }
+        patches = generate_local_build_dockerfile_patches(spec, compose, ext)
+
+        assert set(patches.keys()) == {"backend", "frontend"}
+        assert "kamiwaza-extensions-lib" in patches["backend"]
+        # Backend patch: sed strip is inserted before pip install.
+        assert patches["backend"].index("sed -i") < patches["backend"].index(
+            "pip install"
+        )
+        # Frontend patch: node-based JSON strip is inserted before npm install.
+        assert "@kamiwaza-ai/extensions-lib" in patches["frontend"]
+        assert patches["frontend"].index("node -e") < patches["frontend"].index(
+            "npm install"
+        )
+
+    def test_is_typescript_dist_stale_detects_src_newer_than_dist(self, tmp_path):
+        """``--sdk-repo`` must auto-rebuild when src/ has changes that
+        haven't reached dist/. Without this, a ``git pull`` that adds a
+        new subpath export silently produces a "Module not found" at the
+        consumer (PR #87 / F-006: ``dist/local-dev-auth/`` declared in
+        package.json but never built before merge)."""
+        import time
+
+        from kamiwaza_extensions.sdk_override import is_typescript_dist_stale
+
+        ts_lib = tmp_path / "kamiwaza-ai-extensions-lib"
+        ts_lib.mkdir()
+        (ts_lib / "dist").mkdir()
+        (ts_lib / "src").mkdir()
+        (ts_lib / "dist" / "index.js").write_text("//")
+        time.sleep(0.05)
+        (ts_lib / "src" / "index.ts").write_text("// newer")
+
+        spec = SdkOverrideSpec(sdk_repo=tmp_path)
+        assert is_typescript_dist_stale(spec) is True
+
+    def test_is_typescript_dist_stale_returns_false_when_dist_is_fresh(self, tmp_path):
+        import time
+
+        from kamiwaza_extensions.sdk_override import is_typescript_dist_stale
+
+        ts_lib = tmp_path / "kamiwaza-ai-extensions-lib"
+        ts_lib.mkdir()
+        (ts_lib / "src").mkdir()
+        (ts_lib / "dist").mkdir()
+        (ts_lib / "src" / "index.ts").write_text("//")
+        time.sleep(0.05)
+        (ts_lib / "dist" / "index.js").write_text("// newer")
+
+        spec = SdkOverrideSpec(sdk_repo=tmp_path)
+        assert is_typescript_dist_stale(spec) is False
+
+    def test_is_typescript_dist_stale_returns_false_when_dist_is_missing(
+        self, tmp_path
+    ):
+        """Missing dist/ is a different signal — handled separately by the
+        caller. ``is_typescript_dist_stale`` only answers the comparison
+        question when both src/ and dist/ exist."""
+        from kamiwaza_extensions.sdk_override import is_typescript_dist_stale
+
+        ts_lib = tmp_path / "kamiwaza-ai-extensions-lib"
+        ts_lib.mkdir()
+        (ts_lib / "src").mkdir()
+        (ts_lib / "src" / "index.ts").write_text("//")
+
+        spec = SdkOverrideSpec(sdk_repo=tmp_path)
+        assert is_typescript_dist_stale(spec) is False
+
+    def test_generate_local_build_dockerfile_patches_skips_when_no_install_line(
+        self, tmp_path
+    ):
+        """Custom Dockerfile (e.g. poetry-based) without a recognizable
+        install line is left out of the patch dict — the user's Dockerfile
+        owns its own runtime-lib install."""
+        from kamiwaza_extensions.sdk_override import (
+            generate_local_build_dockerfile_patches,
+        )
+
+        ext = tmp_path / "ext"
+        ext.mkdir()
+        backend = ext / "backend"
+        backend.mkdir()
+        (backend / "Dockerfile").write_text(
+            "FROM python:3.10-slim\nRUN poetry install\n"
+        )
+
+        spec = SdkOverrideSpec(sdk_repo=tmp_path / "sdk")
+        compose = {
+            "services": {"backend": {"build": "./backend", "ports": ["8000:8000"]}}
+        }
+        assert generate_local_build_dockerfile_patches(spec, compose, ext) == {}
+
+    def test_local_build_patches_multistage_node_to_nginx_frontend(self, tmp_path):
+        """ENG-3901 / round-3 reviewer H2 (Codex): the dev-local path must
+        emit the TS strip for a multi-stage ``FROM node ... AS build;
+        FROM nginx:alpine`` frontend, not just the cluster-deploy path.
+        Final-stage classification ('static' for nginx) misses these;
+        ``_detect_build_service_runtime`` correctly identifies the
+        upstream Node builder stage. Without this, ``kz-ext dev local
+        --sdk-repo`` against a multi-stage frontend would hard-fail at
+        ``npm ci`` against the unpublished pin."""
+        from kamiwaza_extensions.sdk_override import (
+            _TS_PRE_INSTALL_STRIP,
+            generate_local_build_dockerfile_patches,
+        )
+
+        ext = tmp_path / "ext"
+        ext.mkdir()
+        web = ext / "web"
+        web.mkdir()
+        (web / "Dockerfile").write_text(
+            "FROM node:20 AS build\n"
+            "WORKDIR /app\n"
+            "COPY package.json package-lock.json ./\n"
+            "RUN npm ci\n"
+            "COPY . .\n"
+            "RUN npm run build\n"
+            "FROM nginx:alpine\n"
+            "COPY --from=build /app/dist /usr/share/nginx/html\n"
+        )
+
+        spec = SdkOverrideSpec(
+            sdk_repo=tmp_path, python=False, typescript=True
+        )
+        compose = {
+            "services": {
+                "frontend": {"build": {"context": "./web"}, "ports": ["8080:80"]}
+            }
+        }
+        patches = generate_local_build_dockerfile_patches(spec, compose, ext)
+        assert "frontend" in patches, (
+            "multi-stage Node→nginx frontend was not patched — final-stage "
+            "classifier misclassified it as 'static'"
+        )
+        assert "# --- SDK override: strip @kamiwaza-ai/extensions-lib" in (
+            patches["frontend"]
+        )
+        # ``RUN npm ci`` was rewritten to ``RUN npm install`` so the
+        # package.json/lockfile divergence the strip creates doesn't abort
+        # the build — same handling as the cluster-deploy path
+        # (``apply_build_overlay``).
+        assert "RUN npm ci" not in patches["frontend"], (
+            "npm ci must be rewritten to npm install in the local-dev path "
+            "too, not just the cluster-deploy path"
+        )
+        assert "RUN npm install" in patches["frontend"]
+
+    def test_strip_regex_matches_real_pin_forms_and_skips_prefix_aliases(self):
+        """Sanity-check the embedded sed pattern against realistic
+        requirements.txt content: every pin form for the runtime lib should
+        be removed; siblings whose name *starts with* the lib name (e.g.
+        ``kamiwaza-extensions-lib-extras``) and unrelated lines stay."""
+        import re
+
+        # Mirror of the sed pattern used in _PYTHON_PRE_INSTALL_STRIP, but
+        # rewritten as a Python regex (POSIX [[:space:]] -> \s).
+        pattern = re.compile(
+            r"^\s*kamiwaza-extensions-lib($|[^A-Za-z0-9_-])", re.MULTILINE
+        )
+        requirements = (
+            "fastapi>=0.100.0\n"
+            "kamiwaza-extensions-lib>=0.4,<0.5\n"
+            "kamiwaza-extensions-lib==0.1.0\n"
+            "kamiwaza-extensions-lib\n"
+            "  kamiwaza-extensions-lib>=0.4\n"
+            "kamiwaza-extensions-lib[extras]>=0.4\n"
+            "kamiwaza-extensions-lib-extras>=0.1\n"
+            "# kamiwaza-extensions-lib>=0.4 (commented)\n"
+        )
+        kept = [line for line in requirements.splitlines() if not pattern.match(line)]
+        assert "fastapi>=0.100.0" in kept
+        assert (
+            "kamiwaza-extensions-lib-extras>=0.1" in kept
+        ), "prefix-alias must NOT be stripped"
+        assert "# kamiwaza-extensions-lib>=0.4 (commented)" in kept
+        # Every form of the actual runtime-lib pin is gone.
+        assert not any("kamiwaza-extensions-lib>=0.4,<0.5" in k for k in kept)
+        assert not any("kamiwaza-extensions-lib==0.1.0" in k for k in kept)
+        assert not any(k.strip() == "kamiwaza-extensions-lib" for k in kept)
+        assert not any("kamiwaza-extensions-lib[extras]" in k for k in kept)
+
+
+# ------------------------------------------------------------------
+# Pre-install strip steps (PR #91 round-2 review hardening): file-exists
+# guard fails open when the canonical filename is missing, and the TS
+# strip covers every npm dep-map key plus overrides/resolutions.
+# ------------------------------------------------------------------
+
+
+def _extract_run_command(template: str) -> str:
+    """Pull the ``RUN ...`` body out of one of the strip templates.
+
+    The templates contain a ``USER root\\n`` line, then a ``RUN <body>\\n``,
+    then a trailing ``{restore_user_block}`` placeholder. This helper
+    returns just ``<body>`` so a test can hand it to ``bash -c``.
+    """
+    lines = template.splitlines()
+    run_idx = next(i for i, ln in enumerate(lines) if ln.startswith("RUN "))
+    return lines[run_idx][len("RUN ") :]
+
+
+@pytest.mark.unit
+class TestPreInstallStripExecution:
+    """Behavioral coverage for the file-exists guards and the expanded
+    TS strip key set added in the round-2 review of PR #91."""
+
+    def test_python_strip_is_no_op_when_requirements_txt_missing(self, tmp_path):
+        """ENG-3901 / round-2: ``[ -f requirements.txt ]`` guard fails open
+        on non-canonical Dockerfile layouts."""
+        import shutil
+        import subprocess
+
+        from kamiwaza_extensions.sdk_override import _PYTHON_PRE_INSTALL_STRIP
+
+        if not shutil.which("bash"):
+            pytest.skip("bash not available")
+
+        cmd = _extract_run_command(_PYTHON_PRE_INSTALL_STRIP)
+        result = subprocess.run(
+            ["bash", "-c", cmd],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        # No file created, no stderr noise.
+        assert list(tmp_path.iterdir()) == []
+        assert result.stderr == ""
+
+    def test_python_strip_removes_pin_when_requirements_txt_present(self, tmp_path):
+        import shutil
+        import subprocess
+
+        from kamiwaza_extensions.sdk_override import _PYTHON_PRE_INSTALL_STRIP
+
+        if not shutil.which("bash"):
+            pytest.skip("bash not available")
+        # GNU sed is required for ``-i`` without a backup arg + POSIX
+        # character classes. macOS ships BSD sed, so install gnu-sed
+        # locally would be needed; the Dockerfile only runs in Linux
+        # build contexts so we gate to GNU sed only.
+        sed_path = shutil.which("sed")
+        if not sed_path:
+            pytest.skip("sed not available")
+        sed_help = subprocess.run(
+            [sed_path, "--version"], capture_output=True, text=True
+        )
+        if "GNU sed" not in sed_help.stdout:
+            pytest.skip("strip requires GNU sed; this host has BSD sed")
+
+        (tmp_path / "requirements.txt").write_text(
+            "fastapi>=0.100.0\n"
+            "kamiwaza-extensions-lib>=0.4,<0.5\n"
+            "kamiwaza-extensions-lib-extras>=0.1\n"
+        )
+        cmd = _extract_run_command(_PYTHON_PRE_INSTALL_STRIP)
+        result = subprocess.run(
+            ["bash", "-c", cmd],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        kept = (tmp_path / "requirements.txt").read_text()
+        assert "fastapi>=0.100.0" in kept
+        assert "kamiwaza-extensions-lib-extras>=0.1" in kept
+        assert "kamiwaza-extensions-lib>=0.4,<0.5" not in kept
+
+    def test_ts_strip_is_no_op_when_package_json_missing(self, tmp_path):
+        """ENG-3901 / round-2: ``[ -f package.json ]`` guard fails open
+        on non-canonical Dockerfile layouts."""
+        import shutil
+        import subprocess
+
+        from kamiwaza_extensions.sdk_override import _TS_PRE_INSTALL_STRIP
+
+        if not shutil.which("bash") or not shutil.which("node"):
+            pytest.skip("bash + node required")
+
+        cmd = _extract_run_command(_TS_PRE_INSTALL_STRIP)
+        result = subprocess.run(
+            ["bash", "-c", cmd],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        assert list(tmp_path.iterdir()) == []
+        assert result.stderr == ""
+
+    def test_ts_strip_removes_lib_from_every_dep_map_key(self, tmp_path):
+        """ENG-3901 / round-2: ``optionalDependencies``,
+        ``bundleDependencies`` / ``bundledDependencies``, ``overrides``,
+        and ``resolutions`` are all covered alongside the three
+        documented dep maps. Both object and array forms handled."""
+        import json as _json
+        import shutil
+        import subprocess
+
+        from kamiwaza_extensions.sdk_override import _TS_PRE_INSTALL_STRIP
+
+        if not shutil.which("bash") or not shutil.which("node"):
+            pytest.skip("bash + node required")
+
+        package = {
+            "name": "stripper-fixture",
+            "version": "0.0.0",
+            "dependencies": {
+                "@kamiwaza-ai/extensions-lib": "^0.4.0",
+                "react": "^18.0.0",
+            },
+            "devDependencies": {"@kamiwaza-ai/extensions-lib": "^0.4.0"},
+            "peerDependencies": {"@kamiwaza-ai/extensions-lib": "^0.4.0"},
+            "optionalDependencies": {"@kamiwaza-ai/extensions-lib": "^0.4.0"},
+            "bundleDependencies": ["@kamiwaza-ai/extensions-lib", "react"],
+            "bundledDependencies": ["@kamiwaza-ai/extensions-lib"],
+            "overrides": {"@kamiwaza-ai/extensions-lib": "0.4.0"},
+            "resolutions": {"@kamiwaza-ai/extensions-lib": "0.4.0"},
+        }
+        (tmp_path / "package.json").write_text(_json.dumps(package, indent=2))
+
+        cmd = _extract_run_command(_TS_PRE_INSTALL_STRIP)
+        result = subprocess.run(
+            ["bash", "-c", cmd],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        out = _json.loads((tmp_path / "package.json").read_text())
+        for k in (
+            "dependencies",
+            "devDependencies",
+            "peerDependencies",
+            "optionalDependencies",
+            "overrides",
+            "resolutions",
+        ):
+            assert "@kamiwaza-ai/extensions-lib" not in out[k], (
+                f"{k!r} still contains the lib"
+            )
+        assert "@kamiwaza-ai/extensions-lib" not in out["bundleDependencies"]
+        assert "@kamiwaza-ai/extensions-lib" not in out["bundledDependencies"]
+        # Unrelated entries survive.
+        assert out["dependencies"]["react"] == "^18.0.0"
+        assert "react" in out["bundleDependencies"]
+
+
+# ------------------------------------------------------------------
 # validate_sdk_override — path safety
 # ------------------------------------------------------------------
 
@@ -731,14 +1435,16 @@ class TestValidatePathSafety:
 class TestDoctorSdkChecks:
     def test_no_config_returns_empty(self, tmp_path, monkeypatch):
         from kamiwaza_extensions.doctor import DoctorChecker
+
         monkeypatch.chdir(tmp_path)
         checker = DoctorChecker()
         results = checker._check_sdk_override()
         assert results == []
 
     def test_valid_config_returns_checks(self, tmp_path, monkeypatch):
-        from kamiwaza_extensions.doctor import DoctorChecker
         import time
+
+        from kamiwaza_extensions.doctor import DoctorChecker
 
         # Set up SDK repo structure
         (tmp_path / "kamiwaza_extensions_lib").mkdir()
@@ -756,6 +1462,7 @@ class TestDoctorSdkChecks:
         (ext_dir / "kamiwaza.json").write_text('{"name": "test", "version": "0.1.0"}')
         (ext_dir / ".kz-ext").mkdir()
         import yaml
+
         (ext_dir / ".kz-ext" / "local.yaml").write_text(
             yaml.dump({"sdk_repo": str(tmp_path)})
         )

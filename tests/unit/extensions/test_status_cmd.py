@@ -30,10 +30,16 @@ def _mock_extension(annotations: dict | None = None):
         "type": "app",
         "version": "1.0.0",
         "phase": "Running",
-        "endpoints": ExtensionEndpoints(external="https://cluster.test/runtime/apps/myapp"),
+        "endpoints": ExtensionEndpoints(
+            external="https://cluster.test/runtime/apps/myapp"
+        ),
         "services": [
-            ExtensionServiceStatus(name="backend", ready=True, replicas=1, available_replicas=1),
-            ExtensionServiceStatus(name="frontend", ready=True, replicas=1, available_replicas=1),
+            ExtensionServiceStatus(
+                name="backend", ready=True, replicas=1, available_replicas=1
+            ),
+            ExtensionServiceStatus(
+                name="frontend", ready=True, replicas=1, available_replicas=1
+            ),
         ],
     }
     if annotations is not None:
@@ -43,7 +49,9 @@ def _mock_extension(annotations: dict | None = None):
 
 @patch("kamiwaza_sdk.KamiwazaClient")
 @patch("kamiwaza_extensions.connections.ConnectionManager")
-def test_status_with_name_hits_extensions_endpoint_not_status(mock_conn_cls, mock_client_cls):
+def test_status_with_name_hits_extensions_endpoint_not_status(
+    mock_conn_cls, mock_client_cls
+):
     """ENG-3887 P10: must call get_extension (/extensions/{name}), not the
     /status sibling that returns 404 on every cluster currently deployed."""
     mock_conn = MagicMock()
@@ -70,7 +78,10 @@ def test_status_with_name_hits_extensions_endpoint_not_status(mock_conn_cls, moc
 @patch("kamiwaza_sdk.KamiwazaClient")
 @patch("kamiwaza_extensions.connections.ConnectionManager")
 def test_status_surfaces_deployer_annotation(mock_conn_cls, mock_client_cls):
-    """ENG-3887 §4.2.9: surface `kamiwaza.ai/deployer` from CRD annotations."""
+    """ENG-3887 §4.2.9: surface `kamiwaza.io/deployer` from CRD annotations.
+
+    Namespace is ``kamiwaza.io/*`` per ENG-3901 / F-010 — the platform's
+    annotation filter only persists ``kamiwaza.io/*`` keys."""
     mock_conn = MagicMock()
     mock_conn.get_active_connection.return_value = MagicMock(
         url="https://cluster.test/api", verify_ssl=True
@@ -81,9 +92,9 @@ def test_status_surfaces_deployer_annotation(mock_conn_cls, mock_client_cls):
     mock_client = MagicMock()
     mock_client.extensions.get_extension.return_value = _mock_extension(
         annotations={
-            "kamiwaza.ai/deployer": "jonathan@kamiwaza.ai",
-            "kamiwaza.ai/revision": "1.0.0-dev-abc.123",
-            "kamiwaza.ai/deployed-at": "2026-04-28T20:00:00+00:00",
+            "kamiwaza.io/deployer": "jonathan@kamiwaza.ai",
+            "kamiwaza.io/revision": "1.0.0-dev-abc.123",
+            "kamiwaza.io/deployed-at": "2026-04-28T20:00:00+00:00",
         },
     )
     mock_client_cls.return_value = mock_client
@@ -121,7 +132,6 @@ def test_status_not_found(mock_conn_cls, mock_client_cls):
     assert "not found" in result.output.lower()
 
 
-
 # ---------------------------------------------------------------------------
 # Review re-review PR #84 H2: cluster-mismatch fallback in name resolution
 # ---------------------------------------------------------------------------
@@ -132,7 +142,10 @@ def test_status_not_found(mock_conn_cls, mock_client_cls):
 @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
 @patch("kamiwaza_extensions.dev_state.read_state")
 def test_status_falls_back_to_jwt_when_dev_state_cluster_mismatches(
-    mock_read_state, mock_detector_cls, mock_conn_cls, mock_client_cls,
+    mock_read_state,
+    mock_detector_cls,
+    mock_conn_cls,
+    mock_client_cls,
 ):
     """H2: after `kz-ext login` to a different cluster, `status` must NOT
     use the saved dev_name from the prior cluster — querying the new
@@ -144,7 +157,8 @@ def test_status_falls_back_to_jwt_when_dev_state_cluster_mismatches(
     # Active connection is now cluster B.
     mock_conn = MagicMock()
     mock_conn.get_active_connection.return_value = MagicMock(
-        url="https://cluster-b.test/api", verify_ssl=True,
+        url="https://cluster-b.test/api",
+        verify_ssl=True,
     )
     mock_conn.get_token.return_value = MagicMock(
         access_token="header.eyJzdWIiOiJ1c2VyLWIifQ.sig",
@@ -155,7 +169,9 @@ def test_status_falls_back_to_jwt_when_dev_state_cluster_mismatches(
 
     mock_detector = MagicMock()
     mock_detector.detect.return_value = SimpleNamespace(
-        path="/tmp/x", name="my-app", version="1.0.0",
+        path="/tmp/x",
+        name="my-app",
+        version="1.0.0",
     )
     mock_detector_cls.return_value = mock_detector
 
@@ -171,8 +187,11 @@ def test_status_falls_back_to_jwt_when_dev_state_cluster_mismatches(
 
     mock_client = MagicMock()
     ext = MagicMock(
-        name="my-app-dev-jwt", phase="Running",
-        endpoints=MagicMock(external=None), services=[], model_extra={},
+        name="my-app-dev-jwt",
+        phase="Running",
+        endpoints=MagicMock(external=None),
+        services=[],
+        model_extra={},
     )
     ext.annotations = {}
     mock_client.extensions.get_extension.return_value = ext
@@ -182,9 +201,9 @@ def test_status_falls_back_to_jwt_when_dev_state_cluster_mismatches(
 
     assert result.exit_code == 0
     called_with = mock_client.extensions.get_extension.call_args[0][0]
-    assert called_with != "my-app-dev-old123", (
-        f"status used cluster-A dev_name {called_with!r} despite cluster-B connection"
-    )
+    assert (
+        called_with != "my-app-dev-old123"
+    ), f"status used cluster-A dev_name {called_with!r} despite cluster-B connection"
     assert called_with.startswith("my-app-dev-")
     assert len(called_with.split("-")[-1]) == 6
 
@@ -194,14 +213,18 @@ def test_status_falls_back_to_jwt_when_dev_state_cluster_mismatches(
 @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
 @patch("kamiwaza_extensions.dev_state.read_state")
 def test_status_uses_dev_state_name_when_cluster_matches(
-    mock_read_state, mock_detector_cls, mock_conn_cls, mock_client_cls,
+    mock_read_state,
+    mock_detector_cls,
+    mock_conn_cls,
+    mock_client_cls,
 ):
     """Sanity check the H2 fix doesn't break the happy path."""
     from kamiwaza_extensions.dev_state import DevState
 
     mock_conn = MagicMock()
     mock_conn.get_active_connection.return_value = MagicMock(
-        url="https://cluster.test/api", verify_ssl=True,
+        url="https://cluster.test/api",
+        verify_ssl=True,
     )
     mock_conn.get_token.return_value = MagicMock(
         access_token="header.eyJzdWIiOiAidXNlci1hbGljZSIsICJlbWFpbCI6ICJhbGljZUBleGFtcGxlLmNvbSJ9.sig",
@@ -212,7 +235,9 @@ def test_status_uses_dev_state_name_when_cluster_matches(
 
     mock_detector = MagicMock()
     mock_detector.detect.return_value = SimpleNamespace(
-        path="/tmp/x", name="my-app", version="1.0.0",
+        path="/tmp/x",
+        name="my-app",
+        version="1.0.0",
     )
     mock_detector_cls.return_value = mock_detector
 
@@ -227,8 +252,11 @@ def test_status_uses_dev_state_name_when_cluster_matches(
 
     mock_client = MagicMock()
     ext = MagicMock(
-        name="my-app-dev-saved", phase="Running",
-        endpoints=MagicMock(external=None), services=[], model_extra={},
+        name="my-app-dev-saved",
+        phase="Running",
+        endpoints=MagicMock(external=None),
+        services=[],
+        model_extra={},
     )
     ext.annotations = {}
     mock_client.extensions.get_extension.return_value = ext
@@ -238,7 +266,6 @@ def test_status_uses_dev_state_name_when_cluster_matches(
     assert result.exit_code == 0
     called_with = mock_client.extensions.get_extension.call_args[0][0]
     assert called_with == "my-app-dev-saved"
-
 
 
 # ---------------------------------------------------------------------------
@@ -251,7 +278,10 @@ def test_status_uses_dev_state_name_when_cluster_matches(
 @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
 @patch("kamiwaza_extensions.dev_state.read_state")
 def test_status_falls_back_to_jwt_when_deployer_mismatches(
-    mock_read_state, mock_detector_cls, mock_conn_cls, mock_client_cls,
+    mock_read_state,
+    mock_detector_cls,
+    mock_conn_cls,
+    mock_client_cls,
 ):
     """Same cluster, but a *different user* is now logged in. Without
     the deployer guard, `kz-ext status` would query for user A's
@@ -262,7 +292,8 @@ def test_status_falls_back_to_jwt_when_deployer_mismatches(
 
     mock_conn = MagicMock()
     mock_conn.get_active_connection.return_value = MagicMock(
-        url="https://cluster.test/api", verify_ssl=True,
+        url="https://cluster.test/api",
+        verify_ssl=True,
     )
     # JWT carrying email=bob@example.com — different from state.deployer.
     mock_conn.get_token.return_value = MagicMock(
@@ -271,26 +302,32 @@ def test_status_falls_back_to_jwt_when_deployer_mismatches(
     mock_conn_cls.return_value = mock_conn
 
     from types import SimpleNamespace
+
     mock_detector = MagicMock()
     mock_detector.detect.return_value = SimpleNamespace(
-        path="/tmp/x", name="my-app", version="1.0.0",
+        path="/tmp/x",
+        name="my-app",
+        version="1.0.0",
     )
     mock_detector_cls.return_value = mock_detector
 
     # Saved state from user A, same cluster as the active connection.
     mock_read_state.return_value = DevState(
-        last_dev_name="my-app-dev-userA1",     # alice's deployment
+        last_dev_name="my-app-dev-userA1",  # alice's deployment
         last_revision="rev-1",
-        cluster="https://cluster.test/api",     # matches active connection
+        cluster="https://cluster.test/api",  # matches active connection
         extension_name="my-app",
-        deployer="alice@example.com",           # ≠ bob's JWT
+        deployer="alice@example.com",  # ≠ bob's JWT
         last_successful_step="poll",
     )
 
     mock_client = MagicMock()
     ext = MagicMock(
-        name="my-app-dev-userB", phase="Running",
-        endpoints=MagicMock(external=None), services=[], model_extra={},
+        name="my-app-dev-userB",
+        phase="Running",
+        endpoints=MagicMock(external=None),
+        services=[],
+        model_extra={},
     )
     ext.annotations = {}
     mock_client.extensions.get_extension.return_value = ext
@@ -301,13 +338,12 @@ def test_status_falls_back_to_jwt_when_deployer_mismatches(
     assert result.exit_code == 0
     called_with = mock_client.extensions.get_extension.call_args[0][0]
     # Crucially NOT alice's saved name.
-    assert called_with != "my-app-dev-userA1", (
-        f"status surfaced alice's deployment {called_with!r} to bob"
-    )
+    assert (
+        called_with != "my-app-dev-userA1"
+    ), f"status surfaced alice's deployment {called_with!r} to bob"
     # Bob gets his own JWT-derived name.
     assert called_with.startswith("my-app-dev-")
     assert len(called_with.split("-")[-1]) == 6
-
 
 
 # ---------------------------------------------------------------------------
@@ -320,7 +356,10 @@ def test_status_falls_back_to_jwt_when_deployer_mismatches(
 @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
 @patch("kamiwaza_extensions.dev_state.read_state")
 def test_status_email_match_is_case_insensitive(
-    mock_read_state, mock_detector_cls, mock_conn_cls, mock_client_cls,
+    mock_read_state,
+    mock_detector_cls,
+    mock_conn_cls,
+    mock_client_cls,
 ):
     """Some IdPs vary email casing across token refreshes (`Alice@Example.com`
     one minute, `alice@example.com` the next). The deployer match should
@@ -329,7 +368,8 @@ def test_status_email_match_is_case_insensitive(
 
     mock_conn = MagicMock()
     mock_conn.get_active_connection.return_value = MagicMock(
-        url="https://cluster.test/api", verify_ssl=True,
+        url="https://cluster.test/api",
+        verify_ssl=True,
     )
     # JWT carries `Alice@Example.COM` (mixed case).
     mock_conn.get_token.return_value = MagicMock(
@@ -338,9 +378,12 @@ def test_status_email_match_is_case_insensitive(
     mock_conn_cls.return_value = mock_conn
 
     from types import SimpleNamespace
+
     mock_detector = MagicMock()
     mock_detector.detect.return_value = SimpleNamespace(
-        path="/tmp/x", name="my-app", version="1.0.0",
+        path="/tmp/x",
+        name="my-app",
+        version="1.0.0",
     )
     mock_detector_cls.return_value = mock_detector
 
@@ -350,14 +393,17 @@ def test_status_email_match_is_case_insensitive(
         last_revision="1.0.0-dev-abc.1",
         cluster="https://cluster.test/api",
         extension_name="my-app",
-        deployer="alice@example.com",          # ≠ JWT casing
+        deployer="alice@example.com",  # ≠ JWT casing
         last_successful_step="poll",
     )
 
     mock_client = MagicMock()
     ext = MagicMock(
-        name="my-app-dev-saved", phase="Running",
-        endpoints=MagicMock(external=None), services=[], model_extra={},
+        name="my-app-dev-saved",
+        phase="Running",
+        endpoints=MagicMock(external=None),
+        services=[],
+        model_extra={},
     )
     ext.annotations = {}
     mock_client.extensions.get_extension.return_value = ext

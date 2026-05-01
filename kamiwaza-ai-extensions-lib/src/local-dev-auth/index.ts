@@ -50,6 +50,17 @@ const TOKEN_ENV = "KAMIWAZA_BEARER_TOKEN";
 const WORKROOM_ENV = "KAMIWAZA_DEV_WORKROOM_ID";
 
 /**
+ * Documented "no specific workroom" sentinel — the all-f UUID. Platform
+ * authorization treats this as "global / unscoped" and lets the request
+ * through; the IdentityExtractor canonical test vectors carry it as the
+ * `global-workroom-sentinel` case (see
+ * `docs/extensions/non-sdk-flow/test-vectors.json`). Used as the
+ * `X-Workroom-Id` default when the developer hasn't set
+ * `KAMIWAZA_DEV_WORKROOM_ID` to a real workroom they belong to.
+ */
+const GLOBAL_WORKROOM_SENTINEL = "ffffffff-ffff-ffff-ffff-ffffffffffff";
+
+/**
  * Forwarded-auth envelope headers that the platform gateway owns in
  * production. Under the local-dev bridge we MUST clear all of these
  * before injecting our synthesized values — otherwise a client-supplied
@@ -251,12 +262,22 @@ export function _buildBridgedHeaders(
     // x-workroom-id is required by strict extract_identity() under
     // KAMIWAZA_USE_AUTH=true (session.py:131, identity.py:149). Without
     // it, every protected route 401s. Honor an explicit override from
-    // KAMIWAZA_DEV_WORKROOM_ID; otherwise fall back to the JWT sub so the
-    // strict identity path succeeds and the workroom_id is stable
-    // per-developer. The synthesized workroom_id is only consumed by
-    // the extension's local authz path — it's never sent to the
-    // platform (which only sees the bearer).
-    out.set("x-workroom-id", config.workroomOverride || claims.sub);
+    // KAMIWAZA_DEV_WORKROOM_ID; otherwise default to the
+    // **global-workroom sentinel** (``ffffffff-ffff-ffff-ffff-ffffffffffff``).
+    //
+    // Earlier default of ``claims.sub`` (the JWT user_id) silently broke
+    // every backend → platform call: runtime-lib forwards X-Workroom-Id
+    // on its ``_PLATFORM_AUTH_HEADER_KEYS`` whitelist, and the platform's
+    // workroom-membership check rejects an X-Workroom-Id that isn't a
+    // workroom the user actually belongs to (403). The user_id is
+    // guaranteed to NOT match any real workroom (different UUID space).
+    // The sentinel is the documented "no specific workroom" value
+    // (``docs/extensions/non-sdk-flow.md`` + ``test-vectors.json``); the
+    // platform treats it as "global / unscoped" and lets the call
+    // through. Developers who want to test against a real workroom can
+    // still set ``KAMIWAZA_DEV_WORKROOM_ID`` explicitly. Discovered
+    // during ENG-3901 dry run as F-009.
+    out.set("x-workroom-id", config.workroomOverride || GLOBAL_WORKROOM_SENTINEL);
     if (typeof claims.email === "string" && claims.email) {
         out.set("x-user-email", claims.email);
     }

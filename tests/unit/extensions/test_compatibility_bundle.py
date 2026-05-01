@@ -21,10 +21,10 @@ import pytest
 
 from kamiwaza_extensions.doctor import DoctorChecker
 
-
 # ---------------------------------------------------------------------------
 # TS-M2-37: bundle is shipped with the package and is well-formed.
 # ---------------------------------------------------------------------------
+
 
 class TestCompatibilityBundleResource:
     """The bundle is imported as a package resource so it works whether the
@@ -65,25 +65,24 @@ class TestCompatibilityBundleResource:
         packaging drift."""
         from pathlib import Path
 
-        pyproject_path = (
-            Path(__file__).resolve().parents[3] / "pyproject.toml"
-        )
+        pyproject_path = Path(__file__).resolve().parents[3] / "pyproject.toml"
         text = pyproject_path.read_text()
         # Find the package-data section for kamiwaza_extensions and verify
         # compatibility.json is listed. We do a coarse string check (no full
         # TOML parse) to keep this independent of the toml stdlib version.
         kw_line = next(
             (
-                line for line in text.splitlines()
+                line
+                for line in text.splitlines()
                 if line.lstrip().startswith("kamiwaza_extensions ")
                 and "=" in line
                 and "templates" in line  # disambiguate from the "lib" entry
             ),
             None,
         )
-        assert kw_line is not None, (
-            "kamiwaza_extensions package-data entry not found in pyproject.toml"
-        )
+        assert (
+            kw_line is not None
+        ), "kamiwaza_extensions package-data entry not found in pyproject.toml"
         assert "compatibility.json" in kw_line, (
             f"compatibility.json missing from kamiwaza_extensions package-data:\n"
             f"  {kw_line}\n"
@@ -97,7 +96,9 @@ class TestCompatibilityBundleResource:
         # commas) for AND between bounds — a comma here makes
         # ``npm install`` fail to parse the spec. The earlier loose
         # "non-empty string" check let the bug ship.
-        ts_range = bundle["runtime_lib_compat"]["typescript"]["@kamiwaza-ai/extensions-lib"]
+        ts_range = bundle["runtime_lib_compat"]["typescript"][
+            "@kamiwaza-ai/extensions-lib"
+        ]
         assert isinstance(ts_range, str) and len(ts_range) > 0
         assert "," not in ts_range, (
             f"TS runtime-lib range {ts_range!r} uses comma syntax — npm semver "
@@ -123,6 +124,7 @@ class TestCompatibilityBundleResource:
 # ---------------------------------------------------------------------------
 # TS-M2-38: Python runtime-lib version probe + warn on out-of-range.
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.extension_regression
 class TestPythonRuntimeLibCheck:
@@ -152,6 +154,36 @@ class TestPythonRuntimeLibCheck:
         req.write_text("fastapi>=0.100\n")
         result = checker._check_python_runtime_lib(req)
         assert result.status == "warn"
+
+    def test_missing_runtime_lib_hint_mentions_cli_version(self, checker, tmp_path):
+        """ENG-3901 / F-003: a developer hitting the "kamiwaza-extensions-lib
+        not found" hint may have a stale ``kz-ext`` install whose bundled
+        compat range is no longer accurate. The fix hint must surface the
+        CLI version and tell them to upgrade kz-ext if it looks stale,
+        not just mechanically apply whatever the (possibly stale) range says."""
+        from kamiwaza_extensions import __version__
+
+        req = tmp_path / "requirements.txt"
+        req.write_text("fastapi>=0.100\n")
+        result = checker._check_python_runtime_lib(req)
+        assert result.fix is not None
+        assert (
+            __version__ in result.fix
+        ), f"hint should include kz-ext version {__version__}; got: {result.fix}"
+        assert "upgrade" in result.fix.lower()
+
+    def test_out_of_range_hint_mentions_cli_version(self, checker, tmp_path):
+        """Same as above but for the out-of-range path: the suggested
+        update target is computed from this CLI's bundled range; the
+        developer needs to know whether to trust it."""
+        from kamiwaza_extensions import __version__
+
+        req = tmp_path / "requirements.txt"
+        req.write_text("kamiwaza-extensions-lib==0.1.0\n")
+        result = checker._check_python_runtime_lib(req)
+        assert result.fix is not None
+        assert __version__ in result.fix
+        assert "upgrade" in result.fix.lower()
 
     def test_prefix_alias_does_not_falsely_match(self, checker, tmp_path):
         """PR-86 H7 — `kamiwaza-extensions-lib-extras` must NOT match the
@@ -194,10 +226,10 @@ class TestPythonRuntimeLibCheck:
     @pytest.mark.parametrize(
         "spec",
         [
-            "kamiwaza-extensions-lib>=0.4",        # bare lower, unbounded above
-            "kamiwaza-extensions-lib~=0.4",        # ~=0.4 = >=0.4,<1.0 (admits 0.5+)
-            "kamiwaza-extensions-lib>0.4",         # strict lower, no upper
-            "kamiwaza-extensions-lib>=0.4,<0.6",   # upper above supported's 0.5
+            "kamiwaza-extensions-lib>=0.4",  # bare lower, unbounded above
+            "kamiwaza-extensions-lib~=0.4",  # ~=0.4 = >=0.4,<1.0 (admits 0.5+)
+            "kamiwaza-extensions-lib>0.4",  # strict lower, no upper
+            "kamiwaza-extensions-lib>=0.4,<0.6",  # upper above supported's 0.5
         ],
     )
     def test_open_ended_or_too_wide_specs_warn(self, checker, tmp_path, spec):
@@ -225,7 +257,7 @@ class TestPythonRuntimeLibCheck:
             ("kamiwaza-extensions-lib~=0.3.0", "warn"),  # >=0.3.0,<0.4 — below floor
             ("kamiwaza-extensions-lib~=0.2.0", "warn"),  # >=0.2.0,<0.3 — below floor
             # X.Y form expands to <(X+1), still warns: admits 0.5+.
-            ("kamiwaza-extensions-lib~=0.4",   "warn"),  # >=0.4,<1.0 — too wide
+            ("kamiwaza-extensions-lib~=0.4", "warn"),  # >=0.4,<1.0 — too wide
         ],
     )
     def test_tilde_eq_upper_bound_derived(self, checker, tmp_path, spec, expected):
@@ -271,6 +303,7 @@ class TestPythonRuntimeLibCheck:
 # TS-M2-39: TypeScript runtime-lib version probe + warn on out-of-range.
 # ---------------------------------------------------------------------------
 
+
 class TestTypeScriptRuntimeLibCheck:
     @pytest.fixture
     def checker(self, tmp_path):
@@ -278,17 +311,25 @@ class TestTypeScriptRuntimeLibCheck:
 
     def test_in_range_dependency_passes(self, checker, tmp_path):
         pkg = tmp_path / "package.json"
-        pkg.write_text(json.dumps({
-            "dependencies": {"@kamiwaza-ai/extensions-lib": "^0.4.0"},
-        }))
+        pkg.write_text(
+            json.dumps(
+                {
+                    "dependencies": {"@kamiwaza-ai/extensions-lib": "^0.4.0"},
+                }
+            )
+        )
         result = checker._check_ts_runtime_lib(pkg)
         assert result.status == "pass"
 
     def test_out_of_range_dependency_warns(self, checker, tmp_path):
         pkg = tmp_path / "package.json"
-        pkg.write_text(json.dumps({
-            "dependencies": {"@kamiwaza-ai/extensions-lib": "0.1.5"},
-        }))
+        pkg.write_text(
+            json.dumps(
+                {
+                    "dependencies": {"@kamiwaza-ai/extensions-lib": "0.1.5"},
+                }
+            )
+        )
         result = checker._check_ts_runtime_lib(pkg)
         assert result.status == "warn"
 
@@ -301,20 +342,28 @@ class TestTypeScriptRuntimeLibCheck:
     @pytest.mark.parametrize(
         "spec,expected",
         [
-            (">=0.4", "warn"),         # bare lower, unbounded above
-            (">0.4", "warn"),          # strict lower, no upper
-            (">=0.4,<0.6", "warn"),    # upper above supported's 0.5
-            ("*", "warn"),             # any-version
-            ("^0.2.0", "warn"),        # caret 0.2 below supported floor
-            ("^0.3.0", "warn"),        # caret 0.3 below supported floor (PR #87 round-6 codex P2)
-            ("~0.3.0", "warn"),        # tilde 0.3 below supported floor
-            ("^0.4.0", "pass"),        # caret 0.4.0 = >=0.4.0,<0.5.0 ⊂ supported (ENG-4318 release)
-            ("~0.4.0", "pass"),        # tilde 0.4.0 = >=0.4.0,<0.5.0 ⊂ supported
-            ("0.3.5", "warn"),         # exact pin below supported floor
-            ("0.4.0", "pass"),         # exact pin in window
+            (">=0.4", "warn"),  # bare lower, unbounded above
+            (">0.4", "warn"),  # strict lower, no upper
+            (">=0.4,<0.6", "warn"),  # upper above supported's 0.5
+            ("*", "warn"),  # any-version
+            ("^0.2.0", "warn"),  # caret 0.2 below supported floor
+            (
+                "^0.3.0",
+                "warn",
+            ),  # caret 0.3 below supported floor (PR #87 round-6 codex P2)
+            ("~0.3.0", "warn"),  # tilde 0.3 below supported floor
+            (
+                "^0.4.0",
+                "pass",
+            ),  # caret 0.4.0 = >=0.4.0,<0.5.0 ⊂ supported (ENG-4318 release)
+            ("~0.4.0", "pass"),  # tilde 0.4.0 = >=0.4.0,<0.5.0 ⊂ supported
+            ("0.3.5", "warn"),  # exact pin below supported floor
+            ("0.4.0", "pass"),  # exact pin in window
         ],
     )
-    def test_full_containment_check_for_npm_specs(self, checker, tmp_path, spec, expected):
+    def test_full_containment_check_for_npm_specs(
+        self, checker, tmp_path, spec, expected
+    ):
         """Round-4 H3 — TS check uses full-containment (was: lower-only
         probe). Open-ended specs (no upper, or upper above the supported
         ceiling) warn. Caret/tilde/exact specs that are fully contained
@@ -327,9 +376,13 @@ class TestTypeScriptRuntimeLibCheck:
         features and to stay on the supported window).
         """
         pkg = tmp_path / "package.json"
-        pkg.write_text(json.dumps({
-            "dependencies": {"@kamiwaza-ai/extensions-lib": spec},
-        }))
+        pkg.write_text(
+            json.dumps(
+                {
+                    "dependencies": {"@kamiwaza-ai/extensions-lib": spec},
+                }
+            )
+        )
         result = checker._check_ts_runtime_lib(pkg)
         assert result.status == expected, (
             f"declared {spec!r} expected={expected} actual={result.status} "
@@ -356,9 +409,13 @@ class TestTypeScriptRuntimeLibCheck:
             "treats this as invalid syntax."
         )
         pkg = tmp_path / "package.json"
-        pkg.write_text(json.dumps({
-            "dependencies": {"@kamiwaza-ai/extensions-lib": rendered_value},
-        }))
+        pkg.write_text(
+            json.dumps(
+                {
+                    "dependencies": {"@kamiwaza-ai/extensions-lib": rendered_value},
+                }
+            )
+        )
         result = checker._check_ts_runtime_lib(pkg)
         assert result.status == "pass", (
             f"fresh scaffold TS pin {rendered_value!r} fails compat check; "
@@ -372,20 +429,29 @@ class TestTypeScriptRuntimeLibCheck:
 # detected (e.g. a Go-only extension).
 # ---------------------------------------------------------------------------
 
+
 class TestNeitherRuntimeLibPresent:
     @pytest.fixture
     def checker(self, tmp_path):
         return DoctorChecker(config_dir=tmp_path / ".kamiwaza")
 
-    def test_runtime_lib_check_skipped_when_no_files(self, checker, tmp_path, monkeypatch):
+    def test_runtime_lib_check_skipped_when_no_files(
+        self, checker, tmp_path, monkeypatch
+    ):
         # No requirements.txt, no package.json — a Go reference, say.
         # The bundle-aware check should produce zero results, not phantom
         # warnings.
         metadata = tmp_path / "kamiwaza.json"
-        metadata.write_text(json.dumps({
-            "name": "go-ext", "version": "0.1.0", "type": "tool",
-            "kz_ext_version": ">=0.11.0",
-        }))
+        metadata.write_text(
+            json.dumps(
+                {
+                    "name": "go-ext",
+                    "version": "0.1.0",
+                    "type": "tool",
+                    "kz_ext_version": ">=0.11.0",
+                }
+            )
+        )
         monkeypatch.chdir(tmp_path)
         results = checker._check_extension_context()
         # _check_cli_version always runs; runtime-lib checks should be absent.

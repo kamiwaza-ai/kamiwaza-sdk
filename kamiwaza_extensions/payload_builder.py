@@ -19,11 +19,18 @@ from kamiwaza_sdk.schemas.extensions import (
 
 from kamiwaza_extensions.connections import ConnectionInfo
 
-# CRD annotation keys — name-spaced under kamiwaza.ai (§4.2.9 / §4.7).
-ANNOTATION_DEPLOYER = "kamiwaza.ai/deployer"
-ANNOTATION_BUILD_HOST = "kamiwaza.ai/build-host"
-ANNOTATION_REVISION = "kamiwaza.ai/revision"
-ANNOTATION_DEPLOYED_AT = "kamiwaza.ai/deployed-at"
+# CRD annotation keys — namespace is ``kamiwaza.io/*`` (NOT ``kamiwaza.ai/*``).
+# The platform's annotation persister filters incoming Extension CR annotations
+# to the ``kamiwaza.io/*`` namespace; ``kamiwaza.ai/*`` annotations are
+# silently dropped on the platform side, leaving ``kz-ext status`` unable
+# to surface "Last deployed by..." and similar observability fields.
+# (ENG-3901 dry-run finding F-010 — tactical SDK-side workaround until the
+# platform broadens its allow-list. The ``.ai`` namespace was tried
+# originally for SDK-team-set annotations but is unsupported in practice.)
+ANNOTATION_DEPLOYER = "kamiwaza.io/deployer"
+ANNOTATION_BUILD_HOST = "kamiwaza.io/build-host"
+ANNOTATION_REVISION = "kamiwaza.io/revision"
+ANNOTATION_DEPLOYED_AT = "kamiwaza.io/deployed-at"
 
 
 def _compose_resources_to_k8s(resources: Dict[str, str]) -> Dict[str, str]:
@@ -61,9 +68,16 @@ class PayloadBuilder:
         revision: Optional[str] = None,
     ) -> CreateExtension:
         ext_type = self._resolve_type(metadata)
-        app_path = f"/runtime/apps/{dev_name}" if ext_type == "app" else f"/runtime/{ext_type}s/{dev_name}"
+        app_path = (
+            f"/runtime/apps/{dev_name}"
+            if ext_type == "app"
+            else f"/runtime/{ext_type}s/{dev_name}"
+        )
         services = self._build_services(
-            transformed_compose, app_path=app_path, verify_ssl=connection.verify_ssl,
+            transformed_compose,
+            app_path=app_path,
+            verify_ssl=connection.verify_ssl,
+            extension_type=ext_type,
         )
         origin = connection.url.removesuffix("/api")
         tls_reject = "0" if not connection.verify_ssl else "1"
@@ -104,10 +118,10 @@ class PayloadBuilder:
     ) -> Dict[str, str]:
         """Build the CRD-metadata annotations attached on every dev deploy.
 
-        - ``kamiwaza.ai/deployer``     — email of the deploying user
-        - ``kamiwaza.ai/build-host``   — local hostname of the developer machine
-        - ``kamiwaza.ai/revision``     — revision tag (image tag suffix)
-        - ``kamiwaza.ai/deployed-at``  — ISO-8601 UTC timestamp of the deploy
+        - ``kamiwaza.io/deployer``     — email of the deploying user
+        - ``kamiwaza.io/build-host``   — local hostname of the developer machine
+        - ``kamiwaza.io/revision``     — revision tag (image tag suffix)
+        - ``kamiwaza.io/deployed-at``  — ISO-8601 UTC timestamp of the deploy
 
         Empty values are dropped so consumers can ``in``-check without
         seeing meaningless empty strings.
@@ -146,8 +160,11 @@ class PayloadBuilder:
     # ------------------------------------------------------------------
 
     def _build_services(
-        self, transformed: Dict[str, Any], app_path: str = "",
+        self,
+        transformed: Dict[str, Any],
+        app_path: str = "",
         verify_ssl: bool = True,
+        extension_type: str = "app",
     ) -> List[ExtensionServiceSpec]:
         services_dict = transformed.get("services") or {}
         specs: List[ExtensionServiceSpec] = []
@@ -170,7 +187,7 @@ class PayloadBuilder:
             env = self._parse_env(svc.get("environment", []))
             resources = self._parse_resources(svc)
 
-            is_primary = (svc_name == primary_name)
+            is_primary = svc_name == primary_name
 
             # Inject platform env vars
             if is_primary and app_path:
@@ -178,7 +195,13 @@ class PayloadBuilder:
             if not verify_ssl:
                 env.append({"name": "KAMIWAZA_VERIFY_SSL", "value": "false"})
 
-            health_check = self._default_health_check(svc_name, svc, ports)
+            health_check = self._default_health_check(
+                svc_name,
+                svc,
+                ports,
+                extension_type=extension_type,
+                is_primary=is_primary,
+            )
 
             spec_kwargs: Dict[str, Any] = dict(
                 name=svc_name,
@@ -205,9 +228,13 @@ class PayloadBuilder:
             proto = "TCP"
             if "/" in s:
                 s, proto_str = s.rsplit("/", 1)
-                proto = proto_str.upper() if proto_str.upper() in ("TCP", "UDP") else "TCP"
+                proto = (
+                    proto_str.upper() if proto_str.upper() in ("TCP", "UDP") else "TCP"
+                )
             try:
-                result.append(ExtensionPort(container_port=int(s), protocol=proto, name="http"))
+                result.append(
+                    ExtensionPort(container_port=int(s), protocol=proto, name="http")
+                )
             except (ValueError, TypeError):
                 continue
         return result
@@ -237,9 +264,37 @@ class PayloadBuilder:
 
     @staticmethod
     def _default_health_check(
-        svc_name: str, svc: Dict[str, Any], ports: List[ExtensionPort],
+        svc_name: str,
+        svc: Dict[str, Any],
+        ports: List[ExtensionPort],
+        *,
+        extension_type: str = "app",
+        is_primary: bool = False,
     ) -> Optional[Dict[str, Any]]:
-        """Generate a default health check based on service type."""
+        """Generate a default health check based on service type.
+
+        Path-selection rules (ENG-3901 / F-013):
+
+        - Frontend (Next.js) services use a node-based exec probe that
+          resolves the basePath env var dynamically.
+        - Backend services in app-type extensions probe ``/health`` —
+          the scaffolded FastAPI backend ships an explicit /health route.
+        - Primary services in **service** and **tool** extensions probe
+          ``/`` — those scaffolds ship a minimal stub (``python -m
+          http.server`` for service, FastMCP for tool) that doesn't
+          declare /health. Probing /health on those stubs returns 404
+          and the K8s startup probe fails the pod into restart loops.
+          Probing ``/`` works because both stubs respond to it.
+
+        Precedence note: the Node-frontend probe (when its detection
+        hits — service name ``frontend`` AND Node-like hints in env)
+        wins over the per-type tool/service rules below. That's the
+        right call because a Node Next.js frontend needs a node probe
+        regardless of extension shape. Realistic conflict only arises
+        if a tool extension's primary is named ``frontend`` AND carries
+        ``NEXT_PUBLIC_*`` env keys — vanishingly rare in practice
+        (the tool template names its primary ``tool``).
+        """
         if not ports:
             return None
         port = ports[0].container_port
@@ -265,18 +320,33 @@ class PayloadBuilder:
                 "startPeriod": 300,
                 "timeoutSeconds": 5,
             }
+        # Path-selection rules (see docstring). Tool primary probes /sse —
+        # the FastMCP SSE endpoint — even though the response body streams
+        # past the K8s 5s probe timeout. The platform's CR API currently
+        # rejects ``tcpSocket`` and ``exec`` healthCheck shapes with an
+        # opaque 500, leaving httpGet as the only path. /sse is preferable
+        # to /health (404 under FastMCP) — the headers come back 200 even
+        # if the probe times out reading the body, which keeps the pod
+        # restart-loop from firing. Net result: pod runs and serves
+        # requests, but K8s may take longer to mark it Ready. The proper
+        # fix is to teach the platform API to accept tcpSocket/exec
+        # probes (tracked separately).
+        if extension_type == "service" and is_primary:
+            path = "/"
+        elif extension_type == "tool" and is_primary:
+            path = "/sse"
+        elif svc_name == "frontend":
+            path = "/"
         else:
-            # Generic frontends usually serve "/" even when they lack a
-            # dedicated /health endpoint; backend-style services still use /health.
-            path = "/" if svc_name == "frontend" else "/health"
-            return {
-                "httpGet": {"path": path, "port": port},
-                "initialDelaySeconds": 10,
-                "periodSeconds": 10,
-                "failureThreshold": 3,
-                "startPeriod": 5,
-                "timeoutSeconds": 5,
-            }
+            path = "/health"
+        return {
+            "httpGet": {"path": path, "port": port},
+            "initialDelaySeconds": 10,
+            "periodSeconds": 10,
+            "failureThreshold": 3,
+            "startPeriod": 5,
+            "timeoutSeconds": 5,
+        }
 
     @staticmethod
     def _parse_resources(svc: Dict[str, Any]) -> Optional[ResourceSpec]:

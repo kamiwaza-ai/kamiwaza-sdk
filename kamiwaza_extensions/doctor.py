@@ -19,7 +19,6 @@ from packaging.version import InvalidVersion, Version
 from kamiwaza_extensions import __version__
 from kamiwaza_extensions.connections import ConnectionManager
 
-
 # kubectl prints distinct stderr for "resource is genuinely absent" vs
 # "I can't even reach the API server / I'm not authorized / wrong context".
 # The former is a real platform-install problem; the latter is a config
@@ -118,9 +117,7 @@ def _spec_bounds(spec_set: SpecifierSet) -> tuple[Optional[Version], Optional[Ve
             # Version normalises ``"0.3"`` and ``"0.3.0"`` to equal values,
             # so we can't recover the segment count from ``ver``.
             implied_upper = _tilde_eq_upper(raw)
-            if implied_upper is not None and (
-                upper is None or implied_upper < upper
-            ):
+            if implied_upper is not None and (upper is None or implied_upper < upper):
                 upper = implied_upper
     return lower, upper
 
@@ -402,14 +399,19 @@ class DoctorChecker:
         if v >= (3, 10):
             return CheckResult("Python version", "pass", f"{version_str}")
         return CheckResult(
-            "Python version", "fail", f"{version_str} (requires >= 3.10)",
+            "Python version",
+            "fail",
+            f"{version_str} (requires >= 3.10)",
             fix="Install Python 3.10 or newer",
         )
 
     def _check_docker_installed(self) -> CheckResult:
         try:
             result = subprocess.run(
-                ["docker", "--version"], capture_output=True, text=True, timeout=10,
+                ["docker", "--version"],
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
             if result.returncode == 0:
                 version = result.stdout.strip().split(",")[0]
@@ -417,7 +419,9 @@ class DoctorChecker:
         except (FileNotFoundError, subprocess.TimeoutExpired):
             pass
         return CheckResult(
-            "Docker installed", "fail", "Not found",
+            "Docker installed",
+            "fail",
+            "Not found",
             fix="Install Docker Desktop: https://docs.docker.com/get-docker/",
         )
 
@@ -425,7 +429,10 @@ class DoctorChecker:
         # Try v2
         try:
             result = subprocess.run(
-                ["docker", "compose", "version"], capture_output=True, text=True, timeout=10,
+                ["docker", "compose", "version"],
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
             if result.returncode == 0:
                 return CheckResult("Docker Compose", "pass", result.stdout.strip())
@@ -434,28 +441,38 @@ class DoctorChecker:
         # Try v1
         try:
             result = subprocess.run(
-                ["docker-compose", "--version"], capture_output=True, text=True, timeout=10,
+                ["docker-compose", "--version"],
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
             if result.returncode == 0:
                 return CheckResult("Docker Compose", "pass", result.stdout.strip())
         except (FileNotFoundError, subprocess.TimeoutExpired):
             pass
         return CheckResult(
-            "Docker Compose", "fail", "Not found",
+            "Docker Compose",
+            "fail",
+            "Not found",
             fix="Install Docker Desktop (includes Compose v2) or pip install docker-compose",
         )
 
     def _check_docker_running(self) -> CheckResult:
         try:
             result = subprocess.run(
-                ["docker", "info"], capture_output=True, text=True, timeout=10,
+                ["docker", "info"],
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
             if result.returncode == 0:
                 return CheckResult("Docker running", "pass", "Docker daemon is running")
         except (FileNotFoundError, subprocess.TimeoutExpired):
             pass
         return CheckResult(
-            "Docker running", "fail", "Docker daemon not responding",
+            "Docker running",
+            "fail",
+            "Docker daemon not responding",
             fix="Start Docker Desktop or run 'sudo systemctl start docker'",
         )
 
@@ -467,18 +484,22 @@ class DoctorChecker:
         conn = self._conn_mgr.get_active_connection()
         if conn is None:
             return CheckResult(
-                "Kamiwaza connection", "warn", "No connection configured",
+                "Kamiwaza connection",
+                "warn",
+                "No connection configured",
                 fix="Run 'kz-ext login <url>' to connect",
             )
         token = self._conn_mgr.get_token()
         if token is None:
             return CheckResult(
-                "Kamiwaza connection", "warn",
+                "Kamiwaza connection",
+                "warn",
                 f"Connection '{conn.name}' has no token",
                 fix=f"Run 'kz-ext login {conn.url}' to re-authenticate",
             )
         # Try health endpoints — platform may expose different ones
         import requests
+
         for path in ("/auth/ping", "/auth/health", "/health"):
             try:
                 resp = requests.get(
@@ -488,11 +509,14 @@ class DoctorChecker:
                     verify=conn.verify_ssl,
                 )
                 if resp.ok:
-                    return CheckResult("Kamiwaza connection", "pass", f"{conn.name} ({conn.url})")
+                    return CheckResult(
+                        "Kamiwaza connection", "pass", f"{conn.name} ({conn.url})"
+                    )
             except requests.ConnectionError:
                 # Server unreachable — no point trying more paths on same host
                 return CheckResult(
-                    "Kamiwaza connection", "warn",
+                    "Kamiwaza connection",
+                    "warn",
                     f"{conn.name}: unreachable ({conn.url})",
                     fix="Check network connectivity or VPN",
                 )
@@ -501,7 +525,8 @@ class DoctorChecker:
 
         # All endpoints responded but none returned 200
         return CheckResult(
-            "Kamiwaza connection", "warn",
+            "Kamiwaza connection",
+            "warn",
             f"{conn.name}: no health endpoint found",
             fix="Server is reachable but health check failed",
         )
@@ -548,7 +573,8 @@ class DoctorChecker:
         connection = self._conn_mgr.get_active_connection()
         if connection is None:
             return CheckResult(
-                name, "warn",
+                name,
+                "warn",
                 "No Kamiwaza connection configured; cluster readiness probe skipped",
                 fix="Run 'kz-ext login <url>' to connect, then re-run doctor",
             )
@@ -561,9 +587,11 @@ class DoctorChecker:
         # reinstall the platform" (review re-review PR #84 H1). Skip with
         # a transparent warn instead.
         from kamiwaza_extensions.platform_compat import is_local_connection
+
         if not is_local_connection(connection.url):
             return CheckResult(
-                name, "warn",
+                name,
+                "warn",
                 f"Connection '{connection.name}' is remote ({connection.url}); "
                 "local kubectl context cannot be verified to target the same cluster — "
                 "probe skipped",
@@ -578,7 +606,8 @@ class DoctorChecker:
         kubectl_check = self._kubectl_available()
         if not kubectl_check:
             return CheckResult(
-                name, "warn",
+                name,
+                "warn",
                 "kubectl not available; cluster readiness probe skipped",
                 fix="Install kubectl and configure access to the target cluster",
             )
@@ -594,13 +623,15 @@ class DoctorChecker:
             # broken cluster.
             if _is_kubectl_not_found_error(crd_err):
                 return CheckResult(
-                    name, "fail",
+                    name,
+                    "fail",
                     f"Extension CRD '{EXTENSION_CRD}' not installed on cluster",
                     fix=f"Install or upgrade the kamiwaza platform on this cluster: {crd_err}",
                     exit_code=not_ready,
                 )
             return CheckResult(
-                name, "warn",
+                name,
+                "warn",
                 f"Could not query cluster for CRD: {crd_err}",
                 fix=(
                     "Verify your kubeconfig is valid and points at the "
@@ -620,13 +651,15 @@ class DoctorChecker:
             err_msg = deploy_payload if isinstance(deploy_payload, str) else ""
             if _is_kubectl_not_found_error(err_msg):
                 return CheckResult(
-                    name, "fail",
+                    name,
+                    "fail",
                     f"extension-operator Deployment not found in '{OPERATOR_NAMESPACE}'",
                     fix="Re-run the platform installer on this cluster",
                     exit_code=not_ready,
                 )
             return CheckResult(
-                name, "warn",
+                name,
+                "warn",
                 f"Could not query cluster for extension-operator Deployment: {err_msg}",
                 fix=(
                     "Verify your kubeconfig is valid and points at the "
@@ -662,7 +695,8 @@ class DoctorChecker:
         if backoff_msg:
             expected = ", ".join(OPERATOR_COMPATIBLE_TAGS)
             return CheckResult(
-                name, "fail",
+                name,
+                "fail",
                 f"extension-operator pod is in ImagePullBackOff: {backoff_msg}",
                 fix=(
                     f"Operator image '{image_ref}' cannot be pulled. "
@@ -683,7 +717,8 @@ class DoctorChecker:
         )
         if not available or (observed_gen is not None and observed_gen != spec_gen):
             return CheckResult(
-                name, "fail",
+                name,
+                "fail",
                 "extension-operator Deployment is not Available",
                 fix=(
                     "Operator is not ready to reconcile extensions. "
@@ -701,14 +736,16 @@ class DoctorChecker:
         # warning (review re-review PR #84 H1).
         if image_tag and is_digest_ref(image_tag):
             return CheckResult(
-                name, "pass",
+                name,
+                "pass",
                 f"CRD installed, extension-operator Available "
                 f"(digest-pinned: {image_tag[:19]}…)",
             )
         if not is_compatible_tag(image_tag):
             expected = ", ".join(OPERATOR_COMPATIBLE_TAGS)
             return CheckResult(
-                name, "warn",
+                name,
+                "warn",
                 f"extension-operator running '{image_tag}' (Available)",
                 fix=(
                     f"Tag '{image_tag}' is not in this CLI's compatible set "
@@ -717,7 +754,8 @@ class DoctorChecker:
             )
 
         return CheckResult(
-            name, "pass",
+            name,
+            "pass",
             f"CRD installed, extension-operator Available ({image_tag})",
         )
 
@@ -726,7 +764,9 @@ class DoctorChecker:
         try:
             result = subprocess.run(
                 ["kubectl", "version", "--client=true", "-o", "json"],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
             return result.returncode == 0
         except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -737,7 +777,9 @@ class DoctorChecker:
         try:
             result = subprocess.run(
                 ["kubectl", "get", *args],
-                capture_output=True, text=True, timeout=15,
+                capture_output=True,
+                text=True,
+                timeout=15,
             )
             return result.returncode, (result.stderr.strip() or result.stdout.strip())
         except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
@@ -748,12 +790,18 @@ class DoctorChecker:
         try:
             result = subprocess.run(
                 ["kubectl", "get", *args, "-o", "json"],
-                capture_output=True, text=True, timeout=15,
+                capture_output=True,
+                text=True,
+                timeout=15,
             )
             if result.returncode != 0:
                 return result.returncode, result.stderr.strip()
             return 0, json.loads(result.stdout)
-        except (FileNotFoundError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
+        except (
+            FileNotFoundError,
+            subprocess.TimeoutExpired,
+            json.JSONDecodeError,
+        ) as exc:
             return 1, str(exc)
 
     @staticmethod
@@ -767,12 +815,19 @@ class DoctorChecker:
         try:
             result = subprocess.run(
                 [
-                    "kubectl", "get", "pods",
-                    "-n", OPERATOR_NAMESPACE,
-                    "-l", f"app.kubernetes.io/name={OPERATOR_DEPLOYMENT}",
-                    "-o", "json",
+                    "kubectl",
+                    "get",
+                    "pods",
+                    "-n",
+                    OPERATOR_NAMESPACE,
+                    "-l",
+                    f"app.kubernetes.io/name={OPERATOR_DEPLOYMENT}",
+                    "-o",
+                    "json",
                 ],
-                capture_output=True, text=True, timeout=15,
+                capture_output=True,
+                text=True,
+                timeout=15,
             )
             if result.returncode != 0:
                 return None
@@ -840,15 +895,21 @@ class DoctorChecker:
             spec = SpecifierSet(specifier_str)
             ver = Version(__version__)
             if ver in spec:
-                return CheckResult("CLI version compatibility", "pass", f"{__version__} matches {specifier_str}")
+                return CheckResult(
+                    "CLI version compatibility",
+                    "pass",
+                    f"{__version__} matches {specifier_str}",
+                )
             return CheckResult(
-                "CLI version compatibility", "fail",
+                "CLI version compatibility",
+                "fail",
                 f"{__version__} does not match {specifier_str}",
                 fix=f"Install a compatible version: pip install 'kamiwaza-sdk{specifier_str}'",
             )
         except (InvalidSpecifier, InvalidVersion) as exc:
             return CheckResult(
-                "CLI version compatibility", "warn",
+                "CLI version compatibility",
+                "warn",
                 f"Could not parse kz_ext_version: {exc}",
             )
 
@@ -877,15 +938,28 @@ class DoctorChecker:
             declared_req = req
             break
         if declared_req is None:
+            # ENG-3901 / F-003: include the CLI version in the fix hint so a
+            # developer with a stale ``kz-ext`` install can spot the version
+            # skew. Without this, ``compat_range`` is read from the bundle
+            # baked into the installed wheel — which may differ from what
+            # develop says is current — and the suggested pin sounds
+            # authoritative even when the CLI itself is out of date.
             return CheckResult(
-                "Runtime lib (Python)", "warn",
+                "Runtime lib (Python)",
+                "warn",
                 "kamiwaza-extensions-lib not found in requirements.txt",
-                fix=f"Add 'kamiwaza-extensions-lib{compat_range}' to requirements.txt",
+                fix=(
+                    f"Add 'kamiwaza-extensions-lib{compat_range}' to "
+                    f"requirements.txt (range from kz-ext {__version__}; "
+                    "if this looks stale, upgrade kz-ext first: "
+                    "pip install --upgrade kamiwaza-sdk)"
+                ),
             )
         declared_spec = str(declared_req.specifier) or ""
         if not compat_range:
             return CheckResult(
-                "Runtime lib (Python)", "pass",
+                "Runtime lib (Python)",
+                "pass",
                 f"kamiwaza-extensions-lib{declared_spec} matches any (no compat range bundled)",
             )
         try:
@@ -893,7 +967,8 @@ class DoctorChecker:
         except InvalidSpecifier:
             # Bundle range malformed — fail open with the declared spec passing.
             return CheckResult(
-                "Runtime lib (Python)", "pass",
+                "Runtime lib (Python)",
+                "pass",
                 f"kamiwaza-extensions-lib{declared_spec} (compat range unparseable, skipping check)",
             )
         # PR-86 M6: range-vs-range overlap. ``declared_req.specifier`` is a
@@ -904,13 +979,24 @@ class DoctorChecker:
             declared_req.specifier, supported
         )
         if out_of_range_reason is not None:
+            # ENG-3901 / F-003: the compat range is read from the bundle baked
+            # into THIS kz-ext install. If the CLI is stale, the bundle is
+            # too — and our "Update to ..." suggestion would point at the
+            # wrong window. Surfacing the CLI version in the hint lets
+            # developers spot the skew themselves.
             return CheckResult(
-                "Runtime lib (Python)", "warn",
+                "Runtime lib (Python)",
+                "warn",
                 f"kamiwaza-extensions-lib{declared_spec} is outside CLI compatibility range {compat_range} ({out_of_range_reason})",
-                fix=f"Update to 'kamiwaza-extensions-lib{compat_range}'",
+                fix=(
+                    f"Update to 'kamiwaza-extensions-lib{compat_range}' "
+                    f"(range from kz-ext {__version__}; if this looks stale, "
+                    "upgrade kz-ext first: pip install --upgrade kamiwaza-sdk)"
+                ),
             )
         return CheckResult(
-            "Runtime lib (Python)", "pass",
+            "Runtime lib (Python)",
+            "pass",
             f"kamiwaza-extensions-lib{declared_spec} matches {compat_range}",
         )
 
@@ -927,15 +1013,26 @@ class DoctorChecker:
             deps = {**data.get("dependencies", {}), **data.get("devDependencies", {})}
         except (json.JSONDecodeError, FileNotFoundError):
             return CheckResult(
-                "Runtime lib (TypeScript)", "warn",
+                "Runtime lib (TypeScript)",
+                "warn",
                 "package.json could not be parsed",
             )
         declared = deps.get("@kamiwaza-ai/extensions-lib")
         if declared is None:
+            # ENG-3901 / F-003: surface CLI version + upgrade hint so a
+            # stale ``kz-ext`` (with a stale bundled compat range) doesn't
+            # silently mislead. Mirrors the Python sibling check above.
             return CheckResult(
-                "Runtime lib (TypeScript)", "warn",
+                "Runtime lib (TypeScript)",
+                "warn",
                 "@kamiwaza-ai/extensions-lib not found in package.json",
-                fix=f'Add "@kamiwaza-ai/extensions-lib": "{compat_range or "^0.4.0"}" to package.json dependencies',
+                fix=(
+                    f'Add "@kamiwaza-ai/extensions-lib": '
+                    f'"{compat_range or "^0.4.0"}" to package.json '
+                    f"dependencies (range from kz-ext {__version__}; "
+                    "if this looks stale, upgrade kz-ext first: "
+                    "pip install --upgrade kamiwaza-sdk)"
+                ),
             )
         if compat_range:
             # Round-5 C1: parse the bundle's TS range with the npm-semver
@@ -958,13 +1055,24 @@ class DoctorChecker:
                     supported_upper,
                 )
                 if reason is not None:
+                    # ENG-3901 / F-003: same CLI-version hint as the
+                    # Python check — a stale ``kz-ext`` ships a stale
+                    # bundle, and the suggested range would be wrong.
                     return CheckResult(
-                        "Runtime lib (TypeScript)", "warn",
+                        "Runtime lib (TypeScript)",
+                        "warn",
                         f"@kamiwaza-ai/extensions-lib {declared} is outside CLI compatibility range {compat_range} ({reason})",
-                        fix=f'Update to "@kamiwaza-ai/extensions-lib": "{compat_range}"',
+                        fix=(
+                            f'Update to "@kamiwaza-ai/extensions-lib": '
+                            f'"{compat_range}" '
+                            f"(range from kz-ext {__version__}; "
+                            "if this looks stale, upgrade kz-ext first: "
+                            "pip install --upgrade kamiwaza-sdk)"
+                        ),
                     )
         return CheckResult(
-            "Runtime lib (TypeScript)", "pass",
+            "Runtime lib (TypeScript)",
+            "pass",
             f"@kamiwaza-ai/extensions-lib {declared} matches {compat_range or 'any'}",
         )
 
@@ -986,10 +1094,13 @@ class DoctorChecker:
         if spec is None:
             return results  # No override configured — skip
 
-        results.append(CheckResult(
-            "SDK override config", "pass",
-            f"Loaded from .kz-ext/local.yaml (sdk_repo: {spec.sdk_repo})",
-        ))
+        results.append(
+            CheckResult(
+                "SDK override config",
+                "pass",
+                f"Loaded from .kz-ext/local.yaml (sdk_repo: {spec.sdk_repo})",
+            )
+        )
 
         validation = validate_sdk_override(spec)
 
@@ -997,37 +1108,53 @@ class DoctorChecker:
         if spec.sdk_repo.is_dir():
             results.append(CheckResult("SDK repo exists", "pass", str(spec.sdk_repo)))
         else:
-            results.append(CheckResult(
-                "SDK repo exists", "fail", f"Not found: {spec.sdk_repo}",
-                fix="Check path in .kz-ext/local.yaml",
-            ))
+            results.append(
+                CheckResult(
+                    "SDK repo exists",
+                    "fail",
+                    f"Not found: {spec.sdk_repo}",
+                    fix="Check path in .kz-ext/local.yaml",
+                )
+            )
             return results  # Can't check further
 
         # Python lib
         if spec.python:
             if spec.python_lib_path.is_dir():
-                results.append(CheckResult(
-                    "SDK Python lib", "pass",
-                    "kamiwaza_extensions_lib/ found",
-                ))
+                results.append(
+                    CheckResult(
+                        "SDK Python lib",
+                        "pass",
+                        "kamiwaza_extensions_lib/ found",
+                    )
+                )
             else:
-                results.append(CheckResult(
-                    "SDK Python lib", "fail",
-                    "kamiwaza_extensions_lib/ not found in SDK repo",
-                ))
+                results.append(
+                    CheckResult(
+                        "SDK Python lib",
+                        "fail",
+                        "kamiwaza_extensions_lib/ not found in SDK repo",
+                    )
+                )
 
         # TypeScript lib
         if spec.typescript:
             if spec.typescript_lib_path.is_dir():
-                results.append(CheckResult(
-                    "SDK TypeScript lib", "pass",
-                    "kamiwaza-ai-extensions-lib/ found",
-                ))
+                results.append(
+                    CheckResult(
+                        "SDK TypeScript lib",
+                        "pass",
+                        "kamiwaza-ai-extensions-lib/ found",
+                    )
+                )
             else:
-                results.append(CheckResult(
-                    "SDK TypeScript lib", "fail",
-                    "kamiwaza-ai-extensions-lib/ not found in SDK repo",
-                ))
+                results.append(
+                    CheckResult(
+                        "SDK TypeScript lib",
+                        "fail",
+                        "kamiwaza-ai-extensions-lib/ not found in SDK repo",
+                    )
+                )
 
             # dist/ check
             if spec.typescript_lib_path.is_dir():
@@ -1035,21 +1162,31 @@ class DoctorChecker:
                     # Check staleness via validation warnings
                     stale = any("stale" in w for w in validation.warnings)
                     if stale:
-                        results.append(CheckResult(
-                            "SDK TypeScript dist/", "warn",
-                            "dist/ exists but may be stale (src/ is newer)",
-                            fix=f"cd {spec.typescript_lib_path} && npm run build",
-                        ))
+                        results.append(
+                            CheckResult(
+                                "SDK TypeScript dist/",
+                                "warn",
+                                "dist/ exists but may be stale (src/ is newer)",
+                                fix=f"cd {spec.typescript_lib_path} && npm run build",
+                            )
+                        )
                     else:
-                        results.append(CheckResult(
-                            "SDK TypeScript dist/", "pass", "Built and up to date",
-                        ))
+                        results.append(
+                            CheckResult(
+                                "SDK TypeScript dist/",
+                                "pass",
+                                "Built and up to date",
+                            )
+                        )
                 else:
-                    results.append(CheckResult(
-                        "SDK TypeScript dist/", "warn",
-                        "dist/ not found — will be built on first run",
-                        fix=f"cd {spec.typescript_lib_path} && npm install && npm run build",
-                    ))
+                    results.append(
+                        CheckResult(
+                            "SDK TypeScript dist/",
+                            "warn",
+                            "dist/ not found — will be built on first run",
+                            fix=f"cd {spec.typescript_lib_path} && npm install && npm run build",
+                        )
+                    )
 
         # Template contract check
         ext_dir = cwd
@@ -1075,23 +1212,32 @@ class DoctorChecker:
             try:
                 with pkg_file.open() as f:
                     data = json.load(f)
-                deps = {**data.get("dependencies", {}), **data.get("devDependencies", {})}
+                deps = {
+                    **data.get("dependencies", {}),
+                    **data.get("devDependencies", {}),
+                }
                 if "@kamiwaza-ai/extensions-lib" not in deps:
                     contract_ok = False
             except (json.JSONDecodeError, FileNotFoundError):
                 pass
 
         if contract_ok:
-            results.append(CheckResult(
-                "SDK override contract", "pass",
-                "requirements.txt and package.json reference runtime libs",
-            ))
+            results.append(
+                CheckResult(
+                    "SDK override contract",
+                    "pass",
+                    "requirements.txt and package.json reference runtime libs",
+                )
+            )
         else:
-            results.append(CheckResult(
-                "SDK override contract", "warn",
-                "Non-standard install — SDK override may need manual configuration",
-                fix="Ensure requirements.txt has kamiwaza-extensions-lib and "
+            results.append(
+                CheckResult(
+                    "SDK override contract",
+                    "warn",
+                    "Non-standard install — SDK override may need manual configuration",
+                    fix="Ensure requirements.txt has kamiwaza-extensions-lib and "
                     "package.json has @kamiwaza-ai/extensions-lib",
-            ))
+                )
+            )
 
         return results
