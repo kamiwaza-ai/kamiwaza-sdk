@@ -818,6 +818,68 @@ class TestPreInstallStripOverlay:
         assert "# ts-strip" in result
         assert result.index("# ts-strip") < result.index("RUN npm install")
 
+    def test_apply_build_overlay_rewrites_npm_ci_to_npm_install(self):
+        """ENG-3901 / round-3 (Codex P2): when a frontend Dockerfile uses
+        ``RUN npm ci`` (which the install pattern matches), the strip
+        step mutates package.json and leaves package-lock.json out of
+        sync. ``npm ci`` enforces strict parity and would error. The
+        overlay applier must rewrite the line to ``npm install`` so the
+        install proceeds and re-resolves with the mutated package.json.
+        Local-build overrides already break strict reproducibility (we
+        swap in a local source tarball) so looser semantics is consistent."""
+        ts_dockerfile = (
+            "FROM node:20-alpine\nWORKDIR /app\n"
+            "COPY package.json package-lock.json ./\n"
+            "RUN npm ci --no-audit\n"
+            "COPY . .\n"
+            "RUN npm run build\n"
+            'CMD ["node", "/app/start.mjs"]\n'
+        )
+        overlay = BuildOverride(
+            service_name="frontend",
+            overlay_steps="# post-install\nRUN echo post\n",
+            additional_build_contexts={"sdk": "/tmp/sdk"},
+            insert_before_build=True,
+            pre_install_steps=(
+                "# ts-strip\nUSER root\nRUN node -e 'strip'\n{restore_user_block}"
+            ),
+        )
+        result = apply_build_overlay(ts_dockerfile, overlay)
+        # The strip is inserted before the install line, AND the install
+        # line itself is rewritten to ``npm install`` (preserving flags).
+        assert "RUN npm ci" not in result, (
+            "npm ci must be rewritten to npm install to tolerate the "
+            "lockfile mismatch the strip creates"
+        )
+        assert "RUN npm install --no-audit" in result, (
+            "npm install rewrite must preserve trailing flags from the "
+            f"original line; got result:\n{result}"
+        )
+
+    def test_apply_build_overlay_leaves_npm_install_unchanged(self):
+        """Sanity: the npm ci → npm install rewrite must NOT mangle a
+        Dockerfile that already uses ``npm install`` (e.g. by accidentally
+        matching ``ci`` inside another flag like ``--ci-mode``)."""
+        ts_dockerfile = (
+            "FROM node:20-alpine\nWORKDIR /app\n"
+            "COPY package.json ./\n"
+            "RUN npm install --legacy-peer-deps\n"
+            "COPY . .\nRUN npm run build\n"
+        )
+        overlay = BuildOverride(
+            service_name="frontend",
+            overlay_steps="",
+            additional_build_contexts={"sdk": "/tmp/sdk"},
+            insert_before_build=True,
+            pre_install_steps=(
+                "# ts-strip\nUSER root\nRUN node -e 'strip'\n{restore_user_block}"
+            ),
+        )
+        result = apply_build_overlay(ts_dockerfile, overlay)
+        assert "RUN npm install --legacy-peer-deps" in result
+        # Only one install line in the patched output.
+        assert result.count("RUN npm install") == 1
+
     def test_strip_step_inserted_before_pip_install(self):
         overlay = BuildOverride(
             service_name="backend",

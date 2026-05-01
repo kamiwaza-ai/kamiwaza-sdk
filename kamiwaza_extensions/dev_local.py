@@ -551,13 +551,21 @@ class DevLocalRunner:
         if stop_event.wait(2.0):
             return
         deadline = time.monotonic() + 60.0
-        services_with_bare_ports: List[Tuple[str, int]] = [
-            (svc_name, container_port)
-            for svc_name, svc_config in compose_data.get("services", {}).items()
-            for port_spec in svc_config.get("ports", []) or []
-            for host_port, container_port in [parse_port_mapping(str(port_spec))]
-            if host_port is None and container_port is not None
-        ]
+        # Dedupe ``(svc_name, container_port)`` so a (technically illegal
+        # but YAML-valid) duplicate bare-port spec like ``ports: ["3000",
+        # "3000"]`` doesn't make the loop's completion check
+        # (``len(printed) < len(services_with_bare_ports)``) permanently
+        # true and spin until the 60s deadline (Claude review on PR #91).
+        # ``dict.fromkeys`` preserves insertion order; sets would not.
+        services_with_bare_ports: List[Tuple[str, int]] = list(
+            dict.fromkeys(
+                (svc_name, container_port)
+                for svc_name, svc_config in compose_data.get("services", {}).items()
+                for port_spec in svc_config.get("ports", []) or []
+                for host_port, container_port in [parse_port_mapping(str(port_spec))]
+                if host_port is None and container_port is not None
+            )
+        )
         # Key on ``(svc_name, container_port)`` so multi-port services
         # (e.g. a frontend exposing both 3000 and 4173 for HMR) get every
         # URL printed, and the loop's completion check actually

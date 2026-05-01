@@ -670,6 +670,19 @@ _TS_NPM_INSTALL_PATTERN = re.compile(
     r"^\s*RUN\s+.*\bnpm\s+(install|ci)\b", re.IGNORECASE
 )
 
+# Rewrites ``RUN ... npm ci ...`` to ``RUN ... npm install ...`` line-by-line.
+# Required because the TS pre-install strip mutates ``package.json`` while
+# leaving ``package-lock.json`` unchanged. ``npm ci`` enforces strict
+# package.json ↔ lockfile parity and aborts on any divergence; ``npm install``
+# consults the lockfile but tolerates mismatches and re-resolves. Local-build
+# overrides already break strict lockfile reproducibility (we swap in a
+# local source-built tarball at install time via ``_TS_OVERLAY``), so
+# accepting looser install semantics is consistent and necessary
+# (Codex P2 review on PR #91).
+_TS_NPM_CI_LINE_PATTERN = re.compile(
+    r"^(\s*RUN\s+.*\b)npm\s+ci\b", re.IGNORECASE | re.MULTILINE
+)
+
 # Drops the ``kamiwaza-extensions-lib`` pin from requirements.txt before pip
 # install runs. The post-install ``_PYTHON_OVERLAY`` will copy the local
 # source into site-packages, so removing the pin avoids a hard failure when
@@ -821,6 +834,14 @@ def apply_build_overlay(dockerfile_content: str, overlay: BuildOverride) -> str:
             )
             if new_content is not content:
                 content = new_content
+                # If the matched install line uses ``npm ci``, rewrite to
+                # ``npm install`` so the lockfile mismatch the strip step
+                # creates doesn't abort the build (Codex P2 review on
+                # PR #91). Safe even when no ``npm ci`` line is present.
+                if pattern is _TS_NPM_INSTALL_PATTERN:
+                    content = _TS_NPM_CI_LINE_PATTERN.sub(
+                        r"\1npm install", content
+                    )
                 break
 
     lines = content.splitlines(keepends=True)

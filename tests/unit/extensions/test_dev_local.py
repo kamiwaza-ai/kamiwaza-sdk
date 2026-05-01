@@ -1054,6 +1054,129 @@ class TestHasBarePorts:
         assert runner._has_bare_ports(compose) is True
 
 
+@pytest.mark.unit
+class TestPollAndPrintUrls:
+    """The foreground URL-poll daemon thread (ENG-3901 / F-008) drives
+    ``docker compose port`` until every bare-port spec resolves and prints
+    each one. This test class exercises termination semantics, multi-port
+    keying (PR #91 Codex P3 / Claude High), and the threading.Event
+    stop-signal wiring (PR #91 round-2 review High).
+    """
+
+    def _runner(self):
+        from kamiwaza_extensions.dev_local import DevLocalRunner
+
+        return DevLocalRunner.__new__(DevLocalRunner)
+
+    def test_stop_event_set_immediately_returns_fast(self, monkeypatch):
+        """The runner's ``finally`` block sets the stop event before
+        unlinking compose override temp files. The polling thread must
+        wake from its initial 2s wait and exit promptly so the cleanup
+        doesn't race the next ``docker compose port`` call against
+        already-deleted ``-f`` paths."""
+        import threading
+        import time as _time
+
+        runner = self._runner()
+        compose = {"services": {"frontend": {"ports": ["3000"]}}}
+        stop = threading.Event()
+        stop.set()
+
+        # Track whether _docker_compose_port was ever called — it must
+        # not be (the thread should exit during the initial wait).
+        port_calls: list = []
+        monkeypatch.setattr(
+            runner,
+            "_docker_compose_port",
+            lambda *a, **kw: port_calls.append((a, kw)) or 12345,
+        )
+
+        t0 = _time.monotonic()
+        runner._poll_and_print_urls(
+            compose, ["docker", "compose"], "/tmp/x", stop_event=stop
+        )
+        elapsed = _time.monotonic() - t0
+        assert elapsed < 0.5, f"poll didn't fast-exit: {elapsed:.2f}s"
+        assert port_calls == []
+
+    def test_multi_port_service_prints_every_url_and_terminates(self, monkeypatch):
+        """A frontend exposing both 3000 (Next.js) and 4173 (HMR) should
+        get TWO URLs printed, not one — and the loop must terminate as
+        soon as both are resolved, not spin to the 60s deadline."""
+        import threading
+        from kamiwaza_extensions import dev_local
+
+        runner = self._runner()
+        compose = {"services": {"frontend": {"ports": ["3000", "4173"]}}}
+        stop = threading.Event()
+
+        # Skip the 2s initial wait so the test runs fast.
+        monkeypatch.setattr(
+            "kamiwaza_extensions.dev_local.threading.Event.wait",
+            lambda self, _t=None: False,
+        )
+        # Resolve both ports immediately on the first iteration.
+        port_results = {3000: 32001, 4173: 32002}
+        monkeypatch.setattr(
+            runner,
+            "_docker_compose_port",
+            lambda svc, port, **kw: port_results.get(port),
+        )
+
+        printed: list = []
+        monkeypatch.setattr(
+            dev_local.console, "print", lambda *a, **kw: printed.append(a)
+        )
+
+        runner._poll_and_print_urls(
+            compose, ["docker", "compose"], "/tmp/x", stop_event=stop
+        )
+        # Both URLs printed exactly once each.
+        urls = " ".join(str(args) for args in printed)
+        assert "32001" in urls and "32002" in urls
+        assert urls.count("frontend:") == 2
+
+    def test_duplicate_bare_port_specs_do_not_spin_loop(self, monkeypatch):
+        """A duplicate bare-port spec like ``ports: ["3000", "3000"]``
+        is technically illegal compose but valid YAML. Without dedupe,
+        the completion check stayed permanently true (printed has one
+        unique key, services_with_bare_ports has two duplicates) and
+        the loop spun until the 60s deadline. With dedupe it terminates
+        the moment the single URL is resolved (PR #91 round-3 / Claude
+        review)."""
+        import threading
+        from kamiwaza_extensions import dev_local
+
+        runner = self._runner()
+        compose = {"services": {"frontend": {"ports": ["3000", "3000"]}}}
+        stop = threading.Event()
+
+        monkeypatch.setattr(
+            "kamiwaza_extensions.dev_local.threading.Event.wait",
+            lambda self, _t=None: False,
+        )
+        sleeps: list = []
+        monkeypatch.setattr(
+            "kamiwaza_extensions.dev_local.time.sleep",
+            lambda s: sleeps.append(s),
+        )
+        monkeypatch.setattr(
+            runner, "_docker_compose_port", lambda svc, port, **kw: 32001
+        )
+        monkeypatch.setattr(dev_local.console, "print", lambda *a, **kw: None)
+
+        runner._poll_and_print_urls(
+            compose, ["docker", "compose"], "/tmp/x", stop_event=stop
+        )
+        # Loop terminated after one iteration because dedupe collapsed
+        # the two specs to one. Without dedupe it would have hit the
+        # 1.5s sleep (or wait) and re-iterated.
+        assert sleeps == [], (
+            "loop should not have slept once duplicates were collapsed; "
+            f"got sleeps={sleeps}"
+        )
+
+
 class TestPrintUrlsBarePort:
     """ENG-3889 P2 + review PR #84 Critical #3 — bare-port URL discovery
     must work in both pre-up and post-up modes. The pre-up mode runs
