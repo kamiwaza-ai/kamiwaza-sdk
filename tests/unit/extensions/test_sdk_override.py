@@ -526,6 +526,28 @@ class TestGenerateBuildOverrides:
         assert "COPY --from=sdk" in overrides[0].overlay_steps
         assert "USER root" in overrides[0].overlay_steps
 
+    def test_python_overlay_resolves_site_packages_without_importing_runtime_lib(
+        self, tmp_path
+    ):
+        """ENG-3901 / F-002 round-3: the post-install overlay must resolve
+        the site-packages dir via ``sysconfig`` rather than by importing
+        ``kamiwaza_extensions_lib``. The pre-install strip removes the lib
+        from requirements.txt so the import would crash here. Use
+        ``sysconfig.get_paths()['purelib']`` which is always resolvable
+        regardless of what's installed."""
+        spec = self._make_spec(tmp_path)
+        compose = {"services": {"backend": {"build": ".", "ports": ["8000:8000"]}}}
+        overlay = generate_build_overrides(spec, compose)[0].overlay_steps
+        # Must NOT import the lib (would fail post-strip).
+        assert "import kamiwaza_extensions_lib" not in overlay, (
+            f"overlay still resolves site-packages by importing the lib — "
+            f"this crashes when the pre-install strip removes the pin. "
+            f"overlay: {overlay!r}"
+        )
+        # MUST use sysconfig.get_paths()['purelib'].
+        assert "sysconfig" in overlay
+        assert "purelib" in overlay
+
     def test_empty_services(self, tmp_path):
         spec = self._make_spec(tmp_path)
         assert generate_build_overrides(spec, {"services": {}}) == []

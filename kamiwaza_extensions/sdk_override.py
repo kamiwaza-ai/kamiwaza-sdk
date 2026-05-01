@@ -637,10 +637,17 @@ _PYTHON_OVERLAY = (
     "# --- SDK override: install local Python runtime lib ---\n"
     "USER root\n"
     "COPY --from=sdk kamiwaza_extensions_lib /tmp/kamiwaza_extensions_lib\n"
-    'RUN SITE=$(python -c "import kamiwaza_extensions_lib as m, os;'
-    ' print(os.path.dirname(m.__file__))")'
-    ' && rm -rf "$SITE"'
-    ' && cp -r /tmp/kamiwaza_extensions_lib "$SITE"'
+    # Resolve the site-packages dir via ``sysconfig`` rather than by
+    # importing ``kamiwaza_extensions_lib``. The pre-install strip
+    # (above) removed the lib from requirements.txt, so it's NOT
+    # installed via pip — importing it would crash here. ``purelib``
+    # is the canonical pure-Python site-packages path for the current
+    # interpreter and is always resolvable regardless of what's
+    # installed. (ENG-3901 / F-002 round-3.)
+    'RUN PURELIB=$(python -c "import sysconfig; print(sysconfig.get_paths()[\\"purelib\\"])")'
+    ' && mkdir -p "$PURELIB"'
+    ' && rm -rf "$PURELIB/kamiwaza_extensions_lib"'
+    ' && cp -r /tmp/kamiwaza_extensions_lib "$PURELIB/"'
     " && rm -rf /tmp/kamiwaza_extensions_lib\n"
     "{restore_user_block}"
 )
