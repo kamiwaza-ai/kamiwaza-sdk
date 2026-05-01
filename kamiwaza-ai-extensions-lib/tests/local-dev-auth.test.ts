@@ -62,11 +62,22 @@ describe("_buildBridgedHeaders", () => {
         expect(out).toBe(incoming); // identity comparison — true no-op
     });
 
-    it("TS-17: gate=1 but token unset → warn and pass through (no synthesized identity)", () => {
+    it("TS-17: gate=1 but token unset → warn, no synthesized identity, envelope cleared", () => {
+        // Round-13 review (codex P2) — under ``--auth`` there is no
+        // platform gateway, so spoofed envelope headers must NEVER pass
+        // through, even on the bridge's "warn + no-op" misconfiguration
+        // path. Non-envelope headers (``x-existing``) are preserved.
         process.env[GATE] = "1";
-        const incoming = new Headers({ "x-existing": "yes" });
+        const incoming = new Headers({
+            "x-existing": "yes",
+            "x-user-id": "spoof",
+            "x-user-system-high": "1",
+        });
         const out = _buildBridgedHeaders(incoming);
-        expect(out).toBe(incoming);
+        expect(out.get("x-existing")).toBe("yes");
+        expect(out.get("x-user-id")).toBeNull();
+        expect(out.get("x-user-system-high")).toBeNull();
+        expect(out.get("authorization")).toBeNull();
         expect(warnSpy).toHaveBeenCalled();
         const msg = warnSpy.mock.calls[0]?.[0];
         expect(String(msg)).toContain(TOKEN);
@@ -148,29 +159,57 @@ describe("_buildBridgedHeaders", () => {
         expect(out.get("x-workroom-id")).toBe("user-1");
     });
 
-    it("TS-20: malformed token (cannot decode) → warn + pass through", () => {
+    it("TS-20: malformed token (cannot decode) → warn + envelope cleared", () => {
+        // Round-13 review (codex P2) — same as TS-17, the warn path
+        // now sanitizes envelope headers since the bridge is the
+        // source of truth under --auth.
         process.env[GATE] = "1";
         process.env[TOKEN] = "not-a-jwt";
 
-        const incoming = new Headers();
+        const incoming = new Headers({
+            "x-user-id": "spoof",
+            "x-user-system-high": "1",
+        });
         const out = _buildBridgedHeaders(incoming);
-        expect(out).toBe(incoming);
+        expect(out.get("x-user-id")).toBeNull();
+        expect(out.get("x-user-system-high")).toBeNull();
         expect(warnSpy).toHaveBeenCalled();
     });
 
-    it("does not override an authorization header that's already present", () => {
-        // Production safety: even with the gate accidentally enabled, an
-        // already-authenticated request must not have its identity replaced.
+    it("preserves inbound Authorization but still sanitizes the envelope", () => {
+        // PR #87 round-13 review (codex P2 escalated to Critical) —
+        // the prior implementation early-returned ``incoming`` on
+        // inbound Authorization, preserving every spoofed envelope
+        // field alongside it. An attacker on the dev server could send
+        // ``Authorization: anything`` + ``x-user-id: admin`` +
+        // ``x-user-system-high: 1`` and reach the backend with
+        // forged envelope-borne privileges. The fix: still honor the
+        // inbound bearer (defense-in-depth for the "bridge accidentally
+        // enabled in production" leak case) but clear envelope
+        // headers so spoofs can't survive alongside it.
         const token = makeJwt({ sub: "user-bridge" });
         process.env[GATE] = "1";
         process.env[TOKEN] = token;
 
         const incoming = new Headers({
             authorization: "Bearer real-platform-token",
-            "x-user-id": "real-user",
+            "x-user-id": "spoof-admin",
+            "x-user-system-high": "1",
+            "x-user-roles": "admin,owner",
+            "x-user-workroom-role": "admin",
+            "x-non-envelope": "preserved",
         });
         const out = _buildBridgedHeaders(incoming);
-        expect(out).toBe(incoming); // pass-through
+
+        // Inbound Authorization is preserved (real platform identity wins).
+        expect(out.get("authorization")).toBe("Bearer real-platform-token");
+        // Spoofed envelope headers are cleared.
+        expect(out.get("x-user-id")).toBeNull();
+        expect(out.get("x-user-system-high")).toBeNull();
+        expect(out.get("x-user-roles")).toBeNull();
+        expect(out.get("x-user-workroom-role")).toBeNull();
+        // Non-envelope headers are passed through unchanged.
+        expect(out.get("x-non-envelope")).toBe("preserved");
     });
 
     it("clears spoofed envelope headers before bridging (round-6 codex P2)", () => {

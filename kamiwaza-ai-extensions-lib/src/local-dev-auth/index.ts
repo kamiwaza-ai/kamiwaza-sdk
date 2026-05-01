@@ -187,29 +187,6 @@ export function _buildBridgedHeaders(
 ): Headers {
     if (!config.enabled) return incoming;
 
-    // Defense-in-depth: if the inbound request is already authenticated,
-    // don't override it. Real platform identity always wins.
-    if (incoming.get("authorization")) return incoming;
-
-    if (!config.token) {
-        warnOnce(
-            "missing-token",
-            `${GATE_ENV}=1 but ${TOKEN_ENV} is unset — local-dev bridge inactive. ` +
-            "Run `kz-ext login` and restart `kz-ext dev local --auth`.",
-        );
-        return incoming;
-    }
-
-    const claims = decodeJwt(config.token);
-    if (!claims || !claims.sub) {
-        warnOnce(
-            "undecodable-token",
-            `${TOKEN_ENV} could not be decoded as a JWT with a 'sub' claim — ` +
-            "local-dev bridge inactive.",
-        );
-        return incoming;
-    }
-
     // PR #87 round-6 review (codex P2) — sanitize ALL forwarded-auth
     // envelope headers before bridging. Starting from `new Headers(incoming)`
     // and only `set()`-ing a subset would preserve client-supplied values
@@ -219,10 +196,56 @@ export function _buildBridgedHeaders(
     // auth tests pass in ways production wouldn't — in production the
     // platform gateway owns the entire envelope). Clear every header in
     // FORWARDED_AUTH_HEADERS first, then set only the synthesized values.
+    //
+    // Round-13 review (codex P2) — the round-6 fix only ran on the
+    // no-inbound-Authorization path. The original early-return on
+    // inbound ``Authorization`` preserved EVERY envelope header
+    // including spoofs, opening a privilege-escalation bypass:
+    // ``Authorization: anything`` + ``x-user-id: admin`` +
+    // ``x-user-system-high: 1`` reached the backend untouched. The
+    // sanitization now runs unconditionally on every gate-on path —
+    // when the bridge is active there's no platform gateway, so
+    // spoofs never have a legitimate source.
+    const inboundAuthorization = incoming.get("authorization");
     const out = new Headers(incoming);
     for (const header of FORWARDED_AUTH_HEADERS) {
         out.delete(header);
     }
+
+    // Defense-in-depth: if the inbound request was already authenticated,
+    // honor that ``Authorization`` rather than overriding with the
+    // bridge's synthesized one (covers the "bridge accidentally
+    // enabled in production" leak case — real platform identity wins).
+    // The envelope above was still cleared so spoofed envelope fields
+    // can't survive alongside the inbound bearer.
+    if (inboundAuthorization) {
+        out.set("authorization", inboundAuthorization);
+        return out;
+    }
+
+    if (!config.token) {
+        warnOnce(
+            "missing-token",
+            `${GATE_ENV}=1 but ${TOKEN_ENV} is unset — local-dev bridge inactive. ` +
+            "Run `kz-ext login` and restart `kz-ext dev local --auth`.",
+        );
+        // Return ``out`` (envelope cleared) rather than ``incoming`` —
+        // the bridge is misconfigured, but spoofs still must not pass
+        // through under --auth (no platform gateway here).
+        return out;
+    }
+
+    const claims = decodeJwt(config.token);
+    if (!claims || !claims.sub) {
+        warnOnce(
+            "undecodable-token",
+            `${TOKEN_ENV} could not be decoded as a JWT with a 'sub' claim — ` +
+            "local-dev bridge inactive.",
+        );
+        return out;
+    }
+
+
     out.set("authorization", `Bearer ${config.token}`);
     out.set("x-user-id", claims.sub);
     // x-workroom-id is required by strict extract_identity() under

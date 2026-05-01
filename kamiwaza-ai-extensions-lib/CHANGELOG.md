@@ -28,13 +28,19 @@ independently.
 * The bridge is a no-op pass-through when the gate env var is unset
   (production behaviour preserved).
 * When the gate is set, all forwarded-auth envelope headers on the
-  inbound request are cleared before the synthesized values are
-  injected — defends against client-supplied spoofs of fields we don't
-  bridge (e.g. `x-user-system-high`, `x-user-workroom-role`).
-* Inbound requests that already carry an `authorization` header are
-  passed through unchanged (real platform identity always wins over the
+  inbound request are cleared on EVERY path before any synthesized
+  values are injected — defends against client-supplied spoofs of
+  fields we don't bridge (e.g. `x-user-system-high`,
+  `x-user-workroom-role`). Round-13 review (codex P2): the prior
+  implementation skipped sanitization when an inbound `Authorization`
+  was set, leaving an envelope-spoof bypass; the fix sanitizes
+  unconditionally under `--auth` (no platform gateway in dev → spoofs
+  never have a legitimate source).
+* Inbound requests that already carry an `Authorization` header keep
+  that header intact (real platform identity always wins over the
   bridge — defense in depth if the gate accidentally bleeds into a
-  non-dev environment).
+  non-dev environment) but the OTHER envelope headers are still
+  sanitized so spoofs can't survive alongside the inbound bearer.
 * `KAMIWAZA_DEV_WORKROOM_ID` env var optionally overrides the
   synthesized `x-workroom-id`; otherwise it defaults to the JWT `sub`
   so the strict identity path succeeds and `workroom_id` is stable
