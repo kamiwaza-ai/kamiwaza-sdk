@@ -16,6 +16,7 @@ from kamiwaza_extensions_lib import (
     list_available_models,
     require_auth,
 )
+from kamiwaza_extensions_lib._url import backend_runtime_base
 from openai import APIStatusError, AsyncOpenAI
 
 app = FastAPI(title="chatbot-app")
@@ -61,44 +62,50 @@ def _pick_string(value):
     return value.strip() if isinstance(value, str) and value.strip() else ""
 
 
-def _public_base_url():
-    config = AuthConfig.from_env()
-    origin = _pick_string(config.origin)
-    if origin:
-        return origin.rstrip("/")
+def _backend_chat_base():
+    """Container-routable base URL for the backend's AsyncOpenAI calls.
 
-    app_url = _pick_string(config.app_url)
-    app_path = _pick_string(config.app_path)
-    if app_url and app_path and app_url.endswith(app_path):
-        return app_url[: -len(app_path)].rstrip("/")
-
-    public_api_url = _pick_string(config.public_api_url)
-    if public_api_url:
-        return public_api_url.removesuffix("/api").rstrip("/")
-
-    api_url = _pick_string(config.api_url)
-    if api_url:
-        return api_url.removesuffix("/api").rstrip("/")
-
-    return ""
+    Built via ``backend_runtime_base`` from the runtime lib so this code
+    path stays in lock-step with ``_resolve_openai_base`` — both run
+    inside the backend container and need the same priority order
+    (``api_url`` over ``public_api_url``). Under ``kz-ext dev local
+    --auth`` the two diverge: ``api_url=host.docker.internal`` (reachable
+    from inside the container), ``public_api_url=localhost`` (browser-
+    only). Without this, the chat endpoint would point at the
+    container's own ``localhost`` and every chat call would fail.
+    See PR #87 round-7 + round-8 review.
+    """
+    return backend_runtime_base(AuthConfig.from_env())
 
 
 def _normalize_model_endpoint(endpoint: str, access_path: str):
-    public_base = _public_base_url()
+    backend_base = _backend_chat_base()
 
-    if access_path and public_base:
+    if access_path and backend_base:
         normalized_path = access_path if access_path.startswith("/") else f"/{access_path}"
         normalized_path = normalized_path.rstrip("/")
         if normalized_path.endswith("/v1"):
-            return f"{public_base}{normalized_path}"
-        return f"{public_base}{normalized_path}/v1"
+            return f"{backend_base}{normalized_path}"
+        return f"{backend_base}{normalized_path}/v1"
 
     if endpoint:
+        # Endpoint came from list_available_models's metadata, which
+        # builds browser-facing URLs. If it's a fully-qualified URL,
+        # re-host it onto the container-routable base so the backend
+        # container can actually reach it (round-8 review High #3).
         parsed = urlparse(endpoint)
         if parsed.path.startswith("/api/runtime/models/"):
-            return urlunparse(
-                parsed._replace(path=parsed.path.replace("/api/runtime/models/", "/runtime/models/", 1))
-            ).rstrip("/")
+            parsed = parsed._replace(
+                path=parsed.path.replace("/api/runtime/models/", "/runtime/models/", 1)
+            )
+        if backend_base and parsed.scheme and parsed.netloc:
+            backend_parsed = urlparse(backend_base)
+            if backend_parsed.scheme and backend_parsed.netloc:
+                parsed = parsed._replace(
+                    scheme=backend_parsed.scheme,
+                    netloc=backend_parsed.netloc,
+                )
+        return urlunparse(parsed).rstrip("/")
 
     return endpoint
 

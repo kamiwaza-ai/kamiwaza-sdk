@@ -145,7 +145,14 @@ def create_session_router(prefix: str = "") -> APIRouter:
         if not config.use_auth:
             return {"login_url": None}
 
-        base = config.public_api_url.rstrip("/")
+        # Browser-facing — must resolve from the user's browser.
+        # Round-8 review High #5: fall back to ``api_url`` if
+        # ``public_api_url`` is unset so we don't render a malformed
+        # ``/auth/login`` relative URL on legacy deployments. The
+        # platform's auth endpoints live under ``/api/auth/*``, so we
+        # use the raw API URL (with trailing slash trimmed) — NOT the
+        # ``public_base_url`` runtime helper that strips ``/api``.
+        base = (config.public_api_url or config.api_url).rstrip("/")
         return_to = config.app_url or str(request.base_url).rstrip("/")
         return {"login_url": f"{base}/auth/login?return_to={quote(return_to, safe='')}"}
 
@@ -155,9 +162,25 @@ def create_session_router(prefix: str = "") -> APIRouter:
         if not config.use_auth:
             return {"logout_url": None, "redirect_url": None}
 
-        base = config.public_api_url.rstrip("/")
+        # Two URLs, two consumers (round-8 review High #4):
+        # - ``logout_url`` returned to the client is browser-facing — the
+        #   browser navigates to it after the response, so it MUST use
+        #   the host the browser can resolve. Prefer ``public_api_url``.
+        # - The internal ``httpx.post(...)`` runs INSIDE the backend
+        #   container — it MUST use a container-routable host or the
+        #   server-side session termination silently fails (under the
+        #   broad ``except Exception`` below). Prefer ``api_url``.
+        # The original code used ``public_api_url`` for both, so under
+        # ``kz-ext dev local --auth`` the browser side worked but the
+        # server-side logout silently no-op'd against ``localhost``.
+        # The platform's auth endpoints live under ``/api/auth/*`` so we
+        # use the raw API URLs here, not the ``/api``-stripping runtime
+        # helpers.
+        browser_base = (config.public_api_url or config.api_url).rstrip("/")
+        backend_base = (config.api_url or config.public_api_url).rstrip("/")
         app_url = config.app_url or str(request.base_url).rstrip("/")
-        logout_url = f"{base}/auth/logout"
+        browser_logout_url = f"{browser_base}/auth/logout"
+        backend_logout_url = f"{backend_base}/auth/logout"
 
         # Terminate the platform session server-side so the user is
         # actually logged out (the client only redirects to redirect_url).
@@ -171,12 +194,12 @@ def create_session_router(prefix: str = "") -> APIRouter:
                 verify=config.verify_ssl,
                 timeout=5,
             ) as client:
-                await client.post(logout_url, headers=headers)
+                await client.post(backend_logout_url, headers=headers)
         except Exception:
             pass  # Best-effort — redirect still happens
 
         return {
-            "logout_url": logout_url,
+            "logout_url": browser_logout_url,
             "redirect_url": f"{app_url}/logged-out",
         }
 

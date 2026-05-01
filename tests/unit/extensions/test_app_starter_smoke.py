@@ -198,6 +198,68 @@ def test_chatbot_example_matches_scaffolded_app_core_files(tmp_path, monkeypatch
             assert scaffolded_path.read_text() == example_path.read_text()
 
 
+@pytest.mark.unit
+def test_template_chat_endpoint_uses_container_routable_url_under_auth_split(
+    tmp_path, monkeypatch
+):
+    """PR #87 round-8 review (claude + comprehensive consensus) — under
+    `kz-ext dev local --auth` the runner sets:
+        KAMIWAZA_API_URL=http://host.docker.internal:8000/api  (container)
+        KAMIWAZA_PUBLIC_API_URL=http://localhost:8000          (browser)
+
+    The template's `_normalize_model_endpoint` must build a chat
+    endpoint reachable from INSIDE the backend container — i.e.
+    container-routable, NOT browser-routable. Round-8 caught the
+    template's local URL helper was still preferring `public_api_url`,
+    so the resulting endpoint pointed at `localhost` which the
+    container can't reach.
+
+    Locks the fix in by exercising the real `_normalize_model_endpoint`
+    function from the scaffolded backend and asserting the resolved
+    chat endpoint contains `host.docker.internal` and NOT `localhost`.
+    """
+    scaffolded = _scaffold_app(tmp_path, monkeypatch)
+
+    # Simulate the round-5 split env that --auth produces.
+    monkeypatch.setenv(
+        "KAMIWAZA_API_URL", "http://host.docker.internal:8000/api"
+    )
+    monkeypatch.setenv("KAMIWAZA_PUBLIC_API_URL", "http://localhost:8000")
+    monkeypatch.setenv("KAMIWAZA_USE_AUTH", "true")
+    monkeypatch.setenv("KZ_EXT_DEV_LOCAL_AUTH", "1")
+
+    module = _load_backend_module(
+        scaffolded / "backend", "scaffolded_split_env"
+    )
+
+    # Path 1: access_path-based endpoint (the typical platform shape).
+    endpoint = module._normalize_model_endpoint(
+        endpoint="",
+        access_path="/runtime/models/dep-1",
+    )
+    assert "host.docker.internal" in endpoint, (
+        f"access_path-built endpoint {endpoint!r} should be "
+        "container-routable, not browser-facing localhost"
+    )
+    assert "localhost" not in endpoint
+
+    # Path 2: pre-built endpoint (the rare, lib-supplied browser URL
+    # path). Round-8 review High #3 — the template should re-host the
+    # browser URL onto the container-routable base instead of passing
+    # the browser URL through verbatim.
+    rehosted = module._normalize_model_endpoint(
+        endpoint="http://localhost:8000/runtime/models/dep-1/v1",
+        access_path="",
+    )
+    assert "host.docker.internal" in rehosted, (
+        f"pre-built endpoint {rehosted!r} should have its host "
+        "rewritten to container-routable"
+    )
+    assert "localhost" not in rehosted
+
+    sys.modules.pop("scaffolded_split_env", None)
+
+
 def _exercise_backend_chat_error_path(
     extension_dir: Path,
     monkeypatch: pytest.MonkeyPatch,

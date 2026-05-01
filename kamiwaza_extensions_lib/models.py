@@ -173,46 +173,15 @@ async def _resolve_openai_base(
     return config.openai_base
 
 
-def _public_base_url(config: AuthConfig) -> str:
-    """Base URL intended for **browser-facing** consumption — values
-    surfaced to the frontend / user (model endpoints displayed in the
-    UI, OAuth redirect URIs, etc.).
-
-    Prefers ``config.public_api_url`` (the developer's browser-resolvable
-    host) over ``config.api_url``. In production both point at the same
-    gateway; under ``kz-ext dev local --auth`` they diverge intentionally
-    so the browser can keep using the original loopback host while the
-    container uses ``host.docker.internal``.
-    """
-    if config.public_api_url:
-        return config.public_api_url.removesuffix("/api").rstrip("/")
-    if config.api_url:
-        return config.api_url.removesuffix("/api").rstrip("/")
-    return ""
-
-
-def _backend_runtime_base(config: AuthConfig) -> str:
-    """Base URL the backend container uses to reach the platform's
-    runtime endpoints (OpenAI-compatible model URLs, deployment access
-    paths). Distinct from ``_public_base_url`` because under
-    ``kz-ext dev local --auth`` the browser and the container need
-    different hosts: the browser hits the original loopback
-    (``http://localhost:8000``), the container hits the rewritten alias
-    (``http://host.docker.internal:8000``).
-
-    In production both URLs point at the same gateway so the priority
-    is a no-op there.
-
-    PR #87 round-7 review (codex P1) caught a regression where
-    ``get_model_client()`` was building OpenAI base URLs from
-    ``public_api_url`` (browser) and the backend container then failed
-    to reach its own ``localhost``.
-    """
-    if config.api_url:
-        return config.api_url.removesuffix("/api").rstrip("/")
-    if config.public_api_url:
-        return config.public_api_url.removesuffix("/api").rstrip("/")
-    return ""
+# Round-8 review consolidated these helpers in `_url.py` so the app
+# template + session router + lib all share a single source of truth
+# (Rule of Three was triggered — see `_url.py` for full rationale).
+# Re-exported under their original underscored names for any in-tree
+# caller / test that imported from ``models.py`` directly.
+from ._url import (  # noqa: E402
+    backend_runtime_base as _backend_runtime_base,  # noqa: F401
+    public_base_url as _public_base_url,  # noqa: F401
+)
 
 
 def _normalize_openai_endpoint(endpoint: str) -> str:
