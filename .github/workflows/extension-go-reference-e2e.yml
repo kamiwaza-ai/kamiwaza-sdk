@@ -172,12 +172,23 @@ jobs:
     env:
       KAMIWAZA_API_URL: ${{ secrets.KAMIWAZA_E2E_API_URL }}
       KAMIWAZA_API_KEY: ${{ secrets.KAMIWAZA_E2E_API_KEY }}
+      # Container registry that `kz-ext dev` pushes the built image to.
+      # Without this, dev.py:294-305 falls through to a "registry.<host>"
+      # heuristic that only works on clusters provisioned with that DNS;
+      # set it explicitly so the workflow doesn't depend on cluster DNS.
+      KAMIWAZA_REGISTRY: ${{ secrets.KAMIWAZA_E2E_REGISTRY }}
       # Publish-profile fields. The "Provision e2e publish profile" step
       # below creates ~/.kamiwaza/profiles/e2e.json from these so
       # `kz-ext publish --stage e2e` can resolve the profile.
       KZ_PUBLISH_REGISTRY: ${{ secrets.KZ_PUBLISH_REGISTRY }}
       KZ_PUBLISH_CATALOG_ENDPOINT: ${{ secrets.KZ_PUBLISH_CATALOG_ENDPOINT }}
       KZ_PUBLISH_CATALOG_BUCKET: ${{ secrets.KZ_PUBLISH_CATALOG_BUCKET }}
+      # AWS credentials read by boto3 at publish time when the e2e profile
+      # uses --catalog-credentials env. Catalog uploads to S3-compatible
+      # storage (AWS S3 / Cloudflare R2 / etc.) need both KEY_ID and
+      # SECRET_ACCESS_KEY in the process environment.
+      AWS_ACCESS_KEY_ID: ${{ secrets.KZ_PUBLISH_AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.KZ_PUBLISH_AWS_SECRET_ACCESS_KEY }}
 
     steps:
       - uses: actions/checkout@v4
@@ -218,16 +229,21 @@ jobs:
         working-directory: examples/extensions/go-reference
         run: |
           set -euo pipefail
-          # The deployed URL is surfaced by `kz-ext status`; we parse the
-          # human-readable output to find the platform-routed URL so the
-          # request actually traverses Traefik ForwardAuth (the only place
-          # the envelope contract is exercised end-to-end).
+          # The deployed URL is surfaced by `kz-ext status`. Two important
+          # capture details:
+          #   1. The status command writes via Console(stderr=True) (see
+          #      kamiwaza_extensions/commands/status.py), so we MUST
+          #      capture stderr too — `2>&1` redirects stderr into stdout.
+          #   2. Deployed extension URLs use the platform's runtime path
+          #      `/runtime/(apps|tools|services)/<name>` (per
+          #      PayloadBuilder), NOT `/extensions/...` which is the
+          #      management API. Match the runtime pattern.
           # TODO: replace this regex with `kz-ext status --json` once that
           # flag exists. Parsing human output is brittle to any cosmetic
           # CLI change (color codes, table reformat, label rename).
-          STATUS=$(NO_COLOR=1 uv run kz-ext status)
+          STATUS=$(NO_COLOR=1 uv run kz-ext status 2>&1)
           echo "$STATUS"
-          DEPLOY_URL=$(echo "$STATUS" | grep -Eo 'https?://[^[:space:]]+/extensions/[^[:space:]]+' | head -1)
+          DEPLOY_URL=$(echo "$STATUS" | grep -Eo 'https?://[^[:space:]]+/runtime/(apps|tools|services)/[^[:space:]]+' | head -1)
           test -n "$DEPLOY_URL" || { echo "::error::no deploy URL in status output"; exit 1; }
           curl -fsS -k "${DEPLOY_URL}/health"
           curl -fsS -k -XPOST "${DEPLOY_URL}/tools/echo" \
@@ -255,5 +271,5 @@ jobs:
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             echo "::notice::Phase B (cluster deploy + invoke + publish) does not run on PRs by design — Phase A (cluster-free smoke) is the executable contract for PRs. Phase B runs on push to main/develop when KAMIWAZA_E2E_ENABLED=true. See workflow header comment for the security rationale."
           else
-            echo "::notice::Phase B skipped — set repo variable KAMIWAZA_E2E_ENABLED=true and provide secrets KAMIWAZA_E2E_API_URL, KAMIWAZA_E2E_API_KEY, KZ_PUBLISH_REGISTRY, KZ_PUBLISH_CATALOG_ENDPOINT, KZ_PUBLISH_CATALOG_BUCKET (plus AWS_* for catalog upload). Tracked under ENG-3894 / D210 M2 T2.12."
+            echo "::notice::Phase B skipped — set repo variable KAMIWAZA_E2E_ENABLED=true and provide secrets KAMIWAZA_E2E_API_URL, KAMIWAZA_E2E_API_KEY, KAMIWAZA_E2E_REGISTRY, KZ_PUBLISH_REGISTRY, KZ_PUBLISH_CATALOG_ENDPOINT, KZ_PUBLISH_CATALOG_BUCKET, KZ_PUBLISH_AWS_ACCESS_KEY_ID, KZ_PUBLISH_AWS_SECRET_ACCESS_KEY. Tracked under ENG-3894 / D210 M2 T2.12."
           fi

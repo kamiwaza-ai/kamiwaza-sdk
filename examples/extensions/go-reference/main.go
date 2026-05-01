@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -127,7 +128,12 @@ func handleEcho(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "kamiwaza_runtime_error", "invalid JSON body")
 		return
 	}
-	if dec.More() {
+	// dec.More() reports whether another element exists in the *current*
+	// array/object — at top level after a single object it returns false
+	// even for trailing `}` or `]`. Require a second Decode to return EOF
+	// to enforce single-document bodies.
+	var trailing struct{}
+	if err := dec.Decode(&trailing); err != io.EOF {
 		writeError(w, http.StatusBadRequest, "kamiwaza_runtime_error", "trailing data after JSON body")
 		return
 	}
@@ -192,11 +198,16 @@ func getenv(key, fallback string) string {
 	return fallback
 }
 
-// parseUseAuth matches kamiwaza_extensions_lib/config.py's truthy/falsy
-// rules: default (empty after trim) → on; case-insensitive false/0/no →
-// off. Anything else (including "True", "TRUE", "yes", "1") → on.
+// parseUseAuth matches kamiwaza_extensions_lib/config.py:57 byte-for-byte:
+//
+//	os.environ.get("KAMIWAZA_USE_AUTH", "true").lower() not in ("false","0","no")
+//
+// Python does NOT trim whitespace; trimming here would diverge — e.g.
+// `KAMIWAZA_USE_AUTH=" false "` would be auth-off in Go (trimmed to
+// "false") but auth-on in Python (literal " false " is not in the falsy
+// set). For a canonical reference any divergence is a footgun.
 func parseUseAuth(v string) bool {
-	switch strings.ToLower(strings.TrimSpace(v)) {
+	switch strings.ToLower(v) {
 	case "false", "0", "no":
 		return false
 	default:

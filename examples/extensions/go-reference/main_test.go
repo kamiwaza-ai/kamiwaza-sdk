@@ -178,13 +178,25 @@ func TestHandleEcho_UnknownField_Returns400(t *testing.T) {
 	}
 }
 
-// Trailing JSON after the first object is rejected — pins dec.More() check.
+// Trailing JSON after the first object is rejected. Three flavors all
+// must fail — they would NOT all be caught by the previous `dec.More()`
+// check at top level (which only reports more elements within an
+// already-open array/object), motivating the second-Decode-expect-EOF
+// pattern in handleEcho.
 func TestHandleEcho_TrailingData_Returns400(t *testing.T) {
-	req := httptest.NewRequest(http.MethodPost, "/tools/echo", strings.NewReader(`{"message":"hi"} {"junk":1}`))
-	rr := httptest.NewRecorder()
-	handleEcho(rr, req)
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("status: want 400, got %d", rr.Code)
+	cases := []string{
+		`{"message":"hi"} {"junk":1}`, // another full object
+		`{"message":"hi"}}`,           // trailing close-brace
+		`{"message":"hi"}]`,           // trailing close-bracket
+		`{"message":"hi"}garbage`,     // trailing identifier
+	}
+	for _, body := range cases {
+		req := httptest.NewRequest(http.MethodPost, "/tools/echo", strings.NewReader(body))
+		rr := httptest.NewRecorder()
+		handleEcho(rr, req)
+		if rr.Code != http.StatusBadRequest {
+			t.Errorf("body %q: status want 400, got %d", body, rr.Code)
+		}
 	}
 }
 
@@ -244,26 +256,29 @@ func TestHandleEcho_AuthOn_ReturnsPopulatedIdentity(t *testing.T) {
 }
 
 // Pins the parity contract: parseUseAuth must agree with Python's truthy
-// rules from kamiwaza_extensions_lib/config.py:57. A regression here is
-// the kind of fail-open default that turns a "reference" into a footgun.
+// rules from kamiwaza_extensions_lib/config.py:57 byte-for-byte. A
+// regression here is the kind of fail-open default that turns a
+// "reference" into a footgun. Note: Python does NOT trim whitespace, so
+// padded values like " false " are auth-ON in Python (the literal
+// " false " is not in the falsy set) — this Go version matches.
 func TestParseUseAuth(t *testing.T) {
 	cases := []struct {
 		in   string
 		want bool
 	}{
-		{"", true},         // unset/default → fail-secure
-		{"   ", true},      // whitespace-only → default
-		{"true", true},     // explicit on
-		{"True", true},     // case-insensitive
-		{"TRUE", true},     // case-insensitive
-		{"yes", true},      // anything non-falsy
-		{"1", true},        // anything non-falsy
-		{"false", false},   // explicit off
-		{"FALSE", false},   // case-insensitive off
-		{"False", false},   // case-insensitive off
-		{"0", false},       // explicit off
-		{"no", false},      // explicit off
-		{" false ", false}, // trimmed
+		{"", true},        // unset/default → fail-secure
+		{"   ", true},     // whitespace-only → not in falsy set → on
+		{"true", true},    // explicit on
+		{"True", true},    // case-insensitive
+		{"TRUE", true},    // case-insensitive
+		{"yes", true},     // anything non-falsy
+		{"1", true},       // anything non-falsy
+		{"false", false},  // explicit off
+		{"FALSE", false},  // case-insensitive off
+		{"False", false},  // case-insensitive off
+		{"0", false},      // explicit off
+		{"no", false},     // explicit off
+		{" false ", true}, // padded — Python doesn't trim, so neither do we
 	}
 	for _, c := range cases {
 		if got := parseUseAuth(c.in); got != c.want {
