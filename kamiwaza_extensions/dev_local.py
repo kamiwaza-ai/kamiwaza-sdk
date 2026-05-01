@@ -10,6 +10,8 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -351,17 +353,35 @@ class DevLocalRunner:
             # 9. Print access URLs (pre-up). For bare-port specs the host
             # port isn't assigned yet — emit a hint instead so users know
             # what to expect. Detach mode (10b) re-prints with the resolved
-            # host port after `compose up -d` returns.
+            # host port after `compose up -d` returns; foreground mode
+            # delegates to a background polling thread (10a) so the URL
+            # surfaces while compose is still streaming logs.
             self._print_urls(info.compose_data, remaps, post_up=False)
+
+            # 10a. Foreground mode: spawn a background thread that polls
+            # ``docker compose port`` until the bare-port assignments are
+            # visible, then prints the URL line. Without this, the user
+            # sees "host port assigned by Docker" but never gets the
+            # actual URL (it scrolls past in the build / Next.js startup
+            # logs and is easy to miss). Daemon thread so it dies with
+            # the process if compose exits early. (ENG-3901 / F-008)
+            url_poll_thread: Optional[threading.Thread] = None
+            if not detach and self._has_bare_ports(info.compose_data):
+                url_poll_thread = threading.Thread(
+                    target=self._poll_and_print_urls,
+                    args=(info.compose_data, remaps, compose_prefix, str(info.path)),
+                    daemon=True,
+                    name="kz-ext-url-poll",
+                )
+                url_poll_thread.start()
 
             # 10. Run subprocess with signal forwarding
             rc = self._run_subprocess(cmd, env=env, cwd=str(info.path))
 
             # 10b. Detach mode only: re-resolve bare-port URLs once Docker
-            # has actually published them. Foreground mode blocks on
-            # compose logs until the user Ctrl+Cs, so there is no
-            # post-up moment to reach. Pass the same compose prefix +
-            # cwd so the port query targets the project that was started.
+            # has actually published them. Foreground mode handled by 10a
+            # above. Pass the same compose prefix + cwd so the port query
+            # targets the project that was started.
             if detach and rc == 0:
                 self._print_urls(
                     info.compose_data,
@@ -446,6 +466,75 @@ class DevLocalRunner:
                 if svc_name in remaps:
                     host_port = remaps[svc_name][1]
                 console.print(f"[dim]{svc_name}:[/dim] http://localhost:{host_port}")
+
+    @staticmethod
+    def _has_bare_ports(compose_data: Optional[dict]) -> bool:
+        """True iff any service in ``compose_data`` has a bare-port spec
+        (e.g. ``"3000"``) whose host port Docker will auto-assign.
+
+        Mapped specs (``"3000:3000"``) are already known and printed by
+        the pre-up pass. Only bare specs need post-up resolution.
+        """
+        if not compose_data:
+            return False
+        for svc_config in compose_data.get("services", {}).values():
+            for port_spec in svc_config.get("ports", []) or []:
+                host_port, _ = parse_port_mapping(str(port_spec))
+                if host_port is None:
+                    return True
+        return False
+
+    def _poll_and_print_urls(
+        self,
+        compose_data: dict,
+        remaps: Dict[str, Tuple[int, int]],
+        compose_cmd: List[str],
+        cwd: str,
+    ) -> None:
+        """Background-thread loop: poll ``docker compose port`` until the
+        bare-port host ports are assigned, then print the URLs.
+
+        Runs in a daemon thread alongside the foreground compose process.
+        Polls at ~1.5s intervals up to ~60s (long enough for a cold image
+        pull + Next.js build) before giving up silently. The user can
+        always fall back to ``docker compose port`` themselves; this is
+        a "make the common case easy" affordance, not a hard guarantee.
+        """
+        # Initial delay so we don't compete with compose's own "Building" /
+        # "Pulling" / "Creating" output for the user's eye.
+        time.sleep(2.0)
+        deadline = time.monotonic() + 60.0
+        services_with_bare_ports = [
+            (svc_name, container_port)
+            for svc_name, svc_config in compose_data.get("services", {}).items()
+            for port_spec in svc_config.get("ports", []) or []
+            for host_port, container_port in [parse_port_mapping(str(port_spec))]
+            if host_port is None and container_port is not None
+        ]
+        printed: Dict[str, int] = {}
+        while time.monotonic() < deadline and len(printed) < len(
+            services_with_bare_ports
+        ):
+            for svc_name, container_port in services_with_bare_ports:
+                if svc_name in printed:
+                    continue
+                host_port = self._docker_compose_port(
+                    svc_name,
+                    container_port,
+                    compose_cmd=compose_cmd,
+                    cwd=cwd,
+                )
+                if host_port is None:
+                    continue
+                if svc_name in remaps:
+                    host_port = remaps[svc_name][1]
+                console.print(
+                    f"\n[bold green]{svc_name}:[/bold green] "
+                    f"[link]http://localhost:{host_port}[/link]"
+                )
+                printed[svc_name] = host_port
+            if len(printed) < len(services_with_bare_ports):
+                time.sleep(1.5)
 
     @staticmethod
     def _docker_compose_port(
