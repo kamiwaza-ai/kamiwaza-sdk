@@ -35,9 +35,11 @@ def _strip_api_suffix(url: str) -> str:
     """Strip a trailing ``/api`` (and any extra slashes). Empty → empty.
 
     Trailing-slash variants normalize identically — ``"…/api"`` and
-    ``"…/api/"`` both produce the same output (round-9 review caught a
-    drift between this helper and ``local_dev.public_api_url_from``
-    on the trailing-slash case).
+    ``"…/api/"`` both produce the same output. Round-10 collapsed the
+    sibling ``local_dev.public_api_url_from`` helper into this single
+    source of truth (the prior helper only existed because the env
+    overlay wrongly stripped ``/api`` before exporting; that path now
+    keeps the raw URL and the helper had no other callers).
     """
     if not url:
         return ""

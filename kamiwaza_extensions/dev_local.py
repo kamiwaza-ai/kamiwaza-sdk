@@ -25,7 +25,6 @@ from kamiwaza_extensions_lib.local_dev import (
     LocalDevAuthError,
     extract_extra_hosts,
     prepare_bridge_context,
-    public_api_url_from,
     rewrite_bare_loopback_url,
 )
 
@@ -231,16 +230,23 @@ class DevLocalRunner:
             # #87 round-2 review Critical #1, codex + claude consensus).
             if auth and connection and info.compose_data:
                 services = info.compose_data.get("services", {})
-                # Use list-of-strings form (`KEY=value`) to override any
-                # service-level value the template might already have set.
-                bridge_env_entries = [
-                    f"{var}={env[var]}" for var in BRIDGE_ENV_VARS if var in env
-                ]
-                if bridge_env_entries and services:
+                # Use **mapping form** (``{KEY: value}``) so Docker Compose
+                # does NOT interpolate ``$`` in the values. Bearer tokens
+                # are base64url-encoded JWTs whose payloads can legally
+                # contain ``$`` after decoding — the list-of-strings form
+                # ``["KEY=value"]`` runs through compose's variable
+                # interpolation, which would partially eat any ``$`` and
+                # silently corrupt the bridge token (round-10 review,
+                # Comprehensive H). The mapping form is exempt from
+                # interpolation per the Compose spec.
+                bridge_env_map = {
+                    var: env[var] for var in BRIDGE_ENV_VARS if var in env
+                }
+                if bridge_env_map and services:
                     auth_env_file = _write_compose_overlay(
                         prefix="kz-auth-env-",
                         services=services,
-                        per_service={"environment": list(bridge_env_entries)},
+                        per_service={"environment": dict(bridge_env_map)},
                     )
 
             # 8. Build the project-identifier prefix (compose binary +
@@ -483,10 +489,16 @@ def build_env_overlay(
 
     env = {
         "KAMIWAZA_API_URL": container_url,
-        # public_api_url_from is the single source of truth for the
-        # /api-stripping convention — keeps prepare_bridge_context and
-        # build_env_overlay consistent for trailing-slash URLs.
-        "KAMIWAZA_PUBLIC_API_URL": public_api_url_from(browser_url),
+        # KAMIWAZA_PUBLIC_API_URL is the RAW browser-facing API URL —
+        # keep ``/api`` intact. ``session.create_session_router`` reads
+        # ``config.public_api_url`` directly to build
+        # ``${base}/auth/login`` and ``${base}/auth/logout`` redirects;
+        # the platform serves those endpoints under ``/api/auth/*``, so
+        # stripping ``/api`` here produces 404s on every login/logout
+        # under ``--auth`` (PR #87 round-10 codex P2). Browser-display
+        # consumers (``url.public_base_url``) strip ``/api`` on demand —
+        # the env var holds the raw URL.
+        "KAMIWAZA_PUBLIC_API_URL": browser_url.rstrip("/"),
         "KAMIWAZA_ENDPOINT": (
             f"{container_url}/v1"
             if not container_url.endswith("/v1")
@@ -605,8 +617,16 @@ def is_port_available(port: int, host: str = "0.0.0.0") -> bool:
 
     Uses connect to detect listeners (catches Docker/other processes bound to
     any interface) and bind without SO_REUSEADDR as a fallback.
+
+    Round-10 review (Comprehensive H): also probes IPv6 loopback so an
+    IPv6-only listener bound to ``[::]`` doesn't falsely appear free.
+    On dual-stack hosts the IPv4 probe usually catches the listener
+    via the v4-mapped binding; on Linux ``net.ipv6.bindv6only=1`` hosts
+    or pure-IPv6 services (some local proxies, kubernetes-style
+    sidecars) the v4 probe misses and ``compose up`` then fails with
+    ``bind: address already in use``.
     """
-    # First check: can we connect? If yes, something is listening.
+    # First check: can we connect via IPv4? If yes, something is listening.
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.settimeout(0.2)
@@ -614,6 +634,16 @@ def is_port_available(port: int, host: str = "0.0.0.0") -> bool:
                 return False
     except OSError:
         pass
+
+    # Same probe over IPv6 loopback for v6-only listeners.
+    if socket.has_ipv6:
+        try:
+            with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as sock:
+                sock.settimeout(0.2)
+                if sock.connect_ex(("::1", port, 0, 0)) == 0:
+                    return False
+        except OSError:
+            pass
 
     # Second check: can we bind without SO_REUSEADDR?
     try:

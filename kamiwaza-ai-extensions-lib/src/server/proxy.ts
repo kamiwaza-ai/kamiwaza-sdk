@@ -1,14 +1,19 @@
+import { ENVELOPE_AUTH_HEADERS } from "../_shared/envelopeHeaders";
 import type { ProxyConfig } from "./types";
 
 /** Headers to forward from the incoming request to the backend.
  *
+ * The auth-bearing subset comes from the shared
+ * ``ENVELOPE_AUTH_HEADERS`` constant — round-10 review caught that
+ * the local-dev-auth bridge's clear-list and this forward-list were
+ * hand-maintained in two places, so adding a future envelope header
+ * to one without the other could silently re-open the spoof gap that
+ * round-6 closed.
+ *
  * Round-3 ultrareview C1 fix: the allowlist was missing
  * ``x-user-system-high``, ``x-user-workroom-role``, and the
  * ``x-user-workroom-id`` alias kept by the platform during the
- * workroom-id migration window. Without them, the Next.js→backend hop
- * stripped envelope fields that ``IdentityExtractor.extract_identity()``
- * relies on, so backend-side ``Identity.system_high`` and
- * ``Identity.workroom_role`` were always ``None`` for proxied requests.
+ * workroom-id migration window.
  *
  * The HMAC pair (``x-user-signature`` / ``x-user-signature-ts``) is part
  * of the platform-internal envelope but extensions deliberately don't
@@ -16,20 +21,11 @@ import type { ProxyConfig } from "./types";
  * envelope arrives intact at the backend, in case a future
  * platform-side check inspects them.
  */
-const FORWARD_REQUEST_HEADERS = new Set([
-    "authorization",
-    "x-auth-token",
-    "x-user-id",
-    "x-user-email",
-    "x-user-name",
-    "x-user-roles",
-    "x-user-system-high",
-    "x-workroom-id",
-    "x-user-workroom-id",
-    "x-user-workroom-role",
+const FORWARD_REQUEST_HEADERS = new Set<string>([
+    ...ENVELOPE_AUTH_HEADERS,
+    // Transport / tracing headers — not auth-bearing, not relevant
+    // to the bridge's clear-and-synthesize cycle.
     "x-request-id",
-    "x-user-signature",
-    "x-user-signature-ts",
     // ``cookie`` is forwarded verbatim from the incoming Next.js request
     // (the browser → Next.js hop) to the backend extension service.
     // The canonical extension auth surface is the envelope-header pair

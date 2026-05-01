@@ -25,10 +25,15 @@ from kamiwaza_extensions_lib.local_dev import BridgeContext
 @pytest.mark.unit
 class TestEnvOverlay:
     def test_builds_correct_overlay(self):
+        # Round-10: KAMIWAZA_PUBLIC_API_URL holds the RAW browser URL
+        # (with ``/api`` intact) so ``session.create_session_router``
+        # can build ``${base}/auth/login`` correctly. Previous round-2
+        # behavior stripped ``/api`` here, breaking login redirects
+        # under ``--auth`` (codex P2).
         conn = ConnectionInfo(name="test", url="https://example.com/api", active=True, created_at=0.0)
         overlay = build_env_overlay(conn, "my-app")
         assert overlay["KAMIWAZA_API_URL"] == "https://example.com/api"
-        assert overlay["KAMIWAZA_PUBLIC_API_URL"] == "https://example.com"
+        assert overlay["KAMIWAZA_PUBLIC_API_URL"] == "https://example.com/api"
         assert overlay["KAMIWAZA_USE_AUTH"] == "false"
         assert overlay["KAMIWAZA_APP_NAME"] == "my-app"
 
@@ -37,13 +42,18 @@ class TestEnvOverlay:
         overlay = build_env_overlay(conn, "my-app")
         assert overlay["KAMIWAZA_PUBLIC_API_URL"] == "https://example.com"
 
-    def test_overlay_does_not_corrupt_mid_url_api(self):
-        """Regression: str.replace('/api', '') corrupted URLs with /api mid-path."""
+    def test_overlay_preserves_raw_url_with_mid_path_api(self):
+        """Round-10: KAMIWAZA_PUBLIC_API_URL holds the raw URL — no
+        ``/api`` stripping. Round-2's ``str.replace('/api', '')``
+        corruption bug is moot since we no longer strip at all here.
+        Browser-display consumers (``url.public_base_url``) strip on
+        demand and that helper has its own mid-path-safe regression
+        coverage in ``test_url.py``."""
         conn = ConnectionInfo(
             name="test", url="https://example.com/api-gateway/api", active=True, created_at=0.0
         )
         overlay = build_env_overlay(conn, "my-app")
-        assert overlay["KAMIWAZA_PUBLIC_API_URL"] == "https://example.com/api-gateway"
+        assert overlay["KAMIWAZA_PUBLIC_API_URL"] == "https://example.com/api-gateway/api"
 
     def test_auth_false_preserves_current_behaviour(self):
         # TS-5 — auth=False is the existing path; no gate, no bearer, USE_AUTH=false
@@ -100,8 +110,9 @@ class TestEnvOverlay:
             == "http://host.docker.internal:8000/api/v1"
         )
         # Browser-side: NEVER rewritten — host.docker.internal isn't
-        # resolvable from the developer's browser.
-        assert overlay["KAMIWAZA_PUBLIC_API_URL"] == "http://localhost:8000"
+        # resolvable from the developer's browser. Round-10: keeps the
+        # ``/api`` suffix so session.py's login/logout URLs are correct.
+        assert overlay["KAMIWAZA_PUBLIC_API_URL"] == "http://localhost:8000/api"
 
     def test_auth_true_preserves_named_hostname(self):
         # TS-8 — kamiwaza.test preserved (TLS cert binding)
@@ -119,7 +130,8 @@ class TestEnvOverlay:
         )
         overlay = build_env_overlay(conn, "my-app", auth=True, bridge=bridge)
         assert overlay["KAMIWAZA_API_URL"] == "https://kamiwaza.test/api"
-        assert overlay["KAMIWAZA_PUBLIC_API_URL"] == "https://kamiwaza.test"
+        # Round-10: raw URL (with /api) so session.py auth redirects work.
+        assert overlay["KAMIWAZA_PUBLIC_API_URL"] == "https://kamiwaza.test/api"
         assert overlay["KAMIWAZA_VERIFY_SSL"] == "false"
 
     def test_auth_true_loopback_public_url_stays_on_original_host(self):
@@ -227,8 +239,10 @@ class TestBuildComposeExtraHosts:
 
 @pytest.mark.unit
 class TestPublicApiUrlConsistency:
-    """Round-2 review High #8 — single source of truth for /api stripping
-    so prepare_bridge_context and build_env_overlay can't drift."""
+    """Round-2 review High #8 — KAMIWAZA_PUBLIC_API_URL must not produce
+    double slashes from trailing-slash inputs. Round-10: assertion
+    updated to the raw-URL contract — ``session.py`` builds
+    ``${base}/auth/login`` and needs the ``/api`` suffix preserved."""
 
     def test_trailing_api_slash_does_not_double_slash(self):
         # Prior bug: url='https://kamiwaza.test/api/' produced
@@ -241,7 +255,41 @@ class TestPublicApiUrlConsistency:
             created_at=0.0,
         )
         overlay = build_env_overlay(conn, "my-app")
-        assert overlay["KAMIWAZA_PUBLIC_API_URL"] == "https://kamiwaza.test"
+        # Round-10: raw URL kept; trailing slash stripped (so no double-slash).
+        assert overlay["KAMIWAZA_PUBLIC_API_URL"] == "https://kamiwaza.test/api"
+
+    def test_public_api_url_produces_correct_session_login_url(self):
+        """PR #87 round-10 codex P2 regression — the env overlay's
+        ``KAMIWAZA_PUBLIC_API_URL`` is consumed by ``session.py``'s
+        ``/auth/login-url`` endpoint, which builds
+        ``f"{config.public_api_url}/auth/login"`` directly. Pin the
+        cross-module contract: the platform serves auth at
+        ``/api/auth/*``, so the env var MUST carry the ``/api`` suffix
+        intact. Stripping ``/api`` here (round-2..round-9 behavior)
+        produces a 404 redirect on every login under ``--auth``.
+        """
+        # Walk the canonical connection-URL shapes the runner sees
+        # from ``kz-ext login`` and confirm each builds a correct
+        # ``/api/auth/login`` URL when concatenated by session.py.
+        cases = [
+            "https://kamiwaza.test/api",
+            "https://kamiwaza.test/api/",  # trailing slash
+            "http://localhost:8000/api",
+            "https://gateway.example.com/foo/api",
+        ]
+        for url in cases:
+            conn = ConnectionInfo(
+                name="t", url=url, active=True, created_at=0.0,
+            )
+            overlay = build_env_overlay(conn, "my-app")
+            base = overlay["KAMIWAZA_PUBLIC_API_URL"]
+            # Replicate session.py's URL construction inline so the
+            # test fails loudly if either side drifts.
+            login_url = f"{base}/auth/login"
+            assert login_url.endswith("/api/auth/login"), (
+                f"connection {url!r} produced {login_url!r} — session.py "
+                f"would 404 because the platform serves auth at /api/auth/*"
+            )
 
 
 @pytest.mark.unit
@@ -351,13 +399,20 @@ class TestRunnerEnvPassthroughOverlay:
         assert env_overlay is not None, "auth-env overlay was not generated"
         services = env_overlay["services"]
         assert set(services.keys()) == {"frontend", "backend"}
+        # Round-10: overlay uses mapping form ``{KEY: value}`` (not the
+        # legacy list-of-strings ``["KEY=value"]``) so Docker Compose
+        # skips ``$`` interpolation on bearer values that legally
+        # contain ``$`` after base64url decode.
         for svc, cfg in services.items():
-            env_entries = cfg["environment"]
-            joined = "\n".join(env_entries)
-            assert "KZ_EXT_DEV_LOCAL_AUTH=1" in joined, (
+            env_map = cfg["environment"]
+            assert isinstance(env_map, dict), (
+                f"service {svc!r} environment must be a mapping (round-10 "
+                f"review Comprehensive H — list form interpolates `$`)"
+            )
+            assert env_map.get("KZ_EXT_DEV_LOCAL_AUTH") == "1", (
                 f"service {svc!r} missing KZ_EXT_DEV_LOCAL_AUTH"
             )
-            assert "KAMIWAZA_BEARER_TOKEN=bearer-xyz" in joined, (
+            assert env_map.get("KAMIWAZA_BEARER_TOKEN") == "bearer-xyz", (
                 f"service {svc!r} missing KAMIWAZA_BEARER_TOKEN"
             )
 

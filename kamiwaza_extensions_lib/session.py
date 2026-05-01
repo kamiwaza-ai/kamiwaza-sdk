@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import base64
-import json
 from urllib.parse import quote
 
 from fastapi import APIRouter, Request
 
+from ._jwt import decode_jwt_exp as _decode_jwt_exp
 from .config import AuthConfig
 from .errors import MisboundAuthError
 from .identity import (
@@ -40,34 +39,6 @@ SESSION_PUBLIC_FIELDS = frozenset(
 def _public_session_payload(identity) -> dict:
     """Project the public subset of an Identity for the /session response."""
     return identity.model_dump(include=SESSION_PUBLIC_FIELDS)
-
-
-def _decode_jwt_exp(token: str) -> int | None:
-    """Extract the ``exp`` claim from a JWT **without** signature verification.
-
-    This is intentional — the token has already been validated by the
-    platform's ForwardAuth layer before reaching the extension.  We only
-    read the expiry so the frontend can display a countdown / trigger a
-    refresh.  Do NOT use this for access-control decisions.
-    """
-    parts = token.split(".")
-    if len(parts) < 2:
-        return None
-
-    payload = parts[1]
-    padding = "=" * (-len(payload) % 4)
-    try:
-        decoded = base64.urlsafe_b64decode(f"{payload}{padding}")
-        data = json.loads(decoded.decode("utf-8"))
-    except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
-        return None
-
-    exp = data.get("exp")
-    if isinstance(exp, (int, float)):
-        return int(exp)
-    if isinstance(exp, str) and exp.isdigit():
-        return int(exp)
-    return None
 
 
 def _session_expires_at(request: Request) -> int | None:

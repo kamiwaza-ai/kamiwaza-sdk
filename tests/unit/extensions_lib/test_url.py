@@ -54,9 +54,10 @@ class TestStripApiSuffix:
 
     def test_trailing_slash_parity(self):
         """Round-9 Claude H — ``…/api`` and ``…/api/`` MUST produce the
-        same output. Drift between this helper and
-        ``local_dev.public_api_url_from`` (which already had the right
-        behavior) was the catalyst for promoting these helpers."""
+        same output. Round-10 removed the sibling
+        ``local_dev.public_api_url_from`` so this is now the only
+        ``/api``-stripping path; the parity contract is locked in
+        here so no future helper drifts again."""
         assert _strip_api_suffix("https://example.com/api") == _strip_api_suffix(
             "https://example.com/api/"
         )

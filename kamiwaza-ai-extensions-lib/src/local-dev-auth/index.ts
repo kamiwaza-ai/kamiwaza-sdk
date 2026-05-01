@@ -33,6 +33,8 @@
 
 import { NextResponse, type NextRequest } from "next/server";
 
+import { ENVELOPE_AUTH_HEADERS } from "../_shared/envelopeHeaders";
+
 /**
  * Compatible with Next.js's `middleware` export shape: a single-argument
  * function that returns a `NextResponse`. Distinct from `NextMiddleware`
@@ -53,24 +55,11 @@ const WORKROOM_ENV = "KAMIWAZA_DEV_WORKROOM_ID";
  * before injecting our synthesized values — otherwise a client-supplied
  * spoof (e.g. `x-user-system-high: 1`) would slip through unchanged and
  * make local auth tests pass for permissions the user doesn't actually
- * have. Mirrors the proxy.ts FORWARD_REQUEST_HEADERS allowlist for
- * envelope fields (intentionally excludes `cookie`, `content-type`,
- * etc., which are not auth-bearing).
+ * have. Sourced from the shared `ENVELOPE_AUTH_HEADERS` constant so
+ * `proxy.ts` (forward) and this file (clear) cannot drift —
+ * round-10 review caught this maintainability gap.
  */
-const FORWARDED_AUTH_HEADERS = [
-    "authorization",
-    "x-auth-token",
-    "x-user-id",
-    "x-user-email",
-    "x-user-name",
-    "x-user-roles",
-    "x-user-system-high",
-    "x-workroom-id",
-    "x-user-workroom-id",
-    "x-user-workroom-role",
-    "x-user-signature",
-    "x-user-signature-ts",
-];
+const FORWARDED_AUTH_HEADERS = ENVELOPE_AUTH_HEADERS;
 
 interface JwtClaims {
     sub?: string;
@@ -282,8 +271,22 @@ export function _buildBridgedHeaders(
 export function createLocalDevAuthMiddleware(): LocalDevAuthMiddleware {
     // Capture the env once at factory creation. Per the docs, the bridge
     // bearer is read at start time; restart `kz-ext dev local --auth` to
-    // pick up a new token.
+    // pick up a new token. Round-10 review (Comprehensive H): under
+    // `next dev`'s HMR the factory may not re-instantiate when only the
+    // bearer rotates, so a stale token can silently persist. Log the
+    // resolved bridge user_id at creation so a developer can spot it
+    // in the dev-server console after `kz-ext login --use other`.
     const config = resolveBridgeConfig();
+    if (config.enabled && config.token) {
+        const claims = decodeJwt(config.token);
+        const sub = typeof claims?.sub === "string" ? claims.sub : "(no sub)";
+        // eslint-disable-next-line no-console
+        console.info(
+            `[local-dev-auth] bridge active for user_id=${sub}` +
+                ` (token captured at factory creation — restart` +
+                ` 'kz-ext dev local --auth' to refresh)`,
+        );
+    }
     return (req: NextRequest): NextResponse => {
         const bridged = _buildBridgedHeaders(req.headers, config);
         if (bridged === req.headers) return NextResponse.next();

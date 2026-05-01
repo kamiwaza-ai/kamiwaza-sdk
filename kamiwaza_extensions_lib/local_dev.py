@@ -10,9 +10,7 @@ no usable connection exists.
 
 from __future__ import annotations
 
-import base64
 import ipaddress
-import json
 import socket
 import threading
 import time
@@ -22,6 +20,8 @@ from typing import Optional
 from urllib.parse import urlparse, urlunparse
 
 from kamiwaza_extensions.connections import ConnectionManager
+
+from ._jwt import decode_jwt_payload
 
 _HOST_DOCKER_INTERNAL = "host.docker.internal"
 # TLDs that are reserved for local / loopback use per RFC 6761 / 6762.
@@ -223,18 +223,6 @@ def rewrite_bare_loopback_url(url: str) -> str:
     return urlunparse(parsed._replace(netloc=new_netloc))
 
 
-def public_api_url_from(api_url: str) -> str:
-    """Strip a trailing ``/api`` (and any extra slashes) from an API URL.
-
-    Single source of truth used by both ``prepare_bridge_context`` and the
-    runner's env overlay so they cannot drift on trailing-slash variants
-    (``…/api`` and ``…/api/`` should normalize identically). Returns
-    ``api_url`` unchanged if stripping leaves an empty string.
-    """
-    stripped = api_url.rstrip("/").removesuffix("/api").rstrip("/")
-    return stripped or api_url
-
-
 def extract_extra_hosts(
     url: str,
     *,
@@ -261,31 +249,12 @@ def extract_extra_hosts(
     return [f"{_strip_brackets(host)}:host-gateway"]
 
 
-def _decode_jwt_claims(token: str) -> dict:
-    """Decode JWT payload (no signature verification) into a dict.
-
-    Returns an empty dict on any decode failure. Mirrors
-    ``kamiwaza_extensions_lib.session._decode_jwt_exp`` — we trust the
-    platform to verify the signature when the bearer is actually used.
-    """
-    parts = token.split(".")
-    # Require the canonical three-segment shape (header.payload.signature)
-    # so the Python side stays in lock-step with the TS middleware
-    # (kamiwaza-ai-extensions-lib/src/local-dev-auth/index.ts `decodeJwt`
-    # also requires `parts.length >= 3`). PR #87 round-6 review caught the
-    # divergence — a malformed two-segment token used to pass the Python
-    # gate but be rejected by the TS middleware, leaving the runner
-    # with KAMIWAZA_USE_AUTH=true and no envelope synthesis.
-    if len(parts) < 3:
-        return {}
-    payload = parts[1]
-    padding = "=" * (-len(payload) % 4)
-    try:
-        decoded = base64.urlsafe_b64decode(f"{payload}{padding}")
-        data = json.loads(decoded.decode("utf-8"))
-    except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
-        return {}
-    return data if isinstance(data, dict) else {}
+# Round-10: the signature-less JWT decoder lives in
+# ``kamiwaza_extensions_lib._jwt`` so this module and ``session.py``
+# share one implementation (prior round-9 review caught a 2-vs-3
+# segment-count divergence between the two copies). Aliased to the
+# original name for in-tree call sites + tests that import it.
+_decode_jwt_claims = decode_jwt_payload
 
 
 def _coerce_int(value: object) -> Optional[int]:

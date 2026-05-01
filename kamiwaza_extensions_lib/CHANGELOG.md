@@ -29,7 +29,24 @@ range in `requirements.txt`.
 
 * `_strip_api_suffix` now produces identical output for `…/api` and
   `…/api/` — round-9 review caught a divergence between this helper and
-  the trailing-slash handling in `local_dev.public_api_url_from`.
+  the trailing-slash handling in the (now-deleted)
+  `local_dev.public_api_url_from` helper.
+* The `kz-ext dev local --auth` env overlay no longer strips `/api`
+  from `KAMIWAZA_PUBLIC_API_URL`. `session.create_session_router`
+  builds `${base}/auth/login` directly and the platform serves auth
+  endpoints under `/api/auth/*`, so stripping here produced 404
+  redirects on every login under `--auth`. Round-10 codex P2.
+
+### Internal
+
+* Consolidated the signature-less JWT payload decoder into
+  `kamiwaza_extensions_lib._jwt`. Both `session._decode_jwt_exp` and
+  `local_dev._decode_jwt_claims` now delegate; the prior implementations
+  diverged on segment-count strictness (round-10 review).
+* Removed `local_dev.public_api_url_from` — its only caller (the env
+  overlay) no longer strips `/api`, and the public `url._strip_api_suffix`
+  covers the remaining browser-display path. Single source of truth
+  for `/api`-stripping (round-10 review).
 
 ### Notes
 

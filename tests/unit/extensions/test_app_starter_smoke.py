@@ -260,6 +260,53 @@ def test_template_chat_endpoint_uses_container_routable_url_under_auth_split(
     sys.modules.pop("scaffolded_split_env", None)
 
 
+@pytest.mark.unit
+def test_template_chat_endpoint_preserves_backend_path_prefix(
+    tmp_path, monkeypatch
+):
+    """PR #87 round-9 review High (Comprehensive) regression — when
+    ``KAMIWAZA_API_URL`` carries an ingress sub-path (e.g.
+    ``https://gateway.example.com/foo/api`` for an ext-instance behind
+    a path-rewriting reverse proxy), ``_normalize_model_endpoint`` must
+    preserve that prefix when re-hosting a browser-facing endpoint
+    onto the container-routable base. Prior to round-9 the re-host
+    only swapped scheme+netloc and silently dropped the ``/foo``
+    prefix — the resulting AsyncOpenAI base URL hit the gateway root
+    instead of the ext-instance ingress.
+
+    Round-10 adds direct test coverage (round-9 fix shipped without
+    a test, so a regression here would be undetectable).
+    """
+    scaffolded = _scaffold_app(tmp_path, monkeypatch)
+
+    monkeypatch.setenv(
+        "KAMIWAZA_API_URL", "https://gateway.example.com/foo/api"
+    )
+    monkeypatch.setenv(
+        "KAMIWAZA_PUBLIC_API_URL", "https://gateway.example.com/foo"
+    )
+    monkeypatch.setenv("KAMIWAZA_USE_AUTH", "true")
+
+    module = _load_backend_module(
+        scaffolded / "backend", "scaffolded_path_prefix"
+    )
+
+    rehosted = module._normalize_model_endpoint(
+        endpoint="https://gateway.example.com/runtime/models/dep-1/v1",
+        access_path="",
+    )
+
+    # Path prefix must survive the re-host: gateway/foo/runtime/...
+    assert "/foo/runtime/models/dep-1/v1" in rehosted, (
+        f"path prefix dropped from re-host: {rehosted!r}"
+    )
+    assert rehosted.startswith("https://gateway.example.com/foo/"), (
+        f"unexpected scheme/host: {rehosted!r}"
+    )
+
+    sys.modules.pop("scaffolded_path_prefix", None)
+
+
 def _exercise_backend_chat_error_path(
     extension_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
