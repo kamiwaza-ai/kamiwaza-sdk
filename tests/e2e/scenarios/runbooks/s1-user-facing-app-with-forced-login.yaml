@@ -11,7 +11,7 @@ prd_ref: "PRD §EDX-E2E-1 / Appendix A Scenario 1"
 
 steps:
   - name: scaffold_app
-    description: "kz-ext create --shape app generates an `app` scaffold with USE_AUTH=true and the forced-login middleware wired into frontend/src/middleware.ts."
+    description: "kz-ext create --type app generates an `app` scaffold with USE_AUTH=true and the forced-login middleware wired into frontend/src/middleware.ts."
   - name: dev_local_with_auth_bridge
     description: "kz-ext dev local --auth boots backend+frontend; the local-dev auth middleware bridges browser → kamiwaza identity (cookies + ForwardAuth-equivalent headers)."
   - name: assert_unauthenticated_redirects_to_login

@@ -10,10 +10,10 @@ uacs:
 prd_ref: "PRD §EDX-E2E-1 / Appendix A Scenario 3"
 
 steps:
-  - name: scaffold_service_shape
-    description: "kz-ext create --shape service generates a connector scaffold (no frontend); template manifest includes service-specific files."
+  - name: scaffold_service
+    description: "kz-ext create --type service generates a connector scaffold (no frontend); template manifest includes service-specific files."
   - name: validate_connector_contract
-    description: "kz-ext validate passes; the Extension CR declares the service correctly (no app-shape leakage)."
+    description: "kz-ext validate passes; the Extension CR declares the service correctly (no app-type leakage)."
   - name: deploy_with_operator_credentials
     description: "Operator (not end-user) deploys the connector via kz-ext dev; OperatorImagePin keeps the operator on a known-published tag."
   - name: invoke_with_authenticated_user_identity

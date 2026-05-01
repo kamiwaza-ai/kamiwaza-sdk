@@ -14,7 +14,7 @@ notes: |
 
 steps:
   - name: scaffold_enrichment_app
-    description: "kz-ext create --shape app for an enrichment workflow; declare the data-boundary (workroom + file context graph) in the extension config."
+    description: "kz-ext create --type app for an enrichment workflow; declare the data-boundary (workroom + file context graph) in the extension config."
   - name: deploy_to_cluster
     description: "kz-ext dev deploys; cluster_extension_readiness probe green."
   - name: invoke_with_in_boundary_file
