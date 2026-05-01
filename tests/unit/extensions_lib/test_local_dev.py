@@ -96,6 +96,47 @@ class TestIsLoopbackUrl:
             "https://my-internal-host", resolver=_nxdomain_resolver
         ) is True
 
+    def test_etc_hosts_alias_resolving_to_loopback_treated_as_loopback(
+        self,
+    ):
+        """PR #87 round-12 review (codex P2) — a non-reserved hostname
+        that resolves to a loopback IP via ``/etc/hosts`` (e.g. the
+        developer mapped ``kamiwaza.dev`` → ``127.0.0.1``) MUST be
+        flagged as loopback. Without this check, ``is_loopback_url``
+        only saw "resolver succeeded" and returned False, then
+        ``build_compose_extra_hosts`` skipped the
+        ``host-gateway`` mapping and the container couldn't reach the
+        alias.
+        """
+        # Simulate /etc/hosts mapping kamiwaza.dev → 127.0.0.1.
+        def loopback_alias_resolver(host: str) -> str:
+            if host == "kamiwaza.dev":
+                return "127.0.0.1"
+            return "1.2.3.4"
+
+        assert is_loopback_url(
+            "https://kamiwaza.dev/api", resolver=loopback_alias_resolver,
+        ) is True
+
+        # And the v6 loopback alias variant — a developer whose
+        # ``/etc/hosts`` maps a custom name to ``::1``.
+        def loopback_v6_alias_resolver(host: str) -> str:
+            return "::1"
+
+        assert is_loopback_url(
+            "https://my-v6-alias", resolver=loopback_v6_alias_resolver,
+        ) is True
+
+        # Sanity: a non-reserved host that resolves to a real public IP
+        # is NOT treated as loopback (regression guard for the new check).
+        def public_ip_resolver(host: str) -> str:
+            return "203.0.113.5"
+
+        assert is_loopback_url(
+            "https://api.kamiwaza.example.com",
+            resolver=public_ip_resolver,
+        ) is False
+
     def test_default_resolver_times_out_on_slow_dns(self, monkeypatch):
         """PR #87 round-3 fix — DNS lookup must be capped via a real
         wall-clock timeout (ThreadPoolExecutor.future.result), not

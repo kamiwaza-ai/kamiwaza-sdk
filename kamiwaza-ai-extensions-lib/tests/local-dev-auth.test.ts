@@ -312,15 +312,33 @@ describe("_decodeJwt", () => {
 
 describe("createLocalDevAuthMiddleware factory diagnostics", () => {
     let infoSpy: ReturnType<typeof vi.spyOn>;
+    let originalEnv: Record<string, string | undefined>;
 
     beforeEach(() => {
+        // Snapshot/restore env (round-12 review Comprehensive M3 — earlier
+        // describe blocks save and restore originalEnv; this one didn't,
+        // so a future test added here could leak GATE/TOKEN/WORKROOM.
+        originalEnv = {
+            [GATE]: process.env[GATE],
+            [TOKEN]: process.env[TOKEN],
+            [WORKROOM]: process.env[WORKROOM],
+        };
         delete process.env[GATE];
         delete process.env[TOKEN];
+        delete process.env[WORKROOM];
+        _resetWarnOnceState();
         infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
     });
 
     afterEach(() => {
         infoSpy.mockRestore();
+        for (const [key, value] of Object.entries(originalEnv)) {
+            if (value === undefined) {
+                delete process.env[key];
+            } else {
+                process.env[key] = value;
+            }
+        }
     });
 
     it("logs the captured user_id at factory creation under --auth", () => {

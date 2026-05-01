@@ -175,13 +175,16 @@ def is_loopback_url(
       - bare loopbacks: ``localhost`` (string), any IP in ``127.0.0.0/8`` /
         IPv6 ``::1`` (via ``ipaddress.is_loopback``)
       - reserved TLDs: ``*.test``, ``*.local``
+      - hostname resolves to a loopback IP (``/etc/hosts`` aliases like
+        ``kamiwaza.dev`` → ``127.0.0.1``)
       - any hostname that fails to resolve via host DNS
 
     A non-loopback IP literal (e.g. ``1.2.3.4``) is never a loopback URL
     even if DNS lookup hits a NXDOMAIN — IPs don't need DNS.
 
     ``resolver`` is injectable for tests; defaults to a timeout-capped
-    wrapper around ``socket.gethostbyname``.
+    wrapper around ``socket.getaddrinfo`` (round-11 switched from
+    ``gethostbyname`` for AAAA-only host support).
     """
     host = _hostname(url)
     if host is None:
@@ -196,13 +199,19 @@ def is_loopback_url(
         return True
     if ip_loopback is False:
         return False
-    # Hostname — try to resolve. Unresolvable means the developer has it
-    # mapped via /etc/hosts on the host but containers can't see that.
+    # Hostname — try to resolve. Round-12 review (codex P2): the resolver
+    # succeeding doesn't mean the host is non-loopback; a developer who
+    # has ``kamiwaza.dev`` mapped to ``127.0.0.1`` in ``/etc/hosts``
+    # produces a successful resolution to a loopback IP, but the
+    # container still can't reach the alias without an
+    # ``extra_hosts:host-gateway`` mapping. Check the resolved IP.
     try:
-        (resolver or _default_resolver)(host)
-        return False
+        resolved = (resolver or _default_resolver)(host)
     except OSError:
+        # Unresolvable means the developer has it mapped via /etc/hosts
+        # on the host but containers can't see that.
         return True
+    return _is_loopback_ip(resolved) is True
 
 
 def is_bare_loopback(host: Optional[str]) -> bool:

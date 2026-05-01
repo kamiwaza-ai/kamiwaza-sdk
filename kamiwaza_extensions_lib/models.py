@@ -174,7 +174,9 @@ async def _resolve_openai_base(
             for deployment in deployments:
                 if not _is_openai_compatible(deployment):
                     continue
-                endpoint = _deployment_openai_base(deployment, container_base)
+                endpoint = _deployment_openai_base(
+                    deployment, container_base, rehost_endpoint=True,
+                )
                 if endpoint:
                     return endpoint
 
@@ -182,6 +184,7 @@ async def _resolve_openai_base(
 
 
 def _normalize_openai_endpoint(endpoint: str) -> str:
+    """Strip a leading ``/api`` from ``/api/runtime/models/...`` paths."""
     if not endpoint:
         return ""
 
@@ -190,6 +193,48 @@ def _normalize_openai_endpoint(endpoint: str) -> str:
         parsed = parsed._replace(
             path=parsed.path.replace("/api/runtime/models/", "/runtime/models/", 1)
         )
+    return urlunparse(parsed).rstrip("/")
+
+
+def _rehost_to_container(endpoint: str, container_base: str) -> str:
+    """Re-host a (potentially browser-facing) endpoint onto the
+    container-routable base.
+
+    Round-12 review (codex P2): the platform may emit deployment
+    ``endpoint`` fields with a browser-only host (``localhost``,
+    ``host.docker.internal`` from a different container, etc.). When
+    we're configuring the backend container's AsyncOpenAI client,
+    those URLs are unreachable; swap scheme+netloc onto
+    ``container_base`` while preserving any ingress sub-path
+    (``/foo/runtime/...``) and avoiding the double-prepend the
+    round-9/round-11 template fix already covers.
+
+    Returns the endpoint unchanged if either side lacks a
+    scheme/netloc (e.g. relative URLs, malformed input).
+    """
+    if not endpoint:
+        return ""
+    parsed = urlparse(endpoint.rstrip("/"))
+    if not container_base or not parsed.scheme or not parsed.netloc:
+        return urlunparse(parsed).rstrip("/")
+    target_parsed = urlparse(container_base)
+    if not target_parsed.scheme or not target_parsed.netloc:
+        return urlunparse(parsed).rstrip("/")
+    base_prefix = target_parsed.path.rstrip("/")
+    already_prefixed = base_prefix and (
+        parsed.path == base_prefix
+        or parsed.path.startswith(base_prefix + "/")
+    )
+    merged_path = (
+        parsed.path
+        if (already_prefixed or not base_prefix)
+        else f"{base_prefix}{parsed.path}"
+    )
+    parsed = parsed._replace(
+        scheme=target_parsed.scheme,
+        netloc=target_parsed.netloc,
+        path=merged_path,
+    )
     return urlunparse(parsed).rstrip("/")
 
 
@@ -242,22 +287,42 @@ def _infer_capabilities(data: dict[str, Any]) -> list[str]:
     return []
 
 
-def _deployment_openai_base(data: dict[str, Any], public_base: str) -> str:
+def _deployment_openai_base(
+    data: dict[str, Any],
+    target_base: str,
+    *,
+    rehost_endpoint: bool = False,
+) -> str:
+    """Build the OpenAI-compatible base URL for ``data``, routable from
+    the audience implied by ``target_base``.
+
+    ``rehost_endpoint=True`` swaps a platform-emitted ``endpoint``
+    field's scheme+netloc onto ``target_base`` (round-12 review,
+    codex P2) — used by the backend AsyncOpenAI path so a browser-only
+    endpoint (``http://localhost:8000/...``) doesn't leak into the
+    container's HTTP client. The frontend display path
+    (``list_available_models``) keeps the platform's endpoint
+    verbatim so URLs the user sees match what the platform reports.
+    """
     endpoint = str(data.get("endpoint") or "").rstrip("/")
     if endpoint:
+        if rehost_endpoint:
+            return _rehost_to_container(
+                _normalize_openai_endpoint(endpoint), target_base,
+            )
         return _normalize_openai_endpoint(endpoint)
 
     access_path = str(data.get("access_path") or "").strip()
-    if access_path and public_base:
+    if access_path and target_base:
         path = access_path if access_path.startswith("/") else f"/{access_path}"
         path = path.rstrip("/")
         if path.endswith("/v1"):
-            return f"{public_base}{path}"
-        return f"{public_base}{path}/v1"
+            return f"{target_base}{path}"
+        return f"{target_base}{path}/v1"
 
     lb_port = data.get("lb_port")
-    if public_base and lb_port:
-        parsed = urlparse(public_base)
+    if target_base and lb_port:
+        parsed = urlparse(target_base)
         scheme = parsed.scheme or "https"
         host = parsed.hostname
         if host:

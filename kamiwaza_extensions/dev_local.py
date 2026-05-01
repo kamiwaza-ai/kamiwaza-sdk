@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import os
 import signal
 import socket
@@ -632,17 +633,18 @@ def is_port_available(port: int, host: str = "0.0.0.0") -> bool:
     ``bind: address already in use``.
     """
     # First check: can we connect via IPv4? If yes, something is listening.
+    # 50ms is plenty for loopback — ECONNREFUSED returns in microseconds
+    # on a free port, and we run this 100× from ``find_available_port``
+    # so the cumulative budget matters (round-12 review, Comprehensive M).
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.settimeout(0.2)
+            sock.settimeout(0.05)
             if sock.connect_ex(("127.0.0.1", port)) == 0:
                 return False
     except OSError:
         pass
 
-    # Same probe over IPv6 loopback for v6-only listeners. Tighter
-    # timeout: loopback ECONNREFUSED returns in microseconds, and a
-    # second 0.2s adds up across `find_available_port`'s 100-port loop.
+    # Same probe over IPv6 loopback for v6-only listeners.
     if socket.has_ipv6:
         try:
             with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as sock:
@@ -662,12 +664,47 @@ def is_port_available(port: int, host: str = "0.0.0.0") -> bool:
             sock.bind((host, port))
     except OSError:
         return False
+    # Round-12 review (Comprehensive H + Claude H): ``socket.has_ipv6``
+    # is a Python build-time constant — it does NOT reflect runtime
+    # availability. On hosts with the kernel-level v6 stack disabled
+    # (``net.ipv6.conf.all.disable_ipv6=1``, hardened Linux servers,
+    # some CI runners), ``socket.socket(AF_INET6, ...)`` or its bind
+    # raises OSError unconditionally for every port. The previous
+    # ``except OSError: return False`` then made every port look
+    # taken and broke ``find_available_port``'s 100-port window. Treat
+    # only EADDRINUSE as "port taken"; other errors (EAFNOSUPPORT,
+    # EADDRNOTAVAIL, etc.) mean v6 is unavailable here — accept the v4
+    # bind as authoritative.
     if socket.has_ipv6:
         try:
             with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as sock:
-                sock.bind(("::", port, 0, 0))
-        except OSError:
-            return False
+                # ``IPV6_V6ONLY=1`` makes the v6 socket reserve ONLY the
+                # v6 stack — without it, on macOS / dual-stack Linux a v6
+                # bind to ``::`` also claims the v4 mapping and races
+                # with the just-released v4 binding above (lingers in
+                # TIME_WAIT for a few hundred ms after socket close,
+                # producing a spurious False from this probe).
+                try:
+                    sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+                except (AttributeError, OSError):
+                    pass
+                # Translate the v4 host arg to the corresponding v6 host
+                # (was ``"::"`` unconditionally before round-12 — Comprehensive M
+                # caught this asymmetry where caller intent was silently broadened).
+                v6_host = "::1" if host == "127.0.0.1" else "::"
+                sock.bind((v6_host, port, 0, 0))
+        except OSError as exc:
+            if exc.errno == errno.EADDRINUSE:
+                return False
+            # v6 stack unavailable / unusable for any other reason:
+            # the v4 bind already succeeded, so the port is bindable for
+            # the actual workload (Docker Compose binds v4 by default
+            # on hosts with v6 disabled). Round-12 review (Comprehensive H +
+            # Claude H): ``socket.has_ipv6`` is a build-time flag, not a
+            # runtime capability — kernel-disabled v6 hosts (e.g.
+            # ``net.ipv6.conf.all.disable_ipv6=1``) raise EAFNOSUPPORT /
+            # EADDRNOTAVAIL here, which previously made every port look
+            # taken and broke ``find_available_port``.
     return True
 
 

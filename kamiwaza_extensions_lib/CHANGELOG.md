@@ -42,6 +42,20 @@ range in `requirements.txt`.
   treat them as "unresolvable" and `build_compose_extra_hosts` to
   silently route platform traffic to the developer's machine via
   `host-gateway`. Round-11 codex GH High.
+* `is_loopback_url` now checks the resolved IP for loopback-range
+  membership instead of treating any successful resolution as
+  "non-loopback". A developer with `kamiwaza.dev` mapped to
+  `127.0.0.1` in `/etc/hosts` was previously skipped by
+  `build_compose_extra_hosts`, so the container couldn't reach the
+  alias. Round-12 codex P2.
+* `_resolve_openai_base` now re-hosts a deployment's ``endpoint``
+  field onto the container-routable base when the platform emits a
+  browser-only host (``localhost``, ``host.docker.internal`` from a
+  different container). Without this, ``get_model_client()`` would
+  configure AsyncOpenAI with a URL the backend container can't reach.
+  ``list_available_models`` (frontend display) is unaffected — its
+  endpoint values remain verbatim so the UI matches the platform's
+  reported URLs. Round-12 codex P2.
 
 ### Internal
 

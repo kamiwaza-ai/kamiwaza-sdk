@@ -419,3 +419,58 @@ class TestRuntimeBaseSplit:
             "cannot reach)."
         )
         assert "localhost" not in base
+
+    @pytest.mark.asyncio
+    async def test_resolve_openai_base_rehosts_browser_endpoint_field(
+        self, monkeypatch
+    ):
+        """PR #87 round-12 review (codex P2) — when the platform emits
+        a fully-qualified ``endpoint`` field with a browser-facing host
+        (``http://localhost:8000/...``) but ``_resolve_openai_base`` is
+        building AsyncOpenAI for the backend container, the endpoint
+        MUST be re-hosted onto the container-routable base. Without
+        the rehost, ``get_model_client()`` configures AsyncOpenAI with
+        the container's own ``localhost`` and every chat call fails.
+        """
+        monkeypatch.setenv(
+            "KAMIWAZA_API_URL", "http://host.docker.internal:8000/api"
+        )
+        monkeypatch.setenv("KAMIWAZA_PUBLIC_API_URL", "http://localhost:8000")
+        monkeypatch.setenv("KZ_EXT_DEV_LOCAL_AUTH", "1")
+
+        from kamiwaza_extensions_lib.config import AuthConfig
+        from kamiwaza_extensions_lib.models import _resolve_openai_base
+
+        config = AuthConfig.from_env()
+
+        with patch(
+            "kamiwaza_extensions_lib.models.KamiwazaExtClient.from_env"
+        ) as mock_from_env:
+            mock_client = AsyncMock()
+            mock_client.get_models = AsyncMock(
+                return_value=[
+                    {
+                        "deployment_id": "dep-1",
+                        "phase": "Running",
+                        "type": "chat",
+                        # NOTE: NO ``access_path`` — the endpoint field
+                        # is the only path. Endpoint is browser-only.
+                        "endpoint": (
+                            "http://localhost:8000/api/runtime/models/dep-1/v1"
+                        ),
+                    }
+                ]
+            )
+            mock_from_env.return_value = mock_client
+
+            base = await _resolve_openai_base(config, {})
+
+        assert "host.docker.internal" in base, (
+            f"endpoint not re-hosted onto container_base: {base!r} — "
+            "browser-only ``localhost`` would be unreachable from the "
+            "backend container."
+        )
+        assert "localhost" not in base
+        # /api stripping still happens.
+        assert "/api/runtime/" not in base
+        assert "/runtime/models/dep-1/v1" in base
