@@ -3,27 +3,36 @@ name: extensions/go-reference-e2e
 # D210 §4.2.11 / Linear ENG-3894 / M2 task T2.12.
 #
 # Exercises the full scaffold→build→deploy→invoke→publish loop for the Go
-# reference extension on every D210-bearing PR. M2 exit criterion is "green
-# on 3 consecutive PRs."
+# reference extension on every PR that touches D210-related paths. M2 exit
+# criterion is "green on 3 consecutive PRs."
 #
 # Two phases:
 #
-#   Phase A (always runs):  cluster-free smoke
-#     - go test (parity vectors from docs/extensions/non-sdk-flow/test-vectors.json)
-#     - kz-ext validate against the example
+#   Phase A (PR + push): cluster-free smoke
+#     - go vet + go test -race (parity vectors + middleware/handler suite)
+#     - Python parity test on the same canonical vectors
+#     - kz-ext validate
 #     - docker build (distroless)
 #     - docker compose up + /health + /tools/echo + 401-on-missing-envelope
 #
-#   Phase B (gated):  cluster deploy + invoke + publish
-#     Runs only when ``vars.KAMIWAZA_E2E_ENABLED == 'true'`` *and* the matching
-#     repo secrets are configured (see Phase B job env). Until M2 cluster
-#     infra lands, Phase A is the executable contract; Phase B emits a
-#     ``skipped — cluster not configured`` summary so PR authors see the gap
-#     explicitly rather than silently passing.
+#   Phase B (push to main/develop ONLY): cluster deploy + invoke + publish
+#     Phase B is intentionally NOT triggered on PRs. PR-head code that
+#     receives cluster credentials (even from a same-repo branch) is the
+#     "preventing pwn requests" failure mode — see
+#     https://securitylab.github.com/research/github-actions-preventing-pwn-requests/
+#     The PR contract is Phase A; Phase B exercises the cluster path
+#     post-merge so any cluster-only regression is caught before the next
+#     release without putting credentials in PR code's reach.
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, labeled]
+    # NOTE: deliberately NOT triggering on `labeled`. GitHub applies the
+    # paths: filter before evaluating job-level if-conditions, so a
+    # `labeled` event on a PR whose changed files are outside the path
+    # list never creates a workflow run at all. The path filter is the
+    # authoritative gate for "D210-bearing PR" — touching any of these
+    # paths IS what makes a PR D210-bearing.
+    types: [opened, synchronize, reopened]
     paths:
       - 'examples/extensions/go-reference/**'
       - 'docs/extensions/non-sdk-flow.md'
@@ -38,21 +47,20 @@ on:
       - 'examples/extensions/go-reference/**'
       - 'docs/extensions/non-sdk-flow.md'
       - 'docs/extensions/non-sdk-flow/**'
+      - 'kamiwaza_extensions_lib/identity.py'
+      - 'kamiwaza_extensions_lib/errors.py'
+      - '.github/workflows/extension-go-reference-e2e.yml'
 
 permissions:
   contents: read
 
-# D210-bearing PRs trigger via the ``D210`` label as well as path-based
-# changes; the gate below short-circuits everything else so we don't burn CI
-# minutes on unrelated PRs that brush these paths.
 jobs:
   smoke:
     name: Phase A — cluster-free smoke
     runs-on: ubuntu-latest
-    if: >
-      github.event_name == 'push' ||
-      github.event.action != 'labeled' ||
-      github.event.label.name == 'D210'
+    env:
+      # Hoisted so docker compose down/logs target the same project as up.
+      COMPOSE_PROJECT_NAME: gorefe2e
 
     steps:
       - uses: actions/checkout@v4
@@ -94,7 +102,6 @@ jobs:
         working-directory: examples/extensions/go-reference
         env:
           KAMIWAZA_USE_AUTH: "true"
-          COMPOSE_PROJECT_NAME: gorefe2e
         run: |
           set -euo pipefail
           docker compose up -d --build
@@ -155,24 +162,22 @@ jobs:
     name: Phase B — cluster deploy + invoke + publish
     needs: smoke
     runs-on: ubuntu-latest
-    # Phase B touches a real cluster with real credentials. Restrict to:
-    #   1. push events to main/develop (always trusted), OR
-    #   2. PRs whose head ref lives in *this* repo (not a fork) and which
-    #      either weren't labeled or carry the D210 label.
-    # Forks never see secrets on `pull_request` so they fail safely without
-    # this gate; the explicit head-repo check defends against a maintainer
-    # labeling a same-repo branch PR with hostile workflow changes.
-    if: >
-      (
-        github.event_name == 'push' ||
-        (github.event.pull_request.head.repo.full_name == github.repository &&
-         (github.event.action != 'labeled' || github.event.label.name == 'D210'))
-      ) &&
-      vars.KAMIWAZA_E2E_ENABLED == 'true'
+    # PUSH-ONLY by design. Phase B receives real cluster credentials and
+    # runs the PR/branch's checked-out code; allowing PR triggers (even
+    # same-repo) is a credential-exfiltration vector — the contributor
+    # who pushed the branch could include hostile changes that exfiltrate
+    # KAMIWAZA_E2E_API_KEY when the workflow runs. Restrict to push events
+    # on protected branches only; the PR contract is Phase A.
+    if: github.event_name == 'push' && vars.KAMIWAZA_E2E_ENABLED == 'true'
     env:
       KAMIWAZA_API_URL: ${{ secrets.KAMIWAZA_E2E_API_URL }}
       KAMIWAZA_API_KEY: ${{ secrets.KAMIWAZA_E2E_API_KEY }}
-      KAMIWAZA_PUBLISH_PROFILE: ${{ vars.KAMIWAZA_E2E_PUBLISH_PROFILE }}
+      # Publish-profile fields. The "Provision e2e publish profile" step
+      # below creates ~/.kamiwaza/profiles/e2e.json from these so
+      # `kz-ext publish --stage e2e` can resolve the profile.
+      KZ_PUBLISH_REGISTRY: ${{ secrets.KZ_PUBLISH_REGISTRY }}
+      KZ_PUBLISH_CATALOG_ENDPOINT: ${{ secrets.KZ_PUBLISH_CATALOG_ENDPOINT }}
+      KZ_PUBLISH_CATALOG_BUCKET: ${{ secrets.KZ_PUBLISH_CATALOG_BUCKET }}
 
     steps:
       - uses: actions/checkout@v4
@@ -191,6 +196,20 @@ jobs:
       - name: kz-ext login
         run: uv run kz-ext login "$KAMIWAZA_API_URL" --api-key "$KAMIWAZA_API_KEY" --name e2e --no-verify-ssl
 
+      - name: Provision e2e publish profile
+        # `kz-ext publish --stage e2e` resolves the profile from
+        # ~/.kamiwaza/profiles/e2e.json. Create it inline from the
+        # KZ_PUBLISH_* env vars rather than checking it in. The profile
+        # uses catalog-credentials=env so the actual S3 credentials are
+        # picked up from AWS_* env vars at publish time (operator
+        # responsibility — set those as additional repo secrets).
+        run: |
+          uv run kz-ext config publish-profile e2e \
+            --registry "$KZ_PUBLISH_REGISTRY" \
+            --catalog-endpoint "$KZ_PUBLISH_CATALOG_ENDPOINT" \
+            --catalog-bucket "$KZ_PUBLISH_CATALOG_BUCKET" \
+            --catalog-credentials env
+
       - name: kz-ext dev (build + push + deploy)
         working-directory: examples/extensions/go-reference
         run: uv run kz-ext dev --revision "${GITHUB_SHA::7}"
@@ -206,7 +225,7 @@ jobs:
           # TODO: replace this regex with `kz-ext status --json` once that
           # flag exists. Parsing human output is brittle to any cosmetic
           # CLI change (color codes, table reformat, label rename).
-          STATUS=$(uv run kz-ext status)
+          STATUS=$(NO_COLOR=1 uv run kz-ext status)
           echo "$STATUS"
           DEPLOY_URL=$(echo "$STATUS" | grep -Eo 'https?://[^[:space:]]+/extensions/[^[:space:]]+' | head -1)
           test -n "$DEPLOY_URL" || { echo "::error::no deploy URL in status output"; exit 1; }
@@ -218,23 +237,23 @@ jobs:
 
       - name: kz-ext publish
         working-directory: examples/extensions/go-reference
-        run: uv run kz-ext publish --stage "$KAMIWAZA_PUBLISH_PROFILE" --revision "${GITHUB_SHA::7}"
+        run: uv run kz-ext publish --stage e2e --revision "${GITHUB_SHA::7}"
 
   cluster-skipped:
-    name: Phase B — skipped (cluster not configured)
+    name: Phase B — skipped (PR or cluster not configured)
     needs: smoke
     runs-on: ubuntu-latest
-    # Mirrors the cluster job's eligibility condition; only the
-    # KAMIWAZA_E2E_ENABLED variable flips between the two so they remain
-    # mutually exclusive — keep the predicates in sync.
-    if: >
-      (
-        github.event_name == 'push' ||
-        (github.event.pull_request.head.repo.full_name == github.repository &&
-         (github.event.action != 'labeled' || github.event.label.name == 'D210'))
-      ) &&
-      vars.KAMIWAZA_E2E_ENABLED != 'true'
+    # Surfaces an explicit notice on every PR (Phase B is push-only by
+    # design) AND on push events when the cluster isn't enabled. No
+    # head-repo gate here — fork PRs should still see the notice so
+    # contributors understand Phase B's scope without having to read the
+    # workflow file.
+    if: github.event_name == 'pull_request' || vars.KAMIWAZA_E2E_ENABLED != 'true'
     steps:
       - name: Note skipped phase
         run: |
-          echo "::notice::Phase B (cluster deploy + invoke + publish) skipped — set repo variable KAMIWAZA_E2E_ENABLED=true and provide KAMIWAZA_E2E_API_URL/KAMIWAZA_E2E_API_KEY/KAMIWAZA_E2E_PUBLISH_PROFILE to enable. Tracked under ENG-3894 / D210 M2 T2.12."
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "::notice::Phase B (cluster deploy + invoke + publish) does not run on PRs by design — Phase A (cluster-free smoke) is the executable contract for PRs. Phase B runs on push to main/develop when KAMIWAZA_E2E_ENABLED=true. See workflow header comment for the security rationale."
+          else
+            echo "::notice::Phase B skipped — set repo variable KAMIWAZA_E2E_ENABLED=true and provide secrets KAMIWAZA_E2E_API_URL, KAMIWAZA_E2E_API_KEY, KZ_PUBLISH_REGISTRY, KZ_PUBLISH_CATALOG_ENDPOINT, KZ_PUBLISH_CATALOG_BUCKET (plus AWS_* for catalog upload). Tracked under ENG-3894 / D210 M2 T2.12."
+          fi

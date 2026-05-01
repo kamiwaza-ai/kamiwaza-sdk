@@ -33,7 +33,11 @@ func main() {
 	logger := newLogger(getenv("LOG_LEVEL", "info"))
 	slog.SetDefault(logger)
 
-	useAuth := getenv("KAMIWAZA_USE_AUTH", "false") == "true"
+	// parseUseAuth mirrors kamiwaza_extensions_lib/config.py: default
+	// "true" (fail-secure), case-insensitive false/0/no treated as off.
+	// Defaulting to off here would mean a Go reference that fails OPEN
+	// where Python fails secure — wrong defaults to ship as canonical.
+	useAuth := parseUseAuth(os.Getenv("KAMIWAZA_USE_AUTH"))
 	port := getenv("PORT", "8000")
 
 	mux := http.NewServeMux()
@@ -54,13 +58,17 @@ func main() {
 
 	// SIGTERM/SIGINT trigger a graceful shutdown. ListenAndServe runs in a
 	// goroutine so the signal handler can call Shutdown on the same Server.
+	// The buffered chan + ErrServerClosed filter guarantee: on signal, the
+	// goroutine's defer closes errs and the select reads zero-value (nil);
+	// on real listener error, the send fires before defer close and the
+	// select reads the error.
 	errs := make(chan error, 1)
 	go func() {
+		defer close(errs)
 		logger.Info("listening", "addr", srv.Addr, "use_auth", useAuth)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errs <- err
 		}
-		close(errs)
 	}()
 
 	stop := make(chan os.Signal, 1)
@@ -90,21 +98,37 @@ func handleHealth(w http.ResponseWriter, _ *http.Request) {
 
 // handleEcho reads the parsed Identity from context and echoes a payload back.
 // Demonstrates the contract end-to-end: middleware → identity → tool handler.
+//
+// Application-level errors (405 wrong method, 400 bad JSON, 413 oversize
+// body) all map to non-sdk-flow.md §5's catch-all class
+// `kamiwaza_runtime_error`. The §5 table lists `kamiwaza_runtime_error`
+// alongside HTTP 500 as the typical status, but the class is a category
+// label — the HTTP status follows standard HTTP semantics independent of
+// the class. Inventing new class names (e.g. "bad_request") would teach
+// downstream non-SDK authors to proliferate non-canonical labels.
 func handleEcho(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		// 405 is HTTP-protocol-level and not in flow doc §5's class set;
-		// "bad_request" is an application-level class outside the
-		// canonical platform-failure list (which only covers envelope /
-		// trust-boundary failures).
-		writeError(w, http.StatusMethodNotAllowed, "bad_request", "method not allowed")
+		w.Header().Set("Allow", http.MethodPost)
+		writeError(w, http.StatusMethodNotAllowed, "kamiwaza_runtime_error", "method not allowed")
 		return
 	}
 	var body struct {
 		Message string `json:"message"`
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, "kamiwaza_runtime_error", "request body too large")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "kamiwaza_runtime_error", "invalid JSON body")
+		return
+	}
+	if dec.More() {
+		writeError(w, http.StatusBadRequest, "kamiwaza_runtime_error", "trailing data after JSON body")
 		return
 	}
 	id, _ := r.Context().Value(identityCtxKey{}).(*identity.Identity)
@@ -166,6 +190,18 @@ func getenv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// parseUseAuth matches kamiwaza_extensions_lib/config.py's truthy/falsy
+// rules: default (empty after trim) → on; case-insensitive false/0/no →
+// off. Anything else (including "True", "TRUE", "yes", "1") → on.
+func parseUseAuth(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "false", "0", "no":
+		return false
+	default:
+		return true
+	}
 }
 
 func newLogger(level string) *slog.Logger {

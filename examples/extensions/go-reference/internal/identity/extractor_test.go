@@ -158,7 +158,13 @@ func TestExtract_OptionalFieldsAbsent_ProduceNullJSON(t *testing.T) {
 }
 
 func TestExtract_CaseInsensitiveHeaders(t *testing.T) {
-	// http.Header.Set canonicalizes; pin that lowercase input still works.
+	// http.Header is case-insensitive at the API surface: Set canonicalizes
+	// on insert, Get canonicalizes the lookup key. Real HTTP requests
+	// parsed by net/http always have canonical keys (the server canonicalizes
+	// inbound), so we don't need to test the non-canonical-map-keys case
+	// (which would not work — Get's canonical lookup would miss them).
+	// What we DO want to lock in: caller code that uses lowercase strings
+	// in Set/Get works correctly through Extract.
 	h := http.Header{}
 	h.Set("x-user-id", "u1")
 	h.Set("x-workroom-id", "w1")
