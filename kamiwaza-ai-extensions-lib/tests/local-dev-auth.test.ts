@@ -108,9 +108,13 @@ describe("_buildBridgedHeaders", () => {
         expect(out.get("x-user-id")).toBe("user-42");
         expect(out.get("x-user-email")).toBe("alice@example.com");
         expect(out.get("x-user-name")).toBe("Alice");
-        // PR #87 review fix — x-workroom-id is required by strict
-        // extract_identity() under KAMIWAZA_USE_AUTH=true. Defaults to JWT sub.
-        expect(out.get("x-workroom-id")).toBe("user-42");
+        // ENG-3901 / F-009 — x-workroom-id defaults to the documented
+        // global-workroom sentinel (all-f UUID) so backend → platform
+        // calls don't 403 on a fake workroom = user_id. Earlier default
+        // of claims.sub silently broke every authenticated platform call.
+        expect(out.get("x-workroom-id")).toBe(
+            "ffffffff-ffff-ffff-ffff-ffffffffffff",
+        );
         expect(out.get("x-existing")).toBe("preserved");
     });
 
@@ -125,14 +129,37 @@ describe("_buildBridgedHeaders", () => {
         expect(out.get("x-user-id")).toBe("user-42");
     });
 
-    it("treats whitespace-only KAMIWAZA_DEV_WORKROOM_ID as unset", () => {
+    it("treats whitespace-only KAMIWAZA_DEV_WORKROOM_ID as unset (falls through to sentinel)", () => {
         const token = makeJwt({ sub: "user-7" });
         process.env[GATE] = "1";
         process.env[TOKEN] = token;
         process.env[WORKROOM] = "   ";
 
         const out = _buildBridgedHeaders(new Headers());
-        expect(out.get("x-workroom-id")).toBe("user-7");
+        // Whitespace-only override is treated as no override → sentinel
+        // default (NOT claims.sub — see ENG-3901 / F-009).
+        expect(out.get("x-workroom-id")).toBe(
+            "ffffffff-ffff-ffff-ffff-ffffffffffff",
+        );
+        expect(out.get("x-user-id")).toBe("user-7");
+    });
+
+    it("ENG-3901 / F-009: never defaults x-workroom-id to user_id (would 403 on platform)", () => {
+        // Explicit regression guard. The platform's workroom-membership
+        // check rejects an X-Workroom-Id that isn't a real workroom the
+        // user belongs to. Defaulting the synthesized value to claims.sub
+        // (an unrelated UUID) was guaranteed to fail. The fix: fall
+        // through to the documented "no specific workroom" sentinel.
+        const token = makeJwt({ sub: "user-cafebabe" });
+        process.env[GATE] = "1";
+        process.env[TOKEN] = token;
+        delete process.env[WORKROOM];
+
+        const out = _buildBridgedHeaders(new Headers());
+        expect(out.get("x-workroom-id")).not.toBe("user-cafebabe");
+        expect(out.get("x-workroom-id")).toBe(
+            "ffffffff-ffff-ffff-ffff-ffffffffffff",
+        );
     });
 
     it("TS-19: parses realm_access.roles into x-user-roles", () => {
@@ -155,8 +182,12 @@ describe("_buildBridgedHeaders", () => {
         expect(out.get("x-user-email")).toBeNull();
         expect(out.get("x-user-name")).toBeNull();
         expect(out.get("x-user-roles")).toBeNull();
-        // x-workroom-id is always set (required by strict extract_identity)
-        expect(out.get("x-workroom-id")).toBe("user-1");
+        // x-workroom-id is always set (required by strict
+        // extract_identity); defaults to the global-workroom sentinel
+        // (ENG-3901 / F-009).
+        expect(out.get("x-workroom-id")).toBe(
+            "ffffffff-ffff-ffff-ffff-ffffffffffff",
+        );
     });
 
     it("TS-20: malformed token (cannot decode) → warn + envelope cleared", () => {
@@ -244,8 +275,12 @@ describe("_buildBridgedHeaders", () => {
         expect(out.get("authorization")).toBe(`Bearer ${token}`);
         expect(out.get("x-user-id")).toBe("user-bridge");
         expect(out.get("x-user-email")).toBe("u@x");
-        // x-workroom-id falls back to JWT sub (no override env set)
-        expect(out.get("x-workroom-id")).toBe("user-bridge");
+        // x-workroom-id defaults to the global-workroom sentinel when no
+        // override env is set (ENG-3901 / F-009). Earlier default of
+        // claims.sub silently 403'd every backend → platform call.
+        expect(out.get("x-workroom-id")).toBe(
+            "ffffffff-ffff-ffff-ffff-ffffffffffff",
+        );
 
         // Spoofed envelope fields the JWT didn't set must be CLEARED,
         // not preserved from the incoming request.
