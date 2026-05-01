@@ -51,6 +51,7 @@ class DevLocalRunner:
             SdkOverrideSpec,
             build_typescript_lib,
             generate_compose_override,
+            generate_local_build_dockerfile_patches,
             print_override_diagnostics,
             resolve_sdk_override,
             validate_sdk_override,
@@ -114,11 +115,11 @@ class DevLocalRunner:
                 env.pop(var, None)
 
         if connection:
-            overlay = build_env_overlay(
-                connection, info.name, auth=auth, bridge=bridge
-            )
+            overlay = build_env_overlay(connection, info.name, auth=auth, bridge=bridge)
             env.update(overlay)
-            console.print(f"[dim]Using connection:[/dim] {connection.name} ({connection.url})")
+            console.print(
+                f"[dim]Using connection:[/dim] {connection.name} ({connection.url})"
+            )
             if auth:
                 who = (bridge.user_id if bridge else None) or "?"
                 console.print(
@@ -127,7 +128,9 @@ class DevLocalRunner:
             else:
                 console.print("[dim]KAMIWAZA_USE_AUTH=false (local dev mode)[/dim]")
         else:
-            console.print("[yellow]No Kamiwaza connection configured — running in standalone mode[/yellow]")
+            console.print(
+                "[yellow]No Kamiwaza connection configured — running in standalone mode[/yellow]"
+            )
 
         # 5. Resolve SDK override
         override_spec = resolve_sdk_override(sdk_repo, info.path)
@@ -149,7 +152,9 @@ class DevLocalRunner:
                     or not override_spec.typescript_dist_path.is_dir()
                 ):
                     if not build_typescript_lib(override_spec):
-                        console.print("[yellow]Continuing without TypeScript override[/yellow]")
+                        console.print(
+                            "[yellow]Continuing without TypeScript override[/yellow]"
+                        )
                         override_spec = SdkOverrideSpec(
                             sdk_repo=override_spec.sdk_repo,
                             python=override_spec.python,
@@ -163,6 +168,8 @@ class DevLocalRunner:
         remaps: Dict[str, Tuple[int, int]] = {}
         patched_compose_file: Optional[str] = None
         sdk_override_file: Optional[str] = None
+        sdk_build_patch_file: Optional[str] = None
+        sdk_build_dockerfiles: List[str] = []
         extra_hosts_file: Optional[str] = None
         auth_env_file: Optional[str] = None
 
@@ -192,7 +199,9 @@ class DevLocalRunner:
             # 7. Generate SDK override compose file
             if override_spec and info.compose_data:
                 sdk_override_data = generate_compose_override(
-                    override_spec, info.compose_data, extension_dir=info.path,
+                    override_spec,
+                    info.compose_data,
+                    extension_dir=info.path,
                 )
                 fd = tempfile.NamedTemporaryFile(
                     mode="w", suffix=".yml", prefix="kz-sdk-", delete=False
@@ -200,6 +209,47 @@ class DevLocalRunner:
                 yaml.dump(sdk_override_data, fd, default_flow_style=False)
                 fd.close()
                 sdk_override_file = fd.name
+
+                # 7a. Patch each Python backend service's Dockerfile to strip
+                # the kamiwaza-extensions-lib pin before pip install runs.
+                # Without this, the build phase fails when the pinned version
+                # is not yet on PyPI; the runtime PYTHONPATH overlay (set in
+                # generate_compose_override above) only kicks in once the
+                # image exists. Patched Dockerfiles are written to temp files
+                # and pointed at via compose's ``build.dockerfile`` (absolute
+                # path). Using ``dockerfile_inline`` would conflict with the
+                # scaffold's explicit ``dockerfile: Dockerfile`` field —
+                # compose treats them as mutually exclusive.
+                df_patches = generate_local_build_dockerfile_patches(
+                    override_spec,
+                    info.compose_data,
+                    info.path,
+                )
+                if df_patches:
+                    build_overlay_services: dict = {}
+                    for svc, patched in df_patches.items():
+                        df_fd = tempfile.NamedTemporaryFile(
+                            mode="w",
+                            suffix=".Dockerfile",
+                            prefix=f"kz-sdk-df-{svc}-",
+                            delete=False,
+                        )
+                        df_fd.write(patched)
+                        df_fd.close()
+                        sdk_build_dockerfiles.append(df_fd.name)
+                        build_overlay_services[svc] = {
+                            "build": {"dockerfile": df_fd.name},
+                        }
+                    fd = tempfile.NamedTemporaryFile(
+                        mode="w", suffix=".yml", prefix="kz-sdk-build-", delete=False
+                    )
+                    yaml.dump(
+                        {"services": build_overlay_services},
+                        fd,
+                        default_flow_style=False,
+                    )
+                    fd.close()
+                    sdk_build_patch_file = fd.name
 
             # 7b. Generate extra_hosts overlay when --auth is set. We always
             # inject host.docker.internal:host-gateway under --auth so
@@ -265,6 +315,11 @@ class DevLocalRunner:
             compose_prefix = compose_cmd + ["-f", compose_file_arg]
             if sdk_override_file:
                 compose_prefix += ["-f", sdk_override_file]
+            # The build patch must apply to the same services the runtime
+            # override touches; place it after sdk_override_file so its
+            # ``build.dockerfile_inline`` wins over any earlier build spec.
+            if sdk_build_patch_file:
+                compose_prefix += ["-f", sdk_build_patch_file]
             if extra_hosts_file:
                 compose_prefix += ["-f", extra_hosts_file]
             if auth_env_file:
@@ -272,6 +327,7 @@ class DevLocalRunner:
             if (
                 patched_compose_file
                 or sdk_override_file
+                or sdk_build_patch_file
                 or extra_hosts_file
                 or auth_env_file
             ):
@@ -308,12 +364,15 @@ class DevLocalRunner:
 
             return rc
         finally:
-            for tmp in (
+            cleanup_paths: List[Optional[str]] = [
                 patched_compose_file,
                 sdk_override_file,
+                sdk_build_patch_file,
                 extra_hosts_file,
                 auth_env_file,
-            ):
+            ]
+            cleanup_paths.extend(sdk_build_dockerfiles)
+            for tmp in cleanup_paths:
                 if tmp:
                     try:
                         os.unlink(tmp)
@@ -368,7 +427,8 @@ class DevLocalRunner:
                         continue
                     if container_port is not None:
                         host_port = self._docker_compose_port(
-                            svc_name, container_port,
+                            svc_name,
+                            container_port,
                             compose_cmd=compose_cmd,
                             cwd=cwd,
                         )
@@ -409,11 +469,16 @@ class DevLocalRunner:
         try:
             result = subprocess.run(
                 [*compose_cmd, "port", service, str(container_port)],
-                capture_output=True, text=True, timeout=10, cwd=cwd,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                cwd=cwd,
             )
             if result.returncode != 0:
                 return None
-            line = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else ""
+            line = (
+                result.stdout.strip().splitlines()[-1] if result.stdout.strip() else ""
+            )
             if ":" in line:
                 return int(line.rsplit(":", 1)[1])
         except (FileNotFoundError, subprocess.TimeoutExpired, ValueError, IndexError):
@@ -545,13 +610,12 @@ def _write_compose_overlay(
     """
     import copy
 
-    overlay = {
-        "services": {
-            svc: copy.deepcopy(per_service) for svc in services.keys()
-        }
-    }
+    overlay = {"services": {svc: copy.deepcopy(per_service) for svc in services.keys()}}
     fd = tempfile.NamedTemporaryFile(
-        mode="w", suffix=".yml", prefix=prefix, delete=False,
+        mode="w",
+        suffix=".yml",
+        prefix=prefix,
+        delete=False,
     )
     yaml.dump(overlay, fd, default_flow_style=False)
     fd.close()
@@ -729,7 +793,9 @@ def find_available_port(start: int, host: str = "0.0.0.0", max_tries: int = 100)
             break
         if is_port_available(candidate, host):
             return candidate
-    raise RuntimeError(f"No available port found in range {start}–{start + max_tries - 1}")
+    raise RuntimeError(
+        f"No available port found in range {start}–{start + max_tries - 1}"
+    )
 
 
 def resolve_port_conflicts(
@@ -809,7 +875,11 @@ def detect_compose_command() -> List[str]:
             timeout=10,
         )
         return ["docker", "compose"]
-    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
+    except (
+        subprocess.CalledProcessError,
+        FileNotFoundError,
+        subprocess.TimeoutExpired,
+    ):
         pass
 
     # Try v1 standalone
@@ -821,7 +891,11 @@ def detect_compose_command() -> List[str]:
             timeout=10,
         )
         return ["docker-compose"]
-    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
+    except (
+        subprocess.CalledProcessError,
+        FileNotFoundError,
+        subprocess.TimeoutExpired,
+    ):
         pass
 
     raise FileNotFoundError(

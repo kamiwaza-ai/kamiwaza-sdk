@@ -148,9 +148,7 @@ def validate_sdk_override(spec: SdkOverrideSpec) -> ValidationResult:
         return result
 
     if spec.python and not spec.python_lib_path.is_dir():
-        result.errors.append(
-            f"Python runtime lib not found: {spec.python_lib_path}"
-        )
+        result.errors.append(f"Python runtime lib not found: {spec.python_lib_path}")
 
     if spec.typescript:
         if not spec.typescript_lib_path.is_dir():
@@ -331,7 +329,9 @@ def _detect_build_service_runtime(
     stage_bases = _read_dockerfile_stage_bases(dockerfile)
     if not stage_bases:
         return detect_service_runtime(
-            svc_name, svc_config, extension_dir=extension_dir,
+            svc_name,
+            svc_config,
+            extension_dir=extension_dir,
         )
 
     final_base = _image_basename(stage_bases[-1])
@@ -348,7 +348,9 @@ def _detect_build_service_runtime(
         return "static"
 
     return detect_service_runtime(
-        svc_name, svc_config, extension_dir=extension_dir,
+        svc_name,
+        svc_config,
+        extension_dir=extension_dir,
     )
 
 
@@ -398,10 +400,10 @@ def _read_dockerfile_startup(dockerfile: Path) -> Optional[DockerStartup]:
         stripped = line.strip()
         if stripped.startswith("ENTRYPOINT "):
             startup.entrypoint = _parse_docker_command(
-                stripped[len("ENTRYPOINT "):].strip()
+                stripped[len("ENTRYPOINT ") :].strip()
             )
         elif stripped.startswith("CMD "):
-            startup.cmd = _parse_docker_command(stripped[len("CMD "):].strip())
+            startup.cmd = _parse_docker_command(stripped[len("CMD ") :].strip())
 
     if not startup.entrypoint and not startup.cmd:
         return None
@@ -440,9 +442,7 @@ def _read_dockerfile_stage_bases(dockerfile: Optional[Path]) -> List[str]:
     if not stages:
         return []
 
-    alias_map = {
-        alias: index for index, (_base, alias) in enumerate(stages) if alias
-    }
+    alias_map = {alias: index for index, (_base, alias) in enumerate(stages) if alias}
 
     def resolve_stage_base(index: int, seen: Optional[set[str]] = None) -> str:
         base_ref = stages[index][0]
@@ -477,6 +477,58 @@ def _startup_argv(
     return fallback
 
 
+def generate_local_build_dockerfile_patches(
+    spec: SdkOverrideSpec,
+    compose_data: dict,
+    extension_dir: Path,
+) -> Dict[str, str]:
+    """Per-service patched Dockerfile content for the ``dev local`` build phase.
+
+    Returns ``{service_name: patched_dockerfile_source}`` for every backend
+    (Python) and frontend (TypeScript/Node) service whose Dockerfile
+    contains a recognizable install line. The caller is responsible for
+    plumbing each value into a compose override (via
+    ``build.dockerfile`` pointing at a temp file).
+
+    Required because the runtime overlay (``generate_compose_override``)
+    can only kick in once the image exists. When the scaffold's
+    runtime-lib pin is not yet published on the language's package
+    registry (PyPI / npm), the build's install step fails before any
+    runtime overlay runs, leaving the developer with a hard build error
+    and no path forward. The strip step inserted here makes each install
+    succeed without the pin; the runtime overlay then surfaces the local
+    source.
+
+    Returns an empty dict when no service has a recognizable install line
+    (e.g. a poetry-based custom Dockerfile, or a Node image that bakes
+    deps differently — those users are responsible for their own
+    runtime-lib install).
+    """
+    patches: Dict[str, str] = {}
+    for svc_name, svc_config in compose_data.get("services", {}).items():
+        if "build" not in svc_config:
+            continue
+        svc_runtime = detect_service_runtime(
+            svc_name, svc_config, extension_dir=extension_dir
+        )
+        if svc_runtime == "backend" and spec.python:
+            pattern = _PYTHON_PIP_INSTALL_PATTERN
+            strip_steps = _PYTHON_PRE_INSTALL_STRIP
+        elif svc_runtime == "frontend" and spec.typescript:
+            pattern = _TS_NPM_INSTALL_PATTERN
+            strip_steps = _TS_PRE_INSTALL_STRIP
+        else:
+            continue
+        df_path = _resolve_dockerfile(svc_config["build"], extension_dir)
+        if df_path is None or not df_path.exists():
+            continue
+        original = df_path.read_text()
+        patched = _insert_before_install_pattern(original, strip_steps, pattern)
+        if patched != original:
+            patches[svc_name] = patched
+    return patches
+
+
 def generate_compose_override(
     spec: SdkOverrideSpec,
     compose_data: dict,
@@ -503,7 +555,9 @@ def generate_compose_override(
             continue
 
         svc_type = detect_service_runtime(
-            svc_name, svc_config, extension_dir=extension_dir,
+            svc_name,
+            svc_config,
+            extension_dir=extension_dir,
         )
         svc_override: dict = {}
 
@@ -515,30 +569,30 @@ def generate_compose_override(
                 startup = _read_dockerfile_startup(df)
 
         if svc_type == "backend" and spec.python:
-            svc_override["volumes"] = [{
-                "type": "bind",
-                "source": str(spec.sdk_repo),
-                "target": "/sdk",
-                "read_only": True,
-            }]
-            exec_cmd = shlex.join(
-                _startup_argv(startup, _DEFAULT_BACKEND_STARTUP)
-            )
+            svc_override["volumes"] = [
+                {
+                    "type": "bind",
+                    "source": str(spec.sdk_repo),
+                    "target": "/sdk",
+                    "read_only": True,
+                }
+            ]
+            exec_cmd = shlex.join(_startup_argv(startup, _DEFAULT_BACKEND_STARTUP))
             svc_override["entrypoint"] = ["/bin/sh", "-c"]
             svc_override["command"] = [
                 _escape_compose_shell_vars(_PYTHON_LIB_COPY) + f" && exec {exec_cmd}"
             ]
 
         elif svc_type == "frontend" and spec.typescript:
-            svc_override["volumes"] = [{
-                "type": "bind",
-                "source": str(spec.sdk_repo),
-                "target": "/sdk",
-                "read_only": True,
-            }]
-            exec_cmd = shlex.join(
-                _startup_argv(startup, _DEFAULT_FRONTEND_STARTUP)
-            )
+            svc_override["volumes"] = [
+                {
+                    "type": "bind",
+                    "source": str(spec.sdk_repo),
+                    "target": "/sdk",
+                    "read_only": True,
+                }
+            ]
+            exec_cmd = shlex.join(_startup_argv(startup, _DEFAULT_FRONTEND_STARTUP))
             svc_override["entrypoint"] = ["/bin/sh", "-c"]
             svc_override["command"] = [
                 _escape_compose_shell_vars(_TS_LIB_INSTALL) + f" && exec {exec_cmd}"
@@ -563,6 +617,7 @@ class BuildOverride:
     overlay_steps: str  # Dockerfile lines appended/inserted into the original
     additional_build_contexts: Dict[str, str]
     insert_before_build: bool = False  # Insert before npm/next build line
+    pre_install_steps: str = ""  # Inserted before RUN pip install -r requirements.txt
 
 
 _PYTHON_OVERLAY = (
@@ -574,6 +629,66 @@ _PYTHON_OVERLAY = (
     ' && rm -rf "$SITE"'
     ' && cp -r /tmp/kamiwaza_extensions_lib "$SITE"'
     " && rm -rf /tmp/kamiwaza_extensions_lib\n"
+    "{restore_user_block}"
+)
+
+# Pattern that locates the standard scaffolded backend's pip install line so
+# the pre-install strip step can be inserted before it.
+_PYTHON_PIP_INSTALL_PATTERN = re.compile(
+    # ``\b-r`` would not match because ``-`` is non-word and the preceding
+    # space is also non-word, so the boundary doesn't apply. Use a literal
+    # space instead. Trailing ``\b`` is fine — boundary between ``t`` and
+    # newline / whitespace.
+    r"^\s*RUN\s+.*\bpip\s+install\b.*\s-r\s+requirements\.txt\b",
+    re.IGNORECASE,
+)
+
+# Pattern locating the frontend scaffold's npm install (``npm install`` or
+# ``npm ci``). Matched per-line; ``RUN npm install`` and ``RUN npm ci`` are
+# both accepted, optionally with flags before/after.
+_TS_NPM_INSTALL_PATTERN = re.compile(
+    r"^\s*RUN\s+.*\bnpm\s+(install|ci)\b", re.IGNORECASE
+)
+
+# Drops the ``kamiwaza-extensions-lib`` pin from requirements.txt before pip
+# install runs. The post-install ``_PYTHON_OVERLAY`` will copy the local
+# source into site-packages, so removing the pin avoids a hard failure when
+# the declared range isn't published yet (PR #89 dry-run finding F-002).
+# Word-boundary check on the package name so prefix-aliases like
+# ``kamiwaza-extensions-lib-extras`` are NOT stripped.
+_PYTHON_PRE_INSTALL_STRIP = (
+    "# --- SDK override: strip kamiwaza-extensions-lib from requirements.txt ---\n"
+    "# The post-install overlay below copies the local runtime-lib source into\n"
+    "# site-packages, so the PyPI install is redundant and would fail whenever\n"
+    "# the pinned version is not yet published. See sdk_override.py docs.\n"
+    "USER root\n"
+    "RUN sed -i -E '/^[[:space:]]*kamiwaza-extensions-lib($|[^A-Za-z0-9_-])/d'"
+    " requirements.txt\n"
+    "{restore_user_block}"
+)
+
+# Drops ``@kamiwaza-ai/extensions-lib`` from the three dependency maps in
+# package.json before ``npm install`` runs. The post-install ``_TS_OVERLAY``
+# (or local-mode bind-mount + npm install) ships the runtime lib via
+# ``npm pack``; removing the dep avoids a hard ETARGET failure when the
+# declared version range isn't on the npm registry yet (mirror of
+# ``_PYTHON_PRE_INSTALL_STRIP`` for the TS side).
+#
+# Implementation note: package.json is JSON, so a sed-line-strip would
+# leave dangling commas. Use ``node -e`` (always present in the frontend
+# image) to parse → mutate → write a structurally valid manifest.
+_TS_PRE_INSTALL_STRIP = (
+    "# --- SDK override: strip @kamiwaza-ai/extensions-lib from package.json ---\n"
+    "# The post-install overlay below installs the local runtime-lib source\n"
+    "# via ``npm pack``, so the registry install is redundant and would fail\n"
+    "# whenever the pinned version is not yet published.\n"
+    "USER root\n"
+    'RUN node -e "'
+    "const fs=require('fs');"
+    "const p=JSON.parse(fs.readFileSync('package.json','utf8'));"
+    "for(const k of ['dependencies','devDependencies','peerDependencies'])"
+    "{if(p[k])delete p[k]['@kamiwaza-ai/extensions-lib'];}"
+    "fs.writeFileSync('package.json', JSON.stringify(p,null,2)+'\\n');\"\n"
     "{restore_user_block}"
 )
 
@@ -614,23 +729,30 @@ def generate_build_overrides(
             continue
 
         svc_type = _detect_build_service_runtime(
-            svc_name, svc_config, extension_dir=extension_dir,
+            svc_name,
+            svc_config,
+            extension_dir=extension_dir,
         )
 
         if svc_type == "backend" and spec.python:
-            overrides.append(BuildOverride(
-                service_name=svc_name,
-                overlay_steps=_PYTHON_OVERLAY,
-                additional_build_contexts={"sdk": str(spec.sdk_repo)},
-            ))
+            overrides.append(
+                BuildOverride(
+                    service_name=svc_name,
+                    overlay_steps=_PYTHON_OVERLAY,
+                    additional_build_contexts={"sdk": str(spec.sdk_repo)},
+                    pre_install_steps=_PYTHON_PRE_INSTALL_STRIP,
+                )
+            )
 
         elif svc_type == "frontend" and spec.typescript:
-            overrides.append(BuildOverride(
-                service_name=svc_name,
-                overlay_steps=_TS_OVERLAY,
-                additional_build_contexts={"sdk": str(spec.sdk_repo)},
-                insert_before_build=True,
-            ))
+            overrides.append(
+                BuildOverride(
+                    service_name=svc_name,
+                    overlay_steps=_TS_OVERLAY,
+                    additional_build_contexts={"sdk": str(spec.sdk_repo)},
+                    insert_before_build=True,
+                )
+            )
 
     return overrides
 
@@ -638,10 +760,20 @@ def generate_build_overrides(
 def apply_build_overlay(dockerfile_content: str, overlay: BuildOverride) -> str:
     """Apply a build overlay to Dockerfile content.
 
-    If ``overlay.insert_before_build`` is True, scans for a ``RUN npm run build``
-    (or similar) line and inserts the overlay before it. Otherwise appends.
+    Two insertion points, applied in order:
+
+    1. ``pre_install_steps`` (Python backend) — inserted immediately before
+       the first ``RUN ... pip install -r requirements.txt`` line, so the
+       runtime-lib pin can be stripped before the install runs. No-op when
+       the Dockerfile has no matching pip-install line.
+    2. ``overlay_steps`` — inserted before a frontend build line when
+       ``insert_before_build`` is True; appended at end otherwise.
     """
-    lines = dockerfile_content.splitlines(keepends=True)
+    content = dockerfile_content
+    if overlay.pre_install_steps:
+        content = _insert_before_pip_install(content, overlay.pre_install_steps)
+
+    lines = content.splitlines(keepends=True)
     insert_idx = None
 
     if overlay.insert_before_build:
@@ -666,7 +798,54 @@ def apply_build_overlay(dockerfile_content: str, overlay: BuildOverride) -> str:
         )
 
     # No build line found or not insert_before_build — append at end
-    return dockerfile_content.rstrip() + "\n\n" + overlay_steps
+    return content.rstrip() + "\n\n" + overlay_steps
+
+
+def _insert_before_pip_install(dockerfile_content: str, pre_steps: str) -> str:
+    """Backend-specific shim around ``_insert_before_install_pattern``."""
+    return _insert_before_install_pattern(
+        dockerfile_content,
+        pre_steps,
+        _PYTHON_PIP_INSTALL_PATTERN,
+    )
+
+
+def _insert_before_install_pattern(
+    dockerfile_content: str,
+    pre_steps: str,
+    pattern: "re.Pattern[str]",
+) -> str:
+    """Insert ``pre_steps`` immediately before the first line matching
+    ``pattern`` (e.g. ``RUN pip install -r requirements.txt`` or
+    ``RUN npm install``). Returns the content unchanged when no such line
+    is present — the user's Dockerfile is then responsible for runtime-lib
+    install on its own, and the post-install overlay (if any) still
+    appends as before."""
+    lines = dockerfile_content.splitlines(keepends=True)
+    insert_idx = None
+    for i, line in enumerate(lines):
+        if pattern.match(line):
+            insert_idx = i
+            break
+    if insert_idx is None:
+        return dockerfile_content
+    pre_steps_resolved = pre_steps.replace(
+        "{restore_user_block}",
+        _restore_user_block(_find_active_user(lines[:insert_idx])),
+    )
+    # Ensure the inserted block starts on its own line and doesn't fuse with
+    # the preceding directive.
+    leading = (
+        "" if not lines[:insert_idx] or lines[insert_idx - 1].endswith("\n") else "\n"
+    )
+    trailing = "" if pre_steps_resolved.endswith("\n") else "\n"
+    return (
+        "".join(lines[:insert_idx])
+        + leading
+        + pre_steps_resolved
+        + trailing
+        + "".join(lines[insert_idx:])
+    )
 
 
 def _find_active_user(lines: List[str]) -> Optional[str]:
@@ -675,7 +854,7 @@ def _find_active_user(lines: List[str]) -> Optional[str]:
     for line in lines:
         stripped = line.strip()
         if stripped.startswith("USER "):
-            user = stripped[len("USER "):].strip()
+            user = stripped[len("USER ") :].strip()
             if user:
                 active_user = user
     return active_user
