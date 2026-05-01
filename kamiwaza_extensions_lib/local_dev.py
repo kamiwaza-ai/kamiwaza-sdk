@@ -155,12 +155,22 @@ def _is_loopback_ip(host: str) -> Optional[bool]:
 
     ``ip_address.is_loopback`` covers the full ``127.0.0.0/8`` range and
     IPv6 ``::1`` — broader than the previous string-set check that only
-    matched ``127.0.0.1`` exactly.
+    matched ``127.0.0.1`` exactly. Round-12 review (Claude M4): also
+    treat IPv4-mapped IPv6 addresses (``::ffff:127.0.0.1``) as loopback
+    so a resolver returning the v4-mapped form for an
+    ``/etc/hosts``-aliased loopback is classified correctly.
     """
     try:
-        return ipaddress.ip_address(host).is_loopback
+        addr = ipaddress.ip_address(host)
     except ValueError:
         return None
+    if addr.is_loopback:
+        return True
+    # IPv4-mapped IPv6: ``::ffff:127.0.0.1`` parses as IPv6Address whose
+    # ``ipv4_mapped`` returns the embedded ``IPv4Address``.
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+        return addr.ipv4_mapped.is_loopback
+    return False
 
 
 def is_loopback_url(
@@ -168,19 +178,28 @@ def is_loopback_url(
     *,
     resolver=None,
 ) -> bool:
-    """Return True if `url`'s hostname is loopback or unresolvable from a
-    container.
+    """Return True if `url`'s hostname is a known loopback / dev-local.
 
     Triggers:
       - bare loopbacks: ``localhost`` (string), any IP in ``127.0.0.0/8`` /
         IPv6 ``::1`` (via ``ipaddress.is_loopback``)
-      - reserved TLDs: ``*.test``, ``*.local``
+      - reserved TLDs: ``*.test``, ``*.local`` (RFC 6761 / 6762 — never
+        valid for production routing)
       - hostname resolves to a loopback IP (``/etc/hosts`` aliases like
-        ``kamiwaza.dev`` → ``127.0.0.1``)
-      - any hostname that fails to resolve via host DNS
+        ``kamiwaza.dev`` → ``127.0.0.1``; ``getaddrinfo`` reads
+        ``/etc/hosts`` so this catches the developer's local mappings)
 
-    A non-loopback IP literal (e.g. ``1.2.3.4``) is never a loopback URL
-    even if DNS lookup hits a NXDOMAIN — IPs don't need DNS.
+    Returns False for IP literals outside the loopback range, for
+    hostnames that resolve to non-loopback IPs, AND for hostnames that
+    fail to resolve. Round-12 review (codex H2) closed the prior
+    behavior where a transient DNS failure (VPN drop, captive portal,
+    flaky resolver) returned True and caused
+    ``build_compose_extra_hosts`` to map a remote hostname (e.g.
+    ``kamiwaza.corp.example.com``) to ``host-gateway`` — under
+    ``--auth`` that would route the forwarded bearer to whatever was
+    listening on the developer's loopback. Now the request fails
+    loudly inside the container with a DNS error, surfacing the actual
+    cause.
 
     ``resolver`` is injectable for tests; defaults to a timeout-capped
     wrapper around ``socket.getaddrinfo`` (round-11 switched from
@@ -208,9 +227,13 @@ def is_loopback_url(
     try:
         resolved = (resolver or _default_resolver)(host)
     except OSError:
-        # Unresolvable means the developer has it mapped via /etc/hosts
-        # on the host but containers can't see that.
-        return True
+        # Unresolvable on the developer's host — could be a transient DNS
+        # failure on a corp VPN. Don't classify as loopback (would route
+        # the forwarded bearer through ``host-gateway`` to the developer's
+        # machine on a flaky network — round-12 codex H2). Container DNS
+        # will be authoritative; the request fails loudly with a DNS
+        # error if the host genuinely can't be reached.
+        return False
     return _is_loopback_ip(resolved) is True
 
 

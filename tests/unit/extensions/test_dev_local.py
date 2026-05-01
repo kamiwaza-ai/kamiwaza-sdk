@@ -850,6 +850,36 @@ class TestIsPortAvailable:
         finally:
             sock.close()
 
+    def test_v6_disabled_runtime_does_not_falsely_report_port_taken(
+        self, monkeypatch
+    ):
+        """PR #87 round-12 review (codex M1) — ``socket.has_ipv6`` is
+        a build-time flag, not a runtime capability. On Linux hosts
+        with ``net.ipv6.conf.all.disable_ipv6=1`` (hardened servers,
+        some CI runners), v6 socket creation raises ``EAFNOSUPPORT``.
+        Round-12 added the errno guard so the v4 bind verdict is
+        authoritative when v6 is unusable; this test pins the fix by
+        making any AF_INET6 socket creation raise.
+        """
+        import errno as _errno
+        import socket as _socket
+
+        original_socket = _socket.socket
+
+        def fake_socket(family, *args, **kwargs):
+            if family == _socket.AF_INET6:
+                # Same outcome as ``net.ipv6.conf.all.disable_ipv6=1``:
+                # the kernel refuses to create a v6 socket at all. The
+                # function's connect/bind probes both raise OSError on
+                # socket creation and fall through.
+                raise OSError(_errno.EAFNOSUPPORT, "v6 disabled")
+            return original_socket(family, *args, **kwargs)
+
+        monkeypatch.setattr(_socket, "socket", fake_socket)
+        # Port should still report available — v4 bind succeeded and
+        # the v6 ``socket()`` call raised EAFNOSUPPORT.
+        assert is_port_available(59128) is True
+
 
 @pytest.mark.unit
 class TestFindAvailablePort:

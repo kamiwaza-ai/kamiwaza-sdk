@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import errno
+import ipaddress
 import os
 import signal
 import socket
@@ -688,10 +689,22 @@ def is_port_available(port: int, host: str = "0.0.0.0") -> bool:
                     sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
                 except (AttributeError, OSError):
                     pass
-                # Translate the v4 host arg to the corresponding v6 host
-                # (was ``"::"`` unconditionally before round-12 — Comprehensive M
-                # caught this asymmetry where caller intent was silently broadened).
-                v6_host = "::1" if host == "127.0.0.1" else "::"
+                # Translate the v4 host arg to the corresponding v6 host.
+                # Round-12 (Comprehensive M1) flagged the unconditional
+                # ``"::"``; round-13 (Claude M3) further narrows non-loopback
+                # v4 IPs to their IPv4-mapped v6 form so caller intent
+                # (e.g. ``192.168.1.5``) isn't silently broadened to
+                # all v6 interfaces. Non-IP hosts (e.g. ``"0.0.0.0"``)
+                # default to the wildcard v6 address.
+                if host == "127.0.0.1":
+                    v6_host = "::1"
+                elif host == "0.0.0.0":
+                    v6_host = "::"
+                else:
+                    try:
+                        v6_host = f"::ffff:{ipaddress.IPv4Address(host)}"
+                    except (ValueError, ipaddress.AddressValueError):
+                        v6_host = "::"
                 sock.bind((v6_host, port, 0, 0))
         except OSError as exc:
             if exc.errno == errno.EADDRINUSE:

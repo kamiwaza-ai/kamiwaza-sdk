@@ -56,6 +56,21 @@ range in `requirements.txt`.
   ``list_available_models`` (frontend display) is unaffected — its
   endpoint values remain verbatim so the UI matches the platform's
   reported URLs. Round-12 codex P2.
+* `is_loopback_url` no longer treats DNS-resolution failures as
+  loopback. A transient resolver failure (VPN drop, captive portal)
+  on a corp hostname previously caused
+  `build_compose_extra_hosts` to map the hostname to ``host-gateway``,
+  which under ``--auth`` could route the forwarded bearer to whatever
+  was listening on the developer's loopback. Now the request fails
+  loudly inside the container with a DNS error, surfacing the actual
+  cause. Legitimate ``/etc/hosts``-aliased loopbacks (the path the
+  prior fallback was trying to handle) resolve correctly via
+  ``getaddrinfo`` and are caught by the round-12 resolved-IP check
+  above. Round-12 GH PR review codex H2.
+* `_is_loopback_ip` also detects IPv4-mapped IPv6 forms
+  (``::ffff:127.0.0.1``) as loopback, so an AAAA-leading resolver
+  answer for an aliased loopback is classified correctly. Round-12
+  Claude M.
 
 ### Internal
 

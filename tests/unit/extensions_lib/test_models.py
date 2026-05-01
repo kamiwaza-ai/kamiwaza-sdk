@@ -474,3 +474,85 @@ class TestRuntimeBaseSplit:
         # /api stripping still happens.
         assert "/api/runtime/" not in base
         assert "/runtime/models/dep-1/v1" in base
+
+
+@pytest.mark.unit
+class TestRehostToContainer:
+    """PR #87 round-12 review (Claude M2) — direct unit coverage for
+    the ``_rehost_to_container`` helper. The end-to-end rehost path
+    is exercised via ``_resolve_openai_base`` but the helper itself
+    has edge cases that should fail loudly if regressed (path-prefix
+    de-duplication came from round-9/round-11 template reviews and
+    has bitten this PR twice).
+    """
+
+    def test_rehosts_browser_endpoint_onto_container_base(self):
+        from kamiwaza_extensions_lib.models import _rehost_to_container
+
+        result = _rehost_to_container(
+            "http://localhost:8000/runtime/models/dep-1/v1",
+            "http://host.docker.internal:8000",
+        )
+        assert result == "http://host.docker.internal:8000/runtime/models/dep-1/v1"
+
+    def test_preserves_ingress_subpath_when_endpoint_lacks_it(self):
+        from kamiwaza_extensions_lib.models import _rehost_to_container
+
+        result = _rehost_to_container(
+            "https://browser-host.example.com/runtime/models/dep-1/v1",
+            "https://gateway.example.com/foo",
+        )
+        assert result == "https://gateway.example.com/foo/runtime/models/dep-1/v1"
+
+    def test_does_not_double_prepend_when_endpoint_already_has_prefix(
+        self,
+    ):
+        # Round-9 / round-11 regression — the prepend MUST be skipped
+        # when ``parsed.path`` already starts with the prefix.
+        from kamiwaza_extensions_lib.models import _rehost_to_container
+
+        result = _rehost_to_container(
+            "https://gateway.example.com/foo/runtime/models/dep-1/v1",
+            "https://gateway.example.com/foo",
+        )
+        assert "/foo/foo/" not in result
+        assert result == "https://gateway.example.com/foo/runtime/models/dep-1/v1"
+
+    def test_returns_unchanged_when_target_base_empty(self):
+        from kamiwaza_extensions_lib.models import _rehost_to_container
+
+        result = _rehost_to_container(
+            "https://example.com/runtime/models/dep-1/v1", "",
+        )
+        assert result == "https://example.com/runtime/models/dep-1/v1"
+
+    def test_returns_empty_for_empty_endpoint(self):
+        from kamiwaza_extensions_lib.models import _rehost_to_container
+
+        assert _rehost_to_container("", "https://gateway.example.com") == ""
+
+    def test_skips_rehost_when_endpoint_lacks_scheme_or_netloc(self):
+        from kamiwaza_extensions_lib.models import _rehost_to_container
+
+        # Path-only endpoint — leave it alone, the caller is
+        # responsible for treating it as a relative URL.
+        assert (
+            _rehost_to_container(
+                "/runtime/models/dep-1/v1",
+                "http://host.docker.internal:8000",
+            )
+            == "/runtime/models/dep-1/v1"
+        )
+
+    def test_skips_rehost_when_target_base_lacks_scheme_or_netloc(self):
+        from kamiwaza_extensions_lib.models import _rehost_to_container
+
+        # Defensive — a malformed ``container_base`` shouldn't corrupt
+        # an otherwise-valid endpoint.
+        assert (
+            _rehost_to_container(
+                "https://example.com/runtime/models/dep-1/v1",
+                "not-a-url",
+            )
+            == "https://example.com/runtime/models/dep-1/v1"
+        )

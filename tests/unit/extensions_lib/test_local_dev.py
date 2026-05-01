@@ -88,13 +88,42 @@ class TestIsLoopbackUrl:
         # TS-13 — resolves via injected resolver, returns False
         assert is_loopback_url(url, resolver=_ok_resolver) is False
 
-    def test_unresolvable_non_reserved_hostname_treated_as_loopback(self):
-        # If the developer has the hostname in /etc/hosts only (not DNS),
-        # containers can't reach it — flag it as loopback so extra_hosts
-        # gets injected.
+    def test_unresolvable_hostname_is_not_loopback(self):
+        """PR #87 round-12 review (codex H2) — round-13 inverted the
+        prior "unresolvable → loopback" fallback. Rationale: a transient
+        DNS failure (VPN drop, captive portal) on a corp hostname
+        (``kamiwaza.corp.example.com``) used to silently classify it as
+        loopback, ``build_compose_extra_hosts`` then mapped it to
+        ``host-gateway``, and under ``--auth`` the forwarded bearer
+        could be routed to whatever was listening on the developer's
+        loopback. The previous "/etc/hosts on host but not DNS"
+        rationale was already moot because ``getaddrinfo`` reads
+        ``/etc/hosts`` (so legitimate aliases produce a successful
+        resolution to a loopback IP, caught by the
+        ``_is_loopback_ip(resolved)`` check above).
+        """
         assert is_loopback_url(
             "https://my-internal-host", resolver=_nxdomain_resolver
-        ) is True
+        ) is False
+
+    def test_unresolvable_remote_hostname_does_not_route_to_host_gateway(
+        self,
+    ):
+        """Defense in depth for the round-13 fix — confirm that a
+        remote-shaped hostname (corp / VPN style) that hits a transient
+        DNS failure does NOT get added to ``extra_hosts:host-gateway``.
+        This is the exact bearer-leak path codex H2 identified.
+        """
+        from kamiwaza_extensions_lib.local_dev import extract_extra_hosts
+
+        # Simulate a VPN drop — DNS fails on a real corp hostname.
+        assert (
+            extract_extra_hosts(
+                "https://kamiwaza.corp.example.com/api",
+                resolver=_nxdomain_resolver,
+            )
+            == []
+        )
 
     def test_etc_hosts_alias_resolving_to_loopback_treated_as_loopback(
         self,
@@ -291,12 +320,24 @@ class TestExtractExtraHosts:
         assert extract_extra_hosts("", resolver=_ok_resolver) == []
         assert extract_extra_hosts("not-a-url", resolver=_ok_resolver) == []
 
-    def test_unresolvable_hostname_gets_extra_hosts(self):
-        # A hostname only in /etc/hosts on the developer's machine — the
-        # container needs extra_hosts to resolve it.
-        assert extract_extra_hosts(
-            "https://my-internal", resolver=_nxdomain_resolver
-        ) == ["my-internal:host-gateway"]
+    def test_unresolvable_hostname_is_not_routed_through_host_gateway(self):
+        """PR #87 round-12 review (codex H2) — round-13 inverted the
+        prior behavior. A transient DNS failure (VPN drop) on a corp
+        hostname previously dropped the request through host-gateway,
+        creating a bearer-leak path under ``--auth``. The container's
+        own DNS now sees the request and either succeeds (if the host
+        is genuinely reachable) or fails loudly with a DNS error.
+        Legitimate dev-local aliases use ``/etc/hosts`` on the host →
+        ``getaddrinfo`` resolves them to a loopback IP →
+        ``is_loopback_url`` returns True via the ``_is_loopback_ip``
+        check, NOT via the OSError path.
+        """
+        assert (
+            extract_extra_hosts(
+                "https://my-internal", resolver=_nxdomain_resolver,
+            )
+            == []
+        )
 
 
 # ---------------------------------------------------------------------------
