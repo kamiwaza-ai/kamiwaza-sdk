@@ -1090,6 +1090,61 @@ class TestPreInstallStripOverlay:
         }
         assert generate_local_build_dockerfile_patches(spec, compose, ext) == {}
 
+    def test_local_build_patches_multistage_node_to_nginx_frontend(self, tmp_path):
+        """ENG-3901 / round-3 reviewer H2 (Codex): the dev-local path must
+        emit the TS strip for a multi-stage ``FROM node ... AS build;
+        FROM nginx:alpine`` frontend, not just the cluster-deploy path.
+        Final-stage classification ('static' for nginx) misses these;
+        ``_detect_build_service_runtime`` correctly identifies the
+        upstream Node builder stage. Without this, ``kz-ext dev local
+        --sdk-repo`` against a multi-stage frontend would hard-fail at
+        ``npm ci`` against the unpublished pin."""
+        from kamiwaza_extensions.sdk_override import (
+            _TS_PRE_INSTALL_STRIP,
+            generate_local_build_dockerfile_patches,
+        )
+
+        ext = tmp_path / "ext"
+        ext.mkdir()
+        web = ext / "web"
+        web.mkdir()
+        (web / "Dockerfile").write_text(
+            "FROM node:20 AS build\n"
+            "WORKDIR /app\n"
+            "COPY package.json package-lock.json ./\n"
+            "RUN npm ci\n"
+            "COPY . .\n"
+            "RUN npm run build\n"
+            "FROM nginx:alpine\n"
+            "COPY --from=build /app/dist /usr/share/nginx/html\n"
+        )
+
+        spec = SdkOverrideSpec(
+            sdk_repo=tmp_path, python=False, typescript=True
+        )
+        compose = {
+            "services": {
+                "frontend": {"build": {"context": "./web"}, "ports": ["8080:80"]}
+            }
+        }
+        patches = generate_local_build_dockerfile_patches(spec, compose, ext)
+        assert "frontend" in patches, (
+            "multi-stage Node→nginx frontend was not patched — final-stage "
+            "classifier misclassified it as 'static'"
+        )
+        assert "# --- SDK override: strip @kamiwaza-ai/extensions-lib" in (
+            patches["frontend"]
+        )
+        # ``RUN npm ci`` was rewritten to ``RUN npm install`` so the
+        # package.json/lockfile divergence the strip creates doesn't abort
+        # the build — same handling as the cluster-deploy path
+        # (``apply_build_overlay``).
+        assert "RUN npm ci" not in patches["frontend"], (
+            "npm ci must be rewritten to npm install in the local-dev path "
+            "too, not just the cluster-deploy path"
+        )
+        assert "RUN npm install" in patches["frontend"]
+
     def test_strip_regex_matches_real_pin_forms_and_skips_prefix_aliases(self):
         """Sanity-check the embedded sed pattern against realistic
         requirements.txt content: every pin form for the runtime lib should

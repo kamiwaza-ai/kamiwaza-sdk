@@ -521,7 +521,14 @@ def generate_local_build_dockerfile_patches(
     for svc_name, svc_config in compose_data.get("services", {}).items():
         if "build" not in svc_config:
             continue
-        svc_runtime = detect_service_runtime(
+        # Use the multi-stage-aware classifier (mirrors the cluster-deploy
+        # ``generate_build_overrides`` path) so a multi-stage
+        # ``FROM node … AS builder; FROM nginx:alpine`` frontend still
+        # receives the TS strip — its final base is ``nginx`` (which
+        # ``detect_service_runtime`` would tag as ``static``) but its
+        # builder stage is the one running ``npm ci`` against the
+        # unpublished pin (PR #91 round-3 reviewer H2 / Codex).
+        svc_runtime = _detect_build_service_runtime(
             svc_name, svc_config, extension_dir=extension_dir
         )
         if svc_runtime == "backend" and spec.python:
@@ -538,6 +545,16 @@ def generate_local_build_dockerfile_patches(
         original = df_path.read_text()
         patched = _insert_before_install_pattern(original, strip_steps, pattern)
         if patched != original:
+            # Mirror the cluster-deploy ``apply_build_overlay`` behavior:
+            # if the matched install line uses ``npm ci``, rewrite it to
+            # ``npm install`` so the package.json/lockfile divergence the
+            # strip creates doesn't abort the build (PR #91 round-3 H1 /
+            # Codex P2 — applies to local-dev path too, not just cluster
+            # deploy).
+            if pattern is _TS_NPM_INSTALL_PATTERN:
+                patched = _TS_NPM_CI_LINE_PATTERN.sub(
+                    r"\1npm install", patched
+                )
             patches[svc_name] = patched
     return patches
 
