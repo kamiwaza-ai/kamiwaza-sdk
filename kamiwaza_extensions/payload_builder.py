@@ -78,6 +78,7 @@ class PayloadBuilder:
             transformed_compose,
             app_path=app_path,
             verify_ssl=connection.verify_ssl,
+            extension_type=ext_type,
         )
         origin = connection.url.removesuffix("/api")
         tls_reject = "0" if not connection.verify_ssl else "1"
@@ -164,6 +165,7 @@ class PayloadBuilder:
         transformed: Dict[str, Any],
         app_path: str = "",
         verify_ssl: bool = True,
+        extension_type: str = "app",
     ) -> List[ExtensionServiceSpec]:
         services_dict = transformed.get("services") or {}
         specs: List[ExtensionServiceSpec] = []
@@ -194,7 +196,13 @@ class PayloadBuilder:
             if not verify_ssl:
                 env.append({"name": "KAMIWAZA_VERIFY_SSL", "value": "false"})
 
-            health_check = self._default_health_check(svc_name, svc, ports)
+            health_check = self._default_health_check(
+                svc_name,
+                svc,
+                ports,
+                extension_type=extension_type,
+                is_primary=is_primary,
+            )
 
             spec_kwargs: Dict[str, Any] = dict(
                 name=svc_name,
@@ -260,8 +268,25 @@ class PayloadBuilder:
         svc_name: str,
         svc: Dict[str, Any],
         ports: List[ExtensionPort],
+        *,
+        extension_type: str = "app",
+        is_primary: bool = False,
     ) -> Optional[Dict[str, Any]]:
-        """Generate a default health check based on service type."""
+        """Generate a default health check based on service type.
+
+        Path-selection rules (ENG-3901 / F-013):
+
+        - Frontend (Next.js) services use a node-based exec probe that
+          resolves the basePath env var dynamically.
+        - Backend services in app-type extensions probe ``/health`` —
+          the scaffolded FastAPI backend ships an explicit /health route.
+        - Primary services in **service** and **tool** extensions probe
+          ``/`` — those scaffolds ship a minimal stub (``python -m
+          http.server`` for service, FastMCP for tool) that doesn't
+          declare /health. Probing /health on those stubs returns 404
+          and the K8s startup probe fails the pod into restart loops.
+          Probing ``/`` works because both stubs respond to it.
+        """
         if not ports:
             return None
         port = ports[0].container_port
@@ -287,18 +312,24 @@ class PayloadBuilder:
                 "startPeriod": 300,
                 "timeoutSeconds": 5,
             }
+        # service / tool primary stubs don't expose /health; probe / instead.
+        # Generic non-primary "frontend"-named services keep / for the same
+        # reason (they typically serve at root). Backends in app-type
+        # extensions ship a real /health route so they keep that path.
+        if (
+            extension_type in ("service", "tool") and is_primary
+        ) or svc_name == "frontend":
+            path = "/"
         else:
-            # Generic frontends usually serve "/" even when they lack a
-            # dedicated /health endpoint; backend-style services still use /health.
-            path = "/" if svc_name == "frontend" else "/health"
-            return {
-                "httpGet": {"path": path, "port": port},
-                "initialDelaySeconds": 10,
-                "periodSeconds": 10,
-                "failureThreshold": 3,
-                "startPeriod": 5,
-                "timeoutSeconds": 5,
-            }
+            path = "/health"
+        return {
+            "httpGet": {"path": path, "port": port},
+            "initialDelaySeconds": 10,
+            "periodSeconds": 10,
+            "failureThreshold": 3,
+            "startPeriod": 5,
+            "timeoutSeconds": 5,
+        }
 
     @staticmethod
     def _parse_resources(svc: Dict[str, Any]) -> Optional[ResourceSpec]:
