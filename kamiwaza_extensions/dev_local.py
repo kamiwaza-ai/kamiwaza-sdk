@@ -230,15 +230,20 @@ class DevLocalRunner:
             # #87 round-2 review Critical #1, codex + claude consensus).
             if auth and connection and info.compose_data:
                 services = info.compose_data.get("services", {})
-                # Use **mapping form** (``{KEY: value}``) so Docker Compose
-                # does NOT interpolate ``$`` in the values. Bearer tokens
-                # are base64url-encoded JWTs whose payloads can legally
-                # contain ``$`` after decoding — the list-of-strings form
-                # ``["KEY=value"]`` runs through compose's variable
-                # interpolation, which would partially eat any ``$`` and
-                # silently corrupt the bridge token (round-10 review,
-                # Comprehensive H). The mapping form is exempt from
-                # interpolation per the Compose spec.
+                # Use **mapping form** (``{KEY: value}``) for the env
+                # overlay — defense-in-depth against Docker Compose's
+                # ``$`` variable interpolation in list-of-strings form
+                # (``["KEY=value"]``). Round-10 review (Comprehensive H)
+                # raised this; round-11 (Comprehensive H + Claude H)
+                # corrected the rationale: canonical bearers are
+                # base64url-encoded JWTs whose alphabet is
+                # ``[A-Za-z0-9_-]`` so the **on-the-wire** token never
+                # contains ``$``. The defensive concern is the *general
+                # case* — if the bridge ever forwards a non-JWT bearer
+                # (e.g. a future opaque-PAT path) or if an env value
+                # the bridge synthesizes ever contains ``$``, the
+                # mapping form is exempt from interpolation per the
+                # Compose spec and won't silently eat the literal.
                 bridge_env_map = {
                     var: env[var] for var in BRIDGE_ENV_VARS if var in env
                 }
@@ -635,23 +640,35 @@ def is_port_available(port: int, host: str = "0.0.0.0") -> bool:
     except OSError:
         pass
 
-    # Same probe over IPv6 loopback for v6-only listeners.
+    # Same probe over IPv6 loopback for v6-only listeners. Tighter
+    # timeout: loopback ECONNREFUSED returns in microseconds, and a
+    # second 0.2s adds up across `find_available_port`'s 100-port loop.
     if socket.has_ipv6:
         try:
             with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as sock:
-                sock.settimeout(0.2)
+                sock.settimeout(0.05)
                 if sock.connect_ex(("::1", port, 0, 0)) == 0:
                     return False
         except OSError:
             pass
 
-    # Second check: can we bind without SO_REUSEADDR?
+    # Bind check: try IPv4 first, then IPv6 if v4 succeeds. Round-11
+    # review (Comprehensive M2): the asymmetry where the connect probe
+    # checked both stacks but the bind only checked v4 meant a port
+    # that's v4-free but v6-occupied could pass ``is_port_available``
+    # and still fail at ``compose up`` bind time. Both must succeed.
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.bind((host, port))
-            return True
     except OSError:
         return False
+    if socket.has_ipv6:
+        try:
+            with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as sock:
+                sock.bind(("::", port, 0, 0))
+        except OSError:
+            return False
+    return True
 
 
 def find_available_port(start: int, host: str = "0.0.0.0", max_tries: int = 100) -> int:

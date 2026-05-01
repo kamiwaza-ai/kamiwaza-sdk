@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import json
+import socket
 import time
 from pathlib import Path
 
@@ -98,17 +99,22 @@ class TestIsLoopbackUrl:
     def test_default_resolver_times_out_on_slow_dns(self, monkeypatch):
         """PR #87 round-3 fix — DNS lookup must be capped via a real
         wall-clock timeout (ThreadPoolExecutor.future.result), not
-        socket.setdefaulttimeout (which is a no-op for gethostbyname)."""
+        socket.setdefaulttimeout (which is a no-op for getaddrinfo).
+        Round-11 (codex GH High): patch target now ``getaddrinfo`` —
+        round-11 switched the resolver from ``gethostbyname`` (IPv4
+        only) to ``getaddrinfo`` (dual-stack) so AAAA-only Kamiwaza
+        deployments resolve correctly.
+        """
         import time as _time
         from kamiwaza_extensions_lib import local_dev as ld
 
         # Replace the underlying resolver with one that hangs longer
         # than the configured cap.
-        def slow_resolver(host):
+        def slow_resolver(host, *args, **kwargs):
             _time.sleep(10.0)  # would block for 10s without the cap
-            return "1.2.3.4"
+            return [(0, 0, 0, "", ("1.2.3.4", 0))]
 
-        monkeypatch.setattr("socket.gethostbyname", slow_resolver)
+        monkeypatch.setattr("socket.getaddrinfo", slow_resolver)
         # Tighten the cap so the test runs fast.
         monkeypatch.setattr(ld, "_DNS_TIMEOUT_S", 0.2)
 
@@ -121,6 +127,39 @@ class TestIsLoopbackUrl:
         assert elapsed < 2.0, (
             f"DNS timeout cap was not honored — elapsed {elapsed:.2f}s"
         )
+
+    def test_default_resolver_resolves_aaaa_only_host(self, monkeypatch):
+        """PR #87 round-11 review (codex GH High) — resolver must
+        succeed for hosts that publish only IPv6 (AAAA) records.
+
+        Bug: prior implementation used ``socket.gethostbyname`` which
+        is IPv4-only. An AAAA-only Kamiwaza hostname raised
+        ``gaierror`` here, ``is_loopback_url`` then treated it as
+        "unresolvable from host", and ``build_compose_extra_hosts``
+        silently routed platform traffic to the developer's machine
+        via ``host-gateway`` — the developer's auth would fail and
+        their requests would loop back to localhost.
+        """
+        from kamiwaza_extensions_lib import local_dev as ld
+
+        # Stub: a host that only has an AAAA record. ``getaddrinfo``
+        # returns the v6 sockaddr 4-tuple ``(addr, port, flowinfo, scope)``.
+        def v6_only(host, *args, **kwargs):
+            return [
+                (
+                    socket.AF_INET6,
+                    socket.SOCK_STREAM,
+                    0,
+                    "",
+                    ("2001:db8::1", 0, 0, 0),
+                ),
+            ]
+
+        monkeypatch.setattr("socket.getaddrinfo", v6_only)
+
+        # Resolver returns the v6 address as a string.
+        addr = ld._default_resolver("ipv6-only.kamiwaza.example.com")
+        assert addr == "2001:db8::1"
 
     def test_handles_malformed_url(self):
         assert is_loopback_url("not-a-url", resolver=_ok_resolver) is False

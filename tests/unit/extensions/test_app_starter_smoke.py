@@ -307,6 +307,61 @@ def test_template_chat_endpoint_preserves_backend_path_prefix(
     sys.modules.pop("scaffolded_path_prefix", None)
 
 
+@pytest.mark.unit
+def test_template_chat_endpoint_does_not_double_prefix_already_prefixed_endpoint(
+    tmp_path, monkeypatch
+):
+    """PR #87 round-11 review Critical (codex) regression — round-9's
+    path-prefix preservation MUST NOT double-prepend when the input
+    endpoint already carries the ingress prefix.
+
+    Production case: deployment metadata emits a fully-qualified
+    ``endpoint`` value already under the ingress (e.g.
+    ``https://gateway.example.com/foo/runtime/models/dep-1/v1``) AND
+    ``backend_base`` is ``https://gateway.example.com/foo``. Round-9's
+    unconditional prepend produced ``/foo/foo/runtime/...`` —
+    AsyncOpenAI then hit the wrong path behind path-prefixed ingress.
+    """
+    scaffolded = _scaffold_app(tmp_path, monkeypatch)
+
+    monkeypatch.setenv(
+        "KAMIWAZA_API_URL", "https://gateway.example.com/foo/api"
+    )
+    monkeypatch.setenv(
+        "KAMIWAZA_PUBLIC_API_URL", "https://gateway.example.com/foo/api"
+    )
+    monkeypatch.setenv("KAMIWAZA_USE_AUTH", "true")
+
+    module = _load_backend_module(
+        scaffolded / "backend", "scaffolded_already_prefixed"
+    )
+
+    # Endpoint already carries ``/foo`` — re-host must NOT re-add it.
+    rehosted = module._normalize_model_endpoint(
+        endpoint="https://gateway.example.com/foo/runtime/models/dep-1/v1",
+        access_path="",
+    )
+
+    assert "/foo/foo/" not in rehosted, (
+        f"path prefix duplicated in re-host: {rehosted!r}"
+    )
+    assert rehosted == "https://gateway.example.com/foo/runtime/models/dep-1/v1", (
+        f"unexpected re-host shape: {rehosted!r}"
+    )
+
+    # Sanity: when endpoint *doesn't* carry the prefix, it still gets prepended
+    # (round-9 fix still works for the original "browser URL re-host" case).
+    rehosted_browser = module._normalize_model_endpoint(
+        endpoint="https://gateway.example.com/runtime/models/dep-2/v1",
+        access_path="",
+    )
+    assert rehosted_browser == "https://gateway.example.com/foo/runtime/models/dep-2/v1", (
+        f"prefix should be prepended for non-prefixed endpoint, got {rehosted_browser!r}"
+    )
+
+    sys.modules.pop("scaffolded_already_prefixed", None)
+
+
 def _exercise_backend_chat_error_path(
     extension_dir: Path,
     monkeypatch: pytest.MonkeyPatch,

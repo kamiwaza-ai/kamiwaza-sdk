@@ -30,5 +30,3 @@ export const ENVELOPE_AUTH_HEADERS = [
     "x-user-signature",
     "x-user-signature-ts",
 ] as const;
-
-export type EnvelopeAuthHeader = (typeof ENVELOPE_AUTH_HEADERS)[number];

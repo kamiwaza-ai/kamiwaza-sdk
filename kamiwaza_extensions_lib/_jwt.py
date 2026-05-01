@@ -47,9 +47,22 @@ def decode_jwt_exp(token: str) -> int | None:
     """Extract the ``exp`` claim from a JWT, or ``None`` if absent/malformed.
 
     Wrapper around :func:`decode_jwt_payload` that coerces the ``exp``
-    value to ``int`` per RFC 7519 (NumericDate). Accepts string-form
-    integers (some IdPs emit them) but rejects floats with fractional
-    parts and any non-numeric value.
+    value to ``int``. RFC 7519's NumericDate type permits non-integer
+    decimal precision, but every real-world IdP we ship against (the
+    platform's Keycloak, Auth0, Okta) emits whole-second integer
+    timestamps. Floats with fractional parts are TRUNCATED via
+    ``int()`` (``1234.7`` → ``1234``); accepts string-form positive
+    integers (``"1234"``) for IdPs that JSON-encode the claim as a
+    string. Booleans are explicitly rejected so a payload containing
+    ``"exp": true`` doesn't coerce to ``1`` (``isinstance(True, int)``
+    is True in Python). String-form ``isdigit()`` rejects negative
+    numbers (the sign char fails) and decimals; both are out of spec
+    for NumericDate which is monotonically positive.
+
+    Round-11 review (Comprehensive H + Claude H): the prior docstring
+    claimed "rejects floats with fractional parts" which was wrong —
+    ``int(1234.5)`` truncates rather than rejects. Doc updated to
+    match implementation; truncation is the right behavior.
     """
     claims = decode_jwt_payload(token)
     exp = claims.get("exp")

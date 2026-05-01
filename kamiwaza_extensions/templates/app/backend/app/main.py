@@ -105,8 +105,23 @@ def _normalize_model_endpoint(endpoint: str, access_path: str):
                 # e.g. an ingress sub-path like ``https://gateway/foo``
                 # whose ``/foo`` would otherwise be dropped during the
                 # re-host (round-9 review High: Comprehensive).
+                #
+                # Round-11 Critical (codex): only PREPEND the prefix if
+                # the endpoint's path doesn't already carry it. Some
+                # deployments emit fully-qualified ``endpoint`` values
+                # under the same ingress (``https://gateway/foo/runtime/...``);
+                # round-9's unconditional prepend produced a doubled
+                # ``/foo/foo/runtime/...`` for those.
                 base_prefix = backend_parsed.path.rstrip("/")
-                merged_path = f"{base_prefix}{parsed.path}" if base_prefix else parsed.path
+                already_prefixed = base_prefix and (
+                    parsed.path == base_prefix
+                    or parsed.path.startswith(base_prefix + "/")
+                )
+                merged_path = (
+                    parsed.path
+                    if (already_prefixed or not base_prefix)
+                    else f"{base_prefix}{parsed.path}"
+                )
                 parsed = parsed._replace(
                     scheme=backend_parsed.scheme,
                     netloc=backend_parsed.netloc,

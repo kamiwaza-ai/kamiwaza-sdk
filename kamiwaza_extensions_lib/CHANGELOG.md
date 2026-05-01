@@ -36,13 +36,21 @@ range in `requirements.txt`.
   builds `${base}/auth/login` directly and the platform serves auth
   endpoints under `/api/auth/*`, so stripping here produced 404
   redirects on every login under `--auth`. Round-10 codex P2.
+* `_default_resolver` switched from `socket.gethostbyname` (IPv4-only)
+  to `socket.getaddrinfo` (dual-stack). AAAA-only Kamiwaza hostnames
+  previously raised `gaierror` here, causing `is_loopback_url` to
+  treat them as "unresolvable" and `build_compose_extra_hosts` to
+  silently route platform traffic to the developer's machine via
+  `host-gateway`. Round-11 codex GH High.
 
 ### Internal
 
 * Consolidated the signature-less JWT payload decoder into
   `kamiwaza_extensions_lib._jwt`. Both `session._decode_jwt_exp` and
   `local_dev._decode_jwt_claims` now delegate; the prior implementations
-  diverged on segment-count strictness (round-10 review).
+  diverged on segment-count strictness (round-10 review). Round-11
+  also collapsed `local_dev._coerce_int` onto `_jwt.decode_jwt_exp`
+  so the NumericDate coercion is no longer duplicated.
 * Removed `local_dev.public_api_url_from` — its only caller (the env
   overlay) no longer strips `/api`, and the public `url._strip_api_suffix`
   covers the remaining browser-display path. Single source of truth

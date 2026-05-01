@@ -21,7 +21,7 @@ from urllib.parse import urlparse, urlunparse
 
 from kamiwaza_extensions.connections import ConnectionManager
 
-from ._jwt import decode_jwt_payload
+from ._jwt import decode_jwt_exp, decode_jwt_payload
 
 _HOST_DOCKER_INTERNAL = "host.docker.internal"
 # TLDs that are reserved for local / loopback use per RFC 6761 / 6762.
@@ -97,15 +97,35 @@ def _default_resolver(host: str) -> str:
     wait time with ``Thread.join(timeout=…)``. The thread is daemonized
     so it dies with the process if the resolver hangs forever — no
     cleanup overhead, since this codepath only runs during one-shot
-    ``kz-ext dev local --auth`` startup. Indirection also lets tests
-    monkeypatch ``socket.gethostbyname`` at call time.
+    ``kz-ext dev local --auth`` startup.
+
+    Round-11 review (codex GH High) fix: switched from
+    ``socket.gethostbyname`` (IPv4-only) to ``socket.getaddrinfo`` so
+    AAAA-only hosts (real Kamiwaza deployments that publish only IPv6
+    records) resolve correctly. Without this, an IPv6-only platform
+    hostname raised ``gaierror`` here → ``is_loopback_url`` treated it
+    as "unresolvable from host" → ``build_compose_extra_hosts`` mapped
+    the remote name to ``host-gateway``, silently routing platform
+    traffic to the developer's machine instead of the actual server.
     """
     result: list[str] = []
     error: list[BaseException] = []
 
     def _run() -> None:
         try:
-            result.append(socket.gethostbyname(host))
+            # ``AF_UNSPEC`` admits both A and AAAA records. We only need
+            # one address back to populate the loopback heuristic; the
+            # IP itself is what callers compare against
+            # ``ipaddress.ip_address.is_loopback``. Take the first
+            # answer regardless of family — both v4 loopback (127/8)
+            # and v6 loopback (::1) parse correctly.
+            infos = socket.getaddrinfo(
+                host, None, socket.AF_UNSPEC, socket.SOCK_STREAM,
+            )
+            if not infos:
+                raise OSError(f"no addresses returned for {host!r}")
+            sockaddr = infos[0][4]
+            result.append(sockaddr[0])
         except BaseException as exc:  # noqa: BLE001 — propagate to caller
             error.append(exc)
 
@@ -249,24 +269,6 @@ def extract_extra_hosts(
     return [f"{_strip_brackets(host)}:host-gateway"]
 
 
-# Round-10: the signature-less JWT decoder lives in
-# ``kamiwaza_extensions_lib._jwt`` so this module and ``session.py``
-# share one implementation (prior round-9 review caught a 2-vs-3
-# segment-count divergence between the two copies). Aliased to the
-# original name for in-tree call sites + tests that import it.
-_decode_jwt_claims = decode_jwt_payload
-
-
-def _coerce_int(value: object) -> Optional[int]:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, (int, float)):
-        return int(value)
-    if isinstance(value, str) and value.isdigit():
-        return int(value)
-    return None
-
-
 def prepare_bridge_context(
     connection_manager: Optional[ConnectionManager] = None,
 ) -> BridgeContext:
@@ -297,8 +299,13 @@ def prepare_bridge_context(
             "token — run `kz-ext login` again"
         )
 
-    claims = _decode_jwt_claims(bearer)
-    exp = _coerce_int(claims.get("exp"))
+    # Round-11 review (Comprehensive M, Claude M) — both the JSON+base64
+    # decode AND the NumericDate int-coercion now live in ``_jwt``; this
+    # path no longer carries its own copy. Decode the payload once for
+    # the ``sub`` lookup below; ``decode_jwt_exp`` re-decodes (cheap —
+    # ~µs) but keeps the public-helper boundary clean.
+    claims = decode_jwt_payload(bearer)
+    exp = decode_jwt_exp(bearer)
     if exp is not None and exp <= int(time.time()):
         when = datetime.fromtimestamp(exp, tz=timezone.utc).isoformat()
         raise LocalDevAuthError(

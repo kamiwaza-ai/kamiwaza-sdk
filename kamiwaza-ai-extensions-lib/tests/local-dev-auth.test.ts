@@ -11,6 +11,7 @@ import {
     _buildBridgedHeaders,
     _decodeJwt,
     _resetWarnOnceState,
+    createLocalDevAuthMiddleware,
 } from "../src/local-dev-auth/index";
 
 const GATE = "KZ_EXT_DEV_LOCAL_AUTH";
@@ -306,5 +307,58 @@ describe("_decodeJwt", () => {
             email: "josé@example.com",
             name: "José 名前 🌸",
         });
+    });
+});
+
+describe("createLocalDevAuthMiddleware factory diagnostics", () => {
+    let infoSpy: ReturnType<typeof vi.spyOn>;
+
+    beforeEach(() => {
+        delete process.env[GATE];
+        delete process.env[TOKEN];
+        infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+        infoSpy.mockRestore();
+    });
+
+    it("logs the captured user_id at factory creation under --auth", () => {
+        // PR #87 round-10 H4 → round-11 review (Claude M5) — Next.js
+        // dev HMR may not re-instantiate the middleware factory when
+        // the bearer rotates, so a stale token can silently persist
+        // across `kz-ext login --use other`. The factory logs the
+        // resolved bridge ``user_id`` once at creation; this test
+        // pins the diagnostic so a future refactor that drops the
+        // log (e.g., moving the decode into the request closure)
+        // fails loudly.
+        process.env[GATE] = "1";
+        process.env[TOKEN] = makeJwt({ sub: "u-bridge-debug" });
+
+        createLocalDevAuthMiddleware();
+
+        expect(infoSpy).toHaveBeenCalled();
+        const message = infoSpy.mock.calls[0]?.[0] ?? "";
+        expect(message).toContain("local-dev-auth");
+        expect(message).toContain("user_id=u-bridge-debug");
+    });
+
+    it("does NOT log when gate is off (production behavior)", () => {
+        // Gate unset → bridge is pass-through → no diagnostic chatter.
+        // Important: this log is not meant to fire in any prod path.
+        process.env[TOKEN] = makeJwt({ sub: "u-prod" });
+        // GATE intentionally unset.
+
+        createLocalDevAuthMiddleware();
+        expect(infoSpy).not.toHaveBeenCalled();
+    });
+
+    it("does NOT log when gate is on but token is missing", () => {
+        // The factory's "warn + no-op" path doesn't reach the log
+        // (which fires only when there's a real token to capture).
+        process.env[GATE] = "1";
+
+        createLocalDevAuthMiddleware();
+        expect(infoSpy).not.toHaveBeenCalled();
     });
 });

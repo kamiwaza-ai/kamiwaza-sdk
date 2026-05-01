@@ -192,7 +192,12 @@ class TestBuildComposeExtraHosts:
     def test_non_loopback_returns_empty_without_auth(self, monkeypatch):
         # TS-10 — auth=False (default)
         import socket as _socket
-        monkeypatch.setattr(_socket, "gethostbyname", lambda h: "1.2.3.4")
+        # Round-11 (codex GH High): resolver switched from gethostbyname
+        # (IPv4-only) to getaddrinfo (dual-stack); patch the new target.
+        monkeypatch.setattr(
+            _socket, "getaddrinfo",
+            lambda *a, **kw: [(0, 0, 0, "", ("1.2.3.4", 0))],
+        )
         conn = ConnectionInfo(
             name="prod", url="https://api.kamiwaza.ai", active=True, created_at=0.0
         )
@@ -228,7 +233,12 @@ class TestBuildComposeExtraHosts:
         # host.docker.internal:host-gateway. Harmless on non-loopback
         # connections and keeps the contract consistent.
         import socket as _socket
-        monkeypatch.setattr(_socket, "gethostbyname", lambda h: "1.2.3.4")
+        # Round-11 (codex GH High): resolver switched from gethostbyname
+        # (IPv4-only) to getaddrinfo (dual-stack); patch the new target.
+        monkeypatch.setattr(
+            _socket, "getaddrinfo",
+            lambda *a, **kw: [(0, 0, 0, "", ("1.2.3.4", 0))],
+        )
         conn = ConnectionInfo(
             name="prod", url="https://api.kamiwaza.ai", active=True, created_at=0.0
         )
@@ -780,6 +790,63 @@ class TestIsPortAvailable:
         sock.listen(1)
         try:
             assert is_port_available(59125) is False
+        finally:
+            sock.close()
+
+    def test_occupied_port_via_ipv6_listener(self):
+        """PR #87 round-10 H6 + round-11 review (Comprehensive H + Claude H)
+        — an IPv6-only listener bound to ``::1`` (e.g. a local proxy on a
+        Linux ``net.ipv6.bindv6only=1`` host, or a kubernetes-style
+        sidecar) must be detected so ``compose up`` doesn't bind-fail.
+        Round-10 added the connect probe; this test pins it.
+        """
+        import socket
+
+        if not socket.has_ipv6:
+            pytest.skip("IPv6 not available on this host")
+
+        sock = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            # IPV6_V6ONLY=1 simulates the bindv6only kernel default that
+            # makes the round-10 fix actually matter — without it the
+            # IPv4 probe would catch the listener via the v4-mapped path.
+            sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+        except (AttributeError, OSError):
+            pass
+        try:
+            sock.bind(("::1", 59126))
+            sock.listen(1)
+            assert is_port_available(59126) is False
+        finally:
+            sock.close()
+
+    def test_v4_free_but_v6_bound_caught_by_bind_check(self):
+        """PR #87 round-11 review (Comprehensive M2) — the round-10
+        connect probe checked both stacks but the bind check was IPv4
+        only, so a port that's v4-free but v6-occupied could pass
+        ``is_port_available`` and still fail at ``compose up`` bind
+        time. Round-11 added a v6 bind probe to close the asymmetry.
+
+        Bind a v6 socket without ``listen()``: the connect probe sees
+        ECONNREFUSED (no listener) and falls through to the bind check,
+        where v4 succeeds and v6 raises EADDRINUSE — which is the
+        exact "v4-free but v6-bound" race we're locking in.
+        """
+        import socket
+
+        if not socket.has_ipv6:
+            pytest.skip("IPv6 not available on this host")
+
+        sock = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+        try:
+            sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+        except (AttributeError, OSError):
+            pass
+        try:
+            sock.bind(("::1", 59127))
+            # No listen() — connect probe will get ECONNREFUSED.
+            assert is_port_available(59127) is False
         finally:
             sock.close()
 
