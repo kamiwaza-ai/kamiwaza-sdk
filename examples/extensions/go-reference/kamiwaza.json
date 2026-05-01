@@ -1,0 +1,13 @@
+{
+  "name": "tool-go-reference",
+  "version": "0.1.0",
+  "type": "tool",
+  "source_type": "user_repo",
+  "visibility": "private",
+  "description": "Reference Go (non-SDK) extension demonstrating the canonical envelope-header contract from docs/extensions/non-sdk-flow.md",
+  "risk_tier": 0,
+  "verified": false,
+  "tags": ["reference", "non-sdk", "go"],
+  "env_defaults": {},
+  "required_env_vars": []
+}
