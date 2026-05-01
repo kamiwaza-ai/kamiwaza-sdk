@@ -292,3 +292,130 @@ class TestListAvailableModels:
 
             with pytest.raises(TypeError):
                 await list_available_models(request)
+
+
+@pytest.mark.unit
+class TestRuntimeBaseSplit:
+    """PR #87 round-7 review (codex P1) — under `kz-ext dev local --auth`
+    KAMIWAZA_API_URL (container-routable) and KAMIWAZA_PUBLIC_API_URL
+    (browser-routable) intentionally diverge. The two consumers in
+    models.py must use the right one:
+
+    - list_available_models() returns endpoints displayed in the UI →
+      _public_base_url (public_api_url first, browser-resolvable)
+    - _resolve_openai_base() builds AsyncOpenAI used by the backend →
+      _backend_runtime_base (api_url first, container-routable)
+
+    Without this split, get_model_client() would build URLs the backend
+    container can't reach (its own localhost) and every --auth model
+    call 401s on a misroute.
+    """
+
+    def test_public_base_prefers_public_api_url(self):
+        # Browser-facing display path — pick the URL the browser sees.
+        from kamiwaza_extensions_lib.config import AuthConfig
+        from kamiwaza_extensions_lib.models import _public_base_url
+
+        config = AuthConfig(
+            api_url="http://host.docker.internal:8000/api",
+            public_api_url="http://localhost:8000",
+        )
+        assert _public_base_url(config) == "http://localhost:8000"
+
+    def test_public_base_falls_back_to_api_url(self):
+        from kamiwaza_extensions_lib.config import AuthConfig
+        from kamiwaza_extensions_lib.models import _public_base_url
+
+        config = AuthConfig(
+            api_url="https://kamiwaza.test/api",
+            public_api_url="",
+        )
+        assert _public_base_url(config) == "https://kamiwaza.test"
+
+    def test_backend_runtime_base_prefers_api_url(self):
+        # Container-side path — pick the URL the backend container can
+        # reach. Round-7 regression: previously _resolve_openai_base
+        # built URLs from public_api_url which under --auth was kept as
+        # localhost (browser-resolvable, container-unreachable).
+        from kamiwaza_extensions_lib.config import AuthConfig
+        from kamiwaza_extensions_lib.models import _backend_runtime_base
+
+        config = AuthConfig(
+            api_url="http://host.docker.internal:8000/api",
+            public_api_url="http://localhost:8000",
+        )
+        assert _backend_runtime_base(config) == "http://host.docker.internal:8000"
+
+    def test_backend_runtime_base_falls_back_to_public(self):
+        # Edge case: api_url unset (shouldn't happen under --auth but
+        # production deployments without an internal cluster URL fall
+        # back to the public ingress).
+        from kamiwaza_extensions_lib.config import AuthConfig
+        from kamiwaza_extensions_lib.models import _backend_runtime_base
+
+        config = AuthConfig(
+            api_url="",
+            public_api_url="https://kamiwaza.test/api",
+        )
+        assert _backend_runtime_base(config) == "https://kamiwaza.test"
+
+    def test_production_parity_both_urls_equal(self):
+        # In production deployed extensions both URLs typically point at
+        # the same gateway. The split must be a no-op in that case.
+        from kamiwaza_extensions_lib.config import AuthConfig
+        from kamiwaza_extensions_lib.models import (
+            _backend_runtime_base,
+            _public_base_url,
+        )
+
+        config = AuthConfig(
+            api_url="https://kamiwaza.example.com/api",
+            public_api_url="https://kamiwaza.example.com/api",
+        )
+        assert _public_base_url(config) == _backend_runtime_base(config)
+
+    @pytest.mark.asyncio
+    async def test_resolve_openai_base_uses_container_url_under_auth_split(
+        self, monkeypatch
+    ):
+        # End-to-end: simulate the round-5 split env (container + browser
+        # URLs differ), build an OpenAI client, assert the resolved base
+        # uses the container-routable host.
+
+        monkeypatch.setenv(
+            "KAMIWAZA_API_URL", "http://host.docker.internal:8000/api"
+        )
+        monkeypatch.setenv("KAMIWAZA_PUBLIC_API_URL", "http://localhost:8000")
+        monkeypatch.setenv("KZ_EXT_DEV_LOCAL_AUTH", "1")
+
+        from kamiwaza_extensions_lib.config import AuthConfig
+        from kamiwaza_extensions_lib.models import _resolve_openai_base
+
+        config = AuthConfig.from_env()
+
+        # Stub out the platform call so we don't actually hit the network.
+        with patch(
+            "kamiwaza_extensions_lib.models.KamiwazaExtClient.from_env"
+        ) as mock_from_env:
+            mock_client = AsyncMock()
+            mock_client.get_models = AsyncMock(
+                return_value=[
+                    {
+                        "deployment_id": "dep-1",
+                        "phase": "Running",
+                        "type": "chat",
+                        "access_path": "/runtime/models/dep-1/v1",
+                    }
+                ]
+            )
+            mock_from_env.return_value = mock_client
+
+            base = await _resolve_openai_base(config, {})
+
+        assert "host.docker.internal" in base, (
+            f"_resolve_openai_base returned {base!r} — should be the "
+            "container-routable host (host.docker.internal), NOT the "
+            "browser-facing localhost (which the backend container "
+            "cannot reach)."
+        )
+        assert "localhost" not in base

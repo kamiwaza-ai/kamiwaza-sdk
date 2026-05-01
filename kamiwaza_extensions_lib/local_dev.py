@@ -271,8 +271,8 @@ def _decode_jwt_claims(token: str) -> dict:
     parts = token.split(".")
     # Require the canonical three-segment shape (header.payload.signature)
     # so the Python side stays in lock-step with the TS middleware
-    # (kamiwaza-ai-extensions-lib/src/local-dev-auth/index.ts:90 also
-    # requires `parts.length >= 3`). PR #87 round-6 review caught the
+    # (kamiwaza-ai-extensions-lib/src/local-dev-auth/index.ts `decodeJwt`
+    # also requires `parts.length >= 3`). PR #87 round-6 review caught the
     # divergence — a malformed two-segment token used to pass the Python
     # gate but be rejected by the TS middleware, leaving the runner
     # with KAMIWAZA_USE_AUTH=true and no envelope synthesis.

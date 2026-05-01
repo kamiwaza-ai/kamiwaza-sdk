@@ -122,6 +122,10 @@ async def list_available_models(request: Request) -> list[AvailableModel]:
         return []
 
     if isinstance(deployments, list):
+        # list_available_models returns endpoints intended for the
+        # frontend / end-user display. Use the public (browser-facing)
+        # base URL so the values surfaced to the UI are the URLs a user
+        # would copy-paste or click — not the container-internal URL.
         public_base = _public_base_url(config)
         models: list[AvailableModel] = []
         for deployment in deployments:
@@ -142,7 +146,15 @@ async def _resolve_openai_base(
     config: AuthConfig,
     forwarded_headers: dict[str, str],
 ) -> str:
-    public_base = _public_base_url(config)
+    # _resolve_openai_base is consumed by get_model_client() which
+    # builds an AsyncOpenAI instance that runs INSIDE the backend
+    # container. Use the container-routable base, not the
+    # browser-facing public URL — under `kz-ext dev local --auth` the
+    # two can diverge (api_url=host.docker.internal, public_api_url=
+    # localhost) and the backend container cannot reach its own
+    # localhost. In production both URLs point at the same gateway so
+    # the priority is a no-op there. PR #87 round-7 review (codex P1).
+    container_base = _backend_runtime_base(config)
     if config.api_url:
         client = KamiwazaExtClient.from_env()
         try:
@@ -154,7 +166,7 @@ async def _resolve_openai_base(
             for deployment in deployments:
                 if not _is_openai_compatible(deployment):
                     continue
-                endpoint = _deployment_openai_base(deployment, public_base)
+                endpoint = _deployment_openai_base(deployment, container_base)
                 if endpoint:
                     return endpoint
 
@@ -162,10 +174,44 @@ async def _resolve_openai_base(
 
 
 def _public_base_url(config: AuthConfig) -> str:
+    """Base URL intended for **browser-facing** consumption — values
+    surfaced to the frontend / user (model endpoints displayed in the
+    UI, OAuth redirect URIs, etc.).
+
+    Prefers ``config.public_api_url`` (the developer's browser-resolvable
+    host) over ``config.api_url``. In production both point at the same
+    gateway; under ``kz-ext dev local --auth`` they diverge intentionally
+    so the browser can keep using the original loopback host while the
+    container uses ``host.docker.internal``.
+    """
     if config.public_api_url:
         return config.public_api_url.removesuffix("/api").rstrip("/")
     if config.api_url:
         return config.api_url.removesuffix("/api").rstrip("/")
+    return ""
+
+
+def _backend_runtime_base(config: AuthConfig) -> str:
+    """Base URL the backend container uses to reach the platform's
+    runtime endpoints (OpenAI-compatible model URLs, deployment access
+    paths). Distinct from ``_public_base_url`` because under
+    ``kz-ext dev local --auth`` the browser and the container need
+    different hosts: the browser hits the original loopback
+    (``http://localhost:8000``), the container hits the rewritten alias
+    (``http://host.docker.internal:8000``).
+
+    In production both URLs point at the same gateway so the priority
+    is a no-op there.
+
+    PR #87 round-7 review (codex P1) caught a regression where
+    ``get_model_client()`` was building OpenAI base URLs from
+    ``public_api_url`` (browser) and the backend container then failed
+    to reach its own ``localhost``.
+    """
+    if config.api_url:
+        return config.api_url.removesuffix("/api").rstrip("/")
+    if config.public_api_url:
+        return config.public_api_url.removesuffix("/api").rstrip("/")
     return ""
 
 
