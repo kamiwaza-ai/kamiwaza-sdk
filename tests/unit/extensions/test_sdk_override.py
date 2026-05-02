@@ -262,27 +262,27 @@ class TestDetectServiceType:
 
 @pytest.mark.unit
 class TestGenerateComposeOverride:
+    """Verify the shell-free SDK injection (ENG-4413).
+
+    Backend services get the SDK at ``/sdk`` plus ``PYTHONPATH=/sdk``.
+    Frontend services get the TS package bind-mounted directly into
+    ``/app/node_modules/@kamiwaza-ai/extensions-lib``. Neither path
+    introduces a ``/bin/sh`` dependency, so the override works on
+    Chainguard distroless runtime images that lack a shell.
+    """
+
     def _make_spec(self, tmp_path, **kwargs):
         return SdkOverrideSpec(sdk_repo=tmp_path, **kwargs)
 
-    def _make_ext_dir(self, tmp_path):
-        """Create a minimal extension directory with Dockerfiles."""
-        ext = tmp_path / "ext"
-        ext.mkdir()
-        be = ext / "backend"
-        be.mkdir()
-        (be / "Dockerfile").write_text(
-            'FROM python:3.10\nCMD ["uvicorn", "app.main:app", "--host", "0.0.0.0"]\n'
-        )
-        fe = ext / "frontend"
-        fe.mkdir()
-        (fe / "Dockerfile").write_text(
-            'FROM node:20\nENTRYPOINT ["node", "/app/start.mjs"]\n'
-        )
-        return ext
+    @staticmethod
+    def _assert_no_shell(svc_override: dict) -> None:
+        """Regression guard: the override must never introduce /bin/sh."""
+        rendered = repr(svc_override)
+        assert "/bin/sh" not in rendered
+        assert "entrypoint" not in svc_override
+        assert "command" not in svc_override
 
     def test_both_libs(self, tmp_path):
-        ext_dir = self._make_ext_dir(tmp_path)
         spec = self._make_spec(tmp_path)
         compose = {
             "services": {
@@ -293,78 +293,27 @@ class TestGenerateComposeOverride:
                 "backend": {"build": {"context": "./backend"}, "ports": ["8000:8000"]},
             }
         }
-        override = generate_compose_override(spec, compose, extension_dir=ext_dir)
-        services = override["services"]
-
-        # Backend reads CMD from Dockerfile
-        assert (
-            'export PYTHONPATH="/sdk$${PYTHONPATH:+:$$PYTHONPATH}"'
-            in services["backend"]["command"][0]
-        )
-        assert (
-            "exec uvicorn app.main:app --host 0.0.0.0"
-            in services["backend"]["command"][0]
-        )
-
-        # Frontend reads ENTRYPOINT from Dockerfile
-        assert "npm pack" in services["frontend"]["command"][0]
-        assert "exec node /app/start.mjs" in services["frontend"]["command"][0]
-
-    def test_combines_entrypoint_and_cmd(self, tmp_path):
-        ext_dir = tmp_path / "ext"
-        ext_dir.mkdir()
-        frontend = ext_dir / "frontend"
-        frontend.mkdir()
-        (frontend / "Dockerfile").write_text(
-            'FROM node:20\nENTRYPOINT ["docker-entrypoint.sh"]\n'
-            'CMD ["npm", "run", "start"]\n'
-        )
-
-        spec = self._make_spec(tmp_path, python=False)
-        compose = {
-            "services": {
-                "frontend": {
-                    "build": {"context": "./frontend"},
-                    "ports": ["3000:3000"],
-                },
-            }
-        }
-
-        override = generate_compose_override(spec, compose, extension_dir=ext_dir)
-        command = override["services"]["frontend"]["command"][0]
-        assert "exec docker-entrypoint.sh npm run start" in command
-
-    def test_quotes_json_array_cmd_arguments(self, tmp_path):
-        ext_dir = tmp_path / "ext"
-        ext_dir.mkdir()
-        backend = ext_dir / "backend"
-        backend.mkdir()
-        (backend / "Dockerfile").write_text(
-            'FROM python:3.10\nCMD ["bash", "-c", "echo hello world"]\n'
-        )
-
-        spec = self._make_spec(tmp_path, typescript=False)
-        compose = {
-            "services": {
-                "backend": {"build": {"context": "./backend"}, "ports": ["8000:8000"]},
-            }
-        }
-
-        override = generate_compose_override(spec, compose, extension_dir=ext_dir)
-        command = override["services"]["backend"]["command"][0]
-        assert "exec bash -c 'echo hello world'" in command
-
-    def test_fallback_without_extension_dir(self, tmp_path):
-        spec = self._make_spec(tmp_path)
-        compose = {
-            "services": {
-                "backend": {"build": "./backend", "ports": ["8000:8000"]},
-            }
-        }
-        # No extension_dir — uses default fallback commands
         override = generate_compose_override(spec, compose)
         services = override["services"]
-        assert "exec uvicorn" in services["backend"]["command"][0]
+
+        # Backend: PYTHONPATH=/sdk via env, /sdk bind, no shell.
+        backend = services["backend"]
+        assert backend["environment"] == {"PYTHONPATH": "/sdk"}
+        assert any(
+            v.get("target") == "/sdk" and v.get("source") == str(tmp_path)
+            for v in backend["volumes"]
+        )
+        self._assert_no_shell(backend)
+
+        # Frontend: SDK package bind-mounted directly into node_modules,
+        # no shell, no command override.
+        frontend = services["frontend"]
+        assert any(
+            v.get("target") == "/app/node_modules/@kamiwaza-ai/extensions-lib"
+            and v.get("source") == str(tmp_path / "kamiwaza-ai-extensions-lib")
+            for v in frontend["volumes"]
+        )
+        self._assert_no_shell(frontend)
 
     def test_python_only(self, tmp_path):
         spec = self._make_spec(tmp_path, typescript=False)
@@ -376,10 +325,9 @@ class TestGenerateComposeOverride:
         }
         override = generate_compose_override(spec, compose)
         services = override["services"]
-        assert (
-            'export PYTHONPATH="/sdk$${PYTHONPATH:+:$$PYTHONPATH}"'
-            in services["backend"]["command"][0]
-        )
+
+        assert services["backend"]["environment"] == {"PYTHONPATH": "/sdk"}
+        self._assert_no_shell(services["backend"])
         assert "frontend" not in services
 
     def test_typescript_only(self, tmp_path):
@@ -393,33 +341,65 @@ class TestGenerateComposeOverride:
 
         override = generate_compose_override(spec, compose)
         services = override["services"]
-        assert "npm pack" in services["frontend"]["command"][0]
+
+        ts_target = "/app/node_modules/@kamiwaza-ai/extensions-lib"
+        assert any(v.get("target") == ts_target for v in services["frontend"]["volumes"])
+        self._assert_no_shell(services["frontend"])
         assert "backend" not in services
 
-    def test_python_override_prefers_local_sdk_via_pythonpath(self, tmp_path):
+    def test_skips_services_without_build(self, tmp_path):
+        """Pre-built images (postgres, redis) must not get SDK overlay."""
+        spec = self._make_spec(tmp_path)
+        compose = {
+            "services": {
+                "postgres": {"image": "postgres:16"},
+                "backend": {"build": "./backend"},
+            }
+        }
+        override = generate_compose_override(spec, compose)
+        assert "postgres" not in override["services"]
+        assert "backend" in override["services"]
+
+    def test_works_on_chainguard_distroless_runtime(self, tmp_path):
+        """ENG-4413 regression: with cgr.dev/kamiwaza/python runtime stage
+        (no /bin/sh), the override must still be applicable."""
+        ext = tmp_path / "ext"
+        be = ext / "backend"
+        be.mkdir(parents=True)
+        (be / "Dockerfile").write_text(
+            "FROM cgr.dev/kamiwaza/python:3.11-dev AS build\n"
+            "FROM cgr.dev/kamiwaza/python:3.11 AS runtime\n"
+            'ENTRYPOINT ["python"]\n'
+            'CMD ["-m", "uvicorn", "app.main:app", "--host", "0.0.0.0"]\n'
+        )
         spec = self._make_spec(tmp_path, typescript=False)
-        compose = {
-            "services": {
-                "backend": {"build": "./backend", "ports": ["8000:8000"]},
-            }
-        }
+        compose = {"services": {"backend": {"build": {"context": "./backend"}}}}
+        override = generate_compose_override(spec, compose, extension_dir=ext)
 
-        override = generate_compose_override(spec, compose)
-        command = override["services"]["backend"]["command"][0]
-        assert 'export PYTHONPATH="/sdk$${PYTHONPATH:+:$$PYTHONPATH}"' in command
+        backend = override["services"]["backend"]
+        # No /bin/sh anywhere — the runtime image doesn't have one.
+        self._assert_no_shell(backend)
+        # PYTHONPATH still routes the SDK in.
+        assert backend["environment"] == {"PYTHONPATH": "/sdk"}
 
-    def test_typescript_override_escapes_tarball_for_compose(self, tmp_path):
+    def test_works_on_chainguard_distroless_node_runtime(self, tmp_path):
+        """ENG-4413 regression: same for cgr.dev/kamiwaza/node frontend."""
+        ext = tmp_path / "ext"
+        fe = ext / "frontend"
+        fe.mkdir(parents=True)
+        (fe / "Dockerfile").write_text(
+            "FROM cgr.dev/kamiwaza/node:22-dev AS build\n"
+            "FROM cgr.dev/kamiwaza/node:22 AS runtime\n"
+            'ENTRYPOINT ["node", "/app/start.mjs"]\n'
+        )
         spec = self._make_spec(tmp_path, python=False)
-        compose = {
-            "services": {
-                "frontend": {"build": "./frontend", "ports": ["3000:3000"]},
-            }
-        }
+        compose = {"services": {"frontend": {"build": {"context": "./frontend"}}}}
+        override = generate_compose_override(spec, compose, extension_dir=ext)
 
-        override = generate_compose_override(spec, compose)
-        command = override["services"]["frontend"]["command"][0]
-        assert "TARBALL=$$(cd /sdk/kamiwaza-ai-extensions-lib" in command
-        assert 'npm install --ignore-scripts "/tmp/$$TARBALL"' in command
+        frontend = override["services"]["frontend"]
+        self._assert_no_shell(frontend)
+        ts_target = "/app/node_modules/@kamiwaza-ai/extensions-lib"
+        assert any(v.get("target") == ts_target for v in frontend["volumes"])
 
     def test_volume_mount_is_readonly(self, tmp_path):
         spec = self._make_spec(tmp_path)

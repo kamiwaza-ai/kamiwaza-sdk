@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import json
 import re
-import shlex
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -14,17 +12,6 @@ import yaml
 from rich.console import Console
 
 console = Console(stderr=True)
-
-_DEFAULT_BACKEND_STARTUP = [
-    "uvicorn",
-    "app.main:app",
-    "--host",
-    "0.0.0.0",
-    "--port",
-    "8000",
-    "--reload",
-]
-_DEFAULT_FRONTEND_STARTUP = ["npm", "start"]
 
 
 # ------------------------------------------------------------------
@@ -241,23 +228,19 @@ def build_typescript_lib(spec: SdkOverrideSpec) -> bool:
 # ------------------------------------------------------------------
 
 
-_PYTHON_LIB_COPY = 'export PYTHONPATH="/sdk${PYTHONPATH:+:$PYTHONPATH}"'
+# In-container path the SDK repo is bind-mounted at. Adding this to
+# PYTHONPATH lets ``import kamiwaza_extensions_lib`` resolve to the
+# local checkout without rebuilding the image.
+_SDK_BIND_TARGET = "/sdk"
 
-_TS_LIB_INSTALL = (
-    "TARBALL=$(cd /sdk/kamiwaza-ai-extensions-lib"
-    " && npm pack --ignore-scripts --pack-destination /tmp 2>/dev/null | tail -1)"
-    ' && cd /app && npm install --ignore-scripts "/tmp/$TARBALL"'
-)
-
-
-def _escape_compose_shell_vars(command: str) -> str:
-    """Escape shell variable syntax so Docker Compose preserves it.
-
-    Compose interpolates ``$VAR`` and ``${VAR}`` when it parses YAML. Local
-    SDK override commands intentionally rely on those variables being expanded
-    later inside the container shell, so they must be emitted as ``$$...``.
-    """
-    return command.replace("$", "$$")
+# In-container path the TypeScript SDK package gets bind-mounted to.
+# Shadowing ``/app/node_modules/@kamiwaza-ai/extensions-lib`` with the
+# SDK repo's package directory lets the existing app code resolve the
+# local sources via standard Node module resolution. No npm install
+# at runtime, no shell required — works on Chainguard distroless
+# runtime images that lack ``/bin/sh`` and ``npm``.
+_TS_LIB_PACKAGE_DIR = "kamiwaza-ai-extensions-lib"
+_TS_LIB_NODE_MODULES_TARGET = "/app/node_modules/@kamiwaza-ai/extensions-lib"
 
 
 def detect_service_type(
@@ -379,50 +362,6 @@ def _resolve_dockerfile(build_spec: Any, extension_dir: Path) -> Optional[Path]:
     return None
 
 
-@dataclass
-class DockerStartup:
-    """Resolved Dockerfile startup instructions."""
-
-    entrypoint: Optional[List[str]] = None
-    cmd: Optional[List[str]] = None
-
-
-def _parse_docker_command(instruction: str) -> List[str]:
-    """Parse a Docker CMD/ENTRYPOINT instruction into argv."""
-    if instruction.startswith("["):
-        try:
-            parts = json.loads(instruction)
-        except (json.JSONDecodeError, TypeError):
-            return ["/bin/sh", "-c", instruction]
-        if isinstance(parts, list):
-            return [str(part) for part in parts]
-    return ["/bin/sh", "-c", instruction]
-
-
-def _read_dockerfile_startup(dockerfile: Path) -> Optional[DockerStartup]:
-    """Read CMD and ENTRYPOINT startup instructions from a Dockerfile."""
-    if not dockerfile.is_file():
-        return None
-    try:
-        content = dockerfile.read_text()
-    except OSError:
-        return None
-
-    startup = DockerStartup()
-    for line in content.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("ENTRYPOINT "):
-            startup.entrypoint = _parse_docker_command(
-                stripped[len("ENTRYPOINT ") :].strip()
-            )
-        elif stripped.startswith("CMD "):
-            startup.cmd = _parse_docker_command(stripped[len("CMD ") :].strip())
-
-    if not startup.entrypoint and not startup.cmd:
-        return None
-    return startup
-
-
 def _read_final_base_image(dockerfile: Optional[Path]) -> Optional[str]:
     """Return the final FROM image name from a Dockerfile, if readable."""
     stage_bases = _read_dockerfile_stage_bases(dockerfile)
@@ -474,20 +413,6 @@ def _image_basename(image_ref: str) -> str:
     ref = image_ref.split("@", 1)[0]
     name = ref.rsplit("/", 1)[-1]
     return name.split(":", 1)[0].lower()
-
-
-def _startup_argv(
-    startup: Optional[DockerStartup],
-    fallback: List[str],
-) -> List[str]:
-    """Return the argv Docker would execute for startup."""
-    if not startup:
-        return fallback
-    if startup.entrypoint:
-        return startup.entrypoint + (startup.cmd or [])
-    if startup.cmd:
-        return startup.cmd
-    return fallback
 
 
 def generate_local_build_dockerfile_patches(
@@ -566,15 +491,28 @@ def generate_compose_override(
 ) -> dict:
     """Generate a compose override dict for local SDK development.
 
-    Adds volume mounts and install command overrides so containers use
-    the local SDK runtime libraries instead of published packages.
-    Only overrides services that have a ``build`` key (skips pre-built
-    images like redis/postgres).
+    Surfaces the local SDK to each service via shell-free mechanisms so
+    the override works against any runtime image — including Chainguard
+    distroless variants (``cgr.dev/kamiwaza/python``,
+    ``cgr.dev/kamiwaza/node``) that have no ``/bin/sh``, ``apt``, or
+    ``npm`` in the runtime stage.
 
-    When *extension_dir* is provided, reads each service's Dockerfile to
-    determine the correct startup command.  Docker Compose clears the
-    image's CMD when ``entrypoint`` is overridden, so the original startup
-    command must be provided explicitly.
+    Mechanism per service type:
+
+    - **Backend (Python)**: bind-mount the SDK repo at ``/sdk`` and set
+      ``PYTHONPATH=/sdk`` via compose ``environment``. The existing
+      Dockerfile entrypoint is left untouched and inherits the env var.
+    - **Frontend (TypeScript)**: bind-mount the SDK's package directory
+      directly into ``/app/node_modules/@kamiwaza-ai/extensions-lib``,
+      shadowing whatever the build phase installed. Standard Node
+      module resolution picks up the local source — no runtime install,
+      no shell.
+
+    Only overrides services that have a ``build`` key (pre-built images
+    like redis/postgres are skipped).
+
+    *extension_dir* is no longer required for correctness, but is still
+    accepted for compatibility with callers that pass it.
     """
     override_services: dict = {}
     services = compose_data.get("services", {})
@@ -591,41 +529,31 @@ def generate_compose_override(
         )
         svc_override: dict = {}
 
-        # Read the original startup command from the Dockerfile
-        startup = None
-        if extension_dir:
-            df = _resolve_dockerfile(svc_config["build"], extension_dir)
-            if df:
-                startup = _read_dockerfile_startup(df)
-
         if svc_type == "backend" and spec.python:
             svc_override["volumes"] = [
                 {
                     "type": "bind",
                     "source": str(spec.sdk_repo),
-                    "target": "/sdk",
+                    "target": _SDK_BIND_TARGET,
                     "read_only": True,
                 }
             ]
-            exec_cmd = shlex.join(_startup_argv(startup, _DEFAULT_BACKEND_STARTUP))
-            svc_override["entrypoint"] = ["/bin/sh", "-c"]
-            svc_override["command"] = [
-                _escape_compose_shell_vars(_PYTHON_LIB_COPY) + f" && exec {exec_cmd}"
-            ]
+            # Set PYTHONPATH so the running interpreter picks up the
+            # local SDK without touching the entrypoint. This overwrites
+            # any image-baked PYTHONPATH; that is intentional for
+            # ``--sdk-repo`` mode (developers asking to use the local
+            # SDK want the local SDK to win unconditionally).
+            svc_override["environment"] = {"PYTHONPATH": _SDK_BIND_TARGET}
 
         elif svc_type == "frontend" and spec.typescript:
+            ts_pkg_source = spec.sdk_repo / _TS_LIB_PACKAGE_DIR
             svc_override["volumes"] = [
                 {
                     "type": "bind",
-                    "source": str(spec.sdk_repo),
-                    "target": "/sdk",
+                    "source": str(ts_pkg_source),
+                    "target": _TS_LIB_NODE_MODULES_TARGET,
                     "read_only": True,
                 }
-            ]
-            exec_cmd = shlex.join(_startup_argv(startup, _DEFAULT_FRONTEND_STARTUP))
-            svc_override["entrypoint"] = ["/bin/sh", "-c"]
-            svc_override["command"] = [
-                _escape_compose_shell_vars(_TS_LIB_INSTALL) + f" && exec {exec_cmd}"
             ]
 
         if svc_override:
