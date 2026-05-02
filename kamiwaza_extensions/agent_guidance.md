@@ -36,34 +36,60 @@ in your next prompt and must repair.
 ## Runtime contract (read this carefully)
 
 Kamiwaza deploys extension containers as **non-root** with a
-**read-only root filesystem**. This drives several patterns:
+**read-only root filesystem**. These rules apply regardless of which
+base image the extension uses:
 
-### Distroless / minimal base images
+- **Run as a non-root user**: end the runtime stage with a `USER`
+  directive (e.g., `USER 1000:1000`, `USER nobody`, `USER 65532:65532`
+  — pick whatever the base image actually provides).
+- **No writes to the root filesystem at runtime**: anything that needs
+  to write must target `/tmp` or an explicitly declared volume. See
+  the read-only root section below.
+- **Healthchecks must work** under the chosen base image (i.e., the
+  binaries the healthcheck invokes must actually be present).
 
-Prefer `cgr.dev/kamiwaza/python:<ver>` (runtime) and
-`cgr.dev/kamiwaza/python:<ver>-dev` (build) for Python services.
-Same for `cgr.dev/kamiwaza/node:<ver>` and `:<ver>-dev`. These are
-Chainguard-style minimal images.
+### Choosing a base image
 
-The runtime images **do not include `/bin/sh`, `apt`, package managers,
-or most system utilities**. This means:
+**Respect the existing base image when it works.** If the source
+extension already uses `python:3.11-slim`, `node:22-alpine`, etc., and
+its Dockerfile is otherwise compliant with the runtime contract above,
+do not swap the base image. Just patch what's broken (e.g., add a
+`USER` line if it ran as root, point cache dirs at `/tmp`).
 
-- **Never use shell-form `CMD` or `ENTRYPOINT`** in runtime stages —
-  always exec form (`CMD ["python", "-m", ...]`, not `CMD python -m ...`).
+**For greenfield containerization** — when the source has no
+Dockerfile and you're generating one from scratch — Kamiwaza ships
+hardened Chainguard-distroless variants tuned for the runtime
+contract: `cgr.dev/kamiwaza/python:<ver>` /
+`cgr.dev/kamiwaza/python:<ver>-dev` for Python services and
+`cgr.dev/kamiwaza/node:<ver>` / `:<ver>-dev` for Node. They are a good
+default but not mandatory.
+
+**Only swap an existing base image** when it is genuinely incompatible
+with the runtime contract (e.g., the upstream image hard-codes root,
+no `-slim` variant exists, package install requires write access to
+`/`). Note the swap and the reason in `CONVERT_NOTES.md`.
+
+### Distroless gotchas (apply when using a Chainguard image)
+
+The Chainguard runtime images **do not include `/bin/sh`, `apt`,
+package managers, or most system utilities**. Whenever the runtime
+stage uses one (whether you chose it or the source already did):
+
+- **Never use shell-form `CMD` or `ENTRYPOINT`** — always exec form
+  (`CMD ["python", "-m", ...]`, not `CMD python -m ...`).
 - **Never use shell-form `HEALTHCHECK`** — always
   `HEALTHCHECK CMD ["python", "-c", "..."]`, not
   `HEALTHCHECK CMD curl -f http://localhost/health`.
 - **Compose healthchecks** must use array form starting with `"CMD"`
   (not `"CMD-SHELL"`): `test: ["CMD", "python", "-c", "..."]`.
-- Do not invoke `sh`, `bash`, `curl`, `wget`, `apt-get`, etc. in the
-  runtime stage. Install everything in the `-dev` build stage and copy
-  the artifacts forward.
-- Do not assume `/etc/passwd` has a `nobody` user — Chainguard uses
-  UID `65532` (`nonroot`); use that explicitly: `USER 65532:65532`.
+- Do not invoke `sh`, `bash`, `curl`, `wget`, `apt-get` etc. in the
+  runtime stage. Install everything in the `-dev` build stage and
+  copy artifacts forward.
+- Use `USER 65532:65532` (Chainguard's `nonroot`) — `nobody` may not
+  be defined in `/etc/passwd`.
 
-If the existing application genuinely requires a shell at runtime
-(rare), call this out in `manual_items` and pick a non-distroless base
-(e.g., `python:3.11-slim`). Default to distroless.
+These rules are *also* good practice on slim/alpine bases (exec form
+is just better) but they are *required* on Chainguard distroless.
 
 ### Read-only root filesystem
 
