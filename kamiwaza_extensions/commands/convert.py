@@ -108,15 +108,18 @@ def run_convert(
         else:
             console.print("  [bold]Files modified:[/bold]")
 
+        action_verbs = {
+            "create": ("created", "would create"),
+            "modify": ("modified", "would modify"),
+            "append": ("appended", "would append"),
+            "copy": ("copied from {src}", "would copy from {src}"),
+        }
         for mod in plan.modifications:
-            if mod.action == "create":
-                icon = "[green]\u2713[/green]" if not dry_run else "[dim]\u2713[/dim]"
-                action = "created" if not dry_run else "would create"
-            else:
-                icon = "[green]\u2713[/green]" if not dry_run else "[dim]\u2713[/dim]"
-                action = "modified" if not dry_run else "would modify"
+            icon = "[green]\u2713[/green]" if not dry_run else "[dim]\u2713[/dim]"
+            past, future = action_verbs.get(mod.action, ("modified", "would modify"))
+            verb = (past if not dry_run else future).format(src=mod.source_path or "?")
             desc = f" ({mod.description})" if mod.description else ""
-            console.print(f"    {icon} {mod.path} — {action}{desc}")
+            console.print(f"    {icon} {mod.path} — {verb}{desc}")
 
     if plan.errors:
         console.print()

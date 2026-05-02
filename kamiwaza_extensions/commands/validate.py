@@ -14,19 +14,38 @@ console = Console()
 
 def run_validate(*, path: Optional[str], json_output: bool) -> None:
     """Validate extension metadata and compose files."""
-    from kamiwaza_extensions.validators.metadata import MetadataValidator
+    from kamiwaza_extensions.extension_detector import (
+        ExtensionDetector,
+        ExtensionNotFoundError,
+        MultipleExtensionsError,
+    )
     from kamiwaza_extensions.validators.compose import ComposeValidator
+    from kamiwaza_extensions.validators.metadata import MetadataValidator
     from kamiwaza_extensions.validators.platform_runtime import PlatformRuntimeValidator
 
-    ext_dir = Path(path) if path else Path.cwd()
+    start_dir = Path(path) if path else Path.cwd()
 
-    metadata_file = ext_dir / "kamiwaza.json"
-    if not metadata_file.exists():
+    try:
+        info = ExtensionDetector().detect(start_dir)
+    except (ExtensionNotFoundError, MultipleExtensionsError) as exc:
         if json_output:
-            typer.echo(json_mod.dumps({"passed": False, "errors": [f"No kamiwaza.json found in {ext_dir}"], "warnings": []}))
+            typer.echo(json_mod.dumps({"passed": False, "errors": [str(exc)], "warnings": []}))
         else:
-            console.print(f"[red]Error:[/red] No kamiwaza.json found in {ext_dir}")
-        raise typer.Exit(code=1)
+            console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    ext_dir = info.path
+    metadata_file = ext_dir / "kamiwaza.json"
+
+    # Surface the monorepo rebase so the user knows where validation ran.
+    if not json_output and ext_dir.resolve() != start_dir.resolve():
+        try:
+            rel = ext_dir.resolve().relative_to(start_dir.resolve())
+        except ValueError:
+            rel = ext_dir
+        console.print(
+            f"  [yellow]→[/yellow] Detected extension at: [bold]{rel}/[/bold]"
+        )
 
     # Run metadata validation
     meta_validator = MetadataValidator()

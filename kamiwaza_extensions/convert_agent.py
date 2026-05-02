@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import re
 import shutil
+import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -45,12 +47,23 @@ _STAGING_SKIP_DIRS = (
 
 @dataclass
 class FileModification:
-    """A single file modification produced by the agent."""
+    """A single file modification produced by the agent.
+
+    Actions:
+    - ``create`` / ``modify`` — write ``content`` to ``path``
+    - ``append`` — append ``content`` to existing ``path`` (or create)
+    - ``copy`` — copy bytes from ``source_path`` to ``path``. Used to
+      vendor binary deps (wheels, tarballs, images) the LLM cannot
+      represent as text. ``content`` is unused. ``source_path`` is
+      resolved against the original CLI path (``rebased_from``) when
+      monorepo detection rebased; otherwise against ``app_dir``.
+    """
 
     path: str  # Relative to app_dir
-    action: str  # "create", "modify", "append"
-    content: str  # Full new content (create/modify) or content to append
+    action: str  # "create" | "modify" | "append" | "copy"
+    content: str = ""  # Full new content (create/modify) or content to append; unused for copy
     description: str = ""  # What was changed and why
+    source_path: Optional[str] = None  # For action=copy: source path within the source tree
 
 
 @dataclass
@@ -99,6 +112,7 @@ def build_strategy_prompt(analysis: AnalysisResult) -> str:
     compat_section = _render_compatibility_issues(analysis)
     files_section = _render_context_files(analysis)
     inventory_section = _render_repo_inventory(analysis)
+    monorepo_section = _render_monorepo_inventory(analysis)
 
     return f"""You are planning a best-effort conversion of an existing application into a Kamiwaza extension.
 
@@ -113,7 +127,7 @@ Description: {analysis.description or 'No description'}
 
 ## Repo Inventory
 {inventory_section}
-
+{monorepo_section}
 ## Services
 {services_section}
 
@@ -187,6 +201,8 @@ Warnings:
 ```
 """
 
+    monorepo_section = _render_monorepo_inventory(analysis)
+
     return f"""You are converting an existing application into a valid Kamiwaza extension repository.
 
 ## Application
@@ -205,7 +221,7 @@ Detected conversion mode: {analysis.conversion_mode}
 
 ## Repo Inventory
 {inventory_section}
-
+{monorepo_section}
 ## Services
 {services_section}
 
@@ -226,11 +242,22 @@ Detected conversion mode: {analysis.conversion_mode}
 - Generated services must be compatible with Kamiwaza's non-root, read-only-root-filesystem runtime contract.
 - Prefer an unprivileged in-container HTTP port such as `8080`.
 - For nginx/static web servers, configure writable temp/pid paths under `/tmp` when needed.
-- Generate `CONVERT_NOTES.md` summarizing what changed and any remaining manual follow-ups.
+- Generate `CONVERT_NOTES.md` summarizing what changed.
 - Only add Kamiwaza runtime libraries when they fit the actual stack.
 - Avoid deleting user source files unless a generated wrapper/config file supersedes them.
 - Keep the output small and practical: wrappers/config/dockerization are fine; full framework rewrites are not.
 - Safe minimal runtime swaps are allowed when they materially improve deploy success on Kamiwaza.
+
+## Vendoring Binary Dependencies (do this, do NOT defer to manual_items)
+- When the existing build references files outside the extension root — wheels, tarballs, images, certs — emit `copy` modifications to vendor them in.
+- The `copy` action takes `path` (destination, relative to the extension root) and `source_path` (relative to the original CLI directory). For monorepo conversions the original CLI dir is the monorepo root, so `source_path` like `shared/python/dist/foo.whl` works directly. Use the entries in **Source Tree Outside Extension Root** above.
+- Update Dockerfile / compose / package manifests to reference the vendored in-extension paths.
+
+## `manual_items` Discipline
+- `manual_items` is for follow-up the user genuinely must do themselves (e.g., test a behavior, pick between alternatives, run a remote command). Aim to leave it empty.
+- DO NOT restate work you have already encoded as a modification. If you emitted a `copy` modification for `shared/foo.whl`, do not then write a `manual_item` saying "vendor shared/foo.whl" — the user would do it twice or be confused about whether the convert did its job.
+- DO NOT include informational notes about preserved files (e.g., "kamiwaza.json preserved") — that belongs in `summary` or `CONVERT_NOTES.md`, not as a manual action.
+- Hedging language ("verify X", "consider Y", "you may want to Z") is only appropriate when the user truly has a choice to make.
 
 Return ONLY JSON with this shape:
 ```json
@@ -238,13 +265,14 @@ Return ONLY JSON with this shape:
   "modifications": [
     {{
       "path": "relative/path/to/file",
-      "action": "create" | "modify" | "append",
-      "content": "full file content",
+      "action": "create" | "modify" | "append" | "copy",
+      "content": "full file content (omit for action=copy)",
+      "source_path": "for action=copy: source path within the source tree",
       "description": "what changed and why"
     }}
   ],
   "manual_items": [
-    "manual follow-up if still required"
+    "manual follow-up if still required (prefer to leave empty — convert any 'manually copy / vendor X' note into a `copy` modification above)"
   ],
   "summary": "brief summary"
 }}
@@ -252,58 +280,196 @@ Return ONLY JSON with this shape:
 """
 
 
+# Subprocess timeout for CLI provider calls. Larger than the SDK timeout
+# (120s) because CLI invocations include cold-start, OAuth refresh, and
+# the model's full reasoning budget for a single one-shot prompt that may
+# carry up to ``_MAX_CONTEXT_SIZE`` characters of repo context.
+_CLI_TIMEOUT_SECONDS = 300
+# Provider tags used by ``KZ_CONVERT_PROVIDER`` to force one path.
+_VALID_PROVIDERS = ("auto", "claude-cli", "codex-cli", "openai", "anthropic")
+
+
 def call_llm(prompt: str) -> Optional[str]:
     """Call an LLM and return the response text.
 
-    Tries providers in order:
-    1. OpenAI-compatible (if OPENAI_API_KEY is set and openai is installed)
-       — works with OpenAI, Azure, Kamiwaza, vLLM, Ollama, or any
-         OpenAI-compatible endpoint. Set OPENAI_BASE_URL to override.
-    2. Anthropic (if ANTHROPIC_API_KEY is set and anthropic is installed)
-    3. Returns None if no provider is available.
+    Provider order (in ``auto`` mode, the default):
 
-    Override the model with KZ_CONVERT_MODEL env var.
+    1. ``claude`` CLI (Claude Code) if installed — uses the developer's
+       Claude Pro/Max subscription, no API key required.
+    2. ``codex`` CLI if installed — uses the developer's ChatGPT
+       Plus subscription, no API key required.
+    3. OpenAI-compatible API (if ``OPENAI_API_KEY`` is set and ``openai``
+       is installed). Works with OpenAI, Azure, Kamiwaza, vLLM, Ollama,
+       or any OpenAI-compatible endpoint via ``OPENAI_BASE_URL``.
+    4. Anthropic API (if ``ANTHROPIC_API_KEY`` is set and ``anthropic``
+       is installed).
+
+    Set ``KZ_CONVERT_PROVIDER`` to one of ``claude-cli``, ``codex-cli``,
+    ``openai``, ``anthropic`` to force a specific provider. Override the
+    API model with ``KZ_CONVERT_MODEL``.
+
+    Returns ``None`` if no provider is available.
     """
-    import os
+    provider = (os.environ.get("KZ_CONVERT_PROVIDER") or "auto").strip().lower()
+    if provider not in _VALID_PROVIDERS:
+        console.print(
+            f"[yellow]Warning:[/yellow] Unknown KZ_CONVERT_PROVIDER='{provider}'. "
+            f"Falling back to auto. Valid values: {', '.join(_VALID_PROVIDERS)}."
+        )
+        provider = "auto"
 
     model_override = os.environ.get("KZ_CONVERT_MODEL")
 
-    # --- OpenAI-compatible (priority — covers OpenAI, Kamiwaza, vLLM, Ollama, etc.) ---
-    openai_key = os.environ.get("OPENAI_API_KEY")
-    if openai_key:
-        if importlib.util.find_spec("openai") is None:
-            console.print(
-                "[dim]OPENAI_API_KEY is set but openai package is not installed. "
-                "Install with: pip install openai[/dim]"
-            )
-        else:
-            result = _call_openai_compatible(
-                prompt,
-                api_key=openai_key,
-                base_url=os.environ.get("OPENAI_BASE_URL"),
-                model=model_override or os.environ.get("OPENAI_MODEL", "gpt-4o"),
-            )
+    # --- Claude CLI (subscription, no API key) ---
+    if provider in ("auto", "claude-cli"):
+        claude_path = shutil.which("claude")
+        if claude_path:
+            result = _call_claude_cli(prompt, binary=claude_path, model=model_override)
             if result is not None:
                 return result
+        elif provider == "claude-cli":
+            console.print(
+                "[yellow]Warning:[/yellow] KZ_CONVERT_PROVIDER=claude-cli but `claude` "
+                "is not on PATH. Install Claude Code or use a different provider."
+            )
 
-    # --- Anthropic (fallback) ---
-    anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
-    if anthropic_key:
-        if importlib.util.find_spec("anthropic") is None:
-            console.print(
-                "[dim]ANTHROPIC_API_KEY is set but anthropic package is not installed. "
-                "Install with: pip install kamiwaza-sdk[convert][/dim]"
-            )
-        else:
-            result = _call_anthropic(
-                prompt,
-                api_key=anthropic_key,
-                model=model_override or "claude-sonnet-4-20250514",
-            )
+    # --- Codex CLI (subscription, no API key) ---
+    if provider in ("auto", "codex-cli"):
+        codex_path = shutil.which("codex")
+        if codex_path:
+            result = _call_codex_cli(prompt, binary=codex_path, model=model_override)
             if result is not None:
                 return result
+        elif provider == "codex-cli":
+            console.print(
+                "[yellow]Warning:[/yellow] KZ_CONVERT_PROVIDER=codex-cli but `codex` "
+                "is not on PATH. Install the Codex CLI or use a different provider."
+            )
+
+    # --- OpenAI-compatible API ---
+    if provider in ("auto", "openai"):
+        openai_key = os.environ.get("OPENAI_API_KEY")
+        if openai_key:
+            if importlib.util.find_spec("openai") is None:
+                console.print(
+                    "[dim]OPENAI_API_KEY is set but openai package is not installed. "
+                    "Install with: pip install openai[/dim]"
+                )
+            else:
+                result = _call_openai_compatible(
+                    prompt,
+                    api_key=openai_key,
+                    base_url=os.environ.get("OPENAI_BASE_URL"),
+                    model=model_override or os.environ.get("OPENAI_MODEL", "gpt-4o"),
+                )
+                if result is not None:
+                    return result
+        elif provider == "openai":
+            console.print(
+                "[yellow]Warning:[/yellow] KZ_CONVERT_PROVIDER=openai but "
+                "OPENAI_API_KEY is not set."
+            )
+
+    # --- Anthropic API ---
+    if provider in ("auto", "anthropic"):
+        anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
+        if anthropic_key:
+            if importlib.util.find_spec("anthropic") is None:
+                console.print(
+                    "[dim]ANTHROPIC_API_KEY is set but anthropic package is not installed. "
+                    "Install with: pip install kamiwaza-sdk[convert][/dim]"
+                )
+            else:
+                result = _call_anthropic(
+                    prompt,
+                    api_key=anthropic_key,
+                    model=model_override or "claude-sonnet-4-20250514",
+                )
+                if result is not None:
+                    return result
+        elif provider == "anthropic":
+            console.print(
+                "[yellow]Warning:[/yellow] KZ_CONVERT_PROVIDER=anthropic but "
+                "ANTHROPIC_API_KEY is not set."
+            )
 
     return None
+
+
+def _call_claude_cli(
+    prompt: str,
+    *,
+    binary: str,
+    model: Optional[str] = None,
+) -> Optional[str]:
+    """Invoke Claude Code in non-interactive mode using the user's subscription auth.
+
+    Runs ``claude --print --no-session-persistence`` with the prompt piped
+    on stdin. Executes from a temp cwd so the CLI does not pick up the
+    user's project ``CLAUDE.md`` / ``AGENTS.md`` and bias the response.
+    """
+    cmd = [binary, "--print", "--no-session-persistence", "--output-format", "text"]
+    if model:
+        cmd += ["--model", model]
+    return _run_cli_subprocess(cmd, prompt, label="claude CLI")
+
+
+def _call_codex_cli(
+    prompt: str,
+    *,
+    binary: str,
+    model: Optional[str] = None,
+) -> Optional[str]:
+    """Invoke Codex CLI non-interactively using the user's subscription auth.
+
+    Runs ``codex exec --skip-git-repo-check -`` so the prompt is read from
+    stdin. Executes from a temp cwd to avoid the CLI surfacing
+    repo-specific context — that temp cwd is not a git repo, hence the
+    ``--skip-git-repo-check`` flag.
+    """
+    cmd = [binary, "exec", "--skip-git-repo-check"]
+    if model:
+        cmd += ["--model", model]
+    cmd.append("-")
+    return _run_cli_subprocess(cmd, prompt, label="codex CLI")
+
+
+def _run_cli_subprocess(cmd: List[str], prompt: str, *, label: str) -> Optional[str]:
+    """Shared subprocess shape for CLI providers. Returns stdout or None."""
+    try:
+        with tempfile.TemporaryDirectory(prefix="kz-ext-llm-") as tmp_cwd:
+            completed = subprocess.run(
+                cmd,
+                input=prompt,
+                capture_output=True,
+                text=True,
+                timeout=_CLI_TIMEOUT_SECONDS,
+                cwd=tmp_cwd,
+                check=False,
+            )
+    except subprocess.TimeoutExpired:
+        console.print(
+            f"[yellow]Warning:[/yellow] {label} timed out after "
+            f"{_CLI_TIMEOUT_SECONDS}s — falling through."
+        )
+        return None
+    except OSError as exc:
+        console.print(f"[yellow]Warning:[/yellow] {label} failed to launch: {exc}")
+        return None
+
+    if completed.returncode != 0:
+        stderr_tail = (completed.stderr or "").strip().splitlines()[-3:]
+        detail = " | ".join(stderr_tail) if stderr_tail else "no stderr"
+        console.print(
+            f"[yellow]Warning:[/yellow] {label} exited {completed.returncode}: {detail}"
+        )
+        return None
+
+    output = (completed.stdout or "").strip()
+    if not output:
+        console.print(f"[yellow]Warning:[/yellow] {label} returned empty output.")
+        return None
+    return output
 
 
 def _call_anthropic(prompt: str, *, api_key: str, model: str) -> Optional[str]:
@@ -396,6 +562,7 @@ def parse_response(response_text: str) -> ConversionPlan:
                     action=mod.get("action", "modify"),
                     content=mod.get("content", ""),
                     description=mod.get("description", ""),
+                    source_path=mod.get("source_path"),
                 )
             )
 
@@ -413,22 +580,44 @@ def parse_response(response_text: str) -> ConversionPlan:
         )
 
 
-def apply_plan(plan: ConversionPlan, app_dir: Path, dry_run: bool = False) -> List[str]:
+def apply_plan(
+    plan: ConversionPlan,
+    app_dir: Path,
+    dry_run: bool = False,
+    *,
+    source_root: Optional[Path] = None,
+) -> List[str]:
     """Apply the conversion plan to the filesystem.
+
+    ``source_root`` is the root used to resolve ``copy`` action source
+    paths. Defaults to ``app_dir``; pass the original CLI path
+    (``analysis.rebased_from``) when monorepo detection rebased so the
+    LLM can vendor binaries from elsewhere in the source tree.
 
     Returns list of applied change descriptions.
     """
     applied = []
     resolved_app_dir = app_dir.resolve()
+    resolved_source_root = (source_root or app_dir).resolve()
     for mod in plan.modifications:
-        if not mod.path or not mod.content:
+        if not mod.path:
             continue
 
-        allowed_actions = ("create", "modify", "append")
+        allowed_actions = ("create", "modify", "append", "copy")
         if mod.action not in allowed_actions:
             console.print(
                 f"[yellow]Warning:[/yellow] Unknown action '{mod.action}' for '{mod.path}' — skipping"
             )
+            continue
+
+        # text-content actions require content; copy requires source_path
+        if mod.action == "copy":
+            if not mod.source_path:
+                console.print(
+                    f"[yellow]Warning:[/yellow] copy action for '{mod.path}' missing source_path — skipping"
+                )
+                continue
+        elif not mod.content:
             continue
 
         target = (resolved_app_dir / mod.path).resolve()
@@ -448,7 +637,23 @@ def apply_plan(plan: ConversionPlan, app_dir: Path, dry_run: bool = False) -> Li
 
         target.parent.mkdir(parents=True, exist_ok=True)
 
-        if mod.action == "append" and target.exists():
+        if mod.action == "copy":
+            source = (resolved_source_root / (mod.source_path or "")).resolve()
+            # Source must live under the source tree we were handed.
+            if not source.is_relative_to(resolved_source_root):
+                console.print(
+                    f"[yellow]Warning:[/yellow] copy source '{mod.source_path}' "
+                    "escapes source tree — skipping"
+                )
+                continue
+            if not source.exists() or not source.is_file():
+                console.print(
+                    f"[yellow]Warning:[/yellow] copy source '{mod.source_path}' "
+                    "does not exist — skipping"
+                )
+                continue
+            shutil.copy2(source, target)
+        elif mod.action == "append" and target.exists():
             existing = target.read_text(encoding="utf-8")
             target.write_text(existing + "\n" + mod.content, encoding="utf-8")
         else:
@@ -518,11 +723,21 @@ def run_agent(analysis: AnalysisResult, dry_run: bool = False) -> ConversionPlan
 
         _preserve_existing_kamiwaza_json(plan, analysis)
         _ensure_supporting_files(plan, analysis, metadata_seed, strategy)
-        last_validation = _validate_plan_in_staging(plan, analysis.app_dir)
+        _dedupe_manual_items_against_modifications(plan)
+        last_validation = _validate_plan_in_staging(
+            plan,
+            analysis.app_dir,
+            source_root=analysis.rebased_from or analysis.app_dir,
+        )
         if last_validation.passed:
             plan.success = True
             plan.warnings = last_validation.warnings
-            apply_plan(plan, analysis.app_dir, dry_run=dry_run)
+            apply_plan(
+                plan,
+                analysis.app_dir,
+                dry_run=dry_run,
+                source_root=analysis.rebased_from or analysis.app_dir,
+            )
             if dry_run:
                 plan.summary = f"[Dry run] Validated {len(plan.modifications)} proposed modifications. {plan.summary}".strip()
             return plan
@@ -602,6 +817,39 @@ def _render_repo_inventory(analysis: AnalysisResult) -> str:
     return "\n\n".join(sections) or "- No notable repo inventory discovered"
 
 
+def _render_monorepo_inventory(analysis: AnalysisResult) -> str:
+    """Surface files outside the rebased ext root that the LLM can ``copy``.
+
+    Returns an empty string when no monorepo rebase happened. Otherwise
+    renders a Markdown section listing the broader source tree (capped)
+    and any vendor-able binary artifacts (.whl / .tgz / etc.) so the LLM
+    knows what to vendor in via ``copy`` modifications.
+    """
+    if not analysis.monorepo_inventory and not analysis.vendorable_artifacts:
+        return ""
+
+    sections: List[str] = ["", "## Source Tree Outside Extension Root"]
+    sections.append(
+        "Files below live in the original CLI directory but outside the "
+        "rebased extension root. You may reference them as `source_path` "
+        "in `copy` modifications to vendor binaries (wheels, tarballs, "
+        "images) or import shared text files into the extension."
+    )
+
+    if analysis.vendorable_artifacts:
+        sections.append("")
+        sections.append("**Vendorable binary artifacts:**")
+        sections.extend(f"- {item}" for item in analysis.vendorable_artifacts[:50])
+
+    if analysis.monorepo_inventory:
+        sections.append("")
+        sections.append("**Other files in the source tree (capped):**")
+        sections.extend(f"- {item}" for item in analysis.monorepo_inventory[:60])
+
+    sections.append("")
+    return "\n".join(sections)
+
+
 def _render_context_files(analysis: AnalysisResult) -> str:
     files_section = ""
     total_chars = 0
@@ -645,13 +893,20 @@ def _apply_basic_fallback(analysis: AnalysisResult, *, dry_run: bool) -> Convers
         strategy=strategy,
         summary="LLM unavailable — created a basic Kamiwaza scaffold only.",
         manual_items=[
-            "Set ANTHROPIC_API_KEY or OPENAI_API_KEY for full AI-powered conversion.",
+            "Install the `claude` (Claude Code) or `codex` CLI to use your existing "
+            "subscription — no API key required.",
+            "Or set ANTHROPIC_API_KEY / OPENAI_API_KEY for full AI-powered conversion.",
             "For other providers, set OPENAI_API_KEY + OPENAI_BASE_URL (any OpenAI-compatible API).",
             "Review kamiwaza.json, then rerun convert with an LLM to attempt compose and runtime integration.",
         ],
     )
     _ensure_supporting_files(plan, analysis, metadata_seed, strategy)
-    apply_plan(plan, analysis.app_dir, dry_run=dry_run)
+    apply_plan(
+        plan,
+        analysis.app_dir,
+        dry_run=dry_run,
+        source_root=analysis.rebased_from or analysis.app_dir,
+    )
     if dry_run:
         plan.summary = f"[Dry run] {plan.summary}"
     return plan
@@ -682,12 +937,11 @@ def _preserve_existing_kamiwaza_json(plan: ConversionPlan, analysis: AnalysisRes
 
     if skipped_metadata_change:
         plan.modifications = kept
-        plan.manual_items = _merge_manual_items(
-            plan.manual_items,
-            [
-                "kamiwaza.json already exists; preserving the existing manifest and skipping AI-proposed metadata changes.",
-            ],
-        )
+        # Don't pollute manual_items with a no-action notification; surface
+        # in the summary so it lands in the convert run output and notes
+        # without prompting the user to "do" anything.
+        note = "Preserved existing kamiwaza.json (skipped AI-proposed metadata changes)."
+        plan.summary = f"{plan.summary} {note}".strip() if plan.summary else note
 
 
 def _load_existing_kamiwaza_json(path: Path) -> Optional[Dict[str, Any]]:
@@ -762,7 +1016,12 @@ def _build_convert_notes(plan: ConversionPlan, strategy: ConversionStrategy) -> 
     return "\n".join(lines) + "\n"
 
 
-def _validate_plan_in_staging(plan: ConversionPlan, app_dir: Path) -> ValidationSummary:
+def _validate_plan_in_staging(
+    plan: ConversionPlan,
+    app_dir: Path,
+    *,
+    source_root: Optional[Path] = None,
+) -> ValidationSummary:
     from kamiwaza_extensions.validators.compose import (
         ComposeValidator,
         is_missing_resource_limits_warning,
@@ -778,7 +1037,9 @@ def _validate_plan_in_staging(plan: ConversionPlan, app_dir: Path) -> Validation
             ignore=shutil.ignore_patterns(*_STAGING_SKIP_DIRS),
             dirs_exist_ok=True,
         )
-        apply_plan(plan, staged_root, dry_run=False)
+        # Copy actions resolve their source against the original source
+        # tree (the monorepo root in rebased cases), not the staged copy.
+        apply_plan(plan, staged_root, dry_run=False, source_root=source_root or app_dir)
 
         errors: List[str] = []
         warnings: List[str] = []
@@ -862,3 +1123,57 @@ def _merge_manual_items(*groups: List[str]) -> List[str]:
                 seen.add(item)
                 merged.append(item)
     return merged
+
+
+# Verbs that signal "the user must take this action" — when paired with a
+# path the LLM has already scheduled as a modification, the manual item is
+# a stale leftover (the LLM hedged after deciding to do the work itself).
+_MANUAL_ACTION_VERBS = (
+    "vendor",
+    "copy",
+    "move",
+    "create",
+    "add ",
+    "rebase",
+    "rewrite",
+    "drop ",
+    "switch ",
+    "update ",
+    "modify ",
+    "ensure ",
+    "install ",
+    "place ",
+)
+
+
+def _dedupe_manual_items_against_modifications(plan: ConversionPlan) -> None:
+    """Drop manual_items the LLM left despite scheduling the same work.
+
+    LLMs often hedge: they emit a `copy` modification for a wheel AND
+    write a manual_item telling the user to "vendor the wheel". The
+    manual_item is then misleading — the user thinks the convert didn't
+    finish. Strip such items when they (a) name a verb implying the user
+    must act, and (b) reference a path or filename already present in
+    the modifications list.
+    """
+    if not plan.manual_items or not plan.modifications:
+        return
+
+    referenced = set()
+    for mod in plan.modifications:
+        if mod.path:
+            referenced.add(mod.path.lower())
+            referenced.add(Path(mod.path).name.lower())
+        if mod.source_path:
+            referenced.add(mod.source_path.lower())
+            referenced.add(Path(mod.source_path).name.lower())
+
+    kept: List[str] = []
+    for item in plan.manual_items:
+        lowered = item.lower()
+        looks_actionable = any(verb in lowered for verb in _MANUAL_ACTION_VERBS)
+        mentions_handled_path = any(token and token in lowered for token in referenced)
+        if looks_actionable and mentions_handled_path:
+            continue
+        kept.append(item)
+    plan.manual_items = kept

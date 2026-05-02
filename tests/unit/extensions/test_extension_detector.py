@@ -101,3 +101,44 @@ class TestComposeLoading:
         (tmp_path / "compose.yml").write_text("services: {b: {}}")
         info = detector.detect(tmp_path)
         assert info.compose_path.name == "docker-compose.yml"
+
+
+class TestMonorepoDiscovery:
+    """ExtensionDetector should find kamiwaza.json under apps/<x>, tools/<x>, etc."""
+
+    @pytest.mark.parametrize(
+        "subdir",
+        ["apps/my-ext", "tools/my-tool", "services/api", "packages/pkg", "extensions/ext"],
+    )
+    def test_finds_in_monorepo_subdir(self, detector, tmp_path, subdir):
+        target = tmp_path / subdir
+        target.mkdir(parents=True)
+        (target / "kamiwaza.json").write_text(json.dumps({"name": target.name}))
+
+        info = detector.detect(tmp_path)
+
+        assert info.path == target
+        assert info.name == target.name
+
+    def test_ambiguous_across_monorepo_dirs_raises(self, detector, tmp_path):
+        for sub in ("apps/foo", "tools/bar"):
+            d = tmp_path / sub
+            d.mkdir(parents=True)
+            (d / "kamiwaza.json").write_text(json.dumps({"name": d.name}))
+
+        with pytest.raises(MultipleExtensionsError) as exc:
+            detector.detect(tmp_path)
+
+        assert "apps/foo" in str(exc.value)
+        assert "tools/bar" in str(exc.value)
+
+    def test_root_kamiwaza_json_wins_over_monorepo(self, detector, tmp_path):
+        (tmp_path / "kamiwaza.json").write_text(json.dumps({"name": "root"}))
+        (tmp_path / "apps").mkdir()
+        (tmp_path / "apps" / "decoy").mkdir()
+        (tmp_path / "apps" / "decoy" / "kamiwaza.json").write_text(json.dumps({"name": "decoy"}))
+
+        info = detector.detect(tmp_path)
+
+        assert info.path == tmp_path
+        assert info.name == "root"

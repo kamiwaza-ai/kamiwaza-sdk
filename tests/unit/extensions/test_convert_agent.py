@@ -202,14 +202,174 @@ class TestApplyPlan:
         applied = apply_plan(plan, tmp_path)
         assert len(applied) == 0
 
+    def test_copy_action_vendors_from_source_root(self, tmp_path):
+        from kamiwaza_extensions.convert_agent import (
+            ConversionPlan,
+            FileModification,
+            apply_plan,
+        )
+
+        # Source tree: monorepo root with shared/ artifact + extension subdir.
+        source_root = tmp_path
+        ext = tmp_path / "apps" / "my-ext"
+        ext.mkdir(parents=True)
+        shared = source_root / "shared" / "python" / "dist"
+        shared.mkdir(parents=True)
+        wheel = shared / "auth-1.0.whl"
+        wheel.write_bytes(b"BINARY-WHEEL-BYTES")
+
+        plan = ConversionPlan(
+            modifications=[
+                FileModification(
+                    path="vendor/auth-1.0.whl",
+                    action="copy",
+                    source_path="shared/python/dist/auth-1.0.whl",
+                    description="vendor wheel",
+                )
+            ]
+        )
+
+        applied = apply_plan(plan, ext, source_root=source_root)
+
+        assert len(applied) == 1
+        copied = ext / "vendor" / "auth-1.0.whl"
+        assert copied.exists()
+        assert copied.read_bytes() == b"BINARY-WHEEL-BYTES"
+
+    def test_copy_action_skips_when_source_missing(self, tmp_path):
+        from kamiwaza_extensions.convert_agent import (
+            ConversionPlan,
+            FileModification,
+            apply_plan,
+        )
+
+        plan = ConversionPlan(
+            modifications=[
+                FileModification(
+                    path="vendor/missing.whl",
+                    action="copy",
+                    source_path="shared/missing.whl",
+                )
+            ]
+        )
+
+        applied = apply_plan(plan, tmp_path, source_root=tmp_path)
+
+        assert applied == []
+        assert not (tmp_path / "vendor" / "missing.whl").exists()
+
+    def test_copy_action_rejects_source_outside_source_root(self, tmp_path):
+        from kamiwaza_extensions.convert_agent import (
+            ConversionPlan,
+            FileModification,
+            apply_plan,
+        )
+
+        ext = tmp_path / "ext"
+        ext.mkdir()
+        outside = tmp_path.parent / "outside.whl"
+        # Don't actually create it; the path-traversal check should fire first.
+
+        plan = ConversionPlan(
+            modifications=[
+                FileModification(
+                    path="vendor/x.whl",
+                    action="copy",
+                    source_path="../outside.whl",
+                )
+            ]
+        )
+
+        applied = apply_plan(plan, ext, source_root=ext)
+
+        assert applied == []
+        assert not (ext / "vendor" / "x.whl").exists()
+        assert not outside.exists()
+
+    def test_dedupe_strips_manual_items_for_handled_paths(self):
+        from kamiwaza_extensions.convert_agent import (
+            ConversionPlan,
+            FileModification,
+            _dedupe_manual_items_against_modifications,
+        )
+
+        plan = ConversionPlan(
+            modifications=[
+                FileModification(
+                    path="vendor/auth-1.0.whl",
+                    action="copy",
+                    source_path="shared/python/dist/auth-1.0.whl",
+                ),
+                FileModification(
+                    path="backend/Dockerfile",
+                    action="modify",
+                    content="FROM python\n",
+                ),
+            ],
+            manual_items=[
+                "Vendor shared/python/dist/auth-1.0.whl into the extension repo.",
+                "Modify backend/Dockerfile to drop monorepo-relative paths.",
+                "Confirm the read-only root filesystem assumption holds at runtime.",
+                "Decide whether to keep ports 8000/3000 or remap to 8080.",
+            ],
+        )
+
+        _dedupe_manual_items_against_modifications(plan)
+
+        # Items naming handled paths are dropped.
+        assert all("auth-1.0.whl" not in item for item in plan.manual_items)
+        assert all("backend/Dockerfile" not in item for item in plan.manual_items)
+        # Items that don't reference a handled path are preserved.
+        assert any("read-only root" in item for item in plan.manual_items)
+        assert any("8080" in item for item in plan.manual_items)
+
+    def test_dedupe_keeps_items_without_action_verbs(self):
+        from kamiwaza_extensions.convert_agent import (
+            ConversionPlan,
+            FileModification,
+            _dedupe_manual_items_against_modifications,
+        )
+
+        plan = ConversionPlan(
+            modifications=[
+                FileModification(path="docker-compose.yml", action="modify", content="x")
+            ],
+            # Mentions a handled path but is purely informational — keep it.
+            manual_items=["Note: docker-compose.yml now uses build context '.'."],
+        )
+
+        _dedupe_manual_items_against_modifications(plan)
+
+        assert len(plan.manual_items) == 1
+
+    def test_copy_action_missing_source_path_skipped(self, tmp_path):
+        from kamiwaza_extensions.convert_agent import (
+            ConversionPlan,
+            FileModification,
+            apply_plan,
+        )
+
+        plan = ConversionPlan(
+            modifications=[
+                FileModification(path="vendor/x.whl", action="copy", source_path=None)
+            ]
+        )
+
+        applied = apply_plan(plan, tmp_path, source_root=tmp_path)
+        assert applied == []
+
 
 class TestRunAgent:
     def test_fallback_without_llm_creates_basic_scaffold(self, monkeypatch, tmp_path):
+        from kamiwaza_extensions import convert_agent
         from kamiwaza_extensions.app_analyzer import AnalysisResult
         from kamiwaza_extensions.convert_agent import run_agent
 
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        # Also disable CLI provider discovery so the fallback path is reached
+        # even on dev machines that have `claude` / `codex` installed.
+        monkeypatch.setattr(convert_agent.shutil, "which", lambda _name: None)
 
         result = AnalysisResult(
             app_dir=tmp_path,
@@ -299,7 +459,10 @@ class TestRunAgent:
         persisted = json.loads((tmp_path / "kamiwaza.json").read_text())
         assert persisted["name"] == "custom-name"
         assert persisted["version"] == "9.9.9"
-        assert any("preserving the existing manifest" in item for item in plan.manual_items)
+        # The "preserved kamiwaza.json" notice now lands in the summary (a
+        # status note, not a user follow-up), keeping manual_items focused
+        # on actionable items.
+        assert "Preserved existing kamiwaza.json" in plan.summary
 
     def test_invalid_existing_kamiwaza_json_can_be_repaired(self, monkeypatch, tmp_path):
         from kamiwaza_extensions.app_analyzer import AnalysisResult
@@ -576,3 +739,228 @@ class TestRunAgent:
         assert plan.errors
         assert not (tmp_path / "kamiwaza.json").exists()
         assert not (tmp_path / "CONVERT_NOTES.md").exists()
+
+
+class TestCallLLMProviderSelection:
+    """``call_llm`` should honor KZ_CONVERT_PROVIDER and the auto-mode order."""
+
+    @pytest.fixture(autouse=True)
+    def _clean_env(self, monkeypatch):
+        for var in (
+            "KZ_CONVERT_PROVIDER",
+            "KZ_CONVERT_MODEL",
+            "OPENAI_API_KEY",
+            "OPENAI_BASE_URL",
+            "OPENAI_MODEL",
+            "ANTHROPIC_API_KEY",
+        ):
+            monkeypatch.delenv(var, raising=False)
+
+    @staticmethod
+    def _completed(stdout="", stderr="", returncode=0):
+        from subprocess import CompletedProcess
+
+        return CompletedProcess(args=["x"], returncode=returncode, stdout=stdout, stderr=stderr)
+
+    def test_returns_none_when_no_provider_available(self, monkeypatch):
+        from kamiwaza_extensions import convert_agent
+
+        monkeypatch.setattr(convert_agent.shutil, "which", lambda _name: None)
+
+        assert convert_agent.call_llm("hi") is None
+
+    def test_auto_prefers_claude_cli_when_available(self, monkeypatch):
+        from kamiwaza_extensions import convert_agent
+
+        which_calls = []
+        run_calls = []
+
+        def fake_which(name):
+            which_calls.append(name)
+            return "/usr/local/bin/claude" if name == "claude" else None
+
+        def fake_run(cmd, **kwargs):
+            run_calls.append((cmd, kwargs))
+            return self._completed(stdout="claude-response\n")
+
+        monkeypatch.setattr(convert_agent.shutil, "which", fake_which)
+        monkeypatch.setattr(convert_agent.subprocess, "run", fake_run)
+
+        result = convert_agent.call_llm("prompt-text")
+
+        assert result == "claude-response"
+        assert "claude" in which_calls
+        # Claude won — codex was never probed.
+        assert "codex" not in which_calls
+        assert run_calls[0][0][0] == "/usr/local/bin/claude"
+        assert "--print" in run_calls[0][0]
+        # Prompt is piped via stdin, not the argv.
+        assert run_calls[0][1]["input"] == "prompt-text"
+        # Subprocess runs in an isolated cwd to avoid pulling in CLAUDE.md
+        # / AGENTS.md from the user's repo.
+        assert run_calls[0][1]["cwd"]
+
+    def test_auto_falls_through_to_codex_when_claude_missing(self, monkeypatch):
+        from kamiwaza_extensions import convert_agent
+
+        def fake_which(name):
+            return "/usr/local/bin/codex" if name == "codex" else None
+
+        captured: list = []
+
+        def fake_run(cmd, **kwargs):
+            captured.append(cmd)
+            return self._completed(stdout="codex-response")
+
+        monkeypatch.setattr(convert_agent.shutil, "which", fake_which)
+        monkeypatch.setattr(convert_agent.subprocess, "run", fake_run)
+
+        assert convert_agent.call_llm("p") == "codex-response"
+        assert captured[0][:2] == ["/usr/local/bin/codex", "exec"]
+        # Tmp cwd is not a git repo, so codex needs the override flag.
+        assert "--skip-git-repo-check" in captured[0]
+        assert captured[0][-1] == "-"
+
+    def test_auto_falls_through_to_openai_when_clis_unavailable(self, monkeypatch):
+        from kamiwaza_extensions import convert_agent
+
+        monkeypatch.setattr(convert_agent.shutil, "which", lambda _name: None)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+        called = {}
+
+        def fake_openai(prompt, **kwargs):
+            called["prompt"] = prompt
+            called["kwargs"] = kwargs
+            return "openai-response"
+
+        monkeypatch.setattr(convert_agent, "_call_openai_compatible", fake_openai)
+        # Pretend openai package is installed.
+        monkeypatch.setattr(
+            convert_agent.importlib.util, "find_spec", lambda _name: object()
+        )
+
+        assert convert_agent.call_llm("p") == "openai-response"
+        assert called["kwargs"]["api_key"] == "sk-test"
+
+    def test_kz_convert_provider_anthropic_skips_clis(self, monkeypatch):
+        from kamiwaza_extensions import convert_agent
+
+        which_calls = []
+        monkeypatch.setattr(
+            convert_agent.shutil,
+            "which",
+            lambda name: which_calls.append(name) or "/bin/" + name,
+        )
+        monkeypatch.setenv("KZ_CONVERT_PROVIDER", "anthropic")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "ant-test")
+        monkeypatch.setattr(
+            convert_agent.importlib.util, "find_spec", lambda _name: object()
+        )
+        monkeypatch.setattr(
+            convert_agent, "_call_anthropic", lambda prompt, **kw: "anthropic-response"
+        )
+
+        assert convert_agent.call_llm("p") == "anthropic-response"
+        # CLIs should not have been probed at all under anthropic-only mode.
+        assert "claude" not in which_calls
+        assert "codex" not in which_calls
+
+    def test_kz_convert_provider_claude_cli_warns_when_missing(self, monkeypatch, capsys):
+        from kamiwaza_extensions import convert_agent
+
+        monkeypatch.setattr(convert_agent.shutil, "which", lambda _n: None)
+        monkeypatch.setenv("KZ_CONVERT_PROVIDER", "claude-cli")
+
+        assert convert_agent.call_llm("p") is None
+        # Warning lands on stderr via Rich Console — capture across both.
+        captured = capsys.readouterr()
+        assert "claude" in (captured.out + captured.err).lower()
+
+    def test_unknown_provider_falls_back_to_auto(self, monkeypatch, capsys):
+        from kamiwaza_extensions import convert_agent
+
+        monkeypatch.setattr(convert_agent.shutil, "which", lambda _n: None)
+        monkeypatch.setenv("KZ_CONVERT_PROVIDER", "bogus")
+
+        assert convert_agent.call_llm("p") is None
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert "bogus" in combined.lower() or "unknown" in combined.lower()
+
+    def test_cli_nonzero_exit_falls_through(self, monkeypatch):
+        from kamiwaza_extensions import convert_agent
+
+        # Both CLIs present, but claude exits 1 — should fall through to codex.
+        monkeypatch.setattr(
+            convert_agent.shutil, "which", lambda name: "/bin/" + name
+        )
+
+        run_calls = []
+
+        def fake_run(cmd, **kwargs):
+            run_calls.append(cmd[0])
+            if cmd[0].endswith("claude"):
+                return self._completed(returncode=1, stderr="not authenticated")
+            return self._completed(stdout="codex-response")
+
+        monkeypatch.setattr(convert_agent.subprocess, "run", fake_run)
+
+        assert convert_agent.call_llm("p") == "codex-response"
+        assert run_calls[0].endswith("claude")
+        assert run_calls[1].endswith("codex")
+
+    def test_cli_timeout_falls_through(self, monkeypatch):
+        from kamiwaza_extensions import convert_agent
+
+        monkeypatch.setattr(
+            convert_agent.shutil, "which", lambda name: "/bin/" + name
+        )
+
+        def fake_run(cmd, **kwargs):
+            if cmd[0].endswith("claude"):
+                from subprocess import TimeoutExpired
+
+                raise TimeoutExpired(cmd, timeout=120)
+            return self._completed(stdout="codex-response")
+
+        monkeypatch.setattr(convert_agent.subprocess, "run", fake_run)
+
+        assert convert_agent.call_llm("p") == "codex-response"
+
+    def test_cli_empty_output_falls_through(self, monkeypatch):
+        from kamiwaza_extensions import convert_agent
+
+        monkeypatch.setattr(
+            convert_agent.shutil, "which", lambda name: "/bin/" + name
+        )
+
+        def fake_run(cmd, **kwargs):
+            if cmd[0].endswith("claude"):
+                return self._completed(stdout="   \n")
+            return self._completed(stdout="codex-response")
+
+        monkeypatch.setattr(convert_agent.subprocess, "run", fake_run)
+
+        assert convert_agent.call_llm("p") == "codex-response"
+
+    def test_kz_convert_model_passes_through_to_claude(self, monkeypatch):
+        from kamiwaza_extensions import convert_agent
+
+        monkeypatch.setattr(
+            convert_agent.shutil, "which", lambda name: "/bin/claude" if name == "claude" else None
+        )
+        monkeypatch.setenv("KZ_CONVERT_MODEL", "opus")
+
+        captured = []
+
+        def fake_run(cmd, **kwargs):
+            captured.append(cmd)
+            return self._completed(stdout="response")
+
+        monkeypatch.setattr(convert_agent.subprocess, "run", fake_run)
+
+        convert_agent.call_llm("p")
+
+        assert "--model" in captured[0]
+        assert "opus" in captured[0]

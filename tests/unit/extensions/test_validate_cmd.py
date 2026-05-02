@@ -165,3 +165,48 @@ class TestRunValidate:
         output = json.loads(capsys.readouterr().out)
         assert output["passed"] is True
         assert output["errors"] == []
+
+
+class TestRunValidateMonorepo:
+    """validate should descend into monorepo subdirs like kz-ext convert does."""
+
+    def test_finds_extension_under_apps(self, tmp_path, capsys):
+        from kamiwaza_extensions.commands.validate import run_validate
+
+        ext = tmp_path / "apps" / "skills-library"
+        ext.mkdir(parents=True)
+        compose = {
+            "services": {
+                "web": {
+                    "image": "nginxinc/nginx-unprivileged:stable-alpine",
+                    "ports": ["8080:8080"],
+                    "deploy": {"resources": {"limits": {"cpus": "1.0", "memory": "1G"}}},
+                },
+            },
+        }
+        (ext / "kamiwaza.json").write_text(json.dumps(_valid_metadata()))
+        (ext / "docker-compose.yml").write_text(yaml.dump(compose))
+
+        run_validate(path=str(tmp_path), json_output=True)
+
+        output = json.loads(capsys.readouterr().out)
+        assert output["passed"] is True
+        assert output["errors"] == []
+
+    def test_ambiguous_monorepo_exits_with_error(self, tmp_path, capsys):
+        import typer
+
+        from kamiwaza_extensions.commands.validate import run_validate
+
+        for sub in ("apps/foo", "tools/bar"):
+            d = tmp_path / sub
+            d.mkdir(parents=True)
+            (d / "kamiwaza.json").write_text(json.dumps(_valid_metadata()))
+
+        with pytest.raises(typer.Exit):
+            run_validate(path=str(tmp_path), json_output=True)
+
+        output = json.loads(capsys.readouterr().out)
+        assert output["passed"] is False
+        joined = " ".join(output["errors"])
+        assert "Multiple kamiwaza.json found" in joined

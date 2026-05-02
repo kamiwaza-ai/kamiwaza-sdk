@@ -11,6 +11,12 @@ import yaml
 
 from kamiwaza_extensions.constants import COMPOSE_FILENAMES
 
+# Conventional monorepo parent dirs searched for ``<parent>/<name>/kamiwaza.json``
+# when no manifest exists at the start dir or in a direct subdirectory.
+# Mirrors AppAnalyzer._MONOREPO_SUBDIR_PATTERNS so kz-ext convert and the
+# lifecycle commands resolve the same extension root.
+_MONOREPO_PARENT_DIRS = ("apps", "tools", "services", "packages", "extensions")
+
 
 @dataclass
 class ExtensionInfo:
@@ -96,14 +102,24 @@ class ExtensionDetector:
         if (start / "kamiwaza.json").exists():
             return start
 
-        found = sorted(
-            (d.parent for d in start.glob("*/kamiwaza.json")),
-            key=lambda p: p.name,
+        candidates: list[Path] = []
+        # Shallow search: any direct subdirectory containing kamiwaza.json.
+        candidates.extend(d.parent for d in start.glob("*/kamiwaza.json"))
+        # Monorepo conventions: kamiwaza.json two levels deep under the
+        # standard parent directories. Mirrors the layout AppAnalyzer
+        # detects in `kz-ext convert` so all lifecycle commands behave
+        # consistently in monorepos.
+        for parent in _MONOREPO_PARENT_DIRS:
+            candidates.extend(d.parent for d in (start / parent).glob("*/kamiwaza.json"))
+
+        unique = sorted(
+            {c.resolve(): c for c in candidates}.values(),
+            key=lambda p: (p.parent.name, p.name),
         )
-        if len(found) == 1:
-            return found[0]
-        if len(found) > 1:
-            dirs = ", ".join(str(d.name) for d in found)
+        if len(unique) == 1:
+            return unique[0]
+        if len(unique) > 1:
+            dirs = ", ".join(str(d.relative_to(start)) for d in unique)
             raise MultipleExtensionsError(
                 f"Multiple kamiwaza.json found: {dirs}. "
                 "Run from inside a specific extension directory."

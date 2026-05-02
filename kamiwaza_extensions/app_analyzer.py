@@ -54,6 +54,15 @@ _DOCKERFILE_NEGATIVE_SUFFIXES = (
     ".example",
     ".sample",
 )
+_VENDORABLE_ARTIFACT_SUFFIXES = (
+    ".whl",
+    ".tgz",
+    ".tar.gz",
+    ".zip",
+    ".jar",
+    ".pex",
+)
+_MAX_MONOREPO_INVENTORY_ENTRIES = 200
 _MANIFEST_FILES = {
     "package.json",
     "requirements.txt",
@@ -177,6 +186,15 @@ class AnalysisResult:
     # ``rebased_from`` holds the original CLI-supplied path so the caller
     # can surface the rebase to the user.
     rebased_from: Optional[Path] = None
+    # When rebased: a list of file paths (relative to ``rebased_from``)
+    # that live *outside* ``app_dir`` and may be referenced by the LLM
+    # via ``copy`` modifications (e.g. vendoring shared wheels/tarballs
+    # from a monorepo's ``shared/`` directory).
+    monorepo_inventory: List[str] = field(default_factory=list)
+    # Subset of ``monorepo_inventory`` that look like vendor-able binary
+    # artifacts (.whl, .tgz, .tar.gz, .zip, .jar). Surfaced separately so
+    # the LLM can find them without reading file_contents.
+    vendorable_artifacts: List[str] = field(default_factory=list)
 
     # Compatibility checks
     has_host_ports: List[str] = field(default_factory=list)
@@ -233,6 +251,7 @@ class AppAnalyzer:
         self._infer_type(result)
         self._gather_repo_inventory(result)
         self._gather_file_contents(result)
+        self._gather_monorepo_inventory(result)
         self._infer_conversion_mode(result)
 
         return result
@@ -548,6 +567,44 @@ class AppAnalyzer:
         result.detected_manifests = manifests[:_MAX_CONTEXT_FILES]
         result.candidate_entrypoints = entrypoints[:_MAX_CONTEXT_FILES]
         result.runtime_hints = sorted(runtime_hints)
+
+    def _gather_monorepo_inventory(self, result: AnalysisResult) -> None:
+        """List files in the broader source tree outside the rebased ext root.
+
+        Only runs when monorepo detection rebased ``app_dir``. The result
+        is exposed to the LLM so it can ``copy`` artifacts (e.g. shared
+        wheels/tarballs) from elsewhere in the source tree into the
+        extension directory.
+        """
+        if result.rebased_from is None:
+            return
+
+        source_root = result.rebased_from.resolve()
+        ext_root = result.app_dir.resolve()
+
+        inventory: List[str] = []
+        artifacts: List[str] = []
+        for path in _walk_files(source_root):
+            try:
+                if path.resolve().is_relative_to(ext_root):
+                    continue
+            except (OSError, ValueError):
+                continue
+            if _is_sensitive_context_file(path):
+                continue
+            try:
+                rel = path.relative_to(source_root).as_posix()
+            except ValueError:
+                continue
+            inventory.append(rel)
+            name = path.name.lower()
+            if any(name.endswith(suffix) for suffix in _VENDORABLE_ARTIFACT_SUFFIXES):
+                artifacts.append(rel)
+            if len(inventory) >= _MAX_MONOREPO_INVENTORY_ENTRIES:
+                break
+
+        result.monorepo_inventory = inventory
+        result.vendorable_artifacts = artifacts
 
     def _gather_file_contents(self, result: AnalysisResult) -> None:
         """Read key files to provide as context for the LLM agent."""

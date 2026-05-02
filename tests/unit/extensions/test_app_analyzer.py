@@ -419,6 +419,59 @@ class TestSkipDirs:
         assert ".cursor" not in joined_manifests
 
 
+class TestMonorepoInventory:
+    """When rebased, the analyzer should surface the broader source tree."""
+
+    def test_collects_files_outside_extension_root(self, tmp_path):
+        from kamiwaza_extensions.app_analyzer import AppAnalyzer
+
+        ext = tmp_path / "apps" / "my-ext"
+        ext.mkdir(parents=True)
+        (ext / "docker-compose.yml").write_text(
+            yaml.dump({"services": {"app": {"image": "x"}}})
+        )
+
+        # Files outside the rebased extension root should be inventoried.
+        (tmp_path / "shared").mkdir()
+        (tmp_path / "shared" / "lib.py").write_text("def x(): pass")
+        (tmp_path / "shared" / "auth-1.0.whl").write_bytes(b"\x00\x01\x02")
+
+        result = AppAnalyzer().analyze(tmp_path)
+
+        assert "shared/lib.py" in result.monorepo_inventory
+        assert "shared/auth-1.0.whl" in result.monorepo_inventory
+        assert "shared/auth-1.0.whl" in result.vendorable_artifacts
+
+    def test_excludes_files_inside_extension_root(self, tmp_path):
+        from kamiwaza_extensions.app_analyzer import AppAnalyzer
+
+        ext = tmp_path / "apps" / "my-ext"
+        ext.mkdir(parents=True)
+        (ext / "docker-compose.yml").write_text(
+            yaml.dump({"services": {"app": {"image": "x"}}})
+        )
+        (ext / "main.py").write_text("print('hi')")
+
+        result = AppAnalyzer().analyze(tmp_path)
+
+        assert "apps/my-ext/main.py" not in result.monorepo_inventory
+
+    def test_empty_when_not_rebased(self, tmp_path):
+        from kamiwaza_extensions.app_analyzer import AppAnalyzer
+
+        (tmp_path / "docker-compose.yml").write_text(
+            yaml.dump({"services": {"app": {"image": "x"}}})
+        )
+        (tmp_path / "shared").mkdir()
+        (tmp_path / "shared" / "lib.py").write_text("def x(): pass")
+
+        result = AppAnalyzer().analyze(tmp_path)
+
+        assert result.rebased_from is None
+        assert result.monorepo_inventory == []
+        assert result.vendorable_artifacts == []
+
+
 class TestSanitizeName:
     def test_lowercase(self):
         from kamiwaza_extensions.app_analyzer import AppAnalyzer
