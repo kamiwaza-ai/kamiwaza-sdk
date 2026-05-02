@@ -116,8 +116,7 @@ def build_strategy_prompt(analysis: AnalysisResult) -> str:
 
     return f"""You are planning a best-effort conversion of an existing application into a Kamiwaza extension.
 
-## Goal
-Produce a valid Kamiwaza extension repository while preserving the existing application/runtime shape when possible.
+Follow the standing rules in the Kamiwaza Extension Authoring Guidance you have been given as system context (delivered as `CLAUDE.md` / `AGENTS.md` for CLI agents, or the system prompt for API agents). The data below is the per-call context.
 
 ## Application
 Name: {analysis.app_name}
@@ -136,20 +135,6 @@ Description: {analysis.description or 'No description'}
 
 ## Current Files
 {files_section}
-
-## Kamiwaza Conversion Rules
-- Prefer preserving the detected runtime/server and containerization when it already exists.
-- If the repo is not containerized, generate the thinnest viable containerization and docker-compose setup.
-- Always target a valid repo with `kamiwaza.json`, a compose file, resource limits, and `CONVERT_NOTES.md`.
-- Use `type=app` unless there is strong evidence the repo is an MCP/tool or generic background service.
-- Kamiwaza deploys extension containers as non-root and expects compatibility with a read-only root filesystem.
-- Primary HTTP services should listen on an unprivileged in-container port; prefer `8080` unless the repo clearly requires something else.
-- Static/web-server wrappers must use writable runtime paths under `/tmp` when the server needs temp, cache, or pid files.
-- Python backend runtime library: `kamiwaza-extensions-lib` is appropriate when there is an actual Python application backend.
-- TypeScript runtime library: `@kamiwaza-ai/extensions-lib` is appropriate for real Node/Next frontends.
-- Pure static HTML/CSS/JS sites do not need Kamiwaza runtime libraries; they do need a container, compose, resource limits, and a healthable HTTP path.
-- If the detected runtime is a poor fit for these constraints, a minimal runtime swap is allowed if it preserves app behavior better than patching a broken root-only setup.
-- Keep user source intact. Prefer additive wrappers/config over rewrites.
 
 Return ONLY JSON with this shape:
 ```json
@@ -205,6 +190,8 @@ Warnings:
 
     return f"""You are converting an existing application into a valid Kamiwaza extension repository.
 
+Follow the standing rules in the Kamiwaza Extension Authoring Guidance you have been given as system context (CLAUDE.md / AGENTS.md for CLI agents, or system prompt for API agents). It defines the runtime contract (Chainguard distroless images, exec-form CMD/ENTRYPOINT, read-only root, non-root user, port conventions), the `copy` action for vendoring binary deps, and the `manual_items` discipline. The data below is the per-call context.
+
 ## Application
 Name: {analysis.app_name}
 Detected conversion mode: {analysis.conversion_mode}
@@ -233,32 +220,6 @@ Detected conversion mode: {analysis.conversion_mode}
 {validation_section}
 {previous_plan_section}
 
-## Conversion Requirements
-- Preserve the app/runtime shape when possible.
-- Create or update `kamiwaza.json`.
-- Create or update a compose file so `kz-ext validate` will not fail and `kz-ext dev local` has a clear path.
-- Ensure each compose service defines `deploy.resources.limits`.
-- Ensure the primary HTTP service has a healthable HTTP path at `/health`.
-- Generated services must be compatible with Kamiwaza's non-root, read-only-root-filesystem runtime contract.
-- Prefer an unprivileged in-container HTTP port such as `8080`.
-- For nginx/static web servers, configure writable temp/pid paths under `/tmp` when needed.
-- Generate `CONVERT_NOTES.md` summarizing what changed.
-- Only add Kamiwaza runtime libraries when they fit the actual stack.
-- Avoid deleting user source files unless a generated wrapper/config file supersedes them.
-- Keep the output small and practical: wrappers/config/dockerization are fine; full framework rewrites are not.
-- Safe minimal runtime swaps are allowed when they materially improve deploy success on Kamiwaza.
-
-## Vendoring Binary Dependencies (do this, do NOT defer to manual_items)
-- When the existing build references files outside the extension root — wheels, tarballs, images, certs — emit `copy` modifications to vendor them in.
-- The `copy` action takes `path` (destination, relative to the extension root) and `source_path` (relative to the original CLI directory). For monorepo conversions the original CLI dir is the monorepo root, so `source_path` like `shared/python/dist/foo.whl` works directly. Use the entries in **Source Tree Outside Extension Root** above.
-- Update Dockerfile / compose / package manifests to reference the vendored in-extension paths.
-
-## `manual_items` Discipline
-- `manual_items` is for follow-up the user genuinely must do themselves (e.g., test a behavior, pick between alternatives, run a remote command). Aim to leave it empty.
-- DO NOT restate work you have already encoded as a modification. If you emitted a `copy` modification for `shared/foo.whl`, do not then write a `manual_item` saying "vendor shared/foo.whl" — the user would do it twice or be confused about whether the convert did its job.
-- DO NOT include informational notes about preserved files (e.g., "kamiwaza.json preserved") — that belongs in `summary` or `CONVERT_NOTES.md`, not as a manual action.
-- Hedging language ("verify X", "consider Y", "you may want to Z") is only appropriate when the user truly has a choice to make.
-
 Return ONLY JSON with this shape:
 ```json
 {{
@@ -272,7 +233,7 @@ Return ONLY JSON with this shape:
     }}
   ],
   "manual_items": [
-    "manual follow-up if still required (prefer to leave empty — convert any 'manually copy / vendor X' note into a `copy` modification above)"
+    "manual follow-up genuinely required of the user (leave empty if everything is encoded as modifications)"
   ],
   "summary": "brief summary"
 }}
@@ -287,6 +248,27 @@ Return ONLY JSON with this shape:
 _CLI_TIMEOUT_SECONDS = 300
 # Provider tags used by ``KZ_CONVERT_PROVIDER`` to force one path.
 _VALID_PROVIDERS = ("auto", "claude-cli", "codex-cli", "openai", "anthropic")
+# Canonical Kamiwaza extension authoring rules. Loaded once and used by
+# all providers — written as ``CLAUDE.md``/``AGENTS.md`` to the CLI
+# providers' working directories so claude/codex auto-discover it, and
+# prepended to API-provider prompts as a ``# System Guidance`` section.
+_GUIDANCE_PATH = Path(__file__).resolve().parent / "agent_guidance.md"
+
+
+def _load_agent_guidance() -> str:
+    """Return the canonical extension authoring rules, or '' if missing.
+
+    Cached at import-time via the module-level ``_AGENT_GUIDANCE``
+    constant below. A missing guidance file is non-fatal — providers
+    still get the per-call prompt.
+    """
+    try:
+        return _GUIDANCE_PATH.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+_AGENT_GUIDANCE = _load_agent_guidance()
 
 
 def call_llm(prompt: str) -> Optional[str]:
@@ -406,12 +388,19 @@ def _call_claude_cli(
 
     Runs ``claude --print --no-session-persistence`` with the prompt piped
     on stdin. Executes from a temp cwd so the CLI does not pick up the
-    user's project ``CLAUDE.md`` / ``AGENTS.md`` and bias the response.
+    user's project ``CLAUDE.md`` / ``AGENTS.md``. We then seed our own
+    ``CLAUDE.md`` (and ``AGENTS.md``, harmlessly) with the canonical
+    Kamiwaza extension authoring rules so claude auto-discovers them.
     """
     cmd = [binary, "--print", "--no-session-persistence", "--output-format", "text"]
     if model:
         cmd += ["--model", model]
-    return _run_cli_subprocess(cmd, prompt, label="claude CLI")
+    return _run_cli_subprocess(
+        cmd,
+        prompt,
+        label="claude CLI",
+        context_files={"CLAUDE.md": _AGENT_GUIDANCE, "AGENTS.md": _AGENT_GUIDANCE},
+    )
 
 
 def _call_codex_cli(
@@ -425,19 +414,43 @@ def _call_codex_cli(
     Runs ``codex exec --skip-git-repo-check -`` so the prompt is read from
     stdin. Executes from a temp cwd to avoid the CLI surfacing
     repo-specific context — that temp cwd is not a git repo, hence the
-    ``--skip-git-repo-check`` flag.
+    ``--skip-git-repo-check`` flag. We seed ``AGENTS.md`` (and ``CLAUDE.md``,
+    harmlessly) with the canonical Kamiwaza authoring rules so codex
+    auto-discovers them.
     """
     cmd = [binary, "exec", "--skip-git-repo-check"]
     if model:
         cmd += ["--model", model]
     cmd.append("-")
-    return _run_cli_subprocess(cmd, prompt, label="codex CLI")
+    return _run_cli_subprocess(
+        cmd,
+        prompt,
+        label="codex CLI",
+        context_files={"AGENTS.md": _AGENT_GUIDANCE, "CLAUDE.md": _AGENT_GUIDANCE},
+    )
 
 
-def _run_cli_subprocess(cmd: List[str], prompt: str, *, label: str) -> Optional[str]:
-    """Shared subprocess shape for CLI providers. Returns stdout or None."""
+def _run_cli_subprocess(
+    cmd: List[str],
+    prompt: str,
+    *,
+    label: str,
+    context_files: Optional[Dict[str, str]] = None,
+) -> Optional[str]:
+    """Shared subprocess shape for CLI providers. Returns stdout or None.
+
+    ``context_files`` maps filename → content; each is written into the
+    temp cwd before the CLI is invoked. CLI agents (claude, codex)
+    auto-discover ``CLAUDE.md`` / ``AGENTS.md`` and use them as durable
+    system guidance, so this is the canonical way to pass standing
+    instructions without bloating the per-call prompt.
+    """
     try:
         with tempfile.TemporaryDirectory(prefix="kz-ext-llm-") as tmp_cwd:
+            for filename, content in (context_files or {}).items():
+                if not content:
+                    continue
+                (Path(tmp_cwd) / filename).write_text(content, encoding="utf-8")
             completed = subprocess.run(
                 cmd,
                 input=prompt,
@@ -473,16 +486,24 @@ def _run_cli_subprocess(cmd: List[str], prompt: str, *, label: str) -> Optional[
 
 
 def _call_anthropic(prompt: str, *, api_key: str, model: str) -> Optional[str]:
-    """Call the Anthropic Messages API."""
+    """Call the Anthropic Messages API.
+
+    Passes the canonical Kamiwaza authoring rules as the ``system``
+    prompt so the model gets the same standing guidance the CLI agents
+    receive via ``CLAUDE.md`` / ``AGENTS.md``.
+    """
     import anthropic
 
     try:
         client = anthropic.Anthropic(api_key=api_key, timeout=120.0)
-        response = client.messages.create(
-            model=model,
-            max_tokens=8192,
-            messages=[{"role": "user", "content": prompt}],
-        )
+        kwargs: Dict[str, Any] = {
+            "model": model,
+            "max_tokens": 8192,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        if _AGENT_GUIDANCE:
+            kwargs["system"] = _AGENT_GUIDANCE
+        response = client.messages.create(**kwargs)
         return response.content[0].text
     except (anthropic.APIError, anthropic.APIConnectionError) as exc:
         console.print(f"[yellow]Warning:[/yellow] Anthropic API call failed: {exc}")
@@ -499,7 +520,12 @@ def _call_openai_compatible(
     base_url: Optional[str] = None,
     model: str = "gpt-4o",
 ) -> Optional[str]:
-    """Call any OpenAI-compatible chat completions API."""
+    """Call any OpenAI-compatible chat completions API.
+
+    Passes the canonical Kamiwaza authoring rules as a leading
+    ``system`` message so the model gets the same standing guidance
+    the CLI agents receive via ``CLAUDE.md`` / ``AGENTS.md``.
+    """
     import openai
 
     try:
@@ -508,10 +534,14 @@ def _call_openai_compatible(
             kwargs["base_url"] = base_url
 
         client = openai.OpenAI(**kwargs)
+        messages: List[Dict[str, str]] = []
+        if _AGENT_GUIDANCE:
+            messages.append({"role": "system", "content": _AGENT_GUIDANCE})
+        messages.append({"role": "user", "content": prompt})
         response = client.chat.completions.create(
             model=model,
             max_tokens=8192,
-            messages=[{"role": "user", "content": prompt}],
+            messages=messages,
         )
         return response.choices[0].message.content
     except (openai.APIError, openai.APIConnectionError) as exc:

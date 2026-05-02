@@ -37,10 +37,22 @@ class TestBuildPrompt:
             runtime_hints=["static-html", "node-package"],
         )
         prompt = build_prompt(result)
+        # The per-call prompt still carries the per-app inventory data.
         assert "index.html" in prompt
         assert "static-html" in prompt
-        assert "non-root" in prompt.lower()
-        assert "8080" in prompt
+
+    def test_runtime_rules_live_in_agent_guidance(self):
+        """Standing rules (non-root, port 8080, distroless) belong in the
+        guidance file shipped as CLAUDE.md/AGENTS.md/system prompt — not
+        repeated per-call."""
+        from kamiwaza_extensions.convert_agent import _AGENT_GUIDANCE
+
+        assert _AGENT_GUIDANCE, "agent_guidance.md must be loadable"
+        lowered = _AGENT_GUIDANCE.lower()
+        assert "non-root" in lowered
+        assert "8080" in lowered
+        assert "distroless" in lowered or "chainguard" in lowered
+        assert "/bin/sh" in lowered  # distroless gotcha
 
 
 class TestParseResponse:
@@ -943,6 +955,49 @@ class TestCallLLMProviderSelection:
         monkeypatch.setattr(convert_agent.subprocess, "run", fake_run)
 
         assert convert_agent.call_llm("p") == "codex-response"
+
+    def test_claude_cli_writes_guidance_into_temp_cwd(self, monkeypatch, tmp_path):
+        """claude CLI should see CLAUDE.md (and AGENTS.md) with Kamiwaza rules."""
+        from kamiwaza_extensions import convert_agent
+
+        monkeypatch.setattr(
+            convert_agent.shutil, "which", lambda name: "/bin/claude" if name == "claude" else None
+        )
+
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            cwd = Path(kwargs["cwd"])
+            captured["claude_md"] = (cwd / "CLAUDE.md").read_text(encoding="utf-8")
+            captured["agents_md"] = (cwd / "AGENTS.md").read_text(encoding="utf-8")
+            return self._completed(stdout="ok")
+
+        monkeypatch.setattr(convert_agent.subprocess, "run", fake_run)
+
+        convert_agent.call_llm("p")
+
+        assert "Kamiwaza Extension Authoring Guidance" in captured["claude_md"]
+        assert captured["claude_md"] == captured["agents_md"]
+
+    def test_codex_cli_writes_guidance_into_temp_cwd(self, monkeypatch):
+        from kamiwaza_extensions import convert_agent
+
+        monkeypatch.setattr(
+            convert_agent.shutil, "which", lambda name: "/bin/codex" if name == "codex" else None
+        )
+
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            cwd = Path(kwargs["cwd"])
+            captured["agents_md"] = (cwd / "AGENTS.md").read_text(encoding="utf-8")
+            return self._completed(stdout="ok")
+
+        monkeypatch.setattr(convert_agent.subprocess, "run", fake_run)
+
+        convert_agent.call_llm("p")
+
+        assert "Kamiwaza Extension Authoring Guidance" in captured["agents_md"]
 
     def test_kz_convert_model_passes_through_to_claude(self, monkeypatch):
         from kamiwaza_extensions import convert_agent
