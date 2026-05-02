@@ -11,6 +11,7 @@ from typing import Any, Dict, Generator, List, Optional
 import yaml
 
 from kamiwaza_extensions import __version__
+from kamiwaza_extensions.constants import COMPOSE_FILENAMES
 
 _SKIP_DIRS = {
     ".git",
@@ -23,7 +24,36 @@ _SKIP_DIRS = {
     "dist",
     "target",
     "coverage",
+    # AI-tooling and IDE config dirs — never application source
+    ".agents",
+    ".claude",
+    ".cursor",
+    ".aider",
+    ".specstory",
+    ".idea",
+    ".vscode",
+    ".devcontainer",
 }
+# Conventional monorepo locations checked one level deep when the root has
+# no compose file. Wildcard "*" expands to every immediate child directory;
+# bare names are checked as-is.
+_MONOREPO_SUBDIR_PATTERNS = (
+    "apps/*",
+    "tools/*",
+    "services/*",
+    "packages/*",
+    "extensions/*",
+    "app",
+    "extension",
+)
+_DOCKERFILE_NEGATIVE_SUFFIXES = (
+    ".template",
+    ".tmpl",
+    ".tpl",
+    ".bak",
+    ".example",
+    ".sample",
+)
 _MANIFEST_FILES = {
     "package.json",
     "requirements.txt",
@@ -105,6 +135,21 @@ def _walk_files(root: Path, extensions: tuple[str, ...] | None = None) -> Genera
                 yield Path(dirpath) / fname
 
 
+class AmbiguousMonorepoError(Exception):
+    """Raised when multiple monorepo subdirectories contain extension candidates.
+
+    The caller is expected to report the candidates and ask the user to
+    re-run with the specific subdirectory. ``candidates`` holds the absolute
+    paths of every directory with a compose file under the searched
+    monorepo conventions.
+    """
+
+    def __init__(self, candidates: List[Path]) -> None:
+        self.candidates = candidates
+        rendered = ", ".join(str(p) for p in candidates)
+        super().__init__(f"Multiple extension candidates found: {rendered}")
+
+
 @dataclass
 class ServiceInfo:
     """Detected service from compose or Dockerfiles."""
@@ -128,6 +173,10 @@ class AnalysisResult:
     services: List[ServiceInfo] = field(default_factory=list)
     compose_path: Optional[Path] = None
     compose_data: Optional[Dict[str, Any]] = None
+    # Set when monorepo detection rebased ``app_dir`` to a subdirectory.
+    # ``rebased_from`` holds the original CLI-supplied path so the caller
+    # can surface the rebase to the user.
+    rebased_from: Optional[Path] = None
 
     # Compatibility checks
     has_host_ports: List[str] = field(default_factory=list)
@@ -158,14 +207,21 @@ class AppAnalyzer:
     """Analyze an existing containerized app for Kamiwaza extension conversion."""
 
     def analyze(self, app_dir: Path) -> AnalysisResult:
-        """Run full analysis on the given directory."""
+        """Run full analysis on the given directory.
+
+        Raises ``AmbiguousMonorepoError`` if multiple monorepo
+        subdirectories contain extension candidates.
+        """
         app_dir = Path(app_dir).resolve()
         if not app_dir.is_dir():
             raise FileNotFoundError(f"Directory not found: {app_dir}")
 
+        effective_root, rebased_from = self._resolve_effective_root(app_dir)
+
         result = AnalysisResult(
-            app_dir=app_dir,
-            app_name=self._sanitize_name(app_dir.name),
+            app_dir=effective_root,
+            app_name=self._sanitize_name(effective_root.name),
+            rebased_from=rebased_from,
         )
 
         self._find_compose(result)
@@ -204,14 +260,42 @@ class AppAnalyzer:
     # Private analysis steps
     # ------------------------------------------------------------------
 
+    def _resolve_effective_root(self, app_dir: Path) -> tuple[Path, Optional[Path]]:
+        """Locate the directory the analyzer should treat as the extension root.
+
+        Returns ``(effective_root, rebased_from)``. ``rebased_from`` is
+        ``None`` when no rebase happened (compose at the user-supplied
+        path, or no compose anywhere). When set it holds the original
+        path so the CLI can tell the user we descended into a subdir.
+
+        Raises ``AmbiguousMonorepoError`` when multiple monorepo
+        subdirectories contain compose files.
+        """
+        if _has_compose_file(app_dir):
+            return app_dir, None
+
+        candidates: List[Path] = []
+        for pattern in _MONOREPO_SUBDIR_PATTERNS:
+            if pattern.endswith("/*"):
+                parent = app_dir / pattern[:-2]
+                if not parent.is_dir():
+                    continue
+                for child in sorted(parent.iterdir()):
+                    if child.is_dir() and _has_compose_file(child):
+                        candidates.append(child)
+            else:
+                candidate = app_dir / pattern
+                if candidate.is_dir() and _has_compose_file(candidate):
+                    candidates.append(candidate)
+
+        if not candidates:
+            return app_dir, None
+        if len(candidates) > 1:
+            raise AmbiguousMonorepoError(candidates)
+        return candidates[0], app_dir
+
     def _find_compose(self, result: AnalysisResult) -> None:
-        compose_names = (
-            "docker-compose.yml",
-            "docker-compose.yaml",
-            "compose.yml",
-            "compose.yaml",
-        )
-        for name in compose_names:
+        for name in COMPOSE_FILENAMES:
             path = result.app_dir / name
             if path.exists():
                 result.compose_path = path
@@ -525,8 +609,15 @@ class AppAnalyzer:
         return name or "my-extension"
 
 
+def _has_compose_file(directory: Path) -> bool:
+    return any((directory / name).exists() for name in COMPOSE_FILENAMES)
+
+
 def _is_dockerfile(path: Path) -> bool:
-    return path.name == "Dockerfile" or path.name.startswith("Dockerfile.")
+    name = path.name
+    if name.endswith(_DOCKERFILE_NEGATIVE_SUFFIXES):
+        return False
+    return name == "Dockerfile" or name.startswith("Dockerfile.")
 
 
 def _is_manifest(path: Path) -> bool:

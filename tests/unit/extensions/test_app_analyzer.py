@@ -259,6 +259,166 @@ class TestGenerateKamiwazaJson:
         assert "kz_ext_version" in kamiwaza
 
 
+class TestMonorepoDetection:
+    """Test that ``analyze()`` rebases to monorepo subdirectories with compose."""
+
+    @staticmethod
+    def _write_compose(directory):
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "docker-compose.yml").write_text(
+            yaml.dump({"services": {"app": {"image": "x"}}})
+        )
+
+    @pytest.mark.parametrize(
+        "subdir",
+        [
+            "apps/skills-library",
+            "tools/my-tool",
+            "services/api",
+            "packages/my-pkg",
+            "extensions/my-ext",
+            "app",
+            "extension",
+        ],
+    )
+    def test_rebases_to_known_monorepo_subdir(self, tmp_path, subdir):
+        from kamiwaza_extensions.app_analyzer import AppAnalyzer
+
+        target = tmp_path / subdir
+        self._write_compose(target)
+
+        result = AppAnalyzer().analyze(tmp_path)
+
+        assert result.app_dir == target.resolve()
+        assert result.rebased_from == tmp_path.resolve()
+        assert result.app_name == AppAnalyzer._sanitize_name(target.name)
+        assert result.compose_path is not None
+
+    def test_no_rebase_when_compose_at_root(self, tmp_path):
+        from kamiwaza_extensions.app_analyzer import AppAnalyzer
+
+        (tmp_path / "docker-compose.yml").write_text(
+            yaml.dump({"services": {"app": {"image": "x"}}})
+        )
+        # A subdir compose should not trigger a rebase if root has its own.
+        self._write_compose(tmp_path / "apps" / "decoy")
+
+        result = AppAnalyzer().analyze(tmp_path)
+
+        assert result.app_dir == tmp_path.resolve()
+        assert result.rebased_from is None
+
+    def test_no_rebase_when_no_compose_anywhere(self, tmp_path):
+        from kamiwaza_extensions.app_analyzer import AppAnalyzer
+
+        (tmp_path / "index.html").write_text("<html></html>")
+
+        result = AppAnalyzer().analyze(tmp_path)
+
+        assert result.app_dir == tmp_path.resolve()
+        assert result.rebased_from is None
+        assert result.compose_path is None
+
+    def test_raises_ambiguous_when_multiple_subdirs_match(self, tmp_path):
+        from kamiwaza_extensions.app_analyzer import (
+            AmbiguousMonorepoError,
+            AppAnalyzer,
+        )
+
+        self._write_compose(tmp_path / "apps" / "foo")
+        self._write_compose(tmp_path / "apps" / "bar")
+
+        with pytest.raises(AmbiguousMonorepoError) as exc_info:
+            AppAnalyzer().analyze(tmp_path)
+
+        candidate_names = sorted(p.name for p in exc_info.value.candidates)
+        assert candidate_names == ["bar", "foo"]
+
+    def test_raises_ambiguous_across_apps_and_tools(self, tmp_path):
+        from kamiwaza_extensions.app_analyzer import (
+            AmbiguousMonorepoError,
+            AppAnalyzer,
+        )
+
+        self._write_compose(tmp_path / "apps" / "foo")
+        self._write_compose(tmp_path / "tools" / "bar")
+
+        with pytest.raises(AmbiguousMonorepoError):
+            AppAnalyzer().analyze(tmp_path)
+
+
+class TestDockerfileDetection:
+    """Regression guards for ``_is_dockerfile()``."""
+
+    def test_excludes_template_suffix(self, tmp_path):
+        from kamiwaza_extensions.app_analyzer import _is_dockerfile
+
+        assert not _is_dockerfile(tmp_path / "Dockerfile.python.template")
+        assert not _is_dockerfile(tmp_path / "Dockerfile.nodejs.template")
+
+    def test_excludes_backup_and_example_suffixes(self, tmp_path):
+        from kamiwaza_extensions.app_analyzer import _is_dockerfile
+
+        assert not _is_dockerfile(tmp_path / "Dockerfile.bak")
+        assert not _is_dockerfile(tmp_path / "Dockerfile.example")
+        assert not _is_dockerfile(tmp_path / "Dockerfile.sample")
+        assert not _is_dockerfile(tmp_path / "Dockerfile.tmpl")
+        assert not _is_dockerfile(tmp_path / "Dockerfile.tpl")
+
+    def test_buildkit_stage_variants_still_match(self, tmp_path):
+        from kamiwaza_extensions.app_analyzer import _is_dockerfile
+
+        assert _is_dockerfile(tmp_path / "Dockerfile")
+        assert _is_dockerfile(tmp_path / "Dockerfile.dev")
+        assert _is_dockerfile(tmp_path / "Dockerfile.prod")
+
+    def test_template_dockerfile_not_treated_as_service(self, tmp_path):
+        """End-to-end: template Dockerfiles in tooling dirs don't become services."""
+        from kamiwaza_extensions.app_analyzer import AppAnalyzer
+
+        # Real service Dockerfile
+        (tmp_path / "backend").mkdir()
+        (tmp_path / "backend" / "Dockerfile").write_text("FROM python:3.11\n")
+        # Template Dockerfile in a (non-skipped) tooling-shaped path
+        templates_dir = tmp_path / "scripts" / "templates"
+        templates_dir.mkdir(parents=True)
+        (templates_dir / "Dockerfile.python.template").write_text("FROM python:3.11\n")
+
+        result = AppAnalyzer().analyze(tmp_path)
+
+        service_names = [s.name for s in result.services]
+        assert "backend" in service_names
+        assert "templates" not in service_names
+
+
+class TestSkipDirs:
+    """``.agents`` / ``.claude`` / IDE config dirs must not be inventoried."""
+
+    def test_skips_agents_and_claude_dirs(self, tmp_path):
+        from kamiwaza_extensions.app_analyzer import AppAnalyzer
+
+        # Real app file at root
+        (tmp_path / "index.html").write_text("<html></html>")
+
+        # Skill template files that previously polluted analysis
+        for tooling_dir in (".agents", ".claude", ".cursor"):
+            templates = tmp_path / tooling_dir / "skills" / "kz" / "templates"
+            templates.mkdir(parents=True)
+            (templates / "Dockerfile.python.template").write_text("FROM python\n")
+            (templates / "package.json").write_text("{}")
+
+        result = AppAnalyzer().analyze(tmp_path)
+
+        assert "index.html" in result.repo_tree
+        for tooling_dir in (".agents/", ".claude/", ".cursor/"):
+            assert tooling_dir not in result.repo_tree
+        # Manifests / entrypoints under those dirs should also be excluded.
+        joined_manifests = " ".join(result.detected_manifests)
+        assert ".agents" not in joined_manifests
+        assert ".claude" not in joined_manifests
+        assert ".cursor" not in joined_manifests
+
+
 class TestSanitizeName:
     def test_lowercase(self):
         from kamiwaza_extensions.app_analyzer import AppAnalyzer
