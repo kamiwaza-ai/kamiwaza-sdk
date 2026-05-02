@@ -12,40 +12,13 @@ import yaml
 
 from kamiwaza_extensions import __version__
 from kamiwaza_extensions.constants import COMPOSE_FILENAMES
-
-_SKIP_DIRS = {
-    ".git",
-    "node_modules",
-    "__pycache__",
-    ".venv",
-    "venv",
-    ".next",
-    "build",
-    "dist",
-    "target",
-    "coverage",
-    # AI-tooling and IDE config dirs — never application source
-    ".agents",
-    ".claude",
-    ".cursor",
-    ".aider",
-    ".specstory",
-    ".idea",
-    ".vscode",
-    ".devcontainer",
-}
-# Conventional monorepo locations checked one level deep when the root has
-# no compose file. Wildcard "*" expands to every immediate child directory;
-# bare names are checked as-is.
-_MONOREPO_SUBDIR_PATTERNS = (
-    "apps/*",
-    "tools/*",
-    "services/*",
-    "packages/*",
-    "extensions/*",
-    "app",
-    "extension",
+from kamiwaza_extensions.monorepo import (
+    MONOREPO_BARE_DIRS,
+    MONOREPO_PARENT_DIRS,
+    SKIP_DIRS,
 )
+
+_SKIP_DIRS = SKIP_DIRS
 _DOCKERFILE_NEGATIVE_SUFFIXES = (
     ".template",
     ".tmpl",
@@ -294,18 +267,19 @@ class AppAnalyzer:
             return app_dir, None
 
         candidates: List[Path] = []
-        for pattern in _MONOREPO_SUBDIR_PATTERNS:
-            if pattern.endswith("/*"):
-                parent = app_dir / pattern[:-2]
-                if not parent.is_dir():
-                    continue
-                for child in sorted(parent.iterdir()):
-                    if child.is_dir() and _has_compose_file(child):
-                        candidates.append(child)
-            else:
-                candidate = app_dir / pattern
-                if candidate.is_dir() and _has_compose_file(candidate):
-                    candidates.append(candidate)
+        # Two-level pattern: <parent>/<name>/<compose>
+        for parent_name in MONOREPO_PARENT_DIRS:
+            parent = app_dir / parent_name
+            if not parent.is_dir():
+                continue
+            for child in sorted(parent.iterdir()):
+                if child.is_dir() and _has_compose_file(child):
+                    candidates.append(child)
+        # One-level bare-dir pattern: <name>/<compose>
+        for bare_name in MONOREPO_BARE_DIRS:
+            candidate = app_dir / bare_name
+            if candidate.is_dir() and _has_compose_file(candidate):
+                candidates.append(candidate)
 
         if not candidates:
             return app_dir, None

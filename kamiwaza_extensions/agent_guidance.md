@@ -172,8 +172,33 @@ root in rebased conversions). The available files are listed in the
 **Source Tree Outside Extension Root** section of the prompt.
 
 If the prebuilt artifact is missing but the source is available, vendor
-the source and build the artifact in-image (see the multi-`copy` pattern
-the converter has used to vendor entire `kamiwaza_auth/` source trees).
+the source and import it via **PYTHONPATH** (Python) or
+**node_modules bind/copy** (Node) — do **not** try to `pip wheel` or
+`npm pack` the vendored source in-image. Source trees from monorepos
+often have build configs that depend on workspace tooling (workspace
+hoisting, hatch / setuptools custom layouts, monorepo-wide
+`packages = [...]` overrides). When you copy just the source files,
+that build config rarely works standalone.
+
+The robust, build-system-agnostic pattern for vendored Python source:
+
+1. Copy the package source under `backend/vendor/<pkgname>/` so the
+   resulting layout has `backend/vendor/<pkgname>/__init__.py` etc.
+2. In the runtime stage of the Dockerfile, ensure `/app/vendor` is on
+   `PYTHONPATH`: add `ENV PYTHONPATH=/app/vendor:${PYTHONPATH}` (or
+   include `/app/vendor` in an existing `PYTHONPATH` line).
+3. Strip the vendored package from `requirements.txt` so pip doesn't
+   try to fetch a published version that doesn't exist.
+
+For vendored Node packages where the upstream ships a tarball, the
+tarball is already a self-contained installable artifact — keep using
+`file:` references in `package.json` and let `npm install` consume the
+copied tarball during the build stage.
+
+For vendored Node packages where you only have the source (no
+tarball), bind-mount or copy the source into
+`/app/node_modules/@scope/pkg` directly, the same way
+`dev local --sdk-repo` does.
 
 After vendoring, **update the Dockerfile / compose / package.json**
 references to point at the in-extension paths. A vendor without the

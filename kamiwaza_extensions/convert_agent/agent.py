@@ -1,0 +1,267 @@
+"""High-level orchestration for the convert agent.
+
+``run_agent`` drives the full pipeline:
+
+1. Strategy LLM call → ``ConversionStrategy``
+2. Up to ``_MAX_REPAIR_ATTEMPTS + 1`` modification rounds. Each round:
+   a. Modification LLM call → ``ConversionPlan``
+   b. Post-process: preserve existing kamiwaza.json, ensure supporting
+      files, dedupe stale manual_items
+   c. Stage and validate
+   d. If validation passes, apply for real and return
+   e. Otherwise feed validation errors back to the LLM for repair
+3. If the LLM is unavailable, fall back to a basic
+   metadata-only scaffold so the user still gets a starting point.
+"""
+
+from __future__ import annotations
+
+import shutil
+import tempfile
+from pathlib import Path
+from typing import List, Optional
+
+from rich.console import Console
+
+from kamiwaza_extensions.app_analyzer import AnalysisResult
+from kamiwaza_extensions.constants import COMPOSE_FILENAMES
+from kamiwaza_extensions.convert_agent.models import (
+    ConversionPlan,
+    ConversionStrategy,
+    ValidationSummary,
+)
+from kamiwaza_extensions.convert_agent.plan import (
+    _default_metadata,
+    _dedupe_manual_items_against_modifications,
+    _ensure_supporting_files,
+    _merge_manual_items,
+    _preserve_existing_kamiwaza_json,
+    apply_plan,
+    parse_response,
+    parse_strategy_response,
+)
+from kamiwaza_extensions.convert_agent.prompts import (
+    build_modification_prompt,
+    build_strategy_prompt,
+)
+from kamiwaza_extensions.convert_agent.providers import call_llm
+from kamiwaza_extensions.monorepo import SKIP_DIRS
+
+console = Console(stderr=True)
+
+_MAX_REPAIR_ATTEMPTS = 2
+# ``shutil.copytree`` ignore-patterns wants positional args; the shared
+# SKIP_DIRS frozenset materializes as a tuple at staging time.
+_STAGING_SKIP_DIRS = tuple(sorted(SKIP_DIRS))
+
+
+def run_agent(analysis: AnalysisResult, dry_run: bool = False) -> ConversionPlan:
+    """Run the full conversion agent with staged validation and repair."""
+    console.print(
+        "  [dim]Note: size-capped source context will be sent to an external LLM "
+        "provider for analysis; common secret-bearing files such as .env, "
+        "credentials, and key files are excluded.[/dim]"
+    )
+    console.print(f"  [dim]Conversion mode: {analysis.conversion_mode}[/dim]")
+    console.print("  [dim]Calling AI agent...[/dim]")
+
+    strategy_text = call_llm(build_strategy_prompt(analysis))
+    if strategy_text is None:
+        return _apply_basic_fallback(analysis, dry_run=dry_run)
+
+    strategy = parse_strategy_response(strategy_text)
+    if strategy is None:
+        return ConversionPlan(
+            success=False,
+            mode=analysis.conversion_mode,
+            summary="The conversion strategy could not be parsed automatically.",
+            manual_items=[
+                "Review the repo manually and re-run convert after tightening the app shape."
+            ],
+            errors=["Conversion strategy could not be parsed."],
+        )
+
+    metadata_seed = _default_metadata(analysis, strategy)
+    previous_plan: Optional[ConversionPlan] = None
+    last_validation = ValidationSummary(passed=False, errors=["No validated plan produced."])
+
+    for attempt in range(_MAX_REPAIR_ATTEMPTS + 1):
+        validation = last_validation if attempt > 0 else None
+        prompt = build_modification_prompt(
+            analysis,
+            strategy,
+            metadata_seed,
+            validation=validation,
+            previous_plan=previous_plan,
+        )
+        response = call_llm(prompt)
+        if response is None:
+            return _llm_unavailable_failure(analysis, strategy)
+
+        plan = parse_response(response)
+        plan.mode = analysis.conversion_mode
+        plan.strategy = strategy
+        plan.manual_items = _merge_manual_items(strategy.manual_items, plan.manual_items)
+        if not plan.success:
+            return plan
+
+        _preserve_existing_kamiwaza_json(plan, analysis)
+        _ensure_supporting_files(plan, analysis, metadata_seed, strategy)
+        _dedupe_manual_items_against_modifications(plan)
+        last_validation = _validate_plan_in_staging(
+            plan,
+            analysis.app_dir,
+            source_root=analysis.rebased_from or analysis.app_dir,
+        )
+        if last_validation.passed:
+            plan.success = True
+            plan.warnings = last_validation.warnings
+            apply_plan(
+                plan,
+                analysis.app_dir,
+                dry_run=dry_run,
+                source_root=analysis.rebased_from or analysis.app_dir,
+            )
+            if dry_run:
+                plan.summary = (
+                    f"[Dry run] Validated {len(plan.modifications)} proposed "
+                    f"modifications. {plan.summary}"
+                ).strip()
+            return plan
+
+        previous_plan = plan
+
+    return ConversionPlan(
+        modifications=previous_plan.modifications if previous_plan else [],
+        manual_items=_merge_manual_items(
+            strategy.manual_items,
+            ["Automatic conversion could not satisfy validation after repair attempts."],
+        ),
+        summary="Conversion could not be validated automatically.",
+        success=False,
+        errors=last_validation.errors,
+        warnings=last_validation.warnings,
+        mode=analysis.conversion_mode,
+        strategy=strategy,
+    )
+
+
+def _llm_unavailable_failure(
+    analysis: AnalysisResult, strategy: ConversionStrategy
+) -> ConversionPlan:
+    """Failure plan when the LLM falls through during the modification loop."""
+    return ConversionPlan(
+        success=False,
+        mode=analysis.conversion_mode,
+        strategy=strategy,
+        summary="LLM became unavailable before a validated conversion could be produced.",
+        manual_items=_merge_manual_items(
+            strategy.manual_items,
+            ["Re-run convert once LLM access is available again."],
+        ),
+        errors=["LLM unavailable during modification generation."],
+    )
+
+
+def _apply_basic_fallback(analysis: AnalysisResult, *, dry_run: bool) -> ConversionPlan:
+    """Apply the documented non-LLM fallback scaffold."""
+    strategy = ConversionStrategy(
+        extension_type=analysis.extension_type,
+        conversion_mode=analysis.conversion_mode,
+        primary_service=analysis.services[0].name if analysis.services else "app",
+        runtime_summary=analysis.description or "Basic metadata-only fallback",
+    )
+    metadata_seed = _default_metadata(analysis, strategy)
+    plan = ConversionPlan(
+        mode=analysis.conversion_mode,
+        strategy=strategy,
+        summary="LLM unavailable — created a basic Kamiwaza scaffold only.",
+        manual_items=[
+            "Install the `claude` (Claude Code) or `codex` CLI to use your existing "
+            "subscription — no API key required.",
+            "Or set ANTHROPIC_API_KEY / OPENAI_API_KEY for full AI-powered conversion.",
+            "For other providers, set OPENAI_API_KEY + OPENAI_BASE_URL (any "
+            "OpenAI-compatible API).",
+            "Review kamiwaza.json, then rerun convert with an LLM to attempt compose "
+            "and runtime integration.",
+        ],
+    )
+    _ensure_supporting_files(plan, analysis, metadata_seed, strategy)
+    apply_plan(
+        plan,
+        analysis.app_dir,
+        dry_run=dry_run,
+        source_root=analysis.rebased_from or analysis.app_dir,
+    )
+    if dry_run:
+        plan.summary = f"[Dry run] {plan.summary}"
+    return plan
+
+
+def _validate_plan_in_staging(
+    plan: ConversionPlan,
+    app_dir: Path,
+    *,
+    source_root: Optional[Path] = None,
+) -> ValidationSummary:
+    """Materialize the plan in a temp copy and run the validators against it."""
+    from kamiwaza_extensions.validators.compose import (
+        ComposeValidator,
+        is_missing_resource_limits_warning,
+    )
+    from kamiwaza_extensions.validators.metadata import MetadataValidator
+    from kamiwaza_extensions.validators.platform_runtime import PlatformRuntimeValidator
+
+    with tempfile.TemporaryDirectory(prefix="kz-ext-convert-") as tmp_dir:
+        staged_root = Path(tmp_dir) / app_dir.name
+        shutil.copytree(
+            app_dir,
+            staged_root,
+            ignore=shutil.ignore_patterns(*_STAGING_SKIP_DIRS),
+            dirs_exist_ok=True,
+        )
+        # Copy actions resolve their source against the original source
+        # tree (the monorepo root in rebased cases), not the staged copy.
+        # ``apply_plan`` only reads from source_root (never mutates it);
+        # any future action that touches source must preserve that
+        # invariant.
+        apply_plan(plan, staged_root, dry_run=False, source_root=source_root or app_dir)
+
+        errors: List[str] = []
+        warnings: List[str] = []
+
+        metadata_path = staged_root / "kamiwaza.json"
+        if not metadata_path.exists():
+            errors.append("No kamiwaza.json found after conversion.")
+        else:
+            meta_result = MetadataValidator().validate(metadata_path)
+            errors.extend(meta_result.errors)
+            warnings.extend(meta_result.warnings)
+
+        compose_path = _find_compose_file(staged_root)
+        if compose_path is None:
+            errors.append("No docker-compose file found after conversion.")
+        else:
+            compose_result = ComposeValidator().validate(compose_path, staged_root)
+            errors.extend(compose_result.errors)
+            warnings.extend(compose_result.warnings)
+            for warning in compose_result.warnings:
+                if is_missing_resource_limits_warning(warning):
+                    errors.append(f"Blocking conversion warning: {warning}")
+            if compose_result.passed:
+                runtime_result = PlatformRuntimeValidator().validate(compose_path, staged_root)
+                errors.extend(runtime_result.errors)
+                warnings.extend(runtime_result.warnings)
+
+        if not (staged_root / "CONVERT_NOTES.md").exists():
+            errors.append("CONVERT_NOTES.md was not generated.")
+
+        return ValidationSummary(passed=len(errors) == 0, errors=errors, warnings=warnings)
+
+
+def _find_compose_file(ext_dir: Path) -> Optional[Path]:
+    for name in COMPOSE_FILENAMES:
+        candidate = ext_dir / name
+        if candidate.exists():
+            return candidate
+    return None

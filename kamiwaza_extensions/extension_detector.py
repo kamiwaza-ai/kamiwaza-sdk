@@ -10,12 +10,7 @@ from typing import Any, Dict, Optional
 import yaml
 
 from kamiwaza_extensions.constants import COMPOSE_FILENAMES
-
-# Conventional monorepo parent dirs searched for ``<parent>/<name>/kamiwaza.json``
-# when no manifest exists at the start dir or in a direct subdirectory.
-# Mirrors AppAnalyzer._MONOREPO_SUBDIR_PATTERNS so kz-ext convert and the
-# lifecycle commands resolve the same extension root.
-_MONOREPO_PARENT_DIRS = ("apps", "tools", "services", "packages", "extensions")
+from kamiwaza_extensions.monorepo import MONOREPO_PARENT_DIRS
 
 
 @dataclass
@@ -109,7 +104,7 @@ class ExtensionDetector:
         # standard parent directories. Mirrors the layout AppAnalyzer
         # detects in `kz-ext convert` so all lifecycle commands behave
         # consistently in monorepos.
-        for parent in _MONOREPO_PARENT_DIRS:
+        for parent in MONOREPO_PARENT_DIRS:
             candidates.extend(d.parent for d in (start / parent).glob("*/kamiwaza.json"))
 
         unique = sorted(
