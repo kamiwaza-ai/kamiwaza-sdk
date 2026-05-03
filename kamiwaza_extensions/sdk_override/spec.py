@@ -229,21 +229,21 @@ def print_override_diagnostics(spec: SdkOverrideSpec) -> None:
             "  [dim]Python lib:[/dim]  [green]local[/green] "
             "(kamiwaza_extensions_lib/)"
         )
-        # PYTHONPATH overwrite is intentional but worth flagging — for
-        # src-layout apps that bake ``ENV PYTHONPATH=/app/src`` into
-        # the runtime image, the overwrite breaks imports unless they
-        # set KZ_SDK_PYTHONPATH_APPEND.
+        # PYTHONPATH composition: /sdk (always first) + any
+        # PYTHONPATH baked into the Dockerfile (auto-detected per
+        # service at compose-build time) + KZ_SDK_PYTHONPATH_APPEND
+        # for paths beyond what's in the Dockerfile.
         extra = _os.environ.get("KZ_SDK_PYTHONPATH_APPEND", "").strip()
         if extra:
             console.print(
-                f"  [dim]PYTHONPATH:[/dim] /sdk:{extra} "
-                "[dim](from KZ_SDK_PYTHONPATH_APPEND)[/dim]"
+                f"  [dim]PYTHONPATH:[/dim] /sdk : <Dockerfile baked> : {extra} "
+                "[dim](image-baked PYTHONPATH preserved; "
+                "KZ_SDK_PYTHONPATH_APPEND adds extra paths)[/dim]"
             )
         else:
             console.print(
-                "  [dim]PYTHONPATH:[/dim] /sdk "
-                "[dim](overwrites image-baked PYTHONPATH; set "
-                "KZ_SDK_PYTHONPATH_APPEND to keep app paths)[/dim]"
+                "  [dim]PYTHONPATH:[/dim] /sdk : <Dockerfile baked, if any> "
+                "[dim](image-baked PYTHONPATH preserved automatically)[/dim]"
             )
     else:
         console.print("  [dim]Python lib:[/dim]  published")

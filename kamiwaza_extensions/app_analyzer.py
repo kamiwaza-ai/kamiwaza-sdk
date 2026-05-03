@@ -312,18 +312,29 @@ class AppAnalyzer:
             return app_dir, None
 
         candidates: List[Path] = []
-        # Two-level pattern: <parent>/<name>/<extension-signal>
+        # Subdir discovery requires a STRONG signal (compose,
+        # kamiwaza.json, or Dockerfile) — same bar as the early-return.
+        # Greenfield monorepo subdirs that have only a bare manifest
+        # (``package.json``, ``pyproject.toml``) are NOT auto-rebased
+        # because we can't tell whether they're real extensions or
+        # workspace libs (Codex iter-3 finding: a repo with
+        # ``index.html`` at root + ``packages/ui/package.json`` would
+        # otherwise rebase into the lib instead of the real app).
+        # Users in that ambiguous case must either run ``kz-ext convert
+        # apps/foo`` directly or add a Dockerfile stub to signal
+        # intent.
+        # Two-level pattern: <parent>/<name>/<strong-signal>
         for parent_name in MONOREPO_PARENT_DIRS:
             parent = app_dir / parent_name
             if not parent.is_dir():
                 continue
             for child in sorted(parent.iterdir()):
-                if child.is_dir() and _looks_like_extension_root(child):
+                if child.is_dir() and _is_strong_extension_root(child):
                     candidates.append(child)
-        # One-level bare-dir pattern: <name>/<extension-signal>
+        # One-level bare-dir pattern: <name>/<strong-signal>
         for bare_name in MONOREPO_BARE_DIRS:
             candidate = app_dir / bare_name
-            if candidate.is_dir() and _looks_like_extension_root(candidate):
+            if candidate.is_dir() and _is_strong_extension_root(candidate):
                 candidates.append(candidate)
 
         if not candidates:
@@ -699,61 +710,37 @@ class AppAnalyzer:
         return name or "my-extension"
 
 
-# STRONG signals that *this exact directory* is an extension root.
-# Used only for the monorepo-rebase early-return ("the user pointed at
-# the right place — don't rebase"). Narrow on purpose: workspace-root
-# monorepos commonly carry their own ``package.json`` (npm workspaces)
-# or ``pyproject.toml`` (poetry / uv workspace) at the repo root, AND
-# also have real extensions under ``apps/<x>``. If we treated those
-# manifests as a strong signal, the early-return would short-circuit
-# rebase and convert would write artifacts into the monorepo root —
-# the exact regression Codex caught after the broader-signal commit.
+# Signals that a directory is an extension root. Both the monorepo
+# rebase early-return AND subdir discovery use this same narrow set.
+#
+# Why narrow: workspace-root monorepos commonly carry their own
+# ``package.json`` (npm workspaces) or ``pyproject.toml`` (poetry/uv
+# workspace) at the repo root AND also have real extensions under
+# ``apps/<x>``. If we treated those manifests as extension signals,
+# we'd short-circuit rebase to the workspace root (or, worse, rebase
+# into a sibling library subdir like ``packages/ui/`` instead of the
+# real app at the repo root). Both regressions surfaced in Codex
+# review iterations.
+#
+# A bare manifest (``package.json``, ``pyproject.toml``) is too
+# ambiguous to auto-rebase on. Greenfield monorepo apps that haven't
+# yet been containerized should either:
+#   - run ``kz-ext convert apps/foo`` with the explicit subdir, OR
+#   - add a Dockerfile stub to the subdir to signal containerization
+#     intent (the convert can then take it the rest of the way).
 _STRONG_EXTENSION_ROOT_SIGNALS = (
     *COMPOSE_FILENAMES,
     "kamiwaza.json",
     "Dockerfile",
 )
 
-# BROADER signals used for *subdirectory* discovery. Manifests count
-# here because a subdir under ``apps/<x>/`` containing only a
-# ``package.json`` or ``pyproject.toml`` is overwhelmingly an
-# extension/app — the convert is precisely what's going to add the
-# Dockerfile + compose. The looser semantics are safe in this position
-# because subdir matches are scoped to the conventional monorepo
-# parents (``apps``, ``tools``, ``services``, ``packages``,
-# ``extensions``).
-_EXTENSION_SIGNAL_FILES = (
-    *_STRONG_EXTENSION_ROOT_SIGNALS,
-    "package.json",
-    "pyproject.toml",
-    "requirements.txt",
-    "Pipfile",
-    "go.mod",
-    "Cargo.toml",
-)
-
 
 def _is_strong_extension_root(directory: Path) -> bool:
-    """Strong signal: *directory* itself is an extension root.
-
-    Used by ``_resolve_effective_root``'s early-return. Narrower than
-    ``_looks_like_extension_root`` (which is used for subdir discovery)
-    — see the constant docstrings above for why.
+    """Return True when *directory* has a strong signal of being an
+    extension root: compose, ``kamiwaza.json``, or ``Dockerfile``.
+    Used by both the monorepo-rebase early-return and subdir discovery.
     """
     return any((directory / name).exists() for name in _STRONG_EXTENSION_ROOT_SIGNALS)
-
-
-def _looks_like_extension_root(directory: Path) -> bool:
-    """Broader signal: *directory* could be an extension/app root.
-
-    Used by monorepo rebase to detect candidate *subdirectories* even
-    in the greenfield case where ``docker-compose.yml`` is precisely
-    what the conversion is going to *generate* (so it isn't there
-    yet). Recognizes any of the signals a developer would point
-    ``kz-ext convert`` at directly: existing kamiwaza.json, an
-    existing Dockerfile, a Python/Node/Go/Rust manifest, etc.
-    """
-    return any((directory / name).exists() for name in _EXTENSION_SIGNAL_FILES)
 
 
 def _is_dockerfile(path: Path) -> bool:

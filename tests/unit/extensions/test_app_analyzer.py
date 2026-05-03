@@ -456,8 +456,14 @@ class TestGreenfieldMonorepoRebase:
         assert result.app_dir == ext.resolve()
         assert result.rebased_from == tmp_path.resolve()
 
-    def test_rebases_when_subdir_has_pyproject_toml(self, tmp_path):
-        """Greenfield Python app: pyproject.toml present, nothing else."""
+    def test_no_rebase_when_subdir_has_pyproject_toml_only(self, tmp_path):
+        """Codex iter-3 finding: a bare ``pyproject.toml`` in a subdir is
+        too ambiguous to auto-rebase on (could be a real extension OR
+        a workspace lib). Greenfield Python apps that haven't yet been
+        containerized should add a Dockerfile stub or run ``kz-ext
+        convert <subdir>`` directly. Locks in the conservative
+        behavior.
+        """
         from kamiwaza_extensions.app_analyzer import AppAnalyzer
 
         ext = tmp_path / "tools" / "py-tool"
@@ -465,11 +471,17 @@ class TestGreenfieldMonorepoRebase:
         (ext / "pyproject.toml").write_text('[project]\nname = "py-tool"\n')
 
         result = AppAnalyzer().analyze(tmp_path)
-        assert result.app_dir == ext.resolve()
-        assert result.rebased_from == tmp_path.resolve()
+        # Bare manifest is not enough — analyzer stays at the root.
+        assert result.app_dir == tmp_path.resolve()
+        assert result.rebased_from is None
 
-    def test_rebases_when_subdir_has_package_json(self, tmp_path):
-        """Greenfield Node app: package.json present, nothing else."""
+    def test_no_rebase_when_subdir_has_package_json_only(self, tmp_path):
+        """Codex iter-3 finding: same as above for Node — bare
+        ``package.json`` could just as easily be a workspace lib.
+        Concrete failure mode: a repo with ``index.html`` at root +
+        ``packages/ui/package.json`` would otherwise rebase into the
+        sibling lib instead of the real app at the root.
+        """
         from kamiwaza_extensions.app_analyzer import AppAnalyzer
 
         ext = tmp_path / "apps" / "node-app"
@@ -477,8 +489,50 @@ class TestGreenfieldMonorepoRebase:
         (ext / "package.json").write_text('{"name": "node-app"}')
 
         result = AppAnalyzer().analyze(tmp_path)
+        assert result.app_dir == tmp_path.resolve()
+        assert result.rebased_from is None
+
+    def test_rebases_when_subdir_has_dockerfile_or_compose(self, tmp_path):
+        """Adding a Dockerfile to a manifest-only subdir signals
+        containerization intent and DOES trigger rebase. This is the
+        documented escape hatch for greenfield monorepo cases."""
+        from kamiwaza_extensions.app_analyzer import AppAnalyzer
+
+        ext = tmp_path / "apps" / "node-app"
+        ext.mkdir(parents=True)
+        (ext / "package.json").write_text('{"name": "node-app"}')
+        (ext / "Dockerfile").write_text("FROM node:22\n")
+
+        result = AppAnalyzer().analyze(tmp_path)
         assert result.app_dir == ext.resolve()
         assert result.rebased_from == tmp_path.resolve()
+
+    def test_root_app_with_sibling_workspace_lib_does_not_rebase(
+        self, tmp_path
+    ):
+        """Codex iter-3 concrete failure mode: a repo where the actual
+        app lives at the root (e.g., ``index.html`` + root
+        ``package.json``) plus a sibling workspace lib at
+        ``packages/ui/package.json`` would, under the broader heuristic,
+        rebase INTO ``packages/ui/`` and write the convert artifacts
+        there instead of touching the real root app. The narrowed
+        heuristic correctly avoids this."""
+        from kamiwaza_extensions.app_analyzer import AppAnalyzer
+
+        # Root app
+        (tmp_path / "package.json").write_text('{"name": "root-app"}')
+        (tmp_path / "index.html").write_text("<html></html>")
+        # Sibling workspace lib (pure manifest, no Dockerfile)
+        lib = tmp_path / "packages" / "ui"
+        lib.mkdir(parents=True)
+        (lib / "package.json").write_text('{"name": "ui-lib"}')
+
+        result = AppAnalyzer().analyze(tmp_path)
+
+        # MUST stay at the root — packages/ui/ is a lib, not an
+        # extension to convert.
+        assert result.app_dir == tmp_path.resolve()
+        assert result.rebased_from is None
 
     def test_no_rebase_when_subdirs_lack_extension_signals(self, tmp_path):
         """An apps/ directory with only random docs / .gitkeep should

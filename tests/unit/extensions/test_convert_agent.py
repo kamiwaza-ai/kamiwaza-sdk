@@ -1399,6 +1399,96 @@ class TestPRReviewFixes:
             "PYTHONPATH": "/sdk"
         }
 
+    def test_pythonpath_preserves_dockerfile_baked_value(self, monkeypatch, tmp_path):
+        """Codex iter-4 finding: src-layout apps with ``ENV
+        PYTHONPATH=/app/src`` baked into the runtime image lost
+        access to ``/app/src`` under ``--sdk-repo`` because the
+        compose override unconditionally overwrote PYTHONPATH with
+        just ``/sdk``.
+
+        Fix: parse the Dockerfile's runtime-stage ENV PYTHONPATH and
+        prepend ``/sdk:`` automatically. SDK still wins (resolves
+        first), but the image's import paths come along for free.
+        """
+        from kamiwaza_extensions.sdk_override import SdkOverrideSpec
+        from kamiwaza_extensions.sdk_override.compose import generate_compose_override
+
+        monkeypatch.delenv("KZ_SDK_PYTHONPATH_APPEND", raising=False)
+
+        # Multi-stage Python Dockerfile with PYTHONPATH baked into
+        # the runtime stage (the canonical src-layout case).
+        ext = tmp_path / "ext"
+        be = ext / "backend"
+        be.mkdir(parents=True)
+        (be / "Dockerfile").write_text(
+            "FROM python:3.11-dev AS build\n"
+            "WORKDIR /app\n"
+            "FROM python:3.11 AS runtime\n"
+            "WORKDIR /app\n"
+            'ENV PYTHONPATH="/app/src"\n'
+            'CMD ["python", "-m", "uvicorn", "app.main:app"]\n'
+        )
+
+        spec = SdkOverrideSpec(sdk_repo=tmp_path, typescript=False)
+        compose = {"services": {"backend": {"build": {"context": "./backend"}}}}
+
+        override = generate_compose_override(spec, compose, extension_dir=ext)
+
+        assert override["services"]["backend"]["environment"] == {
+            "PYTHONPATH": "/sdk:/app/src"
+        }, "Dockerfile-baked PYTHONPATH must be preserved (after /sdk)"
+
+    def test_pythonpath_combines_baked_and_append_env(
+        self, monkeypatch, tmp_path
+    ):
+        """All three sources combine: /sdk first, Dockerfile-baked
+        PYTHONPATH next, KZ_SDK_PYTHONPATH_APPEND last."""
+        from kamiwaza_extensions.sdk_override import SdkOverrideSpec
+        from kamiwaza_extensions.sdk_override.compose import generate_compose_override
+
+        ext = tmp_path / "ext"
+        be = ext / "backend"
+        be.mkdir(parents=True)
+        (be / "Dockerfile").write_text(
+            "FROM python:3.11 AS runtime\n"
+            "ENV PYTHONPATH=/app/src\n"
+        )
+
+        monkeypatch.setenv("KZ_SDK_PYTHONPATH_APPEND", "/extra/lib:/another")
+        spec = SdkOverrideSpec(sdk_repo=tmp_path, typescript=False)
+        compose = {"services": {"backend": {"build": {"context": "./backend"}}}}
+
+        override = generate_compose_override(spec, compose, extension_dir=ext)
+
+        assert override["services"]["backend"]["environment"] == {
+            "PYTHONPATH": "/sdk:/app/src:/extra/lib:/another"
+        }
+
+    def test_pythonpath_legacy_env_form_in_dockerfile(self, monkeypatch, tmp_path):
+        """The Dockerfile parser handles the legacy ``ENV PYTHONPATH /val``
+        space-separated form (vs the modern ``ENV PYTHONPATH=/val``)."""
+        from kamiwaza_extensions.sdk_override import SdkOverrideSpec
+        from kamiwaza_extensions.sdk_override.compose import generate_compose_override
+
+        monkeypatch.delenv("KZ_SDK_PYTHONPATH_APPEND", raising=False)
+
+        ext = tmp_path / "ext"
+        be = ext / "backend"
+        be.mkdir(parents=True)
+        (be / "Dockerfile").write_text(
+            "FROM python:3.11 AS runtime\n"
+            "ENV PYTHONPATH /legacy/path\n"
+        )
+
+        spec = SdkOverrideSpec(sdk_repo=tmp_path, typescript=False)
+        compose = {"services": {"backend": {"build": {"context": "./backend"}}}}
+
+        override = generate_compose_override(spec, compose, extension_dir=ext)
+
+        assert override["services"]["backend"]["environment"] == {
+            "PYTHONPATH": "/sdk:/legacy/path"
+        }
+
 
 class TestFindActiveUserMultiStage:
     """Regression: USER directives are stage-local in Docker. The
@@ -1495,3 +1585,65 @@ class TestStagingCopytreeSymlinks:
             "shutil.copytree must preserve symlinks, not byte-copy "
             "their targets"
         )
+
+    def test_outward_facing_symlinks_stripped_from_staging(
+        self, tmp_path, monkeypatch
+    ):
+        """Codex iter-4 finding: ``shutil.copytree(symlinks=True)``
+        preserves outward-facing symlinks. A ``staged/foo -> /etc/...``
+        link would let validators read sensitive content as if it were
+        the manifest. ``apply_plan``'s path-traversal guard catches
+        the write side, but reads from validators have no such guard.
+
+        Fix: post-copytree pass strips any symlink whose target
+        resolves outside ``staged_root``.
+        """
+        from kamiwaza_extensions.convert_agent import agent as agent_mod
+        from kamiwaza_extensions.convert_agent.agent import (
+            _validate_plan_in_staging,
+        )
+        from kamiwaza_extensions.convert_agent.models import ConversionPlan
+
+        app_dir = tmp_path / "app"
+        app_dir.mkdir()
+        (app_dir / "safe.txt").write_text("safe content")
+        # Inward symlink — resolves inside app_dir, must be kept.
+        (app_dir / "inward.txt").symlink_to("safe.txt")
+        # Outward absolute symlink — resolves outside app_dir, must
+        # be stripped from staging.
+        outside_target = tmp_path / "outside-secret.txt"
+        outside_target.write_text("OUTSIDE")
+        (app_dir / "outward-abs.txt").symlink_to(str(outside_target))
+        # Outward relative symlink — uses .. to escape.
+        (app_dir / "outward-rel.txt").symlink_to("../outside-secret.txt")
+
+        observation: dict = {}
+        original_apply = agent_mod.apply_plan
+
+        def capturing_apply(plan, staged_root, **kwargs):
+            sr = Path(staged_root)
+            observation["inward_kept"] = (sr / "inward.txt").is_symlink()
+            observation["outward_abs_present"] = (sr / "outward-abs.txt").exists()
+            observation["outward_rel_present"] = (sr / "outward-rel.txt").exists()
+            observation["outward_abs_is_link"] = (sr / "outward-abs.txt").is_symlink()
+            observation["outward_rel_is_link"] = (sr / "outward-rel.txt").is_symlink()
+            return original_apply(plan, staged_root, **kwargs)
+
+        monkeypatch.setattr(agent_mod, "apply_plan", capturing_apply)
+        _validate_plan_in_staging(ConversionPlan(), app_dir)
+
+        assert observation.get("inward_kept"), (
+            "Inward symlinks (resolve inside staged_root) must be "
+            "preserved — they represent legitimate intra-extension links"
+        )
+        # Both forms of outward symlink stripped.
+        assert not observation["outward_abs_is_link"], (
+            "Outward absolute symlinks must be stripped from staging "
+            "to prevent validators reading external content"
+        )
+        assert not observation["outward_rel_is_link"], (
+            "Outward .. -escaping symlinks must be stripped from staging"
+        )
+        # And the underlying outside file shouldn't have been mutated
+        # via the (now-stripped) staged link.
+        assert outside_target.read_text() == "OUTSIDE"

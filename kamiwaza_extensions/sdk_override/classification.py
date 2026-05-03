@@ -186,6 +186,58 @@ def _read_dockerfile_stage_bases(dockerfile: Optional[Path]) -> List[str]:
     return [resolve_stage_base(index) for index in range(len(stages))]
 
 
+def read_runtime_pythonpath(dockerfile: Optional[Path]) -> Optional[str]:
+    """Extract the runtime stage's ``ENV PYTHONPATH`` value, if any.
+
+    Returns the literal value of the LAST ``ENV PYTHONPATH=...``
+    declaration in the FINAL Dockerfile stage (i.e., the runtime
+    stage of a multi-stage build, or the only stage of a single-stage
+    Dockerfile). Returns ``None`` when no PYTHONPATH is baked or the
+    Dockerfile is unreadable.
+
+    Used by ``compose._python_override`` to preserve image-baked
+    ``PYTHONPATH`` entries (src-layout apps with ``ENV
+    PYTHONPATH=/app/src`` would otherwise lose access to their own
+    modules under ``--sdk-repo``). The SDK is prepended so its
+    ``import kamiwaza_extensions_lib`` wins over any same-name in the
+    image's PYTHONPATH.
+    """
+    import re
+
+    if not dockerfile or not dockerfile.is_file():
+        return None
+    try:
+        content = dockerfile.read_text()
+    except OSError:
+        return None
+
+    lines = content.splitlines()
+    # Locate the start of the final stage by finding the last FROM.
+    runtime_start = 0
+    for i, line in enumerate(lines):
+        if line.strip().upper().startswith("FROM "):
+            runtime_start = i + 1
+
+    # Match ENV PYTHONPATH=value or ENV PYTHONPATH=value [other=...].
+    # Handle quoted and unquoted values, and the legacy
+    # ``ENV PYTHONPATH /val`` (space-separated) form.
+    env_kv = re.compile(
+        r"""^\s*ENV\s+
+            (?:.*?\s+)?              # allow other ENV pairs before ours
+            PYTHONPATH
+            (?:\s*=\s*|\s+)          # = or space (legacy)
+            ("?)([^"\s]+)\1          # quoted-or-bare value
+        """,
+        re.IGNORECASE | re.VERBOSE,
+    )
+    last_value: Optional[str] = None
+    for line in lines[runtime_start:]:
+        m = env_kv.match(line)
+        if m:
+            last_value = m.group(2)
+    return last_value
+
+
 def _image_basename(image_ref: str) -> str:
     ref = image_ref.split("@", 1)[0]
     name = ref.rsplit("/", 1)[-1]

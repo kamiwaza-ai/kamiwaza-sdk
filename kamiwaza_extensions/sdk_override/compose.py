@@ -12,7 +12,11 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from kamiwaza_extensions.sdk_override.classification import detect_service_runtime
+from kamiwaza_extensions.sdk_override.classification import (
+    _resolve_dockerfile,
+    detect_service_runtime,
+    read_runtime_pythonpath,
+)
 from kamiwaza_extensions.sdk_override.spec import SdkOverrideSpec
 
 # In-container path the SDK repo is bind-mounted at. Adding this to
@@ -62,39 +66,70 @@ def generate_compose_override(
         if "build" not in svc_config:
             continue
         svc_type = detect_service_runtime(svc_name, svc_config, extension_dir=extension_dir)
-        svc_override = _override_for(svc_type, spec)
+        # For Python services, sniff the Dockerfile's runtime-stage
+        # ENV PYTHONPATH so we can preserve src-layout apps whose
+        # images bake their own import paths (e.g.
+        # ``ENV PYTHONPATH=/app/src``). None when no Dockerfile
+        # available or no PYTHONPATH baked.
+        baked_pythonpath: Optional[str] = None
+        if svc_type == "backend" and extension_dir is not None:
+            df = _resolve_dockerfile(svc_config["build"], extension_dir)
+            baked_pythonpath = read_runtime_pythonpath(df)
+        svc_override = _override_for(
+            svc_type, spec, baked_pythonpath=baked_pythonpath
+        )
         if svc_override:
             override_services[svc_name] = svc_override
 
     return {"services": override_services}
 
 
-def _override_for(svc_type: str, spec: SdkOverrideSpec) -> dict:
+def _override_for(
+    svc_type: str,
+    spec: SdkOverrideSpec,
+    *,
+    baked_pythonpath: Optional[str] = None,
+) -> dict:
     """Return the per-service override dict for ``svc_type``, or {} if
     no override applies (skipped service, or runtime-lib disabled)."""
     if svc_type == "backend" and spec.python:
-        return _python_override(spec)
+        return _python_override(spec, baked_pythonpath=baked_pythonpath)
     if svc_type == "frontend" and spec.typescript:
         return _typescript_override(spec)
     return {}
 
 
-def _python_override(spec: SdkOverrideSpec) -> dict:
+def _python_override(
+    spec: SdkOverrideSpec, *, baked_pythonpath: Optional[str] = None
+) -> dict:
     """Bind-mount SDK repo at /sdk and route imports via ``PYTHONPATH``.
 
-    Default: ``PYTHONPATH=/sdk`` — overwrites any image-baked value.
-    The existing Dockerfile entrypoint runs unmodified and inherits
-    the env var.
+    PYTHONPATH composition (in order, first wins for ``import``):
 
-    For src-layout apps whose runtime image bakes a PYTHONPATH
-    declaration (e.g. ``ENV PYTHONPATH=/app/src``), set
-    ``KZ_SDK_PYTHONPATH_APPEND`` on the host to append those paths
-    after ``/sdk`` so the image's imports continue to resolve.
-    Multiple paths can be colon-separated. The SDK appears first so
-    ``import kamiwaza_extensions_lib`` resolves to the local checkout.
+    1. ``/sdk`` — the bind-mounted SDK source (always first so
+       ``import kamiwaza_extensions_lib`` resolves locally).
+    2. ``baked_pythonpath`` — extracted from the runtime stage's
+       ``ENV PYTHONPATH=...`` declaration in the service's Dockerfile,
+       if any. Preserves src-layout apps whose images bake
+       ``ENV PYTHONPATH=/app/src``.
+    3. ``KZ_SDK_PYTHONPATH_APPEND`` — host-side env var for paths
+       beyond what's in the Dockerfile (rarely needed now that the
+       Dockerfile's PYTHONPATH is preserved automatically; kept as an
+       escape hatch for unusual layouts).
+
+    The compose ``environment`` value sets PYTHONPATH wholesale —
+    docker compose doesn't expand container env vars in the
+    ``environment:`` field, so we synthesize the final value
+    ourselves. The Dockerfile's existing entrypoint runs unmodified
+    and inherits the synthesized value.
     """
+    parts = [_SDK_BIND_TARGET]
+    if baked_pythonpath:
+        parts.append(baked_pythonpath)
     extra = os.environ.get(_PYTHONPATH_APPEND_ENV, "").strip()
-    pythonpath = f"{_SDK_BIND_TARGET}:{extra}" if extra else _SDK_BIND_TARGET
+    if extra:
+        parts.append(extra)
+    pythonpath = ":".join(parts)
     return {
         "volumes": [
             {

@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import tempfile
 from pathlib import Path
@@ -275,9 +276,7 @@ def _validate_plan_in_staging(
         # symlinks=True preserves links instead of byte-copying targets.
         # Without this a symlink to /var/log or any large external tree
         # explodes disk usage in staging, and cycles cause copytree to
-        # raise OSError (or, in older versions, recurse). Validators
-        # only inspect file presence + content under staged_root, so
-        # preserving links rather than dereferencing keeps semantics.
+        # raise OSError (or, in older versions, recurse).
         shutil.copytree(
             app_dir,
             staged_root,
@@ -285,6 +284,14 @@ def _validate_plan_in_staging(
             dirs_exist_ok=True,
             symlinks=True,
         )
+        # Strip any symlink whose target resolves OUTSIDE staged_root
+        # — those would let validators read external content as if it
+        # were the manifest, and any LLM-emitted modify-action would
+        # write through them to the real source tree (apply_plan's
+        # path-traversal guard catches the write side, but a
+        # validator following an outward symlink to e.g. /etc/...
+        # is still a sensitive-file leak surface).
+        _strip_outward_symlinks(staged_root)
         # Copy actions resolve their source against the original source
         # tree (the monorepo root in rebased cases), not the staged copy.
         # ``apply_plan`` only reads from source_root (never mutates it);
@@ -322,6 +329,45 @@ def _validate_plan_in_staging(
             errors.append("CONVERT_NOTES.md was not generated.")
 
         return ValidationSummary(passed=len(errors) == 0, errors=errors, warnings=warnings)
+
+
+def _strip_outward_symlinks(staged_root: Path) -> None:
+    """Remove symlinks under *staged_root* whose targets resolve outside it.
+
+    Defence in depth on the staged validation tree. ``shutil.copytree
+    (symlinks=True)`` preserves links as links — fast and disk-safe,
+    but a symlink to ``/etc/secret`` would let a validator read that
+    content as if it were the manifest. ``apply_plan``'s
+    path-traversal guard catches the *write* side (resolves target
+    against staged_root before writing), but readers (validators)
+    have no such guard. Stripping outward links closes that gap.
+
+    Symlinks whose target resolves *inside* staged_root are kept —
+    those represent legitimate intra-extension links that the
+    validators may need to read.
+    """
+    resolved_root = staged_root.resolve()
+    for dirpath, dirnames, filenames in os.walk(staged_root, followlinks=False):
+        for name in list(dirnames) + list(filenames):
+            entry = Path(dirpath) / name
+            if not entry.is_symlink():
+                continue
+            try:
+                target_resolved = entry.resolve()
+            except OSError:
+                # Broken / unreadable link — safest to remove.
+                _safe_unlink(entry)
+                continue
+            if not target_resolved.is_relative_to(resolved_root):
+                _safe_unlink(entry)
+
+
+def _safe_unlink(path: Path) -> None:
+    """Best-effort unlink that tolerates missing-file races."""
+    try:
+        path.unlink()
+    except (OSError, FileNotFoundError):
+        pass
 
 
 def _find_compose_file(ext_dir: Path) -> Optional[Path]:
