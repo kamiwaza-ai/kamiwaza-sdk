@@ -104,14 +104,50 @@ _SENSITIVE_FILE_SUFFIXES = (
 _SENSITIVE_STEMS = {"secret", "secrets", "credential", "credentials"}
 
 
-def _walk_files(root: Path, extensions: tuple[str, ...] | None = None) -> Generator[Path, None, None]:
-    """Walk *root* yielding files, pruning ``_SKIP_DIRS`` in-place.
+# Skip list for the monorepo-inventory pass. Strict subset of
+# ``SKIP_DIRS`` — deliberately omits ``dist``, ``build``, ``target``,
+# and ``coverage`` because that's exactly where shared publish
+# artifacts (.whl, .tgz, .jar, etc.) live in monorepos. The whole
+# point of the inventory pass is to surface those for the LLM's
+# ``copy`` action; pruning them silently breaks the vendoring flow.
+_INVENTORY_SKIP_DIRS = frozenset(
+    {
+        ".git",
+        "node_modules",
+        "__pycache__",
+        ".venv",
+        "venv",
+        ".next",
+        ".agents",
+        ".claude",
+        ".cursor",
+        ".aider",
+        ".specstory",
+        ".idea",
+        ".vscode",
+        ".devcontainer",
+    }
+)
 
-    Much faster than ``rglob`` on JS projects with large ``node_modules``.
+
+def _walk_files(
+    root: Path,
+    extensions: tuple[str, ...] | None = None,
+    *,
+    skip_dirs: frozenset[str] | set[str] | None = None,
+) -> Generator[Path, None, None]:
+    """Walk *root* yielding files, pruning ``skip_dirs`` in-place.
+
+    Defaults to ``_SKIP_DIRS`` (which prunes ``dist``/``build``/etc. for
+    speed on JS projects with large ``node_modules``). Pass an
+    explicit ``skip_dirs`` to override — e.g. the monorepo-inventory
+    pass uses ``_INVENTORY_SKIP_DIRS`` because vendorable artifacts
+    live precisely in the otherwise-skipped ``dist`` directories.
     """
+    effective_skip = skip_dirs if skip_dirs is not None else _SKIP_DIRS
     for dirpath, dirnames, filenames in os.walk(root):
         # Prune in-place so os.walk doesn't descend
-        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
+        dirnames[:] = [d for d in dirnames if d not in effective_skip]
         for fname in filenames:
             if extensions is None or any(fname.endswith(ext) for ext in extensions):
                 yield Path(dirpath) / fname
@@ -263,22 +299,25 @@ class AppAnalyzer:
         Raises ``AmbiguousMonorepoError`` when multiple monorepo
         subdirectories contain compose files.
         """
-        if _has_compose_file(app_dir):
+        # If the user-supplied path itself looks like an extension
+        # root (compose, kamiwaza.json, Dockerfile, manifest), don't
+        # rebase — they pointed at the right place.
+        if _looks_like_extension_root(app_dir):
             return app_dir, None
 
         candidates: List[Path] = []
-        # Two-level pattern: <parent>/<name>/<compose>
+        # Two-level pattern: <parent>/<name>/<extension-signal>
         for parent_name in MONOREPO_PARENT_DIRS:
             parent = app_dir / parent_name
             if not parent.is_dir():
                 continue
             for child in sorted(parent.iterdir()):
-                if child.is_dir() and _has_compose_file(child):
+                if child.is_dir() and _looks_like_extension_root(child):
                     candidates.append(child)
-        # One-level bare-dir pattern: <name>/<compose>
+        # One-level bare-dir pattern: <name>/<extension-signal>
         for bare_name in MONOREPO_BARE_DIRS:
             candidate = app_dir / bare_name
-            if candidate.is_dir() and _has_compose_file(candidate):
+            if candidate.is_dir() and _looks_like_extension_root(candidate):
                 candidates.append(candidate)
 
         if not candidates:
@@ -558,7 +597,9 @@ class AppAnalyzer:
 
         inventory: List[str] = []
         artifacts: List[str] = []
-        for path in _walk_files(source_root):
+        # Use the inventory-specific skip list so vendorable artifacts
+        # in ``dist``/``build``/``target`` are surfaced to the LLM.
+        for path in _walk_files(source_root, skip_dirs=_INVENTORY_SKIP_DIRS):
             try:
                 if path.resolve().is_relative_to(ext_root):
                     continue
@@ -640,8 +681,38 @@ class AppAnalyzer:
         return name or "my-extension"
 
 
+# Files whose presence at a directory's top level marks that directory
+# as "this looks like an extension/app root" for monorepo rebase. Order
+# is approximate strength of signal; any one is enough.
+_EXTENSION_SIGNAL_FILES = (
+    *COMPOSE_FILENAMES,
+    "kamiwaza.json",
+    "Dockerfile",
+    "package.json",
+    "pyproject.toml",
+    "requirements.txt",
+    "Pipfile",
+    "go.mod",
+    "Cargo.toml",
+)
+
+
 def _has_compose_file(directory: Path) -> bool:
     return any((directory / name).exists() for name in COMPOSE_FILENAMES)
+
+
+def _looks_like_extension_root(directory: Path) -> bool:
+    """Return True when *directory* has any signal of being an
+    extension/app root.
+
+    Used by monorepo rebase to detect candidate subdirectories even in
+    the greenfield case where ``docker-compose.yml`` is precisely what
+    the conversion is going to *generate* (so it isn't there yet).
+    Mirrors the kinds of signals a developer would point ``kz-ext
+    convert`` at directly: existing kamiwaza.json, an existing
+    Dockerfile, a Python/Node manifest, etc.
+    """
+    return any((directory / name).exists() for name in _EXTENSION_SIGNAL_FILES)
 
 
 def _is_dockerfile(path: Path) -> bool:

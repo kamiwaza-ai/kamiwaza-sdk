@@ -419,6 +419,100 @@ class TestSkipDirs:
         assert ".cursor" not in joined_manifests
 
 
+class TestGreenfieldMonorepoRebase:
+    """Codex re-review finding: rebase must work for greenfield monorepos
+    where the subdir doesn't have a compose file yet (the conversion is
+    going to *generate* one). Detect via any extension-signal file —
+    Dockerfile, kamiwaza.json, package.json, pyproject.toml, etc."""
+
+    def test_rebases_when_subdir_has_dockerfile_only(self, tmp_path):
+        """No compose anywhere; subdir has Dockerfile only. Rebase
+        should still happen — the convert is about to *generate*
+        compose, but the right place to put it is the subdir."""
+        from kamiwaza_extensions.app_analyzer import AppAnalyzer
+
+        ext = tmp_path / "apps" / "my-ext"
+        ext.mkdir(parents=True)
+        (ext / "Dockerfile").write_text("FROM python:3.11\n")
+        # NO compose file anywhere
+
+        result = AppAnalyzer().analyze(tmp_path)
+
+        # Without the fix, app_dir stays at tmp_path (the monorepo root)
+        # and convert would write kamiwaza.json/compose at the wrong place.
+        assert result.app_dir == ext.resolve()
+        assert result.rebased_from == tmp_path.resolve()
+
+    def test_rebases_when_subdir_has_kamiwaza_json_only(self, tmp_path):
+        """Re-conversion case: subdir already has a partial extension
+        (kamiwaza.json) but is missing compose. Should rebase."""
+        from kamiwaza_extensions.app_analyzer import AppAnalyzer
+
+        ext = tmp_path / "apps" / "ext"
+        ext.mkdir(parents=True)
+        (ext / "kamiwaza.json").write_text('{"name": "ext"}')
+
+        result = AppAnalyzer().analyze(tmp_path)
+        assert result.app_dir == ext.resolve()
+        assert result.rebased_from == tmp_path.resolve()
+
+    def test_rebases_when_subdir_has_pyproject_toml(self, tmp_path):
+        """Greenfield Python app: pyproject.toml present, nothing else."""
+        from kamiwaza_extensions.app_analyzer import AppAnalyzer
+
+        ext = tmp_path / "tools" / "py-tool"
+        ext.mkdir(parents=True)
+        (ext / "pyproject.toml").write_text('[project]\nname = "py-tool"\n')
+
+        result = AppAnalyzer().analyze(tmp_path)
+        assert result.app_dir == ext.resolve()
+        assert result.rebased_from == tmp_path.resolve()
+
+    def test_rebases_when_subdir_has_package_json(self, tmp_path):
+        """Greenfield Node app: package.json present, nothing else."""
+        from kamiwaza_extensions.app_analyzer import AppAnalyzer
+
+        ext = tmp_path / "apps" / "node-app"
+        ext.mkdir(parents=True)
+        (ext / "package.json").write_text('{"name": "node-app"}')
+
+        result = AppAnalyzer().analyze(tmp_path)
+        assert result.app_dir == ext.resolve()
+        assert result.rebased_from == tmp_path.resolve()
+
+    def test_no_rebase_when_subdirs_lack_extension_signals(self, tmp_path):
+        """An apps/ directory with only random docs / .gitkeep should
+        NOT trigger a rebase — it's not actually an extension."""
+        from kamiwaza_extensions.app_analyzer import AppAnalyzer
+
+        random = tmp_path / "apps" / "random"
+        random.mkdir(parents=True)
+        (random / "README.md").write_text("# random notes")
+        (random / ".gitkeep").write_text("")
+
+        result = AppAnalyzer().analyze(tmp_path)
+        # No extension signal — stay at the monorepo root.
+        assert result.app_dir == tmp_path.resolve()
+        assert result.rebased_from is None
+
+    def test_ambiguous_when_multiple_subdirs_have_signals(self, tmp_path):
+        """Two greenfield apps under apps/ — must error rather than
+        silently picking one."""
+        from kamiwaza_extensions.app_analyzer import (
+            AmbiguousMonorepoError,
+            AppAnalyzer,
+        )
+
+        for name in ("foo", "bar"):
+            d = tmp_path / "apps" / name
+            d.mkdir(parents=True)
+            (d / "Dockerfile").write_text("FROM scratch\n")
+
+        with pytest.raises(AmbiguousMonorepoError) as exc:
+            AppAnalyzer().analyze(tmp_path)
+        assert len(exc.value.candidates) == 2
+
+
 class TestMonorepoInventory:
     """When rebased, the analyzer should surface the broader source tree."""
 
@@ -470,6 +564,42 @@ class TestMonorepoInventory:
         assert result.rebased_from is None
         assert result.monorepo_inventory == []
         assert result.vendorable_artifacts == []
+
+    def test_surfaces_artifacts_in_dist_directory(self, tmp_path):
+        """Codex re-review finding: shared publish artifacts (.whl,
+        .tgz) typically live in dist/ — but the general _walk_files
+        prunes dist/build/target. The monorepo-inventory pass must
+        use a smaller skip list so these artifacts surface to the LLM
+        for the copy action.
+        """
+        from kamiwaza_extensions.app_analyzer import AppAnalyzer
+
+        ext = tmp_path / "apps" / "ext"
+        ext.mkdir(parents=True)
+        (ext / "docker-compose.yml").write_text(
+            yaml.dump({"services": {"app": {"image": "x"}}})
+        )
+
+        # The exact layout that broke for the user: shared wheels in
+        # shared/python/dist/. Earlier code pruned dist/ and these
+        # never reached vendorable_artifacts.
+        wheel_dir = tmp_path / "shared" / "python" / "dist"
+        wheel_dir.mkdir(parents=True)
+        wheel = wheel_dir / "auth-1.0.whl"
+        wheel.write_bytes(b"\x00\x01\x02")
+        # Same for typescript tarballs (build/ is also in default skip list).
+        tgz_dir = tmp_path / "shared" / "typescript" / "build"
+        tgz_dir.mkdir(parents=True)
+        tgz = tgz_dir / "auth-1.0.tgz"
+        tgz.write_bytes(b"\x00\x01\x02")
+
+        result = AppAnalyzer().analyze(tmp_path)
+
+        assert "shared/python/dist/auth-1.0.whl" in result.vendorable_artifacts, (
+            "Wheels in shared/python/dist/ must surface — they're "
+            "the primary inputs the copy action is meant to vendor"
+        )
+        assert "shared/typescript/build/auth-1.0.tgz" in result.vendorable_artifacts
 
 
 class TestSanitizeName:
