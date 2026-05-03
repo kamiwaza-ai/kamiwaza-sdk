@@ -1,6 +1,7 @@
 """Unit tests for the convert agent."""
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -1489,6 +1490,99 @@ class TestPRReviewFixes:
             "PYTHONPATH": "/sdk:/legacy/path"
         }
 
+    def test_pythonpath_preserves_compose_environment_value(
+        self, monkeypatch, tmp_path
+    ):
+        """Codex iter-5 finding: src-layout apps that set PYTHONPATH in
+        ``docker-compose.yml`` (not just the Dockerfile) had the value
+        clobbered by the override. Compose merges ``environment``
+        per-key, so an override that doesn't carry the user's value
+        forward effectively deletes it.
+
+        Fix: read the service's compose ``environment.PYTHONPATH`` and
+        include it in the synthesized value alongside Dockerfile-baked.
+        """
+        from kamiwaza_extensions.sdk_override import SdkOverrideSpec
+        from kamiwaza_extensions.sdk_override.compose import generate_compose_override
+
+        monkeypatch.delenv("KZ_SDK_PYTHONPATH_APPEND", raising=False)
+        spec = SdkOverrideSpec(sdk_repo=tmp_path, typescript=False)
+        compose = {
+            "services": {
+                "backend": {
+                    "build": "./backend",
+                    "environment": {"PYTHONPATH": "/app/src"},
+                }
+            }
+        }
+
+        override = generate_compose_override(spec, compose)
+
+        assert override["services"]["backend"]["environment"] == {
+            "PYTHONPATH": "/sdk:/app/src"
+        }, "Compose-defined PYTHONPATH must be preserved (after /sdk)"
+
+    def test_pythonpath_preserves_compose_env_list_form(
+        self, monkeypatch, tmp_path
+    ):
+        """Compose accepts ``environment`` as a list of ``KEY=value``
+        strings too, not just a dict. Both forms must surface
+        PYTHONPATH."""
+        from kamiwaza_extensions.sdk_override import SdkOverrideSpec
+        from kamiwaza_extensions.sdk_override.compose import generate_compose_override
+
+        monkeypatch.delenv("KZ_SDK_PYTHONPATH_APPEND", raising=False)
+        spec = SdkOverrideSpec(sdk_repo=tmp_path, typescript=False)
+        compose = {
+            "services": {
+                "backend": {
+                    "build": "./backend",
+                    "environment": ["FOO=bar", "PYTHONPATH=/app/lib"],
+                }
+            }
+        }
+
+        override = generate_compose_override(spec, compose)
+
+        assert override["services"]["backend"]["environment"] == {
+            "PYTHONPATH": "/sdk:/app/lib"
+        }
+
+    def test_pythonpath_combines_dockerfile_and_compose(
+        self, monkeypatch, tmp_path
+    ):
+        """Both Dockerfile-baked AND compose-defined PYTHONPATH should
+        be preserved when both are present."""
+        from kamiwaza_extensions.sdk_override import SdkOverrideSpec
+        from kamiwaza_extensions.sdk_override.compose import generate_compose_override
+
+        monkeypatch.delenv("KZ_SDK_PYTHONPATH_APPEND", raising=False)
+
+        ext = tmp_path / "ext"
+        be = ext / "backend"
+        be.mkdir(parents=True)
+        (be / "Dockerfile").write_text(
+            "FROM python:3.11 AS runtime\n"
+            "ENV PYTHONPATH=/baked/path\n"
+        )
+
+        spec = SdkOverrideSpec(sdk_repo=tmp_path, typescript=False)
+        compose = {
+            "services": {
+                "backend": {
+                    "build": {"context": "./backend"},
+                    "environment": {"PYTHONPATH": "/compose/path"},
+                }
+            }
+        }
+
+        override = generate_compose_override(spec, compose, extension_dir=ext)
+
+        # Order: /sdk first, Dockerfile baked, then compose value.
+        assert override["services"]["backend"]["environment"] == {
+            "PYTHONPATH": "/sdk:/baked/path:/compose/path"
+        }
+
 
 class TestFindActiveUserMultiStage:
     """Regression: USER directives are stage-local in Docker. The
@@ -1647,3 +1741,38 @@ class TestStagingCopytreeSymlinks:
         # And the underlying outside file shouldn't have been mutated
         # via the (now-stripped) staged link.
         assert outside_target.read_text() == "OUTSIDE"
+
+    def test_strip_outward_symlinks_handles_cycle_without_crashing(
+        self, tmp_path
+    ):
+        """Iter-5 finding: ``Path.resolve()`` raises ``RuntimeError``
+        (not ``OSError``) on a symlink loop, so a self-cycle or
+        A->B->A cycle in the source tree would crash the entire
+        conversion. Treat cycles like broken links — unlink them.
+        """
+        from kamiwaza_extensions.convert_agent.agent import (
+            _strip_outward_symlinks,
+        )
+
+        staged = tmp_path / "staged"
+        staged.mkdir()
+        (staged / "real.txt").write_text("safe")
+
+        # Self-loop.
+        self_loop = staged / "self.txt"
+        os.symlink(self_loop, self_loop)
+
+        # Two-link cycle: a -> b, b -> a.
+        a = staged / "a.txt"
+        b = staged / "b.txt"
+        os.symlink(b, a)
+        os.symlink(a, b)
+
+        # Must not raise.
+        _strip_outward_symlinks(staged)
+
+        # Cycles unlinked; legitimate file untouched.
+        assert not self_loop.exists()
+        assert not a.exists()
+        assert not b.exists()
+        assert (staged / "real.txt").read_text() == "safe"

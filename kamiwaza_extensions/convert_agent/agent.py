@@ -354,8 +354,10 @@ def _strip_outward_symlinks(staged_root: Path) -> None:
                 continue
             try:
                 target_resolved = entry.resolve()
-            except OSError:
-                # Broken / unreadable link — safest to remove.
+            except (OSError, RuntimeError):
+                # Broken / unreadable link, or symlink cycle (resolve()
+                # raises RuntimeError on loops, not OSError) — safest
+                # to remove.
                 _safe_unlink(entry)
                 continue
             if not target_resolved.is_relative_to(resolved_root):

@@ -230,20 +230,21 @@ def print_override_diagnostics(spec: SdkOverrideSpec) -> None:
             "(kamiwaza_extensions_lib/)"
         )
         # PYTHONPATH composition: /sdk (always first) + any
-        # PYTHONPATH baked into the Dockerfile (auto-detected per
-        # service at compose-build time) + KZ_SDK_PYTHONPATH_APPEND
-        # for paths beyond what's in the Dockerfile.
+        # PYTHONPATH baked into the Dockerfile + any PYTHONPATH set on
+        # the compose service (both auto-detected per service at
+        # compose-build time) + KZ_SDK_PYTHONPATH_APPEND for paths
+        # beyond either source.
         extra = _os.environ.get("KZ_SDK_PYTHONPATH_APPEND", "").strip()
         if extra:
             console.print(
-                f"  [dim]PYTHONPATH:[/dim] /sdk : <Dockerfile baked> : {extra} "
-                "[dim](image-baked PYTHONPATH preserved; "
+                f"  [dim]PYTHONPATH:[/dim] /sdk : <Dockerfile/compose baked> : {extra} "
+                "[dim](Dockerfile + compose PYTHONPATH preserved; "
                 "KZ_SDK_PYTHONPATH_APPEND adds extra paths)[/dim]"
             )
         else:
             console.print(
-                "  [dim]PYTHONPATH:[/dim] /sdk : <Dockerfile baked, if any> "
-                "[dim](image-baked PYTHONPATH preserved automatically)[/dim]"
+                "  [dim]PYTHONPATH:[/dim] /sdk : <Dockerfile/compose baked, if any> "
+                "[dim](Dockerfile + compose PYTHONPATH preserved automatically)[/dim]"
             )
     else:
         console.print("  [dim]Python lib:[/dim]  published")

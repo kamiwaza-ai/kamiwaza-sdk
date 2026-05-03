@@ -66,17 +66,26 @@ def generate_compose_override(
         if "build" not in svc_config:
             continue
         svc_type = detect_service_runtime(svc_name, svc_config, extension_dir=extension_dir)
-        # For Python services, sniff the Dockerfile's runtime-stage
-        # ENV PYTHONPATH so we can preserve src-layout apps whose
-        # images bake their own import paths (e.g.
-        # ``ENV PYTHONPATH=/app/src``). None when no Dockerfile
-        # available or no PYTHONPATH baked.
+        # For Python services, gather every PYTHONPATH source we'll need
+        # to preserve so the override doesn't clobber the user's own
+        # imports. Two sources:
+        #   - Dockerfile runtime-stage ``ENV PYTHONPATH=...`` (src-layout
+        #     apps whose images bake their own import paths)
+        #   - The compose service's own ``environment.PYTHONPATH``
+        #     (apps that set the path in compose rather than the image).
+        # Both are no-ops when absent.
         baked_pythonpath: Optional[str] = None
-        if svc_type == "backend" and extension_dir is not None:
-            df = _resolve_dockerfile(svc_config["build"], extension_dir)
-            baked_pythonpath = read_runtime_pythonpath(df)
+        compose_pythonpath: Optional[str] = None
+        if svc_type == "backend":
+            if extension_dir is not None:
+                df = _resolve_dockerfile(svc_config["build"], extension_dir)
+                baked_pythonpath = read_runtime_pythonpath(df)
+            compose_pythonpath = _read_compose_pythonpath(svc_config)
         svc_override = _override_for(
-            svc_type, spec, baked_pythonpath=baked_pythonpath
+            svc_type,
+            spec,
+            baked_pythonpath=baked_pythonpath,
+            compose_pythonpath=compose_pythonpath,
         )
         if svc_override:
             override_services[svc_name] = svc_override
@@ -84,23 +93,54 @@ def generate_compose_override(
     return {"services": override_services}
 
 
+def _read_compose_pythonpath(svc_config: dict) -> Optional[str]:
+    """Return the service's compose-defined ``PYTHONPATH``, or ``None``.
+
+    Compose accepts ``environment`` as either a dict (``{KEY: value}``)
+    or a list of ``KEY=value`` strings. When the override merges with
+    the base file, ``environment`` is merged *per key* — so an override
+    that sets ``PYTHONPATH=/sdk`` would clobber a base
+    ``PYTHONPATH=/app/src``. Read it here so we can include it in the
+    synthesized value.
+    """
+    env = svc_config.get("environment")
+    if isinstance(env, dict):
+        value = env.get("PYTHONPATH")
+        return str(value).strip() if value else None
+    if isinstance(env, list):
+        for entry in env:
+            if not isinstance(entry, str):
+                continue
+            if entry.startswith("PYTHONPATH="):
+                return entry.split("=", 1)[1].strip() or None
+    return None
+
+
 def _override_for(
     svc_type: str,
     spec: SdkOverrideSpec,
     *,
     baked_pythonpath: Optional[str] = None,
+    compose_pythonpath: Optional[str] = None,
 ) -> dict:
     """Return the per-service override dict for ``svc_type``, or {} if
     no override applies (skipped service, or runtime-lib disabled)."""
     if svc_type == "backend" and spec.python:
-        return _python_override(spec, baked_pythonpath=baked_pythonpath)
+        return _python_override(
+            spec,
+            baked_pythonpath=baked_pythonpath,
+            compose_pythonpath=compose_pythonpath,
+        )
     if svc_type == "frontend" and spec.typescript:
         return _typescript_override(spec)
     return {}
 
 
 def _python_override(
-    spec: SdkOverrideSpec, *, baked_pythonpath: Optional[str] = None
+    spec: SdkOverrideSpec,
+    *,
+    baked_pythonpath: Optional[str] = None,
+    compose_pythonpath: Optional[str] = None,
 ) -> dict:
     """Bind-mount SDK repo at /sdk and route imports via ``PYTHONPATH``.
 
@@ -112,10 +152,14 @@ def _python_override(
        ``ENV PYTHONPATH=...`` declaration in the service's Dockerfile,
        if any. Preserves src-layout apps whose images bake
        ``ENV PYTHONPATH=/app/src``.
-    3. ``KZ_SDK_PYTHONPATH_APPEND`` — host-side env var for paths
-       beyond what's in the Dockerfile (rarely needed now that the
-       Dockerfile's PYTHONPATH is preserved automatically; kept as an
-       escape hatch for unusual layouts).
+    3. ``compose_pythonpath`` — the service's own
+       ``environment.PYTHONPATH`` from ``docker-compose.yml``. Preserved
+       because compose merges ``environment`` per key, so an override
+       that doesn't include the user's existing value would clobber it.
+    4. ``KZ_SDK_PYTHONPATH_APPEND`` — host-side env var for paths
+       beyond what's in the Dockerfile or compose file (rarely needed
+       now that both are preserved automatically; kept as an escape
+       hatch for unusual layouts).
 
     The compose ``environment`` value sets PYTHONPATH wholesale —
     docker compose doesn't expand container env vars in the
@@ -126,6 +170,8 @@ def _python_override(
     parts = [_SDK_BIND_TARGET]
     if baked_pythonpath:
         parts.append(baked_pythonpath)
+    if compose_pythonpath and compose_pythonpath not in parts:
+        parts.append(compose_pythonpath)
     extra = os.environ.get(_PYTHONPATH_APPEND_ENV, "").strip()
     if extra:
         parts.append(extra)
