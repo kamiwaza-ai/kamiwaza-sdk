@@ -299,10 +299,16 @@ class AppAnalyzer:
         Raises ``AmbiguousMonorepoError`` when multiple monorepo
         subdirectories contain compose files.
         """
-        # If the user-supplied path itself looks like an extension
-        # root (compose, kamiwaza.json, Dockerfile, manifest), don't
-        # rebase — they pointed at the right place.
-        if _looks_like_extension_root(app_dir):
+        # If the user-supplied path is a STRONG extension root
+        # (compose / kamiwaza.json / Dockerfile present), don't rebase
+        # — they pointed at the right place. We deliberately do NOT
+        # treat a bare ``package.json`` / ``pyproject.toml`` at the
+        # supplied path as a stop signal: those frequently belong to
+        # workspace roots (npm workspaces, poetry/uv workspaces) that
+        # also have real extensions under ``apps/<x>/``. See the
+        # ``_STRONG_EXTENSION_ROOT_SIGNALS`` docstring for the
+        # regression this guards against.
+        if _is_strong_extension_root(app_dir):
             return app_dir, None
 
         candidates: List[Path] = []
@@ -681,13 +687,31 @@ class AppAnalyzer:
         return name or "my-extension"
 
 
-# Files whose presence at a directory's top level marks that directory
-# as "this looks like an extension/app root" for monorepo rebase. Order
-# is approximate strength of signal; any one is enough.
-_EXTENSION_SIGNAL_FILES = (
+# STRONG signals that *this exact directory* is an extension root.
+# Used only for the monorepo-rebase early-return ("the user pointed at
+# the right place — don't rebase"). Narrow on purpose: workspace-root
+# monorepos commonly carry their own ``package.json`` (npm workspaces)
+# or ``pyproject.toml`` (poetry / uv workspace) at the repo root, AND
+# also have real extensions under ``apps/<x>``. If we treated those
+# manifests as a strong signal, the early-return would short-circuit
+# rebase and convert would write artifacts into the monorepo root —
+# the exact regression Codex caught after the broader-signal commit.
+_STRONG_EXTENSION_ROOT_SIGNALS = (
     *COMPOSE_FILENAMES,
     "kamiwaza.json",
     "Dockerfile",
+)
+
+# BROADER signals used for *subdirectory* discovery. Manifests count
+# here because a subdir under ``apps/<x>/`` containing only a
+# ``package.json`` or ``pyproject.toml`` is overwhelmingly an
+# extension/app — the convert is precisely what's going to add the
+# Dockerfile + compose. The looser semantics are safe in this position
+# because subdir matches are scoped to the conventional monorepo
+# parents (``apps``, ``tools``, ``services``, ``packages``,
+# ``extensions``).
+_EXTENSION_SIGNAL_FILES = (
+    *_STRONG_EXTENSION_ROOT_SIGNALS,
     "package.json",
     "pyproject.toml",
     "requirements.txt",
@@ -697,20 +721,25 @@ _EXTENSION_SIGNAL_FILES = (
 )
 
 
-def _has_compose_file(directory: Path) -> bool:
-    return any((directory / name).exists() for name in COMPOSE_FILENAMES)
+def _is_strong_extension_root(directory: Path) -> bool:
+    """Strong signal: *directory* itself is an extension root.
+
+    Used by ``_resolve_effective_root``'s early-return. Narrower than
+    ``_looks_like_extension_root`` (which is used for subdir discovery)
+    — see the constant docstrings above for why.
+    """
+    return any((directory / name).exists() for name in _STRONG_EXTENSION_ROOT_SIGNALS)
 
 
 def _looks_like_extension_root(directory: Path) -> bool:
-    """Return True when *directory* has any signal of being an
-    extension/app root.
+    """Broader signal: *directory* could be an extension/app root.
 
-    Used by monorepo rebase to detect candidate subdirectories even in
-    the greenfield case where ``docker-compose.yml`` is precisely what
-    the conversion is going to *generate* (so it isn't there yet).
-    Mirrors the kinds of signals a developer would point ``kz-ext
-    convert`` at directly: existing kamiwaza.json, an existing
-    Dockerfile, a Python/Node manifest, etc.
+    Used by monorepo rebase to detect candidate *subdirectories* even
+    in the greenfield case where ``docker-compose.yml`` is precisely
+    what the conversion is going to *generate* (so it isn't there
+    yet). Recognizes any of the signals a developer would point
+    ``kz-ext convert`` at directly: existing kamiwaza.json, an
+    existing Dockerfile, a Python/Node/Go/Rust manifest, etc.
     """
     return any((directory / name).exists() for name in _EXTENSION_SIGNAL_FILES)
 

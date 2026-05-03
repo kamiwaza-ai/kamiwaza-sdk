@@ -512,6 +512,74 @@ class TestGreenfieldMonorepoRebase:
             AppAnalyzer().analyze(tmp_path)
         assert len(exc.value.candidates) == 2
 
+    def test_workspace_root_with_package_json_still_rebases(self, tmp_path):
+        """Codex iter-2 finding: an npm-workspaces monorepo has a
+        ``package.json`` at the repo root (declaring ``workspaces:
+        ['apps/*']``) AND a real extension at ``apps/web/Dockerfile``.
+        The earlier broadened-signal commit treated the root
+        ``package.json`` as a strong signal and short-circuited rebase
+        — silently writing convert artifacts into the monorepo root
+        instead of ``apps/web/``. The split signal sets fix this:
+        ``package.json`` only counts for *subdir* discovery, not for
+        the early-return."""
+        from kamiwaza_extensions.app_analyzer import AppAnalyzer
+
+        # Workspace-root manifest at the repo root (npm workspaces).
+        (tmp_path / "package.json").write_text(
+            '{"name": "monorepo", "workspaces": ["apps/*"]}'
+        )
+        # Real extension lives one level deep.
+        ext = tmp_path / "apps" / "web"
+        ext.mkdir(parents=True)
+        (ext / "Dockerfile").write_text("FROM node:22\n")
+
+        result = AppAnalyzer().analyze(tmp_path)
+
+        # MUST rebase to apps/web/ — the root package.json is a
+        # workspace marker, not a strong extension signal.
+        assert result.app_dir == ext.resolve()
+        assert result.rebased_from == tmp_path.resolve()
+
+    def test_workspace_root_with_pyproject_toml_still_rebases(self, tmp_path):
+        """Same regression for poetry/uv workspaces with a root
+        ``pyproject.toml`` plus extensions under ``apps/<x>/``."""
+        from kamiwaza_extensions.app_analyzer import AppAnalyzer
+
+        (tmp_path / "pyproject.toml").write_text(
+            "[project]\nname = 'monorepo'\n[tool.uv.workspace]\nmembers = ['apps/*']\n"
+        )
+        ext = tmp_path / "apps" / "api"
+        ext.mkdir(parents=True)
+        (ext / "Dockerfile").write_text("FROM python:3.11\n")
+
+        result = AppAnalyzer().analyze(tmp_path)
+
+        assert result.app_dir == ext.resolve()
+        assert result.rebased_from == tmp_path.resolve()
+
+    def test_root_with_compose_still_short_circuits(self, tmp_path):
+        """Confirm the early-return still fires for STRONG signals at
+        the supplied path: a root ``docker-compose.yml`` means the
+        user pointed directly at an extension, not a monorepo root.
+        Should NOT rebase even if there's a coincidental signal under
+        ``apps/<x>/``."""
+        from kamiwaza_extensions.app_analyzer import AppAnalyzer
+
+        # User points directly at a valid extension (compose present).
+        (tmp_path / "docker-compose.yml").write_text(
+            yaml.dump({"services": {"app": {"image": "x"}}})
+        )
+        # A coincidental subdir that would otherwise look like a
+        # candidate (e.g. examples/, archived apps/) should not steal
+        # the rebase.
+        (tmp_path / "apps" / "decoy").mkdir(parents=True)
+        (tmp_path / "apps" / "decoy" / "Dockerfile").write_text("FROM scratch\n")
+
+        result = AppAnalyzer().analyze(tmp_path)
+
+        assert result.app_dir == tmp_path.resolve()
+        assert result.rebased_from is None
+
 
 class TestMonorepoInventory:
     """When rebased, the analyzer should surface the broader source tree."""

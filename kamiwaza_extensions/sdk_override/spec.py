@@ -232,18 +232,18 @@ def print_override_diagnostics(spec: SdkOverrideSpec) -> None:
         # PYTHONPATH overwrite is intentional but worth flagging — for
         # src-layout apps that bake ``ENV PYTHONPATH=/app/src`` into
         # the runtime image, the overwrite breaks imports unless they
-        # set KZ_SDK_PYTHONPATH_PREPEND.
-        extra = _os.environ.get("KZ_SDK_PYTHONPATH_PREPEND", "").strip()
+        # set KZ_SDK_PYTHONPATH_APPEND.
+        extra = _os.environ.get("KZ_SDK_PYTHONPATH_APPEND", "").strip()
         if extra:
             console.print(
                 f"  [dim]PYTHONPATH:[/dim] /sdk:{extra} "
-                "[dim](from KZ_SDK_PYTHONPATH_PREPEND)[/dim]"
+                "[dim](from KZ_SDK_PYTHONPATH_APPEND)[/dim]"
             )
         else:
             console.print(
                 "  [dim]PYTHONPATH:[/dim] /sdk "
                 "[dim](overwrites image-baked PYTHONPATH; set "
-                "KZ_SDK_PYTHONPATH_PREPEND to keep app paths)[/dim]"
+                "KZ_SDK_PYTHONPATH_APPEND to keep app paths)[/dim]"
             )
     else:
         console.print("  [dim]Python lib:[/dim]  published")

@@ -22,11 +22,12 @@ _SDK_BIND_TARGET = "/sdk"
 
 # Optional escape hatch for src-layout apps whose runtime image bakes
 # in a PYTHONPATH (e.g. ``ENV PYTHONPATH=/app/src``). The compose
-# override unconditionally overwrites the env var, so without this
-# hatch a ``--sdk-repo`` run on such an image would lose access to
-# ``/app/src``. Set the env var on the host before launching ``dev
-# local`` to prepend additional colon-separated paths after ``/sdk``.
-_PYTHONPATH_PREPEND_ENV = "KZ_SDK_PYTHONPATH_PREPEND"
+# override unconditionally sets PYTHONPATH which overwrites the
+# image-baked value. Set this env var on the host before launching
+# ``dev local --sdk-repo`` to append additional colon-separated paths
+# AFTER ``/sdk`` so the image's import paths continue to resolve. The
+# SDK still wins because it appears first in PYTHONPATH order.
+_PYTHONPATH_APPEND_ENV = "KZ_SDK_PYTHONPATH_APPEND"
 
 # In-container path the TypeScript SDK package gets bind-mounted to.
 # Shadowing ``/app/node_modules/@kamiwaza-ai/extensions-lib`` with the
@@ -79,21 +80,20 @@ def _override_for(svc_type: str, spec: SdkOverrideSpec) -> dict:
 
 
 def _python_override(spec: SdkOverrideSpec) -> dict:
-    """Bind-mount SDK repo at /sdk and set ``PYTHONPATH=/sdk``.
+    """Bind-mount SDK repo at /sdk and route imports via ``PYTHONPATH``.
 
+    Default: ``PYTHONPATH=/sdk`` — overwrites any image-baked value.
     The existing Dockerfile entrypoint runs unmodified and inherits
-    the env var. PYTHONPATH overwrites any image-baked value — that is
-    intentional for ``--sdk-repo`` mode (developers asking to use the
-    local SDK want the local SDK to win unconditionally).
+    the env var.
 
     For src-layout apps whose runtime image bakes a PYTHONPATH
     declaration (e.g. ``ENV PYTHONPATH=/app/src``), set
-    ``KZ_SDK_PYTHONPATH_PREPEND`` on the host to append those paths
-    after ``/sdk`` so imports continue to resolve. Multiple paths can
-    be colon-separated. The SDK takes precedence so its
+    ``KZ_SDK_PYTHONPATH_APPEND`` on the host to append those paths
+    after ``/sdk`` so the image's imports continue to resolve.
+    Multiple paths can be colon-separated. The SDK appears first so
     ``import kamiwaza_extensions_lib`` resolves to the local checkout.
     """
-    extra = os.environ.get(_PYTHONPATH_PREPEND_ENV, "").strip()
+    extra = os.environ.get(_PYTHONPATH_APPEND_ENV, "").strip()
     pythonpath = f"{_SDK_BIND_TARGET}:{extra}" if extra else _SDK_BIND_TARGET
     return {
         "volumes": [

@@ -53,7 +53,7 @@ def run_convert(
             rel = analysis.app_dir
         console.print(
             f"    [yellow]→[/yellow] Rebased to:        [bold]{rel}/[/bold] "
-            "(compose file detected here)"
+            "(extension signals detected here)"
         )
     mode_label = "generic AI fallback" if analysis.conversion_mode == "generic" else "structured"
     console.print(f"    Mode:              [bold]{mode_label}[/bold]")
