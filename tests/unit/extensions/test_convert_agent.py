@@ -1181,3 +1181,317 @@ class TestSafeApiCall:
         assert result is None
         captured = capsys.readouterr()
         assert "IndexError" in captured.out + captured.err
+
+
+class TestPRReviewFixes:
+    """Regression tests for findings from /devloop:pr-review on PR #92."""
+
+    def test_dedupe_runs_before_convert_notes_render(self, tmp_path, monkeypatch):
+        """CONVERT_NOTES.md should NOT carry stale manual_items that were
+        deduped against scheduled modifications. Reordering bug: previously
+        _ensure_supporting_files (which renders the notes) ran BEFORE
+        _dedupe_manual_items_against_modifications, so notes were stale."""
+        from kamiwaza_extensions import convert_agent
+        from kamiwaza_extensions.app_analyzer import AnalysisResult
+
+        # Stage a minimal extension with no kamiwaza.json so the post-
+        # processor renders a fresh notes file.
+        (tmp_path / "docker-compose.yml").write_text(
+            "services:\n  app:\n    image: nginxinc/nginx-unprivileged:stable-alpine\n"
+            "    ports: ['8080']\n"
+            "    deploy:\n      resources:\n        limits:\n"
+            "          cpus: '1.0'\n          memory: '1G'\n"
+            "    healthcheck:\n      test: ['CMD', 'true']\n"
+        )
+        analysis = AnalysisResult(
+            app_dir=tmp_path,
+            app_name="t",
+            extension_type="app",
+            conversion_mode="structured",
+        )
+
+        # Strategy + modification responses: LLM emits a `copy` AND
+        # restates it as a manual_item. Dedupe should drop the manual
+        # item before the notes render.
+        responses = iter(
+            [
+                json.dumps(
+                    {
+                        "extension_type": "app",
+                        "conversion_mode": "preserve_existing_runtime",
+                        "primary_service": "app",
+                        "required_files": [],
+                        "runtime_summary": "test",
+                        "manual_items": [],
+                    }
+                ),
+                json.dumps(
+                    {
+                        "modifications": [
+                            {
+                                "path": "vendor/auth.whl",
+                                "action": "copy",
+                                "source_path": "vendor/auth.whl",
+                                "description": "vendor",
+                            }
+                        ],
+                        "manual_items": [
+                            "Vendor vendor/auth.whl into the extension repo."
+                        ],
+                        "summary": "ok",
+                    }
+                ),
+            ]
+        )
+        monkeypatch.setattr(
+            "kamiwaza_extensions.convert_agent.agent.call_llm",
+            lambda prompt: next(responses, None),
+        )
+        # Provide a real source so the copy doesn't fail in staging.
+        (tmp_path / "vendor").mkdir()
+        (tmp_path / "vendor" / "auth.whl").write_bytes(b"x")
+
+        plan = convert_agent.run_agent(analysis, dry_run=False)
+
+        # CONVERT_NOTES.md should NOT mention the stale manual_item.
+        notes = (tmp_path / "CONVERT_NOTES.md").read_text()
+        assert "Vendor vendor/auth.whl" not in notes, (
+            "CONVERT_NOTES.md carries a stale manual_item that should "
+            "have been deduped against the scheduled copy modification"
+        )
+        # Plan's manual_items reflect the dedupe.
+        assert all("vendor/auth.whl" not in item for item in plan.manual_items)
+
+    def test_execute_copy_short_circuits_on_same_file(self, tmp_path, capsys):
+        """source_path == path with source_root == app_dir would otherwise
+        raise SameFileError and abort apply_plan."""
+        from kamiwaza_extensions.convert_agent import (
+            ConversionPlan,
+            FileModification,
+            apply_plan,
+        )
+
+        existing = tmp_path / "vendor" / "lib.whl"
+        existing.parent.mkdir()
+        existing.write_bytes(b"original")
+
+        plan = ConversionPlan(
+            modifications=[
+                FileModification(
+                    path="vendor/lib.whl",
+                    action="copy",
+                    source_path="vendor/lib.whl",
+                    description="self-copy",
+                )
+            ]
+        )
+
+        # Same source_root and app_dir — the resolved source and target
+        # are the same file. Without the short-circuit, shutil.copy2
+        # raises SameFileError and apply_plan aborts.
+        applied = apply_plan(plan, tmp_path, source_root=tmp_path)
+
+        # Treated as no-op: plan applies cleanly, file unchanged.
+        assert len(applied) == 1
+        assert existing.read_bytes() == b"original"
+
+    def test_run_agent_dry_run_tags_summary_and_does_not_write(
+        self, tmp_path, monkeypatch
+    ):
+        """run_agent(dry_run=True) should:
+        - tag plan.summary with '[Dry run] Validated N proposed modifications.'
+        - NOT write any files to app_dir
+        Closes the test gap flagged in iter-3 review.
+        """
+        from kamiwaza_extensions import convert_agent
+        from kamiwaza_extensions.app_analyzer import AnalysisResult
+
+        # Compose stub the staging validator will accept.
+        (tmp_path / "docker-compose.yml").write_text(
+            "services:\n  app:\n    image: nginxinc/nginx-unprivileged:stable-alpine\n"
+            "    ports: ['8080']\n"
+            "    deploy:\n      resources:\n        limits:\n"
+            "          cpus: '1.0'\n          memory: '1G'\n"
+            "    healthcheck:\n      test: ['CMD', 'true']\n"
+        )
+        analysis = AnalysisResult(
+            app_dir=tmp_path,
+            app_name="t",
+            extension_type="app",
+            conversion_mode="structured",
+        )
+
+        responses = iter(
+            [
+                json.dumps(
+                    {
+                        "extension_type": "app",
+                        "conversion_mode": "preserve_existing_runtime",
+                        "primary_service": "app",
+                        "required_files": [],
+                        "runtime_summary": "test",
+                        "manual_items": [],
+                    }
+                ),
+                json.dumps(
+                    {
+                        "modifications": [
+                            {
+                                "path": "noop.txt",
+                                "action": "create",
+                                "content": "hi\n",
+                                "description": "test",
+                            }
+                        ],
+                        "manual_items": [],
+                        "summary": "applied a noop",
+                    }
+                ),
+            ]
+        )
+        monkeypatch.setattr(
+            "kamiwaza_extensions.convert_agent.agent.call_llm",
+            lambda prompt: next(responses, None),
+        )
+
+        plan = convert_agent.run_agent(analysis, dry_run=True)
+
+        assert plan.success is True
+        # Summary tagged with the dry-run prefix.
+        assert plan.summary.startswith("[Dry run] Validated"), plan.summary
+        # No file written.
+        assert not (tmp_path / "noop.txt").exists(), (
+            "dry_run=True must not write files to app_dir"
+        )
+
+    def test_pythonpath_prepend_env_var_appends_to_sdk(self, monkeypatch, tmp_path):
+        """KZ_SDK_PYTHONPATH_PREPEND escape hatch: src-layout apps with
+        ENV PYTHONPATH=/app/src baked in can keep their import paths by
+        setting this env var on the host."""
+        from kamiwaza_extensions.sdk_override import SdkOverrideSpec
+        from kamiwaza_extensions.sdk_override.compose import generate_compose_override
+
+        spec = SdkOverrideSpec(sdk_repo=tmp_path, typescript=False)
+        compose = {"services": {"backend": {"build": "./backend"}}}
+
+        monkeypatch.setenv("KZ_SDK_PYTHONPATH_PREPEND", "/app/src:/app/lib")
+
+        override = generate_compose_override(spec, compose)
+        env = override["services"]["backend"]["environment"]
+
+        # SDK takes precedence (so import kamiwaza_extensions_lib
+        # resolves to the local checkout) but the user's paths follow.
+        assert env["PYTHONPATH"] == "/sdk:/app/src:/app/lib"
+
+    def test_pythonpath_default_when_env_not_set(self, monkeypatch, tmp_path):
+        """Without KZ_SDK_PYTHONPATH_PREPEND, PYTHONPATH is just /sdk
+        (preserves prior behavior for the common case)."""
+        from kamiwaza_extensions.sdk_override import SdkOverrideSpec
+        from kamiwaza_extensions.sdk_override.compose import generate_compose_override
+
+        monkeypatch.delenv("KZ_SDK_PYTHONPATH_PREPEND", raising=False)
+        spec = SdkOverrideSpec(sdk_repo=tmp_path, typescript=False)
+        compose = {"services": {"backend": {"build": "./backend"}}}
+
+        override = generate_compose_override(spec, compose)
+
+        assert override["services"]["backend"]["environment"] == {
+            "PYTHONPATH": "/sdk"
+        }
+
+
+class TestFindActiveUserMultiStage:
+    """Regression: USER directives are stage-local in Docker. The
+    last-USER lookup must reset on each FROM."""
+
+    def test_resets_on_from(self):
+        from kamiwaza_extensions.sdk_override.build import _find_active_user
+
+        # USER appuser in builder stage; runtime stage doesn't set USER.
+        # Without the FROM reset, _find_active_user would return
+        # 'appuser' and _restore_user_block would emit USER appuser
+        # into the runtime stage (which doesn't know that user).
+        lines = [
+            "FROM python:3.11 AS build\n",
+            "USER appuser\n",
+            "RUN echo build\n",
+            "FROM python:3.11-slim AS runtime\n",
+            "RUN echo runtime\n",
+        ]
+
+        result = _find_active_user(lines)
+
+        # No USER in runtime stage — the FROM reset means we don't
+        # restore appuser.
+        assert result is None
+
+    def test_finds_user_in_runtime_stage(self):
+        from kamiwaza_extensions.sdk_override.build import _find_active_user
+
+        lines = [
+            "FROM python:3.11 AS build\n",
+            "USER appuser\n",
+            "FROM python:3.11-slim AS runtime\n",
+            "USER 65532:65532\n",
+            "RUN echo runtime\n",
+        ]
+
+        result = _find_active_user(lines)
+        assert result == "65532:65532"
+
+    def test_single_stage_unchanged(self):
+        """Single-stage Dockerfiles still report the USER as before."""
+        from kamiwaza_extensions.sdk_override.build import _find_active_user
+
+        lines = [
+            "FROM python:3.11\n",
+            "USER appuser\n",
+            "RUN echo go\n",
+        ]
+        assert _find_active_user(lines) == "appuser"
+
+
+class TestStagingCopytreeSymlinks:
+    """Regression: shutil.copytree must preserve symlinks instead of
+    following them, otherwise a link to /var/log etc. would byte-copy
+    the entire target into staging."""
+
+    def test_symlinks_preserved_in_staging(self, tmp_path, monkeypatch):
+        """A symlink in the source tree should appear as a symlink in
+        the staging tree, not as a fully-realized copy of the target."""
+        from kamiwaza_extensions.convert_agent.agent import (
+            _validate_plan_in_staging,
+        )
+        from kamiwaza_extensions.convert_agent.models import ConversionPlan
+
+        app_dir = tmp_path / "app"
+        app_dir.mkdir()
+        (app_dir / "real.txt").write_text("real content")
+        (app_dir / "link.txt").symlink_to("real.txt")
+
+        # Capture the symlink state DURING the apply_plan call (the
+        # TempDir is cleaned up immediately after _validate_plan_in_staging
+        # returns, so we have to peek at the staged tree from inside).
+        observation: dict = {}
+
+        from kamiwaza_extensions.convert_agent import agent as agent_mod
+
+        original_apply = agent_mod.apply_plan
+
+        def capturing_apply(plan, staged_root, **kwargs):
+            staged_link = Path(staged_root) / "link.txt"
+            observation["is_symlink"] = staged_link.is_symlink()
+            observation["exists"] = staged_link.exists()
+            return original_apply(plan, staged_root, **kwargs)
+
+        monkeypatch.setattr(agent_mod, "apply_plan", capturing_apply)
+
+        # Run validation; the empty plan will fail, but copytree runs
+        # before validation does — that's all we need to inspect.
+        _validate_plan_in_staging(ConversionPlan(), app_dir)
+
+        assert observation.get("exists"), "staging hook didn't fire"
+        assert observation["is_symlink"], (
+            "shutil.copytree must preserve symlinks, not byte-copy "
+            "their targets"
+        )

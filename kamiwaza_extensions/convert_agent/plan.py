@@ -216,6 +216,18 @@ def _execute_copy(
             "does not exist — skipping"
         )
         return False
+    # Short-circuit on same-tree, same-path copies — happens in
+    # non-rebased greenfield conversions where source_root == app_dir
+    # and the LLM emits source_path == path. shutil.copy2 raises
+    # SameFileError on macOS / Linux which would otherwise abort the
+    # entire apply_plan. Treat as a no-op (the file is already where
+    # it needs to be).
+    if source == target.resolve():
+        console.print(
+            f"[dim]Note:[/dim] copy source and target are the same "
+            f"file ('{mod.path}') — no-op."
+        )
+        return True
     shutil.copy2(source, target)
     return True
 

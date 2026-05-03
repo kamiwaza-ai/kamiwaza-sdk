@@ -54,6 +54,22 @@ def _load_agent_guidance() -> str:
 
 _AGENT_GUIDANCE = _load_agent_guidance()
 
+if not _AGENT_GUIDANCE:
+    # Surface missing guidance loudly: this typically means a packaging
+    # bug (the package-data entry in pyproject.toml didn't ship the
+    # file) or the file was accidentally deleted. Without it providers
+    # send only the per-call prompt — the LLM loses the standing
+    # runtime contract, distroless gotchas, and vendoring discipline.
+    # The conversion will still run but produce noticeably worse
+    # output, and silent degradation makes that hard to diagnose.
+    console.print(
+        f"[yellow]Warning:[/yellow] Kamiwaza agent guidance not loadable "
+        f"from {_GUIDANCE_PATH}. The convert agent will run with only "
+        "per-call context — extensions produced may not follow the "
+        "Kamiwaza runtime contract. Re-install the package or restore "
+        "the file."
+    )
+
 
 def call_llm(prompt: str) -> Optional[str]:
     """Call an LLM and return the response text, or ``None`` if no

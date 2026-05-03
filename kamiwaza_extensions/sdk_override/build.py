@@ -433,11 +433,26 @@ def _insert_before_install_pattern(
 
 
 def _find_active_user(lines: List[str]) -> Optional[str]:
-    """Return the last USER declared in the given Dockerfile lines."""
-    active_user = None
+    """Return the active USER for the LAST Dockerfile stage in ``lines``.
+
+    USER is stage-local in Docker: each ``FROM`` resets the active user
+    to the base image's default (typically root). For multi-stage
+    Dockerfiles, only USER directives in the final stage matter for
+    overlay insertion. Without this reset, a ``USER appuser`` from an
+    earlier stage would leak into ``_restore_user_block`` for a later
+    stage that may not even define the ``appuser`` user — producing a
+    ``USER appuser`` directive that breaks the build with "user
+    appuser does not exist".
+    """
+    active_user: Optional[str] = None
     for line in lines:
         stripped = line.strip()
-        if stripped.startswith("USER "):
+        if stripped.upper().startswith("FROM "):
+            # New stage — image default user takes over (we don't try
+            # to resolve it; treat as None and let _restore_user_block
+            # decline to emit a directive).
+            active_user = None
+        elif stripped.startswith("USER "):
             user = stripped[len("USER ") :].strip()
             if user:
                 active_user = user

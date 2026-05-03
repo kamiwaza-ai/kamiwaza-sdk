@@ -218,6 +218,8 @@ def check_buildkit_available() -> bool:
 
 def print_override_diagnostics(spec: SdkOverrideSpec) -> None:
     """Print which SDK overrides are active."""
+    import os as _os
+
     console.print()
     console.print("[bold]SDK Override Active:[/bold]")
     console.print(f"  [dim]SDK repo:[/dim]    {spec.sdk_repo}")
@@ -227,6 +229,22 @@ def print_override_diagnostics(spec: SdkOverrideSpec) -> None:
             "  [dim]Python lib:[/dim]  [green]local[/green] "
             "(kamiwaza_extensions_lib/)"
         )
+        # PYTHONPATH overwrite is intentional but worth flagging — for
+        # src-layout apps that bake ``ENV PYTHONPATH=/app/src`` into
+        # the runtime image, the overwrite breaks imports unless they
+        # set KZ_SDK_PYTHONPATH_PREPEND.
+        extra = _os.environ.get("KZ_SDK_PYTHONPATH_PREPEND", "").strip()
+        if extra:
+            console.print(
+                f"  [dim]PYTHONPATH:[/dim] /sdk:{extra} "
+                "[dim](from KZ_SDK_PYTHONPATH_PREPEND)[/dim]"
+            )
+        else:
+            console.print(
+                "  [dim]PYTHONPATH:[/dim] /sdk "
+                "[dim](overwrites image-baked PYTHONPATH; set "
+                "KZ_SDK_PYTHONPATH_PREPEND to keep app paths)[/dim]"
+            )
     else:
         console.print("  [dim]Python lib:[/dim]  published")
 

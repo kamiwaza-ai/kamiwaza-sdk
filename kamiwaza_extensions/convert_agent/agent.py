@@ -152,8 +152,14 @@ def _run_modification_round(
         return plan, ValidationSummary(passed=False, errors=plan.errors)
 
     _preserve_existing_kamiwaza_json(plan, analysis)
-    _ensure_supporting_files(plan, analysis, metadata_seed, strategy)
+    # Dedupe BEFORE rendering CONVERT_NOTES.md so the notes don't carry
+    # stale manual_items (the rendered file is consumed by users who
+    # may not see the deduped CLI output). _ensure_supporting_files
+    # calls _build_convert_notes which materializes manual_items into
+    # the notes body — running it after the dedupe keeps the two
+    # surfaces consistent.
     _dedupe_manual_items_against_modifications(plan)
+    _ensure_supporting_files(plan, analysis, metadata_seed, strategy)
     validation = _validate_plan_in_staging(
         plan,
         analysis.app_dir,
@@ -266,11 +272,18 @@ def _validate_plan_in_staging(
 
     with tempfile.TemporaryDirectory(prefix="kz-ext-convert-") as tmp_dir:
         staged_root = Path(tmp_dir) / app_dir.name
+        # symlinks=True preserves links instead of byte-copying targets.
+        # Without this a symlink to /var/log or any large external tree
+        # explodes disk usage in staging, and cycles cause copytree to
+        # raise OSError (or, in older versions, recurse). Validators
+        # only inspect file presence + content under staged_root, so
+        # preserving links rather than dereferencing keeps semantics.
         shutil.copytree(
             app_dir,
             staged_root,
             ignore=shutil.ignore_patterns(*_STAGING_SKIP_DIRS),
             dirs_exist_ok=True,
+            symlinks=True,
         )
         # Copy actions resolve their source against the original source
         # tree (the monorepo root in rebased cases), not the staged copy.

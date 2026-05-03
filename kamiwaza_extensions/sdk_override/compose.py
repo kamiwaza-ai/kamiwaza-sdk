@@ -8,6 +8,7 @@ scratch-based images): see ENG-4413.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -18,6 +19,14 @@ from kamiwaza_extensions.sdk_override.spec import SdkOverrideSpec
 # PYTHONPATH lets ``import kamiwaza_extensions_lib`` resolve to the
 # local checkout without rebuilding the image.
 _SDK_BIND_TARGET = "/sdk"
+
+# Optional escape hatch for src-layout apps whose runtime image bakes
+# in a PYTHONPATH (e.g. ``ENV PYTHONPATH=/app/src``). The compose
+# override unconditionally overwrites the env var, so without this
+# hatch a ``--sdk-repo`` run on such an image would lose access to
+# ``/app/src``. Set the env var on the host before launching ``dev
+# local`` to prepend additional colon-separated paths after ``/sdk``.
+_PYTHONPATH_PREPEND_ENV = "KZ_SDK_PYTHONPATH_PREPEND"
 
 # In-container path the TypeScript SDK package gets bind-mounted to.
 # Shadowing ``/app/node_modules/@kamiwaza-ai/extensions-lib`` with the
@@ -76,7 +85,16 @@ def _python_override(spec: SdkOverrideSpec) -> dict:
     the env var. PYTHONPATH overwrites any image-baked value — that is
     intentional for ``--sdk-repo`` mode (developers asking to use the
     local SDK want the local SDK to win unconditionally).
+
+    For src-layout apps whose runtime image bakes a PYTHONPATH
+    declaration (e.g. ``ENV PYTHONPATH=/app/src``), set
+    ``KZ_SDK_PYTHONPATH_PREPEND`` on the host to append those paths
+    after ``/sdk`` so imports continue to resolve. Multiple paths can
+    be colon-separated. The SDK takes precedence so its
+    ``import kamiwaza_extensions_lib`` resolves to the local checkout.
     """
+    extra = os.environ.get(_PYTHONPATH_PREPEND_ENV, "").strip()
+    pythonpath = f"{_SDK_BIND_TARGET}:{extra}" if extra else _SDK_BIND_TARGET
     return {
         "volumes": [
             {
@@ -86,7 +104,7 @@ def _python_override(spec: SdkOverrideSpec) -> dict:
                 "read_only": True,
             }
         ],
-        "environment": {"PYTHONPATH": _SDK_BIND_TARGET},
+        "environment": {"PYTHONPATH": pythonpath},
     }
 
 
