@@ -365,8 +365,23 @@ def _apply_pre_install_strip(content: str, overlay: BuildOverride) -> str:
 
 
 def _splice_overlay_steps(content: str, overlay: BuildOverride) -> str:
-    """Splice ``overlay.overlay_steps`` either before a build line
-    (when ``insert_before_build`` is True) or appended at end."""
+    """Splice ``overlay.overlay_steps`` into the Dockerfile.
+
+    Insertion strategy (in priority order):
+
+    1. If ``overlay.insert_before_build`` is True, insert before the
+       first matching build line (TS overlays, where the SDK lib must
+       be installed before ``npm run build`` / ``next build``).
+    2. Otherwise, for multi-stage Dockerfiles, insert before the LAST
+       ``FROM`` (i.e., at the end of the build stage). The runtime
+       stage of a Chainguard distroless extension has no ``/bin/sh``,
+       so a shell-form ``RUN`` like ``_PYTHON_OVERLAY`` would crash
+       there. Inserting at the end of the build stage keeps the
+       overlay running under the ``-dev`` image (which has both
+       ``python`` and a shell), and the venv it populates flows to
+       runtime via the existing ``COPY --from=build /app/.venv``.
+    3. Otherwise (single-stage Dockerfile), append at the end.
+    """
     lines = content.splitlines(keepends=True)
     insert_idx: Optional[int] = None
 
@@ -375,6 +390,19 @@ def _splice_overlay_steps(content: str, overlay: BuildOverride) -> str:
             if _TS_BUILD_PATTERNS.match(line):
                 insert_idx = i
                 break
+
+    if insert_idx is None:
+        # Multi-stage Dockerfile? Insert before the runtime FROM so
+        # the overlay runs in the build stage (shell + python both
+        # available, even when runtime is distroless). For single-stage
+        # we fall through to "append at end".
+        from_indices = [
+            i
+            for i, line in enumerate(lines)
+            if line.strip().upper().startswith("FROM ")
+        ]
+        if len(from_indices) >= 2:
+            insert_idx = from_indices[-1]
 
     user_scope = lines[:insert_idx] if insert_idx is not None else lines
     overlay_steps = overlay.overlay_steps.replace(
@@ -390,7 +418,11 @@ def _splice_overlay_steps(content: str, overlay: BuildOverride) -> str:
             + "\n"
             + "".join(lines[insert_idx:])
         )
-    # No build line found or not insert_before_build — append at end
+    # Single-stage Dockerfile — append at end. Note: if the single
+    # stage is a distroless runtime, ``_PYTHON_OVERLAY``'s shell-form
+    # RUN will fail at build time. The right fix for that case is to
+    # convert the Dockerfile to multi-stage; we surface a clear build
+    # error rather than silently degrading.
     return content.rstrip() + "\n\n" + overlay_steps
 
 

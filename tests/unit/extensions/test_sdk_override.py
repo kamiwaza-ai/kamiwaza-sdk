@@ -716,6 +716,86 @@ class TestApplyBuildOverlay:
         assert "RUN echo injected" in prefix
         assert "USER 1001" not in prefix
 
+    def test_python_overlay_lands_in_build_stage_for_distroless(self):
+        """User smoke-test blocker: ``kz-ext dev --sdk-repo`` (cluster
+        deploy) failed with ``/bin/sh not found`` because the Python
+        overlay was appended to the END of a multi-stage Dockerfile —
+        which is the runtime stage. For Chainguard distroless runtime
+        images that's a stage with no shell, so the overlay's
+        shell-form RUN crashed.
+
+        Fix: for non-insert_before_build overlays, insert before the
+        LAST FROM (i.e., end of build stage) when the Dockerfile is
+        multi-stage. The build stage uses ``-dev`` images that have
+        shell + python, and the venv it populates flows to runtime
+        via the standard ``COPY --from=build /app/.venv``.
+        """
+        # Standard multi-stage Python Dockerfile per agent_guidance.md.
+        dockerfile = (
+            "FROM cgr.dev/kamiwaza/python:3.11-dev AS build\n"
+            "USER root\n"
+            "WORKDIR /build\n"
+            "RUN python -m venv /app/.venv\n"
+            'ENV PATH="/app/.venv/bin:${PATH}"\n'
+            "COPY backend/requirements.txt ./\n"
+            "RUN pip install -r requirements.txt\n"
+            "COPY backend/app ./app\n"
+            "FROM cgr.dev/kamiwaza/python:3.11 AS runtime\n"
+            "WORKDIR /app\n"
+            "COPY --from=build --chown=65532:65532 /app/.venv /app/.venv\n"
+            "USER 65532:65532\n"
+            'CMD ["python", "-m", "uvicorn", "app.main:app"]\n'
+        )
+        overlay = BuildOverride(
+            service_name="backend",
+            overlay_steps=(
+                "# --- SDK override ---\n"
+                "USER root\n"
+                "RUN echo injecting sdk\n"
+                "{restore_user_block}"
+            ),
+            additional_build_contexts={"sdk": "/sdk"},
+            insert_before_build=False,
+            language="python",
+        )
+
+        result = apply_build_overlay(dockerfile, overlay)
+        lines = result.splitlines()
+
+        # The overlay's RUN must appear BEFORE the runtime FROM (the
+        # second one), so it executes in the build stage where shell
+        # exists.
+        runtime_from_idx = next(
+            i
+            for i, line in enumerate(lines)
+            if line.startswith("FROM cgr.dev/kamiwaza/python:3.11")
+            and "AS runtime" in line
+        )
+        inject_idx = next(
+            i for i, line in enumerate(lines) if "echo injecting sdk" in line
+        )
+        assert inject_idx < runtime_from_idx, (
+            "Build overlay must land in the build stage (before the "
+            "runtime FROM) so shell-form RUN works on distroless "
+            "runtime images. Was placed at line "
+            f"{inject_idx}, runtime FROM at line {runtime_from_idx}."
+        )
+
+    def test_single_stage_dockerfile_still_appends(self):
+        """Single-stage Dockerfiles preserve prior behavior (append at
+        end). A single-stage distroless build will surface a clear
+        build error rather than silently degrading — fix is to convert
+        to multi-stage."""
+        dockerfile = "FROM python:3.10\nRUN pip install .\n"
+        overlay = BuildOverride(
+            service_name="backend",
+            overlay_steps="# overlay\nRUN echo single\n",
+            additional_build_contexts={},
+            insert_before_build=False,
+        )
+        result = apply_build_overlay(dockerfile, overlay)
+        assert result.endswith("RUN echo single\n")
+
 
 # ------------------------------------------------------------------
 # pre_install_steps — strip kamiwaza-extensions-lib before pip install
