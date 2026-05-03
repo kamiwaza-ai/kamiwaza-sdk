@@ -79,39 +79,22 @@ Return ONLY JSON with this shape:
 """
 
 
-def build_modification_prompt(
-    analysis: AnalysisResult,
-    strategy: ConversionStrategy,
-    metadata_seed: Dict[str, Any],
-    *,
-    validation: Optional[ValidationSummary] = None,
-    previous_plan: Optional[ConversionPlan] = None,
-) -> str:
-    """Build the prompt that asks the LLM for concrete file changes."""
-    files_section = _render_context_files(analysis)
-    inventory_section = _render_repo_inventory(analysis)
-    services_section = _render_services(analysis)
-    compat_section = _render_compatibility_issues(analysis)
-    monorepo_section = _render_monorepo_inventory(analysis)
-    validation_section = _render_validation_feedback(validation)
-    previous_plan_section = _render_previous_plan(previous_plan)
-
-    return f"""You are converting an existing application into a valid Kamiwaza extension repository.
+_MODIFICATION_PROMPT_TEMPLATE = """You are converting an existing application into a valid Kamiwaza extension repository.
 
 Follow the standing rules in the Kamiwaza Extension Authoring Guidance you have been given as system context (CLAUDE.md / AGENTS.md for CLI agents, or system prompt for API agents). It defines the runtime contract (Chainguard distroless images, exec-form CMD/ENTRYPOINT, read-only root, non-root user, port conventions), the `copy` action for vendoring binary deps, and the `manual_items` discipline. The data below is the per-call context.
 
 ## Application
-Name: {analysis.app_name}
-Detected conversion mode: {analysis.conversion_mode}
+Name: {app_name}
+Detected conversion mode: {conversion_mode}
 
 ## Strategy
 ```json
-{json.dumps(_strategy_to_dict(strategy), indent=2)}
+{strategy_json}
 ```
 
 ## Metadata Seed
 ```json
-{json.dumps(metadata_seed, indent=2)}
+{metadata_json}
 ```
 
 ## Repo Inventory
@@ -121,7 +104,7 @@ Detected conversion mode: {analysis.conversion_mode}
 {services_section}
 
 ## Compatibility Issues
-{compat_section or 'None detected'}
+{compat_section}
 
 ## Current Files
 {files_section}
@@ -147,6 +130,30 @@ Return ONLY JSON with this shape:
 }}
 ```
 """
+
+
+def build_modification_prompt(
+    analysis: AnalysisResult,
+    strategy: ConversionStrategy,
+    metadata_seed: Dict[str, Any],
+    *,
+    validation: Optional[ValidationSummary] = None,
+    previous_plan: Optional[ConversionPlan] = None,
+) -> str:
+    """Build the prompt that asks the LLM for concrete file changes."""
+    return _MODIFICATION_PROMPT_TEMPLATE.format(
+        app_name=analysis.app_name,
+        conversion_mode=analysis.conversion_mode,
+        strategy_json=json.dumps(_strategy_to_dict(strategy), indent=2),
+        metadata_json=json.dumps(metadata_seed, indent=2),
+        inventory_section=_render_repo_inventory(analysis),
+        monorepo_section=_render_monorepo_inventory(analysis),
+        services_section=_render_services(analysis),
+        compat_section=_render_compatibility_issues(analysis) or "None detected",
+        files_section=_render_context_files(analysis),
+        validation_section=_render_validation_feedback(validation),
+        previous_plan_section=_render_previous_plan(previous_plan),
+    )
 
 
 # ----------------------------------------------------------------------

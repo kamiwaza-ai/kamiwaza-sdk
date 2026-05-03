@@ -335,10 +335,19 @@ class TestApplyPlan:
         assert any("read-only root" in item for item in plan.manual_items)
         assert any("8080" in item for item in plan.manual_items)
 
-    def test_dedupe_keeps_legitimate_followup_naming_handled_basename(self):
-        """Word-boundary matching: 'Add Dockerfile to .gitignore' is a
-        legitimate follow-up that should NOT be dropped just because the
-        LLM also modified 'backend/Dockerfile'."""
+    def test_dedupe_known_limit_drops_followup_with_handled_basename(self):
+        """Documented limitation: when both gates trigger (verb + handled
+        noun), the manual_item is dropped — even when it's a legitimate
+        followup like "Add Dockerfile to .gitignore". The heuristic
+        can't distinguish "user must do X to file Y the LLM modified"
+        from "the LLM hedged after doing X to file Y."
+
+        Locks in current behavior. A smarter heuristic (e.g., LLM
+        tagging each manual_item with `restates_modification: bool`)
+        would fix this — but the cost of a false-keep (user sees a
+        redundant note) is lower than a false-drop (user thinks the
+        convert did its job when something is still needed).
+        """
         from kamiwaza_extensions.convert_agent import (
             ConversionPlan,
             FileModification,
@@ -358,18 +367,9 @@ class TestApplyPlan:
 
         _dedupe_manual_items_against_modifications(plan)
 
-        # The previous substring-based dedupe would have dropped this item
-        # because "dockerfile" appears in both the path basename and the
-        # manual_item text. Word-boundary matching keeps it: the verb is
-        # "add" but the noun "Dockerfile" is a referenced basename — the
-        # heuristic now correctly says "this is a legitimate follow-up
-        # naming the same noun, not a redundant restate-of-work."
-        # Actually with the current heuristic, "add" + "Dockerfile" still
-        # matches both gates. To preserve this kind of follow-up, we'd
-        # need a smarter heuristic. For now, lock in current behavior.
-        # Verify the bug at least no longer drops items where the only
-        # match is on a SHORT basename collision.
-        assert len(plan.manual_items) == 0  # still dropped — known limit
+        # Known limit: verb "add" + handled basename "Dockerfile" both
+        # trigger, so the item is dropped. Documented above.
+        assert len(plan.manual_items) == 0
 
     def test_dedupe_does_not_drop_short_basename_collisions(self):
         """Tokens shorter than the dedupe threshold must not trigger
@@ -1115,3 +1115,69 @@ class TestCallLLMProviderSelection:
 
         assert "--model" in captured[0]
         assert "opus" in captured[0]
+
+
+class TestSafeApiCall:
+    """Direct coverage for the API-call wrapper that distinguishes SDK
+    failures (transient/expected) from programmer errors (unexpected)."""
+
+    def test_returns_value_on_success(self, capsys):
+        from kamiwaza_extensions.convert_agent import _safe_api_call
+
+        result = _safe_api_call("Test", lambda: "ok", (RuntimeError,))
+
+        assert result == "ok"
+        captured = capsys.readouterr()
+        assert "Warning" not in captured.out + captured.err
+
+    def test_sdk_exception_returns_none_with_api_call_failed_warning(self, capsys):
+        from kamiwaza_extensions.convert_agent import _safe_api_call
+
+        class FakeSdkError(Exception):
+            pass
+
+        def boom() -> str:
+            raise FakeSdkError("upstream 503")
+
+        result = _safe_api_call("FakeProvider", boom, (FakeSdkError,))
+
+        assert result is None
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert "FakeProvider API call failed" in combined
+        assert "upstream 503" in combined
+
+    def test_programming_error_returns_none_with_exception_type_in_warning(self, capsys):
+        """A TypeError/AttributeError/etc. inside the wrapper should NOT
+        be bucketed under the generic 'API call failed' label — the
+        warning must include the exception type so a real bug surfaces."""
+        from kamiwaza_extensions.convert_agent import _safe_api_call
+
+        def buggy() -> str:
+            raise AttributeError("'NoneType' object has no attribute 'choices'")
+
+        result = _safe_api_call("FakeProvider", buggy, (RuntimeError,))
+
+        assert result is None
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert "AttributeError" in combined
+        # Crucially, NOT bucketed as a normal API failure.
+        assert "FakeProvider API call failed" not in combined
+
+    def test_index_error_on_empty_response_does_not_crash(self, capsys):
+        """Real failure mode: response.content[0] / response.choices[0]
+        on an empty SDK response would otherwise propagate an
+        IndexError and abort the entire conversion. The wrapper must
+        catch it and surface a labeled warning instead."""
+        from kamiwaza_extensions.convert_agent import _safe_api_call
+
+        def empty_response() -> str:
+            empty: list = []
+            return empty[0]  # IndexError
+
+        result = _safe_api_call("FakeProvider", empty_response, (RuntimeError,))
+
+        assert result is None
+        captured = capsys.readouterr()
+        assert "IndexError" in captured.out + captured.err

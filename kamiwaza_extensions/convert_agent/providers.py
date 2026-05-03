@@ -271,15 +271,21 @@ def _safe_api_call(
     ``sdk_exceptions`` is the tuple of provider SDK exception types
     expected to surface from ``fn``; these are reported as a normal
     "API call failed" warning. Common Python errors (TypeError,
-    AttributeError, etc.) are reported with the exception type included
-    so a programming error doesn't masquerade as a transient API failure.
+    AttributeError, IndexError, etc.) are reported with the exception
+    type included so a programming error or empty-response shape
+    doesn't masquerade as a transient API failure.
+
+    ``IndexError`` is included to handle empty SDK response bodies
+    (e.g., ``response.content[0]`` on an empty content array, or
+    ``response.choices[0]`` when the API returns zero choices) — these
+    are rare but would otherwise crash the entire conversion run.
     """
     try:
         return fn()
     except sdk_exceptions as exc:
         console.print(f"[yellow]Warning:[/yellow] {label} API call failed: {exc}")
         return None
-    except (TypeError, ValueError, AttributeError, KeyError) as exc:
+    except (TypeError, ValueError, AttributeError, KeyError, IndexError) as exc:
         console.print(
             f"[yellow]Warning:[/yellow] {label} call raised "
             f"{type(exc).__name__}: {exc}"

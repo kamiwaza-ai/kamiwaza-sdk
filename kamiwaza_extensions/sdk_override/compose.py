@@ -36,72 +36,75 @@ def generate_compose_override(
 ) -> dict:
     """Generate a compose override dict for local SDK development.
 
-    Surfaces the local SDK to each service via shell-free mechanisms so
-    the override works against any runtime image — including Chainguard
-    distroless variants (``cgr.dev/kamiwaza/python``,
-    ``cgr.dev/kamiwaza/node``) that have no ``/bin/sh``, ``apt``, or
-    ``npm`` in the runtime stage.
+    Surfaces the local SDK to each service via shell-free mechanisms
+    so the override works against any runtime image — including
+    Chainguard distroless variants (no ``/bin/sh``, ``apt``, or ``npm``
+    in the runtime stage). See ``_python_override`` /
+    ``_typescript_override`` for the per-service-type mechanisms.
 
-    Mechanism per service type:
-
-    - **Backend (Python)**: bind-mount the SDK repo at ``/sdk`` and set
-      ``PYTHONPATH=/sdk`` via compose ``environment``. The existing
-      Dockerfile entrypoint is left untouched and inherits the env var.
-    - **Frontend (TypeScript)**: bind-mount the SDK's package directory
-      directly into ``/app/node_modules/@kamiwaza-ai/extensions-lib``,
-      shadowing whatever the build phase installed. Standard Node
-      module resolution picks up the local source — no runtime install,
-      no shell.
-
-    Only overrides services that have a ``build`` key (pre-built images
-    like redis/postgres are skipped).
-
-    *extension_dir* is no longer required for correctness, but is still
-    accepted for compatibility with callers that pass it.
+    Only overrides services that have a ``build`` key (pre-built
+    images like redis/postgres are skipped).
     """
     override_services: dict = {}
     services = compose_data.get("services", {})
 
     for svc_name, svc_config in services.items():
-        # Skip services without a build context (pre-built images)
         if "build" not in svc_config:
             continue
-
-        svc_type = detect_service_runtime(
-            svc_name,
-            svc_config,
-            extension_dir=extension_dir,
-        )
-        svc_override: dict = {}
-
-        if svc_type == "backend" and spec.python:
-            svc_override["volumes"] = [
-                {
-                    "type": "bind",
-                    "source": str(spec.sdk_repo),
-                    "target": _SDK_BIND_TARGET,
-                    "read_only": True,
-                }
-            ]
-            # Set PYTHONPATH so the running interpreter picks up the
-            # local SDK without touching the entrypoint. This overwrites
-            # any image-baked PYTHONPATH; that is intentional for
-            # ``--sdk-repo`` mode (developers asking to use the local
-            # SDK want the local SDK to win unconditionally).
-            svc_override["environment"] = {"PYTHONPATH": _SDK_BIND_TARGET}
-
-        elif svc_type == "frontend" and spec.typescript:
-            ts_pkg_source = spec.sdk_repo / _TS_LIB_PACKAGE_DIR
-            svc_override["volumes"] = [
-                {
-                    "type": "bind",
-                    "source": str(ts_pkg_source),
-                    "target": _TS_LIB_NODE_MODULES_TARGET,
-                    "read_only": True,
-                }
-            ]
-
+        svc_type = detect_service_runtime(svc_name, svc_config, extension_dir=extension_dir)
+        svc_override = _override_for(svc_type, spec)
         if svc_override:
             override_services[svc_name] = svc_override
 
     return {"services": override_services}
+
+
+def _override_for(svc_type: str, spec: SdkOverrideSpec) -> dict:
+    """Return the per-service override dict for ``svc_type``, or {} if
+    no override applies (skipped service, or runtime-lib disabled)."""
+    if svc_type == "backend" and spec.python:
+        return _python_override(spec)
+    if svc_type == "frontend" and spec.typescript:
+        return _typescript_override(spec)
+    return {}
+
+
+def _python_override(spec: SdkOverrideSpec) -> dict:
+    """Bind-mount SDK repo at /sdk and set ``PYTHONPATH=/sdk``.
+
+    The existing Dockerfile entrypoint runs unmodified and inherits
+    the env var. PYTHONPATH overwrites any image-baked value — that is
+    intentional for ``--sdk-repo`` mode (developers asking to use the
+    local SDK want the local SDK to win unconditionally).
+    """
+    return {
+        "volumes": [
+            {
+                "type": "bind",
+                "source": str(spec.sdk_repo),
+                "target": _SDK_BIND_TARGET,
+                "read_only": True,
+            }
+        ],
+        "environment": {"PYTHONPATH": _SDK_BIND_TARGET},
+    }
+
+
+def _typescript_override(spec: SdkOverrideSpec) -> dict:
+    """Bind-mount the SDK's TS package directly into node_modules.
+
+    Shadowing ``/app/node_modules/@kamiwaza-ai/extensions-lib`` lets
+    standard Node module resolution pick up the local source — no
+    runtime install, no shell required.
+    """
+    ts_pkg_source = spec.sdk_repo / _TS_LIB_PACKAGE_DIR
+    return {
+        "volumes": [
+            {
+                "type": "bind",
+                "source": str(ts_pkg_source),
+                "target": _TS_LIB_NODE_MODULES_TARGET,
+                "read_only": True,
+            }
+        ],
+    }

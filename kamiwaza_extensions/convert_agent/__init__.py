@@ -42,8 +42,13 @@ from kamiwaza_extensions.convert_agent.agent import (
     _MAX_REPAIR_ATTEMPTS,
     _STAGING_SKIP_DIRS,
     _apply_basic_fallback,
+    _apply_validated_plan,
     _find_compose_file,
     _llm_unavailable_failure,
+    _print_run_banner,
+    _repair_exhausted_failure,
+    _run_modification_round,
+    _strategy_unparseable_failure,
     _validate_plan_in_staging,
     run_agent,
 )

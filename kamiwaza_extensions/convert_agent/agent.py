@@ -57,6 +57,40 @@ _STAGING_SKIP_DIRS = tuple(sorted(SKIP_DIRS))
 
 def run_agent(analysis: AnalysisResult, dry_run: bool = False) -> ConversionPlan:
     """Run the full conversion agent with staged validation and repair."""
+    _print_run_banner(analysis)
+
+    strategy_text = call_llm(build_strategy_prompt(analysis))
+    if strategy_text is None:
+        return _apply_basic_fallback(analysis, dry_run=dry_run)
+
+    strategy = parse_strategy_response(strategy_text)
+    if strategy is None:
+        return _strategy_unparseable_failure(analysis)
+
+    metadata_seed = _default_metadata(analysis, strategy)
+    previous_plan: Optional[ConversionPlan] = None
+    last_validation = ValidationSummary(passed=False, errors=["No validated plan produced."])
+
+    for attempt in range(_MAX_REPAIR_ATTEMPTS + 1):
+        plan, last_validation = _run_modification_round(
+            analysis,
+            strategy,
+            metadata_seed,
+            previous_plan=previous_plan,
+            previous_validation=last_validation if attempt > 0 else None,
+        )
+        if plan is None:
+            return _llm_unavailable_failure(analysis, strategy)
+        if not plan.success and not last_validation.passed:
+            return plan  # parse failure on LLM response — surface as-is
+        if last_validation.passed:
+            return _apply_validated_plan(plan, analysis, dry_run=dry_run)
+        previous_plan = plan
+
+    return _repair_exhausted_failure(analysis, strategy, previous_plan, last_validation)
+
+
+def _print_run_banner(analysis: AnalysisResult) -> None:
     console.print(
         "  [dim]Note: size-capped source context will be sent to an external LLM "
         "provider for analysis; common secret-bearing files such as .env, "
@@ -65,72 +99,90 @@ def run_agent(analysis: AnalysisResult, dry_run: bool = False) -> ConversionPlan
     console.print(f"  [dim]Conversion mode: {analysis.conversion_mode}[/dim]")
     console.print("  [dim]Calling AI agent...[/dim]")
 
-    strategy_text = call_llm(build_strategy_prompt(analysis))
-    if strategy_text is None:
-        return _apply_basic_fallback(analysis, dry_run=dry_run)
 
-    strategy = parse_strategy_response(strategy_text)
-    if strategy is None:
-        return ConversionPlan(
-            success=False,
-            mode=analysis.conversion_mode,
-            summary="The conversion strategy could not be parsed automatically.",
-            manual_items=[
-                "Review the repo manually and re-run convert after tightening the app shape."
-            ],
-            errors=["Conversion strategy could not be parsed."],
-        )
+def _apply_validated_plan(
+    plan: ConversionPlan, analysis: AnalysisResult, *, dry_run: bool
+) -> ConversionPlan:
+    """Write a validated plan to disk and tag the summary in dry-run mode."""
+    apply_plan(
+        plan,
+        analysis.app_dir,
+        dry_run=dry_run,
+        source_root=analysis.rebased_from or analysis.app_dir,
+    )
+    if dry_run:
+        plan.summary = (
+            f"[Dry run] Validated {len(plan.modifications)} proposed "
+            f"modifications. {plan.summary}"
+        ).strip()
+    return plan
 
-    metadata_seed = _default_metadata(analysis, strategy)
-    previous_plan: Optional[ConversionPlan] = None
-    last_validation = ValidationSummary(passed=False, errors=["No validated plan produced."])
 
-    for attempt in range(_MAX_REPAIR_ATTEMPTS + 1):
-        validation = last_validation if attempt > 0 else None
-        prompt = build_modification_prompt(
-            analysis,
-            strategy,
-            metadata_seed,
-            validation=validation,
-            previous_plan=previous_plan,
-        )
-        response = call_llm(prompt)
-        if response is None:
-            return _llm_unavailable_failure(analysis, strategy)
+def _run_modification_round(
+    analysis: AnalysisResult,
+    strategy: ConversionStrategy,
+    metadata_seed: dict,
+    *,
+    previous_plan: Optional[ConversionPlan],
+    previous_validation: Optional[ValidationSummary],
+) -> tuple[Optional[ConversionPlan], ValidationSummary]:
+    """Run one modification LLM round + post-processing + staging validation.
 
-        plan = parse_response(response)
-        plan.mode = analysis.conversion_mode
-        plan.strategy = strategy
-        plan.manual_items = _merge_manual_items(strategy.manual_items, plan.manual_items)
-        if not plan.success:
-            return plan
+    Returns ``(plan, validation)``. ``plan`` is ``None`` when the LLM
+    fell through; the caller handles that as "LLM unavailable". When
+    the parsed plan itself reports failure, ``plan.success`` is False
+    and ``validation`` carries an empty (passed=False) summary.
+    """
+    prompt = build_modification_prompt(
+        analysis,
+        strategy,
+        metadata_seed,
+        validation=previous_validation,
+        previous_plan=previous_plan,
+    )
+    response = call_llm(prompt)
+    if response is None:
+        return None, ValidationSummary(passed=False, errors=["LLM unavailable."])
 
-        _preserve_existing_kamiwaza_json(plan, analysis)
-        _ensure_supporting_files(plan, analysis, metadata_seed, strategy)
-        _dedupe_manual_items_against_modifications(plan)
-        last_validation = _validate_plan_in_staging(
-            plan,
-            analysis.app_dir,
-            source_root=analysis.rebased_from or analysis.app_dir,
-        )
-        if last_validation.passed:
-            plan.success = True
-            plan.warnings = last_validation.warnings
-            apply_plan(
-                plan,
-                analysis.app_dir,
-                dry_run=dry_run,
-                source_root=analysis.rebased_from or analysis.app_dir,
-            )
-            if dry_run:
-                plan.summary = (
-                    f"[Dry run] Validated {len(plan.modifications)} proposed "
-                    f"modifications. {plan.summary}"
-                ).strip()
-            return plan
+    plan = parse_response(response)
+    plan.mode = analysis.conversion_mode
+    plan.strategy = strategy
+    plan.manual_items = _merge_manual_items(strategy.manual_items, plan.manual_items)
+    if not plan.success:
+        return plan, ValidationSummary(passed=False, errors=plan.errors)
 
-        previous_plan = plan
+    _preserve_existing_kamiwaza_json(plan, analysis)
+    _ensure_supporting_files(plan, analysis, metadata_seed, strategy)
+    _dedupe_manual_items_against_modifications(plan)
+    validation = _validate_plan_in_staging(
+        plan,
+        analysis.app_dir,
+        source_root=analysis.rebased_from or analysis.app_dir,
+    )
+    if validation.passed:
+        plan.success = True
+        plan.warnings = validation.warnings
+    return plan, validation
 
+
+def _strategy_unparseable_failure(analysis: AnalysisResult) -> ConversionPlan:
+    return ConversionPlan(
+        success=False,
+        mode=analysis.conversion_mode,
+        summary="The conversion strategy could not be parsed automatically.",
+        manual_items=[
+            "Review the repo manually and re-run convert after tightening the app shape."
+        ],
+        errors=["Conversion strategy could not be parsed."],
+    )
+
+
+def _repair_exhausted_failure(
+    analysis: AnalysisResult,
+    strategy: ConversionStrategy,
+    previous_plan: Optional[ConversionPlan],
+    last_validation: ValidationSummary,
+) -> ConversionPlan:
     return ConversionPlan(
         modifications=previous_plan.modifications if previous_plan else [],
         manual_items=_merge_manual_items(

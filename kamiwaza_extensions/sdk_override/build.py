@@ -201,44 +201,56 @@ def generate_local_build_dockerfile_patches(
     """
     patches: Dict[str, str] = {}
     for svc_name, svc_config in compose_data.get("services", {}).items():
-        if "build" not in svc_config:
-            continue
-        # Use the multi-stage-aware classifier (mirrors the cluster-deploy
-        # ``generate_build_overrides`` path) so a multi-stage
-        # ``FROM node … AS builder; FROM nginx:alpine`` frontend still
-        # receives the TS strip — its final base is ``nginx`` (which
-        # ``detect_service_runtime`` would tag as ``static``) but its
-        # builder stage is the one running ``npm ci`` against the
-        # unpublished pin (PR #91 round-3 reviewer H2 / Codex).
-        svc_runtime = _detect_build_service_runtime(
-            svc_name, svc_config, extension_dir=extension_dir
-        )
-        if svc_runtime == "backend" and spec.python:
-            pattern = _PYTHON_PIP_INSTALL_PATTERN
-            strip_steps = _PYTHON_PRE_INSTALL_STRIP
-        elif svc_runtime == "frontend" and spec.typescript:
-            pattern = _TS_NPM_INSTALL_PATTERN
-            strip_steps = _TS_PRE_INSTALL_STRIP
-        else:
-            continue
-        df_path = _resolve_dockerfile(svc_config["build"], extension_dir)
-        if df_path is None or not df_path.exists():
-            continue
-        original = df_path.read_text()
-        patched = _insert_before_install_pattern(original, strip_steps, pattern)
-        if patched != original:
-            # Mirror the cluster-deploy ``apply_build_overlay`` behavior:
-            # if the matched install line uses ``npm ci``, rewrite it to
-            # ``npm install`` so the package.json/lockfile divergence the
-            # strip creates doesn't abort the build (PR #91 round-3 H1 /
-            # Codex P2 — applies to local-dev path too, not just cluster
-            # deploy).
-            if pattern is _TS_NPM_INSTALL_PATTERN:
-                patched = _TS_NPM_CI_LINE_PATTERN.sub(
-                    r"\1npm install", patched
-                )
+        patched = _build_patch_for_service(svc_config, spec, extension_dir)
+        if patched is not None:
             patches[svc_name] = patched
     return patches
+
+
+def _build_patch_for_service(
+    svc_config: dict, spec: SdkOverrideSpec, extension_dir: Path
+) -> Optional[str]:
+    """Build the patched Dockerfile content for one service.
+
+    Returns ``None`` when nothing applies (no build context, the
+    service runtime doesn't match an enabled SDK lib, the Dockerfile
+    is missing, or it has no recognizable install line). The
+    multi-stage-aware classifier mirrors the cluster-deploy
+    ``generate_build_overrides`` path so a ``FROM node AS builder;
+    FROM nginx:alpine`` frontend still receives the TS strip on its
+    builder stage (PR #91 round-3 H2).
+    """
+    if "build" not in svc_config:
+        return None
+
+    svc_runtime = _detect_build_service_runtime(
+        "_", svc_config, extension_dir=extension_dir
+    )
+    if svc_runtime == "backend" and spec.python:
+        pattern = _PYTHON_PIP_INSTALL_PATTERN
+        strip_steps = _PYTHON_PRE_INSTALL_STRIP
+    elif svc_runtime == "frontend" and spec.typescript:
+        pattern = _TS_NPM_INSTALL_PATTERN
+        strip_steps = _TS_PRE_INSTALL_STRIP
+    else:
+        return None
+
+    df_path = _resolve_dockerfile(svc_config["build"], extension_dir)
+    if df_path is None or not df_path.exists():
+        return None
+
+    original = df_path.read_text()
+    patched = _insert_before_install_pattern(original, strip_steps, pattern)
+    if patched == original:
+        return None
+
+    # Mirror the cluster-deploy ``apply_build_overlay`` behavior: if
+    # the matched install line uses ``npm ci``, rewrite to ``npm
+    # install`` so the package.json/lockfile divergence the strip
+    # creates doesn't abort the build (PR #91 round-3 H1).
+    if pattern is _TS_NPM_INSTALL_PATTERN:
+        patched = _TS_NPM_CI_LINE_PATTERN.sub(r"\1npm install", patched)
+    return patched
 
 
 def generate_build_overrides(
@@ -305,47 +317,58 @@ def apply_build_overlay(dockerfile_content: str, overlay: BuildOverride) -> str:
 
     1. ``pre_install_steps`` — inserted immediately before the first
        ``RUN ... pip install -r requirements.txt`` (Python) or
-       ``RUN npm install`` (TypeScript) line, so the runtime-lib pin can
-       be stripped before the install runs. No-op when the Dockerfile
-       has no matching install line.
+       ``RUN npm install`` (TypeScript) line, so the runtime-lib pin
+       can be stripped before the install runs. No-op when the
+       Dockerfile has no matching install line.
     2. ``overlay_steps`` — inserted before a frontend build line when
        ``insert_before_build`` is True; appended at end otherwise.
     """
-    content = dockerfile_content
-    if overlay.pre_install_steps:
-        # Pick the install pattern based on the overlay's declared
-        # language. A frontend Dockerfile that also runs ``pip install``
-        # for build tooling would otherwise have the TS strip inserted
-        # before the pip line (no-op, because package.json hasn't been
-        # copied yet) and the actual ``npm install`` would still hit the
-        # unstripped pin (Codex P2 review on PR #91 round-4).
-        if overlay.language == "python":
-            patterns: Tuple["re.Pattern[str]", ...] = (_PYTHON_PIP_INSTALL_PATTERN,)
-        elif overlay.language == "typescript":
-            patterns = (_TS_NPM_INSTALL_PATTERN,)
-        else:
-            # Legacy fallback for callers that don't declare a language —
-            # try Python first, fall through to TS. Same behavior as
-            # before round-4.
-            patterns = (_PYTHON_PIP_INSTALL_PATTERN, _TS_NPM_INSTALL_PATTERN)
-        for pattern in patterns:
-            new_content = _insert_before_install_pattern(
-                content, overlay.pre_install_steps, pattern
-            )
-            if new_content is not content:
-                content = new_content
-                # If the matched install line uses ``npm ci``, rewrite to
-                # ``npm install`` so the lockfile mismatch the strip step
-                # creates doesn't abort the build (Codex P2 review on
-                # PR #91). Safe even when no ``npm ci`` line is present.
-                if pattern is _TS_NPM_INSTALL_PATTERN:
-                    content = _TS_NPM_CI_LINE_PATTERN.sub(
-                        r"\1npm install", content
-                    )
-                break
+    content = _apply_pre_install_strip(dockerfile_content, overlay)
+    return _splice_overlay_steps(content, overlay)
 
+
+def _apply_pre_install_strip(content: str, overlay: BuildOverride) -> str:
+    """Insert ``overlay.pre_install_steps`` before the first matching
+    install line. Returns ``content`` unchanged when nothing to do."""
+    if not overlay.pre_install_steps:
+        return content
+
+    # Pick the install pattern based on the overlay's declared
+    # language. A frontend Dockerfile that also runs ``pip install``
+    # for build tooling would otherwise have the TS strip inserted
+    # before the pip line (no-op, because package.json hasn't been
+    # copied yet) and the actual ``npm install`` would still hit the
+    # unstripped pin (Codex P2 review on PR #91 round-4).
+    if overlay.language == "python":
+        patterns: Tuple["re.Pattern[str]", ...] = (_PYTHON_PIP_INSTALL_PATTERN,)
+    elif overlay.language == "typescript":
+        patterns = (_TS_NPM_INSTALL_PATTERN,)
+    else:
+        # Legacy fallback for callers that don't declare a language —
+        # try Python first, fall through to TS.
+        patterns = (_PYTHON_PIP_INSTALL_PATTERN, _TS_NPM_INSTALL_PATTERN)
+
+    for pattern in patterns:
+        new_content = _insert_before_install_pattern(
+            content, overlay.pre_install_steps, pattern
+        )
+        if new_content is not content:
+            # If the matched install line uses ``npm ci``, rewrite to
+            # ``npm install`` so the lockfile mismatch the strip step
+            # creates doesn't abort the build (Codex P2 review on PR #91).
+            if pattern is _TS_NPM_INSTALL_PATTERN:
+                new_content = _TS_NPM_CI_LINE_PATTERN.sub(
+                    r"\1npm install", new_content
+                )
+            return new_content
+    return content
+
+
+def _splice_overlay_steps(content: str, overlay: BuildOverride) -> str:
+    """Splice ``overlay.overlay_steps`` either before a build line
+    (when ``insert_before_build`` is True) or appended at end."""
     lines = content.splitlines(keepends=True)
-    insert_idx = None
+    insert_idx: Optional[int] = None
 
     if overlay.insert_before_build:
         for i, line in enumerate(lines):
@@ -367,7 +390,6 @@ def apply_build_overlay(dockerfile_content: str, overlay: BuildOverride) -> str:
             + "\n"
             + "".join(lines[insert_idx:])
         )
-
     # No build line found or not insert_before_build — append at end
     return content.rstrip() + "\n\n" + overlay_steps
 
