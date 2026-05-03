@@ -44,6 +44,11 @@ class TestRunValidate:
         assert any("No kamiwaza.json found" in err for err in output["errors"])
 
     def test_invalid_manifest_emits_failed_json(self, tmp_path, capsys):
+        """Codex iter-2 finding: ``kz-ext validate`` is the canonical
+        way to discover that a manifest is broken — the validator
+        should surface its specific JSON-decode error from
+        ``MetadataValidator``, NOT bail with the detector's generic
+        "cannot read" message before validation runs."""
         import typer
 
         from kamiwaza_extensions.commands.validate import run_validate
@@ -56,6 +61,13 @@ class TestRunValidate:
         output = json.loads(capsys.readouterr().out)
         assert output["passed"] is False
         assert output["errors"]
+        # Joined error text should reflect a JSON-parse failure (the
+        # MetadataValidator's specific error class), not a "cannot
+        # read kamiwaza.json" generic detector wrapping.
+        joined = " ".join(output["errors"]).lower()
+        assert "json" in joined or "parse" in joined or "decode" in joined, (
+            f"Expected a JSON-parse error from MetadataValidator, got: {output['errors']}"
+        )
 
     def test_warnings_only_do_not_fail_validation(self, tmp_path, capsys):
         from kamiwaza_extensions.commands.validate import run_validate

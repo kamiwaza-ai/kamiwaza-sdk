@@ -25,8 +25,14 @@ def run_validate(*, path: Optional[str], json_output: bool) -> None:
 
     start_dir = Path(path) if path else Path.cwd()
 
+    # Use find_root() rather than detect() so a malformed
+    # kamiwaza.json doesn't bail with a detector error before
+    # MetadataValidator gets a chance to surface its richer
+    # structured output. Validating broken manifests is the canonical
+    # reason a user invokes ``kz-ext validate``; the detector should
+    # only locate the file, not parse it.
     try:
-        info = ExtensionDetector().detect(start_dir)
+        ext_dir = ExtensionDetector().find_root(start_dir)
     except (ExtensionNotFoundError, MultipleExtensionsError) as exc:
         if json_output:
             typer.echo(json_mod.dumps({"passed": False, "errors": [str(exc)], "warnings": []}))
@@ -34,7 +40,6 @@ def run_validate(*, path: Optional[str], json_output: bool) -> None:
             console.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(code=1) from exc
 
-    ext_dir = info.path
     metadata_file = ext_dir / "kamiwaza.json"
 
     # Surface the monorepo rebase so the user knows where validation ran.

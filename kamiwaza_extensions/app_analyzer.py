@@ -603,8 +603,14 @@ class AppAnalyzer:
 
         inventory: List[str] = []
         artifacts: List[str] = []
-        # Use the inventory-specific skip list so vendorable artifacts
-        # in ``dist``/``build``/``target`` are surfaced to the LLM.
+        # Single walk, but artifacts are collected unconditionally
+        # while general-inventory respects the cap. Without this
+        # split, the cap break would silently drop late-walked
+        # vendorables (.whl, .tgz, .jar) — exactly the inputs the
+        # ``copy`` action is designed to surface. Codex iter-2 review
+        # caught this regression; the fix decouples artifact discovery
+        # from inventory truncation.
+        inventory_capped = False
         for path in _walk_files(source_root, skip_dirs=_INVENTORY_SKIP_DIRS):
             try:
                 if path.resolve().is_relative_to(ext_root):
@@ -617,12 +623,18 @@ class AppAnalyzer:
                 rel = path.relative_to(source_root).as_posix()
             except ValueError:
                 continue
-            inventory.append(rel)
             name = path.name.lower()
-            if any(name.endswith(suffix) for suffix in _VENDORABLE_ARTIFACT_SUFFIXES):
+            is_artifact = any(
+                name.endswith(suffix) for suffix in _VENDORABLE_ARTIFACT_SUFFIXES
+            )
+            if is_artifact:
+                # Artifacts always recorded — they're the primary
+                # input the LLM needs for the copy action.
                 artifacts.append(rel)
-            if len(inventory) >= _MAX_MONOREPO_INVENTORY_ENTRIES:
-                break
+            if not inventory_capped:
+                inventory.append(rel)
+                if len(inventory) >= _MAX_MONOREPO_INVENTORY_ENTRIES:
+                    inventory_capped = True
 
         result.monorepo_inventory = inventory
         result.vendorable_artifacts = artifacts

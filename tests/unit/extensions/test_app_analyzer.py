@@ -669,6 +669,51 @@ class TestMonorepoInventory:
         )
         assert "shared/typescript/build/auth-1.0.tgz" in result.vendorable_artifacts
 
+    def test_artifacts_surface_even_past_inventory_cap(self, tmp_path, monkeypatch):
+        """Codex iter-2 finding: the 200-entry inventory cap was
+        sharing a loop with vendorable artifacts. If the only .whl in
+        the tree was discovered AFTER the cap, the LLM never saw it
+        and couldn't emit a copy action.
+
+        Decoupled artifact scanning means artifacts are recorded
+        unconditionally even when inventory truncation kicks in.
+        """
+        from kamiwaza_extensions import app_analyzer
+        from kamiwaza_extensions.app_analyzer import AppAnalyzer
+
+        ext = tmp_path / "apps" / "ext"
+        ext.mkdir(parents=True)
+        (ext / "docker-compose.yml").write_text(
+            yaml.dump({"services": {"app": {"image": "x"}}})
+        )
+
+        # Force the cap to a small number so the test is fast.
+        monkeypatch.setattr(app_analyzer, "_MAX_MONOREPO_INVENTORY_ENTRIES", 5)
+
+        # 10 ordinary files in shared/ — guaranteed to fill the
+        # 5-entry cap before the .whl appears (which we put in a
+        # later-sorted directory).
+        shared = tmp_path / "shared"
+        shared.mkdir()
+        for i in range(10):
+            (shared / f"a-doc-{i:02d}.md").write_text(f"# doc {i}")
+        # Wheel in z-late-dir/ so os.walk hits it after the docs.
+        late = tmp_path / "z-late-dir"
+        late.mkdir()
+        wheel = late / "needed.whl"
+        wheel.write_bytes(b"x")
+
+        result = AppAnalyzer().analyze(tmp_path)
+
+        # Inventory was capped (only 5 entries).
+        assert len(result.monorepo_inventory) == 5
+        # But the wheel still surfaces — that's the whole point.
+        assert "z-late-dir/needed.whl" in result.vendorable_artifacts, (
+            "Vendorable artifacts must be discovered unconditionally — "
+            "the inventory cap should not silently hide late-walked "
+            "wheels/tarballs that the LLM needs for the copy action"
+        )
+
 
 class TestSanitizeName:
     def test_lowercase(self):

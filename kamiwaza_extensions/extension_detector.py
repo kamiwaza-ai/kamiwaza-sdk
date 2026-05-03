@@ -89,6 +89,22 @@ class ExtensionDetector:
             compose_data=compose_data,
         )
 
+    def find_root(self, start_dir: Optional[Path] = None) -> Path:
+        """Locate the extension directory without parsing the manifest.
+
+        Public counterpart to ``_find_root``. Use this when you only
+        need the path and want to leave validation/error reporting on
+        the manifest contents to a downstream component (e.g.,
+        ``kz-ext validate`` defers JSON parsing to ``MetadataValidator``
+        so it can produce its richer structured error output even when
+        the manifest is malformed).
+
+        Most callers want ``detect()`` instead — it loads the manifest
+        and compose data eagerly and is the right shape for lifecycle
+        commands that need a working manifest to function.
+        """
+        return self._find_root(start_dir or Path.cwd())
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------

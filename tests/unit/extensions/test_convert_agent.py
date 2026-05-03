@@ -1365,7 +1365,7 @@ class TestPRReviewFixes:
         )
 
     def test_pythonpath_prepend_env_var_appends_to_sdk(self, monkeypatch, tmp_path):
-        """KZ_SDK_PYTHONPATH_PREPEND escape hatch: src-layout apps with
+        """KZ_SDK_PYTHONPATH_APPEND escape hatch: src-layout apps with
         ENV PYTHONPATH=/app/src baked in can keep their import paths by
         setting this env var on the host."""
         from kamiwaza_extensions.sdk_override import SdkOverrideSpec
@@ -1374,7 +1374,7 @@ class TestPRReviewFixes:
         spec = SdkOverrideSpec(sdk_repo=tmp_path, typescript=False)
         compose = {"services": {"backend": {"build": "./backend"}}}
 
-        monkeypatch.setenv("KZ_SDK_PYTHONPATH_PREPEND", "/app/src:/app/lib")
+        monkeypatch.setenv("KZ_SDK_PYTHONPATH_APPEND", "/app/src:/app/lib")
 
         override = generate_compose_override(spec, compose)
         env = override["services"]["backend"]["environment"]
@@ -1384,12 +1384,12 @@ class TestPRReviewFixes:
         assert env["PYTHONPATH"] == "/sdk:/app/src:/app/lib"
 
     def test_pythonpath_default_when_env_not_set(self, monkeypatch, tmp_path):
-        """Without KZ_SDK_PYTHONPATH_PREPEND, PYTHONPATH is just /sdk
+        """Without KZ_SDK_PYTHONPATH_APPEND, PYTHONPATH is just /sdk
         (preserves prior behavior for the common case)."""
         from kamiwaza_extensions.sdk_override import SdkOverrideSpec
         from kamiwaza_extensions.sdk_override.compose import generate_compose_override
 
-        monkeypatch.delenv("KZ_SDK_PYTHONPATH_PREPEND", raising=False)
+        monkeypatch.delenv("KZ_SDK_PYTHONPATH_APPEND", raising=False)
         spec = SdkOverrideSpec(sdk_repo=tmp_path, typescript=False)
         compose = {"services": {"backend": {"build": "./backend"}}}
 
