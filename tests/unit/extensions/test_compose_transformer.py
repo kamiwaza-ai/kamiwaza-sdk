@@ -465,6 +465,41 @@ class TestDetectServiceUrlRewrites:
         rewrites = detect_service_url_rewrites(services, "ext")
         assert rewrites == {}
 
+    def test_subdomain_does_not_match_sibling(self):
+        """Iter-8 review finding: a sibling named ``api`` must NOT
+        hijack ``https://api.openai.com/v1`` (the ``.`` after ``api`` is
+        a subdomain separator, not a host terminator). Earlier ``\\b``
+        boundary treated ``.`` as a word boundary and falsely rewrote
+        external URLs sharing a leading subdomain with sibling names
+        like ``api``, ``auth``, ``app``, ``web``."""
+        from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
+
+        services = {
+            "api": {"environment": {}},
+            "auth": {"environment": {}},
+            "frontend": {
+                "environment": {
+                    "OPENAI_BASE_URL": "https://api.openai.com/v1",
+                    "AUTH0_URL": "https://auth.example.com/oauth",
+                    # Real sibling reference (no subdomain) — must
+                    # still be rewritten so we don't regress the
+                    # primary use case.
+                    "API_URL": "http://api:8000",
+                },
+            },
+        }
+        rewrites = detect_service_url_rewrites(services, "ext")
+        # Only the bare-host sibling reference gets rewritten; the
+        # external subdomain URLs pass through untouched.
+        assert rewrites == {
+            "frontend": {
+                "API_URL": {
+                    "from": "http://api:8000",
+                    "to": "http://ext-api:8000",
+                }
+            }
+        }
+
     def test_empty_for_no_environment(self):
         from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
 

@@ -239,12 +239,17 @@ def _entry_has_shell_ref(entry: Any) -> bool:
 # ------------------------------------------------------------------
 
 
-# Captures a ``http(s)://<host>`` reference at the start of a URL —
-# trailing ``:port`` and ``/path`` are kept as-is when the host gets
-# rewritten. Word-boundary on the host so ``backend2`` doesn't match
-# the prefix ``backend``.
+# Captures a ``http(s)://<host>`` reference. The trailing lookahead
+# requires the host to be terminated by a port (``:``), path (``/``),
+# query (``?``), fragment (``#``), or end-of-string — so ``http://api``
+# and ``http://api:8000/path`` match a sibling named ``api``, but
+# ``http://api.openai.com/v1`` does NOT (the ``.`` is not a valid
+# host-terminator). ``\b`` was previously used here but treats ``.``
+# as a word boundary, which falsely rewrites external URLs sharing a
+# leading subdomain with a sibling service name (iter-8 review repro:
+# sibling ``api`` would hijack ``api.openai.com``).
 _URL_HOST_RE = re.compile(
-    r"(?P<scheme>https?://)(?P<host>[A-Za-z][A-Za-z0-9_-]*)\b"
+    r"(?P<scheme>https?://)(?P<host>[A-Za-z][A-Za-z0-9_-]*)(?=[:/?#]|$)"
 )
 
 
