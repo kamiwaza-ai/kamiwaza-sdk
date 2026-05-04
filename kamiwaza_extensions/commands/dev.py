@@ -337,6 +337,20 @@ def run_dev_remote(
     console.print(f"  Extension:  [bold]{info.name}[/bold] ({info.version})")
     console.print(f"  Connection: {connection.name} ({connection.url})")
     console.print(f"  Revision:   {rev_tag}")
+    # Surface auto-disabled TLS verify when the URL is a dev TLD so the
+    # user knows why their KAMIWAZA_TLS_REJECT_UNAUTHORIZED ends up "0".
+    # Skip the notice when the persisted setting already matched (no
+    # effective change) or when the user set the env var explicitly.
+    if (
+        connection.verify_ssl
+        and not connection.effective_verify_ssl()
+        and os.environ.get("KAMIWAZA_VERIFY_SSL", "").strip().lower() != "false"
+    ):
+        console.print(
+            f"  [dim]TLS verify auto-disabled for dev hostname "
+            f"({urlparse(connection.url).hostname or connection.url}); set "
+            f"KAMIWAZA_VERIFY_SSL=true to enforce.[/dim]"
+        )
     console.print()
 
     # 5. Transform compose

@@ -741,7 +741,7 @@ def build_env_overlay(
         "KAMIWAZA_USE_AUTH": "true" if auth else "false",
         "KAMIWAZA_APP_NAME": extension_name,
     }
-    if not connection.verify_ssl:
+    if not connection.effective_verify_ssl():
         env["KAMIWAZA_VERIFY_SSL"] = "false"
     if auth:
         # bridge is non-None here (checked above) — narrow for type checkers.

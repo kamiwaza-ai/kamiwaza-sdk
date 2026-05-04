@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import socket
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -86,19 +85,13 @@ class PayloadBuilder:
             if ext_type == "app"
             else f"/runtime/{ext_type}s/{dev_name}"
         )
-        # ``KAMIWAZA_VERIFY_SSL=false`` env var overrides the persisted
-        # connection setting (set at login time). Devs flip this when
-        # talking to a self-signed local kamiwaza without re-running
-        # ``kz-ext login --no-verify-ssl`` — the SDK's HTTP client
-        # already respects it for outbound calls; this propagates the
-        # same intent to the deployed extension's
-        # ``KAMIWAZA_TLS_REJECT_UNAUTHORIZED`` so its in-cluster
-        # callbacks to the platform don't fail with
-        # ``CERTIFICATE_VERIFY_FAILED``.
-        env_verify_ssl = os.environ.get("KAMIWAZA_VERIFY_SSL", "").strip().lower()
-        verify_ssl = connection.verify_ssl
-        if env_verify_ssl == "false":
-            verify_ssl = False
+        # ``effective_verify_ssl`` centralizes the SSL precedence:
+        # KAMIWAZA_VERIFY_SSL env var > dev-TLD auto-disable > persisted
+        # connection.verify_ssl. Drives both the per-service env
+        # injection (``_build_services``) and the
+        # ``tlsRejectUnauthorized`` spec field so the deployed
+        # extension's in-cluster callbacks match the developer's intent.
+        verify_ssl = connection.effective_verify_ssl()
 
         services = self._build_services(
             transformed_compose,

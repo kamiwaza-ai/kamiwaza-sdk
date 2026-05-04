@@ -158,12 +158,14 @@ class TestAnnotations:
         assert ANNOTATION_DEPLOYED_AT in out
 
 
-class TestVerifySslEnvOverride:
-    """``KAMIWAZA_VERIFY_SSL=false`` env var overrides the persisted
-    ``connection.verify_ssl`` (set at login). The deployed extension
-    needs the override propagated as ``tlsRejectUnauthorized="0"`` so
-    its in-cluster callbacks to a self-signed kamiwaza don't fail with
-    ``CERTIFICATE_VERIFY_FAILED``."""
+class TestVerifySslPropagation:
+    """The deployed extension's ``tlsRejectUnauthorized`` must reflect
+    the developer's intent. Three independent inputs collapse here via
+    ``ConnectionInfo.effective_verify_ssl``:
+    1. ``KAMIWAZA_VERIFY_SSL`` env var (per-session override)
+    2. URL hostname (dev TLDs auto-disable)
+    3. Persisted ``connection.verify_ssl`` from ``kz-ext login``
+    """
 
     def test_env_false_overrides_connection_verify_true(
         self,
@@ -174,32 +176,75 @@ class TestVerifySslEnvOverride:
         monkeypatch,
     ):
         monkeypatch.setenv("KAMIWAZA_VERIFY_SSL", "false")
-        # Sanity check the fixture default.
         assert connection.verify_ssl is True
 
         payload = builder.build(metadata, transformed_compose, connection, "ext")
 
-        # Spec carries the relaxed setting.
         assert payload.kamiwaza.tls_reject_unauthorized == "0"
-        # And per-service env gets KAMIWAZA_VERIFY_SSL=false injected
-        # (handled by _build_services when verify_ssl is False).
-        primary_env = next(
-            s for s in payload.services if s.primary
-        ).env or []
+        primary_env = next(s for s in payload.services if s.primary).env or []
         assert {"name": "KAMIWAZA_VERIFY_SSL", "value": "false"} in primary_env
 
-    def test_env_unset_uses_connection_setting(
+    def test_dev_tld_auto_disables_verify(
         self,
         builder,
         metadata,
         transformed_compose,
-        connection,
         monkeypatch,
     ):
+        """User logged in normally (verify_ssl=True) against
+        ``kamiwaza.test`` — should still ship ``tls_reject="0"`` because
+        ``.test`` URLs always use self-signed certs."""
         monkeypatch.delenv("KAMIWAZA_VERIFY_SSL", raising=False)
-        assert connection.verify_ssl is True
+        conn = ConnectionInfo(
+            name="dev",
+            url="https://kamiwaza.test/api",
+            active=True,
+            created_at=0.0,
+            verify_ssl=True,  # persisted strict — auto-disable should win
+        )
 
-        payload = builder.build(metadata, transformed_compose, connection, "ext")
+        payload = builder.build(metadata, transformed_compose, conn, "ext")
+        assert payload.kamiwaza.tls_reject_unauthorized == "0"
+
+    def test_env_true_re_enables_against_dev_tld(
+        self,
+        builder,
+        metadata,
+        transformed_compose,
+        monkeypatch,
+    ):
+        """``KAMIWAZA_VERIFY_SSL=true`` explicitly opts back in even
+        for dev TLDs (e.g., user has a trusted local root CA)."""
+        monkeypatch.setenv("KAMIWAZA_VERIFY_SSL", "true")
+        conn = ConnectionInfo(
+            name="dev",
+            url="https://kamiwaza.test/api",
+            active=True,
+            created_at=0.0,
+            verify_ssl=True,
+        )
+
+        payload = builder.build(metadata, transformed_compose, conn, "ext")
+        assert payload.kamiwaza.tls_reject_unauthorized == "1"
+
+    def test_production_url_keeps_strict(
+        self,
+        builder,
+        metadata,
+        transformed_compose,
+        monkeypatch,
+    ):
+        """Real public hostnames keep persisted strict setting."""
+        monkeypatch.delenv("KAMIWAZA_VERIFY_SSL", raising=False)
+        conn = ConnectionInfo(
+            name="prod",
+            url="https://api.kamiwaza.ai/api",
+            active=True,
+            created_at=0.0,
+            verify_ssl=True,
+        )
+
+        payload = builder.build(metadata, transformed_compose, conn, "ext")
         assert payload.kamiwaza.tls_reject_unauthorized == "1"
 
 
