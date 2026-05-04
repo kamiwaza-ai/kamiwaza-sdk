@@ -8,6 +8,7 @@ from kamiwaza_extensions.payload_builder import (
     ANNOTATION_DEPLOYED_AT,
     ANNOTATION_DEPLOYER,
     ANNOTATION_REVISION,
+    ANNOTATION_SERVICE_REF_REWRITES,
     PayloadBuilder,
 )
 
@@ -155,6 +156,72 @@ class TestAnnotations:
         assert ANNOTATION_DEPLOYER not in out
         assert ANNOTATION_REVISION not in out
         assert ANNOTATION_DEPLOYED_AT in out
+
+
+class TestServiceRefRewritesAnnotation:
+    """The frontend's compose ``http://backend:8000`` doesn't resolve in
+    K8s DNS — bare ``backend`` only works in docker-compose. The
+    operator reads ``extensions.kamiwaza.io/service-ref-rewrites`` to
+    swap the env value to the deployment-prefixed K8s service name at
+    deploy time."""
+
+    def test_emitted_when_compose_has_cross_service_url(
+        self,
+        builder,
+        metadata,
+        connection,
+    ):
+        import json
+
+        # Frontend references ``backend`` (a sibling service); the
+        # transformer would have already resolved any ``${VAR:-default}``
+        # syntax so we feed it the post-resolution form.
+        transformed = {
+            "services": {
+                "frontend": {
+                    "image": "reg/my-app-frontend:dev",
+                    "ports": ["3000"],
+                    "environment": {"BACKEND_URL": "http://backend:8000"},
+                },
+                "backend": {
+                    "image": "reg/my-app-backend:dev",
+                    "ports": ["8000"],
+                },
+            },
+        }
+        payload = builder.build(metadata, transformed, connection, "my-app-dev-abc")
+
+        annotations = (payload.model_extra or {}).get("annotations") or {}
+        raw = annotations.get(ANNOTATION_SERVICE_REF_REWRITES)
+        assert raw is not None, "service-ref-rewrites annotation missing"
+        rewrites = json.loads(raw)
+        assert rewrites == {
+            "frontend": {
+                "BACKEND_URL": {
+                    "from": "http://backend:8000",
+                    "to": "http://my-app-dev-abc-backend:8000",
+                }
+            }
+        }
+
+    def test_omitted_when_no_cross_service_urls(
+        self,
+        builder,
+        metadata,
+        connection,
+    ):
+        transformed = {
+            "services": {
+                "frontend": {
+                    "image": "reg/my-app-frontend:dev",
+                    "ports": ["3000"],
+                    "environment": {"FOO": "bar"},
+                },
+            },
+        }
+        payload = builder.build(metadata, transformed, connection, "my-app-dev-abc")
+        annotations = (payload.model_extra or {}).get("annotations") or {}
+        assert ANNOTATION_SERVICE_REF_REWRITES not in annotations
 
 
 class TestEnvParsing:

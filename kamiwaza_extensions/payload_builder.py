@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import socket
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -17,6 +18,7 @@ from kamiwaza_sdk.schemas.extensions import (
     SecuritySpec,
 )
 
+from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
 from kamiwaza_extensions.connections import ConnectionInfo
 
 # CRD annotation keys — namespace is ``kamiwaza.io/*`` (NOT ``kamiwaza.ai/*``).
@@ -31,6 +33,16 @@ ANNOTATION_DEPLOYER = "kamiwaza.io/deployer"
 ANNOTATION_BUILD_HOST = "kamiwaza.io/build-host"
 ANNOTATION_REVISION = "kamiwaza.io/revision"
 ANNOTATION_DEPLOYED_AT = "kamiwaza.io/deployed-at"
+
+# The kamiwaza-extension-operator reads this annotation at deploy time
+# and rewrites cross-service URL env values from the compose short name
+# (``http://backend:8000``) to the deployment-prefixed K8s service name
+# (``http://my-app-dev-abc-backend:8000``). Without this annotation,
+# bare ``backend`` doesn't resolve in K8s DNS — the frontend's API
+# proxy fails with ENOTFOUND. Namespace is ``extensions.kamiwaza.io/*``
+# (different from the ``kamiwaza.io/*`` deploy-metadata namespace
+# above). The operator recognizes both.
+ANNOTATION_SERVICE_REF_REWRITES = "extensions.kamiwaza.io/service-ref-rewrites"
 
 
 def _compose_resources_to_k8s(resources: Dict[str, str]) -> Dict[str, str]:
@@ -103,6 +115,20 @@ class PayloadBuilder:
         )
 
         annotations = self.build_annotations(deployer=deployer, revision=revision)
+
+        # Cross-service URL rewrites: scan each service's env for
+        # references to sibling services by short name and emit the
+        # operator-consumed ``service-ref-rewrites`` annotation. Ships
+        # only when at least one rewrite is needed (no annotation when
+        # there are no cross-service URLs).
+        rewrites = detect_service_url_rewrites(
+            transformed_compose.get("services") or {}, dev_name
+        )
+        if rewrites:
+            annotations[ANNOTATION_SERVICE_REF_REWRITES] = json.dumps(
+                rewrites, sort_keys=True, separators=(",", ":")
+            )
+
         if annotations:
             # `CreateExtension` has `extra="allow"` — annotations ride on the
             # request body for the platform to attach to the CRD metadata.
