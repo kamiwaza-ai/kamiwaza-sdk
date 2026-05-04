@@ -44,6 +44,11 @@ class TestRunValidate:
         assert any("No kamiwaza.json found" in err for err in output["errors"])
 
     def test_invalid_manifest_emits_failed_json(self, tmp_path, capsys):
+        """Codex iter-2 finding: ``kz-ext validate`` is the canonical
+        way to discover that a manifest is broken — the validator
+        should surface its specific JSON-decode error from
+        ``MetadataValidator``, NOT bail with the detector's generic
+        "cannot read" message before validation runs."""
         import typer
 
         from kamiwaza_extensions.commands.validate import run_validate
@@ -56,6 +61,13 @@ class TestRunValidate:
         output = json.loads(capsys.readouterr().out)
         assert output["passed"] is False
         assert output["errors"]
+        # Joined error text should reflect a JSON-parse failure (the
+        # MetadataValidator's specific error class), not a "cannot
+        # read kamiwaza.json" generic detector wrapping.
+        joined = " ".join(output["errors"]).lower()
+        assert "json" in joined or "parse" in joined or "decode" in joined, (
+            f"Expected a JSON-parse error from MetadataValidator, got: {output['errors']}"
+        )
 
     def test_warnings_only_do_not_fail_validation(self, tmp_path, capsys):
         from kamiwaza_extensions.commands.validate import run_validate
@@ -165,3 +177,48 @@ class TestRunValidate:
         output = json.loads(capsys.readouterr().out)
         assert output["passed"] is True
         assert output["errors"] == []
+
+
+class TestRunValidateMonorepo:
+    """validate should descend into monorepo subdirs like kz-ext convert does."""
+
+    def test_finds_extension_under_apps(self, tmp_path, capsys):
+        from kamiwaza_extensions.commands.validate import run_validate
+
+        ext = tmp_path / "apps" / "skills-library"
+        ext.mkdir(parents=True)
+        compose = {
+            "services": {
+                "web": {
+                    "image": "nginxinc/nginx-unprivileged:stable-alpine",
+                    "ports": ["8080:8080"],
+                    "deploy": {"resources": {"limits": {"cpus": "1.0", "memory": "1G"}}},
+                },
+            },
+        }
+        (ext / "kamiwaza.json").write_text(json.dumps(_valid_metadata()))
+        (ext / "docker-compose.yml").write_text(yaml.dump(compose))
+
+        run_validate(path=str(tmp_path), json_output=True)
+
+        output = json.loads(capsys.readouterr().out)
+        assert output["passed"] is True
+        assert output["errors"] == []
+
+    def test_ambiguous_monorepo_exits_with_error(self, tmp_path, capsys):
+        import typer
+
+        from kamiwaza_extensions.commands.validate import run_validate
+
+        for sub in ("apps/foo", "tools/bar"):
+            d = tmp_path / sub
+            d.mkdir(parents=True)
+            (d / "kamiwaza.json").write_text(json.dumps(_valid_metadata()))
+
+        with pytest.raises(typer.Exit):
+            run_validate(path=str(tmp_path), json_output=True)
+
+        output = json.loads(capsys.readouterr().out)
+        assert output["passed"] is False
+        joined = " ".join(output["errors"])
+        assert "Multiple kamiwaza.json found" in joined

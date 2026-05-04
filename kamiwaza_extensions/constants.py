@@ -21,9 +21,17 @@ EXTENSIONS_NAMESPACE = "kamiwaza-extensions"
 
 @contextlib.contextmanager
 def ssl_env_override(connection: "ConnectionInfo") -> Generator[None, None, None]:
-    """Temporarily set KAMIWAZA_VERIFY_SSL=false if the connection disables SSL."""
+    """Temporarily set KAMIWAZA_VERIFY_SSL=false if the connection's
+    effective setting disables SSL.
+
+    Reads ``connection.effective_verify_ssl()`` (centralizes env-var
+    override + dev-TLD auto-disable + persisted setting) so the SDK
+    HTTP client picks up the same intent the rest of the deploy
+    pipeline uses. Avoids divergence between "what the developer
+    expected" and "what the inner client did".
+    """
     old = os.environ.get("KAMIWAZA_VERIFY_SSL")
-    if not connection.verify_ssl:
+    if not connection.effective_verify_ssl():
         os.environ["KAMIWAZA_VERIFY_SSL"] = "false"
     try:
         yield

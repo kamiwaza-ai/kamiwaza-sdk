@@ -10,6 +10,7 @@ from typing import Any, Dict, Optional
 import yaml
 
 from kamiwaza_extensions.constants import COMPOSE_FILENAMES
+from kamiwaza_extensions.monorepo import MONOREPO_PARENT_DIRS
 
 
 @dataclass
@@ -88,6 +89,22 @@ class ExtensionDetector:
             compose_data=compose_data,
         )
 
+    def find_root(self, start_dir: Optional[Path] = None) -> Path:
+        """Locate the extension directory without parsing the manifest.
+
+        Public counterpart to ``_find_root``. Use this when you only
+        need the path and want to leave validation/error reporting on
+        the manifest contents to a downstream component (e.g.,
+        ``kz-ext validate`` defers JSON parsing to ``MetadataValidator``
+        so it can produce its richer structured error output even when
+        the manifest is malformed).
+
+        Most callers want ``detect()`` instead — it loads the manifest
+        and compose data eagerly and is the right shape for lifecycle
+        commands that need a working manifest to function.
+        """
+        return self._find_root(start_dir or Path.cwd())
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -96,14 +113,24 @@ class ExtensionDetector:
         if (start / "kamiwaza.json").exists():
             return start
 
-        found = sorted(
-            (d.parent for d in start.glob("*/kamiwaza.json")),
-            key=lambda p: p.name,
+        candidates: list[Path] = []
+        # Shallow search: any direct subdirectory containing kamiwaza.json.
+        candidates.extend(d.parent for d in start.glob("*/kamiwaza.json"))
+        # Monorepo conventions: kamiwaza.json two levels deep under the
+        # standard parent directories. Mirrors the layout AppAnalyzer
+        # detects in `kz-ext convert` so all lifecycle commands behave
+        # consistently in monorepos.
+        for parent in MONOREPO_PARENT_DIRS:
+            candidates.extend(d.parent for d in (start / parent).glob("*/kamiwaza.json"))
+
+        unique = sorted(
+            {c.resolve(): c for c in candidates}.values(),
+            key=lambda p: (p.parent.name, p.name),
         )
-        if len(found) == 1:
-            return found[0]
-        if len(found) > 1:
-            dirs = ", ".join(str(d.name) for d in found)
+        if len(unique) == 1:
+            return unique[0]
+        if len(unique) > 1:
+            dirs = ", ".join(str(d.relative_to(start)) for d in unique)
             raise MultipleExtensionsError(
                 f"Multiple kamiwaza.json found: {dirs}. "
                 "Run from inside a specific extension directory."

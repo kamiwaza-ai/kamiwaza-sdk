@@ -11,19 +11,31 @@ from typing import Any, Dict, Generator, List, Optional
 import yaml
 
 from kamiwaza_extensions import __version__
+from kamiwaza_extensions.constants import COMPOSE_FILENAMES
+from kamiwaza_extensions.monorepo import (
+    MONOREPO_BARE_DIRS,
+    MONOREPO_PARENT_DIRS,
+    SKIP_DIRS,
+)
 
-_SKIP_DIRS = {
-    ".git",
-    "node_modules",
-    "__pycache__",
-    ".venv",
-    "venv",
-    ".next",
-    "build",
-    "dist",
-    "target",
-    "coverage",
-}
+_SKIP_DIRS = SKIP_DIRS
+_DOCKERFILE_NEGATIVE_SUFFIXES = (
+    ".template",
+    ".tmpl",
+    ".tpl",
+    ".bak",
+    ".example",
+    ".sample",
+)
+_VENDORABLE_ARTIFACT_SUFFIXES = (
+    ".whl",
+    ".tgz",
+    ".tar.gz",
+    ".zip",
+    ".jar",
+    ".pex",
+)
+_MAX_MONOREPO_INVENTORY_ENTRIES = 200
 _MANIFEST_FILES = {
     "package.json",
     "requirements.txt",
@@ -92,17 +104,68 @@ _SENSITIVE_FILE_SUFFIXES = (
 _SENSITIVE_STEMS = {"secret", "secrets", "credential", "credentials"}
 
 
-def _walk_files(root: Path, extensions: tuple[str, ...] | None = None) -> Generator[Path, None, None]:
-    """Walk *root* yielding files, pruning ``_SKIP_DIRS`` in-place.
+# Skip list for the monorepo-inventory pass. Strict subset of
+# ``SKIP_DIRS`` — deliberately omits ``dist``, ``build``, ``target``,
+# and ``coverage`` because that's exactly where shared publish
+# artifacts (.whl, .tgz, .jar, etc.) live in monorepos. The whole
+# point of the inventory pass is to surface those for the LLM's
+# ``copy`` action; pruning them silently breaks the vendoring flow.
+_INVENTORY_SKIP_DIRS = frozenset(
+    {
+        ".git",
+        "node_modules",
+        "__pycache__",
+        ".venv",
+        "venv",
+        ".next",
+        ".agents",
+        ".claude",
+        ".cursor",
+        ".aider",
+        ".specstory",
+        ".idea",
+        ".vscode",
+        ".devcontainer",
+    }
+)
 
-    Much faster than ``rglob`` on JS projects with large ``node_modules``.
+
+def _walk_files(
+    root: Path,
+    extensions: tuple[str, ...] | None = None,
+    *,
+    skip_dirs: frozenset[str] | set[str] | None = None,
+) -> Generator[Path, None, None]:
+    """Walk *root* yielding files, pruning ``skip_dirs`` in-place.
+
+    Defaults to ``_SKIP_DIRS`` (which prunes ``dist``/``build``/etc. for
+    speed on JS projects with large ``node_modules``). Pass an
+    explicit ``skip_dirs`` to override — e.g. the monorepo-inventory
+    pass uses ``_INVENTORY_SKIP_DIRS`` because vendorable artifacts
+    live precisely in the otherwise-skipped ``dist`` directories.
     """
+    effective_skip = skip_dirs if skip_dirs is not None else _SKIP_DIRS
     for dirpath, dirnames, filenames in os.walk(root):
         # Prune in-place so os.walk doesn't descend
-        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
+        dirnames[:] = [d for d in dirnames if d not in effective_skip]
         for fname in filenames:
             if extensions is None or any(fname.endswith(ext) for ext in extensions):
                 yield Path(dirpath) / fname
+
+
+class AmbiguousMonorepoError(Exception):
+    """Raised when multiple monorepo subdirectories contain extension candidates.
+
+    The caller is expected to report the candidates and ask the user to
+    re-run with the specific subdirectory. ``candidates`` holds the absolute
+    paths of every directory with a compose file under the searched
+    monorepo conventions.
+    """
+
+    def __init__(self, candidates: List[Path]) -> None:
+        self.candidates = candidates
+        rendered = ", ".join(str(p) for p in candidates)
+        super().__init__(f"Multiple extension candidates found: {rendered}")
 
 
 @dataclass
@@ -128,6 +191,19 @@ class AnalysisResult:
     services: List[ServiceInfo] = field(default_factory=list)
     compose_path: Optional[Path] = None
     compose_data: Optional[Dict[str, Any]] = None
+    # Set when monorepo detection rebased ``app_dir`` to a subdirectory.
+    # ``rebased_from`` holds the original CLI-supplied path so the caller
+    # can surface the rebase to the user.
+    rebased_from: Optional[Path] = None
+    # When rebased: a list of file paths (relative to ``rebased_from``)
+    # that live *outside* ``app_dir`` and may be referenced by the LLM
+    # via ``copy`` modifications (e.g. vendoring shared wheels/tarballs
+    # from a monorepo's ``shared/`` directory).
+    monorepo_inventory: List[str] = field(default_factory=list)
+    # Subset of ``monorepo_inventory`` that look like vendor-able binary
+    # artifacts (.whl, .tgz, .tar.gz, .zip, .jar). Surfaced separately so
+    # the LLM can find them without reading file_contents.
+    vendorable_artifacts: List[str] = field(default_factory=list)
 
     # Compatibility checks
     has_host_ports: List[str] = field(default_factory=list)
@@ -158,14 +234,21 @@ class AppAnalyzer:
     """Analyze an existing containerized app for Kamiwaza extension conversion."""
 
     def analyze(self, app_dir: Path) -> AnalysisResult:
-        """Run full analysis on the given directory."""
+        """Run full analysis on the given directory.
+
+        Raises ``AmbiguousMonorepoError`` if multiple monorepo
+        subdirectories contain extension candidates.
+        """
         app_dir = Path(app_dir).resolve()
         if not app_dir.is_dir():
             raise FileNotFoundError(f"Directory not found: {app_dir}")
 
+        effective_root, rebased_from = self._resolve_effective_root(app_dir)
+
         result = AnalysisResult(
-            app_dir=app_dir,
-            app_name=self._sanitize_name(app_dir.name),
+            app_dir=effective_root,
+            app_name=self._sanitize_name(effective_root.name),
+            rebased_from=rebased_from,
         )
 
         self._find_compose(result)
@@ -177,6 +260,7 @@ class AppAnalyzer:
         self._infer_type(result)
         self._gather_repo_inventory(result)
         self._gather_file_contents(result)
+        self._gather_monorepo_inventory(result)
         self._infer_conversion_mode(result)
 
         return result
@@ -204,14 +288,63 @@ class AppAnalyzer:
     # Private analysis steps
     # ------------------------------------------------------------------
 
+    def _resolve_effective_root(self, app_dir: Path) -> tuple[Path, Optional[Path]]:
+        """Locate the directory the analyzer should treat as the extension root.
+
+        Returns ``(effective_root, rebased_from)``. ``rebased_from`` is
+        ``None`` when no rebase happened (compose at the user-supplied
+        path, or no compose anywhere). When set it holds the original
+        path so the CLI can tell the user we descended into a subdir.
+
+        Raises ``AmbiguousMonorepoError`` when multiple monorepo
+        subdirectories contain compose files.
+        """
+        # If the user-supplied path is a STRONG extension root
+        # (compose / kamiwaza.json / Dockerfile present), don't rebase
+        # — they pointed at the right place. We deliberately do NOT
+        # treat a bare ``package.json`` / ``pyproject.toml`` at the
+        # supplied path as a stop signal: those frequently belong to
+        # workspace roots (npm workspaces, poetry/uv workspaces) that
+        # also have real extensions under ``apps/<x>/``. See the
+        # ``_STRONG_EXTENSION_ROOT_SIGNALS`` docstring for the
+        # regression this guards against.
+        if _is_strong_extension_root(app_dir):
+            return app_dir, None
+
+        candidates: List[Path] = []
+        # Subdir discovery requires a STRONG signal (compose,
+        # kamiwaza.json, or Dockerfile) — same bar as the early-return.
+        # Greenfield monorepo subdirs that have only a bare manifest
+        # (``package.json``, ``pyproject.toml``) are NOT auto-rebased
+        # because we can't tell whether they're real extensions or
+        # workspace libs (Codex iter-3 finding: a repo with
+        # ``index.html`` at root + ``packages/ui/package.json`` would
+        # otherwise rebase into the lib instead of the real app).
+        # Users in that ambiguous case must either run ``kz-ext convert
+        # apps/foo`` directly or add a Dockerfile stub to signal
+        # intent.
+        # Two-level pattern: <parent>/<name>/<strong-signal>
+        for parent_name in MONOREPO_PARENT_DIRS:
+            parent = app_dir / parent_name
+            if not parent.is_dir():
+                continue
+            for child in sorted(parent.iterdir()):
+                if child.is_dir() and _is_strong_extension_root(child):
+                    candidates.append(child)
+        # One-level bare-dir pattern: <name>/<strong-signal>
+        for bare_name in MONOREPO_BARE_DIRS:
+            candidate = app_dir / bare_name
+            if candidate.is_dir() and _is_strong_extension_root(candidate):
+                candidates.append(candidate)
+
+        if not candidates:
+            return app_dir, None
+        if len(candidates) > 1:
+            raise AmbiguousMonorepoError(candidates)
+        return candidates[0], app_dir
+
     def _find_compose(self, result: AnalysisResult) -> None:
-        compose_names = (
-            "docker-compose.yml",
-            "docker-compose.yaml",
-            "compose.yml",
-            "compose.yaml",
-        )
-        for name in compose_names:
+        for name in COMPOSE_FILENAMES:
             path = result.app_dir / name
             if path.exists():
                 result.compose_path = path
@@ -465,6 +598,58 @@ class AppAnalyzer:
         result.candidate_entrypoints = entrypoints[:_MAX_CONTEXT_FILES]
         result.runtime_hints = sorted(runtime_hints)
 
+    def _gather_monorepo_inventory(self, result: AnalysisResult) -> None:
+        """List files in the broader source tree outside the rebased ext root.
+
+        Only runs when monorepo detection rebased ``app_dir``. The result
+        is exposed to the LLM so it can ``copy`` artifacts (e.g. shared
+        wheels/tarballs) from elsewhere in the source tree into the
+        extension directory.
+        """
+        if result.rebased_from is None:
+            return
+
+        source_root = result.rebased_from.resolve()
+        ext_root = result.app_dir.resolve()
+
+        inventory: List[str] = []
+        artifacts: List[str] = []
+        # Single walk, but artifacts are collected unconditionally
+        # while general-inventory respects the cap. Without this
+        # split, the cap break would silently drop late-walked
+        # vendorables (.whl, .tgz, .jar) — exactly the inputs the
+        # ``copy`` action is designed to surface. Codex iter-2 review
+        # caught this regression; the fix decouples artifact discovery
+        # from inventory truncation.
+        inventory_capped = False
+        for path in _walk_files(source_root, skip_dirs=_INVENTORY_SKIP_DIRS):
+            try:
+                if path.resolve().is_relative_to(ext_root):
+                    continue
+            except (OSError, ValueError):
+                continue
+            if _is_sensitive_context_file(path):
+                continue
+            try:
+                rel = path.relative_to(source_root).as_posix()
+            except ValueError:
+                continue
+            name = path.name.lower()
+            is_artifact = any(
+                name.endswith(suffix) for suffix in _VENDORABLE_ARTIFACT_SUFFIXES
+            )
+            if is_artifact:
+                # Artifacts always recorded — they're the primary
+                # input the LLM needs for the copy action.
+                artifacts.append(rel)
+            if not inventory_capped:
+                inventory.append(rel)
+                if len(inventory) >= _MAX_MONOREPO_INVENTORY_ENTRIES:
+                    inventory_capped = True
+
+        result.monorepo_inventory = inventory
+        result.vendorable_artifacts = artifacts
+
     def _gather_file_contents(self, result: AnalysisResult) -> None:
         """Read key files to provide as context for the LLM agent."""
         targets = []
@@ -525,8 +710,44 @@ class AppAnalyzer:
         return name or "my-extension"
 
 
+# Signals that a directory is an extension root. Both the monorepo
+# rebase early-return AND subdir discovery use this same narrow set.
+#
+# Why narrow: workspace-root monorepos commonly carry their own
+# ``package.json`` (npm workspaces) or ``pyproject.toml`` (poetry/uv
+# workspace) at the repo root AND also have real extensions under
+# ``apps/<x>``. If we treated those manifests as extension signals,
+# we'd short-circuit rebase to the workspace root (or, worse, rebase
+# into a sibling library subdir like ``packages/ui/`` instead of the
+# real app at the repo root). Both regressions surfaced in Codex
+# review iterations.
+#
+# A bare manifest (``package.json``, ``pyproject.toml``) is too
+# ambiguous to auto-rebase on. Greenfield monorepo apps that haven't
+# yet been containerized should either:
+#   - run ``kz-ext convert apps/foo`` with the explicit subdir, OR
+#   - add a Dockerfile stub to the subdir to signal containerization
+#     intent (the convert can then take it the rest of the way).
+_STRONG_EXTENSION_ROOT_SIGNALS = (
+    *COMPOSE_FILENAMES,
+    "kamiwaza.json",
+    "Dockerfile",
+)
+
+
+def _is_strong_extension_root(directory: Path) -> bool:
+    """Return True when *directory* has a strong signal of being an
+    extension root: compose, ``kamiwaza.json``, or ``Dockerfile``.
+    Used by both the monorepo-rebase early-return and subdir discovery.
+    """
+    return any((directory / name).exists() for name in _STRONG_EXTENSION_ROOT_SIGNALS)
+
+
 def _is_dockerfile(path: Path) -> bool:
-    return path.name == "Dockerfile" or path.name.startswith("Dockerfile.")
+    name = path.name
+    if name.endswith(_DOCKERFILE_NEGATIVE_SUFFIXES):
+        return False
+    return name == "Dockerfile" or name.startswith("Dockerfile.")
 
 
 def _is_manifest(path: Path) -> bool:

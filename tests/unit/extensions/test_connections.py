@@ -105,3 +105,95 @@ class TestConnectionManager:
     def test_special_chars_rejected(self, mgr):
         with pytest.raises(ValueError, match="Invalid connection name"):
             mgr.add_connection("bad name!", "https://a.example", _make_token())
+
+
+@pytest.mark.unit
+class TestEffectiveVerifySsl:
+    """``ConnectionInfo.effective_verify_ssl`` collapses three inputs
+    (env var, dev TLD, persisted setting) into a single answer the rest
+    of the codebase consumes."""
+
+    def _make(self, url: str, verify_ssl: bool = True):
+        from kamiwaza_extensions.connections import ConnectionInfo
+        return ConnectionInfo(
+            name="test", url=url, active=True, created_at=0.0, verify_ssl=verify_ssl
+        )
+
+    def test_env_false_wins_over_everything(self, monkeypatch):
+        monkeypatch.setenv("KAMIWAZA_VERIFY_SSL", "false")
+        # Even a public hostname with persisted strict mode flips off.
+        conn = self._make("https://api.kamiwaza.ai/api", verify_ssl=True)
+        assert conn.effective_verify_ssl() is False
+
+    def test_env_true_wins_over_dev_tld(self, monkeypatch):
+        monkeypatch.setenv("KAMIWAZA_VERIFY_SSL", "true")
+        # Dev TLD would normally auto-disable, but explicit env wins.
+        conn = self._make("https://kamiwaza.test/api", verify_ssl=False)
+        assert conn.effective_verify_ssl() is True
+
+    @pytest.mark.parametrize("value", ["false", "0", "no", "FALSE", "No"])
+    def test_env_false_value_variants(self, monkeypatch, value):
+        """Iter-8 review (Codex): the SDK client accepts ``false``,
+        ``0``, ``no`` (case-insensitive). ``effective_verify_ssl``
+        must accept the same set or the host CLI and the deployed
+        extension end up with divergent SSL settings — exactly the
+        bug class this method exists to prevent."""
+        monkeypatch.setenv("KAMIWAZA_VERIFY_SSL", value)
+        conn = self._make("https://api.kamiwaza.ai/api", verify_ssl=True)
+        assert conn.effective_verify_ssl() is False, value
+
+    @pytest.mark.parametrize("value", ["true", "1", "yes", "TRUE", "Yes"])
+    def test_env_true_value_variants(self, monkeypatch, value):
+        monkeypatch.setenv("KAMIWAZA_VERIFY_SSL", value)
+        conn = self._make("https://kamiwaza.test/api", verify_ssl=False)
+        assert conn.effective_verify_ssl() is True, value
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://kamiwaza.test/api",
+            "https://anything.test/",
+            "https://my-host.local",
+            "https://localhost:8080",
+            "http://127.0.0.1:7777/api",
+            "https://192.168.1.10/api",
+            "https://[::1]/api",
+            "https://traefik.kamiwaza.svc.cluster.local/api",
+        ],
+    )
+    def test_dev_tlds_auto_disable(self, monkeypatch, url):
+        monkeypatch.delenv("KAMIWAZA_VERIFY_SSL", raising=False)
+        conn = self._make(url, verify_ssl=True)
+        assert conn.effective_verify_ssl() is False, url
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://api.kamiwaza.ai/api",
+            "https://platform.example.com/api",
+            "https://kamiwaza.io/api",
+        ],
+    )
+    def test_production_urls_keep_persisted(self, monkeypatch, url):
+        monkeypatch.delenv("KAMIWAZA_VERIFY_SSL", raising=False)
+        conn = self._make(url, verify_ssl=True)
+        assert conn.effective_verify_ssl() is True, url
+        # And False persisted stays False.
+        assert self._make(url, verify_ssl=False).effective_verify_ssl() is False
+
+    def test_word_boundary_avoids_substring_match(self, monkeypatch):
+        """``host.testing.example.com`` must NOT match ``.test`` TLD."""
+        monkeypatch.delenv("KAMIWAZA_VERIFY_SSL", raising=False)
+        conn = self._make("https://api.testing.example.com/api", verify_ssl=True)
+        assert conn.effective_verify_ssl() is True
+
+    def test_malformed_url_falls_back_to_persisted(self, monkeypatch):
+        monkeypatch.delenv("KAMIWAZA_VERIFY_SSL", raising=False)
+        conn = self._make("not a url", verify_ssl=True)
+        assert conn.effective_verify_ssl() is True
+
+    def test_empty_env_var_treated_as_unset(self, monkeypatch):
+        monkeypatch.setenv("KAMIWAZA_VERIFY_SSL", "")
+        # Empty string falls through to dev-TLD check.
+        conn = self._make("https://kamiwaza.test", verify_ssl=True)
+        assert conn.effective_verify_ssl() is False

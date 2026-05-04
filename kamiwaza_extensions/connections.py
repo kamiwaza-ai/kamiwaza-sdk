@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import re
@@ -10,11 +11,56 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
+from urllib.parse import urlparse
 
 from kamiwaza_sdk.token_store import FileTokenStore, StoredToken
 
 # Connection names must be safe for use as directory names
 _CONN_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+# Hostnames where TLS verification is auto-disabled. ``.test`` is
+# RFC 6761-reserved for development; ``.local`` is mDNS by RFC 6762;
+# ``localhost`` is the loopback alias; bare IPs (``127.0.0.1``,
+# ``192.168.x.y``) virtually never have public CA-signed certs;
+# ``*.svc.cluster.local`` is in-cluster K8s service DNS. None are
+# reachable from the public internet, so a self-signed cert is the
+# norm. Production hostnames (``api.example.com``) keep strict
+# verification.
+_DEV_TLDS = (".test", ".local", ".localhost")
+_K8S_INTERNAL_SUFFIX = ".svc.cluster.local"
+
+# Mirror the SDK client's ``KAMIWAZA_VERIFY_SSL`` parsing
+# (``kamiwaza_sdk.client._VERIFY_SSL_FALSE_VALUES``). Keeping the
+# accepted-value sets in sync prevents divergence: e.g. with the SDK
+# client treating ``0`` as off but the SDK NOT treating it as off,
+# the host CLI would skip verify on outbound calls but ship strict
+# settings to the deployed extension — exactly the divergence bug
+# this whole module was added to prevent.
+_VERIFY_SSL_FALSE_VALUES = {"false", "0", "no"}
+_VERIFY_SSL_TRUE_VALUES = {"true", "1", "yes"}
+
+
+def _is_dev_hostname(url: str) -> bool:
+    """Return True for hostnames that conventionally use self-signed TLS."""
+    if not url:
+        return False
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except (ValueError, AttributeError):
+        return False
+    if not host:
+        return False
+    if host == "localhost":
+        return True
+    if host.endswith(_K8S_INTERNAL_SUFFIX):
+        return True
+    if any(host.endswith(tld) for tld in _DEV_TLDS):
+        return True
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        return False
 
 
 @dataclass
@@ -24,6 +70,36 @@ class ConnectionInfo:
     active: bool
     created_at: float
     verify_ssl: bool = True
+
+    def effective_verify_ssl(self) -> bool:
+        """Return the actual verify-SSL setting for this connection.
+
+        Precedence (first match wins):
+
+        1. ``KAMIWAZA_VERIFY_SSL=false`` env var → False (per-session
+           override; the SDK client respects this for outbound calls
+           and the deployed extension's TLS-reject setting must match).
+        2. ``KAMIWAZA_VERIFY_SSL=true`` env var → True (explicit
+           re-enable, e.g. when testing strict mode against a dev URL).
+        3. URL hostname is a dev TLD (``.test``, ``.local``,
+           ``localhost``, ``*.svc.cluster.local``) or a raw IP → False.
+           Public CAs don't sign these; strict verify always fails.
+        4. Persisted ``verify_ssl`` from ``kz-ext login`` (default True).
+
+        Centralized so PayloadBuilder, ssl_env_override, dev_local, and
+        any future caller share one source of truth — diverging
+        behaviour across these paths is what produced the
+        ``CERTIFICATE_VERIFY_FAILED`` symptom on cluster deploys to
+        ``kamiwaza.test``.
+        """
+        env_value = os.environ.get("KAMIWAZA_VERIFY_SSL", "").strip().lower()
+        if env_value in _VERIFY_SSL_FALSE_VALUES:
+            return False
+        if env_value in _VERIFY_SSL_TRUE_VALUES:
+            return True
+        if _is_dev_hostname(self.url):
+            return False
+        return self.verify_ssl
 
 
 def _validate_connection_name(name: str) -> None:

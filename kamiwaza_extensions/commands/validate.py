@@ -14,19 +14,43 @@ console = Console()
 
 def run_validate(*, path: Optional[str], json_output: bool) -> None:
     """Validate extension metadata and compose files."""
-    from kamiwaza_extensions.validators.metadata import MetadataValidator
+    from kamiwaza_extensions.extension_detector import (
+        ExtensionDetector,
+        ExtensionNotFoundError,
+        MultipleExtensionsError,
+    )
     from kamiwaza_extensions.validators.compose import ComposeValidator
+    from kamiwaza_extensions.validators.metadata import MetadataValidator
     from kamiwaza_extensions.validators.platform_runtime import PlatformRuntimeValidator
 
-    ext_dir = Path(path) if path else Path.cwd()
+    start_dir = Path(path) if path else Path.cwd()
+
+    # Use find_root() rather than detect() so a malformed
+    # kamiwaza.json doesn't bail with a detector error before
+    # MetadataValidator gets a chance to surface its richer
+    # structured output. Validating broken manifests is the canonical
+    # reason a user invokes ``kz-ext validate``; the detector should
+    # only locate the file, not parse it.
+    try:
+        ext_dir = ExtensionDetector().find_root(start_dir)
+    except (ExtensionNotFoundError, MultipleExtensionsError) as exc:
+        if json_output:
+            typer.echo(json_mod.dumps({"passed": False, "errors": [str(exc)], "warnings": []}))
+        else:
+            console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
 
     metadata_file = ext_dir / "kamiwaza.json"
-    if not metadata_file.exists():
-        if json_output:
-            typer.echo(json_mod.dumps({"passed": False, "errors": [f"No kamiwaza.json found in {ext_dir}"], "warnings": []}))
-        else:
-            console.print(f"[red]Error:[/red] No kamiwaza.json found in {ext_dir}")
-        raise typer.Exit(code=1)
+
+    # Surface the monorepo rebase so the user knows where validation ran.
+    if not json_output and ext_dir.resolve() != start_dir.resolve():
+        try:
+            rel = ext_dir.resolve().relative_to(start_dir.resolve())
+        except ValueError:
+            rel = ext_dir
+        console.print(
+            f"  [yellow]→[/yellow] Detected extension at: [bold]{rel}/[/bold]"
+        )
 
     # Run metadata validation
     meta_validator = MetadataValidator()

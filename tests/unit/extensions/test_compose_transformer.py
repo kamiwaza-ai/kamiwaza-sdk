@@ -259,3 +259,249 @@ class TestFullTransform:
         transformer.transform(compose, "test", "v1", "reg")
         assert compose["services"]["api"]["ports"] == original_ports
         assert "build" in compose["services"]["api"]
+
+
+class TestResolveShellRefs:
+    """The compose ``${VAR:-default}`` syntax must round-trip its
+    default value to the K8s pod env (was being dropped wholesale,
+    breaking cross-service URLs like ``BACKEND_URL``)."""
+
+    def test_resolves_default_substitution_dict_form(self, transformer):
+        compose = {
+            "services": {
+                "frontend": {
+                    "build": ".",
+                    "environment": {
+                        "BACKEND_URL": "${BACKEND_URL:-http://backend:8000}",
+                    },
+                },
+            },
+        }
+        result = transformer.transform(compose, "test", "v1", "reg")
+        assert result["services"]["frontend"]["environment"] == {
+            "BACKEND_URL": "http://backend:8000",
+        }
+
+    def test_resolves_default_substitution_list_form(self, transformer):
+        compose = {
+            "services": {
+                "frontend": {
+                    "build": ".",
+                    "environment": [
+                        "BACKEND_URL=${BACKEND_URL:-http://backend:8000}",
+                        "PLAIN_VAR=plain-value",
+                    ],
+                },
+            },
+        }
+        result = transformer.transform(compose, "test", "v1", "reg")
+        assert result["services"]["frontend"]["environment"] == [
+            "BACKEND_URL=http://backend:8000",
+            "PLAIN_VAR=plain-value",
+        ]
+
+    def test_drops_kamiwaza_platform_vars(self, transformer):
+        """``KAMIWAZA_*`` vars are platform-injected via ConfigMap
+        envFrom; an explicit env entry would shadow the cluster-internal
+        value with the laptop-only default."""
+        compose = {
+            "services": {
+                "backend": {
+                    "build": ".",
+                    "environment": {
+                        "KAMIWAZA_API_URL": "${KAMIWAZA_API_URL:-http://host.docker.internal:7777/api}",
+                        "BACKEND_URL": "${BACKEND_URL:-http://backend:8000}",
+                    },
+                },
+            },
+        }
+        result = transformer.transform(compose, "test", "v1", "reg")
+        # KAMIWAZA_* dropped; BACKEND_URL resolved to default.
+        assert result["services"]["backend"]["environment"] == {
+            "BACKEND_URL": "http://backend:8000",
+        }
+
+    def test_drops_unresolvable_substitutions(self, transformer):
+        """``${VAR}`` without a default and ``${VAR:?error}`` (required)
+        have no safe value to ship — drop them."""
+        compose = {
+            "services": {
+                "backend": {
+                    "build": ".",
+                    "environment": {
+                        "OPENAI_API_KEY": "${OPENAI_API_KEY}",
+                        "REQUIRED_VAR": "${REQUIRED_VAR:?missing}",
+                        "PLAIN": "kept",
+                    },
+                },
+            },
+        }
+        result = transformer.transform(compose, "test", "v1", "reg")
+        assert result["services"]["backend"]["environment"] == {"PLAIN": "kept"}
+
+    def test_alternate_default_form_dash_only(self, transformer):
+        """Compose accepts both ``${VAR:-default}`` (unset OR empty)
+        and ``${VAR-default}`` (unset only). Both collapse to default."""
+        compose = {
+            "services": {
+                "backend": {
+                    "build": ".",
+                    "environment": {"X": "${UNSET-fallback}"},
+                },
+            },
+        }
+        result = transformer.transform(compose, "test", "v1", "reg")
+        assert result["services"]["backend"]["environment"] == {"X": "fallback"}
+
+    def test_plain_values_pass_through(self, transformer):
+        compose = {
+            "services": {
+                "backend": {
+                    "build": ".",
+                    "environment": {"FOO": "bar", "PORT": "8000"},
+                },
+            },
+        }
+        result = transformer.transform(compose, "test", "v1", "reg")
+        assert result["services"]["backend"]["environment"] == {
+            "FOO": "bar",
+            "PORT": "8000",
+        }
+
+
+class TestDetectServiceUrlRewrites:
+    """Cross-service URL rewriting: when one service's env references
+    a sibling by compose short name (``http://backend:8000``), emit a
+    rewrite map for the operator to translate to the
+    deployment-prefixed K8s service name (``http://my-app-backend:8000``).
+    Without this, bare ``backend`` doesn't resolve in K8s DNS — the
+    Next.js API proxy fails with ENOTFOUND."""
+
+    def test_rewrites_sibling_url(self):
+        from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
+
+        services = {
+            "frontend": {
+                "environment": {"BACKEND_URL": "http://backend:8000"},
+            },
+            "backend": {
+                "environment": {"PORT": "8000"},
+            },
+        }
+        rewrites = detect_service_url_rewrites(services, "my-app-dev-abc")
+        assert rewrites == {
+            "frontend": {
+                "BACKEND_URL": {
+                    "from": "http://backend:8000",
+                    "to": "http://my-app-dev-abc-backend:8000",
+                }
+            }
+        }
+
+    def test_handles_https_and_path(self):
+        from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
+
+        services = {
+            "frontend": {
+                "environment": {"API": "https://api/v1/health"},
+            },
+            "api": {"environment": {}},
+        }
+        rewrites = detect_service_url_rewrites(services, "ext")
+        assert rewrites["frontend"]["API"]["to"] == "https://ext-api/v1/health"
+
+    def test_handles_list_form_environment(self):
+        from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
+
+        services = {
+            "frontend": {
+                "environment": ["BACKEND_URL=http://backend:8000"],
+            },
+            "backend": {"environment": []},
+        }
+        rewrites = detect_service_url_rewrites(services, "ext")
+        assert rewrites == {
+            "frontend": {
+                "BACKEND_URL": {
+                    "from": "http://backend:8000",
+                    "to": "http://ext-backend:8000",
+                }
+            }
+        }
+
+    def test_ignores_self_reference(self):
+        from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
+
+        services = {
+            "backend": {
+                "environment": {"SELF_URL": "http://backend:8000"},
+            },
+        }
+        rewrites = detect_service_url_rewrites(services, "ext")
+        assert rewrites == {}
+
+    def test_ignores_external_hostnames(self):
+        from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
+
+        services = {
+            "frontend": {
+                "environment": {"EXT": "https://api.openai.com/v1"},
+            },
+            "backend": {"environment": {}},
+        }
+        rewrites = detect_service_url_rewrites(services, "ext")
+        assert rewrites == {}
+
+    def test_word_boundary_avoids_prefix_match(self):
+        """``http://backend2`` must NOT match a sibling named ``backend``."""
+        from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
+
+        services = {
+            "frontend": {
+                "environment": {"URL": "http://backend2:8000"},
+            },
+            "backend": {"environment": {}},
+        }
+        rewrites = detect_service_url_rewrites(services, "ext")
+        assert rewrites == {}
+
+    def test_subdomain_does_not_match_sibling(self):
+        """Iter-8 review finding: a sibling named ``api`` must NOT
+        hijack ``https://api.openai.com/v1`` (the ``.`` after ``api`` is
+        a subdomain separator, not a host terminator). Earlier ``\\b``
+        boundary treated ``.`` as a word boundary and falsely rewrote
+        external URLs sharing a leading subdomain with sibling names
+        like ``api``, ``auth``, ``app``, ``web``."""
+        from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
+
+        services = {
+            "api": {"environment": {}},
+            "auth": {"environment": {}},
+            "frontend": {
+                "environment": {
+                    "OPENAI_BASE_URL": "https://api.openai.com/v1",
+                    "AUTH0_URL": "https://auth.example.com/oauth",
+                    # Real sibling reference (no subdomain) — must
+                    # still be rewritten so we don't regress the
+                    # primary use case.
+                    "API_URL": "http://api:8000",
+                },
+            },
+        }
+        rewrites = detect_service_url_rewrites(services, "ext")
+        # Only the bare-host sibling reference gets rewritten; the
+        # external subdomain URLs pass through untouched.
+        assert rewrites == {
+            "frontend": {
+                "API_URL": {
+                    "from": "http://api:8000",
+                    "to": "http://ext-api:8000",
+                }
+            }
+        }
+
+    def test_empty_for_no_environment(self):
+        from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
+
+        services = {"backend": {}, "frontend": {}}
+        assert detect_service_url_rewrites(services, "ext") == {}

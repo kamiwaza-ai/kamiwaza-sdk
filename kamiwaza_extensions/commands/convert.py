@@ -16,7 +16,7 @@ def run_convert(
     dry_run: bool = False,
 ) -> None:
     """Analyze and convert an existing app to a Kamiwaza extension."""
-    from kamiwaza_extensions.app_analyzer import AppAnalyzer
+    from kamiwaza_extensions.app_analyzer import AmbiguousMonorepoError, AppAnalyzer
     from kamiwaza_extensions.convert_agent import run_agent
 
     app_dir = Path(path).resolve()
@@ -31,9 +31,30 @@ def run_convert(
     except FileNotFoundError as exc:
         console.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(code=1) from exc
+    except AmbiguousMonorepoError as exc:
+        console.print(
+            "[red]Error:[/red] Multiple extension candidates detected — "
+            "re-run with the specific subdirectory:"
+        )
+        for candidate in exc.candidates:
+            try:
+                rel = candidate.relative_to(app_dir)
+            except ValueError:
+                rel = candidate
+            console.print(f"    kz-ext convert {rel}")
+        raise typer.Exit(code=1) from exc
 
     # Print analysis summary
     console.print(f"    Type:              [bold]{analysis.extension_type}[/bold]")
+    if analysis.rebased_from is not None:
+        try:
+            rel = analysis.app_dir.relative_to(analysis.rebased_from)
+        except ValueError:
+            rel = analysis.app_dir
+        console.print(
+            f"    [yellow]→[/yellow] Rebased to:        [bold]{rel}/[/bold] "
+            "(extension signals detected here)"
+        )
     mode_label = "generic AI fallback" if analysis.conversion_mode == "generic" else "structured"
     console.print(f"    Mode:              [bold]{mode_label}[/bold]")
     if analysis.services:
@@ -87,15 +108,18 @@ def run_convert(
         else:
             console.print("  [bold]Files modified:[/bold]")
 
+        action_verbs = {
+            "create": ("created", "would create"),
+            "modify": ("modified", "would modify"),
+            "append": ("appended", "would append"),
+            "copy": ("copied from {src}", "would copy from {src}"),
+        }
         for mod in plan.modifications:
-            if mod.action == "create":
-                icon = "[green]\u2713[/green]" if not dry_run else "[dim]\u2713[/dim]"
-                action = "created" if not dry_run else "would create"
-            else:
-                icon = "[green]\u2713[/green]" if not dry_run else "[dim]\u2713[/dim]"
-                action = "modified" if not dry_run else "would modify"
+            icon = "[green]\u2713[/green]" if not dry_run else "[dim]\u2713[/dim]"
+            past, future = action_verbs.get(mod.action, ("modified", "would modify"))
+            verb = (past if not dry_run else future).format(src=mod.source_path or "?")
             desc = f" ({mod.description})" if mod.description else ""
-            console.print(f"    {icon} {mod.path} — {action}{desc}")
+            console.print(f"    {icon} {mod.path} — {verb}{desc}")
 
     if plan.errors:
         console.print()

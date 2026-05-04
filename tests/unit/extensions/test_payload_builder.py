@@ -8,6 +8,7 @@ from kamiwaza_extensions.payload_builder import (
     ANNOTATION_DEPLOYED_AT,
     ANNOTATION_DEPLOYER,
     ANNOTATION_REVISION,
+    ANNOTATION_SERVICE_REF_REWRITES,
     PayloadBuilder,
 )
 
@@ -155,6 +156,167 @@ class TestAnnotations:
         assert ANNOTATION_DEPLOYER not in out
         assert ANNOTATION_REVISION not in out
         assert ANNOTATION_DEPLOYED_AT in out
+
+
+class TestVerifySslPropagation:
+    """The deployed extension's ``tlsRejectUnauthorized`` must reflect
+    the developer's intent. Three independent inputs collapse here via
+    ``ConnectionInfo.effective_verify_ssl``:
+    1. ``KAMIWAZA_VERIFY_SSL`` env var (per-session override)
+    2. URL hostname (dev TLDs auto-disable)
+    3. Persisted ``connection.verify_ssl`` from ``kz-ext login``
+    """
+
+    def test_env_false_overrides_connection_verify_true(
+        self,
+        builder,
+        metadata,
+        transformed_compose,
+        connection,
+        monkeypatch,
+    ):
+        monkeypatch.setenv("KAMIWAZA_VERIFY_SSL", "false")
+        assert connection.verify_ssl is True
+
+        payload = builder.build(metadata, transformed_compose, connection, "ext")
+
+        assert payload.kamiwaza.tls_reject_unauthorized == "0"
+        primary_env = next(s for s in payload.services if s.primary).env or []
+        # Both conventional vars injected so explicit pod env beats
+        # whatever the operator writes into the configmap.
+        assert {"name": "KAMIWAZA_VERIFY_SSL", "value": "false"} in primary_env
+        assert (
+            {"name": "KAMIWAZA_TLS_REJECT_UNAUTHORIZED", "value": "0"} in primary_env
+        )
+
+    def test_dev_tld_auto_disables_verify(
+        self,
+        builder,
+        metadata,
+        transformed_compose,
+        monkeypatch,
+    ):
+        """User logged in normally (verify_ssl=True) against
+        ``kamiwaza.test`` — should still ship ``tls_reject="0"`` because
+        ``.test`` URLs always use self-signed certs."""
+        monkeypatch.delenv("KAMIWAZA_VERIFY_SSL", raising=False)
+        conn = ConnectionInfo(
+            name="dev",
+            url="https://kamiwaza.test/api",
+            active=True,
+            created_at=0.0,
+            verify_ssl=True,  # persisted strict — auto-disable should win
+        )
+
+        payload = builder.build(metadata, transformed_compose, conn, "ext")
+        assert payload.kamiwaza.tls_reject_unauthorized == "0"
+
+    def test_env_true_re_enables_against_dev_tld(
+        self,
+        builder,
+        metadata,
+        transformed_compose,
+        monkeypatch,
+    ):
+        """``KAMIWAZA_VERIFY_SSL=true`` explicitly opts back in even
+        for dev TLDs (e.g., user has a trusted local root CA)."""
+        monkeypatch.setenv("KAMIWAZA_VERIFY_SSL", "true")
+        conn = ConnectionInfo(
+            name="dev",
+            url="https://kamiwaza.test/api",
+            active=True,
+            created_at=0.0,
+            verify_ssl=True,
+        )
+
+        payload = builder.build(metadata, transformed_compose, conn, "ext")
+        assert payload.kamiwaza.tls_reject_unauthorized == "1"
+
+    def test_production_url_keeps_strict(
+        self,
+        builder,
+        metadata,
+        transformed_compose,
+        monkeypatch,
+    ):
+        """Real public hostnames keep persisted strict setting."""
+        monkeypatch.delenv("KAMIWAZA_VERIFY_SSL", raising=False)
+        conn = ConnectionInfo(
+            name="prod",
+            url="https://api.kamiwaza.ai/api",
+            active=True,
+            created_at=0.0,
+            verify_ssl=True,
+        )
+
+        payload = builder.build(metadata, transformed_compose, conn, "ext")
+        assert payload.kamiwaza.tls_reject_unauthorized == "1"
+
+
+class TestServiceRefRewritesAnnotation:
+    """The frontend's compose ``http://backend:8000`` doesn't resolve in
+    K8s DNS — bare ``backend`` only works in docker-compose. The
+    operator reads ``extensions.kamiwaza.io/service-ref-rewrites`` to
+    swap the env value to the deployment-prefixed K8s service name at
+    deploy time."""
+
+    def test_emitted_when_compose_has_cross_service_url(
+        self,
+        builder,
+        metadata,
+        connection,
+    ):
+        import json
+
+        # Frontend references ``backend`` (a sibling service); the
+        # transformer would have already resolved any ``${VAR:-default}``
+        # syntax so we feed it the post-resolution form.
+        transformed = {
+            "services": {
+                "frontend": {
+                    "image": "reg/my-app-frontend:dev",
+                    "ports": ["3000"],
+                    "environment": {"BACKEND_URL": "http://backend:8000"},
+                },
+                "backend": {
+                    "image": "reg/my-app-backend:dev",
+                    "ports": ["8000"],
+                },
+            },
+        }
+        payload = builder.build(metadata, transformed, connection, "my-app-dev-abc")
+
+        annotations = (payload.model_extra or {}).get("annotations") or {}
+        raw = annotations.get(ANNOTATION_SERVICE_REF_REWRITES)
+        assert raw is not None, "service-ref-rewrites annotation missing"
+        rewrites = json.loads(raw)
+        assert rewrites == {
+            "frontend": {
+                "BACKEND_URL": {
+                    "from": "http://backend:8000",
+                    "to": "http://my-app-dev-abc-backend:8000",
+                }
+            }
+        }
+
+    def test_omitted_when_no_cross_service_urls(
+        self,
+        builder,
+        metadata,
+        connection,
+    ):
+        transformed = {
+            "services": {
+                "frontend": {
+                    "image": "reg/my-app-frontend:dev",
+                    "ports": ["3000"],
+                    "environment": {"FOO": "bar"},
+                },
+            },
+        }
+        payload = builder.build(metadata, transformed, connection, "my-app-dev-abc")
+        annotations = (payload.model_extra or {}).get("annotations") or {}
+        assert ANNOTATION_SERVICE_REF_REWRITES not in annotations
 
 
 class TestEnvParsing:

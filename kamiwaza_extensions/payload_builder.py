@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import socket
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -17,6 +18,7 @@ from kamiwaza_sdk.schemas.extensions import (
     SecuritySpec,
 )
 
+from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
 from kamiwaza_extensions.connections import ConnectionInfo
 
 # CRD annotation keys — namespace is ``kamiwaza.io/*`` (NOT ``kamiwaza.ai/*``).
@@ -31,6 +33,16 @@ ANNOTATION_DEPLOYER = "kamiwaza.io/deployer"
 ANNOTATION_BUILD_HOST = "kamiwaza.io/build-host"
 ANNOTATION_REVISION = "kamiwaza.io/revision"
 ANNOTATION_DEPLOYED_AT = "kamiwaza.io/deployed-at"
+
+# The kamiwaza-extension-operator reads this annotation at deploy time
+# and rewrites cross-service URL env values from the compose short name
+# (``http://backend:8000``) to the deployment-prefixed K8s service name
+# (``http://my-app-dev-abc-backend:8000``). Without this annotation,
+# bare ``backend`` doesn't resolve in K8s DNS — the frontend's API
+# proxy fails with ENOTFOUND. Namespace is ``extensions.kamiwaza.io/*``
+# (different from the ``kamiwaza.io/*`` deploy-metadata namespace
+# above). The operator recognizes both.
+ANNOTATION_SERVICE_REF_REWRITES = "extensions.kamiwaza.io/service-ref-rewrites"
 
 
 def _compose_resources_to_k8s(resources: Dict[str, str]) -> Dict[str, str]:
@@ -73,14 +85,22 @@ class PayloadBuilder:
             if ext_type == "app"
             else f"/runtime/{ext_type}s/{dev_name}"
         )
+        # ``effective_verify_ssl`` centralizes the SSL precedence:
+        # KAMIWAZA_VERIFY_SSL env var > dev-TLD auto-disable > persisted
+        # connection.verify_ssl. Drives both the per-service env
+        # injection (``_build_services``) and the
+        # ``tlsRejectUnauthorized`` spec field so the deployed
+        # extension's in-cluster callbacks match the developer's intent.
+        verify_ssl = connection.effective_verify_ssl()
+
         services = self._build_services(
             transformed_compose,
             app_path=app_path,
-            verify_ssl=connection.verify_ssl,
+            verify_ssl=verify_ssl,
             extension_type=ext_type,
         )
         origin = connection.url.removesuffix("/api")
-        tls_reject = "0" if not connection.verify_ssl else "1"
+        tls_reject = "0" if not verify_ssl else "1"
 
         kwargs: Dict[str, Any] = dict(
             name=dev_name,
@@ -103,6 +123,20 @@ class PayloadBuilder:
         )
 
         annotations = self.build_annotations(deployer=deployer, revision=revision)
+
+        # Cross-service URL rewrites: scan each service's env for
+        # references to sibling services by short name and emit the
+        # operator-consumed ``service-ref-rewrites`` annotation. Ships
+        # only when at least one rewrite is needed (no annotation when
+        # there are no cross-service URLs).
+        rewrites = detect_service_url_rewrites(
+            transformed_compose.get("services") or {}, dev_name
+        )
+        if rewrites:
+            annotations[ANNOTATION_SERVICE_REF_REWRITES] = json.dumps(
+                rewrites, sort_keys=True, separators=(",", ":")
+            )
+
         if annotations:
             # `CreateExtension` has `extra="allow"` — annotations ride on the
             # request body for the platform to attach to the CRD metadata.
@@ -193,7 +227,23 @@ class PayloadBuilder:
             if is_primary and app_path:
                 env.append({"name": "KAMIWAZA_APP_PATH", "value": app_path})
             if not verify_ssl:
+                # K8s rule: explicit ``env`` wins over ``envFrom``
+                # (ConfigMap injection). Inject BOTH conventional
+                # variables explicitly so the deployed pod sees the
+                # relaxed setting regardless of what the operator
+                # writes into ``KAMIWAZA_TLS_REJECT_UNAUTHORIZED`` in
+                # the configmap. Mirrors what the legacy ``make
+                # kamiwaza-push`` flow did — that CR was the empirical
+                # proof point that explicit env beats configmap-via-spec
+                # round-trip and is the reliable mechanism.
+                #
+                # - ``KAMIWAZA_VERIFY_SSL=false`` for the Python SDK
+                #   client (``_verify_ssl_disabled_from_env``).
+                # - ``KAMIWAZA_TLS_REJECT_UNAUTHORIZED=0`` for code that
+                #   reads the Node.js convention (frontend proxy + many
+                #   backend HTTP clients that prefer this var).
                 env.append({"name": "KAMIWAZA_VERIFY_SSL", "value": "false"})
+                env.append({"name": "KAMIWAZA_TLS_REJECT_UNAUTHORIZED", "value": "0"})
 
             health_check = self._default_health_check(
                 svc_name,

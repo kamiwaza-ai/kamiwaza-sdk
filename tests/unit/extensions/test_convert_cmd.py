@@ -98,11 +98,15 @@ class TestRunConvert:
         mock_agent.assert_called_once()
 
     def test_no_llm_fallback_still_creates_manifest(self, monkeypatch, tmp_path):
+        from kamiwaza_extensions import convert_agent
         from kamiwaza_extensions.commands.convert import run_convert
 
         (tmp_path / "index.html").write_text("<html><body>Hello</body></html>")
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        # Also disable CLI provider discovery so the fallback path is reached
+        # even on dev machines that have `claude` / `codex` installed.
+        monkeypatch.setattr(convert_agent.shutil, "which", lambda _name: None)
 
         run_convert(path=str(tmp_path), dry_run=False)
 
