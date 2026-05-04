@@ -29,6 +29,16 @@ _CONN_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 _DEV_TLDS = (".test", ".local", ".localhost")
 _K8S_INTERNAL_SUFFIX = ".svc.cluster.local"
 
+# Mirror the SDK client's ``KAMIWAZA_VERIFY_SSL`` parsing
+# (``kamiwaza_sdk.client._VERIFY_SSL_FALSE_VALUES``). Keeping the
+# accepted-value sets in sync prevents divergence: e.g. with the SDK
+# client treating ``0`` as off but the SDK NOT treating it as off,
+# the host CLI would skip verify on outbound calls but ship strict
+# settings to the deployed extension — exactly the divergence bug
+# this whole module was added to prevent.
+_VERIFY_SSL_FALSE_VALUES = {"false", "0", "no"}
+_VERIFY_SSL_TRUE_VALUES = {"true", "1", "yes"}
+
 
 def _is_dev_hostname(url: str) -> bool:
     """Return True for hostnames that conventionally use self-signed TLS."""
@@ -83,9 +93,9 @@ class ConnectionInfo:
         ``kamiwaza.test``.
         """
         env_value = os.environ.get("KAMIWAZA_VERIFY_SSL", "").strip().lower()
-        if env_value == "false":
+        if env_value in _VERIFY_SSL_FALSE_VALUES:
             return False
-        if env_value == "true":
+        if env_value in _VERIFY_SSL_TRUE_VALUES:
             return True
         if _is_dev_hostname(self.url):
             return False

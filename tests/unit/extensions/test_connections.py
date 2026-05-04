@@ -131,6 +131,23 @@ class TestEffectiveVerifySsl:
         conn = self._make("https://kamiwaza.test/api", verify_ssl=False)
         assert conn.effective_verify_ssl() is True
 
+    @pytest.mark.parametrize("value", ["false", "0", "no", "FALSE", "No"])
+    def test_env_false_value_variants(self, monkeypatch, value):
+        """Iter-8 review (Codex): the SDK client accepts ``false``,
+        ``0``, ``no`` (case-insensitive). ``effective_verify_ssl``
+        must accept the same set or the host CLI and the deployed
+        extension end up with divergent SSL settings — exactly the
+        bug class this method exists to prevent."""
+        monkeypatch.setenv("KAMIWAZA_VERIFY_SSL", value)
+        conn = self._make("https://api.kamiwaza.ai/api", verify_ssl=True)
+        assert conn.effective_verify_ssl() is False, value
+
+    @pytest.mark.parametrize("value", ["true", "1", "yes", "TRUE", "Yes"])
+    def test_env_true_value_variants(self, monkeypatch, value):
+        monkeypatch.setenv("KAMIWAZA_VERIFY_SSL", value)
+        conn = self._make("https://kamiwaza.test/api", verify_ssl=False)
+        assert conn.effective_verify_ssl() is True, value
+
     @pytest.mark.parametrize(
         "url",
         [

@@ -357,10 +357,12 @@ def run_dev_remote(
     # user knows why their KAMIWAZA_TLS_REJECT_UNAUTHORIZED ends up "0".
     # Skip the notice when the persisted setting already matched (no
     # effective change) or when the user set the env var explicitly.
+    from kamiwaza_extensions.connections import _VERIFY_SSL_FALSE_VALUES
     if (
         connection.verify_ssl
         and not connection.effective_verify_ssl()
-        and os.environ.get("KAMIWAZA_VERIFY_SSL", "").strip().lower() != "false"
+        and os.environ.get("KAMIWAZA_VERIFY_SSL", "").strip().lower()
+        not in _VERIFY_SSL_FALSE_VALUES
     ):
         console.print(
             f"  [dim]TLS verify auto-disabled for dev hostname "
