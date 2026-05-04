@@ -182,7 +182,12 @@ class TestVerifySslPropagation:
 
         assert payload.kamiwaza.tls_reject_unauthorized == "0"
         primary_env = next(s for s in payload.services if s.primary).env or []
+        # Both conventional vars injected so explicit pod env beats
+        # whatever the operator writes into the configmap.
         assert {"name": "KAMIWAZA_VERIFY_SSL", "value": "false"} in primary_env
+        assert (
+            {"name": "KAMIWAZA_TLS_REJECT_UNAUTHORIZED", "value": "0"} in primary_env
+        )
 
     def test_dev_tld_auto_disables_verify(
         self,

@@ -227,7 +227,23 @@ class PayloadBuilder:
             if is_primary and app_path:
                 env.append({"name": "KAMIWAZA_APP_PATH", "value": app_path})
             if not verify_ssl:
+                # K8s rule: explicit ``env`` wins over ``envFrom``
+                # (ConfigMap injection). Inject BOTH conventional
+                # variables explicitly so the deployed pod sees the
+                # relaxed setting regardless of what the operator
+                # writes into ``KAMIWAZA_TLS_REJECT_UNAUTHORIZED`` in
+                # the configmap. Mirrors what the legacy ``make
+                # kamiwaza-push`` flow did — that CR was the empirical
+                # proof point that explicit env beats configmap-via-spec
+                # round-trip and is the reliable mechanism.
+                #
+                # - ``KAMIWAZA_VERIFY_SSL=false`` for the Python SDK
+                #   client (``_verify_ssl_disabled_from_env``).
+                # - ``KAMIWAZA_TLS_REJECT_UNAUTHORIZED=0`` for code that
+                #   reads the Node.js convention (frontend proxy + many
+                #   backend HTTP clients that prefer this var).
                 env.append({"name": "KAMIWAZA_VERIFY_SSL", "value": "false"})
+                env.append({"name": "KAMIWAZA_TLS_REJECT_UNAUTHORIZED", "value": "0"})
 
             health_check = self._default_health_check(
                 svc_name,
