@@ -158,6 +158,51 @@ class TestAnnotations:
         assert ANNOTATION_DEPLOYED_AT in out
 
 
+class TestVerifySslEnvOverride:
+    """``KAMIWAZA_VERIFY_SSL=false`` env var overrides the persisted
+    ``connection.verify_ssl`` (set at login). The deployed extension
+    needs the override propagated as ``tlsRejectUnauthorized="0"`` so
+    its in-cluster callbacks to a self-signed kamiwaza don't fail with
+    ``CERTIFICATE_VERIFY_FAILED``."""
+
+    def test_env_false_overrides_connection_verify_true(
+        self,
+        builder,
+        metadata,
+        transformed_compose,
+        connection,
+        monkeypatch,
+    ):
+        monkeypatch.setenv("KAMIWAZA_VERIFY_SSL", "false")
+        # Sanity check the fixture default.
+        assert connection.verify_ssl is True
+
+        payload = builder.build(metadata, transformed_compose, connection, "ext")
+
+        # Spec carries the relaxed setting.
+        assert payload.kamiwaza.tls_reject_unauthorized == "0"
+        # And per-service env gets KAMIWAZA_VERIFY_SSL=false injected
+        # (handled by _build_services when verify_ssl is False).
+        primary_env = next(
+            s for s in payload.services if s.primary
+        ).env or []
+        assert {"name": "KAMIWAZA_VERIFY_SSL", "value": "false"} in primary_env
+
+    def test_env_unset_uses_connection_setting(
+        self,
+        builder,
+        metadata,
+        transformed_compose,
+        connection,
+        monkeypatch,
+    ):
+        monkeypatch.delenv("KAMIWAZA_VERIFY_SSL", raising=False)
+        assert connection.verify_ssl is True
+
+        payload = builder.build(metadata, transformed_compose, connection, "ext")
+        assert payload.kamiwaza.tls_reject_unauthorized == "1"
+
+
 class TestServiceRefRewritesAnnotation:
     """The frontend's compose ``http://backend:8000`` doesn't resolve in
     K8s DNS — bare ``backend`` only works in docker-compose. The
