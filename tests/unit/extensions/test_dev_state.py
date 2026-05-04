@@ -516,12 +516,18 @@ class TestBuildPatchKwargsCarriesAnnotations:
     deployer/revision/deployed-at annotations. Helper extracted from
     commands/dev.py for testability."""
 
-    def _payload_with_annotations(self, annotations: dict | None) -> object:
+    def _payload_with_annotations(
+        self, annotations: dict | None, kamiwaza: object | None = None
+    ) -> object:
         class _FakePayload:
-            def __init__(self, model_extra):
+            def __init__(self, model_extra, kamiwaza):
                 self.model_extra = model_extra
+                self.kamiwaza = kamiwaza
 
-        return _FakePayload({"annotations": annotations} if annotations else {})
+        return _FakePayload(
+            {"annotations": annotations} if annotations else {},
+            kamiwaza,
+        )
 
     def test_carries_annotations_when_present(self):
         from kamiwaza_extensions.commands.dev import _build_patch_kwargs
@@ -562,3 +568,29 @@ class TestBuildPatchKwargsCarriesAnnotations:
         )
         patch = PatchExtension(**kwargs)
         assert (patch.model_extra or {}).get("annotations") == {"k": "v"}
+
+    def test_carries_kamiwaza_spec_so_patch_refreshes_tls_settings(self):
+        """PR #92 iter-7: the existing CR persists from the original
+        CREATE. If the developer flips TLS verify on the host (or
+        upgrades SDK so dev-TLD auto-disable kicks in), PATCH must
+        carry the new ``kamiwaza`` spec or the deployed
+        ``KAMIWAZA_TLS_REJECT_UNAUTHORIZED`` stays stuck at the stale
+        value forever."""
+        from kamiwaza_extensions.commands.dev import _build_patch_kwargs
+
+        # Sentinel object — _build_patch_kwargs doesn't introspect it.
+        kamiwaza_spec = object()
+        kwargs = _build_patch_kwargs(
+            patch_services=["svc"],
+            payload=self._payload_with_annotations(None, kamiwaza=kamiwaza_spec),
+        )
+        assert kwargs["kamiwaza"] is kamiwaza_spec
+
+    def test_omits_kamiwaza_when_payload_has_none(self):
+        from kamiwaza_extensions.commands.dev import _build_patch_kwargs
+
+        kwargs = _build_patch_kwargs(
+            patch_services=["svc"],
+            payload=self._payload_with_annotations(None, kamiwaza=None),
+        )
+        assert "kamiwaza" not in kwargs

@@ -26,15 +26,31 @@ def _build_patch_kwargs(
     """Build the kwargs dict for ``PatchExtension(**kwargs)`` from a
     ``CreateExtension`` payload.
 
-    Carries the ``deployer``/``revision``/``deployed-at`` annotations
-    from the payload's ``model_extra`` so PATCH redeploys refresh CRD
-    metadata — ``kz-ext status`` would otherwise show stale ``Last
-    deployed by`` after the first redeploy (review re-review PR #84 H1).
+    Carries forward fields whose values may have changed between
+    deploys but whose CRs persist beyond the first CREATE:
+
+    1. ``annotations`` — the ``deployer``/``revision``/``deployed-at``
+       trio plus ``service-ref-rewrites`` (cross-service URL map). PR
+       #84 H1 originally added the trio so ``kz-ext status`` doesn't
+       show stale ``Last deployed by`` after redeploys; the rewrites
+       map joined later (PR #92 iter-6) for the same reason — without
+       it, an extension first CREATE'd by the old SDK keeps its empty
+       annotations forever even after the user upgrades.
+    2. ``kamiwaza`` integration spec — ``tlsRejectUnauthorized``,
+       ``apiUrl``, ``origin``, ``useAuth``. Same problem class:
+       changing TLS verify on the host (or upgrading SDK so dev-TLD
+       auto-disable kicks in) doesn't take effect until the user
+       deletes the existing extension. CRs are long-lived; PATCH must
+       carry these or iterative dev silently runs against stale config.
     """
     kwargs: Dict[str, Any] = {"services": patch_services}
     annotations = (payload.model_extra or {}).get("annotations")
     if annotations:
         kwargs["annotations"] = annotations
+    # ``kamiwaza`` is a top-level field on CreateExtension; mirror it onto
+    # the patch via ``extra="allow"`` so PATCH refreshes the persisted CR.
+    if getattr(payload, "kamiwaza", None) is not None:
+        kwargs["kamiwaza"] = payload.kamiwaza
     return kwargs
 
 
