@@ -34,6 +34,16 @@ case "$MODE" in
         ;;
 esac
 
+# Required tooling. Fail loudly up front rather than dying mid-build with
+# a cryptic "command not found".
+for tool in uv npm; do
+    if ! command -v "$tool" &> /dev/null; then
+        echo "Error: '$tool' is required but not installed."
+        echo "  Install: https://github.com/astral-sh/uv (uv) | https://nodejs.org (npm)"
+        exit 1
+    fi
+done
+
 # Check for pipx (needed to clear notebook outputs)
 if ! command -v pipx &> /dev/null; then
     echo "Error: pipx is required but not installed."

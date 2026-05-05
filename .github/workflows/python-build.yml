@@ -8,6 +8,7 @@ on:
       - 'kamiwaza_client/**'
       - 'kamiwaza_extensions/**'
       - 'kamiwaza_extensions_lib/**'
+      - 'kamiwaza-ai-extensions-lib/**'
       - 'pyproject.toml'
       - 'uv.lock'
       - 'MANIFEST.in'
@@ -87,7 +88,7 @@ jobs:
             fi
           done
 
-          # MIT/Apache-2.0 obligation: license text must ship in the dist
+          # Apache-2.0 obligation: license text must ship in the dist
           if ! unzip -l dist/lib/*.whl | grep -q "dist-info/licenses/LICENSE"; then
             echo "::error::lib wheel missing LICENSE file"
             exit 1
@@ -118,6 +119,35 @@ jobs:
           else:
               raise SystemExit("expected LocalDevAuthError in clean venv without SDK")
           PY
+
+      - name: Smoke-test release.sh end-to-end (--build-only)
+        run: |
+          # Exercises the npm portion of the release pipeline that the
+          # Python-only build steps above don't touch. Catches regressions
+          # like a missing committed lockfile, broken `npm ci`, or stale
+          # release.sh logic. We rebuild from scratch so this is a true
+          # fresh-clone simulation.
+          rm -rf dist/sdk dist/lib kamiwaza-ai-extensions-lib/dist kamiwaza-ai-extensions-lib/*.tgz
+          ./release.sh --build-only
+
+          # Confirm all three artifacts landed
+          test -f dist/sdk/*.whl || (echo "::error::SDK wheel missing after release.sh --build-only"; exit 1)
+          test -f dist/lib/*.whl || (echo "::error::lib wheel missing after release.sh --build-only"; exit 1)
+          test -f kamiwaza-ai-extensions-lib/*.tgz || (echo "::error::npm tarball missing after release.sh --build-only"; exit 1)
+
+          # Sanity check: README ships in the npm tarball
+          if ! tar tzf kamiwaza-ai-extensions-lib/*.tgz | grep -q "package/README.md$"; then
+            echo "::error::npm tarball missing README.md"
+            exit 1
+          fi
+
+          # Sanity check: LICENSE ships in the npm tarball
+          if ! tar tzf kamiwaza-ai-extensions-lib/*.tgz | grep -q "package/LICENSE$"; then
+            echo "::error::npm tarball missing LICENSE"
+            exit 1
+          fi
+
+          echo "release.sh --build-only verification passed"
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
