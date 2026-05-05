@@ -38,8 +38,8 @@ from .services.context import ContextService
 logger = logging.getLogger(__name__)
 _BEARER_RE = re.compile(
     r"Bearer(?:\s+|%20)\S+"  # Bearer <token> or URL-encoded
-    r'|"(?:access_token|id_token|refresh_token)"\s*:\s*"[^"]*"'  # JSON token fields
-    r'|\\"(?:access_token|id_token|refresh_token)\\"\s*:\s*\\"[^"\\]*\\"'  # escaped JSON token fields
+    r'|"(?:access_token|id_token|refresh_token|client_secret|code|assertion)"\s*:\s*"[^"]*"'  # JSON token fields
+    r'|\\"(?:access_token|id_token|refresh_token|client_secret|code|assertion)\\"\s*:\s*\\"[^"\\]*\\"'  # escaped JSON token fields
     r"|(?:access_|refresh_|id_)?token=[^\s&,;]+"  # query-param token variants
     r"|(?:code|client_secret|assertion)=[^\s&,;]+"  # OAuth-specific query params
     r"|eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+",  # bare JWT
@@ -164,6 +164,11 @@ class KamiwazaClient:
                 '\\"refresh_token\\"'
             ):
                 return '"refresh_token": "[REDACTED]"'
+            for field in ("client_secret", "code", "assertion"):
+                if lowered.startswith(f'"{field}"') or lowered.startswith(
+                    f'\\"{field}\\"'
+                ):
+                    return f'"{field}": "[REDACTED]"'
             if "=" in lowered:
                 prefix = value[: value.index("=") + 1]
                 return f"{prefix}[REDACTED]"
@@ -188,6 +193,10 @@ class KamiwazaClient:
 
     def _apply_skip_auth(self, kwargs: dict) -> None:
         kwargs["headers"]["Authorization"] = None
+        kwargs.pop("auth", None)
+        req_cookies = kwargs.get("cookies")
+        if isinstance(req_cookies, dict):
+            req_cookies.pop("access_token", None)
         for c in [c for c in self.session.cookies if c.name == "access_token"]:
             self.session.cookies.clear(c.domain, c.path, c.name)
 
