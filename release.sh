@@ -9,8 +9,10 @@
 # corresponding version (root pyproject / __init__.py / package.json)
 # before running.
 
-# Exit on any error
-set -euxo pipefail
+# Exit on any error. We deliberately do NOT enable `-x` here: `uv publish`
+# inherits secrets like `UV_PUBLISH_TOKEN` from the environment, and tracing
+# could leak them via stderr if the script ever expands such vars inline.
+set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$REPO_ROOT"
@@ -27,7 +29,7 @@ if ! command -v pipx &> /dev/null; then
     echo "  pip install pipx      # pip"
     echo "  apt install pipx      # Debian/Ubuntu"
     echo ""
-    read -p "Continue without clearing notebook outputs? (y/n) " -n 1 -r
+    read -r -p "Continue without clearing notebook outputs? (y/n) " REPLY || REPLY=n
     echo
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
         exit 1
@@ -50,22 +52,26 @@ else
     echo "Skipping notebook output clearing (pipx not available)"
 fi
 
-# Clean prior builds for all three packages
-rm -rf \
+# Clean prior builds for all three packages.
+# Both `uv build` invocations below write to ./dist/ regardless of CWD because
+# `[tool.uv.workspace]` makes them workspace siblings. We split per-package
+# artifacts into ./dist/sdk/ and ./dist/lib/ via --out-dir so each `uv publish`
+# only sees its own files.
+rm -rf -- \
     dist/ build/ *.egg-info \
-    kamiwaza_extensions_lib/dist/ kamiwaza_extensions_lib/build/ \
-    kamiwaza-ai-extensions-lib/dist/
+    kamiwaza_extensions_lib/build/ kamiwaza_extensions_lib/*.egg-info \
+    kamiwaza-ai-extensions-lib/dist/ kamiwaza-ai-extensions-lib/*.tgz
 
 # --- Build all three artifacts ---
 
-# 1. Python SDK
-uv build
+# 1. Python extensions-lib (built first because it's a runtime dep of the SDK)
+uv build --package kamiwaza-extensions-lib --out-dir dist/lib
 
-# 2. Python extensions-lib
-( cd kamiwaza_extensions_lib && uv build )
+# 2. Python SDK
+uv build --package kamiwaza-sdk --out-dir dist/sdk
 
 # 3. TypeScript extensions-lib
-( cd kamiwaza-ai-extensions-lib && npm install && npm run build && npm pack )
+( cd kamiwaza-ai-extensions-lib && npm ci && npm run build && npm pack )
 
 # Exit if clean-only mode is requested
 if [[ ${CLEAN_ONLY:-} == "--clean-only" ]]; then
@@ -74,24 +80,29 @@ if [[ ${CLEAN_ONLY:-} == "--clean-only" ]]; then
 fi
 
 # --- Publish, one prompt per package ---
+#
+# Order matters: kamiwaza-sdk pins `kamiwaza-extensions-lib>=0.4,<0.5` as a
+# runtime dep. Publishing the SDK first leaves users unable to
+# `pip install kamiwaza-sdk==X` if the lib upload step is skipped or fails.
+# So: lib → SDK → npm.
 
-read -p "Upload kamiwaza-sdk to PyPI? (y/n) " -n 1 -r
+read -r -p "Upload kamiwaza-extensions-lib to PyPI? (y/n) " REPLY || REPLY=n
 echo
 if [[ $REPLY =~ ^[Yy]$ ]]; then
-    uv publish
-else
-    echo "kamiwaza-sdk upload skipped"
-fi
-
-read -p "Upload kamiwaza-extensions-lib to PyPI? (y/n) " -n 1 -r
-echo
-if [[ $REPLY =~ ^[Yy]$ ]]; then
-    ( cd kamiwaza_extensions_lib && uv publish )
+    uv publish dist/lib/*
 else
     echo "kamiwaza-extensions-lib upload skipped"
 fi
 
-read -p "Upload @kamiwaza-ai/extensions-lib to npm? (y/n) " -n 1 -r
+read -r -p "Upload kamiwaza-sdk to PyPI? (y/n) " REPLY || REPLY=n
+echo
+if [[ $REPLY =~ ^[Yy]$ ]]; then
+    uv publish dist/sdk/*
+else
+    echo "kamiwaza-sdk upload skipped"
+fi
+
+read -r -p "Upload @kamiwaza-ai/extensions-lib to npm? (y/n) " REPLY || REPLY=n
 echo
 if [[ $REPLY =~ ^[Yy]$ ]]; then
     ( cd kamiwaza-ai-extensions-lib && npm publish --access public )
