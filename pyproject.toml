@@ -67,7 +67,16 @@ members = ["kamiwaza_extensions_lib"]
 kamiwaza-extensions-lib = { workspace = true }
 
 [tool.setuptools.packages.find]
-include = ["kamiwaza_sdk*", "kamiwaza_client*", "kamiwaza_extensions*"]
+# Disjoint patterns: list `kamiwaza_extensions` and its dotted subpackages
+# explicitly so the trailing `*` cannot match `kamiwaza_extensions_lib`. The
+# `exclude` line is kept as a defense-in-depth backstop, but the include
+# alone is now correct.
+include = [
+    "kamiwaza_sdk*",
+    "kamiwaza_client*",
+    "kamiwaza_extensions",
+    "kamiwaza_extensions.*",
+]
 exclude = ["tests*", "examples*", "kamiwaza_extensions_lib*"]
 
 [tool.setuptools.package-data]

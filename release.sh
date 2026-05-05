@@ -89,7 +89,7 @@ fi
 read -r -p "Upload kamiwaza-extensions-lib to PyPI? (y/n) " REPLY || REPLY=n
 echo
 if [[ $REPLY =~ ^[Yy]$ ]]; then
-    uv publish dist/lib/*
+    uv publish --check-url https://pypi.org/simple/ dist/lib/*
 else
     echo "kamiwaza-extensions-lib upload skipped"
 fi
@@ -97,7 +97,7 @@ fi
 read -r -p "Upload kamiwaza-sdk to PyPI? (y/n) " REPLY || REPLY=n
 echo
 if [[ $REPLY =~ ^[Yy]$ ]]; then
-    uv publish dist/sdk/*
+    uv publish --check-url https://pypi.org/simple/ dist/sdk/*
 else
     echo "kamiwaza-sdk upload skipped"
 fi
@@ -105,7 +105,18 @@ fi
 read -r -p "Upload @kamiwaza-ai/extensions-lib to npm? (y/n) " REPLY || REPLY=n
 echo
 if [[ $REPLY =~ ^[Yy]$ ]]; then
-    ( cd kamiwaza-ai-extensions-lib && npm publish --access public )
+    # Pre-flight: confirm we're authenticated against the public npm registry
+    # specifically. A stale .npmrc pointing at a private/internal registry
+    # would otherwise divert the upload silently.
+    NPM_REGISTRY="https://registry.npmjs.org/"
+    if ! NPM_USER=$(npm whoami --registry="$NPM_REGISTRY" 2>&1); then
+        echo "Error: not logged in to $NPM_REGISTRY"
+        echo "  npm whoami output: $NPM_USER"
+        echo "  Run \`npm login --registry=$NPM_REGISTRY\` and re-run this script."
+        exit 1
+    fi
+    echo "Publishing @kamiwaza-ai/extensions-lib as npm user: $NPM_USER"
+    ( cd kamiwaza-ai-extensions-lib && npm publish --access public --registry="$NPM_REGISTRY" )
 else
     echo "@kamiwaza-ai/extensions-lib upload skipped"
 fi

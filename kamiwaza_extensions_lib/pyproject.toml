@@ -3,7 +3,7 @@ name = "kamiwaza-extensions-lib"
 version = "0.4.0"
 description = "Runtime library for Kamiwaza extensions: auth middleware, identity extraction, model client, session management"
 readme = "README.md"
-license = {text = "MIT"}
+license = "Apache-2.0"
 requires-python = ">=3.10"
 authors = [
     { name = "Kamiwaza Team", email = "eng@kamiwaza.ai" },
@@ -15,6 +15,8 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Framework :: FastAPI",
 ]
@@ -29,7 +31,8 @@ Homepage = "https://github.com/kamiwaza/kamiwaza-sdk"
 Changelog = "https://github.com/kamiwaza/kamiwaza-sdk/blob/main/kamiwaza_extensions_lib/CHANGELOG.md"
 
 [build-system]
-requires = ["setuptools>=61", "wheel"]
+# setuptools>=77 supports PEP 639 SPDX `license = "Apache-2.0"` in [project].
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 # This pyproject sits inside the package source tree itself: `uv build`

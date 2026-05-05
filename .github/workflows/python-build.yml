@@ -6,9 +6,12 @@ on:
     paths:
       - 'kamiwaza_sdk/**'
       - 'kamiwaza_client/**'
+      - 'kamiwaza_extensions/**'
+      - 'kamiwaza_extensions_lib/**'
       - 'pyproject.toml'
       - 'uv.lock'
       - 'MANIFEST.in'
+      - 'release.sh'
       - '.github/workflows/python-build.yml'
 
 permissions:
@@ -30,30 +33,91 @@ jobs:
       - name: Install dependencies
         run: uv sync
 
-      - name: Build package
-        run: uv build
+      - name: Build SDK package
+        run: uv build --package kamiwaza-sdk --out-dir dist/sdk
 
-      - name: Verify package contents
+      - name: Build extensions-lib package
+        run: uv build --package kamiwaza-extensions-lib --out-dir dist/lib
+
+      - name: Verify SDK wheel contents
         run: |
-          echo "Built packages:"
-          ls -la dist/
+          echo "SDK artifacts:"
+          ls -la dist/sdk/
 
           echo ""
-          echo "Wheel contents:"
-          unzip -l dist/*.whl | grep -E "(kamiwaza_sdk|kamiwaza_client)" | head -20
+          echo "SDK wheel contents (sample):"
+          unzip -l dist/sdk/*.whl | grep -E "(kamiwaza_sdk|kamiwaza_client|kamiwaza_extensions)" | head -20
 
-          # Verify both packages are included
-          if ! unzip -l dist/*.whl | grep -q "kamiwaza_sdk/"; then
-            echo "::error::kamiwaza_sdk not found in wheel"
+          # Verify SDK packages are present
+          for pkg in kamiwaza_sdk kamiwaza_client kamiwaza_extensions; do
+            if ! unzip -l dist/sdk/*.whl | grep -q "${pkg}/"; then
+              echo "::error::${pkg} not found in SDK wheel"
+              exit 1
+            fi
+          done
+
+          # Verify the lib is NOT bundled in the SDK wheel
+          if unzip -l dist/sdk/*.whl | grep -q "kamiwaza_extensions_lib/"; then
+            echo "::error::kamiwaza_extensions_lib leaked into SDK wheel — should be a separate distribution"
             exit 1
           fi
-          if ! unzip -l dist/*.whl | grep -q "kamiwaza_client/"; then
-            echo "::error::kamiwaza_client not found in wheel"
+
+          # Verify SDK still pins lib at runtime
+          if ! unzip -p dist/sdk/*.whl kamiwaza_sdk-*.dist-info/METADATA | grep -q "^Requires-Dist: kamiwaza-extensions-lib"; then
+            echo "::error::SDK wheel METADATA missing Requires-Dist for kamiwaza-extensions-lib"
             exit 1
           fi
+
+          echo "SDK wheel verification passed"
+
+      - name: Verify extensions-lib wheel contents
+        run: |
+          echo "Lib artifacts:"
+          ls -la dist/lib/
 
           echo ""
-          echo "Build verification passed"
+          echo "Lib wheel contents:"
+          unzip -l dist/lib/*.whl
+
+          # The lib must include its top-level package and middleware subpackage
+          for path in kamiwaza_extensions_lib/__init__.py kamiwaza_extensions_lib/middleware/__init__.py kamiwaza_extensions_lib/local_dev.py kamiwaza_extensions_lib/py.typed kamiwaza_extensions_lib/exception_names.json; do
+            if ! unzip -l dist/lib/*.whl | grep -q "${path}\b"; then
+              echo "::error::lib wheel missing required path: ${path}"
+              exit 1
+            fi
+          done
+
+          # MIT/Apache-2.0 obligation: license text must ship in the dist
+          if ! unzip -l dist/lib/*.whl | grep -q "dist-info/licenses/LICENSE"; then
+            echo "::error::lib wheel missing LICENSE file"
+            exit 1
+          fi
+
+          echo "Lib wheel verification passed"
+
+      - name: Smoke-test extensions-lib in clean venv (no SDK installed)
+        run: |
+          # The lib must be importable WITHOUT kamiwaza-sdk so users who
+          # only need the runtime helpers (auth middleware, model client)
+          # are not forced to pull in the full SDK.
+          python -m venv /tmp/lib-smoke
+          /tmp/lib-smoke/bin/pip install --quiet dist/lib/*.whl
+          /tmp/lib-smoke/bin/python - <<'PY'
+          import kamiwaza_extensions_lib
+          import kamiwaza_extensions_lib.middleware  # noqa: F401
+          import kamiwaza_extensions_lib.local_dev as ld
+          print(f"lib version: {kamiwaza_extensions_lib.__version__}")
+          # `prepare_bridge_context` lazy-imports kamiwaza_extensions; without
+          # the SDK, calling it should raise LocalDevAuthError with an
+          # actionable message rather than ModuleNotFoundError.
+          try:
+              ld.prepare_bridge_context()
+          except ld.LocalDevAuthError as exc:
+              assert "pip install kamiwaza-sdk" in str(exc), exc
+              print("lazy-import error path is actionable: OK")
+          else:
+              raise SystemExit("expected LocalDevAuthError in clean venv without SDK")
+          PY
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4

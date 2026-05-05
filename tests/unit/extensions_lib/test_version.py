@@ -3,12 +3,20 @@
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 
 import kamiwaza_extensions_lib
 
+if sys.version_info >= (3, 11):
+    import tomllib
+else:
+    import tomli as tomllib  # type: ignore[no-redef]
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
-CHANGELOG_PATH = REPO_ROOT / "kamiwaza_extensions_lib" / "CHANGELOG.md"
+LIB_DIR = REPO_ROOT / "kamiwaza_extensions_lib"
+CHANGELOG_PATH = LIB_DIR / "CHANGELOG.md"
+LIB_PYPROJECT_PATH = LIB_DIR / "pyproject.toml"
 
 
 def test_version_is_0_4_0_for_m3():
@@ -32,4 +40,23 @@ def test_changelog_documents_current_version():
     assert re.search(pattern, text), (
         f"CHANGELOG.md must have a `## [{current}]` heading documenting the "
         f"current __version__. Add an entry before bumping __version__."
+    )
+
+
+def test_pyproject_version_matches_dunder_version():
+    """The lib has two version sources of truth (pyproject + __init__.py).
+
+    Bumping one without the other will silently desync — the wheel's
+    METADATA reflects the pyproject version while runtime code keys off
+    ``__version__``. This test wires them together so a partial bump
+    fails CI.
+    """
+    with LIB_PYPROJECT_PATH.open("rb") as f:
+        pyproject = tomllib.load(f)
+    pyproject_version = pyproject["project"]["version"]
+    assert pyproject_version == kamiwaza_extensions_lib.__version__, (
+        f"kamiwaza_extensions_lib/pyproject.toml [project].version "
+        f"({pyproject_version!r}) and kamiwaza_extensions_lib.__version__ "
+        f"({kamiwaza_extensions_lib.__version__!r}) disagree. Bump both, "
+        f"or only bump the source of truth and the other auto-derives."
     )
