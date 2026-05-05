@@ -149,7 +149,11 @@ Desktop.ini
 
 # Node.js (TypeScript runtime library)
 node_modules/
+# Ignore stray package-lock.json files anywhere in the tree (e.g. from
+# accidental `npm install` runs in unrelated dirs), but TRACK the npm
+# package's lockfile so `npm ci` works in release.sh on a fresh clone.
 package-lock.json
+!kamiwaza-ai-extensions-lib/package-lock.json
 
 # Custom files per instructions
 code.txt

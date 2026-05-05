@@ -1,9 +1,10 @@
 # Changelog — `kamiwaza-extensions-lib` (Python runtime)
 
 All notable changes to this runtime library are documented here. Versions
-follow semver. The library is distributed alongside `kamiwaza-sdk` but
-versioned independently — extension authors pin against the `[lib]` minor
-range in `requirements.txt`.
+follow semver. The library is published to PyPI as a standalone package
+(`kamiwaza-extensions-lib`) and is versioned independently from
+`kamiwaza-sdk` — extension authors pin against the `[lib]` minor range in
+`requirements.txt`.
 
 ## [0.4.0] — 2026-04-30 (D210 M3 — PR #87)
 

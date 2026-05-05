@@ -16,12 +16,18 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 from urllib.parse import urlparse, urlunparse
 
-from kamiwaza_extensions.connections import ConnectionManager
-
 from ._jwt import decode_jwt_exp, decode_jwt_payload
+
+if TYPE_CHECKING:
+    # ConnectionManager lives in `kamiwaza_extensions`, which ships with the
+    # `kamiwaza-sdk` distribution. The runtime import inside
+    # `prepare_bridge_context` keeps `kamiwaza_extensions_lib` importable on
+    # its own (e.g. when only the lib wheel is installed); the bridge itself
+    # only runs in dev workflows where `kamiwaza-sdk` is also installed.
+    from kamiwaza_extensions.connections import ConnectionManager
 
 _HOST_DOCKER_INTERNAL = "host.docker.internal"
 # TLDs that are reserved for local / loopback use per RFC 6761 / 6762.
@@ -302,7 +308,7 @@ def extract_extra_hosts(
 
 
 def prepare_bridge_context(
-    connection_manager: Optional[ConnectionManager] = None,
+    connection_manager: "Optional[ConnectionManager]" = None,
 ) -> BridgeContext:
     """Validate the active `kz-ext login` connection and return bridge material.
 
@@ -316,7 +322,18 @@ def prepare_bridge_context(
         produced a silent no-op auth path; we now fail-loud upstream so
         the developer sees a clear hint instead of hunting through 401s.
     """
-    mgr = connection_manager or ConnectionManager()
+    if connection_manager is None:
+        try:
+            from kamiwaza_extensions.connections import ConnectionManager
+        except ImportError as exc:
+            raise LocalDevAuthError(
+                "kz-ext dev local --auth requires `kamiwaza-sdk` to be "
+                "installed (provides kamiwaza_extensions.connections). "
+                "Install it with `pip install kamiwaza-sdk`."
+            ) from exc
+        mgr = ConnectionManager()
+    else:
+        mgr = connection_manager
     connection = mgr.get_active_connection()
     if connection is None:
         raise LocalDevAuthError(
