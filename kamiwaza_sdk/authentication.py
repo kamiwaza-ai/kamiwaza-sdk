@@ -43,7 +43,9 @@ class ApiKeyAuthenticator(Authenticator):
     def authenticate(self, session: requests.Session) -> None:
         session.headers.update({"Authorization": f"Bearer {self.api_key}"})
 
-    def refresh_token(self, session: requests.Session) -> None:  # pragma: no cover - nothing to refresh
+    def refresh_token(
+        self, session: requests.Session
+    ) -> None:  # pragma: no cover - nothing to refresh
         pass
 
     def get_access_token(self, session: requests.Session) -> Optional[str]:
@@ -112,6 +114,7 @@ class UserPasswordAuthenticator(Authenticator):
 
         self._store_token_response(token_response)
         session.headers.update({"Authorization": f"Bearer {self.token}"})
+        session.cookies.set("access_token", self.token)
 
     def get_access_token(self, session: requests.Session) -> Optional[str]:
         now = datetime.now(timezone.utc)
@@ -161,8 +164,12 @@ class OAuthAuthenticator(Authenticator):
         self.token: Optional[str] = None
         self.token_expiry: Optional[datetime] = None
 
-    def authenticate(self, session: requests.Session) -> None:  # pragma: no cover - not implemented
+    def authenticate(
+        self, session: requests.Session
+    ) -> None:  # pragma: no cover - not implemented
         raise NotImplementedError("OAuth authentication is not yet implemented.")
 
-    def refresh_token(self, session: requests.Session) -> None:  # pragma: no cover - not implemented
+    def refresh_token(
+        self, session: requests.Session
+    ) -> None:  # pragma: no cover - not implemented
         raise NotImplementedError("OAuth authentication is not yet implemented.")
