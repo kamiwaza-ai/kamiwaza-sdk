@@ -3,7 +3,7 @@ name = "kamiwaza-sdk"
 version = "0.12.0"
 description = "Python client library for the Kamiwaza AI Platform"
 readme = "README.md"
-license = {text = "MIT"}
+license = "Apache-2.0"
 requires-python = ">=3.10"
 authors = [
     { name = "Kamiwaza Team", email = "eng@kamiwaza.ai" },
@@ -45,10 +45,14 @@ all = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/kamiwaza/kamiwaza-sdk"
+Homepage = "https://github.com/kamiwaza-ai/kamiwaza-sdk"
+Repository = "https://github.com/kamiwaza-ai/kamiwaza-sdk"
+Issues = "https://github.com/kamiwaza-ai/kamiwaza-sdk/issues"
 
 [build-system]
-requires = ["setuptools>=45", "wheel"]
+# setuptools>=77 supports PEP 639 SPDX `license = "Apache-2.0"` in [project]
+# and auto-discovers a top-level LICENSE file into the wheel's dist-info.
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project.scripts]

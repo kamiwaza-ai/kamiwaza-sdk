@@ -17,8 +17,22 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$REPO_ROOT"
 
-# Check for --clean-only flag
-CLEAN_ONLY=${1:-}
+# Mode flag. Default is full release (clean → build → publish prompts).
+#   --build-only : run clean + build for all three packages, then exit
+#                  before any publish prompts. Useful for verifying that
+#                  artifacts assemble correctly without touching PyPI/npm.
+#   (Legacy: --clean-only is accepted as an alias for --build-only — its
+#    name was misleading because it always built artifacts before exiting.)
+MODE=${1:-}
+case "$MODE" in
+    --build-only|--clean-only) BUILD_ONLY=1 ;;
+    "") BUILD_ONLY=0 ;;
+    *)
+        echo "Error: unknown flag '$MODE'"
+        echo "Usage: $0 [--build-only]"
+        exit 1
+        ;;
+esac
 
 # Check for pipx (needed to clear notebook outputs)
 if ! command -v pipx &> /dev/null; then
@@ -73,9 +87,9 @@ uv build --package kamiwaza-sdk --out-dir dist/sdk
 # 3. TypeScript extensions-lib
 ( cd kamiwaza-ai-extensions-lib && npm ci && npm run build && npm pack )
 
-# Exit if clean-only mode is requested
-if [[ ${CLEAN_ONLY:-} == "--clean-only" ]]; then
-    echo "Clean-only mode: stopping before upload"
+# Stop before publish if --build-only was requested
+if [[ $BUILD_ONLY -eq 1 ]]; then
+    echo "Build-only mode: artifacts ready in dist/sdk/, dist/lib/, kamiwaza-ai-extensions-lib/*.tgz"
     exit 0
 fi
 

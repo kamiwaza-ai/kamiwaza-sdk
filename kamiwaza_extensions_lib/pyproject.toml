@@ -27,8 +27,8 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/kamiwaza/kamiwaza-sdk"
-Changelog = "https://github.com/kamiwaza/kamiwaza-sdk/blob/main/kamiwaza_extensions_lib/CHANGELOG.md"
+Homepage = "https://github.com/kamiwaza-ai/kamiwaza-sdk"
+Changelog = "https://github.com/kamiwaza-ai/kamiwaza-sdk/blob/main/kamiwaza_extensions_lib/CHANGELOG.md"
 
 [build-system]
 # setuptools>=77 supports PEP 639 SPDX `license = "Apache-2.0"` in [project].
