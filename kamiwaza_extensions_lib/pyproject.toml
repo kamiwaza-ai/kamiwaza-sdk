@@ -1,0 +1,44 @@
+[project]
+name = "kamiwaza-extensions-lib"
+version = "0.4.0"
+description = "Runtime library for Kamiwaza extensions: auth middleware, identity extraction, model client, session management"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    { name = "Kamiwaza Team", email = "eng@kamiwaza.ai" },
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Framework :: FastAPI",
+]
+dependencies = [
+    "httpx",
+    "fastapi>=0.100.0",
+    "pydantic>=2.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/kamiwaza/kamiwaza-sdk"
+Changelog = "https://github.com/kamiwaza/kamiwaza-sdk/blob/main/kamiwaza_extensions_lib/CHANGELOG.md"
+
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+# This pyproject sits inside the package source tree itself: `uv build`
+# from this directory packages `kamiwaza-extensions-lib` independently
+# from the parent `kamiwaza-sdk` distribution. Keep `version` here in
+# sync with `__init__.py:__version__`.
+[tool.setuptools]
+packages = ["kamiwaza_extensions_lib", "kamiwaza_extensions_lib.middleware"]
+package-dir = {"kamiwaza_extensions_lib" = "."}
+
+[tool.setuptools.package-data]
+kamiwaza_extensions_lib = ["py.typed", "exception_names.json"]

@@ -1,7 +1,19 @@
 #!/bin/bash
 
+# Release script for the three artifacts shipped from this repo:
+#   1. kamiwaza-sdk            (PyPI, root pyproject)
+#   2. kamiwaza-extensions-lib (PyPI, kamiwaza_extensions_lib/pyproject.toml)
+#   3. @kamiwaza-ai/extensions-lib (npm, kamiwaza-ai-extensions-lib/)
+#
+# Each package gets its own confirmation prompt before upload. Bump the
+# corresponding version (root pyproject / __init__.py / package.json)
+# before running.
+
 # Exit on any error
 set -euxo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$REPO_ROOT"
 
 # Check for --clean-only flag
 CLEAN_ONLY=${1:-}
@@ -38,11 +50,22 @@ else
     echo "Skipping notebook output clearing (pipx not available)"
 fi
 
-# Remove old builds
-rm -rf dist/ build/ *.egg-info
+# Clean prior builds for all three packages
+rm -rf \
+    dist/ build/ *.egg-info \
+    kamiwaza_extensions_lib/dist/ kamiwaza_extensions_lib/build/ \
+    kamiwaza-ai-extensions-lib/dist/
 
-# Build new package
+# --- Build all three artifacts ---
+
+# 1. Python SDK
 uv build
+
+# 2. Python extensions-lib
+( cd kamiwaza_extensions_lib && uv build )
+
+# 3. TypeScript extensions-lib
+( cd kamiwaza-ai-extensions-lib && npm install && npm run build && npm pack )
 
 # Exit if clean-only mode is requested
 if [[ ${CLEAN_ONLY:-} == "--clean-only" ]]; then
@@ -50,13 +73,28 @@ if [[ ${CLEAN_ONLY:-} == "--clean-only" ]]; then
     exit 0
 fi
 
-# Upload to PyPI and require confirmation
-read -p "Ready to upload to PyPI. Continue? (y/n) " -n 1 -r
-echo    # Move to a new line
-if [[ $REPLY =~ ^[Yy]$ ]]
-then
+# --- Publish, one prompt per package ---
+
+read -p "Upload kamiwaza-sdk to PyPI? (y/n) " -n 1 -r
+echo
+if [[ $REPLY =~ ^[Yy]$ ]]; then
     uv publish
 else
-    echo "Upload cancelled"
-    exit 1
+    echo "kamiwaza-sdk upload skipped"
+fi
+
+read -p "Upload kamiwaza-extensions-lib to PyPI? (y/n) " -n 1 -r
+echo
+if [[ $REPLY =~ ^[Yy]$ ]]; then
+    ( cd kamiwaza_extensions_lib && uv publish )
+else
+    echo "kamiwaza-extensions-lib upload skipped"
+fi
+
+read -p "Upload @kamiwaza-ai/extensions-lib to npm? (y/n) " -n 1 -r
+echo
+if [[ $REPLY =~ ^[Yy]$ ]]; then
+    ( cd kamiwaza-ai-extensions-lib && npm publish --access public )
+else
+    echo "@kamiwaza-ai/extensions-lib upload skipped"
 fi
