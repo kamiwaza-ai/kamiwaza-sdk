@@ -37,13 +37,13 @@ from .services.context import ContextService
 
 logger = logging.getLogger(__name__)
 _BEARER_RE = re.compile(
-    r"Bearer(?:\s+|%20)\S+"                                                  # Bearer <token> or URL-encoded
-    r'|"(?:access_token|id_token|refresh_token)"\s*:\s*"[^"]*"'             # JSON token fields
-    r'|\\"(?:access_token|id_token|refresh_token)\\"\s*:\s*\\"[^"\\]*\\"'   # escaped JSON token fields
-    r"|(?:access_|refresh_|id_)?token=[^\s&,;]+"                             # query-param token variants
-    r"|(?:code|client_secret|assertion)=[^\s&,;]+"                           # OAuth-specific query params
-    r"|eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"               # bare JWT
-    , re.IGNORECASE,
+    r"Bearer(?:\s+|%20)\S+"  # Bearer <token> or URL-encoded
+    r'|"(?:access_token|id_token|refresh_token)"\s*:\s*"[^"]*"'  # JSON token fields
+    r'|\\"(?:access_token|id_token|refresh_token)\\"\s*:\s*\\"[^"\\]*\\"'  # escaped JSON token fields
+    r"|(?:access_|refresh_|id_)?token=[^\s&,;]+"  # query-param token variants
+    r"|(?:code|client_secret|assertion)=[^\s&,;]+"  # OAuth-specific query params
+    r"|eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+",  # bare JWT
+    re.IGNORECASE,
 )
 
 
@@ -82,7 +82,7 @@ class KamiwazaClient:
         self.base_url = resolved_base_url.rstrip("/")
         self.session = requests.Session()
         self._recent_datasets: "OrderedDict[str, float]" = OrderedDict()
-        
+
         # Check KAMIWAZA_VERIFY_SSL environment variable
         verify_ssl = os.environ.get("KAMIWAZA_VERIFY_SSL", "true").lower()
         if verify_ssl == "false":
@@ -125,7 +125,10 @@ class KamiwazaClient:
 
         while self._recent_datasets:
             oldest_urn, oldest_ts = next(iter(self._recent_datasets.items()))
-            if oldest_ts >= cutoff and len(self._recent_datasets) <= self._RECENT_DATASET_MAX:
+            if (
+                oldest_ts >= cutoff
+                and len(self._recent_datasets) <= self._RECENT_DATASET_MAX
+            ):
                 break
             self._recent_datasets.popitem(last=False)
 
@@ -151,14 +154,18 @@ class KamiwazaClient:
             lowered = value.lower()
             if lowered.startswith("bearer"):
                 return "Bearer ***"
-            if lowered.startswith('"access_token"') or lowered.startswith('\\"access_token\\"'):
+            if lowered.startswith('"access_token"') or lowered.startswith(
+                '\\"access_token\\"'
+            ):
                 return '"access_token": "[REDACTED]"'
             if lowered.startswith('"id_token"') or lowered.startswith('\\"id_token\\"'):
                 return '"id_token": "[REDACTED]"'
-            if lowered.startswith('"refresh_token"') or lowered.startswith('\\"refresh_token\\"'):
+            if lowered.startswith('"refresh_token"') or lowered.startswith(
+                '\\"refresh_token\\"'
+            ):
                 return '"refresh_token": "[REDACTED]"'
             if "=" in lowered:
-                prefix = value[:value.index("=") + 1]
+                prefix = value[: value.index("=") + 1]
                 return f"{prefix}[REDACTED]"
             return "[REDACTED]"
 
@@ -170,7 +177,10 @@ class KamiwazaClient:
     def _validate_absolute_url(self, absolute_url: str) -> None:
         base_parsed = urlparse(self.base_url)
         abs_parsed = urlparse(absolute_url)
-        if abs_parsed.netloc != base_parsed.netloc or abs_parsed.scheme != base_parsed.scheme:
+        if (
+            abs_parsed.netloc != base_parsed.netloc
+            or abs_parsed.scheme != base_parsed.scheme
+        ):
             raise ValueError(
                 f"absolute_url must target the same origin as base_url "
                 f"({base_parsed.scheme}://{base_parsed.netloc})"
@@ -178,11 +188,8 @@ class KamiwazaClient:
 
     def _apply_skip_auth(self, kwargs: dict) -> None:
         kwargs["headers"]["Authorization"] = None
-        try:
-            self.session.cookies.pop("access_token", None)
-        except requests.cookies.CookieConflictError:
-            for c in [c for c in self.session.cookies if c.name == "access_token"]:
-                self.session.cookies.clear(c.domain, c.path, c.name)
+        for c in [c for c in self.session.cookies if c.name == "access_token"]:
+            self.session.cookies.clear(c.domain, c.path, c.name)
 
     def _check_dataset_schema_retry(
         self, method: str, path: str, kwargs: dict
@@ -190,7 +197,9 @@ class KamiwazaClient:
         raw_params = kwargs.get("params")
         params: dict[str, Any] = raw_params if isinstance(raw_params, dict) else {}
         dataset_urn_for_schema = (
-            params.get("urn") if path.rstrip("/") == "catalog/datasets/by-urn/schema" else None
+            params.get("urn")
+            if path.rstrip("/") == "catalog/datasets/by-urn/schema"
+            else None
         )
         should_retry = (
             method.upper() == "PUT"
@@ -199,7 +208,9 @@ class KamiwazaClient:
         )
         return should_retry, dataset_urn_for_schema
 
-    def _handle_401(self, response, endpoint: str, skip_auth: bool, did_refresh: bool) -> None:
+    def _handle_401(
+        self, response, endpoint: str, skip_auth: bool, did_refresh: bool
+    ) -> None:
         if skip_auth:
             raise AuthenticationError(
                 f"Unauthenticated request failed for {endpoint}: "
@@ -241,8 +252,10 @@ class KamiwazaClient:
                     f"Your base URL is '{self.base_url}' - did you forget to append '/api'?"
                 )
 
-        if schema_retry and response.status_code == 404 and retry_idx < len(
-            self._DATASET_SCHEMA_PUT_RETRY_DELAYS_SECONDS
+        if (
+            schema_retry
+            and response.status_code == 404
+            and retry_idx < len(self._DATASET_SCHEMA_PUT_RETRY_DELAYS_SECONDS)
         ):
             detail = payload.get("detail") if isinstance(payload, dict) else None
             if detail == "Dataset not found or schema could not be updated":
@@ -259,7 +272,9 @@ class KamiwazaClient:
                 return retry_idx
 
         sanitized_text = self._sanitize_response_text(response_text)
-        message = f"API request failed with status {response.status_code}: {sanitized_text}"
+        message = (
+            f"API request failed with status {response.status_code}: {sanitized_text}"
+        )
         if response.status_code == 501 and (
             path.startswith("vectordb") or path.startswith("context/vectordb")
         ):
@@ -269,9 +284,7 @@ class KamiwazaClient:
                 response_text=sanitized_text,
                 response_data=payload,
             )
-        self.logger.error(
-            "Request failed: %s", sanitized_text
-        )
+        self.logger.error("Request failed: %s", sanitized_text)
         raise APIError(
             message,
             status_code=response.status_code,
@@ -346,15 +359,19 @@ class KamiwazaClient:
             try:
                 self.logger.debug(
                     "Request headers: %s",
-                    {k: ("***" if k.lower() == "authorization" else v)
-                     for k, v in self.session.headers.items()},
+                    {
+                        k: ("***" if k.lower() == "authorization" else v)
+                        for k, v in self.session.headers.items()
+                    },
                 )
                 response = self.session.request(method, url, **kwargs)
                 self.logger.debug(f"Response status: {response.status_code}")
             except requests.RequestException as e:
                 sanitized_err = self._sanitize_response_text(str(e))
                 logger.error("Request failed: %s", sanitized_err)
-                raise APIError(f"An error occurred while making the request: {sanitized_err}")
+                raise APIError(
+                    f"An error occurred while making the request: {sanitized_err}"
+                )
 
             if response.status_code == 401:
                 self._handle_401(response, endpoint, skip_auth, did_refresh)
@@ -398,7 +415,6 @@ class KamiwazaClient:
         if not hasattr(self, "_serving"):
             self._serving = ServingService(self)
         return self._serving
-    
 
     @property
     def catalog(self):
@@ -486,13 +502,13 @@ class KamiwazaClient:
 
     @property
     def oauth_broker(self):
-        if not hasattr(self, '_oauth_broker'):
+        if not hasattr(self, "_oauth_broker"):
             self._oauth_broker = OAuthBrokerService(self)
         return self._oauth_broker
 
     @property
     def context(self):
-        if not hasattr(self, '_context'):
+        if not hasattr(self, "_context"):
             self._context = ContextService(self)
         return self._context
 
