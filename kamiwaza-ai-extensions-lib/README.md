@@ -23,10 +23,10 @@ npm install @kamiwaza-ai/extensions-lib
 import { SessionProvider, AuthGuard, useSession } from "@kamiwaza-ai/extensions-lib/client";
 
 // Server (Next.js route handlers / middleware)
-import { extractIdentity, proxyToBackend } from "@kamiwaza-ai/extensions-lib/server";
+import { extractIdentity, createProxyHandlers } from "@kamiwaza-ai/extensions-lib/server";
 
 // Local dev — forward the host kz-ext login into a container
-import { resolveAuthFromHost } from "@kamiwaza-ai/extensions-lib/local-dev-auth";
+import { createLocalDevAuthMiddleware } from "@kamiwaza-ai/extensions-lib/local-dev-auth";
 ```
 
 See [`CHANGELOG.md`](https://github.com/kamiwaza-ai/kamiwaza-sdk/blob/main/kamiwaza-ai-extensions-lib/CHANGELOG.md)

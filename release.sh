@@ -95,7 +95,10 @@ uv build --package kamiwaza-extensions-lib --out-dir dist/lib
 uv build --package kamiwaza-sdk --out-dir dist/sdk
 
 # 3. TypeScript extensions-lib
-( cd kamiwaza-ai-extensions-lib && npm ci && npm run build && npm pack )
+# `--include=dev` ensures tsup/typescript install even if NODE_ENV=production
+# is set in the release environment (npm ci would otherwise omit
+# devDependencies and `npm run build` would then fail).
+( cd kamiwaza-ai-extensions-lib && npm ci --include=dev && npm run build && npm pack )
 
 # Stop before publish if --build-only was requested
 if [[ $BUILD_ONLY -eq 1 ]]; then

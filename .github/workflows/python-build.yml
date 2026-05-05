@@ -102,11 +102,23 @@ jobs:
           # only need the runtime helpers (auth middleware, model client)
           # are not forced to pull in the full SDK.
           python -m venv /tmp/lib-smoke
-          /tmp/lib-smoke/bin/pip install --quiet dist/lib/*.whl
+          /tmp/lib-smoke/bin/pip install --quiet "$GITHUB_WORKSPACE"/dist/lib/*.whl
+          # Run from a directory OUTSIDE the checkout. Otherwise sys.path[0]
+          # is "" (the repo root) and `import kamiwaza_extensions_lib` resolves
+          # to the source tree before the installed wheel — masking missing
+          # files in the wheel itself. Run from /tmp so only site-packages is
+          # on sys.path.
+          cd /tmp
           /tmp/lib-smoke/bin/python - <<'PY'
           import kamiwaza_extensions_lib
           import kamiwaza_extensions_lib.middleware  # noqa: F401
           import kamiwaza_extensions_lib.local_dev as ld
+          # Sanity check: the loaded module must come from the installed wheel
+          # (site-packages), not from a checkout that leaked onto sys.path.
+          assert "site-packages" in kamiwaza_extensions_lib.__file__, (
+              f"lib resolved from {kamiwaza_extensions_lib.__file__}, "
+              f"expected site-packages — sys.path is contaminated"
+          )
           print(f"lib version: {kamiwaza_extensions_lib.__version__}")
           # `prepare_bridge_context` lazy-imports kamiwaza_extensions; without
           # the SDK, calling it should raise LocalDevAuthError with an
