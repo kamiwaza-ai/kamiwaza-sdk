@@ -1,7 +1,8 @@
 # Changelog — `@kamiwaza-ai/extensions-lib` (TypeScript runtime)
 
-Versions follow semver. Distributed alongside `kamiwaza-sdk` but versioned
-independently.
+Versions follow semver. Published to npm as a standalone package
+(`@kamiwaza-ai/extensions-lib`) and versioned independently from
+`kamiwaza-sdk`.
 
 ## [0.4.0] — 2026-04-30 (ENG-4318)
 

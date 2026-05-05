@@ -100,20 +100,48 @@ fi
 # `pip install kamiwaza-sdk==X` if the lib upload step is skipped or fails.
 # So: lib → SDK → npm.
 
+LIB_PUBLISHED=0
+
 read -r -p "Upload kamiwaza-extensions-lib to PyPI? (y/n) " REPLY || REPLY=n
 echo
 if [[ $REPLY =~ ^[Yy]$ ]]; then
     uv publish --check-url https://pypi.org/simple/ dist/lib/*
+    LIB_PUBLISHED=1
 else
     echo "kamiwaza-extensions-lib upload skipped"
 fi
 
-read -r -p "Upload kamiwaza-sdk to PyPI? (y/n) " REPLY || REPLY=n
-echo
-if [[ $REPLY =~ ^[Yy]$ ]]; then
-    uv publish --check-url https://pypi.org/simple/ dist/sdk/*
+# Coupling guard: kamiwaza-sdk's runtime dep is kamiwaza-extensions-lib
+# at the version we just (or didn't) publish. If the operator skipped the
+# lib but tries to publish the SDK, `pip install kamiwaza-sdk==X` would
+# fail to resolve until the lib lands in a separate run. Refuse unless
+# the operator explicitly acknowledges that the required lib version is
+# *already* on PyPI.
+if [[ $LIB_PUBLISHED -eq 0 ]]; then
+    echo
+    echo "Note: kamiwaza-sdk requires kamiwaza-extensions-lib (>=0.4,<0.5) at runtime."
+    echo "  Since the lib upload was skipped, only proceed if that version is"
+    echo "  already on PyPI from a prior release."
+    read -r -p "Is the required lib version already on PyPI? (y/n) " REPLY || REPLY=n
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        echo "Skipping kamiwaza-sdk upload to avoid publishing an unresolvable release."
+        SDK_GATED=1
+    else
+        SDK_GATED=0
+    fi
 else
-    echo "kamiwaza-sdk upload skipped"
+    SDK_GATED=0
+fi
+
+if [[ $SDK_GATED -eq 0 ]]; then
+    read -r -p "Upload kamiwaza-sdk to PyPI? (y/n) " REPLY || REPLY=n
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        uv publish --check-url https://pypi.org/simple/ dist/sdk/*
+    else
+        echo "kamiwaza-sdk upload skipped"
+    fi
 fi
 
 read -r -p "Upload @kamiwaza-ai/extensions-lib to npm? (y/n) " REPLY || REPLY=n

@@ -23,7 +23,9 @@
         }
     },
     "files": [
-        "dist/**/*"
+        "dist/**/*",
+        "LICENSE",
+        "README.md"
     ],
     "scripts": {
         "build": "tsup",
@@ -52,7 +54,7 @@
         "typescript": "^5.0.0",
         "vitest": "^1.0.0"
     },
-    "license": "MIT",
+    "license": "Apache-2.0",
     "repository": {
         "type": "git",
         "url": "https://github.com/kamiwaza-ai/kamiwaza-sdk"
