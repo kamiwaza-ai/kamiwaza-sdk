@@ -344,6 +344,41 @@ class TestTransformImageTags:
         result = builder.transform_image_tags(yml, "kamiwazaai", "2.0.0", "stage")
         assert f"kamiwazaai/my-app:2.0.0-stage@{digest}" in result
 
+    def test_digest_only_ref_extension_branch_unchanged(self, builder):
+        # F1: image@sha256:<64> (no tag) must NOT be rewritten. Previous
+        # regex captured `service@sha256` as the path and the hex as
+        # the tag, producing `service@sha256:newtag` — corruption.
+        digest = "sha256:" + "a" * 64
+        yml = f"image: kamiwazaai/my-app-web@{digest}"
+        result = builder.transform_image_tags(
+            yml, "kamiwazaai", "2.0.0", "prod", extension_name="my-app",
+        )
+        # Verbatim — no rewrite.
+        assert result == yml
+
+    def test_digest_only_ref_fallback_branch_unchanged(self, builder):
+        digest = "sha256:" + "b" * 64
+        yml = f"image: kamiwazaai/my-app@{digest}"
+        result = builder.transform_image_tags(yml, "kamiwazaai", "2.0.0", "stage")
+        assert result == yml
+
+    def test_digest_only_and_tag_only_siblings(self, builder):
+        # Mixed compose: one ref pinned by digest only, one tagged.
+        # The tagged ref is rewritten; the digest-only ref passes through.
+        digest = "sha256:" + "c" * 64
+        yml = (
+            f"image: kamiwazaai/app-frontend@{digest}\n"
+            "image: kamiwazaai/app-backend:old\n"
+        )
+        result = builder.transform_image_tags(yml, "kamiwazaai", "3.0.0", "prod")
+        assert f"kamiwazaai/app-frontend@{digest}" in result
+        assert "kamiwazaai/app-backend:3.0.0" in result
+        # Frontend was not rewritten with a tag.
+        frontend_line = [
+            ln for ln in result.splitlines() if "app-frontend" in ln
+        ][0]
+        assert ":3.0.0" not in frontend_line
+
     def test_malformed_digest_suffix_passes_through_untouched(self, builder):
         # M5: an `@sha256:short` (or any non-conforming suffix) doesn't
         # match the optional digest group, so the regex matches up to

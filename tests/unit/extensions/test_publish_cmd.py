@@ -785,6 +785,52 @@ class TestPublishDigest:
     @patch("kamiwaza_extensions.validators.compose.ComposeValidator")
     @patch("kamiwaza_extensions.validators.metadata.MetadataValidator")
     @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_dry_run_no_push_without_digest_allowed(
+        self, mock_detector_cls, mock_meta_validator_cls,
+        mock_compose_validator_cls, mock_transformer_cls,
+        mock_profile_mgr_cls, mock_builder_cls, mock_pusher_cls,
+        mock_reg_builder_cls, mock_publisher_cls, mock_resolve,
+        tmp_path,
+    ):
+        # F2: H1's stale-registry hazard does not apply under --dry-run
+        # (no build, no push, no auto-resolve happens). Preview should
+        # complete without forcing the user to add --no-build or --digest.
+        wired = _wire_publish_mocks(
+            detector_cls=mock_detector_cls,
+            meta_validator_cls=mock_meta_validator_cls,
+            compose_validator_cls=mock_compose_validator_cls,
+            transformer_cls=mock_transformer_cls,
+            profile_mgr_cls=mock_profile_mgr_cls,
+            builder_cls=mock_builder_cls,
+            pusher_cls=mock_pusher_cls,
+            reg_builder_cls=mock_reg_builder_cls,
+            publisher_cls=mock_publisher_cls,
+            tmp_path=tmp_path,
+        )
+        mock_publisher_cls.return_value.publish.return_value = (
+            _make_publish_result(dry_run=True)
+        )
+
+        from kamiwaza_extensions.commands.publish import run_publish
+
+        run_publish(stage="dev", dry_run=True, no_push=True)
+
+        # Dry-run completed: build_entry called, no resolver invocation.
+        wired["reg_builder"].build_entry.assert_called_once()
+        mock_resolve.assert_not_called()
+        wired["image_builder"].build.assert_not_called()
+        wired["pusher"].push.assert_not_called()
+
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher.resolve_digest")
+    @patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher")
+    @patch("kamiwaza_extensions.registry_builder.RegistryBuilder")
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher")
+    @patch("kamiwaza_extensions.image_builder.ImageBuilder")
+    @patch("kamiwaza_extensions.profile_manager.ProfileManager")
+    @patch("kamiwaza_extensions.compose_transformer.ComposeTransformer")
+    @patch("kamiwaza_extensions.validators.compose.ComposeValidator")
+    @patch("kamiwaza_extensions.validators.metadata.MetadataValidator")
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
     def test_built_no_push_with_digest_skips_resolve(
         self, mock_detector_cls, mock_meta_validator_cls,
         mock_compose_validator_cls, mock_transformer_cls,

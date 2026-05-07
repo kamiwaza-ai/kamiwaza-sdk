@@ -155,7 +155,10 @@ def run_publish(
     # not-pushed leaves the registry stale (or empty), so the resolved
     # digest would either error or silently pin the *previous* push.
     # Force the user to either push, skip the build, or supply --digest.
-    if not no_build and no_push and digest is None:
+    # Dry-run is exempt: that branch returns before build/push/auto-resolve,
+    # so no hazard exists — preview the catalog without forcing the user
+    # to add ceremony flags.
+    if not dry_run and not no_build and no_push and digest is None:
         console.print(
             "[red]Error:[/red] --no-push without --no-build cannot pin a "
             "catalog digest — the just-built image is only in your local "

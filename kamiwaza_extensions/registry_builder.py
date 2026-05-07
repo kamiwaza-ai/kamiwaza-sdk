@@ -253,7 +253,11 @@ class RegistryBuilder:
         with the *registry* prefix (legacy behaviour).
 
         Refs of the form ``image:tag@sha256:<digest>`` keep the digest;
-        only the tag portion is rewritten.
+        only the tag portion is rewritten. Digest-only refs of the form
+        ``image@sha256:<digest>`` (no tag) are left untouched — the
+        repo-path char class excludes ``@`` so the regex can't capture
+        ``@sha256`` as part of the service name and treat the hex as a
+        tag.
         """
         suffix = _STAGE_SUFFIXES.get(stage, f"-{stage}")
         new_tag = f"{version}{suffix}"
@@ -263,7 +267,7 @@ class RegistryBuilder:
             escaped_ext = re.escape(extension_name)
             # Only match: registry/extension-name-service:tag[@sha256:...]
             pattern = re.compile(
-                rf"(image:\s*){escaped_reg}/({escaped_ext}-[^:\s]+)"
+                rf"(image:\s*){escaped_reg}/({escaped_ext}-[^:\s@]+)"
                 rf":([^\s@]+)(@sha256:[a-f0-9]{{64}})?"
             )
             return pattern.sub(
@@ -272,7 +276,7 @@ class RegistryBuilder:
 
         # Fallback: match any image with the registry prefix
         pattern = re.compile(
-            rf"(image:\s*){escaped_reg}(/[^:\s]+):([^\s@]+)(@sha256:[a-f0-9]{{64}})?"
+            rf"(image:\s*){escaped_reg}(/[^:\s@]+):([^\s@]+)(@sha256:[a-f0-9]{{64}})?"
         )
         return pattern.sub(rf"\g<1>{registry}\2:{new_tag}\g<4>", compose_yml)
 
