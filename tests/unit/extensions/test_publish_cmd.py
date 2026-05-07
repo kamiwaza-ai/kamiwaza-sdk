@@ -994,3 +994,58 @@ class TestPublishDigest:
             run_publish(stage="dev", dry_run=True)
 
             mock_resolve.assert_not_called()
+
+    @patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher")
+    @patch("kamiwaza_extensions.registry_builder.RegistryBuilder")
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher")
+    @patch("kamiwaza_extensions.image_builder.ImageBuilder")
+    @patch("kamiwaza_extensions.profile_manager.ProfileManager")
+    @patch("kamiwaza_extensions.compose_transformer.ComposeTransformer")
+    @patch("kamiwaza_extensions.validators.compose.ComposeValidator")
+    @patch("kamiwaza_extensions.validators.metadata.MetadataValidator")
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_dry_run_with_explicit_digest_passes_through(
+        self, mock_detector_cls, mock_meta_validator_cls,
+        mock_compose_validator_cls, mock_transformer_cls,
+        mock_profile_mgr_cls, mock_builder_cls, mock_pusher_cls,
+        mock_reg_builder_cls, mock_publisher_cls, tmp_path,
+    ):
+        # Compose with one buildable backend (so --digest is valid).
+        compose = {
+            "services": {
+                "backend": {
+                    "build": {"context": "."},
+                    "image": "my-org/my-app-backend:1.0.0",
+                },
+            },
+        }
+        with patch(
+            "kamiwaza_extensions.image_pusher.ImagePusher.resolve_digest"
+        ) as mock_resolve:
+            wired = _wire_publish_mocks(
+                detector_cls=mock_detector_cls,
+                meta_validator_cls=mock_meta_validator_cls,
+                compose_validator_cls=mock_compose_validator_cls,
+                transformer_cls=mock_transformer_cls,
+                profile_mgr_cls=mock_profile_mgr_cls,
+                builder_cls=mock_builder_cls,
+                pusher_cls=mock_pusher_cls,
+                reg_builder_cls=mock_reg_builder_cls,
+                publisher_cls=mock_publisher_cls,
+                tmp_path=tmp_path,
+                compose_data=compose,
+            )
+            mock_publisher_cls.return_value.publish.return_value = (
+                _make_publish_result(dry_run=True)
+            )
+
+            from kamiwaza_extensions.commands.publish import run_publish
+
+            run_publish(stage="dev", dry_run=True, digest=_DIGEST_USER_SUPPLIED)
+
+            mock_resolve.assert_not_called()
+            kwargs = wired["reg_builder"].build_entry.call_args.kwargs
+            # Dry-run preview pins the supplied digest on the buildable ref.
+            assert kwargs["digest_map"] == {
+                "ghcr.io/my-org/my-app-backend:1.0.0-dev": _DIGEST_USER_SUPPLIED,
+            }

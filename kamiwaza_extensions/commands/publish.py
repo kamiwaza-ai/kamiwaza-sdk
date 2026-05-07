@@ -243,6 +243,16 @@ def run_publish(
         )
         console.print(f"  Would push to:         {registry}/")
 
+        # Dry-run preview reflects an explicit --digest; auto-resolve
+        # is skipped because a dry-run shouldn't talk to the registry.
+        dry_digest_map: Dict[str, str] = {}
+        if digest is not None:
+            dry_refs = _collect_image_refs(
+                info.compose_data, info.name, image_tag, registry
+            )
+            if dry_refs:
+                dry_digest_map[dry_refs[0]] = digest
+
         # Run merge check so dry-run detects version conflicts
         reg_builder = RegistryBuilder()
         entry = reg_builder.build_entry(
@@ -252,6 +262,7 @@ def run_publish(
             version=version,
             stage=stage,
             revision=revision,
+            digest_map=dry_digest_map or None,
         )
         try:
             publisher = CatalogPublisher(profile, extension_dir=info.path)
