@@ -344,6 +344,17 @@ class TestTransformImageTags:
         result = builder.transform_image_tags(yml, "kamiwazaai", "2.0.0", "stage")
         assert f"kamiwazaai/my-app:2.0.0-stage@{digest}" in result
 
+    def test_malformed_digest_suffix_passes_through_untouched(self, builder):
+        # M5: an `@sha256:short` (or any non-conforming suffix) doesn't
+        # match the optional digest group, so the regex matches up to
+        # the bad `@` and the broken tail passes through verbatim.
+        # Preserves rather than corrupts user input.
+        yml = "image: kamiwazaai/my-app-web:old@sha256:short"
+        result = builder.transform_image_tags(
+            yml, "kamiwazaai", "2.0.0", "prod", extension_name="my-app",
+        )
+        assert "kamiwazaai/my-app-web:2.0.0@sha256:short" in result
+
     def test_preserves_digest_on_some_siblings_only(self, builder):
         digest = "sha256:" + "c" * 64
         yml = (
@@ -783,6 +794,32 @@ class TestBuildEntryDigestPinning:
             compose["services"]["backend"]["image"]
             == "kamiwazaai/my-app-backend:1.0.0"
         )
+
+    def test_extra_docker_images_collision_pinned_and_deduped(self, builder):
+        # M1: when extra_docker_images repeats a buildable service ref,
+        # both copies must end up pinned identically so dedup collapses
+        # them. Otherwise the catalog leaks an unpinned duplicate.
+        compose = {
+            "services": {
+                "backend": {"image": "kamiwazaai/my-app-backend:1.0.0"},
+            },
+        }
+        meta = {
+            "name": "my-app",
+            "description": "test",
+            "source_type": "kamiwaza",
+            "visibility": "public",
+            # Redundantly listed (same as the service image).
+            "extra_docker_images": ["kamiwazaai/my-app-backend:1.0.0"],
+        }
+        digest_map = {"kamiwazaai/my-app-backend:1.0.0": _DIGEST_A}
+        entry = builder.build_entry(
+            meta, compose, "kamiwazaai", "1.0.0", digest_map=digest_map,
+        )
+        # Single pinned entry — no unpinned duplicate.
+        assert entry["docker_images"] == [
+            f"kamiwazaai/my-app-backend:1.0.0@{_DIGEST_A}"
+        ]
 
     def test_revision_and_digest_are_orthogonal(self, builder, metadata):
         # Catalog ref carries both: <reg>/<ext>-<svc>:<revision>@<digest>.

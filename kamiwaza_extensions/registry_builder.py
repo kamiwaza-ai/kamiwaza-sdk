@@ -99,6 +99,17 @@ class RegistryBuilder:
 
         extra_images = metadata.get("extra_docker_images") or []
         if extra_images:
+            # Apply the same digest-pinning rule to extras so a service
+            # ref that's redundantly listed in `extra_docker_images`
+            # collapses against its already-pinned compose copy during
+            # dedup, instead of leaking an unpinned duplicate.
+            if digest_map:
+                extra_images = [
+                    f"{img}@{digest_map[img]}"
+                    if img in digest_map and "@" not in img
+                    else img
+                    for img in extra_images
+                ]
             docker_images = list(dict.fromkeys(docker_images + extra_images))
 
         entry: Dict[str, Any] = {

@@ -151,6 +151,19 @@ def run_publish(
             )
             raise typer.Exit(code=int(ExitCode.VALIDATION))
 
+    # ENG-4370 H1: auto-resolve queries the registry post-build. Built-but-
+    # not-pushed leaves the registry stale (or empty), so the resolved
+    # digest would either error or silently pin the *previous* push.
+    # Force the user to either push, skip the build, or supply --digest.
+    if not no_build and no_push and digest is None:
+        console.print(
+            "[red]Error:[/red] --no-push without --no-build cannot pin a "
+            "catalog digest — the just-built image is only in your local "
+            "daemon. Push first, pass --no-build to publish-only against "
+            "the existing registry tag, or supply --digest explicitly."
+        )
+        raise typer.Exit(code=int(ExitCode.VALIDATION))
+
     version = info.version
     ext_type = _infer_extension_type(info.metadata)
 
@@ -352,14 +365,44 @@ def run_publish(
     if image_refs:
         if digest is not None:
             # Buildable-count validation above guarantees a single ref.
-            digest_map[image_refs[0]] = digest
+            ref = image_refs[0]
+            digest_map[ref] = digest
+            # H2: when push happened, verify the supplied digest matches
+            # the registry's manifest. Catches CI typos, stale digests,
+            # and the TOCTOU window where a parallel run re-pointed the
+            # tag between our push and our publish.
+            if not no_push:
+                try:
+                    actual = ImagePusher.resolve_digest(ref)
+                except ImagePushError as exc:
+                    console.print(f"\n[red]Error:[/red] {exc}")
+                    raise typer.Exit(code=1) from exc
+                if actual != digest:
+                    console.print(
+                        f"\n[red]Error:[/red] supplied --digest does not match "
+                        f"the registry manifest for {ref}.\n"
+                        f"  supplied: {digest}\n"
+                        f"  registry: {actual}\n"
+                        "Re-run with the correct digest, or omit --digest to "
+                        "auto-resolve."
+                    )
+                    raise typer.Exit(code=int(ExitCode.VALIDATION))
         else:
-            try:
-                for ref in image_refs:
+            for ref in image_refs:
+                try:
                     digest_map[ref] = ImagePusher.resolve_digest(ref)
-            except ImagePushError as exc:
-                console.print(f"\n[red]Error:[/red] {exc}")
-                raise typer.Exit(code=1) from exc
+                except ImagePushError as exc:
+                    # M4: actionable hint for the catalog-only-republish
+                    # case where the tag isn't in the registry yet.
+                    if no_push and "manifest unknown" in str(exc).lower():
+                        console.print(
+                            f"\n[red]Error:[/red] registry has no image at "
+                            f"{ref}. Push it first or pass --digest "
+                            "explicitly."
+                        )
+                    else:
+                        console.print(f"\n[red]Error:[/red] {exc}")
+                    raise typer.Exit(code=1) from exc
 
     # 7. Build catalog entry
     reg_builder = RegistryBuilder()
@@ -410,5 +453,10 @@ def run_publish(
         f"Published [bold]{info.name}[/bold] v{version} to {profile.catalog_bucket}"
     )
     if image_refs:
-        console.print(f"  Images:  {', '.join(image_refs)}")
+        # Show what was actually pinned in the catalog, not the bare tag.
+        pinned = [
+            f"{r}@{digest_map[r]}" if r in digest_map else r
+            for r in image_refs
+        ]
+        console.print(f"  Images:  {', '.join(pinned)}")
     console.print(f"  Catalog: {result.catalog_file}")

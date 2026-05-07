@@ -439,7 +439,12 @@ class TestNoBuildNoPush:
 
         from kamiwaza_extensions.commands.publish import run_publish
 
-        run_publish(stage="dev", no_push=True)
+        # H1: --no-push without --no-build (or --digest) is rejected
+        # because we can't pin a digest for an image that's only local.
+        # This test exercises the build+push-skipped path via --digest.
+        run_publish(
+            stage="dev", no_push=True, digest="sha256:" + "a" * 64,
+        )
 
         # Build happens
         mock_image_builder.build.assert_called_once()
@@ -686,45 +691,10 @@ class TestPublishDigest:
             "ghcr.io/my-org/my-app-frontend:1.0.0-dev": _DIGEST_FRONTEND,
         }
 
-    @patch("kamiwaza_extensions.image_pusher.ImagePusher.resolve_digest")
-    @patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher")
-    @patch("kamiwaza_extensions.registry_builder.RegistryBuilder")
-    @patch("kamiwaza_extensions.image_pusher.ImagePusher")
-    @patch("kamiwaza_extensions.image_builder.ImageBuilder")
-    @patch("kamiwaza_extensions.profile_manager.ProfileManager")
-    @patch("kamiwaza_extensions.compose_transformer.ComposeTransformer")
-    @patch("kamiwaza_extensions.validators.compose.ComposeValidator")
-    @patch("kamiwaza_extensions.validators.metadata.MetadataValidator")
-    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
-    def test_explicit_digest_skips_resolver(
-        self, mock_detector_cls, mock_meta_validator_cls,
-        mock_compose_validator_cls, mock_transformer_cls,
-        mock_profile_mgr_cls, mock_builder_cls, mock_pusher_cls,
-        mock_reg_builder_cls, mock_publisher_cls, mock_resolve,
-        tmp_path,
-    ):
-        wired = _wire_publish_mocks(
-            detector_cls=mock_detector_cls,
-            meta_validator_cls=mock_meta_validator_cls,
-            compose_validator_cls=mock_compose_validator_cls,
-            transformer_cls=mock_transformer_cls,
-            profile_mgr_cls=mock_profile_mgr_cls,
-            builder_cls=mock_builder_cls,
-            pusher_cls=mock_pusher_cls,
-            reg_builder_cls=mock_reg_builder_cls,
-            publisher_cls=mock_publisher_cls,
-            tmp_path=tmp_path,
-        )
-
-        from kamiwaza_extensions.commands.publish import run_publish
-
-        run_publish(stage="dev", digest=_DIGEST_USER_SUPPLIED)
-
-        mock_resolve.assert_not_called()
-        kwargs = wired["reg_builder"].build_entry.call_args.kwargs
-        assert kwargs["digest_map"] == {
-            "ghcr.io/my-org/my-app-backend:1.0.0-dev": _DIGEST_USER_SUPPLIED,
-        }
+    # Note: previous test_explicit_digest_skips_resolver was removed —
+    # H2 changed the contract so explicit --digest with push DOES call
+    # resolve_digest for verification. See test_explicit_digest_with_
+    # push_verifies_against_registry below.
 
     @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
     @patch("kamiwaza_extensions.validators.compose.ComposeValidator")
@@ -783,14 +753,47 @@ class TestPublishDigest:
     @patch("kamiwaza_extensions.validators.compose.ComposeValidator")
     @patch("kamiwaza_extensions.validators.metadata.MetadataValidator")
     @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
-    def test_no_push_still_resolves_digest(
+    def test_built_no_push_without_digest_errors(
         self, mock_detector_cls, mock_meta_validator_cls,
         mock_compose_validator_cls, mock_transformer_cls,
         mock_profile_mgr_cls, mock_builder_cls, mock_pusher_cls,
         mock_reg_builder_cls, mock_publisher_cls, mock_resolve,
         tmp_path,
     ):
-        mock_resolve.return_value = _DIGEST_BACKEND
+        # H1: building locally and skipping push leaves the registry
+        # stale relative to the local image; auto-resolve would pin to
+        # the wrong digest. The CLI must reject this combination.
+        info = _make_extension_info(tmp_path)
+        mock_detector_cls.return_value.detect.return_value = info
+
+        from kamiwaza_extensions.commands.publish import run_publish
+
+        with pytest.raises((SystemExit, ClickExit)):
+            run_publish(stage="dev", no_push=True)
+
+        # Should never have built or attempted to resolve.
+        mock_builder_cls.return_value.build.assert_not_called()
+        mock_resolve.assert_not_called()
+
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher.resolve_digest")
+    @patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher")
+    @patch("kamiwaza_extensions.registry_builder.RegistryBuilder")
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher")
+    @patch("kamiwaza_extensions.image_builder.ImageBuilder")
+    @patch("kamiwaza_extensions.profile_manager.ProfileManager")
+    @patch("kamiwaza_extensions.compose_transformer.ComposeTransformer")
+    @patch("kamiwaza_extensions.validators.compose.ComposeValidator")
+    @patch("kamiwaza_extensions.validators.metadata.MetadataValidator")
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_built_no_push_with_digest_skips_resolve(
+        self, mock_detector_cls, mock_meta_validator_cls,
+        mock_compose_validator_cls, mock_transformer_cls,
+        mock_profile_mgr_cls, mock_builder_cls, mock_pusher_cls,
+        mock_reg_builder_cls, mock_publisher_cls, mock_resolve,
+        tmp_path,
+    ):
+        # H1 escape hatch: explicit --digest lets the user opt out of
+        # auto-resolve, so build+no-push is allowed when --digest is set.
         wired = _wire_publish_mocks(
             detector_cls=mock_detector_cls,
             meta_validator_cls=mock_meta_validator_cls,
@@ -806,13 +809,143 @@ class TestPublishDigest:
 
         from kamiwaza_extensions.commands.publish import run_publish
 
-        run_publish(stage="dev", no_push=True)
+        run_publish(stage="dev", no_push=True, digest=_DIGEST_USER_SUPPLIED)
 
-        # Push skipped, but resolve_digest still ran against existing tag.
+        # No push, no resolve (no_push=True), digest taken verbatim.
         wired["pusher"].push.assert_not_called()
-        mock_resolve.assert_called_once_with(
-            "ghcr.io/my-org/my-app-backend:1.0.0-dev"
+        mock_resolve.assert_not_called()
+        kwargs = wired["reg_builder"].build_entry.call_args.kwargs
+        assert kwargs["digest_map"] == {
+            "ghcr.io/my-org/my-app-backend:1.0.0-dev": _DIGEST_USER_SUPPLIED,
+        }
+
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher.resolve_digest")
+    @patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher")
+    @patch("kamiwaza_extensions.registry_builder.RegistryBuilder")
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher")
+    @patch("kamiwaza_extensions.image_builder.ImageBuilder")
+    @patch("kamiwaza_extensions.profile_manager.ProfileManager")
+    @patch("kamiwaza_extensions.compose_transformer.ComposeTransformer")
+    @patch("kamiwaza_extensions.validators.compose.ComposeValidator")
+    @patch("kamiwaza_extensions.validators.metadata.MetadataValidator")
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_explicit_digest_with_push_verifies_against_registry(
+        self, mock_detector_cls, mock_meta_validator_cls,
+        mock_compose_validator_cls, mock_transformer_cls,
+        mock_profile_mgr_cls, mock_builder_cls, mock_pusher_cls,
+        mock_reg_builder_cls, mock_publisher_cls, mock_resolve,
+        tmp_path,
+    ):
+        # H2: when --digest is set and push happened, resolve_digest is
+        # called for integrity verification (not as the source of truth).
+        mock_resolve.return_value = _DIGEST_USER_SUPPLIED
+        wired = _wire_publish_mocks(
+            detector_cls=mock_detector_cls,
+            meta_validator_cls=mock_meta_validator_cls,
+            compose_validator_cls=mock_compose_validator_cls,
+            transformer_cls=mock_transformer_cls,
+            profile_mgr_cls=mock_profile_mgr_cls,
+            builder_cls=mock_builder_cls,
+            pusher_cls=mock_pusher_cls,
+            reg_builder_cls=mock_reg_builder_cls,
+            publisher_cls=mock_publisher_cls,
+            tmp_path=tmp_path,
         )
+
+        from kamiwaza_extensions.commands.publish import run_publish
+
+        run_publish(stage="dev", digest=_DIGEST_USER_SUPPLIED)
+
+        mock_resolve.assert_called_once()
+        kwargs = wired["reg_builder"].build_entry.call_args.kwargs
+        assert kwargs["digest_map"] == {
+            "ghcr.io/my-org/my-app-backend:1.0.0-dev": _DIGEST_USER_SUPPLIED,
+        }
+
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher.resolve_digest")
+    @patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher")
+    @patch("kamiwaza_extensions.registry_builder.RegistryBuilder")
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher")
+    @patch("kamiwaza_extensions.image_builder.ImageBuilder")
+    @patch("kamiwaza_extensions.profile_manager.ProfileManager")
+    @patch("kamiwaza_extensions.compose_transformer.ComposeTransformer")
+    @patch("kamiwaza_extensions.validators.compose.ComposeValidator")
+    @patch("kamiwaza_extensions.validators.metadata.MetadataValidator")
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_explicit_digest_mismatch_aborts(
+        self, mock_detector_cls, mock_meta_validator_cls,
+        mock_compose_validator_cls, mock_transformer_cls,
+        mock_profile_mgr_cls, mock_builder_cls, mock_pusher_cls,
+        mock_reg_builder_cls, mock_publisher_cls, mock_resolve,
+        tmp_path,
+    ):
+        # H2: registry returns a different digest from what user supplied
+        # → publish must abort before catalog is written.
+        mock_resolve.return_value = _DIGEST_BACKEND  # registry has this
+        wired = _wire_publish_mocks(
+            detector_cls=mock_detector_cls,
+            meta_validator_cls=mock_meta_validator_cls,
+            compose_validator_cls=mock_compose_validator_cls,
+            transformer_cls=mock_transformer_cls,
+            profile_mgr_cls=mock_profile_mgr_cls,
+            builder_cls=mock_builder_cls,
+            pusher_cls=mock_pusher_cls,
+            reg_builder_cls=mock_reg_builder_cls,
+            publisher_cls=mock_publisher_cls,
+            tmp_path=tmp_path,
+        )
+
+        from kamiwaza_extensions.commands.publish import run_publish
+
+        with pytest.raises((SystemExit, ClickExit)):
+            run_publish(stage="dev", digest=_DIGEST_USER_SUPPLIED)  # not _DIGEST_BACKEND
+
+        # Catalog publish never happened.
+        wired["reg_builder"].build_entry.assert_not_called()
+        mock_publisher_cls.return_value.publish.assert_not_called()
+
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher.resolve_digest")
+    @patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher")
+    @patch("kamiwaza_extensions.registry_builder.RegistryBuilder")
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher")
+    @patch("kamiwaza_extensions.image_builder.ImageBuilder")
+    @patch("kamiwaza_extensions.profile_manager.ProfileManager")
+    @patch("kamiwaza_extensions.compose_transformer.ComposeTransformer")
+    @patch("kamiwaza_extensions.validators.compose.ComposeValidator")
+    @patch("kamiwaza_extensions.validators.metadata.MetadataValidator")
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_resolve_digest_failure_aborts_publish(
+        self, mock_detector_cls, mock_meta_validator_cls,
+        mock_compose_validator_cls, mock_transformer_cls,
+        mock_profile_mgr_cls, mock_builder_cls, mock_pusher_cls,
+        mock_reg_builder_cls, mock_publisher_cls, mock_resolve,
+        tmp_path,
+    ):
+        # Orchestration: if resolve_digest raises, run_publish exits 1
+        # and never writes the catalog.
+        from kamiwaza_extensions.image_pusher import ImagePushError
+
+        mock_resolve.side_effect = ImagePushError("manifest unknown")
+        wired = _wire_publish_mocks(
+            detector_cls=mock_detector_cls,
+            meta_validator_cls=mock_meta_validator_cls,
+            compose_validator_cls=mock_compose_validator_cls,
+            transformer_cls=mock_transformer_cls,
+            profile_mgr_cls=mock_profile_mgr_cls,
+            builder_cls=mock_builder_cls,
+            pusher_cls=mock_pusher_cls,
+            reg_builder_cls=mock_reg_builder_cls,
+            publisher_cls=mock_publisher_cls,
+            tmp_path=tmp_path,
+        )
+
+        from kamiwaza_extensions.commands.publish import run_publish
+
+        with pytest.raises((SystemExit, ClickExit)):
+            run_publish(stage="dev")
+
+        wired["reg_builder"].build_entry.assert_not_called()
+        mock_publisher_cls.return_value.publish.assert_not_called()
 
     @patch("kamiwaza_extensions.image_pusher.ImagePusher.resolve_digest")
     @patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher")
