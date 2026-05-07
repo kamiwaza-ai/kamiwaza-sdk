@@ -1344,11 +1344,16 @@ def catalog_stack_environment() -> Iterator[dict[str, object]]:
     # Always issue an up to ensure all services (e.g., minio) are running; harmless if already up.
     try:
         _run_catalog_compose("up", "-d", env=compose_env)
+    except FileNotFoundError:
+        pytest.skip("docker CLI not found — catalog stack unavailable")
     except subprocess.CalledProcessError as exc:
-        pytest.skip(
-            f"Catalog stack docker-compose up failed (exit {exc.returncode}): "
-            f"{exc.stderr or exc.stdout or 'unknown error'}"
-        )
+        detail = (exc.stderr or exc.stdout or "").lower()
+        if "docker" in detail and ("daemon" in detail or "not running" in detail or "connection refused" in detail):
+            pytest.skip(
+                f"Docker daemon unreachable (exit {exc.returncode}): "
+                f"{exc.stderr or exc.stdout or 'unknown error'}"
+            )
+        raise
 
     minio_endpoint_local = f"{parsed_minio.scheme or 'http'}://{parsed_minio.hostname or 'localhost'}:{minio_port}"
     minio_endpoint_runtime = _runtime_endpoint(minio_endpoint_local)

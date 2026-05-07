@@ -11,7 +11,11 @@ import pytest
 
 TEST_REPO_ID = "mlx-community/Qwen3-4B-4bit"
 SERVE_WAIT_TIMEOUT = int(os.environ.get("KAMIWAZA_TEST_SERVE_TIMEOUT", "180"))
-CLI_COMMAND_TIMEOUT = int(os.environ.get("KAMIWAZA_TEST_CLI_TIMEOUT", "240"))
+_CLI_TIMEOUT_BUFFER = 60
+CLI_COMMAND_TIMEOUT = max(
+    int(os.environ.get("KAMIWAZA_TEST_CLI_TIMEOUT", "240")),
+    SERVE_WAIT_TIMEOUT + _CLI_TIMEOUT_BUFFER,
+)
 
 pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
 
