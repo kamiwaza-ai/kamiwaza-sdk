@@ -665,6 +665,21 @@ class TestPublishDigest:
         mock_resolve.side_effect = lambda ref: (
             _DIGEST_BACKEND if "backend" in ref else _DIGEST_FRONTEND
         )
+        # Compose with two buildable services drives `published_refs`
+        # (which is now the source of truth for the auto-resolve loop,
+        # not `image_refs`).
+        compose = {
+            "services": {
+                "backend": {
+                    "build": {"context": "."},
+                    "image": "my-org/my-app-backend:1.0.0",
+                },
+                "frontend": {
+                    "build": {"context": "./frontend"},
+                    "image": "my-org/my-app-frontend:1.0.0",
+                },
+            },
+        }
         wired = _wire_publish_mocks(
             detector_cls=mock_detector_cls,
             meta_validator_cls=mock_meta_validator_cls,
@@ -676,6 +691,7 @@ class TestPublishDigest:
             reg_builder_cls=mock_reg_builder_cls,
             publisher_cls=mock_publisher_cls,
             tmp_path=tmp_path,
+            compose_data=compose,
             image_refs=[
                 "ghcr.io/my-org/my-app-backend:1.0.0-dev",
                 "ghcr.io/my-org/my-app-frontend:1.0.0-dev",
@@ -888,6 +904,142 @@ class TestPublishDigest:
         kwargs = wired["reg_builder"].build_entry.call_args.kwargs
         assert kwargs["digest_map"] == {
             "ghcr.io/my-org/my-app-backend:1.0.0-dev": _DIGEST_USER_SUPPLIED,
+        }
+
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher.resolve_digest")
+    @patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher")
+    @patch("kamiwaza_extensions.registry_builder.RegistryBuilder")
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher")
+    @patch("kamiwaza_extensions.image_builder.ImageBuilder")
+    @patch("kamiwaza_extensions.profile_manager.ProfileManager")
+    @patch("kamiwaza_extensions.compose_transformer.ComposeTransformer")
+    @patch("kamiwaza_extensions.validators.compose.ComposeValidator")
+    @patch("kamiwaza_extensions.validators.metadata.MetadataValidator")
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_digest_pins_canonical_ref_when_profiled_helper_appears_first(
+        self, mock_detector_cls, mock_meta_validator_cls,
+        mock_compose_validator_cls, mock_transformer_cls,
+        mock_profile_mgr_cls, mock_builder_cls, mock_pusher_cls,
+        mock_reg_builder_cls, mock_publisher_cls, mock_resolve,
+        tmp_path,
+    ):
+        # P2 (local Codex): profiled service first in dict order must NOT
+        # redirect --digest pinning. The pinned ref must come from the
+        # filtered buildable_services list, not image_refs[0].
+        compose = {
+            "services": {
+                "dev-helper": {
+                    "build": {"context": "./dev"},
+                    "image": "my-org/my-app-dev-helper:1.0.0",
+                    "profiles": ["dev"],   # profiled — must NOT be pinned
+                },
+                "backend": {
+                    "build": {"context": "."},
+                    "image": "my-org/my-app-backend:1.0.0",
+                },
+            },
+        }
+        # ImageBuilder builds both (it doesn't filter profiles). The
+        # profiled helper appears FIRST in image_refs.
+        wired = _wire_publish_mocks(
+            detector_cls=mock_detector_cls,
+            meta_validator_cls=mock_meta_validator_cls,
+            compose_validator_cls=mock_compose_validator_cls,
+            transformer_cls=mock_transformer_cls,
+            profile_mgr_cls=mock_profile_mgr_cls,
+            builder_cls=mock_builder_cls,
+            pusher_cls=mock_pusher_cls,
+            reg_builder_cls=mock_reg_builder_cls,
+            publisher_cls=mock_publisher_cls,
+            tmp_path=tmp_path,
+            compose_data=compose,
+            image_refs=[
+                "ghcr.io/my-org/my-app-dev-helper:1.0.0-dev",  # FIRST
+                "ghcr.io/my-org/my-app-backend:1.0.0-dev",
+            ],
+        )
+        mock_resolve.return_value = _DIGEST_USER_SUPPLIED  # H2 verify match
+
+        from kamiwaza_extensions.commands.publish import run_publish
+
+        run_publish(stage="dev", digest=_DIGEST_USER_SUPPLIED)
+
+        kwargs = wired["reg_builder"].build_entry.call_args.kwargs
+        # Digest pinned against the canonical buildable ref (backend),
+        # NOT against the profiled helper's ref.
+        assert kwargs["digest_map"] == {
+            "ghcr.io/my-org/my-app-backend:1.0.0-dev": _DIGEST_USER_SUPPLIED,
+        }
+        assert "dev-helper" not in str(kwargs["digest_map"])
+        # H2 verify also runs against the canonical ref.
+        mock_resolve.assert_called_once_with(
+            "ghcr.io/my-org/my-app-backend:1.0.0-dev"
+        )
+
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher.resolve_digest")
+    @patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher")
+    @patch("kamiwaza_extensions.registry_builder.RegistryBuilder")
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher")
+    @patch("kamiwaza_extensions.image_builder.ImageBuilder")
+    @patch("kamiwaza_extensions.profile_manager.ProfileManager")
+    @patch("kamiwaza_extensions.compose_transformer.ComposeTransformer")
+    @patch("kamiwaza_extensions.validators.compose.ComposeValidator")
+    @patch("kamiwaza_extensions.validators.metadata.MetadataValidator")
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_auto_resolve_skips_profiled_helper(
+        self, mock_detector_cls, mock_meta_validator_cls,
+        mock_compose_validator_cls, mock_transformer_cls,
+        mock_profile_mgr_cls, mock_builder_cls, mock_pusher_cls,
+        mock_reg_builder_cls, mock_publisher_cls, mock_resolve,
+        tmp_path,
+    ):
+        # P2 sibling: auto-resolve must not call resolve_digest for
+        # profiled refs — they aren't published in the catalog so any
+        # pin would be silently dropped, and a profiled-only-in-registry
+        # ref might cause a needless network round-trip / failure.
+        compose = {
+            "services": {
+                "dev-helper": {
+                    "build": {"context": "./dev"},
+                    "image": "my-org/my-app-dev-helper:1.0.0",
+                    "profiles": ["dev"],
+                },
+                "backend": {
+                    "build": {"context": "."},
+                    "image": "my-org/my-app-backend:1.0.0",
+                },
+            },
+        }
+        wired = _wire_publish_mocks(
+            detector_cls=mock_detector_cls,
+            meta_validator_cls=mock_meta_validator_cls,
+            compose_validator_cls=mock_compose_validator_cls,
+            transformer_cls=mock_transformer_cls,
+            profile_mgr_cls=mock_profile_mgr_cls,
+            builder_cls=mock_builder_cls,
+            pusher_cls=mock_pusher_cls,
+            reg_builder_cls=mock_reg_builder_cls,
+            publisher_cls=mock_publisher_cls,
+            tmp_path=tmp_path,
+            compose_data=compose,
+            image_refs=[
+                "ghcr.io/my-org/my-app-dev-helper:1.0.0-dev",
+                "ghcr.io/my-org/my-app-backend:1.0.0-dev",
+            ],
+        )
+        mock_resolve.return_value = _DIGEST_BACKEND
+
+        from kamiwaza_extensions.commands.publish import run_publish
+
+        run_publish(stage="dev")
+
+        # resolve_digest invoked once, against the backend ref only.
+        mock_resolve.assert_called_once_with(
+            "ghcr.io/my-org/my-app-backend:1.0.0-dev"
+        )
+        kwargs = wired["reg_builder"].build_entry.call_args.kwargs
+        assert kwargs["digest_map"] == {
+            "ghcr.io/my-org/my-app-backend:1.0.0-dev": _DIGEST_BACKEND,
         }
 
     @patch("kamiwaza_extensions.image_pusher.ImagePusher.resolve_digest")

@@ -370,15 +370,26 @@ def run_publish(
     elif no_push:
         console.print("  [dim]Skipping push (--no-push)[/dim]")
 
-    # 6.5 Resolve digests for buildable images (ENG-4370). Catalog refs
-    # are pinned `image:tag@sha256:...` so they're immutable regardless
+    # 6.5 Resolve digests for published buildable images (ENG-4370). Catalog
+    # refs are pinned `image:tag@sha256:...` so they're immutable regardless
     # of tag mutability. Pass-through external/prebuilt-internal refs
     # (postgres, etc.) keep whatever pinning their source repo applied.
+    #
+    # Iterate over `published_refs` derived from `buildable_services` (which
+    # already excludes profile-only services) instead of `image_refs`.
+    # `image_refs` reflects what ImageBuilder built and ImagePusher pushed,
+    # which can include profiled helpers — those won't appear in the
+    # transformed catalog compose, so resolving / pinning their digest is at
+    # best wasted work and at worst (with --digest) misdirects the user's
+    # supplied digest at the wrong ref.
+    published_refs: List[str] = [
+        f"{registry}/{info.name}-{name}:{image_tag}" for name in buildable_services
+    ]
     digest_map: Dict[str, str] = {}
-    if image_refs:
+    if published_refs:
         if digest is not None:
             # Buildable-count validation above guarantees a single ref.
-            ref = image_refs[0]
+            ref = published_refs[0]
             digest_map[ref] = digest
             # H2: when push happened, verify the supplied digest matches
             # the registry's manifest. Catches CI typos, stale digests,
@@ -401,7 +412,7 @@ def run_publish(
                     )
                     raise typer.Exit(code=int(ExitCode.VALIDATION))
         else:
-            for ref in image_refs:
+            for ref in published_refs:
                 try:
                     digest_map[ref] = ImagePusher.resolve_digest(ref)
                 except ImagePushError as exc:
@@ -477,11 +488,12 @@ def run_publish(
     console.print(
         f"Published [bold]{info.name}[/bold] v{version} to {profile.catalog_bucket}"
     )
-    if image_refs:
-        # Show what was actually pinned in the catalog, not the bare tag.
+    if published_refs:
+        # Show what's actually in the catalog (post-profile-filter), pinned
+        # where digest_map carries an entry.
         pinned = [
             f"{r}@{digest_map[r]}" if r in digest_map else r
-            for r in image_refs
+            for r in published_refs
         ]
         console.print(f"  Images:  {', '.join(pinned)}")
     console.print(f"  Catalog: {result.catalog_file}")
