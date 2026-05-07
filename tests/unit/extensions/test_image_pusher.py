@@ -131,14 +131,16 @@ class TestResolveDigest:
     @patch("kamiwaza_extensions.image_pusher.subprocess.run")
     def test_returns_digest_from_imagetools(self, mock_run):
         mock_run.return_value = MagicMock(
-            returncode=0, stdout=_VALID_DIGEST + "\n", stderr=""
+            returncode=0,
+            stdout='{"digest":"' + _VALID_DIGEST + '","mediaType":"application/vnd.oci.image.index.v1+json"}',
+            stderr="",
         )
         digest = ImagePusher.resolve_digest("reg.test/app:v1")
         assert digest == _VALID_DIGEST
         cmd = mock_run.call_args[0][0]
         assert cmd[:4] == ["docker", "buildx", "imagetools", "inspect"]
         assert "reg.test/app:v1" in cmd
-        assert "{{.Manifest.Digest}}" in cmd
+        assert "{{json .Manifest}}" in cmd
 
     @patch("kamiwaza_extensions.image_pusher.subprocess.run")
     def test_inspect_failure_raises(self, mock_run):
@@ -149,11 +151,27 @@ class TestResolveDigest:
             ImagePusher.resolve_digest("reg.test/app:v1")
 
     @patch("kamiwaza_extensions.image_pusher.subprocess.run")
-    def test_unexpected_output_raises(self, mock_run):
+    def test_invalid_json_raises(self, mock_run):
         mock_run.return_value = MagicMock(
-            returncode=0, stdout="not-a-digest\n", stderr=""
+            returncode=0, stdout="not-json-at-all", stderr=""
         )
-        with pytest.raises(ImagePushError, match="Unexpected digest output"):
+        with pytest.raises(ImagePushError, match="parse imagetools output"):
+            ImagePusher.resolve_digest("reg.test/app:v1")
+
+    @patch("kamiwaza_extensions.image_pusher.subprocess.run")
+    def test_missing_digest_field_raises(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout='{"mediaType":"foo"}', stderr=""
+        )
+        with pytest.raises(ImagePushError, match="Unexpected digest field"):
+            ImagePusher.resolve_digest("reg.test/app:v1")
+
+    @patch("kamiwaza_extensions.image_pusher.subprocess.run")
+    def test_malformed_digest_field_raises(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout='{"digest":"not-a-digest"}', stderr=""
+        )
+        with pytest.raises(ImagePushError, match="Unexpected digest field"):
             ImagePusher.resolve_digest("reg.test/app:v1")
 
     @patch(

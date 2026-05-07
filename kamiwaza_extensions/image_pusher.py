@@ -92,21 +92,28 @@ class ImagePusher:
     def resolve_digest(image_ref: str) -> str:
         """Return the manifest digest for *image_ref* from the registry.
 
-        Uses ``docker buildx imagetools inspect`` to read the digest
-        without pulling the image. The ref must already exist in the
-        registry — call after ``push`` for the just-built image, or
-        against any pre-existing tag.
+        Uses ``docker buildx imagetools inspect`` with a JSON template
+        so that an OCI manifest list (multi-arch) returns its index
+        digest and a single-platform manifest returns its own digest —
+        matching what ``image:tag@sha256:...`` resolves to at pull
+        time. The ref must already exist in the registry; call after
+        ``push`` for the just-built image, or against any pre-existing
+        tag.
 
-        Returns a ``sha256:<64-hex>`` string.
+        Note: ``{{.Manifest.Digest}}`` does not work — that template
+        path hits the type's Stringer and dumps a human-readable
+        manifest. The JSON form is the canonical extraction.
 
         Raises:
-            ImagePushError: When ``docker`` is not installed, the
-                inspect command fails, or the returned digest does not
-                match the expected grammar.
+            ImagePushError: When ``docker`` is missing, the inspect
+                command fails, the JSON cannot be parsed, or the
+                returned digest does not match the expected grammar.
         """
+        import json as _json
+
         cmd = [
             "docker", "buildx", "imagetools", "inspect", image_ref,
-            "--format", "{{.Manifest.Digest}}",
+            "--format", "{{json .Manifest}}",
         ]
         try:
             result = subprocess.run(
@@ -123,10 +130,16 @@ class ImagePusher:
             raise ImagePushError(
                 f"Digest resolution failed for {image_ref}: {result.stderr.strip()}"
             )
-        digest = result.stdout.strip()
-        if not DIGEST_PATTERN.match(digest):
+        try:
+            manifest = _json.loads(result.stdout)
+        except _json.JSONDecodeError as exc:
             raise ImagePushError(
-                f"Unexpected digest output for {image_ref}: {digest!r}"
+                f"Could not parse imagetools output for {image_ref}: {exc}"
+            ) from exc
+        digest = manifest.get("digest", "")
+        if not isinstance(digest, str) or not DIGEST_PATTERN.match(digest):
+            raise ImagePushError(
+                f"Unexpected digest field for {image_ref}: {digest!r}"
             )
         return digest
 
