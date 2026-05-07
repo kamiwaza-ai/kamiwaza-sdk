@@ -240,6 +240,9 @@ class RegistryBuilder:
 
         If *extension_name* is empty, falls back to matching all images
         with the *registry* prefix (legacy behaviour).
+
+        Refs of the form ``image:tag@sha256:<digest>`` keep the digest;
+        only the tag portion is rewritten.
         """
         suffix = _STAGE_SUFFIXES.get(stage, f"-{stage}")
         new_tag = f"{version}{suffix}"
@@ -247,17 +250,20 @@ class RegistryBuilder:
 
         if extension_name:
             escaped_ext = re.escape(extension_name)
-            # Only match: registry/extension-name-service:tag
+            # Only match: registry/extension-name-service:tag[@sha256:...]
             pattern = re.compile(
-                rf"(image:\s*){escaped_reg}/({escaped_ext}-[^:\s]+):([^\s]+)"
+                rf"(image:\s*){escaped_reg}/({escaped_ext}-[^:\s]+)"
+                rf":([^\s@]+)(@sha256:[a-f0-9]{{64}})?"
             )
-            return pattern.sub(rf"\g<1>{registry}/\2:{new_tag}", compose_yml)
+            return pattern.sub(
+                rf"\g<1>{registry}/\2:{new_tag}\g<4>", compose_yml,
+            )
 
         # Fallback: match any image with the registry prefix
         pattern = re.compile(
-            rf"(image:\s*){escaped_reg}(/[^:\s]+):([^\s]+)"
+            rf"(image:\s*){escaped_reg}(/[^:\s]+):([^\s@]+)(@sha256:[a-f0-9]{{64}})?"
         )
-        return pattern.sub(rf"\g<1>{registry}\2:{new_tag}", compose_yml)
+        return pattern.sub(rf"\g<1>{registry}\2:{new_tag}\g<4>", compose_yml)
 
     def extract_docker_images(
         self, compose_data_or_yml: Any,

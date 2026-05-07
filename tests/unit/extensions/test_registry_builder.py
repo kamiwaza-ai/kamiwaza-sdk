@@ -325,6 +325,40 @@ class TestTransformImageTags:
         result = builder.transform_image_tags(yml, "kamiwazaai", "2.0.0", "qa")
         assert "kamiwazaai/my-app:2.0.0-qa" in result
 
+    # ENG-4370: digest suffixes must survive tag rewriting.
+
+    def test_preserves_digest_suffix_extension_branch(self, builder):
+        digest = "sha256:" + "a" * 64
+        yml = f"image: kamiwazaai/my-app-web:old@{digest}"
+        result = builder.transform_image_tags(
+            yml, "kamiwazaai", "2.0.0", "prod", extension_name="my-app",
+        )
+        assert f"kamiwazaai/my-app-web:2.0.0@{digest}" in result
+        # Digest preserved, not stripped.
+        assert "kamiwazaai/my-app-web:2.0.0\n" not in result + "\n"
+        assert "kamiwazaai/my-app-web:2.0.0 " not in result + " "
+
+    def test_preserves_digest_suffix_fallback_branch(self, builder):
+        digest = "sha256:" + "b" * 64
+        yml = f"image: kamiwazaai/my-app:old@{digest}"
+        result = builder.transform_image_tags(yml, "kamiwazaai", "2.0.0", "stage")
+        assert f"kamiwazaai/my-app:2.0.0-stage@{digest}" in result
+
+    def test_preserves_digest_on_some_siblings_only(self, builder):
+        digest = "sha256:" + "c" * 64
+        yml = (
+            f"image: kamiwazaai/app-frontend:old@{digest}\n"
+            "image: kamiwazaai/app-backend:old\n"
+        )
+        result = builder.transform_image_tags(yml, "kamiwazaai", "3.0.0", "prod")
+        assert f"kamiwazaai/app-frontend:3.0.0@{digest}" in result
+        assert "kamiwazaai/app-backend:3.0.0" in result
+        # Backend has no `@` after rewrite.
+        backend_line = [
+            ln for ln in result.splitlines() if "app-backend" in ln
+        ][0]
+        assert "@" not in backend_line
+
 
 # ------------------------------------------------------------------
 # extract_docker_images
