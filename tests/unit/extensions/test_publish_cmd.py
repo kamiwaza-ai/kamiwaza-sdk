@@ -560,3 +560,437 @@ class TestResolvePreviewImage:
 
         result = _resolve_preview_image({}, tmp_path)
         assert result is None
+
+
+# ------------------------------------------------------------------
+# ENG-4370 — --digest flag and auto-resolve digest pinning
+# ------------------------------------------------------------------
+
+
+_DIGEST_BACKEND = "sha256:" + "a" * 64
+_DIGEST_FRONTEND = "sha256:" + "b" * 64
+_DIGEST_USER_SUPPLIED = "sha256:" + "c" * 64
+
+
+def _multi_buildable_compose(name: str = "my-app", version: str = "1.0.0"):
+    return {
+        "services": {
+            "backend": {
+                "build": {"context": "./backend"},
+                "image": f"my-org/{name}-backend:{version}",
+            },
+            "frontend": {
+                "build": {"context": "./frontend"},
+                "image": f"my-org/{name}-frontend:{version}",
+            },
+            "db": {  # Pattern B: external pass-through
+                "image": "postgres:15",
+            },
+        },
+    }
+
+
+def _wire_publish_mocks(
+    *, detector_cls, meta_validator_cls, compose_validator_cls,
+    transformer_cls, profile_mgr_cls, builder_cls, pusher_cls,
+    reg_builder_cls, publisher_cls, tmp_path,
+    compose_data=None, image_refs=None, transformed_services=None,
+):
+    """Configure the standard chain of mocks used by the digest tests."""
+    info = _make_extension_info(tmp_path, compose_data=compose_data)
+    detector = MagicMock()
+    detector.detect.return_value = info
+    detector_cls.return_value = detector
+
+    meta_validator_cls.return_value.validate.return_value = _make_validation_result()
+    compose_validator_cls.return_value.validate.return_value = _make_validation_result()
+    profile_mgr_cls.return_value.resolve_profile.return_value = _make_profile()
+
+    transformer = MagicMock()
+    transformer.transform.return_value = {
+        "services": transformed_services or {
+            "backend": {"image": "ghcr.io/my-org/my-app-backend:1.0.0-dev"},
+        },
+    }
+    transformer_cls.return_value = transformer
+
+    image_builder = MagicMock()
+    image_builder.build.return_value = image_refs or [
+        "ghcr.io/my-org/my-app-backend:1.0.0-dev",
+    ]
+    builder_cls.return_value = image_builder
+
+    pusher_cls.return_value = MagicMock()
+
+    reg_builder = MagicMock()
+    reg_builder.build_entry.return_value = {"name": "my-app", "version": "1.0.0"}
+    reg_builder_cls.return_value = reg_builder
+
+    publisher = MagicMock()
+    publisher.publish.return_value = _make_publish_result()
+    publisher_cls.return_value = publisher
+
+    return {
+        "reg_builder": reg_builder,
+        "image_builder": image_builder,
+        "pusher": pusher_cls.return_value,
+    }
+
+
+class TestPublishDigest:
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher.resolve_digest")
+    @patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher")
+    @patch("kamiwaza_extensions.registry_builder.RegistryBuilder")
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher")
+    @patch("kamiwaza_extensions.image_builder.ImageBuilder")
+    @patch("kamiwaza_extensions.profile_manager.ProfileManager")
+    @patch("kamiwaza_extensions.compose_transformer.ComposeTransformer")
+    @patch("kamiwaza_extensions.validators.compose.ComposeValidator")
+    @patch("kamiwaza_extensions.validators.metadata.MetadataValidator")
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_auto_resolve_passes_digest_map_to_build_entry(
+        self, mock_detector_cls, mock_meta_validator_cls,
+        mock_compose_validator_cls, mock_transformer_cls,
+        mock_profile_mgr_cls, mock_builder_cls, mock_pusher_cls,
+        mock_reg_builder_cls, mock_publisher_cls, mock_resolve,
+        tmp_path,
+    ):
+        mock_resolve.side_effect = lambda ref: (
+            _DIGEST_BACKEND if "backend" in ref else _DIGEST_FRONTEND
+        )
+        wired = _wire_publish_mocks(
+            detector_cls=mock_detector_cls,
+            meta_validator_cls=mock_meta_validator_cls,
+            compose_validator_cls=mock_compose_validator_cls,
+            transformer_cls=mock_transformer_cls,
+            profile_mgr_cls=mock_profile_mgr_cls,
+            builder_cls=mock_builder_cls,
+            pusher_cls=mock_pusher_cls,
+            reg_builder_cls=mock_reg_builder_cls,
+            publisher_cls=mock_publisher_cls,
+            tmp_path=tmp_path,
+            image_refs=[
+                "ghcr.io/my-org/my-app-backend:1.0.0-dev",
+                "ghcr.io/my-org/my-app-frontend:1.0.0-dev",
+            ],
+        )
+
+        from kamiwaza_extensions.commands.publish import run_publish
+
+        run_publish(stage="dev")
+
+        assert mock_resolve.call_count == 2
+        kwargs = wired["reg_builder"].build_entry.call_args.kwargs
+        assert kwargs["digest_map"] == {
+            "ghcr.io/my-org/my-app-backend:1.0.0-dev": _DIGEST_BACKEND,
+            "ghcr.io/my-org/my-app-frontend:1.0.0-dev": _DIGEST_FRONTEND,
+        }
+
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher.resolve_digest")
+    @patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher")
+    @patch("kamiwaza_extensions.registry_builder.RegistryBuilder")
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher")
+    @patch("kamiwaza_extensions.image_builder.ImageBuilder")
+    @patch("kamiwaza_extensions.profile_manager.ProfileManager")
+    @patch("kamiwaza_extensions.compose_transformer.ComposeTransformer")
+    @patch("kamiwaza_extensions.validators.compose.ComposeValidator")
+    @patch("kamiwaza_extensions.validators.metadata.MetadataValidator")
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_explicit_digest_skips_resolver(
+        self, mock_detector_cls, mock_meta_validator_cls,
+        mock_compose_validator_cls, mock_transformer_cls,
+        mock_profile_mgr_cls, mock_builder_cls, mock_pusher_cls,
+        mock_reg_builder_cls, mock_publisher_cls, mock_resolve,
+        tmp_path,
+    ):
+        wired = _wire_publish_mocks(
+            detector_cls=mock_detector_cls,
+            meta_validator_cls=mock_meta_validator_cls,
+            compose_validator_cls=mock_compose_validator_cls,
+            transformer_cls=mock_transformer_cls,
+            profile_mgr_cls=mock_profile_mgr_cls,
+            builder_cls=mock_builder_cls,
+            pusher_cls=mock_pusher_cls,
+            reg_builder_cls=mock_reg_builder_cls,
+            publisher_cls=mock_publisher_cls,
+            tmp_path=tmp_path,
+        )
+
+        from kamiwaza_extensions.commands.publish import run_publish
+
+        run_publish(stage="dev", digest=_DIGEST_USER_SUPPLIED)
+
+        mock_resolve.assert_not_called()
+        kwargs = wired["reg_builder"].build_entry.call_args.kwargs
+        assert kwargs["digest_map"] == {
+            "ghcr.io/my-org/my-app-backend:1.0.0-dev": _DIGEST_USER_SUPPLIED,
+        }
+
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    @patch("kamiwaza_extensions.validators.compose.ComposeValidator")
+    @patch("kamiwaza_extensions.validators.metadata.MetadataValidator")
+    def test_invalid_digest_format_exits_before_detect(
+        self, mock_meta_validator_cls, mock_compose_validator_cls,
+        mock_detector_cls, tmp_path,
+    ):
+        from kamiwaza_extensions.commands.publish import run_publish
+
+        with pytest.raises((SystemExit, ClickExit)):
+            run_publish(stage="dev", digest="not-a-digest")
+
+        # Detection should NOT happen when format is bad — we fail fast.
+        mock_detector_cls.return_value.detect.assert_not_called()
+
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher.resolve_digest")
+    @patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher")
+    @patch("kamiwaza_extensions.registry_builder.RegistryBuilder")
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher")
+    @patch("kamiwaza_extensions.image_builder.ImageBuilder")
+    @patch("kamiwaza_extensions.profile_manager.ProfileManager")
+    @patch("kamiwaza_extensions.compose_transformer.ComposeTransformer")
+    @patch("kamiwaza_extensions.validators.compose.ComposeValidator")
+    @patch("kamiwaza_extensions.validators.metadata.MetadataValidator")
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_digest_with_multi_buildable_errors(
+        self, mock_detector_cls, mock_meta_validator_cls,
+        mock_compose_validator_cls, mock_transformer_cls,
+        mock_profile_mgr_cls, mock_builder_cls, mock_pusher_cls,
+        mock_reg_builder_cls, mock_publisher_cls, mock_resolve,
+        tmp_path,
+    ):
+        info = _make_extension_info(
+            tmp_path, compose_data=_multi_buildable_compose(),
+        )
+        mock_detector_cls.return_value.detect.return_value = info
+
+        from kamiwaza_extensions.commands.publish import run_publish
+
+        with pytest.raises((SystemExit, ClickExit)):
+            run_publish(stage="dev", digest=_DIGEST_USER_SUPPLIED)
+
+        # Should never have built or pushed.
+        mock_builder_cls.return_value.build.assert_not_called()
+        mock_pusher_cls.return_value.push.assert_not_called()
+        mock_resolve.assert_not_called()
+
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher.resolve_digest")
+    @patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher")
+    @patch("kamiwaza_extensions.registry_builder.RegistryBuilder")
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher")
+    @patch("kamiwaza_extensions.image_builder.ImageBuilder")
+    @patch("kamiwaza_extensions.profile_manager.ProfileManager")
+    @patch("kamiwaza_extensions.compose_transformer.ComposeTransformer")
+    @patch("kamiwaza_extensions.validators.compose.ComposeValidator")
+    @patch("kamiwaza_extensions.validators.metadata.MetadataValidator")
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_no_push_still_resolves_digest(
+        self, mock_detector_cls, mock_meta_validator_cls,
+        mock_compose_validator_cls, mock_transformer_cls,
+        mock_profile_mgr_cls, mock_builder_cls, mock_pusher_cls,
+        mock_reg_builder_cls, mock_publisher_cls, mock_resolve,
+        tmp_path,
+    ):
+        mock_resolve.return_value = _DIGEST_BACKEND
+        wired = _wire_publish_mocks(
+            detector_cls=mock_detector_cls,
+            meta_validator_cls=mock_meta_validator_cls,
+            compose_validator_cls=mock_compose_validator_cls,
+            transformer_cls=mock_transformer_cls,
+            profile_mgr_cls=mock_profile_mgr_cls,
+            builder_cls=mock_builder_cls,
+            pusher_cls=mock_pusher_cls,
+            reg_builder_cls=mock_reg_builder_cls,
+            publisher_cls=mock_publisher_cls,
+            tmp_path=tmp_path,
+        )
+
+        from kamiwaza_extensions.commands.publish import run_publish
+
+        run_publish(stage="dev", no_push=True)
+
+        # Push skipped, but resolve_digest still ran against existing tag.
+        wired["pusher"].push.assert_not_called()
+        mock_resolve.assert_called_once_with(
+            "ghcr.io/my-org/my-app-backend:1.0.0-dev"
+        )
+
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher.resolve_digest")
+    @patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher")
+    @patch("kamiwaza_extensions.registry_builder.RegistryBuilder")
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher")
+    @patch("kamiwaza_extensions.image_builder.ImageBuilder")
+    @patch("kamiwaza_extensions.profile_manager.ProfileManager")
+    @patch("kamiwaza_extensions.compose_transformer.ComposeTransformer")
+    @patch("kamiwaza_extensions.validators.compose.ComposeValidator")
+    @patch("kamiwaza_extensions.validators.metadata.MetadataValidator")
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_no_build_no_push_resolves_digest_from_registry(
+        self, mock_detector_cls, mock_meta_validator_cls,
+        mock_compose_validator_cls, mock_transformer_cls,
+        mock_profile_mgr_cls, mock_builder_cls, mock_pusher_cls,
+        mock_reg_builder_cls, mock_publisher_cls, mock_resolve,
+        tmp_path,
+    ):
+        mock_resolve.return_value = _DIGEST_BACKEND
+        wired = _wire_publish_mocks(
+            detector_cls=mock_detector_cls,
+            meta_validator_cls=mock_meta_validator_cls,
+            compose_validator_cls=mock_compose_validator_cls,
+            transformer_cls=mock_transformer_cls,
+            profile_mgr_cls=mock_profile_mgr_cls,
+            builder_cls=mock_builder_cls,
+            pusher_cls=mock_pusher_cls,
+            reg_builder_cls=mock_reg_builder_cls,
+            publisher_cls=mock_publisher_cls,
+            tmp_path=tmp_path,
+        )
+
+        from kamiwaza_extensions.commands.publish import run_publish
+
+        run_publish(stage="dev", no_build=True, no_push=True)
+
+        wired["image_builder"].build.assert_not_called()
+        wired["pusher"].push.assert_not_called()
+        # Image refs come from compose data; digest still resolved.
+        mock_resolve.assert_called_once()
+
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher.resolve_digest")
+    @patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher")
+    @patch("kamiwaza_extensions.registry_builder.RegistryBuilder")
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher")
+    @patch("kamiwaza_extensions.image_builder.ImageBuilder")
+    @patch("kamiwaza_extensions.profile_manager.ProfileManager")
+    @patch("kamiwaza_extensions.compose_transformer.ComposeTransformer")
+    @patch("kamiwaza_extensions.validators.compose.ComposeValidator")
+    @patch("kamiwaza_extensions.validators.metadata.MetadataValidator")
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_revision_and_digest_orthogonal(
+        self, mock_detector_cls, mock_meta_validator_cls,
+        mock_compose_validator_cls, mock_transformer_cls,
+        mock_profile_mgr_cls, mock_builder_cls, mock_pusher_cls,
+        mock_reg_builder_cls, mock_publisher_cls, mock_resolve,
+        tmp_path,
+    ):
+        mock_resolve.return_value = _DIGEST_BACKEND
+        wired = _wire_publish_mocks(
+            detector_cls=mock_detector_cls,
+            meta_validator_cls=mock_meta_validator_cls,
+            compose_validator_cls=mock_compose_validator_cls,
+            transformer_cls=mock_transformer_cls,
+            profile_mgr_cls=mock_profile_mgr_cls,
+            builder_cls=mock_builder_cls,
+            pusher_cls=mock_pusher_cls,
+            reg_builder_cls=mock_reg_builder_cls,
+            publisher_cls=mock_publisher_cls,
+            tmp_path=tmp_path,
+            image_refs=["ghcr.io/my-org/my-app-backend:abc1234"],
+            transformed_services={
+                "backend": {"image": "ghcr.io/my-org/my-app-backend:abc1234"},
+            },
+        )
+
+        from kamiwaza_extensions.commands.publish import run_publish
+
+        run_publish(stage="dev", revision="abc1234")
+
+        kwargs = wired["reg_builder"].build_entry.call_args.kwargs
+        assert kwargs["revision"] == "abc1234"
+        assert kwargs["digest_map"] == {
+            "ghcr.io/my-org/my-app-backend:abc1234": _DIGEST_BACKEND,
+        }
+
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher.resolve_digest")
+    @patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher")
+    @patch("kamiwaza_extensions.registry_builder.RegistryBuilder")
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher")
+    @patch("kamiwaza_extensions.image_builder.ImageBuilder")
+    @patch("kamiwaza_extensions.profile_manager.ProfileManager")
+    @patch("kamiwaza_extensions.compose_transformer.ComposeTransformer")
+    @patch("kamiwaza_extensions.validators.compose.ComposeValidator")
+    @patch("kamiwaza_extensions.validators.metadata.MetadataValidator")
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_pattern_b_external_image_not_in_digest_map(
+        self, mock_detector_cls, mock_meta_validator_cls,
+        mock_compose_validator_cls, mock_transformer_cls,
+        mock_profile_mgr_cls, mock_builder_cls, mock_pusher_cls,
+        mock_reg_builder_cls, mock_publisher_cls, mock_resolve,
+        tmp_path,
+    ):
+        # Compose: one buildable backend + postgres pass-through.
+        compose = {
+            "services": {
+                "backend": {
+                    "build": {"context": "."},
+                    "image": "my-org/my-app-backend:1.0.0",
+                },
+                "db": {"image": "postgres:15"},
+            },
+        }
+        mock_resolve.return_value = _DIGEST_BACKEND
+        wired = _wire_publish_mocks(
+            detector_cls=mock_detector_cls,
+            meta_validator_cls=mock_meta_validator_cls,
+            compose_validator_cls=mock_compose_validator_cls,
+            transformer_cls=mock_transformer_cls,
+            profile_mgr_cls=mock_profile_mgr_cls,
+            builder_cls=mock_builder_cls,
+            pusher_cls=mock_pusher_cls,
+            reg_builder_cls=mock_reg_builder_cls,
+            publisher_cls=mock_publisher_cls,
+            tmp_path=tmp_path,
+            compose_data=compose,
+        )
+
+        from kamiwaza_extensions.commands.publish import run_publish
+
+        run_publish(stage="dev")
+
+        kwargs = wired["reg_builder"].build_entry.call_args.kwargs
+        # Map only carries the buildable ref; postgres absent.
+        assert "postgres:15" not in kwargs["digest_map"]
+        assert all(
+            "postgres" not in ref for ref in kwargs["digest_map"]
+        )
+
+    @patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher")
+    @patch("kamiwaza_extensions.registry_builder.RegistryBuilder")
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher")
+    @patch("kamiwaza_extensions.image_builder.ImageBuilder")
+    @patch("kamiwaza_extensions.profile_manager.ProfileManager")
+    @patch("kamiwaza_extensions.compose_transformer.ComposeTransformer")
+    @patch("kamiwaza_extensions.validators.compose.ComposeValidator")
+    @patch("kamiwaza_extensions.validators.metadata.MetadataValidator")
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_dry_run_skips_digest_resolution(
+        self, mock_detector_cls, mock_meta_validator_cls,
+        mock_compose_validator_cls, mock_transformer_cls,
+        mock_profile_mgr_cls, mock_builder_cls, mock_pusher_cls,
+        mock_reg_builder_cls, mock_publisher_cls, tmp_path,
+    ):
+        with patch(
+            "kamiwaza_extensions.image_pusher.ImagePusher.resolve_digest"
+        ) as mock_resolve:
+            wired = _wire_publish_mocks(
+                detector_cls=mock_detector_cls,
+                meta_validator_cls=mock_meta_validator_cls,
+                compose_validator_cls=mock_compose_validator_cls,
+                transformer_cls=mock_transformer_cls,
+                profile_mgr_cls=mock_profile_mgr_cls,
+                builder_cls=mock_builder_cls,
+                pusher_cls=mock_pusher_cls,
+                reg_builder_cls=mock_reg_builder_cls,
+                publisher_cls=mock_publisher_cls,
+                tmp_path=tmp_path,
+            )
+            wired["reg_builder"].build_entry.return_value = {
+                "name": "my-app", "version": "1.0.0",
+            }
+            mock_publisher_cls.return_value.publish.return_value = (
+                _make_publish_result(dry_run=True)
+            )
+
+            from kamiwaza_extensions.commands.publish import run_publish
+
+            run_publish(stage="dev", dry_run=True)
+
+            mock_resolve.assert_not_called()

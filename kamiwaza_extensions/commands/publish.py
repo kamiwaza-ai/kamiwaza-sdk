@@ -81,6 +81,7 @@ def run_publish(
     no_push: bool = False,
     verbose: bool = False,
     revision: Optional[str] = None,
+    digest: Optional[str] = None,
 ) -> None:
     """Build, push, and publish extension to catalog."""
     from kamiwaza_extensions.catalog_publisher import (
@@ -93,7 +94,11 @@ def run_publish(
     from kamiwaza_extensions.exit_codes import ExitCode
     from kamiwaza_extensions.extension_detector import ExtensionDetector
     from kamiwaza_extensions.image_builder import ImageBuilder, ImageBuildError
-    from kamiwaza_extensions.image_pusher import ImagePusher, ImagePushError
+    from kamiwaza_extensions.image_pusher import (
+        ImagePushError,
+        ImagePusher,
+        validate_digest,
+    )
     from kamiwaza_extensions.profile_manager import ProfileManager
     from kamiwaza_extensions.registry_builder import RegistryBuilder
     from kamiwaza_extensions.validators.compose import ComposeValidator
@@ -111,6 +116,16 @@ def run_publish(
             console.print(f"[red]Error:[/red] {exc}")
             raise typer.Exit(code=int(ExitCode.VALIDATION)) from exc
 
+    # Same fail-fast intent for --digest: reject malformed input before any
+    # build/push side effects. Format guard only — buildable-count check
+    # happens after compose data is loaded.
+    if digest is not None:
+        try:
+            validate_digest(digest)
+        except ValueError as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(code=int(ExitCode.VALIDATION)) from exc
+
     # 1. Detect extension
     detector = ExtensionDetector()
     info = detector.detect()
@@ -118,6 +133,23 @@ def run_publish(
     if info.compose_data is None:
         console.print("[red]Error:[/red] No docker-compose.yml found.")
         raise typer.Exit(code=1)
+
+    # ENG-4370: --digest pins identity for one image. Multi-image extensions
+    # must rely on auto-resolve (the per-service push digest), so reject the
+    # ambiguous case before doing any work.
+    if digest is not None:
+        buildable_services = [
+            name for name, svc in (info.compose_data.get("services") or {}).items()
+            if "build" in svc
+        ]
+        if len(buildable_services) != 1:
+            found = ", ".join(buildable_services) if buildable_services else "none"
+            console.print(
+                f"[red]Error:[/red] --digest requires exactly one buildable "
+                f"service in docker-compose.yml; found {len(buildable_services)} "
+                f"({found}). Omit --digest to auto-resolve per-service digests."
+            )
+            raise typer.Exit(code=int(ExitCode.VALIDATION))
 
     version = info.version
     ext_type = _infer_extension_type(info.metadata)
@@ -301,6 +333,23 @@ def run_publish(
     elif no_push:
         console.print("  [dim]Skipping push (--no-push)[/dim]")
 
+    # 6.5 Resolve digests for buildable images (ENG-4370). Catalog refs
+    # are pinned `image:tag@sha256:...` so they're immutable regardless
+    # of tag mutability. Pass-through external/prebuilt-internal refs
+    # (postgres, etc.) keep whatever pinning their source repo applied.
+    digest_map: Dict[str, str] = {}
+    if image_refs:
+        if digest is not None:
+            # Buildable-count validation above guarantees a single ref.
+            digest_map[image_refs[0]] = digest
+        else:
+            try:
+                for ref in image_refs:
+                    digest_map[ref] = ImagePusher.resolve_digest(ref)
+            except ImagePushError as exc:
+                console.print(f"\n[red]Error:[/red] {exc}")
+                raise typer.Exit(code=1) from exc
+
     # 7. Build catalog entry
     reg_builder = RegistryBuilder()
     entry = reg_builder.build_entry(
@@ -310,6 +359,7 @@ def run_publish(
         version=version,
         stage=stage,
         revision=revision,
+        digest_map=digest_map or None,
     )
 
     # 8. Publish to catalog

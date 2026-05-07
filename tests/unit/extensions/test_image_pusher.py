@@ -4,7 +4,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from kamiwaza_extensions.image_pusher import ImagePusher, ImagePushError
+from kamiwaza_extensions.image_pusher import (
+    ImagePusher,
+    ImagePushError,
+    validate_digest,
+)
 
 
 @pytest.fixture
@@ -84,3 +88,78 @@ class TestPushOrchestration:
         pusher.push(["reg/app:v1"], registry="reg", token="tok", insecure=False)
         mock_login.assert_called_once_with("reg", "tok", use_podman=False)
         mock_push.assert_called_once_with("reg/app:v1", use_podman=False, verbose=False)
+
+
+# ENG-4370 — digest-pinning catalog references
+
+
+_VALID_DIGEST = "sha256:" + "a" * 64
+
+
+class TestValidateDigest:
+    @pytest.mark.parametrize(
+        "good",
+        [
+            "sha256:" + "0" * 64,
+            "sha256:" + "f" * 64,
+            "sha256:" + "abcdef0123456789" * 4,
+        ],
+    )
+    def test_accepts_well_formed(self, good):
+        validate_digest(good)  # no raise
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "",
+            "abc",
+            "sha512:" + "a" * 64,                    # wrong algorithm
+            "sha256:" + "a" * 63,                    # too short
+            "sha256:" + "a" * 65,                    # too long
+            "sha256:" + "A" * 64,                    # uppercase hex
+            "sha256:" + "g" * 64,                    # non-hex char
+            "sha256:" + "a" * 32 + " " + "a" * 31,   # embedded space
+            "Sha256:" + "a" * 64,                    # uppercase prefix
+        ],
+    )
+    def test_rejects_malformed(self, bad):
+        with pytest.raises(ValueError, match="Invalid digest"):
+            validate_digest(bad)
+
+
+class TestResolveDigest:
+    @patch("kamiwaza_extensions.image_pusher.subprocess.run")
+    def test_returns_digest_from_imagetools(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout=_VALID_DIGEST + "\n", stderr=""
+        )
+        digest = ImagePusher.resolve_digest("reg.test/app:v1")
+        assert digest == _VALID_DIGEST
+        cmd = mock_run.call_args[0][0]
+        assert cmd[:4] == ["docker", "buildx", "imagetools", "inspect"]
+        assert "reg.test/app:v1" in cmd
+        assert "{{.Manifest.Digest}}" in cmd
+
+    @patch("kamiwaza_extensions.image_pusher.subprocess.run")
+    def test_inspect_failure_raises(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=1, stdout="", stderr="manifest unknown"
+        )
+        with pytest.raises(ImagePushError, match="Digest resolution failed"):
+            ImagePusher.resolve_digest("reg.test/app:v1")
+
+    @patch("kamiwaza_extensions.image_pusher.subprocess.run")
+    def test_unexpected_output_raises(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout="not-a-digest\n", stderr=""
+        )
+        with pytest.raises(ImagePushError, match="Unexpected digest output"):
+            ImagePusher.resolve_digest("reg.test/app:v1")
+
+    @patch(
+        "kamiwaza_extensions.image_pusher.subprocess.run",
+        side_effect=FileNotFoundError(),
+    )
+    def test_missing_docker_raises(self, _mock_run):
+        with pytest.raises(ImagePushError, match="docker not found"):
+            ImagePusher.resolve_digest("reg.test/app:v1")

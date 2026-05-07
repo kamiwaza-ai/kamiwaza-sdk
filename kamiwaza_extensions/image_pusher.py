@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 from typing import List, Optional
@@ -9,6 +10,20 @@ from typing import List, Optional
 from rich.console import Console
 
 console = Console(stderr=True)
+
+
+# OCI image digest grammar: sha256: followed by 64 lowercase hex chars.
+# Used both for validating user-supplied --digest input and for sanity-
+# checking the output of `docker buildx imagetools inspect`.
+DIGEST_PATTERN = re.compile(r"^sha256:[a-f0-9]{64}$")
+
+
+def validate_digest(digest: str) -> None:
+    """Raise ``ValueError`` if *digest* is not a ``sha256:<64-hex>`` string."""
+    if not DIGEST_PATTERN.match(digest):
+        raise ValueError(
+            f"Invalid digest '{digest}': must match ^sha256:[a-f0-9]{{64}}$"
+        )
 
 
 class ImagePushError(RuntimeError):
@@ -72,6 +87,48 @@ class ImagePusher:
             raise ImagePushError(
                 f"{cli} not found. Install Docker/Podman or ensure '{cli}' is on PATH."
             )
+
+    @staticmethod
+    def resolve_digest(image_ref: str) -> str:
+        """Return the manifest digest for *image_ref* from the registry.
+
+        Uses ``docker buildx imagetools inspect`` to read the digest
+        without pulling the image. The ref must already exist in the
+        registry — call after ``push`` for the just-built image, or
+        against any pre-existing tag.
+
+        Returns a ``sha256:<64-hex>`` string.
+
+        Raises:
+            ImagePushError: When ``docker`` is not installed, the
+                inspect command fails, or the returned digest does not
+                match the expected grammar.
+        """
+        cmd = [
+            "docker", "buildx", "imagetools", "inspect", image_ref,
+            "--format", "{{.Manifest.Digest}}",
+        ]
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+        except FileNotFoundError as exc:
+            raise ImagePushError(
+                "docker not found. Install Docker (with buildx) to resolve image digests."
+            ) from exc
+        if result.returncode != 0:
+            raise ImagePushError(
+                f"Digest resolution failed for {image_ref}: {result.stderr.strip()}"
+            )
+        digest = result.stdout.strip()
+        if not DIGEST_PATTERN.match(digest):
+            raise ImagePushError(
+                f"Unexpected digest output for {image_ref}: {digest!r}"
+            )
+        return digest
 
     @staticmethod
     def _push(image_ref: str, *, use_podman: bool = False, verbose: bool = False) -> None:

@@ -9,6 +9,7 @@ with version-constraint-aware conflict resolution.
 
 from __future__ import annotations
 
+import copy
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -57,6 +58,7 @@ class RegistryBuilder:
         version: str,
         stage: str = "prod",
         revision: Optional[str] = None,
+        digest_map: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """Generate a catalog entry dict from *metadata* and *transformed_compose*.
 
@@ -77,10 +79,21 @@ class RegistryBuilder:
             revision: Optional revision identifier. When provided, included
                 as a top-level ``revision`` field on the entry; consumed by
                 ``CatalogDedupGuard`` to make CI re-publishes idempotent.
+            digest_map: Optional mapping of rewritten image ref
+                (``"<registry>/<ext>-<svc>:<tag>"``) to its OCI manifest
+                digest (``"sha256:..."``). When provided, matching service
+                ``image`` fields in the rendered ``compose_yml`` and the
+                ``docker_images`` list are rewritten to ``ref@digest`` for
+                immutable identity (ENG-4370). Refs not in the map (e.g.
+                pass-through external/postgres images, prebuilt-internal
+                images) are left untouched.
 
         Returns:
             A dict matching the Kamiwaza catalog entry schema.
         """
+        if digest_map:
+            transformed_compose = _apply_digests(transformed_compose, digest_map)
+
         compose_yml = yaml.dump(transformed_compose, default_flow_style=False)
         docker_images = self.extract_docker_images(transformed_compose)
 
@@ -362,6 +375,25 @@ class RegistryBuilder:
 # ------------------------------------------------------------------
 # Module-level helpers
 # ------------------------------------------------------------------
+
+
+def _apply_digests(
+    compose: Dict[str, Any], digest_map: Dict[str, str],
+) -> Dict[str, Any]:
+    """Return a deep copy of *compose* with image refs digest-pinned.
+
+    For each ``services[*].image`` whose value matches a key in
+    *digest_map* and does not already carry a ``@`` digest suffix,
+    rewrite the value to ``"<image>@<digest>"``. Other refs (external
+    pass-through, prebuilt-internal, already-digest-pinned) are left
+    untouched. Caller's *compose* dict is not mutated.
+    """
+    result = copy.deepcopy(compose)
+    for svc in (result.get("services") or {}).values():
+        img = svc.get("image")
+        if img and "@" not in img and img in digest_map:
+            svc["image"] = f"{img}@{digest_map[img]}"
+    return result
 
 
 def _normalize_preview_image(path: str) -> str:
