@@ -93,6 +93,10 @@ class ImagePusher:
             raise ImagePushError(
                 f"{cli} not found. Install Docker/Podman or ensure '{cli}' is on PATH."
             )
+        except subprocess.TimeoutExpired as exc:
+            raise ImagePushError(
+                f"Registry login to {registry} timed out after 30s"
+            ) from exc
 
     @staticmethod
     def resolve_digest(image_ref: str) -> str:
@@ -131,6 +135,10 @@ class ImagePusher:
         except FileNotFoundError as exc:
             raise ImagePushError(
                 "docker not found. Install Docker (with buildx) to resolve image digests."
+            ) from exc
+        except subprocess.TimeoutExpired as exc:
+            raise ImagePushError(
+                f"Digest resolution for {image_ref} timed out after 60s"
             ) from exc
         if result.returncode != 0:
             raise ImagePushError(
@@ -173,3 +181,7 @@ class ImagePusher:
             raise ImagePushError(
                 f"{cli} not found. Install Docker/Podman or ensure '{cli}' is on PATH."
             )
+        except subprocess.TimeoutExpired as exc:
+            raise ImagePushError(
+                f"Push timed out after 600s for {image_ref}"
+            ) from exc

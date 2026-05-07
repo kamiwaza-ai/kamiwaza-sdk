@@ -620,9 +620,11 @@ def _wire_publish_mocks(
     transformer_cls.return_value = transformer
 
     image_builder = MagicMock()
-    image_builder.build.return_value = image_refs or [
-        "ghcr.io/my-org/my-app-backend:1.0.0-dev",
-    ]
+    # Use `is None` so callers can pass [] to mean "no buildable images".
+    image_builder.build.return_value = (
+        image_refs if image_refs is not None
+        else ["ghcr.io/my-org/my-app-backend:1.0.0-dev"]
+    )
     builder_cls.return_value = image_builder
 
     pusher_cls.return_value = MagicMock()
@@ -774,6 +776,166 @@ class TestPublishDigest:
         # Should never have built or attempted to resolve.
         mock_builder_cls.return_value.build.assert_not_called()
         mock_resolve.assert_not_called()
+
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher.resolve_digest")
+    @patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher")
+    @patch("kamiwaza_extensions.registry_builder.RegistryBuilder")
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher")
+    @patch("kamiwaza_extensions.image_builder.ImageBuilder")
+    @patch("kamiwaza_extensions.profile_manager.ProfileManager")
+    @patch("kamiwaza_extensions.compose_transformer.ComposeTransformer")
+    @patch("kamiwaza_extensions.validators.compose.ComposeValidator")
+    @patch("kamiwaza_extensions.validators.metadata.MetadataValidator")
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_external_only_extension_no_push_allowed(
+        self, mock_detector_cls, mock_meta_validator_cls,
+        mock_compose_validator_cls, mock_transformer_cls,
+        mock_profile_mgr_cls, mock_builder_cls, mock_pusher_cls,
+        mock_reg_builder_cls, mock_publisher_cls, mock_resolve,
+        tmp_path,
+    ):
+        # Re-review HIGH 1: extensions whose compose has zero buildable
+        # services (only external/prebuilt refs) must not trip H1 — there
+        # is no local-only image to pin.
+        compose = {
+            "services": {
+                "db": {"image": "postgres:15"},   # no `build:` key
+                "cache": {"image": "redis:7"},
+            },
+        }
+        wired = _wire_publish_mocks(
+            detector_cls=mock_detector_cls,
+            meta_validator_cls=mock_meta_validator_cls,
+            compose_validator_cls=mock_compose_validator_cls,
+            transformer_cls=mock_transformer_cls,
+            profile_mgr_cls=mock_profile_mgr_cls,
+            builder_cls=mock_builder_cls,
+            pusher_cls=mock_pusher_cls,
+            reg_builder_cls=mock_reg_builder_cls,
+            publisher_cls=mock_publisher_cls,
+            tmp_path=tmp_path,
+            compose_data=compose,
+            image_refs=[],  # nothing built
+            transformed_services={
+                "db": {"image": "postgres:15"},
+                "cache": {"image": "redis:7"},
+            },
+        )
+
+        from kamiwaza_extensions.commands.publish import run_publish
+
+        run_publish(stage="dev", no_push=True)
+
+        # H1 must NOT fire — build runs (and returns nothing), push is
+        # skipped, no digest resolution attempted, catalog publishes.
+        wired["pusher"].push.assert_not_called()
+        mock_resolve.assert_not_called()
+        wired["reg_builder"].build_entry.assert_called_once()
+
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher.resolve_digest")
+    @patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher")
+    @patch("kamiwaza_extensions.registry_builder.RegistryBuilder")
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher")
+    @patch("kamiwaza_extensions.image_builder.ImageBuilder")
+    @patch("kamiwaza_extensions.profile_manager.ProfileManager")
+    @patch("kamiwaza_extensions.compose_transformer.ComposeTransformer")
+    @patch("kamiwaza_extensions.validators.compose.ComposeValidator")
+    @patch("kamiwaza_extensions.validators.metadata.MetadataValidator")
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_digest_with_profiled_helper_allowed(
+        self, mock_detector_cls, mock_meta_validator_cls,
+        mock_compose_validator_cls, mock_transformer_cls,
+        mock_profile_mgr_cls, mock_builder_cls, mock_pusher_cls,
+        mock_reg_builder_cls, mock_publisher_cls, mock_resolve,
+        tmp_path,
+    ):
+        # Re-review HIGH 2: a buildable service with a `profiles:` key
+        # is stripped by ComposeTransformer before publish, so it should
+        # not count toward the buildable-count guard.
+        compose = {
+            "services": {
+                "backend": {
+                    "build": {"context": "."},
+                    "image": "my-org/my-app-backend:1.0.0",
+                },
+                "dev-helper": {
+                    "build": {"context": "./dev"},
+                    "image": "my-org/my-app-dev-helper:1.0.0",
+                    "profiles": ["dev"],   # local-only, stripped on publish
+                },
+            },
+        }
+        wired = _wire_publish_mocks(
+            detector_cls=mock_detector_cls,
+            meta_validator_cls=mock_meta_validator_cls,
+            compose_validator_cls=mock_compose_validator_cls,
+            transformer_cls=mock_transformer_cls,
+            profile_mgr_cls=mock_profile_mgr_cls,
+            builder_cls=mock_builder_cls,
+            pusher_cls=mock_pusher_cls,
+            reg_builder_cls=mock_reg_builder_cls,
+            publisher_cls=mock_publisher_cls,
+            tmp_path=tmp_path,
+            compose_data=compose,
+        )
+        mock_resolve.return_value = _DIGEST_USER_SUPPLIED
+
+        from kamiwaza_extensions.commands.publish import run_publish
+
+        # Should NOT error on "found 2"; profiled service is excluded.
+        run_publish(stage="dev", digest=_DIGEST_USER_SUPPLIED)
+
+        kwargs = wired["reg_builder"].build_entry.call_args.kwargs
+        assert kwargs["digest_map"] == {
+            "ghcr.io/my-org/my-app-backend:1.0.0-dev": _DIGEST_USER_SUPPLIED,
+        }
+
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher.resolve_digest")
+    @patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher")
+    @patch("kamiwaza_extensions.registry_builder.RegistryBuilder")
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher")
+    @patch("kamiwaza_extensions.image_builder.ImageBuilder")
+    @patch("kamiwaza_extensions.profile_manager.ProfileManager")
+    @patch("kamiwaza_extensions.compose_transformer.ComposeTransformer")
+    @patch("kamiwaza_extensions.validators.compose.ComposeValidator")
+    @patch("kamiwaza_extensions.validators.metadata.MetadataValidator")
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_no_build_no_push_resolve_failure_falls_back_to_tag_only(
+        self, mock_detector_cls, mock_meta_validator_cls,
+        mock_compose_validator_cls, mock_transformer_cls,
+        mock_profile_mgr_cls, mock_builder_cls, mock_pusher_cls,
+        mock_reg_builder_cls, mock_publisher_cls, mock_resolve,
+        tmp_path,
+    ):
+        # Re-review HIGH 3 (option A): catalog-only republish softly
+        # falls back to tag-only when resolve_digest fails (e.g. no
+        # docker on host). Catalog publishes; the failed ref is absent
+        # from digest_map.
+        from kamiwaza_extensions.image_pusher import ImagePushError
+
+        mock_resolve.side_effect = ImagePushError("docker not found")
+        wired = _wire_publish_mocks(
+            detector_cls=mock_detector_cls,
+            meta_validator_cls=mock_meta_validator_cls,
+            compose_validator_cls=mock_compose_validator_cls,
+            transformer_cls=mock_transformer_cls,
+            profile_mgr_cls=mock_profile_mgr_cls,
+            builder_cls=mock_builder_cls,
+            pusher_cls=mock_pusher_cls,
+            reg_builder_cls=mock_reg_builder_cls,
+            publisher_cls=mock_publisher_cls,
+            tmp_path=tmp_path,
+        )
+
+        from kamiwaza_extensions.commands.publish import run_publish
+
+        # Must NOT raise — catalog still publishes with tag-only.
+        run_publish(stage="dev", no_build=True, no_push=True)
+
+        wired["reg_builder"].build_entry.assert_called_once()
+        kwargs = wired["reg_builder"].build_entry.call_args.kwargs
+        # digest_map either None or empty — no entries for the failed ref.
+        assert not kwargs.get("digest_map")
 
     @patch("kamiwaza_extensions.image_pusher.ImagePusher.resolve_digest")
     @patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher")

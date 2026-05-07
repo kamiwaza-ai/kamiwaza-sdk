@@ -134,31 +134,41 @@ def run_publish(
         console.print("[red]Error:[/red] No docker-compose.yml found.")
         raise typer.Exit(code=1)
 
+    # Buildable services that will actually be published. Mirrors
+    # ComposeTransformer's `profiles:` filter — services with a profiles
+    # key are local-only and stripped before catalog construction, so
+    # they don't count for buildable-count or hazard checks.
+    buildable_services = [
+        name
+        for name, svc in (info.compose_data.get("services") or {}).items()
+        if "build" in svc and not svc.get("profiles")
+    ]
+
     # ENG-4370: --digest pins identity for one image. Multi-image extensions
     # must rely on auto-resolve (the per-service push digest), so reject the
     # ambiguous case before doing any work.
-    if digest is not None:
-        buildable_services = [
-            name for name, svc in (info.compose_data.get("services") or {}).items()
-            if "build" in svc
-        ]
-        if len(buildable_services) != 1:
-            found = ", ".join(buildable_services) if buildable_services else "none"
-            console.print(
-                f"[red]Error:[/red] --digest requires exactly one buildable "
-                f"service in docker-compose.yml; found {len(buildable_services)} "
-                f"({found}). Omit --digest to auto-resolve per-service digests."
-            )
-            raise typer.Exit(code=int(ExitCode.VALIDATION))
+    if digest is not None and len(buildable_services) != 1:
+        found = ", ".join(buildable_services) if buildable_services else "none"
+        console.print(
+            f"[red]Error:[/red] --digest requires exactly one buildable "
+            f"service in docker-compose.yml; found {len(buildable_services)} "
+            f"({found}). Omit --digest to auto-resolve per-service digests."
+        )
+        raise typer.Exit(code=int(ExitCode.VALIDATION))
 
     # ENG-4370 H1: auto-resolve queries the registry post-build. Built-but-
     # not-pushed leaves the registry stale (or empty), so the resolved
     # digest would either error or silently pin the *previous* push.
     # Force the user to either push, skip the build, or supply --digest.
-    # Dry-run is exempt: that branch returns before build/push/auto-resolve,
-    # so no hazard exists — preview the catalog without forcing the user
-    # to add ceremony flags.
-    if not dry_run and not no_build and no_push and digest is None:
+    # Skipped under: dry-run (no build/push happens), and external-only
+    # extensions (no buildable services means no hazard).
+    if (
+        not dry_run
+        and not no_build
+        and no_push
+        and digest is None
+        and buildable_services
+    ):
         console.print(
             "[red]Error:[/red] --no-push without --no-build cannot pin a "
             "catalog digest — the just-built image is only in your local "
@@ -395,8 +405,20 @@ def run_publish(
                 try:
                     digest_map[ref] = ImagePusher.resolve_digest(ref)
                 except ImagePushError as exc:
-                    # M4: actionable hint for the catalog-only-republish
-                    # case where the tag isn't in the registry yet.
+                    # H3 (Codex re-review): under --no-build --no-push the
+                    # caller is doing a catalog-only republish; pre-PR
+                    # behavior was tag-only with no docker dependency.
+                    # Soft-fail to preserve that: warn, leave this ref out
+                    # of digest_map → catalog gets tag-only for it.
+                    if no_build and no_push:
+                        console.print(
+                            f"  [yellow]warn[/yellow] could not resolve "
+                            f"digest for {ref}: {exc} — catalog will use "
+                            "tag-only for this ref"
+                        )
+                        continue
+                    # M4: actionable hint for partial-republish flows
+                    # where the tag isn't in the registry yet.
                     if no_push and "manifest unknown" in str(exc).lower():
                         console.print(
                             f"\n[red]Error:[/red] registry has no image at "

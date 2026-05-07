@@ -181,3 +181,31 @@ class TestResolveDigest:
     def test_missing_docker_raises(self, _mock_run):
         with pytest.raises(ImagePushError, match="docker not found"):
             ImagePusher.resolve_digest("reg.test/app:v1")
+
+    @patch(
+        "kamiwaza_extensions.image_pusher.subprocess.run",
+        side_effect=__import__("subprocess").TimeoutExpired(cmd="docker", timeout=60),
+    )
+    def test_timeout_raises_image_push_error(self, _mock_run):
+        # M1 (re-review): wedged registry must surface as ImagePushError,
+        # not an unhandled TimeoutExpired.
+        with pytest.raises(ImagePushError, match="timed out"):
+            ImagePusher.resolve_digest("reg.test/app:v1")
+
+
+class TestPushTimeout:
+    @patch(
+        "kamiwaza_extensions.image_pusher.subprocess.run",
+        side_effect=__import__("subprocess").TimeoutExpired(cmd="docker", timeout=600),
+    )
+    def test_push_timeout_raises_image_push_error(self, _mock_run, pusher):
+        with pytest.raises(ImagePushError, match="Push timed out"):
+            pusher._push("reg.test/app:v1")
+
+    @patch(
+        "kamiwaza_extensions.image_pusher.subprocess.run",
+        side_effect=__import__("subprocess").TimeoutExpired(cmd="docker", timeout=30),
+    )
+    def test_login_timeout_raises_image_push_error(self, _mock_run, pusher):
+        with pytest.raises(ImagePushError, match="login.*timed out"):
+            pusher._login_registry("reg.test", "tok")
