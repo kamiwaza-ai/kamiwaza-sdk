@@ -19,10 +19,16 @@ DIGEST_PATTERN = re.compile(r"^sha256:[a-f0-9]{64}$")
 
 
 def validate_digest(digest: str) -> None:
-    """Raise ``ValueError`` if *digest* is not a ``sha256:<64-hex>`` string."""
+    """Raise ``ValueError`` if *digest* is not a ``sha256:<64-hex>`` string.
+
+    Phrasing avoids square brackets in the message — rich console markup
+    treats ``[a-f0-9]`` as a (broken) tag and silently strips it from
+    user-facing output.
+    """
     if not DIGEST_PATTERN.match(digest):
         raise ValueError(
-            f"Invalid digest '{digest}': must match ^sha256:[a-f0-9]{{64}}$"
+            f"Invalid digest '{digest}': must be 'sha256:' followed by "
+            "64 lowercase hex characters"
         )
 
 
