@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from urllib.parse import urlparse, urlunparse
 from uuid import UUID
 
@@ -165,18 +166,11 @@ class OAuthBrokerService(BaseService, ProxyMixin, TokenMixin, PolicyMixin):
             single-use and short-lived, limiting exposure.
         """
         # The callback route is mounted at the server root, not under /api.
-        # Build an absolute URL by stripping the ``/api`` suffix from
-        # ``base_url`` so that strict reverse proxies, WAFs, or load
-        # balancers that reject literal ``..`` segments are not a problem.
-        # We pass ``absolute_url`` to ``_request`` so standard error
-        # handling (typed APIError, NonAPIResponseError for HTML pages)
-        # is preserved.  ``skip_auth=True`` means a 401 surfaces as
-        # ``AuthenticationError`` without retry — correct for a public
-        # redirect endpoint.
+        # Strip the /api prefix (and any version suffix like /v1) from
+        # base_url so the callback targets the correct root path.
         parsed = urlparse(self.client.base_url)
         path = parsed.path.rstrip("/")
-        if path.endswith("/api"):
-            path = path[: -len("/api")] or "/"
+        path = re.sub(r"/api(?:/.*)?$", "", path) or "/"
         root = urlunparse((parsed.scheme, parsed.netloc, path.rstrip("/"), "", "", ""))
         url = f"{root}/oauth-broker/auth/google/callback"
 

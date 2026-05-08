@@ -464,6 +464,8 @@ def test_handle_google_callback():
         ("https://example.com/api/", "https://example.com"),
         ("https://example.com:8443/api", "https://example.com:8443"),
         ("https://example.com/prefix/api", "https://example.com/prefix"),
+        ("https://example.com/api/v1", "https://example.com"),
+        ("https://example.com/prefix/api/v2", "https://example.com/prefix"),
         ("https://example.com", "https://example.com"),
         ("https://example.com/v2", "https://example.com/v2"),
     ],
