@@ -345,6 +345,16 @@ def publish(
             "idempotent CI re-publishes; --force overrides."
         ),
     ),
+    digest: Optional[str] = typer.Option(
+        None,
+        "--digest",
+        help=(
+            "Pin the catalog entry to a specific manifest digest "
+            "(sha256:<64-hex>). Catalog refs become 'image:tag@sha256:...' "
+            "for immutable identity. Requires exactly one buildable "
+            "service in compose; omit to auto-resolve per-service digests."
+        ),
+    ),
 ) -> None:
     """Publish extension to catalog."""
     from kamiwaza_extensions.commands.publish import run_publish
@@ -356,6 +366,7 @@ def publish(
         no_push=no_push,
         verbose=_state.verbose,
         revision=revision,
+        digest=digest,
     )
 
 

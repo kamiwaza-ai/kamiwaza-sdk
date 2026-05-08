@@ -72,6 +72,64 @@ def _collect_image_refs(
     return refs
 
 
+def _verify_supplied_digest(ref: str, supplied: str) -> None:
+    """Resolve *ref* in the registry and abort if it disagrees with *supplied*.
+
+    Catches CI typos, stale digests, and the TOCTOU window where a
+    parallel run re-pointed the tag between our push and our publish.
+    Caller must guarantee the image was just pushed (i.e. ``no_push`` is
+    False) — otherwise the registry isn't authoritative for what we
+    intended to publish.
+    """
+    from kamiwaza_extensions.exit_codes import ExitCode
+    from kamiwaza_extensions.image_pusher import ImagePushError, ImagePusher
+
+    try:
+        actual = ImagePusher.resolve_digest(ref)
+    except ImagePushError as exc:
+        console.print(f"\n[red]Error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+    if actual != supplied:
+        console.print(
+            f"\n[red]Error:[/red] supplied --digest does not match "
+            f"the registry manifest for {ref}.\n"
+            f"  supplied: {supplied}\n"
+            f"  registry: {actual}\n"
+            "Re-run with the correct digest, or omit --digest to "
+            "auto-resolve."
+        )
+        raise typer.Exit(code=int(ExitCode.VALIDATION))
+
+
+def _auto_resolve_digests(
+    refs: List[str], *, no_build: bool, no_push: bool,
+) -> Dict[str, str]:
+    """Resolve registry digests for each *ref* and return ``{ref: digest}``.
+
+    Soft-fails for the catalog-only-republish shape (``--no-build
+    --no-push``): pre-PR behavior was tag-only with no docker dependency,
+    so a resolve failure becomes a warning and the ref is omitted from
+    the result rather than aborting the publish.
+    """
+    from kamiwaza_extensions.image_pusher import ImagePushError, ImagePusher
+
+    digest_map: Dict[str, str] = {}
+    for ref in refs:
+        try:
+            digest_map[ref] = ImagePusher.resolve_digest(ref)
+        except ImagePushError as exc:
+            if no_build and no_push:
+                console.print(
+                    f"  [yellow]warn[/yellow] could not resolve digest "
+                    f"for {ref}: {exc} — catalog will use tag-only for "
+                    "this ref"
+                )
+                continue
+            console.print(f"\n[red]Error:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+    return digest_map
+
+
 def run_publish(
     *,
     stage: str,
@@ -81,6 +139,7 @@ def run_publish(
     no_push: bool = False,
     verbose: bool = False,
     revision: Optional[str] = None,
+    digest: Optional[str] = None,
 ) -> None:
     """Build, push, and publish extension to catalog."""
     from kamiwaza_extensions.catalog_publisher import (
@@ -93,7 +152,11 @@ def run_publish(
     from kamiwaza_extensions.exit_codes import ExitCode
     from kamiwaza_extensions.extension_detector import ExtensionDetector
     from kamiwaza_extensions.image_builder import ImageBuilder, ImageBuildError
-    from kamiwaza_extensions.image_pusher import ImagePusher, ImagePushError
+    from kamiwaza_extensions.image_pusher import (
+        ImagePushError,
+        ImagePusher,
+        validate_digest,
+    )
     from kamiwaza_extensions.profile_manager import ProfileManager
     from kamiwaza_extensions.registry_builder import RegistryBuilder
     from kamiwaza_extensions.validators.compose import ComposeValidator
@@ -111,6 +174,20 @@ def run_publish(
             console.print(f"[red]Error:[/red] {exc}")
             raise typer.Exit(code=int(ExitCode.VALIDATION)) from exc
 
+    # Same fail-fast intent for --digest: reject malformed input before any
+    # build/push side effects. Format guard only — buildable-count check
+    # happens after compose data is loaded.
+    if digest is not None:
+        try:
+            validate_digest(digest)
+        except ValueError as exc:
+            # The exception text contains the user-supplied digest verbatim;
+            # rich console treats `[…]` as markup, so disable interpretation
+            # to avoid silent stripping or a markup-injection vector.
+            console.print("[red]Error:[/red] ", end="")
+            console.print(str(exc), markup=False)
+            raise typer.Exit(code=int(ExitCode.VALIDATION)) from exc
+
     # 1. Detect extension
     detector = ExtensionDetector()
     info = detector.detect()
@@ -118,6 +195,49 @@ def run_publish(
     if info.compose_data is None:
         console.print("[red]Error:[/red] No docker-compose.yml found.")
         raise typer.Exit(code=1)
+
+    # Buildable services that will actually be published. Mirrors
+    # ComposeTransformer's `profiles:` filter — services with a profiles
+    # key are local-only and stripped before catalog construction, so
+    # they don't count for buildable-count or hazard checks.
+    buildable_services = [
+        name
+        for name, svc in (info.compose_data.get("services") or {}).items()
+        if "build" in svc and not svc.get("profiles")
+    ]
+
+    # ENG-4370: --digest pins identity for one image. Multi-image extensions
+    # must rely on auto-resolve (the per-service push digest), so reject the
+    # ambiguous case before doing any work.
+    if digest is not None and len(buildable_services) != 1:
+        found = ", ".join(buildable_services) if buildable_services else "none"
+        console.print(
+            f"[red]Error:[/red] --digest requires exactly one buildable "
+            f"service in docker-compose.yml; found {len(buildable_services)} "
+            f"({found}). Omit --digest to auto-resolve per-service digests."
+        )
+        raise typer.Exit(code=int(ExitCode.VALIDATION))
+
+    # Auto-resolve queries the registry post-build. Built-but-not-pushed
+    # leaves the registry stale (or empty), so the resolved digest would
+    # either error or silently pin the *previous* push.
+    # Force the user to either push, skip the build, or supply --digest.
+    # Skipped under: dry-run (no build/push happens), and external-only
+    # extensions (no buildable services means no hazard).
+    if (
+        not dry_run
+        and not no_build
+        and no_push
+        and digest is None
+        and buildable_services
+    ):
+        console.print(
+            "[red]Error:[/red] --no-push without --no-build cannot pin a "
+            "catalog digest — the just-built image is only in your local "
+            "daemon. Push first, pass --no-build to publish-only against "
+            "the existing registry tag, or supply --digest explicitly."
+        )
+        raise typer.Exit(code=int(ExitCode.VALIDATION))
 
     version = info.version
     ext_type = _infer_extension_type(info.metadata)
@@ -211,6 +331,18 @@ def run_publish(
         )
         console.print(f"  Would push to:         {registry}/")
 
+        # Dry-run preview reflects an explicit --digest; auto-resolve
+        # is skipped because a dry-run shouldn't talk to the registry.
+        # Mirrors the live path's published_refs derivation: pin against
+        # the buildable_services-derived ref so a profiled helper that
+        # appears first in dict order can't redirect the user's digest.
+        dry_digest_map: Dict[str, str] = {}
+        if digest is not None and buildable_services:
+            dry_canonical_ref = (
+                f"{registry}/{info.name}-{buildable_services[0]}:{image_tag}"
+            )
+            dry_digest_map[dry_canonical_ref] = digest
+
         # Run merge check so dry-run detects version conflicts
         reg_builder = RegistryBuilder()
         entry = reg_builder.build_entry(
@@ -220,6 +352,7 @@ def run_publish(
             version=version,
             stage=stage,
             revision=revision,
+            digest_map=dry_digest_map or None,
         )
         try:
             publisher = CatalogPublisher(profile, extension_dir=info.path)
@@ -275,6 +408,19 @@ def run_publish(
             info.compose_data, info.name, image_tag, registry
         )
 
+    # 5.5 Preflight: digest resolution post-push needs `docker buildx
+    # imagetools`. If buildx is missing on this host, fail before mutating
+    # the registry rather than push-then-fail-on-resolve. Only required
+    # when push will happen and there's at least one published service to
+    # pin (the catalog-only-republish path soft-falls in
+    # `_auto_resolve_digests` and doesn't need this guard).
+    if not no_push and buildable_services:
+        try:
+            ImagePusher.check_buildx_available()
+        except ImagePushError as exc:
+            console.print(f"\n[red]Error:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+
     # 6. Push images (same stage-aware tag)
     if not no_push and image_refs:
         console.print("  Pushing images...", end="")
@@ -301,6 +447,28 @@ def run_publish(
     elif no_push:
         console.print("  [dim]Skipping push (--no-push)[/dim]")
 
+    # Catalog refs are pinned `image:tag@sha256:...` so they're immutable
+    # regardless of tag mutability. published_refs is derived from
+    # buildable_services (which excludes profile-only services per
+    # ComposeTransformer's filter), so a profiled helper appearing first
+    # in image_refs cannot misdirect the digest map. Pass-through external
+    # refs keep whatever pinning their source repo applied.
+    published_refs: List[str] = [
+        f"{registry}/{info.name}-{name}:{image_tag}" for name in buildable_services
+    ]
+    digest_map: Dict[str, str] = {}
+    if published_refs:
+        if digest is not None:
+            # Single-buildable invariant guaranteed by validation above.
+            ref = published_refs[0]
+            digest_map[ref] = digest
+            if not no_push:
+                _verify_supplied_digest(ref, digest)
+        else:
+            digest_map = _auto_resolve_digests(
+                published_refs, no_build=no_build, no_push=no_push,
+            )
+
     # 7. Build catalog entry
     reg_builder = RegistryBuilder()
     entry = reg_builder.build_entry(
@@ -310,6 +478,7 @@ def run_publish(
         version=version,
         stage=stage,
         revision=revision,
+        digest_map=digest_map or None,
     )
 
     # 8. Publish to catalog
@@ -348,6 +517,12 @@ def run_publish(
     console.print(
         f"Published [bold]{info.name}[/bold] v{version} to {profile.catalog_bucket}"
     )
-    if image_refs:
-        console.print(f"  Images:  {', '.join(image_refs)}")
+    if published_refs:
+        # Show what's actually in the catalog (post-profile-filter), pinned
+        # where digest_map carries an entry.
+        pinned = [
+            f"{r}@{digest_map[r]}" if r in digest_map else r
+            for r in published_refs
+        ]
+        console.print(f"  Images:  {', '.join(pinned)}")
     console.print(f"  Catalog: {result.catalog_file}")

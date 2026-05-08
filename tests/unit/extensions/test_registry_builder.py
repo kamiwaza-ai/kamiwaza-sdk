@@ -325,6 +325,86 @@ class TestTransformImageTags:
         result = builder.transform_image_tags(yml, "kamiwazaai", "2.0.0", "qa")
         assert "kamiwazaai/my-app:2.0.0-qa" in result
 
+    # ENG-4370: digest suffixes must survive tag rewriting.
+
+    def test_preserves_digest_suffix_extension_branch(self, builder):
+        digest = "sha256:" + "a" * 64
+        yml = f"image: kamiwazaai/my-app-web:old@{digest}"
+        result = builder.transform_image_tags(
+            yml, "kamiwazaai", "2.0.0", "prod", extension_name="my-app",
+        )
+        assert f"kamiwazaai/my-app-web:2.0.0@{digest}" in result
+        # Digest preserved, not stripped.
+        assert "kamiwazaai/my-app-web:2.0.0\n" not in result + "\n"
+        assert "kamiwazaai/my-app-web:2.0.0 " not in result + " "
+
+    def test_preserves_digest_suffix_fallback_branch(self, builder):
+        digest = "sha256:" + "b" * 64
+        yml = f"image: kamiwazaai/my-app:old@{digest}"
+        result = builder.transform_image_tags(yml, "kamiwazaai", "2.0.0", "stage")
+        assert f"kamiwazaai/my-app:2.0.0-stage@{digest}" in result
+
+    def test_digest_only_ref_extension_branch_unchanged(self, builder):
+        # image@sha256:<64> (no tag) must NOT be rewritten. An earlier
+        # regex captured `service@sha256` as the path and the hex as
+        # the tag, producing `service@sha256:newtag` — corruption.
+        digest = "sha256:" + "a" * 64
+        yml = f"image: kamiwazaai/my-app-web@{digest}"
+        result = builder.transform_image_tags(
+            yml, "kamiwazaai", "2.0.0", "prod", extension_name="my-app",
+        )
+        # Verbatim — no rewrite.
+        assert result == yml
+
+    def test_digest_only_ref_fallback_branch_unchanged(self, builder):
+        digest = "sha256:" + "b" * 64
+        yml = f"image: kamiwazaai/my-app@{digest}"
+        result = builder.transform_image_tags(yml, "kamiwazaai", "2.0.0", "stage")
+        assert result == yml
+
+    def test_digest_only_and_tag_only_siblings(self, builder):
+        # Mixed compose: one ref pinned by digest only, one tagged.
+        # The tagged ref is rewritten; the digest-only ref passes through.
+        digest = "sha256:" + "c" * 64
+        yml = (
+            f"image: kamiwazaai/app-frontend@{digest}\n"
+            "image: kamiwazaai/app-backend:old\n"
+        )
+        result = builder.transform_image_tags(yml, "kamiwazaai", "3.0.0", "prod")
+        assert f"kamiwazaai/app-frontend@{digest}" in result
+        assert "kamiwazaai/app-backend:3.0.0" in result
+        # Frontend was not rewritten with a tag.
+        frontend_line = [
+            ln for ln in result.splitlines() if "app-frontend" in ln
+        ][0]
+        assert ":3.0.0" not in frontend_line
+
+    def test_malformed_digest_suffix_passes_through_untouched(self, builder):
+        # An `@sha256:short` (or any non-conforming suffix) doesn't
+        # match the optional digest group, so the regex matches up to
+        # the bad `@` and the broken tail passes through verbatim.
+        # Preserves rather than corrupts user input.
+        yml = "image: kamiwazaai/my-app-web:old@sha256:short"
+        result = builder.transform_image_tags(
+            yml, "kamiwazaai", "2.0.0", "prod", extension_name="my-app",
+        )
+        assert "kamiwazaai/my-app-web:2.0.0@sha256:short" in result
+
+    def test_preserves_digest_on_some_siblings_only(self, builder):
+        digest = "sha256:" + "c" * 64
+        yml = (
+            f"image: kamiwazaai/app-frontend:old@{digest}\n"
+            "image: kamiwazaai/app-backend:old\n"
+        )
+        result = builder.transform_image_tags(yml, "kamiwazaai", "3.0.0", "prod")
+        assert f"kamiwazaai/app-frontend:3.0.0@{digest}" in result
+        assert "kamiwazaai/app-backend:3.0.0" in result
+        # Backend has no `@` after rewrite.
+        backend_line = [
+            ln for ln in result.splitlines() if "app-backend" in ln
+        ][0]
+        assert "@" not in backend_line
+
 
 # ------------------------------------------------------------------
 # extract_docker_images
@@ -643,3 +723,156 @@ class TestNormalizePreviewImage:
 
     def test_leading_slash(self):
         assert _normalize_preview_image("/screenshot.png") == "images/screenshot.png"
+
+
+# ------------------------------------------------------------------
+# ENG-4370 — digest pinning via build_entry(digest_map=...)
+# ------------------------------------------------------------------
+
+
+_DIGEST_A = "sha256:" + "a" * 64
+_DIGEST_B = "sha256:" + "b" * 64
+
+
+class TestBuildEntryDigestPinning:
+    def test_pinning_rewrites_compose_yml_and_docker_images(
+        self, builder, metadata, transformed_compose,
+    ):
+        digest_map = {
+            "kamiwazaai/my-app-frontend:1.0.0": _DIGEST_A,
+            "kamiwazaai/my-app-backend:1.0.0": _DIGEST_B,
+        }
+        entry = builder.build_entry(
+            metadata, transformed_compose, "kamiwazaai", "1.0.0",
+            digest_map=digest_map,
+        )
+
+        # docker_images carries `tag@digest` for buildable refs.
+        assert f"kamiwazaai/my-app-frontend:1.0.0@{_DIGEST_A}" in entry["docker_images"]
+        assert f"kamiwazaai/my-app-backend:1.0.0@{_DIGEST_B}" in entry["docker_images"]
+        # Pre-existing tag-only refs no longer present.
+        assert "kamiwazaai/my-app-frontend:1.0.0" not in entry["docker_images"]
+        assert "kamiwazaai/my-app-backend:1.0.0" not in entry["docker_images"]
+        # Pass-through external image left verbatim (Pattern B).
+        assert "postgres:15" in entry["docker_images"]
+
+        parsed = yaml.safe_load(entry["compose_yml"])
+        assert (
+            parsed["services"]["frontend"]["image"]
+            == f"kamiwazaai/my-app-frontend:1.0.0@{_DIGEST_A}"
+        )
+        assert (
+            parsed["services"]["backend"]["image"]
+            == f"kamiwazaai/my-app-backend:1.0.0@{_DIGEST_B}"
+        )
+        assert parsed["services"]["db"]["image"] == "postgres:15"
+
+    def test_omitted_digest_map_leaves_refs_unchanged(
+        self, builder, metadata, transformed_compose,
+    ):
+        entry = builder.build_entry(
+            metadata, transformed_compose, "kamiwazaai", "1.0.0",
+        )
+        assert "kamiwazaai/my-app-frontend:1.0.0" in entry["docker_images"]
+        assert all("@" not in img for img in entry["docker_images"])
+
+    def test_empty_digest_map_leaves_refs_unchanged(
+        self, builder, metadata, transformed_compose,
+    ):
+        entry = builder.build_entry(
+            metadata, transformed_compose, "kamiwazaai", "1.0.0",
+            digest_map={},
+        )
+        assert "kamiwazaai/my-app-frontend:1.0.0" in entry["docker_images"]
+        assert all("@" not in img for img in entry["docker_images"])
+
+    def test_partial_digest_map_only_pins_listed_refs(
+        self, builder, metadata, transformed_compose,
+    ):
+        # Only one of the two buildable refs in the map. The other is
+        # left as tag-only — verifies the map is the source of truth.
+        digest_map = {"kamiwazaai/my-app-frontend:1.0.0": _DIGEST_A}
+        entry = builder.build_entry(
+            metadata, transformed_compose, "kamiwazaai", "1.0.0",
+            digest_map=digest_map,
+        )
+        assert f"kamiwazaai/my-app-frontend:1.0.0@{_DIGEST_A}" in entry["docker_images"]
+        assert "kamiwazaai/my-app-backend:1.0.0" in entry["docker_images"]
+
+    def test_already_pinned_ref_not_double_pinned(self, builder, metadata):
+        compose = {
+            "services": {
+                "backend": {
+                    "image": f"kamiwazaai/my-app-backend:1.0.0@{_DIGEST_A}"
+                },
+            },
+        }
+        # Map keyed by the original (unpinned) ref. Because the compose
+        # value already contains '@', _apply_digests must skip it.
+        digest_map = {"kamiwazaai/my-app-backend:1.0.0": _DIGEST_B}
+        entry = builder.build_entry(
+            metadata, compose, "kamiwazaai", "1.0.0", digest_map=digest_map,
+        )
+        # Original digest preserved; no double `@`.
+        assert f"kamiwazaai/my-app-backend:1.0.0@{_DIGEST_A}" in entry["docker_images"]
+        assert _DIGEST_B not in entry["compose_yml"]
+
+    def test_does_not_mutate_caller_compose(self, builder, metadata):
+        compose = {
+            "services": {
+                "backend": {"image": "kamiwazaai/my-app-backend:1.0.0"},
+            },
+        }
+        digest_map = {"kamiwazaai/my-app-backend:1.0.0": _DIGEST_A}
+        builder.build_entry(metadata, compose, "kamiwazaai", "1.0.0", digest_map=digest_map)
+        assert (
+            compose["services"]["backend"]["image"]
+            == "kamiwazaai/my-app-backend:1.0.0"
+        )
+
+    def test_extra_docker_images_collision_pinned_and_deduped(self, builder):
+        # When extra_docker_images repeats a buildable service ref,
+        # both copies must end up pinned identically so dedup collapses
+        # them. Otherwise the catalog leaks an unpinned duplicate.
+        compose = {
+            "services": {
+                "backend": {"image": "kamiwazaai/my-app-backend:1.0.0"},
+            },
+        }
+        meta = {
+            "name": "my-app",
+            "description": "test",
+            "source_type": "kamiwaza",
+            "visibility": "public",
+            # Redundantly listed (same as the service image).
+            "extra_docker_images": ["kamiwazaai/my-app-backend:1.0.0"],
+        }
+        digest_map = {"kamiwazaai/my-app-backend:1.0.0": _DIGEST_A}
+        entry = builder.build_entry(
+            meta, compose, "kamiwazaai", "1.0.0", digest_map=digest_map,
+        )
+        # Single pinned entry — no unpinned duplicate.
+        assert entry["docker_images"] == [
+            f"kamiwazaai/my-app-backend:1.0.0@{_DIGEST_A}"
+        ]
+
+    def test_revision_and_digest_are_orthogonal(self, builder, metadata):
+        # Catalog ref carries both: <reg>/<ext>-<svc>:<revision>@<digest>.
+        compose = {
+            "services": {
+                "backend": {
+                    "image": "kamiwazaai/my-app-backend:abc1234",  # revision tag
+                },
+            },
+        }
+        digest_map = {"kamiwazaai/my-app-backend:abc1234": _DIGEST_A}
+        entry = builder.build_entry(
+            metadata, compose, "kamiwazaai", "1.0.0",
+            revision="abc1234",
+            digest_map=digest_map,
+        )
+        assert entry["revision"] == "abc1234"
+        assert (
+            f"kamiwazaai/my-app-backend:abc1234@{_DIGEST_A}"
+            in entry["docker_images"]
+        )
