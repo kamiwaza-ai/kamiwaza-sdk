@@ -645,6 +645,147 @@ def _wire_publish_mocks(
 
 
 class TestPublishDigest:
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher.check_buildx_available")
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher.resolve_digest")
+    @patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher")
+    @patch("kamiwaza_extensions.registry_builder.RegistryBuilder")
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher")
+    @patch("kamiwaza_extensions.image_builder.ImageBuilder")
+    @patch("kamiwaza_extensions.profile_manager.ProfileManager")
+    @patch("kamiwaza_extensions.compose_transformer.ComposeTransformer")
+    @patch("kamiwaza_extensions.validators.compose.ComposeValidator")
+    @patch("kamiwaza_extensions.validators.metadata.MetadataValidator")
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_buildx_preflight_aborts_before_push_when_unavailable(
+        self, mock_detector_cls, mock_meta_validator_cls,
+        mock_compose_validator_cls, mock_transformer_cls,
+        mock_profile_mgr_cls, mock_builder_cls, mock_pusher_cls,
+        mock_reg_builder_cls, mock_publisher_cls,
+        mock_resolve, mock_preflight, tmp_path,
+    ):
+        # Re-review HIGH 1: when buildx is missing, fail BEFORE push so
+        # the registry isn't mutated.
+        from kamiwaza_extensions.image_pusher import ImagePushError
+
+        mock_preflight.side_effect = ImagePushError(
+            "docker buildx imagetools is not available"
+        )
+        wired = _wire_publish_mocks(
+            detector_cls=mock_detector_cls,
+            meta_validator_cls=mock_meta_validator_cls,
+            compose_validator_cls=mock_compose_validator_cls,
+            transformer_cls=mock_transformer_cls,
+            profile_mgr_cls=mock_profile_mgr_cls,
+            builder_cls=mock_builder_cls,
+            pusher_cls=mock_pusher_cls,
+            reg_builder_cls=mock_reg_builder_cls,
+            publisher_cls=mock_publisher_cls,
+            tmp_path=tmp_path,
+        )
+
+        from kamiwaza_extensions.commands.publish import run_publish
+
+        with pytest.raises((SystemExit, ClickExit)):
+            run_publish(stage="dev")
+
+        # Preflight ran; push and resolve never did.
+        mock_preflight.assert_called_once()
+        wired["pusher"].push.assert_not_called()
+        mock_resolve.assert_not_called()
+
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher.check_buildx_available")
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher.resolve_digest")
+    @patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher")
+    @patch("kamiwaza_extensions.registry_builder.RegistryBuilder")
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher")
+    @patch("kamiwaza_extensions.image_builder.ImageBuilder")
+    @patch("kamiwaza_extensions.profile_manager.ProfileManager")
+    @patch("kamiwaza_extensions.compose_transformer.ComposeTransformer")
+    @patch("kamiwaza_extensions.validators.compose.ComposeValidator")
+    @patch("kamiwaza_extensions.validators.metadata.MetadataValidator")
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_buildx_preflight_skipped_when_no_push(
+        self, mock_detector_cls, mock_meta_validator_cls,
+        mock_compose_validator_cls, mock_transformer_cls,
+        mock_profile_mgr_cls, mock_builder_cls, mock_pusher_cls,
+        mock_reg_builder_cls, mock_publisher_cls,
+        mock_resolve, mock_preflight, tmp_path,
+    ):
+        # The preflight only matters when push will happen. The catalog-
+        # only-republish path soft-falls in _auto_resolve_digests if buildx
+        # is missing, so don't gate it here.
+        mock_resolve.return_value = _DIGEST_BACKEND
+        _wire_publish_mocks(
+            detector_cls=mock_detector_cls,
+            meta_validator_cls=mock_meta_validator_cls,
+            compose_validator_cls=mock_compose_validator_cls,
+            transformer_cls=mock_transformer_cls,
+            profile_mgr_cls=mock_profile_mgr_cls,
+            builder_cls=mock_builder_cls,
+            pusher_cls=mock_pusher_cls,
+            reg_builder_cls=mock_reg_builder_cls,
+            publisher_cls=mock_publisher_cls,
+            tmp_path=tmp_path,
+        )
+
+        from kamiwaza_extensions.commands.publish import run_publish
+
+        run_publish(stage="dev", no_build=True, no_push=True)
+
+        mock_preflight.assert_not_called()
+
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher.check_buildx_available")
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher.resolve_digest")
+    @patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher")
+    @patch("kamiwaza_extensions.registry_builder.RegistryBuilder")
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher")
+    @patch("kamiwaza_extensions.image_builder.ImageBuilder")
+    @patch("kamiwaza_extensions.profile_manager.ProfileManager")
+    @patch("kamiwaza_extensions.compose_transformer.ComposeTransformer")
+    @patch("kamiwaza_extensions.validators.compose.ComposeValidator")
+    @patch("kamiwaza_extensions.validators.metadata.MetadataValidator")
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_buildx_preflight_skipped_when_no_buildable_services(
+        self, mock_detector_cls, mock_meta_validator_cls,
+        mock_compose_validator_cls, mock_transformer_cls,
+        mock_profile_mgr_cls, mock_builder_cls, mock_pusher_cls,
+        mock_reg_builder_cls, mock_publisher_cls,
+        mock_resolve, mock_preflight, tmp_path,
+    ):
+        # External-only extension (postgres etc.) — no resolve_digest
+        # call will happen, so no buildx needed.
+        compose = {
+            "services": {
+                "db": {"image": "postgres:15"},
+                "cache": {"image": "redis:7"},
+            },
+        }
+        _wire_publish_mocks(
+            detector_cls=mock_detector_cls,
+            meta_validator_cls=mock_meta_validator_cls,
+            compose_validator_cls=mock_compose_validator_cls,
+            transformer_cls=mock_transformer_cls,
+            profile_mgr_cls=mock_profile_mgr_cls,
+            builder_cls=mock_builder_cls,
+            pusher_cls=mock_pusher_cls,
+            reg_builder_cls=mock_reg_builder_cls,
+            publisher_cls=mock_publisher_cls,
+            tmp_path=tmp_path,
+            compose_data=compose,
+            image_refs=[],
+            transformed_services={
+                "db": {"image": "postgres:15"},
+                "cache": {"image": "redis:7"},
+            },
+        )
+
+        from kamiwaza_extensions.commands.publish import run_publish
+
+        run_publish(stage="dev")
+
+        mock_preflight.assert_not_called()
+
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher.check_buildx_available")
     @patch("kamiwaza_extensions.image_pusher.ImagePusher.resolve_digest")
     @patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher")
     @patch("kamiwaza_extensions.registry_builder.RegistryBuilder")
@@ -659,8 +800,8 @@ class TestPublishDigest:
         self, mock_detector_cls, mock_meta_validator_cls,
         mock_compose_validator_cls, mock_transformer_cls,
         mock_profile_mgr_cls, mock_builder_cls, mock_pusher_cls,
-        mock_reg_builder_cls, mock_publisher_cls, mock_resolve,
-        tmp_path,
+        mock_reg_builder_cls, mock_publisher_cls,
+        mock_resolve, mock_preflight, tmp_path,
     ):
         mock_resolve.side_effect = lambda ref: (
             _DIGEST_BACKEND if "backend" in ref else _DIGEST_FRONTEND

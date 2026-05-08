@@ -103,6 +103,12 @@ class RegistryBuilder:
             # ref that's redundantly listed in `extra_docker_images`
             # collapses against its already-pinned compose copy during
             # dedup, instead of leaking an unpinned duplicate.
+            #
+            # Match is exact-string against the post-stage-suffix ref
+            # (e.g. `<reg>/<ext>-<svc>:<version>-dev`); a pre-suffix
+            # entry like `<reg>/<ext>-<svc>:<version>` won't collapse.
+            # Author the entry to match what compose carries after
+            # transform.
             if digest_map:
                 extra_images = [
                     f"{img}@{digest_map[img]}"

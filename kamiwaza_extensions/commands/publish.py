@@ -110,10 +110,6 @@ def _auto_resolve_digests(
     --no-push``): pre-PR behavior was tag-only with no docker dependency,
     so a resolve failure becomes a warning and the ref is omitted from
     the result rather than aborting the publish.
-
-    For the partial shape ``--no-push`` without ``--no-build``, a
-    ``manifest unknown`` registry error is rewrapped with an actionable
-    hint (push first, or pass ``--digest``).
     """
     from kamiwaza_extensions.image_pusher import ImagePushError, ImagePusher
 
@@ -129,13 +125,7 @@ def _auto_resolve_digests(
                     "this ref"
                 )
                 continue
-            if no_push and "manifest unknown" in str(exc).lower():
-                console.print(
-                    f"\n[red]Error:[/red] registry has no image at "
-                    f"{ref}. Push it first or pass --digest explicitly."
-                )
-            else:
-                console.print(f"\n[red]Error:[/red] {exc}")
+            console.print(f"\n[red]Error:[/red] {exc}")
             raise typer.Exit(code=1) from exc
     return digest_map
 
@@ -417,6 +407,19 @@ def run_publish(
         image_refs = _collect_image_refs(
             info.compose_data, info.name, image_tag, registry
         )
+
+    # 5.5 Preflight: digest resolution post-push needs `docker buildx
+    # imagetools`. If buildx is missing on this host, fail before mutating
+    # the registry rather than push-then-fail-on-resolve. Only required
+    # when push will happen and there's at least one published service to
+    # pin (the catalog-only-republish path soft-falls in
+    # `_auto_resolve_digests` and doesn't need this guard).
+    if not no_push and buildable_services:
+        try:
+            ImagePusher.check_buildx_available()
+        except ImagePushError as exc:
+            console.print(f"\n[red]Error:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
 
     # 6. Push images (same stage-aware tag)
     if not no_push and image_refs:

@@ -203,6 +203,41 @@ class TestResolveDigest:
             ImagePusher.resolve_digest("reg.test/app:v1")
 
 
+class TestCheckBuildxAvailable:
+    @patch("kamiwaza_extensions.image_pusher.subprocess.run")
+    def test_passes_when_buildx_present(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0)
+        ImagePusher.check_buildx_available()  # no raise
+        cmd = mock_run.call_args[0][0]
+        assert cmd == ["docker", "buildx", "imagetools", "--help"]
+
+    @patch(
+        "kamiwaza_extensions.image_pusher.subprocess.run",
+        side_effect=FileNotFoundError(),
+    )
+    def test_raises_when_docker_missing(self, _mock_run):
+        with pytest.raises(ImagePushError, match="docker not found"):
+            ImagePusher.check_buildx_available()
+
+    @patch("kamiwaza_extensions.image_pusher.subprocess.run")
+    def test_raises_when_buildx_subcommand_missing(self, mock_run):
+        # docker is present but buildx plugin isn't — docker exits non-zero
+        # with stderr like "docker: 'buildx' is not a docker command".
+        mock_run.return_value = MagicMock(
+            returncode=1, stderr=b"docker: 'buildx' is not a docker command."
+        )
+        with pytest.raises(ImagePushError, match="buildx imagetools is not available"):
+            ImagePusher.check_buildx_available()
+
+    @patch(
+        "kamiwaza_extensions.image_pusher.subprocess.run",
+        side_effect=__import__("subprocess").TimeoutExpired(cmd="docker", timeout=5),
+    )
+    def test_raises_on_timeout(self, _mock_run):
+        with pytest.raises(ImagePushError, match="availability check timed out"):
+            ImagePusher.check_buildx_available()
+
+
 class TestPushTimeout:
     @patch(
         "kamiwaza_extensions.image_pusher.subprocess.run",

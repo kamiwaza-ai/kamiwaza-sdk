@@ -99,6 +99,42 @@ class ImagePusher:
             ) from exc
 
     @staticmethod
+    def check_buildx_available() -> None:
+        """Verify ``docker buildx imagetools`` is usable on PATH.
+
+        Run before push when a downstream ``resolve_digest`` call will
+        be required, so a missing buildx plugin fails the publish *before*
+        the registry is mutated rather than after. Modern docker (Desktop,
+        docker-ce 20.10+) bundles buildx; this guards against older or
+        minimal installations where the plugin is absent.
+
+        Raises:
+            ImagePushError: When ``docker`` is not installed or the
+                ``buildx imagetools`` subcommand isn't recognized.
+        """
+        try:
+            result = subprocess.run(
+                ["docker", "buildx", "imagetools", "--help"],
+                capture_output=True,
+                timeout=5,
+            )
+        except FileNotFoundError as exc:
+            raise ImagePushError(
+                "docker not found — required for digest pinning. "
+                "Install Docker (with buildx) before publishing."
+            ) from exc
+        except subprocess.TimeoutExpired as exc:
+            raise ImagePushError(
+                "docker buildx availability check timed out after 5s"
+            ) from exc
+        if result.returncode != 0:
+            raise ImagePushError(
+                "docker buildx imagetools is not available — required "
+                "for digest pinning. Modern docker (20.10+) bundles "
+                "buildx; older installs may need the plugin added."
+            )
+
+    @staticmethod
     def resolve_digest(image_ref: str) -> str:
         """Return the manifest digest for *image_ref* from the registry.
 
