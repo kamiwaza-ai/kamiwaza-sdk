@@ -439,9 +439,9 @@ class TestNoBuildNoPush:
 
         from kamiwaza_extensions.commands.publish import run_publish
 
-        # H1: --no-push without --no-build (or --digest) is rejected
-        # because we can't pin a digest for an image that's only local.
-        # This test exercises the build+push-skipped path via --digest.
+        # --no-push without --no-build (or --digest) is rejected because
+        # we can't pin a digest for an image that's only local. This test
+        # exercises the build+push-skipped path via --digest.
         run_publish(
             stage="dev", no_push=True, digest="sha256:" + "a" * 64,
         )
@@ -778,7 +778,7 @@ class TestPublishDigest:
         mock_reg_builder_cls, mock_publisher_cls, mock_resolve,
         tmp_path,
     ):
-        # H1: building locally and skipping push leaves the registry
+        # Building locally and skipping push leaves the registry
         # stale relative to the local image; auto-resolve would pin to
         # the wrong digest. The CLI must reject this combination.
         info = _make_extension_info(tmp_path)
@@ -810,7 +810,7 @@ class TestPublishDigest:
         mock_reg_builder_cls, mock_publisher_cls, mock_resolve,
         tmp_path,
     ):
-        # Re-review HIGH 1: extensions whose compose has zero buildable
+        # Extensions whose compose has zero buildable
         # services (only external/prebuilt refs) must not trip H1 — there
         # is no local-only image to pin.
         compose = {
@@ -865,7 +865,7 @@ class TestPublishDigest:
         mock_reg_builder_cls, mock_publisher_cls, mock_resolve,
         tmp_path,
     ):
-        # Re-review HIGH 2: a buildable service with a `profiles:` key
+        # A buildable service with a `profiles:` key
         # is stripped by ComposeTransformer before publish, so it should
         # not count toward the buildable-count guard.
         compose = {
@@ -923,9 +923,9 @@ class TestPublishDigest:
         mock_reg_builder_cls, mock_publisher_cls, mock_resolve,
         tmp_path,
     ):
-        # P2 (local Codex): profiled service first in dict order must NOT
-        # redirect --digest pinning. The pinned ref must come from the
-        # filtered buildable_services list, not image_refs[0].
+        # Profiled service first in dict order must NOT redirect --digest
+        # pinning. The pinned ref must come from the filtered
+        # buildable_services list, not image_refs[0].
         compose = {
             "services": {
                 "dev-helper": {
@@ -993,10 +993,10 @@ class TestPublishDigest:
         mock_reg_builder_cls, mock_publisher_cls, mock_resolve,
         tmp_path,
     ):
-        # P2 sibling: auto-resolve must not call resolve_digest for
-        # profiled refs — they aren't published in the catalog so any
-        # pin would be silently dropped, and a profiled-only-in-registry
-        # ref might cause a needless network round-trip / failure.
+        # Auto-resolve must not call resolve_digest for profiled refs —
+        # they aren't published in the catalog so any pin would be
+        # silently dropped, and a profiled-only-in-registry ref might
+        # cause a needless network round-trip / failure.
         compose = {
             "services": {
                 "dev-helper": {
@@ -1059,10 +1059,9 @@ class TestPublishDigest:
         mock_reg_builder_cls, mock_publisher_cls, mock_resolve,
         tmp_path,
     ):
-        # Re-review HIGH 3 (option A): catalog-only republish softly
-        # falls back to tag-only when resolve_digest fails (e.g. no
-        # docker on host). Catalog publishes; the failed ref is absent
-        # from digest_map.
+        # Catalog-only republish softly falls back to tag-only when
+        # resolve_digest fails (e.g. no docker on host). Catalog
+        # publishes; the failed ref is absent from digest_map.
         from kamiwaza_extensions.image_pusher import ImagePushError
 
         mock_resolve.side_effect = ImagePushError("docker not found")
@@ -1106,7 +1105,7 @@ class TestPublishDigest:
         mock_reg_builder_cls, mock_publisher_cls, mock_resolve,
         tmp_path,
     ):
-        # F2: H1's stale-registry hazard does not apply under --dry-run
+        # The stale-registry hazard does not apply under --dry-run
         # (no build, no push, no auto-resolve happens). Preview should
         # complete without forcing the user to add --no-build or --digest.
         wired = _wire_publish_mocks(
@@ -1152,7 +1151,7 @@ class TestPublishDigest:
         mock_reg_builder_cls, mock_publisher_cls, mock_resolve,
         tmp_path,
     ):
-        # H1 escape hatch: explicit --digest lets the user opt out of
+        # Escape hatch: explicit --digest lets the user opt out of
         # auto-resolve, so build+no-push is allowed when --digest is set.
         wired = _wire_publish_mocks(
             detector_cls=mock_detector_cls,
@@ -1196,7 +1195,7 @@ class TestPublishDigest:
         mock_reg_builder_cls, mock_publisher_cls, mock_resolve,
         tmp_path,
     ):
-        # H2: when --digest is set and push happened, resolve_digest is
+        # When --digest is set and push happened, resolve_digest is
         # called for integrity verification (not as the source of truth).
         mock_resolve.return_value = _DIGEST_USER_SUPPLIED
         wired = _wire_publish_mocks(
@@ -1239,7 +1238,7 @@ class TestPublishDigest:
         mock_reg_builder_cls, mock_publisher_cls, mock_resolve,
         tmp_path,
     ):
-        # H2: registry returns a different digest from what user supplied
+        # Registry returns a different digest from what user supplied
         # → publish must abort before catalog is written.
         mock_resolve.return_value = _DIGEST_BACKEND  # registry has this
         wired = _wire_publish_mocks(
@@ -1542,3 +1541,69 @@ class TestPublishDigest:
             assert kwargs["digest_map"] == {
                 "ghcr.io/my-org/my-app-backend:1.0.0-dev": _DIGEST_USER_SUPPLIED,
             }
+
+    @patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher")
+    @patch("kamiwaza_extensions.registry_builder.RegistryBuilder")
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher")
+    @patch("kamiwaza_extensions.image_builder.ImageBuilder")
+    @patch("kamiwaza_extensions.profile_manager.ProfileManager")
+    @patch("kamiwaza_extensions.compose_transformer.ComposeTransformer")
+    @patch("kamiwaza_extensions.validators.compose.ComposeValidator")
+    @patch("kamiwaza_extensions.validators.metadata.MetadataValidator")
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_dry_run_digest_pins_canonical_when_profiled_helper_first(
+        self, mock_detector_cls, mock_meta_validator_cls,
+        mock_compose_validator_cls, mock_transformer_cls,
+        mock_profile_mgr_cls, mock_builder_cls, mock_pusher_cls,
+        mock_reg_builder_cls, mock_publisher_cls, tmp_path,
+    ):
+        # Same dict-order trap as the live path, but inside the dry-run
+        # branch. Pre-fix: dry-run used `_collect_image_refs` (unfiltered),
+        # so a profiled helper appearing first would have pinned the
+        # user's digest against a local-only ref — mismatched against the
+        # canonical buildable ref that ComposeTransformer actually keeps.
+        compose = {
+            "services": {
+                "dev-helper": {
+                    "build": {"context": "./dev"},
+                    "image": "my-org/my-app-dev-helper:1.0.0",
+                    "profiles": ["dev"],   # FIRST in dict order
+                },
+                "backend": {
+                    "build": {"context": "."},
+                    "image": "my-org/my-app-backend:1.0.0",
+                },
+            },
+        }
+        with patch(
+            "kamiwaza_extensions.image_pusher.ImagePusher.resolve_digest"
+        ) as mock_resolve:
+            wired = _wire_publish_mocks(
+                detector_cls=mock_detector_cls,
+                meta_validator_cls=mock_meta_validator_cls,
+                compose_validator_cls=mock_compose_validator_cls,
+                transformer_cls=mock_transformer_cls,
+                profile_mgr_cls=mock_profile_mgr_cls,
+                builder_cls=mock_builder_cls,
+                pusher_cls=mock_pusher_cls,
+                reg_builder_cls=mock_reg_builder_cls,
+                publisher_cls=mock_publisher_cls,
+                tmp_path=tmp_path,
+                compose_data=compose,
+            )
+            mock_publisher_cls.return_value.publish.return_value = (
+                _make_publish_result(dry_run=True)
+            )
+
+            from kamiwaza_extensions.commands.publish import run_publish
+
+            run_publish(stage="dev", dry_run=True, digest=_DIGEST_USER_SUPPLIED)
+
+            mock_resolve.assert_not_called()
+            kwargs = wired["reg_builder"].build_entry.call_args.kwargs
+            # Dry-run preview pins against the canonical (non-profiled)
+            # ref, not against the dev-helper that appears first.
+            assert kwargs["digest_map"] == {
+                "ghcr.io/my-org/my-app-backend:1.0.0-dev": _DIGEST_USER_SUPPLIED,
+            }
+            assert "dev-helper" not in str(kwargs["digest_map"])

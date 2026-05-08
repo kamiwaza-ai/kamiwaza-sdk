@@ -151,6 +151,16 @@ class TestResolveDigest:
             ImagePusher.resolve_digest("reg.test/app:v1")
 
     @patch("kamiwaza_extensions.image_pusher.subprocess.run")
+    def test_non_dict_json_raises(self, mock_run):
+        # Valid JSON but not a dict — bare .get would AttributeError
+        # without an isinstance guard.
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout="[]", stderr=""
+        )
+        with pytest.raises(ImagePushError, match="expected an object"):
+            ImagePusher.resolve_digest("reg.test/app:v1")
+
+    @patch("kamiwaza_extensions.image_pusher.subprocess.run")
     def test_invalid_json_raises(self, mock_run):
         mock_run.return_value = MagicMock(
             returncode=0, stdout="not-json-at-all", stderr=""
@@ -187,8 +197,8 @@ class TestResolveDigest:
         side_effect=__import__("subprocess").TimeoutExpired(cmd="docker", timeout=60),
     )
     def test_timeout_raises_image_push_error(self, _mock_run):
-        # M1 (re-review): wedged registry must surface as ImagePushError,
-        # not an unhandled TimeoutExpired.
+        # Wedged registry must surface as ImagePushError, not an
+        # unhandled TimeoutExpired.
         with pytest.raises(ImagePushError, match="timed out"):
             ImagePusher.resolve_digest("reg.test/app:v1")
 

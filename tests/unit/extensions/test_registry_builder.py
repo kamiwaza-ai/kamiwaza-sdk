@@ -345,7 +345,7 @@ class TestTransformImageTags:
         assert f"kamiwazaai/my-app:2.0.0-stage@{digest}" in result
 
     def test_digest_only_ref_extension_branch_unchanged(self, builder):
-        # F1: image@sha256:<64> (no tag) must NOT be rewritten. Previous
+        # image@sha256:<64> (no tag) must NOT be rewritten. An earlier
         # regex captured `service@sha256` as the path and the hex as
         # the tag, producing `service@sha256:newtag` — corruption.
         digest = "sha256:" + "a" * 64
@@ -380,7 +380,7 @@ class TestTransformImageTags:
         assert ":3.0.0" not in frontend_line
 
     def test_malformed_digest_suffix_passes_through_untouched(self, builder):
-        # M5: an `@sha256:short` (or any non-conforming suffix) doesn't
+        # An `@sha256:short` (or any non-conforming suffix) doesn't
         # match the optional digest group, so the regex matches up to
         # the bad `@` and the broken tail passes through verbatim.
         # Preserves rather than corrupts user input.
@@ -831,7 +831,7 @@ class TestBuildEntryDigestPinning:
         )
 
     def test_extra_docker_images_collision_pinned_and_deduped(self, builder):
-        # M1: when extra_docker_images repeats a buildable service ref,
+        # When extra_docker_images repeats a buildable service ref,
         # both copies must end up pinned identically so dedup collapses
         # them. Otherwise the catalog leaks an unpinned duplicate.
         compose = {

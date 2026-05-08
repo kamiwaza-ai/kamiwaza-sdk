@@ -150,7 +150,16 @@ class ImagePusher:
             raise ImagePushError(
                 f"Could not parse imagetools output for {image_ref}: {exc}"
             ) from exc
-        digest = manifest.get("digest", "")
+        # Guard against valid-but-unexpected JSON shapes (lists, scalars).
+        # `imagetools inspect --format '{{json .Manifest}}'` returns an OCI
+        # Descriptor object, but a registry/buildx quirk could surface
+        # something else; bare .get() would raise AttributeError.
+        if not isinstance(manifest, dict):
+            raise ImagePushError(
+                f"Unexpected imagetools output for {image_ref}: "
+                f"expected an object, got {type(manifest).__name__}"
+            )
+        digest = manifest.get("digest")
         if not isinstance(digest, str) or not DIGEST_PATTERN.match(digest):
             raise ImagePushError(
                 f"Unexpected digest field for {image_ref}: {digest!r}"

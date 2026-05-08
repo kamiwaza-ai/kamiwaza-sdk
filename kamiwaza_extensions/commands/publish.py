@@ -72,6 +72,74 @@ def _collect_image_refs(
     return refs
 
 
+def _verify_supplied_digest(ref: str, supplied: str) -> None:
+    """Resolve *ref* in the registry and abort if it disagrees with *supplied*.
+
+    Catches CI typos, stale digests, and the TOCTOU window where a
+    parallel run re-pointed the tag between our push and our publish.
+    Caller must guarantee the image was just pushed (i.e. ``no_push`` is
+    False) — otherwise the registry isn't authoritative for what we
+    intended to publish.
+    """
+    from kamiwaza_extensions.exit_codes import ExitCode
+    from kamiwaza_extensions.image_pusher import ImagePushError, ImagePusher
+
+    try:
+        actual = ImagePusher.resolve_digest(ref)
+    except ImagePushError as exc:
+        console.print(f"\n[red]Error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+    if actual != supplied:
+        console.print(
+            f"\n[red]Error:[/red] supplied --digest does not match "
+            f"the registry manifest for {ref}.\n"
+            f"  supplied: {supplied}\n"
+            f"  registry: {actual}\n"
+            "Re-run with the correct digest, or omit --digest to "
+            "auto-resolve."
+        )
+        raise typer.Exit(code=int(ExitCode.VALIDATION))
+
+
+def _auto_resolve_digests(
+    refs: List[str], *, no_build: bool, no_push: bool,
+) -> Dict[str, str]:
+    """Resolve registry digests for each *ref* and return ``{ref: digest}``.
+
+    Soft-fails for the catalog-only-republish shape (``--no-build
+    --no-push``): pre-PR behavior was tag-only with no docker dependency,
+    so a resolve failure becomes a warning and the ref is omitted from
+    the result rather than aborting the publish.
+
+    For the partial shape ``--no-push`` without ``--no-build``, a
+    ``manifest unknown`` registry error is rewrapped with an actionable
+    hint (push first, or pass ``--digest``).
+    """
+    from kamiwaza_extensions.image_pusher import ImagePushError, ImagePusher
+
+    digest_map: Dict[str, str] = {}
+    for ref in refs:
+        try:
+            digest_map[ref] = ImagePusher.resolve_digest(ref)
+        except ImagePushError as exc:
+            if no_build and no_push:
+                console.print(
+                    f"  [yellow]warn[/yellow] could not resolve digest "
+                    f"for {ref}: {exc} — catalog will use tag-only for "
+                    "this ref"
+                )
+                continue
+            if no_push and "manifest unknown" in str(exc).lower():
+                console.print(
+                    f"\n[red]Error:[/red] registry has no image at "
+                    f"{ref}. Push it first or pass --digest explicitly."
+                )
+            else:
+                console.print(f"\n[red]Error:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+    return digest_map
+
+
 def run_publish(
     *,
     stage: str,
@@ -123,7 +191,11 @@ def run_publish(
         try:
             validate_digest(digest)
         except ValueError as exc:
-            console.print(f"[red]Error:[/red] {exc}")
+            # The exception text contains the user-supplied digest verbatim;
+            # rich console treats `[…]` as markup, so disable interpretation
+            # to avoid silent stripping or a markup-injection vector.
+            console.print("[red]Error:[/red] ", end="")
+            console.print(str(exc), markup=False)
             raise typer.Exit(code=int(ExitCode.VALIDATION)) from exc
 
     # 1. Detect extension
@@ -156,9 +228,9 @@ def run_publish(
         )
         raise typer.Exit(code=int(ExitCode.VALIDATION))
 
-    # ENG-4370 H1: auto-resolve queries the registry post-build. Built-but-
-    # not-pushed leaves the registry stale (or empty), so the resolved
-    # digest would either error or silently pin the *previous* push.
+    # Auto-resolve queries the registry post-build. Built-but-not-pushed
+    # leaves the registry stale (or empty), so the resolved digest would
+    # either error or silently pin the *previous* push.
     # Force the user to either push, skip the build, or supply --digest.
     # Skipped under: dry-run (no build/push happens), and external-only
     # extensions (no buildable services means no hazard).
@@ -271,13 +343,15 @@ def run_publish(
 
         # Dry-run preview reflects an explicit --digest; auto-resolve
         # is skipped because a dry-run shouldn't talk to the registry.
+        # Mirrors the live path's published_refs derivation: pin against
+        # the buildable_services-derived ref so a profiled helper that
+        # appears first in dict order can't redirect the user's digest.
         dry_digest_map: Dict[str, str] = {}
-        if digest is not None:
-            dry_refs = _collect_image_refs(
-                info.compose_data, info.name, image_tag, registry
+        if digest is not None and buildable_services:
+            dry_canonical_ref = (
+                f"{registry}/{info.name}-{buildable_services[0]}:{image_tag}"
             )
-            if dry_refs:
-                dry_digest_map[dry_refs[0]] = digest
+            dry_digest_map[dry_canonical_ref] = digest
 
         # Run merge check so dry-run detects version conflicts
         reg_builder = RegistryBuilder()
@@ -370,75 +444,27 @@ def run_publish(
     elif no_push:
         console.print("  [dim]Skipping push (--no-push)[/dim]")
 
-    # 6.5 Resolve digests for published buildable images (ENG-4370). Catalog
-    # refs are pinned `image:tag@sha256:...` so they're immutable regardless
-    # of tag mutability. Pass-through external/prebuilt-internal refs
-    # (postgres, etc.) keep whatever pinning their source repo applied.
-    #
-    # Iterate over `published_refs` derived from `buildable_services` (which
-    # already excludes profile-only services) instead of `image_refs`.
-    # `image_refs` reflects what ImageBuilder built and ImagePusher pushed,
-    # which can include profiled helpers — those won't appear in the
-    # transformed catalog compose, so resolving / pinning their digest is at
-    # best wasted work and at worst (with --digest) misdirects the user's
-    # supplied digest at the wrong ref.
+    # Catalog refs are pinned `image:tag@sha256:...` so they're immutable
+    # regardless of tag mutability. published_refs is derived from
+    # buildable_services (which excludes profile-only services per
+    # ComposeTransformer's filter), so a profiled helper appearing first
+    # in image_refs cannot misdirect the digest map. Pass-through external
+    # refs keep whatever pinning their source repo applied.
     published_refs: List[str] = [
         f"{registry}/{info.name}-{name}:{image_tag}" for name in buildable_services
     ]
     digest_map: Dict[str, str] = {}
     if published_refs:
         if digest is not None:
-            # Buildable-count validation above guarantees a single ref.
+            # Single-buildable invariant guaranteed by validation above.
             ref = published_refs[0]
             digest_map[ref] = digest
-            # H2: when push happened, verify the supplied digest matches
-            # the registry's manifest. Catches CI typos, stale digests,
-            # and the TOCTOU window where a parallel run re-pointed the
-            # tag between our push and our publish.
             if not no_push:
-                try:
-                    actual = ImagePusher.resolve_digest(ref)
-                except ImagePushError as exc:
-                    console.print(f"\n[red]Error:[/red] {exc}")
-                    raise typer.Exit(code=1) from exc
-                if actual != digest:
-                    console.print(
-                        f"\n[red]Error:[/red] supplied --digest does not match "
-                        f"the registry manifest for {ref}.\n"
-                        f"  supplied: {digest}\n"
-                        f"  registry: {actual}\n"
-                        "Re-run with the correct digest, or omit --digest to "
-                        "auto-resolve."
-                    )
-                    raise typer.Exit(code=int(ExitCode.VALIDATION))
+                _verify_supplied_digest(ref, digest)
         else:
-            for ref in published_refs:
-                try:
-                    digest_map[ref] = ImagePusher.resolve_digest(ref)
-                except ImagePushError as exc:
-                    # H3 (Codex re-review): under --no-build --no-push the
-                    # caller is doing a catalog-only republish; pre-PR
-                    # behavior was tag-only with no docker dependency.
-                    # Soft-fail to preserve that: warn, leave this ref out
-                    # of digest_map → catalog gets tag-only for it.
-                    if no_build and no_push:
-                        console.print(
-                            f"  [yellow]warn[/yellow] could not resolve "
-                            f"digest for {ref}: {exc} — catalog will use "
-                            "tag-only for this ref"
-                        )
-                        continue
-                    # M4: actionable hint for partial-republish flows
-                    # where the tag isn't in the registry yet.
-                    if no_push and "manifest unknown" in str(exc).lower():
-                        console.print(
-                            f"\n[red]Error:[/red] registry has no image at "
-                            f"{ref}. Push it first or pass --digest "
-                            "explicitly."
-                        )
-                    else:
-                        console.print(f"\n[red]Error:[/red] {exc}")
-                    raise typer.Exit(code=1) from exc
+            digest_map = _auto_resolve_digests(
+                published_refs, no_build=no_build, no_push=no_push,
+            )
 
     # 7. Build catalog entry
     reg_builder = RegistryBuilder()
