@@ -603,6 +603,34 @@ def test_request_exception_message_is_sanitized(monkeypatch: pytest.MonkeyPatch)
     assert "token=[REDACTED]" in str(exc_info.value)
 
 
+def test_response_data_redacts_sensitive_json_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    """response_data dict must redact credential-bearing keys."""
+    payload = {
+        "detail": "OAuth error",
+        "access_token": "secret-tok",
+        "client_secret": "my-secret",
+        "code": "auth-code-123",
+        "nested": {"refresh_token": "refresh-val", "safe": "ok"},
+    }
+    response = _StubResponse(
+        status_code=400,
+        text="{}",
+        json_data=payload,
+    )
+    client = _make_client_with_response(monkeypatch, response)
+
+    with pytest.raises(APIError) as exc_info:
+        client._request("GET", "/endpoint")
+
+    data = exc_info.value.response_data
+    assert data["detail"] == "OAuth error"
+    assert data["access_token"] == "[REDACTED]"
+    assert data["client_secret"] == "[REDACTED]"
+    assert data["code"] == "[REDACTED]"
+    assert data["nested"]["refresh_token"] == "[REDACTED]"
+    assert data["nested"]["safe"] == "ok"
+
+
 def test_h1_boundary_token_at_200_byte_offset_is_redacted(monkeypatch: pytest.MonkeyPatch) -> None:
     """Token straddling the 200-byte boundary must still be fully redacted."""
     padding = "X" * 195

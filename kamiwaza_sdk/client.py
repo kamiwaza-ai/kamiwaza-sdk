@@ -47,6 +47,22 @@ _BEARER_RE = re.compile(
 )
 
 
+_SENSITIVE_JSON_KEYS = frozenset(
+    {"access_token", "id_token", "refresh_token", "client_secret", "code", "assertion"}
+)
+
+
+def _sanitize_payload(obj: object) -> object:
+    if isinstance(obj, dict):
+        return {
+            k: "[REDACTED]" if k in _SENSITIVE_JSON_KEYS else _sanitize_payload(v)
+            for k, v in obj.items()
+        }
+    if isinstance(obj, list):
+        return [_sanitize_payload(item) for item in obj]
+    return obj
+
+
 class KamiwazaClient:
     _RECENT_DATASET_TTL_SECONDS = 30.0
     _RECENT_DATASET_MAX = 1024
@@ -291,14 +307,14 @@ class KamiwazaClient:
                 "VectorDB backend is not configured",
                 status_code=response.status_code,
                 response_text=sanitized_text,
-                response_data=payload,
+                response_data=_sanitize_payload(payload),
             )
         self.logger.error("Request failed: %s", sanitized_text)
         raise APIError(
             message,
             status_code=response.status_code,
             response_text=sanitized_text,
-            response_data=payload,
+            response_data=_sanitize_payload(payload),
         )
 
     def _parse_success_response(self, response, expect_json: bool):
