@@ -208,7 +208,10 @@ class KamiwazaClient:
             )
 
     def _apply_skip_auth(self, kwargs: dict) -> None:
-        kwargs["headers"]["Authorization"] = None
+        hdrs = kwargs["headers"]
+        for key in [k for k in hdrs if k.lower() == "authorization"]:
+            del hdrs[key]
+        hdrs["Authorization"] = None
         kwargs.pop("auth", None)
         req_cookies = kwargs.get("cookies")
         if isinstance(req_cookies, dict):

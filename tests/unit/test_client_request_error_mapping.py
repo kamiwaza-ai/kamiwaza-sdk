@@ -378,6 +378,31 @@ def test_request_does_not_mutate_caller_headers(monkeypatch: pytest.MonkeyPatch)
     assert "Authorization" not in caller_headers
 
 
+def test_skip_auth_strips_lowercase_authorization_header(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_apply_skip_auth must strip authorization headers regardless of case."""
+    captured_kwargs: dict = {}
+
+    def _capture_request(*args, **kwargs):
+        captured_kwargs.update(kwargs)
+        return _StubResponse(status_code=200, json_data={"ok": True})
+
+    client = KamiwazaClient(base_url="https://example.test/api")
+    monkeypatch.setattr(client.session, "request", _capture_request)
+
+    client._request(
+        "GET",
+        "/public-endpoint",
+        skip_auth=True,
+        headers={"authorization": "Bearer leaked"},
+    )
+
+    sent_headers = captured_kwargs["headers"]
+    assert sent_headers["Authorization"] is None
+    assert "authorization" not in sent_headers
+
+
 # ========== Token redaction in APIError messages ==========
 
 
