@@ -82,6 +82,11 @@ include = [
     "kamiwaza_client*",
     "kamiwaza_extensions",
     "kamiwaza_extensions.*",
+    # T5.1 / ENG-4677 — federation-aware top-level package per design §4.2.11.
+    # Use explicit + dotted form (no trailing `*`) so the pattern doesn't
+    # match `kamiwaza_sdk` / `kamiwaza_client` / `kamiwaza_extensions`.
+    "kamiwaza",
+    "kamiwaza.*",
 ]
 exclude = ["tests*", "examples*", "kamiwaza_extensions_lib*"]
 
