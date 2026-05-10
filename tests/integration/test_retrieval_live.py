@@ -16,8 +16,8 @@ import pytest
 from uuid import uuid4
 
 from kamiwaza_sdk.exceptions import APIError, DatasetNotFoundError
-from kamiwaza_sdk.services.retrieval import RetrievalService
 from kamiwaza_sdk.schemas.retrieval import RetrievalJobStatus
+from kamiwaza_sdk.services.retrieval import RetrievalService
 
 pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
 
@@ -102,6 +102,8 @@ class TestRetrievalJobStatus:
                 pass
             elif exc.status_code in (403, 401):
                 pytest.skip("Insufficient permissions for retrieval endpoint")
+            elif exc.status_code == 500:
+                pytest.skip(f"Retrieval service unavailable: {exc}")
             else:
                 raise
 

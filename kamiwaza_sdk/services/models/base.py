@@ -1,6 +1,5 @@
-from typing import List, Optional, Union, Dict, Any
+from typing import List, Optional, Union
 from uuid import UUID
-from ...exceptions import APIError
 from ...schemas.models.model import Model, CreateModel
 from ...schemas.guide import ModelGuide
 from ...utils.quant_manager import QuantizationManager
@@ -111,7 +110,7 @@ class ModelService(BaseService,
         response = self.client._request("GET", "/models/", params={"load_files": load_files})
         return [Model.model_validate(item) for item in response]
 
-    def get_model_by_repo_id(self, repo_id: str) -> Model:
+    def get_model_by_repo_id(self, repo_id: str) -> Optional[Model]:
         """
         Retrieve a model by its repo_modelId by searching through the models list.
         

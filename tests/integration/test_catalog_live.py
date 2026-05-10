@@ -67,7 +67,7 @@ def test_catalog_dataset_and_secret_lifecycle(live_kamiwaza_client):
         else:
             pytest.skip(
                 "Server defect: secret list query does not return newly created secret "
-                "(see docs-local/0.10.0/00-server-defects.md)"
+                "(see docs-local/00-server-defects.md)"
             )
     finally:
         if secret_urn:

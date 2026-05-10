@@ -6,9 +6,9 @@ import logging
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta, timezone
 import time
-from typing import Optional, TYPE_CHECKING
+from typing import Optional
 
-import requests
+import requests  # type: ignore[import-untyped]
 
 from .exceptions import AuthenticationError
 from .schemas.auth import TokenResponse
@@ -43,7 +43,9 @@ class ApiKeyAuthenticator(Authenticator):
     def authenticate(self, session: requests.Session) -> None:
         session.headers.update({"Authorization": f"Bearer {self.api_key}"})
 
-    def refresh_token(self, session: requests.Session) -> None:  # pragma: no cover - nothing to refresh
+    def refresh_token(
+        self, session: requests.Session
+    ) -> None:  # pragma: no cover - nothing to refresh
         pass
 
     def get_access_token(self, session: requests.Session) -> Optional[str]:
@@ -80,7 +82,6 @@ class UserPasswordAuthenticator(Authenticator):
             self.refresh_token(session)
 
         session.headers.update({"Authorization": f"Bearer {self.token}"})
-        session.cookies.set("access_token", self.token)
         LOGGER.debug("Set bearer token via UserPasswordAuthenticator")
 
     def refresh_token(self, session: requests.Session) -> None:
@@ -161,8 +162,12 @@ class OAuthAuthenticator(Authenticator):
         self.token: Optional[str] = None
         self.token_expiry: Optional[datetime] = None
 
-    def authenticate(self, session: requests.Session) -> None:  # pragma: no cover - not implemented
+    def authenticate(
+        self, session: requests.Session
+    ) -> None:  # pragma: no cover - not implemented
         raise NotImplementedError("OAuth authentication is not yet implemented.")
 
-    def refresh_token(self, session: requests.Session) -> None:  # pragma: no cover - not implemented
+    def refresh_token(
+        self, session: requests.Session
+    ) -> None:  # pragma: no cover - not implemented
         raise NotImplementedError("OAuth authentication is not yet implemented.")

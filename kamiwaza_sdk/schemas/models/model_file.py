@@ -56,7 +56,7 @@ class ModelFile(CreateModelFile):
     download_elapsed: Optional[str] = Field(None, description="The time elapsed during the download.")
     download_remaining: Optional[str] = Field(None, description="The time remaining during the download.")
     download_throughput: Optional[str] = Field(None, description="The download throughput (human readable, units vary)")
-    storage_host: Optional[str] = Field(
+    storage_host: Optional[str] = Field(  # type: ignore[assignment]
         None,
         description="Host where the file is stored. Uses localhost for community edition, actual hostname for clustered mode"
     )

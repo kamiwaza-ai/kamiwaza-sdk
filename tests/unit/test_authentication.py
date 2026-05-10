@@ -61,10 +61,14 @@ class DummyAuthService:
 
 
 def test_user_password_authenticator_performs_password_grant():
-    token = TokenResponse(access_token="token-1", expires_in=60, refresh_token="refresh-1")
+    token = TokenResponse(
+        access_token="token-1", expires_in=60, refresh_token="refresh-1"
+    )
     auth_service = DummyAuthService(login_response=token)
     store = MemoryTokenStore()
-    authenticator = UserPasswordAuthenticator("admin", "secret", auth_service, token_store=store)
+    authenticator = UserPasswordAuthenticator(
+        "admin", "secret", auth_service, token_store=store
+    )
 
     session = requests.Session()
     authenticator.authenticate(session)
@@ -77,11 +81,19 @@ def test_user_password_authenticator_performs_password_grant():
 
 
 def test_user_password_authenticator_prefers_refresh_when_token_expires():
-    login_token = TokenResponse(access_token="token-1", expires_in=1, refresh_token="refresh-1")
-    refresh_token = TokenResponse(access_token="token-2", expires_in=60, refresh_token="refresh-2")
-    auth_service = DummyAuthService(login_response=login_token, refresh_response=refresh_token)
+    login_token = TokenResponse(
+        access_token="token-1", expires_in=1, refresh_token="refresh-1"
+    )
+    refresh_token = TokenResponse(
+        access_token="token-2", expires_in=60, refresh_token="refresh-2"
+    )
+    auth_service = DummyAuthService(
+        login_response=login_token, refresh_response=refresh_token
+    )
     store = MemoryTokenStore()
-    authenticator = UserPasswordAuthenticator("admin", "secret", auth_service, token_store=store)
+    authenticator = UserPasswordAuthenticator(
+        "admin", "secret", auth_service, token_store=store
+    )
     session = requests.Session()
 
     authenticator.authenticate(session)
@@ -101,7 +113,9 @@ def test_user_password_authenticator_raises_when_login_fails():
     auth_service = DummyAuthService(
         login_error=RuntimeError("bad credentials"),
     )
-    authenticator = UserPasswordAuthenticator("admin", "wrong", auth_service, token_store=MemoryTokenStore())
+    authenticator = UserPasswordAuthenticator(
+        "admin", "wrong", auth_service, token_store=MemoryTokenStore()
+    )
     session = requests.Session()
 
     with pytest.raises(AuthenticationError):
@@ -110,12 +124,44 @@ def test_user_password_authenticator_raises_when_login_fails():
 
 def test_user_password_authenticator_uses_cached_token():
     store = MemoryTokenStore()
-    store.value = StoredToken(access_token="cached", refresh_token=None, expires_at=time.time() + 60)
+    store.value = StoredToken(
+        access_token="cached", refresh_token=None, expires_at=time.time() + 60
+    )
     auth_service = DummyAuthService(login_error=RuntimeError("should not login"))
-    authenticator = UserPasswordAuthenticator("admin", "secret", auth_service, token_store=store)
+    authenticator = UserPasswordAuthenticator(
+        "admin", "secret", auth_service, token_store=store
+    )
     session = requests.Session()
 
     authenticator.authenticate(session)
 
     assert auth_service.login_calls == []
     assert session.headers["Authorization"] == "Bearer cached"
+
+
+def test_no_access_token_cookie_set_on_session():
+    """Bearer header is the auth mechanism for SDK clients. The authenticator
+    must NOT inject an access_token cookie — that would leak the token
+    without domain/path/secure scoping on every request."""
+    login_token = TokenResponse(
+        access_token="token-1", expires_in=60, refresh_token="refresh-1"
+    )
+    refresh_token_resp = TokenResponse(
+        access_token="token-2", expires_in=60, refresh_token="refresh-2"
+    )
+    auth_service = DummyAuthService(
+        login_response=login_token, refresh_response=refresh_token_resp
+    )
+    store = MemoryTokenStore()
+    authenticator = UserPasswordAuthenticator(
+        "admin", "secret", auth_service, token_store=store
+    )
+    session = requests.Session()
+
+    authenticator.authenticate(session)
+    assert session.headers["Authorization"] == "Bearer token-1"
+    assert session.cookies.get("access_token") is None
+
+    authenticator.refresh_token(session)
+    assert session.headers["Authorization"] == "Bearer token-2"
+    assert session.cookies.get("access_token") is None

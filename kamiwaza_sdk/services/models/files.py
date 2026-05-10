@@ -1,13 +1,14 @@
-from typing import List, Optional, Union, Dict, Any
+from typing import List, Union, Any
 from uuid import UUID
-from ...schemas.models.model import Model
 from ...schemas.models.model_file import ModelFile, CreateModelFile
 from ...schemas.models.model_search import HubModelFileSearch
 
 
 class ModelFileMixin:
     """Mixin for model file operations."""
-    
+
+    client: Any  # Provided by BaseService when mixed in
+
     def get_model_memory_usage(self, model_id: Union[str, UUID]) -> int:
         """
         Get the memory usage of a model.

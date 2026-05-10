@@ -1,3 +1,4 @@
+# ruff: noqa: F401
 from .models import ModelService
 from .serving import ServingService
 from .catalog import CatalogService
@@ -13,3 +14,4 @@ from .retrieval import RetrievalService
 from .apps import AppService
 from .tools import ToolService
 from .context import ContextService
+from .oauth_broker import OAuthBrokerService

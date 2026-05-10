@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, Optional
 from uuid import UUID
 
 from .base_service import BaseService
@@ -87,9 +87,10 @@ class AuthService(BaseService):
         """Call `/auth/validate` and parse the response header contract."""
         raw_response = self.client.get("/auth/validate", expect_json=False)
         if raw_response.status_code != 200:
+            sanitized = self.client._sanitize_response_text(raw_response.text)
             raise APIError(
                 f"ForwardAuth validation failed with status "
-                f"{raw_response.status_code}: {raw_response.text}"
+                f"{raw_response.status_code}: {sanitized}"
             )
         return ValidationHeaders.from_headers(raw_response.headers)
 

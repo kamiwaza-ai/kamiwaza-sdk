@@ -3,8 +3,10 @@
 from collections import OrderedDict
 import logging
 import os
+import re
 import time
 from typing import Any, Optional
+from urllib.parse import urlparse
 
 import requests  # type: ignore[import-untyped]
 
@@ -30,9 +32,35 @@ from .services.ingestion import IngestionService
 from .services.openai import OpenAIService
 from .services.apps import AppService
 from .services.tools import ToolService
+from .services.oauth_broker import OAuthBrokerService
 from .services.context import ContextService
 
 logger = logging.getLogger(__name__)
+_BEARER_RE = re.compile(
+    r"Bearer(?:\s+|%20)\S+"  # Bearer <token> or URL-encoded
+    r'|"(?:access_token|id_token|refresh_token|client_secret|code|assertion)"\s*:\s*"[^"]*"'  # JSON token fields
+    r'|\\"(?:access_token|id_token|refresh_token|client_secret|code|assertion)\\"\s*:\s*\\"[^"\\]*\\"'  # escaped JSON token fields
+    r"|(?:access_|refresh_|id_)?token=[^\s&,;]+"  # query-param token variants
+    r"|(?:code|client_secret|assertion)=[^\s&,;]+"  # OAuth-specific query params
+    r"|eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+",  # bare JWT
+    re.IGNORECASE,
+)
+
+
+_SENSITIVE_JSON_KEYS = frozenset(
+    {"access_token", "id_token", "refresh_token", "client_secret", "code", "assertion"}
+)
+
+
+def _sanitize_payload(obj: object) -> object:
+    if isinstance(obj, dict):
+        return {
+            k: "[REDACTED]" if k in _SENSITIVE_JSON_KEYS else _sanitize_payload(v)
+            for k, v in obj.items()
+        }
+    if isinstance(obj, list):
+        return [_sanitize_payload(item) for item in obj]
+    return obj
 
 
 class KamiwazaClient:
@@ -70,7 +98,7 @@ class KamiwazaClient:
         self.base_url = resolved_base_url.rstrip("/")
         self.session = requests.Session()
         self._recent_datasets: "OrderedDict[str, float]" = OrderedDict()
-        
+
         # Check KAMIWAZA_VERIFY_SSL environment variable
         verify_ssl = os.environ.get("KAMIWAZA_VERIFY_SSL", "true").lower()
         if verify_ssl == "false":
@@ -113,7 +141,10 @@ class KamiwazaClient:
 
         while self._recent_datasets:
             oldest_urn, oldest_ts = next(iter(self._recent_datasets.items()))
-            if oldest_ts >= cutoff and len(self._recent_datasets) <= self._RECENT_DATASET_MAX:
+            if (
+                oldest_ts >= cutoff
+                and len(self._recent_datasets) <= self._RECENT_DATASET_MAX
+            ):
                 break
             self._recent_datasets.popitem(last=False)
 
@@ -130,117 +161,166 @@ class KamiwazaClient:
             return False
         return True
 
-    def _request(
-        self,
-        method: str,
-        endpoint: str,
-        *,
-        expect_json: bool = True,
-        skip_auth: bool = False,
-        **kwargs,
-    ):
-        url = f"{self.base_url}/{endpoint.lstrip('/')}"
-        path = endpoint.lstrip("/")
-        self.logger.debug(f"Making {method} request to {url}")
+    @staticmethod
+    def _sanitize_response_text(text: str, max_len: int = 200) -> str:
+        text = text[:65536]  # bound worst-case regex cost on pathological bodies
 
-        # Ensure headers are present
-        if "headers" not in kwargs:
-            kwargs["headers"] = {}
+        def _redact(match: re.Match) -> str:
+            value = match.group(0)
+            lowered = value.lower()
+            if lowered.startswith("bearer"):
+                return "Bearer ***"
+            if lowered.startswith('"access_token"') or lowered.startswith(
+                '\\"access_token\\"'
+            ):
+                return '"access_token": "[REDACTED]"'
+            if lowered.startswith('"id_token"') or lowered.startswith('\\"id_token\\"'):
+                return '"id_token": "[REDACTED]"'
+            if lowered.startswith('"refresh_token"') or lowered.startswith(
+                '\\"refresh_token\\"'
+            ):
+                return '"refresh_token": "[REDACTED]"'
+            for field in ("client_secret", "code", "assertion"):
+                if lowered.startswith(f'"{field}"') or lowered.startswith(
+                    f'\\"{field}\\"'
+                ):
+                    return f'"{field}": "[REDACTED]"'
+            if "=" in lowered:
+                prefix = value[: value.index("=") + 1]
+                return f"{prefix}[REDACTED]"
+            return "[REDACTED]"
 
-        # Ensure authentication is set up (except for auth endpoints)
-        if self.authenticator and not skip_auth:
-            self.authenticator.authenticate(self.session)
+        sanitized = _BEARER_RE.sub(_redact, text)
+        if len(sanitized) > max_len:
+            return sanitized[:max_len] + "..."
+        return sanitized
 
-        params = kwargs.get("params") if isinstance(kwargs.get("params"), dict) else {}
+    def _validate_absolute_url(self, absolute_url: str) -> None:
+        base_parsed = urlparse(self.base_url)
+        abs_parsed = urlparse(absolute_url)
+        if (
+            abs_parsed.netloc != base_parsed.netloc
+            or abs_parsed.scheme != base_parsed.scheme
+        ):
+            raise ValueError(
+                f"absolute_url must target the same origin as base_url "
+                f"({base_parsed.scheme}://{base_parsed.netloc})"
+            )
+
+    def _apply_skip_auth(self, kwargs: dict) -> None:
+        hdrs = kwargs["headers"]
+        for key in [k for k in hdrs if k.lower() == "authorization"]:
+            del hdrs[key]
+        hdrs["Authorization"] = None
+        kwargs.pop("auth", None)
+        req_cookies = kwargs.get("cookies")
+        if isinstance(req_cookies, dict):
+            req_cookies.pop("access_token", None)
+        for c in [c for c in self.session.cookies if c.name == "access_token"]:
+            self.session.cookies.clear(c.domain, c.path, c.name)
+
+    def _check_dataset_schema_retry(
+        self, method: str, path: str, kwargs: dict
+    ) -> tuple[bool, str | None]:
+        raw_params = kwargs.get("params")
+        params: dict[str, Any] = raw_params if isinstance(raw_params, dict) else {}
         dataset_urn_for_schema = (
-            params.get("urn") if path.rstrip("/") == "catalog/datasets/by-urn/schema" else None
+            params.get("urn")
+            if path.rstrip("/") == "catalog/datasets/by-urn/schema"
+            else None
         )
-        schema_retry = (
+        should_retry = (
             method.upper() == "PUT"
-            and dataset_urn_for_schema
+            and dataset_urn_for_schema is not None
             and self._dataset_recently_changed(str(dataset_urn_for_schema))
         )
-        retry_idx = 0
-        did_refresh = False
+        return should_retry, dataset_urn_for_schema
 
-        while True:
+    def _handle_401(
+        self, response, endpoint: str, skip_auth: bool, did_refresh: bool
+    ) -> None:
+        if skip_auth:
+            raise AuthenticationError(
+                f"Unauthenticated request failed for {endpoint}: "
+                f"{self._sanitize_response_text(response.text)}"
+            )
+        logger.warning(
+            "Received 401 Unauthorized. Response: %s",
+            self._sanitize_response_text(response.text),
+        )
+        if self.authenticator:
+            if not did_refresh:
+                self.authenticator.refresh_token(self.session)
+                return
+            raise AuthenticationError("Authentication failed after token refresh.")
+        raise AuthenticationError("Authentication failed. No authenticator provided.")
+
+    def _handle_error_response(
+        self,
+        response,
+        path: str,
+        schema_retry: bool,
+        retry_idx: int,
+        dataset_urn_for_schema: str | None,
+    ) -> int:
+        content_type = response.headers.get("content-type", "")
+        response_text = response.text
+        payload: Any | None = None
+        if "application/json" in content_type.lower():
             try:
-                # Debug headers
-                self.logger.debug(f"Request headers: {self.session.headers}")
-                response = self.session.request(method, url, **kwargs)
-                self.logger.debug(f"Response status: {response.status_code}")
-            except requests.RequestException as e:
-                logger.error(f"Request failed: {e}")
-                raise APIError(f"An error occurred while making the request: {e}")
+                payload = response.json()
+            except ValueError:
+                payload = None
 
-            if response.status_code == 401:
-                if skip_auth:
-                    raise AuthenticationError(
-                        f"Unauthenticated request failed for {endpoint}: {response.text}"
-                    )
-                logger.warning(f"Received 401 Unauthorized. Response: {response.text}")
-                if self.authenticator:
-                    if not did_refresh:
-                        did_refresh = True
-                        self.authenticator.refresh_token(self.session)
-                        continue
-                    raise AuthenticationError("Authentication failed after token refresh.")
-                raise AuthenticationError("Authentication failed. No authenticator provided.")
-
-            if response.status_code >= 400:
-                content_type = response.headers.get("content-type", "")
-                response_text = response.text
-                payload: Any | None = None
-                if "application/json" in content_type.lower():
-                    try:
-                        payload = response.json()
-                    except ValueError:
-                        payload = None
-                if response.status_code == 404:
-                    lowered = content_type.lower()
-                    if "text/html" in lowered or "Dashboard" in response_text:
-                        raise NonAPIResponseError(
-                            f"Received 404 with HTML response. "
-                            f"Your base URL is '{self.base_url}' - did you forget to append '/api'?"
-                        )
-
-                if schema_retry and response.status_code == 404 and retry_idx < len(
-                    self._DATASET_SCHEMA_PUT_RETRY_DELAYS_SECONDS
-                ):
-                    detail = payload.get("detail") if isinstance(payload, dict) else None
-                    if detail == "Dataset not found or schema could not be updated":
-                        delay = self._DATASET_SCHEMA_PUT_RETRY_DELAYS_SECONDS[retry_idx]
-                        retry_idx += 1
-                        self.logger.debug(
-                            "Retrying dataset schema update after 404 (attempt %s/%s, delay=%.2fs): %s",
-                            retry_idx,
-                            len(self._DATASET_SCHEMA_PUT_RETRY_DELAYS_SECONDS),
-                            delay,
-                            dataset_urn_for_schema,
-                        )
-                        time.sleep(delay)
-                        continue
-
-                message = f"API request failed with status {response.status_code}: {response_text}"
-                if response.status_code == 501 and (
-                    path.startswith("vectordb") or path.startswith("context/vectordb")
-                ):
-                    raise VectorDBUnavailableError(
-                        "VectorDB backend is not configured",
-                        status_code=response.status_code,
-                        response_text=response_text,
-                        response_data=payload,
-                    )
-                self.logger.error(f"Request failed: {response_text}")
-                raise APIError(
-                    message,
-                    status_code=response.status_code,
-                    response_text=response_text,
-                    response_data=payload,
+        if response.status_code == 404:
+            lowered = content_type.lower()
+            if "text/html" in lowered or "Dashboard" in response_text:
+                raise NonAPIResponseError(
+                    f"Received 404 with HTML response. "
+                    f"Your base URL is '{self.base_url}' - did you forget to append '/api'?"
                 )
 
-            break
+        if (
+            schema_retry
+            and response.status_code == 404
+            and retry_idx < len(self._DATASET_SCHEMA_PUT_RETRY_DELAYS_SECONDS)
+        ):
+            detail = payload.get("detail") if isinstance(payload, dict) else None
+            if detail == "Dataset not found or schema could not be updated":
+                delay = self._DATASET_SCHEMA_PUT_RETRY_DELAYS_SECONDS[retry_idx]
+                retry_idx += 1
+                self.logger.debug(
+                    "Retrying dataset schema update after 404 (attempt %s/%s, delay=%.2fs): %s",
+                    retry_idx,
+                    len(self._DATASET_SCHEMA_PUT_RETRY_DELAYS_SECONDS),
+                    delay,
+                    dataset_urn_for_schema,
+                )
+                time.sleep(delay)
+                return retry_idx
 
+        sanitized_text = self._sanitize_response_text(response_text)
+        message = (
+            f"API request failed with status {response.status_code}: {sanitized_text}"
+        )
+        if response.status_code == 501 and (
+            path.startswith("vectordb") or path.startswith("context/vectordb")
+        ):
+            raise VectorDBUnavailableError(
+                "VectorDB backend is not configured",
+                status_code=response.status_code,
+                response_text=sanitized_text,
+                response_data=_sanitize_payload(payload),
+            )
+        self.logger.error("Request failed: %s", sanitized_text)
+        raise APIError(
+            message,
+            status_code=response.status_code,
+            response_text=sanitized_text,
+            response_data=_sanitize_payload(payload),
+        )
+
+    def _parse_success_response(self, response, expect_json: bool):
         if not expect_json:
             return response
 
@@ -248,37 +328,93 @@ class KamiwazaClient:
             return None
 
         if 200 <= response.status_code < 300:
-            # Try to parse JSON
             try:
                 return response.json()
             except ValueError:
-                # Check if we got an HTML response (likely the dashboard)
                 content_type = response.headers.get("content-type", "").lower()
                 if "text/html" in content_type or "Dashboard" in response.text:
                     raise NonAPIResponseError(
                         f"Received HTML response instead of JSON. "
                         f"Your base URL is '{self.base_url}' - did you forget to append '/api'?"
                     )
+                sanitized = self._sanitize_response_text(response.text)
                 raise APIError(
                     f"Failed to parse JSON response. Content-Type: {content_type}, "
-                    f"Response: {response.text[:200]}...",
+                    f"Response: {sanitized}...",
                     status_code=response.status_code,
-                    response_text=response.text,
+                    response_text=sanitized,
                 )
 
-        # For non-2xx status codes, check if it's an HTML error page
-        if response.status_code == 404:
-            content_type = response.headers.get("content-type", "").lower()
-            if "text/html" in content_type or "Dashboard" in response.text:
-                raise NonAPIResponseError(
-                    f"Received 404 with HTML response. "
-                    f"Your base URL is '{self.base_url}' - did you forget to append '/api'?"
-                )
+        sanitized = self._sanitize_response_text(response.text)
         raise APIError(
-            f"Unexpected status code {response.status_code}: {response.text}",
+            f"Unexpected status code {response.status_code}: {sanitized}",
             status_code=response.status_code,
-            response_text=response.text,
+            response_text=sanitized,
         )
+
+    def _request(
+        self,
+        method: str,
+        endpoint: str,
+        *,
+        expect_json: bool = True,
+        skip_auth: bool = False,
+        absolute_url: str | None = None,
+        **kwargs,
+    ):
+        if absolute_url:
+            self._validate_absolute_url(absolute_url)
+
+        url = absolute_url or f"{self.base_url}/{endpoint.lstrip('/')}"
+        path = endpoint.lstrip("/")
+        self.logger.debug(f"Making {method} request to {url}")
+
+        kwargs["headers"] = dict(kwargs.get("headers") or {})
+
+        if self.authenticator and not skip_auth:
+            self.authenticator.authenticate(self.session)
+
+        if skip_auth:
+            self._apply_skip_auth(kwargs)
+
+        schema_retry, dataset_urn_for_schema = self._check_dataset_schema_retry(
+            method, path, kwargs
+        )
+        retry_idx = 0
+        did_refresh = False
+
+        while True:
+            try:
+                self.logger.debug(
+                    "Request headers: %s",
+                    {
+                        k: ("***" if k.lower() == "authorization" else v)
+                        for k, v in self.session.headers.items()
+                    },
+                )
+                response = self.session.request(method, url, **kwargs)
+                self.logger.debug(f"Response status: {response.status_code}")
+            except requests.RequestException as e:
+                sanitized_err = self._sanitize_response_text(str(e))
+                logger.error("Request failed: %s", sanitized_err)
+                raise APIError(
+                    f"An error occurred while making the request: {sanitized_err}"
+                )
+
+            if response.status_code == 401:
+                self._handle_401(response, endpoint, skip_auth, did_refresh)
+                did_refresh = True
+                continue
+
+            if response.status_code >= 400:
+                retry_idx = self._handle_error_response(
+                    response, path, schema_retry, retry_idx, dataset_urn_for_schema
+                )
+                continue
+
+            break
+
+        return self._parse_success_response(response, expect_json)
 
     def get(self, endpoint: str, **kwargs):
         return self._request("GET", endpoint, **kwargs)
@@ -307,7 +443,6 @@ class KamiwazaClient:
         if not hasattr(self, "_serving"):
             self._serving = ServingService(self)
         return self._serving
-    
 
     @property
     def catalog(self):
@@ -394,8 +529,14 @@ class KamiwazaClient:
         return self._ingestion
 
     @property
+    def oauth_broker(self):
+        if not hasattr(self, "_oauth_broker"):
+            self._oauth_broker = OAuthBrokerService(self)
+        return self._oauth_broker
+
+    @property
     def context(self):
-        if not hasattr(self, '_context'):
+        if not hasattr(self, "_context"):
             self._context = ContextService(self)
         return self._context
 
