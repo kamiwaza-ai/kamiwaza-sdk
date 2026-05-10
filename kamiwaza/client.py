@@ -7,9 +7,12 @@ T5.2 of the Federation API + SDK MVP. Builds on the T5.1 skeleton with:
       kamiwaza_sdk.services.base_service pattern, but new namespace)
     - Retry middleware honoring design §4.2.1's SDK retry contract:
       503 with ``detail.reason == "psk_propagation_timeout"`` is retried
-      with exponential backoff (1, 2, 4, 8, 16s) capped at a 90s
-      wall-clock total. Other 503s and all 4xx responses surface
-      immediately as KamiwazaError(status_code=...).
+      with exponential backoff. The schedule (1, 2, 4, 8, 16, 32, 64s)
+      is an upper bound — the wall-clock cap (90s) trims the schedule
+      mid-flight, so a sequence that would naively sum to 127s gets
+      cut off after the deadline check fires (typically after the
+      32s entry). Other 503s and all 4xx responses surface immediately
+      as KamiwazaError(status_code=...).
     - close() / context-manager support for releasing transport
       resources outside ``with`` blocks.
 
@@ -28,8 +31,12 @@ from typing import Any, Optional, Type
 import httpx
 
 
-# Design §4.2.1 retry contract — exponential schedule capped at 90s
-# wall-clock total. The schedule is deterministic so behavior is testable
+# Design §4.2.1 retry contract — exponential schedule (1, 2, 4, 8, 16,
+# 32, 64s) is an upper bound; the wall-clock cap below trims it.
+# Schedule sums to 127s but the deadline check in `_request` short-
+# circuits before the 64s entry would actually sleep us past 90s, so
+# the effective tail of the schedule (the 64s entry) is usually never
+# slept on. Schedule kept deterministic so behavior is testable
 # without a clock injection layer.
 _RETRY_BACKOFF_SCHEDULE_SECONDS = (1, 2, 4, 8, 16, 32, 64)
 _RETRY_WALL_CLOCK_BUDGET_SECONDS = 90.0
@@ -155,9 +162,11 @@ class Kamiwaza:
 
         Wraps ``httpx.Client.request`` with the design's SDK retry contract
         (§4.2.1): 503 with ``detail.reason == "psk_propagation_timeout"``
-        retries with exponential backoff capped at a 90s wall-clock budget.
-        Other non-2xx responses are mapped to ``KamiwazaError`` with the
-        status code attached.
+        retries with exponential backoff (1, 2, 4, 8, 16, 32, 64s) but
+        the wall-clock cap of 90s trims the schedule — the deadline
+        check before each sleep ensures no single sleep can carry total
+        elapsed past the budget. Other non-2xx responses are mapped to
+        ``KamiwazaError`` with the status code attached.
 
         Args:
             method: HTTP method ("GET", "POST", etc.).

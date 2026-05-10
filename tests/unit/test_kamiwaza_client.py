@@ -187,6 +187,12 @@ def test_request_retry_gives_up_at_wall_clock_cap(httpx_mock: Any) -> None:
     # crosses 90s after the 5th retry (1+2+4+8+16=31, +32=63, +64=127),
     # so we expect 6 attempts (1 initial + 5 retries that fit within budget).
     assert len(httpx_mock.get_requests()) >= 5
+    # Review followup #6: explicit wall-clock cap assertion. The naive
+    # schedule sums to 127s; the deadline check must trim that to ≤90s.
+    # Tolerance covers the test scaffold's monotonic-mock granularity.
+    assert fake_now[0] <= 90.0 + 0.001, (
+        f"Total elapsed wall-clock {fake_now[0]:.1f}s exceeded 90s budget"
+    )
 
 
 def test_request_does_not_retry_other_503_reasons(httpx_mock: Any) -> None:
