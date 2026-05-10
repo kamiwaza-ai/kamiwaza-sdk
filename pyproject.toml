@@ -92,7 +92,19 @@ exclude = ["tests*", "examples*", "kamiwaza_extensions_lib*"]
 
 [tool.setuptools.package-data]
 kamiwaza_sdk = ["py.typed"]
+kamiwaza = ["py.typed"]
 kamiwaza_extensions = ["templates/**/*", "templates/**/.*", "compatibility.json", "agent_guidance.md"]
+
+# T5.12 / ENG-4683 — strict type-check config scoped to the new
+# federation-aware kamiwaza/ package. The legacy kamiwaza_sdk/ +
+# kamiwaza_client/ packages predate this requirement and remain on
+# the project's default (permissive) mypy config.
+[tool.mypy]
+python_version = "3.10"
+
+[[tool.mypy.overrides]]
+module = "kamiwaza.*"
+strict = true
 
 [dependency-groups]
 dev = [
