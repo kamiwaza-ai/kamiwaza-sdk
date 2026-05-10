@@ -139,9 +139,10 @@ def test_user_password_authenticator_uses_cached_token():
     assert session.headers["Authorization"] == "Bearer cached"
 
 
-def test_refresh_token_restores_access_token_cookie():
-    """After refresh_token(), the access_token cookie must be re-set on the
-    session so that deployments authorizing via cookies continue to work."""
+def test_no_access_token_cookie_set_on_session():
+    """Bearer header is the auth mechanism for SDK clients. The authenticator
+    must NOT inject an access_token cookie — that would leak the token
+    without domain/path/secure scoping on every request."""
     login_token = TokenResponse(
         access_token="token-1", expires_in=60, refresh_token="refresh-1"
     )
@@ -158,10 +159,9 @@ def test_refresh_token_restores_access_token_cookie():
     session = requests.Session()
 
     authenticator.authenticate(session)
-    assert session.cookies.get("access_token") == "token-1"
+    assert session.headers["Authorization"] == "Bearer token-1"
+    assert session.cookies.get("access_token") is None
 
-    session.cookies.pop("access_token", None)
     authenticator.refresh_token(session)
-
     assert session.headers["Authorization"] == "Bearer token-2"
-    assert session.cookies.get("access_token") == "token-2"
+    assert session.cookies.get("access_token") is None

@@ -496,6 +496,19 @@ def test_handle_google_callback_url_construction(base_url, expected_root):
     assert call_kwargs["absolute_url"] == expected_url
 
 
+@pytest.mark.parametrize("code,state", [("", "valid"), ("valid", ""), ("", "")])
+def test_handle_google_callback_rejects_empty_params(code, state):
+    """handle_google_callback must reject empty code or state strings."""
+    client = MagicMock()
+    client.base_url = "https://example.com/api"
+    service = OAuthBrokerService(client)
+
+    with pytest.raises(ValueError):
+        service.handle_google_callback(code=code, state=state)
+
+    client._request.assert_not_called()
+
+
 # ========== Connection Management Tests ==========
 
 

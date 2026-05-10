@@ -82,7 +82,6 @@ class UserPasswordAuthenticator(Authenticator):
             self.refresh_token(session)
 
         session.headers.update({"Authorization": f"Bearer {self.token}"})
-        session.cookies.set("access_token", self.token)
         LOGGER.debug("Set bearer token via UserPasswordAuthenticator")
 
     def refresh_token(self, session: requests.Session) -> None:
@@ -114,7 +113,6 @@ class UserPasswordAuthenticator(Authenticator):
 
         self._store_token_response(token_response)
         session.headers.update({"Authorization": f"Bearer {self.token}"})
-        session.cookies.set("access_token", self.token)
 
     def get_access_token(self, session: requests.Session) -> Optional[str]:
         now = datetime.now(timezone.utc)

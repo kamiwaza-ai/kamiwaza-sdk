@@ -165,9 +165,11 @@ class OAuthBrokerService(BaseService, ProxyMixin, TokenMixin, PolicyMixin):
             redirect flow and matches the server-side route.  The code is
             single-use and short-lived, limiting exposure.
         """
-        # The callback route is mounted at the server root, not under /api.
-        # Strip the /api prefix (and any version suffix like /v1) from
-        # base_url so the callback targets the correct root path.
+        if not code or not isinstance(code, str):
+            raise ValueError("code must be a non-empty string")
+        if not state or not isinstance(state, str):
+            raise ValueError("state must be a non-empty string")
+
         parsed = urlparse(self.client.base_url)
         path = parsed.path.rstrip("/")
         path = re.sub(r"/api(?:/.*)?$", "", path) or "/"
