@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 import typer
 from rich.console import Console
 
+from kamiwaza_extensions.catalog_publisher import DEFAULT_CATALOG_SCHEMA
 from kamiwaza_extensions.extension_detector import infer_extension_type
 
 console = Console(stderr=True)
@@ -140,6 +141,7 @@ def run_publish(
     verbose: bool = False,
     revision: Optional[str] = None,
     digest: Optional[str] = None,
+    catalog_schema: int = DEFAULT_CATALOG_SCHEMA,
 ) -> None:
     """Build, push, and publish extension to catalog."""
     from kamiwaza_extensions.catalog_publisher import (
@@ -355,7 +357,11 @@ def run_publish(
             digest_map=dry_digest_map or None,
         )
         try:
-            publisher = CatalogPublisher(profile, extension_dir=info.path)
+            publisher = CatalogPublisher(
+                profile,
+                catalog_schema=catalog_schema,
+                extension_dir=info.path,
+            )
             result = publisher.publish(
                 entry=entry,
                 extension_type=ext_type,
@@ -486,7 +492,11 @@ def run_publish(
     preview_image_path = _resolve_preview_image(info.metadata, info.path)
 
     try:
-        publisher = CatalogPublisher(profile, extension_dir=info.path)
+        publisher = CatalogPublisher(
+            profile,
+            catalog_schema=catalog_schema,
+            extension_dir=info.path,
+        )
         result = publisher.publish(
             entry=entry,
             extension_type=ext_type,
