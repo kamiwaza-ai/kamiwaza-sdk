@@ -63,6 +63,25 @@ class Kamiwaza:
             headers={"Authorization": f"Bearer {token}"},
             timeout=timeout,
         )
+        # Lazy-loaded sub-services per .ai/rules/sdk-patterns.md.
+        # Typed as Any to avoid a runtime import of kamiwaza.federations
+        # in __init__ (would cycle back into client at module-load time).
+        self._federations: Any = None
+
+    @property
+    def federations(self) -> Any:
+        """Federation pairing + brokered user management (T5.3).
+
+        Returns a ``kamiwaza.federations.FederationsAPI`` instance.
+        Annotated as ``Any`` to keep the import lazy; the runtime type
+        is well-defined and customer code gets autocomplete from IDE
+        symbol resolution against the federations module directly.
+        """
+        if self._federations is None:
+            from kamiwaza.federations import FederationsAPI
+
+            self._federations = FederationsAPI(client=self)
+        return self._federations
 
     @classmethod
     def from_env(
