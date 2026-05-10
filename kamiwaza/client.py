@@ -192,13 +192,16 @@ def _try_parse_json(response: httpx.Response) -> Any:
 
 
 def _to_kamiwaza_error(response: httpx.Response) -> Exception:
-    """Map a non-2xx httpx.Response to a KamiwazaError with status_code."""
-    from kamiwaza.exceptions import KamiwazaError
+    """Map a non-2xx httpx.Response to the most-specific KamiwazaError.
+
+    Delegates to ``kamiwaza.exceptions.error_for_response`` for the
+    dispatch table mapping ``(status_code, detail.reason)`` to typed
+    subclasses (T5.10). Unrecognized shapes fall back to the base
+    ``KamiwazaError``.
+    """
+    from kamiwaza.exceptions import error_for_response
 
     body = _try_parse_json(response)
     snippet = response.text[:200] if response.text else ""
-    return KamiwazaError(
-        f"Kamiwaza API request failed: {response.status_code} {snippet}".strip(),
-        status_code=response.status_code,
-        body=body,
-    )
+    message = f"Kamiwaza API request failed: {response.status_code} {snippet}".strip()
+    return error_for_response(response.status_code, body, message)
