@@ -31,6 +31,172 @@ pat = client.auth.create_pat(PATCreate(name="local-bootstrap")).token
 print("Save this token:", pat)
 ```
 
+## Federation walkthrough (kamiwaza-mesh-v1.0.0 skeleton)
+
+> Available in **kamiwaza-sdk 1.0.0+** under the new top-level
+> `kamiwaza` namespace, distinct from the legacy `kamiwaza_sdk`
+> namespace above. See the design's §4.2.11 for the full surface.
+
+The new `kamiwaza` namespace ships the federation-aware client. It
+covers the WS-M1 milestone demo flow end-to-end:
+
+1. Pair two clusters
+2. Allowlist a brokered user on the receiver
+3. Submit a federated job
+4. Observe the audit trail showing the originating user
+
+This is the WS-M1 *skeleton* surface. The full eight-step walkthrough
+(catalog discovery, dataset registration, gate binding, job
+recovery) lands in WS-M3 — see the federation design doc for the
+end-state.
+
+### Configure the client
+
+```python
+import os
+from kamiwaza import Kamiwaza
+
+# Environment-driven config (recommended)
+os.environ.setdefault("KAMIWAZA_BASE_URL", "https://lyra.kamiwaza.test")
+os.environ.setdefault("KAMIWAZA_TOKEN", "<personal-access-token>")
+kz = Kamiwaza.from_env()
+
+# Or pass explicit values
+kz = Kamiwaza(
+    base_url="https://lyra.kamiwaza.test",
+    token="<personal-access-token>",
+)
+
+# Use as a context manager so the underlying httpx transport is
+# released cleanly:
+with Kamiwaza.from_env() as kz:
+    ...  # walkthrough below
+```
+
+### Step 1 — Pair LYRA with ORION
+
+The initiator drives the handshake. The receiver only needs the
+PSK propagated through DataHub plus its admin baseline ReBAC tuple
+(install-dev.sh seeds those automatically).
+
+```python
+fed = kz.federations.pair(
+    name="ORION",
+    role="initiator",
+    remote_url="https://orion.kamiwaza.test",
+    remote_admin_token="<orion-admin-pat>",  # initiator-only
+)
+print(fed.id, fed.status)  # e.g. fed-orion-… PAIRED
+```
+
+If DataHub PSK propagation is mid-flight when the request lands on
+the receiver, the SDK retries with exponential backoff until the
+server's structured 503 (`detail.reason == "psk_propagation_timeout"`)
+times out the budget — see `kamiwaza.exceptions.FederationPairTimeoutError`.
+
+### Step 2 — Allowlist a brokered user
+
+The receiver maintains the allowlist. `external_id` follows the
+`<username>@<peer-cluster-uuid>` convention so the same name can
+exist on multiple peers without colliding. `initial_tuples` are
+applied at first-mesh-ingress when the brokered user is auto-provisioned.
+
+```python
+user = kz.federations["ORION"].users.add(
+    external_id="cdr-baker@lyra-cluster-uuid",
+    initial_tuples=[
+        {
+            "subject": "user:cdr-baker@lyra-cluster-uuid",
+            "relation": "viewer",
+            "object": "cluster:ORION",
+        },
+    ],
+)
+print(user.external_id, user.auto_provisioned)  # False until first mesh request
+```
+
+If the user isn't on the allowlist when a mesh request arrives,
+ext-authz returns 403 with `detail.reason ==
+"brokered_user_not_allowlisted"`. The SDK surfaces that as
+`kamiwaza.exceptions.BrokeredUserNotAllowlistedError`.
+
+### Step 3 — Submit a federated job
+
+`target_cluster` is the federation name (the same name used at
+pair time). Omit it to run locally on the cluster the SDK is
+talking to.
+
+```python
+result = kz.jobs.run(
+    target_cluster="ORION",
+    entrypoint="python /workdir/query.py --rows 1000",
+)
+print(result.status, result.audit_actor)
+# SUCCEEDED  cdr-baker@lyra-cluster-uuid
+```
+
+For longer jobs, prefer the async + poll pattern — `submit_async`
+returns immediately and `wait` polls with bounded backoff until
+the job reaches a terminal state:
+
+```python
+job_id = kz.jobs.submit_async(
+    target_cluster="ORION",
+    entrypoint="python /workdir/long_query.py",
+)
+result = kz.jobs.wait(job_id, timeout=600)
+```
+
+`wait` raises `kamiwaza.exceptions.MeshJobTimeoutError` when the
+budget expires before a terminal state. A *failed* job returns a
+JobResult with `status="FAILED"` and an `error` message — that's
+not exceptional, that's data.
+
+### Step 4 — Observe audit
+
+The receiver-side audit log shows the job completing as the
+originating user (`cdr-baker@lyra-cluster-uuid`), not as a
+system principal. Inspect on the receiver via:
+
+```bash
+kubectl -n kamiwaza logs deployment/core-scheduler \
+    | grep federated_job_completed \
+    | jq 'select(.audit_actor)'
+```
+
+The `audit_actor` field is the same value `kz.jobs.run(...).audit_actor`
+returns in step 3 — that round-trip is the demo gate's load-bearing
+signal.
+
+### Error handling cheat sheet
+
+The SDK maps server-side error contracts to typed exceptions so
+customer code can branch on the failure mode. All inherit from
+`kamiwaza.exceptions.KamiwazaError`:
+
+| Exception                              | Trigger                                                         |
+|----------------------------------------|-----------------------------------------------------------------|
+| `FederationPairTimeoutError`           | Receiver couldn't see the PSK before the retry budget expired.  |
+| `BrokeredUserNotAllowlistedError`      | Mesh request from a user not in the receiver's allowlist.       |
+| `MeshJobTimeoutError`                  | `kz.jobs.wait(...)` budget expired before terminal state.       |
+| `MeshJobFailedError`                   | Job reached FAILED state and the caller asked for an exception. |
+| `NativeRealmRequiredError`             | Operation requires a native (non-brokered) realm user.          |
+| `KamiwazaError` (catch-all)            | Other 4xx/5xx; check `.status_code` and `.body` for details.    |
+
+```python
+from kamiwaza import KamiwazaError
+from kamiwaza.exceptions import FederationPairTimeoutError
+
+try:
+    kz.federations.pair(name="ORION", role="initiator", remote_url=...)
+except FederationPairTimeoutError as exc:
+    # Retriable — DataHub propagation didn't make the deadline this run.
+    print(f"Retry later: {exc.body!r}")
+except KamiwazaError as exc:
+    # Catch-all for everything else.
+    print(f"{exc.status_code}: {exc}")
+```
+
 ## Examples
 
 The `/examples` directory contains Jupyter notebooks demonstrating various use cases:
