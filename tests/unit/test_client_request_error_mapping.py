@@ -658,7 +658,7 @@ def test_response_data_redacts_sensitive_json_keys(monkeypatch: pytest.MonkeyPat
 
 def test_h1_boundary_token_at_200_byte_offset_is_redacted(monkeypatch: pytest.MonkeyPatch) -> None:
     """Token straddling the 200-byte boundary must still be fully redacted."""
-    padding = "X" * 195
+    padding = "X" * 190
     body = f"{padding}Bearer {_FAKE_JWT} end"
     response = _StubResponse(
         status_code=200,

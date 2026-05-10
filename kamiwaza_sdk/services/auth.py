@@ -85,11 +85,9 @@ class AuthService(BaseService):
 
     def forward_auth_headers(self) -> ValidationHeaders:
         """Call `/auth/validate` and parse the response header contract."""
-        from ..client import KamiwazaClient
-
         raw_response = self.client.get("/auth/validate", expect_json=False)
         if raw_response.status_code != 200:
-            sanitized = KamiwazaClient._sanitize_response_text(raw_response.text)
+            sanitized = self.client._sanitize_response_text(raw_response.text)
             raise APIError(
                 f"ForwardAuth validation failed with status "
                 f"{raw_response.status_code}: {sanitized}"
