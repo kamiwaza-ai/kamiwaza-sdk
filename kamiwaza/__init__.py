@@ -23,7 +23,7 @@ Implementation lands across multiple WS-M1 milestone tickets:
 
 from __future__ import annotations
 
-from kamiwaza.client import Kamiwaza
-from kamiwaza.exceptions import KamiwazaError
+from kamiwaza.client import Kamiwaza as Kamiwaza
+from kamiwaza.exceptions import KamiwazaError as KamiwazaError
 
 __all__ = ["Kamiwaza", "KamiwazaError"]
