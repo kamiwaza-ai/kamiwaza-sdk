@@ -452,6 +452,33 @@ class TestCatalogSchemaGardenPath:
 
 
 # ------------------------------------------------------------------
+# Catalog schema bounds check (fail fast on typos / unsupported values)
+# ------------------------------------------------------------------
+
+
+class TestCatalogSchemaValidation:
+    """``catalog_schema`` must be in ``SUPPORTED_CATALOG_SCHEMAS``."""
+
+    def test_zero_rejected(self):
+        from kamiwaza_extensions.catalog_publisher import CatalogPublisher
+
+        with pytest.raises(ValueError, match="Unsupported catalog_schema"):
+            CatalogPublisher(_make_profile(), catalog_schema=0)
+
+    def test_negative_rejected(self):
+        from kamiwaza_extensions.catalog_publisher import CatalogPublisher
+
+        with pytest.raises(ValueError, match="Unsupported catalog_schema"):
+            CatalogPublisher(_make_profile(), catalog_schema=-1)
+
+    def test_unknown_future_version_rejected(self):
+        from kamiwaza_extensions.catalog_publisher import CatalogPublisher
+
+        with pytest.raises(ValueError, match="Unsupported catalog_schema"):
+            CatalogPublisher(_make_profile(), catalog_schema=99)
+
+
+# ------------------------------------------------------------------
 # Preview image upload
 # ------------------------------------------------------------------
 

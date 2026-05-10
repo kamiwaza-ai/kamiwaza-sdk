@@ -262,11 +262,7 @@ class TestPublishDryRun:
 
 
 class TestCatalogSchemaFlag:
-    """``--catalog-schema`` (a.k.a. ``catalog_schema``) selects garden/v{N}/.
-
-    Regression for ENG-4806: previously kz-ext silently published to v2
-    because run_publish never threaded the value to CatalogPublisher.
-    """
+    """``run_publish`` threads ``catalog_schema`` into ``CatalogPublisher``."""
 
     @patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher")
     @patch("kamiwaza_extensions.registry_builder.RegistryBuilder")

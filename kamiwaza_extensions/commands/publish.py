@@ -140,10 +140,11 @@ def run_publish(
     verbose: bool = False,
     revision: Optional[str] = None,
     digest: Optional[str] = None,
-    catalog_schema: int = 3,
+    catalog_schema: Optional[int] = None,
 ) -> None:
     """Build, push, and publish extension to catalog."""
     from kamiwaza_extensions.catalog_publisher import (
+        DEFAULT_CATALOG_SCHEMA,
         CatalogDedupError,
         CatalogDedupGuard,
         CatalogPublishError,
@@ -162,6 +163,9 @@ def run_publish(
     from kamiwaza_extensions.registry_builder import RegistryBuilder
     from kamiwaza_extensions.validators.compose import ComposeValidator
     from kamiwaza_extensions.validators.metadata import MetadataValidator
+
+    if catalog_schema is None:
+        catalog_schema = DEFAULT_CATALOG_SCHEMA
 
     # 0. Fail fast on bad --revision before any side effects (build, push,
     # registry tag pollution). Previously this validated inside
