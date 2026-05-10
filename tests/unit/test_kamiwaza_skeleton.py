@@ -10,6 +10,8 @@ locks in the package structure + import shape.
 
 from __future__ import annotations
 
+import pytest
+
 
 def test_kamiwaza_package_importable():
     """The new top-level `kamiwaza` namespace must be importable so customer
@@ -73,3 +75,64 @@ def test_kamiwaza_error_exposed_at_top_level():
     from kamiwaza.exceptions import KamiwazaError as Submodule
 
     assert TopLevel is Submodule
+
+
+def test_from_env_reads_kamiwaza_base_url_and_token(monkeypatch):
+    """``Kamiwaza.from_env()`` is the canonical entry point — it reads
+    ``KAMIWAZA_BASE_URL`` and ``KAMIWAZA_TOKEN`` from the environment.
+    Existing skeleton tests verify the classmethod exists; this one
+    verifies it actually wires the env-var values onto the instance."""
+    from kamiwaza import Kamiwaza
+
+    monkeypatch.setenv("KAMIWAZA_BASE_URL", "https://kamiwaza.test")
+    monkeypatch.setenv("KAMIWAZA_TOKEN", "pat-from-env")
+
+    client = Kamiwaza.from_env()
+    try:
+        assert client.base_url == "https://kamiwaza.test"
+        assert client.token == "pat-from-env"
+    finally:
+        client.close()
+
+
+def test_from_env_raises_when_base_url_unset(monkeypatch):
+    """A missing ``KAMIWAZA_BASE_URL`` triggers a ``KamiwazaError`` whose
+    message names the missing variable so the operator can fix it
+    directly. Failing fast at construction time is preferred over
+    silently producing a client that 404s every request."""
+    from kamiwaza import Kamiwaza, KamiwazaError
+
+    monkeypatch.delenv("KAMIWAZA_BASE_URL", raising=False)
+    monkeypatch.setenv("KAMIWAZA_TOKEN", "pat-x")
+
+    with pytest.raises(KamiwazaError) as exc_info:
+        Kamiwaza.from_env()
+    assert "KAMIWAZA_BASE_URL" in str(exc_info.value)
+
+
+def test_from_env_raises_when_token_unset(monkeypatch):
+    """Mirror of the base-url check for the token env var."""
+    from kamiwaza import Kamiwaza, KamiwazaError
+
+    monkeypatch.setenv("KAMIWAZA_BASE_URL", "https://kamiwaza.test")
+    monkeypatch.delenv("KAMIWAZA_TOKEN", raising=False)
+
+    with pytest.raises(KamiwazaError) as exc_info:
+        Kamiwaza.from_env()
+    assert "KAMIWAZA_TOKEN" in str(exc_info.value)
+
+
+def test_context_manager_closes_underlying_httpx_transport():
+    """``Kamiwaza`` is usable as a context manager so customer code can
+    do ``with Kamiwaza(...) as kz:`` and have the httpx transport
+    released on exit. Verifies both ``__enter__`` (returns self) and
+    ``__exit__`` (calls close())."""
+    from kamiwaza import Kamiwaza
+
+    with Kamiwaza(base_url="https://kamiwaza.test", token="pat-x") as client:
+        assert client.base_url == "https://kamiwaza.test"
+        # Underlying httpx.Client is open during the block.
+        assert not client._http.is_closed
+
+    # After the block exits, transport is released.
+    assert client._http.is_closed

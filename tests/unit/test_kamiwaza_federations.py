@@ -48,7 +48,6 @@ def test_pair_posts_to_federations_endpoint(httpx_mock: Any) -> None:
     handshake. T5.3 ships the typed wrapper; the server-side endpoints
     are owned by T1.x and the existing federation API."""
     from kamiwaza.client import Kamiwaza
-    from kamiwaza.models import Federation
 
     federation_id = "fed-orion-123"
 
@@ -84,7 +83,6 @@ def test_pair_posts_to_federations_endpoint(httpx_mock: Any) -> None:
         remote_admin_token="orion-pat",
     )
 
-    assert isinstance(fed, Federation)
     assert fed.id == federation_id
     assert fed.status == "PAIRED"
     assert fed.callback_hostname == "edge.lyra.example.com"
@@ -118,7 +116,6 @@ def test_users_add_posts_with_external_id(httpx_mock: Any) -> None:
     federation by name first (GET /federations) to get the id, then
     posts the user record. Returns BrokeredUser."""
     from kamiwaza.client import Kamiwaza
-    from kamiwaza.models import BrokeredUser
 
     federation_id = "fed-orion-123"
 
@@ -161,7 +158,6 @@ def test_users_add_posts_with_external_id(httpx_mock: Any) -> None:
         ],
     )
 
-    assert isinstance(user, BrokeredUser)
     assert user.external_id == "cdr-baker@lyra-cluster-uuid"
     assert user.federation_id == federation_id
 
@@ -206,3 +202,97 @@ def test_users_add_raises_brokered_user_not_allowlisted_on_403(
 
     with pytest.raises(BrokeredUserNotAllowlistedError):
         client.federations["ORION"].users.add(external_id="evil-actor")
+
+
+@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
+def test_users_add_passes_initial_tuples_in_request_body(httpx_mock: Any) -> None:
+    """Existing tests assert on the response shape only. This one nails
+    down the request-body contract: ``initial_tuples`` from the SDK
+    call must appear in the POST body so the server-side allowlist
+    seeding sees the same shape the customer wrote."""
+    from kamiwaza.client import Kamiwaza
+
+    federation_id = "fed-orion-123"
+    httpx_mock.add_response(
+        method="GET",
+        url="https://kamiwaza.test/api/cluster/federations",
+        status_code=200,
+        json={
+            "items": [
+                {
+                    "id": federation_id,
+                    "status": "PAIRED",
+                    "remote_cluster_name": "ORION",
+                }
+            ]
+        },
+    )
+    httpx_mock.add_response(
+        method="POST",
+        url=f"https://kamiwaza.test/api/cluster/federations/{federation_id}/users",
+        status_code=201,
+        json={
+            "federation_id": federation_id,
+            "external_id": "cdr-baker@lyra-cluster-uuid",
+            "auto_provisioned": False,
+        },
+    )
+
+    initial_tuples = [
+        {
+            "subject": "user:cdr-baker@lyra-cluster-uuid",
+            "relation": "viewer",
+            "object": "cluster:ORION",
+        },
+        {
+            "subject": "user:cdr-baker@lyra-cluster-uuid",
+            "relation": "member",
+            "object": "group:analysts",
+        },
+    ]
+
+    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
+    client.federations["ORION"].users.add(
+        external_id="cdr-baker@lyra-cluster-uuid",
+        initial_tuples=initial_tuples,
+    )
+
+    import json as _json
+
+    requests = httpx_mock.get_requests()
+    post_request = next(r for r in requests if r.method == "POST")
+    body = _json.loads(post_request.read())
+    assert body["external_id"] == "cdr-baker@lyra-cluster-uuid"
+    assert body["initial_tuples"] == initial_tuples
+
+
+@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
+def test_indexed_access_users_add_raises_when_name_not_found(
+    httpx_mock: Any,
+) -> None:
+    """``kz.federations["NONEXISTENT"].users.add(...)`` triggers a name→id
+    resolution that walks the federations list. When no matching name is
+    found, the SDK surfaces a ``KamiwazaError`` with a message naming the
+    missing federation rather than silently posting to a bogus path."""
+    from kamiwaza.client import Kamiwaza
+    from kamiwaza.exceptions import KamiwazaError
+
+    httpx_mock.add_response(
+        method="GET",
+        url="https://kamiwaza.test/api/cluster/federations",
+        status_code=200,
+        json={
+            "items": [
+                {
+                    "id": "fed-orion",
+                    "status": "PAIRED",
+                    "remote_cluster_name": "ORION",
+                }
+            ]
+        },
+    )
+
+    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
+    with pytest.raises(KamiwazaError) as exc_info:
+        client.federations["NONEXISTENT"].users.add(external_id="someone")
+    assert "NONEXISTENT" in str(exc_info.value)

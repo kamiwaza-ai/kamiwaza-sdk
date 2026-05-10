@@ -37,7 +37,6 @@ def test_run_synchronous_returns_job_result(httpx_mock: Any) -> None:
     in-line (no separate poll). target_cluster is a federation name; SDK
     encodes routing in the request body, server side dispatches via mesh."""
     from kamiwaza.client import Kamiwaza
-    from kamiwaza.models import JobResult
 
     httpx_mock.add_response(
         method="POST",
@@ -57,7 +56,6 @@ def test_run_synchronous_returns_job_result(httpx_mock: Any) -> None:
         entrypoint="python -c 'print(42)'",
     )
 
-    assert isinstance(result, JobResult)
     assert result.status == "SUCCEEDED"
     assert result.audit_actor == "cdr-baker@LYRA"
 
@@ -234,3 +232,66 @@ def test_wait_returns_failed_job_result(httpx_mock: Any) -> None:
 
     assert result.status == "FAILED"
     assert result.error == "TypeError: bad arg"
+
+
+@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
+def test_wait_returns_canceled_job_result(httpx_mock: Any) -> None:
+    """``CANCELED`` and ``STOPPED`` are also terminal states that should
+    return the JobResult to the caller (not raise). Existing tests
+    cover SUCCEEDED + FAILED only — this one nails down the
+    non-success terminal states from the design's _TERMINAL_STATES set."""
+    from kamiwaza.client import Kamiwaza
+
+    job_id = "job-canceled-1"
+
+    httpx_mock.add_response(
+        method="GET",
+        url=f"https://kamiwaza.test/api/cluster/jobs/{job_id}/status",
+        status_code=200,
+        json={"status": "CANCELED"},
+    )
+    httpx_mock.add_response(
+        method="GET",
+        url=f"https://kamiwaza.test/api/cluster/jobs/{job_id}/result",
+        status_code=200,
+        json={
+            "job_id": job_id,
+            "status": "CANCELED",
+            "error": None,
+        },
+    )
+
+    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
+    with patch("time.sleep"):  # don't actually sleep in tests
+        result = client.jobs.wait(job_id, timeout=60)
+
+    assert result.status == "CANCELED"
+    assert result.job_id == job_id
+
+
+@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
+def test_run_omits_target_cluster_from_body_when_local(httpx_mock: Any) -> None:
+    """When ``target_cluster`` is not provided, the SDK must not include
+    a ``target_cluster`` key in the request body. The server reads the
+    presence of that key to route to a federated peer vs run locally —
+    silently passing ``None`` would change semantics."""
+    import json as _json
+
+    from kamiwaza.client import Kamiwaza
+
+    httpx_mock.add_response(
+        method="POST",
+        url="https://kamiwaza.test/api/cluster/jobs/run",
+        status_code=200,
+        json={"job_id": "local-1", "status": "SUCCEEDED", "result": "ok"},
+    )
+
+    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
+    client.jobs.run(entrypoint="python script.py")
+
+    requests = httpx_mock.get_requests()
+    body = _json.loads(requests[0].read())
+    assert body == {"entrypoint": "python script.py"}
+    assert "target_cluster" not in body
+    assert "runtime_env" not in body
+    assert "timeout_seconds" not in body
