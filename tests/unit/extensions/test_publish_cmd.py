@@ -64,7 +64,7 @@ def _make_publish_result(**overrides):
         version="1.0.0",
         action="insert",
         registry_url="ghcr.io/my-org",
-        catalog_file="garden/v2/apps.json",
+        catalog_file="garden/v3/apps.json",
         images_pushed=[],
         dry_run=False,
     )
@@ -254,6 +254,95 @@ class TestPublishDryRun:
         # Verify dry_run=True was passed
         call_kwargs = mock_publisher.publish.call_args[1]
         assert call_kwargs.get("dry_run") is True
+
+
+# ------------------------------------------------------------------
+# Catalog schema flag plumbing
+# ------------------------------------------------------------------
+
+
+class TestCatalogSchemaFlag:
+    """``--catalog-schema`` (a.k.a. ``catalog_schema``) selects garden/v{N}/.
+
+    Regression for ENG-4806: previously kz-ext silently published to v2
+    because run_publish never threaded the value to CatalogPublisher.
+    """
+
+    @patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher")
+    @patch("kamiwaza_extensions.registry_builder.RegistryBuilder")
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher")
+    @patch("kamiwaza_extensions.image_builder.ImageBuilder")
+    @patch("kamiwaza_extensions.profile_manager.ProfileManager")
+    @patch("kamiwaza_extensions.compose_transformer.ComposeTransformer")
+    @patch("kamiwaza_extensions.validators.compose.ComposeValidator")
+    @patch("kamiwaza_extensions.validators.metadata.MetadataValidator")
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_default_passes_catalog_schema_3(
+        self,
+        mock_detector_cls,
+        mock_meta_validator_cls,
+        mock_compose_validator_cls,
+        mock_transformer_cls,
+        mock_profile_mgr_cls,
+        mock_builder_cls,
+        mock_pusher_cls,
+        mock_reg_builder_cls,
+        mock_publisher_cls,
+        tmp_path,
+    ):
+        mock_detector_cls.return_value.detect.return_value = _make_extension_info(tmp_path)
+        mock_meta_validator_cls.return_value.validate.return_value = _make_validation_result()
+        mock_compose_validator_cls.return_value.validate.return_value = _make_validation_result()
+        mock_profile_mgr_cls.return_value.resolve_profile.return_value = _make_profile()
+        mock_transformer_cls.return_value.transform.return_value = {"services": {}}
+        mock_reg_builder_cls.return_value.build_entry.return_value = {
+            "name": "my-app", "version": "1.0.0",
+        }
+        mock_publisher_cls.return_value.publish.return_value = _make_publish_result(dry_run=True)
+
+        from kamiwaza_extensions.commands.publish import run_publish
+
+        run_publish(stage="dev", dry_run=True)
+
+        assert mock_publisher_cls.call_args.kwargs["catalog_schema"] == 3
+
+    @patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher")
+    @patch("kamiwaza_extensions.registry_builder.RegistryBuilder")
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher")
+    @patch("kamiwaza_extensions.image_builder.ImageBuilder")
+    @patch("kamiwaza_extensions.profile_manager.ProfileManager")
+    @patch("kamiwaza_extensions.compose_transformer.ComposeTransformer")
+    @patch("kamiwaza_extensions.validators.compose.ComposeValidator")
+    @patch("kamiwaza_extensions.validators.metadata.MetadataValidator")
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_explicit_v2_threaded_to_publisher(
+        self,
+        mock_detector_cls,
+        mock_meta_validator_cls,
+        mock_compose_validator_cls,
+        mock_transformer_cls,
+        mock_profile_mgr_cls,
+        mock_builder_cls,
+        mock_pusher_cls,
+        mock_reg_builder_cls,
+        mock_publisher_cls,
+        tmp_path,
+    ):
+        mock_detector_cls.return_value.detect.return_value = _make_extension_info(tmp_path)
+        mock_meta_validator_cls.return_value.validate.return_value = _make_validation_result()
+        mock_compose_validator_cls.return_value.validate.return_value = _make_validation_result()
+        mock_profile_mgr_cls.return_value.resolve_profile.return_value = _make_profile()
+        mock_transformer_cls.return_value.transform.return_value = {"services": {}}
+        mock_reg_builder_cls.return_value.build_entry.return_value = {
+            "name": "my-app", "version": "1.0.0",
+        }
+        mock_publisher_cls.return_value.publish.return_value = _make_publish_result(dry_run=True)
+
+        from kamiwaza_extensions.commands.publish import run_publish
+
+        run_publish(stage="dev", dry_run=True, catalog_schema=2)
+
+        assert mock_publisher_cls.call_args.kwargs["catalog_schema"] == 2
 
 
 # ------------------------------------------------------------------

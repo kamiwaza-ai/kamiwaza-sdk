@@ -410,6 +410,48 @@ class TestCredentialResolution:
 
 
 # ------------------------------------------------------------------
+# Catalog schema version → garden path
+# ------------------------------------------------------------------
+
+
+class TestCatalogSchemaGardenPath:
+    """``catalog_schema`` selects the ``garden/v{N}/`` path. Default is 3."""
+
+    @patch("boto3.Session")
+    def test_default_catalog_schema_is_v3(self, mock_session_cls):
+        from kamiwaza_extensions.catalog_publisher import CatalogPublisher
+
+        publisher = CatalogPublisher(_make_profile())
+
+        assert publisher._garden_dir == "garden/v3/"
+
+    @patch("boto3.Session")
+    def test_explicit_v2_uses_legacy_path(self, mock_session_cls):
+        from kamiwaza_extensions.catalog_publisher import CatalogPublisher
+
+        publisher = CatalogPublisher(_make_profile(), catalog_schema=2)
+
+        assert publisher._garden_dir == "garden/v2/"
+
+    @patch("boto3.Session")
+    def test_explicit_v3_matches_default(self, mock_session_cls):
+        from kamiwaza_extensions.catalog_publisher import CatalogPublisher
+
+        publisher = CatalogPublisher(_make_profile(), catalog_schema=3)
+
+        assert publisher._garden_dir == "garden/v3/"
+
+    @patch("boto3.Session")
+    def test_catalog_prefix_prepended_to_garden_path(self, mock_session_cls):
+        from kamiwaza_extensions.catalog_publisher import CatalogPublisher
+
+        profile = _make_profile(catalog_prefix="staging")
+        publisher = CatalogPublisher(profile, catalog_schema=3)
+
+        assert publisher._garden_dir == "staging/garden/v3/"
+
+
+# ------------------------------------------------------------------
 # Preview image upload
 # ------------------------------------------------------------------
 

@@ -355,6 +355,14 @@ def publish(
             "service in compose; omit to auto-resolve per-service digests."
         ),
     ),
+    catalog_schema: int = typer.Option(
+        3,
+        "--catalog-schema",
+        help=(
+            "Catalog schema version (garden/v{N}/ path). Defaults to 3 "
+            "(K8s/v3 extensions). Pass 2 to publish to the legacy v2 catalog."
+        ),
+    ),
 ) -> None:
     """Publish extension to catalog."""
     from kamiwaza_extensions.commands.publish import run_publish
@@ -367,6 +375,7 @@ def publish(
         verbose=_state.verbose,
         revision=revision,
         digest=digest,
+        catalog_schema=catalog_schema,
     )
 
 

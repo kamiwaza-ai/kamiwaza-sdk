@@ -154,14 +154,17 @@ class CatalogPublisher:
     def __init__(
         self,
         profile: PublishProfile,
-        repo_version: int = 2,
+        catalog_schema: int = 3,
         extension_dir: Optional[Path] = None,
     ) -> None:
         """Initialize S3 client from profile credentials.
 
         Args:
             profile: Publish profile with S3 endpoint and credentials.
-            repo_version: Catalog schema version (determines garden path).
+            catalog_schema: Catalog schema version (determines the
+                ``garden/v{N}/`` path). Defaults to 3 (current schema for
+                K8s/v3 extensions). Pass ``2`` to publish to the legacy
+                ``garden/v2/`` catalog.
             extension_dir: Root directory of the extension project.  Used
                 for placing backup files.  Falls back to ``Path.cwd()`` if
                 not provided.
@@ -180,15 +183,15 @@ class CatalogPublisher:
         self._ClientError = ClientError
 
         self._profile = profile
-        self._repo_version = repo_version
+        self._catalog_schema = catalog_schema
         self._extension_dir = extension_dir if extension_dir is not None else Path.cwd()
 
         # Build garden directory incorporating the optional catalog_prefix.
         prefix = profile.catalog_prefix.strip("/")
         if prefix:
-            self._garden_dir = f"{prefix}/garden/v{repo_version}/"
+            self._garden_dir = f"{prefix}/garden/v{catalog_schema}/"
         else:
-            self._garden_dir = f"garden/v{repo_version}/"
+            self._garden_dir = f"garden/v{catalog_schema}/"
 
         # Validate endpoint to prevent SSRF via env var override
         endpoint = profile.catalog_endpoint
