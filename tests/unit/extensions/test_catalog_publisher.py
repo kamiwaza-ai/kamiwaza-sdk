@@ -332,7 +332,6 @@ class TestLockReleaseOnError:
 
         # Lock succeeds, backup empty, download empty, then upload raises
         call_count = [0]
-        original_put = mock_s3.put_object
 
         def put_object_side_effect(**kwargs):
             call_count[0] += 1
