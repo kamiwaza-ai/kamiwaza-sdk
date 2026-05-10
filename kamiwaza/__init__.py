@@ -25,5 +25,14 @@ from __future__ import annotations
 
 from kamiwaza.client import Kamiwaza as Kamiwaza
 from kamiwaza.exceptions import KamiwazaError as KamiwazaError
+from kamiwaza.models import BrokeredUser as BrokeredUser
+from kamiwaza.models import Federation as Federation
+from kamiwaza.models import JobResult as JobResult
 
-__all__ = ["Kamiwaza", "KamiwazaError"]
+__all__ = [
+    "BrokeredUser",
+    "Federation",
+    "JobResult",
+    "Kamiwaza",
+    "KamiwazaError",
+]
