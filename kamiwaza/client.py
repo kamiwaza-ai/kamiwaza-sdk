@@ -64,9 +64,10 @@ class Kamiwaza:
             timeout=timeout,
         )
         # Lazy-loaded sub-services per .ai/rules/sdk-patterns.md.
-        # Typed as Any to avoid a runtime import of kamiwaza.federations
+        # Typed as Any to avoid a runtime import of the sub-modules
         # in __init__ (would cycle back into client at module-load time).
         self._federations: Any = None
+        self._jobs: Any = None
 
     @property
     def federations(self) -> Any:
@@ -82,6 +83,18 @@ class Kamiwaza:
 
             self._federations = FederationsAPI(client=self)
         return self._federations
+
+    @property
+    def jobs(self) -> Any:
+        """Federated job submission (T5.9).
+
+        Returns a ``kamiwaza.jobs.JobsAPI`` instance.
+        """
+        if self._jobs is None:
+            from kamiwaza.jobs import JobsAPI
+
+            self._jobs = JobsAPI(client=self)
+        return self._jobs
 
     @classmethod
     def from_env(
