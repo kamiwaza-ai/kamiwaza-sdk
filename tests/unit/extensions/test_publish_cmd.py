@@ -29,7 +29,7 @@ def _make_extension_info(
             "services": {
                 "backend": {
                     "build": {"context": "."},
-                    "image": f"my-org/{name}-backend:{version}",
+                    "image": f"ghcr.io/my-org/{name}-backend:{version}",
                     "ports": ["8000"],
                 },
             },
@@ -667,11 +667,11 @@ def _multi_buildable_compose(name: str = "my-app", version: str = "1.0.0"):
         "services": {
             "backend": {
                 "build": {"context": "./backend"},
-                "image": f"my-org/{name}-backend:{version}",
+                "image": f"ghcr.io/my-org/{name}-backend:{version}",
             },
             "frontend": {
                 "build": {"context": "./frontend"},
-                "image": f"my-org/{name}-frontend:{version}",
+                "image": f"ghcr.io/my-org/{name}-frontend:{version}",
             },
             "db": {  # Pattern B: external pass-through
                 "image": "postgres:15",
@@ -898,11 +898,11 @@ class TestPublishDigest:
             "services": {
                 "backend": {
                     "build": {"context": "."},
-                    "image": "my-org/my-app-backend:1.0.0",
+                    "image": "ghcr.io/my-org/my-app-backend:1.0.0",
                 },
                 "frontend": {
                     "build": {"context": "./frontend"},
-                    "image": "my-org/my-app-frontend:1.0.0",
+                    "image": "ghcr.io/my-org/my-app-frontend:1.0.0",
                 },
             },
         }
@@ -934,6 +934,81 @@ class TestPublishDigest:
             "ghcr.io/my-org/my-app-backend:1.0.0-dev": _DIGEST_BACKEND,
             "ghcr.io/my-org/my-app-frontend:1.0.0-dev": _DIGEST_FRONTEND,
         }
+
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher.check_buildx_available")
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher.resolve_digest")
+    @patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher")
+    @patch("kamiwaza_extensions.registry_builder.RegistryBuilder")
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher")
+    @patch("kamiwaza_extensions.image_builder.ImageBuilder")
+    @patch("kamiwaza_extensions.profile_manager.ProfileManager")
+    @patch("kamiwaza_extensions.compose_transformer.ComposeTransformer")
+    @patch("kamiwaza_extensions.validators.compose.ComposeValidator")
+    @patch("kamiwaza_extensions.validators.metadata.MetadataValidator")
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_non_conventional_namespace_flows_through_build_and_resolve(
+        self, mock_detector_cls, mock_meta_validator_cls,
+        mock_compose_validator_cls, mock_transformer_cls,
+        mock_profile_mgr_cls, mock_builder_cls, mock_pusher_cls,
+        mock_reg_builder_cls, mock_publisher_cls,
+        mock_resolve, mock_preflight, tmp_path,
+    ):
+        # ENG-4909: when the compose's declared image namespace diverges
+        # from the legacy `{ext}-{svc}` convention (omniparse-style:
+        # ext=`tool-omniparse`, svc=`omniparse-server`, declared image
+        # `images/omniparse`), the declared namespace must propagate
+        # through the build, the push, the digest_map keys, and the
+        # catalog entry. Without ENG-4909 the four sites synthesized
+        # divergent forms and the catalog shipped pointing at an image
+        # that may not exist at the synthesized path.
+        custom_ref = (
+            "ghcr.io/kamiwaza-internal/foo/images/omniparse:1.0.0-dev"
+        )
+        custom_digest = "sha256:" + "d" * 64
+        mock_resolve.return_value = custom_digest
+
+        compose = {
+            "services": {
+                "omniparse-server": {
+                    "build": {"context": "."},
+                    "image": "ghcr.io/kamiwaza-internal/foo/images/omniparse:1.0.0",
+                },
+            },
+        }
+        wired = _wire_publish_mocks(
+            detector_cls=mock_detector_cls,
+            meta_validator_cls=mock_meta_validator_cls,
+            compose_validator_cls=mock_compose_validator_cls,
+            transformer_cls=mock_transformer_cls,
+            profile_mgr_cls=mock_profile_mgr_cls,
+            builder_cls=mock_builder_cls,
+            pusher_cls=mock_pusher_cls,
+            reg_builder_cls=mock_reg_builder_cls,
+            publisher_cls=mock_publisher_cls,
+            tmp_path=tmp_path,
+            compose_data=compose,
+            image_refs=[custom_ref],
+        )
+
+        from kamiwaza_extensions.commands.publish import run_publish
+
+        run_publish(stage="dev")
+
+        # 1. ImageBuilder was passed the declared-namespace ref via
+        #    the image_refs kwarg — not the synthesized
+        #    {ext}-{svc} form (which for this fixture would have
+        #    been .../my-app-omniparse-server:...).
+        build_kwargs = wired["image_builder"].build.call_args.kwargs
+        assert build_kwargs["image_refs"] == {"omniparse-server": custom_ref}
+
+        # 2. resolve_digest queried the declared-namespace ref.
+        mock_resolve.assert_called_once_with(custom_ref)
+
+        # 3. digest_map keys match the declared-namespace ref, so
+        #    `_apply_digests` in registry_builder.py will pin the
+        #    catalog compose's image successfully (exact-string match).
+        kwargs = wired["reg_builder"].build_entry.call_args.kwargs
+        assert kwargs["digest_map"] == {custom_ref: custom_digest}
 
     # Note: previous test_explicit_digest_skips_resolver was removed —
     # H2 changed the contract so explicit --digest with push DOES call
@@ -1098,11 +1173,11 @@ class TestPublishDigest:
             "services": {
                 "backend": {
                     "build": {"context": "."},
-                    "image": "my-org/my-app-backend:1.0.0",
+                    "image": "ghcr.io/my-org/my-app-backend:1.0.0",
                 },
                 "dev-helper": {
                     "build": {"context": "./dev"},
-                    "image": "my-org/my-app-dev-helper:1.0.0",
+                    "image": "ghcr.io/my-org/my-app-dev-helper:1.0.0",
                     "profiles": ["dev"],   # local-only, stripped on publish
                 },
             },
@@ -1156,12 +1231,12 @@ class TestPublishDigest:
             "services": {
                 "dev-helper": {
                     "build": {"context": "./dev"},
-                    "image": "my-org/my-app-dev-helper:1.0.0",
+                    "image": "ghcr.io/my-org/my-app-dev-helper:1.0.0",
                     "profiles": ["dev"],   # profiled — must NOT be pinned
                 },
                 "backend": {
                     "build": {"context": "."},
-                    "image": "my-org/my-app-backend:1.0.0",
+                    "image": "ghcr.io/my-org/my-app-backend:1.0.0",
                 },
             },
         }
@@ -1227,12 +1302,12 @@ class TestPublishDigest:
             "services": {
                 "dev-helper": {
                     "build": {"context": "./dev"},
-                    "image": "my-org/my-app-dev-helper:1.0.0",
+                    "image": "ghcr.io/my-org/my-app-dev-helper:1.0.0",
                     "profiles": ["dev"],
                 },
                 "backend": {
                     "build": {"context": "."},
-                    "image": "my-org/my-app-backend:1.0.0",
+                    "image": "ghcr.io/my-org/my-app-backend:1.0.0",
                 },
             },
         }
@@ -1635,7 +1710,7 @@ class TestPublishDigest:
             "services": {
                 "backend": {
                     "build": {"context": "."},
-                    "image": "my-org/my-app-backend:1.0.0",
+                    "image": "ghcr.io/my-org/my-app-backend:1.0.0",
                 },
                 "db": {"image": "postgres:15"},
             },
@@ -1729,7 +1804,7 @@ class TestPublishDigest:
             "services": {
                 "backend": {
                     "build": {"context": "."},
-                    "image": "my-org/my-app-backend:1.0.0",
+                    "image": "ghcr.io/my-org/my-app-backend:1.0.0",
                 },
             },
         }
@@ -1788,12 +1863,12 @@ class TestPublishDigest:
             "services": {
                 "dev-helper": {
                     "build": {"context": "./dev"},
-                    "image": "my-org/my-app-dev-helper:1.0.0",
+                    "image": "ghcr.io/my-org/my-app-dev-helper:1.0.0",
                     "profiles": ["dev"],   # FIRST in dict order
                 },
                 "backend": {
                     "build": {"context": "."},
-                    "image": "my-org/my-app-backend:1.0.0",
+                    "image": "ghcr.io/my-org/my-app-backend:1.0.0",
                 },
             },
         }

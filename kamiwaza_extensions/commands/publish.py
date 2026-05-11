@@ -11,7 +11,7 @@ import yaml
 from rich.console import Console
 
 from kamiwaza_extensions.catalog_publisher import DEFAULT_CATALOG_SCHEMA
-from kamiwaza_extensions.compose_transformer import _replace_image_tag
+from kamiwaza_extensions.compose_transformer import _canonical_build_ref
 from kamiwaza_extensions.extension_detector import infer_extension_type
 
 console = Console(stderr=True)
@@ -107,22 +107,18 @@ def _retag_appgarden_compose(
         if not isinstance(svc, dict):
             continue
         if svc_name in build_services:
-            existing = svc.get("image")
-            if isinstance(existing, str) and existing.strip():
-                # The appgarden compose's image field is the canonical
-                # declaration of where this build's image lives in the
-                # registry — set by the extension's sync-compose.py from
-                # its docker-compose.yml. We only own the *tag* (stage
-                # suffix or --revision SHA); the namespace stays what
-                # the extension authored. Without this, extensions whose
-                # GHCR path doesn't match the {ext}-{svc} convention
-                # silently get the wrong namespace in the catalog.
-                svc["image"] = _replace_image_tag(existing, image_tag)
-            else:
-                # No declared image — fall back to the {ext}-{svc}
-                # convention so extensions relying on auto-generated
-                # image fields keep working.
-                svc["image"] = f"{registry}/{extension_name}-{svc_name}:{image_tag}"
+            # The appgarden compose's image field is the canonical
+            # declaration of where this build's image lives in the
+            # registry — set by the extension's sync-compose.py from
+            # its docker-compose.yml. We only own the *tag* (stage
+            # suffix or --revision SHA); the namespace stays what the
+            # extension authored.
+            svc["image"] = _canonical_build_ref(
+                svc, svc_name,
+                fallback_registry=registry,
+                fallback_extension_name=extension_name,
+                revision_tag=image_tag,
+            )
     return out
 
 
@@ -177,11 +173,23 @@ def _collect_image_refs(
     version: str,
     registry: str,
 ) -> List[str]:
-    """Return full image refs for services with build contexts."""
+    """Return canonical image refs for services with build contexts.
+
+    Honors each service's declared ``image:`` field (namespace preserved,
+    tag rewritten to *version*) so the refs returned here match what
+    ``_retag_appgarden_compose`` writes to the catalog. Falls back to
+    the legacy ``{registry}/{extension_name}-{svc_name}:{version}`` form
+    only when no image is declared.
+    """
     refs: List[str] = []
     for svc_name, svc in (compose_data.get("services") or {}).items():
         if "build" in svc:
-            refs.append(f"{registry}/{extension_name}-{svc_name}:{version}")
+            refs.append(_canonical_build_ref(
+                svc, svc_name,
+                fallback_registry=registry,
+                fallback_extension_name=extension_name,
+                revision_tag=version,
+            ))
     return refs
 
 
@@ -491,8 +499,12 @@ def run_publish(
         # appears first in dict order can't redirect the user's digest.
         dry_digest_map: Dict[str, str] = {}
         if digest is not None and buildable_services:
-            dry_canonical_ref = (
-                f"{registry}/{info.name}-{buildable_services[0]}:{image_tag}"
+            dry_canonical_ref = _canonical_build_ref(
+                (info.compose_data.get("services") or {}).get(buildable_services[0]),
+                buildable_services[0],
+                fallback_registry=registry,
+                fallback_extension_name=info.name,
+                revision_tag=image_tag,
             )
             dry_digest_map[dry_canonical_ref] = digest
 
@@ -534,6 +546,24 @@ def run_publish(
         console.print("[dim]No changes made (dry-run mode).[/dim]")
         return
 
+    # Canonical image refs for every build-context service. Single
+    # source of truth — seeds the build, the push, digest resolution,
+    # and the catalog entry's image refs. Without sharing this map
+    # across all four sites they can each synthesize divergent forms
+    # (legacy {ext}-{svc} vs the namespace declared in compose), and
+    # the catalog ships referencing an image that may not exist at the
+    # synthesized path. (ENG-4909.)
+    canonical_refs: Dict[str, str] = {
+        name: _canonical_build_ref(
+            svc, name,
+            fallback_registry=registry,
+            fallback_extension_name=info.name,
+            revision_tag=image_tag,
+        )
+        for name, svc in (info.compose_data.get("services") or {}).items()
+        if "build" in svc
+    }
+
     # 5. Build images (using stage-aware tag)
     image_refs: List[str] = []
     if not no_build:
@@ -547,6 +577,7 @@ def run_publish(
                 revision_tag=image_tag,
                 registry=registry,
                 verbose=verbose,
+                image_refs=canonical_refs,
             )
         except ImageBuildError as exc:
             console.print("    [red]\u2717 build failed[/red]")
@@ -611,7 +642,7 @@ def run_publish(
     # in image_refs cannot misdirect the digest map. Pass-through external
     # refs keep whatever pinning their source repo applied.
     published_refs: List[str] = [
-        f"{registry}/{info.name}-{name}:{image_tag}" for name in buildable_services
+        canonical_refs[name] for name in buildable_services
     ]
     digest_map: Dict[str, str] = {}
     if published_refs:

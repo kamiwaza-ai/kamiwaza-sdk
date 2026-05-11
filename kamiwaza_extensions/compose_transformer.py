@@ -24,6 +24,36 @@ def _replace_image_tag(image_ref: str, new_tag: str) -> str:
     return f"{ref}:{new_tag}"
 
 
+def _canonical_build_ref(
+    service: Optional[Dict[str, Any]],
+    svc_name: str,
+    *,
+    fallback_registry: str,
+    fallback_extension_name: str,
+    revision_tag: str,
+) -> str:
+    """Return the canonical registry image ref for a buildable service.
+
+    Reads ``image`` from *service*. If declared, the namespace is
+    preserved and only the tag is rewritten to *revision_tag*. If
+    absent, falls back to the legacy
+    ``{fallback_registry}/{fallback_extension_name}-{svc_name}:{revision_tag}``
+    form so extensions that rely on auto-generated image fields keep
+    working.
+
+    Shared by ``ComposeTransformer.transform_service``,
+    ``_retag_appgarden_compose``, ``ImageBuilder.build``, and
+    ``run_publish``'s ``published_refs`` derivation so all five sites
+    agree on where a built image lives.
+    """
+    declared = (service or {}).get("image")
+    if isinstance(declared, str) and declared.strip():
+        return _replace_image_tag(declared, revision_tag)
+    return (
+        f"{fallback_registry}/{fallback_extension_name}-{svc_name}:{revision_tag}"
+    )
+
+
 # Compose ``${VAR:-default}`` (use default if unset OR empty) and the
 # ``${VAR-default}`` form (use default only if unset). For our purposes
 # both collapse to the literal default — there's no host process between
@@ -138,11 +168,19 @@ class ComposeTransformer:
         had_build = "build" in svc
         svc.pop("build", None)
 
-        if had_build and "image" not in svc:
-            svc["image"] = f"{registry}/{extension_name}-{service_name}:{revision_tag}"
-        elif had_build and "image" in svc:
-            # Use consistent registry/extension-service:tag format (matches image builder)
-            svc["image"] = f"{registry}/{extension_name}-{service_name}:{revision_tag}"
+        if had_build:
+            # The declared image's namespace is the canonical record of
+            # where this build's image lives in the registry; publish
+            # only owns the tag (stage suffix or --revision SHA). Fall
+            # back to the legacy {ext}-{svc} convention when no image
+            # is declared (auto-generated image fields).
+            svc["image"] = _canonical_build_ref(
+                svc,
+                service_name,
+                fallback_registry=registry,
+                fallback_extension_name=extension_name,
+                revision_tag=revision_tag,
+            )
         # Services without a build context — both external (postgres, redis)
         # and prebuilt-internal (e.g. a helper image published from another
         # repo) — keep their declared image ref verbatim. publish only owns

@@ -93,7 +93,13 @@ class TestBuildContextRemoval:
         assert "build" not in svc
         assert svc["image"] == "registry.test/my-app-api:1.0.0-dev"
 
-    def test_updates_existing_image_tag(self, transformer):
+    def test_preserves_declared_namespace_rewrites_only_tag(self, transformer):
+        # When a service has both `build:` and `image:`, the declared
+        # namespace is canonical — only the tag is rewritten to the
+        # publish's revision_tag. Without this, extensions whose GHCR
+        # path doesn't follow the legacy {ext}-{svc} convention (e.g.
+        # omniparse, which ships at `images/omniparse`) silently get
+        # the wrong namespace in the catalog. (ENG-4909.)
         compose = {
             "services": {
                 "api": {
@@ -103,8 +109,28 @@ class TestBuildContextRemoval:
             }
         }
         result = transformer.transform(compose, "my-app", "1.0.0-dev", "registry.test")
-        # When service has both build and image, use consistent registry format (matches image builder)
-        assert result["services"]["api"]["image"] == "registry.test/my-app-api:1.0.0-dev"
+        assert result["services"]["api"]["image"] == (
+            "kamiwazaai/my-app-api:1.0.0-dev"
+        )
+
+    def test_preserves_declared_namespace_when_diverges_from_convention(self, transformer):
+        # The omniparse-style case: declared image namespace
+        # (`images/omniparse`) does not follow the {ext-name}-{svc-name}
+        # convention (`my-app-api`). The declared form wins.
+        compose = {
+            "services": {
+                "omniparse-server": {
+                    "build": "./tool-omniparse",
+                    "image": "ghcr.io/kamiwaza-internal/foo/images/omniparse:2.0.14",
+                }
+            }
+        }
+        result = transformer.transform(
+            compose, "tool-omniparse", "2.0.14-dev", "ghcr.io/kamiwaza-internal/foo/images",
+        )
+        assert result["services"]["omniparse-server"]["image"] == (
+            "ghcr.io/kamiwaza-internal/foo/images/omniparse:2.0.14-dev"
+        )
 
     def test_dict_build_config(self, transformer):
         compose = {
