@@ -151,6 +151,23 @@ class FixResult(BaseModel):
     outcomes: List[FixOutcome] = []
 
 
+class ClusterOperations(BaseModel):
+    """T5.37 / ENG-4714 — unified jobs+retrieval listing.
+
+    Returned by ``kz.cluster.operations()``. The walking skeleton
+    populates ``jobs`` from ``GET /api/cluster/jobs`` and leaves
+    ``retrievals`` empty until ``GET /api/retrieval/jobs`` lands
+    (T5.30 / ENG-4707) and the SDK retrieval module ships (T5.36).
+
+    Demo bullet (2): list the running federated job + active retrieval.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    jobs: List[Any] = []
+    retrievals: List[Any] = []
+
+
 class JobResult(BaseModel):
     """Result of a federated job — synchronous /run completion or async
     /submit + poll terminal state. ``status`` is one of SUCCEEDED, FAILED,

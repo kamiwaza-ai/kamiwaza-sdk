@@ -32,6 +32,7 @@ from kamiwaza.exceptions import KamiwazaError
 from kamiwaza.models import (
     ClusterCapabilities,
     ClusterDiagnostics,
+    ClusterOperations,
     DiagnoseIssue,
     FixOutcome,
     FixResult,
@@ -105,6 +106,24 @@ class ClusterAPI:
             self._attempt_fix(issue) for issue in sorted_issues
         ]
         return FixResult(outcomes=outcomes)
+
+    def operations(self) -> ClusterOperations:
+        """Return a unified view of in-flight jobs and retrievals (T5.37).
+
+        Walking-skeleton scope: jobs slice only — retrievals is an empty
+        list until ``GET /api/retrieval/jobs`` (T5.30) and the SDK
+        retrieval module (T5.36) ship. The contract is already the
+        unified shape, so customer code written today still works when
+        retrievals start populating.
+
+        Demo bullet (2): ``kz.cluster.operations()`` lists the running
+        federated job + any active retrieval.
+        """
+        jobs_body = self._client._request("GET", "/api/cluster/jobs/")
+        return ClusterOperations(
+            jobs=list(jobs_body) if isinstance(jobs_body, list) else [],
+            retrievals=[],
+        )
 
     def _attempt_fix(self, issue: DiagnoseIssue) -> FixOutcome:
         if not issue.auto_fixable or not issue.fix_endpoint:

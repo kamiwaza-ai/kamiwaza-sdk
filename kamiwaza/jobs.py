@@ -166,6 +166,19 @@ class JobsAPI:
         response = self._client._request("POST", "/api/cluster/jobs/submit", json=body)
         return str(response["job_id"])
 
+    def cancel(self, job_id: str) -> dict[str, Any]:
+        """Cancel a running job (T5.35 / ENG-4712).
+
+        POSTs to ``/api/cluster/jobs/{id}/cancel``. The server returns a
+        JobRecord; we surface the raw dict so customers can inspect
+        ``status`` (typically STOPPED on success) and timestamps.
+
+        Demo bullet (3): ``kz.jobs.cancel(job_id)`` stops a stuck job
+        within seconds.
+        """
+        response = self._client._request("POST", f"/api/cluster/jobs/{job_id}/cancel")
+        return dict(response)
+
     def wait(self, job_id: str, *, timeout: int) -> JobResult:
         """Poll a previously-submitted job until terminal, then return.
 
