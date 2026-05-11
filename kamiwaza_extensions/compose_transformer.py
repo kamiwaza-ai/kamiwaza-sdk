@@ -69,6 +69,11 @@ class ComposeTransformer:
         4. Add / update ``image`` fields with *registry*/*revision_tag*
         5. Add resource limits if missing
         6. Remove ``extra_hosts``, ``container_name``, ``networks`` keys
+
+        Env-value ``${VAR}`` placeholders pass through unchanged. Callers
+        shipping the result to a destination that does NOT perform its
+        own variable substitution (e.g. a Kubernetes API) must additionally
+        call :meth:`resolve_env_placeholders`.
         """
         out = copy.deepcopy(compose_data)
 
@@ -140,7 +145,8 @@ class ComposeTransformer:
         self,
         compose_data: Dict[str, Any],
     ) -> Dict[str, Any]:
-        """Collapse compose ``${VAR}`` env-value placeholders in place.
+        """Return a copy of *compose_data* with ``${VAR}`` env-value
+        placeholders collapsed.
 
         Apply when the consumer of the transformed compose will NOT
         perform its own variable substitution — e.g. shipping the
