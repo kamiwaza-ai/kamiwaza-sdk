@@ -314,7 +314,6 @@ def run_dev_remote(
         DeploymentTimeoutError,
     )
     from kamiwaza_extensions.dev_state import (
-        DevState,
         mark_step,
         read_state,
         resume_message,
