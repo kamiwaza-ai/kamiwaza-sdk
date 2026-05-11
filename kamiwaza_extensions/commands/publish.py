@@ -253,7 +253,7 @@ def _auto_resolve_digests(
                 "The image must exist in the registry before catalog publish.\n"
                 "Common causes:\n"
                 "  • Image name in docker-compose.appgarden.yml doesn't "
-                "match the actual GHCR path\n"
+                "match the actual registry image path\n"
                 "  • Image hasn't been pushed yet (run with build+push, "
                 "or push manually first)\n"
                 "  • Transient registry outage (retry the publish)\n"
@@ -600,8 +600,8 @@ def run_publish(
     # imagetools`. If buildx is missing on this host, fail before mutating
     # the registry rather than push-then-fail-on-resolve. Only required
     # when push will happen and there's at least one published service to
-    # pin (the catalog-only-republish path soft-falls in
-    # `_auto_resolve_digests` and doesn't need this guard).
+    # pin — the catalog-only-republish path (`--no-build --no-push`)
+    # doesn't push, so the preflight is moot there.
     if not no_push and buildable_services:
         try:
             ImagePusher.check_buildx_available()

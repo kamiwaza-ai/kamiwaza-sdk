@@ -796,9 +796,9 @@ class TestPublishDigest:
         mock_reg_builder_cls, mock_publisher_cls,
         mock_resolve, mock_preflight, tmp_path,
     ):
-        # The preflight only matters when push will happen. The catalog-
-        # only-republish path soft-falls in _auto_resolve_digests if buildx
-        # is missing, so don't gate it here.
+        # The preflight only matters when push will happen. The
+        # catalog-only-republish path (--no-build --no-push) doesn't
+        # push, so the buildx preflight is moot there.
         mock_resolve.return_value = _DIGEST_BACKEND
         _wire_publish_mocks(
             detector_cls=mock_detector_cls,
