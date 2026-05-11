@@ -2,16 +2,98 @@
 
 from __future__ import annotations
 
+import copy
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import typer
+import yaml
 from rich.console import Console
 
 from kamiwaza_extensions.catalog_publisher import DEFAULT_CATALOG_SCHEMA
 from kamiwaza_extensions.extension_detector import infer_extension_type
 
 console = Console(stderr=True)
+
+
+APPGARDEN_COMPOSE_FILENAME = "docker-compose.appgarden.yml"
+
+
+def _load_appgarden_compose(
+    ext_dir: Path,
+) -> Optional[Tuple[Path, Dict[str, Any]]]:
+    """Return ``(path, data)`` for the extension's authored appgarden compose, or None.
+
+    ``docker-compose.appgarden.yml`` is the deployment-ready compose
+    produced by an extension's ``sync-compose.py`` (or equivalent). When
+    present it is the source of truth for catalog publishing — it
+    carries extension-specific transformations (env-shape tweaks,
+    hostname rewrites, etc.) that kz-ext's generic ``ComposeTransformer``
+    doesn't replicate.
+
+    Falls back to None (caller continues with the generic transform
+    against ``docker-compose.yml``) when the file is missing, unparseable,
+    or doesn't decode to a mapping.
+    """
+    candidate = ext_dir / APPGARDEN_COMPOSE_FILENAME
+    if not candidate.exists():
+        return None
+    try:
+        data = yaml.safe_load(candidate.read_text())
+    except yaml.YAMLError as exc:
+        console.print(
+            f"[yellow]Warning:[/yellow] failed to parse "
+            f"{APPGARDEN_COMPOSE_FILENAME}: {exc} — falling back to "
+            "docker-compose.yml + generic transform"
+        )
+        return None
+    if not isinstance(data, dict):
+        console.print(
+            f"[yellow]Warning:[/yellow] {APPGARDEN_COMPOSE_FILENAME} did not "
+            "decode to a mapping — falling back to docker-compose.yml"
+        )
+        return None
+    return candidate, data
+
+
+def _retag_appgarden_compose(
+    appgarden_data: Dict[str, Any],
+    source_compose_data: Optional[Dict[str, Any]],
+    *,
+    extension_name: str,
+    image_tag: str,
+    registry: str,
+) -> Dict[str, Any]:
+    """Rewrite image tags on services that this publish actually owns.
+
+    A service is "owned" by this publish if it has a ``build:`` block in
+    the source ``docker-compose.yml`` (i.e. ``ImageBuilder`` will build
+    and push an image for it). For those services we set
+    ``image: {registry}/{ext}-{svc}:{image_tag}`` so the catalog points
+    at the image we just built with the resolved ``--stage`` / ``--revision``
+    tag. External refs (``ghcr.io/.../neo4j``) and any service the
+    extension's ``sync-compose.py`` invented are passed through verbatim.
+
+    The appgarden file is otherwise considered deployment-ready by the
+    extension's authoring intent; no other transformations are applied.
+    """
+    out = copy.deepcopy(appgarden_data)
+    source_services = (
+        source_compose_data.get("services") or {}
+        if isinstance(source_compose_data, dict)
+        else {}
+    )
+    build_services = {
+        name
+        for name, svc in source_services.items()
+        if isinstance(svc, dict) and "build" in svc
+    }
+    for svc_name, svc in (out.get("services") or {}).items():
+        if not isinstance(svc, dict):
+            continue
+        if svc_name in build_services:
+            svc["image"] = f"{registry}/{extension_name}-{svc_name}:{image_tag}"
+    return out
 
 
 def _infer_extension_type(metadata: Dict[str, Any]) -> str:
@@ -198,6 +280,19 @@ def run_publish(
         console.print("[red]Error:[/red] No docker-compose.yml found.")
         raise typer.Exit(code=1)
 
+    # Prefer the extension's authored appgarden compose when present. It
+    # is the deployment-ready output of the extension's `sync-compose.py`
+    # and carries extension-specific transformations kz-ext's generic
+    # ComposeTransformer doesn't replicate (ENG-4907). Source compose
+    # is still used below for ImageBuilder and the buildable-services
+    # derivation — those care about `build:` contexts and host shape.
+    appgarden_pair = _load_appgarden_compose(info.path)
+    if appgarden_pair is not None:
+        publish_compose_path, appgarden_data = appgarden_pair
+    else:
+        publish_compose_path = info.compose_path
+        appgarden_data = None
+
     # Buildable services that will actually be published. Mirrors
     # ComposeTransformer's `profiles:` filter — services with a profiles
     # key are local-only and stripped before catalog construction, so
@@ -259,7 +354,7 @@ def run_publish(
     meta_result = meta_validator.validate(info.path / "kamiwaza.json")
 
     compose_validator = ComposeValidator()
-    compose_result = compose_validator.validate(info.compose_path, info.path)
+    compose_result = compose_validator.validate(publish_compose_path, info.path)
 
     all_errors = meta_result.errors[:]
     all_warnings = meta_result.warnings[:]
@@ -314,14 +409,27 @@ def run_publish(
     else:
         image_tag = f"{version}-{stage}"
 
-    # 4. Transform compose (uses the stage-aware image tag)
-    transformer = ComposeTransformer()
-    transformed = transformer.transform(
-        info.compose_data,
-        extension_name=info.name,
-        revision_tag=image_tag,
-        registry=registry,
-    )
+    # 4. Build the catalog-ready compose (uses the stage-aware image tag).
+    # When the extension supplied an authored appgarden compose, that file
+    # is the source of truth — we only retag the services we actually
+    # built. Otherwise run the generic ComposeTransformer against the
+    # source docker-compose.yml.
+    if appgarden_data is not None:
+        transformed = _retag_appgarden_compose(
+            appgarden_data,
+            info.compose_data,
+            extension_name=info.name,
+            image_tag=image_tag,
+            registry=registry,
+        )
+    else:
+        transformer = ComposeTransformer()
+        transformed = transformer.transform(
+            info.compose_data,
+            extension_name=info.name,
+            revision_tag=image_tag,
+            registry=registry,
+        )
 
     # -- Dry-run path (still runs merge check to detect conflicts) --
     if dry_run:
