@@ -120,6 +120,37 @@ class ClusterDiagnostics(BaseModel):
     has_issues: bool = False
 
 
+class FixOutcome(BaseModel):
+    """T5.8 / ENG-4693 — per-issue outcome from kz.cluster.fix().
+
+    ``status`` is one of:
+      - ``fixed``           — issue.fix_endpoint returned 2xx.
+      - ``manual_required`` — issue.auto_fixable was False; skipped.
+      - ``failed``          — fix_endpoint returned non-2xx; ``error`` set.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    issue_id: str
+    status: Literal["fixed", "manual_required", "failed"]
+    error: Optional[str] = None
+
+
+class FixResult(BaseModel):
+    """T5.8 / ENG-4693 — aggregate result of a kz.cluster.fix() run.
+
+    Per design `system-design.md` §4.2.10: iterates ClusterDiagnostics
+    issues in severity order, dispatches each to its fix_endpoint when
+    auto_fixable, records per-issue outcomes. The skeleton supports
+    auto-fixable issues generically — fix() works for any future probe
+    that ships with a fix_endpoint, without SDK changes.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    outcomes: List[FixOutcome] = []
+
+
 class JobResult(BaseModel):
     """Result of a federated job — synchronous /run completion or async
     /submit + poll terminal state. ``status`` is one of SUCCEEDED, FAILED,

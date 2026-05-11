@@ -1,29 +1,44 @@
-"""T5.7 / T5.21 — kamiwaza.cluster module.
+"""T5.7 / T5.8 / T5.21 — kamiwaza.cluster module.
 
 Customer-facing cluster surface per design §4.2.11 / §4.4.3 / §4.2.10:
 
     kz.cluster.capabilities()    -> ClusterCapabilities  (T5.21 / ENG-4698)
     kz.cluster.diagnose()        -> ClusterDiagnostics   (T5.7  / ENG-4692)
+    kz.cluster.fix()             -> FixResult            (T5.8  / ENG-4693)
 
 ``capabilities()`` is mesh-routable since ENG-4697 (auth widened to
 viewer); a probing peer reaches the same surface through
 ``kz.federations[name].probe()`` (see kamiwaza.federations.FederationProxy).
 
-``diagnose()`` is admin-only and returns structured cluster-health
-issues. ``fix()`` orchestration (T5.8 / ENG-4693) is deferred until at
-least one auto-fixable probe ships server-side — adding it now would be
-a customer surface that always reports manual_required for every issue.
+``diagnose()`` is admin-only and returns structured cluster-health issues.
+
+``fix()`` iterates the issues and POSTs to each ``fix_endpoint`` for
+auto-fixable ones. The SDK has no enumeration of probe types — dispatch
+is generic on the issue shape, so future server-side probes that ship
+``fix_endpoint`` + ``fix_payload`` work without SDK changes.
 
 Server-side correlates:
-- ``GET /api/cluster/cluster_capabilities``  (extended by ENG-4696)
-- ``GET /api/cluster/diagnose``              (new in ENG-4694)
+- ``GET  /api/cluster/cluster_capabilities``  (extended by ENG-4696)
+- ``GET  /api/cluster/diagnose``              (new in ENG-4694)
+- ``POST /api/cluster/diagnose/fix/{issue_id}``  (per design §4.2.10 —
+  endpoints land alongside auto-fixable probes in subsequent commits)
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, List
 
-from kamiwaza.models import ClusterCapabilities, ClusterDiagnostics
+from kamiwaza.exceptions import KamiwazaError
+from kamiwaza.models import (
+    ClusterCapabilities,
+    ClusterDiagnostics,
+    DiagnoseIssue,
+    FixOutcome,
+    FixResult,
+)
+
+
+_SEVERITY_ORDER = {"error": 0, "warning": 1, "info": 2}
 
 
 class ClusterAPI:
@@ -65,3 +80,41 @@ class ClusterAPI:
         """
         body = self._client._request("GET", "/api/cluster/diagnose")
         return ClusterDiagnostics.model_validate(body)
+
+    def fix(self) -> FixResult:
+        """Run diagnose then attempt to remediate each auto-fixable issue.
+
+        Per design §4.2.10: iterates issues in severity order (error →
+        warning → info), invokes ``issue.fix_endpoint`` with
+        ``issue.fix_payload`` for each ``auto_fixable=True`` issue, and
+        records per-issue outcomes. Issues with ``auto_fixable=False`` are
+        surfaced as ``manual_required`` without an endpoint call. A
+        fix_endpoint that returns non-2xx is recorded as ``failed`` with
+        the error message — never raises, so the operator sees per-issue
+        results for the whole batch.
+
+        Returns:
+            FixResult.outcomes — one FixOutcome per issue.
+        """
+        diagnostics = self.diagnose()
+        sorted_issues = sorted(
+            diagnostics.issues,
+            key=lambda issue: _SEVERITY_ORDER.get(issue.severity, 99),
+        )
+        outcomes: List[FixOutcome] = [
+            self._attempt_fix(issue) for issue in sorted_issues
+        ]
+        return FixResult(outcomes=outcomes)
+
+    def _attempt_fix(self, issue: DiagnoseIssue) -> FixOutcome:
+        if not issue.auto_fixable or not issue.fix_endpoint:
+            return FixOutcome(issue_id=issue.id, status="manual_required")
+        try:
+            self._client._request(
+                "POST",
+                issue.fix_endpoint,
+                json=issue.fix_payload or {},
+            )
+        except KamiwazaError as exc:
+            return FixOutcome(issue_id=issue.id, status="failed", error=str(exc))
+        return FixOutcome(issue_id=issue.id, status="fixed")
