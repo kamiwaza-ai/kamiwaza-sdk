@@ -7,6 +7,23 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 
+def _replace_image_tag(image_ref: str, new_tag: str) -> str:
+    """Return *image_ref* with its tag (and any digest) replaced by *new_tag*.
+
+    The namespace (registry + repo path) is preserved verbatim. Handles
+    refs that include a registry port (``localhost:5000/foo:tag``) by
+    using the position of the last ``/`` to disambiguate the port colon
+    from the tag colon, and strips any ``@sha256:...`` suffix before
+    re-tagging.
+    """
+    ref = image_ref.split("@", 1)[0]
+    last_slash = ref.rfind("/")
+    last_colon = ref.rfind(":")
+    if last_colon > last_slash:
+        ref = ref[:last_colon]
+    return f"{ref}:{new_tag}"
+
+
 # Compose ``${VAR:-default}`` (use default if unset OR empty) and the
 # ``${VAR-default}`` form (use default only if unset). For our purposes
 # both collapse to the literal default — there's no host process between

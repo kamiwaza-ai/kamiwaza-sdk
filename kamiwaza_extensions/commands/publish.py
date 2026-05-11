@@ -11,6 +11,7 @@ import yaml
 from rich.console import Console
 
 from kamiwaza_extensions.catalog_publisher import DEFAULT_CATALOG_SCHEMA
+from kamiwaza_extensions.compose_transformer import _replace_image_tag
 from kamiwaza_extensions.extension_detector import infer_extension_type
 
 console = Console(stderr=True)
@@ -54,23 +55,6 @@ def _load_appgarden_compose(
         )
         return None
     return candidate, data
-
-
-def _replace_image_tag(image_ref: str, new_tag: str) -> str:
-    """Return *image_ref* with its tag (and any digest) replaced by *new_tag*.
-
-    The namespace (registry + repo path) is preserved verbatim. Handles
-    refs that include a registry port (``localhost:5000/foo:tag``) by
-    using the position of the last ``/`` to disambiguate the port colon
-    from the tag colon, and strips any ``@sha256:...`` suffix before
-    re-tagging.
-    """
-    ref = image_ref.split("@", 1)[0]
-    last_slash = ref.rfind("/")
-    last_colon = ref.rfind(":")
-    if last_colon > last_slash:
-        ref = ref[:last_colon]
-    return f"{ref}:{new_tag}"
 
 
 def _retag_appgarden_compose(

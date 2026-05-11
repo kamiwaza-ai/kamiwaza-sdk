@@ -1880,7 +1880,7 @@ class TestReplaceImageTag:
     """`_replace_image_tag` preserves the namespace and replaces the tag."""
 
     def test_replaces_simple_tag(self):
-        from kamiwaza_extensions.commands.publish import _replace_image_tag
+        from kamiwaza_extensions.compose_transformer import _replace_image_tag
 
         assert _replace_image_tag(
             "ghcr.io/my-org/foo:1.0.0", "1.0.0-dev"
@@ -1890,7 +1890,7 @@ class TestReplaceImageTag:
         # The whole point of the helper: omniparse's image is at
         # `images/omniparse`, not `images/tool-omniparse-omniparse-server`.
         # The replacement only touches the tag, leaves the path alone.
-        from kamiwaza_extensions.commands.publish import _replace_image_tag
+        from kamiwaza_extensions.compose_transformer import _replace_image_tag
 
         assert _replace_image_tag(
             "ghcr.io/kamiwaza-internal/kamiwaza-extensions-omniparse/images/omniparse:2.0.14",
@@ -1902,14 +1902,14 @@ class TestReplaceImageTag:
     def test_handles_registry_with_port(self):
         # `localhost:5000/foo:tag` — the port colon must not be mistaken
         # for the tag separator.
-        from kamiwaza_extensions.commands.publish import _replace_image_tag
+        from kamiwaza_extensions.compose_transformer import _replace_image_tag
 
         assert _replace_image_tag(
             "localhost:5000/foo:1.0.0", "2.0.0-dev"
         ) == "localhost:5000/foo:2.0.0-dev"
 
     def test_strips_digest_before_retagging(self):
-        from kamiwaza_extensions.commands.publish import _replace_image_tag
+        from kamiwaza_extensions.compose_transformer import _replace_image_tag
 
         assert _replace_image_tag(
             "ghcr.io/my-org/foo:1.0.0@sha256:" + "a" * 64,
@@ -1917,7 +1917,7 @@ class TestReplaceImageTag:
         ) == "ghcr.io/my-org/foo:1.0.0-dev"
 
     def test_appends_tag_when_no_existing_tag(self):
-        from kamiwaza_extensions.commands.publish import _replace_image_tag
+        from kamiwaza_extensions.compose_transformer import _replace_image_tag
 
         assert _replace_image_tag(
             "ghcr.io/my-org/foo", "1.0.0-dev"
