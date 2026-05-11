@@ -1880,6 +1880,54 @@ class TestLoadAppgardenCompose:
         assert _load_appgarden_compose(tmp_path) is None
 
 
+class TestReplaceImageTag:
+    """`_replace_image_tag` preserves the namespace and replaces the tag."""
+
+    def test_replaces_simple_tag(self):
+        from kamiwaza_extensions.commands.publish import _replace_image_tag
+
+        assert _replace_image_tag(
+            "ghcr.io/my-org/foo:1.0.0", "1.0.0-dev"
+        ) == "ghcr.io/my-org/foo:1.0.0-dev"
+
+    def test_replaces_tag_when_namespace_does_not_match_convention(self):
+        # The whole point of the helper: omniparse's image is at
+        # `images/omniparse`, not `images/tool-omniparse-omniparse-server`.
+        # The replacement only touches the tag, leaves the path alone.
+        from kamiwaza_extensions.commands.publish import _replace_image_tag
+
+        assert _replace_image_tag(
+            "ghcr.io/kamiwaza-internal/kamiwaza-extensions-omniparse/images/omniparse:2.0.14",
+            "2.0.14-dev",
+        ) == (
+            "ghcr.io/kamiwaza-internal/kamiwaza-extensions-omniparse/images/omniparse:2.0.14-dev"
+        )
+
+    def test_handles_registry_with_port(self):
+        # `localhost:5000/foo:tag` — the port colon must not be mistaken
+        # for the tag separator.
+        from kamiwaza_extensions.commands.publish import _replace_image_tag
+
+        assert _replace_image_tag(
+            "localhost:5000/foo:1.0.0", "2.0.0-dev"
+        ) == "localhost:5000/foo:2.0.0-dev"
+
+    def test_strips_digest_before_retagging(self):
+        from kamiwaza_extensions.commands.publish import _replace_image_tag
+
+        assert _replace_image_tag(
+            "ghcr.io/my-org/foo:1.0.0@sha256:" + "a" * 64,
+            "1.0.0-dev",
+        ) == "ghcr.io/my-org/foo:1.0.0-dev"
+
+    def test_appends_tag_when_no_existing_tag(self):
+        from kamiwaza_extensions.commands.publish import _replace_image_tag
+
+        assert _replace_image_tag(
+            "ghcr.io/my-org/foo", "1.0.0-dev"
+        ) == "ghcr.io/my-org/foo:1.0.0-dev"
+
+
 class TestRetagAppgardenCompose:
     """`_retag_appgarden_compose` retags only build-context services."""
 
@@ -1896,6 +1944,62 @@ class TestRetagAppgardenCompose:
                 "backend": {"build": {"context": "."}},
             },
         }
+        out = _retag_appgarden_compose(
+            appgarden, source,
+            extension_name="my-app", image_tag="2.0.0-dev",
+            registry="ghcr.io/my-org",
+        )
+        assert out["services"]["backend"]["image"] == (
+            "ghcr.io/my-org/my-app-backend:2.0.0-dev"
+        )
+
+    def test_preserves_declared_namespace_when_diverges_from_convention(self):
+        # Omniparse-style: bake target name (and GHCR path) is
+        # `images/omniparse`, but the kz-ext-computed default would be
+        # `images/tool-omniparse-omniparse-server`. The fix preserves
+        # the namespace declared in the appgarden compose and only
+        # rewrites the tag for stage — fixes the silently-broken
+        # catalog entries this used to produce (ENG-4909).
+        from kamiwaza_extensions.commands.publish import _retag_appgarden_compose
+
+        appgarden = {
+            "services": {
+                "omniparse-server": {
+                    "image": (
+                        "ghcr.io/kamiwaza-internal/"
+                        "kamiwaza-extensions-omniparse/images/omniparse:2.0.14"
+                    ),
+                },
+            },
+        }
+        source = {
+            "services": {
+                "omniparse-server": {"build": {"context": "."}},
+            },
+        }
+        out = _retag_appgarden_compose(
+            appgarden, source,
+            extension_name="tool-omniparse", image_tag="2.0.14-dev",
+            registry=(
+                "ghcr.io/kamiwaza-internal/"
+                "kamiwaza-extensions-omniparse/images"
+            ),
+        )
+        # Namespace preserved; only the tag changed.
+        assert out["services"]["omniparse-server"]["image"] == (
+            "ghcr.io/kamiwaza-internal/"
+            "kamiwaza-extensions-omniparse/images/omniparse:2.0.14-dev"
+        )
+
+    def test_falls_back_to_legacy_convention_when_no_declared_image(self):
+        # Extensions that rely on auto-generated image fields (no
+        # `image:` in compose, just a `build:` block) still get the
+        # `{registry}/{ext}-{svc}:{tag}` form — preserves backward
+        # compatibility with the original ComposeTransformer behavior.
+        from kamiwaza_extensions.commands.publish import _retag_appgarden_compose
+
+        appgarden = {"services": {"backend": {}}}
+        source = {"services": {"backend": {"build": {"context": "."}}}}
         out = _retag_appgarden_compose(
             appgarden, source,
             extension_name="my-app", image_tag="2.0.0-dev",

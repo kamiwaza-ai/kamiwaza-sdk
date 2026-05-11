@@ -56,6 +56,23 @@ def _load_appgarden_compose(
     return candidate, data
 
 
+def _replace_image_tag(image_ref: str, new_tag: str) -> str:
+    """Return *image_ref* with its tag (and any digest) replaced by *new_tag*.
+
+    The namespace (registry + repo path) is preserved verbatim. Handles
+    refs that include a registry port (``localhost:5000/foo:tag``) by
+    using the position of the last ``/`` to disambiguate the port colon
+    from the tag colon, and strips any ``@sha256:...`` suffix before
+    re-tagging.
+    """
+    ref = image_ref.split("@", 1)[0]
+    last_slash = ref.rfind("/")
+    last_colon = ref.rfind(":")
+    if last_colon > last_slash:
+        ref = ref[:last_colon]
+    return f"{ref}:{new_tag}"
+
+
 def _retag_appgarden_compose(
     appgarden_data: Dict[str, Any],
     source_compose_data: Optional[Dict[str, Any]],
@@ -106,7 +123,22 @@ def _retag_appgarden_compose(
         if not isinstance(svc, dict):
             continue
         if svc_name in build_services:
-            svc["image"] = f"{registry}/{extension_name}-{svc_name}:{image_tag}"
+            existing = svc.get("image")
+            if isinstance(existing, str) and existing.strip():
+                # The appgarden compose's image field is the canonical
+                # declaration of where this build's image lives in the
+                # registry — set by the extension's sync-compose.py from
+                # its docker-compose.yml. We only own the *tag* (stage
+                # suffix or --revision SHA); the namespace stays what
+                # the extension authored. Without this, extensions whose
+                # GHCR path doesn't match the {ext}-{svc} convention
+                # silently get the wrong namespace in the catalog.
+                svc["image"] = _replace_image_tag(existing, image_tag)
+            else:
+                # No declared image — fall back to the {ext}-{svc}
+                # convention so extensions relying on auto-generated
+                # image fields keep working.
+                svc["image"] = f"{registry}/{extension_name}-{svc_name}:{image_tag}"
     return out
 
 
