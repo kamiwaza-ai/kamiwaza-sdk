@@ -58,6 +58,31 @@ class BrokeredUser(BaseModel):
     initial_tuples: Optional[List[Any]] = None
 
 
+class ClusterCapabilities(BaseModel):
+    """T5.19 / ENG-4696 capabilities-probe response.
+
+    Returned by ``kz.cluster.capabilities()`` (local) and
+    ``kz.federations[name].probe()`` (via mesh). Server-side correlate:
+    ``kamiwaza.cluster.services.ClusterService.get_cluster_capabilities()``.
+
+    Known fields cover the WS-M2 demo-bullet-(4) probe surface — hardware /
+    platform info plus federation pre-flight fields (federation_count,
+    active_deployments, ray_ready). Other fields flow through via
+    ``extra="allow"`` for forward compatibility per the common-pitfalls
+    guide; pinned SDK wheels must not break when the server adds fields.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    system_type: str
+    os: str
+    gpu_count: int = 0
+    available_platforms: List[str] = []
+    federation_count: int = 0
+    active_deployments: int = 0
+    ray_ready: bool = False
+
+
 class JobResult(BaseModel):
     """Result of a federated job — synchronous /run completion or async
     /submit + poll terminal state. ``status`` is one of SUCCEEDED, FAILED,

@@ -75,6 +75,20 @@ class Kamiwaza:
         # in __init__ (would cycle back into client at module-load time).
         self._federations: Any = None
         self._jobs: Any = None
+        self._cluster: Any = None
+
+    @property
+    def cluster(self) -> Any:
+        """Local cluster operations — capabilities probe (T5.21).
+
+        Returns a ``kamiwaza.cluster.ClusterAPI`` instance. Annotated as
+        ``Any`` to keep the import lazy.
+        """
+        if self._cluster is None:
+            from kamiwaza.cluster import ClusterAPI
+
+            self._cluster = ClusterAPI(client=self)
+        return self._cluster
 
     @property
     def federations(self) -> Any:
