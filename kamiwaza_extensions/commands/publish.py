@@ -167,32 +167,6 @@ def _collect_buildable_image_names(
     return names
 
 
-def _collect_image_refs(
-    compose_data: Dict[str, Any],
-    extension_name: str,
-    version: str,
-    registry: str,
-) -> List[str]:
-    """Return canonical image refs for services with build contexts.
-
-    Honors each service's declared ``image:`` field (namespace preserved,
-    tag rewritten to *version*) so the refs returned here match what
-    ``_retag_appgarden_compose`` writes to the catalog. Falls back to
-    the legacy ``{registry}/{extension_name}-{svc_name}:{version}`` form
-    only when no image is declared.
-    """
-    refs: List[str] = []
-    for svc_name, svc in (compose_data.get("services") or {}).items():
-        if "build" in svc:
-            refs.append(_canonical_build_ref(
-                svc, svc_name,
-                fallback_registry=registry,
-                fallback_extension_name=extension_name,
-                revision_tag=version,
-            ))
-    return refs
-
-
 def _verify_supplied_digest(ref: str, supplied: str) -> None:
     """Resolve *ref* in the registry and abort if it disagrees with *supplied*.
 
@@ -553,9 +527,24 @@ def run_publish(
     # (legacy {ext}-{svc} vs the namespace declared in compose), and
     # the catalog ships referencing an image that may not exist at the
     # synthesized path. (ENG-4909.)
+    #
+    # Per service, prefer the appgarden compose's declaration when
+    # present — that's what ``_retag_appgarden_compose`` writes into the
+    # catalog. The source ``docker-compose.yml`` declaration is the
+    # fallback for services the appgarden file omits, and the legacy
+    # ``{ext}-{svc}`` form remains the final fallback (handled by
+    # ``_canonical_build_ref``). Reading from source when an appgarden
+    # entry overrides the namespace would build/push/digest at a
+    # different path than the catalog references.
+    appgarden_services = (
+        (appgarden_data or {}).get("services") or {}
+        if isinstance(appgarden_data, dict)
+        else {}
+    )
     canonical_refs: Dict[str, str] = {
         name: _canonical_build_ref(
-            svc, name,
+            appgarden_services.get(name) or svc,
+            name,
             fallback_registry=registry,
             fallback_extension_name=info.name,
             revision_tag=image_tag,
@@ -592,9 +581,7 @@ def run_publish(
             console.print("    [yellow]![/yellow] No images to build")
     else:
         console.print("  [dim]Skipping build (--no-build)[/dim]")
-        image_refs = _collect_image_refs(
-            info.compose_data, info.name, image_tag, registry
-        )
+        image_refs = list(canonical_refs.values())
 
     # 5.5 Preflight: digest resolution post-push needs `docker buildx
     # imagetools`. If buildx is missing on this host, fail before mutating

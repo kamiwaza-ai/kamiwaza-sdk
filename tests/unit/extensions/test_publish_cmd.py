@@ -1855,10 +1855,11 @@ class TestPublishDigest:
         mock_reg_builder_cls, mock_publisher_cls, tmp_path,
     ):
         # Same dict-order trap as the live path, but inside the dry-run
-        # branch. Pre-fix: dry-run used `_collect_image_refs` (unfiltered),
-        # so a profiled helper appearing first would have pinned the
-        # user's digest against a local-only ref — mismatched against the
-        # canonical buildable ref that ComposeTransformer actually keeps.
+        # branch. A profiled helper appearing first in the compose dict
+        # must not steal the user's --digest pin — dry-run must filter
+        # via buildable_services the same way the live path does so the
+        # digest binds to the canonical buildable ref that
+        # ComposeTransformer actually keeps.
         compose = {
             "services": {
                 "dev-helper": {
@@ -2024,7 +2025,7 @@ class TestRetagAppgardenCompose:
             "ghcr.io/my-org/my-app-backend:2.0.0-dev"
         )
 
-    def test_preserves_declared_namespace_when_diverges_from_convention(self):
+    def test_retag_appgarden_preserves_divergent_namespace(self):
         # Omniparse-style: bake target name (and GHCR path) is
         # `images/omniparse`, but the kz-ext-computed default would be
         # `images/tool-omniparse-omniparse-server`. The fix preserves
@@ -2357,3 +2358,76 @@ class TestPublishWithAppgarden:
             mock_compose_validator_cls.return_value.validate.call_args
         )
         assert validator_args[0].name == "docker-compose.yml"
+
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher.resolve_digest")
+    @patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher")
+    @patch("kamiwaza_extensions.registry_builder.RegistryBuilder")
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher")
+    @patch("kamiwaza_extensions.image_builder.ImageBuilder")
+    @patch("kamiwaza_extensions.profile_manager.ProfileManager")
+    @patch("kamiwaza_extensions.compose_transformer.ComposeTransformer")
+    @patch("kamiwaza_extensions.validators.compose.ComposeValidator")
+    @patch("kamiwaza_extensions.validators.metadata.MetadataValidator")
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_appgarden_image_namespace_drives_build_and_push(
+        self,
+        mock_detector_cls,
+        mock_meta_validator_cls,
+        mock_compose_validator_cls,
+        mock_transformer_cls,
+        mock_profile_mgr_cls,
+        mock_builder_cls,
+        mock_pusher_cls,
+        mock_reg_builder_cls,
+        mock_publisher_cls,
+        mock_resolve,
+        tmp_path,
+    ):
+        # When ``docker-compose.appgarden.yml`` declares a different image
+        # namespace than the source ``docker-compose.yml``, the appgarden
+        # file is the source of truth (matches what gets written into the
+        # catalog by ``_retag_appgarden_compose``). Build, push, and
+        # digest resolution must all happen at the appgarden ref —
+        # otherwise the catalog references an image the registry was
+        # never told to expect.
+        (tmp_path / "docker-compose.appgarden.yml").write_text(
+            "services:\n"
+            "  backend:\n"
+            "    image: ghcr.io/published/tool-foo/backend:1.0.0\n"
+        )
+        _wire_publish_mocks(
+            detector_cls=mock_detector_cls,
+            meta_validator_cls=mock_meta_validator_cls,
+            compose_validator_cls=mock_compose_validator_cls,
+            transformer_cls=mock_transformer_cls,
+            profile_mgr_cls=mock_profile_mgr_cls,
+            builder_cls=mock_builder_cls,
+            pusher_cls=mock_pusher_cls,
+            reg_builder_cls=mock_reg_builder_cls,
+            publisher_cls=mock_publisher_cls,
+            tmp_path=tmp_path,
+            compose_data={
+                "services": {
+                    "backend": {
+                        "build": {"context": "."},
+                        "image": "registry.test/my-app-backend:1.0.0",
+                    },
+                },
+            },
+        )
+        mock_resolve.return_value = "sha256:" + "a" * 64
+
+        from kamiwaza_extensions.commands.publish import run_publish
+
+        run_publish(stage="dev")
+
+        # ImageBuilder.build receives the appgarden-declared ref, not the
+        # source-compose ref. ``image_refs`` is keyed by service name.
+        builder_kwargs = mock_builder_cls.return_value.build.call_args.kwargs
+        assert builder_kwargs["image_refs"] == {
+            "backend": "ghcr.io/published/tool-foo/backend:1.0.0-dev",
+        }
+        # Digest auto-resolve queries the registry at the appgarden ref.
+        mock_resolve.assert_called_once_with(
+            "ghcr.io/published/tool-foo/backend:1.0.0-dev"
+        )

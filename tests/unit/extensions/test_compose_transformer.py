@@ -113,7 +113,7 @@ class TestBuildContextRemoval:
             "kamiwazaai/my-app-api:1.0.0-dev"
         )
 
-    def test_preserves_declared_namespace_when_diverges_from_convention(self, transformer):
+    def test_transform_preserves_divergent_namespace(self, transformer):
         # The omniparse-style case: declared image namespace
         # (`images/omniparse`) does not follow the {ext-name}-{svc-name}
         # convention (`my-app-api`). The declared form wins.

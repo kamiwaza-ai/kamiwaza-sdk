@@ -47,8 +47,10 @@ def _canonical_build_ref(
     agree on where a built image lives.
     """
     declared = (service or {}).get("image")
-    if isinstance(declared, str) and declared.strip():
-        return _replace_image_tag(declared, revision_tag)
+    if isinstance(declared, str):
+        stripped = declared.strip()
+        if stripped:
+            return _replace_image_tag(stripped, revision_tag)
     return (
         f"{fallback_registry}/{fallback_extension_name}-{svc_name}:{revision_tag}"
     )
