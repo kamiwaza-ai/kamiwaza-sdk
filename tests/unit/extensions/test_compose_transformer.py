@@ -279,23 +279,22 @@ class TestFullTransform:
         assert "build" in compose["services"]["api"]
 
 
-class TestResolveShellRefs:
-    """The compose ``${VAR:-default}`` syntax must round-trip its
-    default value to the K8s pod env (was being dropped wholesale,
-    breaking cross-service URLs like ``BACKEND_URL``)."""
+class TestResolveEnvPlaceholders:
+    """``resolve_env_placeholders`` collapses ``${VAR:-default}`` env
+    placeholders to their default, drops unresolvable forms, and drops
+    ``KAMIWAZA_*`` keys (so the operator's ConfigMap envFrom wins)."""
 
     def test_resolves_default_substitution_dict_form(self, transformer):
         compose = {
             "services": {
                 "frontend": {
-                    "build": ".",
                     "environment": {
                         "BACKEND_URL": "${BACKEND_URL:-http://backend:8000}",
                     },
                 },
             },
         }
-        result = transformer.transform(compose, "test", "v1", "reg")
+        result = transformer.resolve_env_placeholders(compose)
         assert result["services"]["frontend"]["environment"] == {
             "BACKEND_URL": "http://backend:8000",
         }
@@ -304,7 +303,6 @@ class TestResolveShellRefs:
         compose = {
             "services": {
                 "frontend": {
-                    "build": ".",
                     "environment": [
                         "BACKEND_URL=${BACKEND_URL:-http://backend:8000}",
                         "PLAIN_VAR=plain-value",
@@ -312,7 +310,7 @@ class TestResolveShellRefs:
                 },
             },
         }
-        result = transformer.transform(compose, "test", "v1", "reg")
+        result = transformer.resolve_env_placeholders(compose)
         assert result["services"]["frontend"]["environment"] == [
             "BACKEND_URL=http://backend:8000",
             "PLAIN_VAR=plain-value",
@@ -325,7 +323,6 @@ class TestResolveShellRefs:
         compose = {
             "services": {
                 "backend": {
-                    "build": ".",
                     "environment": {
                         "KAMIWAZA_API_URL": "${KAMIWAZA_API_URL:-http://host.docker.internal:7777/api}",
                         "BACKEND_URL": "${BACKEND_URL:-http://backend:8000}",
@@ -333,7 +330,7 @@ class TestResolveShellRefs:
                 },
             },
         }
-        result = transformer.transform(compose, "test", "v1", "reg")
+        result = transformer.resolve_env_placeholders(compose)
         # KAMIWAZA_* dropped; BACKEND_URL resolved to default.
         assert result["services"]["backend"]["environment"] == {
             "BACKEND_URL": "http://backend:8000",
@@ -345,7 +342,6 @@ class TestResolveShellRefs:
         compose = {
             "services": {
                 "backend": {
-                    "build": ".",
                     "environment": {
                         "OPENAI_API_KEY": "${OPENAI_API_KEY}",
                         "REQUIRED_VAR": "${REQUIRED_VAR:?missing}",
@@ -354,7 +350,7 @@ class TestResolveShellRefs:
                 },
             },
         }
-        result = transformer.transform(compose, "test", "v1", "reg")
+        result = transformer.resolve_env_placeholders(compose)
         assert result["services"]["backend"]["environment"] == {"PLAIN": "kept"}
 
     def test_alternate_default_form_dash_only(self, transformer):
@@ -363,28 +359,133 @@ class TestResolveShellRefs:
         compose = {
             "services": {
                 "backend": {
-                    "build": ".",
                     "environment": {"X": "${UNSET-fallback}"},
                 },
             },
         }
-        result = transformer.transform(compose, "test", "v1", "reg")
+        result = transformer.resolve_env_placeholders(compose)
         assert result["services"]["backend"]["environment"] == {"X": "fallback"}
 
     def test_plain_values_pass_through(self, transformer):
         compose = {
             "services": {
                 "backend": {
-                    "build": ".",
                     "environment": {"FOO": "bar", "PORT": "8000"},
+                },
+            },
+        }
+        result = transformer.resolve_env_placeholders(compose)
+        assert result["services"]["backend"]["environment"] == {
+            "FOO": "bar",
+            "PORT": "8000",
+        }
+
+    def test_does_not_mutate_input(self, transformer):
+        compose = {
+            "services": {
+                "backend": {
+                    "environment": {
+                        "BACKEND_URL": "${BACKEND_URL:-http://backend:8000}",
+                        "REQUIRED_VAR": "${REQUIRED_VAR:?missing}",
+                    },
+                },
+            },
+        }
+        original = {
+            "BACKEND_URL": "${BACKEND_URL:-http://backend:8000}",
+            "REQUIRED_VAR": "${REQUIRED_VAR:?missing}",
+        }
+        transformer.resolve_env_placeholders(compose)
+        assert compose["services"]["backend"]["environment"] == original
+
+
+class TestTransformPreservesEnvPlaceholders:
+    """``transform()`` leaves env-value ``${...}`` placeholders verbatim
+    so callers whose destination performs its own substitution (e.g. the
+    platform installer reading a catalog template) receive an
+    unresolved compose."""
+
+    def test_required_placeholder_preserved(self, transformer):
+        """``${VAR:?error}`` survives verbatim so a downstream consumer
+        sees the required-var marker."""
+        compose = {
+            "services": {
+                "neo4j": {
+                    "image": "neo4j:5",
+                    "environment": {
+                        "NEO4J_AUTH": "neo4j/${NEO4J_PASSWORD:?NEO4J_PASSWORD must be set}",
+                        "KZ_NEO4J_PASSWORD": "${NEO4J_PASSWORD:?NEO4J_PASSWORD must be set}",
+                    },
+                },
+            },
+        }
+        result = transformer.transform(compose, "test", "v1", "reg")
+        assert result["services"]["neo4j"]["environment"] == {
+            "NEO4J_AUTH": "neo4j/${NEO4J_PASSWORD:?NEO4J_PASSWORD must be set}",
+            "KZ_NEO4J_PASSWORD": "${NEO4J_PASSWORD:?NEO4J_PASSWORD must be set}",
+        }
+
+    def test_default_placeholder_preserved(self, transformer):
+        """``${VAR:-default}`` survives verbatim so a downstream consumer
+        decides whether to substitute or fall through to the default."""
+        compose = {
+            "services": {
+                "graphiti": {
+                    "image": "graphiti:0.28",
+                    "environment": {
+                        "KAMIWAZA_ENDPOINT": "${KAMIWAZA_ENDPOINT:-http://host.docker.internal:8080}",
+                        "OPENAI_API_KEY": "${OPENAI_API_KEY:-not-needed-kamiwaza}",
+                        "NEO4J_HOST": "${NEO4J_HOST:-neo4j}",
+                    },
+                },
+            },
+        }
+        result = transformer.transform(compose, "test", "v1", "reg")
+        assert result["services"]["graphiti"]["environment"] == {
+            "KAMIWAZA_ENDPOINT": "${KAMIWAZA_ENDPOINT:-http://host.docker.internal:8080}",
+            "OPENAI_API_KEY": "${OPENAI_API_KEY:-not-needed-kamiwaza}",
+            "NEO4J_HOST": "${NEO4J_HOST:-neo4j}",
+        }
+
+    def test_bare_placeholder_preserved(self, transformer):
+        """``${VAR}`` with no default survives verbatim — extensions use
+        this when the caller must supply a value with no fallback."""
+        compose = {
+            "services": {
+                "backend": {
+                    "image": "backend:1",
+                    "environment": {"OPENAI_BASE_URL": "${OPENAI_BASE_URL}"},
                 },
             },
         }
         result = transformer.transform(compose, "test", "v1", "reg")
         assert result["services"]["backend"]["environment"] == {
-            "FOO": "bar",
-            "PORT": "8000",
+            "OPENAI_BASE_URL": "${OPENAI_BASE_URL}",
         }
+
+    def test_list_form_placeholders_preserved(self, transformer):
+        """Compose env can be ``KEY=value`` list form too. Placeholders
+        in list-form entries must also survive verbatim."""
+        compose = {
+            "services": {
+                "backend": {
+                    "image": "backend:1",
+                    "environment": [
+                        "NEO4J_PASSWORD=${NEO4J_PASSWORD:?required}",
+                        "BACKEND_URL=${BACKEND_URL:-http://backend:8000}",
+                        "OPENAI_API_KEY=${OPENAI_API_KEY}",
+                        "PLAIN=kept",
+                    ],
+                },
+            },
+        }
+        result = transformer.transform(compose, "test", "v1", "reg")
+        assert result["services"]["backend"]["environment"] == [
+            "NEO4J_PASSWORD=${NEO4J_PASSWORD:?required}",
+            "BACKEND_URL=${BACKEND_URL:-http://backend:8000}",
+            "OPENAI_API_KEY=${OPENAI_API_KEY}",
+            "PLAIN=kept",
+        ]
 
 
 class TestDetectServiceUrlRewrites:
