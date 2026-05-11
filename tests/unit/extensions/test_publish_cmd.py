@@ -1833,3 +1833,352 @@ class TestPublishDigest:
                 "ghcr.io/my-org/my-app-backend:1.0.0-dev": _DIGEST_USER_SUPPLIED,
             }
             assert "dev-helper" not in str(kwargs["digest_map"])
+
+
+# ------------------------------------------------------------------
+# Appgarden compose preference (ENG-4907)
+# ------------------------------------------------------------------
+
+
+class TestLoadAppgardenCompose:
+    """`_load_appgarden_compose` reads `docker-compose.appgarden.yml`."""
+
+    def test_returns_none_when_file_missing(self, tmp_path):
+        from kamiwaza_extensions.commands.publish import _load_appgarden_compose
+
+        assert _load_appgarden_compose(tmp_path) is None
+
+    def test_returns_path_and_data_when_present(self, tmp_path):
+        from kamiwaza_extensions.commands.publish import _load_appgarden_compose
+
+        appgarden = tmp_path / "docker-compose.appgarden.yml"
+        appgarden.write_text(
+            "services:\n"
+            "  backend:\n"
+            "    image: ghcr.io/my-org/my-app-backend:1.0.0\n"
+        )
+        result = _load_appgarden_compose(tmp_path)
+        assert result is not None
+        path, data = result
+        assert path == appgarden
+        assert data["services"]["backend"]["image"] == (
+            "ghcr.io/my-org/my-app-backend:1.0.0"
+        )
+
+    def test_returns_none_on_malformed_yaml(self, tmp_path):
+        from kamiwaza_extensions.commands.publish import _load_appgarden_compose
+
+        (tmp_path / "docker-compose.appgarden.yml").write_text(
+            "services:\n  backend: {unclosed\n"
+        )
+        assert _load_appgarden_compose(tmp_path) is None
+
+    def test_returns_none_when_top_level_not_mapping(self, tmp_path):
+        from kamiwaza_extensions.commands.publish import _load_appgarden_compose
+
+        (tmp_path / "docker-compose.appgarden.yml").write_text("- not\n- a mapping\n")
+        assert _load_appgarden_compose(tmp_path) is None
+
+
+class TestRetagAppgardenCompose:
+    """`_retag_appgarden_compose` retags only build-context services."""
+
+    def test_retags_build_context_service(self):
+        from kamiwaza_extensions.commands.publish import _retag_appgarden_compose
+
+        appgarden = {
+            "services": {
+                "backend": {"image": "ghcr.io/my-org/my-app-backend:2.0.0"},
+            },
+        }
+        source = {
+            "services": {
+                "backend": {"build": {"context": "."}},
+            },
+        }
+        out = _retag_appgarden_compose(
+            appgarden, source,
+            extension_name="my-app", image_tag="2.0.0-dev",
+            registry="ghcr.io/my-org",
+        )
+        assert out["services"]["backend"]["image"] == (
+            "ghcr.io/my-org/my-app-backend:2.0.0-dev"
+        )
+
+    def test_passes_external_image_through_unchanged(self):
+        from kamiwaza_extensions.commands.publish import _retag_appgarden_compose
+
+        appgarden = {
+            "services": {
+                "neo4j": {"image": "ghcr.io/upstream/neo4j:v5.26.21"},
+            },
+        }
+        source = {
+            "services": {
+                "neo4j": {"image": "ghcr.io/upstream/neo4j:v5.26.21"},
+            },
+        }
+        out = _retag_appgarden_compose(
+            appgarden, source,
+            extension_name="my-app", image_tag="2.0.0-dev",
+            registry="ghcr.io/my-org",
+        )
+        assert out["services"]["neo4j"]["image"] == (
+            "ghcr.io/upstream/neo4j:v5.26.21"
+        )
+
+    def test_mixed_services_only_build_owned_retagged(self):
+        """Graphiti-shaped: external neo4j + built graphiti."""
+        from kamiwaza_extensions.commands.publish import _retag_appgarden_compose
+
+        appgarden = {
+            "services": {
+                "neo4j": {
+                    "image": "ghcr.io/upstream/neo4j:v5.26.21",
+                    "environment": ["NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:?must be set}"],
+                },
+                "graphiti": {
+                    "image": (
+                        "ghcr.io/my-org/service-graphiti-graphiti:2.3.1"
+                    ),
+                    "environment": ["NEO4J_HOST=${NEO4J_HOST:-neo4j}"],
+                },
+            },
+        }
+        source = {
+            "services": {
+                "neo4j": {"image": "ghcr.io/upstream/neo4j:v5.26.21"},
+                "graphiti": {
+                    "build": {"context": "."},
+                    "image": "ghcr.io/my-org/service-graphiti-graphiti:2.3.1",
+                },
+            },
+        }
+        out = _retag_appgarden_compose(
+            appgarden, source,
+            extension_name="service-graphiti", image_tag="2.3.1-dev",
+            registry="ghcr.io/my-org",
+        )
+        assert out["services"]["neo4j"]["image"] == (
+            "ghcr.io/upstream/neo4j:v5.26.21"
+        )
+        assert out["services"]["graphiti"]["image"] == (
+            "ghcr.io/my-org/service-graphiti-graphiti:2.3.1-dev"
+        )
+        # Env placeholders preserved verbatim (ENG-4860 acceptance).
+        assert out["services"]["graphiti"]["environment"] == [
+            "NEO4J_HOST=${NEO4J_HOST:-neo4j}"
+        ]
+        # Original appgarden dict is not mutated (deep copy).
+        assert appgarden["services"]["graphiti"]["image"] == (
+            "ghcr.io/my-org/service-graphiti-graphiti:2.3.1"
+        )
+
+    def test_service_only_in_appgarden_passes_through(self):
+        """Service the extension's sync-compose invented (not in source) → external."""
+        from kamiwaza_extensions.commands.publish import _retag_appgarden_compose
+
+        appgarden = {
+            "services": {
+                "sidecar": {"image": "ghcr.io/third-party/sidecar:1.0"},
+            },
+        }
+        source = {"services": {}}
+        out = _retag_appgarden_compose(
+            appgarden, source,
+            extension_name="my-app", image_tag="2.0.0-dev",
+            registry="ghcr.io/my-org",
+        )
+        assert out["services"]["sidecar"]["image"] == (
+            "ghcr.io/third-party/sidecar:1.0"
+        )
+
+    def test_revision_tag_overrides_stage_tag(self):
+        """`--revision` passes through `image_tag` verbatim (CI SHA-pinning)."""
+        from kamiwaza_extensions.commands.publish import _retag_appgarden_compose
+
+        appgarden = {"services": {"backend": {"image": "ghcr.io/my-org/my-app-backend:2.0.0"}}}
+        source = {"services": {"backend": {"build": {"context": "."}}}}
+        out = _retag_appgarden_compose(
+            appgarden, source,
+            extension_name="my-app", image_tag="2.0.0-abc123",
+            registry="ghcr.io/my-org",
+        )
+        assert out["services"]["backend"]["image"] == (
+            "ghcr.io/my-org/my-app-backend:2.0.0-abc123"
+        )
+
+    def test_profiled_build_service_not_retagged(self):
+        """Service with `build:` + `profiles:` in source must not be retagged.
+
+        Mirrors `buildable_services` filter in `run_publish`: profiled
+        services are local-only and excluded from `published_refs`/digest
+        pinning. Retagging them anyway would ship a catalog ref pointing
+        at an image that was never built/pushed.
+        """
+        from kamiwaza_extensions.commands.publish import _retag_appgarden_compose
+
+        appgarden = {
+            "services": {
+                "backend": {"image": "ghcr.io/my-org/my-app-backend:2.0.0"},
+                "dev-helper": {
+                    "image": "ghcr.io/my-org/my-app-dev-helper:local-only"
+                },
+            },
+        }
+        source = {
+            "services": {
+                "backend": {"build": {"context": "."}},
+                "dev-helper": {
+                    "build": {"context": "."},
+                    "profiles": ["dev-only"],
+                },
+            },
+        }
+        out = _retag_appgarden_compose(
+            appgarden, source,
+            extension_name="my-app", image_tag="2.0.0-dev",
+            registry="ghcr.io/my-org",
+        )
+        # Non-profiled build service: retagged.
+        assert out["services"]["backend"]["image"] == (
+            "ghcr.io/my-org/my-app-backend:2.0.0-dev"
+        )
+        # Profiled build service: pass through, NOT retagged.
+        assert out["services"]["dev-helper"]["image"] == (
+            "ghcr.io/my-org/my-app-dev-helper:local-only"
+        )
+
+
+class TestPublishWithAppgarden:
+    """End-to-end: appgarden.yml on disk skips ComposeTransformer.transform."""
+
+    @patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher")
+    @patch("kamiwaza_extensions.registry_builder.RegistryBuilder")
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher")
+    @patch("kamiwaza_extensions.image_builder.ImageBuilder")
+    @patch("kamiwaza_extensions.profile_manager.ProfileManager")
+    @patch("kamiwaza_extensions.compose_transformer.ComposeTransformer")
+    @patch("kamiwaza_extensions.validators.compose.ComposeValidator")
+    @patch("kamiwaza_extensions.validators.metadata.MetadataValidator")
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_appgarden_file_bypasses_generic_transform(
+        self,
+        mock_detector_cls,
+        mock_meta_validator_cls,
+        mock_compose_validator_cls,
+        mock_transformer_cls,
+        mock_profile_mgr_cls,
+        mock_builder_cls,
+        mock_pusher_cls,
+        mock_reg_builder_cls,
+        mock_publisher_cls,
+        tmp_path,
+    ):
+        # Authored appgarden compose carries the extension's intended shape.
+        (tmp_path / "docker-compose.appgarden.yml").write_text(
+            "services:\n"
+            "  neo4j:\n"
+            "    image: ghcr.io/upstream/neo4j:v5.26.21\n"
+            "  backend:\n"
+            "    image: ghcr.io/my-org/my-app-backend:1.0.0\n"
+            "    environment:\n"
+            "      - HOSTNAME_FROM_APPGARDEN=set-by-sync-compose\n"
+        )
+        wired = _wire_publish_mocks(
+            detector_cls=mock_detector_cls,
+            meta_validator_cls=mock_meta_validator_cls,
+            compose_validator_cls=mock_compose_validator_cls,
+            transformer_cls=mock_transformer_cls,
+            profile_mgr_cls=mock_profile_mgr_cls,
+            builder_cls=mock_builder_cls,
+            pusher_cls=mock_pusher_cls,
+            reg_builder_cls=mock_reg_builder_cls,
+            publisher_cls=mock_publisher_cls,
+            tmp_path=tmp_path,
+            compose_data={
+                "services": {
+                    "neo4j": {"image": "ghcr.io/upstream/neo4j:v5.26.21"},
+                    "backend": {
+                        "build": {"context": "."},
+                        "image": "ghcr.io/my-org/my-app-backend:1.0.0",
+                    },
+                },
+            },
+        )
+
+        from kamiwaza_extensions.commands.publish import run_publish
+
+        run_publish(stage="dev")
+
+        # ComposeTransformer.transform must NOT be invoked when appgarden present.
+        mock_transformer_cls.return_value.transform.assert_not_called()
+
+        # The compose validator was called against the appgarden file path.
+        validator_args, _ = (
+            mock_compose_validator_cls.return_value.validate.call_args
+        )
+        assert validator_args[0].name == "docker-compose.appgarden.yml"
+
+        # Catalog entry's `transformed_compose` is the retagged appgarden:
+        # - backend (had build:) → retagged with stage suffix
+        # - neo4j (external) → unchanged
+        # - environment values preserved verbatim from appgarden.yml
+        entry_kwargs = wired["reg_builder"].build_entry.call_args.kwargs
+        transformed = entry_kwargs["transformed_compose"]
+        assert transformed["services"]["backend"]["image"] == (
+            "ghcr.io/my-org/my-app-backend:1.0.0-dev"
+        )
+        assert transformed["services"]["neo4j"]["image"] == (
+            "ghcr.io/upstream/neo4j:v5.26.21"
+        )
+        assert transformed["services"]["backend"]["environment"] == [
+            "HOSTNAME_FROM_APPGARDEN=set-by-sync-compose"
+        ]
+
+    @patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher")
+    @patch("kamiwaza_extensions.registry_builder.RegistryBuilder")
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher")
+    @patch("kamiwaza_extensions.image_builder.ImageBuilder")
+    @patch("kamiwaza_extensions.profile_manager.ProfileManager")
+    @patch("kamiwaza_extensions.compose_transformer.ComposeTransformer")
+    @patch("kamiwaza_extensions.validators.compose.ComposeValidator")
+    @patch("kamiwaza_extensions.validators.metadata.MetadataValidator")
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_no_appgarden_falls_back_to_generic_transform(
+        self,
+        mock_detector_cls,
+        mock_meta_validator_cls,
+        mock_compose_validator_cls,
+        mock_transformer_cls,
+        mock_profile_mgr_cls,
+        mock_builder_cls,
+        mock_pusher_cls,
+        mock_reg_builder_cls,
+        mock_publisher_cls,
+        tmp_path,
+    ):
+        # No docker-compose.appgarden.yml on disk → legacy behavior.
+        _wire_publish_mocks(
+            detector_cls=mock_detector_cls,
+            meta_validator_cls=mock_meta_validator_cls,
+            compose_validator_cls=mock_compose_validator_cls,
+            transformer_cls=mock_transformer_cls,
+            profile_mgr_cls=mock_profile_mgr_cls,
+            builder_cls=mock_builder_cls,
+            pusher_cls=mock_pusher_cls,
+            reg_builder_cls=mock_reg_builder_cls,
+            publisher_cls=mock_publisher_cls,
+            tmp_path=tmp_path,
+        )
+
+        from kamiwaza_extensions.commands.publish import run_publish
+
+        run_publish(stage="dev")
+
+        mock_transformer_cls.return_value.transform.assert_called_once()
+        # Validator called against the source docker-compose.yml path.
+        validator_args, _ = (
+            mock_compose_validator_cls.return_value.validate.call_args
+        )
+        assert validator_args[0].name == "docker-compose.yml"
