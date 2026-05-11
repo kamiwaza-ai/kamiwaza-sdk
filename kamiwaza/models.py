@@ -20,7 +20,7 @@ must not break the SDK in a customer's pinned wheel.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict
 
@@ -81,6 +81,43 @@ class ClusterCapabilities(BaseModel):
     federation_count: int = 0
     active_deployments: int = 0
     ray_ready: bool = False
+
+
+class DiagnoseIssue(BaseModel):
+    """T5.13 / ENG-4694 — a single cluster-health issue from diagnose().
+
+    Stable ``id`` (e.g. ``admin_missing_baseline_rebac``,
+    ``missing_token_exchange_permission``) lets customer code match
+    programmatically. ``fix_endpoint`` + ``fix_payload`` are present when
+    ``auto_fixable=True`` so a future ``fix()`` orchestration can drive
+    remediation; ``None`` when manual remediation is required.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    id: str
+    severity: Literal["error", "warning", "info"]
+    summary: str
+    detail: Dict[str, Any] = {}
+    fix_endpoint: Optional[str] = None
+    fix_payload: Optional[Dict[str, Any]] = None
+    auto_fixable: bool = False
+
+
+class ClusterDiagnostics(BaseModel):
+    """T5.13 / ENG-4694 — aggregate result of a cluster diagnose run.
+
+    Returned by ``kz.cluster.diagnose()``. ``has_issues`` is True iff any
+    issue has ``severity == "error"``. Server-side correlate:
+    ``kamiwaza.cluster.diagnose.services.ClusterDiagnoseService.run()``.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    cluster_id: str
+    timestamp: datetime
+    issues: List[DiagnoseIssue] = []
+    has_issues: bool = False
 
 
 class JobResult(BaseModel):

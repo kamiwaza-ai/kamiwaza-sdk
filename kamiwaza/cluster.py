@@ -1,25 +1,29 @@
-"""T5.21 / ENG-4698 — kamiwaza.cluster module.
+"""T5.7 / T5.21 — kamiwaza.cluster module.
 
-Customer-facing cluster surface per design §4.2.11 / §4.4.3:
+Customer-facing cluster surface per design §4.2.11 / §4.4.3 / §4.2.10:
 
-    kz.cluster.capabilities()    -> ClusterCapabilities
+    kz.cluster.capabilities()    -> ClusterCapabilities  (T5.21 / ENG-4698)
+    kz.cluster.diagnose()        -> ClusterDiagnostics   (T5.7  / ENG-4692)
 
-The capabilities endpoint is mesh-routable since ENG-4697 (auth widened
-to viewer); a probing peer reaches the same surface through
+``capabilities()`` is mesh-routable since ENG-4697 (auth widened to
+viewer); a probing peer reaches the same surface through
 ``kz.federations[name].probe()`` (see kamiwaza.federations.FederationProxy).
 
-Subsequent WS-M2 cycles layer ``diagnose()``, ``operations()``, and
-``fix()`` onto this module (T5.7 / T5.8 / T5.13 / T5.14).
+``diagnose()`` is admin-only and returns structured cluster-health
+issues. ``fix()`` orchestration (T5.8 / ENG-4693) is deferred until at
+least one auto-fixable probe ships server-side — adding it now would be
+a customer surface that always reports manual_required for every issue.
 
-Server-side correlate: ``GET /api/cluster/cluster_capabilities`` in
-``kamiwaza.cluster.api`` (extended by ENG-4696).
+Server-side correlates:
+- ``GET /api/cluster/cluster_capabilities``  (extended by ENG-4696)
+- ``GET /api/cluster/diagnose``              (new in ENG-4694)
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from kamiwaza.models import ClusterCapabilities
+from kamiwaza.models import ClusterCapabilities, ClusterDiagnostics
 
 
 class ClusterAPI:
@@ -43,3 +47,21 @@ class ClusterAPI:
         """
         body = self._client._request("GET", "/api/cluster/cluster_capabilities")
         return ClusterCapabilities.model_validate(body)
+
+    def diagnose(self) -> ClusterDiagnostics:
+        """Run cluster-health probes and return structured issues (T5.7).
+
+        Hits ``GET /api/cluster/diagnose`` on the local cluster — admin-only.
+        Each probe is fail-soft individually; ``has_issues`` is True iff any
+        probe surfaced an error-severity issue.
+
+        Demo bullet (1) for WS-M2: clean status on a healthy cluster,
+        structured issues on a partially-bootstrapped one.
+
+        Returns:
+            ClusterDiagnostics with cluster_id, timestamp, and per-issue
+            DiagnoseIssue records carrying stable ``id`` strings for
+            programmatic matching.
+        """
+        body = self._client._request("GET", "/api/cluster/diagnose")
+        return ClusterDiagnostics.model_validate(body)
