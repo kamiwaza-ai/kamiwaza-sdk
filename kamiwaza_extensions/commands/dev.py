@@ -431,6 +431,7 @@ def run_dev_remote(
         revision_tag=rev_tag,
         registry=registry,
     )
+    transformed = transformer.resolve_env_placeholders(transformed)
 
     # 5b. Resolve SDK override for build
     build_overrides = None

@@ -69,6 +69,11 @@ class ComposeTransformer:
         4. Add / update ``image`` fields with *registry*/*revision_tag*
         5. Add resource limits if missing
         6. Remove ``extra_hosts``, ``container_name``, ``networks`` keys
+
+        Env-value ``${VAR}`` placeholders pass through unchanged. Callers
+        shipping the result to a destination that does NOT perform its
+        own variable substitution (e.g. a Kubernetes API) must additionally
+        call :meth:`resolve_env_placeholders`.
         """
         out = copy.deepcopy(compose_data)
 
@@ -134,17 +139,40 @@ class ComposeTransformer:
         svc.pop("container_name", None)
         svc.pop("networks", None)
 
-        # 7. Resolve compose ``${VAR:-default}`` substitutions:
-        #    - Non-platform vars (e.g. ``BACKEND_URL``) → resolve to
-        #      ``default`` so the value reaches the pod.
-        #    - Platform vars (``KAMIWAZA_*``) → drop, let the operator's
-        #      ConfigMap envFrom injection win (an explicit ``env``
-        #      would shadow the cluster-internal value).
-        #    - Unresolvable ``${VAR}`` (no default) → drop, same as before.
-        if "environment" in svc:
-            svc["environment"] = _resolve_shell_refs(svc["environment"])
-
         return svc
+
+    def resolve_env_placeholders(
+        self,
+        compose_data: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Return a copy of *compose_data* with ``${VAR}`` env-value
+        placeholders collapsed.
+
+        Apply when the consumer of the transformed compose will NOT
+        perform its own variable substitution — e.g. shipping the
+        compose straight to a Kubernetes API. K8s reads env values as
+        literal strings, so an unresolved ``${VAR:-default}`` reaches
+        the pod verbatim.
+
+        Rules (per env var):
+        - ``${VAR:-default}`` / ``${VAR-default}`` for non-platform
+          keys → collapsed to the literal ``default``.
+        - ``${KAMIWAZA_*:-default}`` → dropped. The kamiwaza-extension
+          operator injects these via ConfigMap envFrom; an explicit
+          env entry would shadow the cluster-internal value.
+        - ``${VAR}`` (no default) and ``${VAR:?error}`` (required) →
+          dropped. No safe value to ship.
+        - Plain values pass through unchanged.
+
+        Skip this step when the destination DOES perform install-time
+        substitution (e.g. a catalog template consumed by the platform
+        installer that holds user-supplied ``required_env_vars``).
+        """
+        out = copy.deepcopy(compose_data)
+        for svc in (out.get("services") or {}).values():
+            if "environment" in svc:
+                svc["environment"] = _resolve_shell_refs(svc["environment"])
+        return out
 
 
 # ------------------------------------------------------------------
