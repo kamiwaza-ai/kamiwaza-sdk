@@ -77,6 +77,17 @@ class Kamiwaza:
         self._jobs: Any = None
         self._cluster: Any = None
         self._gates: Any = None
+        # NB: lazy retrieval-module attribute; matching wrapper below.
+        self._retrieval_api: Any = None
+
+    @property
+    def retrieval(self) -> Any:
+        """Retrieval job management (T5.36 / ENG-4713)."""
+        if self._retrieval_api is None:
+            from kamiwaza import retrieval as _retrieval_module
+
+            self._retrieval_api = _retrieval_module.RetrievalAPI(client=self)
+        return self._retrieval_api
 
     @property
     def gates(self) -> Any:

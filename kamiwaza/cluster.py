@@ -110,19 +110,25 @@ class ClusterAPI:
     def operations(self) -> ClusterOperations:
         """Return a unified view of in-flight jobs and retrievals (T5.37).
 
-        Walking-skeleton scope: jobs slice only — retrievals is an empty
-        list until ``GET /api/retrieval/jobs`` (T5.30) and the SDK
-        retrieval module (T5.36) ship. The contract is already the
-        unified shape, so customer code written today still works when
-        retrievals start populating.
+        Both slices now populate from their respective listing endpoints
+        (ENG-4706 for jobs, ENG-4707 for retrievals). On a missing /
+        503ing retrieval listing endpoint (e.g., older server), the
+        retrievals slice gracefully falls back to empty so the call
+        still returns a usable shape.
 
         Demo bullet (2): ``kz.cluster.operations()`` lists the running
         federated job + any active retrieval.
         """
         jobs_body = self._client._request("GET", "/api/cluster/jobs/")
+        try:
+            retrievals_body = self._client._request("GET", "/api/retrieval/jobs")
+        except KamiwazaError:
+            retrievals_body = []
         return ClusterOperations(
             jobs=list(jobs_body) if isinstance(jobs_body, list) else [],
-            retrievals=[],
+            retrievals=(
+                list(retrievals_body) if isinstance(retrievals_body, list) else []
+            ),
         )
 
     def _attempt_fix(self, issue: DiagnoseIssue) -> FixOutcome:

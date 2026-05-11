@@ -89,14 +89,20 @@ def test_operations_lists_running_jobs(httpx_mock: Any) -> None:
         ],
     )
 
+    httpx_mock.add_response(
+        method="GET",
+        url="https://kamiwaza.test/api/retrieval/jobs",
+        status_code=200,
+        json=[],
+    )
+
     client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
     result = client.cluster.operations()
 
     assert isinstance(result, ClusterOperations)
     assert len(result.jobs) == 2
     assert result.jobs[0]["status"] == "RUNNING"
-    # Retrieval slice is empty until T5.30/T5.36 land; the contract is
-    # already that operations() returns the unified shape.
+    # Retrievals slice populates via /api/retrieval/jobs (T5.30/T5.36).
     assert result.retrievals == []
 
 
@@ -108,6 +114,12 @@ def test_operations_empty_when_no_jobs(httpx_mock: Any) -> None:
     httpx_mock.add_response(
         method="GET",
         url="https://kamiwaza.test/api/cluster/jobs/",
+        status_code=200,
+        json=[],
+    )
+    httpx_mock.add_response(
+        method="GET",
+        url="https://kamiwaza.test/api/retrieval/jobs",
         status_code=200,
         json=[],
     )
