@@ -67,15 +67,24 @@ def _retag_appgarden_compose(
     """Rewrite image tags on services that this publish actually owns.
 
     A service is "owned" by this publish if it has a ``build:`` block in
-    the source ``docker-compose.yml`` (i.e. ``ImageBuilder`` will build
-    and push an image for it). For those services we set
+    the source ``docker-compose.yml`` and is *not* gated by ``profiles:``
+    (i.e. ``ImageBuilder`` will build and push an image for it; this
+    mirrors the ``buildable_services`` filter ``run_publish`` uses to
+    derive ``published_refs``/``digest_map``). For those services we set
     ``image: {registry}/{ext}-{svc}:{image_tag}`` so the catalog points
     at the image we just built with the resolved ``--stage`` / ``--revision``
     tag. External refs (``ghcr.io/.../neo4j``) and any service the
     extension's ``sync-compose.py`` invented are passed through verbatim.
 
     The appgarden file is otherwise considered deployment-ready by the
-    extension's authoring intent; no other transformations are applied.
+    extension's authoring intent and passed through unchanged: host port
+    bindings, bind mounts, ``extra_hosts``, ``container_name``,
+    top-level ``networks``, env-value placeholders, and the
+    ``_ensure_resource_limits`` defaults that ``ComposeTransformer``
+    used to backfill are NOT applied here. ``sync-compose.py`` owns that
+    shape; if a service is missing ``deploy.resources.limits``,
+    ``ComposeValidator`` will surface the warning and the catalog ships
+    without the auto-fill.
     """
     out = copy.deepcopy(appgarden_data)
     source_services = (
@@ -83,10 +92,15 @@ def _retag_appgarden_compose(
         if isinstance(source_compose_data, dict)
         else {}
     )
+    # Mirror `buildable_services` (publish.py): exclude `profiles:`-gated
+    # services. Without this filter, a `build: + profiles:` service that
+    # leaks into the authored appgarden file would be retagged into the
+    # catalog while being absent from `published_refs`/`digest_map` — a
+    # local-only ref shipping with no corresponding push.
     build_services = {
         name
         for name, svc in source_services.items()
-        if isinstance(svc, dict) and "build" in svc
+        if isinstance(svc, dict) and "build" in svc and not svc.get("profiles")
     }
     for svc_name, svc in (out.get("services") or {}).items():
         if not isinstance(svc, dict):

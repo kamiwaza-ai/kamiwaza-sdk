@@ -2008,6 +2008,47 @@ class TestRetagAppgardenCompose:
             "ghcr.io/my-org/my-app-backend:2.0.0-abc123"
         )
 
+    def test_profiled_build_service_not_retagged(self):
+        """Service with `build:` + `profiles:` in source must not be retagged.
+
+        Mirrors `buildable_services` filter in `run_publish`: profiled
+        services are local-only and excluded from `published_refs`/digest
+        pinning. Retagging them anyway would ship a catalog ref pointing
+        at an image that was never built/pushed.
+        """
+        from kamiwaza_extensions.commands.publish import _retag_appgarden_compose
+
+        appgarden = {
+            "services": {
+                "backend": {"image": "ghcr.io/my-org/my-app-backend:2.0.0"},
+                "dev-helper": {
+                    "image": "ghcr.io/my-org/my-app-dev-helper:local-only"
+                },
+            },
+        }
+        source = {
+            "services": {
+                "backend": {"build": {"context": "."}},
+                "dev-helper": {
+                    "build": {"context": "."},
+                    "profiles": ["dev-only"],
+                },
+            },
+        }
+        out = _retag_appgarden_compose(
+            appgarden, source,
+            extension_name="my-app", image_tag="2.0.0-dev",
+            registry="ghcr.io/my-org",
+        )
+        # Non-profiled build service: retagged.
+        assert out["services"]["backend"]["image"] == (
+            "ghcr.io/my-org/my-app-backend:2.0.0-dev"
+        )
+        # Profiled build service: pass through, NOT retagged.
+        assert out["services"]["dev-helper"]["image"] == (
+            "ghcr.io/my-org/my-app-dev-helper:local-only"
+        )
+
 
 class TestPublishWithAppgarden:
     """End-to-end: appgarden.yml on disk skips ComposeTransformer.transform."""
