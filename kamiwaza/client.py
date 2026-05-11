@@ -76,6 +76,21 @@ class Kamiwaza:
         self._federations: Any = None
         self._jobs: Any = None
         self._cluster: Any = None
+        self._gates: Any = None
+
+    @property
+    def gates(self) -> Any:
+        """Gate discovery (T5.4 / ENG-4691).
+
+        Returns a ``kamiwaza.gates.GatesAPI`` instance. WS-M2 surface is
+        ``discover(classpath)``; full surface (set_gate, packages.*) is
+        WS-M3.
+        """
+        if self._gates is None:
+            from kamiwaza.gates import GatesAPI
+
+            self._gates = GatesAPI(client=self)
+        return self._gates
 
     @property
     def cluster(self) -> Any:

@@ -151,6 +151,26 @@ class FixResult(BaseModel):
     outcomes: List[FixOutcome] = []
 
 
+class GateDiscovery(BaseModel):
+    """T5.4 / ENG-4691 — reflection payload from POST /api/authz/gates/discover.
+
+    Returned by ``kz.gates.discover(classpath)``. ``kind`` is one of
+    ``"execution"`` or ``"attribute"``. ``required_attributes`` is the
+    set of user-attribute specs the gate consumes; ``config_schema`` is
+    the JSONSchema-shaped binding schema (empty dict when the gate
+    doesn't declare a ``config_schema()`` classmethod).
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    name: str
+    kind: Literal["execution", "attribute"]
+    required_attributes: List[Dict[str, Any]] = []
+    config_schema: Dict[str, Any] = {}
+    classpath: str
+    location: str = ""
+
+
 class ClusterOperations(BaseModel):
     """T5.37 / ENG-4714 — unified jobs+retrieval listing.
 
