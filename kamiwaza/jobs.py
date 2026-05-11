@@ -53,8 +53,9 @@ class JobsAPI:
         target_cluster: Optional[str] = None,
         runtime_env: Optional[dict[str, Any]] = None,
         timeout_seconds: Optional[int] = None,
+        recoverable: bool = False,
     ) -> JobResult:
-        """Run a job synchronously and return the completed JobResult.
+        """Run a job and return the completed JobResult.
 
         Args:
             entrypoint: Shell command for Ray to execute, e.g.
@@ -62,16 +63,52 @@ class JobsAPI:
             target_cluster: Federation name to route to. None runs on
                 the local cluster.
             runtime_env: Ray runtime_env (env vars, working_dir, …).
-                Limited to the existing /run shape in skeleton; T5.38
-                adds pip / py_modules / working_dir convenience kwargs.
-            timeout_seconds: Server-side wall-clock cap (informational
-                only — server enforces; SDK does not poll).
+            timeout_seconds: Wall-clock cap. Server-enforced for
+                ``recoverable=False``; SDK-enforced poll budget for
+                ``recoverable=True``.
+            recoverable: When True (T5.22 / ENG-4699), the SDK uses async
+                submit + poll instead of the sync /run path so the
+                ``job_id`` is in hand immediately. A connection drop
+                mid-job is recoverable via ``kz.jobs.wait(job_id, ...)``.
+                Recommended for any job with ``timeout_seconds > 60``;
+                the sync path holds the HTTP connection for the full
+                duration and FastAPI buffers the X-Job-Id header until
+                completion — a mid-job drop loses the job_id (see
+                design §4.2.14 + SDK README "Recoverable long-jobs").
 
         Returns:
             Completed ``JobResult``. ``status`` will be SUCCEEDED for
             success or FAILED with ``error`` populated. Customers branch
             on ``result.status`` instead of catching exceptions.
+
+        Raises:
+            MeshJobTimeoutError: Only on the recoverable path, when
+                ``timeout_seconds`` expires before the job reaches a
+                terminal state.
         """
+        if recoverable:
+            return self._run_recoverable(
+                entrypoint=entrypoint,
+                target_cluster=target_cluster,
+                runtime_env=runtime_env,
+                timeout_seconds=timeout_seconds,
+            )
+        return self._run_sync(
+            entrypoint=entrypoint,
+            target_cluster=target_cluster,
+            runtime_env=runtime_env,
+            timeout_seconds=timeout_seconds,
+        )
+
+    def _run_sync(
+        self,
+        *,
+        entrypoint: str,
+        target_cluster: Optional[str],
+        runtime_env: Optional[dict[str, Any]],
+        timeout_seconds: Optional[int],
+    ) -> JobResult:
+        """Existing sync /run path; X-Job-Id only visible on completion."""
         body = self._build_run_body(
             entrypoint=entrypoint,
             target_cluster=target_cluster,
@@ -80,6 +117,29 @@ class JobsAPI:
         )
         response = self._client._request("POST", "/api/cluster/jobs/run", json=body)
         return JobResult.model_validate(response)
+
+    def _run_recoverable(
+        self,
+        *,
+        entrypoint: str,
+        target_cluster: Optional[str],
+        runtime_env: Optional[dict[str, Any]],
+        timeout_seconds: Optional[int],
+    ) -> JobResult:
+        """Async submit + poll. job_id available immediately for resume.
+
+        Per design §4.2.14: returns when the server reports a terminal
+        state, or raises MeshJobTimeoutError when ``timeout_seconds``
+        expires. The wait_seconds default (600s) matches the existing
+        sync /run default behavior for parity.
+        """
+        job_id = self.submit_async(
+            entrypoint=entrypoint,
+            target_cluster=target_cluster,
+            runtime_env=runtime_env,
+            timeout_seconds=timeout_seconds,
+        )
+        return self.wait(job_id, timeout=timeout_seconds or 600)
 
     def submit_async(
         self,

@@ -168,6 +168,46 @@ The `audit_actor` field is the same value `kz.jobs.run(...).audit_actor`
 returns in step 3 — that round-trip is the demo gate's load-bearing
 signal.
 
+### Recoverable long-jobs
+
+For jobs that may take longer than ~60 seconds, use `kz.jobs.run(...,
+recoverable=True)` instead of the default. The default holds the HTTP
+connection for the full job duration; FastAPI buffers the
+`X-Job-Id` response header along with the body and only flushes both on
+completion. If the connection drops mid-job, the SDK never sees the
+`X-Job-Id` and has no handle to recover the result from.
+
+`recoverable=True` flips the SDK to a `submit + poll` shape under the
+covers:
+
+1. `POST /api/cluster/jobs/submit` returns the `job_id` immediately.
+2. The SDK polls `/cluster/jobs/{id}/status` with exponential backoff
+   until the job reaches a terminal state.
+3. `/cluster/jobs/{id}/result` fetches the final payload.
+
+Because the `job_id` is in the SDK's hands from the first response, a
+mid-job process crash is recoverable on a fresh SDK instance:
+
+```python
+# Original process
+job_id = kz.jobs.submit_async(
+    entrypoint="python query.py",
+    target_cluster="ORION",
+    timeout_seconds=600,
+)
+# ... persist job_id somewhere (sqlite, /tmp file, etc.) ...
+# ... process dies ...
+
+# Fresh process, much later
+saved_job_id = load_persisted_job_id()
+result = kz.jobs.wait(saved_job_id, timeout=600)
+print(result.status, result.result)
+```
+
+**Recommended:** use `recoverable=True` for any job with
+`timeout_seconds > 60`. The two-call cost (submit + poll) is amortized
+over the long runtime.
+
 ### Error handling cheat sheet
 
 The SDK maps server-side error contracts to typed exceptions so
