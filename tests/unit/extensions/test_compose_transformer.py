@@ -225,6 +225,24 @@ class TestCleanup:
         assert "networks" not in result["services"]["api"]
         assert "networks" not in result
 
+    def test_preserves_x_kamiwaza_overrides(self, transformer):
+        compose = {
+            "services": {
+                "postgres": {
+                    "image": "postgres:15",
+                    "x-kamiwaza": {
+                        "containerSecurityContext": {"runAsNonRoot": False},
+                        "healthCheck": {"tcpSocket": {"port": 5432}},
+                    },
+                }
+            }
+        }
+        result = transformer.transform(compose, "test", "v1", "reg")
+        assert result["services"]["postgres"]["x-kamiwaza"] == {
+            "containerSecurityContext": {"runAsNonRoot": False},
+            "healthCheck": {"tcpSocket": {"port": 5432}},
+        }
+
 
 class TestFullTransform:
     def test_multi_service(self, transformer, multi_service_compose):
