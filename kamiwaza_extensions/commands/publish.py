@@ -231,15 +231,18 @@ def _verify_supplied_digest(ref: str, supplied: str) -> None:
 
 
 def _auto_resolve_digests(
-    refs: List[str], *, no_build: bool, no_push: bool,
+    refs: List[str],
 ) -> Dict[str, str]:
     """Resolve registry digests for each *ref* and return ``{ref: digest}``.
 
-    Soft-fails for the catalog-only-republish shape (``--no-build
-    --no-push``): pre-PR behavior was tag-only with no docker dependency,
-    so a resolve failure becomes a warning and the ref is omitted from
-    the result rather than aborting the publish.
+    Aborts the publish on any resolution failure. Silent degradation to
+    tag-only entries (the previous behavior in ``--no-build --no-push``
+    mode) hid upstream image-name mismatches that produced unpullable
+    catalog refs (ENG-4909), and a transient registry hiccup was
+    indistinguishable from a legitimate "docker not on host" fall-through.
     """
+    from rich.markup import escape as escape_markup
+
     from kamiwaza_extensions.image_pusher import ImagePushError, ImagePusher
 
     digest_map: Dict[str, str] = {}
@@ -247,14 +250,24 @@ def _auto_resolve_digests(
         try:
             digest_map[ref] = ImagePusher.resolve_digest(ref)
         except ImagePushError as exc:
-            if no_build and no_push:
-                console.print(
-                    f"  [yellow]warn[/yellow] could not resolve digest "
-                    f"for {ref}: {exc} — catalog will use tag-only for "
-                    "this ref"
-                )
-                continue
-            console.print(f"\n[red]Error:[/red] {exc}")
+            # Markup-escape the dynamic parts so a registry error message
+            # containing literal ``[`` (rare but possible) can't garble the
+            # error output via rich's tag parser.
+            safe_ref = escape_markup(ref)
+            safe_exc = escape_markup(str(exc))
+            console.print(
+                f"\n[red]Error:[/red] could not resolve digest for "
+                f"[bold]{safe_ref}[/bold]: {safe_exc}\n\n"
+                "The image must exist in the registry before catalog publish.\n"
+                "Common causes:\n"
+                "  • Image name in docker-compose.appgarden.yml doesn't "
+                "match the actual GHCR path\n"
+                "  • Image hasn't been pushed yet (run with build+push, "
+                "or push manually first)\n"
+                "  • Transient registry outage (retry the publish)\n"
+                "  • To pin a known digest without registry lookup, pass "
+                "--digest sha256:..."
+            )
             raise typer.Exit(code=1) from exc
     return digest_map
 
@@ -625,9 +638,7 @@ def run_publish(
             if not no_push:
                 _verify_supplied_digest(ref, digest)
         else:
-            digest_map = _auto_resolve_digests(
-                published_refs, no_build=no_build, no_push=no_push,
-            )
+            digest_map = _auto_resolve_digests(published_refs)
 
     # 7. Build catalog entry
     reg_builder = RegistryBuilder()

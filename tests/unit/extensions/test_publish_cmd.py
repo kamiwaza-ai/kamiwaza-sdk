@@ -1278,20 +1278,21 @@ class TestPublishDigest:
     @patch("kamiwaza_extensions.validators.compose.ComposeValidator")
     @patch("kamiwaza_extensions.validators.metadata.MetadataValidator")
     @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
-    def test_no_build_no_push_resolve_failure_falls_back_to_tag_only(
+    def test_no_build_no_push_resolve_failure_aborts_by_default(
         self, mock_detector_cls, mock_meta_validator_cls,
         mock_compose_validator_cls, mock_transformer_cls,
         mock_profile_mgr_cls, mock_builder_cls, mock_pusher_cls,
         mock_reg_builder_cls, mock_publisher_cls, mock_resolve,
         tmp_path,
     ):
-        # Catalog-only republish softly falls back to tag-only when
-        # resolve_digest fails (e.g. no docker on host). Catalog
-        # publishes; the failed ref is absent from digest_map.
+        # Catalog-only republish now aborts loudly when resolve_digest
+        # fails. The previous silent soft-fall to tag-only entries hid
+        # upstream image-name mismatches that produced unpullable refs
+        # in the catalog (see ENG-4909).
         from kamiwaza_extensions.image_pusher import ImagePushError
 
         mock_resolve.side_effect = ImagePushError("docker not found")
-        wired = _wire_publish_mocks(
+        _wire_publish_mocks(
             detector_cls=mock_detector_cls,
             meta_validator_cls=mock_meta_validator_cls,
             compose_validator_cls=mock_compose_validator_cls,
@@ -1306,13 +1307,8 @@ class TestPublishDigest:
 
         from kamiwaza_extensions.commands.publish import run_publish
 
-        # Must NOT raise — catalog still publishes with tag-only.
-        run_publish(stage="dev", no_build=True, no_push=True)
-
-        wired["reg_builder"].build_entry.assert_called_once()
-        kwargs = wired["reg_builder"].build_entry.call_args.kwargs
-        # digest_map either None or empty — no entries for the failed ref.
-        assert not kwargs.get("digest_map")
+        with pytest.raises((SystemExit, ClickExit)):
+            run_publish(stage="dev", no_build=True, no_push=True)
 
     @patch("kamiwaza_extensions.image_pusher.ImagePusher.resolve_digest")
     @patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher")
