@@ -431,9 +431,6 @@ def run_dev_remote(
         revision_tag=rev_tag,
         registry=registry,
     )
-    # The dev path ships compose straight to the K8s API, which reads
-    # env values as literal strings. Collapse ``${VAR}`` placeholders
-    # so pods don't see the raw substitution syntax.
     transformed = transformer.resolve_env_placeholders(transformed)
 
     # 5b. Resolve SDK override for build
