@@ -54,6 +54,9 @@ class JobsAPI:
         runtime_env: Optional[dict[str, Any]] = None,
         timeout_seconds: Optional[int] = None,
         recoverable: bool = False,
+        pip: Optional[list[str]] = None,
+        py_modules: Optional[list[str]] = None,
+        working_dir: Optional[str] = None,
     ) -> JobResult:
         """Run a job and return the completed JobResult.
 
@@ -63,18 +66,22 @@ class JobsAPI:
             target_cluster: Federation name to route to. None runs on
                 the local cluster.
             runtime_env: Ray runtime_env (env vars, working_dir, …).
+                Caller-provided keys win over the convenience kwargs
+                below on collision.
             timeout_seconds: Wall-clock cap. Server-enforced for
                 ``recoverable=False``; SDK-enforced poll budget for
                 ``recoverable=True``.
             recoverable: When True (T5.22 / ENG-4699), the SDK uses async
                 submit + poll instead of the sync /run path so the
-                ``job_id`` is in hand immediately. A connection drop
-                mid-job is recoverable via ``kz.jobs.wait(job_id, ...)``.
-                Recommended for any job with ``timeout_seconds > 60``;
-                the sync path holds the HTTP connection for the full
-                duration and FastAPI buffers the X-Job-Id header until
-                completion — a mid-job drop loses the job_id (see
-                design §4.2.14 + SDK README "Recoverable long-jobs").
+                ``job_id`` is in hand immediately.
+            pip: T5.38 / ENG-4715 / FR-94 convenience — Ray pip list,
+                packed into ``runtime_env["pip"]`` on the wire.
+            py_modules: T5.38 / ENG-4715 / FR-94 convenience — local
+                module paths to ship with the job; packs into
+                ``runtime_env["py_modules"]``.
+            working_dir: T5.38 / ENG-4715 / FR-94 convenience — local
+                directory to bundle as the working dir; packs into
+                ``runtime_env["working_dir"]``.
 
         Returns:
             Completed ``JobResult``. ``status`` will be SUCCEEDED for
@@ -86,19 +93,56 @@ class JobsAPI:
                 ``timeout_seconds`` expires before the job reaches a
                 terminal state.
         """
+        merged_runtime_env = self._merge_runtime_env(
+            runtime_env=runtime_env,
+            pip=pip,
+            py_modules=py_modules,
+            working_dir=working_dir,
+        )
         if recoverable:
             return self._run_recoverable(
                 entrypoint=entrypoint,
                 target_cluster=target_cluster,
-                runtime_env=runtime_env,
+                runtime_env=merged_runtime_env,
                 timeout_seconds=timeout_seconds,
             )
         return self._run_sync(
             entrypoint=entrypoint,
             target_cluster=target_cluster,
-            runtime_env=runtime_env,
+            runtime_env=merged_runtime_env,
             timeout_seconds=timeout_seconds,
         )
+
+    @staticmethod
+    def _merge_runtime_env(
+        *,
+        runtime_env: Optional[dict[str, Any]],
+        pip: Optional[list[str]],
+        py_modules: Optional[list[str]],
+        working_dir: Optional[str],
+    ) -> Optional[dict[str, Any]]:
+        """Pack convenience kwargs (T5.38) into a runtime_env dict.
+
+        Caller-supplied runtime_env wins on key collision — the
+        convenience kwargs are sugar, not overrides. Returns None when
+        no source provided so the body shape matches the pre-T5.38
+        default-caller pattern (no runtime_env key on the wire).
+        """
+        convenience: dict[str, Any] = {}
+        if pip is not None:
+            convenience["pip"] = pip
+        if py_modules is not None:
+            convenience["py_modules"] = py_modules
+        if working_dir is not None:
+            convenience["working_dir"] = working_dir
+
+        if not convenience and runtime_env is None:
+            return None
+
+        merged: dict[str, Any] = dict(convenience)
+        if runtime_env:
+            merged.update(runtime_env)  # caller wins on collision
+        return merged
 
     def _run_sync(
         self,
