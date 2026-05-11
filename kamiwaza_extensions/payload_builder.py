@@ -249,7 +249,7 @@ class PayloadBuilder:
                 env.append({"name": "KAMIWAZA_TLS_REJECT_UNAUTHORIZED", "value": "0"})
 
             health_check = _service_extension_field(svc, "healthCheck")
-            if health_check is None:
+            if not health_check:
                 health_check = self._default_health_check(
                     svc_name,
                     svc,
@@ -442,10 +442,14 @@ class PayloadBuilder:
 
         env_defaults = metadata.get("env_defaults") or {}
         services = transformed.get("services") or {}
-        for svc_name, svc in services.items():
+        # Prefer the conventional `sandbox-controller` service; fall back to
+        # any other service that explicitly declares SANDBOX_BACKEND=kubernetes.
+        ordered = sorted(
+            services.items(),
+            key=lambda item: 0 if item[0] == "sandbox-controller" else 1,
+        )
+        for svc_name, svc in ordered:
             env = _service_env_map(svc)
-            if svc_name != "sandbox-controller" and "SANDBOX_BACKEND" not in env:
-                continue
             if env.get("SANDBOX_BACKEND") != "kubernetes":
                 continue
 
@@ -473,7 +477,12 @@ class PayloadBuilder:
                 "SANDBOX_PERSISTENCE"
             )
             if isinstance(persistence, str):
-                spec["persistence"] = persistence.strip().lower() == "true"
+                spec["persistence"] = persistence.strip().lower() in {
+                    "true",
+                    "1",
+                    "yes",
+                    "on",
+                }
             elif isinstance(persistence, bool):
                 spec["persistence"] = persistence
 
@@ -533,12 +542,10 @@ def _should_use_node_frontend_probe(svc_name: str, svc: Dict[str, Any]) -> bool:
 
 
 def _service_extension_field(svc: Dict[str, Any], key: str) -> Optional[Any]:
-    """Read a service override from ``x-kamiwaza`` or a pre-flattened service."""
+    """Read a service override from ``x-kamiwaza``."""
     x_kamiwaza = svc.get("x-kamiwaza")
     if isinstance(x_kamiwaza, dict) and key in x_kamiwaza:
         return x_kamiwaza[key]
-    if key in svc:
-        return svc[key]
     return None
 
 
