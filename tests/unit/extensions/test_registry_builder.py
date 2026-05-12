@@ -67,6 +67,25 @@ class TestBuildEntry:
         parsed = yaml.safe_load(entry["compose_yml"])
         assert "services" in parsed
 
+    def test_compose_yml_preserves_service_order(self, builder, metadata):
+        # Platform infers primary-service selection from compose order
+        # when no service declares x-kamiwaza.primary. Alphabetizing keys on
+        # serialization silently changes which service becomes primary.
+        # Use a database-first ordering that would re-sort under sort_keys=True.
+        compose = {
+            "services": {
+                "neo4j": {"image": "neo4j:5", "ports": ["7687"]},
+                "graphiti": {
+                    "image": "kamiwazaai/service-graphiti-graphiti:1.0.0",
+                    "ports": ["8000"],
+                },
+            },
+        }
+
+        entry = builder.build_entry(metadata, compose, "kamiwazaai", "1.0.0")
+        parsed = yaml.safe_load(entry["compose_yml"])
+        assert list(parsed["services"].keys()) == ["neo4j", "graphiti"]
+
     def test_docker_images_extracted(self, builder, metadata, transformed_compose):
         entry = builder.build_entry(metadata, transformed_compose, "kamiwazaai", "1.0.0")
         assert "kamiwazaai/my-app-frontend:1.0.0" in entry["docker_images"]
