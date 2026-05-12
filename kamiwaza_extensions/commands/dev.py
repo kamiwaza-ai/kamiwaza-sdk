@@ -69,26 +69,29 @@ def _build_patch_service_specs(payload: Any) -> List[Any]:
     ``CreateExtension`` payload, forwarding the new ``x-kamiwaza``
     per-service overrides via ``extra="allow"``.
 
-    jxstanford PR #97 review H2: without forwarding ``healthCheck`` /
-    ``automountServiceAccountToken`` / ``containerSecurityContext`` on
-    PATCH, iterative ``kz-ext dev`` redeploys silently drop the very
-    overrides this PR added.
+    The PATCH carries the full ``(registry, repository, tag)`` triple
+    from the canonical image ref. The operator reconstructs the CR's
+    image field from those three, so a repository change between
+    deploys — common when an extension's declared image namespace
+    differs from the legacy ``{ext}-{svc}`` form that pre-fix kz-ext
+    would have written — flows through. Sending only ``tag`` would
+    leave the CR's image field at the original repository and produce
+    ``ImagePullBackOff`` on the next pull.
     """
+    from kamiwaza_extensions.compose_transformer import _split_image_ref
     from kamiwaza_sdk.schemas.extensions import ImagePatch, PatchServiceSpec
 
     patch_services: List[Any] = []
     for svc in payload.services:
-        # Split tag after last '/' to avoid confusing registry port with tag
-        image = svc.image
-        slash_pos = image.rfind("/")
-        after_slash = image[slash_pos + 1:] if slash_pos >= 0 else image
-        if ":" in after_slash:
-            tag = after_slash.rsplit(":", 1)[1]
-        else:
-            tag = "latest"
+        registry, repository, tag = _split_image_ref(svc.image)
+        image_patch = ImagePatch(
+            tag=tag,
+            registry=registry,
+            repository=repository,
+        )
         spec = PatchServiceSpec(
             name=svc.name,
-            image=ImagePatch(tag=tag),
+            image=image_patch,
         )
         if svc.env:
             spec.env = svc.env

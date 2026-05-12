@@ -782,6 +782,71 @@ class TestCanonicalBuildRef:
         ) == "ghcr.io/my-org/api:2.0.0-dev"
 
 
+class TestSplitImageRef:
+    """`_split_image_ref` decomposes a canonical image ref into
+    ``(registry, repository, tag)`` so the K8s PATCH path can update
+    all three together — sending tag-only would leave the operator's
+    CR pointing at the old repository when an extension's declared
+    image namespace differs from the pre-fix legacy synthesis."""
+
+    @staticmethod
+    def _split(ref):
+        from kamiwaza_extensions.compose_transformer import _split_image_ref
+
+        return _split_image_ref(ref)
+
+    def test_registry_qualified_with_tag(self):
+        assert self._split("ghcr.io/kamiwaza/foo:1.0") == (
+            "ghcr.io", "kamiwaza/foo", "1.0",
+        )
+
+    def test_registry_with_port(self):
+        # The tag colon must not be confused with the registry port colon.
+        assert self._split("localhost:5000/my-app:2.0.0-dev") == (
+            "localhost:5000", "my-app", "2.0.0-dev",
+        )
+
+    def test_localhost_without_port(self):
+        assert self._split("localhost/foo:tag") == ("localhost", "foo", "tag")
+
+    def test_no_tag_defaults_to_latest(self):
+        assert self._split("ghcr.io/kamiwaza/foo") == (
+            "ghcr.io", "kamiwaza/foo", "latest",
+        )
+
+    def test_strips_digest_before_splitting(self):
+        # Defensive: digest pins don't reach the PATCH path in practice,
+        # but the helper should never propagate one into the registry
+        # or repository field if it ever does.
+        assert self._split(
+            "ghcr.io/foo/bar:1.0@sha256:" + "a" * 64,
+        ) == ("ghcr.io", "foo/bar", "1.0")
+
+    def test_unqualified_short_form_has_no_registry(self):
+        # `my-org/my-app:1.0` resolves to docker.io/my-org/my-app under
+        # docker's namespace rules — _canonical_build_ref already
+        # rewrites these to the cluster registry, but if one ever
+        # reaches the splitter the registry field must remain None
+        # rather than masquerade as `my-org`.
+        assert self._split("my-org/my-app:1.0") == (None, "my-org/my-app", "1.0")
+
+    def test_bare_repo_name(self):
+        assert self._split("redis:7") == (None, "redis", "7")
+
+    def test_bare_repo_no_tag(self):
+        assert self._split("redis") == (None, "redis", "latest")
+
+    def test_multi_segment_repository(self):
+        # Omniparse-shaped path: a long repository path under a single registry.
+        assert self._split(
+            "ghcr.io/kamiwaza-internal/kamiwaza-extensions-omniparse/images/omniparse:2.0.14-dev"
+        ) == (
+            "ghcr.io",
+            "kamiwaza-internal/kamiwaza-extensions-omniparse/images/omniparse",
+            "2.0.14-dev",
+        )
+
+
 class TestComputeCanonicalRefs:
     """`compute_canonical_refs` is the shared canonical-refs derivation
     used by publish (live + dry-run) and dev. Same source of truth means

@@ -1,6 +1,5 @@
 """Tests for ImageBuilder."""
 
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -85,6 +84,27 @@ class TestBuild:
         compose = {"services": {"api": {"build": "."}}}
         with pytest.raises(ImageBuildError, match="build failed"):
             builder.build(tmp_path, compose, "test", "v1", "reg")
+
+    @patch("kamiwaza_extensions.image_builder.subprocess.run")
+    def test_image_refs_partial_map_falls_back_to_legacy(
+        self, mock_run, builder, compose_with_build, tmp_path,
+    ):
+        # When `image_refs` is supplied but missing an entry for a
+        # buildable service, that service falls back to the legacy
+        # `{registry}/{ext}-{svc}:{tag}` form. Otherwise a caller that
+        # builds the map but omits a service would silently build at
+        # an arbitrary ref the K8s payload doesn't reference.
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        refs = builder.build(
+            extension_dir=tmp_path,
+            compose_data=compose_with_build,
+            extension_name="my-app",
+            revision_tag="v1",
+            registry="reg",
+            image_refs={"backend": "ghcr.io/canonical/backend:v1"},  # frontend omitted
+        )
+        assert "ghcr.io/canonical/backend:v1" in refs
+        assert "reg/my-app-frontend:v1" in refs
 
 
 class TestResolveBuildConfig:

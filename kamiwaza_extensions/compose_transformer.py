@@ -36,12 +36,45 @@ def _looks_registry_qualified(ref: str) -> bool:
 
     Predicate: the substring before the first ``/`` must contain ``.``
     or ``:``, or be exactly ``localhost``. Bare repo names (no ``/``)
-    are Docker Hub by definition and return False.
+    are Docker Hub by definition and return False. IPv6 host literals
+    like ``[::1]/foo`` and ``[::1]:5000/foo`` are matched via the
+    ``:`` rule.
     """
     if "/" not in ref:
         return False
     first, _, _ = ref.partition("/")
     return "." in first or ":" in first or first == "localhost"
+
+
+def _split_image_ref(image_ref: str) -> Tuple[Optional[str], str, str]:
+    """Split *image_ref* into ``(registry, repository, tag)``.
+
+    Mirrors ``_replace_image_tag``'s tag detection (last ``:`` past the
+    last ``/``) and ``_looks_registry_qualified``'s registry-host rule.
+    Strips any ``@sha256:...`` digest before splitting. Tag defaults to
+    ``latest`` when the ref carries no explicit tag.
+
+    Used by the K8s PATCH path so the operator updates registry +
+    repository + tag together. Pre-fix kz-ext would PATCH only the tag,
+    leaving the CR's image field pointing at the original repository —
+    after this PR builds at the canonical (possibly different)
+    repository, that mismatch would produce ImagePullBackOff.
+    """
+    ref = image_ref.split("@", 1)[0]
+    last_slash = ref.rfind("/")
+    last_colon = ref.rfind(":")
+    if last_colon > last_slash:
+        namespace = ref[:last_colon]
+        tag = ref[last_colon + 1:]
+    else:
+        namespace = ref
+        tag = "latest"
+    if _looks_registry_qualified(namespace):
+        registry, _, repository = namespace.partition("/")
+    else:
+        registry = None
+        repository = namespace
+    return registry, repository, tag
 
 
 def compute_canonical_refs(
