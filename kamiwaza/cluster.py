@@ -335,9 +335,13 @@ class ClusterAPI:
             "force": "true" if force else "false",
             "subjects_holding_value": subjects_holding_value,
         }
-        return self._client._request(
+        # _client._request returns Any (httpx response body parsing); cast to
+        # match the typed dict return annotation. Mypy --strict would flag
+        # the bare return as no-any-return otherwise.
+        result: Dict[str, Any] = self._client._request(
             "DELETE", f"/api/cluster/attribute-schema/{name}", params=params
         )
+        return result
 
     def _attempt_fix(self, issue: DiagnoseIssue) -> FixOutcome:
         if not issue.auto_fixable or not issue.fix_endpoint:
