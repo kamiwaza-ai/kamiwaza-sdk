@@ -118,14 +118,16 @@ class RegistryBuilder:
                 ]
             docker_images = list(dict.fromkeys(docker_images + extra_images))
 
-        # Pass-through: start from kamiwaza.json so every top-level field
-        # the developer authored reaches the catalog. The legacy
-        # `make publish-registry` path treats source kamiwaza.json as the
-        # contract — env_defaults, required_env_vars, template_type,
-        # display_name, strip_path_prefix, capabilities, and friends all
-        # flow through. The platform sync code (templates.py) reads many
-        # of these via `.get(field, default)` and silently degrades when
-        # they're missing (ENG-4919).
+        # Source kamiwaza.json is the catalog contract: every top-level
+        # field the developer authored reaches the catalog entry. The
+        # platform's _update_template_from_remote
+        # (kamiwaza/serving/garden/apps/templates.py) reads
+        # env_defaults, required_env_vars, capabilities, display_name,
+        # strip_path_prefix, and friends via `.get(field, default)` —
+        # any field a slim entry omits silently degrades to {} / [] /
+        # None on the platform side, breaking required-env validation,
+        # env-default injection, and UI metadata. Curating the entry
+        # down to a known-fields subset has bitten us before; don't.
         entry: Dict[str, Any] = copy.deepcopy(metadata)
         entry["name"] = metadata.get("name", "")
         entry["version"] = version

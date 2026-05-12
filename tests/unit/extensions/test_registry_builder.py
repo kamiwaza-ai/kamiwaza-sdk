@@ -173,11 +173,13 @@ class TestBuildEntry:
 
 # ------------------------------------------------------------------
 # build_entry passes every top-level kamiwaza.json field through to
-# the catalog entry (ENG-4919). The platform's catalog→DB sync code
+# the catalog entry. The platform's catalog→DB sync
 # (kamiwaza/serving/garden/apps/templates.py::_update_template_from_remote)
-# reads many of these via `.get(field, default)` and silently degrades
-# to empty/None when slim entries omit them — no required_env_vars
-# validation, no env_defaults injection, missing UI metadata.
+# reads many fields via `.get(field, default)` and silently degrades
+# to empty/None when entries omit them — no required_env_vars
+# validation, no env_defaults injection, missing UI metadata. The
+# regression these tests pin: don't curate the entry down to a
+# known-fields subset.
 # ------------------------------------------------------------------
 
 
