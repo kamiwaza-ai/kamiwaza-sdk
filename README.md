@@ -99,12 +99,49 @@ the receiver, the SDK retries with exponential backoff until the
 server's structured 503 (`detail.reason == "psk_propagation_timeout"`)
 times out the budget — see `kamiwaza.exceptions.FederationPairTimeoutError`.
 
-### Step 2 — Seed personas (M3)
+### Step 2 — Declare the attribute vocabulary, then seed personas (M3 + M3.1)
 
 Replaces the v0.1.x two-phase Keycloak admin recipe (see
-`authoring-a-federated-demo.md` §6). The single PUT writes attributes
-in one round-trip, infers multivalued KC entries for list-shaped
-values, and rolls back attribute deltas on partial failure (T3.4).
+`authoring-a-federated-demo.md` §6). Two sub-steps:
+
+**Step 2a — Declare the realm's attribute vocabulary (M3.1, v0.3.6).**
+Every attribute name a subject can hold must be declared in the realm
+BEFORE `kz.subjects.upsert(...)` writes it. Keycloak's realm default
+`unmanagedAttributePolicy=None` silently drops attribute writes for
+undeclared names — the M3.1 declared-vocabulary surface converts that
+silent drop into a 400 with structured remediation, so unknown names
+fail loudly at upsert time instead of returning success with empty
+attributes.
+
+```python
+kz.cluster.declare_attribute("clearance", type="string")
+kz.cluster.declare_attribute("country",   type="string")
+kz.cluster.declare_attribute("programs",  type="string[]")  # multivalued
+```
+
+`declare_attribute` is idempotent on identical shape — safe to re-run
+during demo setup. Shape change on a declared-state attribute returns
+400 `shape_change_on_declared`; deprecate + withdraw first to retire
+the old shape. See `kz.cluster.list_attributes()` to inspect the
+current vocabulary, and `kz.cluster.deprecate_attribute(name)` /
+`kz.cluster.withdraw_attribute(name, force=True)` for retirement.
+
+For PII-grade attributes the gate consumes via the mesh-envelope
+`user_attrs` channel (not as a JWT claim), pass `sensitive=True`:
+
+```python
+kz.cluster.declare_attribute("ssn_last4", type="string", sensitive=True)
+```
+
+For attributes attested by a peer cluster's brokered-user provisioning
+(rather than set by local admin), pass `authority="mesh_peer"` —
+local admin attempts to set these on local users return 400
+`wrong_authority_for_subject`. Defaults (`sensitive=False`,
+`authority="local_admin"`) match the demo flow's normal case.
+
+**Step 2b — Seed personas.** The single PUT writes attributes in one
+round-trip, infers multivalued KC entries for list-shaped values, and
+rolls back attribute deltas on partial failure (T3.4).
 
 ```python
 cdr_baker = kz.subjects.upsert(
@@ -121,7 +158,10 @@ print(cdr_baker.id, cdr_baker.attributes["clearance"])  # kc-uuid TS
 
 Audit emits `subject_upsert{outcome=success}` on the receiver. A
 partial-failure rollback emits `subject_upsert_rollback{outcome=...}`
-so operators can spot drift cases in logs (T3.7).
+so operators can spot drift cases in logs (T3.7). Attempting `upsert`
+with an undeclared attribute name returns 400 `attribute_not_registered`
+with the undeclared names enumerated and remediation text pointing
+back at `declare_attribute(...)`.
 
 ### Step 3 — Bind the cluster execution gate (M3)
 
