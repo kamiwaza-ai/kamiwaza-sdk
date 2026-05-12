@@ -3,6 +3,7 @@
 import pytest
 import yaml
 
+from kamiwaza_extensions.compose_transformer import ComposeTransformer
 from kamiwaza_extensions.registry_builder import (
     RegistryBuilder,
     _constraint_relationship,
@@ -188,6 +189,78 @@ class TestBuildEntry:
         }
         entry = builder.build_entry(meta, compose, "reg", "1.0.0")
         assert entry["docker_images"].count("custom/sidecar:latest") == 1
+
+
+# ------------------------------------------------------------------
+# Publish-path ordering: end-to-end coverage
+# ------------------------------------------------------------------
+
+
+class TestPublishPathOrdering:
+    # build_entry's sort_keys=False only pins the final serialization step.
+    # The full publish path runs the compose dict through ComposeTransformer
+    # first, so any intermediate step that loses dict insertion order would
+    # silently flip primary-service selection downstream — the same class
+    # of bug as ENG-4920. These tests fence the full chain.
+
+    @pytest.fixture
+    def transformer(self):
+        return ComposeTransformer()
+
+    @pytest.fixture
+    def graphiti_shaped_compose(self):
+        # ENG-4920 trigger shape: database service first, app service second.
+        # If anything in the chain re-sorts keys alphabetically, neo4j (n)
+        # would land after graphiti (g), flipping which service the platform's
+        # fallback heuristic picks as primary.
+        return {
+            "services": {
+                "neo4j": {
+                    "image": "ghcr.io/kamiwaza-internal/containers/images/neo4j:v5.26.21",
+                    "ports": ["7687:7687"],
+                },
+                "graphiti": {
+                    "build": {"context": ".", "dockerfile": "Dockerfile"},
+                    "ports": ["8000:8000"],
+                    "depends_on": ["neo4j"],
+                },
+            },
+        }
+
+    def test_full_publish_chain_preserves_service_order(
+        self, builder, transformer, graphiti_shaped_compose
+    ):
+        transformed = transformer.transform(
+            graphiti_shaped_compose,
+            extension_name="service-graphiti",
+            revision_tag="1.0.0",
+            registry="kamiwazaai",
+        )
+        meta = {
+            "name": "service-graphiti",
+            "version": "1.0.0",
+            "source_type": "kamiwaza",
+            "visibility": "public",
+        }
+        entry = builder.build_entry(meta, transformed, "kamiwazaai", "1.0.0")
+
+        parsed = yaml.safe_load(entry["compose_yml"])
+        assert list(parsed["services"].keys()) == ["neo4j", "graphiti"]
+
+    def test_compose_transformer_preserves_service_order(
+        self, transformer, graphiti_shaped_compose
+    ):
+        # Targeted fence on the upstream half of the chain — guards against a
+        # future ComposeTransformer refactor (dict comprehension, sorted(),
+        # rebuild-from-items) that would lose insertion order before the
+        # compose ever reaches build_entry's sort_keys=False.
+        transformed = transformer.transform(
+            graphiti_shaped_compose,
+            extension_name="service-graphiti",
+            revision_tag="1.0.0",
+            registry="kamiwazaai",
+        )
+        assert list(transformed["services"].keys()) == ["neo4j", "graphiti"]
 
 
 # ------------------------------------------------------------------
