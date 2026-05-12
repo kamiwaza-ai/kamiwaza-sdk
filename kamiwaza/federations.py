@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from typing import Any, List, Optional
 
-from kamiwaza.models import BrokeredUser, Federation
+from kamiwaza.models import BrokeredUser, ClusterCapabilities, Federation
 
 
 class FederationsAPI:
@@ -137,6 +137,32 @@ class FederationProxy:
     @property
     def users(self) -> "FederationUsersAPI":
         return FederationUsersAPI(proxy=self)
+
+    def probe(self) -> ClusterCapabilities:
+        """Probe this federation peer's capabilities via the mesh (T5.21).
+
+        Routes ``GET /api/cluster/cluster_capabilities`` through the local
+        mesh proxy at ``/api/mesh/{name}/...``. The mesh proxy resolves
+        ``name`` to the federation, applies the federation:operator ReBAC
+        guard, signs the request with the local cluster's HMAC, and
+        forwards to the remote cluster — where the receiver's viewer-or-
+        owner gate (ENG-4697) lets the brokered identity reach the
+        capabilities endpoint.
+
+        Demo bullet (4): ``kz.federations["ORION"].probe()`` returns
+        ORION's GPU count, active deployments, Ray status, etc.
+
+        The federation selector is the cluster name itself — no separate
+        federation-id resolution round-trip is required.
+
+        Returns:
+            ClusterCapabilities for the remote cluster.
+        """
+        body = self._client._request(
+            "GET",
+            f"/api/mesh/{self.name}/api/cluster/cluster_capabilities",
+        )
+        return ClusterCapabilities.model_validate(body)
 
     def _id(self) -> str:
         cached = self._cached_id

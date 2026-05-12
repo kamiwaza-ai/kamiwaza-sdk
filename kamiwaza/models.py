@@ -20,7 +20,7 @@ must not break the SDK in a customer's pinned wheel.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict
 
@@ -56,6 +56,136 @@ class BrokeredUser(BaseModel):
     auto_provisioned: bool = False
     created_at: Optional[datetime] = None
     initial_tuples: Optional[List[Any]] = None
+
+
+class ClusterCapabilities(BaseModel):
+    """T5.19 / ENG-4696 capabilities-probe response.
+
+    Returned by ``kz.cluster.capabilities()`` (local) and
+    ``kz.federations[name].probe()`` (via mesh). Server-side correlate:
+    ``kamiwaza.cluster.services.ClusterService.get_cluster_capabilities()``.
+
+    Known fields cover the WS-M2 demo-bullet-(4) probe surface — hardware /
+    platform info plus federation pre-flight fields (federation_count,
+    active_deployments, ray_ready). Other fields flow through via
+    ``extra="allow"`` for forward compatibility per the common-pitfalls
+    guide; pinned SDK wheels must not break when the server adds fields.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    system_type: str
+    os: str
+    gpu_count: int = 0
+    available_platforms: List[str] = []
+    federation_count: int = 0
+    active_deployments: int = 0
+    ray_ready: bool = False
+
+
+class DiagnoseIssue(BaseModel):
+    """T5.13 / ENG-4694 — a single cluster-health issue from diagnose().
+
+    Stable ``id`` (e.g. ``admin_missing_baseline_rebac``,
+    ``missing_token_exchange_permission``) lets customer code match
+    programmatically. ``fix_endpoint`` + ``fix_payload`` are present when
+    ``auto_fixable=True`` so a future ``fix()`` orchestration can drive
+    remediation; ``None`` when manual remediation is required.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    id: str
+    severity: Literal["error", "warning", "info"]
+    summary: str
+    detail: Dict[str, Any] = {}
+    fix_endpoint: Optional[str] = None
+    fix_payload: Optional[Dict[str, Any]] = None
+    auto_fixable: bool = False
+
+
+class ClusterDiagnostics(BaseModel):
+    """T5.13 / ENG-4694 — aggregate result of a cluster diagnose run.
+
+    Returned by ``kz.cluster.diagnose()``. ``has_issues`` is True iff any
+    issue has ``severity == "error"``. Server-side correlate:
+    ``kamiwaza.cluster.diagnose.services.ClusterDiagnoseService.run()``.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    cluster_id: str
+    timestamp: datetime
+    issues: List[DiagnoseIssue] = []
+    has_issues: bool = False
+
+
+class FixOutcome(BaseModel):
+    """T5.8 / ENG-4693 — per-issue outcome from kz.cluster.fix().
+
+    ``status`` is one of:
+      - ``fixed``           — issue.fix_endpoint returned 2xx.
+      - ``manual_required`` — issue.auto_fixable was False; skipped.
+      - ``failed``          — fix_endpoint returned non-2xx; ``error`` set.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    issue_id: str
+    status: Literal["fixed", "manual_required", "failed"]
+    error: Optional[str] = None
+
+
+class FixResult(BaseModel):
+    """T5.8 / ENG-4693 — aggregate result of a kz.cluster.fix() run.
+
+    Per design `system-design.md` §4.2.10: iterates ClusterDiagnostics
+    issues in severity order, dispatches each to its fix_endpoint when
+    auto_fixable, records per-issue outcomes. The skeleton supports
+    auto-fixable issues generically — fix() works for any future probe
+    that ships with a fix_endpoint, without SDK changes.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    outcomes: List[FixOutcome] = []
+
+
+class GateDiscovery(BaseModel):
+    """T5.4 / ENG-4691 — reflection payload from POST /api/authz/gates/discover.
+
+    Returned by ``kz.gates.discover(classpath)``. ``kind`` is one of
+    ``"execution"`` or ``"attribute"``. ``required_attributes`` is the
+    set of user-attribute specs the gate consumes; ``config_schema`` is
+    the JSONSchema-shaped binding schema (empty dict when the gate
+    doesn't declare a ``config_schema()`` classmethod).
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    name: str
+    kind: Literal["execution", "attribute"]
+    required_attributes: List[Dict[str, Any]] = []
+    config_schema: Dict[str, Any] = {}
+    classpath: str
+    location: str = ""
+
+
+class ClusterOperations(BaseModel):
+    """T5.37 / ENG-4714 — unified jobs+retrieval listing.
+
+    Returned by ``kz.cluster.operations()``. The walking skeleton
+    populates ``jobs`` from ``GET /api/cluster/jobs`` and leaves
+    ``retrievals`` empty until ``GET /api/retrieval/jobs`` lands
+    (T5.30 / ENG-4707) and the SDK retrieval module ships (T5.36).
+
+    Demo bullet (2): list the running federated job + active retrieval.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    jobs: List[Any] = []
+    retrievals: List[Any] = []
 
 
 class JobResult(BaseModel):

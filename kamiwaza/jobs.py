@@ -53,8 +53,12 @@ class JobsAPI:
         target_cluster: Optional[str] = None,
         runtime_env: Optional[dict[str, Any]] = None,
         timeout_seconds: Optional[int] = None,
+        recoverable: bool = False,
+        pip: Optional[list[str]] = None,
+        py_modules: Optional[list[str]] = None,
+        working_dir: Optional[str] = None,
     ) -> JobResult:
-        """Run a job synchronously and return the completed JobResult.
+        """Run a job and return the completed JobResult.
 
         Args:
             entrypoint: Shell command for Ray to execute, e.g.
@@ -62,16 +66,93 @@ class JobsAPI:
             target_cluster: Federation name to route to. None runs on
                 the local cluster.
             runtime_env: Ray runtime_env (env vars, working_dir, …).
-                Limited to the existing /run shape in skeleton; T5.38
-                adds pip / py_modules / working_dir convenience kwargs.
-            timeout_seconds: Server-side wall-clock cap (informational
-                only — server enforces; SDK does not poll).
+                Caller-provided keys win over the convenience kwargs
+                below on collision.
+            timeout_seconds: Wall-clock cap. Server-enforced for
+                ``recoverable=False``; SDK-enforced poll budget for
+                ``recoverable=True``.
+            recoverable: When True (T5.22 / ENG-4699), the SDK uses async
+                submit + poll instead of the sync /run path so the
+                ``job_id`` is in hand immediately.
+            pip: T5.38 / ENG-4715 / FR-94 convenience — Ray pip list,
+                packed into ``runtime_env["pip"]`` on the wire.
+            py_modules: T5.38 / ENG-4715 / FR-94 convenience — local
+                module paths to ship with the job; packs into
+                ``runtime_env["py_modules"]``.
+            working_dir: T5.38 / ENG-4715 / FR-94 convenience — local
+                directory to bundle as the working dir; packs into
+                ``runtime_env["working_dir"]``.
 
         Returns:
             Completed ``JobResult``. ``status`` will be SUCCEEDED for
             success or FAILED with ``error`` populated. Customers branch
             on ``result.status`` instead of catching exceptions.
+
+        Raises:
+            MeshJobTimeoutError: Only on the recoverable path, when
+                ``timeout_seconds`` expires before the job reaches a
+                terminal state.
         """
+        merged_runtime_env = self._merge_runtime_env(
+            runtime_env=runtime_env,
+            pip=pip,
+            py_modules=py_modules,
+            working_dir=working_dir,
+        )
+        if recoverable:
+            return self._run_recoverable(
+                entrypoint=entrypoint,
+                target_cluster=target_cluster,
+                runtime_env=merged_runtime_env,
+                timeout_seconds=timeout_seconds,
+            )
+        return self._run_sync(
+            entrypoint=entrypoint,
+            target_cluster=target_cluster,
+            runtime_env=merged_runtime_env,
+            timeout_seconds=timeout_seconds,
+        )
+
+    @staticmethod
+    def _merge_runtime_env(
+        *,
+        runtime_env: Optional[dict[str, Any]],
+        pip: Optional[list[str]],
+        py_modules: Optional[list[str]],
+        working_dir: Optional[str],
+    ) -> Optional[dict[str, Any]]:
+        """Pack convenience kwargs (T5.38) into a runtime_env dict.
+
+        Caller-supplied runtime_env wins on key collision — the
+        convenience kwargs are sugar, not overrides. Returns None when
+        no source provided so the body shape matches the pre-T5.38
+        default-caller pattern (no runtime_env key on the wire).
+        """
+        convenience: dict[str, Any] = {}
+        if pip is not None:
+            convenience["pip"] = pip
+        if py_modules is not None:
+            convenience["py_modules"] = py_modules
+        if working_dir is not None:
+            convenience["working_dir"] = working_dir
+
+        if not convenience and runtime_env is None:
+            return None
+
+        merged: dict[str, Any] = dict(convenience)
+        if runtime_env:
+            merged.update(runtime_env)  # caller wins on collision
+        return merged
+
+    def _run_sync(
+        self,
+        *,
+        entrypoint: str,
+        target_cluster: Optional[str],
+        runtime_env: Optional[dict[str, Any]],
+        timeout_seconds: Optional[int],
+    ) -> JobResult:
+        """Existing sync /run path; X-Job-Id only visible on completion."""
         body = self._build_run_body(
             entrypoint=entrypoint,
             target_cluster=target_cluster,
@@ -80,6 +161,29 @@ class JobsAPI:
         )
         response = self._client._request("POST", "/api/cluster/jobs/run", json=body)
         return JobResult.model_validate(response)
+
+    def _run_recoverable(
+        self,
+        *,
+        entrypoint: str,
+        target_cluster: Optional[str],
+        runtime_env: Optional[dict[str, Any]],
+        timeout_seconds: Optional[int],
+    ) -> JobResult:
+        """Async submit + poll. job_id available immediately for resume.
+
+        Per design §4.2.14: returns when the server reports a terminal
+        state, or raises MeshJobTimeoutError when ``timeout_seconds``
+        expires. The wait_seconds default (600s) matches the existing
+        sync /run default behavior for parity.
+        """
+        job_id = self.submit_async(
+            entrypoint=entrypoint,
+            target_cluster=target_cluster,
+            runtime_env=runtime_env,
+            timeout_seconds=timeout_seconds,
+        )
+        return self.wait(job_id, timeout=timeout_seconds or 600)
 
     def submit_async(
         self,
@@ -105,6 +209,19 @@ class JobsAPI:
         )
         response = self._client._request("POST", "/api/cluster/jobs/submit", json=body)
         return str(response["job_id"])
+
+    def cancel(self, job_id: str) -> dict[str, Any]:
+        """Cancel a running job (T5.35 / ENG-4712).
+
+        POSTs to ``/api/cluster/jobs/{id}/cancel``. The server returns a
+        JobRecord; we surface the raw dict so customers can inspect
+        ``status`` (typically STOPPED on success) and timestamps.
+
+        Demo bullet (3): ``kz.jobs.cancel(job_id)`` stops a stuck job
+        within seconds.
+        """
+        response = self._client._request("POST", f"/api/cluster/jobs/{job_id}/cancel")
+        return dict(response)
 
     def wait(self, job_id: str, *, timeout: int) -> JobResult:
         """Poll a previously-submitted job until terminal, then return.
