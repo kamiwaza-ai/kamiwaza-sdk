@@ -281,3 +281,102 @@ def test_clear_gate_sends_delete(httpx_mock: Any) -> None:
 
     client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
     client.datasets.clear_gate(urn)
+
+
+# ─── T5.17-full — 4xx error-mapping coverage ──────────────────────────────
+
+
+@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
+def test_set_gate_400_wrong_kind_surfaces_as_kamiwaza_error(httpx_mock: Any) -> None:
+    """Server rejects binding an ExecutionGate as a dataset gate (T2.5
+    wrong_kind) — surfaces as KamiwazaError with status_code=400."""
+    from kamiwaza.client import Kamiwaza
+    from kamiwaza.exceptions import KamiwazaError
+
+    urn = "urn:li:dataset:(local,demo,PROD)"
+    httpx_mock.add_response(
+        method="PUT",
+        url=f"https://kamiwaza.test/api/catalog/datasets/{urn}/gate",
+        status_code=400,
+        json={
+            "detail": {
+                "reason": "wrong_kind",
+                "expected": "attribute",
+                "got": "execution",
+                "classpath": "x.ExecGate",
+            }
+        },
+    )
+
+    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
+    with pytest.raises(KamiwazaError) as exc_info:
+        client.datasets.set_gate(urn, type="x.ExecGate")
+    assert exc_info.value.status_code == 400
+
+
+@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
+def test_set_gate_400_schema_validation_failed_surfaces_as_kamiwaza_error(
+    httpx_mock: Any,
+) -> None:
+    """T2.6 jsonschema validation failure → 400 schema_validation_failed."""
+    from kamiwaza.client import Kamiwaza
+    from kamiwaza.exceptions import KamiwazaError
+
+    urn = "urn:li:dataset:(local,demo,PROD)"
+    httpx_mock.add_response(
+        method="PUT",
+        url=f"https://kamiwaza.test/api/catalog/datasets/{urn}/gate",
+        status_code=400,
+        json={
+            "detail": {
+                "reason": "schema_validation_failed",
+                "classpath": "x.Gate",
+                "error": "'classification_field' is a required property",
+            }
+        },
+    )
+
+    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
+    with pytest.raises(KamiwazaError) as exc_info:
+        client.datasets.set_gate(urn, type="x.Gate", config={})
+    assert exc_info.value.status_code == 400
+
+
+@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
+def test_set_gate_404_dataset_not_found_surfaces_as_kamiwaza_error(
+    httpx_mock: Any,
+) -> None:
+    """PUT against an unknown dataset URN → 404 dataset_not_found."""
+    from kamiwaza.client import Kamiwaza
+    from kamiwaza.exceptions import KamiwazaError
+
+    urn = "urn:li:dataset:(local,nonexistent,PROD)"
+    httpx_mock.add_response(
+        method="PUT",
+        url=f"https://kamiwaza.test/api/catalog/datasets/{urn}/gate",
+        status_code=404,
+        json={"detail": {"reason": "dataset_not_found", "dataset_urn": urn}},
+    )
+
+    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
+    with pytest.raises(KamiwazaError) as exc_info:
+        client.datasets.set_gate(urn, type="x.Gate")
+    assert exc_info.value.status_code == 404
+
+
+@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
+def test_get_dataset_404_surfaces_as_kamiwaza_error(httpx_mock: Any) -> None:
+    """GET dataset by unknown URN returns 404."""
+    from kamiwaza.client import Kamiwaza
+    from kamiwaza.exceptions import KamiwazaError
+
+    httpx_mock.add_response(
+        method="GET",
+        url="https://kamiwaza.test/api/catalog/datasets/by-urn?urn=urn:li:dataset:(local,nope,PROD)",
+        status_code=404,
+        json={"detail": "Dataset not found"},
+    )
+
+    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
+    with pytest.raises(KamiwazaError):
+        client.datasets.get("urn:li:dataset:(local,nope,PROD)")
