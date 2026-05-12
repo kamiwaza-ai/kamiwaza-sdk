@@ -231,8 +231,11 @@ class Subject(BaseModel):
     username: str
     attributes: Dict[str, Any] = {}
     grants: List[Grant] = []
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
+    # ENG-4941: server emits datetime (Pydantic serializes to ISO string
+    # on the wire; pydantic coerces back on the SDK side). Matches
+    # sibling BrokeredUser.created_at typing.
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
 
 class DatasetRef(BaseModel):
