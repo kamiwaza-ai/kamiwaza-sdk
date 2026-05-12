@@ -135,6 +135,12 @@ class RegistryBuilder:
         entry["compose_yml"] = compose_yml
         entry["docker_images"] = docker_images
 
+        # `revision` is owned exclusively by the publish-time parameter,
+        # never by source kamiwaza.json. Pop first so a stale value in
+        # metadata (or a catalog entry re-fed as metadata) can't leak
+        # through and trip CatalogDedupGuard with a revision that was
+        # never used to tag the images.
+        entry.pop("revision", None)
         if revision is not None:
             entry["revision"] = revision
 

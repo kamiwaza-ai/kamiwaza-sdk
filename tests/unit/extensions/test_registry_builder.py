@@ -279,7 +279,8 @@ class TestBuildEntryPassthrough:
     def test_metadata_not_mutated(self, builder, transformed_compose):
         # build_entry must not mutate the caller's metadata dict — it's
         # often the parsed kamiwaza.json shared with other code paths
-        # (validators, dedup guard, etc.).
+        # (validators, dedup guard, etc.). deepcopy must protect nested
+        # structures, not just top-level keys.
         meta = {
             "name": "my-app",
             "version": "1.0.0",
@@ -289,9 +290,47 @@ class TestBuildEntryPassthrough:
             "env_defaults": {"FOO": "bar"},
             "preview_image": "./logo.png",
         }
-        builder.build_entry(meta, transformed_compose, "reg", "1.0.0")
+        entry = builder.build_entry(meta, transformed_compose, "reg", "1.0.0")
         assert meta["preview_image"] == "./logo.png"  # not normalized
-        assert meta["env_defaults"] == {"FOO": "bar"}
+        # Mutating the entry's nested dict must not bleed into source.
+        entry["env_defaults"]["FOO"] = "mutated"
+        assert meta["env_defaults"]["FOO"] == "bar"
+
+    def test_revision_not_inherited_from_metadata(
+        self, builder, transformed_compose,
+    ):
+        # `revision` is publish-time only — owned by the --revision CLI
+        # arg, never by source kamiwaza.json. Without explicit pop, a
+        # stale revision in metadata (or a catalog entry round-tripped
+        # through metadata) would survive deepcopy and trip
+        # CatalogDedupGuard with a revision that wasn't used to tag the
+        # images.
+        meta = {
+            "name": "my-app",
+            "version": "1.0.0",
+            "description": "test",
+            "source_type": "kamiwaza",
+            "visibility": "public",
+            "revision": "stale-from-prior-publish",
+        }
+        entry = builder.build_entry(meta, transformed_compose, "reg", "1.0.0")
+        assert "revision" not in entry
+
+    def test_revision_param_overrides_metadata(
+        self, builder, transformed_compose,
+    ):
+        meta = {
+            "name": "my-app",
+            "version": "1.0.0",
+            "description": "test",
+            "source_type": "kamiwaza",
+            "visibility": "public",
+            "revision": "stale",
+        }
+        entry = builder.build_entry(
+            meta, transformed_compose, "reg", "1.0.0", revision="fresh",
+        )
+        assert entry["revision"] == "fresh"
 
     def test_defaults_applied_for_missing_required_fields(
         self, builder, transformed_compose,
