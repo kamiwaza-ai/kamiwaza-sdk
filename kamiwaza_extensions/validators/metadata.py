@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Literal, Optional
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 from kamiwaza_extensions import __version__
 from kamiwaza_extensions.validators.result import ValidationResult
@@ -222,7 +222,50 @@ def _check_version_drift(
                 f"but kamiwaza.json version='{version}'"
             )
 
+    # package.json — root and any first-level subdir (e.g. frontend/),
+    # mirroring what `kz-ext bump` propagates so the validator can spot
+    # the same drift the bumper handles.
+    for pkg in _candidate_package_jsons(ext_dir):
+        try:
+            data = json.loads(pkg.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        pkg_version = data.get("version")
+        if isinstance(pkg_version, str) and pkg_version != version:
+            try:
+                rel = pkg.relative_to(ext_dir)
+            except ValueError:
+                rel = pkg
+            warnings.append(
+                f"Version drift: {rel} version='{pkg_version}' "
+                f"but kamiwaza.json version='{version}'"
+            )
+
     return warnings
+
+
+def _candidate_package_jsons(ext_dir: Path) -> List[Path]:
+    candidates: List[Path] = []
+    root = ext_dir / "package.json"
+    if root.exists():
+        candidates.append(root)
+    try:
+        children = sorted(ext_dir.iterdir())
+    except OSError:
+        return candidates
+    for child in children:
+        if (
+            not child.is_dir()
+            or child.name in {"node_modules", ".git"}
+            or child.name.startswith(".")
+        ):
+            continue
+        nested = child / "package.json"
+        if nested.exists():
+            candidates.append(nested)
+    return candidates
 
 
 def _find_pyproject_version(text: str) -> Optional[str]:

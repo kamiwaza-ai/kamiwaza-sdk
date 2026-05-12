@@ -13,10 +13,13 @@ import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import TYPE_CHECKING, List, Optional, Tuple
 
 import typer
 from rich.console import Console
+
+if TYPE_CHECKING:
+    from packaging.version import Version
 
 console = Console(stderr=True)
 
@@ -113,7 +116,7 @@ def run_bump(*, level: str = "patch", dry_run: bool = False) -> None:
         console.print(f"  [dim]→[/dim] {_relative(update.path, ext_dir)}: {update.summary}")
 
 
-def _compute_new_version(current, level: str) -> Optional[str]:
+def _compute_new_version(current: "Version", level: str) -> Optional[str]:
     major, minor, patch = current.major, current.minor, current.micro
     if level == "major":
         return f"{major + 1}.0.0"
@@ -142,7 +145,10 @@ def _commit_updates(updates: List[FileUpdate]) -> None:
     staged: List[Tuple[Path, Path]] = []
     try:
         for update in updates:
-            tmp = update.path.with_suffix(update.path.suffix + ".tmp")
+            # Use ``with_name`` instead of ``with_suffix(suffix + ".tmp")``
+            # — Python 3.13 tightened ``with_suffix`` to reject suffixes
+            # that contain internal dots (e.g. ``.json.tmp``).
+            tmp = update.path.with_name(update.path.name + ".tmp")
             with tmp.open("w", encoding="utf-8") as f:
                 f.write(update.after)
             staged.append((tmp, update.path))
@@ -300,11 +306,13 @@ def _update_dockerfile(path: Path, old: str, new: str) -> Optional[FileUpdate]:
         return None
     before = path.read_text(encoding="utf-8")
 
-    # ARG NAME=<old> or ARG NAME="<old>" — default value must exactly equal
-    # `old`. Allows trailing whitespace and `# comment` so Dockerfiles using
-    # the common `ARG FOO=1.0.0  # bumped` style aren't silently skipped.
+    # ARG <NAME>_VERSION=<old> — only retag ARGs whose name ends in
+    # ``_VERSION`` so we don't silently rewrite an unrelated pin like
+    # ``ARG PYTHON_VERSION=3.11.9`` when the extension itself is at
+    # ``3.11.9``. Matches the drift detector's heuristic and keeps the
+    # blast radius narrow.
     arg_re = re.compile(
-        rf"""(?m)^(?P<prefix>\s*ARG\s+[A-Za-z_][A-Za-z0-9_]*\s*=\s*)(?P<q>["']?){re.escape(old)}(?P=q)(?P<suffix>\s*(?:\#.*)?)$"""
+        rf"""(?m)^(?P<prefix>\s*ARG\s+[A-Za-z_][A-Za-z0-9_]*_VERSION\s*=\s*)(?P<q>["']?){re.escape(old)}(?P=q)(?P<suffix>\s*(?:\#.*)?)$"""
     )
 
     count = 0

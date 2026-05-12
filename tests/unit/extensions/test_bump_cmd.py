@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -208,11 +208,14 @@ class TestBump:
 
     @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
     def test_only_kamiwaza_json_present(self, mock_detector_cls, tmp_path):
-        _write_kamiwaza_json(tmp_path, "1.0.0")
+        kj = _write_kamiwaza_json(tmp_path, "1.0.0")
         mock_detector_cls.return_value.detect.return_value = _make_extension_info(tmp_path, "1.0.0")
 
         from kamiwaza_extensions.commands.bump import run_bump
-        run_bump(level="patch")  # should not raise
+        run_bump(level="patch")
+
+        # No sibling files means only kamiwaza.json should change.
+        assert json.loads(kj.read_text())["version"] == "1.0.1"
 
     @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
     def test_dry_run_does_not_write(self, mock_detector_cls, tmp_path):

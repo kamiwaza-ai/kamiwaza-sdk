@@ -298,6 +298,29 @@ class TestVersionDrift:
         drift = [w for w in result.warnings if "drift" in w.lower()]
         assert drift == []
 
+    def test_package_json_drift_warns(self, tmp_path):
+        from pathlib import Path
+        from kamiwaza_extensions.validators.metadata import MetadataValidator
+
+        (tmp_path / "kamiwaza.json").write_text(json.dumps(self._meta("2.1.0")))
+        (tmp_path / "package.json").write_text(
+            json.dumps({"name": "x", "version": "2.0.14"}, indent=2)
+        )
+        result = MetadataValidator().validate(Path(tmp_path / "kamiwaza.json"))
+        assert any("package.json" in w and "2.0.14" in w for w in result.warnings)
+
+    def test_nested_package_json_drift_warns(self, tmp_path):
+        from pathlib import Path
+        from kamiwaza_extensions.validators.metadata import MetadataValidator
+
+        (tmp_path / "kamiwaza.json").write_text(json.dumps(self._meta("2.1.0")))
+        (tmp_path / "frontend").mkdir()
+        (tmp_path / "frontend" / "package.json").write_text(
+            json.dumps({"name": "x", "version": "2.0.14"}, indent=2)
+        )
+        result = MetadataValidator().validate(Path(tmp_path / "kamiwaza.json"))
+        assert any("frontend/package.json" in w and "2.0.14" in w for w in result.warnings)
+
     def test_unrelated_thirdparty_image_no_drift_warning(self, tmp_path):
         """A redis/postgres sidecar's semver tag must not trigger a drift
         warning when the extension declares its own image repo."""
