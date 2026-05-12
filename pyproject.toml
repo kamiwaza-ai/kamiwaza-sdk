@@ -124,6 +124,7 @@ dev = [
     "build>=1.0",
     "twine>=4.0",
     "radon>=5.1",
+    "pdoc>=14.0",
 ]
 
 [tool.pytest.ini_options]
