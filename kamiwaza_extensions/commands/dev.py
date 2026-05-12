@@ -69,26 +69,29 @@ def _build_patch_service_specs(payload: Any) -> List[Any]:
     ``CreateExtension`` payload, forwarding the new ``x-kamiwaza``
     per-service overrides via ``extra="allow"``.
 
-    jxstanford PR #97 review H2: without forwarding ``healthCheck`` /
-    ``automountServiceAccountToken`` / ``containerSecurityContext`` on
-    PATCH, iterative ``kz-ext dev`` redeploys silently drop the very
-    overrides this PR added.
+    The PATCH carries the full ``(registry, repository, tag)`` triple
+    from the canonical image ref. The operator reconstructs the CR's
+    image field from those three, so a repository change between
+    deploys — common when an extension's declared image namespace
+    differs from the legacy ``{ext}-{svc}`` form that pre-fix kz-ext
+    would have written — flows through. Sending only ``tag`` would
+    leave the CR's image field at the original repository and produce
+    ``ImagePullBackOff`` on the next pull.
     """
+    from kamiwaza_extensions.compose_transformer import _split_image_ref
     from kamiwaza_sdk.schemas.extensions import ImagePatch, PatchServiceSpec
 
     patch_services: List[Any] = []
     for svc in payload.services:
-        # Split tag after last '/' to avoid confusing registry port with tag
-        image = svc.image
-        slash_pos = image.rfind("/")
-        after_slash = image[slash_pos + 1:] if slash_pos >= 0 else image
-        if ":" in after_slash:
-            tag = after_slash.rsplit(":", 1)[1]
-        else:
-            tag = "latest"
+        registry, repository, tag = _split_image_ref(svc.image)
+        image_patch = ImagePatch(
+            tag=tag,
+            registry=registry,
+            repository=repository,
+        )
         spec = PatchServiceSpec(
             name=svc.name,
-            image=ImagePatch(tag=tag),
+            image=image_patch,
         )
         if svc.env:
             spec.env = svc.env
@@ -303,7 +306,10 @@ def run_dev_remote(
     from kamiwaza_sdk import KamiwazaClient
     from kamiwaza_sdk.exceptions import APIError
 
-    from kamiwaza_extensions.compose_transformer import ComposeTransformer
+    from kamiwaza_extensions.compose_transformer import (
+        ComposeTransformer,
+        compute_canonical_refs,
+    )
     from kamiwaza_extensions.connections import ConnectionManager
     from kamiwaza_extensions.deployment_poller import (
         DeploymentFailedError,
@@ -311,7 +317,6 @@ def run_dev_remote(
         DeploymentTimeoutError,
     )
     from kamiwaza_extensions.dev_state import (
-        DevState,
         mark_step,
         read_state,
         resume_message,
@@ -431,6 +436,20 @@ def run_dev_remote(
         revision_tag=rev_tag,
         registry=registry,
     )
+    transformed = transformer.resolve_env_placeholders(transformed)
+
+    # Canonical image refs for every build-context service. Single
+    # source of truth shared with the transformed compose so the image
+    # we build and push matches the ref the K8s payload will pull. The
+    # transformer honors a service's declared image namespace; without
+    # this map ImageBuilder would synthesize the legacy {ext}-{svc}
+    # form and ship a pod referencing an image that was never pushed.
+    canonical_refs: Dict[str, str] = compute_canonical_refs(
+        info.compose_data.get("services") or {},
+        registry=registry,
+        extension_name=info.name,
+        revision_tag=rev_tag,
+    )
 
     # 5b. Resolve SDK override for build
     build_overrides = None
@@ -497,6 +516,7 @@ def run_dev_remote(
                 service_filter=service,
                 verbose=verbose,
                 build_overrides=build_overrides,
+                image_refs=canonical_refs,
             )
         except ImageBuildError as exc:
             console.print(f"\n[red]Error:[/red] {exc}")
@@ -507,13 +527,15 @@ def run_dev_remote(
         console.print()
     else:
         console.print("[dim]Skipping build (--no-build)[/dim]")
-        # Collect expected image refs for push
-        image_refs = []
-        for svc_name, svc in (info.compose_data.get("services") or {}).items():
-            if service and svc_name != service:
-                continue
-            if "build" in svc:
-                image_refs.append(f"{registry}/{info.name}-{svc_name}:{rev_tag}")
+        # Collect expected image refs for push from the canonical map so
+        # --no-build pushes hit the same registry path the deployment
+        # payload will reference.
+        if service:
+            image_refs = (
+                [canonical_refs[service]] if service in canonical_refs else []
+            )
+        else:
+            image_refs = list(canonical_refs.values())
         console.print()
 
     # 7. Push images
