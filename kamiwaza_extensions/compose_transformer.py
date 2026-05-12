@@ -24,6 +24,26 @@ def _replace_image_tag(image_ref: str, new_tag: str) -> str:
     return f"{ref}:{new_tag}"
 
 
+def _looks_registry_qualified(ref: str) -> bool:
+    """Return True when *ref*'s first slash-separated component is a registry host.
+
+    Mirrors docker's rule for distinguishing a registry-qualified ref
+    (``ghcr.io/...``, ``localhost:5000/...``) from a Docker Hub
+    namespace shortcut (``foo/bar``, ``redis``). Without this guard
+    ``docker push my-org/api:1.0`` silently goes to Docker Hub while
+    the cluster registry expects the same path — guaranteed
+    ImagePullBackOff for extensions that use unqualified short refs.
+
+    Predicate: the substring before the first ``/`` must contain ``.``
+    or ``:``, or be exactly ``localhost``. Bare repo names (no ``/``)
+    are Docker Hub by definition and return False.
+    """
+    if "/" not in ref:
+        return False
+    first, _, _ = ref.partition("/")
+    return "." in first or ":" in first or first == "localhost"
+
+
 def _canonical_build_ref(
     service: Optional[Dict[str, Any]],
     svc_name: str,
@@ -34,22 +54,25 @@ def _canonical_build_ref(
 ) -> str:
     """Return the canonical registry image ref for a buildable service.
 
-    Reads ``image`` from *service*. If declared, the namespace is
-    preserved and only the tag is rewritten to *revision_tag*. If
-    absent, falls back to the legacy
+    Reads ``image`` from *service*. When the declared ref names an
+    explicit registry host (``ghcr.io/...``, ``localhost:5000/...``),
+    the namespace is preserved and only the tag is rewritten to
+    *revision_tag*. Unqualified refs (``api:latest``,
+    ``my-org/api:1.0``) and missing/empty declarations fall back to
+    the legacy
     ``{fallback_registry}/{fallback_extension_name}-{svc_name}:{revision_tag}``
-    form so extensions that rely on auto-generated image fields keep
-    working.
+    form — those would otherwise route ``docker push`` to Docker Hub
+    while the cluster registry expects the rewritten path.
 
     Shared by ``ComposeTransformer.transform_service``,
     ``_retag_appgarden_compose``, ``ImageBuilder.build``, and
-    ``run_publish``'s ``published_refs`` derivation so all five sites
-    agree on where a built image lives.
+    ``run_publish``'s ``published_refs`` derivation so every site
+    that picks a build ref agrees on where the image lives.
     """
     declared = (service or {}).get("image")
     if isinstance(declared, str):
         stripped = declared.strip()
-        if stripped:
+        if stripped and _looks_registry_qualified(stripped):
             return _replace_image_tag(stripped, revision_tag)
     return (
         f"{fallback_registry}/{fallback_extension_name}-{svc_name}:{revision_tag}"

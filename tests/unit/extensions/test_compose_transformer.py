@@ -94,12 +94,34 @@ class TestBuildContextRemoval:
         assert svc["image"] == "registry.test/my-app-api:1.0.0-dev"
 
     def test_preserves_declared_namespace_rewrites_only_tag(self, transformer):
-        # When a service has both `build:` and `image:`, the declared
-        # namespace is canonical — only the tag is rewritten to the
-        # publish's revision_tag. Without this, extensions whose GHCR
-        # path doesn't follow the legacy {ext}-{svc} convention (e.g.
-        # omniparse, which ships at `images/omniparse`) silently get
-        # the wrong namespace in the catalog. (ENG-4909.)
+        # When a service has both `build:` and a registry-qualified
+        # `image:`, the declared namespace is canonical — only the tag
+        # is rewritten. Extensions whose registry path doesn't follow
+        # the legacy {ext}-{svc} convention (e.g. omniparse at
+        # `images/omniparse`) would otherwise silently get the wrong
+        # namespace in the catalog.
+        compose = {
+            "services": {
+                "api": {
+                    "build": "./backend",
+                    "image": "ghcr.io/kamiwazaai/my-app-api:old-tag",
+                }
+            }
+        }
+        result = transformer.transform(compose, "my-app", "1.0.0-dev", "registry.test")
+        assert result["services"]["api"]["image"] == (
+            "ghcr.io/kamiwazaai/my-app-api:1.0.0-dev"
+        )
+
+    def test_unqualified_short_form_falls_back_to_legacy(self):
+        # `image: foo/bar:tag` resolves to docker.io/foo/bar:tag under
+        # docker's namespace rules — building/pushing at that path
+        # silently lands on Docker Hub while the K8s pod and the
+        # cluster registry expect the cluster-side rewrite. Override
+        # with the legacy {registry}/{ext}-{svc}:{tag} form so the
+        # pipeline stays internally consistent.
+        from kamiwaza_extensions.compose_transformer import ComposeTransformer
+
         compose = {
             "services": {
                 "api": {
@@ -108,9 +130,11 @@ class TestBuildContextRemoval:
                 }
             }
         }
-        result = transformer.transform(compose, "my-app", "1.0.0-dev", "registry.test")
+        result = ComposeTransformer().transform(
+            compose, "my-app", "1.0.0-dev", "registry.test",
+        )
         assert result["services"]["api"]["image"] == (
-            "kamiwazaai/my-app-api:1.0.0-dev"
+            "registry.test/my-app-api:1.0.0-dev"
         )
 
     def test_transform_preserves_divergent_namespace(self, transformer):
@@ -650,3 +674,107 @@ class TestDetectServiceUrlRewrites:
 
         services = {"backend": {}, "frontend": {}}
         assert detect_service_url_rewrites(services, "ext") == {}
+
+
+class TestLooksRegistryQualified:
+    """`_looks_registry_qualified` distinguishes registry-qualified refs
+    from Docker Hub namespace shortcuts using docker's standard rule."""
+
+    def test_bare_repo_name(self):
+        from kamiwaza_extensions.compose_transformer import _looks_registry_qualified
+
+        assert _looks_registry_qualified("redis") is False
+        assert _looks_registry_qualified("api:latest") is False
+
+    def test_docker_hub_namespace_shortcut(self):
+        # `my-org/api` looks like a path but docker resolves it to
+        # docker.io/my-org/api — must not be treated as registry-qualified.
+        from kamiwaza_extensions.compose_transformer import _looks_registry_qualified
+
+        assert _looks_registry_qualified("my-org/api:latest") is False
+        assert _looks_registry_qualified("library/redis:7") is False
+
+    def test_explicit_registry_with_dot(self):
+        from kamiwaza_extensions.compose_transformer import _looks_registry_qualified
+
+        assert _looks_registry_qualified("ghcr.io/kamiwaza/foo:1.0") is True
+        assert _looks_registry_qualified("registry.example.com/foo:bar") is True
+
+    def test_explicit_registry_with_port(self):
+        from kamiwaza_extensions.compose_transformer import _looks_registry_qualified
+
+        assert _looks_registry_qualified("localhost:5000/foo:tag") is True
+        assert _looks_registry_qualified("registry:443/foo") is True
+
+    def test_localhost_without_port(self):
+        # The one exception to the dot/colon rule — docker treats bare
+        # `localhost` as a registry host.
+        from kamiwaza_extensions.compose_transformer import _looks_registry_qualified
+
+        assert _looks_registry_qualified("localhost/foo:tag") is True
+
+
+class TestCanonicalBuildRef:
+    """`_canonical_build_ref` returns the registry image ref for a
+    buildable service, honoring registry-qualified declared images and
+    falling back to the legacy form for everything else."""
+
+    @staticmethod
+    def _call(image=None, *, has_build=True, declared_only=False):
+        from kamiwaza_extensions.compose_transformer import _canonical_build_ref
+
+        svc: Dict[str, Any] = {}
+        if has_build:
+            svc["build"] = "."
+        if image is not None:
+            svc["image"] = image
+        if declared_only:
+            svc = {"image": image} if image is not None else {}
+        return _canonical_build_ref(
+            svc, "api",
+            fallback_registry="registry.test",
+            fallback_extension_name="my-ext",
+            revision_tag="2.0.0-dev",
+        )
+
+    def test_legacy_fallback_when_no_image_declared(self):
+        assert self._call() == "registry.test/my-ext-api:2.0.0-dev"
+
+    def test_legacy_fallback_when_image_empty_string(self):
+        assert self._call(image="") == "registry.test/my-ext-api:2.0.0-dev"
+
+    def test_legacy_fallback_when_image_whitespace_only(self):
+        assert self._call(image="   ") == "registry.test/my-ext-api:2.0.0-dev"
+
+    def test_registry_qualified_declared_image_honored(self):
+        assert self._call(
+            image="ghcr.io/my-org/api:1.0",
+        ) == "ghcr.io/my-org/api:2.0.0-dev"
+
+    def test_registry_with_port_honored(self):
+        assert self._call(
+            image="localhost:5000/api:1.0",
+        ) == "localhost:5000/api:2.0.0-dev"
+
+    def test_unqualified_bare_repo_falls_back_to_legacy(self):
+        # `image: api:latest` — docker push would send this to Docker
+        # Hub, breaking extensions whose images live in the cluster
+        # registry. Override with the legacy form so the rewritten ref
+        # matches what _retag_appgarden_compose / ComposeTransformer
+        # write into the K8s payload.
+        assert self._call(
+            image="api:latest",
+        ) == "registry.test/my-ext-api:2.0.0-dev"
+
+    def test_unqualified_short_form_falls_back_to_legacy(self):
+        # `image: my-org/api:1.0` — common dev convention that resolves
+        # to docker.io/my-org/api:1.0 under docker's namespace rules.
+        # Same regression hazard as the bare repo case.
+        assert self._call(
+            image="my-org/api:1.0",
+        ) == "registry.test/my-ext-api:2.0.0-dev"
+
+    def test_strips_whitespace_around_qualified_ref(self):
+        assert self._call(
+            image="  ghcr.io/my-org/api:1.0  ",
+        ) == "ghcr.io/my-org/api:2.0.0-dev"
