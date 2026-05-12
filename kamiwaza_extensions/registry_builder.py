@@ -118,36 +118,36 @@ class RegistryBuilder:
                 ]
             docker_images = list(dict.fromkeys(docker_images + extra_images))
 
-        entry: Dict[str, Any] = {
-            "name": metadata.get("name", ""),
-            "version": version,
-            "description": metadata.get("description", ""),
-            "source_type": metadata.get("source_type", "kamiwaza"),
-            "visibility": metadata.get("visibility", "public"),
-            "compose_yml": compose_yml,
-            "docker_images": docker_images,
-        }
+        # Source kamiwaza.json is the catalog contract: every top-level
+        # field the developer authored reaches the catalog entry. The
+        # platform's _update_template_from_remote
+        # (kamiwaza/serving/garden/apps/templates.py) reads
+        # env_defaults, required_env_vars, capabilities, display_name,
+        # strip_path_prefix, and friends via `.get(field, default)` —
+        # any field a slim entry omits silently degrades to {} / [] /
+        # None on the platform side, breaking required-env validation,
+        # env-default injection, and UI metadata. Curating the entry
+        # down to a known-fields subset has bitten us before; don't.
+        entry: Dict[str, Any] = copy.deepcopy(metadata)
+        entry["name"] = metadata.get("name", "")
+        entry["version"] = version
+        entry.setdefault("description", "")
+        entry.setdefault("source_type", "kamiwaza")
+        entry.setdefault("visibility", "public")
+        entry["compose_yml"] = compose_yml
+        entry["docker_images"] = docker_images
 
+        # `revision` is owned exclusively by the publish-time parameter,
+        # never by source kamiwaza.json. Pop first so a stale value in
+        # metadata (or a catalog entry re-fed as metadata) can't leak
+        # through and trip CatalogDedupGuard with a revision that was
+        # never used to tag the images.
+        entry.pop("revision", None)
         if revision is not None:
             entry["revision"] = revision
 
-        # Optional fields -- only include when present in metadata.
-        kamiwaza_version = metadata.get("kamiwaza_version")
-        if kamiwaza_version:
-            entry["kamiwaza_version"] = kamiwaza_version
-
-        preview_image = metadata.get("preview_image")
-        if preview_image:
-            entry["preview_image"] = _normalize_preview_image(preview_image)
-
-        risk_tier = metadata.get("risk_tier")
-        if risk_tier is not None:
-            entry["risk_tier"] = risk_tier
-
-        for optional_key in ("tags", "category", "verified"):
-            val = metadata.get(optional_key)
-            if val is not None:
-                entry[optional_key] = val
+        if entry.get("preview_image"):
+            entry["preview_image"] = _normalize_preview_image(entry["preview_image"])
 
         return entry
 
