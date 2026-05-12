@@ -94,7 +94,13 @@ class RegistryBuilder:
         if digest_map:
             transformed_compose = _apply_digests(transformed_compose, digest_map)
 
-        compose_yml = yaml.dump(transformed_compose, default_flow_style=False)
+        # sort_keys=False preserves service key order from the source compose.
+        # Downstream consumers infer primary-service selection from the order
+        # services appear in compose, so alphabetizing here silently flips
+        # which service the platform routes to.
+        compose_yml = yaml.dump(
+            transformed_compose, default_flow_style=False, sort_keys=False
+        )
         docker_images = self.extract_docker_images(transformed_compose)
 
         extra_images = metadata.get("extra_docker_images") or []
