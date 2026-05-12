@@ -235,6 +235,150 @@ class TestBump:
         assert compose.read_text() == before_compose
 
     @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_compose_handles_registry_port(self, mock_detector_cls, tmp_path):
+        _write_kamiwaza_json(tmp_path, "2.0.14")
+        compose = tmp_path / "docker-compose.yml"
+        compose.write_text(
+            "services:\n"
+            "  app:\n"
+            "    image: localhost:5000/omniparse:2.0.14\n"
+        )
+        mock_detector_cls.return_value.detect.return_value = _make_extension_info(tmp_path, "2.0.14")
+
+        from kamiwaza_extensions.commands.bump import run_bump
+        run_bump(level="minor")
+
+        assert "localhost:5000/omniparse:2.1.0" in compose.read_text()
+
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_compose_preserves_digest_suffix(self, mock_detector_cls, tmp_path):
+        _write_kamiwaza_json(tmp_path, "2.0.14")
+        compose = tmp_path / "docker-compose.yml"
+        digest = "sha256:" + "a" * 64
+        compose.write_text(
+            f"services:\n  app:\n    image: ghcr.io/x/y:2.0.14@{digest}\n"
+        )
+        mock_detector_cls.return_value.detect.return_value = _make_extension_info(tmp_path, "2.0.14")
+
+        from kamiwaza_extensions.commands.bump import run_bump
+        run_bump(level="patch")
+
+        content = compose.read_text()
+        assert f"ghcr.io/x/y:2.0.15@{digest}" in content
+
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_compose_handles_quoted_image(self, mock_detector_cls, tmp_path):
+        _write_kamiwaza_json(tmp_path, "2.0.14")
+        compose = tmp_path / "docker-compose.yml"
+        compose.write_text(
+            'services:\n  app:\n    image: "ghcr.io/x/y:2.0.14"\n'
+        )
+        mock_detector_cls.return_value.detect.return_value = _make_extension_info(tmp_path, "2.0.14")
+
+        from kamiwaza_extensions.commands.bump import run_bump
+        run_bump(level="minor")
+
+        assert '"ghcr.io/x/y:2.1.0"' in compose.read_text()
+
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_pyproject_with_arrays_before_version(self, mock_detector_cls, tmp_path):
+        _write_kamiwaza_json(tmp_path, "2.0.14")
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text(
+            "[project]\n"
+            'name = "omniparse"\n'
+            'classifiers = [\n'
+            '    "Topic :: Software Development",\n'
+            '    "License :: OSI Approved",\n'
+            ']\n'
+            'dependencies = ["requests", "typer"]\n'
+            'version = "2.0.14"\n'
+            "\n"
+            "[tool.ruff]\n"
+            "line-length = 88\n"
+        )
+        mock_detector_cls.return_value.detect.return_value = _make_extension_info(tmp_path, "2.0.14")
+
+        from kamiwaza_extensions.commands.bump import run_bump
+        run_bump(level="minor")
+
+        assert 'version = "2.1.0"' in pyproject.read_text()
+
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_propagates_nested_package_json(self, mock_detector_cls, tmp_path):
+        _write_kamiwaza_json(tmp_path, "2.0.14")
+        frontend = tmp_path / "frontend"
+        frontend.mkdir()
+        pkg = frontend / "package.json"
+        pkg.write_text(json.dumps({"name": "x", "version": "2.0.14"}, indent=2) + "\n")
+        mock_detector_cls.return_value.detect.return_value = _make_extension_info(tmp_path, "2.0.14")
+
+        from kamiwaza_extensions.commands.bump import run_bump
+        run_bump(level="minor")
+
+        data = json.loads(pkg.read_text())
+        assert data["version"] == "2.1.0"
+
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_package_json_preserves_indent(self, mock_detector_cls, tmp_path):
+        _write_kamiwaza_json(tmp_path, "2.0.14")
+        pkg = tmp_path / "package.json"
+        # Use 4-space indent; expect it to survive.
+        original = (
+            '{\n'
+            '    "name": "x",\n'
+            '    "version": "2.0.14",\n'
+            '    "scripts": {\n'
+            '        "build": "next build"\n'
+            '    }\n'
+            '}\n'
+        )
+        pkg.write_text(original)
+        mock_detector_cls.return_value.detect.return_value = _make_extension_info(tmp_path, "2.0.14")
+
+        from kamiwaza_extensions.commands.bump import run_bump
+        run_bump(level="patch")
+
+        content = pkg.read_text()
+        assert '"version": "2.0.15"' in content
+        assert '    "name": "x"' in content  # 4-space indent preserved
+        assert '"scripts"' in content
+
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_dockerfile_arg_with_trailing_comment(self, mock_detector_cls, tmp_path):
+        _write_kamiwaza_json(tmp_path, "2.0.14")
+        dockerfile = tmp_path / "Dockerfile"
+        dockerfile.write_text(
+            "FROM python:3.11\n"
+            "ARG OMNIPARSE_VERSION=2.0.14  # injected at build\n"
+        )
+        mock_detector_cls.return_value.detect.return_value = _make_extension_info(tmp_path, "2.0.14")
+
+        from kamiwaza_extensions.commands.bump import run_bump
+        run_bump(level="minor")
+
+        content = dockerfile.read_text()
+        assert "ARG OMNIPARSE_VERSION=2.1.0" in content
+        assert "# injected at build" in content
+
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_image_with_digest_in_kamiwaza_json(self, mock_detector_cls, tmp_path):
+        kj = tmp_path / "kamiwaza.json"
+        digest = "sha256:" + "b" * 64
+        kj.write_text(json.dumps({
+            "name": "test-app",
+            "version": "2.0.14",
+            "image": f"ghcr.io/x/y:2.0.14@{digest}",
+        }, indent=4) + "\n")
+        mock_detector_cls.return_value.detect.return_value = _make_extension_info(tmp_path, "2.0.14")
+
+        from kamiwaza_extensions.commands.bump import run_bump
+        run_bump(level="minor")
+
+        data = json.loads(kj.read_text())
+        assert data["image"] == f"ghcr.io/x/y:2.1.0@{digest}"
+
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
     def test_invalid_level_exits(self, mock_detector_cls, tmp_path):
         _write_kamiwaza_json(tmp_path)
         mock_detector_cls.return_value.detect.return_value = _make_extension_info(tmp_path)

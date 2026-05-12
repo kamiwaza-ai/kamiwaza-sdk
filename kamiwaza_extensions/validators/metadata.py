@@ -138,27 +138,27 @@ class MetadataValidator:
 def _check_version_drift(
     ext_dir: Path, version: str, manifest_image: Optional[Any]
 ) -> List[str]:
+    # Import locally to share the canonical image-ref parser with the bump
+    # command — keeps the updater and the drift detector from diverging on
+    # what counts as a "tag" (registry ports, digest suffixes, etc.).
+    from kamiwaza_extensions.commands.bump import _split_image_ref
+    from kamiwaza_extensions.constants import ALL_COMPOSE_FILENAMES
+
     warnings: List[str] = []
 
     # kamiwaza.json image tag
-    if isinstance(manifest_image, str) and ":" in manifest_image:
-        tag = manifest_image.rpartition(":")[2]
-        if tag != version and _looks_like_semver(tag):
+    if isinstance(manifest_image, str):
+        _, tag, _ = _split_image_ref(manifest_image)
+        if tag is not None and tag != version and _looks_like_semver(tag):
             warnings.append(
                 f"Version drift: kamiwaza.json version='{version}' but image tag='{tag}'"
             )
 
-    from kamiwaza_extensions.constants import COMPOSE_FILENAMES
-
-    compose_candidates = list(COMPOSE_FILENAMES) + [
-        "docker-compose.appgarden.yml",
-        "docker-compose.appgarden.yaml",
-    ]
     image_re = re.compile(
-        r"""^\s*image\s*:\s*['"]?(?P<repo>[^\s'":]+):(?P<tag>[^\s'"]+)['"]?""",
+        r"""^\s*image\s*:\s*['"]?(?P<ref>\S+?)['"]?\s*(?:\#.*)?$""",
         re.MULTILINE,
     )
-    for name in compose_candidates:
+    for name in ALL_COMPOSE_FILENAMES:
         compose = ext_dir / name
         if not compose.exists():
             continue
@@ -167,10 +167,10 @@ def _check_version_drift(
         except OSError:
             continue
         for match in image_re.finditer(content):
-            tag = match.group("tag")
+            _, tag, _ = _split_image_ref(match.group("ref"))
             # Only flag images that look like extension-owned versions:
             # tag is semver-shaped *and* differs from manifest version.
-            if tag != version and _looks_like_semver(tag):
+            if tag is not None and tag != version and _looks_like_semver(tag):
                 warnings.append(
                     f"Version drift: {name} has image tag='{tag}' but kamiwaza.json version='{version}'"
                 )
@@ -195,24 +195,37 @@ def _check_version_drift(
                     f"but kamiwaza.json version='{version}'"
                 )
 
-    # pyproject.toml [project] version
+    # pyproject.toml [project] version — scan only inside the [project]
+    # table to survive arrays (e.g. `classifiers = [...]`) before the
+    # version line.
     pyproject = ext_dir / "pyproject.toml"
     if pyproject.exists():
         try:
             content = pyproject.read_text(encoding="utf-8")
         except OSError:
             content = ""
-        match = re.search(
-            r"""(?ms)^\[project\][^\[]*?\nversion\s*=\s*["'](?P<value>[^"']+)["']""",
-            content,
-        )
-        if match and match.group("value") != version:
+        pyproject_version = _find_pyproject_version(content)
+        if pyproject_version is not None and pyproject_version != version:
             warnings.append(
-                f"Version drift: pyproject.toml version='{match.group('value')}' "
+                f"Version drift: pyproject.toml version='{pyproject_version}' "
                 f"but kamiwaza.json version='{version}'"
             )
 
     return warnings
+
+
+def _find_pyproject_version(text: str) -> Optional[str]:
+    from kamiwaza_extensions.commands.bump import _find_project_table_span
+
+    span = _find_project_table_span(text)
+    if span is None:
+        return None
+    start, end = span
+    match = re.search(
+        r"""(?m)^version\s*=\s*["'](?P<value>[^"']+)["']""",
+        text[start:end],
+    )
+    return match.group("value") if match else None
 
 
 def _looks_like_semver(value: str) -> bool:
