@@ -25,14 +25,24 @@ from __future__ import annotations
 
 from kamiwaza.client import Kamiwaza as Kamiwaza
 from kamiwaza.exceptions import KamiwazaError as KamiwazaError
+from kamiwaza.models import AttributeGateBinding as AttributeGateBinding
 from kamiwaza.models import BrokeredUser as BrokeredUser
+from kamiwaza.models import DatasetRef as DatasetRef
+from kamiwaza.models import ExecutionGateBinding as ExecutionGateBinding
 from kamiwaza.models import Federation as Federation
+from kamiwaza.models import Grant as Grant
 from kamiwaza.models import JobResult as JobResult
+from kamiwaza.models import Subject as Subject
 
 __all__ = [
+    "AttributeGateBinding",
     "BrokeredUser",
+    "DatasetRef",
+    "ExecutionGateBinding",
     "Federation",
+    "Grant",
     "JobResult",
     "Kamiwaza",
     "KamiwazaError",
+    "Subject",
 ]

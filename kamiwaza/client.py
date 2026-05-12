@@ -77,6 +77,8 @@ class Kamiwaza:
         self._jobs: Any = None
         self._cluster: Any = None
         self._gates: Any = None
+        self._subjects: Any = None
+        self._datasets: Any = None
         # NB: lazy retrieval-module attribute; matching wrapper below.
         self._retrieval_api: Any = None
 
@@ -142,6 +144,34 @@ class Kamiwaza:
 
             self._jobs = JobsAPI(client=self)
         return self._jobs
+
+    @property
+    def subjects(self) -> Any:
+        """AuthzSubjects + grants (T5.5 / §4.2.11).
+
+        Returns a ``kamiwaza.subjects.SubjectsAPI`` instance. Wraps the
+        server-side typed upsert + grants surface; collapses the
+        v0.1.x two-phase Keycloak admin recipe into a single SDK call.
+        """
+        if self._subjects is None:
+            from kamiwaza.subjects import SubjectsAPI
+
+            self._subjects = SubjectsAPI(client=self)
+        return self._subjects
+
+    @property
+    def datasets(self) -> Any:
+        """Catalog datasets + attribute-gate binding (T5.6 / §4.2.11).
+
+        Returns a ``kamiwaza.datasets.DatasetsAPI`` instance. M3 surface
+        is the minimal slice setup.py reaches for: create / get / delete
+        plus the gate-binding endpoints (set_gate / get_gate / clear_gate).
+        """
+        if self._datasets is None:
+            from kamiwaza.datasets import DatasetsAPI
+
+            self._datasets = DatasetsAPI(client=self)
+        return self._datasets
 
     @classmethod
     def from_env(

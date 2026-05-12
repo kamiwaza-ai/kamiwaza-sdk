@@ -202,3 +202,146 @@ class JobResult(BaseModel):
     result: Optional[Any] = None
     error: Optional[str] = None
     audit_actor: Optional[str] = None
+
+
+class Grant(BaseModel):
+    """T5.5 / §4.2.6 — one ReBAC tuple bound to a subject.
+
+    Returned by ``kz.subjects.grants(username).list()`` / ``.create()``.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    object_namespace: str
+    object_id: str
+    relation: str
+
+
+class Subject(BaseModel):
+    """T5.5 / §4.2.6 — typed Subject response.
+
+    Returned by ``kz.subjects.upsert(...)`` and ``kz.subjects.get(...)``.
+    ``attributes`` collapses single-element KC attribute lists to scalars
+    on the server side so the SDK consumer reads the same shape they wrote.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    id: str
+    username: str
+    attributes: Dict[str, Any] = {}
+    grants: List[Grant] = []
+    # ENG-4941: server emits datetime (Pydantic serializes to ISO string
+    # on the wire; pydantic coerces back on the SDK side). Matches
+    # sibling BrokeredUser.created_at typing.
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
+class DatasetRef(BaseModel):
+    """T5.6 / §4.2.5 — minimal Dataset shape returned by the catalog API.
+
+    The full Dataset (with ``schema``, ``container_urn``, ``tags``, ...)
+    lives on the legacy ``kamiwaza_sdk`` namespace; this M3 namespace
+    surfaces the fields setup.py needs to bind gates and round-trip
+    references through the SDK.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    urn: str
+    name: str
+    platform: str
+    environment: Optional[str] = None
+    properties: Dict[str, Any] = {}
+
+
+class AttributeGateBinding(BaseModel):
+    """T5.6 / §4.2.5 — response shape for dataset.gate endpoints.
+
+    Returned by ``kz.datasets.set_gate(...)`` and
+    ``kz.datasets.get_gate(...)``. ``kind`` is always ``"attribute"`` on
+    this surface (dataset gates are by definition AttributeGate subclasses;
+    a wrong-kind PUT returns 400 before the binding is written).
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    dataset_urn: str
+    type: str
+    config: Dict[str, Any] = {}
+    gate_name: str
+    kind: Literal["attribute"] = "attribute"
+
+
+class ExecutionGateBinding(BaseModel):
+    """T5.6 (cluster expand) / §4.2.4 — response shape for the cluster
+    execution-gate binding endpoints.
+
+    Returned by ``kz.cluster.set_execution_gate(...)`` and
+    ``kz.cluster.get_execution_gate(...)``. Cluster-scoped (one active
+    binding per cluster), kind always ``"execution"``.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    type: str
+    config: Dict[str, Any] = {}
+    gate_name: str
+    kind: Literal["execution"] = "execution"
+
+
+class AttributeSchema(BaseModel):
+    """ENG-4946 / M3.1 / §4.2.18 — declared-vocabulary attribute schema.
+
+    Returned by ``kz.cluster.declare_attribute(...)``,
+    ``kz.cluster.deprecate_attribute(...)``, ``kz.cluster.withdraw_attribute(...)``,
+    and listed by ``kz.cluster.list_attributes()``. Lifecycle states:
+    ``declared`` → ``deprecated`` → ``withdrawn``; only ``declared``-state
+    attributes accept new values on subjects.upsert.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    name: str
+    """Canonical attribute name; matches KC user-profile + OIDC claim."""
+
+    type: Literal["string", "int", "bool", "string[]"]
+    """Wire-level attribute type. ``string[]`` is the multivalued shape."""
+
+    state: Literal["declared", "deprecated", "withdrawn"]
+    """Lifecycle state."""
+
+    authority: Literal["local_admin", "self", "mesh_peer", "system"] = "local_admin"
+    """Which actor may set values on subjects; defaults to local_admin."""
+
+    sensitive: bool = False
+    """If True, mapper exists but JWT claim is not issued (OQ-14)."""
+
+    schema_version: str = "1.0"
+    """Cross-cluster contract version (OQ-13); semver string."""
+
+    declared_at: datetime
+    """When the attribute was first declared in this realm."""
+
+    deprecated_at: Optional[datetime] = None
+    """Set when state transitioned declared → deprecated."""
+
+    withdrawn_at: Optional[datetime] = None
+    """Set when state transitioned to withdrawn."""
+
+    declared_by: Optional[str] = None
+    """Actor user UUID who issued the most recent declare/revive."""
+
+
+class AttributeSchemaList(BaseModel):
+    """ENG-4946 / M3.1 — response wrapper for ``kz.cluster.list_attributes()``.
+
+    Wraps the vocabulary list with a top-level ``schema_version`` so
+    cross-cluster compatibility checks (v1.1 work) have a place to land.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    attributes: List[AttributeSchema]
+    schema_version: str = "v0.3.6"
