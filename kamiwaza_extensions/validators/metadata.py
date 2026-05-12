@@ -126,7 +126,97 @@ class MetadataValidator:
             if not image_path.exists():
                 warnings.append(f"preview_image file not found: {metadata.preview_image}")
 
+        # Version-drift checks: surface mismatches between kamiwaza.json
+        # version and the same version recorded in sibling files. Drift
+        # silently breaks publishes (manifest claims 2.1.0, image tag still
+        # points at 2.0.14) — warn here so it's visible before deploy.
+        warnings.extend(_check_version_drift(path.parent, metadata.version, data.get("image")))
+
         return ValidationResult(passed=len(errors) == 0, errors=errors, warnings=warnings)
+
+
+def _check_version_drift(
+    ext_dir: Path, version: str, manifest_image: Optional[Any]
+) -> List[str]:
+    warnings: List[str] = []
+
+    # kamiwaza.json image tag
+    if isinstance(manifest_image, str) and ":" in manifest_image:
+        tag = manifest_image.rpartition(":")[2]
+        if tag != version and _looks_like_semver(tag):
+            warnings.append(
+                f"Version drift: kamiwaza.json version='{version}' but image tag='{tag}'"
+            )
+
+    from kamiwaza_extensions.constants import COMPOSE_FILENAMES
+
+    compose_candidates = list(COMPOSE_FILENAMES) + [
+        "docker-compose.appgarden.yml",
+        "docker-compose.appgarden.yaml",
+    ]
+    image_re = re.compile(
+        r"""^\s*image\s*:\s*['"]?(?P<repo>[^\s'":]+):(?P<tag>[^\s'"]+)['"]?""",
+        re.MULTILINE,
+    )
+    for name in compose_candidates:
+        compose = ext_dir / name
+        if not compose.exists():
+            continue
+        try:
+            content = compose.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for match in image_re.finditer(content):
+            tag = match.group("tag")
+            # Only flag images that look like extension-owned versions:
+            # tag is semver-shaped *and* differs from manifest version.
+            if tag != version and _looks_like_semver(tag):
+                warnings.append(
+                    f"Version drift: {name} has image tag='{tag}' but kamiwaza.json version='{version}'"
+                )
+                break  # one warning per compose file is enough signal
+
+    # Dockerfile *_VERSION ARG defaults
+    dockerfile = ext_dir / "Dockerfile"
+    if dockerfile.exists():
+        try:
+            content = dockerfile.read_text(encoding="utf-8")
+        except OSError:
+            content = ""
+        arg_re = re.compile(
+            r"""^\s*ARG\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*_VERSION)\s*=\s*["']?(?P<value>[^\s"']+)["']?""",
+            re.MULTILINE,
+        )
+        for match in arg_re.finditer(content):
+            value = match.group("value")
+            if value != version and _looks_like_semver(value):
+                warnings.append(
+                    f"Version drift: Dockerfile ARG {match.group('name')}='{value}' "
+                    f"but kamiwaza.json version='{version}'"
+                )
+
+    # pyproject.toml [project] version
+    pyproject = ext_dir / "pyproject.toml"
+    if pyproject.exists():
+        try:
+            content = pyproject.read_text(encoding="utf-8")
+        except OSError:
+            content = ""
+        match = re.search(
+            r"""(?ms)^\[project\][^\[]*?\nversion\s*=\s*["'](?P<value>[^"']+)["']""",
+            content,
+        )
+        if match and match.group("value") != version:
+            warnings.append(
+                f"Version drift: pyproject.toml version='{match.group('value')}' "
+                f"but kamiwaza.json version='{version}'"
+            )
+
+    return warnings
+
+
+def _looks_like_semver(value: str) -> bool:
+    return bool(_SEMVER_RE.match(value))
 
 
 def _is_valid_specifier_set(value: str) -> bool:

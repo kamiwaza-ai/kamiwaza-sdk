@@ -323,10 +323,11 @@ def port_forward(
 @run_with_error_handling
 def bump(
     level: str = typer.Option("patch", "--level", "-l", help="Bump level: major, minor, or patch"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview file changes without writing"),
 ) -> None:
-    """Bump extension version in kamiwaza.json."""
+    """Bump extension version across kamiwaza.json, compose, Dockerfile, pyproject, package.json."""
     from kamiwaza_extensions.commands.bump import run_bump
-    run_bump(level=level)
+    run_bump(level=level, dry_run=dry_run)
 
 
 @app.command()

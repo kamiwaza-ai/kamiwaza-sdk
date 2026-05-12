@@ -222,3 +222,78 @@ class TestRunValidateMonorepo:
         assert output["passed"] is False
         joined = " ".join(output["errors"])
         assert "Multiple kamiwaza.json found" in joined
+
+
+class TestVersionDrift:
+    """ENG-4835: surface drift between kamiwaza.json version and sibling files."""
+
+    def _meta(self, version: str, image: str | None = None) -> dict:
+        m = _valid_metadata()
+        m["version"] = version
+        if image is not None:
+            m["image"] = image
+        return m
+
+    def test_image_tag_drift_warns(self, tmp_path):
+        from pathlib import Path
+        from kamiwaza_extensions.validators.metadata import MetadataValidator
+
+        (tmp_path / "kamiwaza.json").write_text(
+            json.dumps(self._meta("2.1.0", "ghcr.io/x/y:2.0.14"))
+        )
+        result = MetadataValidator().validate(Path(tmp_path / "kamiwaza.json"))
+        assert result.passed
+        assert any("image tag" in w and "2.0.14" in w for w in result.warnings)
+
+    def test_compose_image_drift_warns(self, tmp_path):
+        from pathlib import Path
+        from kamiwaza_extensions.validators.metadata import MetadataValidator
+
+        (tmp_path / "kamiwaza.json").write_text(json.dumps(self._meta("2.1.0")))
+        (tmp_path / "docker-compose.yml").write_text(
+            "services:\n  app:\n    image: ghcr.io/x/y:2.0.14\n"
+        )
+        result = MetadataValidator().validate(Path(tmp_path / "kamiwaza.json"))
+        assert any("docker-compose.yml" in w and "2.0.14" in w for w in result.warnings)
+
+    def test_dockerfile_arg_drift_warns(self, tmp_path):
+        from pathlib import Path
+        from kamiwaza_extensions.validators.metadata import MetadataValidator
+
+        (tmp_path / "kamiwaza.json").write_text(json.dumps(self._meta("2.1.0")))
+        (tmp_path / "Dockerfile").write_text(
+            "FROM python:3.11\nARG OMNIPARSE_VERSION=2.0.14\n"
+        )
+        result = MetadataValidator().validate(Path(tmp_path / "kamiwaza.json"))
+        assert any("OMNIPARSE_VERSION" in w for w in result.warnings)
+
+    def test_pyproject_drift_warns(self, tmp_path):
+        from pathlib import Path
+        from kamiwaza_extensions.validators.metadata import MetadataValidator
+
+        (tmp_path / "kamiwaza.json").write_text(json.dumps(self._meta("2.1.0")))
+        (tmp_path / "pyproject.toml").write_text(
+            '[project]\nname = "x"\nversion = "2.0.14"\n'
+        )
+        result = MetadataValidator().validate(Path(tmp_path / "kamiwaza.json"))
+        assert any("pyproject.toml" in w and "2.0.14" in w for w in result.warnings)
+
+    def test_aligned_versions_no_drift_warnings(self, tmp_path):
+        from pathlib import Path
+        from kamiwaza_extensions.validators.metadata import MetadataValidator
+
+        (tmp_path / "kamiwaza.json").write_text(
+            json.dumps(self._meta("2.1.0", "ghcr.io/x/y:2.1.0"))
+        )
+        (tmp_path / "docker-compose.yml").write_text(
+            "services:\n  app:\n    image: ghcr.io/x/y:2.1.0\n"
+        )
+        (tmp_path / "Dockerfile").write_text(
+            "FROM python:3.11\nARG OMNIPARSE_VERSION=2.1.0\n"
+        )
+        (tmp_path / "pyproject.toml").write_text(
+            '[project]\nname = "x"\nversion = "2.1.0"\n'
+        )
+        result = MetadataValidator().validate(Path(tmp_path / "kamiwaza.json"))
+        drift = [w for w in result.warnings if "drift" in w.lower()]
+        assert drift == []
