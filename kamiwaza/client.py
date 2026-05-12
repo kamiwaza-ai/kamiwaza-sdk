@@ -77,6 +77,7 @@ class Kamiwaza:
         self._jobs: Any = None
         self._cluster: Any = None
         self._gates: Any = None
+        self._subjects: Any = None
         # NB: lazy retrieval-module attribute; matching wrapper below.
         self._retrieval_api: Any = None
 
@@ -142,6 +143,20 @@ class Kamiwaza:
 
             self._jobs = JobsAPI(client=self)
         return self._jobs
+
+    @property
+    def subjects(self) -> Any:
+        """AuthzSubjects + grants (T5.5 / §4.2.11).
+
+        Returns a ``kamiwaza.subjects.SubjectsAPI`` instance. Wraps the
+        server-side typed upsert + grants surface; collapses the
+        v0.1.x two-phase Keycloak admin recipe into a single SDK call.
+        """
+        if self._subjects is None:
+            from kamiwaza.subjects import SubjectsAPI
+
+            self._subjects = SubjectsAPI(client=self)
+        return self._subjects
 
     @classmethod
     def from_env(

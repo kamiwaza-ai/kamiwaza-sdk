@@ -27,12 +27,16 @@ from kamiwaza.client import Kamiwaza as Kamiwaza
 from kamiwaza.exceptions import KamiwazaError as KamiwazaError
 from kamiwaza.models import BrokeredUser as BrokeredUser
 from kamiwaza.models import Federation as Federation
+from kamiwaza.models import Grant as Grant
 from kamiwaza.models import JobResult as JobResult
+from kamiwaza.models import Subject as Subject
 
 __all__ = [
     "BrokeredUser",
     "Federation",
+    "Grant",
     "JobResult",
     "Kamiwaza",
     "KamiwazaError",
+    "Subject",
 ]

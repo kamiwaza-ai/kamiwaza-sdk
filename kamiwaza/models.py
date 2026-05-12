@@ -202,3 +202,34 @@ class JobResult(BaseModel):
     result: Optional[Any] = None
     error: Optional[str] = None
     audit_actor: Optional[str] = None
+
+
+class Grant(BaseModel):
+    """T5.5 / §4.2.6 — one ReBAC tuple bound to a subject.
+
+    Returned by ``kz.subjects.grants(username).list()`` / ``.create()``.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    object_namespace: str
+    object_id: str
+    relation: str
+
+
+class Subject(BaseModel):
+    """T5.5 / §4.2.6 — typed Subject response.
+
+    Returned by ``kz.subjects.upsert(...)`` and ``kz.subjects.get(...)``.
+    ``attributes`` collapses single-element KC attribute lists to scalars
+    on the server side so the SDK consumer reads the same shape they wrote.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    id: str
+    username: str
+    attributes: Dict[str, Any] = {}
+    grants: List[Grant] = []
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
