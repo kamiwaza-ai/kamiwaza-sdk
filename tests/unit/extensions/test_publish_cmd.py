@@ -29,7 +29,7 @@ def _make_extension_info(
             "services": {
                 "backend": {
                     "build": {"context": "."},
-                    "image": f"my-org/{name}-backend:{version}",
+                    "image": f"ghcr.io/my-org/{name}-backend:{version}",
                     "ports": ["8000"],
                 },
             },
@@ -536,6 +536,68 @@ class TestNoBuildNoPush:
         # Push should NOT be called
         mock_pusher_cls.return_value.push.assert_not_called()
 
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher.check_buildx_available")
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher.resolve_digest")
+    @patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher")
+    @patch("kamiwaza_extensions.registry_builder.RegistryBuilder")
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher")
+    @patch("kamiwaza_extensions.image_builder.ImageBuilder")
+    @patch("kamiwaza_extensions.profile_manager.ProfileManager")
+    @patch("kamiwaza_extensions.compose_transformer.ComposeTransformer")
+    @patch("kamiwaza_extensions.validators.compose.ComposeValidator")
+    @patch("kamiwaza_extensions.validators.metadata.MetadataValidator")
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_no_build_push_excludes_profile_gated_services(
+        self, mock_detector_cls, mock_meta_validator_cls,
+        mock_compose_validator_cls, mock_transformer_cls,
+        mock_profile_mgr_cls, mock_builder_cls, mock_pusher_cls,
+        mock_reg_builder_cls, mock_publisher_cls,
+        mock_resolve, mock_preflight, tmp_path,
+    ):
+        # Under --no-build, the push list is sourced from canonical_refs.
+        # canonical_refs must filter profile-gated services so a
+        # local-only dev helper isn't pushed to the registry alongside
+        # the catalog's services. The catalog itself already excludes
+        # profiled services via buildable_services — push must mirror
+        # that filter or stale dev images leak to the registry.
+        compose = {
+            "services": {
+                "dev-helper": {
+                    "build": {"context": "./dev"},
+                    "image": "ghcr.io/my-org/my-app-dev-helper:1.0.0",
+                    "profiles": ["dev"],
+                },
+                "backend": {
+                    "build": {"context": "."},
+                    "image": "ghcr.io/my-org/my-app-backend:1.0.0",
+                },
+            },
+        }
+        _wire_publish_mocks(
+            detector_cls=mock_detector_cls,
+            meta_validator_cls=mock_meta_validator_cls,
+            compose_validator_cls=mock_compose_validator_cls,
+            transformer_cls=mock_transformer_cls,
+            profile_mgr_cls=mock_profile_mgr_cls,
+            builder_cls=mock_builder_cls,
+            pusher_cls=mock_pusher_cls,
+            reg_builder_cls=mock_reg_builder_cls,
+            publisher_cls=mock_publisher_cls,
+            tmp_path=tmp_path,
+            compose_data=compose,
+        )
+        mock_resolve.return_value = "sha256:" + "a" * 64
+
+        from kamiwaza_extensions.commands.publish import run_publish
+
+        run_publish(stage="dev", no_build=True)
+
+        # ImagePusher.push received only the non-profiled backend ref.
+        push_call = mock_pusher_cls.return_value.push.call_args
+        pushed_refs = push_call.args[0] if push_call.args else push_call.kwargs.get("image_refs", [])
+        assert pushed_refs == ["ghcr.io/my-org/my-app-backend:1.0.0-dev"]
+        assert "dev-helper" not in str(pushed_refs)
+
 
 # ------------------------------------------------------------------
 # Profile not found error
@@ -667,11 +729,11 @@ def _multi_buildable_compose(name: str = "my-app", version: str = "1.0.0"):
         "services": {
             "backend": {
                 "build": {"context": "./backend"},
-                "image": f"my-org/{name}-backend:{version}",
+                "image": f"ghcr.io/my-org/{name}-backend:{version}",
             },
             "frontend": {
                 "build": {"context": "./frontend"},
-                "image": f"my-org/{name}-frontend:{version}",
+                "image": f"ghcr.io/my-org/{name}-frontend:{version}",
             },
             "db": {  # Pattern B: external pass-through
                 "image": "postgres:15",
@@ -796,9 +858,9 @@ class TestPublishDigest:
         mock_reg_builder_cls, mock_publisher_cls,
         mock_resolve, mock_preflight, tmp_path,
     ):
-        # The preflight only matters when push will happen. The catalog-
-        # only-republish path soft-falls in _auto_resolve_digests if buildx
-        # is missing, so don't gate it here.
+        # The preflight only matters when push will happen. The
+        # catalog-only-republish path (--no-build --no-push) doesn't
+        # push, so the buildx preflight is moot there.
         mock_resolve.return_value = _DIGEST_BACKEND
         _wire_publish_mocks(
             detector_cls=mock_detector_cls,
@@ -898,11 +960,11 @@ class TestPublishDigest:
             "services": {
                 "backend": {
                     "build": {"context": "."},
-                    "image": "my-org/my-app-backend:1.0.0",
+                    "image": "ghcr.io/my-org/my-app-backend:1.0.0",
                 },
                 "frontend": {
                     "build": {"context": "./frontend"},
-                    "image": "my-org/my-app-frontend:1.0.0",
+                    "image": "ghcr.io/my-org/my-app-frontend:1.0.0",
                 },
             },
         }
@@ -934,6 +996,81 @@ class TestPublishDigest:
             "ghcr.io/my-org/my-app-backend:1.0.0-dev": _DIGEST_BACKEND,
             "ghcr.io/my-org/my-app-frontend:1.0.0-dev": _DIGEST_FRONTEND,
         }
+
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher.check_buildx_available")
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher.resolve_digest")
+    @patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher")
+    @patch("kamiwaza_extensions.registry_builder.RegistryBuilder")
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher")
+    @patch("kamiwaza_extensions.image_builder.ImageBuilder")
+    @patch("kamiwaza_extensions.profile_manager.ProfileManager")
+    @patch("kamiwaza_extensions.compose_transformer.ComposeTransformer")
+    @patch("kamiwaza_extensions.validators.compose.ComposeValidator")
+    @patch("kamiwaza_extensions.validators.metadata.MetadataValidator")
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_non_conventional_namespace_flows_through_build_and_resolve(
+        self, mock_detector_cls, mock_meta_validator_cls,
+        mock_compose_validator_cls, mock_transformer_cls,
+        mock_profile_mgr_cls, mock_builder_cls, mock_pusher_cls,
+        mock_reg_builder_cls, mock_publisher_cls,
+        mock_resolve, mock_preflight, tmp_path,
+    ):
+        # ENG-4909: when the compose's declared image namespace diverges
+        # from the legacy `{ext}-{svc}` convention (omniparse-style:
+        # ext=`tool-omniparse`, svc=`omniparse-server`, declared image
+        # `images/omniparse`), the declared namespace must propagate
+        # through the build, the push, the digest_map keys, and the
+        # catalog entry. Without ENG-4909 the four sites synthesized
+        # divergent forms and the catalog shipped pointing at an image
+        # that may not exist at the synthesized path.
+        custom_ref = (
+            "ghcr.io/kamiwaza-internal/foo/images/omniparse:1.0.0-dev"
+        )
+        custom_digest = "sha256:" + "d" * 64
+        mock_resolve.return_value = custom_digest
+
+        compose = {
+            "services": {
+                "omniparse-server": {
+                    "build": {"context": "."},
+                    "image": "ghcr.io/kamiwaza-internal/foo/images/omniparse:1.0.0",
+                },
+            },
+        }
+        wired = _wire_publish_mocks(
+            detector_cls=mock_detector_cls,
+            meta_validator_cls=mock_meta_validator_cls,
+            compose_validator_cls=mock_compose_validator_cls,
+            transformer_cls=mock_transformer_cls,
+            profile_mgr_cls=mock_profile_mgr_cls,
+            builder_cls=mock_builder_cls,
+            pusher_cls=mock_pusher_cls,
+            reg_builder_cls=mock_reg_builder_cls,
+            publisher_cls=mock_publisher_cls,
+            tmp_path=tmp_path,
+            compose_data=compose,
+            image_refs=[custom_ref],
+        )
+
+        from kamiwaza_extensions.commands.publish import run_publish
+
+        run_publish(stage="dev")
+
+        # 1. ImageBuilder was passed the declared-namespace ref via
+        #    the image_refs kwarg — not the synthesized
+        #    {ext}-{svc} form (which for this fixture would have
+        #    been .../my-app-omniparse-server:...).
+        build_kwargs = wired["image_builder"].build.call_args.kwargs
+        assert build_kwargs["image_refs"] == {"omniparse-server": custom_ref}
+
+        # 2. resolve_digest queried the declared-namespace ref.
+        mock_resolve.assert_called_once_with(custom_ref)
+
+        # 3. digest_map keys match the declared-namespace ref, so
+        #    `_apply_digests` in registry_builder.py will pin the
+        #    catalog compose's image successfully (exact-string match).
+        kwargs = wired["reg_builder"].build_entry.call_args.kwargs
+        assert kwargs["digest_map"] == {custom_ref: custom_digest}
 
     # Note: previous test_explicit_digest_skips_resolver was removed —
     # H2 changed the contract so explicit --digest with push DOES call
@@ -1098,11 +1235,11 @@ class TestPublishDigest:
             "services": {
                 "backend": {
                     "build": {"context": "."},
-                    "image": "my-org/my-app-backend:1.0.0",
+                    "image": "ghcr.io/my-org/my-app-backend:1.0.0",
                 },
                 "dev-helper": {
                     "build": {"context": "./dev"},
-                    "image": "my-org/my-app-dev-helper:1.0.0",
+                    "image": "ghcr.io/my-org/my-app-dev-helper:1.0.0",
                     "profiles": ["dev"],   # local-only, stripped on publish
                 },
             },
@@ -1156,12 +1293,12 @@ class TestPublishDigest:
             "services": {
                 "dev-helper": {
                     "build": {"context": "./dev"},
-                    "image": "my-org/my-app-dev-helper:1.0.0",
+                    "image": "ghcr.io/my-org/my-app-dev-helper:1.0.0",
                     "profiles": ["dev"],   # profiled — must NOT be pinned
                 },
                 "backend": {
                     "build": {"context": "."},
-                    "image": "my-org/my-app-backend:1.0.0",
+                    "image": "ghcr.io/my-org/my-app-backend:1.0.0",
                 },
             },
         }
@@ -1227,12 +1364,12 @@ class TestPublishDigest:
             "services": {
                 "dev-helper": {
                     "build": {"context": "./dev"},
-                    "image": "my-org/my-app-dev-helper:1.0.0",
+                    "image": "ghcr.io/my-org/my-app-dev-helper:1.0.0",
                     "profiles": ["dev"],
                 },
                 "backend": {
                     "build": {"context": "."},
-                    "image": "my-org/my-app-backend:1.0.0",
+                    "image": "ghcr.io/my-org/my-app-backend:1.0.0",
                 },
             },
         }
@@ -1278,20 +1415,21 @@ class TestPublishDigest:
     @patch("kamiwaza_extensions.validators.compose.ComposeValidator")
     @patch("kamiwaza_extensions.validators.metadata.MetadataValidator")
     @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
-    def test_no_build_no_push_resolve_failure_falls_back_to_tag_only(
+    def test_no_build_no_push_resolve_failure_aborts_by_default(
         self, mock_detector_cls, mock_meta_validator_cls,
         mock_compose_validator_cls, mock_transformer_cls,
         mock_profile_mgr_cls, mock_builder_cls, mock_pusher_cls,
         mock_reg_builder_cls, mock_publisher_cls, mock_resolve,
         tmp_path,
     ):
-        # Catalog-only republish softly falls back to tag-only when
-        # resolve_digest fails (e.g. no docker on host). Catalog
-        # publishes; the failed ref is absent from digest_map.
+        # Catalog-only republish now aborts loudly when resolve_digest
+        # fails. The previous silent soft-fall to tag-only entries hid
+        # upstream image-name mismatches that produced unpullable refs
+        # in the catalog (see ENG-4909).
         from kamiwaza_extensions.image_pusher import ImagePushError
 
         mock_resolve.side_effect = ImagePushError("docker not found")
-        wired = _wire_publish_mocks(
+        _wire_publish_mocks(
             detector_cls=mock_detector_cls,
             meta_validator_cls=mock_meta_validator_cls,
             compose_validator_cls=mock_compose_validator_cls,
@@ -1306,13 +1444,8 @@ class TestPublishDigest:
 
         from kamiwaza_extensions.commands.publish import run_publish
 
-        # Must NOT raise — catalog still publishes with tag-only.
-        run_publish(stage="dev", no_build=True, no_push=True)
-
-        wired["reg_builder"].build_entry.assert_called_once()
-        kwargs = wired["reg_builder"].build_entry.call_args.kwargs
-        # digest_map either None or empty — no entries for the failed ref.
-        assert not kwargs.get("digest_map")
+        with pytest.raises((SystemExit, ClickExit)):
+            run_publish(stage="dev", no_build=True, no_push=True)
 
     @patch("kamiwaza_extensions.image_pusher.ImagePusher.resolve_digest")
     @patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher")
@@ -1639,7 +1772,7 @@ class TestPublishDigest:
             "services": {
                 "backend": {
                     "build": {"context": "."},
-                    "image": "my-org/my-app-backend:1.0.0",
+                    "image": "ghcr.io/my-org/my-app-backend:1.0.0",
                 },
                 "db": {"image": "postgres:15"},
             },
@@ -1733,7 +1866,7 @@ class TestPublishDigest:
             "services": {
                 "backend": {
                     "build": {"context": "."},
-                    "image": "my-org/my-app-backend:1.0.0",
+                    "image": "ghcr.io/my-org/my-app-backend:1.0.0",
                 },
             },
         }
@@ -1784,20 +1917,21 @@ class TestPublishDigest:
         mock_reg_builder_cls, mock_publisher_cls, tmp_path,
     ):
         # Same dict-order trap as the live path, but inside the dry-run
-        # branch. Pre-fix: dry-run used `_collect_image_refs` (unfiltered),
-        # so a profiled helper appearing first would have pinned the
-        # user's digest against a local-only ref — mismatched against the
-        # canonical buildable ref that ComposeTransformer actually keeps.
+        # branch. A profiled helper appearing first in the compose dict
+        # must not steal the user's --digest pin — dry-run must filter
+        # via buildable_services the same way the live path does so the
+        # digest binds to the canonical buildable ref that
+        # ComposeTransformer actually keeps.
         compose = {
             "services": {
                 "dev-helper": {
                     "build": {"context": "./dev"},
-                    "image": "my-org/my-app-dev-helper:1.0.0",
+                    "image": "ghcr.io/my-org/my-app-dev-helper:1.0.0",
                     "profiles": ["dev"],   # FIRST in dict order
                 },
                 "backend": {
                     "build": {"context": "."},
-                    "image": "my-org/my-app-backend:1.0.0",
+                    "image": "ghcr.io/my-org/my-app-backend:1.0.0",
                 },
             },
         }
@@ -1833,6 +1967,71 @@ class TestPublishDigest:
                 "ghcr.io/my-org/my-app-backend:1.0.0-dev": _DIGEST_USER_SUPPLIED,
             }
             assert "dev-helper" not in str(kwargs["digest_map"])
+
+    @patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher")
+    @patch("kamiwaza_extensions.registry_builder.RegistryBuilder")
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher")
+    @patch("kamiwaza_extensions.image_builder.ImageBuilder")
+    @patch("kamiwaza_extensions.profile_manager.ProfileManager")
+    @patch("kamiwaza_extensions.compose_transformer.ComposeTransformer")
+    @patch("kamiwaza_extensions.validators.compose.ComposeValidator")
+    @patch("kamiwaza_extensions.validators.metadata.MetadataValidator")
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_dry_run_digest_uses_appgarden_namespace(
+        self, mock_detector_cls, mock_meta_validator_cls,
+        mock_compose_validator_cls, mock_transformer_cls,
+        mock_profile_mgr_cls, mock_builder_cls, mock_pusher_cls,
+        mock_reg_builder_cls, mock_publisher_cls, tmp_path,
+    ):
+        # When appgarden compose declares a different namespace than the
+        # source compose AND the user passes --digest, the dry-run preview
+        # must pin the digest against the appgarden ref — that's what the
+        # live path would write, and what _retag_appgarden_compose writes
+        # into the catalog. Reading from source compose would produce a
+        # mismatched preview that "passes" while the live path would
+        # silently fail _apply_digests' exact-string match.
+        (tmp_path / "docker-compose.appgarden.yml").write_text(
+            "services:\n"
+            "  backend:\n"
+            "    image: ghcr.io/published/tool-foo/backend:1.0.0\n"
+        )
+        compose = {
+            "services": {
+                "backend": {
+                    "build": {"context": "."},
+                    "image": "registry.test/my-app-backend:1.0.0",
+                },
+            },
+        }
+        with patch(
+            "kamiwaza_extensions.image_pusher.ImagePusher.resolve_digest"
+        ) as mock_resolve:
+            wired = _wire_publish_mocks(
+                detector_cls=mock_detector_cls,
+                meta_validator_cls=mock_meta_validator_cls,
+                compose_validator_cls=mock_compose_validator_cls,
+                transformer_cls=mock_transformer_cls,
+                profile_mgr_cls=mock_profile_mgr_cls,
+                builder_cls=mock_builder_cls,
+                pusher_cls=mock_pusher_cls,
+                reg_builder_cls=mock_reg_builder_cls,
+                publisher_cls=mock_publisher_cls,
+                tmp_path=tmp_path,
+                compose_data=compose,
+            )
+            mock_publisher_cls.return_value.publish.return_value = (
+                _make_publish_result(dry_run=True)
+            )
+
+            from kamiwaza_extensions.commands.publish import run_publish
+
+            run_publish(stage="dev", dry_run=True, digest=_DIGEST_USER_SUPPLIED)
+
+            mock_resolve.assert_not_called()
+            kwargs = wired["reg_builder"].build_entry.call_args.kwargs
+            assert kwargs["digest_map"] == {
+                "ghcr.io/published/tool-foo/backend:1.0.0-dev": _DIGEST_USER_SUPPLIED,
+            }
 
 
 # ------------------------------------------------------------------
@@ -1880,6 +2079,54 @@ class TestLoadAppgardenCompose:
         assert _load_appgarden_compose(tmp_path) is None
 
 
+class TestReplaceImageTag:
+    """`_replace_image_tag` preserves the namespace and replaces the tag."""
+
+    def test_replaces_simple_tag(self):
+        from kamiwaza_extensions.compose_transformer import _replace_image_tag
+
+        assert _replace_image_tag(
+            "ghcr.io/my-org/foo:1.0.0", "1.0.0-dev"
+        ) == "ghcr.io/my-org/foo:1.0.0-dev"
+
+    def test_replaces_tag_when_namespace_does_not_match_convention(self):
+        # The whole point of the helper: omniparse's image is at
+        # `images/omniparse`, not `images/tool-omniparse-omniparse-server`.
+        # The replacement only touches the tag, leaves the path alone.
+        from kamiwaza_extensions.compose_transformer import _replace_image_tag
+
+        assert _replace_image_tag(
+            "ghcr.io/kamiwaza-internal/kamiwaza-extensions-omniparse/images/omniparse:2.0.14",
+            "2.0.14-dev",
+        ) == (
+            "ghcr.io/kamiwaza-internal/kamiwaza-extensions-omniparse/images/omniparse:2.0.14-dev"
+        )
+
+    def test_handles_registry_with_port(self):
+        # `localhost:5000/foo:tag` — the port colon must not be mistaken
+        # for the tag separator.
+        from kamiwaza_extensions.compose_transformer import _replace_image_tag
+
+        assert _replace_image_tag(
+            "localhost:5000/foo:1.0.0", "2.0.0-dev"
+        ) == "localhost:5000/foo:2.0.0-dev"
+
+    def test_strips_digest_before_retagging(self):
+        from kamiwaza_extensions.compose_transformer import _replace_image_tag
+
+        assert _replace_image_tag(
+            "ghcr.io/my-org/foo:1.0.0@sha256:" + "a" * 64,
+            "1.0.0-dev",
+        ) == "ghcr.io/my-org/foo:1.0.0-dev"
+
+    def test_appends_tag_when_no_existing_tag(self):
+        from kamiwaza_extensions.compose_transformer import _replace_image_tag
+
+        assert _replace_image_tag(
+            "ghcr.io/my-org/foo", "1.0.0-dev"
+        ) == "ghcr.io/my-org/foo:1.0.0-dev"
+
+
 class TestRetagAppgardenCompose:
     """`_retag_appgarden_compose` retags only build-context services."""
 
@@ -1896,6 +2143,62 @@ class TestRetagAppgardenCompose:
                 "backend": {"build": {"context": "."}},
             },
         }
+        out = _retag_appgarden_compose(
+            appgarden, source,
+            extension_name="my-app", image_tag="2.0.0-dev",
+            registry="ghcr.io/my-org",
+        )
+        assert out["services"]["backend"]["image"] == (
+            "ghcr.io/my-org/my-app-backend:2.0.0-dev"
+        )
+
+    def test_retag_appgarden_preserves_divergent_namespace(self):
+        # Omniparse-style: bake target name (and GHCR path) is
+        # `images/omniparse`, but the kz-ext-computed default would be
+        # `images/tool-omniparse-omniparse-server`. The fix preserves
+        # the namespace declared in the appgarden compose and only
+        # rewrites the tag for stage — fixes the silently-broken
+        # catalog entries this used to produce (ENG-4909).
+        from kamiwaza_extensions.commands.publish import _retag_appgarden_compose
+
+        appgarden = {
+            "services": {
+                "omniparse-server": {
+                    "image": (
+                        "ghcr.io/kamiwaza-internal/"
+                        "kamiwaza-extensions-omniparse/images/omniparse:2.0.14"
+                    ),
+                },
+            },
+        }
+        source = {
+            "services": {
+                "omniparse-server": {"build": {"context": "."}},
+            },
+        }
+        out = _retag_appgarden_compose(
+            appgarden, source,
+            extension_name="tool-omniparse", image_tag="2.0.14-dev",
+            registry=(
+                "ghcr.io/kamiwaza-internal/"
+                "kamiwaza-extensions-omniparse/images"
+            ),
+        )
+        # Namespace preserved; only the tag changed.
+        assert out["services"]["omniparse-server"]["image"] == (
+            "ghcr.io/kamiwaza-internal/"
+            "kamiwaza-extensions-omniparse/images/omniparse:2.0.14-dev"
+        )
+
+    def test_falls_back_to_legacy_convention_when_no_declared_image(self):
+        # Extensions that rely on auto-generated image fields (no
+        # `image:` in compose, just a `build:` block) still get the
+        # `{registry}/{ext}-{svc}:{tag}` form — preserves backward
+        # compatibility with the original ComposeTransformer behavior.
+        from kamiwaza_extensions.commands.publish import _retag_appgarden_compose
+
+        appgarden = {"services": {"backend": {}}}
+        source = {"services": {"backend": {"build": {"context": "."}}}}
         out = _retag_appgarden_compose(
             appgarden, source,
             extension_name="my-app", image_tag="2.0.0-dev",
@@ -2182,3 +2485,76 @@ class TestPublishWithAppgarden:
             mock_compose_validator_cls.return_value.validate.call_args
         )
         assert validator_args[0].name == "docker-compose.yml"
+
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher.resolve_digest")
+    @patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher")
+    @patch("kamiwaza_extensions.registry_builder.RegistryBuilder")
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher")
+    @patch("kamiwaza_extensions.image_builder.ImageBuilder")
+    @patch("kamiwaza_extensions.profile_manager.ProfileManager")
+    @patch("kamiwaza_extensions.compose_transformer.ComposeTransformer")
+    @patch("kamiwaza_extensions.validators.compose.ComposeValidator")
+    @patch("kamiwaza_extensions.validators.metadata.MetadataValidator")
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_appgarden_image_namespace_drives_build_and_push(
+        self,
+        mock_detector_cls,
+        mock_meta_validator_cls,
+        mock_compose_validator_cls,
+        mock_transformer_cls,
+        mock_profile_mgr_cls,
+        mock_builder_cls,
+        mock_pusher_cls,
+        mock_reg_builder_cls,
+        mock_publisher_cls,
+        mock_resolve,
+        tmp_path,
+    ):
+        # When ``docker-compose.appgarden.yml`` declares a different image
+        # namespace than the source ``docker-compose.yml``, the appgarden
+        # file is the source of truth (matches what gets written into the
+        # catalog by ``_retag_appgarden_compose``). Build, push, and
+        # digest resolution must all happen at the appgarden ref —
+        # otherwise the catalog references an image the registry was
+        # never told to expect.
+        (tmp_path / "docker-compose.appgarden.yml").write_text(
+            "services:\n"
+            "  backend:\n"
+            "    image: ghcr.io/published/tool-foo/backend:1.0.0\n"
+        )
+        _wire_publish_mocks(
+            detector_cls=mock_detector_cls,
+            meta_validator_cls=mock_meta_validator_cls,
+            compose_validator_cls=mock_compose_validator_cls,
+            transformer_cls=mock_transformer_cls,
+            profile_mgr_cls=mock_profile_mgr_cls,
+            builder_cls=mock_builder_cls,
+            pusher_cls=mock_pusher_cls,
+            reg_builder_cls=mock_reg_builder_cls,
+            publisher_cls=mock_publisher_cls,
+            tmp_path=tmp_path,
+            compose_data={
+                "services": {
+                    "backend": {
+                        "build": {"context": "."},
+                        "image": "registry.test/my-app-backend:1.0.0",
+                    },
+                },
+            },
+        )
+        mock_resolve.return_value = "sha256:" + "a" * 64
+
+        from kamiwaza_extensions.commands.publish import run_publish
+
+        run_publish(stage="dev")
+
+        # ImageBuilder.build receives the appgarden-declared ref, not the
+        # source-compose ref. ``image_refs`` is keyed by service name.
+        builder_kwargs = mock_builder_cls.return_value.build.call_args.kwargs
+        assert builder_kwargs["image_refs"] == {
+            "backend": "ghcr.io/published/tool-foo/backend:1.0.0-dev",
+        }
+        # Digest auto-resolve queries the registry at the appgarden ref.
+        mock_resolve.assert_called_once_with(
+            "ghcr.io/published/tool-foo/backend:1.0.0-dev"
+        )

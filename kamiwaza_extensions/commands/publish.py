@@ -11,6 +11,10 @@ import yaml
 from rich.console import Console
 
 from kamiwaza_extensions.catalog_publisher import DEFAULT_CATALOG_SCHEMA
+from kamiwaza_extensions.compose_transformer import (
+    _canonical_build_ref,
+    compute_canonical_refs,
+)
 from kamiwaza_extensions.extension_detector import infer_extension_type
 
 console = Console(stderr=True)
@@ -106,7 +110,18 @@ def _retag_appgarden_compose(
         if not isinstance(svc, dict):
             continue
         if svc_name in build_services:
-            svc["image"] = f"{registry}/{extension_name}-{svc_name}:{image_tag}"
+            # The appgarden compose's image field is the canonical
+            # declaration of where this build's image lives in the
+            # registry — set by the extension's sync-compose.py from
+            # its docker-compose.yml. We only own the *tag* (stage
+            # suffix or --revision SHA); the namespace stays what the
+            # extension authored.
+            svc["image"] = _canonical_build_ref(
+                svc, svc_name,
+                fallback_registry=registry,
+                fallback_extension_name=extension_name,
+                revision_tag=image_tag,
+            )
     return out
 
 
@@ -155,20 +170,6 @@ def _collect_buildable_image_names(
     return names
 
 
-def _collect_image_refs(
-    compose_data: Dict[str, Any],
-    extension_name: str,
-    version: str,
-    registry: str,
-) -> List[str]:
-    """Return full image refs for services with build contexts."""
-    refs: List[str] = []
-    for svc_name, svc in (compose_data.get("services") or {}).items():
-        if "build" in svc:
-            refs.append(f"{registry}/{extension_name}-{svc_name}:{version}")
-    return refs
-
-
 def _verify_supplied_digest(ref: str, supplied: str) -> None:
     """Resolve *ref* in the registry and abort if it disagrees with *supplied*.
 
@@ -199,15 +200,18 @@ def _verify_supplied_digest(ref: str, supplied: str) -> None:
 
 
 def _auto_resolve_digests(
-    refs: List[str], *, no_build: bool, no_push: bool,
+    refs: List[str],
 ) -> Dict[str, str]:
     """Resolve registry digests for each *ref* and return ``{ref: digest}``.
 
-    Soft-fails for the catalog-only-republish shape (``--no-build
-    --no-push``): pre-PR behavior was tag-only with no docker dependency,
-    so a resolve failure becomes a warning and the ref is omitted from
-    the result rather than aborting the publish.
+    Aborts the publish on any resolution failure. Silent degradation to
+    tag-only entries (the previous behavior in ``--no-build --no-push``
+    mode) hid upstream image-name mismatches that produced unpullable
+    catalog refs (ENG-4909), and a transient registry hiccup was
+    indistinguishable from a legitimate "docker not on host" fall-through.
     """
+    from rich.markup import escape as escape_markup
+
     from kamiwaza_extensions.image_pusher import ImagePushError, ImagePusher
 
     digest_map: Dict[str, str] = {}
@@ -215,14 +219,24 @@ def _auto_resolve_digests(
         try:
             digest_map[ref] = ImagePusher.resolve_digest(ref)
         except ImagePushError as exc:
-            if no_build and no_push:
-                console.print(
-                    f"  [yellow]warn[/yellow] could not resolve digest "
-                    f"for {ref}: {exc} — catalog will use tag-only for "
-                    "this ref"
-                )
-                continue
-            console.print(f"\n[red]Error:[/red] {exc}")
+            # Markup-escape the dynamic parts so a registry error message
+            # containing literal ``[`` (rare but possible) can't garble the
+            # error output via rich's tag parser.
+            safe_ref = escape_markup(ref)
+            safe_exc = escape_markup(str(exc))
+            console.print(
+                f"\n[red]Error:[/red] could not resolve digest for "
+                f"[bold]{safe_ref}[/bold]: {safe_exc}\n\n"
+                "The image must exist in the registry before catalog publish.\n"
+                "Common causes:\n"
+                "  • Image name in docker-compose.appgarden.yml doesn't "
+                "match the actual registry image path\n"
+                "  • Image hasn't been pushed yet (run with build+push, "
+                "or push manually first)\n"
+                "  • Transient registry outage (retry the publish)\n"
+                "  • To pin a known digest without registry lookup, pass "
+                "--digest sha256:..."
+            )
             raise typer.Exit(code=1) from exc
     return digest_map
 
@@ -445,6 +459,25 @@ def run_publish(
             registry=registry,
         )
 
+    # Canonical image refs for every build-context service. Single
+    # source of truth shared with the build, push, digest resolution,
+    # and catalog-write paths so they can't drift. Derived once here
+    # before the dry-run branch so the preview reflects exactly what
+    # the live path would produce — appgarden namespace precedence and
+    # profile-gating included.
+    appgarden_services = (
+        (appgarden_data or {}).get("services") or {}
+        if isinstance(appgarden_data, dict)
+        else {}
+    )
+    canonical_refs: Dict[str, str] = compute_canonical_refs(
+        info.compose_data.get("services") or {},
+        registry=registry,
+        extension_name=info.name,
+        revision_tag=image_tag,
+        appgarden_services=appgarden_services,
+    )
+
     # -- Dry-run path (still runs merge check to detect conflicts) --
     if dry_run:
         short_names = _collect_buildable_image_names(
@@ -462,10 +495,7 @@ def run_publish(
         # appears first in dict order can't redirect the user's digest.
         dry_digest_map: Dict[str, str] = {}
         if digest is not None and buildable_services:
-            dry_canonical_ref = (
-                f"{registry}/{info.name}-{buildable_services[0]}:{image_tag}"
-            )
-            dry_digest_map[dry_canonical_ref] = digest
+            dry_digest_map[canonical_refs[buildable_services[0]]] = digest
 
         # Run merge check so dry-run detects version conflicts
         reg_builder = RegistryBuilder()
@@ -518,6 +548,7 @@ def run_publish(
                 revision_tag=image_tag,
                 registry=registry,
                 verbose=verbose,
+                image_refs=canonical_refs,
             )
         except ImageBuildError as exc:
             console.print("    [red]\u2717 build failed[/red]")
@@ -532,16 +563,14 @@ def run_publish(
             console.print("    [yellow]![/yellow] No images to build")
     else:
         console.print("  [dim]Skipping build (--no-build)[/dim]")
-        image_refs = _collect_image_refs(
-            info.compose_data, info.name, image_tag, registry
-        )
+        image_refs = list(canonical_refs.values())
 
     # 5.5 Preflight: digest resolution post-push needs `docker buildx
     # imagetools`. If buildx is missing on this host, fail before mutating
     # the registry rather than push-then-fail-on-resolve. Only required
     # when push will happen and there's at least one published service to
-    # pin (the catalog-only-republish path soft-falls in
-    # `_auto_resolve_digests` and doesn't need this guard).
+    # pin — the catalog-only-republish path (`--no-build --no-push`)
+    # doesn't push, so the preflight is moot there.
     if not no_push and buildable_services:
         try:
             ImagePusher.check_buildx_available()
@@ -582,7 +611,7 @@ def run_publish(
     # in image_refs cannot misdirect the digest map. Pass-through external
     # refs keep whatever pinning their source repo applied.
     published_refs: List[str] = [
-        f"{registry}/{info.name}-{name}:{image_tag}" for name in buildable_services
+        canonical_refs[name] for name in buildable_services
     ]
     digest_map: Dict[str, str] = {}
     if published_refs:
@@ -593,9 +622,7 @@ def run_publish(
             if not no_push:
                 _verify_supplied_digest(ref, digest)
         else:
-            digest_map = _auto_resolve_digests(
-                published_refs, no_build=no_build, no_push=no_push,
-            )
+            digest_map = _auto_resolve_digests(published_refs)
 
     # 7. Build catalog entry
     reg_builder = RegistryBuilder()
