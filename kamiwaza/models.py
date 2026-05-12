@@ -233,3 +233,39 @@ class Subject(BaseModel):
     grants: List[Grant] = []
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
+
+
+class DatasetRef(BaseModel):
+    """T5.6 / §4.2.5 — minimal Dataset shape returned by the catalog API.
+
+    The full Dataset (with ``schema``, ``container_urn``, ``tags``, ...)
+    lives on the legacy ``kamiwaza_sdk`` namespace; this M3 namespace
+    surfaces the fields setup.py needs to bind gates and round-trip
+    references through the SDK.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    urn: str
+    name: str
+    platform: str
+    environment: Optional[str] = None
+    properties: Dict[str, Any] = {}
+
+
+class AttributeGateBinding(BaseModel):
+    """T5.6 / §4.2.5 — response shape for dataset.gate endpoints.
+
+    Returned by ``kz.datasets.set_gate(...)`` and
+    ``kz.datasets.get_gate(...)``. ``kind`` is always ``"attribute"`` on
+    this surface (dataset gates are by definition AttributeGate subclasses;
+    a wrong-kind PUT returns 400 before the binding is written).
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    dataset_urn: str
+    type: str
+    config: Dict[str, Any] = {}
+    gate_name: str
+    kind: Literal["attribute"] = "attribute"

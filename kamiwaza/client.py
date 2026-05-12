@@ -78,6 +78,7 @@ class Kamiwaza:
         self._cluster: Any = None
         self._gates: Any = None
         self._subjects: Any = None
+        self._datasets: Any = None
         # NB: lazy retrieval-module attribute; matching wrapper below.
         self._retrieval_api: Any = None
 
@@ -157,6 +158,20 @@ class Kamiwaza:
 
             self._subjects = SubjectsAPI(client=self)
         return self._subjects
+
+    @property
+    def datasets(self) -> Any:
+        """Catalog datasets + attribute-gate binding (T5.6 / §4.2.11).
+
+        Returns a ``kamiwaza.datasets.DatasetsAPI`` instance. M3 surface
+        is the minimal slice setup.py reaches for: create / get / delete
+        plus the gate-binding endpoints (set_gate / get_gate / clear_gate).
+        """
+        if self._datasets is None:
+            from kamiwaza.datasets import DatasetsAPI
+
+            self._datasets = DatasetsAPI(client=self)
+        return self._datasets
 
     @classmethod
     def from_env(
