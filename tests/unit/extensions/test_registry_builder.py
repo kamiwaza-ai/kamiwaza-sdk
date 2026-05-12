@@ -172,6 +172,141 @@ class TestBuildEntry:
 
 
 # ------------------------------------------------------------------
+# build_entry passes every top-level kamiwaza.json field through to
+# the catalog entry (ENG-4919). The platform's catalog→DB sync code
+# (kamiwaza/serving/garden/apps/templates.py::_update_template_from_remote)
+# reads many of these via `.get(field, default)` and silently degrades
+# to empty/None when slim entries omit them — no required_env_vars
+# validation, no env_defaults injection, missing UI metadata.
+# ------------------------------------------------------------------
+
+
+class TestBuildEntryPassthrough:
+    """Every top-level field in kamiwaza.json survives to the catalog entry."""
+
+    def test_platform_consumed_fields_pass_through(
+        self, builder, transformed_compose,
+    ):
+        # The fields the platform's _update_template_from_remote reads.
+        meta = {
+            "name": "my-app",
+            "version": "1.0.0",
+            "description": "An app",
+            "source_type": "kamiwaza",
+            "visibility": "public",
+            "display_name": "My App",
+            "env_defaults": {"FOO": "bar", "PORT": "8000"},
+            "env_metadata": {"FOO": {"description": "foo var"}},
+            "required_env_vars": ["API_KEY"],
+            "capabilities": ["chat", "completion"],
+            "category": "chatbot",
+            "tags": ["ai"],
+            "author": "Kamiwaza",
+            "license": "Apache-2.0",
+            "homepage": "https://example.com",
+            "image": "kamiwazaai/my-app:1.0.0",
+            "strip_path_prefix": True,
+            "preferred_model_type": "reasoning",
+            "preferred_model_name": "gpt-4",
+            "fail_if_model_type_unavailable": False,
+            "fail_if_model_name_unavailable": False,
+        }
+        entry = builder.build_entry(meta, transformed_compose, "reg", "1.0.0")
+        for key, value in meta.items():
+            assert entry[key] == value, f"{key} did not pass through"
+
+    def test_unknown_fields_pass_through(self, builder, transformed_compose):
+        # omniparse-style: `validation` block (e.g. allowed_images) and
+        # `template_type` are not enumerated anywhere in build_entry but
+        # the platform and the legacy publish path treat kamiwaza.json
+        # as the contract. New fields must not require a kz-ext change.
+        meta = {
+            "name": "tool-omniparse",
+            "version": "2.0.14",
+            "description": "OmniParse",
+            "source_type": "kamiwaza",
+            "visibility": "public",
+            "template_type": "tool",
+            "validation": {"allowed_images": ["ghcr.io/foo/*"]},
+            "x_custom_extension": {"any": "shape"},
+        }
+        entry = builder.build_entry(meta, transformed_compose, "reg", "2.0.14")
+        assert entry["template_type"] == "tool"
+        assert entry["validation"] == {"allowed_images": ["ghcr.io/foo/*"]}
+        assert entry["x_custom_extension"] == {"any": "shape"}
+
+    def test_entry_keys_are_superset_of_source(
+        self, builder, transformed_compose,
+    ):
+        # Stricter check: legacy `make publish-registry` AC #1 says the
+        # entry's top-level keys are a superset of source kamiwaza.json
+        # plus the generated `compose_yml` / `docker_images`.
+        meta = {
+            "name": "svc",
+            "version": "1.0.0",
+            "description": "svc",
+            "source_type": "kamiwaza",
+            "visibility": "public",
+            "template_type": "service",
+            "env_defaults": {"X": "1"},
+            "required_env_vars": ["Y"],
+            "strip_path_prefix": False,
+        }
+        entry = builder.build_entry(meta, transformed_compose, "reg", "1.0.0")
+        for key in meta:
+            assert key in entry, f"source field {key} dropped from entry"
+
+    def test_publish_generated_fields_win_over_metadata(
+        self, builder, transformed_compose,
+    ):
+        # If the source kamiwaza.json carries a stale `compose_yml` or
+        # `docker_images` from a hand-edit, the publish-time values
+        # (from ComposeTransformer + extract_docker_images) must win.
+        meta = {
+            "name": "my-app",
+            "version": "0.9.0-stale",
+            "description": "test",
+            "source_type": "kamiwaza",
+            "visibility": "public",
+            "compose_yml": "stale: data",
+            "docker_images": ["stale:image"],
+        }
+        entry = builder.build_entry(meta, transformed_compose, "reg", "1.0.0")
+        assert entry["version"] == "1.0.0"
+        assert entry["compose_yml"] != "stale: data"
+        assert "stale:image" not in entry["docker_images"]
+
+    def test_metadata_not_mutated(self, builder, transformed_compose):
+        # build_entry must not mutate the caller's metadata dict — it's
+        # often the parsed kamiwaza.json shared with other code paths
+        # (validators, dedup guard, etc.).
+        meta = {
+            "name": "my-app",
+            "version": "1.0.0",
+            "description": "test",
+            "source_type": "kamiwaza",
+            "visibility": "public",
+            "env_defaults": {"FOO": "bar"},
+            "preview_image": "./logo.png",
+        }
+        builder.build_entry(meta, transformed_compose, "reg", "1.0.0")
+        assert meta["preview_image"] == "./logo.png"  # not normalized
+        assert meta["env_defaults"] == {"FOO": "bar"}
+
+    def test_defaults_applied_for_missing_required_fields(
+        self, builder, transformed_compose,
+    ):
+        # Belt-and-suspenders: the upstream MetadataValidator should
+        # catch these, but build_entry still papers over with the same
+        # defaults the prior enumerated implementation used.
+        meta = {"name": "my-app", "version": "1.0.0"}
+        entry = builder.build_entry(meta, transformed_compose, "reg", "1.0.0")
+        assert entry["description"] == ""
+        assert entry["source_type"] == "kamiwaza"
+        assert entry["visibility"] == "public"
+
+
+# ------------------------------------------------------------------
 # build_entry treats ComposeTransformer as canonical (ENG-3591)
 # ------------------------------------------------------------------
 
