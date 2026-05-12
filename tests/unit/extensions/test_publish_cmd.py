@@ -536,6 +536,68 @@ class TestNoBuildNoPush:
         # Push should NOT be called
         mock_pusher_cls.return_value.push.assert_not_called()
 
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher.check_buildx_available")
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher.resolve_digest")
+    @patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher")
+    @patch("kamiwaza_extensions.registry_builder.RegistryBuilder")
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher")
+    @patch("kamiwaza_extensions.image_builder.ImageBuilder")
+    @patch("kamiwaza_extensions.profile_manager.ProfileManager")
+    @patch("kamiwaza_extensions.compose_transformer.ComposeTransformer")
+    @patch("kamiwaza_extensions.validators.compose.ComposeValidator")
+    @patch("kamiwaza_extensions.validators.metadata.MetadataValidator")
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_no_build_push_excludes_profile_gated_services(
+        self, mock_detector_cls, mock_meta_validator_cls,
+        mock_compose_validator_cls, mock_transformer_cls,
+        mock_profile_mgr_cls, mock_builder_cls, mock_pusher_cls,
+        mock_reg_builder_cls, mock_publisher_cls,
+        mock_resolve, mock_preflight, tmp_path,
+    ):
+        # Under --no-build, the push list is sourced from canonical_refs.
+        # canonical_refs must filter profile-gated services so a
+        # local-only dev helper isn't pushed to the registry alongside
+        # the catalog's services. The catalog itself already excludes
+        # profiled services via buildable_services — push must mirror
+        # that filter or stale dev images leak to the registry.
+        compose = {
+            "services": {
+                "dev-helper": {
+                    "build": {"context": "./dev"},
+                    "image": "ghcr.io/my-org/my-app-dev-helper:1.0.0",
+                    "profiles": ["dev"],
+                },
+                "backend": {
+                    "build": {"context": "."},
+                    "image": "ghcr.io/my-org/my-app-backend:1.0.0",
+                },
+            },
+        }
+        _wire_publish_mocks(
+            detector_cls=mock_detector_cls,
+            meta_validator_cls=mock_meta_validator_cls,
+            compose_validator_cls=mock_compose_validator_cls,
+            transformer_cls=mock_transformer_cls,
+            profile_mgr_cls=mock_profile_mgr_cls,
+            builder_cls=mock_builder_cls,
+            pusher_cls=mock_pusher_cls,
+            reg_builder_cls=mock_reg_builder_cls,
+            publisher_cls=mock_publisher_cls,
+            tmp_path=tmp_path,
+            compose_data=compose,
+        )
+        mock_resolve.return_value = "sha256:" + "a" * 64
+
+        from kamiwaza_extensions.commands.publish import run_publish
+
+        run_publish(stage="dev", no_build=True)
+
+        # ImagePusher.push received only the non-profiled backend ref.
+        push_call = mock_pusher_cls.return_value.push.call_args
+        pushed_refs = push_call.args[0] if push_call.args else push_call.kwargs.get("image_refs", [])
+        assert pushed_refs == ["ghcr.io/my-org/my-app-backend:1.0.0-dev"]
+        assert "dev-helper" not in str(pushed_refs)
+
 
 # ------------------------------------------------------------------
 # Profile not found error
@@ -1905,6 +1967,71 @@ class TestPublishDigest:
                 "ghcr.io/my-org/my-app-backend:1.0.0-dev": _DIGEST_USER_SUPPLIED,
             }
             assert "dev-helper" not in str(kwargs["digest_map"])
+
+    @patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher")
+    @patch("kamiwaza_extensions.registry_builder.RegistryBuilder")
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher")
+    @patch("kamiwaza_extensions.image_builder.ImageBuilder")
+    @patch("kamiwaza_extensions.profile_manager.ProfileManager")
+    @patch("kamiwaza_extensions.compose_transformer.ComposeTransformer")
+    @patch("kamiwaza_extensions.validators.compose.ComposeValidator")
+    @patch("kamiwaza_extensions.validators.metadata.MetadataValidator")
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_dry_run_digest_uses_appgarden_namespace(
+        self, mock_detector_cls, mock_meta_validator_cls,
+        mock_compose_validator_cls, mock_transformer_cls,
+        mock_profile_mgr_cls, mock_builder_cls, mock_pusher_cls,
+        mock_reg_builder_cls, mock_publisher_cls, tmp_path,
+    ):
+        # When appgarden compose declares a different namespace than the
+        # source compose AND the user passes --digest, the dry-run preview
+        # must pin the digest against the appgarden ref — that's what the
+        # live path would write, and what _retag_appgarden_compose writes
+        # into the catalog. Reading from source compose would produce a
+        # mismatched preview that "passes" while the live path would
+        # silently fail _apply_digests' exact-string match.
+        (tmp_path / "docker-compose.appgarden.yml").write_text(
+            "services:\n"
+            "  backend:\n"
+            "    image: ghcr.io/published/tool-foo/backend:1.0.0\n"
+        )
+        compose = {
+            "services": {
+                "backend": {
+                    "build": {"context": "."},
+                    "image": "registry.test/my-app-backend:1.0.0",
+                },
+            },
+        }
+        with patch(
+            "kamiwaza_extensions.image_pusher.ImagePusher.resolve_digest"
+        ) as mock_resolve:
+            wired = _wire_publish_mocks(
+                detector_cls=mock_detector_cls,
+                meta_validator_cls=mock_meta_validator_cls,
+                compose_validator_cls=mock_compose_validator_cls,
+                transformer_cls=mock_transformer_cls,
+                profile_mgr_cls=mock_profile_mgr_cls,
+                builder_cls=mock_builder_cls,
+                pusher_cls=mock_pusher_cls,
+                reg_builder_cls=mock_reg_builder_cls,
+                publisher_cls=mock_publisher_cls,
+                tmp_path=tmp_path,
+                compose_data=compose,
+            )
+            mock_publisher_cls.return_value.publish.return_value = (
+                _make_publish_result(dry_run=True)
+            )
+
+            from kamiwaza_extensions.commands.publish import run_publish
+
+            run_publish(stage="dev", dry_run=True, digest=_DIGEST_USER_SUPPLIED)
+
+            mock_resolve.assert_not_called()
+            kwargs = wired["reg_builder"].build_entry.call_args.kwargs
+            assert kwargs["digest_map"] == {
+                "ghcr.io/published/tool-foo/backend:1.0.0-dev": _DIGEST_USER_SUPPLIED,
+            }
 
 
 # ------------------------------------------------------------------

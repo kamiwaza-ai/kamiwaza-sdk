@@ -44,6 +44,52 @@ def _looks_registry_qualified(ref: str) -> bool:
     return "." in first or ":" in first or first == "localhost"
 
 
+def compute_canonical_refs(
+    source_services: Optional[Dict[str, Any]],
+    *,
+    registry: str,
+    extension_name: str,
+    revision_tag: str,
+    appgarden_services: Optional[Dict[str, Any]] = None,
+) -> Dict[str, str]:
+    """Canonical image refs for every buildable service, keyed by service name.
+
+    Single source of truth for the publish and dev pipelines: build,
+    push, digest resolution, and the K8s/catalog image refs all read
+    from this map so they can't drift.
+
+    Service-image precedence (per service):
+    1. ``appgarden_services[name]`` when the key is present (matches
+       ``_retag_appgarden_compose``'s behavior — uses presence, not
+       truthiness, so an empty mapping still falls through to legacy
+       via ``_canonical_build_ref`` rather than reading from source).
+    2. Source-compose entry otherwise.
+
+    Filters out profile-gated services (matches ``buildable_services``
+    in ``run_publish``) so profile-only helpers don't leak into the
+    push list under ``--no-build``.
+    """
+    appgarden = appgarden_services or {}
+    out: Dict[str, str] = {}
+    for name, svc in (source_services or {}).items():
+        if "build" not in svc or svc.get("profiles"):
+            continue
+        # Presence-based: a service that is *declared* in the appgarden
+        # compose, even as an empty mapping, is owned by the appgarden
+        # path. Truthiness here would silently fall back to source on
+        # `services.foo: {}` while _retag_appgarden_compose would write
+        # the legacy fallback — recreating the very mismatch this
+        # PR fixes.
+        lookup = appgarden[name] if name in appgarden else svc
+        out[name] = _canonical_build_ref(
+            lookup, name,
+            fallback_registry=registry,
+            fallback_extension_name=extension_name,
+            revision_tag=revision_tag,
+        )
+    return out
+
+
 def _canonical_build_ref(
     service: Optional[Dict[str, Any]],
     svc_name: str,

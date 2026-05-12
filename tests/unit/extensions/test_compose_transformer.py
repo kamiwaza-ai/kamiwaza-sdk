@@ -1,5 +1,7 @@
 """Tests for ComposeTransformer."""
 
+from typing import Any, Dict
+
 import pytest
 
 from kamiwaza_extensions.compose_transformer import ComposeTransformer
@@ -778,3 +780,106 @@ class TestCanonicalBuildRef:
         assert self._call(
             image="  ghcr.io/my-org/api:1.0  ",
         ) == "ghcr.io/my-org/api:2.0.0-dev"
+
+
+class TestComputeCanonicalRefs:
+    """`compute_canonical_refs` is the shared canonical-refs derivation
+    used by publish (live + dry-run) and dev. Same source of truth means
+    none of the three paths can drift on namespace, profile filtering,
+    or appgarden precedence."""
+
+    @staticmethod
+    def _call(source, *, appgarden=None, registry="registry.test", extension_name="my-ext", revision_tag="2.0.0-dev"):
+        from kamiwaza_extensions.compose_transformer import compute_canonical_refs
+
+        return compute_canonical_refs(
+            source,
+            registry=registry,
+            extension_name=extension_name,
+            revision_tag=revision_tag,
+            appgarden_services=appgarden,
+        )
+
+    def test_empty_source_returns_empty(self):
+        assert self._call({}) == {}
+
+    def test_only_buildable_services_included(self):
+        source = {
+            "backend": {"build": ".", "image": "ghcr.io/my-org/backend:1.0"},
+            "neo4j": {"image": "ghcr.io/upstream/neo4j:5.0"},  # external
+        }
+        result = self._call(source)
+        assert "backend" in result
+        assert "neo4j" not in result
+
+    def test_profile_gated_services_excluded(self):
+        # Mirrors the buildable_services filter in run_publish. A
+        # service with a profiles: key is local-only; pushing it under
+        # --no-build would leak a dev helper into the registry.
+        source = {
+            "backend": {"build": ".", "image": "ghcr.io/my-org/backend:1.0"},
+            "dev-helper": {
+                "build": "./dev",
+                "image": "ghcr.io/my-org/dev-helper:1.0",
+                "profiles": ["dev"],
+            },
+        }
+        result = self._call(source)
+        assert list(result.keys()) == ["backend"]
+
+    def test_appgarden_entry_overrides_source(self):
+        source = {
+            "backend": {
+                "build": ".",
+                "image": "ghcr.io/source-org/backend:1.0",
+            },
+        }
+        appgarden = {
+            "backend": {"image": "ghcr.io/published/tool-foo/backend:1.0"},
+        }
+        assert self._call(source, appgarden=appgarden) == {
+            "backend": "ghcr.io/published/tool-foo/backend:2.0.0-dev",
+        }
+
+    def test_empty_appgarden_entry_falls_through_to_legacy(self):
+        # Presence-based lookup: an appgarden services entry that exists
+        # but is empty/missing image: must NOT silently fall back to
+        # source compose. _retag_appgarden_compose would call
+        # _canonical_build_ref({}, ...) and write the legacy fallback;
+        # this helper must agree so the two paths can't drift.
+        source = {
+            "backend": {
+                "build": ".",
+                "image": "ghcr.io/source-org/backend:1.0",
+            },
+        }
+        appgarden = {"backend": {}}  # present but empty
+        assert self._call(source, appgarden=appgarden) == {
+            "backend": "registry.test/my-ext-backend:2.0.0-dev",
+        }
+
+    def test_appgarden_missing_service_uses_source(self):
+        # When a service exists in source compose but NOT in appgarden,
+        # the source entry is the right lookup. Common case: appgarden
+        # compose is hand-authored and only declares the services it
+        # actually retags.
+        source = {
+            "backend": {
+                "build": ".",
+                "image": "ghcr.io/source-org/backend:1.0",
+            },
+        }
+        appgarden: Dict[str, Any] = {}
+        assert self._call(source, appgarden=appgarden) == {
+            "backend": "ghcr.io/source-org/backend:2.0.0-dev",
+        }
+
+    def test_none_source_returns_empty(self):
+        # Defensive: missing services key on the source compose dict.
+        assert self._call(None) == {}
+
+    def test_legacy_fallback_when_no_image_anywhere(self):
+        source = {"backend": {"build": "."}}
+        assert self._call(source) == {
+            "backend": "registry.test/my-ext-backend:2.0.0-dev",
+        }

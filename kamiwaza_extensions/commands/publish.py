@@ -11,7 +11,10 @@ import yaml
 from rich.console import Console
 
 from kamiwaza_extensions.catalog_publisher import DEFAULT_CATALOG_SCHEMA
-from kamiwaza_extensions.compose_transformer import _canonical_build_ref
+from kamiwaza_extensions.compose_transformer import (
+    _canonical_build_ref,
+    compute_canonical_refs,
+)
 from kamiwaza_extensions.extension_detector import infer_extension_type
 
 console = Console(stderr=True)
@@ -456,6 +459,25 @@ def run_publish(
             registry=registry,
         )
 
+    # Canonical image refs for every build-context service. Single
+    # source of truth shared with the build, push, digest resolution,
+    # and catalog-write paths so they can't drift. Derived once here
+    # before the dry-run branch so the preview reflects exactly what
+    # the live path would produce — appgarden namespace precedence and
+    # profile-gating included.
+    appgarden_services = (
+        (appgarden_data or {}).get("services") or {}
+        if isinstance(appgarden_data, dict)
+        else {}
+    )
+    canonical_refs: Dict[str, str] = compute_canonical_refs(
+        info.compose_data.get("services") or {},
+        registry=registry,
+        extension_name=info.name,
+        revision_tag=image_tag,
+        appgarden_services=appgarden_services,
+    )
+
     # -- Dry-run path (still runs merge check to detect conflicts) --
     if dry_run:
         short_names = _collect_buildable_image_names(
@@ -473,14 +495,7 @@ def run_publish(
         # appears first in dict order can't redirect the user's digest.
         dry_digest_map: Dict[str, str] = {}
         if digest is not None and buildable_services:
-            dry_canonical_ref = _canonical_build_ref(
-                (info.compose_data.get("services") or {}).get(buildable_services[0]),
-                buildable_services[0],
-                fallback_registry=registry,
-                fallback_extension_name=info.name,
-                revision_tag=image_tag,
-            )
-            dry_digest_map[dry_canonical_ref] = digest
+            dry_digest_map[canonical_refs[buildable_services[0]]] = digest
 
         # Run merge check so dry-run detects version conflicts
         reg_builder = RegistryBuilder()
@@ -519,39 +534,6 @@ def run_publish(
         console.print()
         console.print("[dim]No changes made (dry-run mode).[/dim]")
         return
-
-    # Canonical image refs for every build-context service. Single
-    # source of truth — seeds the build, the push, digest resolution,
-    # and the catalog entry's image refs. Without sharing this map
-    # across all four sites they can each synthesize divergent forms
-    # (legacy {ext}-{svc} vs the namespace declared in compose), and
-    # the catalog ships referencing an image that may not exist at the
-    # synthesized path. (ENG-4909.)
-    #
-    # Per service, prefer the appgarden compose's declaration when
-    # present — that's what ``_retag_appgarden_compose`` writes into the
-    # catalog. The source ``docker-compose.yml`` declaration is the
-    # fallback for services the appgarden file omits, and the legacy
-    # ``{ext}-{svc}`` form remains the final fallback (handled by
-    # ``_canonical_build_ref``). Reading from source when an appgarden
-    # entry overrides the namespace would build/push/digest at a
-    # different path than the catalog references.
-    appgarden_services = (
-        (appgarden_data or {}).get("services") or {}
-        if isinstance(appgarden_data, dict)
-        else {}
-    )
-    canonical_refs: Dict[str, str] = {
-        name: _canonical_build_ref(
-            appgarden_services.get(name) or svc,
-            name,
-            fallback_registry=registry,
-            fallback_extension_name=info.name,
-            revision_tag=image_tag,
-        )
-        for name, svc in (info.compose_data.get("services") or {}).items()
-        if "build" in svc
-    }
 
     # 5. Build images (using stage-aware tag)
     image_refs: List[str] = []

@@ -305,7 +305,7 @@ def run_dev_remote(
 
     from kamiwaza_extensions.compose_transformer import (
         ComposeTransformer,
-        _canonical_build_ref,
+        compute_canonical_refs,
     )
     from kamiwaza_extensions.connections import ConnectionManager
     from kamiwaza_extensions.deployment_poller import (
@@ -435,22 +435,18 @@ def run_dev_remote(
     )
     transformed = transformer.resolve_env_placeholders(transformed)
 
-    # Canonical image refs for every build-context service. Single source
-    # of truth shared with the transformed compose so the image we build
-    # and push matches the ref the K8s payload will pull (ENG-4909). The
+    # Canonical image refs for every build-context service. Single
+    # source of truth shared with the transformed compose so the image
+    # we build and push matches the ref the K8s payload will pull. The
     # transformer honors a service's declared image namespace; without
-    # this map ImageBuilder would synthesize the legacy {ext}-{svc} form
-    # and ship a pod referencing an image that was never pushed.
-    canonical_refs: Dict[str, str] = {
-        name: _canonical_build_ref(
-            svc, name,
-            fallback_registry=registry,
-            fallback_extension_name=info.name,
-            revision_tag=rev_tag,
-        )
-        for name, svc in (info.compose_data.get("services") or {}).items()
-        if "build" in svc
-    }
+    # this map ImageBuilder would synthesize the legacy {ext}-{svc}
+    # form and ship a pod referencing an image that was never pushed.
+    canonical_refs: Dict[str, str] = compute_canonical_refs(
+        info.compose_data.get("services") or {},
+        registry=registry,
+        extension_name=info.name,
+        revision_tag=rev_tag,
+    )
 
     # 5b. Resolve SDK override for build
     build_overrides = None
