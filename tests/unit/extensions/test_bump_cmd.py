@@ -379,6 +379,61 @@ class TestBump:
         assert data["image"] == f"ghcr.io/x/y:2.1.0@{digest}"
 
     @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_compose_scopes_to_extension_repo(self, mock_detector_cls, tmp_path):
+        """A sidecar whose tag happens to equal `old` must not be retagged
+        when the manifest declares its own image repo."""
+        kj = tmp_path / "kamiwaza.json"
+        kj.write_text(json.dumps({
+            "name": "test-app",
+            "version": "2.0.14",
+            "image": "ghcr.io/kamiwaza/app:2.0.14",
+        }, indent=4) + "\n")
+        compose = tmp_path / "docker-compose.yml"
+        compose.write_text(
+            "services:\n"
+            "  app:\n"
+            "    image: ghcr.io/kamiwaza/app:2.0.14\n"
+            "  sidecar:\n"
+            "    image: vendor/sidecar:2.0.14\n"
+        )
+        mock_detector_cls.return_value.detect.return_value = _make_extension_info(tmp_path, "2.0.14")
+
+        from kamiwaza_extensions.commands.bump import run_bump
+        run_bump(level="minor")
+
+        content = compose.read_text()
+        assert "ghcr.io/kamiwaza/app:2.1.0" in content
+        assert "vendor/sidecar:2.0.14" in content  # untouched
+
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_package_json_targets_top_level_version(self, mock_detector_cls, tmp_path):
+        """Nested `"version"` keys (engines, config, …) must not be
+        rewritten when the top-level version is the bump target."""
+        _write_kamiwaza_json(tmp_path, "2.0.14")
+        pkg = tmp_path / "package.json"
+        # `engines.version` appears textually before top-level `version`
+        # and shares the same string value — a naive first-match regex
+        # would rewrite the wrong one.
+        original = (
+            '{\n'
+            '  "name": "x",\n'
+            '  "engines": {\n'
+            '    "version": "2.0.14"\n'
+            '  },\n'
+            '  "version": "2.0.14"\n'
+            '}\n'
+        )
+        pkg.write_text(original)
+        mock_detector_cls.return_value.detect.return_value = _make_extension_info(tmp_path, "2.0.14")
+
+        from kamiwaza_extensions.commands.bump import run_bump
+        run_bump(level="minor")
+
+        data = json.loads(pkg.read_text())
+        assert data["version"] == "2.1.0"
+        assert data["engines"]["version"] == "2.0.14"  # untouched
+
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
     def test_invalid_level_exits(self, mock_detector_cls, tmp_path):
         _write_kamiwaza_json(tmp_path)
         mock_detector_cls.return_value.detect.return_value = _make_extension_info(tmp_path)

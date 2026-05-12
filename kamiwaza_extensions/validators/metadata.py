@@ -141,10 +141,14 @@ def _check_version_drift(
     # Import locally to share the canonical image-ref parser with the bump
     # command — keeps the updater and the drift detector from diverging on
     # what counts as a "tag" (registry ports, digest suffixes, etc.).
-    from kamiwaza_extensions.commands.bump import _split_image_ref
+    from kamiwaza_extensions.commands.bump import (
+        _split_image_ref,
+        extension_image_repo,
+    )
     from kamiwaza_extensions.constants import ALL_COMPOSE_FILENAMES
 
     warnings: List[str] = []
+    ext_repo = extension_image_repo(manifest_image)
 
     # kamiwaza.json image tag
     if isinstance(manifest_image, str):
@@ -167,14 +171,21 @@ def _check_version_drift(
         except OSError:
             continue
         for match in image_re.finditer(content):
-            _, tag, _ = _split_image_ref(match.group("ref"))
-            # Only flag images that look like extension-owned versions:
-            # tag is semver-shaped *and* differs from manifest version.
-            if tag is not None and tag != version and _looks_like_semver(tag):
-                warnings.append(
-                    f"Version drift: {name} has image tag='{tag}' but kamiwaza.json version='{version}'"
-                )
-                break  # one warning per compose file is enough signal
+            repo, tag, _ = _split_image_ref(match.group("ref"))
+            # Only flag images that belong to the extension. Without a
+            # manifest image repo we fall back to "semver tag != manifest
+            # version" alone, which keeps drift detection useful for
+            # manifests that omit `image` but risks noise for unrelated
+            # third-party services (e.g. redis:7.2.4); scoping eliminates
+            # that noise when the manifest declares its repo.
+            if tag is None or tag == version or not _looks_like_semver(tag):
+                continue
+            if ext_repo is not None and repo != ext_repo:
+                continue
+            warnings.append(
+                f"Version drift: {name} has image tag='{tag}' but kamiwaza.json version='{version}'"
+            )
+            break  # one warning per compose file is enough signal
 
     # Dockerfile *_VERSION ARG defaults
     dockerfile = ext_dir / "Dockerfile"

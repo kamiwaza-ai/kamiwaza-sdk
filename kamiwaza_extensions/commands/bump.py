@@ -62,10 +62,16 @@ def run_bump(*, level: str = "patch", dry_run: bool = False) -> None:
         )
         raise typer.Exit(code=1)
 
+    # Scope compose/drift rewrites to the extension's own image repo so we
+    # don't accidentally retag a sidecar that happens to share `old`
+    # (e.g. `vendor/sidecar:2.0.14` while bumping our `app` to 2.1.0).
+    manifest = json.loads(kamiwaza_json_path.read_text(encoding="utf-8"))
+    ext_repo = extension_image_repo(manifest.get("image"))
+
     updates: List[FileUpdate] = []
     for update in (
         _update_kamiwaza_json(kamiwaza_json_path, old_version, new_version),
-        *_update_compose_files(ext_dir, old_version, new_version),
+        *_update_compose_files(ext_dir, old_version, new_version, ext_repo),
         _update_dockerfile(ext_dir / "Dockerfile", old_version, new_version),
         _update_pyproject(ext_dir / "pyproject.toml", old_version, new_version),
         *_update_package_json_files(ext_dir, old_version, new_version),
@@ -212,7 +218,22 @@ def _update_kamiwaza_json(path: Path, old: str, new: str) -> Optional[FileUpdate
     return FileUpdate(path=path, before=before, after=after, summary=summary)
 
 
-def _update_compose_files(ext_dir: Path, old: str, new: str) -> List[Optional[FileUpdate]]:
+def extension_image_repo(manifest_image: object) -> Optional[str]:
+    """Return the manifest image's repo (e.g. ``ghcr.io/x/y``) or ``None``.
+
+    Used to scope compose rewrites and drift warnings to images that belong
+    to the extension, so a sidecar with a coincidentally matching tag isn't
+    silently retagged.
+    """
+    if not isinstance(manifest_image, str):
+        return None
+    repo, _, _ = _split_image_ref(manifest_image)
+    return repo or None
+
+
+def _update_compose_files(
+    ext_dir: Path, old: str, new: str, ext_repo: Optional[str]
+) -> List[Optional[FileUpdate]]:
     from kamiwaza_extensions.constants import ALL_COMPOSE_FILENAMES
 
     seen: set = set()
@@ -222,7 +243,7 @@ def _update_compose_files(ext_dir: Path, old: str, new: str) -> List[Optional[Fi
         if not path.exists() or path in seen:
             continue
         seen.add(path)
-        results.append(_update_compose_file(path, old, new))
+        results.append(_update_compose_file(path, old, new, ext_repo))
     return results
 
 
@@ -237,7 +258,9 @@ _COMPOSE_IMAGE_RE = re.compile(
 )
 
 
-def _update_compose_file(path: Path, old: str, new: str) -> Optional[FileUpdate]:
+def _update_compose_file(
+    path: Path, old: str, new: str, ext_repo: Optional[str]
+) -> Optional[FileUpdate]:
     before = path.read_text(encoding="utf-8")
 
     count = 0
@@ -247,6 +270,12 @@ def _update_compose_file(path: Path, old: str, new: str) -> Optional[FileUpdate]
         ref = match.group("ref")
         repo, tag, digest = _split_image_ref(ref)
         if tag != old:
+            return match.group(0)
+        # If the manifest declares an image repo, only retag images that
+        # belong to the extension. Without a manifest repo we fall back to
+        # tag-equality alone (the original behavior, exercised by tests
+        # for manifests that omit `image`).
+        if ext_repo is not None and repo != ext_repo:
             return match.group(0)
         count += 1
         new_ref = f"{repo}:{new}{digest or ''}"
@@ -370,12 +399,68 @@ def _update_package_json(path: Path, old: str, new: str) -> Optional[FileUpdate]
         return None
     if not isinstance(data, dict) or data.get("version") != old:
         return None
-    # Targeted line rewrite preserves the source file's indentation,
-    # key order, and trailing newline — re-serializing via json.dumps
-    # would normalize 4-space or tab indentation to 2 and create
-    # gratuitous diffs.
-    version_re = re.compile(r'("version"\s*:\s*")[^"]+(")')
-    after, count = version_re.subn(rf"\g<1>{new}\g<2>", before, count=1)
-    if count == 0 or after == before:
+    # Targeted rewrite of the **top-level** `"version"` key. A bare regex
+    # match-first would rewrite the first textual `"version"` — which could
+    # be a nested one like `engines.version` or `config.version` — and
+    # leave the real package version stale. Walk the source with brace
+    # depth + string awareness to locate the depth-1 value span and splice
+    # in the new version, preserving the file's indentation and key order.
+    span = _find_top_level_string_value_span(before, "version")
+    if span is None or before[span[0] : span[1]] != old:
+        return None
+    after = before[: span[0]] + new + before[span[1] :]
+    if after == before:
         return None
     return FileUpdate(path=path, before=before, after=after, summary='"version"')
+
+
+def _find_top_level_string_value_span(text: str, key: str) -> Optional[Tuple[int, int]]:
+    """Return ``(start, end)`` of the string value bound to top-level *key*.
+
+    Walks the JSON text tracking brace/bracket depth so nested objects
+    that happen to use the same key name (e.g. ``engines.version``) are
+    ignored. Returns ``None`` if the key isn't found at depth 1 with a
+    string value.
+    """
+    depth = 0
+    i = 0
+    n = len(text)
+    in_string = False
+    string_start = -1
+    pending_key: Optional[str] = None
+    awaiting_value = False
+    while i < n:
+        ch = text[i]
+        if in_string:
+            if ch == "\\" and i + 1 < n:
+                i += 2
+                continue
+            if ch == '"':
+                token = text[string_start + 1 : i]
+                in_string = False
+                if awaiting_value and depth == 1:
+                    if pending_key == key:
+                        return string_start + 1, i
+                    awaiting_value = False
+                    pending_key = None
+                else:
+                    pending_key = token
+            i += 1
+            continue
+        if ch == '"':
+            in_string = True
+            string_start = i
+        elif ch in "{[":
+            depth += 1
+        elif ch in "}]":
+            depth -= 1
+            awaiting_value = False
+            pending_key = None
+        elif ch == ":":
+            if depth == 1 and pending_key is not None:
+                awaiting_value = True
+        elif ch == ",":
+            awaiting_value = False
+            pending_key = None
+        i += 1
+    return None

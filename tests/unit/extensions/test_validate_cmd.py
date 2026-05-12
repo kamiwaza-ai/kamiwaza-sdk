@@ -297,3 +297,23 @@ class TestVersionDrift:
         result = MetadataValidator().validate(Path(tmp_path / "kamiwaza.json"))
         drift = [w for w in result.warnings if "drift" in w.lower()]
         assert drift == []
+
+    def test_unrelated_thirdparty_image_no_drift_warning(self, tmp_path):
+        """A redis/postgres sidecar's semver tag must not trigger a drift
+        warning when the extension declares its own image repo."""
+        from pathlib import Path
+        from kamiwaza_extensions.validators.metadata import MetadataValidator
+
+        (tmp_path / "kamiwaza.json").write_text(
+            json.dumps(self._meta("2.1.0", "ghcr.io/kamiwaza/app:2.1.0"))
+        )
+        (tmp_path / "docker-compose.yml").write_text(
+            "services:\n"
+            "  app:\n"
+            "    image: ghcr.io/kamiwaza/app:2.1.0\n"
+            "  redis:\n"
+            "    image: redis:7.2.4\n"
+        )
+        result = MetadataValidator().validate(Path(tmp_path / "kamiwaza.json"))
+        drift = [w for w in result.warnings if "drift" in w.lower()]
+        assert drift == []
