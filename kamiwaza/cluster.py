@@ -30,6 +30,8 @@ from typing import Any, Dict, List, Optional
 
 from kamiwaza.exceptions import KamiwazaError
 from kamiwaza.models import (
+    AttributeSchema,
+    AttributeSchemaList,
     ClusterCapabilities,
     ClusterDiagnostics,
     ClusterOperations,
@@ -178,6 +180,164 @@ class ClusterAPI:
     def clear_execution_gate(self) -> None:
         """Remove this cluster's ExecutionGate binding."""
         self._client._request("DELETE", "/api/cluster/execution-gate")
+
+    # ─── §4.2.18 — attribute schema surface (v0.3.6 / M3.1) ──────────────
+
+    def declare_attribute(
+        self,
+        name: str,
+        *,
+        type: str,
+        sensitive: bool = False,
+        authority: str = "local_admin",
+        schema_version: str = "1.0",
+    ) -> AttributeSchema:
+        """Register an attribute in the realm's declared vocabulary (ENG-4946).
+
+        Required BEFORE ``kz.subjects.upsert(...)`` writes for any
+        attribute name not already declared. Idempotent on identical
+        shape; shape change on a ``declared``-state attribute returns
+        400 ``shape_change_on_declared`` — deprecate + withdraw first to
+        retire the old shape.
+
+        Hits ``PUT /api/cluster/attribute-schema/{name}``.
+
+        Args:
+            name: Canonical attribute name (e.g. ``"clearance"``).
+            type: One of ``"string"``, ``"int"``, ``"bool"``, ``"string[]"``.
+            sensitive: When True, the attribute is registered in the realm
+                vocabulary but NOT issued as a JWT claim; gates that
+                consume it must read the mesh-envelope ``user_attrs``
+                field. Default False (per OQ-14 — PII attributes opt-in
+                sensitive; demo flow's clearance/country/programs are not).
+            authority: Which actor may set values on subjects. Default
+                ``"local_admin"``.  ``"mesh_peer"`` reserves the attribute
+                for cross-cluster attestation via brokered-user
+                provisioning; ``"self"`` reserves for a future self-service
+                surface (M3.1 declare-hook only); ``"system"`` reserves
+                for platform-emitted attrs (audit/provenance).
+            schema_version: Cross-cluster contract version (OQ-13); semver.
+
+        Returns:
+            AttributeSchema in ``declared`` state.
+
+        Raises:
+            KamiwazaError: 400 ``shape_change_on_declared`` if the
+                attribute is already declared with a different shape.
+        """
+        body = {
+            "type": type,
+            "sensitive": sensitive,
+            "authority": authority,
+            "schema_version": schema_version,
+        }
+        response = self._client._request(
+            "PUT", f"/api/cluster/attribute-schema/{name}", json=body
+        )
+        return AttributeSchema.model_validate(response)
+
+    def list_attributes(
+        self, *, include_deprecated: bool = True
+    ) -> List[AttributeSchema]:
+        """List the realm's declared vocabulary (ENG-4946).
+
+        Hits ``GET /api/cluster/attribute-schema``. Withdrawn entries are
+        tombstoned at the KC layer and never appear here; deprecated
+        entries are included by default (operators need them to plan
+        retirement).
+
+        Args:
+            include_deprecated: When False, omits deprecated entries.
+
+        Returns:
+            List of AttributeSchema; sorted by name.
+        """
+        params = {"include_deprecated": "true" if include_deprecated else "false"}
+        response = self._client._request(
+            "GET", "/api/cluster/attribute-schema", params=params
+        )
+        return AttributeSchemaList.model_validate(response).attributes
+
+    def deprecate_attribute(self, name: str) -> AttributeSchema:
+        """Transition an attribute from declared → deprecated (ENG-4946).
+
+        Hits ``DELETE /api/cluster/attribute-schema/{name}`` (without
+        force flag). Subsequent ``kz.subjects.upsert(...)`` calls that
+        include this attribute reject with 400 ``attribute_deprecated``.
+        Existing subject values continue to surface in JWTs until the
+        attribute is withdrawn.
+
+        Use as the first step of a planned retirement; call
+        ``withdraw_attribute(...)`` once ``subjects_holding_value``
+        reaches an acceptable threshold (typically 0).
+
+        Returns:
+            AttributeSchema in ``deprecated`` state.
+
+        Raises:
+            KamiwazaError: 404 ``attribute_not_found`` if absent.
+        """
+        response = self._client._request(
+            "DELETE", f"/api/cluster/attribute-schema/{name}"
+        )
+        # The DELETE endpoint returns {state, subjects_holding_value}; we
+        # need the full schema record, so round-trip through GET.
+        # (Avoids a server-side change; M3.1 ships the lean DELETE shape.)
+        _ = response
+        full_list = self.list_attributes(include_deprecated=True)
+        for schema in full_list:
+            if schema.name == name:
+                return schema
+        # Defensive: server said deprecate succeeded but list omits the
+        # entry. Raise the SDK's generic error rather than silently
+        # synthesizing a schema with no real declared_at.
+        raise KamiwazaError(
+            f"Attribute {name!r} was deprecated server-side but is missing "
+            "from the subsequent list_attributes() response."
+        )
+
+    def withdraw_attribute(
+        self,
+        name: str,
+        *,
+        force: bool = False,
+        subjects_holding_value: int = 0,
+    ) -> Dict[str, Any]:
+        """Transition an attribute to withdrawn state (ENG-4946).
+
+        Hits ``DELETE /api/cluster/attribute-schema/{name}?force=true``.
+        Default refuses with 409 ``subjects_holding_value`` when subjects
+        currently hold a value; ``force=True`` proceeds with explicit
+        audit capturing the count + intent. Removes the KC realm
+        user-profile entry + OIDC mapper. Subject KC records retain raw
+        values at the KC storage layer (not auto-purged); re-declaring
+        the same name later is a ``revive_from_withdrawn`` audit action.
+
+        Args:
+            name: Attribute name to withdraw.
+            force: When True, proceed even when subjects hold values.
+            subjects_holding_value: Caller-supplied count of subjects
+                currently holding a value (operator's best estimate;
+                the platform does NOT scan subjects for cost reasons).
+                Default 0. force=True with non-zero count is allowed and
+                audited; force=False with non-zero count returns 409.
+
+        Returns:
+            Dict with ``state`` (always ``"withdrawn"``) and
+            ``subjects_holding_value`` (echoed from input for forensic
+            audit-trail correlation).
+
+        Raises:
+            KamiwazaError: 404 ``attribute_not_found``; 409
+                ``subjects_holding_value`` when force=False and count>0.
+        """
+        params: Dict[str, Any] = {
+            "force": "true" if force else "false",
+            "subjects_holding_value": subjects_holding_value,
+        }
+        return self._client._request(
+            "DELETE", f"/api/cluster/attribute-schema/{name}", params=params
+        )
 
     def _attempt_fix(self, issue: DiagnoseIssue) -> FixOutcome:
         if not issue.auto_fixable or not issue.fix_endpoint:
