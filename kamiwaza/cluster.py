@@ -26,7 +26,7 @@ Server-side correlates:
 
 from __future__ import annotations
 
-from typing import Any, List
+from typing import Any, Dict, List, Optional
 
 from kamiwaza.exceptions import KamiwazaError
 from kamiwaza.models import (
@@ -34,6 +34,7 @@ from kamiwaza.models import (
     ClusterDiagnostics,
     ClusterOperations,
     DiagnoseIssue,
+    ExecutionGateBinding,
     FixOutcome,
     FixResult,
 )
@@ -130,6 +131,53 @@ class ClusterAPI:
                 list(retrievals_body) if isinstance(retrievals_body, list) else []
             ),
         )
+
+    # ─── §4.2.4 — execution-gate binding (M3 expand) ──────────────────
+
+    def set_execution_gate(
+        self,
+        *,
+        type: str,
+        config: Optional[Dict[str, Any]] = None,
+    ) -> ExecutionGateBinding:
+        """Bind an ExecutionGate to this cluster (T2.4 server-side).
+
+        Hits ``PUT /api/cluster/execution-gate``. Server validates ``type``
+        is an ``ExecutionGate`` subclass and validates ``config`` against
+        the gate's ``config_schema()`` before persisting.
+
+        Args:
+            type: ExecutionGate classpath, e.g.
+                ``"kamiwaza.services.authz.gates.default_gates.AllowAllExecutionGate"``.
+            config: Per-gate config dict. Defaults to ``{}`` for gates
+                with no configurable surface.
+
+        Returns:
+            ExecutionGateBinding — the persisted shape.
+
+        Raises:
+            KamiwazaError: 400 wrong_kind when ``type`` is an
+                AttributeGate; 400 schema_validation_failed when config
+                violates the gate's schema.
+        """
+        body = {"type": type, "config": dict(config) if config else {}}
+        response = self._client._request(
+            "PUT", "/api/cluster/execution-gate", json=body
+        )
+        return ExecutionGateBinding.model_validate(response)
+
+    def get_execution_gate(self) -> ExecutionGateBinding:
+        """Read the active ExecutionGate binding for this cluster.
+
+        Raises:
+            KamiwazaError: 404 not_configured when no binding is persisted.
+        """
+        response = self._client._request("GET", "/api/cluster/execution-gate")
+        return ExecutionGateBinding.model_validate(response)
+
+    def clear_execution_gate(self) -> None:
+        """Remove this cluster's ExecutionGate binding."""
+        self._client._request("DELETE", "/api/cluster/execution-gate")
 
     def _attempt_fix(self, issue: DiagnoseIssue) -> FixOutcome:
         if not issue.auto_fixable or not issue.fix_endpoint:

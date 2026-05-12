@@ -269,3 +269,20 @@ class AttributeGateBinding(BaseModel):
     config: Dict[str, Any] = {}
     gate_name: str
     kind: Literal["attribute"] = "attribute"
+
+
+class ExecutionGateBinding(BaseModel):
+    """T5.6 (cluster expand) / §4.2.4 — response shape for the cluster
+    execution-gate binding endpoints.
+
+    Returned by ``kz.cluster.set_execution_gate(...)`` and
+    ``kz.cluster.get_execution_gate(...)``. Cluster-scoped (one active
+    binding per cluster), kind always ``"execution"``.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    type: str
+    config: Dict[str, Any] = {}
+    gate_name: str
+    kind: Literal["execution"] = "execution"
