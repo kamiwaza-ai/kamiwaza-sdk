@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import os
 import time
+import warnings
 from types import TracebackType
 from typing import Any, Optional, Type
 
@@ -41,6 +42,14 @@ import httpx
 _RETRY_BACKOFF_SCHEDULE_SECONDS = (1, 2, 4, 8, 16, 32, 64)
 _RETRY_WALL_CLOCK_BUDGET_SECONDS = 90.0
 _PSK_PROPAGATION_TIMEOUT_REASON = "psk_propagation_timeout"
+
+
+# T7.14 / ENG-5048 — module-level flag for one-time-per-process
+# deprecation warning. Set to True after the first Kamiwaza()
+# instantiation so subsequent calls don't spam the warning.
+# Reset implicitly when the module is re-imported (which only happens in
+# test contexts that drop it from sys.modules).
+_DEPRECATION_WARNED = False
 
 
 class Kamiwaza:
@@ -63,6 +72,21 @@ class Kamiwaza:
         *,
         timeout: float = 30.0,
     ) -> None:
+        # T7.14 / ENG-5048 — one-time-per-process DeprecationWarning.
+        # Reverses the v0.2.0 / v0.3.4 / ENG-4677 namespace decision per
+        # design v0.3.7 §4.2.11. Removal target: v2.0 per OQ-17. The
+        # warning's stacklevel=2 makes it point at the customer's
+        # Kamiwaza(...) call site, not at this shim.
+        global _DEPRECATION_WARNED
+        if not _DEPRECATION_WARNED:
+            _DEPRECATION_WARNED = True
+            warnings.warn(
+                "kamiwaza.Kamiwaza is deprecated; use kamiwaza_sdk.KamiwazaClient "
+                "instead. Removal target: v2.0. See WS-M3.2 / design v0.3.7 §4.2.11.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+
         self.base_url = base_url
         self.token = token
         self._http = httpx.Client(

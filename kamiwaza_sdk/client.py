@@ -166,7 +166,44 @@ class KamiwazaClient:
         api_key: Optional[str] = None,
         authenticator: Optional[Authenticator] = None,
         log_level: int = logging.INFO,
+        *,
+        verify: Optional[Any] = None,
+        ca_bundle: Optional[str] = None,
     ):
+        """Construct a KamiwazaClient.
+
+        Args:
+            base_url: Cluster API root (e.g. ``"https://kamiwaza.test/api"``).
+                Falls back to ``KAMIWAZA_BASE_URL`` then ``KAMIWAZA_BASE_URI``
+                env vars when not supplied.
+            api_key: Optional PAT. Falls back to ``KAMIWAZA_API_KEY`` then
+                ``KAMIWAZA_API_TOKEN`` env vars.
+            authenticator: Optional ``Authenticator`` instance; takes
+                precedence over ``api_key`` when supplied.
+            log_level: Python logging level (default INFO).
+            verify: TLS verification setting. ``True`` (default — system
+                bundle), ``False`` (disable; warns), or a path string
+                (custom CA bundle).
+            ca_bundle: Path to a custom CA bundle (PEM). Sugar for
+                ``verify=<path>`` — clearer name when callers know they're
+                pointing at a specific file. ``ca_bundle`` wins over
+                ``verify`` when both supplied.
+
+        TLS verification precedence (T7.13 / ENG-5047, closes ENG-5015):
+
+            explicit ``ca_bundle=`` >
+            explicit ``verify=`` >
+            ``KAMIWAZA_VERIFY_SSL`` env var (existing behavior) >
+            ``REQUESTS_CA_BUNDLE`` env var (honored by requests natively) >
+            default ``True`` (system bundle)
+
+        For self-signed cluster certs, fetch the cluster's CA via:
+
+            kubectl get secret kamiwaza-ca-root-ca -n kamiwaza \\
+                -o jsonpath='{.data.tls\\.crt}' | base64 -d > cluster-ca.pem
+
+        then construct: ``KamiwazaClient(ca_bundle="cluster-ca.pem")``.
+        """
         # Configure logging
         logging.basicConfig(
             level=log_level,
@@ -188,8 +225,18 @@ class KamiwazaClient:
         self.session = requests.Session()
         self._recent_datasets: "OrderedDict[str, float]" = OrderedDict()
 
-        # Check KAMIWAZA_VERIFY_SSL environment variable
-        if _verify_ssl_disabled_from_env():
+        # TLS verification: explicit kwargs > env vars > default True.
+        # ca_bundle is sugar for verify=<path>; wins over verify when both.
+        if ca_bundle is not None:
+            self.session.verify = ca_bundle
+        elif verify is not None:
+            self.session.verify = verify
+            if verify is False:
+                import urllib3
+
+                urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+                self.logger.info("SSL verification disabled (verify=False kwarg)")
+        elif _verify_ssl_disabled_from_env():
             self.session.verify = False
             # Suppress SSL warnings when verification is disabled
             import urllib3
