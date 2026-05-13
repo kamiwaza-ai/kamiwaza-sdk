@@ -44,7 +44,7 @@ class GatesAPI(BaseService):
         """
         response = self.client._request(
             "POST",
-            "/api/authz/gates/discover",
+            "/authz/gates/discover",
             json={"classpath": classpath},
         )
         return GateDiscovery.model_validate(response)

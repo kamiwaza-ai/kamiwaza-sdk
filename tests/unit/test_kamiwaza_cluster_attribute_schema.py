@@ -169,7 +169,10 @@ def test_list_attributes_passes_include_deprecated_false(httpx_mock: Any) -> Non
 
 
 @pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
-def test_deprecate_attribute_round_trips_via_list(httpx_mock: Any) -> None:
+def test_deprecate_attribute_round_trips_via_get(httpx_mock: Any) -> None:
+    """H4 (PR feedback): deprecate_attribute() reads the full schema back
+    via a single-name GET (not list_attributes) — smaller race window,
+    one fewer round trip."""
     from kamiwaza.client import Kamiwaza
 
     httpx_mock.add_response(
@@ -180,12 +183,9 @@ def test_deprecate_attribute_round_trips_via_list(httpx_mock: Any) -> None:
     )
     httpx_mock.add_response(
         method="GET",
-        url="https://kamiwaza.test/api/cluster/attribute-schema?include_deprecated=true",
+        url="https://kamiwaza.test/api/cluster/attribute-schema/clearance",
         status_code=200,
-        json={
-            "attributes": [_attribute_schema_payload("clearance", state="deprecated")],
-            "schema_version": "v0.3.6",
-        },
+        json=_attribute_schema_payload("clearance", state="deprecated"),
     )
 
     client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")

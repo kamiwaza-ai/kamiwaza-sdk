@@ -57,7 +57,7 @@ class SubjectsAPI(BaseService):
         if password is not None:
             body["password"] = password
         response = self.client._request(
-            "PUT", f"/api/authz/subjects/{username}", json=body
+            "PUT", f"/authz/subjects/{username}", json=body
         )
         return Subject.model_validate(response)
 
@@ -67,13 +67,13 @@ class SubjectsAPI(BaseService):
         Raises:
             KamiwazaError: 404 subject_not_found when absent.
         """
-        response = self.client._request("GET", f"/api/authz/subjects/{username}")
+        response = self.client._request("GET", f"/authz/subjects/{username}")
         return Subject.model_validate(response)
 
     def delete(self, username: str, *, cascade_grants: bool = False) -> None:
         """Delete the Subject. ``cascade_grants=True`` also removes the
         subject's ReBAC tuples (T3.6 server-side cascade)."""
-        path = f"/api/authz/subjects/{username}"
+        path = f"/authz/subjects/{username}"
         if cascade_grants:
             path = f"{path}?cascade=grants"
         self.client._request("DELETE", path)
@@ -106,7 +106,7 @@ class SubjectGrantsAPI:
         }
         response = self._client._request(
             "POST",
-            f"/api/authz/subjects/{self._username}/grants",
+            f"/authz/subjects/{self._username}/grants",
             json=body,
         )
         return Grant.model_validate(response)
@@ -114,7 +114,7 @@ class SubjectGrantsAPI:
     def list(self) -> List[Grant]:
         """Return all grants bound to this subject."""
         response = self._client._request(
-            "GET", f"/api/authz/subjects/{self._username}/grants"
+            "GET", f"/authz/subjects/{self._username}/grants"
         )
         items = response if isinstance(response, list) else []
         return [Grant.model_validate(item) for item in items]
@@ -134,6 +134,6 @@ class SubjectGrantsAPI:
         }
         self._client._request(
             "DELETE",
-            f"/api/authz/subjects/{self._username}/grants",
+            f"/authz/subjects/{self._username}/grants",
             json=body,
         )

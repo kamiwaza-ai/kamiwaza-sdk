@@ -32,7 +32,10 @@ def test_client_constructs_httpx_client_with_base_url_and_auth() -> None:
     # The httpx.Client is exposed as `_http` (private — convention only,
     # advanced consumers can reach it but the public surface is _request).
     assert client._http is not None
-    assert str(client._http.base_url).rstrip("/") == "https://kamiwaza.test"
+    # WS-M3.2 / PR feedback C1: legacy Kamiwaza auto-normalizes base_url to
+    # end with /api so the unified service code (which uses unprefixed paths)
+    # resolves to the same URL as the canonical KamiwazaClient.
+    assert str(client._http.base_url).rstrip("/") == "https://kamiwaza.test/api"
     auth_header = client._http.headers.get("Authorization")
     assert auth_header == "Bearer pat-abc-123"
 
@@ -50,7 +53,7 @@ def test_request_returns_parsed_json_for_2xx(httpx_mock: Any) -> None:
     )
 
     client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
-    body = client._request("GET", "/api/cluster/cluster_capabilities")
+    body = client._request("GET", "/cluster/cluster_capabilities")
 
     assert body == {"gpu_count": 0, "kamiwaza_version": "1.0.0"}
 
@@ -75,7 +78,7 @@ def test_request_raises_kamiwaza_error_for_4xx(httpx_mock: Any) -> None:
     client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
 
     with pytest.raises(KamiwazaError) as exc_info:
-        client._request("GET", "/api/cluster/jobs/missing")
+        client._request("GET", "/cluster/jobs/missing")
 
     err = exc_info.value
     assert getattr(err, "status_code", None) == 404
@@ -127,7 +130,7 @@ def test_request_retries_psk_propagation_timeout_503(httpx_mock: Any) -> None:
     client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
 
     with patch("time.sleep") as sleep_mock:
-        body = client._request("POST", "/api/cluster/federations/pair", json={})
+        body = client._request("POST", "/cluster/federations/pair", json={})
 
     assert body == {"cluster_id": "ORION", "status": "PAIRED"}
     assert len(httpx_mock.get_requests()) == 3
@@ -180,7 +183,7 @@ def test_request_retry_gives_up_at_wall_clock_cap(httpx_mock: Any) -> None:
     with patch("time.monotonic", side_effect=fake_monotonic):
         with patch("time.sleep", side_effect=fake_sleep):
             with pytest.raises(KamiwazaError) as exc_info:
-                client._request("POST", "/api/cluster/federations/pair", json={})
+                client._request("POST", "/cluster/federations/pair", json={})
 
     assert getattr(exc_info.value, "status_code", None) == 503
     # Should have exhausted the 90s budget. The schedule 1+2+4+8+16+32+64
@@ -212,7 +215,7 @@ def test_request_does_not_retry_other_503_reasons(httpx_mock: Any) -> None:
     client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
 
     with pytest.raises(KamiwazaError) as exc_info:
-        client._request("GET", "/api/cluster/jobs")
+        client._request("GET", "/cluster/jobs")
 
     assert getattr(exc_info.value, "status_code", None) == 503
     # Single attempt — not retried.
@@ -229,7 +232,7 @@ def test_from_env_constructs_via_explicit_constructor(monkeypatch: Any) -> None:
 
     client = Kamiwaza.from_env()
 
-    assert client.base_url == "https://kamiwaza.test"
+    assert client.base_url == "https://kamiwaza.test/api"  # WS-M3.2: auto-normalized
     assert client.token == "pat-from-env"
     assert client._http.headers.get("Authorization") == "Bearer pat-from-env"
 

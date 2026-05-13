@@ -469,6 +469,18 @@ class KamiwazaClient:
             )
 
         self.logger.error(f"Request failed: {response_text}")
+
+        # T7.14 / PR feedback H2: route recognized server reasons through
+        # the typed-exception dispatch (kamiwaza_sdk.exceptions.error_for_response)
+        # so federation-aware subclasses surface to customers. Falls back to
+        # the generic APIError when the (status_code, detail.reason) pair
+        # has no typed mapping.
+        from .exceptions import KamiwazaError, error_for_response
+
+        typed = error_for_response(response.status_code, payload, message)
+        if type(typed) is not KamiwazaError:
+            raise typed
+
         raise APIError(
             message,
             status_code=response.status_code,

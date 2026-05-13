@@ -81,7 +81,7 @@ def test_fix_invokes_fix_endpoint_for_auto_fixable_issue(httpx_mock: Any) -> Non
                     "severity": "error",
                     "summary": "OBO actor lacks token-exchange",
                     "detail": {"client_id": "kamiwaza-platform-svc"},
-                    "fix_endpoint": "/api/cluster/diagnose/fix/missing_token_exchange_permission",
+                    "fix_endpoint": "/cluster/diagnose/fix/missing_token_exchange_permission",
                     "fix_payload": {"client_id": "kamiwaza-platform-svc"},
                     "auto_fixable": True,
                 }
@@ -129,7 +129,7 @@ def test_fix_records_failure_when_fix_endpoint_5xxs(httpx_mock: Any) -> None:
                     "summary": "kamiwaza-claims scope missing on platform clients",
                     "detail": {"missing_on": ["kamiwaza-platform"]},
                     "fix_endpoint": (
-                        "/api/cluster/diagnose/fix/"
+                        "/cluster/diagnose/fix/"
                         "missing_kamiwaza_claims_scope_attachment"
                     ),
                     "fix_payload": {},

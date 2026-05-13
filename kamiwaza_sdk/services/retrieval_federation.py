@@ -50,7 +50,7 @@ class RetrievalAPI(RetrievalService):
         scoped server-side to their own requester URN.
         """
         params: dict[str, Any] = {"limit": limit, "offset": offset}
-        body = self.client._request("GET", "/api/retrieval/jobs", params=params)
+        body = self.client._request("GET", "/retrieval/jobs", params=params)
         return list(body) if isinstance(body, list) else []
 
     def cancel(self, query_id: str) -> dict[str, Any]:
@@ -61,6 +61,6 @@ class RetrievalAPI(RetrievalService):
         ``KamiwazaError`` with the structured detail on 4xx.
         """
         response = self.client._request(
-            "POST", f"/api/retrieval/jobs/{query_id}/cancel"
+            "POST", f"/retrieval/jobs/{query_id}/cancel"
         )
         return dict(response) if isinstance(response, dict) else {}

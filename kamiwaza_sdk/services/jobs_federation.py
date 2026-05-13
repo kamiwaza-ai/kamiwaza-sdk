@@ -159,7 +159,7 @@ class JobsAPI(BaseService):
             runtime_env=runtime_env,
             timeout_seconds=timeout_seconds,
         )
-        response = self.client._request("POST", "/api/cluster/jobs/run", json=body)
+        response = self.client._request("POST", "/cluster/jobs/run", json=body)
         return JobResult.model_validate(response)
 
     def _run_recoverable(
@@ -205,7 +205,7 @@ class JobsAPI(BaseService):
             runtime_env=runtime_env,
             timeout_seconds=timeout_seconds,
         )
-        response = self.client._request("POST", "/api/cluster/jobs/submit", json=body)
+        response = self.client._request("POST", "/cluster/jobs/submit", json=body)
         return str(response["job_id"])
 
     def cancel(self, job_id: str) -> dict[str, Any]:
@@ -218,7 +218,7 @@ class JobsAPI(BaseService):
         Demo bullet (3): ``kz.jobs.cancel(job_id)`` stops a stuck job
         within seconds.
         """
-        response = self.client._request("POST", f"/api/cluster/jobs/{job_id}/cancel")
+        response = self.client._request("POST", f"/cluster/jobs/{job_id}/cancel")
         return dict(response)
 
     def wait(self, job_id: str, *, timeout: int) -> JobResult:
@@ -242,14 +242,14 @@ class JobsAPI(BaseService):
         delay = _POLL_BACKOFF_INITIAL_SECONDS
         while time.monotonic() < deadline:
             status_body = self.client._request(
-                "GET", f"/api/cluster/jobs/{job_id}/status"
+                "GET", f"/cluster/jobs/{job_id}/status"
             )
             status = (
                 status_body.get("status") if isinstance(status_body, dict) else None
             )
             if status in _TERMINAL_STATES:
                 result_body = self.client._request(
-                    "GET", f"/api/cluster/jobs/{job_id}/result"
+                    "GET", f"/cluster/jobs/{job_id}/result"
                 )
                 return JobResult.model_validate(result_body)
 

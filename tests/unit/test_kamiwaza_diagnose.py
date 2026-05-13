@@ -102,7 +102,7 @@ def test_diagnose_allows_unknown_issue_fields_forward_compat(httpx_mock: Any) ->
                     "severity": "error",
                     "summary": "kamiwaza-platform-svc lacks token-exchange",
                     "detail": {"client_id": "kamiwaza-platform-svc"},
-                    "fix_endpoint": "/api/cluster/diagnose/fix/missing_token_exchange_permission",
+                    "fix_endpoint": "/cluster/diagnose/fix/missing_token_exchange_permission",
                     "fix_payload": {},
                     "auto_fixable": True,
                     "remediation_url": "https://docs/...",  # Future field

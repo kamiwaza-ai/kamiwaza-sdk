@@ -61,7 +61,7 @@ class ClusterAPI(ClusterService):
         Hits ``GET /api/cluster/cluster_capabilities``. Auth: any
         authenticated user with viewer or owner on ``cluster:<local_uuid>``.
         """
-        body = self.client._request("GET", "/api/cluster/cluster_capabilities")
+        body = self.client._request("GET", "/cluster/cluster_capabilities")
         return ClusterCapabilities.model_validate(body)
 
     def diagnose(self) -> ClusterDiagnostics:
@@ -71,7 +71,7 @@ class ClusterAPI(ClusterService):
         fail-soft individually; ``has_issues`` is True iff any probe
         surfaced an error-severity issue.
         """
-        body = self.client._request("GET", "/api/cluster/diagnose")
+        body = self.client._request("GET", "/cluster/diagnose")
         return ClusterDiagnostics.model_validate(body)
 
     def fix(self) -> FixResult:
@@ -98,11 +98,18 @@ class ClusterAPI(ClusterService):
         Demo bullet (2): lists the running federated job + any active
         retrieval. Graceful fallback to empty retrievals on older servers.
         """
-        jobs_body = self.client._request("GET", "/api/cluster/jobs/")
+        jobs_body = self.client._request("GET", "/cluster/jobs/")
+        # H3 (PR feedback): narrow the older-server fallback to 404
+        # specifically. Wider catches hid 401/403/500/timeouts the same
+        # as a missing endpoint and surfaced as "no retrievals" — operators
+        # need to see auth + availability failures.
         try:
-            retrievals_body = self.client._request("GET", "/api/retrieval/jobs")
-        except KamiwazaError:
-            retrievals_body = []
+            retrievals_body = self.client._request("GET", "/retrieval/jobs")
+        except KamiwazaError as exc:
+            if exc.status_code == 404:
+                retrievals_body = []
+            else:
+                raise
         return ClusterOperations(
             jobs=list(jobs_body) if isinstance(jobs_body, list) else [],
             retrievals=(
@@ -125,17 +132,17 @@ class ClusterAPI(ClusterService):
         gate's ``config_schema()`` before persisting.
         """
         body = {"type": type, "config": dict(config) if config else {}}
-        response = self.client._request("PUT", "/api/cluster/execution-gate", json=body)
+        response = self.client._request("PUT", "/cluster/execution-gate", json=body)
         return ExecutionGateBinding.model_validate(response)
 
     def get_execution_gate(self) -> ExecutionGateBinding:
         """Read the active ExecutionGate binding for this cluster."""
-        response = self.client._request("GET", "/api/cluster/execution-gate")
+        response = self.client._request("GET", "/cluster/execution-gate")
         return ExecutionGateBinding.model_validate(response)
 
     def clear_execution_gate(self) -> None:
         """Remove this cluster's ExecutionGate binding."""
-        self.client._request("DELETE", "/api/cluster/execution-gate")
+        self.client._request("DELETE", "/cluster/execution-gate")
 
     # ─── §4.2.18 — attribute schema surface (v0.3.6 / M3.1) ──────────────
 
@@ -161,7 +168,7 @@ class ClusterAPI(ClusterService):
             "schema_version": schema_version,
         }
         response = self.client._request(
-            "PUT", f"/api/cluster/attribute-schema/{name}", json=body
+            "PUT", f"/cluster/attribute-schema/{name}", json=body
         )
         return AttributeSchema.model_validate(response)
 
@@ -171,24 +178,36 @@ class ClusterAPI(ClusterService):
         """List the realm's declared vocabulary (ENG-4946)."""
         params = {"include_deprecated": "true" if include_deprecated else "false"}
         response = self.client._request(
-            "GET", "/api/cluster/attribute-schema", params=params
+            "GET", "/cluster/attribute-schema", params=params
         )
         return AttributeSchemaList.model_validate(response).attributes
 
     def deprecate_attribute(self, name: str) -> AttributeSchema:
-        """Transition an attribute from declared → deprecated (ENG-4946)."""
-        response = self.client._request(
-            "DELETE", f"/api/cluster/attribute-schema/{name}"
-        )
-        _ = response
-        full_list = self.list_attributes(include_deprecated=True)
-        for schema in full_list:
-            if schema.name == name:
-                return schema
-        raise KamiwazaError(
-            f"Attribute {name!r} was deprecated server-side but is missing "
-            "from the subsequent list_attributes() response."
-        )
+        """Transition an attribute from declared → deprecated (ENG-4946).
+
+        H4 (PR feedback): the DELETE endpoint only returns
+        ``{state, subjects_holding_value}`` so the SDK reads the full
+        schema back via a single-name GET (rather than a full
+        ``list_attributes()`` walk). Smaller race window + one fewer
+        round trip. A concurrent ``withdraw_attribute`` between the
+        DELETE and GET can still cause a 404; surfaced as a clear
+        ``KamiwazaError`` rather than a synthesized schema. Server-side
+        change to return the full schema directly from DELETE would let
+        us drop the GET entirely — tracked as post-M3.2 polish per
+        design v0.3.6 §4.2.18.
+        """
+        self.client._request("DELETE", f"/cluster/attribute-schema/{name}")
+        try:
+            response = self.client._request("GET", f"/cluster/attribute-schema/{name}")
+        except KamiwazaError as exc:
+            if exc.status_code == 404:
+                raise KamiwazaError(
+                    f"Attribute {name!r} was deprecated server-side but the "
+                    f"subsequent GET returned 404 — concurrent withdraw "
+                    f"likely. Re-fetch state with list_attributes()."
+                ) from exc
+            raise
+        return AttributeSchema.model_validate(response)
 
     def withdraw_attribute(
         self,
@@ -207,7 +226,7 @@ class ClusterAPI(ClusterService):
             "subjects_holding_value": subjects_holding_value,
         }
         result: Dict[str, Any] = self.client._request(
-            "DELETE", f"/api/cluster/attribute-schema/{name}", params=params
+            "DELETE", f"/cluster/attribute-schema/{name}", params=params
         )
         return result
 

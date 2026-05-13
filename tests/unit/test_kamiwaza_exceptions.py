@@ -88,7 +88,7 @@ def test_request_raises_brokered_user_not_allowlisted_on_403(
     client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
 
     with pytest.raises(BrokeredUserNotAllowlistedError) as exc_info:
-        client._request("POST", "/api/cluster/jobs/run", json={})
+        client._request("POST", "/cluster/jobs/run", json={})
 
     err = exc_info.value
     assert isinstance(err, KamiwazaError)
@@ -113,7 +113,7 @@ def test_request_raises_native_realm_required_on_403(httpx_mock: Any) -> None:
     client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
 
     with pytest.raises(NativeRealmRequiredError) as exc_info:
-        client._request("PUT", "/api/cluster/execution-gate", json={})
+        client._request("PUT", "/cluster/execution-gate", json={})
 
     assert exc_info.value.status_code == 403
 
@@ -159,7 +159,7 @@ def test_request_raises_federation_pair_timeout_after_retry_budget(
     with patch("time.monotonic", side_effect=fake_monotonic):
         with patch("time.sleep", side_effect=fake_sleep):
             with pytest.raises(FederationPairTimeoutError) as exc_info:
-                client._request("POST", "/api/cluster/federations/pair", json={})
+                client._request("POST", "/cluster/federations/pair", json={})
 
     assert exc_info.value.status_code == 503
 
@@ -186,7 +186,7 @@ def test_generic_5xx_falls_back_to_kamiwaza_error(httpx_mock: Any) -> None:
     client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
 
     with pytest.raises(KamiwazaError) as exc_info:
-        client._request("GET", "/api/cluster/jobs")
+        client._request("GET", "/cluster/jobs")
 
     err = exc_info.value
     # Specifically NOT a federation-typed subclass.
@@ -217,7 +217,7 @@ def test_403_without_typed_reason_uses_base_class(httpx_mock: Any) -> None:
     client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
 
     with pytest.raises(KamiwazaError) as exc_info:
-        client._request("GET", "/api/cluster/jobs")
+        client._request("GET", "/cluster/jobs")
 
     err = exc_info.value
     assert not isinstance(err, BrokeredUserNotAllowlistedError)

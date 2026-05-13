@@ -86,7 +86,7 @@ def _stage_pair_responses(
     """Stage the two-call /federations → /pair sequence with stable shapes."""
     client.expect(
         "POST",
-        "/api/cluster/federations",
+        "/cluster/federations",
         {
             "id": fed_id,
             "status": "PAIRING",
@@ -96,7 +96,7 @@ def _stage_pair_responses(
     )
     client.expect(
         "POST",
-        f"/api/cluster/federations/{fed_id}/pair",
+        f"/cluster/federations/{fed_id}/pair",
         {
             "id": fed_id,
             "status": final_status,
@@ -110,7 +110,7 @@ def _stage_pair_responses(
 def _create_call(client: _MockClient) -> Tuple[str, Dict[str, Any]]:
     """Extract the POST /api/cluster/federations body for assertions."""
     for method, path, kwargs in client.calls:
-        if (method, path) == ("POST", "/api/cluster/federations"):
+        if (method, path) == ("POST", "/cluster/federations"):
             body = kwargs.get("json")
             assert isinstance(body, dict), "create call body must be a dict"
             return path, body
@@ -353,8 +353,8 @@ def test_pair_does_two_step_create_then_pair_call() -> None:
 
     # Two POSTs in order: create then drive the handshake.
     assert len(client.calls) == 2
-    assert client.calls[0][1] == "/api/cluster/federations"
-    assert client.calls[1][1] == "/api/cluster/federations/fed-orion-xyz/pair"
+    assert client.calls[0][1] == "/cluster/federations"
+    assert client.calls[1][1] == "/cluster/federations/fed-orion-xyz/pair"
     # Final returned status reflects the second call's response.
     assert result.status == "PAIRED"
 
@@ -381,7 +381,7 @@ def test_users_add_posts_initial_tuples() -> None:
     # Name → id resolution.
     client.expect(
         "GET",
-        "/api/cluster/federations",
+        "/cluster/federations",
         {
             "items": [
                 {
@@ -394,7 +394,7 @@ def test_users_add_posts_initial_tuples() -> None:
     )
     client.expect(
         "POST",
-        "/api/cluster/federations/fed-orion-id/users",
+        "/cluster/federations/fed-orion-id/users",
         {
             "federation_id": "fed-orion-id",
             "external_id": "cdr-baker@lyra-uuid",

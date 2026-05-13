@@ -57,8 +57,8 @@ class FederationsAPI(BaseService):
         self,
         name: str,
         role: str,
-        *,
         remote_url: Optional[str] = None,
+        *,
         remote_ips: Optional[List[Any]] = None,
         preshared_key: Optional[str] = None,
         callback_hostname: Optional[str] = None,
@@ -137,12 +137,12 @@ class FederationsAPI(BaseService):
 
         created = self.client._request(
             "POST",
-            "/api/cluster/federations",
+            "/cluster/federations",
             json=create_body,
         )
         if not isinstance(created, dict) or "id" not in created:
             raise TypeError(
-                f"Expected POST /api/cluster/federations to return a dict with 'id', "
+                f"Expected POST /cluster/federations to return a dict with 'id', "
                 f"got: {type(created).__name__}"
             )
 
@@ -156,7 +156,7 @@ class FederationsAPI(BaseService):
         federation_id = created["id"]
         paired = self.client._request(
             "POST",
-            f"/api/cluster/federations/{federation_id}/pair",
+            f"/cluster/federations/{federation_id}/pair",
         )
         return Federation.model_validate(paired)
 
@@ -171,7 +171,7 @@ class FederationsAPI(BaseService):
         ``FederationProxy`` after first resolution so ``users.add`` /
         ``users.revoke`` don't refetch.
         """
-        body = self.client._request("GET", "/api/cluster/federations")
+        body = self.client._request("GET", "/cluster/federations")
         items: List[Any] = []
         if isinstance(body, dict):
             raw = body.get("items")
@@ -230,7 +230,7 @@ class FederationProxy:
         """
         body = self._client._request(
             "GET",
-            f"/api/mesh/{self.name}/api/cluster/cluster_capabilities",
+            f"/mesh/{self.name}/api/cluster/cluster_capabilities",
         )
         return ClusterCapabilities.model_validate(body)
 
@@ -278,7 +278,7 @@ class FederationUsersAPI:
 
         result = self._client._request(
             "POST",
-            f"/api/cluster/federations/{self._proxy._id()}/users",
+            f"/cluster/federations/{self._proxy._id()}/users",
             json=body,
         )
         return BrokeredUser.model_validate(result)

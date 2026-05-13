@@ -53,20 +53,20 @@ class DatasetsAPI(BaseService):
             body["tags"] = list(tags)
         if description is not None:
             body["description"] = description
-        response = self.client._request("POST", "/api/catalog/datasets/", json=body)
+        response = self.client._request("POST", "/catalog/datasets/", json=body)
         return DatasetRef.model_validate(response)
 
     def get(self, urn: str) -> DatasetRef:
         """Read a dataset by URN."""
         response = self.client._request(
-            "GET", "/api/catalog/datasets/by-urn", params={"urn": urn}
+            "GET", "/catalog/datasets/by-urn", params={"urn": urn}
         )
         return DatasetRef.model_validate(response)
 
     def delete(self, urn: str) -> None:
         """Delete the dataset by URN."""
         self.client._request(
-            "DELETE", "/api/catalog/datasets/by-urn", params={"urn": urn}
+            "DELETE", "/catalog/datasets/by-urn", params={"urn": urn}
         )
 
     # ─── gate binding (M3-specific surface) ──────────────────────────────
@@ -81,15 +81,15 @@ class DatasetsAPI(BaseService):
         """Bind an AttributeGate to a dataset (PUT /datasets/{urn}/gate)."""
         body = {"type": type, "config": dict(config) if config else {}}
         response = self.client._request(
-            "PUT", f"/api/catalog/datasets/{urn}/gate", json=body
+            "PUT", f"/catalog/datasets/{urn}/gate", json=body
         )
         return AttributeGateBinding.model_validate(response)
 
     def get_gate(self, urn: str) -> AttributeGateBinding:
         """Read the AttributeGate binding for a dataset."""
-        response = self.client._request("GET", f"/api/catalog/datasets/{urn}/gate")
+        response = self.client._request("GET", f"/catalog/datasets/{urn}/gate")
         return AttributeGateBinding.model_validate(response)
 
     def clear_gate(self, urn: str) -> None:
         """Remove the AttributeGate binding for a dataset."""
-        self.client._request("DELETE", f"/api/catalog/datasets/{urn}/gate")
+        self.client._request("DELETE", f"/catalog/datasets/{urn}/gate")

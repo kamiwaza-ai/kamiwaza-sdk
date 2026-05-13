@@ -42,7 +42,7 @@ def test_kamiwaza_instantiation_accepts_base_url_and_token():
     from kamiwaza import Kamiwaza
 
     client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-test-1234")
-    assert client.base_url == "https://kamiwaza.test"
+    assert client.base_url == "https://kamiwaza.test/api"  # WS-M3.2: auto-normalized
     assert client.token == "pat-test-1234"
 
 
@@ -89,7 +89,7 @@ def test_from_env_reads_kamiwaza_base_url_and_token(monkeypatch):
 
     client = Kamiwaza.from_env()
     try:
-        assert client.base_url == "https://kamiwaza.test"
+        assert client.base_url == "https://kamiwaza.test/api"  # WS-M3.2: auto-normalized
         assert client.token == "pat-from-env"
     finally:
         client.close()
@@ -130,7 +130,7 @@ def test_context_manager_closes_underlying_httpx_transport():
     from kamiwaza import Kamiwaza
 
     with Kamiwaza(base_url="https://kamiwaza.test", token="pat-x") as client:
-        assert client.base_url == "https://kamiwaza.test"
+        assert client.base_url == "https://kamiwaza.test/api"  # WS-M3.2: auto-normalized
         # Underlying httpx.Client is open during the block.
         assert not client._http.is_closed
 

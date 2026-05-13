@@ -87,10 +87,20 @@ class Kamiwaza:
                 stacklevel=2,
             )
 
-        self.base_url = base_url
+        # WS-M3.2 / PR feedback C1: normalize base_url to end with /api.
+        # The shared service code (kamiwaza_sdk.services.*) uses unprefixed
+        # paths like ``/cluster/federations`` because the canonical
+        # KamiwazaClient is documented as taking base_url ending in /api.
+        # Legacy callers passing base_url=https://host (no /api) are
+        # auto-normalized so both clients route to the same final URL.
+        normalized = base_url.rstrip("/")
+        if not normalized.endswith("/api"):
+            normalized = f"{normalized}/api"
+
+        self.base_url = normalized
         self.token = token
         self._http = httpx.Client(
-            base_url=base_url,
+            base_url=normalized,
             headers={"Authorization": f"Bearer {token}"},
             timeout=timeout,
         )
