@@ -1,15 +1,20 @@
-"""T5.9 / ENG-4680 — kamiwaza.jobs module skeleton.
+"""T7.6 / ENG-5040 — Federated job submission on the canonical surface.
 
-Customer-facing surface for federated job submission per design §4.2.11.
-Exposed on the client as ``kz.jobs`` (lazy-loaded — see
-kamiwaza.client.Kamiwaza.jobs).
+WS-M3.2 service migration. Brings the customer-facing federation jobs
+surface from ``kamiwaza/jobs.py`` (M1+ skeleton) into the canonical
+``kamiwaza_sdk.services`` namespace per design v0.3.7 §4.2.11.
+
+Module name: ``jobs_federation.py`` (not ``jobs.py``) per design §6.2 T7.6
+to leave room for a future legacy-style local-cluster jobs service should
+one be needed. The class name remains ``JobsAPI`` for consistency with the
+M1+ API surface customers already learned.
 
 Skeleton scope (WS-M1):
     - kz.jobs.run(target_cluster, entrypoint, ...)  -> JobResult
     - kz.jobs.submit_async(target_cluster, entrypoint, ...) -> str (job_id)
     - kz.jobs.wait(job_id, *, timeout) -> JobResult
 
-Out of scope for skeleton (land in WS-M2):
+Operability scope (WS-M2):
     - kz.jobs.cancel(job_id) — T5.35 / ENG-4712
     - kz.jobs.run(..., recoverable=True) — T5.22 / ENG-4699
     - kz.jobs.run(..., pip=[...], py_modules=[...]) — T5.38 / ENG-4715
@@ -23,9 +28,9 @@ from __future__ import annotations
 import time
 from typing import Any, Optional
 
-from kamiwaza.exceptions import MeshJobTimeoutError
-from kamiwaza.models import JobResult
-
+from ..exceptions import MeshJobTimeoutError
+from ..schemas.federation import JobResult
+from .base_service import BaseService
 
 # Polling backoff schedule for wait(). Mirrors the design §4.2.14
 # pattern: 1s, 2s, 4s, capped at 5s. Total budget is the caller's
@@ -38,13 +43,8 @@ _POLL_BACKOFF_CAP_SECONDS = 5.0
 _TERMINAL_STATES = frozenset({"SUCCEEDED", "FAILED", "STOPPED", "CANCELED"})
 
 
-class JobsAPI:
+class JobsAPI(BaseService):
     """Job submission for the local cluster + federated targets."""
-
-    def __init__(self, client: Any) -> None:
-        # client is a kamiwaza.client.Kamiwaza instance; typed as Any
-        # to avoid the runtime-cycle cost (see federations.py).
-        self._client = client
 
     def run(
         self,
@@ -159,7 +159,7 @@ class JobsAPI:
             runtime_env=runtime_env,
             timeout_seconds=timeout_seconds,
         )
-        response = self._client._request("POST", "/api/cluster/jobs/run", json=body)
+        response = self.client._request("POST", "/cluster/jobs/run", json=body)
         return JobResult.model_validate(response)
 
     def _run_recoverable(
@@ -197,9 +197,7 @@ class JobsAPI:
 
         Use ``wait(job_id, timeout=...)`` to poll for completion. The
         async submit + poll pattern is the recommended shape for jobs
-        that may exceed 60s (per design §4.2.14). The full recoverable
-        helper that combines submit + wait + reconnect-on-drop lands in
-        WS-M2 (T5.22 / ENG-4699).
+        that may exceed 60s (per design §4.2.14).
         """
         body = self._build_run_body(
             entrypoint=entrypoint,
@@ -207,7 +205,7 @@ class JobsAPI:
             runtime_env=runtime_env,
             timeout_seconds=timeout_seconds,
         )
-        response = self._client._request("POST", "/api/cluster/jobs/submit", json=body)
+        response = self.client._request("POST", "/cluster/jobs/submit", json=body)
         return str(response["job_id"])
 
     def cancel(self, job_id: str) -> dict[str, Any]:
@@ -220,7 +218,7 @@ class JobsAPI:
         Demo bullet (3): ``kz.jobs.cancel(job_id)`` stops a stuck job
         within seconds.
         """
-        response = self._client._request("POST", f"/api/cluster/jobs/{job_id}/cancel")
+        response = self.client._request("POST", f"/cluster/jobs/{job_id}/cancel")
         return dict(response)
 
     def wait(self, job_id: str, *, timeout: int) -> JobResult:
@@ -243,15 +241,15 @@ class JobsAPI:
         deadline = time.monotonic() + timeout
         delay = _POLL_BACKOFF_INITIAL_SECONDS
         while time.monotonic() < deadline:
-            status_body = self._client._request(
-                "GET", f"/api/cluster/jobs/{job_id}/status"
+            status_body = self.client._request(
+                "GET", f"/cluster/jobs/{job_id}/status"
             )
             status = (
                 status_body.get("status") if isinstance(status_body, dict) else None
             )
             if status in _TERMINAL_STATES:
-                result_body = self._client._request(
-                    "GET", f"/api/cluster/jobs/{job_id}/result"
+                result_body = self.client._request(
+                    "GET", f"/cluster/jobs/{job_id}/result"
                 )
                 return JobResult.model_validate(result_body)
 

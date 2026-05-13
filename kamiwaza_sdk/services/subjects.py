@@ -1,6 +1,10 @@
-"""T5.5 / ENG-4741 — kamiwaza.subjects module.
+"""T7.8 / ENG-5042 — AuthzSubjects on the canonical surface.
 
-Customer-facing surface for AuthzSubjects per design §4.2.11:
+WS-M3.2 service migration. Brings the customer-facing AuthzSubject
+surface from ``kamiwaza/subjects.py`` (M3 T5.5) into the canonical
+``kamiwaza_sdk.services`` namespace per design v0.3.7 §4.2.11.
+
+Customer-facing API:
 
     kz.subjects.upsert(username, attributes=..., password=...) -> Subject
     kz.subjects.get(username)                                  -> Subject
@@ -9,34 +13,38 @@ Customer-facing surface for AuthzSubjects per design §4.2.11:
     kz.subjects.grants(username).list()                        -> list[Grant]
     kz.subjects.grants(username).delete(...)                   -> None
 
-Server-side correlates (§4.2.6):
-    PUT    /api/authz/subjects/{id_or_username}
-    GET    /api/authz/subjects/{id_or_username}
-    DELETE /api/authz/subjects/{id_or_username}?cascade=grants
-    POST   /api/authz/subjects/{id_or_username}/grants
-    GET    /api/authz/subjects/{id_or_username}/grants
-    DELETE /api/authz/subjects/{id_or_username}/grants
+Per OQ-11: PUT-only on upsert — no POST surface.
 
-v0.3.5 OQ-11: PUT-only on upsert — no POST surface.
+Server-side correlates (§4.2.6) at /api/authz/subjects/{id_or_username}.
 """
 
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote
 
-from kamiwaza.models import Grant, Subject
+from ..schemas.federation import Grant, Subject
+from .base_service import BaseService
 
 
-class SubjectsAPI:
+def _encode_username(username: str) -> str:
+    """URL-encode a username/UUID for safe inclusion as a path segment.
+
+    H1 (PR feedback): the server's id-or-username matcher accepts both KC
+    UUIDs (URL-safe) and free-form usernames (which can contain ``/``,
+    ``@``, ``+``, spaces, etc. per Keycloak's username constraints). Without
+    encoding a username like ``svc/job-runner`` would split into two path
+    segments and miss the route.
+    """
+    return quote(username, safe="")
+
+
+class SubjectsAPI(BaseService):
     """Subject lifecycle on the local cluster.
 
     The demo author's first reach for ``setup.py`` — collapses the
     two-phase Keycloak admin recipe into a single typed call.
     """
-
-    def __init__(self, client: Any) -> None:
-        # ``Any`` avoids a runtime cycle (client lazy-imports this module).
-        self._client = client
 
     def upsert(
         self,
@@ -61,8 +69,8 @@ class SubjectsAPI:
         body: Dict[str, Any] = {"attributes": dict(attributes)}
         if password is not None:
             body["password"] = password
-        response = self._client._request(
-            "PUT", f"/api/authz/subjects/{username}", json=body
+        response = self.client._request(
+            "PUT", f"/authz/subjects/{_encode_username(username)}", json=body
         )
         return Subject.model_validate(response)
 
@@ -72,29 +80,22 @@ class SubjectsAPI:
         Raises:
             KamiwazaError: 404 subject_not_found when absent.
         """
-        response = self._client._request("GET", f"/api/authz/subjects/{username}")
+        response = self.client._request(
+            "GET", f"/authz/subjects/{_encode_username(username)}"
+        )
         return Subject.model_validate(response)
 
     def delete(self, username: str, *, cascade_grants: bool = False) -> None:
         """Delete the Subject. ``cascade_grants=True`` also removes the
         subject's ReBAC tuples (T3.6 server-side cascade)."""
-        path = f"/api/authz/subjects/{username}"
+        path = f"/authz/subjects/{_encode_username(username)}"
         if cascade_grants:
             path = f"{path}?cascade=grants"
-        self._client._request("DELETE", path)
+        self.client._request("DELETE", path)
 
     def grants(self, username: str) -> "SubjectGrantsAPI":
-        """Grants sub-resource scoped to a subject.
-
-        Returns a handle for the subject's ReBAC tuples:
-
-            kz.subjects.grants("alice").create(
-                object_namespace="cluster",
-                object_id="...",
-                relation="viewer",
-            )
-        """
-        return SubjectGrantsAPI(client=self._client, username=username)
+        """Grants sub-resource scoped to a subject."""
+        return SubjectGrantsAPI(client=self.client, username=username)
 
 
 class SubjectGrantsAPI:
@@ -120,7 +121,7 @@ class SubjectGrantsAPI:
         }
         response = self._client._request(
             "POST",
-            f"/api/authz/subjects/{self._username}/grants",
+            f"/authz/subjects/{_encode_username(self._username)}/grants",
             json=body,
         )
         return Grant.model_validate(response)
@@ -128,7 +129,7 @@ class SubjectGrantsAPI:
     def list(self) -> List[Grant]:
         """Return all grants bound to this subject."""
         response = self._client._request(
-            "GET", f"/api/authz/subjects/{self._username}/grants"
+            "GET", f"/authz/subjects/{_encode_username(self._username)}/grants"
         )
         items = response if isinstance(response, list) else []
         return [Grant.model_validate(item) for item in items]
@@ -140,11 +141,7 @@ class SubjectGrantsAPI:
         object_id: str,
         relation: str,
     ) -> None:
-        """Remove the tuple ``(subject, object, relation)``.
-
-        Tuple key in the body, not the path — relation values can carry
-        characters that don't path-encode cleanly.
-        """
+        """Remove the tuple ``(subject, object, relation)``."""
         body = {
             "object_namespace": object_namespace,
             "object_id": object_id,
@@ -152,6 +149,6 @@ class SubjectGrantsAPI:
         }
         self._client._request(
             "DELETE",
-            f"/api/authz/subjects/{self._username}/grants",
+            f"/authz/subjects/{_encode_username(self._username)}/grants",
             json=body,
         )

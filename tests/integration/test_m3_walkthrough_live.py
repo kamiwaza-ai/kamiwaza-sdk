@@ -99,7 +99,7 @@ def test_m3_full_walkthrough_against_live_fleet(
     """End-to-end M3 demo through SDK only — the milestone ship gate.
 
     Steps mirror README §"Federation walkthrough" exactly:
-      1. Pair LYRA → ORION
+      1. Pair LYRA <-> ORION (two-sided orchestration)
       2. Seed personas via kz.subjects.upsert
       3. Bind cluster execution gate via kz.cluster.set_execution_gate
       4. Register dataset via kz.datasets.create
@@ -108,26 +108,99 @@ def test_m3_full_walkthrough_against_live_fleet(
       7. Submit federated job via kz.jobs.run
       8. Assert audit_actor round-trip
     """
-    from kamiwaza.client import Kamiwaza
-    from kamiwaza.exceptions import KamiwazaError
+    import uuid
+
+    from kamiwaza_sdk import KamiwazaClient
+    from kamiwaza_sdk.exceptions import KamiwazaError
 
     federation_id = None
     dataset_urn = None
     execution_gate_classpath = (
         "kamiwaza.services.authz.gates.default_gates.AllowAllExecutionGate"
     )
+    lyra_federation_name = "ORION-m3-walkthrough"
+    orion_federation_name = "LYRA-m3-walkthrough"
 
-    with Kamiwaza(base_url=lyra_url, token=lyra_token) as lyra:
+    with (
+        KamiwazaClient(base_url=lyra_url, api_key=lyra_token) as lyra,
+        KamiwazaClient(base_url=orion_url, api_key=orion_token) as orion,
+    ):
         try:
-            # Step 1 — Pair LYRA with ORION.
+            # Step 1 — Pair LYRA <-> ORION. Mirrors setup.py
+            # ``step_00_pair_federation`` (space-ssa-conjunction): both sides
+            # need a federation record with the same PSK before the initiator
+            # drives the /pair handshake. The receiver waits; the initiator
+            # POSTs to the receiver's /remote/pair, and the receiver looks
+            # up its WAITING federation by PSK match.
+            #
+            # Required after WS-M3.2: the bash 00_pair_federation.sh recipe
+            # always did this, but the live test used to pass only one side
+            # and relied on the old reciprocation flow. Per design v0.3.7
+            # §4.2.11 + the test orchestration gap surfaced during T7.18
+            # validation (ENG-5155 spinoff), both sides must be orchestrated
+            # explicitly through the canonical SDK surface.
+
+            # 1.0 — Reconcile stale federation records on both sides. A
+            # previous failed run can leave WAITING entries that collide
+            # with the new pair; setup.py's step_00 does the same dance.
+            for client in (lyra, orion):
+                try:
+                    existing = client._request("GET", "/cluster/federations")  # noqa: SLF001
+                except KamiwazaError:
+                    existing = []
+                if isinstance(existing, list):
+                    for fed in existing:
+                        if isinstance(fed, dict) and fed.get("id"):
+                            try:
+                                client._request(  # noqa: SLF001
+                                    "DELETE", f"/cluster/federations/{fed['id']}"
+                                )
+                            except KamiwazaError:
+                                pass
+
+            shared_psk = str(uuid.uuid4())
+            from urllib.parse import urlparse
+
+            lyra_host = urlparse(lyra_url).hostname or ""
+            orion_host = urlparse(orion_url).hostname or ""
+
+            # 1a. Receiver record on ORION (no /pair drive — waits for the PSK).
+            orion.federations.pair(
+                name=orion_federation_name,
+                role="receiver",
+                preshared_key=shared_psk,
+                callback_hostname=orion_host,
+            )
+
+            # 1b. Initiator on LYRA — drives the /pair handshake.
             fed = lyra.federations.pair(
-                name="ORION-m3-walkthrough",
+                name=lyra_federation_name,
                 role="initiator",
                 remote_url=orion_url,
-                remote_admin_token=orion_token,
+                preshared_key=shared_psk,
+                callback_hostname=lyra_host,
             )
             federation_id = fed.id
             assert fed.status == "PAIRED"
+
+            # Step 2.0 — Declare the attribute vocabulary before any
+            # subject upsert. M3.1 (ENG-4946) added a realm-level schema
+            # check that rejects subject upserts referencing undeclared
+            # attribute names. Server returns
+            # ``400 attribute_not_registered`` with a remediation pointing
+            # back at this exact call. Idempotent on identical shape; safe
+            # to re-run.
+            for attr_name, attr_type in (
+                ("clearance", "string"),
+                ("country", "string"),
+                ("programs", "string[]"),
+            ):
+                try:
+                    lyra.cluster.declare_attribute(attr_name, type=attr_type)
+                except KamiwazaError as exc:
+                    # 409 = already declared with matching shape; safe.
+                    if exc.status_code != 409:
+                        raise
 
             # Step 2 — Seed persona via SDK (replaces v0.1.x KC recipe).
             subject = lyra.subjects.upsert(
@@ -150,14 +223,19 @@ def test_m3_full_walkthrough_against_live_fleet(
             assert exec_binding.kind == "execution"
             assert exec_binding.type == execution_gate_classpath
 
-            # Step 4 — Register dataset.
-            dataset = lyra.datasets.create(
+            # Step 4 — Register dataset. Per WS-M3.2 PR-feedback C1 fix,
+            # DatasetsAPI.create() returns the bare URN string matching
+            # the server's ``201 type: string`` contract; round-trip via
+            # ``kz.datasets.get(urn)`` if the caller needs the full
+            # DatasetRef object.
+            dataset_urn = lyra.datasets.create(
                 name=demo_dataset_name,
                 platform="file",
                 environment="PROD",
                 properties={"path": f"/tmp/{demo_dataset_name}"},
             )
-            dataset_urn = dataset.urn
+            assert isinstance(dataset_urn, str) and dataset_urn.startswith("urn:")
+            dataset = lyra.datasets.get(dataset_urn)
             assert dataset.name == demo_dataset_name
 
             # Step 5 — Bind dataset's attribute gate. Skipped if no
@@ -249,6 +327,31 @@ def test_m3_full_walkthrough_against_live_fleet(
                         lyra.federations[federation_id].disconnect()
                     except (KamiwazaError, AttributeError):
                         pass
+                # Clear receiver-side federation record by name. The
+                # disconnect() above propagates over the mesh on a paired
+                # state, but if the test failed before reaching PAIRED the
+                # receiver still holds a WAITING entry — clear by name via
+                # the raw API (FederationsAPI doesn't expose list() today;
+                # see setup.py step_00 for the same pattern).
+                try:
+                    orion_feds = orion._request("GET", "/cluster/federations")  # noqa: SLF001
+                    if isinstance(orion_feds, list):
+                        for fed in orion_feds:
+                            if (
+                                isinstance(fed, dict)
+                                and fed.get("remote_cluster_name")
+                                == orion_federation_name
+                                and fed.get("id")
+                            ):
+                                try:
+                                    orion._request(  # noqa: SLF001
+                                        "DELETE",
+                                        f"/cluster/federations/{fed['id']}",
+                                    )
+                                except KamiwazaError:
+                                    pass
+                except KamiwazaError:
+                    pass
             except Exception:
                 # Last-resort: cleanup must not mask the test failure.
                 pass

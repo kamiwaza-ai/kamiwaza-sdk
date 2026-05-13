@@ -1,20 +1,36 @@
-"""T5.11 / ENG-4682 — Skeleton Pydantic models for SDK return types.
+"""T7.3 / ENG-5037 — Federation-aware Pydantic models on the canonical surface.
 
-Per design §4.2.11, the SDK returns validated Pydantic models for all
-WS-M1 federation flows so customer code gets type-safe access to server
-responses. This module ships only the WS-M1-scoped models:
-
-    - Federation: rows from kamiwaza.cluster_federations
-    - JobResult: synchronous /run + async /submit completion shape
-    - BrokeredUser: cluster_federation_users rows + provisioning state
-
-Subsequent tickets layer additional models (Subject, Dataset,
-ClusterCapabilities, Operation, Retrieval, …) — those are explicitly
-scoped out of T5.11 and will follow the same pattern.
+WS-M3.2 foundation task. Migrates the M1+ federation-aware Pydantic types
+from ``kamiwaza/models.py`` into ``kamiwaza_sdk/schemas/federation.py`` per
+design v0.3.7 §4.2.11. The legacy ``kamiwaza/models.py`` re-exports from
+this module so existing imports continue to work without code change; T7.14
+adds the full DeprecationWarning shim.
 
 All models opt into ``extra="allow"`` for forward compatibility per
-.ai/knowledge/failures/common-pitfalls.md — server-side schema evolution
-must not break the SDK in a customer's pinned wheel.
+``.ai/knowledge/failures/common-pitfalls.md`` — pinned-wheel customers must
+not break when the server adds fields.
+
+Models in this module support the M1+ federation API surface:
+
+    - Federation                — cluster_federations row (M1)
+    - BrokeredUser              — cluster_federation_users allowlist entry (M1)
+    - JobResult                 — federated job terminal state (M1)
+    - ClusterCapabilities       — capabilities-probe response (M2 / T5.19)
+    - DiagnoseIssue, ClusterDiagnostics, FixOutcome, FixResult
+                                — diagnose + fix surface (M2 / T5.13, T5.8)
+    - GateDiscovery             — gate-discover response (M2 / T5.4)
+    - ClusterOperations         — unified jobs+retrieval listing (M2 / T5.37)
+    - Subject, Grant            — AuthzSubject surface (M3 / T5.5)
+    - DatasetRef                — minimal Dataset shape (M3 / T5.6)
+    - AttributeGateBinding      — dataset-scoped AttributeGate binding (M3 / T5.6)
+    - ExecutionGateBinding      — cluster-scoped ExecutionGate binding (M3 / T5.6)
+    - AttributeSchema, AttributeSchemaList
+                                — declared-vocabulary surface (M3.1 / ENG-4946)
+
+JobResult v0.3.7 change: 4 server fields previously paper-thinned via
+``extra="allow"`` are now declared as typed Optional fields so customer
+code gets type-checker support (``ray_job_id``, ``error_type``,
+``error_message``, ``duration_seconds``).
 """
 
 from __future__ import annotations
@@ -193,6 +209,17 @@ class JobResult(BaseModel):
     /submit + poll terminal state. ``status`` is one of SUCCEEDED, FAILED,
     STOPPED, CANCELED. ``result`` is None for non-SUCCEEDED states;
     ``error`` is set on FAILED.
+
+    T7.3 / v0.3.7: 4 server fields previously paper-thinned via
+    ``extra="allow"`` are now declared as typed Optional fields:
+      - ``ray_job_id``         — Ray's internal job identifier; useful for
+        cross-referencing Ray dashboard / logs.
+      - ``error_type``         — exception class name on FAILED jobs (e.g.
+        ``OBOExchangeFailedError``); programmatic dispatch friend.
+      - ``error_message``      — long-form structured error (stack trace +
+        context); distinct from the short ``error`` summary.
+      - ``duration_seconds``   — server-side wall-clock duration; populated
+        on terminal states (SUCCEEDED, FAILED, CANCELED).
     """
 
     model_config = ConfigDict(extra="allow")
@@ -202,6 +229,12 @@ class JobResult(BaseModel):
     result: Optional[Any] = None
     error: Optional[str] = None
     audit_actor: Optional[str] = None
+
+    # T7.3 declared-from-extra fields (v0.3.7).
+    ray_job_id: Optional[str] = None
+    error_type: Optional[str] = None
+    error_message: Optional[str] = None
+    duration_seconds: Optional[float] = None
 
 
 class Grant(BaseModel):
@@ -242,9 +275,9 @@ class DatasetRef(BaseModel):
     """T5.6 / §4.2.5 — minimal Dataset shape returned by the catalog API.
 
     The full Dataset (with ``schema``, ``container_urn``, ``tags``, ...)
-    lives on the legacy ``kamiwaza_sdk`` namespace; this M3 namespace
-    surfaces the fields setup.py needs to bind gates and round-trip
-    references through the SDK.
+    lives elsewhere in ``kamiwaza_sdk.schemas`` (legacy catalog surface);
+    this M3 surface ships the fields setup.py needs to bind gates and
+    round-trip references through the SDK.
     """
 
     model_config = ConfigDict(extra="allow")

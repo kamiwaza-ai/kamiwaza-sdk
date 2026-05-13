@@ -1,6 +1,6 @@
-"""T5.6 expand — kamiwaza.cluster execution-gate binding tests.
+"""T5.6 expand — ClusterAPI execution-gate binding on canonical surface.
 
-Adds set/get/clear execution-gate methods to ClusterAPI for the M3 demo:
+WS-M3.2 test migration (T7.15 / ENG-5049). Customer-facing M3 demo surface:
 
     kz.cluster.set_execution_gate(type, config={}) -> ExecutionGateBinding
     kz.cluster.get_execution_gate()                -> ExecutionGateBinding
@@ -11,22 +11,17 @@ Server-side correlate: §4.2.4 / T2.4 at /api/cluster/execution-gate.
 
 from __future__ import annotations
 
-import json
-from typing import Any
-
 import pytest
 
 
-@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
-def test_set_execution_gate_puts_to_cluster_endpoint(httpx_mock: Any) -> None:
-    from kamiwaza.client import Kamiwaza
-    from kamiwaza.models import ExecutionGateBinding
+def test_set_execution_gate_puts_to_cluster_endpoint(mock_client) -> None:
+    from kamiwaza_sdk.schemas.federation import ExecutionGateBinding
+    from kamiwaza_sdk.services.cluster_federation import ClusterAPI
 
-    httpx_mock.add_response(
-        method="PUT",
-        url="https://kamiwaza.test/api/cluster/execution-gate",
-        status_code=200,
-        json={
+    mock_client.expect(
+        "PUT",
+        "/cluster/execution-gate",
+        {
             "type": "kamiwaza.services.authz.gates.default_gates.AllowAllExecutionGate",
             "config": {},
             "gate_name": "allow_all_execution_gate",
@@ -34,31 +29,29 @@ def test_set_execution_gate_puts_to_cluster_endpoint(httpx_mock: Any) -> None:
         },
     )
 
-    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
-    binding = client.cluster.set_execution_gate(
+    binding = ClusterAPI(client=mock_client).set_execution_gate(
         type="kamiwaza.services.authz.gates.default_gates.AllowAllExecutionGate",
     )
     assert isinstance(binding, ExecutionGateBinding)
     assert binding.kind == "execution"
     assert binding.gate_name == "allow_all_execution_gate"
 
-    request = httpx_mock.get_requests(method="PUT")[0]
-    body = json.loads(request.content)
-    assert body == {
+    method, path, kwargs = mock_client.calls[0]
+    assert method == "PUT"
+    assert path == "/cluster/execution-gate"
+    assert kwargs.get("json") == {
         "type": "kamiwaza.services.authz.gates.default_gates.AllowAllExecutionGate",
         "config": {},
     }
 
 
-@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
-def test_set_execution_gate_forwards_config(httpx_mock: Any) -> None:
-    from kamiwaza.client import Kamiwaza
+def test_set_execution_gate_forwards_config(mock_client) -> None:
+    from kamiwaza_sdk.services.cluster_federation import ClusterAPI
 
-    httpx_mock.add_response(
-        method="PUT",
-        url="https://kamiwaza.test/api/cluster/execution-gate",
-        status_code=200,
-        json={
+    mock_client.expect(
+        "PUT",
+        "/cluster/execution-gate",
+        {
             "type": "my_gate.MyExecutionGate",
             "config": {"min_clearance": "S"},
             "gate_name": "my-gate",
@@ -66,65 +59,46 @@ def test_set_execution_gate_forwards_config(httpx_mock: Any) -> None:
         },
     )
 
-    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
-    client.cluster.set_execution_gate(
+    ClusterAPI(client=mock_client).set_execution_gate(
         type="my_gate.MyExecutionGate", config={"min_clearance": "S"}
     )
 
-    request = httpx_mock.get_requests(method="PUT")[0]
-    body = json.loads(request.content)
-    assert body["config"] == {"min_clearance": "S"}
+    _method, _path, kwargs = mock_client.calls[0]
+    assert kwargs.get("json", {}).get("config") == {"min_clearance": "S"}
 
 
-@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
-def test_get_execution_gate_returns_binding(httpx_mock: Any) -> None:
-    from kamiwaza.client import Kamiwaza
-    from kamiwaza.models import ExecutionGateBinding
+def test_get_execution_gate_returns_binding(mock_client) -> None:
+    from kamiwaza_sdk.schemas.federation import ExecutionGateBinding
+    from kamiwaza_sdk.services.cluster_federation import ClusterAPI
 
-    httpx_mock.add_response(
-        method="GET",
-        url="https://kamiwaza.test/api/cluster/execution-gate",
-        status_code=200,
-        json={
-            "type": "g.G",
-            "config": {},
-            "gate_name": "g",
-            "kind": "execution",
-        },
+    mock_client.expect(
+        "GET",
+        "/cluster/execution-gate",
+        {"type": "g.G", "config": {}, "gate_name": "g", "kind": "execution"},
     )
 
-    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
-    binding = client.cluster.get_execution_gate()
+    binding = ClusterAPI(client=mock_client).get_execution_gate()
     assert isinstance(binding, ExecutionGateBinding)
 
 
-@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
-def test_get_execution_gate_raises_on_404_not_configured(httpx_mock: Any) -> None:
-    from kamiwaza.client import Kamiwaza
-    from kamiwaza.exceptions import KamiwazaError
+def test_get_execution_gate_raises_on_404_not_configured(mock_client) -> None:
+    from kamiwaza_sdk.exceptions import KamiwazaError
+    from kamiwaza_sdk.services.cluster_federation import ClusterAPI
 
-    httpx_mock.add_response(
-        method="GET",
-        url="https://kamiwaza.test/api/cluster/execution-gate",
-        status_code=404,
-        json={"detail": {"reason": "not_configured"}},
+    mock_client.raise_on(
+        "GET",
+        "/cluster/execution-gate",
+        KamiwazaError("not_configured", status_code=404),
     )
 
-    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
     with pytest.raises(KamiwazaError):
-        client.cluster.get_execution_gate()
+        ClusterAPI(client=mock_client).get_execution_gate()
 
 
-@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
-def test_clear_execution_gate_sends_delete(httpx_mock: Any) -> None:
-    from kamiwaza.client import Kamiwaza
+def test_clear_execution_gate_sends_delete(mock_client) -> None:
+    from kamiwaza_sdk.services.cluster_federation import ClusterAPI
 
-    httpx_mock.add_response(
-        method="DELETE",
-        url="https://kamiwaza.test/api/cluster/execution-gate",
-        status_code=200,
-        json={"deleted": True, "previous_type": "g.G"},
+    mock_client.expect(
+        "DELETE", "/cluster/execution-gate", {"deleted": True, "previous_type": "g.G"}
     )
-
-    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
-    client.cluster.clear_execution_gate()
+    ClusterAPI(client=mock_client).clear_execution_gate()

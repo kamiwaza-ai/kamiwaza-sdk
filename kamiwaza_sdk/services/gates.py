@@ -1,29 +1,25 @@
-"""T5.4 / ENG-4691 — kamiwaza.gates module.
+"""T7.10 / ENG-5044 — Gate discovery on the canonical surface.
 
-Customer-facing surface for gate discovery per design §4.2.11:
+WS-M3.2 service migration. Brings the gate-discovery surface from
+``kamiwaza/gates.py`` (T5.4 / ENG-4691) into ``kamiwaza_sdk.services.gates``
+per design v0.3.7 §4.2.11.
+
+Customer-facing API (M2 scope):
 
     kz.gates.discover(classpath)   -> GateDiscovery
 
-WS-M2 ships only ``discover()``. Full surface (set_gate, clear_gate,
-packages.*) is WS-M3.
-
+Full gates surface (set_gate / clear_gate / packages.*) ships in WS-M5.
 Server-side correlate: POST /api/authz/gates/discover (§4.2.3).
 """
 
 from __future__ import annotations
 
-from typing import Any
+from ..schemas.federation import GateDiscovery
+from .base_service import BaseService
 
-from kamiwaza.models import GateDiscovery
 
-
-class GatesAPI:
+class GatesAPI(BaseService):
     """Gate discovery on the local cluster."""
-
-    def __init__(self, client: Any) -> None:
-        # client is a kamiwaza.client.Kamiwaza instance — Any avoids a
-        # runtime cycle (client lazy-imports this module).
-        self._client = client
 
     def discover(self, classpath: str) -> GateDiscovery:
         """Reflect on a Gate class by classpath; return its metadata.
@@ -46,9 +42,9 @@ class GatesAPI:
                 class can't be loaded; 400 not_a_gate when the loaded
                 class isn't an AttributeGate / ExecutionGate subclass.
         """
-        response = self._client._request(
+        response = self.client._request(
             "POST",
-            "/api/authz/gates/discover",
+            "/authz/gates/discover",
             json={"classpath": classpath},
         )
         return GateDiscovery.model_validate(response)

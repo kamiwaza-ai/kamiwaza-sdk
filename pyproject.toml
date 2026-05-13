@@ -77,34 +77,26 @@ kamiwaza-extensions-lib = { workspace = true }
 # explicitly so the trailing `*` cannot match `kamiwaza_extensions_lib`. The
 # `exclude` line is kept as a defense-in-depth backstop, but the include
 # alone is now correct.
+#
+# WS-M3.2 / design v0.3.7 §4.2.11: the v0.2.0 ``kamiwaza`` namespace
+# experiment was reversed. The canonical SDK lives at
+# ``kamiwaza_sdk.KamiwazaClient``; federation-aware services live at
+# ``kamiwaza_sdk/services/``. The interim ``kamiwaza`` package was
+# deleted in the same change that ships v0.3.7.
 include = [
     "kamiwaza_sdk*",
     "kamiwaza_client*",
     "kamiwaza_extensions",
     "kamiwaza_extensions.*",
-    # T5.1 / ENG-4677 — federation-aware top-level package per design §4.2.11.
-    # Use explicit + dotted form (no trailing `*`) so the pattern doesn't
-    # match `kamiwaza_sdk` / `kamiwaza_client` / `kamiwaza_extensions`.
-    "kamiwaza",
-    "kamiwaza.*",
 ]
 exclude = ["tests*", "examples*", "kamiwaza_extensions_lib*"]
 
 [tool.setuptools.package-data]
 kamiwaza_sdk = ["py.typed"]
-kamiwaza = ["py.typed"]
 kamiwaza_extensions = ["templates/**/*", "templates/**/.*", "compatibility.json", "agent_guidance.md"]
 
-# T5.12 / ENG-4683 — strict type-check config scoped to the new
-# federation-aware kamiwaza/ package. The legacy kamiwaza_sdk/ +
-# kamiwaza_client/ packages predate this requirement and remain on
-# the project's default (permissive) mypy config.
 [tool.mypy]
 python_version = "3.10"
-
-[[tool.mypy.overrides]]
-module = "kamiwaza.*"
-strict = true
 
 [dependency-groups]
 dev = [

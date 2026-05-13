@@ -1,6 +1,7 @@
-"""T5.5 / §4.2.11 — kamiwaza.subjects module tests.
+"""T5.5 / §4.2.11 — SubjectsAPI on the canonical kamiwaza_sdk surface.
 
-Customer-facing surface for AuthzSubjects per design §4.2.11:
+WS-M3.2 test migration (T7.15 / ENG-5049). Customer-facing AuthzSubjects
+surface per design §4.2.11:
 
     kz.subjects.upsert(username, attributes=..., password=...) -> Subject
     kz.subjects.get(username)                                  -> Subject
@@ -9,54 +10,28 @@ Customer-facing surface for AuthzSubjects per design §4.2.11:
     kz.subjects.grants(username).list()                        -> list[Grant]
     kz.subjects.grants(username).delete(...)                   -> None
 
-Server-side correlates (mounted at /api/authz):
-    PUT    /api/authz/subjects/{id_or_username}
-    GET    /api/authz/subjects/{id_or_username}
-    DELETE /api/authz/subjects/{id_or_username}?cascade=grants
-    POST   /api/authz/subjects/{id_or_username}/grants
-    GET    /api/authz/subjects/{id_or_username}/grants
-    DELETE /api/authz/subjects/{id_or_username}/grants
-
-v0.3.5 OQ-11: PUT-only on the upsert path (no POST).
+v0.3.5 OQ-11: PUT-only on upsert. M3 PR-feedback M3 (test gap): a real
+special-character username is exercised in
+``test_upsert_url_encodes_special_char_username`` to actually catch a
+regression in ``_encode_username``.
 """
 
 from __future__ import annotations
 
-import json
-from typing import Any
+from urllib.parse import quote
 
 import pytest
 
 
-def test_kamiwaza_exposes_subjects_attribute() -> None:
-    """client.subjects is the entry point for subject lifecycle."""
-    from kamiwaza.client import Kamiwaza
+def test_upsert_puts_to_server_with_attributes(mock_client) -> None:
+    """kz.subjects.upsert puts to /authz/subjects/{username} (OQ-11)."""
+    from kamiwaza_sdk.schemas.federation import Subject
+    from kamiwaza_sdk.services.subjects import SubjectsAPI
 
-    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
-    assert client.subjects is not None
-
-
-def test_subjects_is_lazy_loaded() -> None:
-    """Lazy-load per .ai/rules/sdk-patterns.md."""
-    from kamiwaza.client import Kamiwaza
-
-    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
-    a = client.subjects
-    b = client.subjects
-    assert a is b
-
-
-@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
-def test_upsert_puts_to_server_with_attributes(httpx_mock: Any) -> None:
-    """kz.subjects.upsert puts to /api/authz/subjects/{username} (v0.3.5 OQ-11)."""
-    from kamiwaza.client import Kamiwaza
-    from kamiwaza.models import Subject
-
-    httpx_mock.add_response(
-        method="PUT",
-        url="https://kamiwaza.test/api/authz/subjects/alice",
-        status_code=200,
-        json={
+    mock_client.expect(
+        "PUT",
+        "/authz/subjects/alice",
+        {
             "id": "kc-alice-uuid",
             "username": "alice",
             "attributes": {"clearance": "S", "country": "GBR"},
@@ -66,8 +41,7 @@ def test_upsert_puts_to_server_with_attributes(httpx_mock: Any) -> None:
         },
     )
 
-    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
-    result = client.subjects.upsert(
+    result = SubjectsAPI(client=mock_client).upsert(
         "alice", attributes={"clearance": "S", "country": "GBR"}
     )
 
@@ -77,16 +51,14 @@ def test_upsert_puts_to_server_with_attributes(httpx_mock: Any) -> None:
     assert result.attributes["clearance"] == "S"
 
 
-@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
-def test_upsert_forwards_password_in_body(httpx_mock: Any) -> None:
+def test_upsert_forwards_password_in_body(mock_client) -> None:
     """SDK passes password through as the body's `password` field."""
-    from kamiwaza.client import Kamiwaza
+    from kamiwaza_sdk.services.subjects import SubjectsAPI
 
-    httpx_mock.add_response(
-        method="PUT",
-        url="https://kamiwaza.test/api/authz/subjects/bob",
-        status_code=200,
-        json={
+    mock_client.expect(
+        "PUT",
+        "/authz/subjects/bob",
+        {
             "id": "kc-bob-uuid",
             "username": "bob",
             "attributes": {"clearance": "U"},
@@ -94,28 +66,22 @@ def test_upsert_forwards_password_in_body(httpx_mock: Any) -> None:
         },
     )
 
-    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
-    client.subjects.upsert("bob", attributes={"clearance": "U"}, password="initial-pw")
+    SubjectsAPI(client=mock_client).upsert(
+        "bob", attributes={"clearance": "U"}, password="initial-pw"
+    )
 
-    request = httpx_mock.get_requests(method="PUT")[0]
-    body = json.loads(request.content)
-    assert body == {
-        "attributes": {"clearance": "U"},
-        "password": "initial-pw",
-    }
+    body = mock_client.calls[0][2].get("json", {})
+    assert body == {"attributes": {"clearance": "U"}, "password": "initial-pw"}
 
 
-@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
-def test_upsert_omits_password_field_when_none(httpx_mock: Any) -> None:
-    """When password=None, the field is omitted from the body — server
-    treats no-password as 'don't touch credentials' (T3.2 semantics)."""
-    from kamiwaza.client import Kamiwaza
+def test_upsert_omits_password_field_when_none(mock_client) -> None:
+    """When password=None, the field is omitted (T3.2 'don't touch creds')."""
+    from kamiwaza_sdk.services.subjects import SubjectsAPI
 
-    httpx_mock.add_response(
-        method="PUT",
-        url="https://kamiwaza.test/api/authz/subjects/carol",
-        status_code=200,
-        json={
+    mock_client.expect(
+        "PUT",
+        "/authz/subjects/carol",
+        {
             "id": "kc-carol-uuid",
             "username": "carol",
             "attributes": {"clearance": "C"},
@@ -123,25 +89,53 @@ def test_upsert_omits_password_field_when_none(httpx_mock: Any) -> None:
         },
     )
 
-    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
-    client.subjects.upsert("carol", attributes={"clearance": "C"})
+    SubjectsAPI(client=mock_client).upsert("carol", attributes={"clearance": "C"})
 
-    request = httpx_mock.get_requests(method="PUT")[0]
-    body = json.loads(request.content)
+    body = mock_client.calls[0][2].get("json", {})
     assert body == {"attributes": {"clearance": "C"}}
 
 
-@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
-def test_get_returns_subject(httpx_mock: Any) -> None:
-    """kz.subjects.get → GET /api/authz/subjects/{username} → Subject."""
-    from kamiwaza.client import Kamiwaza
-    from kamiwaza.models import Subject
+def test_upsert_url_encodes_special_char_username(mock_client) -> None:
+    """PR-feedback M3: usernames with ``/``, ``@``, ``+``, space — all
+    Keycloak-allowed — must be URL-encoded so the path doesn't split.
 
-    httpx_mock.add_response(
-        method="GET",
-        url="https://kamiwaza.test/api/authz/subjects/dan",
-        status_code=200,
-        json={
+    Without ``quote(safe="")``, a username like ``svc/job-runner`` would
+    resolve to ``/authz/subjects/svc/job-runner`` (two path segments)
+    instead of ``/authz/subjects/svc%2Fjob-runner`` (one segment), and
+    the request would miss the route.
+    """
+    from kamiwaza_sdk.services.subjects import SubjectsAPI
+
+    username = "svc/job-runner+ops@kamiwaza"
+    encoded = quote(username, safe="")
+    # Sanity: encoding is NOT a no-op for this name.
+    assert encoded != username
+
+    mock_client.expect(
+        "PUT",
+        f"/authz/subjects/{encoded}",
+        {"id": "kc-x", "username": username, "attributes": {}, "grants": []},
+    )
+
+    SubjectsAPI(client=mock_client).upsert(username, attributes={"role": "svc"})
+
+    # Belt-and-suspenders: verify the recorded request path is the
+    # encoded form, not the raw one.
+    method, path, _ = mock_client.calls[0]
+    assert method == "PUT"
+    assert path == f"/authz/subjects/{encoded}"
+    assert path != f"/authz/subjects/{username}"
+
+
+def test_get_returns_subject(mock_client) -> None:
+    """kz.subjects.get → GET /authz/subjects/{username} → Subject."""
+    from kamiwaza_sdk.schemas.federation import Subject
+    from kamiwaza_sdk.services.subjects import SubjectsAPI
+
+    mock_client.expect(
+        "GET",
+        "/authz/subjects/dan",
+        {
             "id": "kc-dan-uuid",
             "username": "dan",
             "attributes": {"clearance": "TS"},
@@ -149,99 +143,87 @@ def test_get_returns_subject(httpx_mock: Any) -> None:
         },
     )
 
-    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
-    subject = client.subjects.get("dan")
+    subject = SubjectsAPI(client=mock_client).get("dan")
 
     assert isinstance(subject, Subject)
     assert subject.id == "kc-dan-uuid"
 
 
-@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
-def test_get_raises_on_404(httpx_mock: Any) -> None:
+def test_get_raises_on_404(mock_client) -> None:
     """404 subject_not_found surfaces as KamiwazaError per T5.10 mapping."""
-    from kamiwaza.client import Kamiwaza
-    from kamiwaza.exceptions import KamiwazaError
+    from kamiwaza_sdk.exceptions import KamiwazaError
+    from kamiwaza_sdk.services.subjects import SubjectsAPI
 
-    httpx_mock.add_response(
-        method="GET",
-        url="https://kamiwaza.test/api/authz/subjects/ghost",
-        status_code=404,
-        json={"detail": {"reason": "subject_not_found", "id_or_username": "ghost"}},
+    mock_client.raise_on(
+        "GET",
+        "/authz/subjects/ghost",
+        KamiwazaError("subject_not_found", status_code=404),
     )
 
-    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
     with pytest.raises(KamiwazaError):
-        client.subjects.get("ghost")
+        SubjectsAPI(client=mock_client).get("ghost")
 
 
-@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
-def test_delete_sends_delete_without_cascade_by_default(httpx_mock: Any) -> None:
+def test_delete_sends_delete_without_cascade_by_default(mock_client) -> None:
     """kz.subjects.delete defaults to no cascade — grants stay put."""
-    from kamiwaza.client import Kamiwaza
+    from kamiwaza_sdk.services.subjects import SubjectsAPI
 
-    httpx_mock.add_response(
-        method="DELETE",
-        url="https://kamiwaza.test/api/authz/subjects/eve",
-        status_code=200,
-        json={"deleted": True, "username": "eve"},
+    mock_client.expect(
+        "DELETE", "/authz/subjects/eve", {"deleted": True, "username": "eve"}
     )
 
-    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
-    client.subjects.delete("eve")
+    SubjectsAPI(client=mock_client).delete("eve")
 
-    request = httpx_mock.get_requests(method="DELETE")[0]
-    # No cascade query param when cascade_grants is False.
-    assert "cascade" not in request.url.query.decode()
+    method, path, _ = mock_client.calls[0]
+    assert method == "DELETE"
+    assert path == "/authz/subjects/eve"
 
 
-@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
-def test_delete_with_cascade_grants_passes_query_param(httpx_mock: Any) -> None:
+def test_delete_with_cascade_grants_passes_query_param(mock_client) -> None:
     """cascade_grants=True adds ?cascade=grants per T3.5 server contract."""
-    from kamiwaza.client import Kamiwaza
+    from kamiwaza_sdk.services.subjects import SubjectsAPI
 
-    httpx_mock.add_response(
-        method="DELETE",
-        url="https://kamiwaza.test/api/authz/subjects/frank?cascade=grants",
-        status_code=200,
-        json={"deleted": True, "username": "frank"},
+    mock_client.expect(
+        "DELETE",
+        "/authz/subjects/frank?cascade=grants",
+        {"deleted": True, "username": "frank"},
     )
 
-    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
-    client.subjects.delete("frank", cascade_grants=True)
+    SubjectsAPI(client=mock_client).delete("frank", cascade_grants=True)
 
 
 # ─── Grants sub-resource ──────────────────────────────────────────────────
 
 
-@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
-def test_grants_create_posts_to_subject_scoped_endpoint(httpx_mock: Any) -> None:
-    """kz.subjects.grants('alice').create(...) → POST /api/authz/subjects/alice/grants."""
-    from kamiwaza.client import Kamiwaza
-    from kamiwaza.models import Grant
+def test_grants_create_posts_to_subject_scoped_endpoint(mock_client) -> None:
+    """kz.subjects.grants('alice').create(...) → POST /authz/subjects/alice/grants."""
+    from kamiwaza_sdk.schemas.federation import Grant
+    from kamiwaza_sdk.services.subjects import SubjectsAPI
 
-    httpx_mock.add_response(
-        method="POST",
-        url="https://kamiwaza.test/api/authz/subjects/alice/grants",
-        status_code=201,
-        json={
+    mock_client.expect(
+        "POST",
+        "/authz/subjects/alice/grants",
+        {
             "object_namespace": "cluster",
             "object_id": "cluster-uuid-1",
             "relation": "viewer",
         },
     )
 
-    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
-    grant = client.subjects.grants("alice").create(
-        object_namespace="cluster",
-        object_id="cluster-uuid-1",
-        relation="viewer",
+    grant = (
+        SubjectsAPI(client=mock_client)
+        .grants("alice")
+        .create(
+            object_namespace="cluster",
+            object_id="cluster-uuid-1",
+            relation="viewer",
+        )
     )
 
     assert isinstance(grant, Grant)
     assert grant.relation == "viewer"
 
-    request = httpx_mock.get_requests(method="POST")[0]
-    body = json.loads(request.content)
+    body = mock_client.calls[0][2].get("json", {})
     assert body == {
         "object_namespace": "cluster",
         "object_id": "cluster-uuid-1",
@@ -249,61 +231,40 @@ def test_grants_create_posts_to_subject_scoped_endpoint(httpx_mock: Any) -> None
     }
 
 
-@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
-def test_grants_list_returns_typed_grants(httpx_mock: Any) -> None:
+def test_grants_list_returns_typed_grants(mock_client) -> None:
     """kz.subjects.grants('alice').list() returns list[Grant]."""
-    from kamiwaza.client import Kamiwaza
-    from kamiwaza.models import Grant
+    from kamiwaza_sdk.schemas.federation import Grant
+    from kamiwaza_sdk.services.subjects import SubjectsAPI
 
-    httpx_mock.add_response(
-        method="GET",
-        url="https://kamiwaza.test/api/authz/subjects/alice/grants",
-        status_code=200,
-        json=[
-            {
-                "object_namespace": "cluster",
-                "object_id": "c1",
-                "relation": "viewer",
-            },
-            {
-                "object_namespace": "dataset",
-                "object_id": "d1",
-                "relation": "owner",
-            },
+    mock_client.expect(
+        "GET",
+        "/authz/subjects/alice/grants",
+        [
+            {"object_namespace": "cluster", "object_id": "c1", "relation": "viewer"},
+            {"object_namespace": "dataset", "object_id": "d1", "relation": "owner"},
         ],
     )
 
-    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
-    grants = client.subjects.grants("alice").list()
+    grants = SubjectsAPI(client=mock_client).grants("alice").list()
 
     assert len(grants) == 2
     assert all(isinstance(g, Grant) for g in grants)
     assert {g.relation for g in grants} == {"viewer", "owner"}
 
 
-@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
-def test_grants_delete_sends_tuple_key_in_body(httpx_mock: Any) -> None:
-    """kz.subjects.grants('alice').delete(...) → DELETE with tuple-key body
-    (relation values can contain characters that don't path-encode cleanly,
-    so the server takes the tuple in the body)."""
-    from kamiwaza.client import Kamiwaza
+def test_grants_delete_sends_tuple_key_in_body(mock_client) -> None:
+    """kz.subjects.grants('alice').delete(...) → DELETE with tuple-key body."""
+    from kamiwaza_sdk.services.subjects import SubjectsAPI
 
-    httpx_mock.add_response(
-        method="DELETE",
-        url="https://kamiwaza.test/api/authz/subjects/alice/grants",
-        status_code=200,
-        json={"deleted": True},
-    )
+    mock_client.expect("DELETE", "/authz/subjects/alice/grants", {"deleted": True})
 
-    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
-    client.subjects.grants("alice").delete(
+    SubjectsAPI(client=mock_client).grants("alice").delete(
         object_namespace="cluster",
         object_id="c1",
         relation="viewer",
     )
 
-    request = httpx_mock.get_requests(method="DELETE")[0]
-    body = json.loads(request.content)
+    body = mock_client.calls[0][2].get("json", {})
     assert body == {
         "object_namespace": "cluster",
         "object_id": "c1",
