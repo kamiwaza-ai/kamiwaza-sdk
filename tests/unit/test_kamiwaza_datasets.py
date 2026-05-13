@@ -2,7 +2,7 @@
 
 Customer-facing surface for catalog datasets + attribute-gate binding:
 
-    kz.datasets.create(name, platform, **kwargs) -> DatasetRef
+    kz.datasets.create(name, platform, **kwargs) -> str  (URN per H4 fix)
     kz.datasets.get(urn)                          -> DatasetRef
     kz.datasets.delete(urn)                       -> None
     kz.datasets.set_gate(urn, type, config={})    -> AttributeGateBinding
@@ -13,15 +13,21 @@ Server-side correlates:
     POST   /api/catalog/datasets/
     GET    /api/catalog/datasets/by-urn?urn=...
     DELETE /api/catalog/datasets/by-urn?urn=...
-    PUT    /api/catalog/datasets/{urn}/gate
-    GET    /api/catalog/datasets/{urn}/gate
-    DELETE /api/catalog/datasets/{urn}/gate
+    PUT    /api/catalog/datasets/{urn-encoded}/gate
+    GET    /api/catalog/datasets/{urn-encoded}/gate
+    DELETE /api/catalog/datasets/{urn-encoded}/gate
+
+PR feedback H1: gate-binding endpoints URL-encode the URN segment so
+DataHub URNs containing ``/`` (file-platform datasets etc.) don't split
+into extra path segments. Tests below build expected URLs via
+``urllib.parse.quote(urn, safe="")`` to mirror the SDK behavior.
 """
 
 from __future__ import annotations
 
 import json
 from typing import Any
+from urllib.parse import quote
 
 import pytest
 
@@ -47,29 +53,27 @@ def test_datasets_is_lazy_loaded() -> None:
 
 @pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
 def test_create_posts_minimal_body(httpx_mock: Any) -> None:
-    """kz.datasets.create(name, platform) → POST /api/catalog/datasets/."""
-    from kamiwaza.client import Kamiwaza
-    from kamiwaza.models import DatasetRef
+    """kz.datasets.create(name, platform) → POST /api/catalog/datasets/.
 
+    PR feedback C1 (H4 fix): server returns a bare URN string per OpenAPI
+    (``201 type: string``), not a Dataset object. SDK returns the URN
+    string for callers to subsequently ``kz.datasets.get(urn)``.
+    """
+    from kamiwaza.client import Kamiwaza
+
+    expected_urn = "urn:li:dataset:(local,demo,PROD)"
     httpx_mock.add_response(
         method="POST",
         url="https://kamiwaza.test/api/catalog/datasets/",
-        status_code=200,
-        json={
-            "urn": "urn:li:dataset:(local,demo,PROD)",
-            "name": "demo",
-            "platform": "file",
-            "environment": "PROD",
-            "properties": {},
-        },
+        status_code=201,
+        json=expected_urn,
     )
 
     client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
-    ds = client.datasets.create(name="demo", platform="file")
+    urn = client.datasets.create(name="demo", platform="file")
 
-    assert isinstance(ds, DatasetRef)
-    assert ds.urn == "urn:li:dataset:(local,demo,PROD)"
-    assert ds.name == "demo"
+    assert isinstance(urn, str)
+    assert urn == expected_urn
 
     request = httpx_mock.get_requests(method="POST")[0]
     body = json.loads(request.content)
@@ -85,14 +89,8 @@ def test_create_forwards_properties_and_environment(httpx_mock: Any) -> None:
     httpx_mock.add_response(
         method="POST",
         url="https://kamiwaza.test/api/catalog/datasets/",
-        status_code=200,
-        json={
-            "urn": "urn:li:dataset:(local,demo,DEV)",
-            "name": "demo",
-            "platform": "file",
-            "environment": "DEV",
-            "properties": {"path": "/data/demo"},
-        },
+        status_code=201,
+        json="urn:li:dataset:(local,demo,DEV)",
     )
 
     client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
@@ -113,7 +111,7 @@ def test_create_forwards_properties_and_environment(httpx_mock: Any) -> None:
 def test_get_passes_urn_as_query_param(httpx_mock: Any) -> None:
     """kz.datasets.get(urn) → GET /api/catalog/datasets/by-urn?urn=..."""
     from kamiwaza.client import Kamiwaza
-    from kamiwaza.models import DatasetRef
+    from kamiwaza_sdk.schemas.federation import DatasetRef
 
     urn = "urn:li:dataset:(local,demo,PROD)"
     httpx_mock.add_response(
@@ -157,14 +155,18 @@ def test_delete_passes_urn_as_query_param(httpx_mock: Any) -> None:
 
 @pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
 def test_set_gate_puts_to_dataset_scoped_endpoint(httpx_mock: Any) -> None:
-    """kz.datasets.set_gate puts to /api/catalog/datasets/{urn}/gate."""
+    """kz.datasets.set_gate puts to /api/catalog/datasets/{urn-encoded}/gate.
+
+    PR feedback H1: URN is URL-encoded in the path segment.
+    """
     from kamiwaza.client import Kamiwaza
-    from kamiwaza.models import AttributeGateBinding
+    from kamiwaza_sdk.schemas.federation import AttributeGateBinding
 
     urn = "urn:li:dataset:(local,demo,PROD)"
+    encoded = quote(urn, safe="")
     httpx_mock.add_response(
         method="PUT",
-        url=f"https://kamiwaza.test/api/catalog/datasets/{urn}/gate",
+        url=f"https://kamiwaza.test/api/catalog/datasets/{encoded}/gate",
         status_code=200,
         json={
             "dataset_urn": urn,
@@ -203,7 +205,7 @@ def test_set_gate_defaults_config_to_empty_dict(httpx_mock: Any) -> None:
     urn = "urn:li:dataset:(local,demo,PROD)"
     httpx_mock.add_response(
         method="PUT",
-        url=f"https://kamiwaza.test/api/catalog/datasets/{urn}/gate",
+        url=f"https://kamiwaza.test/api/catalog/datasets/{quote(urn, safe='')}/gate",
         status_code=200,
         json={
             "dataset_urn": urn,
@@ -225,12 +227,12 @@ def test_set_gate_defaults_config_to_empty_dict(httpx_mock: Any) -> None:
 @pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
 def test_get_gate_returns_binding(httpx_mock: Any) -> None:
     from kamiwaza.client import Kamiwaza
-    from kamiwaza.models import AttributeGateBinding
+    from kamiwaza_sdk.schemas.federation import AttributeGateBinding
 
     urn = "urn:li:dataset:(local,demo,PROD)"
     httpx_mock.add_response(
         method="GET",
-        url=f"https://kamiwaza.test/api/catalog/datasets/{urn}/gate",
+        url=f"https://kamiwaza.test/api/catalog/datasets/{quote(urn, safe='')}/gate",
         status_code=200,
         json={
             "dataset_urn": urn,
@@ -257,7 +259,7 @@ def test_get_gate_raises_on_404_not_configured(httpx_mock: Any) -> None:
     urn = "urn:li:dataset:(local,demo,PROD)"
     httpx_mock.add_response(
         method="GET",
-        url=f"https://kamiwaza.test/api/catalog/datasets/{urn}/gate",
+        url=f"https://kamiwaza.test/api/catalog/datasets/{quote(urn, safe='')}/gate",
         status_code=404,
         json={"detail": {"reason": "not_configured", "dataset_urn": urn}},
     )
@@ -274,7 +276,7 @@ def test_clear_gate_sends_delete(httpx_mock: Any) -> None:
     urn = "urn:li:dataset:(local,demo,PROD)"
     httpx_mock.add_response(
         method="DELETE",
-        url=f"https://kamiwaza.test/api/catalog/datasets/{urn}/gate",
+        url=f"https://kamiwaza.test/api/catalog/datasets/{quote(urn, safe='')}/gate",
         status_code=200,
         json={"deleted": True, "previous_type": "g.G"},
     )
@@ -296,7 +298,7 @@ def test_set_gate_400_wrong_kind_surfaces_as_kamiwaza_error(httpx_mock: Any) -> 
     urn = "urn:li:dataset:(local,demo,PROD)"
     httpx_mock.add_response(
         method="PUT",
-        url=f"https://kamiwaza.test/api/catalog/datasets/{urn}/gate",
+        url=f"https://kamiwaza.test/api/catalog/datasets/{quote(urn, safe='')}/gate",
         status_code=400,
         json={
             "detail": {
@@ -325,7 +327,7 @@ def test_set_gate_400_schema_validation_failed_surfaces_as_kamiwaza_error(
     urn = "urn:li:dataset:(local,demo,PROD)"
     httpx_mock.add_response(
         method="PUT",
-        url=f"https://kamiwaza.test/api/catalog/datasets/{urn}/gate",
+        url=f"https://kamiwaza.test/api/catalog/datasets/{quote(urn, safe='')}/gate",
         status_code=400,
         json={
             "detail": {
@@ -353,7 +355,7 @@ def test_set_gate_404_dataset_not_found_surfaces_as_kamiwaza_error(
     urn = "urn:li:dataset:(local,nonexistent,PROD)"
     httpx_mock.add_response(
         method="PUT",
-        url=f"https://kamiwaza.test/api/catalog/datasets/{urn}/gate",
+        url=f"https://kamiwaza.test/api/catalog/datasets/{quote(urn, safe='')}/gate",
         status_code=404,
         json={"detail": {"reason": "dataset_not_found", "dataset_urn": urn}},
     )

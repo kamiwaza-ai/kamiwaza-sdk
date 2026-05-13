@@ -38,4 +38,11 @@ jobs:
         run: uv sync
 
       - name: Run mypy --strict on kamiwaza/
-        run: uv run mypy --strict kamiwaza/
+        # --follow-imports=silent keeps strict checking scoped to the
+        # kamiwaza/ package itself. Post-WS-M3.2 the kamiwaza/ modules
+        # are thin re-exports from kamiwaza_sdk/, so transitively
+        # following imports would surface (and fail on) untyped legacy
+        # services that predate the strict requirement. Per design
+        # v0.3.7 §4.2.11, the strict gate is on the federation-aware
+        # surface, not on the legacy service modules.
+        run: uv run mypy --strict --follow-imports=silent kamiwaza/

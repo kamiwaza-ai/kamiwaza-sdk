@@ -21,9 +21,22 @@ Server-side correlates (§4.2.6) at /api/authz/subjects/{id_or_username}.
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote
 
 from ..schemas.federation import Grant, Subject
 from .base_service import BaseService
+
+
+def _encode_username(username: str) -> str:
+    """URL-encode a username/UUID for safe inclusion as a path segment.
+
+    H1 (PR feedback): the server's id-or-username matcher accepts both KC
+    UUIDs (URL-safe) and free-form usernames (which can contain ``/``,
+    ``@``, ``+``, spaces, etc. per Keycloak's username constraints). Without
+    encoding a username like ``svc/job-runner`` would split into two path
+    segments and miss the route.
+    """
+    return quote(username, safe="")
 
 
 class SubjectsAPI(BaseService):
@@ -57,7 +70,7 @@ class SubjectsAPI(BaseService):
         if password is not None:
             body["password"] = password
         response = self.client._request(
-            "PUT", f"/authz/subjects/{username}", json=body
+            "PUT", f"/authz/subjects/{_encode_username(username)}", json=body
         )
         return Subject.model_validate(response)
 
@@ -67,13 +80,15 @@ class SubjectsAPI(BaseService):
         Raises:
             KamiwazaError: 404 subject_not_found when absent.
         """
-        response = self.client._request("GET", f"/authz/subjects/{username}")
+        response = self.client._request(
+            "GET", f"/authz/subjects/{_encode_username(username)}"
+        )
         return Subject.model_validate(response)
 
     def delete(self, username: str, *, cascade_grants: bool = False) -> None:
         """Delete the Subject. ``cascade_grants=True`` also removes the
         subject's ReBAC tuples (T3.6 server-side cascade)."""
-        path = f"/authz/subjects/{username}"
+        path = f"/authz/subjects/{_encode_username(username)}"
         if cascade_grants:
             path = f"{path}?cascade=grants"
         self.client._request("DELETE", path)
@@ -106,7 +121,7 @@ class SubjectGrantsAPI:
         }
         response = self._client._request(
             "POST",
-            f"/authz/subjects/{self._username}/grants",
+            f"/authz/subjects/{_encode_username(self._username)}/grants",
             json=body,
         )
         return Grant.model_validate(response)
@@ -114,7 +129,7 @@ class SubjectGrantsAPI:
     def list(self) -> List[Grant]:
         """Return all grants bound to this subject."""
         response = self._client._request(
-            "GET", f"/authz/subjects/{self._username}/grants"
+            "GET", f"/authz/subjects/{_encode_username(self._username)}/grants"
         )
         items = response if isinstance(response, list) else []
         return [Grant.model_validate(item) for item in items]
@@ -134,6 +149,6 @@ class SubjectGrantsAPI:
         }
         self._client._request(
             "DELETE",
-            f"/authz/subjects/{self._username}/grants",
+            f"/authz/subjects/{_encode_username(self._username)}/grants",
             json=body,
         )

@@ -233,10 +233,20 @@ class ClusterAPI(ClusterService):
     def _attempt_fix(self, issue: DiagnoseIssue) -> FixOutcome:
         if not issue.auto_fixable or not issue.fix_endpoint:
             return FixOutcome(issue_id=issue.id, status="manual_required")
+        # H2 (PR feedback): the server's DiagnoseIssue.fix_endpoint historically
+        # carried a leading ``/api`` prefix (legacy callsites that constructed
+        # full paths). Post-WS-M3.2 the client's base_url already ends in
+        # ``/api``, so the legacy shape would resolve to ``/api/api/...``.
+        # Strip a leading ``/api`` if present so both old + new server
+        # responses route correctly. Endpoints that don't have the prefix
+        # pass through unchanged.
+        endpoint = issue.fix_endpoint
+        if endpoint.startswith("/api/"):
+            endpoint = endpoint[len("/api") :]
         try:
             self.client._request(
                 "POST",
-                issue.fix_endpoint,
+                endpoint,
                 json=issue.fix_payload or {},
             )
         except KamiwazaError as exc:
