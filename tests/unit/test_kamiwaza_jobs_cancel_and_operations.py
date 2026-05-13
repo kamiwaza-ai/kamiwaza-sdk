@@ -1,38 +1,22 @@
-"""T5.35 + T5.37 — kz.jobs.cancel() + kz.cluster.operations() tests.
+"""T5.35 + T5.37 — JobsAPI.cancel + ClusterAPI.operations on canonical surface.
 
-WS-M2 demo bullets (2) and (3):
-- (2) kz.cluster.operations() lists the running federated job + active
-  retrieval (retrieval slice is empty in the walking skeleton until
-  T5.30/T5.36 land).
-- (3) kz.jobs.cancel(job_id) stops a stuck job within seconds.
-
-Server-side correlates:
-- POST /api/cluster/jobs/{id}/cancel  (already shipped; M1)
-- GET /api/cluster/jobs               (ENG-4706 / T5.29)
+WS-M3.2 test migration (T7.15 / ENG-5049). WS-M2 demo bullets:
+- (2) ``kz.cluster.operations()`` lists running jobs + retrievals.
+- (3) ``kz.jobs.cancel(job_id)`` stops a stuck job.
 """
 
 from __future__ import annotations
 
-from typing import Any
 
-import pytest
-
-
-# -- kz.jobs.cancel ----------------------------------------------------------
-
-
-@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
-def test_cancel_posts_to_server_cancel_endpoint(httpx_mock: Any) -> None:
-    """``kz.jobs.cancel(job_id)`` POSTs to
-    ``/api/cluster/jobs/{id}/cancel`` and returns the JobRecord."""
-    from kamiwaza.client import Kamiwaza
+def test_cancel_posts_to_server_cancel_endpoint(mock_client) -> None:
+    """``kz.jobs.cancel(job_id)`` POSTs to ``/cluster/jobs/{id}/cancel``."""
+    from kamiwaza_sdk.services.jobs_federation import JobsAPI
 
     job_id = "00000000-0000-0000-0000-000000000001"
-    httpx_mock.add_response(
-        method="POST",
-        url=f"https://kamiwaza.test/api/cluster/jobs/{job_id}/cancel",
-        status_code=200,
-        json={
+    mock_client.expect(
+        "POST",
+        f"/cluster/jobs/{job_id}/cancel",
+        {
             "id": job_id,
             "status": "STOPPED",
             "source": "local",
@@ -44,28 +28,21 @@ def test_cancel_posts_to_server_cancel_endpoint(httpx_mock: Any) -> None:
         },
     )
 
-    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
-    result = client.jobs.cancel(job_id)
-
+    result = JobsAPI(client=mock_client).cancel(job_id)
     assert result["id"] == job_id
     assert result["status"] == "STOPPED"
 
 
-# -- kz.cluster.operations --------------------------------------------------
+def test_operations_lists_running_jobs(mock_client) -> None:
+    """``kz.cluster.operations()`` GETs /cluster/jobs and surfaces them
+    as a structured ClusterOperations result."""
+    from kamiwaza_sdk.schemas.federation import ClusterOperations
+    from kamiwaza_sdk.services.cluster_federation import ClusterAPI
 
-
-@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
-def test_operations_lists_running_jobs(httpx_mock: Any) -> None:
-    """``kz.cluster.operations()`` GETs /api/cluster/jobs and surfaces
-    them as a structured ClusterOperations result."""
-    from kamiwaza.client import Kamiwaza
-    from kamiwaza.models import ClusterOperations
-
-    httpx_mock.add_response(
-        method="GET",
-        url="https://kamiwaza.test/api/cluster/jobs/",
-        status_code=200,
-        json=[
+    mock_client.expect(
+        "GET",
+        "/cluster/jobs/",
+        [
             {
                 "id": "00000000-0000-0000-0000-000000000001",
                 "status": "RUNNING",
@@ -88,44 +65,24 @@ def test_operations_lists_running_jobs(httpx_mock: Any) -> None:
             },
         ],
     )
+    mock_client.expect("GET", "/retrieval/jobs", [])
 
-    httpx_mock.add_response(
-        method="GET",
-        url="https://kamiwaza.test/api/retrieval/jobs",
-        status_code=200,
-        json=[],
-    )
-
-    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
-    result = client.cluster.operations()
+    result = ClusterAPI(client=mock_client).operations()
 
     assert isinstance(result, ClusterOperations)
     assert len(result.jobs) == 2
     assert result.jobs[0]["status"] == "RUNNING"
-    # Retrievals slice populates via /api/retrieval/jobs (T5.30/T5.36).
     assert result.retrievals == []
 
 
-@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
-def test_operations_empty_when_no_jobs(httpx_mock: Any) -> None:
+def test_operations_empty_when_no_jobs(mock_client) -> None:
     """Empty cluster — no jobs, no retrievals — returns empty lists."""
-    from kamiwaza.client import Kamiwaza
+    from kamiwaza_sdk.services.cluster_federation import ClusterAPI
 
-    httpx_mock.add_response(
-        method="GET",
-        url="https://kamiwaza.test/api/cluster/jobs/",
-        status_code=200,
-        json=[],
-    )
-    httpx_mock.add_response(
-        method="GET",
-        url="https://kamiwaza.test/api/retrieval/jobs",
-        status_code=200,
-        json=[],
-    )
+    mock_client.expect("GET", "/cluster/jobs/", [])
+    mock_client.expect("GET", "/retrieval/jobs", [])
 
-    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
-    result = client.cluster.operations()
+    result = ClusterAPI(client=mock_client).operations()
 
     assert result.jobs == []
     assert result.retrievals == []

@@ -1,6 +1,7 @@
-"""T5.6 — kamiwaza.datasets module tests.
+"""T5.6 — DatasetsAPI on the canonical kamiwaza_sdk surface.
 
-Customer-facing surface for catalog datasets + attribute-gate binding:
+WS-M3.2 test migration (T7.15 / ENG-5049). Customer-facing surface for
+catalog datasets + attribute-gate binding per design §4.2.11:
 
     kz.datasets.create(name, platform, **kwargs) -> str  (URN per H4 fix)
     kz.datasets.get(urn)                          -> DatasetRef
@@ -17,108 +18,103 @@ Server-side correlates:
     GET    /api/catalog/datasets/{urn-encoded}/gate
     DELETE /api/catalog/datasets/{urn-encoded}/gate
 
-PR feedback H1: gate-binding endpoints URL-encode the URN segment so
-DataHub URNs containing ``/`` (file-platform datasets etc.) don't split
-into extra path segments. Tests below build expected URLs via
-``urllib.parse.quote(urn, safe="")`` to mirror the SDK behavior.
+PR feedback H1: gate-binding endpoints URL-encode the URN segment.
+PR feedback M2 (test gap): the previous URN ``urn:li:dataset:(local,demo,PROD)``
+contained no ``/``, so ``quote(safe="")`` and ``quote(safe="/")`` produced
+identical output — the regression guard was effectively a no-op. The new
+``test_set_gate_encodes_file_platform_urn_with_slashes`` uses a real
+file-platform URN (``urn:li:dataset:(urn:li:dataPlatform:file,/var/tmp/docs,PROD)``)
+to actually exercise the encoding contract.
 """
 
 from __future__ import annotations
 
-import json
-from typing import Any
 from urllib.parse import quote
 
 import pytest
 
 
-def test_kamiwaza_exposes_datasets_attribute() -> None:
-    from kamiwaza.client import Kamiwaza
-
-    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
-    assert client.datasets is not None
-
-
-def test_datasets_is_lazy_loaded() -> None:
-    from kamiwaza.client import Kamiwaza
-
-    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
-    a = client.datasets
-    b = client.datasets
-    assert a is b
-
-
 # ─── create / get / delete ────────────────────────────────────────────────
 
 
-@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
-def test_create_posts_minimal_body(httpx_mock: Any) -> None:
-    """kz.datasets.create(name, platform) → POST /api/catalog/datasets/.
+def test_create_posts_minimal_body(mock_client) -> None:
+    """kz.datasets.create(name, platform) → POST /catalog/datasets/.
 
-    PR feedback C1 (H4 fix): server returns a bare URN string per OpenAPI
+    PR feedback C1: server returns a bare URN string per OpenAPI
     (``201 type: string``), not a Dataset object. SDK returns the URN
     string for callers to subsequently ``kz.datasets.get(urn)``.
     """
-    from kamiwaza.client import Kamiwaza
+    from kamiwaza_sdk.services.datasets import DatasetsAPI
 
     expected_urn = "urn:li:dataset:(local,demo,PROD)"
-    httpx_mock.add_response(
-        method="POST",
-        url="https://kamiwaza.test/api/catalog/datasets/",
-        status_code=201,
-        json=expected_urn,
-    )
+    mock_client.expect("POST", "/catalog/datasets/", expected_urn)
 
-    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
-    urn = client.datasets.create(name="demo", platform="file")
+    urn = DatasetsAPI(client=mock_client).create(name="demo", platform="file")
 
     assert isinstance(urn, str)
     assert urn == expected_urn
 
-    request = httpx_mock.get_requests(method="POST")[0]
-    body = json.loads(request.content)
+    body = mock_client.calls[0][2].get("json", {})
     assert body["name"] == "demo"
     assert body["platform"] == "file"
 
 
-@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
-def test_create_forwards_properties_and_environment(httpx_mock: Any) -> None:
-    """Optional kwargs (properties, environment) reach the server unchanged."""
-    from kamiwaza.client import Kamiwaza
+def test_create_notes_recent_dataset_change_for_consistency_retry(mock_client) -> None:
+    """PR-feedback M1 (Codex correctness): after a successful POST the URN
+    is registered with ``client._note_recent_dataset_change`` so a
+    subsequent ``catalog.datasets.update_schema(urn, ...)`` gets the
+    DataHub eventual-consistency 404-retry the legacy path provides.
 
-    httpx_mock.add_response(
-        method="POST",
-        url="https://kamiwaza.test/api/catalog/datasets/",
-        status_code=201,
-        json="urn:li:dataset:(local,demo,DEV)",
+    Without this, ``kz.datasets.create(...) → catalog.update_schema(...)``
+    can 404 against an as-yet-unindexed dataset and surface as a hard
+    failure to the caller.
+    """
+    from kamiwaza_sdk.services.datasets import DatasetsAPI
+
+    expected_urn = "urn:li:dataset:(local,registered,PROD)"
+    mock_client.expect("POST", "/catalog/datasets/", expected_urn)
+
+    # Add the bookkeeping hook to the mock — DatasetsAPI calls it iff present.
+    seen: list[str] = []
+    mock_client._note_recent_dataset_change = seen.append
+
+    urn = DatasetsAPI(client=mock_client).create(name="registered", platform="file")
+
+    assert urn == expected_urn
+    assert seen == [expected_urn], (
+        "DatasetsAPI.create must call client._note_recent_dataset_change(urn) "
+        "so subsequent catalog.update_schema gets the DataHub consistency retry."
     )
 
-    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
-    client.datasets.create(
+
+def test_create_forwards_properties_and_environment(mock_client) -> None:
+    """Optional kwargs (properties, environment) reach the server unchanged."""
+    from kamiwaza_sdk.services.datasets import DatasetsAPI
+
+    mock_client.expect("POST", "/catalog/datasets/", "urn:li:dataset:(local,demo,DEV)")
+
+    DatasetsAPI(client=mock_client).create(
         name="demo",
         platform="file",
         environment="DEV",
         properties={"path": "/data/demo"},
     )
 
-    request = httpx_mock.get_requests(method="POST")[0]
-    body = json.loads(request.content)
+    body = mock_client.calls[0][2].get("json", {})
     assert body["environment"] == "DEV"
     assert body["properties"] == {"path": "/data/demo"}
 
 
-@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
-def test_get_passes_urn_as_query_param(httpx_mock: Any) -> None:
-    """kz.datasets.get(urn) → GET /api/catalog/datasets/by-urn?urn=..."""
-    from kamiwaza.client import Kamiwaza
+def test_get_passes_urn_as_query_param(mock_client) -> None:
+    """kz.datasets.get(urn) → GET /catalog/datasets/by-urn?urn=..."""
     from kamiwaza_sdk.schemas.federation import DatasetRef
+    from kamiwaza_sdk.services.datasets import DatasetsAPI
 
     urn = "urn:li:dataset:(local,demo,PROD)"
-    httpx_mock.add_response(
-        method="GET",
-        url=f"https://kamiwaza.test/api/catalog/datasets/by-urn?urn={urn}",
-        status_code=200,
-        json={
+    mock_client.expect(
+        "GET",
+        "/catalog/datasets/by-urn",
+        {
             "urn": urn,
             "name": "demo",
             "platform": "file",
@@ -127,48 +123,41 @@ def test_get_passes_urn_as_query_param(httpx_mock: Any) -> None:
         },
     )
 
-    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
-    ds = client.datasets.get(urn)
+    ds = DatasetsAPI(client=mock_client).get(urn)
     assert isinstance(ds, DatasetRef)
     assert ds.urn == urn
 
+    _method, _path, kwargs = mock_client.calls[0]
+    assert kwargs.get("params") == {"urn": urn}
 
-@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
-def test_delete_passes_urn_as_query_param(httpx_mock: Any) -> None:
-    """kz.datasets.delete(urn) → DELETE /api/catalog/datasets/by-urn?urn=..."""
-    from kamiwaza.client import Kamiwaza
+
+def test_delete_passes_urn_as_query_param(mock_client) -> None:
+    """kz.datasets.delete(urn) → DELETE /catalog/datasets/by-urn?urn=..."""
+    from kamiwaza_sdk.services.datasets import DatasetsAPI
 
     urn = "urn:li:dataset:(local,demo,PROD)"
-    httpx_mock.add_response(
-        method="DELETE",
-        url=f"https://kamiwaza.test/api/catalog/datasets/by-urn?urn={urn}",
-        status_code=200,
-        json={"message": "deleted"},
-    )
+    mock_client.expect("DELETE", "/catalog/datasets/by-urn", {"message": "deleted"})
 
-    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
-    client.datasets.delete(urn)
+    DatasetsAPI(client=mock_client).delete(urn)
+
+    _method, _path, kwargs = mock_client.calls[0]
+    assert kwargs.get("params") == {"urn": urn}
 
 
 # ─── gate binding (M3-specific surface) ──────────────────────────────────
 
 
-@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
-def test_set_gate_puts_to_dataset_scoped_endpoint(httpx_mock: Any) -> None:
-    """kz.datasets.set_gate puts to /api/catalog/datasets/{urn-encoded}/gate.
-
-    PR feedback H1: URN is URL-encoded in the path segment.
-    """
-    from kamiwaza.client import Kamiwaza
+def test_set_gate_puts_to_dataset_scoped_endpoint(mock_client) -> None:
+    """kz.datasets.set_gate puts to /catalog/datasets/{urn-encoded}/gate."""
     from kamiwaza_sdk.schemas.federation import AttributeGateBinding
+    from kamiwaza_sdk.services.datasets import DatasetsAPI
 
     urn = "urn:li:dataset:(local,demo,PROD)"
     encoded = quote(urn, safe="")
-    httpx_mock.add_response(
-        method="PUT",
-        url=f"https://kamiwaza.test/api/catalog/datasets/{encoded}/gate",
-        status_code=200,
-        json={
+    mock_client.expect(
+        "PUT",
+        f"/catalog/datasets/{encoded}/gate",
+        {
             "dataset_urn": urn,
             "type": "my_gate.ClassificationGate",
             "config": {"classification_field": "classification"},
@@ -177,8 +166,7 @@ def test_set_gate_puts_to_dataset_scoped_endpoint(httpx_mock: Any) -> None:
         },
     )
 
-    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
-    binding = client.datasets.set_gate(
+    binding = DatasetsAPI(client=mock_client).set_gate(
         urn,
         type="my_gate.ClassificationGate",
         config={"classification_field": "classification"},
@@ -188,26 +176,43 @@ def test_set_gate_puts_to_dataset_scoped_endpoint(httpx_mock: Any) -> None:
     assert binding.kind == "attribute"
     assert binding.dataset_urn == urn
 
-    request = httpx_mock.get_requests(method="PUT")[0]
-    body = json.loads(request.content)
+    body = mock_client.calls[0][2].get("json", {})
     assert body == {
         "type": "my_gate.ClassificationGate",
         "config": {"classification_field": "classification"},
     }
 
 
-@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
-def test_set_gate_defaults_config_to_empty_dict(httpx_mock: Any) -> None:
-    """Omitting config sends an empty dict — server's config_schema()
-    default-accepts gates with no configurable surface."""
-    from kamiwaza.client import Kamiwaza
+def test_set_gate_encodes_file_platform_urn_with_slashes(mock_client) -> None:
+    """PR-feedback M2 regression guard: a real file-platform URN containing
+    a filesystem path with ``/`` characters must be encoded so the path
+    doesn't split into extra segments.
 
-    urn = "urn:li:dataset:(local,demo,PROD)"
-    httpx_mock.add_response(
-        method="PUT",
-        url=f"https://kamiwaza.test/api/catalog/datasets/{quote(urn, safe='')}/gate",
-        status_code=200,
-        json={
+    Without ``quote(safe="")`` (i.e. with ``safe="/")``, the URN
+    ``urn:li:dataset:(urn:li:dataPlatform:file,/var/tmp/docs,PROD)`` would
+    route to ``/catalog/datasets/.../var/tmp/docs.../gate`` (four extra
+    segments). With ``safe=""``, the slashes encode as ``%2F`` and the
+    path stays single-segment.
+    """
+    from kamiwaza_sdk.services.datasets import DatasetsAPI
+
+    urn = "urn:li:dataset:(urn:li:dataPlatform:file,/var/tmp/docs,PROD)"
+    safe_empty = quote(urn, safe="")
+    safe_slash = quote(urn, safe="/")
+
+    # Sanity: encoding with `/` left safe would NOT escape the slashes,
+    # so the two encodings differ. If they were identical (as for the
+    # legacy ``(local,demo,PROD)`` URN), this test would not prove
+    # anything about the safe="" contract.
+    assert safe_empty != safe_slash, (
+        "Test URN must actually exercise the `/` encoding — pick a URN "
+        "with `/` characters or this regression guard is a no-op."
+    )
+
+    mock_client.expect(
+        "PUT",
+        f"/catalog/datasets/{safe_empty}/gate",
+        {
             "dataset_urn": urn,
             "type": "x.Gate",
             "config": {},
@@ -216,25 +221,47 @@ def test_set_gate_defaults_config_to_empty_dict(httpx_mock: Any) -> None:
         },
     )
 
-    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
-    client.datasets.set_gate(urn, type="x.Gate")
+    DatasetsAPI(client=mock_client).set_gate(urn, type="x.Gate")
 
-    request = httpx_mock.get_requests(method="PUT")[0]
-    body = json.loads(request.content)
+    _method, path, _ = mock_client.calls[0]
+    assert path == f"/catalog/datasets/{safe_empty}/gate"
+    # Belt-and-suspenders: the wrongly-encoded path is NOT what was sent.
+    assert path != f"/catalog/datasets/{safe_slash}/gate"
+
+
+def test_set_gate_defaults_config_to_empty_dict(mock_client) -> None:
+    """Omitting config sends an empty dict — server's config_schema()
+    default-accepts gates with no configurable surface."""
+    from kamiwaza_sdk.services.datasets import DatasetsAPI
+
+    urn = "urn:li:dataset:(local,demo,PROD)"
+    mock_client.expect(
+        "PUT",
+        f"/catalog/datasets/{quote(urn, safe='')}/gate",
+        {
+            "dataset_urn": urn,
+            "type": "x.Gate",
+            "config": {},
+            "gate_name": "x",
+            "kind": "attribute",
+        },
+    )
+
+    DatasetsAPI(client=mock_client).set_gate(urn, type="x.Gate")
+
+    body = mock_client.calls[0][2].get("json", {})
     assert body == {"type": "x.Gate", "config": {}}
 
 
-@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
-def test_get_gate_returns_binding(httpx_mock: Any) -> None:
-    from kamiwaza.client import Kamiwaza
+def test_get_gate_returns_binding(mock_client) -> None:
     from kamiwaza_sdk.schemas.federation import AttributeGateBinding
+    from kamiwaza_sdk.services.datasets import DatasetsAPI
 
     urn = "urn:li:dataset:(local,demo,PROD)"
-    httpx_mock.add_response(
-        method="GET",
-        url=f"https://kamiwaza.test/api/catalog/datasets/{quote(urn, safe='')}/gate",
-        status_code=200,
-        json={
+    mock_client.expect(
+        "GET",
+        f"/catalog/datasets/{quote(urn, safe='')}/gate",
+        {
             "dataset_urn": urn,
             "type": "g.G",
             "config": {},
@@ -243,142 +270,110 @@ def test_get_gate_returns_binding(httpx_mock: Any) -> None:
         },
     )
 
-    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
-    binding = client.datasets.get_gate(urn)
+    binding = DatasetsAPI(client=mock_client).get_gate(urn)
 
     assert isinstance(binding, AttributeGateBinding)
     assert binding.gate_name == "g"
 
 
-@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
-def test_get_gate_raises_on_404_not_configured(httpx_mock: Any) -> None:
+def test_get_gate_raises_on_404_not_configured(mock_client) -> None:
     """404 not_configured surfaces as KamiwazaError per T5.10 mapping."""
-    from kamiwaza.client import Kamiwaza
-    from kamiwaza.exceptions import KamiwazaError
+    from kamiwaza_sdk.exceptions import KamiwazaError
+    from kamiwaza_sdk.services.datasets import DatasetsAPI
 
     urn = "urn:li:dataset:(local,demo,PROD)"
-    httpx_mock.add_response(
-        method="GET",
-        url=f"https://kamiwaza.test/api/catalog/datasets/{quote(urn, safe='')}/gate",
-        status_code=404,
-        json={"detail": {"reason": "not_configured", "dataset_urn": urn}},
+    mock_client.raise_on(
+        "GET",
+        f"/catalog/datasets/{quote(urn, safe='')}/gate",
+        KamiwazaError("not_configured", status_code=404),
     )
 
-    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
     with pytest.raises(KamiwazaError):
-        client.datasets.get_gate(urn)
+        DatasetsAPI(client=mock_client).get_gate(urn)
 
 
-@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
-def test_clear_gate_sends_delete(httpx_mock: Any) -> None:
-    from kamiwaza.client import Kamiwaza
+def test_clear_gate_sends_delete(mock_client) -> None:
+    from kamiwaza_sdk.services.datasets import DatasetsAPI
 
     urn = "urn:li:dataset:(local,demo,PROD)"
-    httpx_mock.add_response(
-        method="DELETE",
-        url=f"https://kamiwaza.test/api/catalog/datasets/{quote(urn, safe='')}/gate",
-        status_code=200,
-        json={"deleted": True, "previous_type": "g.G"},
+    mock_client.expect(
+        "DELETE",
+        f"/catalog/datasets/{quote(urn, safe='')}/gate",
+        {"deleted": True, "previous_type": "g.G"},
     )
 
-    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
-    client.datasets.clear_gate(urn)
+    DatasetsAPI(client=mock_client).clear_gate(urn)
 
 
 # ─── T5.17-full — 4xx error-mapping coverage ──────────────────────────────
 
 
-@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
-def test_set_gate_400_wrong_kind_surfaces_as_kamiwaza_error(httpx_mock: Any) -> None:
+def test_set_gate_400_wrong_kind_surfaces_as_kamiwaza_error(mock_client) -> None:
     """Server rejects binding an ExecutionGate as a dataset gate (T2.5
     wrong_kind) — surfaces as KamiwazaError with status_code=400."""
-    from kamiwaza.client import Kamiwaza
-    from kamiwaza.exceptions import KamiwazaError
+    from kamiwaza_sdk.exceptions import KamiwazaError
+    from kamiwaza_sdk.services.datasets import DatasetsAPI
 
     urn = "urn:li:dataset:(local,demo,PROD)"
-    httpx_mock.add_response(
-        method="PUT",
-        url=f"https://kamiwaza.test/api/catalog/datasets/{quote(urn, safe='')}/gate",
-        status_code=400,
-        json={
-            "detail": {
-                "reason": "wrong_kind",
-                "expected": "attribute",
-                "got": "execution",
-                "classpath": "x.ExecGate",
-            }
-        },
+    mock_client.raise_on(
+        "PUT",
+        f"/catalog/datasets/{quote(urn, safe='')}/gate",
+        KamiwazaError("wrong_kind", status_code=400),
     )
 
-    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
     with pytest.raises(KamiwazaError) as exc_info:
-        client.datasets.set_gate(urn, type="x.ExecGate")
+        DatasetsAPI(client=mock_client).set_gate(urn, type="x.ExecGate")
     assert exc_info.value.status_code == 400
 
 
-@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
 def test_set_gate_400_schema_validation_failed_surfaces_as_kamiwaza_error(
-    httpx_mock: Any,
+    mock_client,
 ) -> None:
     """T2.6 jsonschema validation failure → 400 schema_validation_failed."""
-    from kamiwaza.client import Kamiwaza
-    from kamiwaza.exceptions import KamiwazaError
+    from kamiwaza_sdk.exceptions import KamiwazaError
+    from kamiwaza_sdk.services.datasets import DatasetsAPI
 
     urn = "urn:li:dataset:(local,demo,PROD)"
-    httpx_mock.add_response(
-        method="PUT",
-        url=f"https://kamiwaza.test/api/catalog/datasets/{quote(urn, safe='')}/gate",
-        status_code=400,
-        json={
-            "detail": {
-                "reason": "schema_validation_failed",
-                "classpath": "x.Gate",
-                "error": "'classification_field' is a required property",
-            }
-        },
+    mock_client.raise_on(
+        "PUT",
+        f"/catalog/datasets/{quote(urn, safe='')}/gate",
+        KamiwazaError("schema_validation_failed", status_code=400),
     )
 
-    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
     with pytest.raises(KamiwazaError) as exc_info:
-        client.datasets.set_gate(urn, type="x.Gate", config={})
+        DatasetsAPI(client=mock_client).set_gate(urn, type="x.Gate", config={})
     assert exc_info.value.status_code == 400
 
 
-@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
 def test_set_gate_404_dataset_not_found_surfaces_as_kamiwaza_error(
-    httpx_mock: Any,
+    mock_client,
 ) -> None:
     """PUT against an unknown dataset URN → 404 dataset_not_found."""
-    from kamiwaza.client import Kamiwaza
-    from kamiwaza.exceptions import KamiwazaError
+    from kamiwaza_sdk.exceptions import KamiwazaError
+    from kamiwaza_sdk.services.datasets import DatasetsAPI
 
     urn = "urn:li:dataset:(local,nonexistent,PROD)"
-    httpx_mock.add_response(
-        method="PUT",
-        url=f"https://kamiwaza.test/api/catalog/datasets/{quote(urn, safe='')}/gate",
-        status_code=404,
-        json={"detail": {"reason": "dataset_not_found", "dataset_urn": urn}},
+    mock_client.raise_on(
+        "PUT",
+        f"/catalog/datasets/{quote(urn, safe='')}/gate",
+        KamiwazaError("dataset_not_found", status_code=404),
     )
 
-    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
     with pytest.raises(KamiwazaError) as exc_info:
-        client.datasets.set_gate(urn, type="x.Gate")
+        DatasetsAPI(client=mock_client).set_gate(urn, type="x.Gate")
     assert exc_info.value.status_code == 404
 
 
-@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
-def test_get_dataset_404_surfaces_as_kamiwaza_error(httpx_mock: Any) -> None:
+def test_get_dataset_404_surfaces_as_kamiwaza_error(mock_client) -> None:
     """GET dataset by unknown URN returns 404."""
-    from kamiwaza.client import Kamiwaza
-    from kamiwaza.exceptions import KamiwazaError
+    from kamiwaza_sdk.exceptions import KamiwazaError
+    from kamiwaza_sdk.services.datasets import DatasetsAPI
 
-    httpx_mock.add_response(
-        method="GET",
-        url="https://kamiwaza.test/api/catalog/datasets/by-urn?urn=urn:li:dataset:(local,nope,PROD)",
-        status_code=404,
-        json={"detail": "Dataset not found"},
+    mock_client.raise_on(
+        "GET",
+        "/catalog/datasets/by-urn",
+        KamiwazaError("Dataset not found", status_code=404),
     )
 
-    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
     with pytest.raises(KamiwazaError):
-        client.datasets.get("urn:li:dataset:(local,nope,PROD)")
+        DatasetsAPI(client=mock_client).get("urn:li:dataset:(local,nope,PROD)")

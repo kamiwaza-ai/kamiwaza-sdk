@@ -262,52 +262,16 @@ def test_attribute_schema_full_shape() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Legacy kamiwaza.models re-export — existing callers keep working
+# Legacy kamiwaza.* namespace was removed in WS-M3.2 (design v0.3.7 §4.2.11
+# revised OQ-17). Tests that asserted the bridge identity are deleted.
 # ---------------------------------------------------------------------------
 
 
-def test_kamiwaza_models_re_exports_from_canonical_surface() -> None:
-    """The legacy kamiwaza.models module re-exports from
-    kamiwaza_sdk.schemas.federation so existing M1-M3 imports continue
-    to work without code change. Full DeprecationWarning shim ships in
-    T7.14; T7.3 lands just the re-export.
-
-    Identity test: the class objects are SAME — no duplicate definitions
-    that would fail isinstance() checks across the two import paths.
+def test_kamiwaza_namespace_is_removed() -> None:
+    """The interim ``kamiwaza`` top-level package (from the reversed v0.2.0
+    decision) is gone in v0.3.7. New code uses ``kamiwaza_sdk`` exclusively.
     """
-    from kamiwaza.models import Federation as LegacyFederation
-    from kamiwaza_sdk.schemas.federation import Federation as CanonicalFederation
+    import pytest
 
-    assert LegacyFederation is CanonicalFederation
-
-
-def test_kamiwaza_models_re_exports_all_classes() -> None:
-    """Every class importable from kamiwaza.models is the SAME object as
-    the one in kamiwaza_sdk.schemas.federation. Catches partial-shim bugs
-    where some types are migrated and others stay separate."""
-    import kamiwaza.models as legacy
-    import kamiwaza_sdk.schemas.federation as canonical
-
-    for name in [
-        "Federation",
-        "BrokeredUser",
-        "ClusterCapabilities",
-        "DiagnoseIssue",
-        "ClusterDiagnostics",
-        "FixOutcome",
-        "FixResult",
-        "GateDiscovery",
-        "ClusterOperations",
-        "JobResult",
-        "Grant",
-        "Subject",
-        "DatasetRef",
-        "AttributeGateBinding",
-        "ExecutionGateBinding",
-        "AttributeSchema",
-        "AttributeSchemaList",
-    ]:
-        assert getattr(legacy, name) is getattr(canonical, name), (
-            f"{name}: kamiwaza.models and kamiwaza_sdk.schemas.federation "
-            f"must reference the SAME class object (re-export, not copy)"
-        )
+    with pytest.raises(ModuleNotFoundError):
+        __import__("kamiwaza.models")

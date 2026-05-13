@@ -443,15 +443,51 @@ def test_pair_docstring_documents_three_modes() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Legacy kamiwaza.federations re-export (T7.14 will add full DeprecationWarning shim)
+# Legacy kamiwaza.* namespace was removed in WS-M3.2 (design v0.3.7 §4.2.11
+# revised OQ-17). The bridge-identity test is deleted.
 # ---------------------------------------------------------------------------
 
 
-def test_kamiwaza_federations_re_exports_from_canonical() -> None:
-    """kamiwaza.federations preserves the legacy import path via re-export
-    so existing M1-M3 callsites work unchanged. Identity invariant: the
-    classes are the SAME objects across both import paths."""
-    from kamiwaza.federations import FederationsAPI as LegacyAPI
-    from kamiwaza_sdk.services.federations import FederationsAPI as CanonicalAPI
+def test_kamiwaza_federations_namespace_is_removed() -> None:
+    """The interim ``kamiwaza.federations`` shim (v0.2.0 carcass) is gone."""
+    import pytest
 
-    assert LegacyAPI is CanonicalAPI
+    with pytest.raises(ModuleNotFoundError):
+        __import__("kamiwaza.federations")
+
+
+def test_federation_aware_services_reexported_from_kamiwaza_sdk_services() -> None:
+    """PR-feedback M7 (architecture consistency): ``FederationsAPI`` and
+    its 6 federation-aware peers must be importable from
+    ``kamiwaza_sdk.services`` like every other service.
+
+    Before the fix, ``from kamiwaza_sdk.services import FederationsAPI``
+    raised AttributeError — only the fully-qualified submodule path or
+    the lazy ``client.federations`` property worked, breaking the
+    invariant with peers like ``ClusterService`` and ``RetrievalService``.
+    """
+    from kamiwaza_sdk import services
+    from kamiwaza_sdk.services import (
+        FederationsAPI,
+    )
+
+    # Identity check: same class object as the submodule export.
+    from kamiwaza_sdk.services.federations import FederationsAPI as Canonical
+
+    assert FederationsAPI is Canonical
+
+    # Every new service appears in ``services.__all__``.
+    expected = {
+        "ClusterAPI",
+        "DatasetsAPI",
+        "FederationProxy",
+        "FederationUsersAPI",
+        "FederationsAPI",
+        "GatesAPI",
+        "JobsAPI",
+        "RetrievalAPI",
+        "SubjectGrantsAPI",
+        "SubjectsAPI",
+    }
+    missing = expected - set(services.__all__)
+    assert not missing, f"missing from kamiwaza_sdk.services.__all__: {missing}"

@@ -50,7 +50,7 @@ def test_ws_m1_skeleton_walkthrough_pair_allowlist_run_audit(
     load-bearing demo-gate signal: the job ran as the originating user
     (``cdr-baker@LYRA``), not as a system principal.
     """
-    from kamiwaza.client import Kamiwaza
+    from kamiwaza_sdk import KamiwazaClient
 
     # Step 1 — Pair: two-step flow on the initiator side.
     httpx_mock.add_response(
@@ -128,7 +128,7 @@ def test_ws_m1_skeleton_walkthrough_pair_allowlist_run_audit(
         },
     )
 
-    with Kamiwaza(base_url=_LYRA_BASE_URL, token="pat-lyra-admin") as kz:
+    with KamiwazaClient(base_url=_LYRA_BASE_URL, api_key="pat-lyra-admin") as kz:
         # Step 1
         fed = kz.federations.pair(
             name=_ORION_NAME,
@@ -191,7 +191,7 @@ def test_ws_m1_skeleton_walkthrough_async_submit_path(httpx_mock: Any) -> None:
     """
     from unittest.mock import patch
 
-    from kamiwaza.client import Kamiwaza
+    from kamiwaza_sdk import KamiwazaClient
 
     # Pair (same as the synchronous test).
     httpx_mock.add_response(
@@ -276,7 +276,7 @@ def test_ws_m1_skeleton_walkthrough_async_submit_path(httpx_mock: Any) -> None:
         },
     )
 
-    with Kamiwaza(base_url=_LYRA_BASE_URL, token="pat-lyra-admin") as kz:
+    with KamiwazaClient(base_url=_LYRA_BASE_URL, api_key="pat-lyra-admin") as kz:
         kz.federations.pair(
             name=_ORION_NAME,
             role="initiator",

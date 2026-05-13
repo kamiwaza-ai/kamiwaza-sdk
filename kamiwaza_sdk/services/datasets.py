@@ -69,6 +69,14 @@ class DatasetsAPI(BaseService):
         ``DatasetRef.model_validate(response)`` on the string response,
         which Pydantic would have raised ValidationError for on the
         first real call.
+
+        PR-feedback M1 (Codex correctness): after a successful POST the
+        URN is registered with ``client._note_recent_dataset_change`` so
+        a subsequent ``client.catalog.datasets.update_schema(urn, ...)``
+        gets the DataHub eventual-consistency PUT-after-create 404 retry
+        that the legacy ``client.catalog.datasets.create`` provides.
+        Matches that contract — see
+        ``kamiwaza_sdk.services.catalog.DatasetClient.create``.
         """
         body: Dict[str, Any] = {"name": name, "platform": platform}
         if environment is not None:
@@ -80,7 +88,11 @@ class DatasetsAPI(BaseService):
         if description is not None:
             body["description"] = description
         response = self.client._request("POST", "/catalog/datasets/", json=body)
-        return str(response)
+        urn = str(response)
+        note = getattr(self.client, "_note_recent_dataset_change", None)
+        if callable(note):
+            note(urn)
+        return urn
 
     def get(self, urn: str) -> DatasetRef:
         """Read a dataset by URN."""

@@ -1,38 +1,31 @@
-"""T5.8 / ENG-4693 — kz.cluster.fix() orchestration tests.
+"""T5.8 / ENG-4693 — ClusterAPI.fix() orchestration on canonical surface.
 
-Per design `system-design.md` §4.2.10: ``fix()`` iterates issues in
-severity order; for each ``auto_fixable=True`` issue, invokes its
-``fix_endpoint`` with ``fix_payload``. Issues with ``auto_fixable=False``
-are surfaced but skipped with ``status="manual_required"``.
+WS-M3.2 test migration (T7.15 / ENG-5049). Per design §4.2.10: ``fix()``
+iterates issues in severity order; for each ``auto_fixable=True`` issue,
+invokes its ``fix_endpoint`` with ``fix_payload``. Issues with
+``auto_fixable=False`` surface with ``status="manual_required"``.
 
-Server-side fix endpoints don't exist yet (no auto-fixable probe is
-implemented in this cycle's walking skeleton). Tests verify the SDK's
-generic dispatch shape — when the token-exchange / claims-scope probes
-land with fix endpoints in subsequent commits, this SDK orchestration
-works without changes.
+PR-feedback M4: H2 defensive ``/api/``-strip in ``_attempt_fix`` is
+covered by ``test_fix_strips_legacy_api_prefix_from_fix_endpoint`` below.
+Without the strip, the request would resolve to ``/api/api/...`` against
+the ``KamiwazaClient(base_url=".../api")`` convention and 404 every time.
 """
 
 from __future__ import annotations
 
-from typing import Any
-
-import pytest
+from kamiwaza_sdk.exceptions import KamiwazaError
 
 
-@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
-def test_fix_reports_manual_required_for_non_auto_fixable_issues(
-    httpx_mock: Any,
-) -> None:
-    """The skeleton-cluster case: admin-baseline issue is auto_fixable=False
-    so fix() reports manual_required without hitting any endpoint."""
-    from kamiwaza.client import Kamiwaza
-    from kamiwaza.models import FixResult
+def test_fix_reports_manual_required_for_non_auto_fixable_issues(mock_client) -> None:
+    """admin-baseline issue is auto_fixable=False → fix() reports
+    manual_required without hitting any endpoint."""
+    from kamiwaza_sdk.schemas.federation import FixResult
+    from kamiwaza_sdk.services.cluster_federation import ClusterAPI
 
-    httpx_mock.add_response(
-        method="GET",
-        url="https://kamiwaza.test/api/cluster/diagnose",
-        status_code=200,
-        json={
+    mock_client.expect(
+        "GET",
+        "/cluster/diagnose",
+        {
             "cluster_id": "11111111-2222-3333-4444-555555555555",
             "timestamp": "2026-05-10T22:00:00+00:00",
             "issues": [
@@ -50,8 +43,7 @@ def test_fix_reports_manual_required_for_non_auto_fixable_issues(
         },
     )
 
-    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
-    result = client.cluster.fix()
+    result = ClusterAPI(client=mock_client).fix()
 
     assert isinstance(result, FixResult)
     assert len(result.outcomes) == 1
@@ -60,19 +52,15 @@ def test_fix_reports_manual_required_for_non_auto_fixable_issues(
     assert outcome.status == "manual_required"
 
 
-@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
-def test_fix_invokes_fix_endpoint_for_auto_fixable_issue(httpx_mock: Any) -> None:
-    """When a probe ships an auto-fixable issue (e.g. token-exchange in a
-    later commit), fix() POSTs to issue.fix_endpoint with issue.fix_payload
-    and records the result. SDK is probe-type-agnostic — the dispatch is
-    generic on the issue shape."""
-    from kamiwaza.client import Kamiwaza
+def test_fix_invokes_fix_endpoint_for_auto_fixable_issue(mock_client) -> None:
+    """fix() POSTs to issue.fix_endpoint with issue.fix_payload and records
+    the result. SDK dispatch is generic on the issue shape."""
+    from kamiwaza_sdk.services.cluster_federation import ClusterAPI
 
-    httpx_mock.add_response(
-        method="GET",
-        url="https://kamiwaza.test/api/cluster/diagnose",
-        status_code=200,
-        json={
+    mock_client.expect(
+        "GET",
+        "/cluster/diagnose",
+        {
             "cluster_id": "11111111-2222-3333-4444-555555555555",
             "timestamp": "2026-05-10T22:00:00+00:00",
             "issues": [
@@ -89,37 +77,33 @@ def test_fix_invokes_fix_endpoint_for_auto_fixable_issue(httpx_mock: Any) -> Non
             "has_issues": True,
         },
     )
-    httpx_mock.add_response(
-        method="POST",
-        url=(
-            "https://kamiwaza.test/api/cluster/diagnose/fix/"
-            "missing_token_exchange_permission"
-        ),
-        status_code=200,
-        json={"fixed": True},
+    mock_client.expect(
+        "POST",
+        "/cluster/diagnose/fix/missing_token_exchange_permission",
+        {"fixed": True},
     )
 
-    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
-    result = client.cluster.fix()
+    result = ClusterAPI(client=mock_client).fix()
 
     assert len(result.outcomes) == 1
     outcome = result.outcomes[0]
     assert outcome.issue_id == "missing_token_exchange_permission"
     assert outcome.status == "fixed"
 
+    # H2 (PR feedback): payload forwarded verbatim
+    fix_call = next(c for c in mock_client.calls if c[0] == "POST")
+    assert fix_call[2].get("json") == {"client_id": "kamiwaza-platform-svc"}
 
-@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
-def test_fix_records_failure_when_fix_endpoint_5xxs(httpx_mock: Any) -> None:
-    """If the fix endpoint returns an error, the outcome records
-    status=failed without raising — so the operator sees per-issue
-    success/failure for the batch."""
-    from kamiwaza.client import Kamiwaza
 
-    httpx_mock.add_response(
-        method="GET",
-        url="https://kamiwaza.test/api/cluster/diagnose",
-        status_code=200,
-        json={
+def test_fix_records_failure_when_fix_endpoint_5xxs(mock_client) -> None:
+    """If the fix endpoint raises, the outcome records status=failed
+    without re-raising — so the operator sees per-issue success/failure."""
+    from kamiwaza_sdk.services.cluster_federation import ClusterAPI
+
+    mock_client.expect(
+        "GET",
+        "/cluster/diagnose",
+        {
             "cluster_id": "11111111-2222-3333-4444-555555555555",
             "timestamp": "2026-05-10T22:00:00+00:00",
             "issues": [
@@ -129,8 +113,7 @@ def test_fix_records_failure_when_fix_endpoint_5xxs(httpx_mock: Any) -> None:
                     "summary": "kamiwaza-claims scope missing on platform clients",
                     "detail": {"missing_on": ["kamiwaza-platform"]},
                     "fix_endpoint": (
-                        "/cluster/diagnose/fix/"
-                        "missing_kamiwaza_claims_scope_attachment"
+                        "/cluster/diagnose/fix/missing_kamiwaza_claims_scope_attachment"
                     ),
                     "fix_payload": {},
                     "auto_fixable": True,
@@ -139,20 +122,61 @@ def test_fix_records_failure_when_fix_endpoint_5xxs(httpx_mock: Any) -> None:
             "has_issues": True,
         },
     )
-    httpx_mock.add_response(
-        method="POST",
-        url=(
-            "https://kamiwaza.test/api/cluster/diagnose/fix/"
-            "missing_kamiwaza_claims_scope_attachment"
-        ),
-        status_code=503,
-        json={"detail": "Keycloak unreachable"},
+    mock_client.raise_on(
+        "POST",
+        "/cluster/diagnose/fix/missing_kamiwaza_claims_scope_attachment",
+        KamiwazaError("Keycloak unreachable", status_code=503),
     )
 
-    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
-    result = client.cluster.fix()
+    result = ClusterAPI(client=mock_client).fix()
 
     assert len(result.outcomes) == 1
     outcome = result.outcomes[0]
     assert outcome.status == "failed"
     assert outcome.error is not None
+
+
+def test_fix_strips_legacy_api_prefix_from_fix_endpoint(mock_client) -> None:
+    """PR-feedback M4 / H2 regression guard: when the server emits a legacy
+    fix_endpoint with a leading ``/api/`` prefix, the SDK strips it before
+    routing against ``KamiwazaClient(base_url=".../api")``. Without the
+    strip, the request would resolve to ``/api/api/...`` and 404 every
+    time. The mock expects the **stripped** path; if the strip regresses,
+    no expectation will match and the test fails with a clear error."""
+    from kamiwaza_sdk.services.cluster_federation import ClusterAPI
+
+    legacy_fix_endpoint = "/api/cluster/diagnose/fix/legacy_probe"
+    canonical_path = "/cluster/diagnose/fix/legacy_probe"
+
+    mock_client.expect(
+        "GET",
+        "/cluster/diagnose",
+        {
+            "cluster_id": "11111111-2222-3333-4444-555555555555",
+            "timestamp": "2026-05-10T22:00:00+00:00",
+            "issues": [
+                {
+                    "id": "legacy_probe",
+                    "severity": "error",
+                    "summary": "Server returns legacy /api/-prefixed fix_endpoint",
+                    "detail": {},
+                    "fix_endpoint": legacy_fix_endpoint,
+                    "fix_payload": {},
+                    "auto_fixable": True,
+                }
+            ],
+            "has_issues": True,
+        },
+    )
+    # If the strip regresses, the SDK will POST to ``/api/cluster/...``
+    # which has no expectation set — the mock raises AssertionError and
+    # the test fails. The canonical path is the one we expect to see.
+    mock_client.expect("POST", canonical_path, {"fixed": True})
+
+    result = ClusterAPI(client=mock_client).fix()
+
+    assert len(result.outcomes) == 1
+    assert result.outcomes[0].status == "fixed"
+    # Belt-and-suspenders: explicit assertion on the recorded request path.
+    fix_call = next(c for c in mock_client.calls if c[0] == "POST")
+    assert fix_call[1] == canonical_path

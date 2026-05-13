@@ -108,8 +108,8 @@ def test_m3_full_walkthrough_against_live_fleet(
       7. Submit federated job via kz.jobs.run
       8. Assert audit_actor round-trip
     """
-    from kamiwaza.client import Kamiwaza
-    from kamiwaza.exceptions import KamiwazaError
+    from kamiwaza_sdk import KamiwazaClient
+    from kamiwaza_sdk.exceptions import KamiwazaError
 
     federation_id = None
     dataset_urn = None
@@ -117,7 +117,7 @@ def test_m3_full_walkthrough_against_live_fleet(
         "kamiwaza.services.authz.gates.default_gates.AllowAllExecutionGate"
     )
 
-    with Kamiwaza(base_url=lyra_url, token=lyra_token) as lyra:
+    with KamiwazaClient(base_url=lyra_url, api_key=lyra_token) as lyra:
         try:
             # Step 1 — Pair LYRA with ORION.
             fed = lyra.federations.pair(

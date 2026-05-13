@@ -1,47 +1,29 @@
-"""T5.36 / ENG-4713 — kamiwaza.retrieval module tests.
+"""T7.11 / ENG-5045 — RetrievalAPI on the canonical kamiwaza_sdk surface.
+
+WS-M3.2 test migration (T7.15 / ENG-5049). Drops the legacy
+``kamiwaza.client.Kamiwaza`` + ``httpx_mock`` machinery in favor of the
+canonical ``kamiwaza_sdk.services.retrieval_federation.RetrievalAPI``
+instantiated directly against the shared ``MockClient`` fixture.
 
 Customer-facing surface per design §4.2.11:
 
     kz.retrieval.list(...)         -> list of retrieval job records
     kz.retrieval.cancel(query_id)  -> updated job status
 
-Plus operations() now populates the retrievals slice from this module
-(previously empty until cycle 5 retrieval work landed).
+Plus operations() now populates the retrievals slice from this module.
 """
 
 from __future__ import annotations
 
-from typing import Any
 
-import pytest
+def test_retrieval_list_hits_get_endpoint(mock_client) -> None:
+    """kz.retrieval.list() GETs /retrieval/jobs with default pagination."""
+    from kamiwaza_sdk.services.retrieval_federation import RetrievalAPI
 
-
-def test_kamiwaza_exposes_retrieval_attribute() -> None:
-    from kamiwaza.client import Kamiwaza
-
-    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
-    assert client.retrieval is not None
-
-
-def test_retrieval_is_lazy_loaded() -> None:
-    from kamiwaza.client import Kamiwaza
-
-    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
-    a = client.retrieval
-    b = client.retrieval
-    assert a is b
-
-
-@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
-def test_retrieval_list_hits_get_endpoint(httpx_mock: Any) -> None:
-    """kz.retrieval.list() GETs /api/retrieval/jobs."""
-    from kamiwaza.client import Kamiwaza
-
-    httpx_mock.add_response(
-        method="GET",
-        url="https://kamiwaza.test/api/retrieval/jobs?limit=100&offset=0",
-        status_code=200,
-        json=[
+    mock_client.expect(
+        "GET",
+        "/retrieval/jobs",
+        [
             {
                 "job_id": "00000000-0000-0000-0000-000000000001",
                 "status": "RUNNING",
@@ -56,53 +38,37 @@ def test_retrieval_list_hits_get_endpoint(httpx_mock: Any) -> None:
         ],
     )
 
-    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
-    items = client.retrieval.list()
+    items = RetrievalAPI(client=mock_client).list()
 
     assert len(items) == 1
     assert items[0]["job_id"] == "00000000-0000-0000-0000-000000000001"
 
 
-@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
-def test_retrieval_cancel_posts_to_cancel_endpoint(httpx_mock: Any) -> None:
+def test_retrieval_cancel_posts_to_cancel_endpoint(mock_client) -> None:
     """kz.retrieval.cancel(query_id) POSTs to .../jobs/{id}/cancel."""
-    from kamiwaza.client import Kamiwaza
+    from kamiwaza_sdk.services.retrieval_federation import RetrievalAPI
 
     job_id = "00000000-0000-0000-0000-000000000002"
-
-    httpx_mock.add_response(
-        method="POST",
-        url=f"https://kamiwaza.test/api/retrieval/jobs/{job_id}/cancel",
-        status_code=200,
-        json={
-            "job_id": job_id,
-            "status": "CANCELED",
-            "transport": "sse",
-        },
+    mock_client.expect(
+        "POST",
+        f"/retrieval/jobs/{job_id}/cancel",
+        {"job_id": job_id, "status": "CANCELED", "transport": "sse"},
     )
 
-    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
-    result = client.retrieval.cancel(job_id)
+    result = RetrievalAPI(client=mock_client).cancel(job_id)
 
     assert result["status"] == "CANCELED"
 
 
-@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
-def test_operations_populates_retrievals_slice(httpx_mock: Any) -> None:
-    """cluster.operations() now surfaces in-flight retrievals (T5.37 thickening)."""
-    from kamiwaza.client import Kamiwaza
+def test_operations_populates_retrievals_slice(mock_client) -> None:
+    """ClusterAPI.operations() surfaces in-flight retrievals (T5.37 thickening)."""
+    from kamiwaza_sdk.services.cluster_federation import ClusterAPI
 
-    httpx_mock.add_response(
-        method="GET",
-        url="https://kamiwaza.test/api/cluster/jobs/",
-        status_code=200,
-        json=[],
-    )
-    httpx_mock.add_response(
-        method="GET",
-        url="https://kamiwaza.test/api/retrieval/jobs",
-        status_code=200,
-        json=[
+    mock_client.expect("GET", "/cluster/jobs/", [])
+    mock_client.expect(
+        "GET",
+        "/retrieval/jobs",
+        [
             {
                 "job_id": "00000000-0000-0000-0000-000000000003",
                 "status": "RUNNING",
@@ -117,8 +83,7 @@ def test_operations_populates_retrievals_slice(httpx_mock: Any) -> None:
         ],
     )
 
-    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
-    result = client.cluster.operations()
+    result = ClusterAPI(client=mock_client).operations()
 
     assert result.jobs == []
     assert len(result.retrievals) == 1

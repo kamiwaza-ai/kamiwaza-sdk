@@ -1,48 +1,28 @@
-"""T5.9 / ENG-4680 — kamiwaza.jobs module skeleton tests.
+"""T5.9 / ENG-4680 — JobsAPI skeleton tests on canonical surface.
 
-Skeleton scope per design §6.2 WS-M1 T5.9:
+WS-M3.2 test migration (T7.15 / ENG-5049). Skeleton scope per design §6.2 WS-M1 T5.9:
     - kz.jobs.run(target_cluster, entrypoint, ...) -> JobResult
     - kz.jobs.submit_async(...) -> str (job_id)
     - kz.jobs.wait(job_id, timeout=...) -> JobResult
-
-cancel + recoverable=True land in WS-M2 (T5.22 / T5.35), not here.
 """
 
 from __future__ import annotations
 
-from typing import Any
 from unittest.mock import patch
 
 import pytest
 
 
-def test_kamiwaza_exposes_jobs_attribute() -> None:
-    from kamiwaza.client import Kamiwaza
+def test_run_synchronous_returns_job_result(mock_client) -> None:
+    """``jobs.run(target_cluster, entrypoint, ...)`` hits the synchronous
+    ``/cluster/jobs/run`` endpoint which returns the completed JobResult
+    in-line (no separate poll)."""
+    from kamiwaza_sdk.services.jobs_federation import JobsAPI
 
-    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
-    assert client.jobs is not None
-
-
-def test_jobs_is_lazy_loaded() -> None:
-    from kamiwaza.client import Kamiwaza
-
-    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
-    assert client.jobs is client.jobs
-
-
-@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
-def test_run_synchronous_returns_job_result(httpx_mock: Any) -> None:
-    """kz.jobs.run(target_cluster, entrypoint, ...) hits the synchronous
-    /api/cluster/jobs/run endpoint, which returns the completed JobResult
-    in-line (no separate poll). target_cluster is a federation name; SDK
-    encodes routing in the request body, server side dispatches via mesh."""
-    from kamiwaza.client import Kamiwaza
-
-    httpx_mock.add_response(
-        method="POST",
-        url="https://kamiwaza.test/api/cluster/jobs/run",
-        status_code=200,
-        json={
+    mock_client.expect(
+        "POST",
+        "/cluster/jobs/run",
+        {
             "job_id": "job-abc-123",
             "status": "SUCCEEDED",
             "result": {"answer": "42"},
@@ -50,8 +30,7 @@ def test_run_synchronous_returns_job_result(httpx_mock: Any) -> None:
         },
     )
 
-    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
-    result = client.jobs.run(
+    result = JobsAPI(client=mock_client).run(
         target_cluster="ORION",
         entrypoint="python -c 'print(42)'",
     )
@@ -59,54 +38,39 @@ def test_run_synchronous_returns_job_result(httpx_mock: Any) -> None:
     assert result.status == "SUCCEEDED"
     assert result.audit_actor == "cdr-baker@LYRA"
 
-    sent = httpx_mock.get_requests()[0]
-    body = sent.read()
-    assert b"ORION" in body
-    assert b"entrypoint" in body
+    _method, _path, kwargs = mock_client.calls[0]
+    body = kwargs.get("json", {})
+    assert body["target_cluster"] == "ORION"
+    assert "entrypoint" in body
 
 
-@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
-def test_run_local_when_target_cluster_omitted(httpx_mock: Any) -> None:
-    """When target_cluster is not provided, the job runs on the local
-    cluster. Wire shape doesn't include target_cluster."""
-    from kamiwaza.client import Kamiwaza
+def test_run_local_when_target_cluster_omitted(mock_client) -> None:
+    """When ``target_cluster`` is not provided, the job runs on the local
+    cluster. Wire shape doesn't include the ``target_cluster`` key."""
+    from kamiwaza_sdk.services.jobs_federation import JobsAPI
 
-    httpx_mock.add_response(
-        method="POST",
-        url="https://kamiwaza.test/api/cluster/jobs/run",
-        status_code=200,
-        json={
-            "job_id": "job-local",
-            "status": "SUCCEEDED",
-            "result": {"local": True},
-        },
+    mock_client.expect(
+        "POST",
+        "/cluster/jobs/run",
+        {"job_id": "job-local", "status": "SUCCEEDED", "result": {"local": True}},
     )
 
-    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
-    result = client.jobs.run(entrypoint="python -c 'pass'")
-
+    result = JobsAPI(client=mock_client).run(entrypoint="python -c 'pass'")
     assert result.status == "SUCCEEDED"
 
-    sent = httpx_mock.get_requests()[0]
-    body = sent.read()
-    assert b"target_cluster" not in body
+    _method, _path, kwargs = mock_client.calls[0]
+    body = kwargs.get("json", {})
+    assert "target_cluster" not in body
 
 
-@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
-def test_submit_async_returns_job_id(httpx_mock: Any) -> None:
-    """submit_async POSTs to /api/cluster/jobs/submit and returns just
+def test_submit_async_returns_job_id(mock_client) -> None:
+    """submit_async POSTs to ``/cluster/jobs/submit`` and returns just
     the job_id immediately. Customer polls via wait()."""
-    from kamiwaza.client import Kamiwaza
+    from kamiwaza_sdk.services.jobs_federation import JobsAPI
 
-    httpx_mock.add_response(
-        method="POST",
-        url="https://kamiwaza.test/api/cluster/jobs/submit",
-        status_code=202,
-        json={"job_id": "job-async-456"},
-    )
+    mock_client.expect("POST", "/cluster/jobs/submit", {"job_id": "job-async-456"})
 
-    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
-    job_id = client.jobs.submit_async(
+    job_id = JobsAPI(client=mock_client).submit_async(
         target_cluster="ORION",
         entrypoint="python big_job.py",
     )
@@ -114,79 +78,47 @@ def test_submit_async_returns_job_id(httpx_mock: Any) -> None:
     assert job_id == "job-async-456"
 
 
-@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
-def test_wait_polls_until_terminal_state(httpx_mock: Any) -> None:
-    """wait() polls /api/cluster/jobs/{id}/status with backoff until the
-    status is terminal (SUCCEEDED/FAILED/STOPPED/CANCELED), then fetches
-    the result via /api/cluster/jobs/{id}/result and returns JobResult.
-    """
-    from kamiwaza.client import Kamiwaza
+def test_wait_polls_until_terminal_state(mock_client) -> None:
+    """wait() polls ``/cluster/jobs/{id}/status`` with backoff until the
+    status is terminal, then fetches the result and returns JobResult."""
+    from kamiwaza_sdk.services.jobs_federation import JobsAPI
 
     job_id = "job-wait-789"
 
-    # Two PENDING/RUNNING then SUCCEEDED.
-    httpx_mock.add_response(
-        method="GET",
-        url=f"https://kamiwaza.test/api/cluster/jobs/{job_id}/status",
-        status_code=200,
-        json={"status": "PENDING"},
+    mock_client.expect_sequence(
+        "GET",
+        f"/cluster/jobs/{job_id}/status",
+        [
+            {"status": "PENDING"},
+            {"status": "RUNNING"},
+            {"status": "SUCCEEDED"},
+        ],
     )
-    httpx_mock.add_response(
-        method="GET",
-        url=f"https://kamiwaza.test/api/cluster/jobs/{job_id}/status",
-        status_code=200,
-        json={"status": "RUNNING"},
+    mock_client.expect(
+        "GET",
+        f"/cluster/jobs/{job_id}/result",
+        {"job_id": job_id, "status": "SUCCEEDED", "result": {"value": "done"}},
     )
-    httpx_mock.add_response(
-        method="GET",
-        url=f"https://kamiwaza.test/api/cluster/jobs/{job_id}/status",
-        status_code=200,
-        json={"status": "SUCCEEDED"},
-    )
-    httpx_mock.add_response(
-        method="GET",
-        url=f"https://kamiwaza.test/api/cluster/jobs/{job_id}/result",
-        status_code=200,
-        json={
-            "job_id": job_id,
-            "status": "SUCCEEDED",
-            "result": {"value": "done"},
-        },
-    )
-
-    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
 
     with patch("time.sleep") as sleep_mock:
-        result = client.jobs.wait(job_id, timeout=60)
+        result = JobsAPI(client=mock_client).wait(job_id, timeout=60)
 
     assert result.status == "SUCCEEDED"
     assert result.result == {"value": "done"}
-    # Polled status thrice + fetched result once.
-    assert len(httpx_mock.get_requests()) == 4
+    # 3 status polls + 1 result fetch.
+    assert len(mock_client.calls) == 4
     assert sleep_mock.call_count >= 2
 
 
-@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
-def test_wait_raises_mesh_job_timeout_after_budget(
-    httpx_mock: Any,
-) -> None:
-    """wait() never blocks longer than `timeout` seconds. When the budget
+def test_wait_raises_mesh_job_timeout_after_budget(mock_client) -> None:
+    """wait() never blocks longer than ``timeout`` seconds. When the budget
     expires before the job reaches a terminal state, raise
-    MeshJobTimeoutError so customer code can branch on it."""
-    from kamiwaza.client import Kamiwaza
-    from kamiwaza.exceptions import MeshJobTimeoutError
+    MeshJobTimeoutError."""
+    from kamiwaza_sdk.exceptions import MeshJobTimeoutError
+    from kamiwaza_sdk.services.jobs_federation import JobsAPI
 
     job_id = "job-stuck"
-
-    for _ in range(50):
-        httpx_mock.add_response(
-            method="GET",
-            url=f"https://kamiwaza.test/api/cluster/jobs/{job_id}/status",
-            status_code=200,
-            json={"status": "RUNNING"},
-        )
-
-    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
+    mock_client.expect("GET", f"/cluster/jobs/{job_id}/status", {"status": "RUNNING"})
 
     fake_now = [0.0]
 
@@ -196,101 +128,69 @@ def test_wait_raises_mesh_job_timeout_after_budget(
     def fake_sleep(seconds: float) -> None:
         fake_now[0] += seconds
 
-    with patch("time.monotonic", side_effect=fake_monotonic):
-        with patch("time.sleep", side_effect=fake_sleep):
-            with pytest.raises(MeshJobTimeoutError):
-                client.jobs.wait(job_id, timeout=10)
+    with (
+        patch("time.monotonic", side_effect=fake_monotonic),
+        patch("time.sleep", side_effect=fake_sleep),
+        pytest.raises(MeshJobTimeoutError),
+    ):
+        JobsAPI(client=mock_client).wait(job_id, timeout=10)
 
 
-@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
-def test_wait_returns_failed_job_result(httpx_mock: Any) -> None:
+def test_wait_returns_failed_job_result(mock_client) -> None:
     """When the job reaches FAILED, wait() returns the JobResult with
     status=FAILED — does NOT raise. Customers branch on result.status."""
-    from kamiwaza.client import Kamiwaza
+    from kamiwaza_sdk.services.jobs_federation import JobsAPI
 
     job_id = "job-fail"
-
-    httpx_mock.add_response(
-        method="GET",
-        url=f"https://kamiwaza.test/api/cluster/jobs/{job_id}/status",
-        status_code=200,
-        json={"status": "FAILED"},
-    )
-    httpx_mock.add_response(
-        method="GET",
-        url=f"https://kamiwaza.test/api/cluster/jobs/{job_id}/result",
-        status_code=200,
-        json={
-            "job_id": job_id,
-            "status": "FAILED",
-            "error": "TypeError: bad arg",
-        },
+    mock_client.expect("GET", f"/cluster/jobs/{job_id}/status", {"status": "FAILED"})
+    mock_client.expect(
+        "GET",
+        f"/cluster/jobs/{job_id}/result",
+        {"job_id": job_id, "status": "FAILED", "error": "TypeError: bad arg"},
     )
 
-    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
-    result = client.jobs.wait(job_id, timeout=60)
+    result = JobsAPI(client=mock_client).wait(job_id, timeout=60)
 
     assert result.status == "FAILED"
     assert result.error == "TypeError: bad arg"
 
 
-@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
-def test_wait_returns_canceled_job_result(httpx_mock: Any) -> None:
-    """``CANCELED`` and ``STOPPED`` are also terminal states that should
-    return the JobResult to the caller (not raise). Existing tests
-    cover SUCCEEDED + FAILED only — this one nails down the
-    non-success terminal states from the design's _TERMINAL_STATES set."""
-    from kamiwaza.client import Kamiwaza
+def test_wait_returns_canceled_job_result(mock_client) -> None:
+    """CANCELED is terminal — return the JobResult, don't raise."""
+    from kamiwaza_sdk.services.jobs_federation import JobsAPI
 
     job_id = "job-canceled-1"
-
-    httpx_mock.add_response(
-        method="GET",
-        url=f"https://kamiwaza.test/api/cluster/jobs/{job_id}/status",
-        status_code=200,
-        json={"status": "CANCELED"},
-    )
-    httpx_mock.add_response(
-        method="GET",
-        url=f"https://kamiwaza.test/api/cluster/jobs/{job_id}/result",
-        status_code=200,
-        json={
-            "job_id": job_id,
-            "status": "CANCELED",
-            "error": None,
-        },
+    mock_client.expect("GET", f"/cluster/jobs/{job_id}/status", {"status": "CANCELED"})
+    mock_client.expect(
+        "GET",
+        f"/cluster/jobs/{job_id}/result",
+        {"job_id": job_id, "status": "CANCELED", "error": None},
     )
 
-    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
-    with patch("time.sleep"):  # don't actually sleep in tests
-        result = client.jobs.wait(job_id, timeout=60)
+    with patch("time.sleep"):
+        result = JobsAPI(client=mock_client).wait(job_id, timeout=60)
 
     assert result.status == "CANCELED"
     assert result.job_id == job_id
 
 
-@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
-def test_run_omits_target_cluster_from_body_when_local(httpx_mock: Any) -> None:
+def test_run_omits_target_cluster_from_body_when_local(mock_client) -> None:
     """When ``target_cluster`` is not provided, the SDK must not include
     a ``target_cluster`` key in the request body. The server reads the
-    presence of that key to route to a federated peer vs run locally —
-    silently passing ``None`` would change semantics."""
-    import json as _json
+    presence of that key to route — silently passing ``None`` would
+    change semantics."""
+    from kamiwaza_sdk.services.jobs_federation import JobsAPI
 
-    from kamiwaza.client import Kamiwaza
-
-    httpx_mock.add_response(
-        method="POST",
-        url="https://kamiwaza.test/api/cluster/jobs/run",
-        status_code=200,
-        json={"job_id": "local-1", "status": "SUCCEEDED", "result": "ok"},
+    mock_client.expect(
+        "POST",
+        "/cluster/jobs/run",
+        {"job_id": "local-1", "status": "SUCCEEDED", "result": "ok"},
     )
 
-    client = Kamiwaza(base_url="https://kamiwaza.test", token="pat-abc")
-    client.jobs.run(entrypoint="python script.py")
+    JobsAPI(client=mock_client).run(entrypoint="python script.py")
 
-    requests = httpx_mock.get_requests()
-    body = _json.loads(requests[0].read())
+    _method, _path, kwargs = mock_client.calls[0]
+    body = kwargs.get("json", {})
     assert body == {"entrypoint": "python script.py"}
     assert "target_cluster" not in body
     assert "runtime_env" not in body
