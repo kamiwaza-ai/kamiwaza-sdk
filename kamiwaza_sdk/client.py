@@ -20,13 +20,11 @@ from .services.serving import ServingService
 from .services.catalog import CatalogService
 from .services.prompts import PromptsService
 from .services.embedding import EmbeddingService
-from .services.cluster import ClusterService
 from .services.activity import ActivityService
 from .services.lab import LabService
 from .services.auth import AuthService
 from .services.authz import AuthzService
 from .authentication import Authenticator, ApiKeyAuthenticator
-from .services.retrieval import RetrievalService
 from .services.ingestion import IngestionService
 from .services.openai import OpenAIService
 from .services.apps import AppService
@@ -623,9 +621,67 @@ class KamiwazaClient:
 
     @property
     def cluster(self):
+        """Cluster operations — legacy CRUD + federation-aware surfaces.
+
+        Returns a ``ClusterAPI`` instance (T7.7 / ENG-5041 federation-aware
+        cluster service). ClusterAPI inherits from ClusterService, so
+        existing legacy methods (``list_locations``, ``list_clusters``, etc.)
+        continue to work alongside the M3+ methods (``capabilities``,
+        ``set_execution_gate``, ``declare_attribute``, etc.).
+        """
         if not hasattr(self, "_cluster"):
-            self._cluster = ClusterService(self)
+            from .services.cluster_federation import ClusterAPI
+
+            self._cluster = ClusterAPI(self)
         return self._cluster
+
+    # T7.5/T7.6/T7.8/T7.9/T7.10/T7.11 lazy-property wires for federation-aware
+    # services. Per OQ-16 design v0.3.7: lazy-load pattern applied consistently.
+
+    @property
+    def federations(self):
+        """Federation pairing + brokered-user management (T7.5 / ENG-5039)."""
+        if not hasattr(self, "_federations"):
+            from .services.federations import FederationsAPI
+
+            self._federations = FederationsAPI(self)
+        return self._federations
+
+    @property
+    def jobs(self):
+        """Federated job submission (T7.6 / ENG-5040)."""
+        if not hasattr(self, "_jobs"):
+            from .services.jobs_federation import JobsAPI
+
+            self._jobs = JobsAPI(self)
+        return self._jobs
+
+    @property
+    def subjects(self):
+        """AuthzSubjects + grants surface (T7.8 / ENG-5042)."""
+        if not hasattr(self, "_subjects"):
+            from .services.subjects import SubjectsAPI
+
+            self._subjects = SubjectsAPI(self)
+        return self._subjects
+
+    @property
+    def datasets(self):
+        """Catalog datasets + attribute-gate binding (T7.9 / ENG-5043)."""
+        if not hasattr(self, "_datasets"):
+            from .services.datasets import DatasetsAPI
+
+            self._datasets = DatasetsAPI(self)
+        return self._datasets
+
+    @property
+    def gates(self):
+        """Gate discovery (T7.10 / ENG-5044)."""
+        if not hasattr(self, "_gates"):
+            from .services.gates import GatesAPI
+
+            self._gates = GatesAPI(self)
+        return self._gates
 
     @property
     def activity(self):
@@ -659,8 +715,17 @@ class KamiwazaClient:
 
     @property
     def retrieval(self):
+        """Retrieval — legacy streaming surface + federation-aware list/cancel.
+
+        Returns a ``RetrievalAPI`` instance (T7.11 / ENG-5045). RetrievalAPI
+        inherits from RetrievalService, so existing legacy methods
+        (``create_job``, ``materialize``, ``stream_events``) continue to
+        work alongside the M3 methods (``list``, ``cancel``).
+        """
         if not hasattr(self, "_retrieval"):
-            self._retrieval = RetrievalService(self)
+            from .services.retrieval_federation import RetrievalAPI
+
+            self._retrieval = RetrievalAPI(self)
         return self._retrieval
 
     @property

@@ -25,11 +25,18 @@ from __future__ import annotations
 
 from typing import Any
 
-from .base_service import BaseService
+from .retrieval import RetrievalService
 
 
-class RetrievalAPI(BaseService):
-    """Retrieval job management on the local cluster (M3 surface)."""
+class RetrievalAPI(RetrievalService):
+    """Retrieval job management on the local cluster (M3 surface).
+
+    Inherits from ``RetrievalService`` (the legacy streaming/embedding
+    retrieval surface — ``create_job``, ``materialize``, ``stream_events``,
+    etc.) so a single ``client.retrieval`` attribute exposes both
+    surfaces — legacy streaming methods and the M3+ federation-aware
+    ``list`` / ``cancel`` methods below. No method-name collisions.
+    """
 
     def list(
         self,

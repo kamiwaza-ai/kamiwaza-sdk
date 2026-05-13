@@ -38,13 +38,22 @@ from ..schemas.federation import (
     FixOutcome,
     FixResult,
 )
-from .base_service import BaseService
+from .cluster import ClusterService
 
 _SEVERITY_ORDER = {"error": 0, "warning": 1, "info": 2}
 
 
-class ClusterAPI(BaseService):
-    """Top-level federation-aware cluster operations."""
+class ClusterAPI(ClusterService):
+    """Top-level federation-aware cluster operations.
+
+    Inherits from ``ClusterService`` (the legacy node/hardware/Ray cluster
+    CRUD surface) so a single ``client.cluster`` attribute exposes both
+    surfaces — legacy methods (``list_locations``, ``list_clusters``,
+    ``list_nodes``, etc.) and the M3+ federation-aware methods below
+    (``capabilities``, ``diagnose``, ``set_execution_gate``,
+    ``declare_attribute``, etc.). No method-name collisions: the two
+    surfaces are disjoint in their public APIs.
+    """
 
     def capabilities(self) -> ClusterCapabilities:
         """Return the local cluster's capabilities (T5.19 + T5.21).
