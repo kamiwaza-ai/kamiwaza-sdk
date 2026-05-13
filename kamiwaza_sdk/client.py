@@ -11,6 +11,7 @@ import requests  # type: ignore[import-untyped]
 from .exceptions import (
     APIError,
     AuthenticationError,
+    FederationPairTimeoutError,
     NonAPIResponseError,
     VectorDBUnavailableError,
 )
@@ -41,9 +42,75 @@ _AUTH_ERROR_DETAIL_TRUNCATED_SUFFIX = "... [truncated]"
 _VERIFY_SSL_FALSE_VALUES = {"false", "0", "no"}
 
 
-def _truncate_with_suffix(
-    value: str, max_len: int = _AUTH_ERROR_DETAIL_MAX_LEN
-) -> str:
+# ----------------------------------------------------------------------------
+# psk_propagation_timeout retry middleware (T7.4 / ENG-5038)
+#
+# Per design §4.2.1, the federation pair flow may return HTTP 503 with body
+# ``{"detail": {"reason": "psk_propagation_timeout"}}`` while DataHub is
+# still racing to make the freshly-stored PSK available to the receiver.
+# The SDK retries on the exponential schedule below, capped by a 90s
+# wall-clock budget so a stuck cluster cannot hang the SDK indefinitely.
+# On exhaustion, surfaces as FederationPairTimeoutError (typed) so customer
+# code can branch on the specific terminal failure.
+#
+# Ported from kamiwaza/client.py (httpx-based) to requests.Session
+# semantics per OQ-15 (transport stack stays on requests for v1.x; httpx
+# modernization deferred to v1.1+).
+# ----------------------------------------------------------------------------
+
+_RETRY_BACKOFF_SCHEDULE_SECONDS = (1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0)
+"""Upper-bound exponential backoff schedule. The wall-clock cap trims it.
+
+The schedule sums to 127s but the deadline check in ``_request`` short-
+circuits before the 64s entry would push total elapsed past 90s, so the
+effective tail is usually never slept on. Schedule kept deterministic so
+behavior is testable without a clock-injection layer."""
+
+_RETRY_WALL_CLOCK_BUDGET_SECONDS = 90.0
+"""Hard cap on total wall-clock time spent in psk_propagation_timeout retry."""
+
+_PSK_PROPAGATION_TIMEOUT_REASON = "psk_propagation_timeout"
+
+
+def _is_psk_propagation_timeout(response: Any) -> bool:
+    """Match the design §4.2.1 retry-eligible 503 shape exactly.
+
+    Server returns ``HTTPException(status_code=503, detail={"reason":
+    "psk_propagation_timeout", "elapsed_seconds": ..., "remediation": ...})``.
+    Status code is part of the match so a pathological non-503 with the
+    matching reason string doesn't trigger retry.
+    """
+    if response.status_code != 503:
+        return False
+    try:
+        body = response.json()
+    except (ValueError, AttributeError):
+        return False
+    if not isinstance(body, dict):
+        return False
+    detail = body.get("detail")
+    if not isinstance(detail, dict):
+        return False
+    return detail.get("reason") == _PSK_PROPAGATION_TIMEOUT_REASON
+
+
+def _psk_timeout_error_from_response(response: Any) -> FederationPairTimeoutError:
+    """Construct a typed FederationPairTimeoutError from the final retried
+    response when the wall-clock budget is exhausted. Carries the structured
+    body so customer code can inspect ``elapsed_seconds`` / ``remediation``."""
+    try:
+        body = response.json()
+    except (ValueError, AttributeError):
+        body = None
+    return FederationPairTimeoutError(
+        "Federation pair barrier timed out: psk_propagation_timeout persisted "
+        "past the 90s SDK retry budget.",
+        status_code=response.status_code,
+        body=body,
+    )
+
+
+def _truncate_with_suffix(value: str, max_len: int = _AUTH_ERROR_DETAIL_MAX_LEN) -> str:
     """Truncate ``value`` to ``max_len`` chars, appending a suffix when cut.
 
     A naked slice is ambiguous — a 500-char return is indistinguishable from
@@ -206,7 +273,10 @@ class KamiwazaClient:
     ) -> tuple[str | None, bool]:
         dataset_urn_for_schema: str | None = None
         params = kwargs.get("params")
-        if isinstance(params, dict) and path.rstrip("/") == "catalog/datasets/by-urn/schema":
+        if (
+            isinstance(params, dict)
+            and path.rstrip("/") == "catalog/datasets/by-urn/schema"
+        ):
             urn = params.get("urn")
             dataset_urn_for_schema = urn if isinstance(urn, str) and urn else None
 
@@ -242,11 +312,12 @@ class KamiwazaClient:
             )
 
         logger.warning(
-            f"Received 401 Unauthorized. Response: "
-            f"{_extract_server_detail(response)}"
+            f"Received 401 Unauthorized. Response: {_extract_server_detail(response)}"
         )
         if not self.authenticator:
-            raise AuthenticationError("Authentication failed. No authenticator provided.")
+            raise AuthenticationError(
+                "Authentication failed. No authenticator provided."
+            )
 
         can_refresh_attr = getattr(self.authenticator, "can_refresh", True)
         can_refresh = (
@@ -261,8 +332,7 @@ class KamiwazaClient:
                 f"{endpoint}: {_extract_server_detail(response)}"
             )
         raise AuthenticationError(
-            f"Authentication failed for {endpoint}: "
-            f"{_extract_server_detail(response)}"
+            f"Authentication failed for {endpoint}: {_extract_server_detail(response)}"
         )
 
     def _retry_dataset_schema_update(
@@ -321,7 +391,9 @@ class KamiwazaClient:
                     f"Your base URL is '{self.base_url}' - did you forget to append '/api'?"
                 )
 
-        message = f"API request failed with status {response.status_code}: {response_text}"
+        message = (
+            f"API request failed with status {response.status_code}: {response_text}"
+        )
         if response.status_code == 501 and (
             path.startswith("vectordb") or path.startswith("context/vectordb")
         ):
@@ -396,6 +468,13 @@ class KamiwazaClient:
         retry_idx = 0
         did_refresh = False
 
+        # T7.4 / ENG-5038: psk_propagation_timeout retry state per design §4.2.1.
+        # Deadline captures wall-clock budget at request entry; schedule_idx
+        # advances exactly once per retry so the (1, 2, 4, 8, 16, 32, 64)
+        # progression is preserved across the loop.
+        psk_deadline = time.monotonic() + _RETRY_WALL_CLOCK_BUDGET_SECONDS
+        psk_schedule_idx = 0
+
         while True:
             response = self._send_request(method, url, kwargs)
 
@@ -405,6 +484,18 @@ class KamiwazaClient:
                 )
                 did_refresh = True
                 continue
+
+            if _is_psk_propagation_timeout(response):
+                # Eligible for psk retry — sleep + continue if budget allows,
+                # otherwise raise the typed FederationPairTimeoutError so
+                # customer code can branch on the specific terminal failure.
+                if psk_schedule_idx < len(_RETRY_BACKOFF_SCHEDULE_SECONDS):
+                    delay = _RETRY_BACKOFF_SCHEDULE_SECONDS[psk_schedule_idx]
+                    if time.monotonic() + delay <= psk_deadline:
+                        time.sleep(delay)
+                        psk_schedule_idx += 1
+                        continue
+                raise _psk_timeout_error_from_response(response)
 
             if response.status_code >= 400:
                 should_retry, retry_idx = self._retry_dataset_schema_update(
