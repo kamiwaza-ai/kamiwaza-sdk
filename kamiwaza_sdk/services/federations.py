@@ -145,8 +145,15 @@ class FederationsAPI(BaseService):
                 f"Expected POST /api/cluster/federations to return a dict with 'id', "
                 f"got: {type(created).__name__}"
             )
-        federation_id = created["id"]
 
+        # Receivers wait for the initiator's /pair handshake — they don't
+        # call /pair themselves. The bash recipe (00_pair_federation.sh)
+        # creates a receiver-role record on the central cluster and stops
+        # there; only the initiator drives the handshake. Mirror that here.
+        if role == "receiver":
+            return Federation.model_validate(created)
+
+        federation_id = created["id"]
         paired = self.client._request(
             "POST",
             f"/api/cluster/federations/{federation_id}/pair",
