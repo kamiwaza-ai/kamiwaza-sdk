@@ -270,7 +270,10 @@ def run_publish(
         validate_digest,
     )
     from kamiwaza_extensions.profile_manager import ProfileManager
-    from kamiwaza_extensions.registry_builder import RegistryBuilder
+    from kamiwaza_extensions.registry_builder import (
+        RegistryBuilder,
+        resolve_extra_image,
+    )
     from kamiwaza_extensions.validators.compose import ComposeValidator
     from kamiwaza_extensions.validators.metadata import MetadataValidator
 
@@ -623,6 +626,25 @@ def run_publish(
                 _verify_supplied_digest(ref, digest)
         else:
             digest_map = _auto_resolve_digests(published_refs)
+
+    # Extras under our registry get the same tag-and-digest pinning as
+    # compose buildable services. External refs and author-pinned
+    # `@sha256:...` refs pass through untouched. Refs already in
+    # digest_map (e.g. the buildable service redundantly listed in extras
+    # when the user supplied `--digest`) are left alone — re-resolving
+    # would hit the registry and could overwrite an explicit user pin.
+    resolved_extras = [
+        resolve_extra_image(img, registry, version, stage)
+        for img in (info.metadata.get("extra_docker_images") or [])
+    ]
+    extras_to_resolve = [
+        r for r in resolved_extras
+        if r.startswith(f"{registry}/")
+        and "@" not in r
+        and r not in digest_map
+    ]
+    if extras_to_resolve:
+        digest_map.update(_auto_resolve_digests(extras_to_resolve))
 
     # 7. Build catalog entry
     reg_builder = RegistryBuilder()

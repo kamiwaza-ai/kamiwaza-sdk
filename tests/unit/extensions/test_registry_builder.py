@@ -167,7 +167,11 @@ class TestBuildEntry:
         assert entry["category"] == "chatbot"
         assert entry["verified"] is True
 
-    def test_extra_docker_images_appended(self, builder, transformed_compose):
+    def test_extra_docker_images_emitted_on_their_own_field(
+        self, builder, transformed_compose,
+    ):
+        # Extras live in their own catalog field; docker_images is
+        # compose-derived only. The two lists never merge.
         meta = {
             "name": "my-app",
             "description": "test",
@@ -176,9 +180,15 @@ class TestBuildEntry:
             "extra_docker_images": ["custom/sidecar:latest"],
         }
         entry = builder.build_entry(meta, transformed_compose, "reg", "1.0.0")
-        assert "custom/sidecar:latest" in entry["docker_images"]
+        assert entry["extra_docker_images"] == ["custom/sidecar:latest"]
+        # docker_images stays compose-derived only.
+        assert "custom/sidecar:latest" not in entry["docker_images"]
 
-    def test_extra_docker_images_deduped(self, builder):
+    def test_extra_docker_images_disjoint_from_docker_images(self, builder):
+        # If the same ref appears in compose AND extras, each list retains
+        # its own copy — no dedup across the two fields. They represent
+        # different intents (runtime service vs. additional pull manifest)
+        # and downstream consumers iterate them separately.
         compose = {"services": {"web": {"image": "custom/sidecar:latest"}}}
         meta = {
             "name": "my-app",
@@ -188,7 +198,175 @@ class TestBuildEntry:
             "extra_docker_images": ["custom/sidecar:latest"],
         }
         entry = builder.build_entry(meta, compose, "reg", "1.0.0")
-        assert entry["docker_images"].count("custom/sidecar:latest") == 1
+        assert entry["docker_images"] == ["custom/sidecar:latest"]
+        assert entry["extra_docker_images"] == ["custom/sidecar:latest"]
+
+    def test_no_extra_docker_images_field_when_metadata_omits_it(
+        self, builder, metadata, transformed_compose,
+    ):
+        entry = builder.build_entry(metadata, transformed_compose, "reg", "1.0.0")
+        assert "extra_docker_images" not in entry
+
+    # `{version}` in extra_docker_images entries must be substituted
+    # before reaching the catalog — same rewrite ComposeTransformer
+    # applies to compose service images.
+    def test_extra_docker_images_version_placeholder_substituted(
+        self, builder, transformed_compose,
+    ):
+        meta = {
+            "name": "kaizenv3",
+            "description": "test",
+            "source_type": "kamiwaza",
+            "visibility": "public",
+            "extra_docker_images": ["myreg/images/agent:{version}"],
+        }
+        entry = builder.build_entry(
+            meta, transformed_compose, "myreg/images", "1.8.13", stage="prod",
+        )
+        # No raw `{version}` placeholder reaches the catalog.
+        assert "myreg/images/agent:{version}" not in entry["extra_docker_images"]
+        assert "myreg/images/agent:1.8.13" in entry["extra_docker_images"]
+        # Extras stay out of docker_images.
+        assert all(
+            "agent" not in ref for ref in entry["docker_images"]
+        ), entry["docker_images"]
+
+    def test_extra_docker_images_stage_suffix_applied(
+        self, builder, transformed_compose,
+    ):
+        meta = {
+            "name": "kaizenv3",
+            "description": "test",
+            "source_type": "kamiwaza",
+            "visibility": "public",
+            "extra_docker_images": ["myreg/images/agent:{version}"],
+        }
+        for stage, expected_tag in [
+            ("prod", "1.8.13"),
+            ("dev", "1.8.13-dev"),
+            ("stage", "1.8.13-stage"),
+        ]:
+            entry = builder.build_entry(
+                meta, transformed_compose, "myreg/images", "1.8.13", stage=stage,
+            )
+            expected_ref = f"myreg/images/agent:{expected_tag}"
+            assert expected_ref in entry["extra_docker_images"], (
+                f"stage={stage}: expected {expected_ref} in extras, "
+                f"got {entry['extra_docker_images']}"
+            )
+            # Extras don't leak into docker_images regardless of stage.
+            assert expected_ref not in entry["docker_images"]
+
+    def test_extra_docker_images_external_ref_not_suffixed(
+        self, builder, transformed_compose,
+    ):
+        # Refs outside the configured registry namespace pass through
+        # untouched — postgres, redis, third-party sidecars, etc.
+        meta = {
+            "name": "my-app",
+            "description": "test",
+            "source_type": "kamiwaza",
+            "visibility": "public",
+            "extra_docker_images": [
+                "ghcr.io/external/sidecar:2.0",
+                "quay.io/org/util:{version}",
+            ],
+        }
+        entry = builder.build_entry(
+            meta, transformed_compose, "myreg/images", "1.8.13", stage="dev",
+        )
+        # External ref with no placeholder: untouched.
+        assert "ghcr.io/external/sidecar:2.0" in entry["extra_docker_images"]
+        # External ref with placeholder: substituted but NOT stage-suffixed.
+        # External tags aren't ours to rewrite.
+        assert "quay.io/org/util:1.8.13" in entry["extra_docker_images"]
+
+    def test_extra_docker_images_fixed_tag_under_registry_passthrough(
+        self, builder, transformed_compose,
+    ):
+        # A literal tag (no `{version}`) signals an independent release
+        # cadence — a vendored helper at its own version. Re-suffixing it
+        # would point at a tag this publish never built.
+        meta = {
+            "name": "my-app",
+            "description": "test",
+            "source_type": "kamiwaza",
+            "visibility": "public",
+            "extra_docker_images": ["myreg/images/shared-helper:0.5.0"],
+        }
+        for stage in ["dev", "stage", "prod"]:
+            entry = builder.build_entry(
+                meta, transformed_compose, "myreg/images", "1.8.13", stage=stage,
+            )
+            assert entry["extra_docker_images"] == [
+                "myreg/images/shared-helper:0.5.0"
+            ], f"stage={stage}: fixed tag should pass through verbatim"
+
+    def test_extra_docker_images_registry_with_port_untagged(
+        self, builder, transformed_compose,
+    ):
+        # OCI refs allow `:` in the host segment (registry port). For an
+        # untagged ref like `localhost:5000/org/agent`, the tag (if any)
+        # lives after the last `/`, not at the first `:`. Splitting on the
+        # leftmost colon would mangle the repository path.
+        meta = {
+            "name": "my-app",
+            "description": "test",
+            "source_type": "kamiwaza",
+            "visibility": "public",
+            "extra_docker_images": ["localhost:5000/org/agent:{version}"],
+        }
+        entry = builder.build_entry(
+            meta, transformed_compose, "localhost:5000/org", "1.8.13",
+            stage="dev",
+        )
+        assert entry["extra_docker_images"] == [
+            "localhost:5000/org/agent:1.8.13-dev"
+        ]
+
+    def test_extra_docker_images_digest_pinned_ref_passthrough(
+        self, builder, transformed_compose,
+    ):
+        # Already-digest-pinned refs are left exactly as-authored. Re-tagging
+        # would mismatch the digest and break the immutable-identity contract.
+        pinned = (
+            "myreg/images/agent:1.8.13-dev"
+            "@sha256:" + "a" * 64
+        )
+        meta = {
+            "name": "kaizenv3",
+            "description": "test",
+            "source_type": "kamiwaza",
+            "visibility": "public",
+            "extra_docker_images": [pinned],
+        }
+        entry = builder.build_entry(
+            meta, transformed_compose, "myreg/images", "1.8.13", stage="prod",
+        )
+        assert pinned in entry["extra_docker_images"]
+
+    def test_extra_docker_images_digest_pinned_when_in_digest_map(
+        self, builder, transformed_compose,
+    ):
+        # When the caller supplies a digest_map entry keyed by the
+        # post-substitution ref, build_entry pins the extra and emits it
+        # only via extra_docker_images.
+        digest = "sha256:" + "b" * 64
+        digest_map = {"myreg/images/agent:1.8.13-dev": digest}
+        meta = {
+            "name": "kaizenv3",
+            "description": "test",
+            "source_type": "kamiwaza",
+            "visibility": "public",
+            "extra_docker_images": ["myreg/images/agent:{version}"],
+        }
+        entry = builder.build_entry(
+            meta, transformed_compose, "myreg/images", "1.8.13", stage="dev",
+            digest_map=digest_map,
+        )
+        pinned_ref = f"myreg/images/agent:1.8.13-dev@{digest}"
+        assert entry["extra_docker_images"] == [pinned_ref]
+        assert pinned_ref not in entry["docker_images"]
 
 
 # ------------------------------------------------------------------
