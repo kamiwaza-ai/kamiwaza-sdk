@@ -437,6 +437,54 @@ class TestBump:
         assert data["engines"]["version"] == "2.0.14"  # untouched
 
     @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_kamiwaza_json_preserves_indent_and_unicode(
+        self, mock_detector_cls, tmp_path
+    ):
+        """A hand-authored manifest with 2-space indent and Unicode
+        description should not be reformatted by bump."""
+        kj = tmp_path / "kamiwaza.json"
+        original = (
+            '{\n'
+            '  "name": "test-app",\n'
+            '  "version": "2.0.14",\n'
+            '  "description": "Café ☕ tooling",\n'
+            '  "image": "ghcr.io/x/y:2.0.14"\n'
+            '}\n'
+        )
+        kj.write_text(original)
+        mock_detector_cls.return_value.detect.return_value = _make_extension_info(tmp_path, "2.0.14")
+
+        from kamiwaza_extensions.commands.bump import run_bump
+        run_bump(level="minor")
+
+        content = kj.read_text()
+        # Targeted rewrite — 2-space indent and the Unicode char survive.
+        assert '  "name": "test-app"' in content
+        assert "Café ☕ tooling" in content
+        assert '"version": "2.1.0"' in content
+        assert '"image": "ghcr.io/x/y:2.1.0"' in content
+
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_pyproject_header_with_comment(self, mock_detector_cls, tmp_path):
+        """A `[project]` header followed by a TOML comment should still
+        be located by the table-span scanner."""
+        _write_kamiwaza_json(tmp_path, "2.0.14")
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text(
+            '[project]  # main metadata\n'
+            'name = "x"\n'
+            'version = "2.0.14"\n'
+        )
+        mock_detector_cls.return_value.detect.return_value = _make_extension_info(tmp_path, "2.0.14")
+
+        from kamiwaza_extensions.commands.bump import run_bump
+        run_bump(level="minor")
+
+        content = pyproject.read_text()
+        assert 'version = "2.1.0"' in content
+        assert "[project]  # main metadata" in content
+
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
     def test_invalid_level_exits(self, mock_detector_cls, tmp_path):
         _write_kamiwaza_json(tmp_path)
         mock_detector_cls.return_value.detect.return_value = _make_extension_info(tmp_path)

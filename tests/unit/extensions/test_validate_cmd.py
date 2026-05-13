@@ -267,6 +267,23 @@ class TestVersionDrift:
         result = MetadataValidator().validate(Path(tmp_path / "kamiwaza.json"))
         assert any("OMNIPARSE_VERSION" in w for w in result.warnings)
 
+    def test_runtime_arg_drift_not_warned(self, tmp_path):
+        """Common third-party runtime ARGs (NODE_VERSION, ALPINE_VERSION,
+        …) intentionally don't track the extension's semver, so they
+        must not trigger drift warnings."""
+        from pathlib import Path
+        from kamiwaza_extensions.validators.metadata import MetadataValidator
+
+        (tmp_path / "kamiwaza.json").write_text(json.dumps(self._meta("2.1.0")))
+        (tmp_path / "Dockerfile").write_text(
+            "FROM node:20-alpine\n"
+            "ARG NODE_VERSION=20.11.1\n"
+            "ARG ALPINE_VERSION=3.19.1\n"
+        )
+        result = MetadataValidator().validate(Path(tmp_path / "kamiwaza.json"))
+        drift = [w for w in result.warnings if "drift" in w.lower()]
+        assert drift == []
+
     def test_pyproject_drift_warns(self, tmp_path):
         from pathlib import Path
         from kamiwaza_extensions.validators.metadata import MetadataValidator

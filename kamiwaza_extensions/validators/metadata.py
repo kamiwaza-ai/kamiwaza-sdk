@@ -26,6 +26,23 @@ _SEMVER_RE = re.compile(
 # Valid image extensions for preview_image
 _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp"}
 
+# Dockerfile ARGs that pin third-party runtime / base-image versions and
+# intentionally don't track the extension's own semver. Excluded from drift
+# checks so a clean Dockerfile doesn't emit noisy warnings.
+_RUNTIME_VERSION_ARGS = frozenset({
+    "NODE_VERSION",
+    "PYTHON_VERSION",
+    "ALPINE_VERSION",
+    "DEBIAN_VERSION",
+    "UBUNTU_VERSION",
+    "GO_VERSION",
+    "BUN_VERSION",
+    "RUBY_VERSION",
+    "RUST_VERSION",
+    "JAVA_VERSION",
+    "BASE_IMAGE_VERSION",
+})
+
 
 class KamiwazaMetadata(BaseModel):
     """Pydantic model for kamiwaza.json schema validation."""
@@ -199,10 +216,17 @@ def _check_version_drift(
             re.MULTILINE,
         )
         for match in arg_re.finditer(content):
+            name = match.group("name")
             value = match.group("value")
+            # Skip well-known third-party runtime ARGs — they pin
+            # interpreter/base-image versions that intentionally don't
+            # track the extension's own semver, so any "drift" against
+            # the manifest is noise.
+            if name in _RUNTIME_VERSION_ARGS:
+                continue
             if value != version and _looks_like_semver(value):
                 warnings.append(
-                    f"Version drift: Dockerfile ARG {match.group('name')}='{value}' "
+                    f"Version drift: Dockerfile ARG {name}='{value}' "
                     f"but kamiwaza.json version='{version}'"
                 )
 

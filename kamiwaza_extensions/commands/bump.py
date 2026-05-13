@@ -205,21 +205,48 @@ def _split_image_ref(ref: str) -> Tuple[str, Optional[str], Optional[str]]:
 def _update_kamiwaza_json(path: Path, old: str, new: str) -> Optional[FileUpdate]:
     before = path.read_text(encoding="utf-8")
     data = json.loads(before)
+    if data.get("version") != old:
+        # Manifest already drifted (or its detector value was different);
+        # fall back to writing through json.dumps so the file is at least
+        # internally consistent post-bump.
+        data["version"] = new
+        return FileUpdate(
+            path=path,
+            before=before,
+            after=json.dumps(data, indent=4) + "\n",
+            summary="version",
+        )
 
-    data["version"] = new
+    # Targeted rewrite of the top-level ``"version"`` string. Mirrors the
+    # package.json approach so a manifest with non-default indentation,
+    # key order, or non-ASCII content doesn't get a full-file reformat
+    # diff on bump.
+    span = _find_top_level_string_value_span(before, "version")
+    if span is None or before[span[0] : span[1]] != old:
+        # Pathological: top-level version isn't a string. Re-serialize.
+        data["version"] = new
+        return FileUpdate(
+            path=path,
+            before=before,
+            after=json.dumps(data, indent=4) + "\n",
+            summary="version",
+        )
+    after = before[: span[0]] + new + before[span[1] :]
 
+    # Conditional image-tag rewrite.
     image = data.get("image")
     image_changed = False
     if isinstance(image, str):
         repo, tag, digest = _split_image_ref(image)
         if tag == old:
-            data["image"] = f"{repo}:{new}{digest or ''}"
-            image_changed = True
+            new_image = f"{repo}:{new}{digest or ''}"
+            image_span = _find_top_level_string_value_span(after, "image")
+            if image_span is not None and after[image_span[0] : image_span[1]] == image:
+                after = after[: image_span[0]] + new_image + after[image_span[1] :]
+                image_changed = True
 
-    after = json.dumps(data, indent=4) + "\n"
     if after == before:
         return None
-
     summary = "version" + (" + image tag" if image_changed else "")
     return FileUpdate(path=path, before=before, after=after, summary=summary)
 
@@ -361,7 +388,9 @@ def _update_pyproject(path: Path, old: str, new: str) -> Optional[FileUpdate]:
     return FileUpdate(path=path, before=before, after=after, summary="[project] version")
 
 
-_TOML_SECTION_RE = re.compile(r"(?m)^\[([^\]\n]+)\]\s*$")
+# TOML allows a comment after a table header (`[project]  # main metadata`),
+# so match `]` followed by optional whitespace and an optional `# comment`.
+_TOML_SECTION_RE = re.compile(r"(?m)^\[([^\]\n]+)\]\s*(?:#.*)?$")
 
 
 def _find_project_table_span(text: str) -> Optional[Tuple[int, int]]:
