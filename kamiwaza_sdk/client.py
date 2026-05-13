@@ -260,6 +260,25 @@ class KamiwazaClient:
 
         # Don't authenticate during initialization - let it happen on first request
 
+    def close(self) -> None:
+        """Release the underlying requests.Session transport.
+
+        Idempotent — repeated close() calls are safe (Session.close()
+        does its own idempotency).
+        """
+        self.session.close()
+
+    def __enter__(self) -> "KamiwazaClient":
+        return self
+
+    def __exit__(
+        self,
+        _exc_type: Any,
+        _exc: Any,
+        _tb: Any,
+    ) -> None:
+        self.close()
+
     def _note_recent_dataset_change(self, dataset_urn: str) -> None:
         """Mark a dataset as recently created/updated for eventual-consistency retries."""
         if not isinstance(dataset_urn, str) or not dataset_urn:
