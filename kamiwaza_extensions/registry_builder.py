@@ -25,6 +25,14 @@ _STAGE_SUFFIXES = {
     "dev": "-dev",
 }
 
+# Matches compose ``${VAR:-default}`` and ``${VAR-default}`` env values.
+# ``${VAR}`` (no default) and ``${VAR:?error}`` (required) don't match —
+# they have no default to rewrite. ``[^}]+`` keeps the digest's leading
+# ``@sha256:...`` inside the captured default (no ``}`` in a digest).
+_ENV_DEFAULT_SUB_RE = re.compile(
+    r"\A(\$\{[A-Za-z_][A-Za-z0-9_]*:?-)([^}]+)(\})\Z"
+)
+
 # Lazy-initialized probe versions for constraint overlap detection.
 # Built on first use to avoid ~50ms import-time cost.
 _PROBE_VERSIONS: Optional[List[Version]] = None
@@ -94,6 +102,16 @@ class RegistryBuilder:
         """
         if digest_map:
             transformed_compose = _apply_digests(transformed_compose, digest_map)
+
+        # Env-var image refs (e.g. ``${AGENT_SERVER_IMAGE:-<reg>/agent:1.8.13}``)
+        # are a parallel surface to ``services[*].image``: dynamic-spawn
+        # targets that never appear as a compose service so ``_apply_digests``
+        # doesn't catch them. Rewrites are gated on *digest_map* membership
+        # (same source of truth ``_apply_digests`` uses) so an env default
+        # only gets restamped when this publish actually resolved that ref.
+        transformed_compose = _apply_env_image_rewrites(
+            transformed_compose, stage, digest_map
+        )
 
         # sort_keys=False preserves service key order from the source compose.
         # Downstream consumers infer primary-service selection from the order
@@ -430,6 +448,133 @@ def _apply_digests(
         if img and "@" not in img and img in digest_map:
             svc["image"] = f"{img}@{digest_map[img]}"
     return result
+
+
+def _apply_env_image_rewrites(
+    compose: Dict[str, Any],
+    stage: str,
+    digest_map: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
+    """Return a deep copy of *compose* with image refs in env values rewritten.
+
+    Walks ``services[*].environment`` (dict and list shapes) and rewrites
+    image refs to the stage-suffixed-and-digest-pinned form ONLY when the
+    post-suffix candidate ref appears as a key in *digest_map*. Caller's
+    *compose* dict is not mutated.
+
+    Sibling to :func:`_apply_digests` for the env-value surface. Kaizen's
+    ``${AGENT_SERVER_IMAGE:-<reg>/agent:1.8.13}`` default is the
+    motivating case: the agent image is referenced by env var because
+    the backend spawns sandbox pods dynamically, so the ref never appears
+    as a service ``image:`` field that ``_apply_digests`` would catch.
+
+    Contract: *digest_map* is the source of truth for "what this publish
+    actually resolved." Gating on its membership keeps env defaults from
+    pointing at refs the publish never produced — e.g. a vendored
+    ``shared-helper:0.5.0`` (independent release cadence) stays at
+    ``:0.5.0`` because ``:0.5.0-dev`` was never built or mirrored. Matches
+    the literal-tag-passthrough rule that :func:`resolve_extra_image`
+    enforces on the extras surface.
+    """
+    if not digest_map:
+        return copy.deepcopy(compose)
+    result = copy.deepcopy(compose)
+    for svc in (result.get("services") or {}).values():
+        env = svc.get("environment")
+        if isinstance(env, dict):
+            for key, val in env.items():
+                if isinstance(val, str):
+                    env[key] = _rewrite_env_image_ref(val, stage, digest_map)
+        elif isinstance(env, list):
+            for i, entry in enumerate(env):
+                if isinstance(entry, str) and "=" in entry:
+                    k, v = entry.split("=", 1)
+                    new_v = _rewrite_env_image_ref(v, stage, digest_map)
+                    if new_v != v:
+                        env[i] = f"{k}={new_v}"
+                elif isinstance(entry, dict):
+                    val = entry.get("value")
+                    if isinstance(val, str):
+                        entry["value"] = _rewrite_env_image_ref(
+                            val, stage, digest_map
+                        )
+    return result
+
+
+def _rewrite_env_image_ref(
+    value: str, stage: str, digest_map: Dict[str, str],
+) -> str:
+    """Apply stage suffix + digest pin to an image ref embedded in *value*.
+
+    Handles two shapes:
+
+    - ``${VAR:-<image>:<tag>}`` (or ``${VAR-default}``) — rewrites the
+      default while preserving the substitution form so a runtime
+      override still wins.
+    - Bare ``<image>:<tag>`` — rewrites in place.
+
+    Pass-through cases (none of which match *digest_map* membership):
+    non-image-shaped strings, already ``@sha256:``-pinned refs, refs
+    whose post-suffix candidate isn't in *digest_map*.
+    """
+    match = _ENV_DEFAULT_SUB_RE.match(value)
+    if match:
+        prefix, default, brace = match.group(1), match.group(2), match.group(3)
+        new_ref = _stage_and_pin_ref(default, stage, digest_map)
+        if new_ref == default:
+            return value
+        return f"{prefix}{new_ref}{brace}"
+    return _stage_and_pin_ref(value, stage, digest_map)
+
+
+def _stage_and_pin_ref(
+    ref: str, stage: str, digest_map: Dict[str, str],
+) -> str:
+    """Return ``ref@digest`` when the staged candidate is in *digest_map*.
+
+    Returns *ref* unchanged when:
+
+    - The ref is already digest-pinned (``@sha256:...``).
+    - The post-suffix candidate isn't a key in *digest_map* — either the
+      ref points outside our published surface (external image, vendored
+      helper) or the publish didn't resolve it.
+
+    Stage suffixes: known built-ins (``-dev``/``-stage``) are stripped
+    before reapplying so re-publishes round-trip cleanly. Custom-stage
+    suffixes aren't stripped (a tracked gap; same behavior in
+    :func:`resolve_extra_image`).
+    """
+    if "@" in ref:
+        return ref
+
+    # Literal-tag refs in `extra_docker_images` (no `{version}` placeholder)
+    # round-trip through ``resolve_extra_image`` unchanged and land in
+    # ``digest_map`` keyed by the literal ref — no stage suffix applied.
+    # When the same ref shows up as an env default, pin against the literal
+    # key first so the env value matches what extras emit. Mirrors the
+    # "independent release cadence" semantics ``resolve_extra_image`` uses.
+    if ref in digest_map:
+        return f"{ref}@{digest_map[ref]}"
+
+    suffix = _STAGE_SUFFIXES.get(stage, f"-{stage}")
+    # Split on the last `:` after the final `/`; an earlier `:` is a
+    # registry port (e.g. ``localhost:5000/org/agent:tag``).
+    slash = ref.rfind("/")
+    if slash == -1:
+        return ref
+    last_segment = ref[slash + 1:]
+    if ":" in last_segment:
+        colon = last_segment.index(":")
+        name = ref[: slash + 1 + colon]
+        tag = last_segment[colon + 1:]
+        clean_tag = re.sub(r"-(dev|stage)$", "", tag)
+    else:
+        name, clean_tag = ref, "latest"
+
+    candidate = f"{name}:{clean_tag}{suffix}"
+    if candidate in digest_map:
+        return f"{candidate}@{digest_map[candidate]}"
+    return ref
 
 
 def resolve_extra_image(

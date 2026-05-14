@@ -478,6 +478,124 @@ class TestPublishExtrasDigestResolution:
 
 
 # ------------------------------------------------------------------
+# Env-var image refs: compose default matches extras (ENG-5260)
+# ------------------------------------------------------------------
+
+
+class TestPublishEnvImageRefsAgreeWithExtras:
+    """For a kaizen-shaped extension (env-var image ref + extras entry for
+    the same dynamic-spawn image), the published compose's env default
+    must agree with the extras list — same stage suffix, same digest."""
+
+    @patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher")
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher")
+    @patch("kamiwaza_extensions.image_builder.ImageBuilder")
+    @patch("kamiwaza_extensions.profile_manager.ProfileManager")
+    @patch("kamiwaza_extensions.validators.compose.ComposeValidator")
+    @patch("kamiwaza_extensions.validators.metadata.MetadataValidator")
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_env_default_matches_extras_entry_end_to_end(
+        self,
+        mock_detector_cls,
+        mock_meta_validator_cls,
+        mock_compose_validator_cls,
+        mock_profile_mgr_cls,
+        mock_builder_cls,
+        mock_pusher_cls,
+        mock_publisher_cls,
+        tmp_path,
+    ):
+        # Real ComposeTransformer + RegistryBuilder; only the I/O
+        # boundary is mocked. The published apps.json entry's compose_yml
+        # env default and extra_docker_images entry must agree on tag +
+        # digest for the same dynamic-spawn image.
+        import yaml as _yaml
+
+        metadata = {
+            "name": "kaizenv3",
+            "version": "1.8.13",
+            "description": "Kaizen v3",
+            "extra_docker_images": ["ghcr.io/my-org/images/agent:{version}"],
+        }
+        compose_data = {
+            "services": {
+                "backend": {
+                    "build": {"context": "."},
+                    "image": "ghcr.io/my-org/kaizenv3-backend:1.8.13",
+                    "ports": ["8000"],
+                    "environment": {
+                        "AGENT_SERVER_IMAGE":
+                            "${AGENT_SERVER_IMAGE:-ghcr.io/my-org/images/agent:1.8.13}",
+                    },
+                },
+            },
+        }
+        mock_detector = MagicMock()
+        mock_detector.detect.return_value = _make_extension_info(
+            tmp_path,
+            name="kaizenv3",
+            version="1.8.13",
+            metadata=metadata,
+            compose_data=compose_data,
+        )
+        mock_detector_cls.return_value = mock_detector
+
+        mock_meta_validator = MagicMock()
+        mock_meta_validator.validate.return_value = _make_validation_result()
+        mock_meta_validator_cls.return_value = mock_meta_validator
+
+        mock_compose_validator = MagicMock()
+        mock_compose_validator.validate.return_value = _make_validation_result()
+        mock_compose_validator_cls.return_value = mock_compose_validator
+
+        mock_profile_mgr = MagicMock()
+        mock_profile_mgr.resolve_profile.return_value = _make_profile()
+        mock_profile_mgr_cls.return_value = mock_profile_mgr
+
+        mock_image_builder = MagicMock()
+        mock_image_builder.build.return_value = [
+            "ghcr.io/my-org/kaizenv3-backend:1.8.13-dev",
+        ]
+        mock_builder_cls.return_value = mock_image_builder
+
+        agent_digest = "sha256:" + "b" * 64
+        digest_by_ref = {
+            "ghcr.io/my-org/kaizenv3-backend:1.8.13-dev": "sha256:" + "a" * 64,
+            "ghcr.io/my-org/images/agent:1.8.13-dev": agent_digest,
+        }
+        mock_pusher_cls.resolve_digest.side_effect = lambda ref: digest_by_ref[ref]
+
+        mock_publisher = MagicMock()
+        mock_publisher.publish.return_value = _make_publish_result(
+            extension_name="kaizenv3", version="1.8.13",
+        )
+        mock_publisher_cls.return_value = mock_publisher
+
+        from kamiwaza_extensions.commands.publish import run_publish
+
+        run_publish(stage="dev")
+
+        # Grab the entry the publisher would have written to the catalog.
+        publish_kwargs = mock_publisher.publish.call_args.kwargs
+        entry = publish_kwargs["entry"]
+        compose_out = _yaml.safe_load(entry["compose_yml"])
+        env_default = compose_out["services"]["backend"]["environment"][
+            "AGENT_SERVER_IMAGE"
+        ]
+
+        # Acceptance: the canonical pinned ref appears in BOTH surfaces.
+        expected_ref = f"ghcr.io/my-org/images/agent:1.8.13-dev@{agent_digest}"
+        assert entry["extra_docker_images"] == [expected_ref]
+        assert expected_ref in env_default, (
+            f"compose env default {env_default!r} must reference the same "
+            f"pinned ref as extras ({expected_ref!r})"
+        )
+        # The ${VAR:-...} shape is preserved so runtime overrides still win.
+        assert env_default.startswith("${AGENT_SERVER_IMAGE:-")
+        assert env_default.endswith("}")
+
+
+# ------------------------------------------------------------------
 # Dry-run mode
 # ------------------------------------------------------------------
 
