@@ -547,6 +547,15 @@ def _stage_and_pin_ref(
     if "@" in ref:
         return ref
 
+    # Literal-tag refs in `extra_docker_images` (no `{version}` placeholder)
+    # round-trip through ``resolve_extra_image`` unchanged and land in
+    # ``digest_map`` keyed by the literal ref — no stage suffix applied.
+    # When the same ref shows up as an env default, pin against the literal
+    # key first so the env value matches what extras emit. Mirrors the
+    # "independent release cadence" semantics ``resolve_extra_image`` uses.
+    if ref in digest_map:
+        return f"{ref}@{digest_map[ref]}"
+
     suffix = _STAGE_SUFFIXES.get(stage, f"-{stage}")
     # Split on the last `:` after the final `/`; an earlier `:` is a
     # registry port (e.g. ``localhost:5000/org/agent:tag``).

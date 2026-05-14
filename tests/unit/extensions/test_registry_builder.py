@@ -706,6 +706,92 @@ class TestBuildEntryEnvImageRewrites:
             "build_entry mutated the caller's compose dict"
         )
 
+    def test_literal_key_in_digest_map_pins_without_suffix(self, builder):
+        # JohnBot H1: when extras has a literal-tag ref (no `{version}`
+        # opt-in), resolve_extra_image returns it unchanged and run_publish
+        # resolves a digest keyed by the literal ref. The env default for
+        # the same image must pin against that literal key — re-suffixing
+        # would point at a ref the publish never produced. This is the
+        # exact extras-vs-env divergence the PR was meant to close.
+        literal_digest = "sha256:" + "1" * 64
+        # digest_map is keyed by the LITERAL ref (no stage suffix), as
+        # `_auto_resolve_digests` does when extras come in as a literal tag.
+        digest_map = {"myreg/images/shared-helper:0.5.0": literal_digest}
+        compose = _kaizen_shaped_compose(
+            "${HELPER_IMAGE:-myreg/images/shared-helper:0.5.0}"
+        )
+        meta = self._meta(
+            extra_docker_images=["myreg/images/shared-helper:0.5.0"],
+        )
+        entry = builder.build_entry(
+            meta, compose, "myreg/images", "1.8.13",
+            stage="dev", digest_map=digest_map,
+        )
+        # Extras emit `:0.5.0@sha256:...` (literal pin).
+        extras_ref = f"myreg/images/shared-helper:0.5.0@{literal_digest}"
+        assert entry["extra_docker_images"] == [extras_ref]
+        # Env default agrees — same ref, same digest, no stage suffix.
+        compose_out = yaml.safe_load(entry["compose_yml"])
+        env_default = compose_out["services"]["backend"]["environment"][
+            "AGENT_SERVER_IMAGE"
+        ]
+        assert env_default == (
+            "${HELPER_IMAGE:-"
+            f"myreg/images/shared-helper:0.5.0@{literal_digest}}}"
+        )
+
+    def test_no_tag_bare_ref_defaults_to_latest_candidate(self, builder):
+        # JohnBot M4: a bare ref with no `:tag` falls back to `:latest`
+        # when computing the candidate. Locks behavior; matches Docker
+        # CLI semantics. Tag-less refs in the wild are uncommon but legal.
+        latest_dev_digest = "sha256:" + "2" * 64
+        digest_map = {"myreg/images/agent:latest-dev": latest_dev_digest}
+        compose = _kaizen_shaped_compose(
+            "${AGENT_SERVER_IMAGE:-myreg/images/agent}"
+        )
+        entry = builder.build_entry(
+            self._meta(), compose, "myreg/images", "1.8.13",
+            stage="dev", digest_map=digest_map,
+        )
+        compose_out = yaml.safe_load(entry["compose_yml"])
+        assert compose_out["services"]["backend"]["environment"][
+            "AGENT_SERVER_IMAGE"
+        ] == (
+            "${AGENT_SERVER_IMAGE:-"
+            f"myreg/images/agent:latest-dev@{latest_dev_digest}}}"
+        )
+
+    def test_nested_substitution_left_alone(self, builder):
+        # The default-sub regex is anchored end-to-end, so embedded
+        # ${...} inside a larger string doesn't match — the value
+        # passes through verbatim. Locks regex behavior.
+        compose = _kaizen_shaped_compose(
+            "prefix-${INNER:-myreg/images/agent:1.8.13}-suffix"
+        )
+        entry = builder.build_entry(
+            self._meta(), compose, "myreg/images", "1.8.13",
+            stage="dev", digest_map=self._AGENT_DEV_MAP,
+        )
+        compose_out = yaml.safe_load(entry["compose_yml"])
+        assert compose_out["services"]["backend"]["environment"][
+            "AGENT_SERVER_IMAGE"
+        ] == "prefix-${INNER:-myreg/images/agent:1.8.13}-suffix"
+
+    def test_whitespace_padded_substitution_left_alone(self, builder):
+        # Leading/trailing whitespace in an env value breaks the
+        # anchored default-sub match. Locks the regex's strict behavior.
+        compose = _kaizen_shaped_compose(
+            "  ${AGENT_SERVER_IMAGE:-myreg/images/agent:1.8.13}  "
+        )
+        entry = builder.build_entry(
+            self._meta(), compose, "myreg/images", "1.8.13",
+            stage="dev", digest_map=self._AGENT_DEV_MAP,
+        )
+        compose_out = yaml.safe_load(entry["compose_yml"])
+        assert compose_out["services"]["backend"]["environment"][
+            "AGENT_SERVER_IMAGE"
+        ] == "  ${AGENT_SERVER_IMAGE:-myreg/images/agent:1.8.13}  "
+
     def test_env_value_matches_extra_docker_images_entry(self, builder):
         # The acceptance criterion: for kaizen-shaped input (env-var
         # default + extra_docker_images for the same image), the
