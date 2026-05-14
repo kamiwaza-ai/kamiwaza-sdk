@@ -337,6 +337,173 @@ class TestEnvParsing:
         assert builder._parse_env({}) == []
 
 
+class TestServiceOverrides:
+    def test_x_kamiwaza_overrides_are_carried_into_service_spec(
+        self, builder, metadata, connection
+    ):
+        transformed = {
+            "services": {
+                "postgres": {
+                    "image": "postgres:15",
+                    "ports": ["5432"],
+                    "x-kamiwaza": {
+                        "containerSecurityContext": {
+                            "runAsNonRoot": False,
+                            "runAsUser": 0,
+                            "readOnlyRootFilesystem": False,
+                        },
+                        "healthCheck": {"tcpSocket": {"port": 5432}},
+                    },
+                },
+                "sandbox-controller": {
+                    "image": "reg/sandbox-controller:dev",
+                    "ports": ["8085"],
+                    "x-kamiwaza": {"automountServiceAccountToken": True},
+                },
+            },
+        }
+
+        payload = builder.build(metadata, transformed, connection, "my-app-dev-abc")
+        services = {svc.name: svc.model_dump() for svc in payload.services}
+
+        assert services["postgres"]["containerSecurityContext"] == {
+            "runAsNonRoot": False,
+            "runAsUser": 0,
+            "readOnlyRootFilesystem": False,
+        }
+        assert services["postgres"]["healthCheck"] == {"tcpSocket": {"port": 5432}}
+        assert services["sandbox-controller"]["automountServiceAccountToken"] is True
+
+    def test_kubernetes_sandbox_controller_emits_sandbox_spec(
+        self, builder, metadata, connection
+    ):
+        transformed = {
+            "services": {
+                "sandbox-controller": {
+                    "image": "reg/sandbox-controller:dev",
+                    "ports": ["8085"],
+                    "environment": {
+                        "SANDBOX_BACKEND": "kubernetes",
+                        "SANDBOX_NAMESPACE": "kamiwaza-sandboxes",
+                        "SANDBOX_ALLOWED_IMAGE_PREFIXES": "ghcr.io/openhands/,ghcr.io/acme/agent",
+                        "SANDBOX_RESOURCE_CPU_REQUEST": "50m",
+                        "SANDBOX_RESOURCE_CPU_LIMIT": "2",
+                        "SANDBOX_RESOURCE_MEMORY_REQUEST": "512Mi",
+                        "SANDBOX_RESOURCE_MEMORY_LIMIT": "4Gi",
+                    },
+                }
+            },
+        }
+
+        payload = builder.build(metadata, transformed, connection, "my-app-dev-abc")
+
+        assert (payload.model_extra or {})["sandbox"] == {
+            "enabled": True,
+            "service_name": "sandbox-controller",
+            "namespace": "kamiwaza-sandboxes",
+            "image_whitelist": ["ghcr.io/openhands/", "ghcr.io/acme/agent"],
+            "resources": {
+                "requests": {"cpu": "50m", "memory": "512Mi"},
+                "limits": {"cpu": "2", "memory": "4Gi"},
+            },
+        }
+
+
+    def test_non_kubernetes_backend_emits_no_sandbox_spec(
+        self, builder, metadata, connection
+    ):
+        transformed = {
+            "services": {
+                "sandbox-controller": {
+                    "image": "reg/sandbox-controller:dev",
+                    "ports": ["8085"],
+                    "environment": {"SANDBOX_BACKEND": "docker"},
+                }
+            },
+        }
+        payload = builder.build(metadata, transformed, connection, "my-app-dev-abc")
+        assert "sandbox" not in (payload.model_extra or {})
+
+    def test_no_sandbox_backend_emits_no_sandbox_spec(
+        self, builder, metadata, connection
+    ):
+        transformed = {
+            "services": {
+                "worker": {"image": "reg/worker:dev", "ports": ["8000"]},
+            },
+        }
+        payload = builder.build(metadata, transformed, connection, "my-app-dev-abc")
+        assert "sandbox" not in (payload.model_extra or {})
+
+    def test_declared_metadata_sandbox_overrides_env_inference(
+        self, builder, connection
+    ):
+        meta = {
+            "name": "my-app",
+            "type": "app",
+            "version": "1.0.0",
+            "sandbox": {
+                "enabled": True,
+                "service_name": "explicit-controller",
+                "namespace": "explicit-ns",
+            },
+        }
+        transformed = {
+            "services": {
+                "sandbox-controller": {
+                    "image": "reg/sandbox-controller:dev",
+                    "ports": ["8085"],
+                    "environment": {
+                        "SANDBOX_BACKEND": "kubernetes",
+                        "SANDBOX_NAMESPACE": "inferred-ns",
+                    },
+                }
+            },
+        }
+        payload = builder.build(meta, transformed, connection, "my-app-dev-abc")
+        assert (payload.model_extra or {})["sandbox"] == {
+            "enabled": True,
+            "service_name": "explicit-controller",
+            "namespace": "explicit-ns",
+        }
+
+    def test_persistence_accepts_common_truthy_strings(
+        self, builder, metadata, connection
+    ):
+        for truthy in ("true", "1", "yes", "on", "TRUE"):
+            transformed = {
+                "services": {
+                    "sandbox-controller": {
+                        "image": "reg/sandbox-controller:dev",
+                        "ports": ["8085"],
+                        "environment": {
+                            "SANDBOX_BACKEND": "kubernetes",
+                            "SANDBOX_PERSISTENCE": truthy,
+                        },
+                    }
+                },
+            }
+            payload = builder.build(
+                metadata, transformed, connection, "my-app-dev-abc"
+            )
+            sandbox = (payload.model_extra or {})["sandbox"]
+            assert sandbox["persistence"] is True, f"failed for {truthy!r}"
+
+    def test_automount_false_is_preserved(self, builder, metadata, connection):
+        transformed = {
+            "services": {
+                "worker": {
+                    "image": "reg/worker:dev",
+                    "ports": ["8000"],
+                    "x-kamiwaza": {"automountServiceAccountToken": False},
+                }
+            },
+        }
+        payload = builder.build(metadata, transformed, connection, "my-app-dev-abc")
+        services = {svc.name: svc.model_dump() for svc in payload.services}
+        assert services["worker"]["automountServiceAccountToken"] is False
+
+
 class TestDevNaming:
     def test_format(self):
         name = PayloadBuilder.make_dev_name("my-app", user_id="user-123")

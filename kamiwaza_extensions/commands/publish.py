@@ -2,15 +2,127 @@
 
 from __future__ import annotations
 
+import copy
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import typer
+import yaml
 from rich.console import Console
 
+from kamiwaza_extensions.catalog_publisher import DEFAULT_CATALOG_SCHEMA
+from kamiwaza_extensions.compose_transformer import (
+    _canonical_build_ref,
+    compute_canonical_refs,
+)
 from kamiwaza_extensions.extension_detector import infer_extension_type
 
 console = Console(stderr=True)
+
+
+APPGARDEN_COMPOSE_FILENAME = "docker-compose.appgarden.yml"
+
+
+def _load_appgarden_compose(
+    ext_dir: Path,
+) -> Optional[Tuple[Path, Dict[str, Any]]]:
+    """Return ``(path, data)`` for the extension's authored appgarden compose, or None.
+
+    ``docker-compose.appgarden.yml`` is the deployment-ready compose
+    produced by an extension's ``sync-compose.py`` (or equivalent). When
+    present it is the source of truth for catalog publishing — it
+    carries extension-specific transformations (env-shape tweaks,
+    hostname rewrites, etc.) that kz-ext's generic ``ComposeTransformer``
+    doesn't replicate.
+
+    Falls back to None (caller continues with the generic transform
+    against ``docker-compose.yml``) when the file is missing, unparseable,
+    or doesn't decode to a mapping.
+    """
+    candidate = ext_dir / APPGARDEN_COMPOSE_FILENAME
+    if not candidate.exists():
+        return None
+    try:
+        data = yaml.safe_load(candidate.read_text())
+    except yaml.YAMLError as exc:
+        console.print(
+            f"[yellow]Warning:[/yellow] failed to parse "
+            f"{APPGARDEN_COMPOSE_FILENAME}: {exc} — falling back to "
+            "docker-compose.yml + generic transform"
+        )
+        return None
+    if not isinstance(data, dict):
+        console.print(
+            f"[yellow]Warning:[/yellow] {APPGARDEN_COMPOSE_FILENAME} did not "
+            "decode to a mapping — falling back to docker-compose.yml"
+        )
+        return None
+    return candidate, data
+
+
+def _retag_appgarden_compose(
+    appgarden_data: Dict[str, Any],
+    source_compose_data: Optional[Dict[str, Any]],
+    *,
+    extension_name: str,
+    image_tag: str,
+    registry: str,
+) -> Dict[str, Any]:
+    """Rewrite image tags on services that this publish actually owns.
+
+    A service is "owned" by this publish if it has a ``build:`` block in
+    the source ``docker-compose.yml`` and is *not* gated by ``profiles:``
+    (i.e. ``ImageBuilder`` will build and push an image for it; this
+    mirrors the ``buildable_services`` filter ``run_publish`` uses to
+    derive ``published_refs``/``digest_map``). For those services we set
+    ``image: {registry}/{ext}-{svc}:{image_tag}`` so the catalog points
+    at the image we just built with the resolved ``--stage`` / ``--revision``
+    tag. External refs (``ghcr.io/.../neo4j``) and any service the
+    extension's ``sync-compose.py`` invented are passed through verbatim.
+
+    The appgarden file is otherwise considered deployment-ready by the
+    extension's authoring intent and passed through unchanged: host port
+    bindings, bind mounts, ``extra_hosts``, ``container_name``,
+    top-level ``networks``, env-value placeholders, and the
+    ``_ensure_resource_limits`` defaults that ``ComposeTransformer``
+    used to backfill are NOT applied here. ``sync-compose.py`` owns that
+    shape; if a service is missing ``deploy.resources.limits``,
+    ``ComposeValidator`` will surface the warning and the catalog ships
+    without the auto-fill.
+    """
+    out = copy.deepcopy(appgarden_data)
+    source_services = (
+        source_compose_data.get("services") or {}
+        if isinstance(source_compose_data, dict)
+        else {}
+    )
+    # Mirror `buildable_services` (publish.py): exclude `profiles:`-gated
+    # services. Without this filter, a `build: + profiles:` service that
+    # leaks into the authored appgarden file would be retagged into the
+    # catalog while being absent from `published_refs`/`digest_map` — a
+    # local-only ref shipping with no corresponding push.
+    build_services = {
+        name
+        for name, svc in source_services.items()
+        if isinstance(svc, dict) and "build" in svc and not svc.get("profiles")
+    }
+    for svc_name, svc in (out.get("services") or {}).items():
+        if not isinstance(svc, dict):
+            continue
+        if svc_name in build_services:
+            # The appgarden compose's image field is the canonical
+            # declaration of where this build's image lives in the
+            # registry — set by the extension's sync-compose.py from
+            # its docker-compose.yml. We only own the *tag* (stage
+            # suffix or --revision SHA); the namespace stays what the
+            # extension authored.
+            svc["image"] = _canonical_build_ref(
+                svc, svc_name,
+                fallback_registry=registry,
+                fallback_extension_name=extension_name,
+                revision_tag=image_tag,
+            )
+    return out
 
 
 def _infer_extension_type(metadata: Dict[str, Any]) -> str:
@@ -58,18 +170,75 @@ def _collect_buildable_image_names(
     return names
 
 
-def _collect_image_refs(
-    compose_data: Dict[str, Any],
-    extension_name: str,
-    version: str,
-    registry: str,
-) -> List[str]:
-    """Return full image refs for services with build contexts."""
-    refs: List[str] = []
-    for svc_name, svc in (compose_data.get("services") or {}).items():
-        if "build" in svc:
-            refs.append(f"{registry}/{extension_name}-{svc_name}:{version}")
-    return refs
+def _verify_supplied_digest(ref: str, supplied: str) -> None:
+    """Resolve *ref* in the registry and abort if it disagrees with *supplied*.
+
+    Catches CI typos, stale digests, and the TOCTOU window where a
+    parallel run re-pointed the tag between our push and our publish.
+    Caller must guarantee the image was just pushed (i.e. ``no_push`` is
+    False) — otherwise the registry isn't authoritative for what we
+    intended to publish.
+    """
+    from kamiwaza_extensions.exit_codes import ExitCode
+    from kamiwaza_extensions.image_pusher import ImagePushError, ImagePusher
+
+    try:
+        actual = ImagePusher.resolve_digest(ref)
+    except ImagePushError as exc:
+        console.print(f"\n[red]Error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+    if actual != supplied:
+        console.print(
+            f"\n[red]Error:[/red] supplied --digest does not match "
+            f"the registry manifest for {ref}.\n"
+            f"  supplied: {supplied}\n"
+            f"  registry: {actual}\n"
+            "Re-run with the correct digest, or omit --digest to "
+            "auto-resolve."
+        )
+        raise typer.Exit(code=int(ExitCode.VALIDATION))
+
+
+def _auto_resolve_digests(
+    refs: List[str],
+) -> Dict[str, str]:
+    """Resolve registry digests for each *ref* and return ``{ref: digest}``.
+
+    Aborts the publish on any resolution failure. Silent degradation to
+    tag-only entries (the previous behavior in ``--no-build --no-push``
+    mode) hid upstream image-name mismatches that produced unpullable
+    catalog refs (ENG-4909), and a transient registry hiccup was
+    indistinguishable from a legitimate "docker not on host" fall-through.
+    """
+    from rich.markup import escape as escape_markup
+
+    from kamiwaza_extensions.image_pusher import ImagePushError, ImagePusher
+
+    digest_map: Dict[str, str] = {}
+    for ref in refs:
+        try:
+            digest_map[ref] = ImagePusher.resolve_digest(ref)
+        except ImagePushError as exc:
+            # Markup-escape the dynamic parts so a registry error message
+            # containing literal ``[`` (rare but possible) can't garble the
+            # error output via rich's tag parser.
+            safe_ref = escape_markup(ref)
+            safe_exc = escape_markup(str(exc))
+            console.print(
+                f"\n[red]Error:[/red] could not resolve digest for "
+                f"[bold]{safe_ref}[/bold]: {safe_exc}\n\n"
+                "The image must exist in the registry before catalog publish.\n"
+                "Common causes:\n"
+                "  • Image name in docker-compose.appgarden.yml doesn't "
+                "match the actual registry image path\n"
+                "  • Image hasn't been pushed yet (run with build+push, "
+                "or push manually first)\n"
+                "  • Transient registry outage (retry the publish)\n"
+                "  • To pin a known digest without registry lookup, pass "
+                "--digest sha256:..."
+            )
+            raise typer.Exit(code=1) from exc
+    return digest_map
 
 
 def run_publish(
@@ -81,6 +250,8 @@ def run_publish(
     no_push: bool = False,
     verbose: bool = False,
     revision: Optional[str] = None,
+    digest: Optional[str] = None,
+    catalog_schema: int = DEFAULT_CATALOG_SCHEMA,
 ) -> None:
     """Build, push, and publish extension to catalog."""
     from kamiwaza_extensions.catalog_publisher import (
@@ -93,7 +264,11 @@ def run_publish(
     from kamiwaza_extensions.exit_codes import ExitCode
     from kamiwaza_extensions.extension_detector import ExtensionDetector
     from kamiwaza_extensions.image_builder import ImageBuilder, ImageBuildError
-    from kamiwaza_extensions.image_pusher import ImagePusher, ImagePushError
+    from kamiwaza_extensions.image_pusher import (
+        ImagePushError,
+        ImagePusher,
+        validate_digest,
+    )
     from kamiwaza_extensions.profile_manager import ProfileManager
     from kamiwaza_extensions.registry_builder import RegistryBuilder
     from kamiwaza_extensions.validators.compose import ComposeValidator
@@ -111,6 +286,20 @@ def run_publish(
             console.print(f"[red]Error:[/red] {exc}")
             raise typer.Exit(code=int(ExitCode.VALIDATION)) from exc
 
+    # Same fail-fast intent for --digest: reject malformed input before any
+    # build/push side effects. Format guard only — buildable-count check
+    # happens after compose data is loaded.
+    if digest is not None:
+        try:
+            validate_digest(digest)
+        except ValueError as exc:
+            # The exception text contains the user-supplied digest verbatim;
+            # rich console treats `[…]` as markup, so disable interpretation
+            # to avoid silent stripping or a markup-injection vector.
+            console.print("[red]Error:[/red] ", end="")
+            console.print(str(exc), markup=False)
+            raise typer.Exit(code=int(ExitCode.VALIDATION)) from exc
+
     # 1. Detect extension
     detector = ExtensionDetector()
     info = detector.detect()
@@ -118,6 +307,62 @@ def run_publish(
     if info.compose_data is None:
         console.print("[red]Error:[/red] No docker-compose.yml found.")
         raise typer.Exit(code=1)
+
+    # Prefer the extension's authored appgarden compose when present. It
+    # is the deployment-ready output of the extension's `sync-compose.py`
+    # and carries extension-specific transformations kz-ext's generic
+    # ComposeTransformer doesn't replicate (ENG-4907). Source compose
+    # is still used below for ImageBuilder and the buildable-services
+    # derivation — those care about `build:` contexts and host shape.
+    appgarden_pair = _load_appgarden_compose(info.path)
+    if appgarden_pair is not None:
+        publish_compose_path, appgarden_data = appgarden_pair
+    else:
+        publish_compose_path = info.compose_path
+        appgarden_data = None
+
+    # Buildable services that will actually be published. Mirrors
+    # ComposeTransformer's `profiles:` filter — services with a profiles
+    # key are local-only and stripped before catalog construction, so
+    # they don't count for buildable-count or hazard checks.
+    buildable_services = [
+        name
+        for name, svc in (info.compose_data.get("services") or {}).items()
+        if "build" in svc and not svc.get("profiles")
+    ]
+
+    # ENG-4370: --digest pins identity for one image. Multi-image extensions
+    # must rely on auto-resolve (the per-service push digest), so reject the
+    # ambiguous case before doing any work.
+    if digest is not None and len(buildable_services) != 1:
+        found = ", ".join(buildable_services) if buildable_services else "none"
+        console.print(
+            f"[red]Error:[/red] --digest requires exactly one buildable "
+            f"service in docker-compose.yml; found {len(buildable_services)} "
+            f"({found}). Omit --digest to auto-resolve per-service digests."
+        )
+        raise typer.Exit(code=int(ExitCode.VALIDATION))
+
+    # Auto-resolve queries the registry post-build. Built-but-not-pushed
+    # leaves the registry stale (or empty), so the resolved digest would
+    # either error or silently pin the *previous* push.
+    # Force the user to either push, skip the build, or supply --digest.
+    # Skipped under: dry-run (no build/push happens), and external-only
+    # extensions (no buildable services means no hazard).
+    if (
+        not dry_run
+        and not no_build
+        and no_push
+        and digest is None
+        and buildable_services
+    ):
+        console.print(
+            "[red]Error:[/red] --no-push without --no-build cannot pin a "
+            "catalog digest — the just-built image is only in your local "
+            "daemon. Push first, pass --no-build to publish-only against "
+            "the existing registry tag, or supply --digest explicitly."
+        )
+        raise typer.Exit(code=int(ExitCode.VALIDATION))
 
     version = info.version
     ext_type = _infer_extension_type(info.metadata)
@@ -137,7 +382,7 @@ def run_publish(
     meta_result = meta_validator.validate(info.path / "kamiwaza.json")
 
     compose_validator = ComposeValidator()
-    compose_result = compose_validator.validate(info.compose_path, info.path)
+    compose_result = compose_validator.validate(publish_compose_path, info.path)
 
     all_errors = meta_result.errors[:]
     all_warnings = meta_result.warnings[:]
@@ -192,13 +437,45 @@ def run_publish(
     else:
         image_tag = f"{version}-{stage}"
 
-    # 4. Transform compose (uses the stage-aware image tag)
-    transformer = ComposeTransformer()
-    transformed = transformer.transform(
-        info.compose_data,
+    # 4. Build the catalog-ready compose (uses the stage-aware image tag).
+    # When the extension supplied an authored appgarden compose, that file
+    # is the source of truth — we only retag the services we actually
+    # built. Otherwise run the generic ComposeTransformer against the
+    # source docker-compose.yml.
+    if appgarden_data is not None:
+        transformed = _retag_appgarden_compose(
+            appgarden_data,
+            info.compose_data,
+            extension_name=info.name,
+            image_tag=image_tag,
+            registry=registry,
+        )
+    else:
+        transformer = ComposeTransformer()
+        transformed = transformer.transform(
+            info.compose_data,
+            extension_name=info.name,
+            revision_tag=image_tag,
+            registry=registry,
+        )
+
+    # Canonical image refs for every build-context service. Single
+    # source of truth shared with the build, push, digest resolution,
+    # and catalog-write paths so they can't drift. Derived once here
+    # before the dry-run branch so the preview reflects exactly what
+    # the live path would produce — appgarden namespace precedence and
+    # profile-gating included.
+    appgarden_services = (
+        (appgarden_data or {}).get("services") or {}
+        if isinstance(appgarden_data, dict)
+        else {}
+    )
+    canonical_refs: Dict[str, str] = compute_canonical_refs(
+        info.compose_data.get("services") or {},
+        registry=registry,
         extension_name=info.name,
         revision_tag=image_tag,
-        registry=registry,
+        appgarden_services=appgarden_services,
     )
 
     # -- Dry-run path (still runs merge check to detect conflicts) --
@@ -211,6 +488,15 @@ def run_publish(
         )
         console.print(f"  Would push to:         {registry}/")
 
+        # Dry-run preview reflects an explicit --digest; auto-resolve
+        # is skipped because a dry-run shouldn't talk to the registry.
+        # Mirrors the live path's published_refs derivation: pin against
+        # the buildable_services-derived ref so a profiled helper that
+        # appears first in dict order can't redirect the user's digest.
+        dry_digest_map: Dict[str, str] = {}
+        if digest is not None and buildable_services:
+            dry_digest_map[canonical_refs[buildable_services[0]]] = digest
+
         # Run merge check so dry-run detects version conflicts
         reg_builder = RegistryBuilder()
         entry = reg_builder.build_entry(
@@ -220,9 +506,14 @@ def run_publish(
             version=version,
             stage=stage,
             revision=revision,
+            digest_map=dry_digest_map or None,
         )
         try:
-            publisher = CatalogPublisher(profile, extension_dir=info.path)
+            publisher = CatalogPublisher(
+                profile,
+                catalog_schema=catalog_schema,
+                extension_dir=info.path,
+            )
             result = publisher.publish(
                 entry=entry,
                 extension_type=ext_type,
@@ -257,6 +548,7 @@ def run_publish(
                 revision_tag=image_tag,
                 registry=registry,
                 verbose=verbose,
+                image_refs=canonical_refs,
             )
         except ImageBuildError as exc:
             console.print("    [red]\u2717 build failed[/red]")
@@ -271,9 +563,20 @@ def run_publish(
             console.print("    [yellow]![/yellow] No images to build")
     else:
         console.print("  [dim]Skipping build (--no-build)[/dim]")
-        image_refs = _collect_image_refs(
-            info.compose_data, info.name, image_tag, registry
-        )
+        image_refs = list(canonical_refs.values())
+
+    # 5.5 Preflight: digest resolution post-push needs `docker buildx
+    # imagetools`. If buildx is missing on this host, fail before mutating
+    # the registry rather than push-then-fail-on-resolve. Only required
+    # when push will happen and there's at least one published service to
+    # pin — the catalog-only-republish path (`--no-build --no-push`)
+    # doesn't push, so the preflight is moot there.
+    if not no_push and buildable_services:
+        try:
+            ImagePusher.check_buildx_available()
+        except ImagePushError as exc:
+            console.print(f"\n[red]Error:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
 
     # 6. Push images (same stage-aware tag)
     if not no_push and image_refs:
@@ -301,6 +604,26 @@ def run_publish(
     elif no_push:
         console.print("  [dim]Skipping push (--no-push)[/dim]")
 
+    # Catalog refs are pinned `image:tag@sha256:...` so they're immutable
+    # regardless of tag mutability. published_refs is derived from
+    # buildable_services (which excludes profile-only services per
+    # ComposeTransformer's filter), so a profiled helper appearing first
+    # in image_refs cannot misdirect the digest map. Pass-through external
+    # refs keep whatever pinning their source repo applied.
+    published_refs: List[str] = [
+        canonical_refs[name] for name in buildable_services
+    ]
+    digest_map: Dict[str, str] = {}
+    if published_refs:
+        if digest is not None:
+            # Single-buildable invariant guaranteed by validation above.
+            ref = published_refs[0]
+            digest_map[ref] = digest
+            if not no_push:
+                _verify_supplied_digest(ref, digest)
+        else:
+            digest_map = _auto_resolve_digests(published_refs)
+
     # 7. Build catalog entry
     reg_builder = RegistryBuilder()
     entry = reg_builder.build_entry(
@@ -310,6 +633,7 @@ def run_publish(
         version=version,
         stage=stage,
         revision=revision,
+        digest_map=digest_map or None,
     )
 
     # 8. Publish to catalog
@@ -317,7 +641,11 @@ def run_publish(
     preview_image_path = _resolve_preview_image(info.metadata, info.path)
 
     try:
-        publisher = CatalogPublisher(profile, extension_dir=info.path)
+        publisher = CatalogPublisher(
+            profile,
+            catalog_schema=catalog_schema,
+            extension_dir=info.path,
+        )
         result = publisher.publish(
             entry=entry,
             extension_type=ext_type,
@@ -348,6 +676,12 @@ def run_publish(
     console.print(
         f"Published [bold]{info.name}[/bold] v{version} to {profile.catalog_bucket}"
     )
-    if image_refs:
-        console.print(f"  Images:  {', '.join(image_refs)}")
+    if published_refs:
+        # Show what's actually in the catalog (post-profile-filter), pinned
+        # where digest_map carries an entry.
+        pinned = [
+            f"{r}@{digest_map[r]}" if r in digest_map else r
+            for r in published_refs
+        ]
+        console.print(f"  Images:  {', '.join(pinned)}")
     console.print(f"  Catalog: {result.catalog_file}")

@@ -332,7 +332,6 @@ class TestLockReleaseOnError:
 
         # Lock succeeds, backup empty, download empty, then upload raises
         call_count = [0]
-        original_put = mock_s3.put_object
 
         def put_object_side_effect(**kwargs):
             call_count[0] += 1
@@ -407,6 +406,75 @@ class TestCredentialResolution:
         profile = _make_profile(catalog_credentials="magic-auth")
         with pytest.raises(ValueError, match="Unknown credential spec"):
             CatalogPublisher(profile)
+
+
+# ------------------------------------------------------------------
+# Catalog schema version → garden path
+# ------------------------------------------------------------------
+
+
+class TestCatalogSchemaGardenPath:
+    """``catalog_schema`` selects the ``garden/v{N}/`` path. Default is 3."""
+
+    @patch("boto3.Session")
+    def test_default_catalog_schema_is_v3(self, mock_session_cls):
+        from kamiwaza_extensions.catalog_publisher import CatalogPublisher
+
+        publisher = CatalogPublisher(_make_profile())
+
+        assert publisher._garden_dir == "garden/v3/"
+
+    @patch("boto3.Session")
+    def test_explicit_v2_uses_legacy_path(self, mock_session_cls):
+        from kamiwaza_extensions.catalog_publisher import CatalogPublisher
+
+        publisher = CatalogPublisher(_make_profile(), catalog_schema=2)
+
+        assert publisher._garden_dir == "garden/v2/"
+
+    @patch("boto3.Session")
+    def test_explicit_v3_matches_default(self, mock_session_cls):
+        from kamiwaza_extensions.catalog_publisher import CatalogPublisher
+
+        publisher = CatalogPublisher(_make_profile(), catalog_schema=3)
+
+        assert publisher._garden_dir == "garden/v3/"
+
+    @patch("boto3.Session")
+    def test_catalog_prefix_prepended_to_garden_path(self, mock_session_cls):
+        from kamiwaza_extensions.catalog_publisher import CatalogPublisher
+
+        profile = _make_profile(catalog_prefix="staging")
+        publisher = CatalogPublisher(profile, catalog_schema=3)
+
+        assert publisher._garden_dir == "staging/garden/v3/"
+
+
+# ------------------------------------------------------------------
+# Catalog schema bounds check (fail fast on typos / unsupported values)
+# ------------------------------------------------------------------
+
+
+class TestCatalogSchemaValidation:
+    """``catalog_schema`` must be in ``SUPPORTED_CATALOG_SCHEMAS``."""
+
+    def test_zero_rejected(self):
+        from kamiwaza_extensions.catalog_publisher import CatalogPublisher
+
+        with pytest.raises(ValueError, match="Unsupported catalog_schema"):
+            CatalogPublisher(_make_profile(), catalog_schema=0)
+
+    def test_negative_rejected(self):
+        from kamiwaza_extensions.catalog_publisher import CatalogPublisher
+
+        with pytest.raises(ValueError, match="Unsupported catalog_schema"):
+            CatalogPublisher(_make_profile(), catalog_schema=-1)
+
+    def test_unknown_future_version_rejected(self):
+        from kamiwaza_extensions.catalog_publisher import CatalogPublisher
+
+        with pytest.raises(ValueError, match="Unsupported catalog_schema"):
+            CatalogPublisher(_make_profile(), catalog_schema=99)
 
 
 # ------------------------------------------------------------------

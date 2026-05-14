@@ -594,3 +594,131 @@ class TestBuildPatchKwargsCarriesAnnotations:
             payload=self._payload_with_annotations(None, kamiwaza=None),
         )
         assert "kamiwaza" not in kwargs
+
+    def test_carries_sandbox_spec_so_patch_refreshes_sandbox_contract(self):
+        """jxstanford PR #97 review H1: the existing CR persists from
+        the original CREATE. If the developer toggles
+        ``SANDBOX_BACKEND=kubernetes`` on or changes namespace/whitelist
+        on a redeploy, PATCH must carry the new ``sandbox`` block so
+        the operator can refresh sandbox RBAC. Without this carry-
+        forward, sandbox config edits silently no-op until the user
+        delete+recreates the extension."""
+        from kamiwaza_extensions.commands.dev import _build_patch_kwargs
+
+        class _FakePayload:
+            model_extra = {
+                "sandbox": {
+                    "enabled": True,
+                    "service_name": "sandbox-controller",
+                    "namespace": "kamiwaza-sandboxes",
+                }
+            }
+            kamiwaza = None
+
+        kwargs = _build_patch_kwargs(
+            patch_services=["svc"], payload=_FakePayload()
+        )
+        assert kwargs["sandbox"] == {
+            "enabled": True,
+            "service_name": "sandbox-controller",
+            "namespace": "kamiwaza-sandboxes",
+        }
+
+    def test_omits_sandbox_when_payload_has_none(self):
+        from kamiwaza_extensions.commands.dev import _build_patch_kwargs
+
+        kwargs = _build_patch_kwargs(
+            patch_services=["svc"],
+            payload=self._payload_with_annotations(None),
+        )
+        assert "sandbox" not in kwargs
+
+    def test_patch_service_specs_forwards_x_kamiwaza_overrides(self):
+        """jxstanford PR #97 review H2: per-service overrides
+        (healthCheck, automountServiceAccountToken,
+        containerSecurityContext) must ride PATCH so the operator
+        refreshes them on existing CRs after iterative redeploys."""
+        from kamiwaza_sdk.schemas.extensions import ExtensionServiceSpec
+
+        from kamiwaza_extensions.commands.dev import _build_patch_service_specs
+
+        class _FakePayload:
+            services = [
+                ExtensionServiceSpec(
+                    name="postgres",
+                    image="postgres:15",
+                    healthCheck={"tcpSocket": {"port": 5432}},
+                    containerSecurityContext={
+                        "runAsNonRoot": False,
+                        "runAsUser": 0,
+                    },
+                ),
+                ExtensionServiceSpec(
+                    name="sandbox-controller",
+                    image="reg/sc:dev",
+                    automountServiceAccountToken=True,
+                ),
+                ExtensionServiceSpec(name="frontend", image="reg/fe:dev"),
+            ]
+
+        specs = _build_patch_service_specs(_FakePayload())
+        by_name = {s.name: s for s in specs}
+
+        pg_extra = by_name["postgres"].model_extra or {}
+        assert pg_extra["healthCheck"] == {"tcpSocket": {"port": 5432}}
+        assert pg_extra["containerSecurityContext"] == {
+            "runAsNonRoot": False,
+            "runAsUser": 0,
+        }
+        assert "automountServiceAccountToken" not in pg_extra
+
+        sc_extra = by_name["sandbox-controller"].model_extra or {}
+        assert sc_extra["automountServiceAccountToken"] is True
+        assert "healthCheck" not in sc_extra
+        assert "containerSecurityContext" not in sc_extra
+
+        fe_extra = by_name["frontend"].model_extra or {}
+        assert "healthCheck" not in fe_extra
+        assert "automountServiceAccountToken" not in fe_extra
+        assert "containerSecurityContext" not in fe_extra
+
+    def test_patch_service_specs_preserves_automount_false(self):
+        """``automountServiceAccountToken=False`` is a meaningful
+        explicit setting (deny token mount). The ``is not None`` check
+        in the helper must preserve it, not skip it as falsy."""
+        from kamiwaza_sdk.schemas.extensions import ExtensionServiceSpec
+
+        from kamiwaza_extensions.commands.dev import _build_patch_service_specs
+
+        class _FakePayload:
+            services = [
+                ExtensionServiceSpec(
+                    name="worker",
+                    image="reg/worker:dev",
+                    automountServiceAccountToken=False,
+                ),
+            ]
+
+        specs = _build_patch_service_specs(_FakePayload())
+        assert (specs[0].model_extra or {})["automountServiceAccountToken"] is False
+
+    def test_patchextension_accepts_sandbox_via_extra_allow(self):
+        """Sanity: PatchExtension must accept the sandbox kwarg via
+        ``extra="allow"``."""
+        from kamiwaza_sdk.schemas.extensions import PatchExtension, PatchServiceSpec
+
+        from kamiwaza_extensions.commands.dev import _build_patch_kwargs
+
+        class _FakePayload:
+            model_extra = {"sandbox": {"enabled": True, "service_name": "sc"}}
+            kamiwaza = None
+
+        kwargs = _build_patch_kwargs(
+            patch_services=[PatchServiceSpec(name="x")],
+            payload=_FakePayload(),
+        )
+        patch = PatchExtension(**kwargs)
+        assert (patch.model_extra or {}).get("sandbox") == {
+            "enabled": True,
+            "service_name": "sc",
+        }

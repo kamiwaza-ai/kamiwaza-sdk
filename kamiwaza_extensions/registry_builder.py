@@ -9,6 +9,7 @@ with version-constraint-aware conflict resolution.
 
 from __future__ import annotations
 
+import copy
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -57,6 +58,7 @@ class RegistryBuilder:
         version: str,
         stage: str = "prod",
         revision: Optional[str] = None,
+        digest_map: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """Generate a catalog entry dict from *metadata* and *transformed_compose*.
 
@@ -77,47 +79,81 @@ class RegistryBuilder:
             revision: Optional revision identifier. When provided, included
                 as a top-level ``revision`` field on the entry; consumed by
                 ``CatalogDedupGuard`` to make CI re-publishes idempotent.
+            digest_map: Optional mapping of rewritten image ref
+                (``"<registry>/<ext>-<svc>:<tag>"``) to its OCI manifest
+                digest (``"sha256:..."``). When provided, matching service
+                ``image`` fields in the rendered ``compose_yml`` and the
+                ``docker_images`` list are rewritten to ``ref@digest`` for
+                immutable identity (ENG-4370). Refs not in the map (e.g.
+                pass-through external/postgres images, prebuilt-internal
+                images) are left untouched.
 
         Returns:
             A dict matching the Kamiwaza catalog entry schema.
         """
-        compose_yml = yaml.dump(transformed_compose, default_flow_style=False)
+        if digest_map:
+            transformed_compose = _apply_digests(transformed_compose, digest_map)
+
+        # sort_keys=False preserves service key order from the source compose.
+        # Downstream consumers infer primary-service selection from the order
+        # services appear in compose, so alphabetizing here silently flips
+        # which service the platform routes to.
+        compose_yml = yaml.dump(
+            transformed_compose, default_flow_style=False, sort_keys=False
+        )
         docker_images = self.extract_docker_images(transformed_compose)
 
         extra_images = metadata.get("extra_docker_images") or []
         if extra_images:
+            # Apply the same digest-pinning rule to extras so a service
+            # ref that's redundantly listed in `extra_docker_images`
+            # collapses against its already-pinned compose copy during
+            # dedup, instead of leaking an unpinned duplicate.
+            #
+            # Match is exact-string against the post-stage-suffix ref
+            # (e.g. `<reg>/<ext>-<svc>:<version>-dev`); a pre-suffix
+            # entry like `<reg>/<ext>-<svc>:<version>` won't collapse.
+            # Author the entry to match what compose carries after
+            # transform.
+            if digest_map:
+                extra_images = [
+                    f"{img}@{digest_map[img]}"
+                    if img in digest_map and "@" not in img
+                    else img
+                    for img in extra_images
+                ]
             docker_images = list(dict.fromkeys(docker_images + extra_images))
 
-        entry: Dict[str, Any] = {
-            "name": metadata.get("name", ""),
-            "version": version,
-            "description": metadata.get("description", ""),
-            "source_type": metadata.get("source_type", "kamiwaza"),
-            "visibility": metadata.get("visibility", "public"),
-            "compose_yml": compose_yml,
-            "docker_images": docker_images,
-        }
+        # Source kamiwaza.json is the catalog contract: every top-level
+        # field the developer authored reaches the catalog entry. The
+        # platform's _update_template_from_remote
+        # (kamiwaza/serving/garden/apps/templates.py) reads
+        # env_defaults, required_env_vars, capabilities, display_name,
+        # strip_path_prefix, and friends via `.get(field, default)` —
+        # any field a slim entry omits silently degrades to {} / [] /
+        # None on the platform side, breaking required-env validation,
+        # env-default injection, and UI metadata. Curating the entry
+        # down to a known-fields subset has bitten us before; don't.
+        entry: Dict[str, Any] = copy.deepcopy(metadata)
+        entry["name"] = metadata.get("name", "")
+        entry["version"] = version
+        entry.setdefault("description", "")
+        entry.setdefault("source_type", "kamiwaza")
+        entry.setdefault("visibility", "public")
+        entry["compose_yml"] = compose_yml
+        entry["docker_images"] = docker_images
 
+        # `revision` is owned exclusively by the publish-time parameter,
+        # never by source kamiwaza.json. Pop first so a stale value in
+        # metadata (or a catalog entry re-fed as metadata) can't leak
+        # through and trip CatalogDedupGuard with a revision that was
+        # never used to tag the images.
+        entry.pop("revision", None)
         if revision is not None:
             entry["revision"] = revision
 
-        # Optional fields -- only include when present in metadata.
-        kamiwaza_version = metadata.get("kamiwaza_version")
-        if kamiwaza_version:
-            entry["kamiwaza_version"] = kamiwaza_version
-
-        preview_image = metadata.get("preview_image")
-        if preview_image:
-            entry["preview_image"] = _normalize_preview_image(preview_image)
-
-        risk_tier = metadata.get("risk_tier")
-        if risk_tier is not None:
-            entry["risk_tier"] = risk_tier
-
-        for optional_key in ("tags", "category", "verified"):
-            val = metadata.get(optional_key)
-            if val is not None:
-                entry[optional_key] = val
+        if entry.get("preview_image"):
+            entry["preview_image"] = _normalize_preview_image(entry["preview_image"])
 
         return entry
 
@@ -227,6 +263,13 @@ class RegistryBuilder:
 
         If *extension_name* is empty, falls back to matching all images
         with the *registry* prefix (legacy behaviour).
+
+        Refs of the form ``image:tag@sha256:<digest>`` keep the digest;
+        only the tag portion is rewritten. Digest-only refs of the form
+        ``image@sha256:<digest>`` (no tag) are left untouched — the
+        repo-path char class excludes ``@`` so the regex can't capture
+        ``@sha256`` as part of the service name and treat the hex as a
+        tag.
         """
         suffix = _STAGE_SUFFIXES.get(stage, f"-{stage}")
         new_tag = f"{version}{suffix}"
@@ -234,17 +277,20 @@ class RegistryBuilder:
 
         if extension_name:
             escaped_ext = re.escape(extension_name)
-            # Only match: registry/extension-name-service:tag
+            # Only match: registry/extension-name-service:tag[@sha256:...]
             pattern = re.compile(
-                rf"(image:\s*){escaped_reg}/({escaped_ext}-[^:\s]+):([^\s]+)"
+                rf"(image:\s*){escaped_reg}/({escaped_ext}-[^:\s@]+)"
+                rf":([^\s@]+)(@sha256:[a-f0-9]{{64}})?"
             )
-            return pattern.sub(rf"\g<1>{registry}/\2:{new_tag}", compose_yml)
+            return pattern.sub(
+                rf"\g<1>{registry}/\2:{new_tag}\g<4>", compose_yml,
+            )
 
         # Fallback: match any image with the registry prefix
         pattern = re.compile(
-            rf"(image:\s*){escaped_reg}(/[^:\s]+):([^\s]+)"
+            rf"(image:\s*){escaped_reg}(/[^:\s@]+):([^\s@]+)(@sha256:[a-f0-9]{{64}})?"
         )
-        return pattern.sub(rf"\g<1>{registry}\2:{new_tag}", compose_yml)
+        return pattern.sub(rf"\g<1>{registry}\2:{new_tag}\g<4>", compose_yml)
 
     def extract_docker_images(
         self, compose_data_or_yml: Any,
@@ -362,6 +408,25 @@ class RegistryBuilder:
 # ------------------------------------------------------------------
 # Module-level helpers
 # ------------------------------------------------------------------
+
+
+def _apply_digests(
+    compose: Dict[str, Any], digest_map: Dict[str, str],
+) -> Dict[str, Any]:
+    """Return a deep copy of *compose* with image refs digest-pinned.
+
+    For each ``services[*].image`` whose value matches a key in
+    *digest_map* and does not already carry a ``@`` digest suffix,
+    rewrite the value to ``"<image>@<digest>"``. Other refs (external
+    pass-through, prebuilt-internal, already-digest-pinned) are left
+    untouched. Caller's *compose* dict is not mutated.
+    """
+    result = copy.deepcopy(compose)
+    for svc in (result.get("services") or {}).values():
+        img = svc.get("image")
+        if img and "@" not in img and img in digest_map:
+            svc["image"] = f"{img}@{digest_map[img]}"
+    return result
 
 
 def _normalize_preview_image(path: str) -> str:

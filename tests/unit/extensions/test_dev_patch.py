@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -55,9 +55,6 @@ class TestDeployPatchLogic:
         client.extensions.create_extension.return_value = _make_ext("Pending")
 
         payload = _make_payload()
-
-        # Simulate the deploy logic
-        from kamiwaza_sdk.schemas.extensions import ImagePatch, PatchExtension, PatchServiceSpec
 
         try:
             client.extensions.get_extension("myapp-dev-abc123")
@@ -143,3 +140,77 @@ class TestDeployPatchLogic:
             else:
                 tag = "latest"
             assert tag == expected_tag, f"For image '{image}' expected '{expected_tag}' got '{tag}'"
+
+
+class TestBuildPatchServiceSpecs:
+    """`_build_patch_service_specs` must populate all three of
+    ImagePatch.{registry, repository, tag} so the operator updates the
+    CR's full image field on redeploy. Tag-only would leave the
+    existing CR pointing at its original repository — an
+    ImagePullBackOff every time the canonical ref's repository differs
+    from what the CR holds (e.g. SDK upgrade from pre-fix kz-ext, or
+    declared image namespace change between deploys)."""
+
+    def _payload(self, image: str):
+        return CreateExtension(
+            name="myapp-dev-abc123",
+            type="app",
+            version="1.0.0",
+            services=[
+                ExtensionServiceSpec(name="backend", image=image, primary=True, ports=[]),
+            ],
+        )
+
+    def test_canonical_ghcr_ref_populates_all_three_fields(self):
+        from kamiwaza_extensions.commands.dev import _build_patch_service_specs
+
+        payload = self._payload(
+            "ghcr.io/kamiwaza-internal/foo/images/omniparse:2.0.14-dev"
+        )
+        specs = _build_patch_service_specs(payload)
+        assert len(specs) == 1
+        img = specs[0].image
+        assert img.registry == "ghcr.io"
+        assert img.repository == "kamiwaza-internal/foo/images/omniparse"
+        assert img.tag == "2.0.14-dev"
+
+    def test_localhost_kind_registry_with_port(self):
+        from kamiwaza_extensions.commands.dev import _build_patch_service_specs
+
+        payload = self._payload("localhost:5001/my-ext-backend:1.0.0-gabc")
+        img = _build_patch_service_specs(payload)[0].image
+        assert img.registry == "localhost:5001"
+        assert img.repository == "my-ext-backend"
+        assert img.tag == "1.0.0-gabc"
+
+    def test_legacy_unqualified_ref_has_no_registry(self):
+        # Unqualified refs are rewritten to the cluster registry before
+        # reaching this code (via _canonical_build_ref); the splitter
+        # still must not invent a registry from `my-org/foo`.
+        from kamiwaza_extensions.commands.dev import _build_patch_service_specs
+
+        payload = self._payload("my-org/foo:1.0")
+        img = _build_patch_service_specs(payload)[0].image
+        assert img.registry is None
+        assert img.repository == "my-org/foo"
+        assert img.tag == "1.0"
+
+    def test_repo_change_between_deploys_flows_through_patch(self):
+        # The regression scenario: a CR was deployed under pre-fix kz-ext
+        # at `registry.test/myapp-omniparse-server:v1` (legacy synthesis),
+        # and a redeploy now builds at the canonical declared namespace
+        # `ghcr.io/.../images/omniparse:v2`. The PATCH payload must carry
+        # the new registry + repository so the operator updates the CR's
+        # image field — tag-only would pull `registry.test/myapp-omniparse-server:v2`
+        # which was never pushed.
+        from kamiwaza_extensions.commands.dev import _build_patch_service_specs
+
+        payload = self._payload(
+            "ghcr.io/kamiwaza-internal/foo/images/omniparse:v2"
+        )
+        img = _build_patch_service_specs(payload)[0].image
+        # The patch carries the new repository, not just a new tag —
+        # the operator will rewrite the CR's image field accordingly.
+        assert img.registry == "ghcr.io"
+        assert img.repository == "kamiwaza-internal/foo/images/omniparse"
+        assert img.tag == "v2"
