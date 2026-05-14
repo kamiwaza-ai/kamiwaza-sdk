@@ -70,12 +70,13 @@ class RegistryBuilder:
                 are tagged with publish's revision; services without one
                 keep their declared image ref verbatim).
             registry: Docker registry prefix (e.g. ``"kamiwazaai"``).
-            version: Semver version string for this release.
+            version: Semver version string for this release. Substituted
+                into ``{version}`` placeholders in ``extra_docker_images``
+                entries.
             stage: One of ``"prod"``, ``"stage"``, ``"dev"``, or any custom name.
-                Currently unused in the body — ``ComposeTransformer`` already
-                applied the stage-derived tag to buildable services. Kept on
-                the signature for call-site compatibility with prior callers
-                of ``RegistryBuilder``.
+                Applied as a tag suffix to ``extra_docker_images`` entries
+                under *registry* that carried a ``{version}`` placeholder.
+                Author-pinned literal tags pass through untouched.
             revision: Optional revision identifier. When provided, included
                 as a top-level ``revision`` field on the entry; consumed by
                 ``CatalogDedupGuard`` to make CI re-publishes idempotent.
@@ -103,26 +104,20 @@ class RegistryBuilder:
         )
         docker_images = self.extract_docker_images(transformed_compose)
 
-        extra_images = metadata.get("extra_docker_images") or []
-        if extra_images:
-            # Apply the same digest-pinning rule to extras so a service
-            # ref that's redundantly listed in `extra_docker_images`
-            # collapses against its already-pinned compose copy during
-            # dedup, instead of leaking an unpinned duplicate.
-            #
-            # Match is exact-string against the post-stage-suffix ref
-            # (e.g. `<reg>/<ext>-<svc>:<version>-dev`); a pre-suffix
-            # entry like `<reg>/<ext>-<svc>:<version>` won't collapse.
-            # Author the entry to match what compose carries after
-            # transform.
-            if digest_map:
-                extra_images = [
-                    f"{img}@{digest_map[img]}"
-                    if img in digest_map and "@" not in img
-                    else img
-                    for img in extra_images
-                ]
-            docker_images = list(dict.fromkeys(docker_images + extra_images))
+        # `docker_images` and `extra_docker_images` are disjoint catalog
+        # fields: compose-derived vs. author-declared. Downstream consumers
+        # iterate each list separately; do not merge.
+        extra_images = [
+            resolve_extra_image(img, registry, version, stage)
+            for img in (metadata.get("extra_docker_images") or [])
+        ]
+        if extra_images and digest_map:
+            extra_images = [
+                f"{img}@{digest_map[img]}"
+                if img in digest_map and "@" not in img
+                else img
+                for img in extra_images
+            ]
 
         # Source kamiwaza.json is the catalog contract: every top-level
         # field the developer authored reaches the catalog entry. The
@@ -142,6 +137,14 @@ class RegistryBuilder:
         entry.setdefault("visibility", "public")
         entry["compose_yml"] = compose_yml
         entry["docker_images"] = docker_images
+        # Overwrite the deepcopy carryover with the resolved list (source
+        # entries are in author format; the catalog needs post-substitution
+        # refs). Drop the field entirely when metadata declared no extras
+        # so the catalog field is absent rather than an empty array.
+        if extra_images:
+            entry["extra_docker_images"] = extra_images
+        else:
+            entry.pop("extra_docker_images", None)
 
         # `revision` is owned exclusively by the publish-time parameter,
         # never by source kamiwaza.json. Pop first so a stale value in
@@ -427,6 +430,47 @@ def _apply_digests(
         if img and "@" not in img and img in digest_map:
             svc["image"] = f"{img}@{digest_map[img]}"
     return result
+
+
+def resolve_extra_image(
+    image: str, registry: str, version: str, stage: str,
+) -> str:
+    """Apply ``{version}`` substitution and stage suffix to one ref.
+
+    Substitutes ``{version}`` literally, then applies the stage-derived
+    suffix only to substituted refs under *registry*. Returns *image*
+    unchanged when:
+
+    - The ref carried no ``{version}`` placeholder (author-pinned tag).
+    - The ref is already digest-pinned (``@sha256:...``).
+    - The ref is outside *registry* (external pass-through).
+    """
+    substituted = image.replace("{version}", version)
+
+    if (
+        substituted == image
+        or "@" in substituted
+        or not substituted.startswith(f"{registry}/")
+    ):
+        return substituted
+
+    # The tag, if any, lives after the last `/`. Splitting on the leftmost
+    # `:` would catch a registry port (e.g. `localhost:5000/...`) instead.
+    suffix = _STAGE_SUFFIXES.get(stage, f"-{stage}")
+    slash = substituted.rfind("/")
+    last_segment = substituted[slash + 1:]
+    if ":" in last_segment:
+        colon = last_segment.index(":")
+        name = substituted[: slash + 1 + colon]
+        tag = last_segment[colon + 1:]
+        # Strip an existing stage suffix so `agent:{version}-dev` published
+        # against a prod stage emits the unsuffixed tag rather than
+        # `agent:1.8.13-dev` reapplied.
+        clean_tag = re.sub(r"-(dev|stage)$", "", tag)
+    else:
+        name, clean_tag = substituted, "latest"
+
+    return f"{name}:{clean_tag}{suffix}"
 
 
 def _normalize_preview_image(path: str) -> str:

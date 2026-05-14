@@ -184,6 +184,300 @@ class TestPublishHappyPath:
 
 
 # ------------------------------------------------------------------
+# extra_docker_images: digest resolution
+# ------------------------------------------------------------------
+
+
+class TestPublishExtrasDigestResolution:
+    """`kz-ext publish` resolves digests for extra_docker_images."""
+
+    @patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher")
+    @patch("kamiwaza_extensions.registry_builder.RegistryBuilder")
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher")
+    @patch("kamiwaza_extensions.image_builder.ImageBuilder")
+    @patch("kamiwaza_extensions.profile_manager.ProfileManager")
+    @patch("kamiwaza_extensions.compose_transformer.ComposeTransformer")
+    @patch("kamiwaza_extensions.validators.compose.ComposeValidator")
+    @patch("kamiwaza_extensions.validators.metadata.MetadataValidator")
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_extras_under_registry_get_digest_resolved_and_passed_to_build_entry(
+        self,
+        mock_detector_cls,
+        mock_meta_validator_cls,
+        mock_compose_validator_cls,
+        mock_transformer_cls,
+        mock_profile_mgr_cls,
+        mock_builder_cls,
+        mock_pusher_cls,
+        mock_reg_builder_cls,
+        mock_publisher_cls,
+        tmp_path,
+    ):
+        # An extra_docker_images entry with `{version}` under the
+        # configured registry must be substituted, stage-suffixed, and
+        # digest-pinned via the same registry-resolution path compose
+        # buildable services use.
+        metadata = {
+            "name": "kaizenv3",
+            "version": "1.8.13",
+            "description": "Kaizen v3",
+            "extra_docker_images": [
+                "ghcr.io/my-org/images/agent:{version}",
+            ],
+        }
+        mock_detector = MagicMock()
+        mock_detector.detect.return_value = _make_extension_info(
+            tmp_path, name="kaizenv3", version="1.8.13", metadata=metadata,
+        )
+        mock_detector_cls.return_value = mock_detector
+
+        mock_meta_validator = MagicMock()
+        mock_meta_validator.validate.return_value = _make_validation_result()
+        mock_meta_validator_cls.return_value = mock_meta_validator
+
+        mock_compose_validator = MagicMock()
+        mock_compose_validator.validate.return_value = _make_validation_result()
+        mock_compose_validator_cls.return_value = mock_compose_validator
+
+        mock_profile_mgr = MagicMock()
+        mock_profile_mgr.resolve_profile.return_value = _make_profile()
+        mock_profile_mgr_cls.return_value = mock_profile_mgr
+
+        mock_transformer = MagicMock()
+        mock_transformer.transform.return_value = {
+            "services": {
+                "backend": {"image": "ghcr.io/my-org/kaizenv3-backend:1.8.13-dev"},
+            },
+        }
+        mock_transformer_cls.return_value = mock_transformer
+
+        mock_image_builder = MagicMock()
+        mock_image_builder.build.return_value = [
+            "ghcr.io/my-org/kaizenv3-backend:1.8.13-dev",
+        ]
+        mock_builder_cls.return_value = mock_image_builder
+
+        # Distinct digests per ref so the assertion can pin which ref
+        # got which digest.
+        digest_by_ref = {
+            "ghcr.io/my-org/kaizenv3-backend:1.8.13-dev": "sha256:" + "a" * 64,
+            "ghcr.io/my-org/images/agent:1.8.13-dev": "sha256:" + "b" * 64,
+        }
+        mock_pusher_cls.resolve_digest.side_effect = lambda ref: digest_by_ref[ref]
+
+        mock_reg_builder = MagicMock()
+        mock_reg_builder.build_entry.return_value = {
+            "name": "kaizenv3",
+            "version": "1.8.13",
+        }
+        mock_reg_builder_cls.return_value = mock_reg_builder
+
+        mock_publisher = MagicMock()
+        mock_publisher.publish.return_value = _make_publish_result(
+            extension_name="kaizenv3", version="1.8.13",
+        )
+        mock_publisher_cls.return_value = mock_publisher
+
+        from kamiwaza_extensions.commands.publish import run_publish
+
+        run_publish(stage="dev")
+
+        resolved_refs = [
+            call.args[0] for call in mock_pusher_cls.resolve_digest.call_args_list
+        ]
+        assert "ghcr.io/my-org/images/agent:1.8.13-dev" in resolved_refs
+        assert "ghcr.io/my-org/kaizenv3-backend:1.8.13-dev" in resolved_refs
+
+        # Both digests reach digest_map.
+        build_entry_kwargs = mock_reg_builder.build_entry.call_args.kwargs
+        digest_map = build_entry_kwargs["digest_map"]
+        assert digest_map["ghcr.io/my-org/images/agent:1.8.13-dev"] == (
+            "sha256:" + "b" * 64
+        )
+        assert digest_map["ghcr.io/my-org/kaizenv3-backend:1.8.13-dev"] == (
+            "sha256:" + "a" * 64
+        )
+
+    @patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher")
+    @patch("kamiwaza_extensions.registry_builder.RegistryBuilder")
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher")
+    @patch("kamiwaza_extensions.image_builder.ImageBuilder")
+    @patch("kamiwaza_extensions.profile_manager.ProfileManager")
+    @patch("kamiwaza_extensions.compose_transformer.ComposeTransformer")
+    @patch("kamiwaza_extensions.validators.compose.ComposeValidator")
+    @patch("kamiwaza_extensions.validators.metadata.MetadataValidator")
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_extras_already_in_digest_map_skipped_from_auto_resolve(
+        self,
+        mock_detector_cls,
+        mock_meta_validator_cls,
+        mock_compose_validator_cls,
+        mock_transformer_cls,
+        mock_profile_mgr_cls,
+        mock_builder_cls,
+        mock_pusher_cls,
+        mock_reg_builder_cls,
+        mock_publisher_cls,
+        tmp_path,
+    ):
+        # When `--digest` pins a buildable ref and that same ref is
+        # redundantly listed in extras, the explicit pin must survive:
+        # no registry lookup, no overwrite.
+        metadata = {
+            "name": "my-app",
+            "version": "1.0.0",
+            "description": "Test",
+            "extra_docker_images": ["ghcr.io/my-org/my-app-backend:{version}"],
+        }
+        mock_detector = MagicMock()
+        mock_detector.detect.return_value = _make_extension_info(
+            tmp_path, metadata=metadata,
+        )
+        mock_detector_cls.return_value = mock_detector
+
+        mock_meta_validator = MagicMock()
+        mock_meta_validator.validate.return_value = _make_validation_result()
+        mock_meta_validator_cls.return_value = mock_meta_validator
+
+        mock_compose_validator = MagicMock()
+        mock_compose_validator.validate.return_value = _make_validation_result()
+        mock_compose_validator_cls.return_value = mock_compose_validator
+
+        mock_profile_mgr = MagicMock()
+        mock_profile_mgr.resolve_profile.return_value = _make_profile()
+        mock_profile_mgr_cls.return_value = mock_profile_mgr
+
+        mock_transformer = MagicMock()
+        mock_transformer.transform.return_value = {
+            "services": {
+                "backend": {"image": "ghcr.io/my-org/my-app-backend:1.0.0-dev"},
+            },
+        }
+        mock_transformer_cls.return_value = mock_transformer
+
+        mock_image_builder = MagicMock()
+        mock_image_builder.build.return_value = [
+            "ghcr.io/my-org/my-app-backend:1.0.0-dev",
+        ]
+        mock_builder_cls.return_value = mock_image_builder
+
+        # If anything calls resolve_digest, fail the test loudly — the
+        # user-supplied digest must be the only source of truth here.
+        mock_pusher_cls.resolve_digest.side_effect = AssertionError(
+            "resolve_digest should not be called when --digest pins the ref"
+        )
+
+        mock_reg_builder = MagicMock()
+        mock_reg_builder.build_entry.return_value = {"name": "my-app", "version": "1.0.0"}
+        mock_reg_builder_cls.return_value = mock_reg_builder
+
+        mock_publisher = MagicMock()
+        mock_publisher.publish.return_value = _make_publish_result()
+        mock_publisher_cls.return_value = mock_publisher
+
+        from kamiwaza_extensions.commands.publish import run_publish
+
+        supplied_digest = "sha256:" + "e" * 64
+        # --digest implies --no-push so the supplied digest is trusted
+        # without a post-push verification round-trip.
+        run_publish(stage="dev", digest=supplied_digest, no_push=True)
+
+        # The supplied digest survived end-to-end into build_entry's map.
+        build_entry_kwargs = mock_reg_builder.build_entry.call_args.kwargs
+        digest_map = build_entry_kwargs["digest_map"]
+        assert digest_map["ghcr.io/my-org/my-app-backend:1.0.0-dev"] == supplied_digest
+
+    @patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher")
+    @patch("kamiwaza_extensions.registry_builder.RegistryBuilder")
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher")
+    @patch("kamiwaza_extensions.image_builder.ImageBuilder")
+    @patch("kamiwaza_extensions.profile_manager.ProfileManager")
+    @patch("kamiwaza_extensions.compose_transformer.ComposeTransformer")
+    @patch("kamiwaza_extensions.validators.compose.ComposeValidator")
+    @patch("kamiwaza_extensions.validators.metadata.MetadataValidator")
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_external_extras_skipped_from_digest_resolution(
+        self,
+        mock_detector_cls,
+        mock_meta_validator_cls,
+        mock_compose_validator_cls,
+        mock_transformer_cls,
+        mock_profile_mgr_cls,
+        mock_builder_cls,
+        mock_pusher_cls,
+        mock_reg_builder_cls,
+        mock_publisher_cls,
+        tmp_path,
+    ):
+        # External refs and already-pinned refs skip the digest lookup:
+        # external images aren't ours to pin, and re-tagging a pinned ref
+        # would break its immutable identity.
+        metadata = {
+            "name": "my-app",
+            "version": "1.0.0",
+            "description": "Test",
+            "extra_docker_images": [
+                "postgres:15",                              # external
+                "ghcr.io/external/sidecar:2.0",             # external
+                "ghcr.io/my-org/images/util@sha256:" + "c" * 64,  # already pinned
+            ],
+        }
+        mock_detector = MagicMock()
+        mock_detector.detect.return_value = _make_extension_info(
+            tmp_path, metadata=metadata,
+        )
+        mock_detector_cls.return_value = mock_detector
+
+        mock_meta_validator = MagicMock()
+        mock_meta_validator.validate.return_value = _make_validation_result()
+        mock_meta_validator_cls.return_value = mock_meta_validator
+
+        mock_compose_validator = MagicMock()
+        mock_compose_validator.validate.return_value = _make_validation_result()
+        mock_compose_validator_cls.return_value = mock_compose_validator
+
+        mock_profile_mgr = MagicMock()
+        mock_profile_mgr.resolve_profile.return_value = _make_profile()
+        mock_profile_mgr_cls.return_value = mock_profile_mgr
+
+        mock_transformer = MagicMock()
+        mock_transformer.transform.return_value = {
+            "services": {
+                "backend": {"image": "ghcr.io/my-org/my-app-backend:1.0.0-dev"},
+            },
+        }
+        mock_transformer_cls.return_value = mock_transformer
+
+        mock_image_builder = MagicMock()
+        mock_image_builder.build.return_value = [
+            "ghcr.io/my-org/my-app-backend:1.0.0-dev",
+        ]
+        mock_builder_cls.return_value = mock_image_builder
+
+        compose_digest = "sha256:" + "d" * 64
+        mock_pusher_cls.resolve_digest.return_value = compose_digest
+
+        mock_reg_builder = MagicMock()
+        mock_reg_builder.build_entry.return_value = {"name": "my-app", "version": "1.0.0"}
+        mock_reg_builder_cls.return_value = mock_reg_builder
+
+        mock_publisher = MagicMock()
+        mock_publisher.publish.return_value = _make_publish_result()
+        mock_publisher_cls.return_value = mock_publisher
+
+        from kamiwaza_extensions.commands.publish import run_publish
+
+        run_publish(stage="dev")
+
+        # Only the compose backend hits the registry; the three extras
+        # are filtered out before resolution.
+        resolved_refs = [
+            call.args[0] for call in mock_pusher_cls.resolve_digest.call_args_list
+        ]
+        assert resolved_refs == ["ghcr.io/my-org/my-app-backend:1.0.0-dev"]
+
+
+# ------------------------------------------------------------------
 # Dry-run mode
 # ------------------------------------------------------------------
 
