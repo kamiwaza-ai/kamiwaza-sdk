@@ -1,5 +1,7 @@
 """Tests for RegistryBuilder."""
 
+from typing import Any, Dict
+
 import pytest
 import yaml
 
@@ -367,6 +369,296 @@ class TestBuildEntry:
         pinned_ref = f"myreg/images/agent:1.8.13-dev@{digest}"
         assert entry["extra_docker_images"] == [pinned_ref]
         assert pinned_ref not in entry["docker_images"]
+
+
+# ------------------------------------------------------------------
+# Env-var image-ref rewriting (ENG-5260)
+# ------------------------------------------------------------------
+
+
+def _kaizen_shaped_compose(env_value: str) -> Dict[str, Any]:
+    """Build a compose dict with a single env-var image ref on the backend."""
+    return {
+        "services": {
+            "backend": {
+                "image": "myreg/images/kaizenv3-backend:1.8.13-dev",
+                "environment": {
+                    "AGENT_SERVER_IMAGE": env_value,
+                },
+            },
+        },
+    }
+
+
+class TestBuildEntryEnvImageRewrites:
+    """Image refs embedded in ``services[*].environment`` values get the
+    same stage-suffix + digest-pin treatment as ``extra_docker_images``,
+    so a dynamic-spawn ref like ``${AGENT_SERVER_IMAGE:-...}`` stays in
+    lockstep with the air-gap mirror list for the same image."""
+
+    def test_default_sub_under_registry_gets_stage_suffix(self, builder):
+        # The kaizen-shaped case: ${VAR:-<reg>/agent:1.8.13} published
+        # to stage=dev must emit ${VAR:-<reg>/agent:1.8.13-dev}.
+        compose = _kaizen_shaped_compose(
+            "${AGENT_SERVER_IMAGE:-myreg/images/agent:1.8.13}"
+        )
+        meta = {
+            "name": "kaizenv3",
+            "description": "test",
+            "source_type": "kamiwaza",
+            "visibility": "public",
+        }
+        entry = builder.build_entry(
+            meta, compose, "myreg/images", "1.8.13", stage="dev",
+        )
+        compose_out = yaml.safe_load(entry["compose_yml"])
+        assert compose_out["services"]["backend"]["environment"][
+            "AGENT_SERVER_IMAGE"
+        ] == "${AGENT_SERVER_IMAGE:-myreg/images/agent:1.8.13-dev}"
+
+    def test_default_sub_dash_form_supported(self, builder):
+        # ``${VAR-default}`` (use default only if unset) is rewritten
+        # the same as ``${VAR:-default}``; both forms collapse to the
+        # default at deploy time in our pipeline.
+        compose = _kaizen_shaped_compose(
+            "${AGENT_SERVER_IMAGE-myreg/images/agent:1.8.13}"
+        )
+        meta = {"name": "k", "description": "", "source_type": "kamiwaza",
+                "visibility": "public"}
+        entry = builder.build_entry(
+            meta, compose, "myreg/images", "1.8.13", stage="dev",
+        )
+        compose_out = yaml.safe_load(entry["compose_yml"])
+        assert compose_out["services"]["backend"]["environment"][
+            "AGENT_SERVER_IMAGE"
+        ] == "${AGENT_SERVER_IMAGE-myreg/images/agent:1.8.13-dev}"
+
+    def test_bare_ref_under_registry_gets_stage_suffix(self, builder):
+        # Some authors set env defaults via plain values, not ${VAR:-...}.
+        # When the value is the bare image ref, rewrite in place.
+        compose = _kaizen_shaped_compose("myreg/images/agent:1.8.13")
+        meta = {"name": "k", "description": "", "source_type": "kamiwaza",
+                "visibility": "public"}
+        entry = builder.build_entry(
+            meta, compose, "myreg/images", "1.8.13", stage="dev",
+        )
+        compose_out = yaml.safe_load(entry["compose_yml"])
+        assert compose_out["services"]["backend"]["environment"][
+            "AGENT_SERVER_IMAGE"
+        ] == "myreg/images/agent:1.8.13-dev"
+
+    def test_external_ref_not_rewritten(self, builder):
+        # Refs outside our registry pass through — postgres, redis, etc.
+        compose = _kaizen_shaped_compose(
+            "${AGENT_SERVER_IMAGE:-postgres:15}"
+        )
+        meta = {"name": "k", "description": "", "source_type": "kamiwaza",
+                "visibility": "public"}
+        entry = builder.build_entry(
+            meta, compose, "myreg/images", "1.8.13", stage="dev",
+        )
+        compose_out = yaml.safe_load(entry["compose_yml"])
+        assert compose_out["services"]["backend"]["environment"][
+            "AGENT_SERVER_IMAGE"
+        ] == "${AGENT_SERVER_IMAGE:-postgres:15}"
+
+    def test_non_image_default_passes_through(self, builder):
+        # An env value that happens to be a ${VAR:-default} but whose
+        # default isn't an image ref under our registry must not be
+        # rewritten — e.g. a feature flag, a URL, a literal string.
+        compose = _kaizen_shaped_compose(
+            "${LOG_LEVEL:-info}"
+        )
+        meta = {"name": "k", "description": "", "source_type": "kamiwaza",
+                "visibility": "public"}
+        entry = builder.build_entry(
+            meta, compose, "myreg/images", "1.8.13", stage="dev",
+        )
+        compose_out = yaml.safe_load(entry["compose_yml"])
+        assert compose_out["services"]["backend"]["environment"][
+            "AGENT_SERVER_IMAGE"
+        ] == "${LOG_LEVEL:-info}"
+
+    def test_already_pinned_ref_passes_through(self, builder):
+        # ${VAR:-<reg>/agent:1.8.13-dev@sha256:...} is already immutable;
+        # leave the digest alone (re-suffixing would mismatch the pin).
+        pinned_default = (
+            "myreg/images/agent:1.8.13-dev@sha256:" + "a" * 64
+        )
+        compose = _kaizen_shaped_compose(
+            f"${{AGENT_SERVER_IMAGE:-{pinned_default}}}"
+        )
+        meta = {"name": "k", "description": "", "source_type": "kamiwaza",
+                "visibility": "public"}
+        entry = builder.build_entry(
+            meta, compose, "myreg/images", "1.8.13", stage="stage",
+        )
+        compose_out = yaml.safe_load(entry["compose_yml"])
+        # Suffix is NOT reapplied; default value preserved verbatim.
+        assert compose_out["services"]["backend"]["environment"][
+            "AGENT_SERVER_IMAGE"
+        ] == f"${{AGENT_SERVER_IMAGE:-{pinned_default}}}"
+
+    def test_prod_strips_stage_suffix(self, builder):
+        # Source compose may already carry a -dev tag (e.g. a re-publish
+        # round-trip); a prod publish must emit the clean tag rather
+        # than reapplying -dev or leaving the prior stage in place.
+        compose = _kaizen_shaped_compose(
+            "${AGENT_SERVER_IMAGE:-myreg/images/agent:1.8.13-dev}"
+        )
+        meta = {"name": "k", "description": "", "source_type": "kamiwaza",
+                "visibility": "public"}
+        entry = builder.build_entry(
+            meta, compose, "myreg/images", "1.8.13", stage="prod",
+        )
+        compose_out = yaml.safe_load(entry["compose_yml"])
+        assert compose_out["services"]["backend"]["environment"][
+            "AGENT_SERVER_IMAGE"
+        ] == "${AGENT_SERVER_IMAGE:-myreg/images/agent:1.8.13}"
+
+    def test_digest_pinned_when_in_digest_map(self, builder):
+        # The acceptance criterion: when digest_map carries the
+        # post-suffix ref, the env default is rewritten to
+        # ``:tag@sha256:...`` so it matches extra_docker_images for the
+        # same image.
+        digest = "sha256:" + "c" * 64
+        digest_map = {"myreg/images/agent:1.8.13-dev": digest}
+        compose = _kaizen_shaped_compose(
+            "${AGENT_SERVER_IMAGE:-myreg/images/agent:1.8.13}"
+        )
+        meta = {"name": "k", "description": "", "source_type": "kamiwaza",
+                "visibility": "public"}
+        entry = builder.build_entry(
+            meta, compose, "myreg/images", "1.8.13", stage="dev",
+            digest_map=digest_map,
+        )
+        compose_out = yaml.safe_load(entry["compose_yml"])
+        expected = f"${{AGENT_SERVER_IMAGE:-myreg/images/agent:1.8.13-dev@{digest}}}"
+        assert compose_out["services"]["backend"]["environment"][
+            "AGENT_SERVER_IMAGE"
+        ] == expected
+
+    def test_env_list_form_supported(self, builder):
+        # Compose env can be a list of ``KEY=value`` strings instead of
+        # a dict. Both shapes must round-trip the rewrite.
+        compose = {
+            "services": {
+                "backend": {
+                    "image": "myreg/images/k-backend:1.8.13-dev",
+                    "environment": [
+                        "AGENT_SERVER_IMAGE=${AGENT_SERVER_IMAGE:-myreg/images/agent:1.8.13}",
+                        "LOG_LEVEL=info",
+                    ],
+                },
+            },
+        }
+        meta = {"name": "k", "description": "", "source_type": "kamiwaza",
+                "visibility": "public"}
+        entry = builder.build_entry(
+            meta, compose, "myreg/images", "1.8.13", stage="dev",
+        )
+        compose_out = yaml.safe_load(entry["compose_yml"])
+        env_list = compose_out["services"]["backend"]["environment"]
+        assert (
+            "AGENT_SERVER_IMAGE=${AGENT_SERVER_IMAGE:-myreg/images/agent:1.8.13-dev}"
+            in env_list
+        )
+        assert "LOG_LEVEL=info" in env_list
+
+    def test_env_long_form_dict_supported(self, builder):
+        # ``[{"name": KEY, "value": VAL}, ...]`` — the long-form list
+        # entry shape that Compose v3 also accepts.
+        compose = {
+            "services": {
+                "backend": {
+                    "image": "myreg/images/k-backend:1.8.13-dev",
+                    "environment": [
+                        {"name": "AGENT_SERVER_IMAGE",
+                         "value": "${AGENT_SERVER_IMAGE:-myreg/images/agent:1.8.13}"},
+                    ],
+                },
+            },
+        }
+        meta = {"name": "k", "description": "", "source_type": "kamiwaza",
+                "visibility": "public"}
+        entry = builder.build_entry(
+            meta, compose, "myreg/images", "1.8.13", stage="dev",
+        )
+        compose_out = yaml.safe_load(entry["compose_yml"])
+        env_list = compose_out["services"]["backend"]["environment"]
+        assert env_list[0]["value"] == (
+            "${AGENT_SERVER_IMAGE:-myreg/images/agent:1.8.13-dev}"
+        )
+
+    def test_non_string_env_values_untouched(self, builder):
+        # Compose allows int/bool env values. Walking the dict must not
+        # coerce or otherwise corrupt them.
+        compose = {
+            "services": {
+                "backend": {
+                    "image": "myreg/images/k-backend:1.8.13-dev",
+                    "environment": {
+                        "MAX_CONN": 100,
+                        "ENABLE_FEATURE": True,
+                    },
+                },
+            },
+        }
+        meta = {"name": "k", "description": "", "source_type": "kamiwaza",
+                "visibility": "public"}
+        entry = builder.build_entry(
+            meta, compose, "myreg/images", "1.8.13", stage="dev",
+        )
+        compose_out = yaml.safe_load(entry["compose_yml"])
+        env = compose_out["services"]["backend"]["environment"]
+        assert env["MAX_CONN"] == 100
+        assert env["ENABLE_FEATURE"] is True
+
+    def test_registry_with_port_handled(self, builder):
+        # OCI refs allow `:` in the host segment (registry port). The
+        # tag-split must happen after the last `/`, not the leftmost `:`.
+        compose = _kaizen_shaped_compose(
+            "${AGENT_SERVER_IMAGE:-localhost:5000/org/agent:1.8.13}"
+        )
+        meta = {"name": "k", "description": "", "source_type": "kamiwaza",
+                "visibility": "public"}
+        entry = builder.build_entry(
+            meta, compose, "localhost:5000/org", "1.8.13", stage="dev",
+        )
+        compose_out = yaml.safe_load(entry["compose_yml"])
+        assert compose_out["services"]["backend"]["environment"][
+            "AGENT_SERVER_IMAGE"
+        ] == "${AGENT_SERVER_IMAGE:-localhost:5000/org/agent:1.8.13-dev}"
+
+    def test_env_value_matches_extra_docker_images_entry(self, builder):
+        # The acceptance criterion: for kaizen-shaped input (env-var
+        # default + extra_docker_images for the same image), the
+        # published compose env default agrees with the extras list.
+        digest = "sha256:" + "d" * 64
+        digest_map = {"myreg/images/agent:1.8.13-dev": digest}
+        compose = _kaizen_shaped_compose(
+            "${AGENT_SERVER_IMAGE:-myreg/images/agent:1.8.13}"
+        )
+        meta = {
+            "name": "kaizenv3",
+            "description": "test",
+            "source_type": "kamiwaza",
+            "visibility": "public",
+            "extra_docker_images": ["myreg/images/agent:{version}"],
+        }
+        entry = builder.build_entry(
+            meta, compose, "myreg/images", "1.8.13", stage="dev",
+            digest_map=digest_map,
+        )
+        # extras list carries the canonical pinned ref.
+        extras_ref = f"myreg/images/agent:1.8.13-dev@{digest}"
+        assert entry["extra_docker_images"] == [extras_ref]
+        # And the compose env default points at the same ref.
+        compose_out = yaml.safe_load(entry["compose_yml"])
+        env_default = compose_out["services"]["backend"]["environment"][
+            "AGENT_SERVER_IMAGE"
+        ]
+        assert extras_ref in env_default
 
 
 # ------------------------------------------------------------------
