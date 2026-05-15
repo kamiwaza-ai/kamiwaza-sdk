@@ -345,15 +345,52 @@ def test_context_required_llm_available(context_required_llm: str) -> None:
     assert context_required_llm
 
 
-def test_context_vectordb_lifecycle_global(live_kamiwaza_client) -> None:
+def test_context_vectordb_create_in_global_workroom_is_read_only(
+    live_kamiwaza_client,
+) -> None:
+    """Global Workroom is read-only for VectorDB creation (ENG-4352, PR #1635).
+
+    Verifies the server-side gate at
+    ``kamiwaza/services/context/lifecycle.py:_raise_if_global_workroom_write``
+    rejects ``create_vectordb`` without an explicit workroom_id (which
+    defaults to the Global Workroom UUID). Returns 403 regardless of
+    caller role, matching commit 73071d5d1's stated intent:
+    "Keeps Global Workroom read paths available to members and blocks
+    Global write paths in both ReBAC-on and RBAC-off modes."
+    """
+    service = _context_service(live_kamiwaza_client)
+
+    with pytest.raises(APIError) as exc_info:
+        service.create_vectordb(
+            name=f"sdk-context-vdb-global-{uuid4().hex[:8]}",
+            engine="milvus",
+        )
+
+    assert exc_info.value.status_code == 403
+    assert "Global Workroom is read-only" in str(exc_info.value)
+
+
+def test_context_vectordb_lifecycle_in_workroom(live_kamiwaza_client) -> None:
+    """Full VectorDB lifecycle (create / get / update / scale / delete)
+    succeeds when scoped to a non-global workroom.
+
+    The Global Workroom is read-only for VectorDB creation
+    (see test_context_vectordb_create_in_global_workroom_is_read_only).
+    A dedicated test workroom is the canonical write target — matches
+    how SDK consumers create vectordbs in production.
+    """
     service = _context_service(live_kamiwaza_client)
 
     name = f"sdk-context-vdb-{uuid4().hex[:8]}"
-    created = service.create_vectordb(name=name, engine="milvus")
+    created = service.create_vectordb(
+        name=name,
+        engine="milvus",
+        workroom_id=DEFAULT_WORKROOM_ID,
+    )
     vectordb_id = created["id"]
 
     try:
-        fetched = service.get_vectordb(vectordb_id)
+        fetched = service.get_vectordb(vectordb_id, workroom_id=DEFAULT_WORKROOM_ID)
         assert fetched["id"] == vectordb_id
         assert fetched["name"] == name
 
@@ -361,13 +398,20 @@ def test_context_vectordb_lifecycle_global(live_kamiwaza_client) -> None:
             vectordb_id,
             config={"SDK_CONTEXT_TEST": "1"},
             replicas=1,
+            workroom_id=DEFAULT_WORKROOM_ID,
         )
         assert updated["id"] == vectordb_id
 
-        scaled = service.scale_vectordb(vectordb_id, replicas=1)
+        scaled = service.scale_vectordb(
+            vectordb_id,
+            replicas=1,
+            workroom_id=DEFAULT_WORKROOM_ID,
+        )
         assert scaled["id"] == vectordb_id
     finally:
-        _safe_delete_vectordb(service, vectordb_id)
+        _safe_delete_vectordb(
+            service, vectordb_id, workroom_id=DEFAULT_WORKROOM_ID
+        )
 
 
 def test_context_vectordb_insert_vectors_instance(
