@@ -98,6 +98,7 @@ class PayloadBuilder:
             app_path=app_path,
             verify_ssl=verify_ssl,
             extension_type=ext_type,
+            metadata=metadata,
         )
         origin = connection.url.removesuffix("/api")
         tls_reject = "0" if not verify_ssl else "1"
@@ -202,6 +203,7 @@ class PayloadBuilder:
         app_path: str = "",
         verify_ssl: bool = True,
         extension_type: str = "app",
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> List[ExtensionServiceSpec]:
         services_dict = transformed.get("services") or {}
         specs: List[ExtensionServiceSpec] = []
@@ -248,7 +250,20 @@ class PayloadBuilder:
                 env.append({"name": "KAMIWAZA_VERIFY_SSL", "value": "false"})
                 env.append({"name": "KAMIWAZA_TLS_REJECT_UNAUTHORIZED", "value": "0"})
 
-            health_check = _service_extension_field(svc, "healthCheck")
+            # Health-check precedence (ENG-4832):
+            # 1. ``kamiwaza.json`` → ``services.<svc_name>.healthCheck`` —
+            #    the user-facing escape hatch for any tool/service extension
+            #    whose primary doesn't serve ``/sse`` (FastMCP feature-flagged
+            #    off, REST-only, gRPC-only). Lives in the metadata file
+            #    rather than compose so kamiwaza.json stays the single
+            #    source of catalog truth.
+            # 2. Compose ``x-kamiwaza.healthCheck`` — pre-existing override
+            #    path for compose-authored extensions.
+            # 3. ``_default_health_check`` heuristics — back-compat default
+            #    when neither override is set.
+            health_check = _metadata_service_field(metadata, svc_name, "healthCheck")
+            if not health_check:
+                health_check = _service_extension_field(svc, "healthCheck")
             if not health_check:
                 health_check = self._default_health_check(
                     svc_name,
@@ -387,13 +402,17 @@ class PayloadBuilder:
         # the FastMCP SSE endpoint — even though the response body streams
         # past the K8s 5s probe timeout. The platform's CR API currently
         # rejects ``tcpSocket`` and ``exec`` healthCheck shapes with an
-        # opaque 500, leaving httpGet as the only path. /sse is preferable
-        # to /health (404 under FastMCP) — the headers come back 200 even
-        # if the probe times out reading the body, which keeps the pod
-        # restart-loop from firing. Net result: pod runs and serves
-        # requests, but K8s may take longer to mark it Ready. The proper
-        # fix is to teach the platform API to accept tcpSocket/exec
-        # probes (tracked separately).
+        # opaque 500 (ENG-4833), leaving httpGet as the only path. /sse is
+        # preferable to /health (404 under FastMCP) — the headers come back
+        # 200 even if the probe times out reading the body, which keeps
+        # the pod restart-loop from firing. Net result: pod runs and serves
+        # requests, but K8s may take longer to mark it Ready.
+        #
+        # Escape hatch (ENG-4832): tool extensions that DON'T serve /sse
+        # (REST-only, MCP at /mcp via streamable-http, gRPC, feature-flagged
+        # MCP off) should declare an explicit probe in ``kamiwaza.json``
+        # under ``services.<svc_name>.healthCheck``. That override runs
+        # ahead of the heuristics below — see ``_build_services``.
         if extension_type == "service" and is_primary:
             path = "/"
         elif extension_type == "tool" and is_primary:
@@ -547,6 +566,32 @@ def _service_extension_field(svc: Dict[str, Any], key: str) -> Optional[Any]:
     if isinstance(x_kamiwaza, dict) and key in x_kamiwaza:
         return x_kamiwaza[key]
     return None
+
+
+def _metadata_service_field(
+    metadata: Optional[Dict[str, Any]],
+    svc_name: str,
+    key: str,
+) -> Optional[Any]:
+    """Read a per-service override from ``kamiwaza.json`` (ENG-4832).
+
+    Shape::
+
+        {
+          "services": {
+            "<svc_name>": { "<key>": <value> }
+          }
+        }
+    """
+    if not isinstance(metadata, dict):
+        return None
+    services = metadata.get("services")
+    if not isinstance(services, dict):
+        return None
+    svc_block = services.get(svc_name)
+    if not isinstance(svc_block, dict):
+        return None
+    return svc_block.get(key)
 
 
 def _service_env_map(svc: Dict[str, Any]) -> Dict[str, str]:

@@ -149,7 +149,148 @@ class MetadataValidator:
         # points at 2.0.14) — warn here so it's visible before deploy.
         warnings.extend(_check_version_drift(path.parent, metadata.version, data.get("image")))
 
+        # services.<name>.healthCheck shape (ENG-4832).
+        service_errors, service_warnings = _check_services_block(data.get("services"))
+        errors.extend(service_errors)
+        warnings.extend(service_warnings)
+
         return ValidationResult(passed=len(errors) == 0, errors=errors, warnings=warnings)
+
+
+_PROBE_SHAPES = ("httpGet", "tcpSocket", "exec", "grpc")
+_HEALTHCHECK_KEYS = frozenset(
+    {
+        *_PROBE_SHAPES,
+        "initialDelaySeconds",
+        "timeoutSeconds",
+        "periodSeconds",
+        "successThreshold",
+        "failureThreshold",
+        "terminationGracePeriodSeconds",
+    }
+)
+_PROBE_KEYS = {
+    "httpGet": frozenset({"path", "port", "host", "scheme", "httpHeaders"}),
+    "tcpSocket": frozenset({"port", "host"}),
+    "exec": frozenset({"command"}),
+    "grpc": frozenset({"port", "service"}),
+}
+_NAMED_PORT_RE = re.compile(r"^[a-z]([-a-z0-9]{0,13}[a-z0-9])?$")
+
+
+def _check_services_block(services: Any) -> tuple[List[str], List[str]]:
+    """Validate the optional ``services`` block in kamiwaza.json (ENG-4832).
+
+    The block is a map of compose service names to per-service overrides.
+    Today the only override we read is ``healthCheck``; this checker keeps
+    structural mistakes (wrong probe shape, missing port, two shapes at
+    once) from reaching the platform CR API as opaque 500s.
+    """
+    errors: List[str] = []
+    warnings: List[str] = []
+    if services is None:
+        return errors, warnings
+    if not isinstance(services, dict):
+        errors.append("services must be a JSON object keyed by service name")
+        return errors, warnings
+    for svc_name, block in services.items():
+        if not isinstance(block, dict):
+            errors.append(f"services.{svc_name} must be a JSON object")
+            continue
+        health = block.get("healthCheck")
+        if health is None:
+            continue
+        health_errors, health_warnings = _check_healthcheck_shape(svc_name, health)
+        errors.extend(health_errors)
+        warnings.extend(health_warnings)
+    return errors, warnings
+
+
+def _check_healthcheck_shape(svc_name: str, health: Any) -> tuple[List[str], List[str]]:
+    """Mirror K8s' "exactly one probe shape" rule for a healthCheck block."""
+    errors: List[str] = []
+    warnings: List[str] = []
+    if not isinstance(health, dict):
+        errors.append(f"services.{svc_name}.healthCheck must be a JSON object")
+        return errors, warnings
+    unknown_health_keys = sorted(set(health) - _HEALTHCHECK_KEYS)
+    for key in unknown_health_keys:
+        warnings.append(
+            f"services.{svc_name}.healthCheck has unknown field '{key}'"
+        )
+    declared = [name for name in _PROBE_SHAPES if name in health]
+    if not declared:
+        errors.append(
+            f"services.{svc_name}.healthCheck must declare one of: "
+            f"{', '.join(_PROBE_SHAPES)}"
+        )
+        return errors, warnings
+    if len(declared) > 1:
+        errors.append(
+            f"services.{svc_name}.healthCheck declares multiple probe shapes "
+            f"({', '.join(declared)}); pick exactly one"
+        )
+        return errors, warnings
+    shape = declared[0]
+    value = health[shape]
+    if not isinstance(value, dict):
+        errors.append(
+            f"services.{svc_name}.healthCheck.{shape} must be a JSON object"
+        )
+        return errors, warnings
+    unknown_probe_keys = sorted(set(value) - _PROBE_KEYS[shape])
+    for key in unknown_probe_keys:
+        warnings.append(
+            f"services.{svc_name}.healthCheck.{shape} has unknown field '{key}'"
+        )
+    if shape in {"httpGet", "tcpSocket", "grpc"}:
+        errors.extend(_check_probe_port(svc_name, shape, value))
+    elif shape == "exec":
+        command = value.get("command")
+        if not isinstance(command, list) or not command:
+            errors.append(
+                f"services.{svc_name}.healthCheck.exec.command must be a non-empty list"
+            )
+    return errors, warnings
+
+
+def _check_probe_port(svc_name: str, shape: str, value: Dict[str, Any]) -> List[str]:
+    errors: List[str] = []
+    if "port" not in value:
+        errors.append(f"services.{svc_name}.healthCheck.{shape} must include 'port'")
+        return errors
+    port = value["port"]
+    if isinstance(port, bool):
+        errors.append(
+            f"services.{svc_name}.healthCheck.{shape}.port must be an integer "
+            "1-65535 or a valid named port"
+        )
+        return errors
+    if isinstance(port, int):
+        if not 1 <= port <= 65535:
+            errors.append(
+                f"services.{svc_name}.healthCheck.{shape}.port must be between 1 and 65535"
+            )
+        return errors
+    if isinstance(port, str):
+        if port.isdigit():
+            number = int(port)
+            if not 1 <= number <= 65535:
+                errors.append(
+                    f"services.{svc_name}.healthCheck.{shape}.port must be between 1 and 65535"
+                )
+            return errors
+        if not _NAMED_PORT_RE.match(port):
+            errors.append(
+                f"services.{svc_name}.healthCheck.{shape}.port must be an integer "
+                "1-65535 or a valid named port"
+            )
+        return errors
+    errors.append(
+        f"services.{svc_name}.healthCheck.{shape}.port must be an integer "
+        "1-65535 or a valid named port"
+    )
+    return errors
 
 
 def _check_version_drift(

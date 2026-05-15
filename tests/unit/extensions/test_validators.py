@@ -131,6 +131,220 @@ class TestMetadataValidator:
         result = validator.validate(tmp_path / "nonexistent.json")
         assert not result.passed
 
+    # ── services.<name>.healthCheck (ENG-4832) ────────────────────────
+
+    def test_services_healthcheck_httpget_passes(self, tmp_path, validator):
+        data = _valid_metadata()
+        data["services"] = {
+            "tool": {
+                "healthCheck": {"httpGet": {"path": "/v1/healthz", "port": 8000}}
+            }
+        }
+        f = tmp_path / "kamiwaza.json"
+        _write_json(f, data)
+        result = validator.validate(f)
+        assert result.passed, result.errors
+
+    def test_services_healthcheck_tcpsocket_passes(self, tmp_path, validator):
+        data = _valid_metadata()
+        data["services"] = {"tool": {"healthCheck": {"tcpSocket": {"port": 8000}}}}
+        f = tmp_path / "kamiwaza.json"
+        _write_json(f, data)
+        result = validator.validate(f)
+        assert result.passed, result.errors
+
+    def test_services_healthcheck_exec_passes(self, tmp_path, validator):
+        data = _valid_metadata()
+        data["services"] = {
+            "tool": {
+                "healthCheck": {
+                    "exec": {"command": ["python3", "-c", "import sys; sys.exit(0)"]}
+                }
+            }
+        }
+        f = tmp_path / "kamiwaza.json"
+        _write_json(f, data)
+        result = validator.validate(f)
+        assert result.passed, result.errors
+
+    def test_services_healthcheck_grpc_passes(self, tmp_path, validator):
+        data = _valid_metadata()
+        data["services"] = {"tool": {"healthCheck": {"grpc": {"port": 50051}}}}
+        f = tmp_path / "kamiwaza.json"
+        _write_json(f, data)
+        result = validator.validate(f)
+        assert result.passed, result.errors
+
+    def test_services_not_a_dict_errors(self, tmp_path, validator):
+        data = _valid_metadata()
+        data["services"] = "nope"
+        f = tmp_path / "kamiwaza.json"
+        _write_json(f, data)
+        result = validator.validate(f)
+        assert not result.passed
+        assert any("services must be" in e for e in result.errors)
+
+    def test_services_entry_not_a_dict_errors(self, tmp_path, validator):
+        data = _valid_metadata()
+        data["services"] = {"tool": "nope"}
+        f = tmp_path / "kamiwaza.json"
+        _write_json(f, data)
+        result = validator.validate(f)
+        assert not result.passed
+        assert any("services.tool" in e for e in result.errors)
+
+    def test_healthcheck_not_a_dict_errors(self, tmp_path, validator):
+        data = _valid_metadata()
+        data["services"] = {"tool": {"healthCheck": "nope"}}
+        f = tmp_path / "kamiwaza.json"
+        _write_json(f, data)
+        result = validator.validate(f)
+        assert not result.passed
+        assert any("healthCheck must be a JSON object" in e for e in result.errors)
+
+    def test_healthcheck_with_no_probe_shape_errors(self, tmp_path, validator):
+        data = _valid_metadata()
+        data["services"] = {"tool": {"healthCheck": {"initialDelaySeconds": 10}}}
+        f = tmp_path / "kamiwaza.json"
+        _write_json(f, data)
+        result = validator.validate(f)
+        assert not result.passed
+        assert any("must declare one of" in e for e in result.errors)
+
+    def test_healthcheck_with_multiple_probe_shapes_errors(self, tmp_path, validator):
+        data = _valid_metadata()
+        data["services"] = {
+            "tool": {
+                "healthCheck": {
+                    "httpGet": {"path": "/", "port": 8000},
+                    "tcpSocket": {"port": 8000},
+                }
+            }
+        }
+        f = tmp_path / "kamiwaza.json"
+        _write_json(f, data)
+        result = validator.validate(f)
+        assert not result.passed
+        assert any("multiple probe shapes" in e for e in result.errors)
+
+    def test_healthcheck_with_httpget_and_grpc_errors(self, tmp_path, validator):
+        data = _valid_metadata()
+        data["services"] = {
+            "tool": {
+                "healthCheck": {
+                    "httpGet": {"path": "/", "port": 8000},
+                    "grpc": {"port": 50051},
+                }
+            }
+        }
+        f = tmp_path / "kamiwaza.json"
+        _write_json(f, data)
+        result = validator.validate(f)
+        assert not result.passed
+        assert any("multiple probe shapes" in e for e in result.errors)
+
+    def test_unknown_probe_shape_errors(self, tmp_path, validator):
+        data = _valid_metadata()
+        data["services"] = {"tool": {"healthCheck": {"httpsGet": {"port": 8000}}}}
+        f = tmp_path / "kamiwaza.json"
+        _write_json(f, data)
+        result = validator.validate(f)
+        assert not result.passed
+        assert any("must declare one of" in e for e in result.errors)
+        assert any("unknown field 'httpsGet'" in w for w in result.warnings)
+
+    def test_httpget_without_port_errors(self, tmp_path, validator):
+        data = _valid_metadata()
+        data["services"] = {"tool": {"healthCheck": {"httpGet": {"path": "/"}}}}
+        f = tmp_path / "kamiwaza.json"
+        _write_json(f, data)
+        result = validator.validate(f)
+        assert not result.passed
+        assert any("httpGet must include 'port'" in e for e in result.errors)
+
+    def test_httpget_with_invalid_port_errors(self, tmp_path, validator):
+        data = _valid_metadata()
+        data["services"] = {
+            "tool": {"healthCheck": {"httpGet": {"path": "/", "port": "bad port"}}}
+        }
+        f = tmp_path / "kamiwaza.json"
+        _write_json(f, data)
+        result = validator.validate(f)
+        assert not result.passed
+        assert any("httpGet.port must be" in e for e in result.errors)
+
+    def test_httpget_with_out_of_range_port_errors(self, tmp_path, validator):
+        data = _valid_metadata()
+        data["services"] = {
+            "tool": {"healthCheck": {"httpGet": {"path": "/", "port": 70000}}}
+        }
+        f = tmp_path / "kamiwaza.json"
+        _write_json(f, data)
+        result = validator.validate(f)
+        assert not result.passed
+        assert any("httpGet.port must be between" in e for e in result.errors)
+
+    def test_httpget_with_named_port_passes(self, tmp_path, validator):
+        data = _valid_metadata()
+        data["services"] = {
+            "tool": {"healthCheck": {"httpGet": {"path": "/", "port": "http"}}}
+        }
+        f = tmp_path / "kamiwaza.json"
+        _write_json(f, data)
+        result = validator.validate(f)
+        assert result.passed, result.errors
+
+    def test_tcpsocket_without_port_errors(self, tmp_path, validator):
+        data = _valid_metadata()
+        data["services"] = {"tool": {"healthCheck": {"tcpSocket": {"host": "127.0.0.1"}}}}
+        f = tmp_path / "kamiwaza.json"
+        _write_json(f, data)
+        result = validator.validate(f)
+        assert not result.passed
+        assert any("tcpSocket must include 'port'" in e for e in result.errors)
+
+    def test_grpc_without_port_errors(self, tmp_path, validator):
+        data = _valid_metadata()
+        data["services"] = {"tool": {"healthCheck": {"grpc": {"service": "health"}}}}
+        f = tmp_path / "kamiwaza.json"
+        _write_json(f, data)
+        result = validator.validate(f)
+        assert not result.passed
+        assert any("grpc must include 'port'" in e for e in result.errors)
+
+    def test_exec_with_empty_command_errors(self, tmp_path, validator):
+        data = _valid_metadata()
+        data["services"] = {"tool": {"healthCheck": {"exec": {"command": []}}}}
+        f = tmp_path / "kamiwaza.json"
+        _write_json(f, data)
+        result = validator.validate(f)
+        assert not result.passed
+        assert any("exec.command must be a non-empty list" in e for e in result.errors)
+
+    def test_exec_without_command_errors(self, tmp_path, validator):
+        data = _valid_metadata()
+        data["services"] = {"tool": {"healthCheck": {"exec": {}}}}
+        f = tmp_path / "kamiwaza.json"
+        _write_json(f, data)
+        result = validator.validate(f)
+        assert not result.passed
+        assert any("exec.command must be a non-empty list" in e for e in result.errors)
+
+    def test_probe_unknown_field_warns(self, tmp_path, validator):
+        data = _valid_metadata()
+        data["services"] = {
+            "tool": {
+                "healthCheck": {
+                    "httpGet": {"path": "/", "port": 8000, "command_line": "curl"}
+                }
+            }
+        }
+        f = tmp_path / "kamiwaza.json"
+        _write_json(f, data)
+        result = validator.validate(f)
+        assert result.passed, result.errors
+        assert any("httpGet has unknown field 'command_line'" in w for w in result.warnings)
+
 
 # ── ComposeValidator ──────────────────────────────────────────────────────────
 
