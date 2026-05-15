@@ -423,6 +423,60 @@ class TestComposeVolumes:
             "volumeMounts" not in (svc.model_extra or {}) for svc in payload.services
         )
 
+    def test_interpolated_host_path_is_not_emitted_as_empty_dir(
+        self, builder, metadata, connection
+    ):
+        """PR-113 review High #1: a shell-interpolated bind source
+        (``${PWD}/src``) must NOT be normalized into a named volume and
+        emitted as an emptyDir over the image's baked files. It is a
+        host path and the validator rejects it; the payload builder must
+        agree and drop it."""
+        transformed = {
+            "services": {
+                "tool": {
+                    "image": "registry.test/tool:dev",
+                    "ports": ["8000"],
+                    "volumes": [
+                        "${PWD}/src:/app/src",
+                        "$HOME/.cache:/cache",
+                    ],
+                },
+            },
+        }
+
+        payload = builder.build(metadata, transformed, connection, "tool-dev-abc")
+        tool = payload.services[0].model_dump()
+
+        assert "volumes" not in (payload.model_extra or {})
+        assert "volumeMounts" not in tool
+
+    def test_user_volume_named_tmp_avoids_operator_collision(
+        self, builder, metadata, connection
+    ):
+        """PR-113 review High #2: the operator injects volumes named
+        ``tmp`` and ``data``. A user compose volume that normalizes to
+        either must be renamed so the reconciled Deployment has no
+        duplicate volume names (K8s rejects duplicates)."""
+        transformed = {
+            "services": {
+                "tool": {
+                    "image": "registry.test/tool:dev",
+                    "ports": ["8000"],
+                    "volumes": ["tmp:/scratch", "data:/store"],
+                },
+            },
+        }
+
+        payload = builder.build(metadata, transformed, connection, "tool-dev-abc")
+        tool = payload.services[0].model_dump()
+
+        emitted = {v["name"] for v in (payload.model_extra or {})["volumes"]}
+        assert emitted.isdisjoint({"tmp", "data"})
+        mount_names = {m["name"] for m in tool["volumeMounts"]}
+        # Mounts must reference the renamed volumes, not the reserved ones.
+        assert mount_names == emitted
+        assert mount_names.isdisjoint({"tmp", "data"})
+
 
 class TestEnvParsing:
     def test_list_format(self, builder):

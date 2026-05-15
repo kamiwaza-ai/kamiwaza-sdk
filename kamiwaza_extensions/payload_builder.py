@@ -77,7 +77,14 @@ def _build_volume_specs(
     volumes: List[Dict[str, Any]] = []
     mounts_by_service: Dict[str, List[Dict[str, Any]]] = {}
     source_to_name: Dict[str, str] = {}
-    used_names: set[str] = set()
+    # Pre-reserve the operator-injected volume names. The kamiwaza-
+    # extension-operator rebuilds each Deployment's volume list as
+    # ``[tmp emptyDir] + (data PVC if persistence) + svc.Volumes``; if a
+    # user's compose volume normalizes to ``tmp`` or ``data``, the
+    # reconciled pod would carry duplicate volume names and the K8s API
+    # would reject the spec. Seeding the set forces such a volume to a
+    # collision-suffixed name (``tmp-2``/``data-2``).
+    used_names: set[str] = {"tmp", "data"}
 
     for svc_name, svc in (transformed.get("services") or {}).items():
         if not isinstance(svc, dict):

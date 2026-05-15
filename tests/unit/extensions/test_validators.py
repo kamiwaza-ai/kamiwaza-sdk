@@ -578,6 +578,27 @@ class TestComposeValidator:
         assert not result.passed
         assert any("tmpfs mount" in e for e in result.errors)
 
+    def test_interpolated_bind_source_is_rejected(self, tmp_path, validator):
+        """PR-113 review High #1: a shell-interpolated bind source
+        (``${PWD}/src``, ``$HOME/.cache``) resolves to a host path at
+        runtime and can never be a named volume. The validator must
+        reject it on a prebuilt-image service rather than letting the
+        payload builder turn it into an emptyDir."""
+        compose = {
+            "services": {
+                "web": {
+                    "image": "nginx",
+                    "volumes": ["${PWD}/src:/app/src", "$HOME/.cache:/cache"],
+                },
+            },
+        }
+        f = tmp_path / "docker-compose.yml"
+        self._write_compose(f, compose)
+        result = validator.validate(f, tmp_path)
+        assert not result.passed
+        bind_errors = [e for e in result.errors if "bind mount" in e]
+        assert len(bind_errors) == 2
+
     def test_service_level_tmpfs_key_is_rejected(self, tmp_path, validator):
         """Compose's top-level ``tmpfs:`` service key is distinct from
         ``volumes:``. ``ComposeTransformer`` only strips long-form tmpfs
