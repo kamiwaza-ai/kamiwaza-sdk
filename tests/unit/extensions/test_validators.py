@@ -388,7 +388,7 @@ class TestComposeValidator:
         assert result.passed  # warning, not error
         assert any("port" in w.lower() for w in result.warnings)
 
-    def test_bind_mount_warning(self, tmp_path, validator):
+    def test_bind_mount_error(self, tmp_path, validator):
         compose = {
             "services": {
                 "web": {"image": "nginx", "volumes": ["./src:/app"]},
@@ -397,8 +397,42 @@ class TestComposeValidator:
         f = tmp_path / "docker-compose.yml"
         self._write_compose(f, compose)
         result = validator.validate(f, tmp_path)
+        assert not result.passed
+        assert any("bind mount './src:/app'" in e for e in result.errors)
+
+    def test_long_form_bind_mount_error(self, tmp_path, validator):
+        compose = {
+            "services": {
+                "web": {
+                    "image": "nginx",
+                    "volumes": [{"type": "bind", "source": "./src", "target": "/app"}],
+                },
+            },
+        }
+        f = tmp_path / "docker-compose.yml"
+        self._write_compose(f, compose)
+        result = validator.validate(f, tmp_path)
+        assert not result.passed
+        assert any("bind mount './src:/app'" in e for e in result.errors)
+
+    def test_named_volume_passes_compose_validation(self, tmp_path, validator):
+        compose = {
+            "services": {
+                "web": {
+                    "image": "nginx",
+                    "volumes": ["data:/app/data"],
+                    "deploy": {
+                        "resources": {"limits": {"cpus": "0.5", "memory": "512M"}}
+                    },
+                },
+            },
+            "volumes": {"data": None},
+        }
+        f = tmp_path / "docker-compose.yml"
+        self._write_compose(f, compose)
+        result = validator.validate(f, tmp_path)
         assert result.passed
-        assert any("bind mount" in w.lower() for w in result.warnings)
+        assert not any("bind mount" in e.lower() for e in result.errors)
 
     def test_missing_resource_limits_warning(self, tmp_path, validator):
         compose = {
@@ -446,6 +480,171 @@ class TestComposeValidator:
         result = validator.validate(f, tmp_path)
         assert result.passed
         assert any("network" in w.lower() for w in result.warnings)
+
+    def test_scaffold_templates_pass_validation(self, validator):
+        """ENG-4834 regression: ``kz-ext create`` ships templates that
+        carry bind mounts on ``build:`` services for local-dev hot
+        reload. Promoting bind mounts to a hard error breaks every fresh
+        scaffold's ``kz-ext validate`` and ``kz-ext publish``. Lock in
+        that the shipped templates validate cleanly."""
+        from pathlib import Path
+
+        import kamiwaza_extensions
+
+        templates_root = Path(kamiwaza_extensions.__file__).parent / "templates"
+        for kind in ("app", "tool"):
+            ext_dir = templates_root / kind
+            compose = ext_dir / "docker-compose.yml"
+            if not compose.exists():
+                continue
+            result = validator.validate(compose, ext_dir)
+            # Templates may legitimately surface warnings (no resource
+            # limits, bind-mounts-as-local-dev). They must NOT produce
+            # validation errors that block create→validate→publish.
+            assert result.passed, (
+                f"{kind} template failed validation: {result.errors}"
+            )
+
+    def test_bind_mount_in_build_service_warns_not_errors(self, tmp_path, validator):
+        """ENG-4834: scaffolded extensions (``kz-ext create``) ship a
+        ``build:`` service with bind mounts for hot-reload. ``ComposeTransformer``
+        strips them at deploy, so the validator must NOT error on this
+        local-dev pattern — otherwise every fresh scaffold fails
+        ``kz-ext validate`` / ``kz-ext publish``."""
+        (tmp_path / "Dockerfile").write_text("FROM python:3.10")
+        compose = {
+            "services": {
+                "web": {
+                    "build": ".",
+                    "volumes": ["./src:/app/src"],
+                    "deploy": {
+                        "resources": {"limits": {"cpus": "0.5", "memory": "512M"}}
+                    },
+                },
+            },
+        }
+        f = tmp_path / "docker-compose.yml"
+        self._write_compose(f, compose)
+        result = validator.validate(f, tmp_path)
+        assert result.passed, result.errors
+        assert any("stripped at deploy" in w for w in result.warnings)
+
+    def test_shared_named_volume_warns_about_emptydir(self, tmp_path, validator):
+        """ENG-4834: named volumes deploy as pod-scoped ``emptyDir``, so
+        two services referencing the same name do NOT share data at
+        runtime. Surface this before the user is surprised post-deploy."""
+        compose = {
+            "services": {
+                "api": {
+                    "image": "nginx",
+                    "volumes": ["shared:/app/data"],
+                    "deploy": {
+                        "resources": {"limits": {"cpus": "0.5", "memory": "512M"}}
+                    },
+                },
+                "worker": {
+                    "image": "nginx",
+                    "volumes": ["shared:/app/data"],
+                    "deploy": {
+                        "resources": {"limits": {"cpus": "0.5", "memory": "512M"}}
+                    },
+                },
+            },
+            "volumes": {"shared": None},
+        }
+        f = tmp_path / "docker-compose.yml"
+        self._write_compose(f, compose)
+        result = validator.validate(f, tmp_path)
+        assert result.passed
+        assert any(
+            "emptyDir is pod-scoped" in w and "shared" in w for w in result.warnings
+        )
+
+    def test_tmpfs_long_form_is_rejected(self, tmp_path, validator):
+        """``ComposeTransformer._strip_bind_mounts`` silently drops tmpfs
+        mounts — same failure mode as the pre-ENG-4834 named-volume drop.
+        Surface explicitly so the user can fix the compose."""
+        compose = {
+            "services": {
+                "web": {
+                    "image": "nginx",
+                    "volumes": [{"type": "tmpfs", "target": "/run/cache"}],
+                },
+            },
+        }
+        f = tmp_path / "docker-compose.yml"
+        self._write_compose(f, compose)
+        result = validator.validate(f, tmp_path)
+        assert not result.passed
+        assert any("tmpfs mount" in e for e in result.errors)
+
+    def test_interpolated_bind_source_is_rejected(self, tmp_path, validator):
+        """PR-113 review High #1: a shell-interpolated bind source
+        (``${PWD}/src``, ``$HOME/.cache``) resolves to a host path at
+        runtime and can never be a named volume. The validator must
+        reject it on a prebuilt-image service rather than letting the
+        payload builder turn it into an emptyDir."""
+        compose = {
+            "services": {
+                "web": {
+                    "image": "nginx",
+                    "volumes": ["${PWD}/src:/app/src", "$HOME/.cache:/cache"],
+                },
+            },
+        }
+        f = tmp_path / "docker-compose.yml"
+        self._write_compose(f, compose)
+        result = validator.validate(f, tmp_path)
+        assert not result.passed
+        bind_errors = [e for e in result.errors if "bind mount" in e]
+        assert len(bind_errors) == 2
+
+    def test_service_level_tmpfs_key_is_rejected(self, tmp_path, validator):
+        """Compose's top-level ``tmpfs:`` service key is distinct from
+        ``volumes:``. ``ComposeTransformer`` only strips long-form tmpfs
+        entries inside ``volumes:``, so a service-level ``tmpfs:`` slips
+        through and silently loses the mount at deploy — reject it."""
+        compose = {
+            "services": {
+                "web": {
+                    "image": "nginx",
+                    "tmpfs": ["/run/cache", "/var/cache:size=64m"],
+                },
+            },
+        }
+        f = tmp_path / "docker-compose.yml"
+        self._write_compose(f, compose)
+        result = validator.validate(f, tmp_path)
+        assert not result.passed
+        tmpfs_errors = [e for e in result.errors if "tmpfs mount" in e]
+        assert len(tmpfs_errors) == 2
+
+    def test_service_level_tmpfs_string_form_is_rejected(self, tmp_path, validator):
+        """The ``tmpfs:`` key also accepts a bare string."""
+        compose = {
+            "services": {
+                "web": {"image": "nginx", "tmpfs": "/run/cache"},
+            },
+        }
+        f = tmp_path / "docker-compose.yml"
+        self._write_compose(f, compose)
+        result = validator.validate(f, tmp_path)
+        assert not result.passed
+        assert any("tmpfs mount '/run/cache'" in e for e in result.errors)
+
+    def test_null_volumes_key_does_not_crash(self, tmp_path, validator):
+        """A YAML ``volumes:`` key with no value parses to ``None``;
+        the per-service loop must not crash trying to iterate it."""
+        compose = {
+            "services": {
+                "web": {"image": "nginx", "volumes": None},
+            },
+        }
+        f = tmp_path / "docker-compose.yml"
+        self._write_compose(f, compose)
+        result = validator.validate(f, tmp_path)
+        # Should not raise; service has no volumes -> no bind-mount findings
+        assert not any("bind mount" in e for e in result.errors)
 
     def test_invalid_yaml(self, tmp_path, validator):
         f = tmp_path / "docker-compose.yml"

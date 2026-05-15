@@ -319,6 +319,165 @@ class TestServiceRefRewritesAnnotation:
         assert ANNOTATION_SERVICE_REF_REWRITES not in annotations
 
 
+class TestComposeVolumes:
+    """ENG-4834: named compose volumes must reach the kext payload."""
+
+    def test_named_volume_becomes_empty_dir_and_volume_mount(
+        self, builder, metadata, connection
+    ):
+        transformed = {
+            "services": {
+                "tool": {
+                    "image": "registry.test/tool:dev",
+                    "ports": ["8000"],
+                    "volumes": ["omniparse-data:/data"],
+                },
+            },
+            "volumes": {"omniparse-data": None},
+        }
+
+        payload = builder.build(metadata, transformed, connection, "tool-dev-abc")
+        tool = payload.services[0].model_dump()
+
+        assert (payload.model_extra or {})["volumes"] == [
+            {"name": "omniparse-data", "emptyDir": {}}
+        ]
+        assert payload.model_dump()["volumes"] == [
+            {"name": "omniparse-data", "emptyDir": {}}
+        ]
+        assert tool["volumeMounts"] == [
+            {"name": "omniparse-data", "mountPath": "/data"}
+        ]
+
+    def test_shared_named_volume_is_declared_once(self, builder, metadata, connection):
+        transformed = {
+            "services": {
+                "api": {
+                    "image": "registry.test/api:dev",
+                    "ports": ["8000"],
+                    "volumes": ["shared-data:/cache"],
+                },
+                "worker": {
+                    "image": "registry.test/worker:dev",
+                    "volumes": ["shared-data:/cache"],
+                },
+            },
+        }
+
+        payload = builder.build(metadata, transformed, connection, "app-dev-abc")
+        services = {svc.name: svc.model_dump() for svc in payload.services}
+
+        assert (payload.model_extra or {})["volumes"] == [
+            {"name": "shared-data", "emptyDir": {}}
+        ]
+        assert services["api"]["volumeMounts"] == [
+            {"name": "shared-data", "mountPath": "/cache"}
+        ]
+        assert services["worker"]["volumeMounts"] == [
+            {"name": "shared-data", "mountPath": "/cache"}
+        ]
+
+    def test_long_form_volume_is_supported_and_read_only(
+        self, builder, metadata, connection
+    ):
+        transformed = {
+            "services": {
+                "backend": {
+                    "image": "registry.test/backend:dev",
+                    "ports": ["8000"],
+                    "volumes": [
+                        {
+                            "type": "volume",
+                            "source": "backend_data",
+                            "target": "/app/persist",
+                            "read_only": True,
+                        }
+                    ],
+                },
+            },
+        }
+
+        payload = builder.build(metadata, transformed, connection, "app-dev-abc")
+        backend = payload.services[0].model_dump()
+
+        assert (payload.model_extra or {})["volumes"] == [
+            {"name": "backend-data", "emptyDir": {}}
+        ]
+        assert backend["volumeMounts"] == [
+            {
+                "name": "backend-data",
+                "mountPath": "/app/persist",
+                "readOnly": True,
+            }
+        ]
+
+    def test_no_volumes_keeps_payload_unchanged(
+        self, builder, metadata, transformed_compose, connection
+    ):
+        payload = builder.build(
+            metadata, transformed_compose, connection, "app-dev-abc"
+        )
+
+        assert "volumes" not in (payload.model_extra or {})
+        assert all(
+            "volumeMounts" not in (svc.model_extra or {}) for svc in payload.services
+        )
+
+    def test_interpolated_host_path_is_not_emitted_as_empty_dir(
+        self, builder, metadata, connection
+    ):
+        """PR-113 review High #1: a shell-interpolated bind source
+        (``${PWD}/src``) must NOT be normalized into a named volume and
+        emitted as an emptyDir over the image's baked files. It is a
+        host path and the validator rejects it; the payload builder must
+        agree and drop it."""
+        transformed = {
+            "services": {
+                "tool": {
+                    "image": "registry.test/tool:dev",
+                    "ports": ["8000"],
+                    "volumes": [
+                        "${PWD}/src:/app/src",
+                        "$HOME/.cache:/cache",
+                    ],
+                },
+            },
+        }
+
+        payload = builder.build(metadata, transformed, connection, "tool-dev-abc")
+        tool = payload.services[0].model_dump()
+
+        assert "volumes" not in (payload.model_extra or {})
+        assert "volumeMounts" not in tool
+
+    def test_user_volume_named_tmp_avoids_operator_collision(
+        self, builder, metadata, connection
+    ):
+        """PR-113 review High #2: the operator injects volumes named
+        ``tmp`` and ``data``. A user compose volume that normalizes to
+        either must be renamed so the reconciled Deployment has no
+        duplicate volume names (K8s rejects duplicates)."""
+        transformed = {
+            "services": {
+                "tool": {
+                    "image": "registry.test/tool:dev",
+                    "ports": ["8000"],
+                    "volumes": ["tmp:/scratch", "data:/store"],
+                },
+            },
+        }
+
+        payload = builder.build(metadata, transformed, connection, "tool-dev-abc")
+        tool = payload.services[0].model_dump()
+
+        emitted = {v["name"] for v in (payload.model_extra or {})["volumes"]}
+        assert emitted.isdisjoint({"tmp", "data"})
+        mount_names = {m["name"] for m in tool["volumeMounts"]}
+        # Mounts must reference the renamed volumes, not the reserved ones.
+        assert mount_names == emitted
+        assert mount_names.isdisjoint({"tmp", "data"})
+
+
 class TestEnvParsing:
     def test_list_format(self, builder):
         result = builder._parse_env(["KEY=value", "BARE_KEY"])

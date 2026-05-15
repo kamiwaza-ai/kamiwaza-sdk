@@ -61,6 +61,18 @@ def _build_patch_kwargs(
     sandbox = extra.get("sandbox")
     if sandbox:
         kwargs["sandbox"] = sandbox
+    # Always forward ``volumes`` (even when empty) so removing a named
+    # volume from compose actually clears the stale top-level volume on
+    # the persisted CR. Same iterative-dev contract that drives the
+    # ``kamiwaza``/annotations forwarding above.
+    #
+    # Safe against operator-managed mounts: the kamiwaza-extension-
+    # operator rebuilds each Deployment's volume list every reconcile as
+    # ``[tmp emptyDir] + (data PVC if persistence) + svc.Volumes``. The
+    # ``tmp``/``data`` volumes are injected at reconcile time and are
+    # never stored in ``svc.Volumes``, so PATCHing ``volumes: []`` clears
+    # only user-declared volumes and cannot wipe operator-managed ones.
+    kwargs["volumes"] = extra.get("volumes") or []
     return kwargs
 
 
@@ -105,6 +117,13 @@ def _build_patch_service_specs(payload: Any) -> List[Any]:
         ):
             if field in svc_extra and svc_extra[field] is not None:
                 setattr(spec, field, svc_extra[field])
+        # Always forward ``volumeMounts`` (even when empty) so removing
+        # a volume from compose clears the stale per-service mount on
+        # the persisted CR; consistent with the top-level ``volumes``
+        # forwarding in ``_build_patch_kwargs``. The operator appends
+        # ``svc.VolumeMounts`` after its own ``tmp``/``data`` mounts, so
+        # an empty list clears only user-declared mounts.
+        spec.volumeMounts = svc_extra.get("volumeMounts") or []
         patch_services.append(spec)
     return patch_services
 
