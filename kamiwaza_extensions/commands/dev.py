@@ -44,14 +44,69 @@ def _build_patch_kwargs(
        carry these or iterative dev silently runs against stale config.
     """
     kwargs: Dict[str, Any] = {"services": patch_services}
-    annotations = (payload.model_extra or {}).get("annotations")
+    extra = payload.model_extra or {}
+    annotations = extra.get("annotations")
     if annotations:
         kwargs["annotations"] = annotations
     # ``kamiwaza`` is a top-level field on CreateExtension; mirror it onto
     # the patch via ``extra="allow"`` so PATCH refreshes the persisted CR.
     if getattr(payload, "kamiwaza", None) is not None:
         kwargs["kamiwaza"] = payload.kamiwaza
+    # ``sandbox`` rides ``CreateExtension`` as an extra field
+    # (``extra="allow"``). Forward it on PATCH too: ``kz-ext dev`` uses
+    # PATCH after the first CREATE, and the operator needs the sandbox
+    # contract refreshed for sandbox RBAC reconciliation when a user
+    # toggles ``SANDBOX_BACKEND=kubernetes`` or changes
+    # namespace/whitelist/resources on a redeploy.
+    sandbox = extra.get("sandbox")
+    if sandbox:
+        kwargs["sandbox"] = sandbox
     return kwargs
+
+
+def _build_patch_service_specs(payload: Any) -> List[Any]:
+    """Build the per-service ``PatchServiceSpec`` list from a
+    ``CreateExtension`` payload, forwarding the new ``x-kamiwaza``
+    per-service overrides via ``extra="allow"``.
+
+    The PATCH carries the full ``(registry, repository, tag)`` triple
+    from the canonical image ref. The operator reconstructs the CR's
+    image field from those three, so a repository change between
+    deploys — common when an extension's declared image namespace
+    differs from the legacy ``{ext}-{svc}`` form that pre-fix kz-ext
+    would have written — flows through. Sending only ``tag`` would
+    leave the CR's image field at the original repository and produce
+    ``ImagePullBackOff`` on the next pull.
+    """
+    from kamiwaza_extensions.compose_transformer import _split_image_ref
+    from kamiwaza_sdk.schemas.extensions import ImagePatch, PatchServiceSpec
+
+    patch_services: List[Any] = []
+    for svc in payload.services:
+        registry, repository, tag = _split_image_ref(svc.image)
+        image_patch = ImagePatch(
+            tag=tag,
+            registry=registry,
+            repository=repository,
+        )
+        spec = PatchServiceSpec(
+            name=svc.name,
+            image=image_patch,
+        )
+        if svc.env:
+            spec.env = svc.env
+        if svc.replicas is not None:
+            spec.replicas = svc.replicas
+        svc_extra = svc.model_extra or {}
+        for field in (
+            "healthCheck",
+            "automountServiceAccountToken",
+            "containerSecurityContext",
+        ):
+            if field in svc_extra and svc_extra[field] is not None:
+                setattr(spec, field, svc_extra[field])
+        patch_services.append(spec)
+    return patch_services
 
 
 # Match the default ``RevisionTagger.generate_tag`` format:
@@ -251,7 +306,10 @@ def run_dev_remote(
     from kamiwaza_sdk import KamiwazaClient
     from kamiwaza_sdk.exceptions import APIError
 
-    from kamiwaza_extensions.compose_transformer import ComposeTransformer
+    from kamiwaza_extensions.compose_transformer import (
+        ComposeTransformer,
+        compute_canonical_refs,
+    )
     from kamiwaza_extensions.connections import ConnectionManager
     from kamiwaza_extensions.deployment_poller import (
         DeploymentFailedError,
@@ -259,7 +317,6 @@ def run_dev_remote(
         DeploymentTimeoutError,
     )
     from kamiwaza_extensions.dev_state import (
-        DevState,
         mark_step,
         read_state,
         resume_message,
@@ -379,6 +436,20 @@ def run_dev_remote(
         revision_tag=rev_tag,
         registry=registry,
     )
+    transformed = transformer.resolve_env_placeholders(transformed)
+
+    # Canonical image refs for every build-context service. Single
+    # source of truth shared with the transformed compose so the image
+    # we build and push matches the ref the K8s payload will pull. The
+    # transformer honors a service's declared image namespace; without
+    # this map ImageBuilder would synthesize the legacy {ext}-{svc}
+    # form and ship a pod referencing an image that was never pushed.
+    canonical_refs: Dict[str, str] = compute_canonical_refs(
+        info.compose_data.get("services") or {},
+        registry=registry,
+        extension_name=info.name,
+        revision_tag=rev_tag,
+    )
 
     # 5b. Resolve SDK override for build
     build_overrides = None
@@ -445,6 +516,7 @@ def run_dev_remote(
                 service_filter=service,
                 verbose=verbose,
                 build_overrides=build_overrides,
+                image_refs=canonical_refs,
             )
         except ImageBuildError as exc:
             console.print(f"\n[red]Error:[/red] {exc}")
@@ -455,13 +527,15 @@ def run_dev_remote(
         console.print()
     else:
         console.print("[dim]Skipping build (--no-build)[/dim]")
-        # Collect expected image refs for push
-        image_refs = []
-        for svc_name, svc in (info.compose_data.get("services") or {}).items():
-            if service and svc_name != service:
-                continue
-            if "build" in svc:
-                image_refs.append(f"{registry}/{info.name}-{svc_name}:{rev_tag}")
+        # Collect expected image refs for push from the canonical map so
+        # --no-build pushes hit the same registry path the deployment
+        # payload will reference.
+        if service:
+            image_refs = (
+                [canonical_refs[service]] if service in canonical_refs else []
+            )
+        else:
+            image_refs = list(canonical_refs.values())
         console.print()
 
     # 7. Push images
@@ -539,36 +613,16 @@ def run_dev_remote(
 
         # Deploy — PATCH if exists, POST if new
         from kamiwaza_sdk.exceptions import NotFoundError
-        from kamiwaza_sdk.schemas.extensions import (
-            ImagePatch,
-            PatchExtension,
-            PatchServiceSpec,
-        )
+        from kamiwaza_sdk.schemas.extensions import PatchExtension
 
         try:
             # Check if extension already exists
             client.extensions.get_extension(dev_name)
 
-            # Build patch from payload — extract image, env, replicas per service
-            patch_services = []
-            for svc in payload.services:
-                # Split tag after last '/' to avoid confusing registry port with tag
-                image = svc.image
-                slash_pos = image.rfind("/")
-                after_slash = image[slash_pos + 1:] if slash_pos >= 0 else image
-                if ":" in after_slash:
-                    tag = after_slash.rsplit(":", 1)[1]
-                else:
-                    tag = "latest"
-                spec = PatchServiceSpec(
-                    name=svc.name,
-                    image=ImagePatch(tag=tag),
-                )
-                if svc.env:
-                    spec.env = svc.env
-                if svc.replicas is not None:
-                    spec.replicas = svc.replicas
-                patch_services.append(spec)
+            # Build patch from payload — extract image, env, replicas
+            # plus the x-kamiwaza per-service overrides forwarded via
+            # ``extra="allow"`` (jxstanford PR #97 review H2).
+            patch_services = _build_patch_service_specs(payload)
             # Carries the deployer/revision/deployed-at annotations on
             # every PATCH so `kz-ext status` reflects the current
             # redeploy (review re-review PR #84 H1).

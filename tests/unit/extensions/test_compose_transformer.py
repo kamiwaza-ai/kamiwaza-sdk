@@ -1,5 +1,7 @@
 """Tests for ComposeTransformer."""
 
+from typing import Any, Dict
+
 import pytest
 
 from kamiwaza_extensions.compose_transformer import ComposeTransformer
@@ -93,7 +95,35 @@ class TestBuildContextRemoval:
         assert "build" not in svc
         assert svc["image"] == "registry.test/my-app-api:1.0.0-dev"
 
-    def test_updates_existing_image_tag(self, transformer):
+    def test_preserves_declared_namespace_rewrites_only_tag(self, transformer):
+        # When a service has both `build:` and a registry-qualified
+        # `image:`, the declared namespace is canonical — only the tag
+        # is rewritten. Extensions whose registry path doesn't follow
+        # the legacy {ext}-{svc} convention (e.g. omniparse at
+        # `images/omniparse`) would otherwise silently get the wrong
+        # namespace in the catalog.
+        compose = {
+            "services": {
+                "api": {
+                    "build": "./backend",
+                    "image": "ghcr.io/kamiwazaai/my-app-api:old-tag",
+                }
+            }
+        }
+        result = transformer.transform(compose, "my-app", "1.0.0-dev", "registry.test")
+        assert result["services"]["api"]["image"] == (
+            "ghcr.io/kamiwazaai/my-app-api:1.0.0-dev"
+        )
+
+    def test_unqualified_short_form_falls_back_to_legacy(self):
+        # `image: foo/bar:tag` resolves to docker.io/foo/bar:tag under
+        # docker's namespace rules — building/pushing at that path
+        # silently lands on Docker Hub while the K8s pod and the
+        # cluster registry expect the cluster-side rewrite. Override
+        # with the legacy {registry}/{ext}-{svc}:{tag} form so the
+        # pipeline stays internally consistent.
+        from kamiwaza_extensions.compose_transformer import ComposeTransformer
+
         compose = {
             "services": {
                 "api": {
@@ -102,9 +132,31 @@ class TestBuildContextRemoval:
                 }
             }
         }
-        result = transformer.transform(compose, "my-app", "1.0.0-dev", "registry.test")
-        # When service has both build and image, use consistent registry format (matches image builder)
-        assert result["services"]["api"]["image"] == "registry.test/my-app-api:1.0.0-dev"
+        result = ComposeTransformer().transform(
+            compose, "my-app", "1.0.0-dev", "registry.test",
+        )
+        assert result["services"]["api"]["image"] == (
+            "registry.test/my-app-api:1.0.0-dev"
+        )
+
+    def test_transform_preserves_divergent_namespace(self, transformer):
+        # The omniparse-style case: declared image namespace
+        # (`images/omniparse`) does not follow the {ext-name}-{svc-name}
+        # convention (`my-app-api`). The declared form wins.
+        compose = {
+            "services": {
+                "omniparse-server": {
+                    "build": "./tool-omniparse",
+                    "image": "ghcr.io/kamiwaza-internal/foo/images/omniparse:2.0.14",
+                }
+            }
+        }
+        result = transformer.transform(
+            compose, "tool-omniparse", "2.0.14-dev", "ghcr.io/kamiwaza-internal/foo/images",
+        )
+        assert result["services"]["omniparse-server"]["image"] == (
+            "ghcr.io/kamiwaza-internal/foo/images/omniparse:2.0.14-dev"
+        )
 
     def test_dict_build_config(self, transformer):
         compose = {
@@ -225,6 +277,24 @@ class TestCleanup:
         assert "networks" not in result["services"]["api"]
         assert "networks" not in result
 
+    def test_preserves_x_kamiwaza_overrides(self, transformer):
+        compose = {
+            "services": {
+                "postgres": {
+                    "image": "postgres:15",
+                    "x-kamiwaza": {
+                        "containerSecurityContext": {"runAsNonRoot": False},
+                        "healthCheck": {"tcpSocket": {"port": 5432}},
+                    },
+                }
+            }
+        }
+        result = transformer.transform(compose, "test", "v1", "reg")
+        assert result["services"]["postgres"]["x-kamiwaza"] == {
+            "containerSecurityContext": {"runAsNonRoot": False},
+            "healthCheck": {"tcpSocket": {"port": 5432}},
+        }
+
 
 class TestFullTransform:
     def test_multi_service(self, transformer, multi_service_compose):
@@ -261,23 +331,22 @@ class TestFullTransform:
         assert "build" in compose["services"]["api"]
 
 
-class TestResolveShellRefs:
-    """The compose ``${VAR:-default}`` syntax must round-trip its
-    default value to the K8s pod env (was being dropped wholesale,
-    breaking cross-service URLs like ``BACKEND_URL``)."""
+class TestResolveEnvPlaceholders:
+    """``resolve_env_placeholders`` collapses ``${VAR:-default}`` env
+    placeholders to their default, drops unresolvable forms, and drops
+    ``KAMIWAZA_*`` keys (so the operator's ConfigMap envFrom wins)."""
 
     def test_resolves_default_substitution_dict_form(self, transformer):
         compose = {
             "services": {
                 "frontend": {
-                    "build": ".",
                     "environment": {
                         "BACKEND_URL": "${BACKEND_URL:-http://backend:8000}",
                     },
                 },
             },
         }
-        result = transformer.transform(compose, "test", "v1", "reg")
+        result = transformer.resolve_env_placeholders(compose)
         assert result["services"]["frontend"]["environment"] == {
             "BACKEND_URL": "http://backend:8000",
         }
@@ -286,7 +355,6 @@ class TestResolveShellRefs:
         compose = {
             "services": {
                 "frontend": {
-                    "build": ".",
                     "environment": [
                         "BACKEND_URL=${BACKEND_URL:-http://backend:8000}",
                         "PLAIN_VAR=plain-value",
@@ -294,7 +362,7 @@ class TestResolveShellRefs:
                 },
             },
         }
-        result = transformer.transform(compose, "test", "v1", "reg")
+        result = transformer.resolve_env_placeholders(compose)
         assert result["services"]["frontend"]["environment"] == [
             "BACKEND_URL=http://backend:8000",
             "PLAIN_VAR=plain-value",
@@ -307,7 +375,6 @@ class TestResolveShellRefs:
         compose = {
             "services": {
                 "backend": {
-                    "build": ".",
                     "environment": {
                         "KAMIWAZA_API_URL": "${KAMIWAZA_API_URL:-http://host.docker.internal:7777/api}",
                         "BACKEND_URL": "${BACKEND_URL:-http://backend:8000}",
@@ -315,7 +382,7 @@ class TestResolveShellRefs:
                 },
             },
         }
-        result = transformer.transform(compose, "test", "v1", "reg")
+        result = transformer.resolve_env_placeholders(compose)
         # KAMIWAZA_* dropped; BACKEND_URL resolved to default.
         assert result["services"]["backend"]["environment"] == {
             "BACKEND_URL": "http://backend:8000",
@@ -327,7 +394,6 @@ class TestResolveShellRefs:
         compose = {
             "services": {
                 "backend": {
-                    "build": ".",
                     "environment": {
                         "OPENAI_API_KEY": "${OPENAI_API_KEY}",
                         "REQUIRED_VAR": "${REQUIRED_VAR:?missing}",
@@ -336,7 +402,7 @@ class TestResolveShellRefs:
                 },
             },
         }
-        result = transformer.transform(compose, "test", "v1", "reg")
+        result = transformer.resolve_env_placeholders(compose)
         assert result["services"]["backend"]["environment"] == {"PLAIN": "kept"}
 
     def test_alternate_default_form_dash_only(self, transformer):
@@ -345,28 +411,133 @@ class TestResolveShellRefs:
         compose = {
             "services": {
                 "backend": {
-                    "build": ".",
                     "environment": {"X": "${UNSET-fallback}"},
                 },
             },
         }
-        result = transformer.transform(compose, "test", "v1", "reg")
+        result = transformer.resolve_env_placeholders(compose)
         assert result["services"]["backend"]["environment"] == {"X": "fallback"}
 
     def test_plain_values_pass_through(self, transformer):
         compose = {
             "services": {
                 "backend": {
-                    "build": ".",
                     "environment": {"FOO": "bar", "PORT": "8000"},
+                },
+            },
+        }
+        result = transformer.resolve_env_placeholders(compose)
+        assert result["services"]["backend"]["environment"] == {
+            "FOO": "bar",
+            "PORT": "8000",
+        }
+
+    def test_does_not_mutate_input(self, transformer):
+        compose = {
+            "services": {
+                "backend": {
+                    "environment": {
+                        "BACKEND_URL": "${BACKEND_URL:-http://backend:8000}",
+                        "REQUIRED_VAR": "${REQUIRED_VAR:?missing}",
+                    },
+                },
+            },
+        }
+        original = {
+            "BACKEND_URL": "${BACKEND_URL:-http://backend:8000}",
+            "REQUIRED_VAR": "${REQUIRED_VAR:?missing}",
+        }
+        transformer.resolve_env_placeholders(compose)
+        assert compose["services"]["backend"]["environment"] == original
+
+
+class TestTransformPreservesEnvPlaceholders:
+    """``transform()`` leaves env-value ``${...}`` placeholders verbatim
+    so callers whose destination performs its own substitution (e.g. the
+    platform installer reading a catalog template) receive an
+    unresolved compose."""
+
+    def test_required_placeholder_preserved(self, transformer):
+        """``${VAR:?error}`` survives verbatim so a downstream consumer
+        sees the required-var marker."""
+        compose = {
+            "services": {
+                "neo4j": {
+                    "image": "neo4j:5",
+                    "environment": {
+                        "NEO4J_AUTH": "neo4j/${NEO4J_PASSWORD:?NEO4J_PASSWORD must be set}",
+                        "KZ_NEO4J_PASSWORD": "${NEO4J_PASSWORD:?NEO4J_PASSWORD must be set}",
+                    },
+                },
+            },
+        }
+        result = transformer.transform(compose, "test", "v1", "reg")
+        assert result["services"]["neo4j"]["environment"] == {
+            "NEO4J_AUTH": "neo4j/${NEO4J_PASSWORD:?NEO4J_PASSWORD must be set}",
+            "KZ_NEO4J_PASSWORD": "${NEO4J_PASSWORD:?NEO4J_PASSWORD must be set}",
+        }
+
+    def test_default_placeholder_preserved(self, transformer):
+        """``${VAR:-default}`` survives verbatim so a downstream consumer
+        decides whether to substitute or fall through to the default."""
+        compose = {
+            "services": {
+                "graphiti": {
+                    "image": "graphiti:0.28",
+                    "environment": {
+                        "KAMIWAZA_ENDPOINT": "${KAMIWAZA_ENDPOINT:-http://host.docker.internal:8080}",
+                        "OPENAI_API_KEY": "${OPENAI_API_KEY:-not-needed-kamiwaza}",
+                        "NEO4J_HOST": "${NEO4J_HOST:-neo4j}",
+                    },
+                },
+            },
+        }
+        result = transformer.transform(compose, "test", "v1", "reg")
+        assert result["services"]["graphiti"]["environment"] == {
+            "KAMIWAZA_ENDPOINT": "${KAMIWAZA_ENDPOINT:-http://host.docker.internal:8080}",
+            "OPENAI_API_KEY": "${OPENAI_API_KEY:-not-needed-kamiwaza}",
+            "NEO4J_HOST": "${NEO4J_HOST:-neo4j}",
+        }
+
+    def test_bare_placeholder_preserved(self, transformer):
+        """``${VAR}`` with no default survives verbatim — extensions use
+        this when the caller must supply a value with no fallback."""
+        compose = {
+            "services": {
+                "backend": {
+                    "image": "backend:1",
+                    "environment": {"OPENAI_BASE_URL": "${OPENAI_BASE_URL}"},
                 },
             },
         }
         result = transformer.transform(compose, "test", "v1", "reg")
         assert result["services"]["backend"]["environment"] == {
-            "FOO": "bar",
-            "PORT": "8000",
+            "OPENAI_BASE_URL": "${OPENAI_BASE_URL}",
         }
+
+    def test_list_form_placeholders_preserved(self, transformer):
+        """Compose env can be ``KEY=value`` list form too. Placeholders
+        in list-form entries must also survive verbatim."""
+        compose = {
+            "services": {
+                "backend": {
+                    "image": "backend:1",
+                    "environment": [
+                        "NEO4J_PASSWORD=${NEO4J_PASSWORD:?required}",
+                        "BACKEND_URL=${BACKEND_URL:-http://backend:8000}",
+                        "OPENAI_API_KEY=${OPENAI_API_KEY}",
+                        "PLAIN=kept",
+                    ],
+                },
+            },
+        }
+        result = transformer.transform(compose, "test", "v1", "reg")
+        assert result["services"]["backend"]["environment"] == [
+            "NEO4J_PASSWORD=${NEO4J_PASSWORD:?required}",
+            "BACKEND_URL=${BACKEND_URL:-http://backend:8000}",
+            "OPENAI_API_KEY=${OPENAI_API_KEY}",
+            "PLAIN=kept",
+        ]
 
 
 class TestDetectServiceUrlRewrites:
@@ -505,3 +676,275 @@ class TestDetectServiceUrlRewrites:
 
         services = {"backend": {}, "frontend": {}}
         assert detect_service_url_rewrites(services, "ext") == {}
+
+
+class TestLooksRegistryQualified:
+    """`_looks_registry_qualified` distinguishes registry-qualified refs
+    from Docker Hub namespace shortcuts using docker's standard rule."""
+
+    def test_bare_repo_name(self):
+        from kamiwaza_extensions.compose_transformer import _looks_registry_qualified
+
+        assert _looks_registry_qualified("redis") is False
+        assert _looks_registry_qualified("api:latest") is False
+
+    def test_docker_hub_namespace_shortcut(self):
+        # `my-org/api` looks like a path but docker resolves it to
+        # docker.io/my-org/api — must not be treated as registry-qualified.
+        from kamiwaza_extensions.compose_transformer import _looks_registry_qualified
+
+        assert _looks_registry_qualified("my-org/api:latest") is False
+        assert _looks_registry_qualified("library/redis:7") is False
+
+    def test_explicit_registry_with_dot(self):
+        from kamiwaza_extensions.compose_transformer import _looks_registry_qualified
+
+        assert _looks_registry_qualified("ghcr.io/kamiwaza/foo:1.0") is True
+        assert _looks_registry_qualified("registry.example.com/foo:bar") is True
+
+    def test_explicit_registry_with_port(self):
+        from kamiwaza_extensions.compose_transformer import _looks_registry_qualified
+
+        assert _looks_registry_qualified("localhost:5000/foo:tag") is True
+        assert _looks_registry_qualified("registry:443/foo") is True
+
+    def test_localhost_without_port(self):
+        # The one exception to the dot/colon rule — docker treats bare
+        # `localhost` as a registry host.
+        from kamiwaza_extensions.compose_transformer import _looks_registry_qualified
+
+        assert _looks_registry_qualified("localhost/foo:tag") is True
+
+
+class TestCanonicalBuildRef:
+    """`_canonical_build_ref` returns the registry image ref for a
+    buildable service, honoring registry-qualified declared images and
+    falling back to the legacy form for everything else."""
+
+    @staticmethod
+    def _call(image=None, *, has_build=True, declared_only=False):
+        from kamiwaza_extensions.compose_transformer import _canonical_build_ref
+
+        svc: Dict[str, Any] = {}
+        if has_build:
+            svc["build"] = "."
+        if image is not None:
+            svc["image"] = image
+        if declared_only:
+            svc = {"image": image} if image is not None else {}
+        return _canonical_build_ref(
+            svc, "api",
+            fallback_registry="registry.test",
+            fallback_extension_name="my-ext",
+            revision_tag="2.0.0-dev",
+        )
+
+    def test_legacy_fallback_when_no_image_declared(self):
+        assert self._call() == "registry.test/my-ext-api:2.0.0-dev"
+
+    def test_legacy_fallback_when_image_empty_string(self):
+        assert self._call(image="") == "registry.test/my-ext-api:2.0.0-dev"
+
+    def test_legacy_fallback_when_image_whitespace_only(self):
+        assert self._call(image="   ") == "registry.test/my-ext-api:2.0.0-dev"
+
+    def test_registry_qualified_declared_image_honored(self):
+        assert self._call(
+            image="ghcr.io/my-org/api:1.0",
+        ) == "ghcr.io/my-org/api:2.0.0-dev"
+
+    def test_registry_with_port_honored(self):
+        assert self._call(
+            image="localhost:5000/api:1.0",
+        ) == "localhost:5000/api:2.0.0-dev"
+
+    def test_unqualified_bare_repo_falls_back_to_legacy(self):
+        # `image: api:latest` — docker push would send this to Docker
+        # Hub, breaking extensions whose images live in the cluster
+        # registry. Override with the legacy form so the rewritten ref
+        # matches what _retag_appgarden_compose / ComposeTransformer
+        # write into the K8s payload.
+        assert self._call(
+            image="api:latest",
+        ) == "registry.test/my-ext-api:2.0.0-dev"
+
+    def test_unqualified_short_form_falls_back_to_legacy(self):
+        # `image: my-org/api:1.0` — common dev convention that resolves
+        # to docker.io/my-org/api:1.0 under docker's namespace rules.
+        # Same regression hazard as the bare repo case.
+        assert self._call(
+            image="my-org/api:1.0",
+        ) == "registry.test/my-ext-api:2.0.0-dev"
+
+    def test_strips_whitespace_around_qualified_ref(self):
+        assert self._call(
+            image="  ghcr.io/my-org/api:1.0  ",
+        ) == "ghcr.io/my-org/api:2.0.0-dev"
+
+
+class TestSplitImageRef:
+    """`_split_image_ref` decomposes a canonical image ref into
+    ``(registry, repository, tag)`` so the K8s PATCH path can update
+    all three together — sending tag-only would leave the operator's
+    CR pointing at the old repository when an extension's declared
+    image namespace differs from the pre-fix legacy synthesis."""
+
+    @staticmethod
+    def _split(ref):
+        from kamiwaza_extensions.compose_transformer import _split_image_ref
+
+        return _split_image_ref(ref)
+
+    def test_registry_qualified_with_tag(self):
+        assert self._split("ghcr.io/kamiwaza/foo:1.0") == (
+            "ghcr.io", "kamiwaza/foo", "1.0",
+        )
+
+    def test_registry_with_port(self):
+        # The tag colon must not be confused with the registry port colon.
+        assert self._split("localhost:5000/my-app:2.0.0-dev") == (
+            "localhost:5000", "my-app", "2.0.0-dev",
+        )
+
+    def test_localhost_without_port(self):
+        assert self._split("localhost/foo:tag") == ("localhost", "foo", "tag")
+
+    def test_no_tag_defaults_to_latest(self):
+        assert self._split("ghcr.io/kamiwaza/foo") == (
+            "ghcr.io", "kamiwaza/foo", "latest",
+        )
+
+    def test_strips_digest_before_splitting(self):
+        # Defensive: digest pins don't reach the PATCH path in practice,
+        # but the helper should never propagate one into the registry
+        # or repository field if it ever does.
+        assert self._split(
+            "ghcr.io/foo/bar:1.0@sha256:" + "a" * 64,
+        ) == ("ghcr.io", "foo/bar", "1.0")
+
+    def test_unqualified_short_form_has_no_registry(self):
+        # `my-org/my-app:1.0` resolves to docker.io/my-org/my-app under
+        # docker's namespace rules — _canonical_build_ref already
+        # rewrites these to the cluster registry, but if one ever
+        # reaches the splitter the registry field must remain None
+        # rather than masquerade as `my-org`.
+        assert self._split("my-org/my-app:1.0") == (None, "my-org/my-app", "1.0")
+
+    def test_bare_repo_name(self):
+        assert self._split("redis:7") == (None, "redis", "7")
+
+    def test_bare_repo_no_tag(self):
+        assert self._split("redis") == (None, "redis", "latest")
+
+    def test_multi_segment_repository(self):
+        # Omniparse-shaped path: a long repository path under a single registry.
+        assert self._split(
+            "ghcr.io/kamiwaza-internal/kamiwaza-extensions-omniparse/images/omniparse:2.0.14-dev"
+        ) == (
+            "ghcr.io",
+            "kamiwaza-internal/kamiwaza-extensions-omniparse/images/omniparse",
+            "2.0.14-dev",
+        )
+
+
+class TestComputeCanonicalRefs:
+    """`compute_canonical_refs` is the shared canonical-refs derivation
+    used by publish (live + dry-run) and dev. Same source of truth means
+    none of the three paths can drift on namespace, profile filtering,
+    or appgarden precedence."""
+
+    @staticmethod
+    def _call(source, *, appgarden=None, registry="registry.test", extension_name="my-ext", revision_tag="2.0.0-dev"):
+        from kamiwaza_extensions.compose_transformer import compute_canonical_refs
+
+        return compute_canonical_refs(
+            source,
+            registry=registry,
+            extension_name=extension_name,
+            revision_tag=revision_tag,
+            appgarden_services=appgarden,
+        )
+
+    def test_empty_source_returns_empty(self):
+        assert self._call({}) == {}
+
+    def test_only_buildable_services_included(self):
+        source = {
+            "backend": {"build": ".", "image": "ghcr.io/my-org/backend:1.0"},
+            "neo4j": {"image": "ghcr.io/upstream/neo4j:5.0"},  # external
+        }
+        result = self._call(source)
+        assert "backend" in result
+        assert "neo4j" not in result
+
+    def test_profile_gated_services_excluded(self):
+        # Mirrors the buildable_services filter in run_publish. A
+        # service with a profiles: key is local-only; pushing it under
+        # --no-build would leak a dev helper into the registry.
+        source = {
+            "backend": {"build": ".", "image": "ghcr.io/my-org/backend:1.0"},
+            "dev-helper": {
+                "build": "./dev",
+                "image": "ghcr.io/my-org/dev-helper:1.0",
+                "profiles": ["dev"],
+            },
+        }
+        result = self._call(source)
+        assert list(result.keys()) == ["backend"]
+
+    def test_appgarden_entry_overrides_source(self):
+        source = {
+            "backend": {
+                "build": ".",
+                "image": "ghcr.io/source-org/backend:1.0",
+            },
+        }
+        appgarden = {
+            "backend": {"image": "ghcr.io/published/tool-foo/backend:1.0"},
+        }
+        assert self._call(source, appgarden=appgarden) == {
+            "backend": "ghcr.io/published/tool-foo/backend:2.0.0-dev",
+        }
+
+    def test_empty_appgarden_entry_falls_through_to_legacy(self):
+        # Presence-based lookup: an appgarden services entry that exists
+        # but is empty/missing image: must NOT silently fall back to
+        # source compose. _retag_appgarden_compose would call
+        # _canonical_build_ref({}, ...) and write the legacy fallback;
+        # this helper must agree so the two paths can't drift.
+        source = {
+            "backend": {
+                "build": ".",
+                "image": "ghcr.io/source-org/backend:1.0",
+            },
+        }
+        appgarden = {"backend": {}}  # present but empty
+        assert self._call(source, appgarden=appgarden) == {
+            "backend": "registry.test/my-ext-backend:2.0.0-dev",
+        }
+
+    def test_appgarden_missing_service_uses_source(self):
+        # When a service exists in source compose but NOT in appgarden,
+        # the source entry is the right lookup. Common case: appgarden
+        # compose is hand-authored and only declares the services it
+        # actually retags.
+        source = {
+            "backend": {
+                "build": ".",
+                "image": "ghcr.io/source-org/backend:1.0",
+            },
+        }
+        appgarden: Dict[str, Any] = {}
+        assert self._call(source, appgarden=appgarden) == {
+            "backend": "ghcr.io/source-org/backend:2.0.0-dev",
+        }
+
+    def test_none_source_returns_empty(self):
+        # Defensive: missing services key on the source compose dict.
+        assert self._call(None) == {}
+
+    def test_legacy_fallback_when_no_image_anywhere(self):
+        source = {"backend": {"build": "."}}
+        assert self._call(source) == {
+            "backend": "registry.test/my-ext-backend:2.0.0-dev",
+        }

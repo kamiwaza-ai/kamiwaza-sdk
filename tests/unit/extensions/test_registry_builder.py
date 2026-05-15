@@ -3,6 +3,7 @@
 import pytest
 import yaml
 
+from kamiwaza_extensions.compose_transformer import ComposeTransformer
 from kamiwaza_extensions.registry_builder import (
     RegistryBuilder,
     _constraint_relationship,
@@ -66,6 +67,25 @@ class TestBuildEntry:
         # Should be valid YAML
         parsed = yaml.safe_load(entry["compose_yml"])
         assert "services" in parsed
+
+    def test_compose_yml_preserves_service_order(self, builder, metadata):
+        # Platform infers primary-service selection from compose order
+        # when no service declares x-kamiwaza.primary. Alphabetizing keys on
+        # serialization silently changes which service becomes primary.
+        # Use a database-first ordering that would re-sort under sort_keys=True.
+        compose = {
+            "services": {
+                "neo4j": {"image": "neo4j:5", "ports": ["7687"]},
+                "graphiti": {
+                    "image": "kamiwazaai/service-graphiti-graphiti:1.0.0",
+                    "ports": ["8000"],
+                },
+            },
+        }
+
+        entry = builder.build_entry(metadata, compose, "kamiwazaai", "1.0.0")
+        parsed = yaml.safe_load(entry["compose_yml"])
+        assert list(parsed["services"].keys()) == ["neo4j", "graphiti"]
 
     def test_docker_images_extracted(self, builder, metadata, transformed_compose):
         entry = builder.build_entry(metadata, transformed_compose, "kamiwazaai", "1.0.0")
@@ -169,6 +189,254 @@ class TestBuildEntry:
         }
         entry = builder.build_entry(meta, compose, "reg", "1.0.0")
         assert entry["docker_images"].count("custom/sidecar:latest") == 1
+
+
+# ------------------------------------------------------------------
+# Publish-path ordering: end-to-end coverage
+# ------------------------------------------------------------------
+
+
+class TestPublishPathOrdering:
+    # build_entry's sort_keys=False only pins the final serialization step.
+    # The full publish path runs the compose dict through ComposeTransformer
+    # first, so any intermediate step that loses dict insertion order would
+    # silently flip primary-service selection downstream — the same class
+    # of bug as ENG-4920. These tests fence the full chain.
+
+    @pytest.fixture
+    def transformer(self):
+        return ComposeTransformer()
+
+    @pytest.fixture
+    def graphiti_shaped_compose(self):
+        # ENG-4920 trigger shape: database service first, app service second.
+        # If anything in the chain re-sorts keys alphabetically, neo4j (n)
+        # would land after graphiti (g), flipping which service the platform's
+        # fallback heuristic picks as primary.
+        return {
+            "services": {
+                "neo4j": {
+                    "image": "ghcr.io/kamiwaza-internal/containers/images/neo4j:v5.26.21",
+                    "ports": ["7687:7687"],
+                },
+                "graphiti": {
+                    "build": {"context": ".", "dockerfile": "Dockerfile"},
+                    "ports": ["8000:8000"],
+                    "depends_on": ["neo4j"],
+                },
+            },
+        }
+
+    def test_full_publish_chain_preserves_service_order(
+        self, builder, transformer, graphiti_shaped_compose
+    ):
+        transformed = transformer.transform(
+            graphiti_shaped_compose,
+            extension_name="service-graphiti",
+            revision_tag="1.0.0",
+            registry="kamiwazaai",
+        )
+        meta = {
+            "name": "service-graphiti",
+            "version": "1.0.0",
+            "source_type": "kamiwaza",
+            "visibility": "public",
+        }
+        entry = builder.build_entry(meta, transformed, "kamiwazaai", "1.0.0")
+
+        parsed = yaml.safe_load(entry["compose_yml"])
+        assert list(parsed["services"].keys()) == ["neo4j", "graphiti"]
+
+    def test_compose_transformer_preserves_service_order(
+        self, transformer, graphiti_shaped_compose
+    ):
+        # Targeted fence on the upstream half of the chain — guards against a
+        # future ComposeTransformer refactor (dict comprehension, sorted(),
+        # rebuild-from-items) that would lose insertion order before the
+        # compose ever reaches build_entry's sort_keys=False.
+        transformed = transformer.transform(
+            graphiti_shaped_compose,
+            extension_name="service-graphiti",
+            revision_tag="1.0.0",
+            registry="kamiwazaai",
+        )
+        assert list(transformed["services"].keys()) == ["neo4j", "graphiti"]
+
+
+# ------------------------------------------------------------------
+# build_entry passes every top-level kamiwaza.json field through to
+# the catalog entry. The platform's catalog→DB sync
+# (kamiwaza/serving/garden/apps/templates.py::_update_template_from_remote)
+# reads many fields via `.get(field, default)` and silently degrades
+# to empty/None when entries omit them — no required_env_vars
+# validation, no env_defaults injection, missing UI metadata. The
+# regression these tests pin: don't curate the entry down to a
+# known-fields subset.
+# ------------------------------------------------------------------
+
+
+class TestBuildEntryPassthrough:
+    """Every top-level field in kamiwaza.json survives to the catalog entry."""
+
+    def test_platform_consumed_fields_pass_through(
+        self, builder, transformed_compose,
+    ):
+        # The fields the platform's _update_template_from_remote reads.
+        meta = {
+            "name": "my-app",
+            "version": "1.0.0",
+            "description": "An app",
+            "source_type": "kamiwaza",
+            "visibility": "public",
+            "display_name": "My App",
+            "env_defaults": {"FOO": "bar", "PORT": "8000"},
+            "env_metadata": {"FOO": {"description": "foo var"}},
+            "required_env_vars": ["API_KEY"],
+            "capabilities": ["chat", "completion"],
+            "category": "chatbot",
+            "tags": ["ai"],
+            "author": "Kamiwaza",
+            "license": "Apache-2.0",
+            "homepage": "https://example.com",
+            "image": "kamiwazaai/my-app:1.0.0",
+            "strip_path_prefix": True,
+            "preferred_model_type": "reasoning",
+            "preferred_model_name": "gpt-4",
+            "fail_if_model_type_unavailable": False,
+            "fail_if_model_name_unavailable": False,
+        }
+        entry = builder.build_entry(meta, transformed_compose, "reg", "1.0.0")
+        for key, value in meta.items():
+            assert entry[key] == value, f"{key} did not pass through"
+
+    def test_unknown_fields_pass_through(self, builder, transformed_compose):
+        # omniparse-style: `validation` block (e.g. allowed_images) and
+        # `template_type` are not enumerated anywhere in build_entry but
+        # the platform and the legacy publish path treat kamiwaza.json
+        # as the contract. New fields must not require a kz-ext change.
+        meta = {
+            "name": "tool-omniparse",
+            "version": "2.0.14",
+            "description": "OmniParse",
+            "source_type": "kamiwaza",
+            "visibility": "public",
+            "template_type": "tool",
+            "validation": {"allowed_images": ["ghcr.io/foo/*"]},
+            "x_custom_extension": {"any": "shape"},
+        }
+        entry = builder.build_entry(meta, transformed_compose, "reg", "2.0.14")
+        assert entry["template_type"] == "tool"
+        assert entry["validation"] == {"allowed_images": ["ghcr.io/foo/*"]}
+        assert entry["x_custom_extension"] == {"any": "shape"}
+
+    def test_entry_keys_are_superset_of_source(
+        self, builder, transformed_compose,
+    ):
+        # Stricter check: legacy `make publish-registry` AC #1 says the
+        # entry's top-level keys are a superset of source kamiwaza.json
+        # plus the generated `compose_yml` / `docker_images`.
+        meta = {
+            "name": "svc",
+            "version": "1.0.0",
+            "description": "svc",
+            "source_type": "kamiwaza",
+            "visibility": "public",
+            "template_type": "service",
+            "env_defaults": {"X": "1"},
+            "required_env_vars": ["Y"],
+            "strip_path_prefix": False,
+        }
+        entry = builder.build_entry(meta, transformed_compose, "reg", "1.0.0")
+        for key in meta:
+            assert key in entry, f"source field {key} dropped from entry"
+
+    def test_publish_generated_fields_win_over_metadata(
+        self, builder, transformed_compose,
+    ):
+        # If the source kamiwaza.json carries a stale `compose_yml` or
+        # `docker_images` from a hand-edit, the publish-time values
+        # (from ComposeTransformer + extract_docker_images) must win.
+        meta = {
+            "name": "my-app",
+            "version": "0.9.0-stale",
+            "description": "test",
+            "source_type": "kamiwaza",
+            "visibility": "public",
+            "compose_yml": "stale: data",
+            "docker_images": ["stale:image"],
+        }
+        entry = builder.build_entry(meta, transformed_compose, "reg", "1.0.0")
+        assert entry["version"] == "1.0.0"
+        assert entry["compose_yml"] != "stale: data"
+        assert "stale:image" not in entry["docker_images"]
+
+    def test_metadata_not_mutated(self, builder, transformed_compose):
+        # build_entry must not mutate the caller's metadata dict — it's
+        # often the parsed kamiwaza.json shared with other code paths
+        # (validators, dedup guard, etc.). deepcopy must protect nested
+        # structures, not just top-level keys.
+        meta = {
+            "name": "my-app",
+            "version": "1.0.0",
+            "description": "test",
+            "source_type": "kamiwaza",
+            "visibility": "public",
+            "env_defaults": {"FOO": "bar"},
+            "preview_image": "./logo.png",
+        }
+        entry = builder.build_entry(meta, transformed_compose, "reg", "1.0.0")
+        assert meta["preview_image"] == "./logo.png"  # not normalized
+        # Mutating the entry's nested dict must not bleed into source.
+        entry["env_defaults"]["FOO"] = "mutated"
+        assert meta["env_defaults"]["FOO"] == "bar"
+
+    def test_revision_not_inherited_from_metadata(
+        self, builder, transformed_compose,
+    ):
+        # `revision` is publish-time only — owned by the --revision CLI
+        # arg, never by source kamiwaza.json. Without explicit pop, a
+        # stale revision in metadata (or a catalog entry round-tripped
+        # through metadata) would survive deepcopy and trip
+        # CatalogDedupGuard with a revision that wasn't used to tag the
+        # images.
+        meta = {
+            "name": "my-app",
+            "version": "1.0.0",
+            "description": "test",
+            "source_type": "kamiwaza",
+            "visibility": "public",
+            "revision": "stale-from-prior-publish",
+        }
+        entry = builder.build_entry(meta, transformed_compose, "reg", "1.0.0")
+        assert "revision" not in entry
+
+    def test_revision_param_overrides_metadata(
+        self, builder, transformed_compose,
+    ):
+        meta = {
+            "name": "my-app",
+            "version": "1.0.0",
+            "description": "test",
+            "source_type": "kamiwaza",
+            "visibility": "public",
+            "revision": "stale",
+        }
+        entry = builder.build_entry(
+            meta, transformed_compose, "reg", "1.0.0", revision="fresh",
+        )
+        assert entry["revision"] == "fresh"
+
+    def test_defaults_applied_for_missing_required_fields(
+        self, builder, transformed_compose,
+    ):
+        # Belt-and-suspenders: the upstream MetadataValidator should
+        # catch these, but build_entry still papers over with the same
+        # defaults the prior enumerated implementation used.
+        meta = {"name": "my-app", "version": "1.0.0"}
+        entry = builder.build_entry(meta, transformed_compose, "reg", "1.0.0")
+        assert entry["description"] == ""
+        assert entry["source_type"] == "kamiwaza"
+        assert entry["visibility"] == "public"
 
 
 # ------------------------------------------------------------------
@@ -324,6 +592,86 @@ class TestTransformImageTags:
         yml = "image: kamiwazaai/my-app:old"
         result = builder.transform_image_tags(yml, "kamiwazaai", "2.0.0", "qa")
         assert "kamiwazaai/my-app:2.0.0-qa" in result
+
+    # ENG-4370: digest suffixes must survive tag rewriting.
+
+    def test_preserves_digest_suffix_extension_branch(self, builder):
+        digest = "sha256:" + "a" * 64
+        yml = f"image: kamiwazaai/my-app-web:old@{digest}"
+        result = builder.transform_image_tags(
+            yml, "kamiwazaai", "2.0.0", "prod", extension_name="my-app",
+        )
+        assert f"kamiwazaai/my-app-web:2.0.0@{digest}" in result
+        # Digest preserved, not stripped.
+        assert "kamiwazaai/my-app-web:2.0.0\n" not in result + "\n"
+        assert "kamiwazaai/my-app-web:2.0.0 " not in result + " "
+
+    def test_preserves_digest_suffix_fallback_branch(self, builder):
+        digest = "sha256:" + "b" * 64
+        yml = f"image: kamiwazaai/my-app:old@{digest}"
+        result = builder.transform_image_tags(yml, "kamiwazaai", "2.0.0", "stage")
+        assert f"kamiwazaai/my-app:2.0.0-stage@{digest}" in result
+
+    def test_digest_only_ref_extension_branch_unchanged(self, builder):
+        # image@sha256:<64> (no tag) must NOT be rewritten. An earlier
+        # regex captured `service@sha256` as the path and the hex as
+        # the tag, producing `service@sha256:newtag` — corruption.
+        digest = "sha256:" + "a" * 64
+        yml = f"image: kamiwazaai/my-app-web@{digest}"
+        result = builder.transform_image_tags(
+            yml, "kamiwazaai", "2.0.0", "prod", extension_name="my-app",
+        )
+        # Verbatim — no rewrite.
+        assert result == yml
+
+    def test_digest_only_ref_fallback_branch_unchanged(self, builder):
+        digest = "sha256:" + "b" * 64
+        yml = f"image: kamiwazaai/my-app@{digest}"
+        result = builder.transform_image_tags(yml, "kamiwazaai", "2.0.0", "stage")
+        assert result == yml
+
+    def test_digest_only_and_tag_only_siblings(self, builder):
+        # Mixed compose: one ref pinned by digest only, one tagged.
+        # The tagged ref is rewritten; the digest-only ref passes through.
+        digest = "sha256:" + "c" * 64
+        yml = (
+            f"image: kamiwazaai/app-frontend@{digest}\n"
+            "image: kamiwazaai/app-backend:old\n"
+        )
+        result = builder.transform_image_tags(yml, "kamiwazaai", "3.0.0", "prod")
+        assert f"kamiwazaai/app-frontend@{digest}" in result
+        assert "kamiwazaai/app-backend:3.0.0" in result
+        # Frontend was not rewritten with a tag.
+        frontend_line = [
+            ln for ln in result.splitlines() if "app-frontend" in ln
+        ][0]
+        assert ":3.0.0" not in frontend_line
+
+    def test_malformed_digest_suffix_passes_through_untouched(self, builder):
+        # An `@sha256:short` (or any non-conforming suffix) doesn't
+        # match the optional digest group, so the regex matches up to
+        # the bad `@` and the broken tail passes through verbatim.
+        # Preserves rather than corrupts user input.
+        yml = "image: kamiwazaai/my-app-web:old@sha256:short"
+        result = builder.transform_image_tags(
+            yml, "kamiwazaai", "2.0.0", "prod", extension_name="my-app",
+        )
+        assert "kamiwazaai/my-app-web:2.0.0@sha256:short" in result
+
+    def test_preserves_digest_on_some_siblings_only(self, builder):
+        digest = "sha256:" + "c" * 64
+        yml = (
+            f"image: kamiwazaai/app-frontend:old@{digest}\n"
+            "image: kamiwazaai/app-backend:old\n"
+        )
+        result = builder.transform_image_tags(yml, "kamiwazaai", "3.0.0", "prod")
+        assert f"kamiwazaai/app-frontend:3.0.0@{digest}" in result
+        assert "kamiwazaai/app-backend:3.0.0" in result
+        # Backend has no `@` after rewrite.
+        backend_line = [
+            ln for ln in result.splitlines() if "app-backend" in ln
+        ][0]
+        assert "@" not in backend_line
 
 
 # ------------------------------------------------------------------
@@ -643,3 +991,156 @@ class TestNormalizePreviewImage:
 
     def test_leading_slash(self):
         assert _normalize_preview_image("/screenshot.png") == "images/screenshot.png"
+
+
+# ------------------------------------------------------------------
+# ENG-4370 — digest pinning via build_entry(digest_map=...)
+# ------------------------------------------------------------------
+
+
+_DIGEST_A = "sha256:" + "a" * 64
+_DIGEST_B = "sha256:" + "b" * 64
+
+
+class TestBuildEntryDigestPinning:
+    def test_pinning_rewrites_compose_yml_and_docker_images(
+        self, builder, metadata, transformed_compose,
+    ):
+        digest_map = {
+            "kamiwazaai/my-app-frontend:1.0.0": _DIGEST_A,
+            "kamiwazaai/my-app-backend:1.0.0": _DIGEST_B,
+        }
+        entry = builder.build_entry(
+            metadata, transformed_compose, "kamiwazaai", "1.0.0",
+            digest_map=digest_map,
+        )
+
+        # docker_images carries `tag@digest` for buildable refs.
+        assert f"kamiwazaai/my-app-frontend:1.0.0@{_DIGEST_A}" in entry["docker_images"]
+        assert f"kamiwazaai/my-app-backend:1.0.0@{_DIGEST_B}" in entry["docker_images"]
+        # Pre-existing tag-only refs no longer present.
+        assert "kamiwazaai/my-app-frontend:1.0.0" not in entry["docker_images"]
+        assert "kamiwazaai/my-app-backend:1.0.0" not in entry["docker_images"]
+        # Pass-through external image left verbatim (Pattern B).
+        assert "postgres:15" in entry["docker_images"]
+
+        parsed = yaml.safe_load(entry["compose_yml"])
+        assert (
+            parsed["services"]["frontend"]["image"]
+            == f"kamiwazaai/my-app-frontend:1.0.0@{_DIGEST_A}"
+        )
+        assert (
+            parsed["services"]["backend"]["image"]
+            == f"kamiwazaai/my-app-backend:1.0.0@{_DIGEST_B}"
+        )
+        assert parsed["services"]["db"]["image"] == "postgres:15"
+
+    def test_omitted_digest_map_leaves_refs_unchanged(
+        self, builder, metadata, transformed_compose,
+    ):
+        entry = builder.build_entry(
+            metadata, transformed_compose, "kamiwazaai", "1.0.0",
+        )
+        assert "kamiwazaai/my-app-frontend:1.0.0" in entry["docker_images"]
+        assert all("@" not in img for img in entry["docker_images"])
+
+    def test_empty_digest_map_leaves_refs_unchanged(
+        self, builder, metadata, transformed_compose,
+    ):
+        entry = builder.build_entry(
+            metadata, transformed_compose, "kamiwazaai", "1.0.0",
+            digest_map={},
+        )
+        assert "kamiwazaai/my-app-frontend:1.0.0" in entry["docker_images"]
+        assert all("@" not in img for img in entry["docker_images"])
+
+    def test_partial_digest_map_only_pins_listed_refs(
+        self, builder, metadata, transformed_compose,
+    ):
+        # Only one of the two buildable refs in the map. The other is
+        # left as tag-only — verifies the map is the source of truth.
+        digest_map = {"kamiwazaai/my-app-frontend:1.0.0": _DIGEST_A}
+        entry = builder.build_entry(
+            metadata, transformed_compose, "kamiwazaai", "1.0.0",
+            digest_map=digest_map,
+        )
+        assert f"kamiwazaai/my-app-frontend:1.0.0@{_DIGEST_A}" in entry["docker_images"]
+        assert "kamiwazaai/my-app-backend:1.0.0" in entry["docker_images"]
+
+    def test_already_pinned_ref_not_double_pinned(self, builder, metadata):
+        compose = {
+            "services": {
+                "backend": {
+                    "image": f"kamiwazaai/my-app-backend:1.0.0@{_DIGEST_A}"
+                },
+            },
+        }
+        # Map keyed by the original (unpinned) ref. Because the compose
+        # value already contains '@', _apply_digests must skip it.
+        digest_map = {"kamiwazaai/my-app-backend:1.0.0": _DIGEST_B}
+        entry = builder.build_entry(
+            metadata, compose, "kamiwazaai", "1.0.0", digest_map=digest_map,
+        )
+        # Original digest preserved; no double `@`.
+        assert f"kamiwazaai/my-app-backend:1.0.0@{_DIGEST_A}" in entry["docker_images"]
+        assert _DIGEST_B not in entry["compose_yml"]
+
+    def test_does_not_mutate_caller_compose(self, builder, metadata):
+        compose = {
+            "services": {
+                "backend": {"image": "kamiwazaai/my-app-backend:1.0.0"},
+            },
+        }
+        digest_map = {"kamiwazaai/my-app-backend:1.0.0": _DIGEST_A}
+        builder.build_entry(metadata, compose, "kamiwazaai", "1.0.0", digest_map=digest_map)
+        assert (
+            compose["services"]["backend"]["image"]
+            == "kamiwazaai/my-app-backend:1.0.0"
+        )
+
+    def test_extra_docker_images_collision_pinned_and_deduped(self, builder):
+        # When extra_docker_images repeats a buildable service ref,
+        # both copies must end up pinned identically so dedup collapses
+        # them. Otherwise the catalog leaks an unpinned duplicate.
+        compose = {
+            "services": {
+                "backend": {"image": "kamiwazaai/my-app-backend:1.0.0"},
+            },
+        }
+        meta = {
+            "name": "my-app",
+            "description": "test",
+            "source_type": "kamiwaza",
+            "visibility": "public",
+            # Redundantly listed (same as the service image).
+            "extra_docker_images": ["kamiwazaai/my-app-backend:1.0.0"],
+        }
+        digest_map = {"kamiwazaai/my-app-backend:1.0.0": _DIGEST_A}
+        entry = builder.build_entry(
+            meta, compose, "kamiwazaai", "1.0.0", digest_map=digest_map,
+        )
+        # Single pinned entry — no unpinned duplicate.
+        assert entry["docker_images"] == [
+            f"kamiwazaai/my-app-backend:1.0.0@{_DIGEST_A}"
+        ]
+
+    def test_revision_and_digest_are_orthogonal(self, builder, metadata):
+        # Catalog ref carries both: <reg>/<ext>-<svc>:<revision>@<digest>.
+        compose = {
+            "services": {
+                "backend": {
+                    "image": "kamiwazaai/my-app-backend:abc1234",  # revision tag
+                },
+            },
+        }
+        digest_map = {"kamiwazaai/my-app-backend:abc1234": _DIGEST_A}
+        entry = builder.build_entry(
+            metadata, compose, "kamiwazaai", "1.0.0",
+            revision="abc1234",
+            digest_map=digest_map,
+        )
+        assert entry["revision"] == "abc1234"
+        assert (
+            f"kamiwazaai/my-app-backend:abc1234@{_DIGEST_A}"
+            in entry["docker_images"]
+        )

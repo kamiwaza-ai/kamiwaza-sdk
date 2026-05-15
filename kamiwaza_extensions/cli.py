@@ -8,8 +8,21 @@ import typer
 from rich.console import Console
 
 from kamiwaza_extensions import __version__
+from kamiwaza_extensions.catalog_publisher import (
+    DEFAULT_CATALOG_SCHEMA,
+    SUPPORTED_CATALOG_SCHEMAS,
+)
 from kamiwaza_extensions.exit_codes import exit_code_for
 from kamiwaza_extensions_lib.errors import KamiwazaRuntimeError
+
+
+def _validate_catalog_schema(value: int) -> int:
+    """Typer callback: reject values outside ``SUPPORTED_CATALOG_SCHEMAS``."""
+    if value not in SUPPORTED_CATALOG_SCHEMAS:
+        raise typer.BadParameter(
+            f"must be one of {sorted(SUPPORTED_CATALOG_SCHEMAS)} (got {value})"
+        )
+    return value
 
 app = typer.Typer(
     name="kz-ext",
@@ -345,6 +358,25 @@ def publish(
             "idempotent CI re-publishes; --force overrides."
         ),
     ),
+    digest: Optional[str] = typer.Option(
+        None,
+        "--digest",
+        help=(
+            "Pin the catalog entry to a specific manifest digest "
+            "(sha256:<64-hex>). Catalog refs become 'image:tag@sha256:...' "
+            "for immutable identity. Requires exactly one buildable "
+            "service in compose; omit to auto-resolve per-service digests."
+        ),
+    ),
+    catalog_schema: int = typer.Option(
+        DEFAULT_CATALOG_SCHEMA,
+        "--catalog-schema",
+        callback=_validate_catalog_schema,
+        help=(
+            "Catalog schema version (garden/v{N}/ path). Defaults to 3 "
+            "(K8s/v3 extensions). Pass 2 to publish to the legacy v2 catalog."
+        ),
+    ),
 ) -> None:
     """Publish extension to catalog."""
     from kamiwaza_extensions.commands.publish import run_publish
@@ -356,6 +388,8 @@ def publish(
         no_push=no_push,
         verbose=_state.verbose,
         revision=revision,
+        digest=digest,
+        catalog_schema=catalog_schema,
     )
 
 
