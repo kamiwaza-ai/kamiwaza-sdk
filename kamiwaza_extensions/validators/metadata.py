@@ -149,7 +149,83 @@ class MetadataValidator:
         # points at 2.0.14) — warn here so it's visible before deploy.
         warnings.extend(_check_version_drift(path.parent, metadata.version, data.get("image")))
 
+        # services.<name>.healthCheck shape (ENG-4832).
+        errors.extend(_check_services_block(data.get("services")))
+
         return ValidationResult(passed=len(errors) == 0, errors=errors, warnings=warnings)
+
+
+_PROBE_SHAPES = ("httpGet", "tcpSocket", "exec")
+
+
+def _check_services_block(services: Any) -> List[str]:
+    """Validate the optional ``services`` block in kamiwaza.json (ENG-4832).
+
+    The block is a map of compose service names to per-service overrides.
+    Today the only override we read is ``healthCheck``; this checker keeps
+    structural mistakes (wrong probe shape, missing port, two shapes at
+    once) from reaching the platform CR API as opaque 500s.
+    """
+    errors: List[str] = []
+    if services is None:
+        return errors
+    if not isinstance(services, dict):
+        errors.append("services must be a JSON object keyed by service name")
+        return errors
+    for svc_name, block in services.items():
+        if not isinstance(block, dict):
+            errors.append(f"services.{svc_name} must be a JSON object")
+            continue
+        health = block.get("healthCheck")
+        if health is None:
+            continue
+        errors.extend(_check_healthcheck_shape(svc_name, health))
+    return errors
+
+
+def _check_healthcheck_shape(svc_name: str, health: Any) -> List[str]:
+    """Mirror K8s' "exactly one probe shape" rule for a healthCheck block."""
+    errors: List[str] = []
+    if not isinstance(health, dict):
+        errors.append(f"services.{svc_name}.healthCheck must be a JSON object")
+        return errors
+    declared = [name for name in _PROBE_SHAPES if name in health]
+    if not declared:
+        errors.append(
+            f"services.{svc_name}.healthCheck must declare one of: "
+            f"{', '.join(_PROBE_SHAPES)}"
+        )
+        return errors
+    if len(declared) > 1:
+        errors.append(
+            f"services.{svc_name}.healthCheck declares multiple probe shapes "
+            f"({', '.join(declared)}); pick exactly one"
+        )
+        return errors
+    shape = declared[0]
+    value = health[shape]
+    if not isinstance(value, dict):
+        errors.append(
+            f"services.{svc_name}.healthCheck.{shape} must be a JSON object"
+        )
+        return errors
+    if shape == "httpGet":
+        if "port" not in value:
+            errors.append(
+                f"services.{svc_name}.healthCheck.httpGet must include 'port'"
+            )
+    elif shape == "tcpSocket":
+        if "port" not in value:
+            errors.append(
+                f"services.{svc_name}.healthCheck.tcpSocket must include 'port'"
+            )
+    elif shape == "exec":
+        command = value.get("command")
+        if not isinstance(command, list) or not command:
+            errors.append(
+                f"services.{svc_name}.healthCheck.exec.command must be a non-empty list"
+            )
+    return errors
 
 
 def _check_version_drift(

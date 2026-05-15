@@ -690,3 +690,179 @@ class TestHealthChecks:
         backend = next(s for s in payload.services if s.name == "backend")
         health_check = backend.model_dump()["healthCheck"]
         assert health_check["httpGet"] == {"path": "/health", "port": 8000}
+
+
+class TestHealthCheckOverride:
+    """ENG-4832: per-service healthCheck override in ``kamiwaza.json``.
+
+    Lets tool/service extensions whose primary doesn't serve ``/sse``
+    (REST-only, MCP-at-/mcp, gRPC, FastMCP feature-flagged off) declare
+    a probe that actually matches what the container exposes, instead
+    of hitting the ``/sse``-on-every-tool default and CrashLoopBackOff.
+    """
+
+    def test_metadata_override_replaces_default_for_tool_primary(
+        self, builder, connection
+    ):
+        """Omniparse-style REST-only tool: probe /v1/healthz, not /sse."""
+        metadata = {
+            "name": "my-tool",
+            "version": "1.0.0",
+            "type": "tool",
+            "services": {
+                "tool": {
+                    "healthCheck": {
+                        "httpGet": {"path": "/v1/healthz", "port": 8000},
+                        "initialDelaySeconds": 10,
+                        "periodSeconds": 10,
+                    },
+                },
+            },
+        }
+        transformed = {
+            "services": {
+                "tool": {
+                    "image": "registry.test/my-tool:1.0.0",
+                    "ports": ["8000"],
+                },
+            },
+        }
+        payload = builder.build(metadata, transformed, connection, "test")
+        tool = payload.services[0]
+        health_check = tool.model_dump()["healthCheck"]
+        assert tool.primary is True
+        assert health_check["httpGet"] == {"path": "/v1/healthz", "port": 8000}
+        assert health_check["initialDelaySeconds"] == 10
+        assert health_check["periodSeconds"] == 10
+
+    def test_metadata_override_wins_over_x_kamiwaza(self, builder, connection):
+        """When both kamiwaza.json and compose declare a probe, metadata wins.
+
+        Locks the precedence: catalog metadata is the single source of truth,
+        compose ``x-kamiwaza`` is the legacy fallback.
+        """
+        metadata = {
+            "name": "my-tool",
+            "version": "1.0.0",
+            "type": "tool",
+            "services": {
+                "tool": {
+                    "healthCheck": {"httpGet": {"path": "/v1/healthz", "port": 8000}},
+                },
+            },
+        }
+        transformed = {
+            "services": {
+                "tool": {
+                    "image": "registry.test/my-tool:1.0.0",
+                    "ports": ["8000"],
+                    "x-kamiwaza": {
+                        "healthCheck": {"httpGet": {"path": "/old", "port": 8000}},
+                    },
+                },
+            },
+        }
+        payload = builder.build(metadata, transformed, connection, "test")
+        tool = payload.services[0]
+        health_check = tool.model_dump()["healthCheck"]
+        assert health_check["httpGet"] == {"path": "/v1/healthz", "port": 8000}
+
+    def test_no_metadata_override_falls_back_to_x_kamiwaza(
+        self, builder, connection
+    ):
+        """Existing ``x-kamiwaza.healthCheck`` path stays intact."""
+        metadata = {"name": "my-tool", "version": "1.0.0", "type": "tool"}
+        transformed = {
+            "services": {
+                "tool": {
+                    "image": "registry.test/my-tool:1.0.0",
+                    "ports": ["8000"],
+                    "x-kamiwaza": {
+                        "healthCheck": {"httpGet": {"path": "/compose", "port": 8000}},
+                    },
+                },
+            },
+        }
+        payload = builder.build(metadata, transformed, connection, "test")
+        tool = payload.services[0]
+        health_check = tool.model_dump()["healthCheck"]
+        assert health_check["httpGet"] == {"path": "/compose", "port": 8000}
+
+    def test_no_overrides_keeps_default_sse_for_tool_primary(
+        self, builder, connection
+    ):
+        """Regression guard: tool extensions with no override still get /sse."""
+        metadata = {"name": "my-tool", "version": "1.0.0", "type": "tool"}
+        transformed = {
+            "services": {
+                "tool": {
+                    "image": "registry.test/my-tool:1.0.0",
+                    "ports": ["8000"],
+                },
+            },
+        }
+        payload = builder.build(metadata, transformed, connection, "test")
+        tool = payload.services[0]
+        health_check = tool.model_dump()["healthCheck"]
+        assert health_check["httpGet"] == {"path": "/sse", "port": 8000}
+
+    def test_metadata_override_per_service_only_affects_named_service(
+        self, builder, connection
+    ):
+        """Override on one service doesn't leak into siblings."""
+        metadata = {
+            "name": "my-app",
+            "version": "1.0.0",
+            "type": "app",
+            "services": {
+                "backend": {
+                    "healthCheck": {"httpGet": {"path": "/v1/ready", "port": 8000}},
+                },
+            },
+        }
+        transformed = {
+            "services": {
+                "frontend": {
+                    "image": "registry.test/my-app-frontend:1.0.0",
+                    "ports": ["3000"],
+                    "environment": ["NEXT_PUBLIC_API_URL=http://backend:8000"],
+                },
+                "backend": {
+                    "image": "registry.test/my-app-backend:1.0.0",
+                    "ports": ["8000"],
+                },
+            },
+        }
+        payload = builder.build(metadata, transformed, connection, "test")
+        backend = next(s for s in payload.services if s.name == "backend")
+        frontend = next(s for s in payload.services if s.name == "frontend")
+        assert backend.model_dump()["healthCheck"]["httpGet"] == {
+            "path": "/v1/ready",
+            "port": 8000,
+        }
+        # Frontend keeps the Node-based default probe — untouched by the
+        # backend-only override.
+        assert frontend.model_dump()["healthCheck"]["exec"]["command"][0] == "node"
+
+    def test_metadata_services_not_a_dict_is_ignored(self, builder, connection):
+        """Malformed metadata.services falls back cleanly to defaults."""
+        metadata = {
+            "name": "my-tool",
+            "version": "1.0.0",
+            "type": "tool",
+            "services": "not-a-dict",
+        }
+        transformed = {
+            "services": {
+                "tool": {
+                    "image": "registry.test/my-tool:1.0.0",
+                    "ports": ["8000"],
+                },
+            },
+        }
+        payload = builder.build(metadata, transformed, connection, "test")
+        tool = payload.services[0]
+        assert tool.model_dump()["healthCheck"]["httpGet"] == {
+            "path": "/sse",
+            "port": 8000,
+        }
