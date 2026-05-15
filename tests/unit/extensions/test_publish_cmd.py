@@ -44,7 +44,7 @@ def _make_extension_info(
     )
 
 
-def _make_validation_result(passed=True, errors=None, warnings=None):
+def _make_validation_result(passed=True, errors=None, warnings=None, info=None):
     """Create a mock ValidationResult."""
     from kamiwaza_extensions.validators.result import ValidationResult
 
@@ -52,6 +52,7 @@ def _make_validation_result(passed=True, errors=None, warnings=None):
         passed=passed,
         errors=errors or [],
         warnings=warnings or [],
+        info=info or [],
     )
 
 
@@ -180,6 +181,93 @@ class TestPublishHappyPath:
         mock_image_builder.build.assert_called_once()
         mock_pusher.push.assert_called_once()
         mock_reg_builder.build_entry.assert_called_once()
+        mock_publisher.publish.assert_called_once()
+
+
+class TestPublishWithInfoFindings:
+    """ENG-4956 regression: info findings must not break the publish flow.
+
+    The info-printing loop previously rebound the `info` variable (the
+    ExtensionInfo object) to a message string, so `info.path` later raised
+    `AttributeError: 'str' object has no attribute 'path'` whenever
+    validation emitted any info entry.
+    """
+
+    @patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher")
+    @patch("kamiwaza_extensions.registry_builder.RegistryBuilder")
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher")
+    @patch("kamiwaza_extensions.image_builder.ImageBuilder")
+    @patch("kamiwaza_extensions.profile_manager.ProfileManager")
+    @patch("kamiwaza_extensions.compose_transformer.ComposeTransformer")
+    @patch("kamiwaza_extensions.validators.compose.ComposeValidator")
+    @patch("kamiwaza_extensions.validators.metadata.MetadataValidator")
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_publish_succeeds_with_info_findings(
+        self,
+        mock_detector_cls,
+        mock_meta_validator_cls,
+        mock_compose_validator_cls,
+        mock_transformer_cls,
+        mock_profile_mgr_cls,
+        mock_builder_cls,
+        mock_pusher_cls,
+        mock_reg_builder_cls,
+        mock_publisher_cls,
+        tmp_path,
+    ):
+        mock_detector = MagicMock()
+        mock_detector.detect.return_value = _make_extension_info(tmp_path)
+        mock_detector_cls.return_value = mock_detector
+
+        mock_meta_validator = MagicMock()
+        mock_meta_validator.validate.return_value = _make_validation_result()
+        mock_meta_validator_cls.return_value = mock_meta_validator
+
+        # Compose validation emits scaffold-default info entries.
+        mock_compose_validator = MagicMock()
+        mock_compose_validator.validate.return_value = _make_validation_result(
+            info=[
+                "Service 'backend' uses bind mount './data:/app' — stripped at deploy.",
+                "Service 'backend' has no resource limits — defaults applied at deploy.",
+            ]
+        )
+        mock_compose_validator_cls.return_value = mock_compose_validator
+
+        mock_profile_mgr = MagicMock()
+        mock_profile_mgr.resolve_profile.return_value = _make_profile()
+        mock_profile_mgr_cls.return_value = mock_profile_mgr
+
+        mock_transformer = MagicMock()
+        mock_transformer.transform.return_value = {
+            "services": {"backend": {"image": "ghcr.io/my-org/my-app-backend:1.0.0"}}
+        }
+        mock_transformer_cls.return_value = mock_transformer
+
+        mock_image_builder = MagicMock()
+        mock_image_builder.build.return_value = ["ghcr.io/my-org/my-app-backend:1.0.0"]
+        mock_builder_cls.return_value = mock_image_builder
+
+        mock_pusher_cls.return_value = MagicMock()
+
+        mock_reg_builder = MagicMock()
+        mock_reg_builder.build_entry.return_value = {"name": "my-app", "version": "1.0.0"}
+        mock_reg_builder_cls.return_value = mock_reg_builder
+
+        mock_publisher = MagicMock()
+        mock_publisher.publish.return_value = _make_publish_result()
+        mock_publisher_cls.return_value = mock_publisher
+
+        from kamiwaza_extensions.commands.publish import run_publish
+
+        # Must not raise AttributeError — the ExtensionInfo binding survives
+        # the info-printing loop.
+        run_publish(stage="dev")
+
+        # resolve_profile is the call site that crashed: it needs the real
+        # ExtensionInfo's `path`, proving `info` was not clobbered.
+        mock_profile_mgr.resolve_profile.assert_called_once_with(
+            "dev", extension_dir=tmp_path
+        )
         mock_publisher.publish.assert_called_once()
 
 

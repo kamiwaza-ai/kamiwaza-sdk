@@ -13,8 +13,13 @@ from kamiwaza_extensions.validators.result import ValidationResult
 MISSING_RESOURCE_LIMITS_TEXT = "no resource limits defined"
 
 
-def is_missing_resource_limits_warning(message: str) -> bool:
-    """Return True when *message* is the compose missing-limits warning."""
+def is_missing_resource_limits_finding(message: str) -> bool:
+    """Return True when *message* is the compose missing-limits finding.
+
+    As of ENG-4956 this finding is emitted on the ``info`` channel for
+    ``validate``/``publish`` (deploy applies defaults), but conversion
+    still treats it as blocking — see ``ConversionAgent`` for why.
+    """
     return MISSING_RESOURCE_LIMITS_TEXT in message.lower()
 
 

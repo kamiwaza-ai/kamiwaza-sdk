@@ -266,7 +266,7 @@ def _validate_plan_in_staging(
     """Materialize the plan in a temp copy and run the validators against it."""
     from kamiwaza_extensions.validators.compose import (
         ComposeValidator,
-        is_missing_resource_limits_warning,
+        is_missing_resource_limits_finding,
     )
     from kamiwaza_extensions.validators.metadata import MetadataValidator
     from kamiwaza_extensions.validators.platform_runtime import PlatformRuntimeValidator
@@ -320,9 +320,14 @@ def _validate_plan_in_staging(
             errors.extend(compose_result.errors)
             warnings.extend(compose_result.warnings)
             info.extend(compose_result.info)
+            # Conversion is intentionally stricter than `validate`/`publish`:
+            # those surface missing resource limits as benign `info` because
+            # deploy applies defaults, but a converted app should ship explicit
+            # limits, so we promote the finding to a blocking conversion error.
+            # Scan both channels since the finding may land in either.
             for message in compose_result.warnings + compose_result.info:
-                if is_missing_resource_limits_warning(message):
-                    errors.append(f"Blocking conversion warning: {message}")
+                if is_missing_resource_limits_finding(message):
+                    errors.append(f"Blocking conversion finding: {message}")
             if compose_result.passed:
                 runtime_result = PlatformRuntimeValidator().validate(compose_path, staged_root)
                 errors.extend(runtime_result.errors)

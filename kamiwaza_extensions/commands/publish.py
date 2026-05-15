@@ -407,8 +407,8 @@ def run_publish(
             console.print(f"    [yellow]![/yellow] {warn}")
     else:
         console.print("          [green]\u2713[/green] passed")
-    for info in all_info:
-        console.print(f"    [cyan]i[/cyan] {info}")
+    for info_msg in all_info:
+        console.print(f"    [cyan]i[/cyan] {info_msg}")
 
     # 3. Resolve publish profile
     profile_mgr = ProfileManager()
