@@ -61,6 +61,9 @@ def _build_patch_kwargs(
     sandbox = extra.get("sandbox")
     if sandbox:
         kwargs["sandbox"] = sandbox
+    volumes = extra.get("volumes")
+    if volumes:
+        kwargs["volumes"] = volumes
     return kwargs
 
 
@@ -102,6 +105,7 @@ def _build_patch_service_specs(payload: Any) -> List[Any]:
             "healthCheck",
             "automountServiceAccountToken",
             "containerSecurityContext",
+            "volumeMounts",
         ):
             if field in svc_extra and svc_extra[field] is not None:
                 setattr(spec, field, svc_extra[field])

@@ -319,6 +319,111 @@ class TestServiceRefRewritesAnnotation:
         assert ANNOTATION_SERVICE_REF_REWRITES not in annotations
 
 
+class TestComposeVolumes:
+    """ENG-4834: named compose volumes must reach the kext payload."""
+
+    def test_named_volume_becomes_empty_dir_and_volume_mount(
+        self, builder, metadata, connection
+    ):
+        transformed = {
+            "services": {
+                "tool": {
+                    "image": "registry.test/tool:dev",
+                    "ports": ["8000"],
+                    "volumes": ["omniparse-data:/data"],
+                },
+            },
+            "volumes": {"omniparse-data": None},
+        }
+
+        payload = builder.build(metadata, transformed, connection, "tool-dev-abc")
+        tool = payload.services[0].model_dump()
+
+        assert (payload.model_extra or {})["volumes"] == [
+            {"name": "omniparse-data", "emptyDir": {}}
+        ]
+        assert payload.model_dump()["volumes"] == [
+            {"name": "omniparse-data", "emptyDir": {}}
+        ]
+        assert tool["volumeMounts"] == [
+            {"name": "omniparse-data", "mountPath": "/data"}
+        ]
+
+    def test_shared_named_volume_is_declared_once(self, builder, metadata, connection):
+        transformed = {
+            "services": {
+                "api": {
+                    "image": "registry.test/api:dev",
+                    "ports": ["8000"],
+                    "volumes": ["shared-data:/cache"],
+                },
+                "worker": {
+                    "image": "registry.test/worker:dev",
+                    "volumes": ["shared-data:/cache"],
+                },
+            },
+        }
+
+        payload = builder.build(metadata, transformed, connection, "app-dev-abc")
+        services = {svc.name: svc.model_dump() for svc in payload.services}
+
+        assert (payload.model_extra or {})["volumes"] == [
+            {"name": "shared-data", "emptyDir": {}}
+        ]
+        assert services["api"]["volumeMounts"] == [
+            {"name": "shared-data", "mountPath": "/cache"}
+        ]
+        assert services["worker"]["volumeMounts"] == [
+            {"name": "shared-data", "mountPath": "/cache"}
+        ]
+
+    def test_long_form_volume_is_supported_and_read_only(
+        self, builder, metadata, connection
+    ):
+        transformed = {
+            "services": {
+                "backend": {
+                    "image": "registry.test/backend:dev",
+                    "ports": ["8000"],
+                    "volumes": [
+                        {
+                            "type": "volume",
+                            "source": "backend_data",
+                            "target": "/app/persist",
+                            "read_only": True,
+                        }
+                    ],
+                },
+            },
+        }
+
+        payload = builder.build(metadata, transformed, connection, "app-dev-abc")
+        backend = payload.services[0].model_dump()
+
+        assert (payload.model_extra or {})["volumes"] == [
+            {"name": "backend-data", "emptyDir": {}}
+        ]
+        assert backend["volumeMounts"] == [
+            {
+                "name": "backend-data",
+                "mountPath": "/app/persist",
+                "readOnly": True,
+            }
+        ]
+
+    def test_no_volumes_keeps_payload_unchanged(
+        self, builder, metadata, transformed_compose, connection
+    ):
+        payload = builder.build(
+            metadata, transformed_compose, connection, "app-dev-abc"
+        )
+
+        assert "volumes" not in (payload.model_extra or {})
+        assert all(
+            "volumeMounts" not in (svc.model_extra or {}) for svc in payload.services
+        )
+
+
 class TestEnvParsing:
     def test_list_format(self, builder):
         result = builder._parse_env(["KEY=value", "BARE_KEY"])
