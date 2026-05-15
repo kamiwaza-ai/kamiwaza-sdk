@@ -65,6 +65,23 @@ Complex services use mixin composition for modularity:
 - Each mixin handles a specific feature area
 - See @.ai/knowledge/successful/service-patterns.md for why this works well
 
+### Federation-Aware Services (mesh-v1.0.0)
+
+The Federation API + SDK MVP unified the SDK surface in WS-M3.2 and added federation-aware services. Notes for new contributors:
+
+- **Canonical import:** `from kamiwaza_sdk import KamiwazaClient` (the legacy top-level `kamiwaza` package has been retired; the `kamiwaza_sdk` namespace is the only supported one).
+- **Base URL convention:** `KamiwazaClient(base_url=".../api", verify=...)` — `base_url` must end with `/api`. `verify=` / `ca_bundle=` kwargs accept self-signed certs in dev (T7.13).
+- **Federation-aware services on the client:**
+  - `kz.federations` — pair / list / probe federations (T7.5)
+  - `kz.jobs` — submit, run(recoverable=True), cancel, list cluster jobs (T7.6)
+  - `kz.cluster` — diagnose, capabilities, operations, set_execution_gate, clear_execution_gate (T7.7)
+  - `kz.gates` — discover (M2/M3 introduced); `kz.gates.packages` — install/replace/uninstall hash-pinned gate packages (M5 / T7.10)
+  - `kz.subjects` / `kz.datasets` — AuthzSubjects CRUD + dataset attribute-gate bindings (M3)
+  - `kz.retrieval` — federated retrieval cancel + list (M2)
+  - `kz.auth` — `UserPasswordAuthenticator` for live integration tests
+- **Pattern when a federation surface is missing:** the canonical PRD + Design at `../kamiwaza-docs-engineering-internal/docs/specifications/core/federation-api-and-sdk/` is the source of truth. The M5 smoke playbook at `../kamiwaza-docs-engineering-internal/docs/mesh-v1.0.0/demos/m5-gate-packages-smoke.md` shows the canonical install→discover→bind→replace→uninstall sequence.
+- **Service-doc sync:** kamiwaza-docs syncs `docs/services/<svc>/README.md` from this repo at build time (CLAUDE.md in kamiwaza-docs). When you add federation-aware methods to a service, update that service's `docs/services/<svc>/README.md` here so customer docs catch up.
+
 ## Quick Start for New Contributors
 
 ### Adding a New Service
