@@ -385,13 +385,22 @@ def run_publish(
     meta_result = meta_validator.validate(info.path / "kamiwaza.json")
 
     compose_validator = ComposeValidator()
-    compose_result = compose_validator.validate(publish_compose_path, info.path)
+    # An authored appgarden compose is published via `_retag_appgarden_compose`,
+    # which bypasses `ComposeTransformer` — so bind mounts and missing resource
+    # limits are NOT stripped/backfilled and must surface as warnings, not info.
+    compose_result = compose_validator.validate(
+        publish_compose_path,
+        info.path,
+        transformer_handled=appgarden_data is None,
+    )
 
     all_errors = meta_result.errors[:]
     all_warnings = meta_result.warnings[:]
+    all_info = meta_result.info[:]
     if compose_result:
         all_errors.extend(compose_result.errors)
         all_warnings.extend(compose_result.warnings)
+        all_info.extend(compose_result.info)
 
     if all_errors:
         console.print("          [red]\u2717 failed[/red]")
@@ -405,6 +414,8 @@ def run_publish(
             console.print(f"    [yellow]![/yellow] {warn}")
     else:
         console.print("          [green]\u2713[/green] passed")
+    for info_msg in all_info:
+        console.print(f"    [cyan]i[/cyan] {info_msg}")
 
     # 3. Resolve publish profile
     profile_mgr = ProfileManager()

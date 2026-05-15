@@ -5,7 +5,12 @@ import json
 import pytest
 
 from kamiwaza_extensions.validators.metadata import MetadataValidator
-from kamiwaza_extensions.validators.compose import ComposeValidator
+from kamiwaza_extensions.validators.compose import (
+    ComposeValidator,
+    is_bind_mount,
+    is_missing_resource_limits_finding,
+    is_missing_resource_limits_warning,
+)
 from kamiwaza_extensions.validators.platform_runtime import PlatformRuntimeValidator
 
 
@@ -434,7 +439,7 @@ class TestComposeValidator:
         assert result.passed
         assert not any("bind mount" in e.lower() for e in result.errors)
 
-    def test_missing_resource_limits_warning(self, tmp_path, validator):
+    def test_missing_resource_limits_info(self, tmp_path, validator):
         compose = {
             "services": {
                 "web": {"image": "nginx"},
@@ -444,7 +449,14 @@ class TestComposeValidator:
         self._write_compose(f, compose)
         result = validator.validate(f, tmp_path)
         assert result.passed
-        assert any("resource" in w.lower() for w in result.warnings)
+        # ENG-4956: deploy backfills resource limits, so the default
+        # (transformer-handled) path reports this as info, not a warning.
+        assert not any("resource" in w.lower() for w in result.warnings)
+        assert any(
+            "no resource limits defined" in i
+            and "defaults will be applied at deploy" in i
+            for i in result.info
+        )
 
     def test_missing_dockerfile_error(self, tmp_path, validator):
         compose = {
@@ -505,12 +517,13 @@ class TestComposeValidator:
                 f"{kind} template failed validation: {result.errors}"
             )
 
-    def test_bind_mount_in_build_service_warns_not_errors(self, tmp_path, validator):
-        """ENG-4834: scaffolded extensions (``kz-ext create``) ship a
+    def test_bind_mount_in_build_service_is_info(self, tmp_path, validator):
+        """ENG-4834/ENG-4956: scaffolded extensions (``kz-ext create``) ship a
         ``build:`` service with bind mounts for hot-reload. ``ComposeTransformer``
         strips them at deploy, so the validator must NOT error on this
-        local-dev pattern — otherwise every fresh scaffold fails
-        ``kz-ext validate`` / ``kz-ext publish``."""
+        local-dev pattern — and per ENG-4956 the default (transformer-handled)
+        path reports it as info rather than a warning so a fresh scaffold's
+        ``kz-ext validate`` is clean."""
         (tmp_path / "Dockerfile").write_text("FROM python:3.10")
         compose = {
             "services": {
@@ -527,7 +540,56 @@ class TestComposeValidator:
         self._write_compose(f, compose)
         result = validator.validate(f, tmp_path)
         assert result.passed, result.errors
-        assert any("stripped at deploy" in w for w in result.warnings)
+        assert not any("bind mount" in w.lower() for w in result.warnings)
+        assert any(
+            "bind mount './src:/app/src'" in i and "stripped at deploy" in i
+            for i in result.info
+        )
+
+    def test_bind_mount_in_build_service_is_warning_when_transformer_bypassed(
+        self, tmp_path, validator
+    ):
+        """ENG-4956: on a publish path that bypasses ComposeTransformer (an
+        authored appgarden compose), a build-service bind mount is NOT
+        stripped, so it must surface as an actionable warning, not info."""
+        (tmp_path / "Dockerfile").write_text("FROM python:3.10")
+        compose = {
+            "services": {
+                "web": {
+                    "build": ".",
+                    "volumes": ["./src:/app/src"],
+                    "deploy": {
+                        "resources": {"limits": {"cpus": "0.5", "memory": "512M"}}
+                    },
+                },
+            },
+        }
+        f = tmp_path / "docker-compose.yml"
+        self._write_compose(f, compose)
+        result = validator.validate(f, tmp_path, transformer_handled=False)
+        assert result.passed, result.errors
+        assert not any("bind mount" in i.lower() for i in result.info)
+        assert any(
+            "bind mount './src:/app/src'" in w and "stripped at deploy" not in w
+            for w in result.warnings
+        )
+
+    def test_missing_limits_is_warning_when_transformer_bypassed(
+        self, tmp_path, validator
+    ):
+        """ENG-4956: when the transformer is bypassed, deploy-time resource
+        defaults are not applied, so the finding must be a warning."""
+        compose = {"services": {"web": {"image": "nginx", "build": "."}}}
+        (tmp_path / "Dockerfile").write_text("FROM python:3.10")
+        f = tmp_path / "docker-compose.yml"
+        self._write_compose(f, compose)
+        result = validator.validate(f, tmp_path, transformer_handled=False)
+        assert result.passed
+        assert not any("resource limits" in i.lower() for i in result.info)
+        assert any(
+            "no resource limits defined" in w and "at deploy" not in w
+            for w in result.warnings
+        )
 
     def test_shared_named_volume_warns_about_emptydir(self, tmp_path, validator):
         """ENG-4834: named volumes deploy as pod-scoped ``emptyDir``, so
@@ -652,6 +714,58 @@ class TestComposeValidator:
         result = validator.validate(f, tmp_path)
         # yaml.safe_load might not error on all bad yaml; check it doesn't crash
         assert isinstance(result, ComposeValidator.__init__.__class__) or True
+
+
+@pytest.mark.unit
+class TestIsBindMount:
+    """Direct coverage for the validator/transformer shared bind-mount detector."""
+
+    @pytest.mark.parametrize(
+        "volume",
+        [
+            "/abs/host:/app",
+            "./rel:/app",
+            "../rel:/app",
+            "~/home:/app",
+            r"C:\host\data:/app",
+            ".:/app",
+            "..:/app",
+            "${PWD}/src:/app",
+            {"type": "bind", "source": "./src", "target": "/app"},
+            {"source": "/abs/host", "target": "/app"},
+        ],
+    )
+    def test_detects_bind_mounts(self, volume):
+        assert is_bind_mount(volume) is True
+
+    @pytest.mark.parametrize(
+        "volume",
+        [
+            "data:/app",
+            "logs:/var/log:rw",
+            "named_volume:/data",
+            {"type": "volume", "source": "data", "target": "/app"},
+            {"type": "tmpfs", "target": "/run/cache"},
+            {"source": "data", "target": "/app"},
+        ],
+    )
+    def test_ignores_named_volumes(self, volume):
+        assert is_bind_mount(volume) is False
+
+
+@pytest.mark.unit
+class TestResourceLimitsFinding:
+    """The renamed helper and its backward-compatible alias."""
+
+    def test_finding_matcher(self):
+        assert is_missing_resource_limits_finding(
+            "Service 'web': no resource limits defined — defaults applied"
+        )
+        assert not is_missing_resource_limits_finding("Service 'web': all good")
+
+    def test_deprecated_alias_is_same_callable(self):
+        # External importers of the pre-ENG-4956 name must keep working.
+        assert is_missing_resource_limits_warning is is_missing_resource_limits_finding
 
 
 @pytest.mark.unit

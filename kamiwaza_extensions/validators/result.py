@@ -11,3 +11,4 @@ class ValidationResult:
     passed: bool
     errors: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
+    info: List[str] = field(default_factory=list)
