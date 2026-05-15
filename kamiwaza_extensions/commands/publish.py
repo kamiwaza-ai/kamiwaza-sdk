@@ -385,7 +385,14 @@ def run_publish(
     meta_result = meta_validator.validate(info.path / "kamiwaza.json")
 
     compose_validator = ComposeValidator()
-    compose_result = compose_validator.validate(publish_compose_path, info.path)
+    # An authored appgarden compose is published via `_retag_appgarden_compose`,
+    # which bypasses `ComposeTransformer` — so bind mounts and missing resource
+    # limits are NOT stripped/backfilled and must surface as warnings, not info.
+    compose_result = compose_validator.validate(
+        publish_compose_path,
+        info.path,
+        transformer_handled=appgarden_data is None,
+    )
 
     all_errors = meta_result.errors[:]
     all_warnings = meta_result.warnings[:]

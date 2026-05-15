@@ -5,7 +5,12 @@ import json
 import pytest
 
 from kamiwaza_extensions.validators.metadata import MetadataValidator
-from kamiwaza_extensions.validators.compose import ComposeValidator
+from kamiwaza_extensions.validators.compose import (
+    ComposeValidator,
+    is_bind_mount,
+    is_missing_resource_limits_finding,
+    is_missing_resource_limits_warning,
+)
 from kamiwaza_extensions.validators.platform_runtime import PlatformRuntimeValidator
 
 
@@ -481,6 +486,87 @@ class TestComposeValidator:
         result = validator.validate(f, tmp_path)
         # yaml.safe_load might not error on all bad yaml; check it doesn't crash
         assert isinstance(result, ComposeValidator.__init__.__class__) or True
+
+    def test_bind_mount_is_warning_when_transformer_bypassed(self, tmp_path, validator):
+        """ENG-4956: on a publish path that bypasses ComposeTransformer (e.g. an
+        authored appgarden compose), bind mounts are NOT stripped, so the finding
+        must be an actionable warning rather than benign info."""
+        compose = {
+            "services": {"web": {"image": "nginx", "volumes": ["./src:/app"]}},
+        }
+        f = tmp_path / "docker-compose.yml"
+        self._write_compose(f, compose)
+        result = validator.validate(f, tmp_path, transformer_handled=False)
+        assert result.passed
+        assert not any("bind mount" in i.lower() for i in result.info)
+        assert any(
+            "bind mount './src:/app'" in w and "stripped at deploy" not in w
+            for w in result.warnings
+        )
+
+    def test_missing_limits_is_warning_when_transformer_bypassed(self, tmp_path, validator):
+        """ENG-4956: when the transformer is bypassed, deploy-time resource
+        defaults are not applied, so the finding must be a warning."""
+        compose = {"services": {"web": {"image": "nginx"}}}
+        f = tmp_path / "docker-compose.yml"
+        self._write_compose(f, compose)
+        result = validator.validate(f, tmp_path, transformer_handled=False)
+        assert result.passed
+        assert not any("resource limits" in i.lower() for i in result.info)
+        assert any(
+            "no resource limits defined" in w and "at deploy" not in w
+            for w in result.warnings
+        )
+
+
+@pytest.mark.unit
+class TestIsBindMount:
+    """Direct coverage for the validator/transformer shared bind-mount detector."""
+
+    @pytest.mark.parametrize(
+        "volume",
+        [
+            "/abs/host:/app",
+            "./rel:/app",
+            "../rel:/app",
+            "~/home:/app",
+            r"C:\host\data:/app",
+            ".:/app",
+            "..:/app",
+            {"type": "bind", "source": "./src", "target": "/app"},
+            {"source": "/abs/host", "target": "/app"},
+        ],
+    )
+    def test_detects_bind_mounts(self, volume):
+        assert is_bind_mount(volume) is True
+
+    @pytest.mark.parametrize(
+        "volume",
+        [
+            "data:/app",
+            "logs:/var/log:rw",
+            "named_volume:/data",
+            {"type": "volume", "source": "data", "target": "/app"},
+            {"source": "data", "target": "/app"},
+        ],
+    )
+    def test_ignores_named_volumes(self, volume):
+        assert is_bind_mount(volume) is False
+
+
+@pytest.mark.unit
+class TestResourceLimitsFinding:
+    """The renamed helper and its backward-compatible alias."""
+
+    def test_finding_matcher(self):
+        assert is_missing_resource_limits_finding(
+            "Service 'web': no resource limits defined — defaults applied"
+        )
+        assert not is_missing_resource_limits_finding("Service 'web': all good")
+
+    def test_deprecated_alias_is_same_callable(self):
+        # External importers of the pre-ENG-4956 name must keep working.
+        assert is_missing_resource_limits_warning is is_missing_resource_limits_finding
 
 
 @pytest.mark.unit

@@ -67,10 +67,16 @@ class TestCreateThenValidateFlow:
         assert data["passed"] is True
         assert data["errors"] == []
         assert data["warnings"] == []
-        assert len(data["info"]) == 4
-        assert any("bind mount './frontend/src:/app/src'" in i for i in data["info"])
-        assert any("bind mount './backend/app:/app/app'" in i for i in data["info"])
-        assert sum("no resource limits defined" in i for i in data["info"]) == 2
+        # Assert by category rather than a brittle total count, so an
+        # unrelated scaffold tweak doesn't silently break this test.
+        bind_infos = [i for i in data["info"] if "bind mount" in i]
+        limit_infos = [i for i in data["info"] if "no resource limits defined" in i]
+        assert len(bind_infos) == 2
+        assert len(limit_infos) == 2
+        # Every info entry is one of the two expected categories.
+        assert len(bind_infos) + len(limit_infos) == len(data["info"])
+        assert any("bind mount './frontend/src:/app/src'" in i for i in bind_infos)
+        assert any("bind mount './backend/app:/app/app'" in i for i in bind_infos)
 
 
 @pytest.mark.unit

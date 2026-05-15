@@ -109,8 +109,8 @@ def run_validate(*, path: Optional[str], json_output: bool) -> None:
             for warn in all_warnings:
                 console.print(f"  [yellow]![/yellow] {warn}")
         if all_info:
-            for info in all_info:
-                console.print(f"  [cyan]i[/cyan] {info}")
+            for info_msg in all_info:
+                console.print(f"  [cyan]i[/cyan] {info_msg}")
         if passed:
             console.print("[green]✓ Validation passed[/green]", highlight=False)
             if all_warnings:

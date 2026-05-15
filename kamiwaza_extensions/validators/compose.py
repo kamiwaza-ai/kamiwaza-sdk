@@ -16,17 +16,43 @@ MISSING_RESOURCE_LIMITS_TEXT = "no resource limits defined"
 def is_missing_resource_limits_finding(message: str) -> bool:
     """Return True when *message* is the compose missing-limits finding.
 
-    As of ENG-4956 this finding is emitted on the ``info`` channel for
-    ``validate``/``publish`` (deploy applies defaults), but conversion
-    still treats it as blocking — see ``ConversionAgent`` for why.
+    As of ENG-4956 this finding is emitted on the ``info`` channel when
+    the generic ``ComposeTransformer`` will run (deploy applies
+    defaults), and as a ``warning`` otherwise; conversion still treats
+    it as blocking — see ``ConversionAgent`` for why. The match is
+    channel-agnostic, so callers should scan ``warnings + info``.
     """
     return MISSING_RESOURCE_LIMITS_TEXT in message.lower()
+
+
+# Deprecated alias: ``is_missing_resource_limits_warning`` was the
+# pre-ENG-4956 name (the finding was always a warning then). Kept so
+# external importers don't break; prefer the ``_finding`` name.
+is_missing_resource_limits_warning = is_missing_resource_limits_finding
 
 
 class ComposeValidator:
     """Validates docker-compose.yml for deployment compatibility."""
 
-    def validate(self, compose_path: Path, ext_dir: Path) -> ValidationResult:
+    def validate(
+        self,
+        compose_path: Path,
+        ext_dir: Path,
+        *,
+        transformer_handled: bool = True,
+    ) -> ValidationResult:
+        """Validate a compose file for deployment compatibility.
+
+        ``transformer_handled`` controls how findings that the generic
+        ``ComposeTransformer`` would normally fix are reported. When
+        True (the default — ``kz-ext validate`` and publishes that go
+        through the generic transform), bind mounts and missing
+        resource limits are emitted on the ``info`` channel because
+        deploy strips/backfills them. When False — e.g. publishing an
+        authored ``docker-compose.appgarden.yml``, which bypasses the
+        transformer — the same findings are emitted as actionable
+        warnings because no deploy-time stripping or defaulting occurs.
+        """
         errors: List[str] = []
         warnings: List[str] = []
         info: List[str] = []
@@ -61,26 +87,31 @@ class ComposeValidator:
             # Bind mounts
             volumes = svc_config.get("volumes", [])
             for vol in volumes:
-                if _is_bind_mount(vol):
-                    info.append(
-                        f"Service '{svc_name}': bind mount '{_format_volume(vol)}' "
-                        "— local-dev only (stripped at deploy)"
+                if is_bind_mount(vol):
+                    finding = (
+                        f"Service '{svc_name}': bind mount "
+                        f"'{_format_volume(vol)}'"
                     )
+                    if transformer_handled:
+                        info.append(f"{finding} — local-dev only (stripped at deploy)")
+                    else:
+                        warnings.append(
+                            f"{finding} — ships to the catalog as-is "
+                            "(this publish path does not strip bind mounts)"
+                        )
 
             # Missing resource limits
             deploy = svc_config.get("deploy", {})
-            if isinstance(deploy, dict):
-                resources = deploy.get("resources", {})
-                if not resources or not isinstance(resources, dict) or not resources.get("limits"):
-                    info.append(
-                        f"Service '{svc_name}': {MISSING_RESOURCE_LIMITS_TEXT} "
-                        "— defaults will be applied at deploy"
+            resources = deploy.get("resources", {}) if isinstance(deploy, dict) else {}
+            if not isinstance(resources, dict) or not resources.get("limits"):
+                finding = f"Service '{svc_name}': {MISSING_RESOURCE_LIMITS_TEXT}"
+                if transformer_handled:
+                    info.append(f"{finding} — defaults will be applied at deploy")
+                else:
+                    warnings.append(
+                        f"{finding} — add explicit limits "
+                        "(this publish path does not apply deploy-time defaults)"
                     )
-            else:
-                info.append(
-                    f"Service '{svc_name}': {MISSING_RESOURCE_LIMITS_TEXT} "
-                    "— defaults will be applied at deploy"
-                )
 
             # Explicit container_name
             if "container_name" in svc_config:
@@ -113,7 +144,13 @@ class ComposeValidator:
         )
 
 
-def _is_bind_mount(volume: object) -> bool:
+def is_bind_mount(volume: object) -> bool:
+    """Return True when *volume* is a host bind mount (not a named volume).
+
+    Public so ``ComposeTransformer`` can share the exact detection the
+    validator uses, keeping "stripped at deploy" findings in sync with
+    what the transformer actually strips.
+    """
     if isinstance(volume, dict):
         volume_type = volume.get("type")
         source = volume.get("source") or volume.get("src")

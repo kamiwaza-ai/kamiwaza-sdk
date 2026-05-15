@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 # Reuse the validator's bind-mount detection so the "stripped at deploy"
 # info message ComposeValidator emits stays in sync with what the
 # transformer actually strips (ENG-4956).
-from kamiwaza_extensions.validators.compose import _is_bind_mount
+from kamiwaza_extensions.validators.compose import is_bind_mount
 
 
 def _replace_image_tag(image_ref: str, new_tag: str) -> str:
@@ -549,7 +549,7 @@ def _strip_bind_mounts(volumes: List[Any]) -> List[str]:
     """Keep named volumes, remove bind mounts.
 
     String bind-mount detection is delegated to the validator's
-    ``_is_bind_mount`` so every host-path form ``ComposeValidator``
+    ``is_bind_mount`` so every host-path form ``ComposeValidator``
     flags as "stripped at deploy" (absolute/relative paths, ``~``, and
     Windows drive letters) is actually stripped here. See ENG-4956.
     """
@@ -561,7 +561,7 @@ def _strip_bind_mounts(volumes: List[Any]) -> List[str]:
                 kept.append(vol)
             continue
         s = str(vol)
-        if _is_bind_mount(s):
+        if is_bind_mount(s):
             continue
         kept.append(s)
     return kept
