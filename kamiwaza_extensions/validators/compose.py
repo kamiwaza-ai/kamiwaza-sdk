@@ -99,6 +99,21 @@ class ComposeValidator:
                 if source is not None:
                     named_volume_users[source].append(svc_name)
 
+            # Service-level ``tmpfs:`` key — a distinct compose field from
+            # ``volumes:``. ``ComposeTransformer`` only strips long-form
+            # tmpfs entries that appear inside ``volumes:``, so a service
+            # declaring the more common top-level ``tmpfs: [...]`` slips
+            # past the transformer and silently loses the mount at deploy.
+            tmpfs = svc_config.get("tmpfs")
+            if tmpfs:
+                entries = tmpfs if isinstance(tmpfs, list) else [tmpfs]
+                for entry in entries:
+                    errors.append(
+                        f"Service '{svc_name}': tmpfs mount '{entry}' is not "
+                        "supported in deployment; write to /tmp directly or "
+                        "use a named volume like 'data:/path'"
+                    )
+
             # Missing resource limits
             deploy = svc_config.get("deploy", {})
             if isinstance(deploy, dict):

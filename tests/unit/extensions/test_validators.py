@@ -578,6 +578,39 @@ class TestComposeValidator:
         assert not result.passed
         assert any("tmpfs mount" in e for e in result.errors)
 
+    def test_service_level_tmpfs_key_is_rejected(self, tmp_path, validator):
+        """Compose's top-level ``tmpfs:`` service key is distinct from
+        ``volumes:``. ``ComposeTransformer`` only strips long-form tmpfs
+        entries inside ``volumes:``, so a service-level ``tmpfs:`` slips
+        through and silently loses the mount at deploy — reject it."""
+        compose = {
+            "services": {
+                "web": {
+                    "image": "nginx",
+                    "tmpfs": ["/run/cache", "/var/cache:size=64m"],
+                },
+            },
+        }
+        f = tmp_path / "docker-compose.yml"
+        self._write_compose(f, compose)
+        result = validator.validate(f, tmp_path)
+        assert not result.passed
+        tmpfs_errors = [e for e in result.errors if "tmpfs mount" in e]
+        assert len(tmpfs_errors) == 2
+
+    def test_service_level_tmpfs_string_form_is_rejected(self, tmp_path, validator):
+        """The ``tmpfs:`` key also accepts a bare string."""
+        compose = {
+            "services": {
+                "web": {"image": "nginx", "tmpfs": "/run/cache"},
+            },
+        }
+        f = tmp_path / "docker-compose.yml"
+        self._write_compose(f, compose)
+        result = validator.validate(f, tmp_path)
+        assert not result.passed
+        assert any("tmpfs mount '/run/cache'" in e for e in result.errors)
+
     def test_null_volumes_key_does_not_crash(self, tmp_path, validator):
         """A YAML ``volumes:`` key with no value parses to ``None``;
         the per-service loop must not crash trying to iterate it."""
