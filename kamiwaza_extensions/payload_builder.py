@@ -21,6 +21,7 @@ from kamiwaza_sdk.schemas.extensions import (
 
 from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
 from kamiwaza_extensions.connections import ConnectionInfo
+from kamiwaza_extensions.volume_utils import looks_like_host_path
 
 # CRD annotation keys — namespace is ``kamiwaza.io/*`` (NOT ``kamiwaza.ai/*``).
 # The platform's annotation persister filters incoming Extension CR annotations
@@ -119,7 +120,7 @@ def _parse_named_volume_mount(raw_volume: Any) -> Optional[tuple[str, str, bool]
             return None
         source_str = str(source)
         target_str = str(target)
-        if _looks_like_host_path(source_str) or not target_str.startswith("/"):
+        if looks_like_host_path(source_str) or not target_str.startswith("/"):
             return None
         read_only = bool(raw_volume.get("read_only") or raw_volume.get("readOnly"))
         return source_str, target_str, read_only
@@ -133,7 +134,7 @@ def _parse_named_volume_mount(raw_volume: Any) -> Optional[tuple[str, str, bool]
     source, target = parts[0], parts[1]
     if not source or not target or not target.startswith("/"):
         return None
-    if _looks_like_host_path(source):
+    if looks_like_host_path(source):
         return None
 
     modes = ",".join(parts[2:]).split(",") if len(parts) > 2 else []
@@ -155,14 +156,6 @@ def _unique_k8s_volume_name(source: str, used_names: set[str]) -> str:
         counter += 1
     used_names.add(name)
     return name
-
-
-def _looks_like_host_path(source: str) -> bool:
-    return (
-        source.startswith(("/", "./", "../", "~"))
-        or source in {".", ".."}
-        or bool(re.match(r"^[A-Za-z]:[\\/]", source))
-    )
 
 
 class PayloadBuilder:
