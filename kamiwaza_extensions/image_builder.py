@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -33,6 +32,7 @@ class ImageBuilder:
         service_filter: Optional[str] = None,
         verbose: bool = False,
         build_overrides: Optional[List[Any]] = None,
+        image_refs: Optional[Dict[str, str]] = None,
     ) -> List[str]:
         """Build images and return the list of image references.
 
@@ -46,6 +46,12 @@ class ImageBuilder:
             verbose: Stream full build output.
             build_overrides: Optional list of ``BuildOverride`` objects from
                 ``sdk_override.generate_build_overrides()``.
+            image_refs: Optional per-service canonical image refs keyed by
+                service name. When provided, services found in the map are
+                built at the supplied ref; services not in the map fall
+                back to the legacy ``{registry}/{ext}-{svc}:{tag}`` form.
+                Callers that own canonical-ref derivation (run_publish)
+                pass this so build/push and catalog-write stay in lockstep.
 
         Returns:
             List of image references that were built.
@@ -65,7 +71,10 @@ class ImageBuilder:
             if "build" not in svc:
                 continue
 
-            image_ref = f"{registry}/{extension_name}-{svc_name}:{revision_tag}"
+            if image_refs is not None and svc_name in image_refs:
+                image_ref = image_refs[svc_name]
+            else:
+                image_ref = f"{registry}/{extension_name}-{svc_name}:{revision_tag}"
             dockerfile, context = self._resolve_build_config(svc["build"], extension_dir)
 
             override = override_map.get(svc_name)

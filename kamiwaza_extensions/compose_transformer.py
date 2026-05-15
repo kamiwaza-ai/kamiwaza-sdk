@@ -7,6 +7,157 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 
+def _replace_image_tag(image_ref: str, new_tag: str) -> str:
+    """Return *image_ref* with its tag (and any digest) replaced by *new_tag*.
+
+    The namespace (registry + repo path) is preserved verbatim. Handles
+    refs that include a registry port (``localhost:5000/foo:tag``) by
+    using the position of the last ``/`` to disambiguate the port colon
+    from the tag colon, and strips any ``@sha256:...`` suffix before
+    re-tagging.
+    """
+    ref = image_ref.split("@", 1)[0]
+    last_slash = ref.rfind("/")
+    last_colon = ref.rfind(":")
+    if last_colon > last_slash:
+        ref = ref[:last_colon]
+    return f"{ref}:{new_tag}"
+
+
+def _looks_registry_qualified(ref: str) -> bool:
+    """Return True when *ref*'s first slash-separated component is a registry host.
+
+    Mirrors docker's rule for distinguishing a registry-qualified ref
+    (``ghcr.io/...``, ``localhost:5000/...``) from a Docker Hub
+    namespace shortcut (``foo/bar``, ``redis``). Without this guard
+    ``docker push my-org/api:1.0`` silently goes to Docker Hub while
+    the cluster registry expects the same path — guaranteed
+    ImagePullBackOff for extensions that use unqualified short refs.
+
+    Predicate: the substring before the first ``/`` must contain ``.``
+    or ``:``, or be exactly ``localhost``. Bare repo names (no ``/``)
+    are Docker Hub by definition and return False. IPv6 host literals
+    like ``[::1]/foo`` and ``[::1]:5000/foo`` are matched via the
+    ``:`` rule.
+    """
+    if "/" not in ref:
+        return False
+    first, _, _ = ref.partition("/")
+    return "." in first or ":" in first or first == "localhost"
+
+
+def _split_image_ref(image_ref: str) -> Tuple[Optional[str], str, str]:
+    """Split *image_ref* into ``(registry, repository, tag)``.
+
+    Mirrors ``_replace_image_tag``'s tag detection (last ``:`` past the
+    last ``/``) and ``_looks_registry_qualified``'s registry-host rule.
+    Strips any ``@sha256:...`` digest before splitting. Tag defaults to
+    ``latest`` when the ref carries no explicit tag.
+
+    Used by the K8s PATCH path so the operator updates registry +
+    repository + tag together. Pre-fix kz-ext would PATCH only the tag,
+    leaving the CR's image field pointing at the original repository —
+    after this PR builds at the canonical (possibly different)
+    repository, that mismatch would produce ImagePullBackOff.
+    """
+    ref = image_ref.split("@", 1)[0]
+    last_slash = ref.rfind("/")
+    last_colon = ref.rfind(":")
+    if last_colon > last_slash:
+        namespace = ref[:last_colon]
+        tag = ref[last_colon + 1:]
+    else:
+        namespace = ref
+        tag = "latest"
+    if _looks_registry_qualified(namespace):
+        registry, _, repository = namespace.partition("/")
+    else:
+        registry = None
+        repository = namespace
+    return registry, repository, tag
+
+
+def compute_canonical_refs(
+    source_services: Optional[Dict[str, Any]],
+    *,
+    registry: str,
+    extension_name: str,
+    revision_tag: str,
+    appgarden_services: Optional[Dict[str, Any]] = None,
+) -> Dict[str, str]:
+    """Canonical image refs for every buildable service, keyed by service name.
+
+    Single source of truth for the publish and dev pipelines: build,
+    push, digest resolution, and the K8s/catalog image refs all read
+    from this map so they can't drift.
+
+    Service-image precedence (per service):
+    1. ``appgarden_services[name]`` when the key is present (matches
+       ``_retag_appgarden_compose``'s behavior — uses presence, not
+       truthiness, so an empty mapping still falls through to legacy
+       via ``_canonical_build_ref`` rather than reading from source).
+    2. Source-compose entry otherwise.
+
+    Filters out profile-gated services (matches ``buildable_services``
+    in ``run_publish``) so profile-only helpers don't leak into the
+    push list under ``--no-build``.
+    """
+    appgarden = appgarden_services or {}
+    out: Dict[str, str] = {}
+    for name, svc in (source_services or {}).items():
+        if "build" not in svc or svc.get("profiles"):
+            continue
+        # Presence-based: a service that is *declared* in the appgarden
+        # compose, even as an empty mapping, is owned by the appgarden
+        # path. Truthiness here would silently fall back to source on
+        # `services.foo: {}` while _retag_appgarden_compose would write
+        # the legacy fallback — recreating the very mismatch this
+        # PR fixes.
+        lookup = appgarden[name] if name in appgarden else svc
+        out[name] = _canonical_build_ref(
+            lookup, name,
+            fallback_registry=registry,
+            fallback_extension_name=extension_name,
+            revision_tag=revision_tag,
+        )
+    return out
+
+
+def _canonical_build_ref(
+    service: Optional[Dict[str, Any]],
+    svc_name: str,
+    *,
+    fallback_registry: str,
+    fallback_extension_name: str,
+    revision_tag: str,
+) -> str:
+    """Return the canonical registry image ref for a buildable service.
+
+    Reads ``image`` from *service*. When the declared ref names an
+    explicit registry host (``ghcr.io/...``, ``localhost:5000/...``),
+    the namespace is preserved and only the tag is rewritten to
+    *revision_tag*. Unqualified refs (``api:latest``,
+    ``my-org/api:1.0``) and missing/empty declarations fall back to
+    the legacy
+    ``{fallback_registry}/{fallback_extension_name}-{svc_name}:{revision_tag}``
+    form — those would otherwise route ``docker push`` to Docker Hub
+    while the cluster registry expects the rewritten path.
+
+    Shared by ``ComposeTransformer.transform_service``,
+    ``_retag_appgarden_compose``, ``ImageBuilder.build``, and
+    ``run_publish``'s ``published_refs`` derivation so every site
+    that picks a build ref agrees on where the image lives.
+    """
+    declared = (service or {}).get("image")
+    if isinstance(declared, str):
+        stripped = declared.strip()
+        if stripped and _looks_registry_qualified(stripped):
+            return _replace_image_tag(stripped, revision_tag)
+    return (
+        f"{fallback_registry}/{fallback_extension_name}-{svc_name}:{revision_tag}"
+    )
+
+
 # Compose ``${VAR:-default}`` (use default if unset OR empty) and the
 # ``${VAR-default}`` form (use default only if unset). For our purposes
 # both collapse to the literal default — there's no host process between
@@ -69,6 +220,11 @@ class ComposeTransformer:
         4. Add / update ``image`` fields with *registry*/*revision_tag*
         5. Add resource limits if missing
         6. Remove ``extra_hosts``, ``container_name``, ``networks`` keys
+
+        Env-value ``${VAR}`` placeholders pass through unchanged. Callers
+        shipping the result to a destination that does NOT perform its
+        own variable substitution (e.g. a Kubernetes API) must additionally
+        call :meth:`resolve_env_placeholders`.
         """
         out = copy.deepcopy(compose_data)
 
@@ -116,11 +272,19 @@ class ComposeTransformer:
         had_build = "build" in svc
         svc.pop("build", None)
 
-        if had_build and "image" not in svc:
-            svc["image"] = f"{registry}/{extension_name}-{service_name}:{revision_tag}"
-        elif had_build and "image" in svc:
-            # Use consistent registry/extension-service:tag format (matches image builder)
-            svc["image"] = f"{registry}/{extension_name}-{service_name}:{revision_tag}"
+        if had_build:
+            # The declared image's namespace is the canonical record of
+            # where this build's image lives in the registry; publish
+            # only owns the tag (stage suffix or --revision SHA). Fall
+            # back to the legacy {ext}-{svc} convention when no image
+            # is declared (auto-generated image fields).
+            svc["image"] = _canonical_build_ref(
+                svc,
+                service_name,
+                fallback_registry=registry,
+                fallback_extension_name=extension_name,
+                revision_tag=revision_tag,
+            )
         # Services without a build context — both external (postgres, redis)
         # and prebuilt-internal (e.g. a helper image published from another
         # repo) — keep their declared image ref verbatim. publish only owns
@@ -134,17 +298,40 @@ class ComposeTransformer:
         svc.pop("container_name", None)
         svc.pop("networks", None)
 
-        # 7. Resolve compose ``${VAR:-default}`` substitutions:
-        #    - Non-platform vars (e.g. ``BACKEND_URL``) → resolve to
-        #      ``default`` so the value reaches the pod.
-        #    - Platform vars (``KAMIWAZA_*``) → drop, let the operator's
-        #      ConfigMap envFrom injection win (an explicit ``env``
-        #      would shadow the cluster-internal value).
-        #    - Unresolvable ``${VAR}`` (no default) → drop, same as before.
-        if "environment" in svc:
-            svc["environment"] = _resolve_shell_refs(svc["environment"])
-
         return svc
+
+    def resolve_env_placeholders(
+        self,
+        compose_data: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Return a copy of *compose_data* with ``${VAR}`` env-value
+        placeholders collapsed.
+
+        Apply when the consumer of the transformed compose will NOT
+        perform its own variable substitution — e.g. shipping the
+        compose straight to a Kubernetes API. K8s reads env values as
+        literal strings, so an unresolved ``${VAR:-default}`` reaches
+        the pod verbatim.
+
+        Rules (per env var):
+        - ``${VAR:-default}`` / ``${VAR-default}`` for non-platform
+          keys → collapsed to the literal ``default``.
+        - ``${KAMIWAZA_*:-default}`` → dropped. The kamiwaza-extension
+          operator injects these via ConfigMap envFrom; an explicit
+          env entry would shadow the cluster-internal value.
+        - ``${VAR}`` (no default) and ``${VAR:?error}`` (required) →
+          dropped. No safe value to ship.
+        - Plain values pass through unchanged.
+
+        Skip this step when the destination DOES perform install-time
+        substitution (e.g. a catalog template consumed by the platform
+        installer that holds user-supplied ``required_env_vars``).
+        """
+        out = copy.deepcopy(compose_data)
+        for svc in (out.get("services") or {}).values():
+            if "environment" in svc:
+                svc["environment"] = _resolve_shell_refs(svc["environment"])
+        return out
 
 
 # ------------------------------------------------------------------

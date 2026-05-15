@@ -121,6 +121,9 @@ class PayloadBuilder:
                 verified=metadata.get("verified", False),
             ),
         )
+        sandbox = self._build_sandbox_spec(metadata, transformed_compose)
+        if sandbox:
+            kwargs["sandbox"] = sandbox
 
         annotations = self.build_annotations(deployer=deployer, revision=revision)
 
@@ -245,13 +248,15 @@ class PayloadBuilder:
                 env.append({"name": "KAMIWAZA_VERIFY_SSL", "value": "false"})
                 env.append({"name": "KAMIWAZA_TLS_REJECT_UNAUTHORIZED", "value": "0"})
 
-            health_check = self._default_health_check(
-                svc_name,
-                svc,
-                ports,
-                extension_type=extension_type,
-                is_primary=is_primary,
-            )
+            health_check = _service_extension_field(svc, "healthCheck")
+            if not health_check:
+                health_check = self._default_health_check(
+                    svc_name,
+                    svc,
+                    ports,
+                    extension_type=extension_type,
+                    is_primary=is_primary,
+                )
 
             spec_kwargs: Dict[str, Any] = dict(
                 name=svc_name,
@@ -264,6 +269,14 @@ class PayloadBuilder:
             )
             if health_check:
                 spec_kwargs["healthCheck"] = health_check
+            automount = _service_extension_field(svc, "automountServiceAccountToken")
+            if automount is not None:
+                spec_kwargs["automountServiceAccountToken"] = automount
+            container_security_context = _service_extension_field(
+                svc, "containerSecurityContext"
+            )
+            if container_security_context is not None:
+                spec_kwargs["containerSecurityContext"] = container_security_context
 
             specs.append(ExtensionServiceSpec(**spec_kwargs))
 
@@ -418,6 +431,65 @@ class PayloadBuilder:
             return "app"
         return t
 
+    @staticmethod
+    def _build_sandbox_spec(
+        metadata: Dict[str, Any],
+        transformed: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        declared = metadata.get("sandbox")
+        if isinstance(declared, dict):
+            return declared
+
+        env_defaults = metadata.get("env_defaults") or {}
+        services = transformed.get("services") or {}
+        # Prefer the conventional `sandbox-controller` service; fall back to
+        # any other service that explicitly declares SANDBOX_BACKEND=kubernetes.
+        ordered = sorted(
+            services.items(),
+            key=lambda item: 0 if item[0] == "sandbox-controller" else 1,
+        )
+        for svc_name, svc in ordered:
+            env = _service_env_map(svc)
+            if env.get("SANDBOX_BACKEND") != "kubernetes":
+                continue
+
+            spec: Dict[str, Any] = {
+                "enabled": True,
+                "service_name": svc_name,
+            }
+            namespace = env.get("SANDBOX_NAMESPACE")
+            if namespace:
+                spec["namespace"] = namespace
+
+            allowed_images = [
+                item.strip()
+                for item in env.get("SANDBOX_ALLOWED_IMAGE_PREFIXES", "").split(",")
+                if item.strip()
+            ]
+            if allowed_images:
+                spec["image_whitelist"] = allowed_images
+
+            resources = _sandbox_resources_from_env(env)
+            if resources:
+                spec["resources"] = resources
+
+            persistence = env.get("SANDBOX_PERSISTENCE") or env_defaults.get(
+                "SANDBOX_PERSISTENCE"
+            )
+            if isinstance(persistence, str):
+                spec["persistence"] = persistence.strip().lower() in {
+                    "true",
+                    "1",
+                    "yes",
+                    "on",
+                }
+            elif isinstance(persistence, bool):
+                spec["persistence"] = persistence
+
+            return spec
+
+        return None
+
 
 def _should_use_node_frontend_probe(svc_name: str, svc: Dict[str, Any]) -> bool:
     """Use the Node-based probe only for likely Node/Next frontends.
@@ -467,3 +539,50 @@ def _should_use_node_frontend_probe(svc_name: str, svc: Dict[str, Any]) -> bool:
             return True
 
     return False
+
+
+def _service_extension_field(svc: Dict[str, Any], key: str) -> Optional[Any]:
+    """Read a service override from ``x-kamiwaza``."""
+    x_kamiwaza = svc.get("x-kamiwaza")
+    if isinstance(x_kamiwaza, dict) and key in x_kamiwaza:
+        return x_kamiwaza[key]
+    return None
+
+
+def _service_env_map(svc: Dict[str, Any]) -> Dict[str, str]:
+    env: Dict[str, str] = {}
+    raw = svc.get("environment") or {}
+    if isinstance(raw, dict):
+        for key, value in raw.items():
+            if value is not None:
+                env[str(key)] = str(value)
+        return env
+    if isinstance(raw, list):
+        for entry in raw:
+            if isinstance(entry, str) and "=" in entry:
+                key, value = entry.split("=", 1)
+                env[key] = value
+            elif isinstance(entry, dict):
+                for key, value in entry.items():
+                    if value is not None:
+                        env[str(key)] = str(value)
+    return env
+
+
+def _sandbox_resources_from_env(env: Dict[str, str]) -> Optional[Dict[str, Dict[str, str]]]:
+    resources: Dict[str, Dict[str, str]] = {}
+    requests: Dict[str, str] = {}
+    limits: Dict[str, str] = {}
+    if env.get("SANDBOX_RESOURCE_CPU_REQUEST"):
+        requests["cpu"] = env["SANDBOX_RESOURCE_CPU_REQUEST"]
+    if env.get("SANDBOX_RESOURCE_MEMORY_REQUEST"):
+        requests["memory"] = env["SANDBOX_RESOURCE_MEMORY_REQUEST"]
+    if env.get("SANDBOX_RESOURCE_CPU_LIMIT"):
+        limits["cpu"] = env["SANDBOX_RESOURCE_CPU_LIMIT"]
+    if env.get("SANDBOX_RESOURCE_MEMORY_LIMIT"):
+        limits["memory"] = env["SANDBOX_RESOURCE_MEMORY_LIMIT"]
+    if requests:
+        resources["requests"] = requests
+    if limits:
+        resources["limits"] = limits
+    return resources or None

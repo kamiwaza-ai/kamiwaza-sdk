@@ -23,6 +23,9 @@ from kamiwaza_extensions.registry_builder import RegistryBuilder
 
 console = Console(stderr=True)
 
+DEFAULT_CATALOG_SCHEMA: int = 3
+SUPPORTED_CATALOG_SCHEMAS: frozenset[int] = frozenset({2, 3})
+
 # Revision grammar (Open Q #8 resolution): 1-64 chars, starts with
 # alphanumeric, allows lowercase letters, digits, hyphens, and dots.
 # Compatible with default revision_tagger output and plain Git SHAs.
@@ -154,18 +157,28 @@ class CatalogPublisher:
     def __init__(
         self,
         profile: PublishProfile,
-        repo_version: int = 2,
+        catalog_schema: int = DEFAULT_CATALOG_SCHEMA,
         extension_dir: Optional[Path] = None,
     ) -> None:
         """Initialize S3 client from profile credentials.
 
         Args:
             profile: Publish profile with S3 endpoint and credentials.
-            repo_version: Catalog schema version (determines garden path).
+            catalog_schema: Catalog schema version (determines the
+                ``garden/v{N}/`` path). Defaults to 3 (current schema for
+                K8s/v3 extensions). Pass ``2`` to publish to the legacy
+                ``garden/v2/`` catalog. Must be in
+                ``SUPPORTED_CATALOG_SCHEMAS``; otherwise raises
+                ``ValueError``.
             extension_dir: Root directory of the extension project.  Used
                 for placing backup files.  Falls back to ``Path.cwd()`` if
                 not provided.
         """
+        if catalog_schema not in SUPPORTED_CATALOG_SCHEMAS:
+            raise ValueError(
+                f"Unsupported catalog_schema={catalog_schema!r}. "
+                f"Supported values: {sorted(SUPPORTED_CATALOG_SCHEMAS)}."
+            )
         try:
             import boto3
             from botocore.exceptions import ClientError
@@ -180,15 +193,15 @@ class CatalogPublisher:
         self._ClientError = ClientError
 
         self._profile = profile
-        self._repo_version = repo_version
+        self._catalog_schema = catalog_schema
         self._extension_dir = extension_dir if extension_dir is not None else Path.cwd()
 
         # Build garden directory incorporating the optional catalog_prefix.
         prefix = profile.catalog_prefix.strip("/")
         if prefix:
-            self._garden_dir = f"{prefix}/garden/v{repo_version}/"
+            self._garden_dir = f"{prefix}/garden/v{catalog_schema}/"
         else:
-            self._garden_dir = f"garden/v{repo_version}/"
+            self._garden_dir = f"garden/v{catalog_schema}/"
 
         # Validate endpoint to prevent SSRF via env var override
         endpoint = profile.catalog_endpoint
