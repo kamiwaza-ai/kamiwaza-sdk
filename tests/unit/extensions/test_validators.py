@@ -388,7 +388,7 @@ class TestComposeValidator:
         assert result.passed  # warning, not error
         assert any("port" in w.lower() for w in result.warnings)
 
-    def test_bind_mount_warning(self, tmp_path, validator):
+    def test_bind_mount_info(self, tmp_path, validator):
         compose = {
             "services": {
                 "web": {"image": "nginx", "volumes": ["./src:/app"]},
@@ -398,9 +398,32 @@ class TestComposeValidator:
         self._write_compose(f, compose)
         result = validator.validate(f, tmp_path)
         assert result.passed
-        assert any("bind mount" in w.lower() for w in result.warnings)
+        assert not any("bind mount" in w.lower() for w in result.warnings)
+        assert any(
+            "bind mount './src:/app'" in i and "stripped at deploy" in i
+            for i in result.info
+        )
 
-    def test_missing_resource_limits_warning(self, tmp_path, validator):
+    def test_long_form_bind_mount_info(self, tmp_path, validator):
+        compose = {
+            "services": {
+                "web": {
+                    "image": "nginx",
+                    "volumes": [{"type": "bind", "source": "./src", "target": "/app"}],
+                },
+            },
+        }
+        f = tmp_path / "docker-compose.yml"
+        self._write_compose(f, compose)
+        result = validator.validate(f, tmp_path)
+        assert result.passed
+        assert not any("bind mount" in w.lower() for w in result.warnings)
+        assert any(
+            "bind mount './src:/app'" in i and "stripped at deploy" in i
+            for i in result.info
+        )
+
+    def test_missing_resource_limits_info(self, tmp_path, validator):
         compose = {
             "services": {
                 "web": {"image": "nginx"},
@@ -410,7 +433,12 @@ class TestComposeValidator:
         self._write_compose(f, compose)
         result = validator.validate(f, tmp_path)
         assert result.passed
-        assert any("resource" in w.lower() for w in result.warnings)
+        assert not any("resource" in w.lower() for w in result.warnings)
+        assert any(
+            "no resource limits defined" in i
+            and "defaults will be applied at deploy" in i
+            for i in result.info
+        )
 
     def test_missing_dockerfile_error(self, tmp_path, validator):
         compose = {

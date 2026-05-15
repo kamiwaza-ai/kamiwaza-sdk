@@ -30,8 +30,10 @@ class TestCreateThenValidateFlow:
         assert "Created" in result.output
 
         result = runner.invoke(app, ["validate", str(d)])
-        assert result.exit_code == 0
+        assert result.exit_code == 0, result.output
         assert "passed" in result.output.lower()
+        assert "!" not in result.output
+        assert "warning" not in result.output.lower()
 
     def test_create_tool_then_validate(self, tmp_path, monkeypatch):
         d = _empty_dir(tmp_path)
@@ -64,6 +66,11 @@ class TestCreateThenValidateFlow:
         data = json.loads(result.output)
         assert data["passed"] is True
         assert data["errors"] == []
+        assert data["warnings"] == []
+        assert len(data["info"]) == 4
+        assert any("bind mount './frontend/src:/app/src'" in i for i in data["info"])
+        assert any("bind mount './backend/app:/app/app'" in i for i in data["info"])
+        assert sum("no resource limits defined" in i for i in data["info"]) == 2
 
 
 @pytest.mark.unit

@@ -389,9 +389,11 @@ def run_publish(
 
     all_errors = meta_result.errors[:]
     all_warnings = meta_result.warnings[:]
+    all_info = meta_result.info[:]
     if compose_result:
         all_errors.extend(compose_result.errors)
         all_warnings.extend(compose_result.warnings)
+        all_info.extend(compose_result.info)
 
     if all_errors:
         console.print("          [red]\u2717 failed[/red]")
@@ -405,6 +407,8 @@ def run_publish(
             console.print(f"    [yellow]![/yellow] {warn}")
     else:
         console.print("          [green]\u2713[/green] passed")
+    for info in all_info:
+        console.print(f"    [cyan]i[/cyan] {info}")
 
     # 3. Resolve publish profile
     profile_mgr = ProfileManager()

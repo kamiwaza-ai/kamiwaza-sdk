@@ -24,6 +24,7 @@ class ComposeValidator:
     def validate(self, compose_path: Path, ext_dir: Path) -> ValidationResult:
         errors: List[str] = []
         warnings: List[str] = []
+        info: List[str] = []
 
         try:
             with compose_path.open("r", encoding="utf-8") as f:
@@ -55,18 +56,26 @@ class ComposeValidator:
             # Bind mounts
             volumes = svc_config.get("volumes", [])
             for vol in volumes:
-                vol_str = str(vol)
-                if isinstance(vol, str) and (":./" in vol_str or vol_str.startswith("./") or vol_str.startswith("../") or re.match(r"^/[^$]", vol_str)):
-                    warnings.append(f"Service '{svc_name}': bind mount '{vol_str}' — not available in deployment")
+                if _is_bind_mount(vol):
+                    info.append(
+                        f"Service '{svc_name}': bind mount '{_format_volume(vol)}' "
+                        "— local-dev only (stripped at deploy)"
+                    )
 
             # Missing resource limits
             deploy = svc_config.get("deploy", {})
             if isinstance(deploy, dict):
                 resources = deploy.get("resources", {})
                 if not resources or not isinstance(resources, dict) or not resources.get("limits"):
-                    warnings.append(f"Service '{svc_name}': {MISSING_RESOURCE_LIMITS_TEXT}")
+                    info.append(
+                        f"Service '{svc_name}': {MISSING_RESOURCE_LIMITS_TEXT} "
+                        "— defaults will be applied at deploy"
+                    )
             else:
-                warnings.append(f"Service '{svc_name}': {MISSING_RESOURCE_LIMITS_TEXT}")
+                info.append(
+                    f"Service '{svc_name}': {MISSING_RESOURCE_LIMITS_TEXT} "
+                    "— defaults will be applied at deploy"
+                )
 
             # Explicit container_name
             if "container_name" in svc_config:
@@ -91,4 +100,51 @@ class ComposeValidator:
         if networks:
             warnings.append("Custom networks defined — platform manages networking")
 
-        return ValidationResult(passed=len(errors) == 0, errors=errors, warnings=warnings)
+        return ValidationResult(
+            passed=len(errors) == 0,
+            errors=errors,
+            warnings=warnings,
+            info=info,
+        )
+
+
+def _is_bind_mount(volume: object) -> bool:
+    if isinstance(volume, dict):
+        volume_type = volume.get("type")
+        source = volume.get("source") or volume.get("src")
+        if volume_type == "bind":
+            return True
+        return bool(source and _looks_like_host_path(str(source)))
+
+    if not isinstance(volume, str):
+        return False
+
+    if re.match(r"^[A-Za-z]:[\\/]", volume):
+        return True
+    if volume.startswith(("./", "../", "/", "~")):
+        return True
+    if ":./" in volume or ":../" in volume:
+        return True
+    if ":" not in volume:
+        return False
+    source, _, _ = volume.partition(":")
+    return _looks_like_host_path(source)
+
+
+def _looks_like_host_path(source: str) -> bool:
+    return (
+        source.startswith(("/", "./", "../", "~"))
+        or source in {".", ".."}
+        or bool(re.match(r"^[A-Za-z]:[\\/]", source))
+    )
+
+
+def _format_volume(volume: object) -> str:
+    if isinstance(volume, dict):
+        source = volume.get("source") or volume.get("src") or ""
+        target = (
+            volume.get("target") or volume.get("destination") or volume.get("dst") or ""
+        )
+        if source or target:
+            return f"{source}:{target}".rstrip(":")
+    return str(volume)
