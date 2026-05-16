@@ -270,7 +270,10 @@ def run_publish(
         validate_digest,
     )
     from kamiwaza_extensions.profile_manager import ProfileManager
-    from kamiwaza_extensions.registry_builder import RegistryBuilder
+    from kamiwaza_extensions.registry_builder import (
+        RegistryBuilder,
+        resolve_extra_image,
+    )
     from kamiwaza_extensions.validators.compose import ComposeValidator
     from kamiwaza_extensions.validators.metadata import MetadataValidator
 
@@ -382,13 +385,22 @@ def run_publish(
     meta_result = meta_validator.validate(info.path / "kamiwaza.json")
 
     compose_validator = ComposeValidator()
-    compose_result = compose_validator.validate(publish_compose_path, info.path)
+    # An authored appgarden compose is published via `_retag_appgarden_compose`,
+    # which bypasses `ComposeTransformer` — so bind mounts and missing resource
+    # limits are NOT stripped/backfilled and must surface as warnings, not info.
+    compose_result = compose_validator.validate(
+        publish_compose_path,
+        info.path,
+        transformer_handled=appgarden_data is None,
+    )
 
     all_errors = meta_result.errors[:]
     all_warnings = meta_result.warnings[:]
+    all_info = meta_result.info[:]
     if compose_result:
         all_errors.extend(compose_result.errors)
         all_warnings.extend(compose_result.warnings)
+        all_info.extend(compose_result.info)
 
     if all_errors:
         console.print("          [red]\u2717 failed[/red]")
@@ -402,6 +414,8 @@ def run_publish(
             console.print(f"    [yellow]![/yellow] {warn}")
     else:
         console.print("          [green]\u2713[/green] passed")
+    for info_msg in all_info:
+        console.print(f"    [cyan]i[/cyan] {info_msg}")
 
     # 3. Resolve publish profile
     profile_mgr = ProfileManager()
@@ -623,6 +637,25 @@ def run_publish(
                 _verify_supplied_digest(ref, digest)
         else:
             digest_map = _auto_resolve_digests(published_refs)
+
+    # Extras under our registry get the same tag-and-digest pinning as
+    # compose buildable services. External refs and author-pinned
+    # `@sha256:...` refs pass through untouched. Refs already in
+    # digest_map (e.g. the buildable service redundantly listed in extras
+    # when the user supplied `--digest`) are left alone — re-resolving
+    # would hit the registry and could overwrite an explicit user pin.
+    resolved_extras = [
+        resolve_extra_image(img, registry, version, stage)
+        for img in (info.metadata.get("extra_docker_images") or [])
+    ]
+    extras_to_resolve = [
+        r for r in resolved_extras
+        if r.startswith(f"{registry}/")
+        and "@" not in r
+        and r not in digest_map
+    ]
+    if extras_to_resolve:
+        digest_map.update(_auto_resolve_digests(extras_to_resolve))
 
     # 7. Build catalog entry
     reg_builder = RegistryBuilder()

@@ -632,6 +632,41 @@ class TestBuildPatchKwargsCarriesAnnotations:
         )
         assert "sandbox" not in kwargs
 
+    def test_carries_volumes_so_patch_refreshes_mount_contract(self):
+        """ENG-4834: existing dev CRs are updated by PATCH after first
+        create, so top-level volume declarations must ride PATCH too."""
+        from kamiwaza_extensions.commands.dev import _build_patch_kwargs
+
+        volumes = [{"name": "omniparse-data", "emptyDir": {}}]
+
+        class _FakePayload:
+            model_extra = {"volumes": volumes}
+            kamiwaza = None
+
+        kwargs = _build_patch_kwargs(patch_services=["svc"], payload=_FakePayload())
+        assert kwargs["volumes"] == volumes
+
+    def test_patchextension_accepts_volumes_via_extra_allow(self):
+        """Sanity: PatchExtension must accept top-level volumes via
+        ``extra="allow"``."""
+        from kamiwaza_sdk.schemas.extensions import PatchExtension, PatchServiceSpec
+
+        from kamiwaza_extensions.commands.dev import _build_patch_kwargs
+
+        volumes = [{"name": "data", "emptyDir": {}}]
+
+        class _FakePayload:
+            model_extra = {"volumes": volumes}
+            kamiwaza = None
+
+        kwargs = _build_patch_kwargs(
+            patch_services=[PatchServiceSpec(name="x")],
+            payload=_FakePayload(),
+        )
+        patch = PatchExtension(**kwargs)
+        assert (patch.model_extra or {}).get("volumes") == volumes
+        assert patch.model_dump()["volumes"] == volumes
+
     def test_patch_service_specs_forwards_x_kamiwaza_overrides(self):
         """jxstanford PR #97 review H2: per-service overrides
         (healthCheck, automountServiceAccountToken,
@@ -700,6 +735,56 @@ class TestBuildPatchKwargsCarriesAnnotations:
 
         specs = _build_patch_service_specs(_FakePayload())
         assert (specs[0].model_extra or {})["automountServiceAccountToken"] is False
+
+    def test_patch_service_specs_forwards_volume_mounts(self):
+        """ENG-4834: service-level mounts must also refresh on PATCH."""
+        from kamiwaza_sdk.schemas.extensions import ExtensionServiceSpec
+
+        from kamiwaza_extensions.commands.dev import _build_patch_service_specs
+
+        volume_mounts = [{"name": "data", "mountPath": "/data"}]
+
+        class _FakePayload:
+            services = [
+                ExtensionServiceSpec(
+                    name="tool",
+                    image="reg/tool:dev",
+                    volumeMounts=volume_mounts,
+                ),
+            ]
+
+        specs = _build_patch_service_specs(_FakePayload())
+        assert (specs[0].model_extra or {})["volumeMounts"] == volume_mounts
+        assert specs[0].model_dump()["volumeMounts"] == volume_mounts
+
+    def test_volumes_cleared_when_payload_has_none(self):
+        """ENG-4834 follow-up: removing a named volume from compose
+        must clear the stale top-level volume on the persisted CR.
+        Omitting the field on PATCH leaves the operator with no signal
+        to clear, so always send an explicit (possibly empty) list."""
+        from kamiwaza_extensions.commands.dev import _build_patch_kwargs
+
+        kwargs = _build_patch_kwargs(
+            patch_services=["svc"],
+            payload=self._payload_with_annotations(None),
+        )
+        assert kwargs["volumes"] == []
+
+    def test_volume_mounts_cleared_when_svc_has_none(self):
+        """ENG-4834 follow-up: per-service mounts must also clear on
+        PATCH when removed from compose. Mirrors the top-level clear
+        behavior in ``_build_patch_kwargs``."""
+        from kamiwaza_sdk.schemas.extensions import ExtensionServiceSpec
+
+        from kamiwaza_extensions.commands.dev import _build_patch_service_specs
+
+        class _FakePayload:
+            services = [
+                ExtensionServiceSpec(name="tool", image="reg/tool:dev"),
+            ]
+
+        specs = _build_patch_service_specs(_FakePayload())
+        assert (specs[0].model_extra or {}).get("volumeMounts") == []
 
     def test_patchextension_accepts_sandbox_via_extra_allow(self):
         """Sanity: PatchExtension must accept the sandbox kwarg via
