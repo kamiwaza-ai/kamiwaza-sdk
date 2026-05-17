@@ -31,6 +31,349 @@ pat = client.auth.create_pat(PATCreate(name="local-bootstrap")).token
 print("Save this token:", pat)
 ```
 
+## Federation walkthrough (kamiwaza-mesh-v1.0.0)
+
+> Available in **kamiwaza-sdk 1.0.0+** under the new top-level
+> `kamiwaza` namespace, distinct from the legacy `kamiwaza_sdk`
+> namespace above. See the design's §4.2.11 for the full surface.
+
+The new `kamiwaza` namespace ships the federation-aware client. The
+eight-step demo author's `setup.py` flow uses **only SDK calls** — no
+`kubectl exec`, no manual SQL, no Keycloak admin REST:
+
+1. **Pair LYRA with ORION** — `kz.federations.pair(...)`
+2. **Seed personas** — `kz.subjects.upsert(...)` (replaces the v0.1.x
+   two-phase KC recipe — see authoring-guide §6)
+3. **Bind the cluster execution gate** — `kz.cluster.set_execution_gate(...)`
+   (replaces the `kubectl exec` recipe — see authoring-guide §9.1)
+4. **Register the dataset** — `kz.datasets.create(...)`
+5. **Bind the dataset's attribute gate** — `kz.datasets.set_gate(...)`
+6. **Allowlist the brokered user + grant viewer** —
+   `kz.federations["ORION"].users.add(...)` plus
+   `kz.subjects.grants("user").create(...)`
+7. **Submit the federated job** — `kz.jobs.run(...)`
+8. **Observe the audit trail** — `kz.cluster.operations()` / receiver-side
+   `gate_binding{,_set,clear}` + `subject_upsert` audit events
+
+### Configure the client
+
+```python
+import os
+from kamiwaza import Kamiwaza
+
+# Environment-driven config (recommended)
+os.environ.setdefault("KAMIWAZA_BASE_URL", "https://lyra.kamiwaza.test")
+os.environ.setdefault("KAMIWAZA_TOKEN", "<personal-access-token>")
+kz = Kamiwaza.from_env()
+
+# Or pass explicit values
+kz = Kamiwaza(
+    base_url="https://lyra.kamiwaza.test",
+    token="<personal-access-token>",
+)
+
+# Use as a context manager so the underlying httpx transport is
+# released cleanly:
+with Kamiwaza.from_env() as kz:
+    ...  # walkthrough below
+```
+
+### Step 1 — Pair LYRA with ORION
+
+The initiator drives the handshake. The receiver only needs the
+PSK propagated through DataHub plus its admin baseline ReBAC tuple
+(install-dev.sh seeds those automatically).
+
+```python
+fed = kz.federations.pair(
+    name="ORION",
+    role="initiator",
+    remote_url="https://orion.kamiwaza.test",
+    remote_admin_token="<orion-admin-pat>",  # initiator-only
+)
+print(fed.id, fed.status)  # e.g. fed-orion-… PAIRED
+```
+
+If DataHub PSK propagation is mid-flight when the request lands on
+the receiver, the SDK retries with exponential backoff until the
+server's structured 503 (`detail.reason == "psk_propagation_timeout"`)
+times out the budget — see `kamiwaza.exceptions.FederationPairTimeoutError`.
+
+### Step 2 — Declare the attribute vocabulary, then seed personas (M3 + M3.1)
+
+Replaces the v0.1.x two-phase Keycloak admin recipe (see
+`authoring-a-federated-demo.md` §6). Two sub-steps:
+
+**Step 2a — Declare the realm's attribute vocabulary (M3.1, v0.3.6).**
+Every attribute name a subject can hold must be declared in the realm
+BEFORE `kz.subjects.upsert(...)` writes it. Keycloak's realm default
+`unmanagedAttributePolicy=None` silently drops attribute writes for
+undeclared names — the M3.1 declared-vocabulary surface converts that
+silent drop into a 400 with structured remediation, so unknown names
+fail loudly at upsert time instead of returning success with empty
+attributes.
+
+```python
+kz.cluster.declare_attribute("clearance", type="string")
+kz.cluster.declare_attribute("country",   type="string")
+kz.cluster.declare_attribute("programs",  type="string[]")  # multivalued
+```
+
+`declare_attribute` is idempotent on identical shape — safe to re-run
+during demo setup. Shape change on a declared-state attribute returns
+400 `shape_change_on_declared`; deprecate + withdraw first to retire
+the old shape. See `kz.cluster.list_attributes()` to inspect the
+current vocabulary, and `kz.cluster.deprecate_attribute(name)` /
+`kz.cluster.withdraw_attribute(name, force=True)` for retirement.
+
+For PII-grade attributes the gate consumes via the mesh-envelope
+`user_attrs` channel (not as a JWT claim), pass `sensitive=True`:
+
+```python
+kz.cluster.declare_attribute("ssn_last4", type="string", sensitive=True)
+```
+
+For attributes attested by a peer cluster's brokered-user provisioning
+(rather than set by local admin), pass `authority="mesh_peer"` —
+local admin attempts to set these on local users return 400
+`wrong_authority_for_subject`. Defaults (`sensitive=False`,
+`authority="local_admin"`) match the demo flow's normal case.
+
+**Step 2b — Seed personas.** The single PUT writes attributes in one
+round-trip, infers multivalued KC entries for list-shaped values, and
+rolls back attribute deltas on partial failure (T3.4).
+
+```python
+cdr_baker = kz.subjects.upsert(
+    "cdr-baker",
+    attributes={
+        "clearance": "TS",
+        "country": "USA",
+        "programs": ["IRIS", "ARGOS"],   # list → multivalued KC attribute
+    },
+    password="cdr-baker",
+)
+print(cdr_baker.id, cdr_baker.attributes["clearance"])  # kc-uuid TS
+```
+
+Audit emits `subject_upsert{outcome=success}` on the receiver. A
+partial-failure rollback emits `subject_upsert_rollback{outcome=...}`
+so operators can spot drift cases in logs (T3.7). Attempting `upsert`
+with an undeclared attribute name returns 400 `attribute_not_registered`
+with the undeclared names enumerated and remediation text pointing
+back at `declare_attribute(...)`.
+
+### Step 3 — Bind the cluster execution gate (M3)
+
+Replaces the `kubectl exec ... RuntimeConfig().set_config(...)` recipe
+(see `authoring-a-federated-demo.md` §9.1). The PUT validates the
+classpath is an ExecutionGate subclass and validates `config` against
+the gate's `config_schema()` before persisting (T2.6 jsonschema).
+
+```python
+binding = kz.cluster.set_execution_gate(
+    type="kamiwaza.services.authz.gates.default_gates.AllowAllExecutionGate",
+    # config={} omitted — AllowAllExecutionGate declares no config_schema()
+)
+print(binding.gate_name, binding.kind)  # allow_all_execution_gate execution
+```
+
+Without an active binding, mesh job submission fails with `403
+no_execution_gate_configured_for_mesh`. The SDK surfaces wrong-kind
+attempts (binding an `AttributeGate` as an execution gate) as
+`KamiwazaError` with status 400.
+
+### Step 4 — Register the dataset (M3)
+
+```python
+conjunctions = kz.datasets.create(
+    name="conjunctions",
+    platform="postgres",
+    environment="PROD",
+    properties={
+        "connection_secret_urn": "urn:li:secret:postgres-conjunctions",
+        "table": "public.conjunctions",
+    },
+)
+print(conjunctions.urn)  # urn:li:dataset:(postgres,conjunctions,PROD)
+```
+
+### Step 5 — Bind the dataset's attribute gate (M3)
+
+```python
+ds_binding = kz.datasets.set_gate(
+    conjunctions.urn,
+    type="kamiwaza_extensions.classified_conjunction_gate.ClassifiedConjunctionGate",
+    config={
+        "classification_field": "classification",
+        "releasable_to_field": "releasable_to",
+        "program_compartment_field": "program_compartment",
+    },
+)
+print(ds_binding.dataset_urn, ds_binding.gate_name)
+```
+
+The server verifies the classpath is an `AttributeGate` (wrong-kind →
+400) and that `config` matches the gate's `config_schema()` (mismatch
+→ 400 `schema_validation_failed`). Owner-on-dataset ReBAC enforces
+that only the dataset's owner can rebind the gate (T2.5 follow-up).
+
+### Step 6 — Allowlist the brokered user + grant viewer (M3)
+
+```python
+# Receiver-side allowlist (same as WS-M1):
+kz.federations["ORION"].users.add(
+    external_id="cdr-baker@lyra-cluster-uuid",
+    initial_tuples=[
+        {
+            "subject": "user:cdr-baker@lyra-cluster-uuid",
+            "relation": "viewer",
+            "object": "cluster:ORION",
+        },
+    ],
+)
+
+# Then attach a ReBAC viewer relation on the dataset (M3 subjects.grants):
+kz.subjects.grants("cdr-baker").create(
+    object_namespace="dataset",
+    object_id=conjunctions.urn,
+    relation="viewer",
+)
+```
+
+If the user isn't on the allowlist when a mesh request arrives,
+ext-authz returns 403 with `detail.reason ==
+"brokered_user_not_allowlisted"`. The SDK surfaces that as
+`kamiwaza.exceptions.BrokeredUserNotAllowlistedError`.
+
+### Step 7 — Submit the federated job
+
+`target_cluster` is the federation name (the same name used at
+pair time). Omit it to run locally on the cluster the SDK is
+talking to.
+
+```python
+result = kz.jobs.run(
+    target_cluster="ORION",
+    entrypoint="python /workdir/query.py --rows 1000",
+)
+print(result.status, result.audit_actor)
+# SUCCEEDED  cdr-baker@lyra-cluster-uuid
+```
+
+For longer jobs, prefer the async + poll pattern — `submit_async`
+returns immediately and `wait` polls with bounded backoff until
+the job reaches a terminal state:
+
+```python
+job_id = kz.jobs.submit_async(
+    target_cluster="ORION",
+    entrypoint="python /workdir/long_query.py",
+)
+result = kz.jobs.wait(job_id, timeout=600)
+```
+
+`wait` raises `kamiwaza.exceptions.MeshJobTimeoutError` when the
+budget expires before a terminal state. A *failed* job returns a
+JobResult with `status="FAILED"` and an `error` message — that's
+not exceptional, that's data.
+
+### Step 8 — Observe audit
+
+The receiver-side audit log shows the job completing as the
+originating user (`cdr-baker@lyra-cluster-uuid`), not as a
+system principal. M3 adds two more event types operators can grep for:
+
+- `gate_binding{action: set|clear, kind: execution|attribute}` — every
+  PUT/DELETE on the cluster + dataset gate endpoints (T2.12).
+- `subject_upsert{,_rollback}` and `subject_grant_change` — every
+  AuthzSubjects mutation (T3.7).
+
+```bash
+# Federated job audit trail
+kubectl -n kamiwaza logs deployment/core-scheduler \
+    | grep federated_job_completed \
+    | jq 'select(.audit_actor)'
+
+# M3 gate-binding + subject-management audit
+kubectl -n kamiwaza logs deployment/core-scheduler \
+    | jq 'select(.event_type | startswith("gate_binding") or
+                                  startswith("subject_"))'
+```
+
+The `audit_actor` field is the same value `kz.jobs.run(...).audit_actor`
+returns in step 7 — that round-trip is the demo gate's load-bearing
+signal.
+
+### Recoverable long-jobs
+
+For jobs that may take longer than ~60 seconds, use `kz.jobs.run(...,
+recoverable=True)` instead of the default. The default holds the HTTP
+connection for the full job duration; FastAPI buffers the
+`X-Job-Id` response header along with the body and only flushes both on
+completion. If the connection drops mid-job, the SDK never sees the
+`X-Job-Id` and has no handle to recover the result from.
+
+`recoverable=True` flips the SDK to a `submit + poll` shape under the
+covers:
+
+1. `POST /api/cluster/jobs/submit` returns the `job_id` immediately.
+2. The SDK polls `/cluster/jobs/{id}/status` with exponential backoff
+   until the job reaches a terminal state.
+3. `/cluster/jobs/{id}/result` fetches the final payload.
+
+Because the `job_id` is in the SDK's hands from the first response, a
+mid-job process crash is recoverable on a fresh SDK instance:
+
+```python
+# Original process
+job_id = kz.jobs.submit_async(
+    entrypoint="python query.py",
+    target_cluster="ORION",
+    timeout_seconds=600,
+)
+# ... persist job_id somewhere (sqlite, /tmp file, etc.) ...
+# ... process dies ...
+
+# Fresh process, much later
+saved_job_id = load_persisted_job_id()
+result = kz.jobs.wait(saved_job_id, timeout=600)
+print(result.status, result.result)
+```
+
+**Recommended:** use `recoverable=True` for any job with
+`timeout_seconds > 60`. The two-call cost (submit + poll) is amortized
+over the long runtime.
+
+### Error handling cheat sheet
+
+The SDK maps server-side error contracts to typed exceptions so
+customer code can branch on the failure mode. All inherit from
+`kamiwaza.exceptions.KamiwazaError`:
+
+| Exception                              | Trigger                                                         |
+|----------------------------------------|-----------------------------------------------------------------|
+| `FederationPairTimeoutError`           | Receiver couldn't see the PSK before the retry budget expired.  |
+| `BrokeredUserNotAllowlistedError`      | Mesh request from a user not in the receiver's allowlist.       |
+| `MeshJobTimeoutError`                  | `kz.jobs.wait(...)` budget expired before terminal state.       |
+| `MeshJobFailedError`                   | Job reached FAILED state and the caller asked for an exception. |
+| `NativeRealmRequiredError`             | Operation requires a native (non-brokered) realm user.          |
+| `KamiwazaError` (catch-all)            | Other 4xx/5xx; check `.status_code` and `.body` for details.    |
+
+```python
+from kamiwaza import KamiwazaError
+from kamiwaza.exceptions import FederationPairTimeoutError
+
+try:
+    kz.federations.pair(name="ORION", role="initiator", remote_url=...)
+except FederationPairTimeoutError as exc:
+    # Retriable — DataHub propagation didn't make the deadline this run.
+    print(f"Retry later: {exc.body!r}")
+except KamiwazaError as exc:
+    # Catch-all for everything else.
+    print(f"{exc.status_code}: {exc}")
+```
+
 ## Examples
 
 The `/examples` directory contains Jupyter notebooks demonstrating various use cases:
