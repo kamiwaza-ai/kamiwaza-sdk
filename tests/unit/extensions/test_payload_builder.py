@@ -319,6 +319,165 @@ class TestServiceRefRewritesAnnotation:
         assert ANNOTATION_SERVICE_REF_REWRITES not in annotations
 
 
+class TestComposeVolumes:
+    """ENG-4834: named compose volumes must reach the kext payload."""
+
+    def test_named_volume_becomes_empty_dir_and_volume_mount(
+        self, builder, metadata, connection
+    ):
+        transformed = {
+            "services": {
+                "tool": {
+                    "image": "registry.test/tool:dev",
+                    "ports": ["8000"],
+                    "volumes": ["omniparse-data:/data"],
+                },
+            },
+            "volumes": {"omniparse-data": None},
+        }
+
+        payload = builder.build(metadata, transformed, connection, "tool-dev-abc")
+        tool = payload.services[0].model_dump()
+
+        assert (payload.model_extra or {})["volumes"] == [
+            {"name": "omniparse-data", "emptyDir": {}}
+        ]
+        assert payload.model_dump()["volumes"] == [
+            {"name": "omniparse-data", "emptyDir": {}}
+        ]
+        assert tool["volumeMounts"] == [
+            {"name": "omniparse-data", "mountPath": "/data"}
+        ]
+
+    def test_shared_named_volume_is_declared_once(self, builder, metadata, connection):
+        transformed = {
+            "services": {
+                "api": {
+                    "image": "registry.test/api:dev",
+                    "ports": ["8000"],
+                    "volumes": ["shared-data:/cache"],
+                },
+                "worker": {
+                    "image": "registry.test/worker:dev",
+                    "volumes": ["shared-data:/cache"],
+                },
+            },
+        }
+
+        payload = builder.build(metadata, transformed, connection, "app-dev-abc")
+        services = {svc.name: svc.model_dump() for svc in payload.services}
+
+        assert (payload.model_extra or {})["volumes"] == [
+            {"name": "shared-data", "emptyDir": {}}
+        ]
+        assert services["api"]["volumeMounts"] == [
+            {"name": "shared-data", "mountPath": "/cache"}
+        ]
+        assert services["worker"]["volumeMounts"] == [
+            {"name": "shared-data", "mountPath": "/cache"}
+        ]
+
+    def test_long_form_volume_is_supported_and_read_only(
+        self, builder, metadata, connection
+    ):
+        transformed = {
+            "services": {
+                "backend": {
+                    "image": "registry.test/backend:dev",
+                    "ports": ["8000"],
+                    "volumes": [
+                        {
+                            "type": "volume",
+                            "source": "backend_data",
+                            "target": "/app/persist",
+                            "read_only": True,
+                        }
+                    ],
+                },
+            },
+        }
+
+        payload = builder.build(metadata, transformed, connection, "app-dev-abc")
+        backend = payload.services[0].model_dump()
+
+        assert (payload.model_extra or {})["volumes"] == [
+            {"name": "backend-data", "emptyDir": {}}
+        ]
+        assert backend["volumeMounts"] == [
+            {
+                "name": "backend-data",
+                "mountPath": "/app/persist",
+                "readOnly": True,
+            }
+        ]
+
+    def test_no_volumes_keeps_payload_unchanged(
+        self, builder, metadata, transformed_compose, connection
+    ):
+        payload = builder.build(
+            metadata, transformed_compose, connection, "app-dev-abc"
+        )
+
+        assert "volumes" not in (payload.model_extra or {})
+        assert all(
+            "volumeMounts" not in (svc.model_extra or {}) for svc in payload.services
+        )
+
+    def test_interpolated_host_path_is_not_emitted_as_empty_dir(
+        self, builder, metadata, connection
+    ):
+        """PR-113 review High #1: a shell-interpolated bind source
+        (``${PWD}/src``) must NOT be normalized into a named volume and
+        emitted as an emptyDir over the image's baked files. It is a
+        host path and the validator rejects it; the payload builder must
+        agree and drop it."""
+        transformed = {
+            "services": {
+                "tool": {
+                    "image": "registry.test/tool:dev",
+                    "ports": ["8000"],
+                    "volumes": [
+                        "${PWD}/src:/app/src",
+                        "$HOME/.cache:/cache",
+                    ],
+                },
+            },
+        }
+
+        payload = builder.build(metadata, transformed, connection, "tool-dev-abc")
+        tool = payload.services[0].model_dump()
+
+        assert "volumes" not in (payload.model_extra or {})
+        assert "volumeMounts" not in tool
+
+    def test_user_volume_named_tmp_avoids_operator_collision(
+        self, builder, metadata, connection
+    ):
+        """PR-113 review High #2: the operator injects volumes named
+        ``tmp`` and ``data``. A user compose volume that normalizes to
+        either must be renamed so the reconciled Deployment has no
+        duplicate volume names (K8s rejects duplicates)."""
+        transformed = {
+            "services": {
+                "tool": {
+                    "image": "registry.test/tool:dev",
+                    "ports": ["8000"],
+                    "volumes": ["tmp:/scratch", "data:/store"],
+                },
+            },
+        }
+
+        payload = builder.build(metadata, transformed, connection, "tool-dev-abc")
+        tool = payload.services[0].model_dump()
+
+        emitted = {v["name"] for v in (payload.model_extra or {})["volumes"]}
+        assert emitted.isdisjoint({"tmp", "data"})
+        mount_names = {m["name"] for m in tool["volumeMounts"]}
+        # Mounts must reference the renamed volumes, not the reserved ones.
+        assert mount_names == emitted
+        assert mount_names.isdisjoint({"tmp", "data"})
+
+
 class TestEnvParsing:
     def test_list_format(self, builder):
         result = builder._parse_env(["KEY=value", "BARE_KEY"])
@@ -690,3 +849,179 @@ class TestHealthChecks:
         backend = next(s for s in payload.services if s.name == "backend")
         health_check = backend.model_dump()["healthCheck"]
         assert health_check["httpGet"] == {"path": "/health", "port": 8000}
+
+
+class TestHealthCheckOverride:
+    """ENG-4832: per-service healthCheck override in ``kamiwaza.json``.
+
+    Lets tool/service extensions whose primary doesn't serve ``/sse``
+    (REST-only, MCP-at-/mcp, gRPC, FastMCP feature-flagged off) declare
+    a probe that actually matches what the container exposes, instead
+    of hitting the ``/sse``-on-every-tool default and CrashLoopBackOff.
+    """
+
+    def test_metadata_override_replaces_default_for_tool_primary(
+        self, builder, connection
+    ):
+        """Omniparse-style REST-only tool: probe /v1/healthz, not /sse."""
+        metadata = {
+            "name": "my-tool",
+            "version": "1.0.0",
+            "type": "tool",
+            "services": {
+                "tool": {
+                    "healthCheck": {
+                        "httpGet": {"path": "/v1/healthz", "port": 8000},
+                        "initialDelaySeconds": 10,
+                        "periodSeconds": 10,
+                    },
+                },
+            },
+        }
+        transformed = {
+            "services": {
+                "tool": {
+                    "image": "registry.test/my-tool:1.0.0",
+                    "ports": ["8000"],
+                },
+            },
+        }
+        payload = builder.build(metadata, transformed, connection, "test")
+        tool = payload.services[0]
+        health_check = tool.model_dump()["healthCheck"]
+        assert tool.primary is True
+        assert health_check["httpGet"] == {"path": "/v1/healthz", "port": 8000}
+        assert health_check["initialDelaySeconds"] == 10
+        assert health_check["periodSeconds"] == 10
+
+    def test_metadata_override_wins_over_x_kamiwaza(self, builder, connection):
+        """When both kamiwaza.json and compose declare a probe, metadata wins.
+
+        Locks the precedence: catalog metadata is the single source of truth,
+        compose ``x-kamiwaza`` is the legacy fallback.
+        """
+        metadata = {
+            "name": "my-tool",
+            "version": "1.0.0",
+            "type": "tool",
+            "services": {
+                "tool": {
+                    "healthCheck": {"httpGet": {"path": "/v1/healthz", "port": 8000}},
+                },
+            },
+        }
+        transformed = {
+            "services": {
+                "tool": {
+                    "image": "registry.test/my-tool:1.0.0",
+                    "ports": ["8000"],
+                    "x-kamiwaza": {
+                        "healthCheck": {"httpGet": {"path": "/old", "port": 8000}},
+                    },
+                },
+            },
+        }
+        payload = builder.build(metadata, transformed, connection, "test")
+        tool = payload.services[0]
+        health_check = tool.model_dump()["healthCheck"]
+        assert health_check["httpGet"] == {"path": "/v1/healthz", "port": 8000}
+
+    def test_no_metadata_override_falls_back_to_x_kamiwaza(
+        self, builder, connection
+    ):
+        """Existing ``x-kamiwaza.healthCheck`` path stays intact."""
+        metadata = {"name": "my-tool", "version": "1.0.0", "type": "tool"}
+        transformed = {
+            "services": {
+                "tool": {
+                    "image": "registry.test/my-tool:1.0.0",
+                    "ports": ["8000"],
+                    "x-kamiwaza": {
+                        "healthCheck": {"httpGet": {"path": "/compose", "port": 8000}},
+                    },
+                },
+            },
+        }
+        payload = builder.build(metadata, transformed, connection, "test")
+        tool = payload.services[0]
+        health_check = tool.model_dump()["healthCheck"]
+        assert health_check["httpGet"] == {"path": "/compose", "port": 8000}
+
+    def test_no_overrides_keeps_default_sse_for_tool_primary(
+        self, builder, connection
+    ):
+        """Regression guard: tool extensions with no override still get /sse."""
+        metadata = {"name": "my-tool", "version": "1.0.0", "type": "tool"}
+        transformed = {
+            "services": {
+                "tool": {
+                    "image": "registry.test/my-tool:1.0.0",
+                    "ports": ["8000"],
+                },
+            },
+        }
+        payload = builder.build(metadata, transformed, connection, "test")
+        tool = payload.services[0]
+        health_check = tool.model_dump()["healthCheck"]
+        assert health_check["httpGet"] == {"path": "/sse", "port": 8000}
+
+    def test_metadata_override_per_service_only_affects_named_service(
+        self, builder, connection
+    ):
+        """Override on one service doesn't leak into siblings."""
+        metadata = {
+            "name": "my-app",
+            "version": "1.0.0",
+            "type": "app",
+            "services": {
+                "backend": {
+                    "healthCheck": {"httpGet": {"path": "/v1/ready", "port": 8000}},
+                },
+            },
+        }
+        transformed = {
+            "services": {
+                "frontend": {
+                    "image": "registry.test/my-app-frontend:1.0.0",
+                    "ports": ["3000"],
+                    "environment": ["NEXT_PUBLIC_API_URL=http://backend:8000"],
+                },
+                "backend": {
+                    "image": "registry.test/my-app-backend:1.0.0",
+                    "ports": ["8000"],
+                },
+            },
+        }
+        payload = builder.build(metadata, transformed, connection, "test")
+        backend = next(s for s in payload.services if s.name == "backend")
+        frontend = next(s for s in payload.services if s.name == "frontend")
+        assert backend.model_dump()["healthCheck"]["httpGet"] == {
+            "path": "/v1/ready",
+            "port": 8000,
+        }
+        # Frontend keeps the Node-based default probe — untouched by the
+        # backend-only override.
+        assert frontend.model_dump()["healthCheck"]["exec"]["command"][0] == "node"
+
+    def test_metadata_services_not_a_dict_is_ignored(self, builder, connection):
+        """Malformed metadata.services falls back cleanly to defaults."""
+        metadata = {
+            "name": "my-tool",
+            "version": "1.0.0",
+            "type": "tool",
+            "services": "not-a-dict",
+        }
+        transformed = {
+            "services": {
+                "tool": {
+                    "image": "registry.test/my-tool:1.0.0",
+                    "ports": ["8000"],
+                },
+            },
+        }
+        payload = builder.build(metadata, transformed, connection, "test")
+        tool = payload.services[0]
+        assert tool.model_dump()["healthCheck"]["httpGet"] == {
+            "path": "/sse",
+            "port": 8000,
+        }

@@ -86,6 +86,24 @@ class TestStripBindMounts:
         result = transformer.transform(compose, "test", "v1", "reg")
         assert result["services"]["web"]["volumes"] == ["data:/app/data"]
 
+    def test_strips_home_dir_bind_mount(self, transformer):
+        """ENG-4956: ~ paths are flagged by the validator, so deploy must strip them."""
+        compose = {"services": {"web": {"volumes": ["~/data:/app/data", "named:/app/persist"]}}}
+        result = transformer.transform(compose, "test", "v1", "reg")
+        assert result["services"]["web"]["volumes"] == ["named:/app/persist"]
+
+    def test_strips_windows_drive_bind_mount(self, transformer):
+        """ENG-4956: Windows drive-letter paths are flagged by the validator."""
+        compose = {"services": {"web": {"volumes": [r"C:\host\data:/app/data"]}}}
+        result = transformer.transform(compose, "test", "v1", "reg")
+        assert "volumes" not in result["services"]["web"]
+
+    def test_strips_cwd_bind_mount(self, transformer):
+        """ENG-4956: a bare '.' source is flagged by the validator."""
+        compose = {"services": {"web": {"volumes": [".:/app"]}}}
+        result = transformer.transform(compose, "test", "v1", "reg")
+        assert "volumes" not in result["services"]["web"]
+
 
 class TestBuildContextRemoval:
     def test_removes_build_adds_image(self, transformer):
