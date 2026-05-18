@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import socket
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -20,6 +21,7 @@ from kamiwaza_sdk.schemas.extensions import (
 
 from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
 from kamiwaza_extensions.connections import ConnectionInfo
+from kamiwaza_extensions.volume_utils import looks_like_host_path
 
 # CRD annotation keys — namespace is ``kamiwaza.io/*`` (NOT ``kamiwaza.ai/*``).
 # The platform's annotation persister filters incoming Extension CR annotations
@@ -65,6 +67,104 @@ def _compose_resources_to_k8s(resources: Dict[str, str]) -> Dict[str, str]:
     return out
 
 
+_DNS_LABEL_RE = re.compile(r"[^a-z0-9-]+")
+
+
+def _build_volume_specs(
+    transformed: Dict[str, Any],
+) -> tuple[List[Dict[str, Any]], Dict[str, List[Dict[str, Any]]]]:
+    """Translate named compose volumes to K8s emptyDir volumes and mounts."""
+    volumes: List[Dict[str, Any]] = []
+    mounts_by_service: Dict[str, List[Dict[str, Any]]] = {}
+    source_to_name: Dict[str, str] = {}
+    # Pre-reserve the operator-injected volume names. The kamiwaza-
+    # extension-operator rebuilds each Deployment's volume list as
+    # ``[tmp emptyDir] + (data PVC if persistence) + svc.Volumes``; if a
+    # user's compose volume normalizes to ``tmp`` or ``data``, the
+    # reconciled pod would carry duplicate volume names and the K8s API
+    # would reject the spec. Seeding the set forces such a volume to a
+    # collision-suffixed name (``tmp-2``/``data-2``).
+    used_names: set[str] = {"tmp", "data"}
+
+    for svc_name, svc in (transformed.get("services") or {}).items():
+        if not isinstance(svc, dict):
+            continue
+        mounts: List[Dict[str, Any]] = []
+        for raw_volume in svc.get("volumes", []) or []:
+            parsed = _parse_named_volume_mount(raw_volume)
+            if not parsed:
+                continue
+            source, target, read_only = parsed
+            if source not in source_to_name:
+                name = _unique_k8s_volume_name(source, used_names)
+                source_to_name[source] = name
+                volumes.append({"name": name, "emptyDir": {}})
+
+            mount: Dict[str, Any] = {
+                "name": source_to_name[source],
+                "mountPath": target,
+            }
+            if read_only:
+                mount["readOnly"] = True
+            mounts.append(mount)
+        if mounts:
+            mounts_by_service[svc_name] = mounts
+
+    return volumes, mounts_by_service
+
+
+def _parse_named_volume_mount(raw_volume: Any) -> Optional[tuple[str, str, bool]]:
+    """Return ``(source, target, read_only)`` for named compose volumes."""
+    if isinstance(raw_volume, dict):
+        volume_type = raw_volume.get("type", "volume")
+        source = raw_volume.get("source") or raw_volume.get("src")
+        target = (
+            raw_volume.get("target")
+            or raw_volume.get("destination")
+            or raw_volume.get("dst")
+        )
+        if volume_type != "volume" or not source or not target:
+            return None
+        source_str = str(source)
+        target_str = str(target)
+        if looks_like_host_path(source_str) or not target_str.startswith("/"):
+            return None
+        read_only = bool(raw_volume.get("read_only") or raw_volume.get("readOnly"))
+        return source_str, target_str, read_only
+
+    if not isinstance(raw_volume, str):
+        return None
+
+    parts = raw_volume.split(":")
+    if len(parts) < 2:
+        return None
+    source, target = parts[0], parts[1]
+    if not source or not target or not target.startswith("/"):
+        return None
+    if looks_like_host_path(source):
+        return None
+
+    modes = ",".join(parts[2:]).split(",") if len(parts) > 2 else []
+    read_only = any(mode.strip().lower() == "ro" for mode in modes)
+    return source, target, read_only
+
+
+def _unique_k8s_volume_name(source: str, used_names: set[str]) -> str:
+    base = _DNS_LABEL_RE.sub("-", source.lower()).strip("-")
+    if not base:
+        base = "volume"
+    base = base[:63].strip("-") or "volume"
+    name = base
+    counter = 2
+    while name in used_names:
+        suffix = f"-{counter}"
+        prefix_len = 63 - len(suffix)
+        name = f"{base[:prefix_len].rstrip('-')}{suffix}"
+        counter += 1
+    used_names.add(name)
+    return name
+
+
 class PayloadBuilder:
     """Build a ``CreateExtension`` request from extension metadata and
     a transformed compose dict."""
@@ -92,12 +192,15 @@ class PayloadBuilder:
         # ``tlsRejectUnauthorized`` spec field so the deployed
         # extension's in-cluster callbacks match the developer's intent.
         verify_ssl = connection.effective_verify_ssl()
+        volumes, service_volume_mounts = _build_volume_specs(transformed_compose)
 
         services = self._build_services(
             transformed_compose,
             app_path=app_path,
             verify_ssl=verify_ssl,
             extension_type=ext_type,
+            metadata=metadata,
+            service_volume_mounts=service_volume_mounts,
         )
         origin = connection.url.removesuffix("/api")
         tls_reject = "0" if not verify_ssl else "1"
@@ -124,6 +227,8 @@ class PayloadBuilder:
         sandbox = self._build_sandbox_spec(metadata, transformed_compose)
         if sandbox:
             kwargs["sandbox"] = sandbox
+        if volumes:
+            kwargs["volumes"] = volumes
 
         annotations = self.build_annotations(deployer=deployer, revision=revision)
 
@@ -202,8 +307,11 @@ class PayloadBuilder:
         app_path: str = "",
         verify_ssl: bool = True,
         extension_type: str = "app",
+        metadata: Optional[Dict[str, Any]] = None,
+        service_volume_mounts: Optional[Dict[str, List[Dict[str, Any]]]] = None,
     ) -> List[ExtensionServiceSpec]:
         services_dict = transformed.get("services") or {}
+        service_volume_mounts = service_volume_mounts or {}
         specs: List[ExtensionServiceSpec] = []
 
         # Determine primary service: prefer "frontend", fall back to first with ports
@@ -248,7 +356,20 @@ class PayloadBuilder:
                 env.append({"name": "KAMIWAZA_VERIFY_SSL", "value": "false"})
                 env.append({"name": "KAMIWAZA_TLS_REJECT_UNAUTHORIZED", "value": "0"})
 
-            health_check = _service_extension_field(svc, "healthCheck")
+            # Health-check precedence (ENG-4832):
+            # 1. ``kamiwaza.json`` → ``services.<svc_name>.healthCheck`` —
+            #    the user-facing escape hatch for any tool/service extension
+            #    whose primary doesn't serve ``/sse`` (FastMCP feature-flagged
+            #    off, REST-only, gRPC-only). Lives in the metadata file
+            #    rather than compose so kamiwaza.json stays the single
+            #    source of catalog truth.
+            # 2. Compose ``x-kamiwaza.healthCheck`` — pre-existing override
+            #    path for compose-authored extensions.
+            # 3. ``_default_health_check`` heuristics — back-compat default
+            #    when neither override is set.
+            health_check = _metadata_service_field(metadata, svc_name, "healthCheck")
+            if not health_check:
+                health_check = _service_extension_field(svc, "healthCheck")
             if not health_check:
                 health_check = self._default_health_check(
                     svc_name,
@@ -277,6 +398,9 @@ class PayloadBuilder:
             )
             if container_security_context is not None:
                 spec_kwargs["containerSecurityContext"] = container_security_context
+            volume_mounts = service_volume_mounts.get(svc_name)
+            if volume_mounts:
+                spec_kwargs["volumeMounts"] = volume_mounts
 
             specs.append(ExtensionServiceSpec(**spec_kwargs))
 
@@ -387,13 +511,17 @@ class PayloadBuilder:
         # the FastMCP SSE endpoint — even though the response body streams
         # past the K8s 5s probe timeout. The platform's CR API currently
         # rejects ``tcpSocket`` and ``exec`` healthCheck shapes with an
-        # opaque 500, leaving httpGet as the only path. /sse is preferable
-        # to /health (404 under FastMCP) — the headers come back 200 even
-        # if the probe times out reading the body, which keeps the pod
-        # restart-loop from firing. Net result: pod runs and serves
-        # requests, but K8s may take longer to mark it Ready. The proper
-        # fix is to teach the platform API to accept tcpSocket/exec
-        # probes (tracked separately).
+        # opaque 500 (ENG-4833), leaving httpGet as the only path. /sse is
+        # preferable to /health (404 under FastMCP) — the headers come back
+        # 200 even if the probe times out reading the body, which keeps
+        # the pod restart-loop from firing. Net result: pod runs and serves
+        # requests, but K8s may take longer to mark it Ready.
+        #
+        # Escape hatch (ENG-4832): tool extensions that DON'T serve /sse
+        # (REST-only, MCP at /mcp via streamable-http, gRPC, feature-flagged
+        # MCP off) should declare an explicit probe in ``kamiwaza.json``
+        # under ``services.<svc_name>.healthCheck``. That override runs
+        # ahead of the heuristics below — see ``_build_services``.
         if extension_type == "service" and is_primary:
             path = "/"
         elif extension_type == "tool" and is_primary:
@@ -547,6 +675,32 @@ def _service_extension_field(svc: Dict[str, Any], key: str) -> Optional[Any]:
     if isinstance(x_kamiwaza, dict) and key in x_kamiwaza:
         return x_kamiwaza[key]
     return None
+
+
+def _metadata_service_field(
+    metadata: Optional[Dict[str, Any]],
+    svc_name: str,
+    key: str,
+) -> Optional[Any]:
+    """Read a per-service override from ``kamiwaza.json`` (ENG-4832).
+
+    Shape::
+
+        {
+          "services": {
+            "<svc_name>": { "<key>": <value> }
+          }
+        }
+    """
+    if not isinstance(metadata, dict):
+        return None
+    services = metadata.get("services")
+    if not isinstance(services, dict):
+        return None
+    svc_block = services.get(svc_name)
+    if not isinstance(svc_block, dict):
+        return None
+    return svc_block.get(key)
 
 
 def _service_env_map(svc: Dict[str, Any]) -> Dict[str, str]:

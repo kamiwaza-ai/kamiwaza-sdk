@@ -6,6 +6,11 @@ import copy
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
+# Reuse the validator's bind-mount detection so the "stripped at deploy"
+# info message ComposeValidator emits stays in sync with what the
+# transformer actually strips (ENG-4956).
+from kamiwaza_extensions.validators.compose import is_bind_mount
+
 
 def _replace_image_tag(image_ref: str, new_tag: str) -> str:
     """Return *image_ref* with its tag (and any digest) replaced by *new_tag*.
@@ -541,22 +546,23 @@ def _strip_host_ports(ports: List[Any]) -> List[str]:
 
 
 def _strip_bind_mounts(volumes: List[Any]) -> List[str]:
-    """Keep named volumes, remove bind mounts (``./``, ``../``, absolute paths)."""
-    kept = []
+    """Keep named volumes, remove bind mounts.
+
+    String bind-mount detection is delegated to the validator's
+    ``is_bind_mount`` so every host-path form ``ComposeValidator``
+    flags as "stripped at deploy" (absolute/relative paths, ``~``, and
+    Windows drive letters) is actually stripped here. See ENG-4956.
+    """
+    kept: List[Any] = []
     for vol in volumes:
         if isinstance(vol, dict):
-            # Long-form volume — check type
+            # Long-form volume — keep named volumes; bind/tmpfs are stripped.
             if vol.get("type") == "volume":
                 kept.append(vol)
-            # bind / tmpfs types are stripped
             continue
         s = str(vol)
-        if s.startswith("/") or s.startswith("./") or s.startswith("../"):
+        if is_bind_mount(s):
             continue
-        if ":" in s:
-            host_part = s.split(":", 1)[0]
-            if host_part.startswith("/") or host_part.startswith("./") or host_part.startswith("../"):
-                continue
         kept.append(s)
     return kept
 
