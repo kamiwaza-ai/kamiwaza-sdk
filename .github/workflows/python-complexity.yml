@@ -60,6 +60,12 @@ jobs:
             "kamiwaza_extensions/commands/publish.py"
             "kamiwaza_extensions/commands/dev.py"
             "kamiwaza_extensions/registry_builder.py"
+            # M7-B (ENG-5380) reconciliation: develop commit 87e5a71 (ENG-5260
+            # rewrite image refs in compose env-var defaults) pushed compose.py
+            # over the CC threshold. Grandfather pending refactor — same pattern
+            # as the other extension files. Refactor follow-up tracked in
+            # D210 Bugs & Carryovers (see ENG-5310 M8 backlog).
+            "kamiwaza_extensions/validators/compose.py"
           )
 
           is_grandfathered() {

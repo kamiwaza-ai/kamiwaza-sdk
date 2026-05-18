@@ -30,8 +30,10 @@ class TestCreateThenValidateFlow:
         assert "Created" in result.output
 
         result = runner.invoke(app, ["validate", str(d)])
-        assert result.exit_code == 0
+        assert result.exit_code == 0, result.output
         assert "passed" in result.output.lower()
+        assert "!" not in result.output
+        assert "warning" not in result.output.lower()
 
     def test_create_tool_then_validate(self, tmp_path, monkeypatch):
         d = _empty_dir(tmp_path)
@@ -64,6 +66,17 @@ class TestCreateThenValidateFlow:
         data = json.loads(result.output)
         assert data["passed"] is True
         assert data["errors"] == []
+        assert data["warnings"] == []
+        # Assert by category rather than a brittle total count, so an
+        # unrelated scaffold tweak doesn't silently break this test.
+        bind_infos = [i for i in data["info"] if "bind mount" in i]
+        limit_infos = [i for i in data["info"] if "no resource limits defined" in i]
+        assert len(bind_infos) == 2
+        assert len(limit_infos) == 2
+        # Every info entry is one of the two expected categories.
+        assert len(bind_infos) + len(limit_infos) == len(data["info"])
+        assert any("bind mount './frontend/src:/app/src'" in i for i in bind_infos)
+        assert any("bind mount './backend/app:/app/app'" in i for i in bind_infos)
 
 
 @pytest.mark.unit

@@ -266,7 +266,7 @@ def _validate_plan_in_staging(
     """Materialize the plan in a temp copy and run the validators against it."""
     from kamiwaza_extensions.validators.compose import (
         ComposeValidator,
-        is_missing_resource_limits_warning,
+        is_missing_resource_limits_finding,
     )
     from kamiwaza_extensions.validators.metadata import MetadataValidator
     from kamiwaza_extensions.validators.platform_runtime import PlatformRuntimeValidator
@@ -301,6 +301,7 @@ def _validate_plan_in_staging(
 
         errors: List[str] = []
         warnings: List[str] = []
+        info: List[str] = []
 
         metadata_path = staged_root / "kamiwaza.json"
         if not metadata_path.exists():
@@ -309,6 +310,7 @@ def _validate_plan_in_staging(
             meta_result = MetadataValidator().validate(metadata_path)
             errors.extend(meta_result.errors)
             warnings.extend(meta_result.warnings)
+            info.extend(meta_result.info)
 
         compose_path = _find_compose_file(staged_root)
         if compose_path is None:
@@ -317,18 +319,30 @@ def _validate_plan_in_staging(
             compose_result = ComposeValidator().validate(compose_path, staged_root)
             errors.extend(compose_result.errors)
             warnings.extend(compose_result.warnings)
-            for warning in compose_result.warnings:
-                if is_missing_resource_limits_warning(warning):
-                    errors.append(f"Blocking conversion warning: {warning}")
+            info.extend(compose_result.info)
+            # Conversion is intentionally stricter than `validate`/`publish`:
+            # those surface missing resource limits as benign `info` because
+            # deploy applies defaults, but a converted app should ship explicit
+            # limits, so we promote the finding to a blocking conversion error.
+            # Scan both channels since the finding may land in either.
+            for message in compose_result.warnings + compose_result.info:
+                if is_missing_resource_limits_finding(message):
+                    errors.append(f"Blocking conversion finding: {message}")
             if compose_result.passed:
                 runtime_result = PlatformRuntimeValidator().validate(compose_path, staged_root)
                 errors.extend(runtime_result.errors)
                 warnings.extend(runtime_result.warnings)
+                info.extend(runtime_result.info)
 
         if not (staged_root / "CONVERT_NOTES.md").exists():
             errors.append("CONVERT_NOTES.md was not generated.")
 
-        return ValidationSummary(passed=len(errors) == 0, errors=errors, warnings=warnings)
+        return ValidationSummary(
+            passed=len(errors) == 0,
+            errors=errors,
+            warnings=warnings,
+            info=info,
+        )
 
 
 def _strip_outward_symlinks(staged_root: Path) -> None:

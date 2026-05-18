@@ -270,6 +270,7 @@ def _render_validation_feedback(validation: Optional[ValidationSummary]) -> str:
         return ""
     error_lines = "\n".join(f"- {err}" for err in validation.errors) or "- None"
     warning_lines = "\n".join(f"- {warn}" for warn in validation.warnings) or "- None"
+    info_lines = "\n".join(f"- {info}" for info in validation.info) or "- None"
     return f"""
 ## Validation Feedback From Previous Attempt
 Errors:
@@ -277,6 +278,9 @@ Errors:
 
 Warnings:
 {warning_lines}
+
+Info:
+{info_lines}
 """
 
 
