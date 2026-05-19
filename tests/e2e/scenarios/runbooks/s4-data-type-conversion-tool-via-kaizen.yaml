@@ -1,0 +1,26 @@
+id: "S4"
+name: "Data-type conversion tool accessible via Kaizen"
+sign_off_actor: "Preston McGowan"
+uacs:
+  - UAC-12
+  - UAC-16
+prd_ref: "PRD §EDX-E2E-1 / Appendix A Scenario 4"
+
+steps:
+  - name: scaffold_tool
+    description: "kz-ext create --type tool produces a tool scaffold with MCP server registration + tool manifest."
+  - name: implement_minimal_conversion
+    description: "Implement a trivial data-type conversion (e.g. CSV → JSON) inside the tool body. No platform plumbing required."
+  - name: deploy_and_register_with_kaizen
+    description: "kz-ext dev deploys the tool; the MCP registration surfaces it inside Kaizen for the deploying user's workrooms."
+  - name: invoke_tool_from_kaizen
+    description: "From a Kaizen session, call the tool with a sample payload; the response is the converted artifact."
+  - name: assert_tool_identity_attribution
+    description: "Verify the tool sees the invoking Kaizen user's identity (X-User-Id) — not the developer's nor the platform service account."
+  - name: capture_command_transcript
+    description: "Capture transcript + Kaizen tool-call log + tool response for the UAT packet."
+
+expected_outcomes:
+  - "Tool template (UAC-12) produces a working MCP-registered tool out of the box."
+  - "Tool invocation from Kaizen flows the end-user identity through to the tool body."
+  - "No platform-side workaround is required to make the tool discoverable from Kaizen."

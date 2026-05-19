@@ -57,6 +57,7 @@ class KamiwazaIntegrationSpec(BaseModel):
     public_api_url: Optional[str] = None
     origin: Optional[str] = None
     use_auth: str = Field(default="true")
+    tls_reject_unauthorized: Optional[str] = None
 
 
 class NetworkingSpec(BaseModel):
@@ -84,8 +85,8 @@ class CreateExtension(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     name: str = Field(..., description="Extension name (K8s DNS label)")
-    type: Literal["app", "tool"] = Field(
-        ..., description="Extension type: 'app' or 'tool'"
+    type: Literal["app", "tool", "service"] = Field(
+        ..., description="Extension type: 'app', 'tool', or 'service'"
     )
     version: str = Field(..., description="Extension version (semver)")
     services: List[ExtensionServiceSpec] = Field(..., min_length=1)
@@ -128,3 +129,93 @@ class Extension(BaseModel):
     endpoints: Optional[ExtensionEndpoints] = None
     owner_user_id: Optional[str] = None
     created_at: Optional[datetime] = None
+
+
+# ---------------------------------------------------------------------------
+# Patch / update models
+# ---------------------------------------------------------------------------
+
+
+class ImagePatch(BaseModel):
+    """Image update — typically only tag changes during dev."""
+
+    model_config = ConfigDict(extra="allow")
+
+    tag: str
+    registry: Optional[str] = None
+    repository: Optional[str] = None
+
+
+class PatchServiceSpec(BaseModel):
+    """Partial service update — only name is required (for matching)."""
+
+    model_config = ConfigDict(extra="allow")
+
+    name: str
+    image: Optional[ImagePatch] = None
+    env: Optional[List[Dict[str, Any]]] = None
+    replicas: Optional[int] = Field(None, ge=0)
+
+
+class PatchExtension(BaseModel):
+    """Partial extension update. Only service-level fields supported in v1."""
+
+    model_config = ConfigDict(extra="allow")
+
+    services: List[PatchServiceSpec] = Field(..., min_length=1)
+
+
+# ---------------------------------------------------------------------------
+# Detailed status models
+# ---------------------------------------------------------------------------
+
+
+class PodInfo(BaseModel):
+    """Individual pod information for logs/shell targeting."""
+
+    model_config = ConfigDict(extra="allow")
+
+    name: str
+    phase: str
+    ready: bool
+    restart_count: int = 0
+    started_at: Optional[datetime] = None
+
+
+class ServiceStatusDetail(BaseModel):
+    """Detailed per-service status with pod-level info."""
+
+    model_config = ConfigDict(extra="allow")
+
+    name: str
+    image_tag: str
+    ready_replicas: int = 0
+    replicas: int = 0
+    restart_count: int = 0
+    pods: List[PodInfo] = []
+
+
+class ExtensionEvent(BaseModel):
+    """Recent K8s event relevant to the extension."""
+
+    model_config = ConfigDict(extra="allow")
+
+    type: str
+    reason: str
+    message: str
+    first_seen: Optional[datetime] = None
+    last_seen: Optional[datetime] = None
+    count: int = 1
+
+
+class ExtensionStatus(BaseModel):
+    """Rich deployment status response."""
+
+    model_config = ConfigDict(extra="allow")
+
+    name: str
+    phase: str
+    url: Optional[str] = None
+    services: List[ServiceStatusDetail] = []
+    rolling_update: bool = False
+    events: List[ExtensionEvent] = []

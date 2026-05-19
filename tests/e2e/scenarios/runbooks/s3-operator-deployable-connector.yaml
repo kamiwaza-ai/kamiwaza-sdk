@@ -1,0 +1,31 @@
+id: "S3"
+name: "Operator-deployable connector (O365-style)"
+sign_off_actor: "Preston McGowan"
+uacs:
+  - UAC-9
+  - UAC-9a
+  - UAC-9b
+  - UAC-12
+  - UAC-16
+prd_ref: "PRD §EDX-E2E-1 / Appendix A Scenario 3"
+
+steps:
+  - name: scaffold_service
+    description: "kz-ext create --type service generates a connector scaffold (no frontend); template manifest includes service-specific files."
+  - name: validate_connector_contract
+    description: "kz-ext validate passes; the Extension CR declares the service correctly (no app-type leakage)."
+  - name: deploy_with_operator_credentials
+    description: "Operator (not end-user) deploys the connector via kz-ext dev; OperatorImagePin keeps the operator on a known-published tag."
+  - name: invoke_with_authenticated_user_identity
+    description: "An authenticated end-user invokes the connector through the gateway; identity headers reach the connector with the user's identity (not the operator's)."
+  - name: assert_traffic_routing_correct
+    description: "UAC-10: routing places the request through Traefik with the gateway-attested envelope; no direct pod-to-pod bypass."
+  - name: assert_unauthenticated_request_rejected
+    description: "An unauthenticated request to the connector is rejected at the gateway, not by the connector code (negative path)."
+  - name: capture_command_transcript
+    description: "Capture transcript + CR snapshot + Traefik routing config for the UAT packet."
+
+expected_outcomes:
+  - "Operator-deployable connector works for end-users without the operator pre-baking user identities."
+  - "Routing invariant (gateway-attested envelope; no bypass) holds end-to-end."
+  - "Auth failures are legible (UAC-9d exception classes) and never leak raw 401s to the developer."

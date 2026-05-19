@@ -1,0 +1,6 @@
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0
+httpx>=0.25.0
+openai>=1.0.0
+pyjwt>=2.0.0
+kamiwaza-extensions-lib{{python_runtime_lib_version}}

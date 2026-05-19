@@ -10,6 +10,11 @@ from kamiwaza_sdk.schemas.extensions import (
     CreateExtension,
     Extension,
     ExtensionServiceSpec,
+    ExtensionStatus,
+    ImagePatch,
+    PatchExtension,
+    PatchServiceSpec,
+    ServiceStatusDetail,
 )
 from kamiwaza_sdk.services.extensions import ExtensionService
 
@@ -41,6 +46,9 @@ class DummyClient:
 
     def delete(self, path: str, **kwargs):
         return self._dispatch("DELETE", path, **kwargs)
+
+    def patch(self, path: str, **kwargs):
+        return self._dispatch("PATCH", path, **kwargs)
 
 
 # -- list --
@@ -198,3 +206,126 @@ def test_create_extension_rejects_invalid_type():
                 ExtensionServiceSpec(name="svc", image="img:latest", primary=True),
             ],
         )
+
+
+# -- patch --
+
+
+def test_patch_extension():
+    responses = {
+        ("PATCH", "/extensions/my-ext"): {
+            "name": "my-ext",
+            "type": "app",
+            "version": "1.0.0",
+            "phase": "Running",
+        }
+    }
+    client = DummyClient(responses)
+    service = ExtensionService(client)
+
+    patch = PatchExtension(
+        services=[
+            PatchServiceSpec(name="backend", image=ImagePatch(tag="abc123")),
+        ]
+    )
+    ext = service.patch_extension("my-ext", patch)
+
+    assert ext.name == "my-ext"
+    method, path, kwargs = client.calls[0]
+    assert method == "PATCH"
+    assert path == "/extensions/my-ext"
+    # Verify exclude_none serialization — image should be present, env/replicas should not
+    payload = kwargs["json"]
+    assert len(payload["services"]) == 1
+    assert payload["services"][0]["name"] == "backend"
+    assert payload["services"][0]["image"]["tag"] == "abc123"
+    assert "env" not in payload["services"][0]
+    assert "replicas" not in payload["services"][0]
+
+
+def test_patch_extension_not_found():
+    error = APIError("Not found", status_code=404)
+    responses = {("PATCH", "/extensions/missing"): error}
+    service = ExtensionService(DummyClient(responses))
+
+    with pytest.raises(NotFoundError, match="missing"):
+        service.patch_extension(
+            "missing",
+            PatchExtension(services=[PatchServiceSpec(name="svc", image=ImagePatch(tag="v1"))]),
+        )
+
+
+def test_patch_extension_reraises_non_404():
+    error = APIError("Server error", status_code=500)
+    responses = {("PATCH", "/extensions/ext"): error}
+    service = ExtensionService(DummyClient(responses))
+
+    with pytest.raises(APIError, match="Server error"):
+        service.patch_extension(
+            "ext",
+            PatchExtension(services=[PatchServiceSpec(name="svc", image=ImagePatch(tag="v1"))]),
+        )
+
+
+# -- get_extension_status --
+
+
+def test_get_extension_status():
+    responses = {
+        ("GET", "/extensions/my-ext/status"): {
+            "name": "my-ext",
+            "phase": "Running",
+            "url": "https://cluster.test/app",
+            "services": [
+                {
+                    "name": "backend",
+                    "image_tag": "abc123",
+                    "ready_replicas": 1,
+                    "replicas": 1,
+                    "pods": [
+                        {"name": "backend-pod-1", "phase": "Running", "ready": True},
+                    ],
+                },
+            ],
+            "events": [
+                {"type": "Normal", "reason": "Scheduled", "message": "Pod scheduled"},
+            ],
+        }
+    }
+    service = ExtensionService(DummyClient(responses))
+
+    status = service.get_extension_status("my-ext")
+
+    assert isinstance(status, ExtensionStatus)
+    assert status.name == "my-ext"
+    assert status.phase == "Running"
+    assert status.url == "https://cluster.test/app"
+    assert len(status.services) == 1
+    assert status.services[0].name == "backend"
+    assert status.services[0].ready_replicas == 1
+    assert len(status.services[0].pods) == 1
+    assert status.services[0].pods[0].name == "backend-pod-1"
+    assert len(status.events) == 1
+    assert status.events[0].reason == "Scheduled"
+
+
+def test_get_extension_status_not_found():
+    error = APIError("Not found", status_code=404)
+    responses = {("GET", "/extensions/missing/status"): error}
+    service = ExtensionService(DummyClient(responses))
+
+    with pytest.raises(NotFoundError, match="missing"):
+        service.get_extension_status("missing")
+
+
+# -- schema validation for new models --
+
+
+def test_patch_extension_requires_services():
+    with pytest.raises(ValidationError):
+        PatchExtension(services=[])
+
+
+def test_patch_service_spec_requires_name():
+    with pytest.raises(ValidationError):
+        PatchServiceSpec(image=ImagePatch(tag="v1"))

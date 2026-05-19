@@ -1,0 +1,203 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-kw-bg text-kw-text-primary font-mono;
+  }
+
+  /* CRT scanline overlay */
+  body::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 9999;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0, 0, 0, 0.06) 2px,
+      rgba(0, 0, 0, 0.06) 4px
+    );
+  }
+
+  /* CRT vignette */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 9998;
+    background: radial-gradient(
+      ellipse at center,
+      transparent 60%,
+      rgba(0, 0, 0, 0.35) 100%
+    );
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-heading;
+  }
+
+  pre {
+    @apply font-mono;
+  }
+
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-kw-bg;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-kw-elevated rounded;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #555;
+  }
+}
+
+@layer components {
+  .card {
+    @apply bg-kw-surface border border-kw-elevated rounded-lg p-4
+           transition-all duration-200 hover:border-kw-primary/30
+           hover:shadow-glow-teal;
+  }
+
+  .card-title {
+    @apply font-heading text-sm font-semibold uppercase tracking-widest
+           text-kw-primary mb-3 flex items-center gap-2;
+  }
+
+  .card-title::before {
+    content: ">";
+    @apply text-kw-primary/50 font-mono;
+  }
+
+  .json-pre {
+    @apply bg-kw-bg rounded border border-kw-elevated p-3
+           text-xs leading-relaxed text-kw-text-secondary
+           overflow-x-auto max-h-80 font-mono whitespace-pre-wrap break-words;
+  }
+
+  .btn {
+    @apply px-4 py-2 rounded font-heading text-xs uppercase
+           tracking-wider font-semibold transition-all duration-200
+           border cursor-pointer;
+  }
+
+  .btn-primary {
+    @apply btn border-kw-primary text-kw-primary bg-kw-primary/10
+           hover:bg-kw-primary/20 hover:shadow-glow-teal;
+  }
+
+  .btn-secondary {
+    @apply btn border-kw-secondary text-kw-secondary bg-kw-secondary/10
+           hover:bg-kw-secondary/20 hover:shadow-glow-blue;
+  }
+
+  .btn-danger {
+    @apply btn border-kw-error text-kw-error bg-kw-error/10
+           hover:bg-kw-error/20 hover:shadow-glow-error;
+  }
+
+  .status-dot {
+    @apply inline-block w-2 h-2 rounded-full flex-shrink-0;
+  }
+
+  .status-pill {
+    @apply flex items-center gap-2 bg-kw-surface rounded px-3 py-3 border
+           border-kw-elevated text-xs font-mono min-w-0;
+  }
+
+  .terminal-header {
+    @apply text-kw-primary font-heading text-2xl font-bold tracking-tight;
+  }
+
+  .terminal-header::before {
+    content: "$ ";
+    @apply text-kw-primary/40 font-mono;
+  }
+
+  .inline-code {
+    @apply text-kw-info bg-kw-elevated px-1.5 py-0.5 rounded text-xs font-mono;
+  }
+
+  .chat-shell {
+    @apply card flex flex-col gap-5 min-h-[70vh];
+  }
+
+  .chat-toolbar {
+    @apply flex flex-col gap-4 border-b border-kw-elevated pb-5 lg:flex-row
+           lg:items-end;
+  }
+
+  .chat-select {
+    @apply w-full rounded-lg border border-kw-elevated bg-kw-bg px-3 py-3
+           text-sm text-kw-text-primary outline-none transition-all duration-200
+           focus:border-kw-primary focus:shadow-glow-teal disabled:cursor-not-allowed
+           disabled:opacity-60;
+  }
+
+  .chat-transcript {
+    @apply flex-1 overflow-y-auto rounded-xl border border-kw-elevated bg-kw-bg/80
+           p-4 min-h-[24rem] max-h-[32rem];
+  }
+
+  .chat-empty-state {
+    @apply flex h-full flex-col justify-center rounded-xl border border-dashed
+           border-kw-elevated px-6 py-10 text-center;
+  }
+
+  .chat-message {
+    @apply max-w-3xl rounded-2xl border px-4 py-3 shadow-sm;
+  }
+
+  .chat-message-user {
+    @apply ml-auto border-kw-primary/40 bg-kw-primary/10;
+  }
+
+  .chat-message-assistant {
+    @apply mr-auto border-kw-secondary/30 bg-kw-surface;
+  }
+
+  .chat-message-meta {
+    @apply mb-2 font-heading text-[11px] uppercase tracking-[0.24em]
+           text-kw-text-secondary;
+  }
+
+  .chat-message-body {
+    @apply whitespace-pre-wrap text-sm leading-7 text-kw-text-primary;
+  }
+
+  .chat-alert {
+    @apply rounded-lg border border-kw-elevated bg-kw-bg px-3 py-3 text-sm
+           text-kw-text-secondary;
+  }
+
+  .chat-alert-error {
+    @apply border-kw-error/50 bg-kw-error/10 text-kw-text-primary;
+  }
+
+  .chat-composer {
+    @apply flex flex-col gap-3 rounded-xl border border-kw-elevated bg-kw-surface
+           p-4;
+  }
+
+  .chat-textarea {
+    @apply min-h-[7rem] w-full resize-y rounded-lg border border-kw-elevated
+           bg-kw-bg px-3 py-3 text-sm leading-7 text-kw-text-primary outline-none
+           transition-all duration-200 focus:border-kw-primary focus:shadow-glow-teal
+           disabled:cursor-not-allowed disabled:opacity-60;
+  }
+
+  .btn:disabled,
+  .btn-primary:disabled,
+  .btn-secondary:disabled,
+  .btn-danger:disabled {
+    @apply cursor-not-allowed opacity-50 shadow-none;
+  }
+}

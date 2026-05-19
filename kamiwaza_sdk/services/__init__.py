@@ -13,6 +13,8 @@ from .retrieval import RetrievalService
 from .apps import AppService
 from .tools import ToolService
 from .context import ContextService
+from .skills import SkillsService
+from .enclaves import EnclavesService
 from .workrooms import WorkroomService
 
 __all__ = [
@@ -24,12 +26,14 @@ __all__ = [
     "ClusterService",
     "ContextService",
     "EmbeddingService",
+    "EnclavesService",
     "IngestionService",
     "LabService",
     "ModelService",
     "PromptsService",
     "RetrievalService",
     "ServingService",
+    "SkillsService",
     "ToolService",
     "WorkroomService",
 ]

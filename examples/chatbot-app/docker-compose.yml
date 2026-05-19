@@ -1,0 +1,48 @@
+services:
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    # Host port auto-assigned by Docker — `3000:3000` collided with the
+    # kind-cluster control plane on developer laptops running Kamiwaza
+    # locally. `kz-ext dev local` still discovers the assigned host port
+    # via `docker compose port`. (ENG-3889 P2 / §4.8)
+    ports:
+      - "3000"
+    environment:
+      - BACKEND_URL=http://backend:8000
+      # Local-dev auth bridge env vars (ENG-4318). Empty in production
+      # and standalone `kz-ext dev local`; populated by the runner under
+      # `kz-ext dev local --auth` so the createLocalDevAuthMiddleware()
+      # in `frontend/src/middleware.ts` can synthesize the platform
+      # forwarded-auth envelope from the developer's bearer.
+      - KZ_EXT_DEV_LOCAL_AUTH=${KZ_EXT_DEV_LOCAL_AUTH:-}
+      - KAMIWAZA_BEARER_TOKEN=${KAMIWAZA_BEARER_TOKEN:-}
+      - KAMIWAZA_DEV_WORKROOM_ID=${KAMIWAZA_DEV_WORKROOM_ID:-}
+    volumes:
+      - ./frontend/src:/app/src
+    depends_on:
+      - backend
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000"
+    environment:
+      - KAMIWAZA_API_URL=${KAMIWAZA_API_URL:-}
+      - KAMIWAZA_PUBLIC_API_URL=${KAMIWAZA_PUBLIC_API_URL:-}
+      - KAMIWAZA_ENDPOINT=${KAMIWAZA_ENDPOINT:-}
+      - KAMIWAZA_USE_AUTH=${KAMIWAZA_USE_AUTH:-false}
+      - KAMIWAZA_APP_NAME=${KAMIWAZA_APP_NAME:-chatbot-app}
+      - KAMIWAZA_APP_URL=${KAMIWAZA_APP_URL:-http://localhost:3000}
+      - KAMIWAZA_API_KEY=${KAMIWAZA_API_KEY:-}
+      - KAMIWAZA_VERIFY_SSL=${KAMIWAZA_VERIFY_SSL:-}
+      # Local-dev auth bridge (ENG-4318) — same passthrough as frontend
+      # so the FastAPI side sees a consistent env when `--auth` is used.
+      - KZ_EXT_DEV_LOCAL_AUTH=${KZ_EXT_DEV_LOCAL_AUTH:-}
+      - KAMIWAZA_BEARER_TOKEN=${KAMIWAZA_BEARER_TOKEN:-}
+      - KAMIWAZA_DEV_WORKROOM_ID=${KAMIWAZA_DEV_WORKROOM_ID:-}
+    volumes:
+      - ./backend/app:/app/app

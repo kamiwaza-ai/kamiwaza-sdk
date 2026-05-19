@@ -1,0 +1,18 @@
+services:
+  tool:
+    build: .
+    # No fixed host port — the platform allocates one (non-sdk-flow.md §6).
+    # Local dev maps with `docker compose up -d` will get a random host
+    # port; resolve via `docker compose port tool 8000`.
+    ports:
+      - "8000"
+    environment:
+      KAMIWAZA_USE_AUTH: ${KAMIWAZA_USE_AUTH:-false}
+      # KAMIWAZA_API_URL / KAMIWAZA_EXTENSION_NAME / KAMIWAZA_EXTENSION_VERSION
+      # are forwarded for completeness — main.go does not read them today.
+      # When the reference grows a model-access example (flow doc §4), it
+      # will read KAMIWAZA_API_URL here.
+      KAMIWAZA_API_URL: ${KAMIWAZA_API_URL:-}
+      KAMIWAZA_EXTENSION_NAME: ${KAMIWAZA_EXTENSION_NAME:-tool-go-reference}
+      KAMIWAZA_EXTENSION_VERSION: ${KAMIWAZA_EXTENSION_VERSION:-0.1.0}
+      LOG_LEVEL: ${LOG_LEVEL:-info}

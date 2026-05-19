@@ -1,0 +1,32 @@
+id: "S1"
+name: "User-facing app with forced login"
+sign_off_actor: "Preston McGowan"
+uacs:
+  - UAC-9
+  - UAC-9a
+  - UAC-9b
+  - UAC-12
+  - UAC-16
+prd_ref: "PRD §EDX-E2E-1 / Appendix A Scenario 1"
+
+steps:
+  - name: scaffold_app
+    description: "kz-ext create --type app generates an `app` scaffold with USE_AUTH=true and the forced-login middleware wired into frontend/src/middleware.ts."
+  - name: dev_local_with_auth_bridge
+    description: "kz-ext dev local --auth boots backend+frontend; the local-dev auth middleware bridges browser → kamiwaza identity (cookies + ForwardAuth-equivalent headers)."
+  - name: assert_unauthenticated_redirects_to_login
+    description: "Hit the frontend root unauthenticated; assert the response is a redirect to the platform login URL (not a 200 with empty user)."
+  - name: deploy_to_cluster
+    description: "kz-ext dev pushes the image and applies the Extension CR; cluster_extension_readiness probe is green; pods reach Ready."
+  - name: invoke_through_traefik_with_user_session
+    description: "Browse to the cluster ingress, authenticate as a non-admin user, exercise a protected route; identity headers (X-User-Id, X-Workroom-Id, etc.) reach the backend per IdentityExtractor."
+  - name: assert_no_internal_url_leak
+    description: "Confirm /api/info (unauthenticated) does not leak internal cluster URLs (regression guard for ENG-3920)."
+  - name: capture_command_transcript
+    description: "Capture the full kz-ext command transcript + cluster CR snapshot for the D210 UAT packet."
+
+expected_outcomes:
+  - "End-to-end forced-login flow works against staging without manual platform plumbing."
+  - "Backend receives ForwardAuth-equivalent identity headers on every authenticated request."
+  - "Failure modes (missing envelope, expired session) surface as legible runtime-lib exceptions, not raw 401s."
+  - "Sign-off artifact captures Preston's GitHub login + timestamp + pass/fail."

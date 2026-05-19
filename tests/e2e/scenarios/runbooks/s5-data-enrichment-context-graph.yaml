@@ -1,0 +1,32 @@
+id: "S5"
+name: "Data enrichment constrained to a file's context graph"
+sign_off_actor: "SDK team"
+uacs:
+  - UAC-9c
+  - UAC-9d
+  - UAC-16
+prd_ref: "PRD §EDX-E2E-1 / Appendix A Scenario 5"
+notes: |
+  Boundary-enforcement scenario. Overlaps with the UAC-9d failure-path
+  track. SDK-team-automated; failure modes here are the canonical legible
+  exceptions a developer sees when their extension reaches outside its
+  declared envelope.
+
+steps:
+  - name: scaffold_enrichment_app
+    description: "kz-ext create --type app for an enrichment workflow; declare the data-boundary (workroom + file context graph) in the extension config."
+  - name: deploy_to_cluster
+    description: "kz-ext dev deploys; cluster_extension_readiness probe green."
+  - name: invoke_with_in_boundary_file
+    description: "Invoke the enrichment for a file inside the declared workroom + context graph; the extension reads the file and writes back enriched content."
+  - name: invoke_with_out_of_boundary_file
+    description: "Invoke the enrichment for a file outside the declared boundary; assert the runtime lib raises OutOfEnvelopeAccessError (UAC-9d failure class)."
+  - name: assert_exit_code_for_boundary_violation
+    description: "When the violation surfaces in the CLI path (not just runtime), assert exit code 12 (OUT_OF_ENVELOPE_ACCESS) per ExitCodeMap (ENG-3885 / UAC-9d)."
+  - name: assert_no_silent_data_leak
+    description: "Confirm the out-of-boundary path never returned partial data — the failure is hard (no enriched body in the response)."
+
+expected_outcomes:
+  - "Boundary enforcement is end-to-end: declared boundary → runtime check → legible exception → CLI exit code."
+  - "All four UAC-9d exception classes are exercised across the M3 scenarios (S5 covers OUT_OF_ENVELOPE_ACCESS specifically; UNEXPECTED_CONTEXT and MISBOUND_AUTH appear in S1/S3)."
+  - "No partial-data leak path exists when boundary checks fail."

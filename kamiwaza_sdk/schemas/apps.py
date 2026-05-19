@@ -1,7 +1,7 @@
 # kamiwaza_sdk/schemas/apps.py
 
 from typing import List, Optional, Dict, Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from datetime import datetime
 from uuid import UUID
 from enum import Enum
@@ -120,6 +120,11 @@ class ImagePullResult(BaseModel):
 class GardenApp(BaseModel):
     """Pre-built garden application."""
 
+    # Forward compatibility: catalog entries gained a top-level `revision`
+    # field in M1 (ENG-3884). Older clients reading newer catalogs preserve
+    # unknown fields rather than dropping them.
+    model_config = ConfigDict(extra="allow")
+
     name: str
     version: str
     description: str
@@ -131,3 +136,4 @@ class GardenApp(BaseModel):
     author: Optional[str] = None
     license: Optional[str] = None
     homepage: Optional[str] = None
+    revision: Optional[str] = None
