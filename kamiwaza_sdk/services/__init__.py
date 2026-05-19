@@ -15,6 +15,7 @@ from .tools import ToolService
 from .context import ContextService
 from .skills import SkillsService
 from .enclaves import EnclavesService
+from .workrooms import WorkroomService
 
 __all__ = [
     "ActivityService",
@@ -34,4 +35,5 @@ __all__ = [
     "ServingService",
     "SkillsService",
     "ToolService",
+    "WorkroomService",
 ]
