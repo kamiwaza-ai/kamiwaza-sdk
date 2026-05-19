@@ -544,7 +544,7 @@ class PayloadBuilder:
         deploy = svc.get("deploy", {})
         res = deploy.get("resources", {})
         limits = res.get("limits")
-        requests = res.get("requests") or res.get("reservations")
+        requests = res.get("reservations")
         if limits or requests:
             return ResourceSpec(
                 limits=_compose_resources_to_k8s(limits) if limits else None,

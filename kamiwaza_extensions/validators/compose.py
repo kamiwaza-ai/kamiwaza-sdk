@@ -161,15 +161,7 @@ class ComposeValidator:
             deploy = svc_config.get("deploy", {})
             resources = deploy.get("resources", {}) if isinstance(deploy, dict) else {}
 
-            # ENG-5426: ``deploy.resources.requests`` is a Kubernetes term, not
-            # a Docker Compose key — Compose's schema only knows ``limits`` and
-            # ``reservations``. Authors writing ``requests:`` out of K8s habit
-            # have it silently dropped from the compose→catalog→CR pipeline,
-            # which then ships limits-only and lets Kubernetes default the
-            # request to equal the limit — silently over-reserving (ENG-5424).
-            # Fail-fast here so the typo never reaches deploy; do NOT auto-map
-            # to ``reservations``, because silently rewriting the author's
-            # intent is the failure class we're eliminating.
+            # ENG-5426: requests is a K8s term, not Compose — fail-fast (no auto-map to reservations).
             if isinstance(resources, dict) and "requests" in resources:
                 errors.append(
                     f"Service '{svc_name}': "

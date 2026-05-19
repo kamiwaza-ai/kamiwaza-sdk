@@ -700,6 +700,23 @@ class TestResourceParsing:
     def test_no_resources_returns_none(self, builder):
         assert builder._parse_resources({}) is None
 
+    def test_reservations_maps_to_requests(self, builder):
+        # ENG-5426: Compose `reservations` is the term that maps to K8s
+        # `requests`. The compose-side `requests` key is now rejected by
+        # ComposeValidator, so the parser only reads `reservations`.
+        svc = {
+            "deploy": {
+                "resources": {
+                    "limits": {"cpus": "1.0", "memory": "1G"},
+                    "reservations": {"cpus": "0.5", "memory": "512M"},
+                }
+            }
+        }
+        res = builder._parse_resources(svc)
+        assert res.limits["cpu"] == "1000m"
+        assert res.requests["cpu"] == "500m"
+        assert res.requests["memory"] == "512M"
+
 
 class TestResolveType:
     def test_default_app(self, builder):
