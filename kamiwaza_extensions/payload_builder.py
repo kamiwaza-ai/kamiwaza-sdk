@@ -21,6 +21,7 @@ from kamiwaza_sdk.schemas.extensions import (
 
 from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
 from kamiwaza_extensions.connections import ConnectionInfo
+from kamiwaza_extensions.validators.compose import INVALID_DEPLOY_REQUESTS_TEXT
 from kamiwaza_extensions.volume_utils import looks_like_host_path
 
 # CRD annotation keys — namespace is ``kamiwaza.io/*`` (NOT ``kamiwaza.ai/*``).
@@ -543,6 +544,13 @@ class PayloadBuilder:
     def _parse_resources(svc: Dict[str, Any]) -> Optional[ResourceSpec]:
         deploy = svc.get("deploy", {})
         res = deploy.get("resources", {})
+        # ENG-5426: the validator rejects `deploy.resources.requests` at
+        # validate-time, but `kz-ext dev` (run_dev_remote) builds payloads
+        # without invoking ComposeValidator. Raise here so any code path that
+        # bypasses the validator still cannot silently drop the typo
+        # (which is the ENG-5424 over-reservation failure class).
+        if isinstance(res, dict) and "requests" in res:
+            raise ValueError(INVALID_DEPLOY_REQUESTS_TEXT)
         limits = res.get("limits")
         requests = res.get("reservations")
         if limits or requests:

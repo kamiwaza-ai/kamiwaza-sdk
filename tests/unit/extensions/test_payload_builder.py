@@ -717,6 +717,32 @@ class TestResourceParsing:
         assert res.requests["cpu"] == "500m"
         assert res.requests["memory"] == "512M"
 
+    def test_parse_resources_raises_on_requests_key(self, builder):
+        # ENG-5426 (Codex H1): `run_dev_remote` builds payloads without
+        # invoking ComposeValidator, so a parser that *silently* dropped
+        # an unknown `requests` key would reproduce the ENG-5424
+        # over-reservation incident on the `kz-ext dev` path. Pair the
+        # validator's fail-fast at validate-time with the parser's
+        # fail-fast at parse-time. Dev-path-level coverage is implicit:
+        # `run_dev_remote → payload_builder.build → _parse_resources` is
+        # a straight call chain (payload_builder.py:333), and the dev
+        # tests mock `PayloadBuilder` wholesale, so the parser layer is
+        # where this contract is most cleanly pinned.
+        svc = {
+            "deploy": {
+                "resources": {
+                    "limits": {"cpus": "1.0", "memory": "1G"},
+                    "requests": {"cpus": "0.5", "memory": "512M"},
+                }
+            }
+        }
+        with pytest.raises(ValueError) as exc_info:
+            builder._parse_resources(svc)
+        assert (
+            "deploy.resources.requests is not a valid Docker Compose key"
+            in str(exc_info.value)
+        )
+
 
 class TestResolveType:
     def test_default_app(self, builder):

@@ -13,6 +13,18 @@ from kamiwaza_extensions.volume_utils import looks_like_host_path
 
 MISSING_RESOURCE_LIMITS_TEXT = "no resource limits defined"
 
+# ENG-5426: shared with ``payload_builder._parse_resources`` so the validator's
+# fail-fast at validate-time and the parser's fail-fast at parse-time emit the
+# same user-facing message (one source of truth — wording drift would defeat
+# the per-PR assertions that pin this phrase).
+INVALID_DEPLOY_REQUESTS_TEXT = (
+    "deploy.resources.requests is not a valid Docker Compose key "
+    "(only `limits` and `reservations` are valid). "
+    "Did you mean `reservations`? "
+    "`reservations` is the Compose term that maps to "
+    "Kubernetes `requests` at deploy."
+)
+
 
 def is_missing_resource_limits_finding(message: str) -> bool:
     """Return True when *message* is the compose missing-limits finding.
@@ -163,14 +175,7 @@ class ComposeValidator:
 
             # ENG-5426: requests is a K8s term, not Compose — fail-fast (no auto-map to reservations).
             if isinstance(resources, dict) and "requests" in resources:
-                errors.append(
-                    f"Service '{svc_name}': "
-                    "deploy.resources.requests is not a valid Docker Compose key "
-                    "(only `limits` and `reservations` are valid). "
-                    "Did you mean `reservations`? "
-                    "`reservations` is the Compose term that maps to "
-                    "Kubernetes `requests` at deploy."
-                )
+                errors.append(f"Service '{svc_name}': {INVALID_DEPLOY_REQUESTS_TEXT}")
 
             if not isinstance(resources, dict) or not resources.get("limits"):
                 finding = f"Service '{svc_name}': {MISSING_RESOURCE_LIMITS_TEXT}"
