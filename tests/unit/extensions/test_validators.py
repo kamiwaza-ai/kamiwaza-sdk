@@ -458,6 +458,61 @@ class TestComposeValidator:
             for i in result.info
         )
 
+    def test_deploy_resources_requests_key_errors(self, tmp_path, validator):
+        """ENG-5426: ``deploy.resources.requests`` is a Kubernetes term, not
+        a Compose key. Authors writing it out of K8s habit had it silently
+        dropped, leaving the CR limits-only and Kubernetes defaulting the
+        request to equal the limit (the ENG-5424 over-reservation incident).
+        The validator must fail-fast on this typo."""
+        compose = {
+            "services": {
+                "web": {
+                    "image": "nginx",
+                    "deploy": {
+                        "resources": {
+                            "limits": {"cpus": "1.0", "memory": "1G"},
+                            "requests": {"cpus": "0.5", "memory": "512M"},
+                        }
+                    },
+                },
+            },
+        }
+        f = tmp_path / "docker-compose.yml"
+        self._write_compose(f, compose)
+        result = validator.validate(f, tmp_path)
+        assert not result.passed
+        assert any(
+            "deploy.resources.requests is not a valid Docker Compose key" in e
+            and "Did you mean `reservations`?" in e
+            for e in result.errors
+        )
+
+    def test_deploy_resources_reservations_no_requests_error(
+        self, tmp_path, validator
+    ):
+        """ENG-5426 negative coverage: valid ``deploy.resources.reservations``
+        must not trigger the new requests-key error."""
+        compose = {
+            "services": {
+                "web": {
+                    "image": "nginx",
+                    "deploy": {
+                        "resources": {
+                            "limits": {"cpus": "1.0", "memory": "1G"},
+                            "reservations": {"cpus": "0.5", "memory": "512M"},
+                        }
+                    },
+                },
+            },
+        }
+        f = tmp_path / "docker-compose.yml"
+        self._write_compose(f, compose)
+        result = validator.validate(f, tmp_path)
+        assert result.passed, result.errors
+        assert not any(
+            "deploy.resources.requests" in e for e in result.errors
+        )
+
     def test_missing_dockerfile_error(self, tmp_path, validator):
         compose = {
             "services": {
