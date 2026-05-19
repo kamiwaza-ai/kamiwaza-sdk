@@ -22,6 +22,7 @@ from .serving import ServingService
 from .skills import SkillsService
 from .subjects import SubjectGrantsAPI, SubjectsAPI
 from .tools import ToolService
+from .workrooms import WorkroomService
 
 __all__ = [
     "ActivityService",
@@ -57,4 +58,5 @@ __all__ = [
     "SubjectGrantsAPI",
     "SubjectsAPI",
     "ToolService",
+    "WorkroomService",
 ]
