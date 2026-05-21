@@ -459,13 +459,13 @@ def _apply_env_image_rewrites(
 ) -> Dict[str, Any]:
     """Return a deep copy of *compose* with image refs in env values rewritten.
 
-    Walks ``services[*].environment`` (dict and list shapes) and rewrites
-    image refs to the stage-suffixed-and-digest-pinned form ONLY when the
-    post-suffix candidate ref appears as a key in *digest_map*. Caller's
-    *compose* dict is not mutated.
+    Walks ``services[*].environment`` (dict and list shapes) and digest-
+    pins image refs when a candidate (direct / revision-tag / stage-
+    suffix — see :func:`_stage_and_pin_ref`) appears as a key in
+    *digest_map*. Caller's *compose* dict is not mutated.
 
     Sibling to :func:`_apply_digests` for the env-value surface. Kaizen's
-    ``${AGENT_SERVER_IMAGE:-<reg>/agent:1.8.13}`` default is the
+    ``${AGENT_SERVER_IMAGE:-<reg>/agent:1.9.0}`` default is the
     motivating case: the agent image is referenced by env var because
     the backend spawns sandbox pods dynamically, so the ref never appears
     as a service ``image:`` field that ``_apply_digests`` would catch.
@@ -474,8 +474,8 @@ def _apply_env_image_rewrites(
     actually resolved." Gating on its membership keeps env defaults from
     pointing at refs the publish never produced — e.g. a vendored
     ``shared-helper:0.5.0`` (independent release cadence) stays at
-    ``:0.5.0`` because ``:0.5.0-dev`` was never built or mirrored. Matches
-    the literal-tag-passthrough rule that :func:`resolve_extra_image`
+    ``:0.5.0`` because no published candidate matches it. Matches the
+    literal-tag-passthrough rule that :func:`resolve_extra_image`
     enforces on the extras surface.
     """
     if not digest_map:
@@ -507,7 +507,7 @@ def _rewrite_env_image_ref(
     value: str, stage: str, digest_map: Dict[str, str],
     revision: Optional[str] = None,
 ) -> str:
-    """Apply stage suffix + digest pin to an image ref embedded in *value*.
+    """Digest-pin an image ref embedded in *value*.
 
     Handles two shapes:
 
@@ -516,14 +516,10 @@ def _rewrite_env_image_ref(
       override still wins.
     - Bare ``<image>:<tag>`` — rewrites in place.
 
-    Pass-through cases (none of which match *digest_map* membership):
-    non-image-shaped strings, already ``@sha256:``-pinned refs, refs
-    whose post-suffix candidate isn't in *digest_map*.
-
-    When *revision* is set, candidate construction follows
-    :func:`_stage_and_pin_ref`'s revision-aware path so env defaults
-    written against a concrete tag (e.g. ``agent:1.9.0``) still resolve
-    against a revision-keyed digest_map (e.g. ``agent:develop``).
+    Candidate construction (direct / revision-tag / stage-suffix) and
+    pass-through rules are :func:`_stage_and_pin_ref`'s contract.
+    Non-image-shaped strings (no ``${VAR...}`` match, no recognizable
+    name) fall through unchanged.
     """
     match = _ENV_DEFAULT_SUB_RE.match(value)
     if match:

@@ -976,6 +976,36 @@ class TestBuildEntryEnvImageRewritesWithRevision:
             f"myreg/images/agent:develop@{self._DIGEST}}}"
         )
 
+    def test_direct_match_wins_over_revision_candidate(self, builder):
+        # Scenario: a literal-tag extra `agent:foo` AND a {version} extra
+        # for the same image are both declared, so digest_map ends up
+        # with BOTH `agent:foo` and `agent:develop`. With env default
+        # `agent:foo`, the direct-match path (candidate #1) must win
+        # over the revision-tag candidate (candidate #2). Locks the
+        # candidate ordering when direct and revision keys actually
+        # differ (the existing direct-match test uses `:develop` for
+        # both, so it doesn't disambiguate).
+        direct_digest = "sha256:" + "1" * 64
+        revision_digest = "sha256:" + "2" * 64
+        both_map = {
+            "myreg/images/agent:foo": direct_digest,
+            "myreg/images/agent:develop": revision_digest,
+        }
+        compose = _kaizen_shaped_compose(
+            "${AGENT_SERVER_IMAGE:-myreg/images/agent:foo}"
+        )
+        entry = builder.build_entry(
+            self._meta(), compose, "myreg/images", "1.9.0",
+            stage="dev", revision="develop", digest_map=both_map,
+        )
+        compose_out = yaml.safe_load(entry["compose_yml"])
+        assert compose_out["services"]["backend"]["environment"][
+            "AGENT_SERVER_IMAGE"
+        ] == (
+            "${AGENT_SERVER_IMAGE:-"
+            f"myreg/images/agent:foo@{direct_digest}}}"
+        ), "direct-match must win over revision-tag candidate"
+
     def test_env_default_already_at_revision_tag_pinned_via_direct_match(self, builder):
         # Defense in depth: if the author wrote the env default at the
         # revision tag itself (e.g. `:develop`), the direct-match path
@@ -1027,23 +1057,30 @@ class TestBuildEntryEnvImageRewritesWithRevision:
             "AGENT_SERVER_IMAGE"
         ] == f"${{AGENT_SERVER_IMAGE:-{pinned_default}}}"
 
-    def test_revision_set_but_candidate_not_in_digest_map_falls_back(self, builder):
-        # When revision is supplied but the revision-tag candidate isn't
-        # in digest_map (e.g. publish didn't actually resolve that ref),
-        # the legacy stage-suffix candidate is tried next. If neither
-        # matches, the value is left verbatim — same gating contract
-        # as the no-revision path.
+    def test_revision_miss_falls_back_to_legacy_stage_candidate(self, builder):
+        # When revision is supplied but the revision-tag candidate
+        # `agent:develop` isn't in digest_map, the legacy stage-suffix
+        # candidate `agent:1.9.0-dev` is tried next. If it hits, the env
+        # default is pinned to the legacy form. Locks the candidate
+        # ordering: direct → revision → legacy stage. Uses a non-empty
+        # digest_map so _apply_env_image_rewrites doesn't short-circuit
+        # at its outer empty-map guard.
+        legacy_digest = "sha256:" + "9" * 64
+        legacy_only_map = {"myreg/images/agent:1.9.0-dev": legacy_digest}
         compose = _kaizen_shaped_compose(
             "${AGENT_SERVER_IMAGE:-myreg/images/agent:1.9.0}"
         )
         entry = builder.build_entry(
             self._meta(), compose, "myreg/images", "1.9.0",
-            stage="dev", revision="develop", digest_map={},
+            stage="dev", revision="develop", digest_map=legacy_only_map,
         )
         compose_out = yaml.safe_load(entry["compose_yml"])
         assert compose_out["services"]["backend"]["environment"][
             "AGENT_SERVER_IMAGE"
-        ] == "${AGENT_SERVER_IMAGE:-myreg/images/agent:1.9.0}"
+        ] == (
+            "${AGENT_SERVER_IMAGE:-"
+            f"myreg/images/agent:1.9.0-dev@{legacy_digest}}}"
+        )
 
     def test_bare_ref_form_under_revision(self, builder):
         # Bare image ref (no ${...} wrapper) takes the same path through
