@@ -977,22 +977,20 @@ class TestBuildEntryEnvImageRewritesWithRevision:
         )
 
     def test_direct_match_wins_over_revision_candidate(self, builder):
-        # Scenario: a literal-tag extra `agent:foo` AND a {version} extra
-        # for the same image are both declared, so digest_map ends up
-        # with BOTH `agent:foo` and `agent:develop`. With env default
-        # `agent:foo`, the direct-match path (candidate #1) must win
-        # over the revision-tag candidate (candidate #2). Locks the
-        # candidate ordering when direct and revision keys actually
-        # differ (the existing direct-match test uses `:develop` for
-        # both, so it doesn't disambiguate).
+        # Both candidates must be reachable for the ordering check to
+        # be meaningful. Env literal `agent:<version>` clears the
+        # version-gate so the revision candidate `agent:develop` WOULD
+        # be tried; both `agent:<version>` and `agent:develop` are in
+        # digest_map. Direct match must short-circuit before the
+        # revision candidate, returning the direct digest.
         direct_digest = "sha256:" + "1" * 64
         revision_digest = "sha256:" + "2" * 64
         both_map = {
-            "myreg/images/agent:foo": direct_digest,
+            "myreg/images/agent:1.9.0": direct_digest,
             "myreg/images/agent:develop": revision_digest,
         }
         compose = _kaizen_shaped_compose(
-            "${AGENT_SERVER_IMAGE:-myreg/images/agent:foo}"
+            "${AGENT_SERVER_IMAGE:-myreg/images/agent:1.9.0}"
         )
         entry = builder.build_entry(
             self._meta(), compose, "myreg/images", "1.9.0",
@@ -1003,7 +1001,7 @@ class TestBuildEntryEnvImageRewritesWithRevision:
             "AGENT_SERVER_IMAGE"
         ] == (
             "${AGENT_SERVER_IMAGE:-"
-            f"myreg/images/agent:foo@{direct_digest}}}"
+            f"myreg/images/agent:1.9.0@{direct_digest}}}"
         ), "direct-match must win over revision-tag candidate"
 
     def test_env_default_already_at_revision_tag_pinned_via_direct_match(self, builder):

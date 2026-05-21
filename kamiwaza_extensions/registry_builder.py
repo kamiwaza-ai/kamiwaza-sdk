@@ -562,8 +562,8 @@ def _stage_and_pin_ref(
       1. *ref* itself (direct match).
       2. ``<name>:<clean_tag><stage_suffix>`` synthesis.
 
-    Returns *ref* unchanged when no candidate matches, the ref is
-    digest-pinned, or the ref has no ``/`` (can't split a name).
+    Returns *ref* unchanged when no candidate matches or the ref is
+    already digest-pinned.
 
     Stage suffixes: known built-ins (``-dev``/``-stage``) are stripped
     before reapplying so re-publishes round-trip cleanly. Custom-stage
