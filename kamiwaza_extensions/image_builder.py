@@ -33,6 +33,7 @@ class ImageBuilder:
         verbose: bool = False,
         build_overrides: Optional[List[Any]] = None,
         image_refs: Optional[Dict[str, str]] = None,
+        image_basename: Optional[str] = None,
     ) -> List[str]:
         """Build images and return the list of image references.
 
@@ -49,9 +50,13 @@ class ImageBuilder:
             image_refs: Optional per-service canonical image refs keyed by
                 service name. When provided, services found in the map are
                 built at the supplied ref; services not in the map fall
-                back to the legacy ``{registry}/{ext}-{svc}:{tag}`` form.
-                Callers that own canonical-ref derivation (run_publish)
-                pass this so build/push and catalog-write stay in lockstep.
+                back to the legacy ``{registry}/{basename}-{svc}:{tag}``
+                form. Callers that own canonical-ref derivation
+                (run_publish) pass this so build/push and catalog-write
+                stay in lockstep.
+            image_basename: Optional override for the ``{basename}``
+                segment in the legacy fallback form. When None, falls
+                back to ``extension_name``.
 
         Returns:
             List of image references that were built.
@@ -64,6 +69,7 @@ class ImageBuilder:
 
         services = compose_data.get("services") or {}
         built: List[str] = []
+        basename = image_basename or extension_name
 
         for svc_name, svc in services.items():
             if service_filter and svc_name != service_filter:
@@ -74,7 +80,7 @@ class ImageBuilder:
             if image_refs is not None and svc_name in image_refs:
                 image_ref = image_refs[svc_name]
             else:
-                image_ref = f"{registry}/{extension_name}-{svc_name}:{revision_tag}"
+                image_ref = f"{registry}/{basename}-{svc_name}:{revision_tag}"
             dockerfile, context = self._resolve_build_config(svc["build"], extension_dir)
 
             override = override_map.get(svc_name)

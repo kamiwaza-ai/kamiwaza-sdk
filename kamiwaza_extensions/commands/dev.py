@@ -454,6 +454,7 @@ def run_dev_remote(
         extension_name=info.name,
         revision_tag=rev_tag,
         registry=registry,
+        image_basename=info.image_basename,
     )
     transformed = transformer.resolve_env_placeholders(transformed)
 
@@ -468,6 +469,7 @@ def run_dev_remote(
         registry=registry,
         extension_name=info.name,
         revision_tag=rev_tag,
+        image_basename=info.image_basename,
     )
 
     # 5b. Resolve SDK override for build
@@ -536,6 +538,7 @@ def run_dev_remote(
                 verbose=verbose,
                 build_overrides=build_overrides,
                 image_refs=canonical_refs,
+                image_basename=info.image_basename,
             )
         except ImageBuildError as exc:
             console.print(f"\n[red]Error:[/red] {exc}")

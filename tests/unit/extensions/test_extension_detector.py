@@ -76,6 +76,32 @@ class TestMetadataLoading:
         with pytest.raises(ExtensionNotFoundError, match="Cannot read"):
             detector.detect(tmp_path)
 
+    def test_image_basename_absent_is_none(self, detector, tmp_path):
+        (tmp_path / "kamiwaza.json").write_text(
+            json.dumps({"name": "x", "version": "1.0.0"})
+        )
+        info = detector.detect(tmp_path)
+        assert info.image_basename is None
+
+    def test_image_basename_present_is_loaded(self, detector, tmp_path):
+        (tmp_path / "kamiwaza.json").write_text(json.dumps({
+            "name": "workroom-manager",
+            "version": "0.13.0",
+            "image_basename": "outcome-d563-workroom-manager",
+        }))
+        info = detector.detect(tmp_path)
+        assert info.image_basename == "outcome-d563-workroom-manager"
+
+    def test_image_basename_empty_string_is_none(self, detector, tmp_path):
+        # An empty/whitespace override would synthesize bad refs like
+        # `registry/-svc:tag`; normalize to None so the legacy fallback
+        # (extension_name) is used.
+        (tmp_path / "kamiwaza.json").write_text(json.dumps({
+            "name": "x", "version": "1.0.0", "image_basename": "   ",
+        }))
+        info = detector.detect(tmp_path)
+        assert info.image_basename is None
+
 
 class TestComposeLoading:
     def test_compose_loaded(self, detector, ext_dir):

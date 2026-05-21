@@ -67,6 +67,7 @@ def _retag_appgarden_compose(
     extension_name: str,
     image_tag: str,
     registry: str,
+    image_basename: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Rewrite image tags on services that this publish actually owns.
 
@@ -121,6 +122,7 @@ def _retag_appgarden_compose(
                 fallback_registry=registry,
                 fallback_extension_name=extension_name,
                 revision_tag=image_tag,
+                fallback_image_basename=image_basename,
             )
     return out
 
@@ -161,12 +163,19 @@ def _collect_buildable_image_names(
     extension_name: str,
     version: str,
     registry: str,
+    image_basename: Optional[str] = None,
 ) -> List[str]:
-    """Return short image names (``name:tag``) for services with build contexts."""
+    """Return short image names (``basename:tag``) for services with build contexts.
+
+    Display-only (dry-run preview). ``image_basename`` (when set) overrides
+    ``extension_name`` so the preview matches what the live path would
+    actually push.
+    """
+    basename = image_basename or extension_name
     names: List[str] = []
     for svc_name, svc in (compose_data.get("services") or {}).items():
         if "build" in svc:
-            names.append(f"{extension_name}-{svc_name}:{version}")
+            names.append(f"{basename}-{svc_name}:{version}")
     return names
 
 
@@ -463,6 +472,7 @@ def run_publish(
             extension_name=info.name,
             image_tag=image_tag,
             registry=registry,
+            image_basename=info.image_basename,
         )
     else:
         transformer = ComposeTransformer()
@@ -471,6 +481,7 @@ def run_publish(
             extension_name=info.name,
             revision_tag=image_tag,
             registry=registry,
+            image_basename=info.image_basename,
         )
 
     # Canonical image refs for every build-context service. Single
@@ -490,12 +501,14 @@ def run_publish(
         extension_name=info.name,
         revision_tag=image_tag,
         appgarden_services=appgarden_services,
+        image_basename=info.image_basename,
     )
 
     # -- Dry-run path (still runs merge check to detect conflicts) --
     if dry_run:
         short_names = _collect_buildable_image_names(
-            info.compose_data, info.name, image_tag, registry
+            info.compose_data, info.name, image_tag, registry,
+            image_basename=info.image_basename,
         )
         console.print(
             f"  Would build images:    {', '.join(short_names) if short_names else '(none)'}"
@@ -563,6 +576,7 @@ def run_publish(
                 registry=registry,
                 verbose=verbose,
                 image_refs=canonical_refs,
+                image_basename=info.image_basename,
             )
         except ImageBuildError as exc:
             console.print("    [red]\u2717 build failed[/red]")

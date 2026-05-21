@@ -67,6 +67,10 @@ class KamiwazaMetadata(BaseModel):
     category: Optional[str] = None
     preferred_model_type: Optional[str] = None
     strip_path_prefix: Optional[bool] = None
+    # Override for the image-ref basename when the bake target / pushed
+    # image basename diverges from ``name``. Consumed by
+    # ``_canonical_build_ref``'s legacy-fallback synthesis.
+    image_basename: Optional[str] = Field(default=None, min_length=1)
     # ENG-3890 — stamped by scaffolder, consumed by `kz-ext update` to pick
     # the right TemplateManifest. Optional so existing scaffolds (created
     # before M2) load cleanly; ``update`` requires --bootstrap if missing.
