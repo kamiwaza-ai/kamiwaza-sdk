@@ -32,6 +32,7 @@ from .services.tools import ToolService
 from .services.context import ContextService
 from .services.skills import SkillsService
 from .services.enclaves import EnclavesService
+from .services.workrooms import WorkroomService
 
 logger = logging.getLogger(__name__)
 
@@ -789,3 +790,9 @@ class KamiwazaClient:
         if not hasattr(self, "_enclaves"):
             self._enclaves = EnclavesService(self)
         return self._enclaves
+
+    @property
+    def workrooms(self):
+        if not hasattr(self, '_workrooms'):
+            self._workrooms = WorkroomService(self)
+        return self._workrooms

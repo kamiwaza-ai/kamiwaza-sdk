@@ -348,6 +348,30 @@ class TestBuildEntry:
         )
         assert pinned in entry["extra_docker_images"]
 
+    def test_extra_docker_images_digest_pinned_ref_passthrough_under_revision(
+        self, builder, transformed_compose,
+    ):
+        # The `@sha256:` short-circuit in resolve_extra_image runs
+        # before the revision branch, so a digest-pinned ref is
+        # immutable regardless of --revision. Locks that guard under
+        # the revision-aware path.
+        pinned = (
+            "myreg/images/agent:1.9.0"
+            "@sha256:" + "a" * 64
+        )
+        meta = {
+            "name": "kaizenv3",
+            "description": "test",
+            "source_type": "kamiwaza",
+            "visibility": "public",
+            "extra_docker_images": [pinned],
+        }
+        entry = builder.build_entry(
+            meta, transformed_compose, "myreg/images", "1.9.0",
+            stage="dev", revision="develop",
+        )
+        assert entry["extra_docker_images"] == [pinned]
+
     def test_extra_docker_images_digest_pinned_when_in_digest_map(
         self, builder, transformed_compose,
     ):
@@ -370,6 +394,118 @@ class TestBuildEntry:
         pinned_ref = f"myreg/images/agent:1.8.13-dev@{digest}"
         assert entry["extra_docker_images"] == [pinned_ref]
         assert pinned_ref not in entry["docker_images"]
+
+    def test_extra_docker_images_revision_overrides_synthesis(
+        self, builder, transformed_compose,
+    ):
+        # CI publishes extension images at the branch/release tag
+        # (`:develop`, `:release-X.Y.Z`), not `:<version>-<stage>`.
+        # When --revision is supplied, the {version}-placeholder extras
+        # path uses it as the tag instead of synthesizing the legacy
+        # `<version><stage_suffix>` form. Mirrors the primary
+        # docker_images path in commands/publish.py.
+        meta = {
+            "name": "kaizenv3",
+            "description": "test",
+            "source_type": "kamiwaza",
+            "visibility": "public",
+            "extra_docker_images": ["myreg/images/agent:{version}"],
+        }
+        entry = builder.build_entry(
+            meta, transformed_compose, "myreg/images", "2.0.1",
+            stage="dev", revision="develop",
+        )
+        assert entry["extra_docker_images"] == ["myreg/images/agent:develop"]
+        # The legacy synthesized ref must not also appear.
+        assert "myreg/images/agent:2.0.1-dev" not in entry["extra_docker_images"]
+
+    def test_extra_docker_images_no_revision_preserves_legacy_synthesis(
+        self, builder, transformed_compose,
+    ):
+        # Backwards-compat: extensions not yet on the shared workflow
+        # publish without --revision and rely on the `<version><stage_suffix>`
+        # synthesis. revision=None must not regress that behavior.
+        meta = {
+            "name": "kaizenv3",
+            "description": "test",
+            "source_type": "kamiwaza",
+            "visibility": "public",
+            "extra_docker_images": ["myreg/images/agent:{version}"],
+        }
+        entry = builder.build_entry(
+            meta, transformed_compose, "myreg/images", "1.8.13",
+            stage="dev",  # revision defaults to None
+        )
+        assert entry["extra_docker_images"] == ["myreg/images/agent:1.8.13-dev"]
+
+    def test_extra_docker_images_revision_does_not_retag_author_pinned(
+        self, builder, transformed_compose,
+    ):
+        # Asymmetric with primary docker_images by design: the {version}
+        # placeholder is the opt-in signal that an extra image's release
+        # cadence is coupled to the extension. Author-pinned literal tags
+        # signal independent cadence (vendored helper, frozen self-pin)
+        # and must pass through regardless of --revision.
+        meta = {
+            "name": "my-app",
+            "description": "test",
+            "source_type": "kamiwaza",
+            "visibility": "public",
+            "extra_docker_images": ["myreg/images/shared-helper:0.5.0"],
+        }
+        entry = builder.build_entry(
+            meta, transformed_compose, "myreg/images", "1.8.13",
+            stage="dev", revision="develop",
+        )
+        assert entry["extra_docker_images"] == ["myreg/images/shared-helper:0.5.0"]
+
+    def test_extra_docker_images_revision_and_digest_pin_together(
+        self, builder, transformed_compose,
+    ):
+        # The full publish path: revision retags the extras ref, then
+        # digest_map pins it. digest_map is keyed by the revision-tagged
+        # ref — matches what publish.py:_auto_resolve_digests resolves
+        # against the actual GHCR push under the branch-name tag policy.
+        digest = "sha256:" + "c" * 64
+        digest_map = {"myreg/images/agent:develop": digest}
+        meta = {
+            "name": "kaizenv3",
+            "description": "test",
+            "source_type": "kamiwaza",
+            "visibility": "public",
+            "extra_docker_images": ["myreg/images/agent:{version}"],
+        }
+        entry = builder.build_entry(
+            meta, transformed_compose, "myreg/images", "2.0.1",
+            stage="dev", revision="develop", digest_map=digest_map,
+        )
+        assert entry["extra_docker_images"] == [
+            f"myreg/images/agent:develop@{digest}"
+        ]
+
+    def test_extra_docker_images_revision_does_not_retag_external(
+        self, builder, transformed_compose,
+    ):
+        # External refs are never ours to retag, --revision or not.
+        meta = {
+            "name": "my-app",
+            "description": "test",
+            "source_type": "kamiwaza",
+            "visibility": "public",
+            "extra_docker_images": [
+                "ghcr.io/external/sidecar:2.0",
+                "quay.io/org/util:{version}",
+            ],
+        }
+        entry = builder.build_entry(
+            meta, transformed_compose, "myreg/images", "1.8.13",
+            stage="dev", revision="develop",
+        )
+        # No-placeholder external: untouched.
+        assert "ghcr.io/external/sidecar:2.0" in entry["extra_docker_images"]
+        # Placeholder substituted, but external registry → no revision retag.
+        assert "quay.io/org/util:1.8.13" in entry["extra_docker_images"]
+        assert "quay.io/org/util:develop" not in entry["extra_docker_images"]
 
 
 # ------------------------------------------------------------------
@@ -813,6 +949,244 @@ class TestBuildEntryEnvImageRewrites:
         extras_ref = f"myreg/images/agent:1.8.13-dev@{digest}"
         assert entry["extra_docker_images"] == [extras_ref]
         # And the compose env default points at the same ref.
+        compose_out = yaml.safe_load(entry["compose_yml"])
+        env_default = compose_out["services"]["backend"]["environment"][
+            "AGENT_SERVER_IMAGE"
+        ]
+        assert extras_ref in env_default
+
+
+# ------------------------------------------------------------------
+# Env-var image-ref rewriting under --revision
+# ------------------------------------------------------------------
+
+
+class TestBuildEntryEnvImageRewritesWithRevision:
+    """Env-default rewriting under ``--revision``. Under the new CI tag
+    policy ``resolve_extra_image`` emits ``<name>:<revision>`` and
+    ``_auto_resolve_digests`` populates ``digest_map`` keyed by that
+    revision tag. Env defaults written against a concrete tag (the
+    common kaizen shape: ``${VAR:-<reg>/agent:1.9.0}``) must still
+    resolve to the same revision-tagged + digest-pinned ref so the
+    env default agrees with the extras entry in the same catalog row.
+    """
+
+    _DIGEST = "sha256:" + "f" * 64
+    _REV_MAP = {"myreg/images/agent:develop": _DIGEST}
+
+    def _meta(self, **overrides):
+        base = {"name": "kaizenv3", "description": "", "source_type": "kamiwaza",
+                "visibility": "public"}
+        base.update(overrides)
+        return base
+
+    def test_concrete_tag_env_default_pinned_to_revision_tag(self, builder):
+        # Env default at literal `:<version>` + revision in digest_map →
+        # pinned to `:<revision>@<digest>`. The tag-equals-version
+        # opt-in (mirroring resolve_extra_image's {version} semantics)
+        # is what triggers the retag.
+        compose = _kaizen_shaped_compose(
+            "${AGENT_SERVER_IMAGE:-myreg/images/agent:1.9.0}"
+        )
+        entry = builder.build_entry(
+            self._meta(), compose, "myreg/images", "1.9.0",
+            stage="dev", revision="develop", digest_map=self._REV_MAP,
+        )
+        compose_out = yaml.safe_load(entry["compose_yml"])
+        assert compose_out["services"]["backend"]["environment"][
+            "AGENT_SERVER_IMAGE"
+        ] == (
+            "${AGENT_SERVER_IMAGE:-"
+            f"myreg/images/agent:develop@{self._DIGEST}}}"
+        )
+
+    def test_direct_match_wins_over_revision_candidate(self, builder):
+        # Both candidates must be reachable for the ordering check to
+        # be meaningful. Env literal `agent:<version>` clears the
+        # version-gate so the revision candidate `agent:develop` WOULD
+        # be tried; both `agent:<version>` and `agent:develop` are in
+        # digest_map. Direct match must short-circuit before the
+        # revision candidate, returning the direct digest.
+        direct_digest = "sha256:" + "1" * 64
+        revision_digest = "sha256:" + "2" * 64
+        both_map = {
+            "myreg/images/agent:1.9.0": direct_digest,
+            "myreg/images/agent:develop": revision_digest,
+        }
+        compose = _kaizen_shaped_compose(
+            "${AGENT_SERVER_IMAGE:-myreg/images/agent:1.9.0}"
+        )
+        entry = builder.build_entry(
+            self._meta(), compose, "myreg/images", "1.9.0",
+            stage="dev", revision="develop", digest_map=both_map,
+        )
+        compose_out = yaml.safe_load(entry["compose_yml"])
+        assert compose_out["services"]["backend"]["environment"][
+            "AGENT_SERVER_IMAGE"
+        ] == (
+            "${AGENT_SERVER_IMAGE:-"
+            f"myreg/images/agent:1.9.0@{direct_digest}}}"
+        ), "direct-match must win over revision-tag candidate"
+
+    def test_env_default_already_at_revision_tag_pinned_via_direct_match(self, builder):
+        # Defense in depth: if the author wrote the env default at the
+        # revision tag itself (e.g. `:develop`), the direct-match path
+        # at the top of _stage_and_pin_ref catches it before the
+        # revision-candidate branch is even consulted.
+        compose = _kaizen_shaped_compose(
+            "${AGENT_SERVER_IMAGE:-myreg/images/agent:develop}"
+        )
+        entry = builder.build_entry(
+            self._meta(), compose, "myreg/images", "1.9.0",
+            stage="dev", revision="develop", digest_map=self._REV_MAP,
+        )
+        compose_out = yaml.safe_load(entry["compose_yml"])
+        assert compose_out["services"]["backend"]["environment"][
+            "AGENT_SERVER_IMAGE"
+        ] == (
+            "${AGENT_SERVER_IMAGE:-"
+            f"myreg/images/agent:develop@{self._DIGEST}}}"
+        )
+
+    def test_external_ref_passes_through_under_revision(self, builder):
+        # External refs (outside our registry) are never in digest_map
+        # and so are never retagged — same invariant as without revision.
+        compose = _kaizen_shaped_compose(
+            "${SIDECAR:-ghcr.io/external/sidecar:2.0}"
+        )
+        entry = builder.build_entry(
+            self._meta(), compose, "myreg/images", "1.9.0",
+            stage="dev", revision="develop", digest_map=self._REV_MAP,
+        )
+        compose_out = yaml.safe_load(entry["compose_yml"])
+        assert compose_out["services"]["backend"]["environment"][
+            "AGENT_SERVER_IMAGE"
+        ] == "${SIDECAR:-ghcr.io/external/sidecar:2.0}"
+
+    def test_digest_pinned_env_default_unchanged_under_revision(self, builder):
+        # Already-`@sha256:`-pinned refs short-circuit at the top of
+        # _stage_and_pin_ref regardless of revision.
+        pinned_default = (
+            "myreg/images/agent:1.9.0@sha256:" + "a" * 64
+        )
+        compose = _kaizen_shaped_compose(f"${{AGENT_SERVER_IMAGE:-{pinned_default}}}")
+        entry = builder.build_entry(
+            self._meta(), compose, "myreg/images", "1.9.0",
+            stage="dev", revision="develop", digest_map=self._REV_MAP,
+        )
+        compose_out = yaml.safe_load(entry["compose_yml"])
+        assert compose_out["services"]["backend"]["environment"][
+            "AGENT_SERVER_IMAGE"
+        ] == f"${{AGENT_SERVER_IMAGE:-{pinned_default}}}"
+
+    def test_revision_miss_fail_closed_no_legacy_fallback(self, builder):
+        # Under --revision, the legacy stage-suffix candidate is NOT
+        # tried. The publish flow keys digest_map by `:<revision>` so
+        # the legacy candidate is unreachable in practice; locking the
+        # fallback would let a future caller building digest_map
+        # differently re-divergence the env vs extras surfaces.
+        # Invariant: revision miss → pass through unchanged.
+        legacy_digest = "sha256:" + "9" * 64
+        legacy_only_map = {"myreg/images/agent:1.9.0-dev": legacy_digest}
+        compose = _kaizen_shaped_compose(
+            "${AGENT_SERVER_IMAGE:-myreg/images/agent:1.9.0}"
+        )
+        entry = builder.build_entry(
+            self._meta(), compose, "myreg/images", "1.9.0",
+            stage="dev", revision="develop", digest_map=legacy_only_map,
+        )
+        compose_out = yaml.safe_load(entry["compose_yml"])
+        # Env default is left verbatim — the legacy stage-suffix
+        # candidate is NOT tried under --revision.
+        assert compose_out["services"]["backend"]["environment"][
+            "AGENT_SERVER_IMAGE"
+        ] == "${AGENT_SERVER_IMAGE:-myreg/images/agent:1.9.0}"
+
+    def test_literal_pinned_env_default_passes_through_under_revision(self, builder):
+        # An env default at a literal tag != kamiwaza.json version
+        # signals independent release cadence (e.g. a vendored helper
+        # pinned to :0.5.0 while the extension is at :1.9.0). The
+        # revision candidate must NOT retag it just because
+        # <name>:<revision> happens to be in digest_map — the env
+        # surface mirrors resolve_extra_image's {version}-opt-in
+        # semantics, with tag-equals-version as the opt-in signal
+        # (since compose env values can't carry the literal `{version}`
+        # placeholder the extras surface uses).
+        revision_digest = "sha256:" + "3" * 64
+        # digest_map carries the revision-tagged form (from the
+        # extension's own {version} extras), but NOT a key matching
+        # the literal env default tag.
+        map_with_revision = {"myreg/images/agent:develop": revision_digest}
+        compose = _kaizen_shaped_compose(
+            "${HELPER_IMAGE:-myreg/images/agent:0.5.0}"
+        )
+        entry = builder.build_entry(
+            self._meta(), compose, "myreg/images", "1.9.0",
+            stage="dev", revision="develop", digest_map=map_with_revision,
+        )
+        compose_out = yaml.safe_load(entry["compose_yml"])
+        # Literal :0.5.0 is preserved — the version-gate skipped the
+        # revision candidate because tag (0.5.0) != version (1.9.0).
+        assert compose_out["services"]["backend"]["environment"][
+            "AGENT_SERVER_IMAGE"
+        ] == "${HELPER_IMAGE:-myreg/images/agent:0.5.0}"
+        # And the revision-tag candidate did NOT leak in.
+        assert "develop" not in compose_out["services"]["backend"]["environment"][
+            "AGENT_SERVER_IMAGE"
+        ]
+
+    def test_bare_ref_form_under_revision(self, builder):
+        # Bare image ref (no ${...} wrapper) takes the same path through
+        # _stage_and_pin_ref. Locks parity between wrapped and bare forms.
+        compose = _kaizen_shaped_compose("myreg/images/agent:1.9.0")
+        entry = builder.build_entry(
+            self._meta(), compose, "myreg/images", "1.9.0",
+            stage="dev", revision="develop", digest_map=self._REV_MAP,
+        )
+        compose_out = yaml.safe_load(entry["compose_yml"])
+        assert compose_out["services"]["backend"]["environment"][
+            "AGENT_SERVER_IMAGE"
+        ] == f"myreg/images/agent:develop@{self._DIGEST}"
+
+    def test_revision_none_preserves_legacy_stage_synthesis(self, builder):
+        # Backwards-compat: when revision=None, the env-rewrite path
+        # must behave exactly as before (stage-suffix synthesis only).
+        # Sister test to test_extra_docker_images_no_revision_preserves_legacy_synthesis.
+        legacy_digest = "sha256:" + "b" * 64
+        legacy_map = {"myreg/images/agent:1.9.0-dev": legacy_digest}
+        compose = _kaizen_shaped_compose(
+            "${AGENT_SERVER_IMAGE:-myreg/images/agent:1.9.0}"
+        )
+        entry = builder.build_entry(
+            self._meta(), compose, "myreg/images", "1.9.0",
+            stage="dev", digest_map=legacy_map,  # revision defaults to None
+        )
+        compose_out = yaml.safe_load(entry["compose_yml"])
+        assert compose_out["services"]["backend"]["environment"][
+            "AGENT_SERVER_IMAGE"
+        ] == (
+            "${AGENT_SERVER_IMAGE:-"
+            f"myreg/images/agent:1.9.0-dev@{legacy_digest}}}"
+        )
+
+    def test_env_and_extras_agree_under_revision_end_to_end(self, builder):
+        # The acceptance criterion for H1: for kaizen-shaped input
+        # under --revision, the published compose env default and the
+        # extras list agree on tag + digest. Sister test to
+        # test_env_value_matches_extra_docker_images_entry at L908
+        # (which exercises the no-revision path).
+        compose = _kaizen_shaped_compose(
+            "${AGENT_SERVER_IMAGE:-myreg/images/agent:1.9.0}"
+        )
+        meta = self._meta(
+            extra_docker_images=["myreg/images/agent:{version}"],
+        )
+        entry = builder.build_entry(
+            meta, compose, "myreg/images", "1.9.0",
+            stage="dev", revision="develop", digest_map=self._REV_MAP,
+        )
+        extras_ref = f"myreg/images/agent:develop@{self._DIGEST}"
+        assert entry["extra_docker_images"] == [extras_ref]
         compose_out = yaml.safe_load(entry["compose_yml"])
         env_default = compose_out["services"]["backend"]["environment"][
             "AGENT_SERVER_IMAGE"
