@@ -111,7 +111,7 @@ class RegistryBuilder:
         # (same source of truth ``_apply_digests`` uses) so an env default
         # only gets restamped when this publish actually resolved that ref.
         transformed_compose = _apply_env_image_rewrites(
-            transformed_compose, stage, digest_map, revision
+            transformed_compose, stage, digest_map, revision, version
         )
 
         # sort_keys=False preserves service key order from the source compose.
@@ -456,6 +456,7 @@ def _apply_env_image_rewrites(
     stage: str,
     digest_map: Optional[Dict[str, str]] = None,
     revision: Optional[str] = None,
+    version: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Return a deep copy of *compose* with image refs in env values rewritten.
 
@@ -486,19 +487,23 @@ def _apply_env_image_rewrites(
         if isinstance(env, dict):
             for key, val in env.items():
                 if isinstance(val, str):
-                    env[key] = _rewrite_env_image_ref(val, stage, digest_map, revision)
+                    env[key] = _rewrite_env_image_ref(
+                        val, stage, digest_map, revision, version
+                    )
         elif isinstance(env, list):
             for i, entry in enumerate(env):
                 if isinstance(entry, str) and "=" in entry:
                     k, v = entry.split("=", 1)
-                    new_v = _rewrite_env_image_ref(v, stage, digest_map, revision)
+                    new_v = _rewrite_env_image_ref(
+                        v, stage, digest_map, revision, version
+                    )
                     if new_v != v:
                         env[i] = f"{k}={new_v}"
                 elif isinstance(entry, dict):
                     val = entry.get("value")
                     if isinstance(val, str):
                         entry["value"] = _rewrite_env_image_ref(
-                            val, stage, digest_map, revision
+                            val, stage, digest_map, revision, version
                         )
     return result
 
@@ -506,6 +511,7 @@ def _apply_env_image_rewrites(
 def _rewrite_env_image_ref(
     value: str, stage: str, digest_map: Dict[str, str],
     revision: Optional[str] = None,
+    version: Optional[str] = None,
 ) -> str:
     """Digest-pin an image ref embedded in *value*.
 
@@ -524,33 +530,40 @@ def _rewrite_env_image_ref(
     match = _ENV_DEFAULT_SUB_RE.match(value)
     if match:
         prefix, default, brace = match.group(1), match.group(2), match.group(3)
-        new_ref = _stage_and_pin_ref(default, stage, digest_map, revision)
+        new_ref = _stage_and_pin_ref(default, stage, digest_map, revision, version)
         if new_ref == default:
             return value
         return f"{prefix}{new_ref}{brace}"
-    return _stage_and_pin_ref(value, stage, digest_map, revision)
+    return _stage_and_pin_ref(value, stage, digest_map, revision, version)
 
 
 def _stage_and_pin_ref(
     ref: str, stage: str, digest_map: Dict[str, str],
     revision: Optional[str] = None,
+    version: Optional[str] = None,
 ) -> str:
     """Return ``ref@digest`` when a candidate ref is in *digest_map*.
 
-    Tries three candidates in order:
+    Candidate construction depends on whether *revision* is supplied:
 
-    1. *ref* itself (direct match — catches literal-tag extras and
-       refs the author already wrote at the revision tag).
-    2. ``<name>:<revision>`` (only when *revision* is supplied) —
-       mirrors :func:`resolve_extra_image`'s revision branch so env
-       defaults written against a concrete tag (e.g. ``agent:1.9.0``)
-       still resolve under ``--revision`` (where digest_map is keyed by
-       e.g. ``agent:develop``).
-    3. ``<name>:<clean_tag><stage_suffix>`` — legacy synthesis for the
-       no-revision path.
+    Under ``--revision``:
+      1. *ref* itself (direct match — author already wrote the
+         revision tag, or listed a literal-tag extra).
+      2. ``<name>:<revision>`` ONLY when ``ref``'s tag equals
+         *version* — same opt-in signal as ``{version}`` in
+         :func:`resolve_extra_image`. A literal pin to any other tag
+         signals independent release cadence and passes through.
+      No legacy stage-suffix fallback (would re-divergence env vs
+      extras; under --revision the catalog publish keys digest_map by
+      ``:<revision>``, so the stage candidate is unreachable in
+      practice and shouldn't be locked in tests).
 
-    Returns *ref* unchanged when none match, the ref is digest-pinned,
-    or the ref has no ``/`` (can't split a name).
+    Without ``--revision`` (legacy):
+      1. *ref* itself (direct match).
+      2. ``<name>:<clean_tag><stage_suffix>`` synthesis.
+
+    Returns *ref* unchanged when no candidate matches, the ref is
+    digest-pinned, or the ref has no ``/`` (can't split a name).
 
     Stage suffixes: known built-ins (``-dev``/``-stage``) are stripped
     before reapplying so re-publishes round-trip cleanly. Custom-stage
@@ -580,16 +593,22 @@ def _stage_and_pin_ref(
     else:
         name, tag = ref, "latest"
 
-    # Revision-tag candidate: under --revision, digest_map is keyed by
-    # `<name>:<revision>` (what ``resolve_extra_image`` emits). An env
-    # default with a concrete tag like `:1.9.0` needs this retag to
-    # agree with the extras entry in the same catalog row.
     if revision is not None:
-        rev_candidate = f"{name}:{revision}"
-        if rev_candidate in digest_map:
-            return f"{rev_candidate}@{digest_map[rev_candidate]}"
+        # Version-gate: only retag when the env default explicitly opts
+        # in by writing the current kamiwaza.json version as its tag.
+        # A literal pin to a different version (e.g. a helper at
+        # `:0.5.0` while the extension is at `:1.9.0`) passes through —
+        # mirrors ``resolve_extra_image``'s ``{version}``-opt-in
+        # semantics so the env-rewrite surface stays consistent with
+        # the extras surface. No legacy stage-suffix fallback under
+        # --revision.
+        if version is not None and tag == version:
+            rev_candidate = f"{name}:{revision}"
+            if rev_candidate in digest_map:
+                return f"{rev_candidate}@{digest_map[rev_candidate]}"
+        return ref
 
-    # Legacy stage-suffix synthesis fallback.
+    # Legacy stage-suffix synthesis (revision=None path only).
     clean_tag = re.sub(r"-(dev|stage)$", "", tag)
     suffix = _STAGE_SUFFIXES.get(stage, f"-{stage}")
     candidate = f"{name}:{clean_tag}{suffix}"

@@ -374,12 +374,12 @@ class TestBuildEntry:
     def test_extra_docker_images_revision_overrides_synthesis(
         self, builder, transformed_compose,
     ):
-        # ENG-5599: under the new tag policy CI publishes images at the
-        # branch/release tag (e.g. `:develop`), not `:<version>-<stage>`.
+        # CI publishes extension images at the branch/release tag
+        # (`:develop`, `:release-X.Y.Z`), not `:<version>-<stage>`.
         # When --revision is supplied, the {version}-placeholder extras
-        # path must use it as the tag instead of synthesizing the legacy
-        # `<version><stage_suffix>` form. Mirrors the primary docker_images
-        # path in commands/publish.py.
+        # path uses it as the tag instead of synthesizing the legacy
+        # `<version><stage_suffix>` form. Mirrors the primary
+        # docker_images path in commands/publish.py.
         meta = {
             "name": "kaizenv3",
             "description": "test",
@@ -440,9 +440,8 @@ class TestBuildEntry:
     ):
         # The full publish path: revision retags the extras ref, then
         # digest_map pins it. digest_map is keyed by the revision-tagged
-        # ref (matching what publish.py:_auto_resolve_digests resolves
-        # against the actual GHCR push). Locks the post-fix shape; pre-fix
-        # the key would be `agent:<version>-<stage>` and never match.
+        # ref — matches what publish.py:_auto_resolve_digests resolves
+        # against the actual GHCR push under the branch-name tag policy.
         digest = "sha256:" + "c" * 64
         digest_map = {"myreg/images/agent:develop": digest}
         meta = {
@@ -934,7 +933,7 @@ class TestBuildEntryEnvImageRewrites:
 
 
 # ------------------------------------------------------------------
-# Env-var image-ref rewriting under --revision (ENG-5599)
+# Env-var image-ref rewriting under --revision
 # ------------------------------------------------------------------
 
 
@@ -958,9 +957,10 @@ class TestBuildEntryEnvImageRewritesWithRevision:
         return base
 
     def test_concrete_tag_env_default_pinned_to_revision_tag(self, builder):
-        # The H1 regression: env default at literal `:1.9.0` + revision
-        # in digest_map → pinned to `:develop@<digest>`. Pre-fix the
-        # candidate was `:1.9.0-dev`, missed the map, env left unpinned.
+        # Env default at literal `:<version>` + revision in digest_map →
+        # pinned to `:<revision>@<digest>`. The tag-equals-version
+        # opt-in (mirroring resolve_extra_image's {version} semantics)
+        # is what triggers the retag.
         compose = _kaizen_shaped_compose(
             "${AGENT_SERVER_IMAGE:-myreg/images/agent:1.9.0}"
         )
@@ -1057,14 +1057,13 @@ class TestBuildEntryEnvImageRewritesWithRevision:
             "AGENT_SERVER_IMAGE"
         ] == f"${{AGENT_SERVER_IMAGE:-{pinned_default}}}"
 
-    def test_revision_miss_falls_back_to_legacy_stage_candidate(self, builder):
-        # When revision is supplied but the revision-tag candidate
-        # `agent:develop` isn't in digest_map, the legacy stage-suffix
-        # candidate `agent:1.9.0-dev` is tried next. If it hits, the env
-        # default is pinned to the legacy form. Locks the candidate
-        # ordering: direct → revision → legacy stage. Uses a non-empty
-        # digest_map so _apply_env_image_rewrites doesn't short-circuit
-        # at its outer empty-map guard.
+    def test_revision_miss_fail_closed_no_legacy_fallback(self, builder):
+        # Under --revision, the legacy stage-suffix candidate is NOT
+        # tried. The publish flow keys digest_map by `:<revision>` so
+        # the legacy candidate is unreachable in practice; locking the
+        # fallback would let a future caller building digest_map
+        # differently re-divergence the env vs extras surfaces.
+        # Invariant: revision miss → pass through unchanged.
         legacy_digest = "sha256:" + "9" * 64
         legacy_only_map = {"myreg/images/agent:1.9.0-dev": legacy_digest}
         compose = _kaizen_shaped_compose(
@@ -1075,12 +1074,44 @@ class TestBuildEntryEnvImageRewritesWithRevision:
             stage="dev", revision="develop", digest_map=legacy_only_map,
         )
         compose_out = yaml.safe_load(entry["compose_yml"])
+        # Env default is left verbatim — the legacy stage-suffix
+        # candidate is NOT tried under --revision.
         assert compose_out["services"]["backend"]["environment"][
             "AGENT_SERVER_IMAGE"
-        ] == (
-            "${AGENT_SERVER_IMAGE:-"
-            f"myreg/images/agent:1.9.0-dev@{legacy_digest}}}"
+        ] == "${AGENT_SERVER_IMAGE:-myreg/images/agent:1.9.0}"
+
+    def test_literal_pinned_env_default_passes_through_under_revision(self, builder):
+        # An env default at a literal tag != kamiwaza.json version
+        # signals independent release cadence (e.g. a vendored helper
+        # pinned to :0.5.0 while the extension is at :1.9.0). The
+        # revision candidate must NOT retag it just because
+        # <name>:<revision> happens to be in digest_map — the env
+        # surface mirrors resolve_extra_image's {version}-opt-in
+        # semantics, with tag-equals-version as the opt-in signal
+        # (since compose env values can't carry the literal `{version}`
+        # placeholder the extras surface uses).
+        revision_digest = "sha256:" + "3" * 64
+        # digest_map carries the revision-tagged form (from the
+        # extension's own {version} extras), but NOT a key matching
+        # the literal env default tag.
+        map_with_revision = {"myreg/images/agent:develop": revision_digest}
+        compose = _kaizen_shaped_compose(
+            "${HELPER_IMAGE:-myreg/images/agent:0.5.0}"
         )
+        entry = builder.build_entry(
+            self._meta(), compose, "myreg/images", "1.9.0",
+            stage="dev", revision="develop", digest_map=map_with_revision,
+        )
+        compose_out = yaml.safe_load(entry["compose_yml"])
+        # Literal :0.5.0 is preserved — the version-gate skipped the
+        # revision candidate because tag (0.5.0) != version (1.9.0).
+        assert compose_out["services"]["backend"]["environment"][
+            "AGENT_SERVER_IMAGE"
+        ] == "${HELPER_IMAGE:-myreg/images/agent:0.5.0}"
+        # And the revision-tag candidate did NOT leak in.
+        assert "develop" not in compose_out["services"]["backend"]["environment"][
+            "AGENT_SERVER_IMAGE"
+        ]
 
     def test_bare_ref_form_under_revision(self, builder):
         # Bare image ref (no ${...} wrapper) takes the same path through

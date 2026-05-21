@@ -779,13 +779,15 @@ class TestPublishEnvImageRefsAgreeWithExtras:
         mock_publisher_cls,
         tmp_path,
     ):
-        # ENG-5599 H1 regression: the kaizen-shaped end-to-end under
-        # --revision. The compose env default is written at the literal
-        # version tag (the common author shape); the extras list uses
-        # {version}. After publish, both surfaces in the catalog entry
-        # must reference the same revision-tagged + digest-pinned ref.
-        # Pre-fix the env default would have been left at the unpinned
-        # `:1.9.0` while extras shipped `:develop@<digest>`.
+        # Kaizen-shaped end-to-end under --revision: the compose env
+        # default is written at the literal version tag (the common
+        # author shape); the extras list uses {version}. After
+        # publish, both surfaces in the catalog entry must reference
+        # the same revision-tagged + digest-pinned ref. Locks the
+        # env-default-matches-extras invariant under the revision
+        # path; sister test `test_env_default_matches_extras_entry_
+        # end_to_end` above exercises the same invariant without
+        # --revision.
         import yaml as _yaml
 
         metadata = {
@@ -861,15 +863,14 @@ class TestPublishEnvImageRefsAgreeWithExtras:
             "AGENT_SERVER_IMAGE"
         ]
 
-        # Acceptance: under --revision the canonical pinned ref appears
-        # in BOTH the extras list and the env default. This is the
-        # invariant pre-fix violated.
+        # Under --revision, the canonical pinned ref must appear in
+        # BOTH the extras list and the env default — the env-default-
+        # matches-extras invariant.
         expected_ref = f"ghcr.io/my-org/images/agent:develop@{agent_digest}"
         assert entry["extra_docker_images"] == [expected_ref]
         assert expected_ref in env_default, (
             f"under --revision develop, compose env default {env_default!r} "
-            f"must reference the same pinned ref as extras ({expected_ref!r}) "
-            f"— H1 regression check"
+            f"must reference the same pinned ref as extras ({expected_ref!r})"
         )
         assert env_default.startswith("${AGENT_SERVER_IMAGE:-")
         assert env_default.endswith("}")
