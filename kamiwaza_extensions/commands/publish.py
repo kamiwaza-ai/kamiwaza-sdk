@@ -645,7 +645,7 @@ def run_publish(
     # when the user supplied `--digest`) are left alone — re-resolving
     # would hit the registry and could overwrite an explicit user pin.
     resolved_extras = [
-        resolve_extra_image(img, registry, version, stage)
+        resolve_extra_image(img, registry, version, stage, revision)
         for img in (info.metadata.get("extra_docker_images") or [])
     ]
     extras_to_resolve = [

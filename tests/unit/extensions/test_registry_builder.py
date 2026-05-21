@@ -371,6 +371,94 @@ class TestBuildEntry:
         assert entry["extra_docker_images"] == [pinned_ref]
         assert pinned_ref not in entry["docker_images"]
 
+    def test_extra_docker_images_revision_overrides_synthesis(
+        self, builder, transformed_compose,
+    ):
+        # ENG-5599: under the new tag policy CI publishes images at the
+        # branch/release tag (e.g. `:develop`), not `:<version>-<stage>`.
+        # When --revision is supplied, the {version}-placeholder extras
+        # path must use it as the tag instead of synthesizing the legacy
+        # `<version><stage_suffix>` form. Mirrors the primary docker_images
+        # path in commands/publish.py.
+        meta = {
+            "name": "kaizenv3",
+            "description": "test",
+            "source_type": "kamiwaza",
+            "visibility": "public",
+            "extra_docker_images": ["myreg/images/agent:{version}"],
+        }
+        entry = builder.build_entry(
+            meta, transformed_compose, "myreg/images", "2.0.1",
+            stage="dev", revision="develop",
+        )
+        assert entry["extra_docker_images"] == ["myreg/images/agent:develop"]
+        # The legacy synthesized ref must not also appear.
+        assert "myreg/images/agent:2.0.1-dev" not in entry["extra_docker_images"]
+
+    def test_extra_docker_images_no_revision_preserves_legacy_synthesis(
+        self, builder, transformed_compose,
+    ):
+        # Backwards-compat: extensions not yet on the shared workflow
+        # publish without --revision and rely on the `<version><stage_suffix>`
+        # synthesis. revision=None must not regress that behavior.
+        meta = {
+            "name": "kaizenv3",
+            "description": "test",
+            "source_type": "kamiwaza",
+            "visibility": "public",
+            "extra_docker_images": ["myreg/images/agent:{version}"],
+        }
+        entry = builder.build_entry(
+            meta, transformed_compose, "myreg/images", "1.8.13",
+            stage="dev",  # revision defaults to None
+        )
+        assert entry["extra_docker_images"] == ["myreg/images/agent:1.8.13-dev"]
+
+    def test_extra_docker_images_revision_does_not_retag_author_pinned(
+        self, builder, transformed_compose,
+    ):
+        # Asymmetric with primary docker_images by design: the {version}
+        # placeholder is the opt-in signal that an extra image's release
+        # cadence is coupled to the extension. Author-pinned literal tags
+        # signal independent cadence (vendored helper, frozen self-pin)
+        # and must pass through regardless of --revision.
+        meta = {
+            "name": "my-app",
+            "description": "test",
+            "source_type": "kamiwaza",
+            "visibility": "public",
+            "extra_docker_images": ["myreg/images/shared-helper:0.5.0"],
+        }
+        entry = builder.build_entry(
+            meta, transformed_compose, "myreg/images", "1.8.13",
+            stage="dev", revision="develop",
+        )
+        assert entry["extra_docker_images"] == ["myreg/images/shared-helper:0.5.0"]
+
+    def test_extra_docker_images_revision_does_not_retag_external(
+        self, builder, transformed_compose,
+    ):
+        # External refs are never ours to retag, --revision or not.
+        meta = {
+            "name": "my-app",
+            "description": "test",
+            "source_type": "kamiwaza",
+            "visibility": "public",
+            "extra_docker_images": [
+                "ghcr.io/external/sidecar:2.0",
+                "quay.io/org/util:{version}",
+            ],
+        }
+        entry = builder.build_entry(
+            meta, transformed_compose, "myreg/images", "1.8.13",
+            stage="dev", revision="develop",
+        )
+        # No-placeholder external: untouched.
+        assert "ghcr.io/external/sidecar:2.0" in entry["extra_docker_images"]
+        # Placeholder substituted, but external registry → no revision retag.
+        assert "quay.io/org/util:1.8.13" in entry["extra_docker_images"]
+        assert "quay.io/org/util:develop" not in entry["extra_docker_images"]
+
 
 # ------------------------------------------------------------------
 # Env-var image-ref rewriting (ENG-5260)

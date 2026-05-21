@@ -83,11 +83,18 @@ class RegistryBuilder:
                 entries.
             stage: One of ``"prod"``, ``"stage"``, ``"dev"``, or any custom name.
                 Applied as a tag suffix to ``extra_docker_images`` entries
-                under *registry* that carried a ``{version}`` placeholder.
-                Author-pinned literal tags pass through untouched.
-            revision: Optional revision identifier. When provided, included
-                as a top-level ``revision`` field on the entry; consumed by
-                ``CatalogDedupGuard`` to make CI re-publishes idempotent.
+                under *registry* that carried a ``{version}`` placeholder,
+                in the legacy synthesis path only. *revision* takes
+                precedence. Author-pinned literal tags pass through
+                untouched.
+            revision: Optional revision identifier (e.g. the CI-canonical
+                branch/release tag). When provided, included as a
+                top-level ``revision`` field on the entry (consumed by
+                ``CatalogDedupGuard`` to make CI re-publishes idempotent)
+                AND used as the tag for ``extra_docker_images`` entries
+                under *registry* with a ``{version}`` placeholder,
+                replacing the legacy ``<version><stage_suffix>``
+                synthesis.
             digest_map: Optional mapping of rewritten image ref
                 (``"<registry>/<ext>-<svc>:<tag>"``) to its OCI manifest
                 digest (``"sha256:..."``). When provided, matching service
@@ -126,7 +133,7 @@ class RegistryBuilder:
         # fields: compose-derived vs. author-declared. Downstream consumers
         # iterate each list separately; do not merge.
         extra_images = [
-            resolve_extra_image(img, registry, version, stage)
+            resolve_extra_image(img, registry, version, stage, revision)
             for img in (metadata.get("extra_docker_images") or [])
         ]
         if extra_images and digest_map:
@@ -578,15 +585,24 @@ def _stage_and_pin_ref(
 
 
 def resolve_extra_image(
-    image: str, registry: str, version: str, stage: str,
+    image: str,
+    registry: str,
+    version: str,
+    stage: str,
+    revision: Optional[str] = None,
 ) -> str:
-    """Apply ``{version}`` substitution and stage suffix to one ref.
+    """Apply ``{version}`` substitution and derive the tag for one ref.
 
-    Substitutes ``{version}`` literally, then applies the stage-derived
-    suffix only to substituted refs under *registry*. Returns *image*
-    unchanged when:
+    For refs containing ``{version}`` under *registry*, the resulting tag
+    is *revision* when supplied (CI passes the canonical branch/release
+    tag — mirrors the primary ``docker_images`` path in
+    ``commands/publish.py``), else the legacy ``<version><stage_suffix>``
+    synthesis (for extensions not yet on the shared workflow).
 
-    - The ref carried no ``{version}`` placeholder (author-pinned tag).
+    Returns *image* unchanged when:
+
+    - The ref carried no ``{version}`` placeholder (author-pinned tag —
+      independent release cadence, not ours to retag).
     - The ref is already digest-pinned (``@sha256:...``).
     - The ref is outside *registry* (external pass-through).
     """
@@ -601,20 +617,23 @@ def resolve_extra_image(
 
     # The tag, if any, lives after the last `/`. Splitting on the leftmost
     # `:` would catch a registry port (e.g. `localhost:5000/...`) instead.
-    suffix = _STAGE_SUFFIXES.get(stage, f"-{stage}")
     slash = substituted.rfind("/")
     last_segment = substituted[slash + 1:]
     if ":" in last_segment:
         colon = last_segment.index(":")
         name = substituted[: slash + 1 + colon]
         tag = last_segment[colon + 1:]
-        # Strip an existing stage suffix so `agent:{version}-dev` published
-        # against a prod stage emits the unsuffixed tag rather than
-        # `agent:1.8.13-dev` reapplied.
-        clean_tag = re.sub(r"-(dev|stage)$", "", tag)
     else:
-        name, clean_tag = substituted, "latest"
+        name, tag = substituted, "latest"
 
+    if revision is not None:
+        return f"{name}:{revision}"
+
+    # Legacy synthesis. Strip an existing stage suffix so
+    # `agent:{version}-dev` published against a prod stage emits the
+    # unsuffixed tag rather than `agent:1.8.13-dev` reapplied.
+    clean_tag = re.sub(r"-(dev|stage)$", "", tag)
+    suffix = _STAGE_SUFFIXES.get(stage, f"-{stage}")
     return f"{name}:{clean_tag}{suffix}"
 
 
