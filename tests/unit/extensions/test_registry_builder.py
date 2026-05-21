@@ -2147,3 +2147,74 @@ class TestBuildEntryDigestPinning:
             f"kamiwazaai/my-app-backend:abc1234@{_DIGEST_A}"
             in entry["docker_images"]
         )
+
+
+class TestBuildEntryImageBasenameNormalization:
+    """Catalog-boundary normalization of `image_basename`. ENG-5643.
+
+    `ExtensionDetector` and `MetadataValidator` both normalize a blank/
+    whitespace-only override to None at their layers, but the catalog
+    builder is the boundary that *publishes* metadata downstream — a
+    stale catalog entry re-fed as `metadata` (or a programmatic caller
+    that bypasses the loaders) could otherwise ship a malformed field.
+    """
+
+    def test_blank_image_basename_dropped_from_catalog_entry(
+        self, builder, transformed_compose
+    ):
+        metadata = {
+            "name": "my-app",
+            "version": "1.0.0",
+            "description": "x",
+            "source_type": "kamiwaza",
+            "visibility": "public",
+            "image_basename": "   ",
+        }
+        entry = builder.build_entry(
+            metadata, transformed_compose, "kamiwazaai", "1.0.0"
+        )
+        assert "image_basename" not in entry
+
+    def test_empty_string_image_basename_dropped_from_catalog_entry(
+        self, builder, transformed_compose
+    ):
+        metadata = {
+            "name": "my-app",
+            "version": "1.0.0",
+            "description": "x",
+            "source_type": "kamiwaza",
+            "visibility": "public",
+            "image_basename": "",
+        }
+        entry = builder.build_entry(
+            metadata, transformed_compose, "kamiwazaai", "1.0.0"
+        )
+        assert "image_basename" not in entry
+
+    def test_valid_image_basename_passes_through(
+        self, builder, transformed_compose
+    ):
+        # Non-blank values survive — this is the happy path that the
+        # platform's downstream `_update_template_from_remote` consumes.
+        metadata = {
+            "name": "workroom-manager",
+            "version": "0.13.0",
+            "description": "x",
+            "source_type": "kamiwaza",
+            "visibility": "public",
+            "image_basename": "outcome-d563-workroom-manager",
+        }
+        entry = builder.build_entry(
+            metadata, transformed_compose, "kamiwazaai", "0.13.0"
+        )
+        assert entry["image_basename"] == "outcome-d563-workroom-manager"
+
+    def test_absent_image_basename_unchanged(
+        self, builder, metadata, transformed_compose
+    ):
+        # Manifests without the field don't gain it as a side effect.
+        assert "image_basename" not in metadata
+        entry = builder.build_entry(
+            metadata, transformed_compose, "kamiwazaai", "1.0.0"
+        )
+        assert "image_basename" not in entry
