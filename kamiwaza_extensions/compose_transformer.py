@@ -89,6 +89,7 @@ def compute_canonical_refs(
     extension_name: str,
     revision_tag: str,
     appgarden_services: Optional[Dict[str, Any]] = None,
+    image_basename: Optional[str] = None,
 ) -> Dict[str, str]:
     """Canonical image refs for every buildable service, keyed by service name.
 
@@ -106,6 +107,11 @@ def compute_canonical_refs(
     Filters out profile-gated services (matches ``buildable_services``
     in ``run_publish``) so profile-only helpers don't leak into the
     push list under ``--no-build``.
+
+    ``image_basename`` (when present and non-empty) overrides
+    ``extension_name`` for the legacy ``{registry}/{basename}-{svc}:{tag}``
+    synthesis — needed when the bake target / pushed image basename
+    diverges from the kamiwaza.json ``name``.
     """
     appgarden = appgarden_services or {}
     out: Dict[str, str] = {}
@@ -124,6 +130,7 @@ def compute_canonical_refs(
             fallback_registry=registry,
             fallback_extension_name=extension_name,
             revision_tag=revision_tag,
+            fallback_image_basename=image_basename,
         )
     return out
 
@@ -135,6 +142,7 @@ def _canonical_build_ref(
     fallback_registry: str,
     fallback_extension_name: str,
     revision_tag: str,
+    fallback_image_basename: Optional[str] = None,
 ) -> str:
     """Return the canonical registry image ref for a buildable service.
 
@@ -142,11 +150,18 @@ def _canonical_build_ref(
     explicit registry host (``ghcr.io/...``, ``localhost:5000/...``),
     the namespace is preserved and only the tag is rewritten to
     *revision_tag*. Unqualified refs (``api:latest``,
-    ``my-org/api:1.0``) and missing/empty declarations fall back to
-    the legacy
-    ``{fallback_registry}/{fallback_extension_name}-{svc_name}:{revision_tag}``
+    ``my-org/api:1.0``) and missing/empty declarations fall back to the
+    legacy ``{fallback_registry}/{basename}-{svc_name}:{revision_tag}``
     form — those would otherwise route ``docker push`` to Docker Hub
     while the cluster registry expects the rewritten path.
+
+    ``fallback_image_basename`` (when truthy) overrides
+    ``fallback_extension_name`` as the ``{basename}`` segment. This
+    lets a repo whose bake target / pushed image basename diverges
+    from its kamiwaza.json ``name`` (e.g. ``name=workroom-manager`` but
+    images pushed as ``outcome-d563-workroom-manager-<svc>``) declare
+    the override via ``image_basename`` in kamiwaza.json without
+    touching the manifest's primary identifier.
 
     Shared by ``ComposeTransformer.transform_service``,
     ``_retag_appgarden_compose``, ``ImageBuilder.build``, and
@@ -158,9 +173,14 @@ def _canonical_build_ref(
         stripped = declared.strip()
         if stripped and _looks_registry_qualified(stripped):
             return _replace_image_tag(stripped, revision_tag)
-    return (
-        f"{fallback_registry}/{fallback_extension_name}-{svc_name}:{revision_tag}"
-    )
+    # Strip whitespace so a malformed-but-truthy override (e.g. "   "
+    # — caller forgot to normalize) doesn't synthesize a broken
+    # `{registry}/   -svc:tag`. ExtensionDetector + MetadataValidator
+    # both normalize blank to None at their layers, but this function
+    # is also called directly from tests and downstream call sites
+    # that may bypass those normalizers.
+    basename = (fallback_image_basename or "").strip() or fallback_extension_name
+    return f"{fallback_registry}/{basename}-{svc_name}:{revision_tag}"
 
 
 # Compose ``${VAR:-default}`` (use default if unset OR empty) and the
@@ -215,6 +235,7 @@ class ComposeTransformer:
         extension_name: str,
         revision_tag: str,
         registry: str,
+        image_basename: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Return a deployment-ready copy of *compose_data*.
 
@@ -225,6 +246,11 @@ class ComposeTransformer:
         4. Add / update ``image`` fields with *registry*/*revision_tag*
         5. Add resource limits if missing
         6. Remove ``extra_hosts``, ``container_name``, ``networks`` keys
+
+        ``image_basename`` (when present) overrides ``extension_name`` as
+        the prefix in the legacy ``{registry}/{basename}-{svc}:{tag}``
+        fallback synthesis; see ``_canonical_build_ref`` for the
+        precedence rules.
 
         Env-value ``${VAR}`` placeholders pass through unchanged. Callers
         shipping the result to a destination that does NOT perform its
@@ -246,6 +272,7 @@ class ComposeTransformer:
                 extension_name,
                 revision_tag,
                 registry,
+                image_basename=image_basename,
             )
 
         # Remove top-level networks (platform manages networking)
@@ -260,6 +287,7 @@ class ComposeTransformer:
         extension_name: str,
         revision_tag: str,
         registry: str,
+        image_basename: Optional[str] = None,
     ) -> Dict[str, Any]:
         svc = copy.deepcopy(service)
 
@@ -289,6 +317,7 @@ class ComposeTransformer:
                 fallback_registry=registry,
                 fallback_extension_name=extension_name,
                 revision_tag=revision_tag,
+                fallback_image_basename=image_basename,
             )
         # Services without a build context — both external (postgres, redis)
         # and prebuilt-internal (e.g. a helper image published from another

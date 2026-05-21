@@ -71,6 +71,87 @@ class TestMetadataValidator:
         result = validator.validate(f)
         assert not result.passed
 
+    def test_image_basename_present_validates(self, tmp_path, validator):
+        data = _valid_metadata()
+        data["image_basename"] = "outcome-d563-workroom-manager"
+        f = tmp_path / "kamiwaza.json"
+        _write_json(f, data)
+        result = validator.validate(f)
+        assert result.passed
+
+    def test_image_basename_blank_string_validates_as_absent(
+        self, tmp_path, validator
+    ):
+        # Blank/whitespace-only override must not hard-fail validation —
+        # `ExtensionDetector` treats it as absent, so the validator
+        # must agree (otherwise `kz-ext validate` and `kz-ext publish`
+        # disagree on a manifest the publish path silently accepts).
+        data = _valid_metadata()
+        data["image_basename"] = "   "
+        f = tmp_path / "kamiwaza.json"
+        _write_json(f, data)
+        result = validator.validate(f)
+        assert result.passed
+
+    def test_image_basename_absent_validates(self, tmp_path, validator):
+        # Today's behavior preserved when the optional field is omitted.
+        data = _valid_metadata()
+        assert "image_basename" not in data
+        f = tmp_path / "kamiwaza.json"
+        _write_json(f, data)
+        result = validator.validate(f)
+        assert result.passed
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "BAD CASE",          # uppercase + space
+            "a b",               # internal whitespace
+            "foo:bar",           # tag-separator char leaks past push
+            "a/b/../c",          # path traversal
+            "-leading-hyphen",   # starts with punct
+            "trailing-hyphen-",  # ends with punct
+            "Ümlaut",            # non-ASCII
+            "a" * 129,           # exceeds 128-char cap
+        ],
+    )
+    def test_image_basename_invalid_charset_rejected(
+        self, tmp_path, validator, value
+    ):
+        # Hard-fail invalid charsets at validate time so a malformed
+        # override (uppercase, spaces, `:`, `..`, etc.) can't escape
+        # into the legacy `{registry}/{basename}-{svc}:{tag}` synthesis
+        # and break docker push silently.
+        data = _valid_metadata()
+        data["image_basename"] = value
+        f = tmp_path / "kamiwaza.json"
+        _write_json(f, data)
+        result = validator.validate(f)
+        assert not result.passed
+        assert any("image_basename" in e for e in result.errors)
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "outcome-d563-workroom-manager",   # the bug repro
+            "workroom-manager",
+            "a",                                # min length
+            "kamiwaza-internal/foo/bar",        # path components allowed
+            "name_with_underscores",
+            "name.with.dots",
+            "a" * 128,                          # at length cap
+        ],
+    )
+    def test_image_basename_valid_values_pass(
+        self, tmp_path, validator, value
+    ):
+        data = _valid_metadata()
+        data["image_basename"] = value
+        f = tmp_path / "kamiwaza.json"
+        _write_json(f, data)
+        result = validator.validate(f)
+        assert result.passed, f"unexpected errors: {result.errors}"
+
     def test_tool_naming_convention_warning(self, tmp_path, validator):
         data = _valid_metadata()
         data["name"] = "bad-name"

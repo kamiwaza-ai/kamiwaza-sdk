@@ -154,6 +154,14 @@ class RegistryBuilder:
         entry.setdefault("description", "")
         entry.setdefault("source_type", "kamiwaza")
         entry.setdefault("visibility", "public")
+        # Mirror ExtensionDetector + MetadataValidator's blank-to-None
+        # normalization at the catalog boundary so a malformed
+        # `image_basename` (blank/whitespace-only that bypassed earlier
+        # layers — e.g. metadata re-fed from a stale catalog entry)
+        # doesn't ship a wrong-shaped field into the published catalog.
+        raw_basename = entry.get("image_basename")
+        if isinstance(raw_basename, str) and not raw_basename.strip():
+            entry.pop("image_basename", None)
         entry["compose_yml"] = compose_yml
         entry["docker_images"] = docker_images
         # Overwrite the deepcopy carryover with the resolved list (source

@@ -966,3 +966,147 @@ class TestComputeCanonicalRefs:
         assert self._call(source) == {
             "backend": "registry.test/my-ext-backend:2.0.0-dev",
         }
+
+
+class TestCanonicalBuildRefImageBasename:
+    """``image_basename`` override on the legacy fallback path.
+
+    Repos whose docker-bake target / pushed image basename diverges from
+    kamiwaza.json ``name`` (e.g. workroom-manager → outcome-d563-
+    workroom-manager-<svc>) need to override the ``{basename}-`` prefix
+    without renaming the manifest. The override only affects the legacy
+    fallback synthesis — a registry-qualified declared ``image:`` still
+    wins.
+    """
+
+    @staticmethod
+    def _call(*, image=None, fallback_image_basename=None, has_build=True):
+        from kamiwaza_extensions.compose_transformer import _canonical_build_ref
+
+        svc: Dict[str, Any] = {}
+        if has_build:
+            svc["build"] = "."
+        if image is not None:
+            svc["image"] = image
+        return _canonical_build_ref(
+            svc, "api",
+            fallback_registry="registry.test",
+            fallback_extension_name="my-ext",
+            revision_tag="2.0.0-dev",
+            fallback_image_basename=fallback_image_basename,
+        )
+
+    def test_basename_absent_uses_extension_name(self):
+        # Today's behavior is preserved when the override is None — the
+        # fallback synthesis still uses fallback_extension_name.
+        assert self._call() == "registry.test/my-ext-api:2.0.0-dev"
+
+    def test_basename_present_overrides_extension_name(self):
+        # When supplied, the basename replaces fallback_extension_name in
+        # the legacy {basename}-{svc} prefix.
+        assert self._call(
+            fallback_image_basename="custom-basename",
+        ) == "registry.test/custom-basename-api:2.0.0-dev"
+
+    def test_basename_empty_string_falls_back_to_extension_name(self):
+        # Defensive: an empty override is treated as absent (don't ship
+        # `registry.test/-api:tag` if a misconfig leaks through).
+        assert self._call(
+            fallback_image_basename="",
+        ) == "registry.test/my-ext-api:2.0.0-dev"
+
+    def test_basename_whitespace_only_falls_back_to_extension_name(self):
+        # ExtensionDetector + MetadataValidator both normalize blank to
+        # None at their layers, but `_canonical_build_ref` is called
+        # directly from tests and downstream sites that may bypass
+        # those normalizers — strip here too so a "   " override
+        # doesn't escape as `registry.test/   -api:tag`.
+        assert self._call(
+            fallback_image_basename="   ",
+        ) == "registry.test/my-ext-api:2.0.0-dev"
+
+    def test_basename_ignored_when_image_registry_qualified(self):
+        # Override only affects the legacy fallback. A registry-qualified
+        # declared image still wins, exactly as without the override.
+        assert self._call(
+            image="ghcr.io/my-org/api:1.0",
+            fallback_image_basename="custom-basename",
+        ) == "ghcr.io/my-org/api:2.0.0-dev"
+
+
+class TestComposeTransformerImageBasenameRegression:
+    """Workroom-manager regression: synthetic kamiwaza.json with
+    ``name=workroom-manager`` + ``image_basename=outcome-d563-workroom-
+    manager`` + a docker-compose.yml that declares only ``build:`` blocks
+    (no ``image:``). The canonical refs MUST use the bake-target basename
+    so publish push and catalog refs match what GHCR actually serves.
+    """
+
+    def test_workroom_manager_basename_threaded_through_transform(self):
+        transformer = ComposeTransformer()
+        compose = {
+            "services": {
+                "backend": {"build": "./backend"},
+                "frontend": {"build": "./frontend"},
+            }
+        }
+        out = transformer.transform(
+            compose,
+            extension_name="workroom-manager",
+            revision_tag="0.13.0-dev",
+            registry="ghcr.io/kamiwaza-internal",
+            image_basename="outcome-d563-workroom-manager",
+        )
+        assert out["services"]["backend"]["image"] == (
+            "ghcr.io/kamiwaza-internal/"
+            "outcome-d563-workroom-manager-backend:0.13.0-dev"
+        )
+        assert out["services"]["frontend"]["image"] == (
+            "ghcr.io/kamiwaza-internal/"
+            "outcome-d563-workroom-manager-frontend:0.13.0-dev"
+        )
+
+    def test_workroom_manager_basename_threaded_through_compute_canonical_refs(self):
+        from kamiwaza_extensions.compose_transformer import compute_canonical_refs
+
+        source = {
+            "backend": {"build": "./backend"},
+            "frontend": {"build": "./frontend"},
+        }
+        refs = compute_canonical_refs(
+            source,
+            registry="ghcr.io/kamiwaza-internal",
+            extension_name="workroom-manager",
+            revision_tag="0.13.0-dev",
+            image_basename="outcome-d563-workroom-manager",
+        )
+        assert refs == {
+            "backend": (
+                "ghcr.io/kamiwaza-internal/"
+                "outcome-d563-workroom-manager-backend:0.13.0-dev"
+            ),
+            "frontend": (
+                "ghcr.io/kamiwaza-internal/"
+                "outcome-d563-workroom-manager-frontend:0.13.0-dev"
+            ),
+        }
+
+    def test_basename_absent_preserves_legacy_workroom_manager_synthesis(self):
+        # The regression: before this PR, the absence of image_basename
+        # forced the synthesis to use `name`, producing the wrong GHCR
+        # path. Without the override, behavior is unchanged — same legacy
+        # synthesis as today.
+        from kamiwaza_extensions.compose_transformer import compute_canonical_refs
+
+        source = {"backend": {"build": "./backend"}}
+        refs = compute_canonical_refs(
+            source,
+            registry="ghcr.io/kamiwaza-internal",
+            extension_name="workroom-manager",
+            revision_tag="0.13.0-dev",
+        )
+        assert refs == {
+            "backend": (
+                "ghcr.io/kamiwaza-internal/workroom-manager-backend:0.13.0-dev"
+            ),
+        }
