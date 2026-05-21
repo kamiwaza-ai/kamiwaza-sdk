@@ -7,7 +7,6 @@ import yaml
 
 from kamiwaza_extensions.extension_detector import (
     ExtensionDetector,
-    ExtensionInfo,
     ExtensionNotFoundError,
     MultipleExtensionsError,
 )

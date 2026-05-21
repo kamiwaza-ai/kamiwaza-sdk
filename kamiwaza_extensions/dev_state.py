@@ -15,10 +15,10 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional
 
 DEV_STATE_DIR = ".kz-ext"
 DEV_STATE_FILE = "dev-state.json"
