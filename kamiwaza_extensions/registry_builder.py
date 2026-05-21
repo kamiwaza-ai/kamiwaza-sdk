@@ -81,20 +81,14 @@ class RegistryBuilder:
             version: Semver version string for this release. Substituted
                 into ``{version}`` placeholders in ``extra_docker_images``
                 entries.
-            stage: One of ``"prod"``, ``"stage"``, ``"dev"``, or any custom name.
-                Applied as a tag suffix to ``extra_docker_images`` entries
-                under *registry* that carried a ``{version}`` placeholder,
-                in the legacy synthesis path only. *revision* takes
-                precedence. Author-pinned literal tags pass through
-                untouched.
-            revision: Optional revision identifier (e.g. the CI-canonical
-                branch/release tag). When provided, included as a
-                top-level ``revision`` field on the entry (consumed by
-                ``CatalogDedupGuard`` to make CI re-publishes idempotent)
-                AND used as the tag for ``extra_docker_images`` entries
-                under *registry* with a ``{version}`` placeholder,
-                replacing the legacy ``<version><stage_suffix>``
-                synthesis.
+            stage: ``"prod"`` / ``"stage"`` / ``"dev"`` / custom name.
+                Tag suffix for ``{version}`` extras under *registry* in
+                the legacy (no-revision) synthesis path only.
+            revision: Optional revision identifier. When provided, set
+                as the entry's ``revision`` field (for
+                ``CatalogDedupGuard`` idempotency) AND used as the tag
+                for ``{version}`` extras under *registry*, overriding
+                the legacy ``<version><stage_suffix>`` synthesis.
             digest_map: Optional mapping of rewritten image ref
                 (``"<registry>/<ext>-<svc>:<tag>"``) to its OCI manifest
                 digest (``"sha256:..."``). When provided, matching service
@@ -593,16 +587,15 @@ def resolve_extra_image(
 ) -> str:
     """Apply ``{version}`` substitution and derive the tag for one ref.
 
-    For refs containing ``{version}`` under *registry*, the resulting tag
-    is *revision* when supplied (CI passes the canonical branch/release
-    tag — mirrors the primary ``docker_images`` path in
+    ``{version}`` is always substituted first. For refs under *registry*,
+    the resulting tag is *revision* when supplied (CI's canonical
+    branch/release tag — mirrors the primary ``docker_images`` path in
     ``commands/publish.py``), else the legacy ``<version><stage_suffix>``
     synthesis (for extensions not yet on the shared workflow).
 
-    Returns *image* unchanged when:
+    Tag derivation is skipped (substituted ref returned as-is) when:
 
-    - The ref carried no ``{version}`` placeholder (author-pinned tag —
-      independent release cadence, not ours to retag).
+    - The ref carried no ``{version}`` placeholder (author-pinned tag).
     - The ref is already digest-pinned (``@sha256:...``).
     - The ref is outside *registry* (external pass-through).
     """

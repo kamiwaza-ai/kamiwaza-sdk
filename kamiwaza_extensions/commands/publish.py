@@ -638,12 +638,11 @@ def run_publish(
         else:
             digest_map = _auto_resolve_digests(published_refs)
 
-    # Extras under our registry get the same tag-and-digest pinning as
-    # compose buildable services. External refs and author-pinned
-    # `@sha256:...` refs pass through untouched. Refs already in
-    # digest_map (e.g. the buildable service redundantly listed in extras
-    # when the user supplied `--digest`) are left alone — re-resolving
-    # would hit the registry and could overwrite an explicit user pin.
+    # `{version}` extras under our registry are retagged and digest-
+    # pinned. Literal extras under our registry keep their tag but may
+    # be digest-pinned. External refs and `@sha256:`-pinned refs keep
+    # their declared form. Refs already in digest_map are left alone —
+    # re-resolving would overwrite an explicit `--digest` user pin.
     resolved_extras = [
         resolve_extra_image(img, registry, version, stage, revision)
         for img in (info.metadata.get("extra_docker_images") or [])

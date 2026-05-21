@@ -435,6 +435,31 @@ class TestBuildEntry:
         )
         assert entry["extra_docker_images"] == ["myreg/images/shared-helper:0.5.0"]
 
+    def test_extra_docker_images_revision_and_digest_pin_together(
+        self, builder, transformed_compose,
+    ):
+        # The full publish path: revision retags the extras ref, then
+        # digest_map pins it. digest_map is keyed by the revision-tagged
+        # ref (matching what publish.py:_auto_resolve_digests resolves
+        # against the actual GHCR push). Locks the post-fix shape; pre-fix
+        # the key would be `agent:<version>-<stage>` and never match.
+        digest = "sha256:" + "c" * 64
+        digest_map = {"myreg/images/agent:develop": digest}
+        meta = {
+            "name": "kaizenv3",
+            "description": "test",
+            "source_type": "kamiwaza",
+            "visibility": "public",
+            "extra_docker_images": ["myreg/images/agent:{version}"],
+        }
+        entry = builder.build_entry(
+            meta, transformed_compose, "myreg/images", "2.0.1",
+            stage="dev", revision="develop", digest_map=digest_map,
+        )
+        assert entry["extra_docker_images"] == [
+            f"myreg/images/agent:develop@{digest}"
+        ]
+
     def test_extra_docker_images_revision_does_not_retag_external(
         self, builder, transformed_compose,
     ):
