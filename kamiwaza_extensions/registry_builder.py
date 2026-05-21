@@ -111,7 +111,7 @@ class RegistryBuilder:
         # (same source of truth ``_apply_digests`` uses) so an env default
         # only gets restamped when this publish actually resolved that ref.
         transformed_compose = _apply_env_image_rewrites(
-            transformed_compose, stage, digest_map
+            transformed_compose, stage, digest_map, revision
         )
 
         # sort_keys=False preserves service key order from the source compose.
@@ -455,6 +455,7 @@ def _apply_env_image_rewrites(
     compose: Dict[str, Any],
     stage: str,
     digest_map: Optional[Dict[str, str]] = None,
+    revision: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Return a deep copy of *compose* with image refs in env values rewritten.
 
@@ -485,25 +486,26 @@ def _apply_env_image_rewrites(
         if isinstance(env, dict):
             for key, val in env.items():
                 if isinstance(val, str):
-                    env[key] = _rewrite_env_image_ref(val, stage, digest_map)
+                    env[key] = _rewrite_env_image_ref(val, stage, digest_map, revision)
         elif isinstance(env, list):
             for i, entry in enumerate(env):
                 if isinstance(entry, str) and "=" in entry:
                     k, v = entry.split("=", 1)
-                    new_v = _rewrite_env_image_ref(v, stage, digest_map)
+                    new_v = _rewrite_env_image_ref(v, stage, digest_map, revision)
                     if new_v != v:
                         env[i] = f"{k}={new_v}"
                 elif isinstance(entry, dict):
                     val = entry.get("value")
                     if isinstance(val, str):
                         entry["value"] = _rewrite_env_image_ref(
-                            val, stage, digest_map
+                            val, stage, digest_map, revision
                         )
     return result
 
 
 def _rewrite_env_image_ref(
     value: str, stage: str, digest_map: Dict[str, str],
+    revision: Optional[str] = None,
 ) -> str:
     """Apply stage suffix + digest pin to an image ref embedded in *value*.
 
@@ -517,28 +519,42 @@ def _rewrite_env_image_ref(
     Pass-through cases (none of which match *digest_map* membership):
     non-image-shaped strings, already ``@sha256:``-pinned refs, refs
     whose post-suffix candidate isn't in *digest_map*.
+
+    When *revision* is set, candidate construction follows
+    :func:`_stage_and_pin_ref`'s revision-aware path so env defaults
+    written against a concrete tag (e.g. ``agent:1.9.0``) still resolve
+    against a revision-keyed digest_map (e.g. ``agent:develop``).
     """
     match = _ENV_DEFAULT_SUB_RE.match(value)
     if match:
         prefix, default, brace = match.group(1), match.group(2), match.group(3)
-        new_ref = _stage_and_pin_ref(default, stage, digest_map)
+        new_ref = _stage_and_pin_ref(default, stage, digest_map, revision)
         if new_ref == default:
             return value
         return f"{prefix}{new_ref}{brace}"
-    return _stage_and_pin_ref(value, stage, digest_map)
+    return _stage_and_pin_ref(value, stage, digest_map, revision)
 
 
 def _stage_and_pin_ref(
     ref: str, stage: str, digest_map: Dict[str, str],
+    revision: Optional[str] = None,
 ) -> str:
-    """Return ``ref@digest`` when the staged candidate is in *digest_map*.
+    """Return ``ref@digest`` when a candidate ref is in *digest_map*.
 
-    Returns *ref* unchanged when:
+    Tries three candidates in order:
 
-    - The ref is already digest-pinned (``@sha256:...``).
-    - The post-suffix candidate isn't a key in *digest_map* — either the
-      ref points outside our published surface (external image, vendored
-      helper) or the publish didn't resolve it.
+    1. *ref* itself (direct match — catches literal-tag extras and
+       refs the author already wrote at the revision tag).
+    2. ``<name>:<revision>`` (only when *revision* is supplied) —
+       mirrors :func:`resolve_extra_image`'s revision branch so env
+       defaults written against a concrete tag (e.g. ``agent:1.9.0``)
+       still resolve under ``--revision`` (where digest_map is keyed by
+       e.g. ``agent:develop``).
+    3. ``<name>:<clean_tag><stage_suffix>`` — legacy synthesis for the
+       no-revision path.
+
+    Returns *ref* unchanged when none match, the ref is digest-pinned,
+    or the ref has no ``/`` (can't split a name).
 
     Stage suffixes: known built-ins (``-dev``/``-stage``) are stripped
     before reapplying so re-publishes round-trip cleanly. Custom-stage
@@ -548,16 +564,13 @@ def _stage_and_pin_ref(
     if "@" in ref:
         return ref
 
-    # Literal-tag refs in `extra_docker_images` (no `{version}` placeholder)
-    # round-trip through ``resolve_extra_image`` unchanged and land in
-    # ``digest_map`` keyed by the literal ref — no stage suffix applied.
-    # When the same ref shows up as an env default, pin against the literal
-    # key first so the env value matches what extras emit. Mirrors the
-    # "independent release cadence" semantics ``resolve_extra_image`` uses.
+    # Direct match catches literal-tag extras (no `{version}`) which
+    # ``resolve_extra_image`` leaves untouched and which land in
+    # ``digest_map`` keyed by the literal ref. Also catches the case
+    # where the env default was already written at the revision tag.
     if ref in digest_map:
         return f"{ref}@{digest_map[ref]}"
 
-    suffix = _STAGE_SUFFIXES.get(stage, f"-{stage}")
     # Split on the last `:` after the final `/`; an earlier `:` is a
     # registry port (e.g. ``localhost:5000/org/agent:tag``).
     slash = ref.rfind("/")
@@ -568,10 +581,21 @@ def _stage_and_pin_ref(
         colon = last_segment.index(":")
         name = ref[: slash + 1 + colon]
         tag = last_segment[colon + 1:]
-        clean_tag = re.sub(r"-(dev|stage)$", "", tag)
     else:
-        name, clean_tag = ref, "latest"
+        name, tag = ref, "latest"
 
+    # Revision-tag candidate: under --revision, digest_map is keyed by
+    # `<name>:<revision>` (what ``resolve_extra_image`` emits). An env
+    # default with a concrete tag like `:1.9.0` needs this retag to
+    # agree with the extras entry in the same catalog row.
+    if revision is not None:
+        rev_candidate = f"{name}:{revision}"
+        if rev_candidate in digest_map:
+            return f"{rev_candidate}@{digest_map[rev_candidate]}"
+
+    # Legacy stage-suffix synthesis fallback.
+    clean_tag = re.sub(r"-(dev|stage)$", "", tag)
+    suffix = _STAGE_SUFFIXES.get(stage, f"-{stage}")
     candidate = f"{name}:{clean_tag}{suffix}"
     if candidate in digest_map:
         return f"{candidate}@{digest_map[candidate]}"
