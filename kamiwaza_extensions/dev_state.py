@@ -161,10 +161,13 @@ def mark_step(
     book-keeping fields, sets ``last_successful_step = step``, and writes
     the result atomically.
 
-    ``service``, ``sdk_repo``, ``registry`` are persisted so the next
-    ``kz-ext dev`` invocation can refuse resume when its inputs differ
-    (review re-re-re-review PR #84 H1) — e.g., a partial-service first
-    run must not let a later full run skip building the un-built service.
+    ``service``, ``sdk_repo``, ``registry``, ``image_basename`` are
+    persisted so the next ``kz-ext dev`` invocation can refuse resume
+    when its inputs differ (review re-re-re-review PR #84 H1) — e.g.,
+    a partial-service first run must not let a later full run skip
+    building the un-built service, and a flipped ``image_basename``
+    override under the same ``--revision`` must invalidate resume
+    (would otherwise deploy refs that were never pushed).
     """
     if step not in STEPS:
         raise ValueError(f"Unknown dev step '{step}'; expected one of {STEPS}")
