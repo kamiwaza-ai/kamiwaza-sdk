@@ -3251,3 +3251,207 @@ class TestPublishWithAppgarden:
         mock_resolve.assert_called_once_with(
             "ghcr.io/published/tool-foo/backend:1.0.0-dev"
         )
+
+
+# ------------------------------------------------------------------
+# ENG-5643 E2E: kamiwaza.json `image_basename` override end-to-end
+# ------------------------------------------------------------------
+
+
+class TestPublishDryRunImageBasename:
+    """End-to-end dry-run verification of the `image_basename` override.
+
+    Unit tests pin `_canonical_build_ref` math; these drive `run_publish`
+    with `dry_run=True` against a synthetic extension (kamiwaza.json +
+    docker-compose.yml mimicking workroom-manager's flat layout — two
+    services, build: only, no declared image:) and assert that the
+    canonical image refs reaching the catalog actually use the override.
+
+    Three runs:
+
+      A. ``name=workroom-manager-test`` + ``image_basename=outcome-d563-
+         workroom-manager-test`` → refs use the override.
+      B. Same name, ``image_basename`` field omitted → refs fall back
+         to ``name`` (today's behavior, backwards-compat guarantee).
+      C. Same name, ``image_basename=""`` (blank) → normalized to None,
+         same refs as run B.
+
+    ComposeTransformer runs for real so the full ref-synthesis path is
+    exercised; only the I/O-bound seams (detector, validators, profile,
+    catalog writer) are mocked.
+    """
+
+    _REGISTRY = (
+        "ghcr.io/kamiwaza-internal/"
+        "kamiwaza-extensions-workroom-manager/images"
+    )
+
+    @staticmethod
+    def _compose_data() -> Dict[str, Any]:
+        # Mimic workroom-manager's flat docker-compose.yml — both services
+        # have build: contexts and no image: field. This is the layout
+        # that triggers the legacy fallback synthesis where the bug bit.
+        return {
+            "services": {
+                "backend": {"build": "./backend"},
+                "frontend": {"build": "./frontend"},
+            },
+        }
+
+    @staticmethod
+    def _metadata(name: str, image_basename: Optional[str]) -> Dict[str, Any]:
+        meta: Dict[str, Any] = {
+            "name": name,
+            "version": "0.13.0",
+            "source_type": "kamiwaza",
+            "visibility": "public",
+            "description": "ENG-5643 e2e",
+            "risk_tier": 0,
+            "verified": False,
+        }
+        if image_basename is not None:
+            meta["image_basename"] = image_basename
+        return meta
+
+    @classmethod
+    def _make_info(
+        cls,
+        tmp_path: Path,
+        *,
+        name: str,
+        image_basename: Optional[str],
+    ) -> Any:
+        from kamiwaza_extensions.extension_detector import ExtensionInfo
+
+        # Apply the same blank-to-None normalization ExtensionDetector
+        # does at read time, so the synthetic ExtensionInfo matches
+        # what the real loader would produce for these manifests.
+        if isinstance(image_basename, str) and not image_basename.strip():
+            effective = None
+        else:
+            effective = image_basename
+        return ExtensionInfo(
+            path=tmp_path,
+            name=name,
+            version="0.13.0",
+            metadata=cls._metadata(name, image_basename),
+            compose_path=tmp_path / "docker-compose.yml",
+            compose_data=cls._compose_data(),
+            image_basename=effective,
+        )
+
+    @classmethod
+    def _profile(cls):
+        from kamiwaza_extensions.profile_manager import PublishProfile
+
+        return PublishProfile(
+            name="dev",
+            registry=cls._REGISTRY,
+            catalog_endpoint="https://s3.example.com",
+            catalog_bucket="my-catalog",
+            catalog_credentials="env",
+        )
+
+    def _drive(self, info: Any) -> Dict[str, str]:
+        # Real ComposeTransformer runs — only I/O seams are mocked so the
+        # full ref-synthesis path is exercised end-to-end.
+        with patch(
+            "kamiwaza_extensions.catalog_publisher.CatalogPublisher"
+        ) as mock_publisher_cls, patch(
+            "kamiwaza_extensions.registry_builder.RegistryBuilder"
+        ) as mock_reg_builder_cls, patch(
+            "kamiwaza_extensions.profile_manager.ProfileManager"
+        ) as mock_profile_mgr_cls, patch(
+            "kamiwaza_extensions.validators.compose.ComposeValidator"
+        ) as mock_compose_validator_cls, patch(
+            "kamiwaza_extensions.validators.metadata.MetadataValidator"
+        ) as mock_meta_validator_cls, patch(
+            "kamiwaza_extensions.extension_detector.ExtensionDetector"
+        ) as mock_detector_cls:
+            mock_detector_cls.return_value.detect.return_value = info
+            mock_meta_validator_cls.return_value.validate.return_value = (
+                _make_validation_result()
+            )
+            mock_compose_validator_cls.return_value.validate.return_value = (
+                _make_validation_result()
+            )
+            mock_profile_mgr_cls.return_value.resolve_profile.return_value = (
+                self._profile()
+            )
+            mock_reg_builder_cls.return_value.build_entry.return_value = {
+                "name": info.name, "version": info.version,
+            }
+            mock_publisher_cls.return_value.publish.return_value = (
+                _make_publish_result(dry_run=True)
+            )
+
+            from kamiwaza_extensions.commands.publish import run_publish
+
+            run_publish(stage="dev", dry_run=True, revision="testrev")
+
+            # Capture the transformed-compose argument the catalog reg-builder
+            # receives. transformed["services"][svc]["image"] is the canonical
+            # ref the catalog (and therefore the operator) will see.
+            kwargs = (
+                mock_reg_builder_cls.return_value.build_entry.call_args.kwargs
+            )
+            transformed = kwargs["transformed_compose"]
+            return {
+                svc: transformed["services"][svc]["image"]
+                for svc in ("backend", "frontend")
+            }
+
+    def test_run_a_image_basename_override_used(self, tmp_path, capsys):
+        # Bug repro: name diverges from bake-target basename. With the
+        # override set, refs must use the basename — not `name`.
+        info = self._make_info(
+            tmp_path,
+            name="workroom-manager-test",
+            image_basename="outcome-d563-workroom-manager-test",
+        )
+        refs = self._drive(info)
+        prefix = self._REGISTRY
+        assert refs == {
+            "backend": f"{prefix}/outcome-d563-workroom-manager-test-backend:testrev",
+            "frontend": f"{prefix}/outcome-d563-workroom-manager-test-frontend:testrev",
+        }
+        # The "Would build images" preview also honors the override
+        # (display-only, but a useful regression signal). The override
+        # name has the manifest name as a SUBSTRING, so the negative
+        # check uses the full preview prefix to disambiguate.
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert "outcome-d563-workroom-manager-test-backend:testrev" in combined
+        assert "outcome-d563-workroom-manager-test-frontend:testrev" in combined
+        assert "images:    workroom-manager-test-backend" not in combined
+
+    def test_run_b_no_override_falls_back_to_name(self, tmp_path):
+        # Backwards-compat: a manifest without the field must produce
+        # the same refs the codebase produced before this PR.
+        info = self._make_info(
+            tmp_path,
+            name="workroom-manager-test",
+            image_basename=None,
+        )
+        refs = self._drive(info)
+        prefix = self._REGISTRY
+        assert refs == {
+            "backend": f"{prefix}/workroom-manager-test-backend:testrev",
+            "frontend": f"{prefix}/workroom-manager-test-frontend:testrev",
+        }
+
+    def test_run_c_empty_string_normalizes_to_none(self, tmp_path):
+        # Blank override → normalized to None → identical to run B.
+        # Guards against an empty value silently producing
+        # `{registry}/-{svc}:tag` refs.
+        info = self._make_info(
+            tmp_path,
+            name="workroom-manager-test",
+            image_basename="",
+        )
+        refs = self._drive(info)
+        prefix = self._REGISTRY
+        assert refs == {
+            "backend": f"{prefix}/workroom-manager-test-backend:testrev",
+            "frontend": f"{prefix}/workroom-manager-test-frontend:testrev",
+        }
