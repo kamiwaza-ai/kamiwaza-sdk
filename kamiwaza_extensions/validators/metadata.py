@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Literal, Optional
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from kamiwaza_extensions import __version__
 from kamiwaza_extensions.validators.result import ValidationResult
@@ -69,8 +69,19 @@ class KamiwazaMetadata(BaseModel):
     strip_path_prefix: Optional[bool] = None
     # Override for the image-ref basename when the bake target / pushed
     # image basename diverges from ``name``. Consumed by
-    # ``_canonical_build_ref``'s legacy-fallback synthesis.
-    image_basename: Optional[str] = Field(default=None, min_length=1)
+    # ``_canonical_build_ref``'s legacy-fallback synthesis. Blank/
+    # whitespace-only values normalize to None so validation matches
+    # ``ExtensionDetector``'s lenient loader — a published manifest with
+    # ``"image_basename": ""`` must not hard-fail ``kz-ext validate``
+    # while ``kz-ext publish`` silently treats it as absent.
+    image_basename: Optional[str] = None
+
+    @field_validator("image_basename", mode="before")
+    @classmethod
+    def _blank_image_basename_is_none(cls, value: Any) -> Any:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
     # ENG-3890 — stamped by scaffolder, consumed by `kz-ext update` to pick
     # the right TemplateManifest. Optional so existing scaffolds (created
     # before M2) load cleanly; ``update`` requires --bootstrap if missing.

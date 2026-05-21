@@ -47,6 +47,11 @@ class DevState:
     last_service: Optional[str] = None  # `--service` filter, if any
     last_sdk_repo: Optional[str] = None  # `--sdk-repo` override path, if any
     last_registry: str = ""  # KAMIWAZA_REGISTRY / derived
+    # kamiwaza.json `image_basename` override at last run. Build/push and
+    # deploy refs depend on it, so a flipped override under the same
+    # `--revision` must invalidate resume — otherwise we'd skip
+    # build/push and deploy an image ref that was never built or pushed.
+    last_image_basename: Optional[str] = None
 
     def is_step_complete(self, step: str) -> bool:
         if not self.last_successful_step:
@@ -148,6 +153,7 @@ def mark_step(
     service: Optional[str] = None,
     sdk_repo: Optional[str] = None,
     registry: str = "",
+    image_basename: Optional[str] = None,
 ) -> DevState:
     """Update the dev-state to record completion of ``step``.
 
@@ -174,6 +180,7 @@ def mark_step(
     state.last_service = service
     state.last_sdk_repo = sdk_repo
     state.last_registry = registry
+    state.last_image_basename = image_basename
     write_state(extension_dir, state)
     return state
 

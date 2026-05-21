@@ -176,6 +176,7 @@ def _is_resumable(
     sdk_repo: Optional[str] = None,
     service: Optional[str] = None,
     registry: str = "",
+    image_basename: Optional[str] = None,
 ) -> bool:
     """Return True when the prior dev-state can resume the current run.
 
@@ -201,6 +202,10 @@ def _is_resumable(
       * **Registry** (``KAMIWAZA_REGISTRY`` / derived) — the prior push
         targeted a specific registry; a different registry means the
         image isn't there to skip-push to.
+      * **image_basename** — kamiwaza.json override that controls the
+        ``{registry}/{basename}-{svc}:{tag}`` legacy-fallback synthesis.
+        Build/push and deploy refs depend on it, so a flipped override
+        under the same ``--revision`` must invalidate resume.
     """
     if prior_state is None:
         return False
@@ -212,15 +217,17 @@ def _is_resumable(
         return False
     if prior_state.cluster != connection_url:
         return False
-    # Service filter, sdk_repo, and registry must all match. None vs ""
-    # are treated as equivalent for service/sdk_repo (older state files
-    # didn't record them — refuse resume on those by mismatching against
-    # current values when current is set).
+    # Service filter, sdk_repo, registry, and image_basename must all
+    # match. None vs "" are treated as equivalent for the Optional
+    # fields (older state files didn't record them — refuse resume on
+    # those by mismatching against current values when current is set).
     if (prior_state.last_service or None) != (service or None):
         return False
     if (prior_state.last_sdk_repo or None) != (sdk_repo or None):
         return False
     if prior_state.last_registry != registry:
+        return False
+    if (prior_state.last_image_basename or None) != (image_basename or None):
         return False
     return True
 
@@ -413,6 +420,7 @@ def run_dev_remote(
         sdk_repo=sdk_repo,
         service=service,
         registry=registry,
+        image_basename=info.image_basename,
     )
     if resumable and not no_build and prior_state.is_step_complete("build"):
         console.print(
@@ -605,11 +613,12 @@ def run_dev_remote(
                 extension_name=info.name,
                 deployer=deployer_email or "",
                 # Persist the resume-key inputs so the next invocation can
-                # detect when service-filter / sdk-repo / registry differ
-                # (review re-re-re-review PR #84 H1).
+                # detect when service-filter / sdk-repo / registry /
+                # image_basename differ (review re-re-re-review PR #84 H1).
                 service=service,
                 sdk_repo=sdk_repo,
                 registry=registry,
+                image_basename=info.image_basename,
             )
         except OSError as state_exc:
             console.print(

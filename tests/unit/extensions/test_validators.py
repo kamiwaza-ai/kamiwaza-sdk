@@ -71,6 +71,37 @@ class TestMetadataValidator:
         result = validator.validate(f)
         assert not result.passed
 
+    def test_image_basename_present_validates(self, tmp_path, validator):
+        data = _valid_metadata()
+        data["image_basename"] = "outcome-d563-workroom-manager"
+        f = tmp_path / "kamiwaza.json"
+        _write_json(f, data)
+        result = validator.validate(f)
+        assert result.passed
+
+    def test_image_basename_blank_string_validates_as_absent(
+        self, tmp_path, validator
+    ):
+        # Blank/whitespace-only override must not hard-fail validation —
+        # `ExtensionDetector` treats it as absent, so the validator
+        # must agree (otherwise `kz-ext validate` and `kz-ext publish`
+        # disagree on a manifest the publish path silently accepts).
+        data = _valid_metadata()
+        data["image_basename"] = "   "
+        f = tmp_path / "kamiwaza.json"
+        _write_json(f, data)
+        result = validator.validate(f)
+        assert result.passed
+
+    def test_image_basename_absent_validates(self, tmp_path, validator):
+        # Today's behavior preserved when the optional field is omitted.
+        data = _valid_metadata()
+        assert "image_basename" not in data
+        f = tmp_path / "kamiwaza.json"
+        _write_json(f, data)
+        result = validator.validate(f)
+        assert result.passed
+
     def test_tool_naming_convention_warning(self, tmp_path, validator):
         data = _valid_metadata()
         data["name"] = "bad-name"
