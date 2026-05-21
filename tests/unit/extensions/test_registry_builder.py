@@ -348,6 +348,30 @@ class TestBuildEntry:
         )
         assert pinned in entry["extra_docker_images"]
 
+    def test_extra_docker_images_digest_pinned_ref_passthrough_under_revision(
+        self, builder, transformed_compose,
+    ):
+        # The `@sha256:` short-circuit in resolve_extra_image runs
+        # before the revision branch, so a digest-pinned ref is
+        # immutable regardless of --revision. Locks that guard under
+        # the revision-aware path.
+        pinned = (
+            "myreg/images/agent:1.9.0"
+            "@sha256:" + "a" * 64
+        )
+        meta = {
+            "name": "kaizenv3",
+            "description": "test",
+            "source_type": "kamiwaza",
+            "visibility": "public",
+            "extra_docker_images": [pinned],
+        }
+        entry = builder.build_entry(
+            meta, transformed_compose, "myreg/images", "1.9.0",
+            stage="dev", revision="develop",
+        )
+        assert entry["extra_docker_images"] == [pinned]
+
     def test_extra_docker_images_digest_pinned_when_in_digest_map(
         self, builder, transformed_compose,
     ):
