@@ -173,7 +173,13 @@ def _canonical_build_ref(
         stripped = declared.strip()
         if stripped and _looks_registry_qualified(stripped):
             return _replace_image_tag(stripped, revision_tag)
-    basename = fallback_image_basename or fallback_extension_name
+    # Strip whitespace so a malformed-but-truthy override (e.g. "   "
+    # — caller forgot to normalize) doesn't synthesize a broken
+    # `{registry}/   -svc:tag`. ExtensionDetector + MetadataValidator
+    # both normalize blank to None at their layers, but this function
+    # is also called directly from tests and downstream call sites
+    # that may bypass those normalizers.
+    basename = (fallback_image_basename or "").strip() or fallback_extension_name
     return f"{fallback_registry}/{basename}-{svc_name}:{revision_tag}"
 
 

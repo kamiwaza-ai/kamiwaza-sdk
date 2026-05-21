@@ -1015,6 +1015,16 @@ class TestCanonicalBuildRefImageBasename:
             fallback_image_basename="",
         ) == "registry.test/my-ext-api:2.0.0-dev"
 
+    def test_basename_whitespace_only_falls_back_to_extension_name(self):
+        # ExtensionDetector + MetadataValidator both normalize blank to
+        # None at their layers, but `_canonical_build_ref` is called
+        # directly from tests and downstream sites that may bypass
+        # those normalizers — strip here too so a "   " override
+        # doesn't escape as `registry.test/   -api:tag`.
+        assert self._call(
+            fallback_image_basename="   ",
+        ) == "registry.test/my-ext-api:2.0.0-dev"
+
     def test_basename_ignored_when_image_registry_qualified(self):
         # Override only affects the legacy fallback. A registry-qualified
         # declared image still wins, exactly as without the override.
