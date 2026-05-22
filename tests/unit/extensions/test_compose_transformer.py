@@ -865,6 +865,58 @@ class TestSplitImageRef:
         )
 
 
+class TestRepoPart:
+    """`_repo_part` returns ``registry/repository`` from a ref, dropping
+    tag and digest. Used by ``_retag_appgarden_compose`` to identify
+    sibling services whose image points at a repo this publish built
+    (ENG-5648)."""
+
+    @staticmethod
+    def _repo(ref):
+        from kamiwaza_extensions.compose_transformer import _repo_part
+
+        return _repo_part(ref)
+
+    def test_registry_qualified_with_tag(self):
+        assert self._repo("ghcr.io/kamiwaza/foo:1.0") == "ghcr.io/kamiwaza/foo"
+
+    def test_strips_digest(self):
+        assert self._repo(
+            "ghcr.io/foo/bar:1.0@sha256:" + "a" * 64,
+        ) == "ghcr.io/foo/bar"
+
+    def test_registry_with_port(self):
+        assert self._repo("localhost:5000/my-app:dev") == "localhost:5000/my-app"
+
+    def test_no_tag(self):
+        assert self._repo("ghcr.io/kamiwaza/foo") == "ghcr.io/kamiwaza/foo"
+
+    def test_unqualified_short_form_has_no_registry(self):
+        # Bare repo names lack a registry host; return repository alone so
+        # the equality check in _retag_appgarden_compose still distinguishes
+        # `my-org/my-app` from `my-org/some-other-app`.
+        assert self._repo("my-org/my-app:1.0") == "my-org/my-app"
+
+    def test_bare_repo_name(self):
+        assert self._repo("redis:7") == "redis"
+
+    def test_multi_segment_repository(self):
+        assert self._repo(
+            "ghcr.io/kamiwaza-internal/"
+            "kamiwaza-extensions-milvus/images/service-milvus:2.3.0"
+        ) == (
+            "ghcr.io/kamiwaza-internal/"
+            "kamiwaza-extensions-milvus/images/service-milvus"
+        )
+
+    def test_two_refs_at_different_tags_share_repo(self):
+        # The membership check that drives sibling-image retagging
+        # depends on equal repos for refs at different tags.
+        assert self._repo("ghcr.io/org/app:1.0") == self._repo(
+            "ghcr.io/org/app:2.0"
+        )
+
+
 class TestComputeCanonicalRefs:
     """`compute_canonical_refs` is the shared canonical-refs derivation
     used by publish (live + dry-run) and dev. Same source of truth means
