@@ -3223,6 +3223,45 @@ class TestRetagAppgardenCompose:
         assert out["services"]["backend"]["image"] == f"{fallback_repo}:dev"
         assert out["services"]["backend-init"]["image"] == f"{fallback_repo}:dev"
 
+    def test_sibling_matches_when_build_uses_image_basename_override(self):
+        """Sibling-image gate must honor ``image_basename`` so a build
+        service using the override and a sibling pointing at the same
+        override-derived repo both retag together (ENG-5648 × ENG-5643).
+
+        Without threading ``image_basename`` into ``compute_canonical_refs``
+        inside ``_retag_appgarden_compose``, ``built_repos`` would be
+        keyed on ``extension_name`` while the rewrite uses
+        ``image_basename`` — the sibling check would miss.
+        """
+        from kamiwaza_extensions.commands.publish import _retag_appgarden_compose
+
+        fallback_repo = "ghcr.io/my-org/outcome-d563-workroom-manager-backend"
+        appgarden = {
+            "services": {
+                # Build service: no image declared → uses image_basename
+                # fallback at deploy time.
+                "backend": {},
+                # Sibling pointing at the override-derived ref.
+                "backend-init": {"image": f"{fallback_repo}:1.0"},
+            },
+        }
+        source = {
+            "services": {
+                "backend": {"build": {"context": "."}},
+                "backend-init": {"image": f"{fallback_repo}:1.0"},
+            },
+        }
+        out = _retag_appgarden_compose(
+            appgarden, source,
+            extension_name="workroom-manager",
+            image_tag="dev",
+            registry="ghcr.io/my-org",
+            image_basename="outcome-d563-workroom-manager",
+        )
+        assert out["services"]["backend"]["image"] == f"{fallback_repo}:dev"
+        # Sibling caught only when built_repos honors image_basename.
+        assert out["services"]["backend-init"]["image"] == f"{fallback_repo}:dev"
+
 
 class TestPublishWithAppgarden:
     """End-to-end: appgarden.yml on disk skips ComposeTransformer.transform."""

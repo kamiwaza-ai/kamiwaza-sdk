@@ -134,6 +134,7 @@ def _retag_appgarden_compose(
         extension_name=extension_name,
         revision_tag=image_tag,
         appgarden_services=appgarden_services,
+        image_basename=image_basename,
     )
     # Membership in ``built_repos`` is the sibling-image gate: any
     # service whose ``image:`` resolves to a repo this publish builds
