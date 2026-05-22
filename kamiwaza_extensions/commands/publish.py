@@ -72,47 +72,32 @@ def _retag_appgarden_compose(
 ) -> Dict[str, Any]:
     """Rewrite image tags on services whose image repo this publish built.
 
-    A service is "owned" by this publish when its ``image:`` field points
-    at a registry repo that one of the source compose's buildable
-    services produces. That covers two shapes:
+    Ownership: a service is "owned" if either its name is in the source
+    compose's buildable set, or its ``image:`` points at a registry
+    repo one of those buildable services produces (the
+    multi-service-one-image idiom — e.g. an ``init`` container reusing
+    the main image to chown/migrate/seed). Owned services are retagged
+    via ``_canonical_build_ref`` so their declared namespace is
+    preserved and the tag becomes ``--stage`` / ``--revision``.
 
-    * The build service itself — its image lives at the canonical repo
-      ``ImageBuilder`` pushes to (matches the ``buildable_services``
-      filter ``run_publish`` uses to derive
-      ``published_refs``/``digest_map``).
-    * A sibling service whose ``image:`` repo matches a build service's
-      target repo — the multi-service-one-image idiom (e.g. a one-shot
-      ``init`` container reusing the main image to chown/migrate/seed).
-      Without this, the sibling would ship at its source-authored tag
-      (e.g. ``:2.3.0``) which is never pushed → catalog references an
-      unpullable image → ImagePullBackOff at deploy. See ENG-5648.
+    The repo-membership check is the safety boundary: refs we did not
+    build (third-party images, services in our namespace at a repo we
+    don't produce) pass through verbatim. Without sibling-image
+    retagging, the catalog would point at the source-authored tag
+    (never pushed) → ImagePullBackOff on deploy. See ENG-5648.
 
-    For owned services we set
-    ``image: {registry}/{ext}-{svc}:{image_tag}`` so the catalog points
-    at the image we just built with the resolved ``--stage`` /
-    ``--revision`` tag, and downstream ``_apply_digests`` finds a match
-    in ``digest_map`` to pin them all consistently. Refs we did not
-    build (``ghcr.io/.../neo4j``, helper images from other repos
-    declared in our own namespace, any service the extension's
-    ``sync-compose.py`` invented) are passed through verbatim — the
-    membership check against built repos is the safety boundary that
-    keeps external-passthrough semantics intact.
+    Profile-gated services are dropped, matching
+    ``ComposeTransformer.transform``'s policy — local-only services
+    must not reach the deployment-ready catalog entry.
 
-    Profile-gated build services are excluded so a ``build: + profiles:``
-    helper that leaks into the authored appgarden file is not retagged
-    into the catalog while being absent from
-    ``published_refs``/``digest_map`` — that would ship a local-only ref
-    with no corresponding push.
-
-    The appgarden file is otherwise considered deployment-ready by the
-    extension's authoring intent and passed through unchanged: host port
+    The appgarden file is otherwise considered deployment-ready by
+    ``sync-compose.py`` and passed through unchanged: host port
     bindings, bind mounts, ``extra_hosts``, ``container_name``,
-    top-level ``networks``, env-value placeholders, and the
+    top-level ``networks``, env placeholders, and the
     ``_ensure_resource_limits`` defaults that ``ComposeTransformer``
-    used to backfill are NOT applied here. ``sync-compose.py`` owns that
-    shape; if a service is missing ``deploy.resources.limits``,
-    ``ComposeValidator`` will surface the warning and the catalog ships
-    without the auto-fill.
+    backfills are NOT applied here. ``ComposeValidator`` surfaces
+    warnings on missing ``deploy.resources.limits``; the catalog
+    ships without auto-fill.
     """
     out = copy.deepcopy(appgarden_data)
     source_services = (
@@ -121,13 +106,6 @@ def _retag_appgarden_compose(
         else {}
     )
     appgarden_services = out.get("services") or {}
-    # Drop appgarden services with ``profiles:`` BEFORE retagging —
-    # mirrors ``ComposeTransformer.transform``'s same-shape deletion
-    # block (profiled services are local-only and must not appear in
-    # the deployment-ready catalog entry). Done up front so a profiled
-    # service can never reach either ownership gate or end up in the
-    # catalog at its source-authored tag (which was never pushed under
-    # the profile-aware push filter).
     profiled_in_appgarden = [
         name
         for name, svc in appgarden_services.items()
@@ -135,13 +113,8 @@ def _retag_appgarden_compose(
     ]
     for name in profiled_in_appgarden:
         del appgarden_services[name]
-    # Compute the canonical refs this publish will push for. Reuses the
-    # shared derivation so this gate, ``run_publish``'s
-    # ``published_refs``, and the dev pipeline can't drift on what
-    # counts as a buildable service or which namespace it lives at.
-    # Appgarden precedence: an appgarden-declared image namespace beats
-    # the source-compose ref, matching ``ImageBuilder``'s actual push
-    # target.
+    # Shared derivation: keeps this gate aligned with run_publish's
+    # published_refs and the dev pipeline.
     canonical_by_name = compute_canonical_refs(
         source_services,
         registry=registry,
@@ -150,21 +123,10 @@ def _retag_appgarden_compose(
         appgarden_services=appgarden_services,
         image_basename=image_basename,
     )
-    # Membership in ``built_repos`` is the sibling-image gate: any
-    # service whose ``image:`` resolves to a repo this publish builds
-    # consumes the freshly-pinned ref alongside the build service.
-    # ``built_repos`` is the safety boundary that keeps refs we did NOT
-    # build (third-party images, helper images from other repos that
-    # happen to live in our namespace) flowing through verbatim.
     built_repos = {_repo_part(ref) for ref in canonical_by_name.values()}
-    # Profile-gated source services are NEVER owned, even when their
-    # image repo collides with a non-profiled build service. Matches
-    # the generic ``ComposeTransformer.transform`` policy, which drops
-    # any service with a ``profiles:`` key as local-only. Covers both
-    # the ``build: + profiles:`` collision shape (a dev-only helper
-    # sharing a Dockerfile with the main service) and the no-build
-    # profiled shape (a helper reusing the built image just to run a
-    # different command under a dev profile).
+    # Block repo-match on source-side profiled services: their image
+    # repo can collide with a non-profiled build service's repo, and
+    # the appgarden-side delete above doesn't catch this case.
     profiled_source_names = {
         name
         for name, svc in source_services.items()
@@ -173,15 +135,6 @@ def _retag_appgarden_compose(
     for svc_name, svc in appgarden_services.items():
         if not isinstance(svc, dict):
             continue
-        # Two ways a service is "owned" by this publish:
-        # (1) it is a buildable service from the source compose — covers
-        #     the legacy-fallback path (no image declared anywhere) and
-        #     the divergent-namespace path (appgarden declares a
-        #     different image namespace from the source);
-        # (2) it carries no ``build:`` (or has ``build:`` without
-        #     ``profiles:``) AND its image repo matches one of the
-        #     repos we built — the multi-service-one-image idiom (init
-        #     container reusing the main image).
         img = svc.get("image")
         repo_owned = (
             isinstance(img, str)
@@ -190,11 +143,7 @@ def _retag_appgarden_compose(
             and svc_name not in profiled_source_names
         )
         if svc_name in canonical_by_name or repo_owned:
-            # The image field is the canonical declaration of where
-            # this build's image lives in the registry — set by the
-            # extension's sync-compose.py from its docker-compose.yml.
-            # We only own the *tag* (stage suffix or --revision SHA);
-            # the namespace stays what the extension authored.
+            # Preserve declared namespace; we only rewrite the tag.
             svc["image"] = _canonical_build_ref(
                 svc, svc_name,
                 fallback_registry=registry,
