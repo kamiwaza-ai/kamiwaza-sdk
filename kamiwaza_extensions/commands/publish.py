@@ -13,6 +13,7 @@ from rich.console import Console
 from kamiwaza_extensions.catalog_publisher import DEFAULT_CATALOG_SCHEMA
 from kamiwaza_extensions.compose_transformer import (
     _canonical_build_ref,
+    _repo_part,
     compute_canonical_refs,
 )
 from kamiwaza_extensions.extension_detector import infer_extension_type
@@ -67,28 +68,36 @@ def _retag_appgarden_compose(
     extension_name: str,
     image_tag: str,
     registry: str,
+    image_basename: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Rewrite image tags on services that this publish actually owns.
+    """Rewrite image tags on services whose image repo this publish built.
 
-    A service is "owned" by this publish if it has a ``build:`` block in
-    the source ``docker-compose.yml`` and is *not* gated by ``profiles:``
-    (i.e. ``ImageBuilder`` will build and push an image for it; this
-    mirrors the ``buildable_services`` filter ``run_publish`` uses to
-    derive ``published_refs``/``digest_map``). For those services we set
-    ``image: {registry}/{ext}-{svc}:{image_tag}`` so the catalog points
-    at the image we just built with the resolved ``--stage`` / ``--revision``
-    tag. External refs (``ghcr.io/.../neo4j``) and any service the
-    extension's ``sync-compose.py`` invented are passed through verbatim.
+    Ownership: a service is "owned" if either its name is in the source
+    compose's buildable set, or its ``image:`` points at a registry
+    repo one of those buildable services produces (the
+    multi-service-one-image idiom — e.g. an ``init`` container reusing
+    the main image to chown/migrate/seed). Owned services are retagged
+    via ``_canonical_build_ref`` so their declared namespace is
+    preserved and the tag becomes ``--stage`` / ``--revision``.
 
-    The appgarden file is otherwise considered deployment-ready by the
-    extension's authoring intent and passed through unchanged: host port
+    The repo-membership check is the safety boundary: refs we did not
+    build (third-party images, services in our namespace at a repo we
+    don't produce) pass through verbatim. Without sibling-image
+    retagging, the catalog would point at the source-authored tag
+    (never pushed) → ImagePullBackOff on deploy. See ENG-5648.
+
+    Profile-gated services are dropped, matching
+    ``ComposeTransformer.transform``'s policy — local-only services
+    must not reach the deployment-ready catalog entry.
+
+    The appgarden file is otherwise considered deployment-ready by
+    ``sync-compose.py`` and passed through unchanged: host port
     bindings, bind mounts, ``extra_hosts``, ``container_name``,
-    top-level ``networks``, env-value placeholders, and the
+    top-level ``networks``, env placeholders, and the
     ``_ensure_resource_limits`` defaults that ``ComposeTransformer``
-    used to backfill are NOT applied here. ``sync-compose.py`` owns that
-    shape; if a service is missing ``deploy.resources.limits``,
-    ``ComposeValidator`` will surface the warning and the catalog ships
-    without the auto-fill.
+    backfills are NOT applied here. ``ComposeValidator`` surfaces
+    warnings on missing ``deploy.resources.limits``; the catalog
+    ships without auto-fill.
     """
     out = copy.deepcopy(appgarden_data)
     source_services = (
@@ -96,31 +105,51 @@ def _retag_appgarden_compose(
         if isinstance(source_compose_data, dict)
         else {}
     )
-    # Mirror `buildable_services` (publish.py): exclude `profiles:`-gated
-    # services. Without this filter, a `build: + profiles:` service that
-    # leaks into the authored appgarden file would be retagged into the
-    # catalog while being absent from `published_refs`/`digest_map` — a
-    # local-only ref shipping with no corresponding push.
-    build_services = {
+    appgarden_services = out.get("services") or {}
+    profiled_in_appgarden = [
+        name
+        for name, svc in appgarden_services.items()
+        if isinstance(svc, dict) and svc.get("profiles")
+    ]
+    for name in profiled_in_appgarden:
+        del appgarden_services[name]
+    # Shared derivation: keeps this gate aligned with run_publish's
+    # published_refs and the dev pipeline.
+    canonical_by_name = compute_canonical_refs(
+        source_services,
+        registry=registry,
+        extension_name=extension_name,
+        revision_tag=image_tag,
+        appgarden_services=appgarden_services,
+        image_basename=image_basename,
+    )
+    built_repos = {_repo_part(ref) for ref in canonical_by_name.values()}
+    # Block repo-match on source-side profiled services: their image
+    # repo can collide with a non-profiled build service's repo, and
+    # the appgarden-side delete above doesn't catch this case.
+    profiled_source_names = {
         name
         for name, svc in source_services.items()
-        if isinstance(svc, dict) and "build" in svc and not svc.get("profiles")
+        if isinstance(svc, dict) and svc.get("profiles")
     }
-    for svc_name, svc in (out.get("services") or {}).items():
+    for svc_name, svc in appgarden_services.items():
         if not isinstance(svc, dict):
             continue
-        if svc_name in build_services:
-            # The appgarden compose's image field is the canonical
-            # declaration of where this build's image lives in the
-            # registry — set by the extension's sync-compose.py from
-            # its docker-compose.yml. We only own the *tag* (stage
-            # suffix or --revision SHA); the namespace stays what the
-            # extension authored.
+        img = svc.get("image")
+        repo_owned = (
+            isinstance(img, str)
+            and bool(img)
+            and _repo_part(img) in built_repos
+            and svc_name not in profiled_source_names
+        )
+        if svc_name in canonical_by_name or repo_owned:
+            # Preserve declared namespace; we only rewrite the tag.
             svc["image"] = _canonical_build_ref(
                 svc, svc_name,
                 fallback_registry=registry,
                 fallback_extension_name=extension_name,
                 revision_tag=image_tag,
+                fallback_image_basename=image_basename,
             )
     return out
 
@@ -161,12 +190,19 @@ def _collect_buildable_image_names(
     extension_name: str,
     version: str,
     registry: str,
+    image_basename: Optional[str] = None,
 ) -> List[str]:
-    """Return short image names (``name:tag``) for services with build contexts."""
+    """Return short image names (``basename:tag``) for services with build contexts.
+
+    Display-only (dry-run preview). ``image_basename`` (when set) overrides
+    ``extension_name`` so the preview matches what the live path would
+    actually push.
+    """
+    basename = image_basename or extension_name
     names: List[str] = []
     for svc_name, svc in (compose_data.get("services") or {}).items():
         if "build" in svc:
-            names.append(f"{extension_name}-{svc_name}:{version}")
+            names.append(f"{basename}-{svc_name}:{version}")
     return names
 
 
@@ -463,6 +499,7 @@ def run_publish(
             extension_name=info.name,
             image_tag=image_tag,
             registry=registry,
+            image_basename=info.image_basename,
         )
     else:
         transformer = ComposeTransformer()
@@ -471,6 +508,7 @@ def run_publish(
             extension_name=info.name,
             revision_tag=image_tag,
             registry=registry,
+            image_basename=info.image_basename,
         )
 
     # Canonical image refs for every build-context service. Single
@@ -490,12 +528,14 @@ def run_publish(
         extension_name=info.name,
         revision_tag=image_tag,
         appgarden_services=appgarden_services,
+        image_basename=info.image_basename,
     )
 
     # -- Dry-run path (still runs merge check to detect conflicts) --
     if dry_run:
         short_names = _collect_buildable_image_names(
-            info.compose_data, info.name, image_tag, registry
+            info.compose_data, info.name, image_tag, registry,
+            image_basename=info.image_basename,
         )
         console.print(
             f"  Would build images:    {', '.join(short_names) if short_names else '(none)'}"
@@ -563,6 +603,7 @@ def run_publish(
                 registry=registry,
                 verbose=verbose,
                 image_refs=canonical_refs,
+                image_basename=info.image_basename,
             )
         except ImageBuildError as exc:
             console.print("    [red]\u2717 build failed[/red]")

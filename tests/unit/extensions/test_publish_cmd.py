@@ -3045,6 +3045,361 @@ class TestRetagAppgardenCompose:
             "ghcr.io/my-org/my-app-dev-helper:local-only"
         )
 
+    def test_sibling_service_sharing_built_image_repo_is_retagged(self):
+        """Multi-service-one-image idiom: sibling with same image repo
+        as a build service must be retagged + digest-pinned alongside it
+        (ENG-5648).
+
+        Milvus-shape: a one-shot init container reuses the main image to
+        chown/migrate/seed. Pre-fix the sibling shipped at its
+        source-authored tag (e.g. ``:2.3.0``) which was never pushed →
+        catalog ref unpullable → ImagePullBackOff on deploy.
+        """
+        from kamiwaza_extensions.commands.publish import _retag_appgarden_compose
+
+        image = (
+            "ghcr.io/kamiwaza-internal/"
+            "kamiwaza-extensions-milvus/images/service-milvus:2.3.0"
+        )
+        appgarden = {
+            "services": {
+                "standalone-init": {"image": image, "user": "0:0"},
+                "standalone": {"image": image, "user": "65532:65532"},
+            },
+        }
+        source = {
+            "services": {
+                "standalone-init": {"image": image, "user": "0:0"},
+                "standalone": {
+                    "build": {"context": ".", "dockerfile": "Dockerfile"},
+                    "image": image,
+                },
+            },
+        }
+        out = _retag_appgarden_compose(
+            appgarden, source,
+            extension_name="service-milvus", image_tag="develop",
+            registry=(
+                "ghcr.io/kamiwaza-internal/"
+                "kamiwaza-extensions-milvus/images"
+            ),
+        )
+        expected = (
+            "ghcr.io/kamiwaza-internal/"
+            "kamiwaza-extensions-milvus/images/service-milvus:develop"
+        )
+        assert out["services"]["standalone"]["image"] == expected
+        # Sibling without `build:` retagged to match — both will resolve
+        # to the same digest in `digest_map` downstream.
+        assert out["services"]["standalone-init"]["image"] == expected
+
+    def test_sibling_in_same_namespace_but_different_repo_passes_through(self):
+        """Safety boundary: a sibling whose image repo is in our
+        namespace but was NOT built by this publish passes through
+        verbatim. Rewriting it would point the catalog at a ``:dev``
+        tag that was never pushed and break ``_auto_resolve_digests``
+        with a confusing 404.
+        """
+        from kamiwaza_extensions.commands.publish import _retag_appgarden_compose
+
+        appgarden = {
+            "services": {
+                "backend": {
+                    "image": "ghcr.io/my-org/my-app/images/backend:1.0"
+                },
+                "helper": {
+                    # Same namespace prefix (my-app), but `some-other-tool`
+                    # is a different repo nothing here builds.
+                    "image": (
+                        "ghcr.io/my-org/my-app/images/some-other-tool:1.0"
+                    ),
+                },
+            },
+        }
+        source = {
+            "services": {
+                "backend": {
+                    "build": {"context": "."},
+                    "image": "ghcr.io/my-org/my-app/images/backend:1.0",
+                },
+                # No build → not in built_repos.
+                "helper": {
+                    "image": (
+                        "ghcr.io/my-org/my-app/images/some-other-tool:1.0"
+                    ),
+                },
+            },
+        }
+        out = _retag_appgarden_compose(
+            appgarden, source,
+            extension_name="my-app", image_tag="dev",
+            registry="ghcr.io/my-org/my-app/images",
+        )
+        assert out["services"]["backend"]["image"] == (
+            "ghcr.io/my-org/my-app/images/backend:dev"
+        )
+        # Unbuilt sibling-in-namespace: passed through, safety boundary
+        # preserves external-passthrough semantics for refs we didn't
+        # produce.
+        assert out["services"]["helper"]["image"] == (
+            "ghcr.io/my-org/my-app/images/some-other-tool:1.0"
+        )
+
+    def test_sibling_of_profiled_build_service_not_retagged(self):
+        """A sibling sharing the image repo of a profile-gated build
+        service must NOT be retagged. The profiled service's image is
+        never pushed (excluded from ``built_repos``), so the sibling
+        falls through as external.
+        """
+        from kamiwaza_extensions.commands.publish import _retag_appgarden_compose
+
+        helper_image = "ghcr.io/my-org/my-app-dev-helper:local-only"
+        appgarden = {
+            "services": {
+                "backend": {"image": "ghcr.io/my-org/my-app-backend:2.0.0"},
+                "dev-helper": {
+                    "build": {"context": "."},
+                    "image": helper_image,
+                },
+                # Hypothetical sibling reusing the profiled helper's
+                # image to seed test data; would only ever run alongside
+                # the dev-only helper.
+                "dev-helper-init": {"image": helper_image},
+            },
+        }
+        source = {
+            "services": {
+                "backend": {"build": {"context": "."}},
+                "dev-helper": {
+                    "build": {"context": "."},
+                    "image": helper_image,
+                    "profiles": ["dev-only"],
+                },
+                "dev-helper-init": {"image": helper_image},
+            },
+        }
+        out = _retag_appgarden_compose(
+            appgarden, source,
+            extension_name="my-app", image_tag="2.0.0-dev",
+            registry="ghcr.io/my-org",
+        )
+        assert out["services"]["backend"]["image"] == (
+            "ghcr.io/my-org/my-app-backend:2.0.0-dev"
+        )
+        # Profiled service still passes through.
+        assert out["services"]["dev-helper"]["image"] == helper_image
+        # Its sibling does too — the profiled service did not contribute
+        # to built_repos.
+        assert out["services"]["dev-helper-init"]["image"] == helper_image
+
+    def test_sibling_retagged_when_build_service_uses_legacy_fallback(self):
+        """When a build service has no declared ``image:``,
+        ``_canonical_build_ref`` falls back to
+        ``{registry}/{ext}-{svc}:{tag}``. A sibling that explicitly
+        references that fallback repo (rare but legal) should still be
+        recognized as built and retagged.
+        """
+        from kamiwaza_extensions.commands.publish import _retag_appgarden_compose
+
+        fallback_repo = "ghcr.io/my-org/my-app-backend"
+        appgarden = {
+            "services": {
+                "backend": {},
+                "backend-init": {"image": f"{fallback_repo}:1.0"},
+            },
+        }
+        source = {
+            "services": {
+                # No image → legacy fallback applies.
+                "backend": {"build": {"context": "."}},
+                "backend-init": {"image": f"{fallback_repo}:1.0"},
+            },
+        }
+        out = _retag_appgarden_compose(
+            appgarden, source,
+            extension_name="my-app", image_tag="dev",
+            registry="ghcr.io/my-org",
+        )
+        assert out["services"]["backend"]["image"] == f"{fallback_repo}:dev"
+        assert out["services"]["backend-init"]["image"] == f"{fallback_repo}:dev"
+
+    def test_profiled_build_service_sharing_repo_not_retagged(self):
+        """A profile-gated build service whose image repo collides with
+        a non-profiled build service must still be excluded — repo
+        collision can't bypass the profile gate.
+
+        Realistic shape: a dev-only helper sharing the main service's
+        Dockerfile/image but running a different command. The profile
+        filter on ``ImageBuilder``/push would not produce that helper's
+        ref under normal publishes; retagging it into the catalog would
+        ship a ref to a tag that was never pushed.
+        """
+        from kamiwaza_extensions.commands.publish import _retag_appgarden_compose
+
+        shared_image = "ghcr.io/my-org/my-app-backend:1.0"
+        appgarden = {
+            "services": {
+                "backend": {"image": shared_image},
+                "backend-dev": {"image": shared_image},
+            },
+        }
+        source = {
+            "services": {
+                "backend": {
+                    "build": {"context": "."},
+                    "image": shared_image,
+                },
+                "backend-dev": {
+                    "build": {"context": "."},
+                    "image": shared_image,
+                    "profiles": ["dev-only"],
+                },
+            },
+        }
+        out = _retag_appgarden_compose(
+            appgarden, source,
+            extension_name="my-app", image_tag="dev",
+            registry="ghcr.io/my-org",
+        )
+        # Non-profiled build service: retagged.
+        assert out["services"]["backend"]["image"] == (
+            "ghcr.io/my-org/my-app-backend:dev"
+        )
+        # Profiled build service: NOT retagged, even though its image
+        # repo collides with the non-profiled service's built_repos
+        # entry.
+        assert out["services"]["backend-dev"]["image"] == shared_image
+
+    def test_profiled_no_build_service_sharing_repo_dropped(self):
+        """A profile-gated appgarden service that shares the built repo
+        is dropped entirely — matches the generic transformer's policy
+        of removing any profile-gated service as local-only.
+
+        Realistic shape: a helper reusing the main image to run a
+        different command under a dev profile (e.g. a smoke-test
+        runner). Keeping it in the catalog entry at its source-authored
+        tag would ship a ref to an image never pushed under the
+        profile-aware push filter.
+        """
+        from kamiwaza_extensions.commands.publish import _retag_appgarden_compose
+
+        shared_image = "ghcr.io/my-org/my-app-backend:1.0"
+        appgarden = {
+            "services": {
+                "backend": {"image": shared_image},
+                "backend-smoketest": {
+                    "image": shared_image,
+                    "profiles": ["dev-only"],
+                },
+            },
+        }
+        source = {
+            "services": {
+                "backend": {
+                    "build": {"context": "."},
+                    "image": shared_image,
+                },
+                # No build, but profile-gated.
+                "backend-smoketest": {
+                    "image": shared_image,
+                    "profiles": ["dev-only"],
+                },
+            },
+        }
+        out = _retag_appgarden_compose(
+            appgarden, source,
+            extension_name="my-app", image_tag="dev",
+            registry="ghcr.io/my-org",
+        )
+        assert out["services"]["backend"]["image"] == (
+            "ghcr.io/my-org/my-app-backend:dev"
+        )
+        # Profiled appgarden service: dropped from output entirely.
+        assert "backend-smoketest" not in out["services"]
+
+    def test_appgarden_only_profiled_service_dropped(self):
+        """A service profile-gated only in the appgarden compose (no
+        ``profiles:`` on the source side) is also dropped — keeps the
+        appgarden path in policy parity with
+        ``ComposeTransformer.transform`` (which removes any profiled
+        service).
+
+        Improbable shape today (``sync-compose.py`` doesn't emit
+        ``profiles:``), but defensive against future tooling that
+        might.
+        """
+        from kamiwaza_extensions.commands.publish import _retag_appgarden_compose
+
+        shared_image = "ghcr.io/my-org/my-app-backend:1.0"
+        appgarden = {
+            "services": {
+                "backend": {"image": shared_image},
+                # Appgarden-only profile: source doesn't gate it.
+                "appgarden-only-helper": {
+                    "image": shared_image,
+                    "profiles": ["dev-only"],
+                },
+            },
+        }
+        source = {
+            "services": {
+                "backend": {
+                    "build": {"context": "."},
+                    "image": shared_image,
+                },
+                # Note: source does NOT carry the profile gate.
+            },
+        }
+        out = _retag_appgarden_compose(
+            appgarden, source,
+            extension_name="my-app", image_tag="dev",
+            registry="ghcr.io/my-org",
+        )
+        assert out["services"]["backend"]["image"] == (
+            "ghcr.io/my-org/my-app-backend:dev"
+        )
+        # Appgarden-only profiled service: dropped from output entirely.
+        assert "appgarden-only-helper" not in out["services"]
+
+    def test_sibling_matches_when_build_uses_image_basename_override(self):
+        """Sibling-image gate must honor ``image_basename`` so a build
+        service using the override and a sibling pointing at the same
+        override-derived repo both retag together (ENG-5648 × ENG-5643).
+
+        Without threading ``image_basename`` into ``compute_canonical_refs``
+        inside ``_retag_appgarden_compose``, ``built_repos`` would be
+        keyed on ``extension_name`` while the rewrite uses
+        ``image_basename`` — the sibling check would miss.
+        """
+        from kamiwaza_extensions.commands.publish import _retag_appgarden_compose
+
+        fallback_repo = "ghcr.io/my-org/outcome-d563-workroom-manager-backend"
+        appgarden = {
+            "services": {
+                # Build service: no image declared → uses image_basename
+                # fallback at deploy time.
+                "backend": {},
+                # Sibling pointing at the override-derived ref.
+                "backend-init": {"image": f"{fallback_repo}:1.0"},
+            },
+        }
+        source = {
+            "services": {
+                "backend": {"build": {"context": "."}},
+                "backend-init": {"image": f"{fallback_repo}:1.0"},
+            },
+        }
+        out = _retag_appgarden_compose(
+            appgarden, source,
+            extension_name="workroom-manager",
+            image_tag="dev",
+            registry="ghcr.io/my-org",
+            image_basename="outcome-d563-workroom-manager",
+        )
+        assert out["services"]["backend"]["image"] == f"{fallback_repo}:dev"
+        # Sibling caught only when built_repos honors image_basename.
+        assert out["services"]["backend-init"]["image"] == f"{fallback_repo}:dev"
+
 
 class TestPublishWithAppgarden:
     """End-to-end: appgarden.yml on disk skips ComposeTransformer.transform."""
@@ -3251,3 +3606,207 @@ class TestPublishWithAppgarden:
         mock_resolve.assert_called_once_with(
             "ghcr.io/published/tool-foo/backend:1.0.0-dev"
         )
+
+
+# ------------------------------------------------------------------
+# ENG-5643 E2E: kamiwaza.json `image_basename` override end-to-end
+# ------------------------------------------------------------------
+
+
+class TestPublishDryRunImageBasename:
+    """End-to-end dry-run verification of the `image_basename` override.
+
+    Unit tests pin `_canonical_build_ref` math; these drive `run_publish`
+    with `dry_run=True` against a synthetic extension (kamiwaza.json +
+    docker-compose.yml mimicking workroom-manager's flat layout — two
+    services, build: only, no declared image:) and assert that the
+    canonical image refs reaching the catalog actually use the override.
+
+    Three runs:
+
+      A. ``name=workroom-manager-test`` + ``image_basename=outcome-d563-
+         workroom-manager-test`` → refs use the override.
+      B. Same name, ``image_basename`` field omitted → refs fall back
+         to ``name`` (today's behavior, backwards-compat guarantee).
+      C. Same name, ``image_basename=""`` (blank) → normalized to None,
+         same refs as run B.
+
+    ComposeTransformer runs for real so the full ref-synthesis path is
+    exercised; only the I/O-bound seams (detector, validators, profile,
+    catalog writer) are mocked.
+    """
+
+    _REGISTRY = (
+        "ghcr.io/kamiwaza-internal/"
+        "kamiwaza-extensions-workroom-manager/images"
+    )
+
+    @staticmethod
+    def _compose_data() -> Dict[str, Any]:
+        # Mimic workroom-manager's flat docker-compose.yml — both services
+        # have build: contexts and no image: field. This is the layout
+        # that triggers the legacy fallback synthesis where the bug bit.
+        return {
+            "services": {
+                "backend": {"build": "./backend"},
+                "frontend": {"build": "./frontend"},
+            },
+        }
+
+    @staticmethod
+    def _metadata(name: str, image_basename: Optional[str]) -> Dict[str, Any]:
+        meta: Dict[str, Any] = {
+            "name": name,
+            "version": "0.13.0",
+            "source_type": "kamiwaza",
+            "visibility": "public",
+            "description": "ENG-5643 e2e",
+            "risk_tier": 0,
+            "verified": False,
+        }
+        if image_basename is not None:
+            meta["image_basename"] = image_basename
+        return meta
+
+    @classmethod
+    def _make_info(
+        cls,
+        tmp_path: Path,
+        *,
+        name: str,
+        image_basename: Optional[str],
+    ) -> Any:
+        from kamiwaza_extensions.extension_detector import ExtensionInfo
+
+        # Apply the same blank-to-None normalization ExtensionDetector
+        # does at read time, so the synthetic ExtensionInfo matches
+        # what the real loader would produce for these manifests.
+        if isinstance(image_basename, str) and not image_basename.strip():
+            effective = None
+        else:
+            effective = image_basename
+        return ExtensionInfo(
+            path=tmp_path,
+            name=name,
+            version="0.13.0",
+            metadata=cls._metadata(name, image_basename),
+            compose_path=tmp_path / "docker-compose.yml",
+            compose_data=cls._compose_data(),
+            image_basename=effective,
+        )
+
+    @classmethod
+    def _profile(cls):
+        from kamiwaza_extensions.profile_manager import PublishProfile
+
+        return PublishProfile(
+            name="dev",
+            registry=cls._REGISTRY,
+            catalog_endpoint="https://s3.example.com",
+            catalog_bucket="my-catalog",
+            catalog_credentials="env",
+        )
+
+    def _drive(self, info: Any) -> Dict[str, str]:
+        # Real ComposeTransformer runs — only I/O seams are mocked so the
+        # full ref-synthesis path is exercised end-to-end.
+        with patch(
+            "kamiwaza_extensions.catalog_publisher.CatalogPublisher"
+        ) as mock_publisher_cls, patch(
+            "kamiwaza_extensions.registry_builder.RegistryBuilder"
+        ) as mock_reg_builder_cls, patch(
+            "kamiwaza_extensions.profile_manager.ProfileManager"
+        ) as mock_profile_mgr_cls, patch(
+            "kamiwaza_extensions.validators.compose.ComposeValidator"
+        ) as mock_compose_validator_cls, patch(
+            "kamiwaza_extensions.validators.metadata.MetadataValidator"
+        ) as mock_meta_validator_cls, patch(
+            "kamiwaza_extensions.extension_detector.ExtensionDetector"
+        ) as mock_detector_cls:
+            mock_detector_cls.return_value.detect.return_value = info
+            mock_meta_validator_cls.return_value.validate.return_value = (
+                _make_validation_result()
+            )
+            mock_compose_validator_cls.return_value.validate.return_value = (
+                _make_validation_result()
+            )
+            mock_profile_mgr_cls.return_value.resolve_profile.return_value = (
+                self._profile()
+            )
+            mock_reg_builder_cls.return_value.build_entry.return_value = {
+                "name": info.name, "version": info.version,
+            }
+            mock_publisher_cls.return_value.publish.return_value = (
+                _make_publish_result(dry_run=True)
+            )
+
+            from kamiwaza_extensions.commands.publish import run_publish
+
+            run_publish(stage="dev", dry_run=True, revision="testrev")
+
+            # Capture the transformed-compose argument the catalog reg-builder
+            # receives. transformed["services"][svc]["image"] is the canonical
+            # ref the catalog (and therefore the operator) will see.
+            kwargs = (
+                mock_reg_builder_cls.return_value.build_entry.call_args.kwargs
+            )
+            transformed = kwargs["transformed_compose"]
+            return {
+                svc: transformed["services"][svc]["image"]
+                for svc in ("backend", "frontend")
+            }
+
+    def test_run_a_image_basename_override_used(self, tmp_path):
+        # Bug repro: name diverges from bake-target basename. With the
+        # override set, refs must use the basename — not `name`.
+        info = self._make_info(
+            tmp_path,
+            name="workroom-manager-test",
+            image_basename="outcome-d563-workroom-manager-test",
+        )
+        refs = self._drive(info)
+        prefix = self._REGISTRY
+        assert refs == {
+            "backend": f"{prefix}/outcome-d563-workroom-manager-test-backend:testrev",
+            "frontend": f"{prefix}/outcome-d563-workroom-manager-test-frontend:testrev",
+        }
+        # Override name has the manifest name as a SUBSTRING — anchor
+        # the negative invariant against the captured ref values
+        # themselves, not the formatted dry-run preview line. (Preview
+        # line spacing is presentation-layer churn that shouldn't
+        # break this test.)
+        for ref in refs.values():
+            assert (
+                f"{prefix}/workroom-manager-test-" not in ref
+            ), f"unexpected legacy fallback in ref: {ref!r}"
+
+    def test_run_b_no_override_falls_back_to_name(self, tmp_path):
+        # Backwards-compat: a manifest without the field must produce
+        # the same refs the codebase produced before this PR.
+        info = self._make_info(
+            tmp_path,
+            name="workroom-manager-test",
+            image_basename=None,
+        )
+        refs = self._drive(info)
+        prefix = self._REGISTRY
+        assert refs == {
+            "backend": f"{prefix}/workroom-manager-test-backend:testrev",
+            "frontend": f"{prefix}/workroom-manager-test-frontend:testrev",
+        }
+
+    def test_run_c_empty_string_normalizes_to_none(self, tmp_path):
+        # Blank override → normalized to None → identical to run B.
+        # Guards against an empty value silently producing
+        # `{registry}/-{svc}:tag` refs.
+        info = self._make_info(
+            tmp_path,
+            name="workroom-manager-test",
+            image_basename="",
+        )
+        refs = self._drive(info)
+        prefix = self._REGISTRY
+        assert refs == {
+            "backend": f"{prefix}/workroom-manager-test-backend:testrev",
+            "frontend": f"{prefix}/workroom-manager-test-frontend:testrev",
+        }

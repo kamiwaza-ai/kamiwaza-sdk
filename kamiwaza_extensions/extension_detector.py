@@ -23,6 +23,12 @@ class ExtensionInfo:
     metadata: Dict[str, Any]
     compose_path: Optional[Path] = None
     compose_data: Optional[Dict[str, Any]] = field(default=None, repr=False)
+    # Optional override for the image-ref basename, populated from
+    # ``kamiwaza.json``'s ``image_basename`` field. When None, image
+    # refs fall back to ``name`` (today's behavior). Needed for repos
+    # whose bake target / pushed image basename diverges from ``name``;
+    # see ``_canonical_build_ref``.
+    image_basename: Optional[str] = None
 
 
 def infer_extension_type(metadata: Dict[str, Any]) -> str:
@@ -80,6 +86,12 @@ class ExtensionDetector:
         ext_dir = self._find_root(root)
         metadata = self._load_metadata(ext_dir)
         compose_path, compose_data = self._load_compose(ext_dir)
+        raw_basename = metadata.get("image_basename")
+        image_basename = (
+            raw_basename.strip()
+            if isinstance(raw_basename, str) and raw_basename.strip()
+            else None
+        )
         return ExtensionInfo(
             path=ext_dir,
             name=metadata.get("name", ext_dir.name),
@@ -87,6 +99,7 @@ class ExtensionDetector:
             metadata=metadata,
             compose_path=compose_path,
             compose_data=compose_data,
+            image_basename=image_basename,
         )
 
     def find_root(self, start_dir: Optional[Path] = None) -> Path:

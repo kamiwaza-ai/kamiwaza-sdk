@@ -9,11 +9,19 @@ from typing import Any, Dict, List, Literal, Optional
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from kamiwaza_extensions import __version__
 from kamiwaza_extensions.validators.result import ValidationResult
 
+
+# OCI repo-component grammar for ``image_basename``: lowercase
+# alphanumerics, hyphens, underscores, dots, slashes. Must start and end
+# alphanumeric. Caps the length to keep the synthesized image ref well
+# under the OCI 255-char repository name limit (basename is one segment
+# of ``{registry}/{basename}-{svc}:{tag}``, so leaving headroom for
+# registry prefix, service suffix, and tag is intentional).
+_IMAGE_BASENAME_RE = re.compile(r"^[a-z0-9]([-a-z0-9._/]{0,126}[a-z0-9])?$")
 
 # Semver regex: X.Y.Z with optional pre-release
 _SEMVER_RE = re.compile(
@@ -67,6 +75,45 @@ class KamiwazaMetadata(BaseModel):
     category: Optional[str] = None
     preferred_model_type: Optional[str] = None
     strip_path_prefix: Optional[bool] = None
+    # Override for the image-ref basename when the bake target / pushed
+    # image basename diverges from ``name``. Consumed by
+    # ``_canonical_build_ref``'s legacy-fallback synthesis. Blank/
+    # whitespace-only values normalize to None so validation matches
+    # ``ExtensionDetector``'s lenient loader — a published manifest with
+    # ``"image_basename": ""`` must not hard-fail ``kz-ext validate``
+    # while ``kz-ext publish`` silently treats it as absent.
+    image_basename: Optional[str] = None
+
+    @field_validator("image_basename", mode="before")
+    @classmethod
+    def _blank_image_basename_is_none(cls, value: Any) -> Any:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("image_basename", mode="after")
+    @classmethod
+    def _check_image_basename_grammar(cls, value: Optional[str]) -> Optional[str]:
+        # Hard-fail invalid charsets at validate time so a malformed
+        # override (uppercase, spaces, `:`, `..`, etc.) can't escape
+        # into the legacy `{registry}/{basename}-{svc}:{tag}` synthesis
+        # and break docker push silently. The grammar mirrors the OCI
+        # repo-component rules; see ``_IMAGE_BASENAME_RE`` for the
+        # length cap rationale.
+        if value is None:
+            return None
+        if not _IMAGE_BASENAME_RE.match(value):
+            raise ValueError(
+                f"image_basename '{value}' must match "
+                f"{_IMAGE_BASENAME_RE.pattern} (lowercase alphanumerics, "
+                "hyphens, underscores, dots, slashes; must start and end "
+                "alphanumeric; max 128 chars)"
+            )
+        if ".." in value:
+            raise ValueError(
+                f"image_basename '{value}' must not contain '..'"
+            )
+        return value
     # ENG-3890 — stamped by scaffolder, consumed by `kz-ext update` to pick
     # the right TemplateManifest. Optional so existing scaffolds (created
     # before M2) load cleanly; ``update`` requires --bootstrap if missing.

@@ -15,10 +15,10 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional
 
 DEV_STATE_DIR = ".kz-ext"
 DEV_STATE_FILE = "dev-state.json"
@@ -47,6 +47,11 @@ class DevState:
     last_service: Optional[str] = None  # `--service` filter, if any
     last_sdk_repo: Optional[str] = None  # `--sdk-repo` override path, if any
     last_registry: str = ""  # KAMIWAZA_REGISTRY / derived
+    # kamiwaza.json `image_basename` override at last run. Build/push and
+    # deploy refs depend on it, so a flipped override under the same
+    # `--revision` must invalidate resume — otherwise we'd skip
+    # build/push and deploy an image ref that was never built or pushed.
+    last_image_basename: Optional[str] = None
 
     def is_step_complete(self, step: str) -> bool:
         if not self.last_successful_step:
@@ -148,6 +153,7 @@ def mark_step(
     service: Optional[str] = None,
     sdk_repo: Optional[str] = None,
     registry: str = "",
+    image_basename: Optional[str] = None,
 ) -> DevState:
     """Update the dev-state to record completion of ``step``.
 
@@ -155,10 +161,13 @@ def mark_step(
     book-keeping fields, sets ``last_successful_step = step``, and writes
     the result atomically.
 
-    ``service``, ``sdk_repo``, ``registry`` are persisted so the next
-    ``kz-ext dev`` invocation can refuse resume when its inputs differ
-    (review re-re-re-review PR #84 H1) — e.g., a partial-service first
-    run must not let a later full run skip building the un-built service.
+    ``service``, ``sdk_repo``, ``registry``, ``image_basename`` are
+    persisted so the next ``kz-ext dev`` invocation can refuse resume
+    when its inputs differ (review re-re-re-review PR #84 H1) — e.g.,
+    a partial-service first run must not let a later full run skip
+    building the un-built service, and a flipped ``image_basename``
+    override under the same ``--revision`` must invalidate resume
+    (would otherwise deploy refs that were never pushed).
     """
     if step not in STEPS:
         raise ValueError(f"Unknown dev step '{step}'; expected one of {STEPS}")
@@ -174,6 +183,7 @@ def mark_step(
     state.last_service = service
     state.last_sdk_repo = sdk_repo
     state.last_registry = registry
+    state.last_image_basename = image_basename
     write_state(extension_dir, state)
     return state
 

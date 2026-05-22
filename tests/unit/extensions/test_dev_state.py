@@ -483,6 +483,58 @@ class TestIsResumableServiceFilterAndRegistry:
             is False
         )
 
+    def test_image_basename_change_invalidates_resume(self):
+        # kamiwaza.json `image_basename` flipped between runs at the same
+        # --revision: build/push refs differ, but the prior push wrote
+        # the old basename. Skipping build+push would deploy refs that
+        # were never built or pushed.
+        from kamiwaza_extensions.commands.dev import _is_resumable
+
+        prior = self._state(last_image_basename="custom-a")
+        assert (
+            _is_resumable(
+                prior,
+                rev_tag="1.0.0-dev-abc1234.1714999999",
+                connection_url="https://cluster.test/api",
+                registry="registry.test",
+                image_basename="custom-b",
+            )
+            is False
+        )
+
+    def test_image_basename_consistent_resumes(self):
+        # Same image_basename on both runs — resume is safe.
+        from kamiwaza_extensions.commands.dev import _is_resumable
+
+        prior = self._state(last_image_basename="custom-a")
+        assert (
+            _is_resumable(
+                prior,
+                rev_tag="1.0.0-dev-abc1234.1714999999",
+                connection_url="https://cluster.test/api",
+                registry="registry.test",
+                image_basename="custom-a",
+            )
+            is True
+        )
+
+    def test_image_basename_added_invalidates_resume(self):
+        # Prior run had no override; new run sets one → build/push refs
+        # change, so build must run again.
+        from kamiwaza_extensions.commands.dev import _is_resumable
+
+        prior = self._state(last_image_basename=None)
+        assert (
+            _is_resumable(
+                prior,
+                rev_tag="1.0.0-dev-abc1234.1714999999",
+                connection_url="https://cluster.test/api",
+                registry="registry.test",
+                image_basename="custom-basename",
+            )
+            is False
+        )
+
     def test_legacy_state_without_resume_inputs_invalidates_when_current_set(self):
         # An older dev-state file (pre-H1) doesn't carry service /
         # sdk_repo / registry. Reading drops the unknown keys and
