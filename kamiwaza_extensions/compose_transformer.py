@@ -82,6 +82,22 @@ def _split_image_ref(image_ref: str) -> Tuple[Optional[str], str, str]:
     return registry, repository, tag
 
 
+def _repo_part(image_ref: str) -> str:
+    """Return ``registry/repository`` from *image_ref*, stripping tag and digest.
+
+    Returns the bare ``repository`` for unqualified refs (no registry host).
+    Built on ``_split_image_ref`` so registry-host detection and tag-vs-port
+    disambiguation stay consistent with the rest of the ref-handling helpers.
+
+    Used by ``_retag_appgarden_compose`` to identify sibling services whose
+    ``image:`` field points at the same registry repo as a service this
+    publish actually built — those siblings consume the same retagged +
+    digest-pinned ref instead of their source-authored tag.
+    """
+    registry, repository, _ = _split_image_ref(image_ref)
+    return f"{registry}/{repository}" if registry else repository
+
+
 def compute_canonical_refs(
     source_services: Optional[Dict[str, Any]],
     *,

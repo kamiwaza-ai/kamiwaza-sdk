@@ -3045,6 +3045,184 @@ class TestRetagAppgardenCompose:
             "ghcr.io/my-org/my-app-dev-helper:local-only"
         )
 
+    def test_sibling_service_sharing_built_image_repo_is_retagged(self):
+        """Multi-service-one-image idiom: sibling with same image repo
+        as a build service must be retagged + digest-pinned alongside it
+        (ENG-5648).
+
+        Milvus-shape: a one-shot init container reuses the main image to
+        chown/migrate/seed. Pre-fix the sibling shipped at its
+        source-authored tag (e.g. ``:2.3.0``) which was never pushed →
+        catalog ref unpullable → ImagePullBackOff on deploy.
+        """
+        from kamiwaza_extensions.commands.publish import _retag_appgarden_compose
+
+        image = (
+            "ghcr.io/kamiwaza-internal/"
+            "kamiwaza-extensions-milvus/images/service-milvus:2.3.0"
+        )
+        appgarden = {
+            "services": {
+                "standalone-init": {"image": image, "user": "0:0"},
+                "standalone": {"image": image, "user": "65532:65532"},
+            },
+        }
+        source = {
+            "services": {
+                "standalone-init": {"image": image, "user": "0:0"},
+                "standalone": {
+                    "build": {"context": ".", "dockerfile": "Dockerfile"},
+                    "image": image,
+                },
+            },
+        }
+        out = _retag_appgarden_compose(
+            appgarden, source,
+            extension_name="service-milvus", image_tag="develop",
+            registry=(
+                "ghcr.io/kamiwaza-internal/"
+                "kamiwaza-extensions-milvus/images"
+            ),
+        )
+        expected = (
+            "ghcr.io/kamiwaza-internal/"
+            "kamiwaza-extensions-milvus/images/service-milvus:develop"
+        )
+        assert out["services"]["standalone"]["image"] == expected
+        # Sibling without `build:` retagged to match — both will resolve
+        # to the same digest in `digest_map` downstream.
+        assert out["services"]["standalone-init"]["image"] == expected
+
+    def test_sibling_in_same_namespace_but_different_repo_passes_through(self):
+        """Safety boundary: a sibling whose image repo is in our
+        namespace but was NOT built by this publish passes through
+        verbatim. Rewriting it would point the catalog at a ``:dev``
+        tag that was never pushed and break ``_auto_resolve_digests``
+        with a confusing 404.
+        """
+        from kamiwaza_extensions.commands.publish import _retag_appgarden_compose
+
+        appgarden = {
+            "services": {
+                "backend": {
+                    "image": "ghcr.io/my-org/my-app/images/backend:1.0"
+                },
+                "helper": {
+                    # Same namespace prefix (my-app), but `some-other-tool`
+                    # is a different repo nothing here builds.
+                    "image": (
+                        "ghcr.io/my-org/my-app/images/some-other-tool:1.0"
+                    ),
+                },
+            },
+        }
+        source = {
+            "services": {
+                "backend": {
+                    "build": {"context": "."},
+                    "image": "ghcr.io/my-org/my-app/images/backend:1.0",
+                },
+                # No build → not in built_repos.
+                "helper": {
+                    "image": (
+                        "ghcr.io/my-org/my-app/images/some-other-tool:1.0"
+                    ),
+                },
+            },
+        }
+        out = _retag_appgarden_compose(
+            appgarden, source,
+            extension_name="my-app", image_tag="dev",
+            registry="ghcr.io/my-org/my-app/images",
+        )
+        assert out["services"]["backend"]["image"] == (
+            "ghcr.io/my-org/my-app/images/backend:dev"
+        )
+        # Unbuilt sibling-in-namespace: passed through, safety boundary
+        # preserves external-passthrough semantics for refs we didn't
+        # produce.
+        assert out["services"]["helper"]["image"] == (
+            "ghcr.io/my-org/my-app/images/some-other-tool:1.0"
+        )
+
+    def test_sibling_of_profiled_build_service_not_retagged(self):
+        """A sibling sharing the image repo of a profile-gated build
+        service must NOT be retagged. The profiled service's image is
+        never pushed (excluded from ``built_repos``), so the sibling
+        falls through as external.
+        """
+        from kamiwaza_extensions.commands.publish import _retag_appgarden_compose
+
+        helper_image = "ghcr.io/my-org/my-app-dev-helper:local-only"
+        appgarden = {
+            "services": {
+                "backend": {"image": "ghcr.io/my-org/my-app-backend:2.0.0"},
+                "dev-helper": {
+                    "build": {"context": "."},
+                    "image": helper_image,
+                },
+                # Hypothetical sibling reusing the profiled helper's
+                # image to seed test data; would only ever run alongside
+                # the dev-only helper.
+                "dev-helper-init": {"image": helper_image},
+            },
+        }
+        source = {
+            "services": {
+                "backend": {"build": {"context": "."}},
+                "dev-helper": {
+                    "build": {"context": "."},
+                    "image": helper_image,
+                    "profiles": ["dev-only"],
+                },
+                "dev-helper-init": {"image": helper_image},
+            },
+        }
+        out = _retag_appgarden_compose(
+            appgarden, source,
+            extension_name="my-app", image_tag="2.0.0-dev",
+            registry="ghcr.io/my-org",
+        )
+        assert out["services"]["backend"]["image"] == (
+            "ghcr.io/my-org/my-app-backend:2.0.0-dev"
+        )
+        # Profiled service still passes through.
+        assert out["services"]["dev-helper"]["image"] == helper_image
+        # Its sibling does too — the profiled service did not contribute
+        # to built_repos.
+        assert out["services"]["dev-helper-init"]["image"] == helper_image
+
+    def test_sibling_retagged_when_build_service_uses_legacy_fallback(self):
+        """When a build service has no declared ``image:``,
+        ``_canonical_build_ref`` falls back to
+        ``{registry}/{ext}-{svc}:{tag}``. A sibling that explicitly
+        references that fallback repo (rare but legal) should still be
+        recognized as built and retagged.
+        """
+        from kamiwaza_extensions.commands.publish import _retag_appgarden_compose
+
+        fallback_repo = "ghcr.io/my-org/my-app-backend"
+        appgarden = {
+            "services": {
+                "backend": {},
+                "backend-init": {"image": f"{fallback_repo}:1.0"},
+            },
+        }
+        source = {
+            "services": {
+                # No image → legacy fallback applies.
+                "backend": {"build": {"context": "."}},
+                "backend-init": {"image": f"{fallback_repo}:1.0"},
+            },
+        }
+        out = _retag_appgarden_compose(
+            appgarden, source,
+            extension_name="my-app", image_tag="dev",
+            registry="ghcr.io/my-org",
+        )
+        assert out["services"]["backend"]["image"] == f"{fallback_repo}:dev"
+        assert out["services"]["backend-init"]["image"] == f"{fallback_repo}:dev"
+
 
 class TestPublishWithAppgarden:
     """End-to-end: appgarden.yml on disk skips ComposeTransformer.transform."""

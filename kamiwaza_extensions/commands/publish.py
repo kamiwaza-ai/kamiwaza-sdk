@@ -13,6 +13,7 @@ from rich.console import Console
 from kamiwaza_extensions.catalog_publisher import DEFAULT_CATALOG_SCHEMA
 from kamiwaza_extensions.compose_transformer import (
     _canonical_build_ref,
+    _repo_part,
     compute_canonical_refs,
 )
 from kamiwaza_extensions.extension_detector import infer_extension_type
@@ -69,17 +70,39 @@ def _retag_appgarden_compose(
     registry: str,
     image_basename: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Rewrite image tags on services that this publish actually owns.
+    """Rewrite image tags on services whose image repo this publish built.
 
-    A service is "owned" by this publish if it has a ``build:`` block in
-    the source ``docker-compose.yml`` and is *not* gated by ``profiles:``
-    (i.e. ``ImageBuilder`` will build and push an image for it; this
-    mirrors the ``buildable_services`` filter ``run_publish`` uses to
-    derive ``published_refs``/``digest_map``). For those services we set
+    A service is "owned" by this publish when its ``image:`` field points
+    at a registry repo that one of the source compose's buildable
+    services produces. That covers two shapes:
+
+    * The build service itself — its image lives at the canonical repo
+      ``ImageBuilder`` pushes to (matches the ``buildable_services``
+      filter ``run_publish`` uses to derive
+      ``published_refs``/``digest_map``).
+    * A sibling service whose ``image:`` repo matches a build service's
+      target repo — the multi-service-one-image idiom (e.g. a one-shot
+      ``init`` container reusing the main image to chown/migrate/seed).
+      Without this, the sibling would ship at its source-authored tag
+      (e.g. ``:2.3.0``) which is never pushed → catalog references an
+      unpullable image → ImagePullBackOff at deploy. See ENG-5648.
+
+    For owned services we set
     ``image: {registry}/{ext}-{svc}:{image_tag}`` so the catalog points
-    at the image we just built with the resolved ``--stage`` / ``--revision``
-    tag. External refs (``ghcr.io/.../neo4j``) and any service the
-    extension's ``sync-compose.py`` invented are passed through verbatim.
+    at the image we just built with the resolved ``--stage`` /
+    ``--revision`` tag, and downstream ``_apply_digests`` finds a match
+    in ``digest_map`` to pin them all consistently. Refs we did not
+    build (``ghcr.io/.../neo4j``, helper images from other repos
+    declared in our own namespace, any service the extension's
+    ``sync-compose.py`` invented) are passed through verbatim — the
+    membership check against built repos is the safety boundary that
+    keeps external-passthrough semantics intact.
+
+    Profile-gated build services are excluded so a ``build: + profiles:``
+    helper that leaks into the authored appgarden file is not retagged
+    into the catalog while being absent from
+    ``published_refs``/``digest_map`` — that would ship a local-only ref
+    with no corresponding push.
 
     The appgarden file is otherwise considered deployment-ready by the
     extension's authoring intent and passed through unchanged: host port
@@ -97,26 +120,51 @@ def _retag_appgarden_compose(
         if isinstance(source_compose_data, dict)
         else {}
     )
-    # Mirror `buildable_services` (publish.py): exclude `profiles:`-gated
-    # services. Without this filter, a `build: + profiles:` service that
-    # leaks into the authored appgarden file would be retagged into the
-    # catalog while being absent from `published_refs`/`digest_map` — a
-    # local-only ref shipping with no corresponding push.
-    build_services = {
-        name
-        for name, svc in source_services.items()
-        if isinstance(svc, dict) and "build" in svc and not svc.get("profiles")
-    }
-    for svc_name, svc in (out.get("services") or {}).items():
+    appgarden_services = out.get("services") or {}
+    # Compute the canonical refs this publish will push for. Reuses the
+    # shared derivation so this gate, ``run_publish``'s
+    # ``published_refs``, and the dev pipeline can't drift on what
+    # counts as a buildable service or which namespace it lives at.
+    # Appgarden precedence: an appgarden-declared image namespace beats
+    # the source-compose ref, matching ``ImageBuilder``'s actual push
+    # target.
+    canonical_by_name = compute_canonical_refs(
+        source_services,
+        registry=registry,
+        extension_name=extension_name,
+        revision_tag=image_tag,
+        appgarden_services=appgarden_services,
+    )
+    # Membership in ``built_repos`` is the sibling-image gate: any
+    # service whose ``image:`` resolves to a repo this publish builds
+    # consumes the freshly-pinned ref alongside the build service.
+    # ``built_repos`` is the safety boundary that keeps refs we did NOT
+    # build (third-party images, helper images from other repos that
+    # happen to live in our namespace) flowing through verbatim.
+    built_repos = {_repo_part(ref) for ref in canonical_by_name.values()}
+    for svc_name, svc in appgarden_services.items():
         if not isinstance(svc, dict):
             continue
-        if svc_name in build_services:
-            # The appgarden compose's image field is the canonical
-            # declaration of where this build's image lives in the
-            # registry — set by the extension's sync-compose.py from
-            # its docker-compose.yml. We only own the *tag* (stage
-            # suffix or --revision SHA); the namespace stays what the
-            # extension authored.
+        # Two ways a service is "owned" by this publish:
+        # (1) it is a buildable service from the source compose — covers
+        #     the legacy-fallback path (no image declared anywhere) and
+        #     the divergent-namespace path (appgarden declares a
+        #     different image namespace from the source);
+        # (2) it carries no ``build:`` but its image repo matches one
+        #     of the repos we built — the multi-service-one-image idiom
+        #     (init container reusing the main image).
+        img = svc.get("image")
+        repo_owned = (
+            isinstance(img, str)
+            and bool(img)
+            and _repo_part(img) in built_repos
+        )
+        if svc_name in canonical_by_name or repo_owned:
+            # The image field is the canonical declaration of where
+            # this build's image lives in the registry — set by the
+            # extension's sync-compose.py from its docker-compose.yml.
+            # We only own the *tag* (stage suffix or --revision SHA);
+            # the namespace stays what the extension authored.
             svc["image"] = _canonical_build_ref(
                 svc, svc_name,
                 fallback_registry=registry,
