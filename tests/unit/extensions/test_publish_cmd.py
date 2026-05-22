@@ -3223,6 +3223,144 @@ class TestRetagAppgardenCompose:
         assert out["services"]["backend"]["image"] == f"{fallback_repo}:dev"
         assert out["services"]["backend-init"]["image"] == f"{fallback_repo}:dev"
 
+    def test_profiled_build_service_sharing_repo_not_retagged(self):
+        """A profile-gated build service whose image repo collides with
+        a non-profiled build service must still be excluded — repo
+        collision can't bypass the profile gate.
+
+        Realistic shape: a dev-only helper sharing the main service's
+        Dockerfile/image but running a different command. The profile
+        filter on ``ImageBuilder``/push would not produce that helper's
+        ref under normal publishes; retagging it into the catalog would
+        ship a ref to a tag that was never pushed.
+        """
+        from kamiwaza_extensions.commands.publish import _retag_appgarden_compose
+
+        shared_image = "ghcr.io/my-org/my-app-backend:1.0"
+        appgarden = {
+            "services": {
+                "backend": {"image": shared_image},
+                "backend-dev": {"image": shared_image},
+            },
+        }
+        source = {
+            "services": {
+                "backend": {
+                    "build": {"context": "."},
+                    "image": shared_image,
+                },
+                "backend-dev": {
+                    "build": {"context": "."},
+                    "image": shared_image,
+                    "profiles": ["dev-only"],
+                },
+            },
+        }
+        out = _retag_appgarden_compose(
+            appgarden, source,
+            extension_name="my-app", image_tag="dev",
+            registry="ghcr.io/my-org",
+        )
+        # Non-profiled build service: retagged.
+        assert out["services"]["backend"]["image"] == (
+            "ghcr.io/my-org/my-app-backend:dev"
+        )
+        # Profiled build service: NOT retagged, even though its image
+        # repo collides with the non-profiled service's built_repos
+        # entry.
+        assert out["services"]["backend-dev"]["image"] == shared_image
+
+    def test_profiled_no_build_service_sharing_repo_dropped(self):
+        """A profile-gated appgarden service that shares the built repo
+        is dropped entirely — matches the generic transformer's policy
+        of removing any profile-gated service as local-only.
+
+        Realistic shape: a helper reusing the main image to run a
+        different command under a dev profile (e.g. a smoke-test
+        runner). Keeping it in the catalog entry at its source-authored
+        tag would ship a ref to an image never pushed under the
+        profile-aware push filter.
+        """
+        from kamiwaza_extensions.commands.publish import _retag_appgarden_compose
+
+        shared_image = "ghcr.io/my-org/my-app-backend:1.0"
+        appgarden = {
+            "services": {
+                "backend": {"image": shared_image},
+                "backend-smoketest": {
+                    "image": shared_image,
+                    "profiles": ["dev-only"],
+                },
+            },
+        }
+        source = {
+            "services": {
+                "backend": {
+                    "build": {"context": "."},
+                    "image": shared_image,
+                },
+                # No build, but profile-gated.
+                "backend-smoketest": {
+                    "image": shared_image,
+                    "profiles": ["dev-only"],
+                },
+            },
+        }
+        out = _retag_appgarden_compose(
+            appgarden, source,
+            extension_name="my-app", image_tag="dev",
+            registry="ghcr.io/my-org",
+        )
+        assert out["services"]["backend"]["image"] == (
+            "ghcr.io/my-org/my-app-backend:dev"
+        )
+        # Profiled appgarden service: dropped from output entirely.
+        assert "backend-smoketest" not in out["services"]
+
+    def test_appgarden_only_profiled_service_dropped(self):
+        """A service profile-gated only in the appgarden compose (no
+        ``profiles:`` on the source side) is also dropped — keeps the
+        appgarden path in policy parity with
+        ``ComposeTransformer.transform`` (which removes any profiled
+        service).
+
+        Improbable shape today (``sync-compose.py`` doesn't emit
+        ``profiles:``), but defensive against future tooling that
+        might.
+        """
+        from kamiwaza_extensions.commands.publish import _retag_appgarden_compose
+
+        shared_image = "ghcr.io/my-org/my-app-backend:1.0"
+        appgarden = {
+            "services": {
+                "backend": {"image": shared_image},
+                # Appgarden-only profile: source doesn't gate it.
+                "appgarden-only-helper": {
+                    "image": shared_image,
+                    "profiles": ["dev-only"],
+                },
+            },
+        }
+        source = {
+            "services": {
+                "backend": {
+                    "build": {"context": "."},
+                    "image": shared_image,
+                },
+                # Note: source does NOT carry the profile gate.
+            },
+        }
+        out = _retag_appgarden_compose(
+            appgarden, source,
+            extension_name="my-app", image_tag="dev",
+            registry="ghcr.io/my-org",
+        )
+        assert out["services"]["backend"]["image"] == (
+            "ghcr.io/my-org/my-app-backend:dev"
+        )
+        # Appgarden-only profiled service: dropped from output entirely.
+        assert "appgarden-only-helper" not in out["services"]
+
     def test_sibling_matches_when_build_uses_image_basename_override(self):
         """Sibling-image gate must honor ``image_basename`` so a build
         service using the override and a sibling pointing at the same

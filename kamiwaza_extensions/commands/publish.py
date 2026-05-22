@@ -121,6 +121,20 @@ def _retag_appgarden_compose(
         else {}
     )
     appgarden_services = out.get("services") or {}
+    # Drop appgarden services with ``profiles:`` BEFORE retagging —
+    # mirrors ``ComposeTransformer.transform``'s same-shape deletion
+    # block (profiled services are local-only and must not appear in
+    # the deployment-ready catalog entry). Done up front so a profiled
+    # service can never reach either ownership gate or end up in the
+    # catalog at its source-authored tag (which was never pushed under
+    # the profile-aware push filter).
+    profiled_in_appgarden = [
+        name
+        for name, svc in appgarden_services.items()
+        if isinstance(svc, dict) and svc.get("profiles")
+    ]
+    for name in profiled_in_appgarden:
+        del appgarden_services[name]
     # Compute the canonical refs this publish will push for. Reuses the
     # shared derivation so this gate, ``run_publish``'s
     # ``published_refs``, and the dev pipeline can't drift on what
@@ -143,6 +157,19 @@ def _retag_appgarden_compose(
     # build (third-party images, helper images from other repos that
     # happen to live in our namespace) flowing through verbatim.
     built_repos = {_repo_part(ref) for ref in canonical_by_name.values()}
+    # Profile-gated source services are NEVER owned, even when their
+    # image repo collides with a non-profiled build service. Matches
+    # the generic ``ComposeTransformer.transform`` policy, which drops
+    # any service with a ``profiles:`` key as local-only. Covers both
+    # the ``build: + profiles:`` collision shape (a dev-only helper
+    # sharing a Dockerfile with the main service) and the no-build
+    # profiled shape (a helper reusing the built image just to run a
+    # different command under a dev profile).
+    profiled_source_names = {
+        name
+        for name, svc in source_services.items()
+        if isinstance(svc, dict) and svc.get("profiles")
+    }
     for svc_name, svc in appgarden_services.items():
         if not isinstance(svc, dict):
             continue
@@ -151,14 +178,16 @@ def _retag_appgarden_compose(
         #     the legacy-fallback path (no image declared anywhere) and
         #     the divergent-namespace path (appgarden declares a
         #     different image namespace from the source);
-        # (2) it carries no ``build:`` but its image repo matches one
-        #     of the repos we built — the multi-service-one-image idiom
-        #     (init container reusing the main image).
+        # (2) it carries no ``build:`` (or has ``build:`` without
+        #     ``profiles:``) AND its image repo matches one of the
+        #     repos we built — the multi-service-one-image idiom (init
+        #     container reusing the main image).
         img = svc.get("image")
         repo_owned = (
             isinstance(img, str)
             and bool(img)
             and _repo_part(img) in built_repos
+            and svc_name not in profiled_source_names
         )
         if svc_name in canonical_by_name or repo_owned:
             # The image field is the canonical declaration of where
