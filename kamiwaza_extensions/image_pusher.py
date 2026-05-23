@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from rich.console import Console
 
@@ -53,21 +53,29 @@ class ImagePusher:
         token: Optional[str] = None,
         insecure: bool = False,
         verbose: bool = False,
+        target_refs: Optional[Dict[str, str]] = None,
     ) -> None:
         """Push all images to the registry.
 
         If *token* is provided, authenticates with the registry first.
         When *insecure* is True and Podman is available, ``--tls-verify=false``
         is passed to bypass self-signed certificate errors.
+
+        ``target_refs`` optionally maps built/deployment refs to alternate
+        push refs. This supports local topologies where the same registry is
+        reachable under different hostnames from the build VM and the cluster.
         """
         use_podman = insecure and _has_podman()
         if token:
             self._login_registry(registry, token, use_podman=use_podman)
 
         for ref in image_refs:
-            short = ref.rsplit("/", 1)[-1] if "/" in ref else ref
+            push_ref = (target_refs or {}).get(ref, ref)
+            short = push_ref.rsplit("/", 1)[-1] if "/" in push_ref else push_ref
             console.print(f"  Pushing [bold]{short}[/bold]...")
-            self._push(ref, use_podman=use_podman, verbose=verbose)
+            if push_ref != ref:
+                self._tag(ref, push_ref, use_podman=use_podman, verbose=verbose)
+            self._push(push_ref, use_podman=use_podman, verbose=verbose)
             console.print(f"  [green]\u2713[/green] {short}")
 
     @staticmethod
@@ -158,8 +166,13 @@ class ImagePusher:
         import json as _json
 
         cmd = [
-            "docker", "buildx", "imagetools", "inspect", image_ref,
-            "--format", "{{json .Manifest}}",
+            "docker",
+            "buildx",
+            "imagetools",
+            "inspect",
+            image_ref,
+            "--format",
+            "{{json .Manifest}}",
         ]
         try:
             result = subprocess.run(
@@ -197,13 +210,13 @@ class ImagePusher:
             )
         digest = manifest.get("digest")
         if not isinstance(digest, str) or not DIGEST_PATTERN.match(digest):
-            raise ImagePushError(
-                f"Unexpected digest field for {image_ref}: {digest!r}"
-            )
+            raise ImagePushError(f"Unexpected digest field for {image_ref}: {digest!r}")
         return digest
 
     @staticmethod
-    def _push(image_ref: str, *, use_podman: bool = False, verbose: bool = False) -> None:
+    def _push(
+        image_ref: str, *, use_podman: bool = False, verbose: bool = False
+    ) -> None:
         cli = "podman" if use_podman else "docker"
         cmd = [cli, "push", image_ref]
         if use_podman:
@@ -227,6 +240,38 @@ class ImagePusher:
                 f"{cli} not found. Install Docker/Podman or ensure '{cli}' is on PATH."
             )
         except subprocess.TimeoutExpired as exc:
+            raise ImagePushError(f"Push timed out after 600s for {image_ref}") from exc
+
+    @staticmethod
+    def _tag(
+        source_ref: str,
+        target_ref: str,
+        *,
+        use_podman: bool = False,
+        verbose: bool = False,
+    ) -> None:
+        cli = "podman" if use_podman else "docker"
+        cmd = [cli, "tag", source_ref, target_ref]
+        try:
+            if verbose:
+                subprocess.run(cmd, check=True, timeout=120)
+            else:
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                )
+                if result.returncode != 0:
+                    raise ImagePushError(
+                        f"Retag failed for {source_ref} -> {target_ref}: "
+                        f"{result.stderr.strip()}"
+                    )
+        except FileNotFoundError:
             raise ImagePushError(
-                f"Push timed out after 600s for {image_ref}"
+                f"{cli} not found. Install Docker/Podman or ensure '{cli}' is on PATH."
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise ImagePushError(
+                f"Retag timed out after 120s for {source_ref} -> {target_ref}"
             ) from exc

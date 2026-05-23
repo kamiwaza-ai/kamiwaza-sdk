@@ -1,7 +1,7 @@
 """Tests for DoctorChecker."""
 
 import json
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -20,7 +20,9 @@ class TestDoctorSystemChecks:
 
     def test_docker_installed_pass(self, checker):
         with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0, stdout="Docker version 24.0.0, build abc123")
+            mock_run.return_value = MagicMock(
+                returncode=0, stdout="Docker version 24.0.0, build abc123"
+            )
             result = checker._check_docker_installed()
             assert result.status == "pass"
 
@@ -44,7 +46,9 @@ class TestDoctorSystemChecks:
 
     def test_compose_v2_pass(self, checker):
         with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0, stdout="Docker Compose v2.24.0")
+            mock_run.return_value = MagicMock(
+                returncode=0, stdout="Docker Compose v2.24.0"
+            )
             result = checker._check_compose()
             assert result.status == "pass"
 
@@ -56,6 +60,71 @@ class TestDoctorConnectionChecks:
         result = checker._check_connection()
         assert result.status == "warn"
         assert "No connection" in result.message
+
+
+@pytest.mark.unit
+class TestDoctorRegistryChecks:
+    def test_registry_endpoint_flags_html_response(self):
+        checker = DoctorChecker(config_dir=None)
+        response = MagicMock(
+            status_code=200,
+            headers={"content-type": "text/html; charset=utf-8"},
+            text='<!DOCTYPE html><html lang="en">',
+        )
+        with patch("requests.get", return_value=response):
+            result = checker._check_registry_http_endpoint(
+                "Registry image endpoint",
+                "registry.kamiwaza.test",
+            )
+
+        assert result.status == "fail"
+        assert "returned HTML" in result.message
+        assert result.exit_code == 20
+
+    def test_registry_endpoint_accepts_v2_json_response(self):
+        checker = DoctorChecker(config_dir=None)
+        response = MagicMock(
+            status_code=200,
+            headers={"content-type": "application/json; charset=utf-8"},
+            text="{}",
+        )
+        with patch("requests.get", return_value=response):
+            result = checker._check_registry_http_endpoint(
+                "Registry image endpoint",
+                "127.0.0.1:30010",
+            )
+
+        assert result.status == "pass"
+
+    @patch("kamiwaza_extensions.registry_resolution.detect_core_config_registry")
+    def test_registry_readiness_reports_split(self, mock_core, tmp_path, monkeypatch):
+        monkeypatch.setenv("KAMIWAZA_PUSH_REGISTRY", "host.containers.internal:30010")
+        mock_core.return_value = "127.0.0.1:30010"
+        checker = DoctorChecker(config_dir=tmp_path / ".kamiwaza")
+        checker._conn_mgr.get_active_connection = MagicMock(
+            return_value=MagicMock(url="https://kamiwaza.test/api")
+        )
+        ok = MagicMock(
+            status_code=200,
+            headers={"content-type": "application/json"},
+            text="{}",
+        )
+        with (
+            patch("requests.get", return_value=ok),
+            patch(
+                "kamiwaza_extensions.registry_resolution.build_engine_runs_in_vm",
+                return_value=False,
+            ),
+        ):
+            results = checker._check_registry_readiness()
+
+        assert results[0].name == "Registry resolution"
+        assert "push=host.containers.internal:30010" in results[0].message
+        assert {r.name for r in results} == {
+            "Registry resolution",
+            "Registry image endpoint",
+            "Registry push endpoint",
+        }
 
 
 @pytest.mark.unit
@@ -92,9 +161,9 @@ class TestDoctorExtensionChecks:
 
     def test_ts_runtime_lib_found(self, tmp_path):
         pkg_file = tmp_path / "package.json"
-        pkg_file.write_text(json.dumps({
-            "dependencies": {"@kamiwaza-ai/extensions-lib": "^0.4.0"}
-        }))
+        pkg_file.write_text(
+            json.dumps({"dependencies": {"@kamiwaza-ai/extensions-lib": "^0.4.0"}})
+        )
         checker = DoctorChecker(config_dir=tmp_path / ".kamiwaza")
         result = checker._check_ts_runtime_lib(pkg_file)
         assert result.status == "pass"
@@ -137,8 +206,11 @@ class TestDoctorCommandExitCodePrecedence:
         results = [
             CheckResult("Docker installed", "fail", "Not found", fix="x"),
             CheckResult(
-                "Cluster extension readiness", "fail",
-                "CRD missing", fix="reinstall", exit_code=23,
+                "Cluster extension readiness",
+                "fail",
+                "CRD missing",
+                fix="reinstall",
+                exit_code=23,
             ),
         ]
 
@@ -150,7 +222,8 @@ class TestDoctorCommandExitCodePrecedence:
                 return results
 
         monkeypatch.setattr(
-            "kamiwaza_extensions.doctor.DoctorChecker", FakeChecker,
+            "kamiwaza_extensions.doctor.DoctorChecker",
+            FakeChecker,
         )
 
         runner = CliRunner()
@@ -175,7 +248,8 @@ class TestDoctorCommandExitCodePrecedence:
                 return results
 
         monkeypatch.setattr(
-            "kamiwaza_extensions.doctor.DoctorChecker", FakeChecker,
+            "kamiwaza_extensions.doctor.DoctorChecker",
+            FakeChecker,
         )
 
         runner = CliRunner()
@@ -199,7 +273,8 @@ class TestDoctorCommandExitCodePrecedence:
                 return results
 
         monkeypatch.setattr(
-            "kamiwaza_extensions.doctor.DoctorChecker", FakeChecker,
+            "kamiwaza_extensions.doctor.DoctorChecker",
+            FakeChecker,
         )
 
         runner = CliRunner()

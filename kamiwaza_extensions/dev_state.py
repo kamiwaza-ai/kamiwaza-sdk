@@ -47,6 +47,7 @@ class DevState:
     last_service: Optional[str] = None  # `--service` filter, if any
     last_sdk_repo: Optional[str] = None  # `--sdk-repo` override path, if any
     last_registry: str = ""  # KAMIWAZA_REGISTRY / derived
+    last_push_registry: str = ""  # KAMIWAZA_PUSH_REGISTRY / derived push host
     # kamiwaza.json `image_basename` override at last run. Build/push and
     # deploy refs depend on it, so a flipped override under the same
     # `--revision` must invalidate resume — otherwise we'd skip
@@ -153,6 +154,7 @@ def mark_step(
     service: Optional[str] = None,
     sdk_repo: Optional[str] = None,
     registry: str = "",
+    push_registry: str = "",
     image_basename: Optional[str] = None,
 ) -> DevState:
     """Update the dev-state to record completion of ``step``.
@@ -161,7 +163,8 @@ def mark_step(
     book-keeping fields, sets ``last_successful_step = step``, and writes
     the result atomically.
 
-    ``service``, ``sdk_repo``, ``registry``, ``image_basename`` are
+    ``service``, ``sdk_repo``, ``registry``, ``push_registry``,
+    ``image_basename`` are
     persisted so the next ``kz-ext dev`` invocation can refuse resume
     when its inputs differ (review re-re-re-review PR #84 H1) — e.g.,
     a partial-service first run must not let a later full run skip
@@ -183,6 +186,7 @@ def mark_step(
     state.last_service = service
     state.last_sdk_repo = sdk_repo
     state.last_registry = registry
+    state.last_push_registry = push_registry or registry
     state.last_image_basename = image_basename
     write_state(extension_dir, state)
     return state

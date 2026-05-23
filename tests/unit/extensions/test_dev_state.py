@@ -483,6 +483,44 @@ class TestIsResumableServiceFilterAndRegistry:
             is False
         )
 
+    def test_push_registry_change_invalidates_resume(self):
+        # Same image ref registry but different push address: the previous
+        # push may only exist via the old push host, so push must run again.
+        from kamiwaza_extensions.commands.dev import _is_resumable
+
+        prior = self._state(
+            last_registry="127.0.0.1:30010",
+            last_push_registry="host.containers.internal:30010",
+        )
+        assert (
+            _is_resumable(
+                prior,
+                rev_tag="1.0.0-dev-abc1234.1714999999",
+                connection_url="https://cluster.test/api",
+                registry="127.0.0.1:30010",
+                push_registry="host.docker.internal:30010",
+            )
+            is False
+        )
+
+    def test_legacy_state_without_push_registry_uses_image_registry(self):
+        # Older state files did not record last_push_registry. If the current
+        # push registry is the same as the image registry, the old state can
+        # still resume safely.
+        from kamiwaza_extensions.commands.dev import _is_resumable
+
+        prior = self._state(last_registry="registry.test", last_push_registry="")
+        assert (
+            _is_resumable(
+                prior,
+                rev_tag="1.0.0-dev-abc1234.1714999999",
+                connection_url="https://cluster.test/api",
+                registry="registry.test",
+                push_registry="registry.test",
+            )
+            is True
+        )
+
     def test_image_basename_change_invalidates_resume(self):
         # kamiwaza.json `image_basename` flipped between runs at the same
         # --revision: build/push refs differ, but the prior push wrote
@@ -609,9 +647,8 @@ class TestBuildPatchKwargsCarriesAnnotations:
         # Sanity: the PatchExtension schema must accept the annotations
         # kwarg via `extra="allow"`. If a future schema change locks
         # `extra="forbid"`, this test fails loudly.
-        from kamiwaza_sdk.schemas.extensions import PatchExtension, PatchServiceSpec
-
         from kamiwaza_extensions.commands.dev import _build_patch_kwargs
+        from kamiwaza_sdk.schemas.extensions import PatchExtension, PatchServiceSpec
 
         kwargs = _build_patch_kwargs(
             patch_services=[PatchServiceSpec(name="x")],
@@ -666,9 +703,7 @@ class TestBuildPatchKwargsCarriesAnnotations:
             }
             kamiwaza = None
 
-        kwargs = _build_patch_kwargs(
-            patch_services=["svc"], payload=_FakePayload()
-        )
+        kwargs = _build_patch_kwargs(patch_services=["svc"], payload=_FakePayload())
         assert kwargs["sandbox"] == {
             "enabled": True,
             "service_name": "sandbox-controller",
@@ -701,9 +736,8 @@ class TestBuildPatchKwargsCarriesAnnotations:
     def test_patchextension_accepts_volumes_via_extra_allow(self):
         """Sanity: PatchExtension must accept top-level volumes via
         ``extra="allow"``."""
-        from kamiwaza_sdk.schemas.extensions import PatchExtension, PatchServiceSpec
-
         from kamiwaza_extensions.commands.dev import _build_patch_kwargs
+        from kamiwaza_sdk.schemas.extensions import PatchExtension, PatchServiceSpec
 
         volumes = [{"name": "data", "emptyDir": {}}]
 
@@ -724,9 +758,8 @@ class TestBuildPatchKwargsCarriesAnnotations:
         (healthCheck, automountServiceAccountToken,
         containerSecurityContext) must ride PATCH so the operator
         refreshes them on existing CRs after iterative redeploys."""
-        from kamiwaza_sdk.schemas.extensions import ExtensionServiceSpec
-
         from kamiwaza_extensions.commands.dev import _build_patch_service_specs
+        from kamiwaza_sdk.schemas.extensions import ExtensionServiceSpec
 
         class _FakePayload:
             services = [
@@ -772,9 +805,8 @@ class TestBuildPatchKwargsCarriesAnnotations:
         """``automountServiceAccountToken=False`` is a meaningful
         explicit setting (deny token mount). The ``is not None`` check
         in the helper must preserve it, not skip it as falsy."""
-        from kamiwaza_sdk.schemas.extensions import ExtensionServiceSpec
-
         from kamiwaza_extensions.commands.dev import _build_patch_service_specs
+        from kamiwaza_sdk.schemas.extensions import ExtensionServiceSpec
 
         class _FakePayload:
             services = [
@@ -790,9 +822,8 @@ class TestBuildPatchKwargsCarriesAnnotations:
 
     def test_patch_service_specs_forwards_volume_mounts(self):
         """ENG-4834: service-level mounts must also refresh on PATCH."""
-        from kamiwaza_sdk.schemas.extensions import ExtensionServiceSpec
-
         from kamiwaza_extensions.commands.dev import _build_patch_service_specs
+        from kamiwaza_sdk.schemas.extensions import ExtensionServiceSpec
 
         volume_mounts = [{"name": "data", "mountPath": "/data"}]
 
@@ -826,9 +857,8 @@ class TestBuildPatchKwargsCarriesAnnotations:
         """ENG-4834 follow-up: per-service mounts must also clear on
         PATCH when removed from compose. Mirrors the top-level clear
         behavior in ``_build_patch_kwargs``."""
-        from kamiwaza_sdk.schemas.extensions import ExtensionServiceSpec
-
         from kamiwaza_extensions.commands.dev import _build_patch_service_specs
+        from kamiwaza_sdk.schemas.extensions import ExtensionServiceSpec
 
         class _FakePayload:
             services = [
@@ -841,9 +871,8 @@ class TestBuildPatchKwargsCarriesAnnotations:
     def test_patchextension_accepts_sandbox_via_extra_allow(self):
         """Sanity: PatchExtension must accept the sandbox kwarg via
         ``extra="allow"``."""
-        from kamiwaza_sdk.schemas.extensions import PatchExtension, PatchServiceSpec
-
         from kamiwaza_extensions.commands.dev import _build_patch_kwargs
+        from kamiwaza_sdk.schemas.extensions import PatchExtension, PatchServiceSpec
 
         class _FakePayload:
             model_extra = {"sandbox": {"enabled": True, "service_name": "sc"}}

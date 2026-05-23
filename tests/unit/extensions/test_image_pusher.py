@@ -67,27 +67,71 @@ class TestPush:
 class TestPushOrchestration:
     @patch("kamiwaza_extensions.image_pusher._has_podman", return_value=True)
     @patch.object(ImagePusher, "_login_registry")
+    @patch.object(ImagePusher, "_tag")
     @patch.object(ImagePusher, "_push")
-    def test_insecure_uses_podman(self, mock_push, mock_login, _mock_hp, pusher):
+    def test_insecure_uses_podman(
+        self, mock_push, mock_tag, mock_login, _mock_hp, pusher
+    ):
         pusher.push(["reg/app:v1"], registry="reg", token="tok", insecure=True)
         mock_login.assert_called_once_with("reg", "tok", use_podman=True)
+        mock_tag.assert_not_called()
         mock_push.assert_called_once_with("reg/app:v1", use_podman=True, verbose=False)
 
     @patch("kamiwaza_extensions.image_pusher._has_podman", return_value=False)
     @patch.object(ImagePusher, "_login_registry")
+    @patch.object(ImagePusher, "_tag")
     @patch.object(ImagePusher, "_push")
-    def test_insecure_no_podman_falls_back_to_docker(self, mock_push, mock_login, _mock_hp, pusher):
+    def test_insecure_no_podman_falls_back_to_docker(
+        self, mock_push, mock_tag, mock_login, _mock_hp, pusher
+    ):
         pusher.push(["reg/app:v1"], registry="reg", token="tok", insecure=True)
         mock_login.assert_called_once_with("reg", "tok", use_podman=False)
+        mock_tag.assert_not_called()
         mock_push.assert_called_once_with("reg/app:v1", use_podman=False, verbose=False)
 
     @patch("kamiwaza_extensions.image_pusher._has_podman", return_value=True)
     @patch.object(ImagePusher, "_login_registry")
+    @patch.object(ImagePusher, "_tag")
     @patch.object(ImagePusher, "_push")
-    def test_secure_uses_docker(self, mock_push, mock_login, _mock_hp, pusher):
+    def test_secure_uses_docker(
+        self, mock_push, mock_tag, mock_login, _mock_hp, pusher
+    ):
         pusher.push(["reg/app:v1"], registry="reg", token="tok", insecure=False)
         mock_login.assert_called_once_with("reg", "tok", use_podman=False)
+        mock_tag.assert_not_called()
         mock_push.assert_called_once_with("reg/app:v1", use_podman=False, verbose=False)
+
+    @patch("kamiwaza_extensions.image_pusher._has_podman", return_value=True)
+    @patch.object(ImagePusher, "_login_registry")
+    @patch.object(ImagePusher, "_tag")
+    @patch.object(ImagePusher, "_push")
+    def test_target_refs_are_retagged_and_pushed(
+        self, mock_push, mock_tag, mock_login, _mock_hp, pusher
+    ):
+        pusher.push(
+            ["127.0.0.1:30010/app:v1"],
+            registry="host.containers.internal:30010",
+            token="tok",
+            insecure=True,
+            target_refs={
+                "127.0.0.1:30010/app:v1": "host.containers.internal:30010/app:v1",
+            },
+        )
+
+        mock_login.assert_called_once_with(
+            "host.containers.internal:30010", "tok", use_podman=True
+        )
+        mock_tag.assert_called_once_with(
+            "127.0.0.1:30010/app:v1",
+            "host.containers.internal:30010/app:v1",
+            use_podman=True,
+            verbose=False,
+        )
+        mock_push.assert_called_once_with(
+            "host.containers.internal:30010/app:v1",
+            use_podman=True,
+            verbose=False,
+        )
 
 
 # ENG-4370 — digest-pinning catalog references
@@ -113,13 +157,13 @@ class TestValidateDigest:
         [
             "",
             "abc",
-            "sha512:" + "a" * 64,                    # wrong algorithm
-            "sha256:" + "a" * 63,                    # too short
-            "sha256:" + "a" * 65,                    # too long
-            "sha256:" + "A" * 64,                    # uppercase hex
-            "sha256:" + "g" * 64,                    # non-hex char
-            "sha256:" + "a" * 32 + " " + "a" * 31,   # embedded space
-            "Sha256:" + "a" * 64,                    # uppercase prefix
+            "sha512:" + "a" * 64,  # wrong algorithm
+            "sha256:" + "a" * 63,  # too short
+            "sha256:" + "a" * 65,  # too long
+            "sha256:" + "A" * 64,  # uppercase hex
+            "sha256:" + "g" * 64,  # non-hex char
+            "sha256:" + "a" * 32 + " " + "a" * 31,  # embedded space
+            "Sha256:" + "a" * 64,  # uppercase prefix
         ],
     )
     def test_rejects_malformed(self, bad):
@@ -132,7 +176,9 @@ class TestResolveDigest:
     def test_returns_digest_from_imagetools(self, mock_run):
         mock_run.return_value = MagicMock(
             returncode=0,
-            stdout='{"digest":"' + _VALID_DIGEST + '","mediaType":"application/vnd.oci.image.index.v1+json"}',
+            stdout='{"digest":"'
+            + _VALID_DIGEST
+            + '","mediaType":"application/vnd.oci.image.index.v1+json"}',
             stderr="",
         )
         digest = ImagePusher.resolve_digest("reg.test/app:v1")
@@ -154,9 +200,7 @@ class TestResolveDigest:
     def test_non_dict_json_raises(self, mock_run):
         # Valid JSON but not a dict — bare .get would AttributeError
         # without an isinstance guard.
-        mock_run.return_value = MagicMock(
-            returncode=0, stdout="[]", stderr=""
-        )
+        mock_run.return_value = MagicMock(returncode=0, stdout="[]", stderr="")
         with pytest.raises(ImagePushError, match="expected an object"):
             ImagePusher.resolve_digest("reg.test/app:v1")
 

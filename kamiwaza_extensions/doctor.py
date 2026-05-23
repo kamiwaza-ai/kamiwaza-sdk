@@ -42,6 +42,12 @@ def _is_kubectl_not_found_error(stderr: str) -> bool:
     return bool(_NOT_FOUND_FALLBACK_RE.search(stderr))
 
 
+def _registry_exit_code() -> int:
+    from kamiwaza_extensions.exit_codes import ExitCode
+
+    return int(ExitCode.REGISTRY_AUTH)
+
+
 @lru_cache(maxsize=1)
 def _uac_9d_hints() -> list[dict]:
     """Load UAC-9d class hints from the runtime lib's canonical JSON."""
@@ -351,6 +357,9 @@ class DoctorChecker:
         # Connection checks (if configured)
         results.append(self._check_connection())
 
+        # Registry checks (if configured)
+        results.extend(self._check_registry_readiness())
+
         # Cluster extension readiness — operator image / CRD / Deployment
         results.append(self.cluster_extension_readiness())
 
@@ -529,6 +538,134 @@ class DoctorChecker:
             "warn",
             f"{conn.name}: no health endpoint found",
             fix="Server is reachable but health check failed",
+        )
+
+    # ------------------------------------------------------------------
+    # Registry checks
+    # ------------------------------------------------------------------
+
+    def _check_registry_readiness(self) -> List[CheckResult]:
+        connection = self._conn_mgr.get_active_connection()
+        if connection is None:
+            return []
+
+        try:
+            from kamiwaza_extensions.registry_resolution import resolve_dev_registries
+
+            resolution = resolve_dev_registries(connection)
+        except ValueError as exc:
+            return [
+                CheckResult(
+                    "Registry resolution",
+                    "fail",
+                    str(exc),
+                    fix="Set KAMIWAZA_REGISTRY explicitly or configure the platform registry",
+                )
+            ]
+
+        results = [
+            CheckResult(
+                "Registry resolution",
+                "pass",
+                (
+                    f"image={resolution.image_registry} "
+                    f"({resolution.image_registry_source}), "
+                    f"push={resolution.push_registry} "
+                    f"({resolution.push_registry_source})"
+                ),
+            )
+        ]
+        results.append(
+            self._check_registry_http_endpoint(
+                "Registry image endpoint",
+                resolution.image_registry,
+            )
+        )
+        if resolution.push_registry != resolution.image_registry:
+            results.append(self._check_push_registry_endpoint(resolution.push_registry))
+        return results
+
+    def _check_push_registry_endpoint(self, registry: str) -> CheckResult:
+        from kamiwaza_extensions.registry_resolution import running_podman_machine_name
+
+        machine = running_podman_machine_name()
+        if machine is not None and registry.startswith("host.containers.internal:"):
+            try:
+                result = subprocess.run(
+                    [
+                        "podman",
+                        "machine",
+                        "ssh",
+                        machine,
+                        "curl",
+                        "-fsS",
+                        f"http://{registry}/v2/",
+                        "-o",
+                        "/dev/null",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+            except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+                return CheckResult(
+                    "Registry push endpoint",
+                    "warn",
+                    f"Could not probe from Podman VM: {exc}",
+                )
+            if result.returncode == 0:
+                return CheckResult(
+                    "Registry push endpoint",
+                    "pass",
+                    f"{registry} reachable from Podman machine '{machine}'",
+                )
+            return CheckResult(
+                "Registry push endpoint",
+                "fail",
+                f"{registry} not reachable from Podman machine '{machine}'",
+                fix=result.stderr.strip() or "Check KAMIWAZA_PUSH_REGISTRY",
+                exit_code=_registry_exit_code(),
+            )
+        return self._check_registry_http_endpoint("Registry push endpoint", registry)
+
+    @staticmethod
+    def _check_registry_http_endpoint(name: str, registry: str) -> CheckResult:
+        import requests
+
+        failures: list[str] = []
+        for url in (f"http://{registry}/v2/", f"https://{registry}/v2/"):
+            try:
+                response = requests.get(url, timeout=5, verify=False)
+            except requests.RequestException as exc:
+                failures.append(f"{url}: {exc}")
+                continue
+            content_type = response.headers.get("content-type", "")
+            body_start = (response.text or "").lstrip()[:64].lower()
+            if "text/html" in content_type.lower() or body_start.startswith(
+                ("<!doctype html", "<html")
+            ):
+                return CheckResult(
+                    name,
+                    "fail",
+                    f"{url} returned HTML, not a registry /v2/ response",
+                    fix=(
+                        "Use the platform-advertised registry host or set "
+                        "KAMIWAZA_REGISTRY explicitly"
+                    ),
+                    exit_code=_registry_exit_code(),
+                )
+            if response.status_code in (200, 401):
+                return CheckResult(
+                    name,
+                    "pass",
+                    f"{url} returned {response.status_code}",
+                )
+            failures.append(f"{url}: HTTP {response.status_code}")
+        return CheckResult(
+            name,
+            "warn",
+            f"Could not confirm registry /v2/ endpoint for {registry}",
+            fix="; ".join(failures[-2:]) if failures else None,
         )
 
     # ------------------------------------------------------------------
