@@ -89,7 +89,20 @@ class GatePackagesAPI(BaseService):
         *,
         index_url: Optional[str] = None,
     ) -> GatePackageInstallResult:
-        """Atomic in-place replace (FR-89a). Ships in WS-M5b."""
+        """Atomic in-place replace (FR-89a). Ships in WS-M5b.
+
+        Raises:
+            GatePackageHashRequiredError: 400 when ``hash_digest`` is missing.
+            GatePackageHashMismatchError: 422 when pip --require-hashes
+                rejects the wheel.
+            GatePackageInstallTimeoutError: 504 on pip-subprocess timeout.
+            GatePackageNotFoundError: 404 when no package named ``name`` is
+                currently installed.
+            GatePackageClasspathDropError: 409 when the candidate package's
+                classpaths are not a superset of the active package's
+                classpaths. Rebinding the dropped classpaths is operator
+                work; the error body names the diff.
+        """
         spec = GatePackageSpec(
             package_spec=package_spec,
             hash_digest=hash_digest,
@@ -104,5 +117,15 @@ class GatePackagesAPI(BaseService):
 
     def uninstall(self, name: str) -> None:
         """Uninstall (FR-90). Server refuses if any active binding
-        references a classpath from the package. Ships in WS-M5b."""
+        references a classpath from the package. Ships in WS-M5b.
+
+        Return value is reserved; M5b may surface the audit event id.
+
+        Raises:
+            GatePackageNotFoundError: 404 when no package named ``name``
+                is currently installed.
+            GatePackageUninstallBlockedError: 409 when at least one active
+                binding still references a classpath from the package.
+                The error body names the blocking bindings.
+        """
         self.client._request("DELETE", f"/authz/gate-packages/{name}")
