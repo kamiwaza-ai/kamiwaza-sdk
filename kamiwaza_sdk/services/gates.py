@@ -14,8 +14,13 @@ Server-side correlate: POST /api/authz/gates/discover (§4.2.3).
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from ..schemas.federation import GateDiscovery
 from .base_service import BaseService
+
+if TYPE_CHECKING:
+    from .gate_packages import GatePackagesAPI
 
 
 class GatesAPI(BaseService):
