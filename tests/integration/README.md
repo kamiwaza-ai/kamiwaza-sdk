@@ -62,19 +62,47 @@ KAMIWAZA_PEER_API_KEY=... \
 
 ## Adding a federation-aware integration test
 
-1. Add the marker:
+1. Add **all four** markers — the canonical walkthrough uses each
+   for a distinct purpose, and the suite is broken without any one:
 
    ```python
-   pytestmark = [pytest.mark.live, pytest.mark.requires_two_clusters]
+   pytestmark = [
+       pytest.mark.integration,        # included by CI's -m "integration and live" selector
+       pytest.mark.live,               # requires a running Kamiwaza deployment
+       pytest.mark.withoutresponses,   # disables pytest-responses HTTP stubbing (real network only)
+       pytest.mark.requires_two_clusters,  # auto-deselected when peer creds unset
+   ]
    ```
+
+   Missing `integration` makes the suite invisible to the CI selector.
+   Missing `withoutresponses` lets `pytest-responses` stub the real
+   HTTP calls — the test passes against a mocked stack rather than
+   the live peer cluster (the exact defect R2 fixed).
 
 2. Depend on the peer-cluster fixtures from `tests/integration/conftest.py`:
 
-   - `live_kamiwaza_client` — the primary cluster's `KamiwazaClient`
-   - `live_kamiwaza_peer_client` — the peer cluster's `KamiwazaClient`
+   - `live_kamiwaza_session_client` — the primary cluster's
+     `KamiwazaClient`, **session-scoped**. Use this from
+     module-scoped fixtures. The older `live_kamiwaza_client` is
+     function-scoped — depending on it from a module-scoped fixture
+     raises `ScopeMismatch` at fixture resolution (R1 ScopeMismatch
+     defect).
+   - `live_kamiwaza_peer_client` — the peer cluster's `KamiwazaClient`,
+     session-scoped.
+
+   Scope rule: `function-scoped fixtures must not be depended on by
+   broader-scoped (module/session) fixtures` is the pytest-builtin
+   rule that R1 violated. When in doubt, use the session-scoped
+   client; tests that need a fresh per-test client can wrap it in a
+   function-scoped fixture instead.
 
 3. Keep teardown best-effort — federation state survives test failures
-   and the next run gets a fresh per-run unique federation name.
+   and the next run gets a fresh per-run unique federation name + PSK.
+
+4. Mint a fresh PSK *inside* each pair fixture rather than sharing one
+   at module scope. The backend resolves the receiver-side federation
+   by PSK match; two coexisting pairs sharing a PSK confuse the
+   resolver (R5 H1 defect).
 
 See `test_federation_two_cluster_live.py` for the canonical walkthrough
 (pair → brokered user → federated job → retrieval smoke → unpair).

@@ -43,10 +43,12 @@ def federation_pair_name() -> str:
     return f"eng5784-live-{uuid.uuid4().hex[:8]}"
 
 
-@pytest.fixture(scope="module")
-def shared_psk() -> str:
-    """Shared PSK between initiator and receiver. Mode B (caller-supplied)."""
-    return str(uuid.uuid4())
+# ENG-5784 R5 H1 — PSKs are now minted INSIDE each pair fixture rather
+# than shared at module scope. The backend resolves the receiver-side
+# federation by PSK match; if two coexisting pairs share the same PSK,
+# /pair on the second one can bind to the wrong row or be refused.
+# Each fixture now mints its own UUID4 so the receiver's PSK lookup is
+# unambiguous.
 
 
 @pytest.fixture(scope="module")
@@ -68,23 +70,20 @@ def receiver_client(live_kamiwaza_peer_client: KamiwazaClient) -> KamiwazaClient
 def initiator_cluster_uuid(initiator_client: KamiwazaClient) -> str:
     """UUID of the initiator cluster. Used to build brokered external_ids.
 
-    Reads ``local_node_id`` from ``cluster.capabilities()`` — that's the
-    canonical cluster-identity UUID in the ClusterCapabilities schema.
-    Falls back to ``cluster_id`` / ``id`` for backend versions that may
-    expose alternate field names.
+    Reads the schema-declared ``local_node_id`` field on
+    ClusterCapabilities (added in R5 H4 — was previously available only
+    via ``extra="allow"`` passthrough). The server has emitted this
+    field since the original ENG-4696 capabilities-probe work; the
+    fallback chain through ``cluster_id`` / ``id`` was carrying schema-
+    drift risk because those names aren't declared. Now schema-bound.
     """
     capabilities = initiator_client.cluster.capabilities()
-    cluster_id = (
-        getattr(capabilities, "local_node_id", None)
-        or getattr(capabilities, "cluster_id", None)
-        or getattr(capabilities, "id", None)
-    )
-    if not cluster_id:
+    if not capabilities.local_node_id:
         pytest.fail(
-            "initiator cluster.capabilities() returned no identifying UUID; "
+            "initiator cluster.capabilities() returned no local_node_id; "
             f"got {capabilities!r}"
         )
-    return str(cluster_id)
+    return capabilities.local_node_id
 
 
 @pytest.fixture(scope="module")
@@ -92,7 +91,6 @@ def paired_federation(
     initiator_client: KamiwazaClient,
     receiver_client: KamiwazaClient,
     federation_pair_name: str,
-    shared_psk: str,
     live_peer_base_url: str,
 ) -> Iterator[dict[str, str]]:
     """Establish a federation pair for the test module. Tears down at exit.
@@ -100,6 +98,11 @@ def paired_federation(
     Yields a dict with the federation_id on both sides plus the pair name
     so individual tests can stitch onto the live state.
     """
+    # R5 H1 — mint the PSK inside the fixture so it's not shared with
+    # other pair fixtures (the receiver's PSK-match lookup must be
+    # unambiguous across coexisting pairs).
+    pair_psk = str(uuid.uuid4())
+
     # Receiver creates its side first (WAITING state) so the initiator's
     # /pair handshake has something to hit. The receiver record only
     # needs name + role + psk — it doesn't need a callback URL because
@@ -110,7 +113,7 @@ def paired_federation(
     receiver_fed = receiver_client.federations.pair(
         name=federation_pair_name,
         role="receiver",
-        preshared_key=shared_psk,
+        preshared_key=pair_psk,
     )
     receiver_fed_id = str(receiver_fed.id)
 
@@ -123,7 +126,7 @@ def paired_federation(
             name=federation_pair_name,
             role="initiator",
             remote_url=live_peer_base_url,
-            preshared_key=shared_psk,
+            preshared_key=pair_psk,
         )
     except Exception:
         try:
@@ -168,7 +171,6 @@ def paired_federation(
 def unpaired_federation(
     initiator_client: KamiwazaClient,
     receiver_client: KamiwazaClient,
-    shared_psk: str,
     live_peer_base_url: str,
 ) -> Iterator[dict[str, str]]:
     """Fresh function-scoped pair for tests that mutate pair lifecycle state.
@@ -176,14 +178,16 @@ def unpaired_federation(
     The module-scoped ``paired_federation`` is a shared resource; tests
     like ``test_unpair_returns_to_clean_state`` would otherwise create
     order-dependent suite behavior. This fixture stands up a separate
-    federation with a unique name per test, so mutating its state
-    doesn't affect the module-scoped pair.
+    federation with a unique name + unique PSK per test, so mutating
+    its state doesn't affect the module-scoped pair AND the receiver
+    PSK-match lookup stays unambiguous across coexisting pairs (R5 H1).
     """
     fresh_name = f"eng5784-unpair-{uuid.uuid4().hex[:8]}"
+    fresh_psk = str(uuid.uuid4())
     receiver_fed = receiver_client.federations.pair(
         name=fresh_name,
         role="receiver",
-        preshared_key=shared_psk,
+        preshared_key=fresh_psk,
     )
     receiver_fed_id = str(receiver_fed.id)
     try:
@@ -191,7 +195,7 @@ def unpaired_federation(
             name=fresh_name,
             role="initiator",
             remote_url=live_peer_base_url,
-            preshared_key=shared_psk,
+            preshared_key=fresh_psk,
         )
     except Exception:
         try:
@@ -270,18 +274,13 @@ class TestFederationTwoClusterWalkthrough:
         """
         proxy = initiator_client.federations[paired_federation["name"]]
         capabilities = proxy.probe()
-        # ClusterCapabilities is a pydantic model — probe() raises if the
-        # mesh hop or capability schema fails. Existence of any identifying
-        # UUID is the load-bearing signal. local_node_id is the canonical
-        # field; cluster_id/id are accepted for backend version variance.
-        cluster_id = (
-            getattr(capabilities, "local_node_id", None)
-            or getattr(capabilities, "cluster_id", None)
-            or getattr(capabilities, "id", None)
-        )
+        # probe() raises if the mesh hop or capability schema fails.
+        # local_node_id is the schema-declared cluster-identity field
+        # (R5 H4 added the declaration). Pin the schema contract — no
+        # fallback chain, no extra="allow" passthrough gymnastics.
         assert (
-            cluster_id
-        ), f"peer capabilities missing identifying UUID: {capabilities!r}"
+            capabilities.local_node_id
+        ), f"peer capabilities missing local_node_id: {capabilities!r}"
 
     def test_brokered_user_allowlist_round_trip(
         self,
@@ -324,6 +323,16 @@ class TestFederationTwoClusterWalkthrough:
         """The WS-M1 demo-gate signal: a federated job runs as the
         originating user, not as a system principal. Audit-actor round-trip
         is the proof. T5.22 / ENG-4699.
+
+        Strict gates (R5 H2):
+          - status MUST be SUCCEEDED — accepting FAILED would mask the
+            very failure modes this test exists to catch (a brokered
+            job that crashes is not a positive demo-gate signal).
+          - identity is read from result.audit_actor — the canonical
+            field declared on JobResult (schemas/federation.py).
+            Accepting requester/submitter fallbacks lets generically-
+            named identity attributes pass even when the audit-actor
+            wiring is broken.
         """
         # Use the recoverable path so we get the job_id back immediately
         # and can poll for the terminal state.
@@ -333,19 +342,12 @@ class TestFederationTwoClusterWalkthrough:
             timeout_seconds=120,
             recoverable=True,
         )
-        assert result.status in {
-            "SUCCEEDED",
-            "FAILED",
-        }, f"job did not reach terminal state: {result}"
-        # The audit_actor field is the demo-gate signal. Backend versions
-        # may name it audit_actor / requester / submitter — accept any
-        # non-None identity-like attribute as the round-trip proof.
-        actor = (
-            getattr(result, "audit_actor", None)
-            or getattr(result, "requester", None)
-            or getattr(result, "submitter", None)
-        )
-        assert actor, f"job result missing audit-actor identity: {result}"
+        assert (
+            result.status == "SUCCEEDED"
+        ), f"federated job did not succeed: status={result.status} result={result}"
+        assert (
+            result.audit_actor
+        ), f"job result missing audit_actor (demo-gate signal): {result}"
 
     def test_retrieval_surface_reachable_on_both_clusters(
         self,
@@ -386,4 +388,11 @@ class TestFederationTwoClusterWalkthrough:
             "GET", f"/cluster/federations/{unpaired_federation['initiator_id']}"
         )
         assert isinstance(view, dict)
-        assert view["status"] in {"DISCONNECTED", "DEAD", "WAITING"}, view
+        # R5 H3 — terminal post-disconnect set MUST NOT include WAITING
+        # (the initial state). A no-op or rejected disconnect that
+        # leaves the row in WAITING would otherwise pass silently.
+        observed = view.get("status")
+        assert observed in {"DISCONNECTED", "DEAD"}, (
+            f"disconnect did not reach a terminal-disconnect state; "
+            f"observed status={observed!r}; full view={view!r}"
+        )
