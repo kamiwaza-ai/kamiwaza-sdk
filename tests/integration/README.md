@@ -14,6 +14,8 @@ contributor PRs without a live cluster don't see false reds.
 | `KAMIWAZA_VERIFY_SSL` | Set `false` for self-signed certs in dev | `true` |
 | `KAMIWAZA_PEER_BASE_URL` | Federation peer cluster base URL (ENG-5784) | unset |
 | `KAMIWAZA_PEER_API_KEY` | API key on the peer cluster (ENG-5784) | unset |
+| `KAMIWAZA_INITIATOR_CALLBACK_HOST` | Hostname/IP the peer cluster uses to reach back to the initiator. Required when both clusters share a domain (e.g. both expose `https://kamiwaza.test/api` resolving to their own ingress). Pass the routable host the receiver should call (e.g. `spark-1`). | falls back to `KAMIWAZA_BASE_URL` host |
+| `KAMIWAZA_INITIATOR_CALLBACK_URL` | Full callback URL alternative to `_HOST` — use when scheme/path/port also differs from `KAMIWAZA_BASE_URL`. | falls back to `KAMIWAZA_BASE_URL` |
 
 The peer-cluster env vars only activate the two-cluster federation tests
 marked `@pytest.mark.requires_two_clusters`. When unset, those tests are
