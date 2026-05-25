@@ -9,7 +9,8 @@ contributor PRs without a live cluster don't see false reds.
 |---|---|---|
 | `KAMIWAZA_BASE_URL` | Primary cluster base URL (must end with `/api`) | `https://kamiwaza.test/api` |
 | `KAMIWAZA_API_KEY` | API key for the primary cluster | unset |
-| `KAMIWAZA_USERNAME` / `KAMIWAZA_PASSWORD` | Username + password auth fallback (`admin` / kz-login) | `admin` |
+| `KAMIWAZA_USERNAME` | Username for password-auth fallback | `admin` |
+| `KAMIWAZA_PASSWORD` | Password for password-auth fallback | unset (falls back to kz-login) |
 | `KAMIWAZA_VERIFY_SSL` | Set `false` for self-signed certs in dev | `true` |
 | `KAMIWAZA_PEER_BASE_URL` | Federation peer cluster base URL (ENG-5784) | unset |
 | `KAMIWAZA_PEER_API_KEY` | API key on the peer cluster (ENG-5784) | unset |
@@ -38,7 +39,7 @@ KAMIWAZA_PEER_API_KEY=... \
 |---|---|---|
 | `live` | Tests that talk to a running Kamiwaza deployment | always selected when running `-m live` |
 | `requires_embedding_model` | Live tests that need an active platform embedding deployment | auto-provisioned by `embedding_model_prerequisite` fixture; skipped if provisioning fails |
-| `requires_two_clusters` | Live tests that need a federation peer cluster (ENG-5784) | auto-deselected when `KAMIWAZA_PEER_BASE_URL` is unset |
+| `requires_two_clusters` | Live tests that need a federation peer cluster (ENG-5784) | auto-deselected at collection when `KAMIWAZA_PEER_BASE_URL` is unset; skipped at run time with an explicit reason when peer URL is set but `KAMIWAZA_PEER_API_KEY` is missing (partial-creds case) |
 
 ## Adding a federation-aware integration test
 

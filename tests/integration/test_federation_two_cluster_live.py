@@ -18,7 +18,7 @@ reference_fleet_validation_hosts.md).
 
 from __future__ import annotations
 
-import os
+import logging
 import time
 import uuid
 from typing import Iterator
@@ -27,8 +27,12 @@ import pytest
 
 from kamiwaza_sdk import KamiwazaClient
 
+logger = logging.getLogger(__name__)
+
 pytestmark = [
+    pytest.mark.integration,
     pytest.mark.live,
+    pytest.mark.withoutresponses,
     pytest.mark.requires_two_clusters,
 ]
 
@@ -46,9 +50,12 @@ def shared_psk() -> str:
 
 
 @pytest.fixture(scope="module")
-def initiator_client(live_kamiwaza_client: KamiwazaClient) -> KamiwazaClient:
-    """Local cluster as initiator of the federation."""
-    return live_kamiwaza_client
+def initiator_client(live_kamiwaza_session_client: KamiwazaClient) -> KamiwazaClient:
+    """Local cluster as initiator. Uses the session-scoped client so this
+    module-scoped fixture's scope chain is consistent (depending on the
+    function-scoped ``live_kamiwaza_client`` would raise ScopeMismatch).
+    """
+    return live_kamiwaza_session_client
 
 
 @pytest.fixture(scope="module")
@@ -86,26 +93,46 @@ def paired_federation(
     so individual tests can stitch onto the live state.
     """
     # Receiver creates its side first (WAITING state) so the initiator's
-    # /pair handshake has something to hit.
-    initiator_base = os.environ.get("KAMIWAZA_BASE_URL") or initiator_client.base_url
+    # /pair handshake has something to hit. Use initiator_client.base_url
+    # as the single source of truth for the callback host — reading
+    # KAMIWAZA_BASE_URL separately would misroute the receiver when a
+    # contributor passes --live-base-url overriding the env var.
     receiver_fed = receiver_client.federations.pair(
         name=federation_pair_name,
         role="receiver",
-        remote_url=initiator_base,
+        remote_url=initiator_client.base_url,
         preshared_key=shared_psk,
     )
+    receiver_fed_id = str(receiver_fed.id)
 
-    # Initiator drives the handshake (PSK barrier exercised here).
-    initiator_fed = initiator_client.federations.pair(
-        name=federation_pair_name,
-        role="initiator",
-        remote_url=live_peer_base_url,
-        preshared_key=shared_psk,
-    )
+    # Initiator drives the handshake (PSK barrier exercised here). If
+    # initiator pair raises after the receiver-side record was created,
+    # best-effort clean up the orphaned receiver federation before
+    # re-raising so the next run doesn't collide on stale state.
+    try:
+        initiator_fed = initiator_client.federations.pair(
+            name=federation_pair_name,
+            role="initiator",
+            remote_url=live_peer_base_url,
+            preshared_key=shared_psk,
+        )
+    except Exception:
+        try:
+            receiver_client._request(
+                "POST", f"/cluster/federations/{receiver_fed_id}/disconnect"
+            )
+        except Exception as cleanup_exc:  # pragma: no cover - best effort
+            logger.warning(
+                "failed to clean up orphaned receiver federation %s after "
+                "initiator pair failure: %s",
+                receiver_fed_id,
+                cleanup_exc,
+            )
+        raise
 
     state = {
         "initiator_id": str(initiator_fed.id),
-        "receiver_id": str(receiver_fed.id),
+        "receiver_id": receiver_fed_id,
         "name": federation_pair_name,
     }
     try:
@@ -120,15 +147,88 @@ def paired_federation(
             try:
                 client._request("POST", f"/cluster/federations/{fed_id}/disconnect")
             except Exception as exc:  # pragma: no cover - teardown best-effort
-                print(
-                    f"warning: failed to disconnect {client_label} federation "
-                    f"{fed_id}: {exc}"
+                logger.warning(
+                    "failed to disconnect %s federation %s: %s",
+                    client_label,
+                    fed_id,
+                    exc,
+                )
+
+
+@pytest.fixture
+def unpaired_federation(
+    initiator_client: KamiwazaClient,
+    receiver_client: KamiwazaClient,
+    shared_psk: str,
+    live_peer_base_url: str,
+) -> Iterator[dict[str, str]]:
+    """Fresh function-scoped pair for tests that mutate pair lifecycle state.
+
+    The module-scoped ``paired_federation`` is a shared resource; tests
+    like ``test_unpair_returns_to_clean_state`` would otherwise create
+    order-dependent suite behavior. This fixture stands up a separate
+    federation with a unique name per test, so mutating its state
+    doesn't affect the module-scoped pair.
+    """
+    fresh_name = f"eng5784-unpair-{uuid.uuid4().hex[:8]}"
+    receiver_fed = receiver_client.federations.pair(
+        name=fresh_name,
+        role="receiver",
+        remote_url=initiator_client.base_url,
+        preshared_key=shared_psk,
+    )
+    receiver_fed_id = str(receiver_fed.id)
+    try:
+        initiator_fed = initiator_client.federations.pair(
+            name=fresh_name,
+            role="initiator",
+            remote_url=live_peer_base_url,
+            preshared_key=shared_psk,
+        )
+    except Exception:
+        try:
+            receiver_client._request(
+                "POST", f"/cluster/federations/{receiver_fed_id}/disconnect"
+            )
+        except Exception as cleanup_exc:  # pragma: no cover - best effort
+            logger.warning(
+                "failed to clean up orphaned receiver federation %s: %s",
+                receiver_fed_id,
+                cleanup_exc,
+            )
+        raise
+
+    state = {
+        "initiator_id": str(initiator_fed.id),
+        "receiver_id": receiver_fed_id,
+        "name": fresh_name,
+    }
+    try:
+        yield state
+    finally:
+        for client_label, client, fed_id in (
+            ("initiator", initiator_client, state["initiator_id"]),
+            ("receiver", receiver_client, state["receiver_id"]),
+        ):
+            try:
+                client._request("POST", f"/cluster/federations/{fed_id}/disconnect")
+            except Exception as exc:  # pragma: no cover - teardown best-effort
+                logger.warning(
+                    "failed to disconnect %s federation %s: %s",
+                    client_label,
+                    fed_id,
+                    exc,
                 )
 
 
 class TestFederationTwoClusterWalkthrough:
     """Live two-cluster federation walkthrough — counterpart to the mocked
     ``test_federation_skeleton_walkthrough.py`` flow.
+
+    TODO(WS-M2): replace direct ``client._request("GET"/"POST", ...)``
+    calls with typed wrappers once federation introspection
+    (``client.federations[name].get()`` and ``.disconnect()``) lands on
+    the canonical SDK surface.
     """
 
     def test_paired_state_visible_on_both_sides(
@@ -137,7 +237,10 @@ class TestFederationTwoClusterWalkthrough:
         initiator_client: KamiwazaClient,
         receiver_client: KamiwazaClient,
     ) -> None:
-        """Pair handshake completes; both clusters see the federation."""
+        """Initiator settles into PAIRED/ACTIVE after the handshake; receiver
+        may still be observed as WAITING immediately post-handshake on
+        some backend versions (the asymmetric tolerance is intentional).
+        """
         initiator_view = initiator_client._request(
             "GET", f"/cluster/federations/{paired_federation['initiator_id']}"
         )
@@ -146,8 +249,6 @@ class TestFederationTwoClusterWalkthrough:
         )
         assert isinstance(initiator_view, dict)
         assert isinstance(receiver_view, dict)
-        # Status is PAIRED after the /pair handshake completes; receivers
-        # may surface ACTIVE or PAIRED depending on backend version.
         assert initiator_view["status"] in {"PAIRED", "ACTIVE"}
         assert receiver_view["status"] in {"PAIRED", "ACTIVE", "WAITING"}
 
@@ -239,20 +340,26 @@ class TestFederationTwoClusterWalkthrough:
 
     def test_unpair_returns_to_clean_state(
         self,
-        paired_federation: dict[str, str],
+        unpaired_federation: dict[str, str],
         initiator_client: KamiwazaClient,
     ) -> None:
-        """Disconnect the federation from the initiator side mid-suite to
-        prove the unpair path. Final teardown handles any leftover state.
+        """Disconnect the federation from the initiator side and assert the
+        initiator-side status reflects the disconnect. Uses a dedicated
+        fresh-pair fixture (``unpaired_federation``) so this test doesn't
+        mutate the module-scoped ``paired_federation`` state — other tests
+        stay order-independent.
         """
         initiator_client._request(
             "POST",
-            f"/cluster/federations/{paired_federation['initiator_id']}/disconnect",
+            f"/cluster/federations/{unpaired_federation['initiator_id']}/disconnect",
         )
-        # Give the receiver a brief moment to observe the disconnect.
+        # Brief settle window — the disconnect is synchronous on the
+        # initiator side, but the status field may be eventually
+        # consistent across the request/response boundary on slower
+        # backends.
         time.sleep(1)
         view = initiator_client._request(
-            "GET", f"/cluster/federations/{paired_federation['initiator_id']}"
+            "GET", f"/cluster/federations/{unpaired_federation['initiator_id']}"
         )
         assert isinstance(view, dict)
         assert view["status"] in {"DISCONNECTED", "DEAD", "WAITING"}, view

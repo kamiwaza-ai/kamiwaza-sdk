@@ -1239,13 +1239,20 @@ def live_kamiwaza_peer_client(
     Only resolves when both KAMIWAZA_PEER_BASE_URL + KAMIWAZA_PEER_API_KEY are
     configured. Two-cluster tests should depend on this fixture alongside
     the @pytest.mark.requires_two_clusters marker.
+
+    SSL verification is opted out per-client (dev clusters typically run
+    with self-signed certs) so the toggle is scoped to this client rather
+    than mutating process-wide environment.
     """
     if not live_peer_base_url:
         pytest.skip("requires_two_clusters: KAMIWAZA_PEER_BASE_URL not set")
     if not live_peer_api_key:
         pytest.skip("requires_two_clusters: KAMIWAZA_PEER_API_KEY not set")
-    os.environ.setdefault("KAMIWAZA_VERIFY_SSL", "false")
-    return KamiwazaClient(live_peer_base_url, api_key=live_peer_api_key.strip())
+    return KamiwazaClient(
+        live_peer_base_url,
+        api_key=live_peer_api_key.strip(),
+        verify=False,
+    )
 
 
 def pytest_collection_modifyitems(
