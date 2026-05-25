@@ -512,23 +512,23 @@ def test_pair_forwards_all_four_brokering_kwargs_when_supplied() -> None:
         name="ORION",
         role="initiator",
         remote_url="https://orion.example.com",
-        peer_kc_issuer_url="https://lyra.example.com/realms/kamiwaza",
-        peer_kc_jwks_url=(
+        local_kc_issuer_url="https://lyra.example.com/realms/kamiwaza",
+        local_kc_jwks_url=(
             "https://lyra.example.com/realms/kamiwaza/protocol/openid-connect/certs"
         ),
-        peer_broker_client_id="kamiwaza-broker",
-        peer_broker_client_secret="test-secret-x",
+        local_broker_client_id="kamiwaza-broker",
+        local_broker_client_secret="test-secret-x",
     )
 
     _, body = _create_call(client)
-    assert body.get("peer_kc_issuer_url") == (
+    assert body.get("local_kc_issuer_url") == (
         "https://lyra.example.com/realms/kamiwaza"
     )
-    assert body.get("peer_kc_jwks_url") == (
+    assert body.get("local_kc_jwks_url") == (
         "https://lyra.example.com/realms/kamiwaza/protocol/openid-connect/certs"
     )
-    assert body.get("peer_broker_client_id") == "kamiwaza-broker"
-    assert body.get("peer_broker_client_secret") == "test-secret-x"
+    assert body.get("local_broker_client_id") == "kamiwaza-broker"
+    assert body.get("local_broker_client_secret") == "test-secret-x"
 
 
 def test_pair_omits_brokering_kwargs_when_not_supplied() -> None:
@@ -549,10 +549,10 @@ def test_pair_omits_brokering_kwargs_when_not_supplied() -> None:
 
     _, body = _create_call(client)
     for key in (
-        "peer_kc_issuer_url",
-        "peer_kc_jwks_url",
-        "peer_broker_client_id",
-        "peer_broker_client_secret",
+        "local_kc_issuer_url",
+        "local_kc_jwks_url",
+        "local_broker_client_id",
+        "local_broker_client_secret",
     ):
         assert key not in body, f"unexpected {key!r} in default-mode body"
 
@@ -572,16 +572,16 @@ def test_pair_forwards_partial_brokering_kwargs_to_server() -> None:
         name="ORION",
         role="initiator",
         remote_url="https://orion.example.com",
-        peer_kc_issuer_url="https://lyra.example.com/realms/kamiwaza",
+        local_kc_issuer_url="https://lyra.example.com/realms/kamiwaza",
     )
 
     _, body = _create_call(client)
-    assert body.get("peer_kc_issuer_url") == (
+    assert body.get("local_kc_issuer_url") == (
         "https://lyra.example.com/realms/kamiwaza"
     )
     for key in (
-        "peer_kc_jwks_url",
-        "peer_broker_client_id",
-        "peer_broker_client_secret",
+        "local_kc_jwks_url",
+        "local_broker_client_id",
+        "local_broker_client_secret",
     ):
         assert key not in body, f"unexpected {key!r} in partial-mode body"
