@@ -66,14 +66,22 @@ def receiver_client(live_kamiwaza_peer_client: KamiwazaClient) -> KamiwazaClient
 
 @pytest.fixture(scope="module")
 def initiator_cluster_uuid(initiator_client: KamiwazaClient) -> str:
-    """UUID of the initiator cluster. Used to build brokered external_ids."""
+    """UUID of the initiator cluster. Used to build brokered external_ids.
+
+    Reads ``local_node_id`` from ``cluster.capabilities()`` — that's the
+    canonical cluster-identity UUID in the ClusterCapabilities schema.
+    Falls back to ``cluster_id`` / ``id`` for backend versions that may
+    expose alternate field names.
+    """
     capabilities = initiator_client.cluster.capabilities()
-    cluster_id = getattr(capabilities, "cluster_id", None) or getattr(
-        capabilities, "id", None
+    cluster_id = (
+        getattr(capabilities, "local_node_id", None)
+        or getattr(capabilities, "cluster_id", None)
+        or getattr(capabilities, "id", None)
     )
     if not cluster_id:
         pytest.fail(
-            "initiator cluster.capabilities() returned no cluster_id; "
+            "initiator cluster.capabilities() returned no identifying UUID; "
             f"got {capabilities!r}"
         )
     return str(cluster_id)
@@ -263,12 +271,15 @@ class TestFederationTwoClusterWalkthrough:
         proxy = initiator_client.federations[paired_federation["name"]]
         capabilities = proxy.probe()
         # ClusterCapabilities is a pydantic model — probe() raises if the
-        # mesh hop or capability schema fails. Existence of a cluster_id
-        # is the load-bearing signal.
-        cluster_id = getattr(capabilities, "cluster_id", None) or getattr(
-            capabilities, "id", None
+        # mesh hop or capability schema fails. Existence of any identifying
+        # UUID is the load-bearing signal. local_node_id is the canonical
+        # field; cluster_id/id are accepted for backend version variance.
+        cluster_id = (
+            getattr(capabilities, "local_node_id", None)
+            or getattr(capabilities, "cluster_id", None)
+            or getattr(capabilities, "id", None)
         )
-        assert cluster_id, f"peer capabilities missing cluster id: {capabilities!r}"
+        assert cluster_id, f"peer capabilities missing identifying UUID: {capabilities!r}"
 
     def test_brokered_user_allowlist_round_trip(
         self,

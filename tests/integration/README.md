@@ -15,6 +15,25 @@ contributor PRs without a live cluster don't see false reds.
 | `KAMIWAZA_PEER_BASE_URL` | Federation peer cluster base URL (ENG-5784) | unset |
 | `KAMIWAZA_PEER_API_KEY` | API key on the peer cluster (ENG-5784) | unset |
 
+### Brokering env vars (capabilities probe + federated job tests)
+
+The capabilities-probe-via-mesh and federated-job-audit-actor tests
+require brokering to be active on both clusters. Brokering needs
+Keycloak issuer URLs + cluster IDs configured on both sides; the
+`kamiwaza-smoke.py federation-pair` script emits
+``WARN: brokering not active on either side (KAMIWAZA_KC_* env vars
+not set)`` when this is missing.
+
+These two tests will fail with mesh-proxy errors (capabilities) and
+job-result-marker errors (audit-actor) on fleet rigs that don't have
+brokering wired up. The other four tests (pair, brokered-user-allowlist,
+retrieval, unpair) work without brokering.
+
+Full brokering setup is outside the scope of this harness — operators
+running this suite against a fleet rig should ensure brokering is
+active per the federation-pair runbook before relying on the
+mesh-routing tests.
+
 The peer-cluster env vars only activate the two-cluster federation tests
 marked `@pytest.mark.requires_two_clusters`. When unset, those tests are
 auto-deselected — contributor PRs without peer creds see no false reds.
