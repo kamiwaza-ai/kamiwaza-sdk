@@ -63,6 +63,10 @@ class FederationsAPI(BaseService):
         preshared_key: Optional[str] = None,
         callback_hostname: Optional[str] = None,
         remote_admin_token: Optional[str] = None,
+        peer_kc_issuer_url: Optional[str] = None,
+        peer_kc_jwks_url: Optional[str] = None,
+        peer_broker_client_id: Optional[str] = None,
+        peer_broker_client_secret: Optional[str] = None,
     ) -> Federation:
         """Initiate or accept a federation pairing.
 
@@ -110,6 +114,22 @@ class FederationsAPI(BaseService):
             remote_admin_token: PAT/admin token on the remote cluster
                 (initiator-only convenience field; the server uses it to
                 drive the /pair handshake from the initiator side).
+            peer_kc_issuer_url: ENG-5822 — optional per-pair Keycloak
+                issuer URL for this cluster's brokering identity
+                (e.g. ``https://kamiwaza.test/realms/kamiwaza``). When
+                supplied, persisted onto the federation row and used by
+                the pair handshake instead of the cluster's
+                ``KAMIWAZA_KC_ISSUER_URL`` process-env default. Useful
+                for SDK-driven setup scripts that want to configure
+                brokering at pair time without a Helm rebuild.
+            peer_kc_jwks_url: Companion to ``peer_kc_issuer_url`` — the
+                JWKS endpoint URL.
+            peer_broker_client_id: Keycloak client ID used for
+                token-exchange brokering. The 4 brokering fields must
+                be supplied together; partial sets are refused by the
+                server with a 422 naming the missing field(s).
+            peer_broker_client_secret: Keycloak client secret (or
+                DataHub secret URN) paired with ``peer_broker_client_id``.
 
         Returns:
             Federation record reflecting the post-/pair state.
@@ -134,6 +154,18 @@ class FederationsAPI(BaseService):
             create_body["callback_hostname"] = callback_hostname
         if remote_admin_token is not None:
             create_body["remote_admin_token"] = remote_admin_token
+        # ENG-5822 — per-pair brokering inputs. Server-side atomic
+        # validator refuses partial sets, so include only when all 4
+        # are supplied (we let the server emit the validation error
+        # so callers get one canonical source-of-truth for the contract).
+        if peer_kc_issuer_url is not None:
+            create_body["peer_kc_issuer_url"] = peer_kc_issuer_url
+        if peer_kc_jwks_url is not None:
+            create_body["peer_kc_jwks_url"] = peer_kc_jwks_url
+        if peer_broker_client_id is not None:
+            create_body["peer_broker_client_id"] = peer_broker_client_id
+        if peer_broker_client_secret is not None:
+            create_body["peer_broker_client_secret"] = peer_broker_client_secret
 
         created = self.client._request(
             "POST",

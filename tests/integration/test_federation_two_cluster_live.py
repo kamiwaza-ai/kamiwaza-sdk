@@ -279,7 +279,9 @@ class TestFederationTwoClusterWalkthrough:
             or getattr(capabilities, "cluster_id", None)
             or getattr(capabilities, "id", None)
         )
-        assert cluster_id, f"peer capabilities missing identifying UUID: {capabilities!r}"
+        assert (
+            cluster_id
+        ), f"peer capabilities missing identifying UUID: {capabilities!r}"
 
     def test_brokered_user_allowlist_round_trip(
         self,
@@ -292,13 +294,24 @@ class TestFederationTwoClusterWalkthrough:
         initiator. Auto-provisioning happens on first mesh request; we
         validate only that the allowlist write succeeds and the record
         is queryable.
+
+        Uses the receiver-side federation ID (not the operator-supplied
+        name) because the pair handshake overwrites the receiver's
+        ``remote_cluster_name`` with the initiator's cluster name —
+        ``federations[name]`` lookup-by-name fails on the receiver
+        post-pair. POST the user record directly against the
+        receiver-side ID, mirroring how setup.py / cmd_m3 drives this.
         """
         external_id = (
             f"eng5784-brokered-{uuid.uuid4().hex[:6]}@{initiator_cluster_uuid}"
         )
-        proxy = receiver_client.federations[paired_federation["name"]]
-        brokered = proxy.users.add(external_id=external_id)
-        assert brokered.external_id == external_id
+        brokered = receiver_client._request(
+            "POST",
+            f"/cluster/federations/{paired_federation['receiver_id']}/users",
+            json={"external_id": external_id},
+        )
+        assert isinstance(brokered, dict)
+        assert brokered["external_id"] == external_id
         # auto_provisioned starts False — flips True on the user's first
         # mesh-origin request. We don't drive that here; the cmd_m3 smoke
         # script does that end-to-end.
