@@ -128,8 +128,16 @@ class FederationsAPI(BaseService):
                 token-exchange brokering. The 4 brokering fields must
                 be supplied together; partial sets are refused by the
                 server with a 422 naming the missing field(s).
-            local_broker_client_secret: Keycloak client secret (or
-                DataHub secret URN) paired with ``local_broker_client_id``.
+            local_broker_client_secret: DataHub secret URN
+                (``urn:li:dataHubSecret:...``) for the Keycloak broker
+                client secret. The server resolves this URN via
+                CatalogService at pair time and ships the raw secret
+                to the peer. **URN-only — raw secrets are refused**
+                with a 422 because they would land in API logs,
+                network traces, and DB rows in plaintext. Operators
+                store the raw secret in DataHub first (via the
+                secrets API) and supply the URN here. Mirrors the
+                PSK secret-handling path.
 
         Returns:
             Federation record reflecting the post-/pair state.

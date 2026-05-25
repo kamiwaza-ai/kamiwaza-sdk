@@ -517,7 +517,7 @@ def test_pair_forwards_all_four_brokering_kwargs_when_supplied() -> None:
             "https://lyra.example.com/realms/kamiwaza/protocol/openid-connect/certs"
         ),
         local_broker_client_id="kamiwaza-broker",
-        local_broker_client_secret="test-secret-x",
+        local_broker_client_secret="urn:li:dataHubSecret:test-broker",
     )
 
     _, body = _create_call(client)
@@ -528,7 +528,11 @@ def test_pair_forwards_all_four_brokering_kwargs_when_supplied() -> None:
         "https://lyra.example.com/realms/kamiwaza/protocol/openid-connect/certs"
     )
     assert body.get("local_broker_client_id") == "kamiwaza-broker"
-    assert body.get("local_broker_client_secret") == "test-secret-x"
+    # URN-only contract — the SDK passes through verbatim; the server's
+    # @validator at the schema layer refuses raw secrets with a 422.
+    assert body.get("local_broker_client_secret") == (
+        "urn:li:dataHubSecret:test-broker"
+    )
 
 
 def test_pair_omits_brokering_kwargs_when_not_supplied() -> None:
