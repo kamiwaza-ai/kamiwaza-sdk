@@ -19,11 +19,9 @@ reference_fleet_validation_hosts.md).
 from __future__ import annotations
 
 import logging
-import os
 import time
 import uuid
 from typing import Iterator
-from urllib.parse import urlparse
 
 import pytest
 
@@ -49,34 +47,6 @@ def federation_pair_name() -> str:
 def shared_psk() -> str:
     """Shared PSK between initiator and receiver. Mode B (caller-supplied)."""
     return str(uuid.uuid4())
-
-
-@pytest.fixture(scope="module")
-def initiator_callback_url(initiator_client: KamiwazaClient) -> str:
-    """Routable URL the peer cluster uses to call back to the initiator.
-
-    Operator-supplied via ``KAMIWAZA_INITIATOR_CALLBACK_HOST`` (or
-    ``KAMIWAZA_INITIATOR_CALLBACK_URL``). Required when the initiator's
-    ``base_url`` host doesn't resolve to a routable address from the
-    peer's perspective — common on fleet rigs where both clusters share
-    a domain (e.g. both expose ``https://kamiwaza.test/api`` but each
-    resolves locally to its own ingress).
-
-    Fallback: derive from ``initiator_client.base_url`` host. Works when
-    both clusters can resolve a shared hostname to the right cluster
-    (e.g. split DNS in production), but the smoke fleet rig requires
-    the override.
-    """
-    explicit = os.environ.get("KAMIWAZA_INITIATOR_CALLBACK_URL", "").strip()
-    if explicit:
-        return explicit.rstrip("/")
-    host = os.environ.get("KAMIWAZA_INITIATOR_CALLBACK_HOST", "").strip()
-    if host:
-        # Match the ``base_url`` scheme + path so the receiver pairs at
-        # the same /api root.
-        parsed = urlparse(initiator_client.base_url)
-        return f"{parsed.scheme}://{host}{parsed.path}".rstrip("/")
-    return initiator_client.base_url.rstrip("/")
 
 
 @pytest.fixture(scope="module")
@@ -116,7 +86,6 @@ def paired_federation(
     federation_pair_name: str,
     shared_psk: str,
     live_peer_base_url: str,
-    initiator_callback_url: str,
 ) -> Iterator[dict[str, str]]:
     """Establish a federation pair for the test module. Tears down at exit.
 
@@ -124,14 +93,15 @@ def paired_federation(
     so individual tests can stitch onto the live state.
     """
     # Receiver creates its side first (WAITING state) so the initiator's
-    # /pair handshake has something to hit. Use initiator_client.base_url
-    # as the single source of truth for the callback host — reading
-    # KAMIWAZA_BASE_URL separately would misroute the receiver when a
-    # contributor passes --live-base-url overriding the env var.
+    # /pair handshake has something to hit. The receiver record only
+    # needs name + role + psk — it doesn't need a callback URL because
+    # the initiator reaches out, not the other way around. Passing
+    # remote_url on the receiver side derives a wrong remote_ips entry
+    # (the receiver doesn't need to know the initiator's location).
+    # Mirrors the kamiwaza-smoke.py federation-pair flow at services.py.
     receiver_fed = receiver_client.federations.pair(
         name=federation_pair_name,
         role="receiver",
-        remote_url=initiator_callback_url,
         preshared_key=shared_psk,
     )
     receiver_fed_id = str(receiver_fed.id)
@@ -192,7 +162,6 @@ def unpaired_federation(
     receiver_client: KamiwazaClient,
     shared_psk: str,
     live_peer_base_url: str,
-    initiator_callback_url: str,
 ) -> Iterator[dict[str, str]]:
     """Fresh function-scoped pair for tests that mutate pair lifecycle state.
 
@@ -206,7 +175,6 @@ def unpaired_federation(
     receiver_fed = receiver_client.federations.pair(
         name=fresh_name,
         role="receiver",
-        remote_url=initiator_callback_url,
         preshared_key=shared_psk,
     )
     receiver_fed_id = str(receiver_fed.id)
