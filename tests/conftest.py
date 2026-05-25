@@ -92,6 +92,27 @@ def pytest_addoption(parser: pytest.Parser) -> None:
             "(defaults to env KAMIWAZA_PASSWORD, else integration fixture resolves via kz-login)."
         ),
     )
+    # ENG-5784 — federation peer cluster for two-cluster live tests
+    group.addoption(
+        "--live-peer-base-url",
+        action="store",
+        default=os.environ.get("KAMIWAZA_PEER_BASE_URL", ""),
+        help=(
+            "Base URL of the federation peer cluster for two-cluster live "
+            "tests marked @pytest.mark.requires_two_clusters "
+            "(defaults to env KAMIWAZA_PEER_BASE_URL). When empty, peer-required "
+            "tests are auto-deselected."
+        ),
+    )
+    group.addoption(
+        "--live-peer-api-key",
+        action="store",
+        default=os.environ.get("KAMIWAZA_PEER_API_KEY", ""),
+        help=(
+            "API key for the federation peer cluster (defaults to env "
+            "KAMIWAZA_PEER_API_KEY). Required when --live-peer-base-url is set."
+        ),
+    )
 
 
 @pytest.fixture(scope="session")
@@ -274,6 +295,23 @@ def live_username(pytestconfig: pytest.Config) -> str:
 @pytest.fixture(scope="session")
 def live_password(pytestconfig: pytest.Config) -> str:
     return str(pytestconfig.getoption("live_password"))
+
+
+@pytest.fixture(scope="session")
+def live_peer_base_url(pytestconfig: pytest.Config) -> str:
+    """Peer-cluster base URL for two-cluster federation tests (ENG-5784).
+
+    Returns empty string when not configured — collection-side hooks
+    auto-deselect ``@pytest.mark.requires_two_clusters`` tests in that
+    case, so test bodies can assume both env vars are set.
+    """
+    return str(pytestconfig.getoption("live_peer_base_url")).rstrip("/")
+
+
+@pytest.fixture(scope="session")
+def live_peer_api_key(pytestconfig: pytest.Config) -> str:
+    """Peer-cluster API key for two-cluster federation tests (ENG-5784)."""
+    return str(pytestconfig.getoption("live_peer_api_key"))
 
 
 @pytest.fixture

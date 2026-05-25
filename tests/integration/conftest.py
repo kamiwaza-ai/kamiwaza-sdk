@@ -87,7 +87,9 @@ _logger = logging.getLogger(__name__)
 class _TimeoutHTTPAdapter(HTTPAdapter):
     """HTTPAdapter that applies a default timeout to every request."""
 
-    def __init__(self, *args: Any, timeout: float = _PROBE_TIMEOUT_SECONDS, **kwargs: Any):
+    def __init__(
+        self, *args: Any, timeout: float = _PROBE_TIMEOUT_SECONDS, **kwargs: Any
+    ):
         self._timeout = timeout
         super().__init__(*args, **kwargs)
 
@@ -100,6 +102,8 @@ def _mount_probe_timeout(client: KamiwazaClient) -> None:
     adapter = _TimeoutHTTPAdapter(timeout=_PROBE_TIMEOUT_SECONDS)
     client.session.mount("http://", adapter)
     client.session.mount("https://", adapter)
+
+
 _HTTP_TRACE_FLAG = "KAMIWAZA_HTTP_TRACE"
 _HTTP_TRACE_FILE_ENV = "KAMIWAZA_HTTP_TRACE_FILE"
 _TEXT_BODY_MARKERS = (
@@ -1200,8 +1204,73 @@ def _require_embedding_model_for_marked_tests(request: pytest.FixtureRequest) ->
         request.getfixturevalue("embedding_model_prerequisite")
 
 
-def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
-    """Run explicit smoke tests first, then embedding-dependent tests near the front."""
+@pytest.fixture(autouse=True)
+def _require_two_clusters_for_marked_tests(request: pytest.FixtureRequest) -> None:
+    """ENG-5784 — surface a clear skip reason when peer creds are missing.
+
+    Collection-side deselection in ``pytest_collection_modifyitems`` removes
+    these tests entirely when neither --live-peer-base-url nor
+    KAMIWAZA_PEER_BASE_URL is set, so this fixture only fires when peer
+    creds were partially provided (e.g. base URL but no API key).
+    """
+    if "requires_two_clusters" not in request.keywords:
+        return
+    peer_url = str(request.config.getoption("live_peer_base_url")).strip()
+    peer_key = str(request.config.getoption("live_peer_api_key")).strip()
+    if not peer_url:
+        pytest.skip(
+            "requires_two_clusters: set --live-peer-base-url or "
+            "KAMIWAZA_PEER_BASE_URL to run."
+        )
+    if not peer_key:
+        pytest.skip(
+            "requires_two_clusters: --live-peer-base-url is set but "
+            "--live-peer-api-key / KAMIWAZA_PEER_API_KEY is missing."
+        )
+
+
+@pytest.fixture(scope="session")
+def live_kamiwaza_peer_client(
+    live_peer_base_url: str,
+    live_peer_api_key: str,
+) -> KamiwazaClient:
+    """ENG-5784 — KamiwazaClient bound to the federation peer cluster.
+
+    Only resolves when both KAMIWAZA_PEER_BASE_URL + KAMIWAZA_PEER_API_KEY are
+    configured. Two-cluster tests should depend on this fixture alongside
+    the @pytest.mark.requires_two_clusters marker.
+    """
+    if not live_peer_base_url:
+        pytest.skip("requires_two_clusters: KAMIWAZA_PEER_BASE_URL not set")
+    if not live_peer_api_key:
+        pytest.skip("requires_two_clusters: KAMIWAZA_PEER_API_KEY not set")
+    os.environ.setdefault("KAMIWAZA_VERIFY_SSL", "false")
+    return KamiwazaClient(live_peer_base_url, api_key=live_peer_api_key.strip())
+
+
+def pytest_collection_modifyitems(
+    config: pytest.Config, items: list[pytest.Item]
+) -> None:
+    """Order: smoke first, embedding-dependent next, others last.
+
+    ENG-5784: also deselect @pytest.mark.requires_two_clusters when neither
+    --live-peer-base-url nor KAMIWAZA_PEER_BASE_URL is set. Mirrors the
+    requires_embedding_model deselection convention so contributor PRs
+    without peer creds don't show false reds.
+    """
+    peer_url = str(config.getoption("live_peer_base_url")).strip()
+    if not peer_url:
+        kept: list[pytest.Item] = []
+        deselected: list[pytest.Item] = []
+        for item in items:
+            if "requires_two_clusters" in item.keywords:
+                deselected.append(item)
+            else:
+                kept.append(item)
+        if deselected:
+            config.hook.pytest_deselected(items=deselected)
+            items[:] = kept
+
     smoke_items = [
         item for item in items if Path(str(item.fspath)).name.startswith("test_00_")
     ]
