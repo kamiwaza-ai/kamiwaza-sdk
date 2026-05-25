@@ -132,6 +132,7 @@ markers = [
     "slow: intentionally slow tests",
     "withoutresponses: tests needing real network access",
     "requires_embedding_model: live tests that require an active platform embedding deployment",
+    "requires_two_clusters: live tests that require a federation peer cluster reachable via KAMIWAZA_PEER_BASE_URL / KAMIWAZA_PEER_API_KEY (ENG-5784)",
     "extension_regression: D210 12-issue regression checklist (UAC-17 / EDX-OPS-2). See tests/unit/extensions/regression/inventory.yaml.",
 ]
 

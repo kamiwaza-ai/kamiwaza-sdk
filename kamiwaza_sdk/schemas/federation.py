@@ -97,6 +97,12 @@ class ClusterCapabilities(BaseModel):
     federation_count: int = 0
     active_deployments: int = 0
     ray_ready: bool = False
+    # ENG-5784 R5 H4 — the server always emits a stable cluster-identity
+    # UUID on capabilities responses. Declare it explicitly so harness
+    # / SDK consumers can rely on it without ``extra="allow"`` fallback
+    # gymnastics. The field has been emitted since the original
+    # ENG-4696 work; only the schema declaration was missing.
+    local_node_id: Optional[str] = None
 
 
 class DiagnoseIssue(BaseModel):
