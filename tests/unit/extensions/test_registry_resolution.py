@@ -10,9 +10,13 @@ import pytest
 
 from kamiwaza_extensions.registry_resolution import (
     _reset_docker_info_cache,
+    _reset_docker_registry_config_cache,
     build_push_ref_map,
+    docker_accepts_insecure_push_to,
+    insecure_registry_daemon_json_fix,
     replace_registry_prefix,
     resolve_dev_registries,
+    select_push_engine,
 )
 
 pytestmark = pytest.mark.unit
@@ -20,12 +24,15 @@ pytestmark = pytest.mark.unit
 
 @pytest.fixture(autouse=True)
 def _clear_docker_info_cache():
-    """``_docker_info`` is memoized per process. Reset between cases so a
-    prior test's mocked subprocess outcome doesn't leak into the next."""
+    """``_docker_info`` and ``_docker_registry_config`` are both memoized
+    per process. Reset between cases so a prior test's mocked subprocess
+    outcome doesn't leak into the next."""
 
     _reset_docker_info_cache()
+    _reset_docker_registry_config_cache()
     yield
     _reset_docker_info_cache()
+    _reset_docker_registry_config_cache()
 
 
 def _conn(url: str = "https://kamiwaza.test/api"):
@@ -369,6 +376,79 @@ class TestBuildEngineVmPlatformGate:
         from kamiwaza_extensions.registry_resolution import build_engine_runs_in_vm
 
         assert build_engine_runs_in_vm() is False
+
+
+class TestSelectPushEngine:
+    """``select_push_engine`` is the single source of truth for which
+    binary will run the push. ``ImagePusher`` mirrors this rule inline,
+    and the dev pre-flight check uses this function directly — drift
+    between them is what jxstanford's Critical and High both flagged."""
+
+    @patch("kamiwaza_extensions.registry_resolution._has_podman", return_value=True)
+    def test_insecure_plus_podman_picks_podman(self, _mock):
+        assert select_push_engine(insecure=True) == "podman"
+
+    @patch("kamiwaza_extensions.registry_resolution._has_podman", return_value=False)
+    def test_insecure_without_podman_picks_docker(self, _mock):
+        assert select_push_engine(insecure=True) == "docker"
+
+    @patch("kamiwaza_extensions.registry_resolution._has_podman", return_value=True)
+    def test_secure_always_picks_docker(self, _mock):
+        # Insecure=False means no need for --tls-verify=false; docker
+        # is the universal default even when podman is installed.
+        assert select_push_engine(insecure=False) == "docker"
+
+
+class TestDockerInsecureRegistries:
+    """jxstanford iter-4 Critical #1: detect whether docker will actually
+    push insecurely to the rewritten alias before retag/push fails."""
+
+    @patch("kamiwaza_extensions.registry_resolution.subprocess.run")
+    def test_accepts_alias_listed_in_index_configs(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout=(
+                '{"InsecureRegistryCIDRs":[],'
+                '"IndexConfigs":{"host.docker.internal:30010":'
+                '{"Name":"host.docker.internal:30010","Secure":false}}}'
+            ),
+        )
+        assert docker_accepts_insecure_push_to("host.docker.internal:30010") is True
+
+    @patch("kamiwaza_extensions.registry_resolution.subprocess.run")
+    def test_rejects_alias_not_in_index_configs(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout='{"InsecureRegistryCIDRs":["127.0.0.0/8"],"IndexConfigs":{}}',
+        )
+        assert docker_accepts_insecure_push_to("host.docker.internal:30010") is False
+
+    @patch("kamiwaza_extensions.registry_resolution.subprocess.run")
+    def test_accepts_ip_inside_insecure_cidr(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout='{"InsecureRegistryCIDRs":["127.0.0.0/8"],"IndexConfigs":{}}',
+        )
+        # 127.0.0.1:30010 falls inside the default 127.0.0.0/8 CIDR.
+        assert docker_accepts_insecure_push_to("127.0.0.1:30010") is True
+        # 10.0.0.5:30010 does not.
+        assert docker_accepts_insecure_push_to("10.0.0.5:30010") is False
+
+    @patch(
+        "kamiwaza_extensions.registry_resolution.subprocess.run",
+        side_effect=FileNotFoundError(),
+    )
+    def test_returns_true_when_docker_absent(self, _mock):
+        """If docker isn't installed it won't be the engine pushing, so
+        the predicate must not gate a podman-only setup."""
+
+        assert docker_accepts_insecure_push_to("host.docker.internal:30010") is True
+
+    def test_daemon_json_fix_includes_registry_and_command(self):
+        msg = insecure_registry_daemon_json_fix("host.docker.internal:30010")
+        assert "host.docker.internal:30010" in msg
+        assert "insecure-registries" in msg
+        assert "daemon.json" in msg
 
 
 class TestDockerInfoCache:

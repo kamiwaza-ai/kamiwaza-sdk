@@ -39,7 +39,14 @@ class ImagePushError(RuntimeError):
 
 
 def _has_podman() -> bool:
-    """Return True if the ``podman`` CLI is available on PATH."""
+    """Return True if the ``podman`` CLI is available on PATH.
+
+    Same predicate as ``registry_resolution._has_podman``; both feed
+    ``select_push_engine``, which is the single source of truth for
+    *engine selection*. The duplication avoids an import cycle on the
+    hot push path. If the selection rule changes, update
+    ``select_push_engine`` and every caller listed there.
+    """
     return shutil.which("podman") is not None
 
 
@@ -65,6 +72,12 @@ class ImagePusher:
         push refs. This supports local topologies where the same registry is
         reachable under different hostnames from the build VM and the cluster.
         """
+        # Must mirror ``registry_resolution.select_push_engine``: that
+        # helper is what ``commands/dev.py`` uses to gate insecure-
+        # registries / engine-mismatch pre-flight checks (jxstanford
+        # Critical #1 + High #1). Changing this rule without updating
+        # ``select_push_engine`` will desync the pre-flight from the
+        # actual push behavior.
         use_podman = insecure and _has_podman()
         if token:
             self._login_registry(registry, token, use_podman=use_podman)

@@ -381,6 +381,30 @@ def run_dev_remote(
     registry = registry_resolution.image_registry
     push_registry = registry_resolution.push_registry
 
+    # Pre-flight: the active push engine has to actually be able to push
+    # to ``push_registry`` insecurely. Docker only treats 127.0.0.0/8 as
+    # insecure by default, so the loopback→host.docker.internal rewrite
+    # silently breaks on a stock Docker Desktop unless the alias is in
+    # ``insecure-registries``. Fail fast with a one-line daemon.json fix
+    # (jxstanford iter-4 Critical #1) rather than letting the push spend
+    # 30s timing out against HTTPS.
+    from kamiwaza_extensions.registry_resolution import (
+        docker_accepts_insecure_push_to,
+        insecure_registry_daemon_json_fix,
+        select_push_engine,
+    )
+
+    insecure = not connection.verify_ssl
+    push_engine = select_push_engine(insecure=insecure)
+    if (
+        not no_push
+        and push_engine == "docker"
+        and push_registry != registry
+        and not docker_accepts_insecure_push_to(push_registry)
+    ):
+        console.print(f"[red]Error:[/red] {insecure_registry_daemon_json_fix(push_registry)}")
+        raise typer.Exit(code=1)
+
     # Read prior dev-state for resume hints (§4.2.9 DevStateFile, ENG-3887).
     # If the prior run wrote matching inputs (revision, cluster, service,
     # sdk-repo, registry, push registry) and got past a step, skip that
@@ -410,6 +434,30 @@ def run_dev_remote(
             f"[dim]Skipping push — revision {rev_tag} already pushed in prior run.[/dim]"
         )
         no_push = True
+
+    # Engine consistency: Docker and Podman keep separate image stores, so
+    # a ``--no-build`` resume that would push with a different engine than
+    # the build used would call ``podman tag <docker-image>`` (or the
+    # inverse) on an image the new engine can't see (jxstanford iter-4
+    # High #1). Refuse with an actionable error rather than letting
+    # ImagePusher fail downstream with a confusing tag-not-found message.
+    if (
+        no_build
+        and not no_push
+        and prior_state is not None
+        and prior_state.last_build_engine
+        and prior_state.last_build_engine != push_engine
+    ):
+        console.print(
+            f"[red]Error:[/red] Previous build used '{prior_state.last_build_engine}' "
+            f"but this push will use '{push_engine}'.\n"
+            "  Their image stores are separate, so the prior image isn't visible to "
+            f"'{push_engine}'.\n"
+            "  Rerun [bold]kz-ext dev[/bold] without --no-build to rebuild with the "
+            "active engine, or restore the previous engine "
+            f"(e.g., start Docker Desktop if it was '{prior_state.last_build_engine}')."
+        )
+        raise typer.Exit(code=1)
 
     # Print header
     console.print(f"  Extension:  [bold]{info.name}[/bold] ({info.version})")
@@ -624,6 +672,10 @@ def run_dev_remote(
                 registry=registry,
                 push_registry=push_registry,
                 image_basename=info.image_basename,
+                # ImageBuilder always uses ``docker build`` today, so the
+                # build step records "docker". If a future Podman builder
+                # lands, plumb the engine through and replace this literal.
+                build_engine="docker" if step == "build" else "",
             )
         except OSError as state_exc:
             console.print(

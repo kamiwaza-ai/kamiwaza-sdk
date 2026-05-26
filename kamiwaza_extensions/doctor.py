@@ -575,14 +575,41 @@ class DoctorChecker:
                 ),
             )
         ]
+        verify_ssl = getattr(connection, "verify_ssl", True)
         results.append(
             self._check_registry_http_endpoint(
                 "Registry image endpoint",
                 resolution.image_registry,
+                connection_verify_ssl=verify_ssl,
             )
         )
         if resolution.push_registry != resolution.image_registry:
             results.append(self._check_push_registry_endpoint(resolution.push_registry))
+            # The push registry differs from the image registry, which means
+            # we'll retag and push to an alias. Docker won't push to that
+            # alias over HTTP unless it's in ``insecure-registries``. Catch
+            # this in doctor too (jxstanford iter-4 Critical #1) so users
+            # see the fix before they hit it at ``kz-ext dev`` time.
+            from kamiwaza_extensions.registry_resolution import (
+                docker_accepts_insecure_push_to,
+                insecure_registry_daemon_json_fix,
+                select_push_engine,
+            )
+
+            insecure = not verify_ssl
+            if (
+                select_push_engine(insecure=insecure) == "docker"
+                and not docker_accepts_insecure_push_to(resolution.push_registry)
+            ):
+                results.append(
+                    CheckResult(
+                        "Docker insecure-registries",
+                        "fail",
+                        f"Docker won't push insecurely to {resolution.push_registry}",
+                        fix=insecure_registry_daemon_json_fix(resolution.push_registry),
+                        exit_code=_registry_exit_code(),
+                    )
+                )
         return results
 
     def _check_push_registry_endpoint(self, registry: str) -> CheckResult:
@@ -653,12 +680,20 @@ class DoctorChecker:
 
         return self._check_registry_http_endpoint("Registry push endpoint", registry)
 
-    @staticmethod
-    def _check_registry_http_endpoint(name: str, registry: str) -> CheckResult:
+    def _check_registry_http_endpoint(
+        self,
+        name: str,
+        registry: str,
+        *,
+        connection_verify_ssl: Optional[bool] = None,
+    ) -> CheckResult:
         import warnings
 
         import requests
-        import urllib3
+        # Use the urllib3 vendored under ``requests`` rather than the top-
+        # level package so we ride whatever version ``requests`` pins —
+        # jxstanford Medium #6: ``urllib3`` isn't a declared dependency.
+        from requests.packages import urllib3  # type: ignore[import-untyped]
         from kamiwaza_extensions.registry_resolution import is_loopback_registry
 
         loopback = is_loopback_registry(registry)
@@ -674,11 +709,23 @@ class DoctorChecker:
 
         failures: list[str] = []
         for url in urls:
-            # Skip TLS verification only for loopback dev registries that
-            # legitimately use self-signed or no cert. Real registries should
-            # be probed with the system CA bundle so a genuine cert problem
-            # surfaces in doctor output rather than getting silently masked.
-            verify = False if (loopback and url.startswith("https://")) else True
+            # TLS verification policy:
+            #   - Loopback HTTPS: always skip verify (dev self-signed).
+            #   - Non-loopback HTTPS with connection.verify_ssl=False:
+            #     mirror the connection's choice so doctor doesn't
+            #     contradict every other request the SDK makes for the
+            #     same cluster (jxstanford Medium #1).
+            #   - Otherwise: verify against the system CA so real cert
+            #     issues surface in doctor output.
+            if url.startswith("https://"):
+                if loopback:
+                    verify = False
+                elif connection_verify_ssl is False:
+                    verify = False
+                else:
+                    verify = True
+            else:
+                verify = True
             try:
                 if verify:
                     response = requests.get(url, timeout=5)
@@ -704,7 +751,15 @@ class DoctorChecker:
                 # and continue so the alternate scheme still gets a chance.
                 failures.append(f"{url} returned HTML, not a registry /v2/ response")
                 continue
-            if response.status_code in (200, 401):
+            # Treat 200/401 as definitive registry-valid. Also accept 4xx
+            # whose ``WWW-Authenticate: Bearer ...`` proves a registry is
+            # behind a token authorizer (e.g., GHCR catalog disabled,
+            # jxstanford Medium #3).
+            if response.status_code in (200, 401) or (
+                400 <= response.status_code < 500
+                and "bearer"
+                in (response.headers.get("WWW-Authenticate", "") or "").lower()
+            ):
                 return CheckResult(
                     name,
                     "pass",

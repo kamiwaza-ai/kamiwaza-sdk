@@ -108,6 +108,39 @@ class TestMarkStep:
         # Persisted on disk
         assert read_state(tmp_path) == s
 
+    def test_build_engine_recorded_only_on_build_step(self, tmp_path):
+        """jxstanford iter-4 High #1: ``last_build_engine`` pins which
+        engine produced the image so a later push can refuse if the
+        engines would differ. Recording it on non-build steps would
+        let a podman push overwrite the docker build engine, defeating
+        the consistency check."""
+
+        s = mark_step(
+            tmp_path,
+            "build",
+            revision="r",
+            dev_name="d",
+            cluster="c",
+            extension_name="e",
+            deployer="d",
+            build_engine="docker",
+        )
+        assert s.last_build_engine == "docker"
+
+        # A later push step that "happens to" pass build_engine="podman"
+        # must not overwrite the build's record.
+        s = mark_step(
+            tmp_path,
+            "push",
+            revision="r",
+            dev_name="d",
+            cluster="c",
+            extension_name="e",
+            deployer="d",
+            build_engine="podman",
+        )
+        assert s.last_build_engine == "docker"
+
     def test_progresses_step_in_order(self, tmp_path):
         for step in STEPS:
             mark_step(

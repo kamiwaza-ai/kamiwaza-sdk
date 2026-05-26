@@ -143,6 +143,99 @@ class TestDoctorRegistryChecks:
             "InsecureRequestWarning" in str(w.message) for w in caught
         )
 
+    def test_registry_endpoint_loopback_https_fallback_skips_verify(self):
+        """jxstanford Medium #2: the HTTP-success short-circuit in the
+        prior test meant the ``verify=False`` HTTPS branch was never
+        actually exercised. Force HTTP to fail so the HTTPS fallback
+        runs, and assert it passed ``verify=False`` without emitting
+        ``InsecureRequestWarning``."""
+
+        import warnings
+
+        import requests
+
+        checker = DoctorChecker(config_dir=None)
+        https_ok = MagicMock(
+            status_code=200,
+            headers={"content-type": "application/json"},
+            text="{}",
+        )
+        # First call (HTTP) raises ConnectionError; second call (HTTPS) returns OK.
+        with patch(
+            "requests.get",
+            side_effect=[requests.ConnectionError("conn refused"), https_ok],
+        ) as mock_get:
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                result = checker._check_registry_http_endpoint(
+                    "Registry image endpoint",
+                    "127.0.0.1:30010",
+                )
+
+        assert result.status == "pass"
+        assert mock_get.call_count == 2
+        # Second call is the HTTPS fallback; must be verify=False.
+        second_call = mock_get.call_args_list[1]
+        assert second_call.args[0].startswith("https://127.0.0.1")
+        assert second_call.kwargs.get("verify") is False
+        # Even with verify=False, no warning leaks to the user's stderr.
+        assert not any(
+            "InsecureRequestWarning" in str(w.message) for w in caught
+        )
+
+    def test_registry_endpoint_honors_connection_verify_ssl(self):
+        """jxstanford Medium #1: a connection with verify_ssl=False (dev
+        TLD auto-disable, etc.) probing a non-loopback HTTPS registry
+        with a self-signed cert should pass — doctor must mirror what
+        the rest of the SDK will do for the same cluster."""
+
+        checker = DoctorChecker(config_dir=None)
+        ok = MagicMock(
+            status_code=200,
+            headers={"content-type": "application/json"},
+            text="{}",
+        )
+        with patch(
+            "requests.get",
+            side_effect=[
+                # First call is HTTPS (non-loopback first); verify=False
+                # because connection.verify_ssl=False.
+                ok,
+            ],
+        ) as mock_get:
+            result = checker._check_registry_http_endpoint(
+                "Registry image endpoint",
+                "registry.dev.test",
+                connection_verify_ssl=False,
+            )
+
+        assert result.status == "pass"
+        first_call = mock_get.call_args_list[0]
+        assert first_call.args[0].startswith("https://")
+        assert first_call.kwargs.get("verify") is False
+
+    def test_registry_endpoint_accepts_4xx_with_bearer_challenge(self):
+        """jxstanford Medium #3: some registries (GHCR with catalog
+        disabled) return 4xx on /v2/ but ``WWW-Authenticate: Bearer``
+        proves a registry is behind the URL — that's pass-worthy."""
+
+        checker = DoctorChecker(config_dir=None)
+        bearer = MagicMock(
+            status_code=403,
+            headers={
+                "content-type": "application/json",
+                "WWW-Authenticate": 'Bearer realm="https://auth.example/token"',
+            },
+            text="{}",
+        )
+        with patch("requests.get", return_value=bearer):
+            result = checker._check_registry_http_endpoint(
+                "Registry image endpoint",
+                "ghcr.example",
+            )
+
+        assert result.status == "pass"
+
     def test_registry_endpoint_accepts_v2_json_response(self):
         checker = DoctorChecker(config_dir=None)
         response = MagicMock(
@@ -172,6 +265,51 @@ class TestDoctorRegistryChecks:
 
     @patch(
         "kamiwaza_extensions.registry_resolution.running_podman_machine_name",
+        return_value="podman-machine-default",
+    )
+    def test_push_endpoint_passes_when_podman_ssh_curl_succeeds(self, _mock_machine):
+        """jxstanford Medium #5: cover the success path of the
+        ``podman machine ssh ... curl /v2/`` probe. Until this test, the
+        most complex branch in ``_check_push_registry_endpoint`` had no
+        coverage at all."""
+
+        checker = DoctorChecker(config_dir=None)
+        success = MagicMock(returncode=0, stdout="", stderr="")
+        with patch("subprocess.run", return_value=success) as mock_run:
+            result = checker._check_push_registry_endpoint(
+                "host.containers.internal:30010"
+            )
+
+        assert result.status == "pass"
+        assert "podman-machine-default" in result.message
+        # The probe runs exactly one ``podman machine ssh`` invocation.
+        cmd_args = mock_run.call_args.args[0]
+        assert cmd_args[:4] == ["podman", "machine", "ssh", "podman-machine-default"]
+        assert "curl" in cmd_args
+
+    @patch(
+        "kamiwaza_extensions.registry_resolution.running_podman_machine_name",
+        return_value="podman-machine-default",
+    )
+    def test_push_endpoint_fails_with_exit_code_when_podman_ssh_curl_fails(
+        self, _mock_machine
+    ):
+        """jxstanford Medium #5 (negative path): a non-zero exit from the
+        VM-side curl is a hard fail with the REGISTRY_AUTH exit code."""
+
+        checker = DoctorChecker(config_dir=None)
+        failure = MagicMock(returncode=22, stdout="", stderr="curl: (7) refused")
+        with patch("subprocess.run", return_value=failure):
+            result = checker._check_push_registry_endpoint(
+                "host.containers.internal:30010"
+            )
+
+        assert result.status == "fail"
+        assert result.exit_code == 20  # REGISTRY_AUTH
+        assert "refused" in (result.fix or "")
+
+    @patch(
+        "kamiwaza_extensions.registry_resolution.running_podman_machine_name",
         return_value=None,
     )
     def test_push_endpoint_warns_on_containers_internal_without_machine(
@@ -193,8 +331,11 @@ class TestDoctorRegistryChecks:
         monkeypatch.setenv("KAMIWAZA_PUSH_REGISTRY", "host.containers.internal:30010")
         mock_core.return_value = "127.0.0.1:30010"
         checker = DoctorChecker(config_dir=tmp_path / ".kamiwaza")
+        # Connection mock needs an explicit ``verify_ssl`` attribute (not a
+        # MagicMock auto-attr) so the new probe TLS-verify policy
+        # (jxstanford Medium #1) sees a real bool rather than truthy mock.
         checker._conn_mgr.get_active_connection = MagicMock(
-            return_value=MagicMock(url="https://kamiwaza.test/api")
+            return_value=MagicMock(url="https://kamiwaza.test/api", verify_ssl=True)
         )
         ok = MagicMock(
             status_code=200,
@@ -207,6 +348,13 @@ class TestDoctorRegistryChecks:
                 "kamiwaza_extensions.registry_resolution.build_engine_runs_in_vm",
                 return_value=False,
             ),
+            # Pretend docker accepts the alias as insecure — keeps the new
+            # "Docker insecure-registries" check out of the result set so
+            # this test continues to exercise just the split-reporting path.
+            patch(
+                "kamiwaza_extensions.registry_resolution.docker_accepts_insecure_push_to",
+                return_value=True,
+            ),
         ):
             results = checker._check_registry_readiness()
 
@@ -217,6 +365,58 @@ class TestDoctorRegistryChecks:
             "Registry image endpoint",
             "Registry push endpoint",
         }
+
+    @patch("kamiwaza_extensions.registry_resolution.detect_core_config_registry")
+    def test_registry_readiness_fails_on_missing_insecure_registries(
+        self, mock_core, tmp_path
+    ):
+        """jxstanford iter-4 Critical #1: when docker is the active push
+        engine and the auto-rewritten alias isn't in ``insecure-registries``,
+        doctor must emit a hard fail with the daemon.json fix so the user
+        sees it before ``kz-ext dev`` push fails with a confusing TLS error."""
+
+        mock_core.return_value = "127.0.0.1:30010"
+        checker = DoctorChecker(config_dir=tmp_path / ".kamiwaza")
+        checker._conn_mgr.get_active_connection = MagicMock(
+            return_value=MagicMock(url="https://kamiwaza.test/api", verify_ssl=True)
+        )
+        ok = MagicMock(
+            status_code=200,
+            headers={"content-type": "application/json"},
+            text="{}",
+        )
+        # Force the alias-rewrite path: VM in play, docker is the working
+        # engine, but docker's RegistryConfig doesn't list the alias as
+        # insecure (default Docker Desktop).
+        with (
+            patch("requests.get", return_value=ok),
+            patch(
+                "kamiwaza_extensions.registry_resolution.build_engine_runs_in_vm",
+                return_value=True,
+            ),
+            patch(
+                "kamiwaza_extensions.registry_resolution._docker_is_working",
+                return_value=True,
+            ),
+            patch(
+                "kamiwaza_extensions.registry_resolution._has_podman",
+                return_value=False,
+            ),
+            patch(
+                "kamiwaza_extensions.registry_resolution.docker_accepts_insecure_push_to",
+                return_value=False,
+            ),
+        ):
+            results = checker._check_registry_readiness()
+
+        insecure_check = next(
+            (r for r in results if r.name == "Docker insecure-registries"), None
+        )
+        assert insecure_check is not None
+        assert insecure_check.status == "fail"
+        assert "insecure-registries" in (insecure_check.fix or "")
+        assert "host.docker.internal" in (insecure_check.fix or "") or \
+            "30010" in (insecure_check.fix or "")
 
 
 @pytest.mark.unit

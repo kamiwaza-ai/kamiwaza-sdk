@@ -407,8 +407,138 @@ def _has_docker() -> bool:
     return shutil.which("docker") is not None
 
 
+def _has_podman() -> bool:
+    """True when ``podman`` is on PATH."""
+
+    return shutil.which("podman") is not None
+
+
+def select_push_engine(*, insecure: bool) -> str:
+    """Return the engine that will actually push (``'docker'`` / ``'podman'``).
+
+    Mirrors the selection rule inside ``ImagePusher.push``: Podman is only
+    used when the caller asked for an insecure push AND Podman is
+    installed. Docker is the default everywhere else. Centralizing the
+    rule here lets ``commands/dev.py`` and ``doctor.py`` check engine
+    consistency without copying the predicate.
+    """
+
+    return "podman" if (insecure and _has_podman()) else "docker"
+
+
+def docker_accepts_insecure_push_to(registry: str) -> bool:
+    """True when the local Docker daemon will push to *registry* over HTTP.
+
+    Docker's default ``insecure-registries`` covers only ``127.0.0.0/8``,
+    so a VM-alias rewrite to ``host.docker.internal:<port>`` flips the
+    push to HTTPS unless the user has explicitly added the alias to
+    ``daemon.json``. Without this gate, the alias rewrite silently breaks
+    every default Docker Desktop + k0s loopback setup (jxstanford
+    Critical #1 / ENG-5719 iter-4).
+
+    Returns ``True`` when docker isn't available (no daemon to consult) —
+    a non-docker engine will end up handling the push, so this predicate
+    shouldn't gate it. Returns ``True`` for hostnames already covered by
+    the default ``127.0.0.0/8`` CIDR.
+    """
+
+    config = _docker_registry_config()
+    if config is None:
+        return True  # docker absent or unreachable; not the engine in play
+    parsed = urlparse(f"//{registry}")
+    host = (parsed.hostname or "").lower()
+    if not host:
+        return False
+    # ``IndexConfigs`` is keyed by exact ``host:port`` and carries a
+    # ``Secure`` flag — ``Secure: false`` means the daemon will push HTTP.
+    index_configs = config.get("IndexConfigs") or {}
+    entry = index_configs.get(registry)
+    if isinstance(entry, dict) and entry.get("Secure") is False:
+        return True
+    # ``InsecureRegistryCIDRs`` matches by IP only.
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    for cidr in config.get("InsecureRegistryCIDRs") or ():
+        try:
+            if addr in ipaddress.ip_network(cidr, strict=False):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def _docker_registry_config() -> Optional[dict]:
+    """Cached probe of ``docker info``'s RegistryConfig JSON.
+
+    Separate cache from the ``OSType|OperatingSystem`` probe because
+    ``--format '{{json .RegistryConfig}}'`` is a different invocation;
+    parsing both from a single call would couple two callers that today
+    have different needs. Returns ``None`` when docker is absent or the
+    JSON cannot be parsed.
+    """
+
+    global _DOCKER_REGISTRY_CONFIG_CACHE
+    if _DOCKER_REGISTRY_CONFIG_CACHE is not _DOCKER_INFO_UNSET:
+        return _DOCKER_REGISTRY_CONFIG_CACHE  # type: ignore[return-value]
+    try:
+        result = subprocess.run(
+            ["docker", "info", "--format", "{{json .RegistryConfig}}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        _DOCKER_REGISTRY_CONFIG_CACHE = None
+        return None
+    if result.returncode != 0:
+        _DOCKER_REGISTRY_CONFIG_CACHE = None
+        return None
+    try:
+        config = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        _DOCKER_REGISTRY_CONFIG_CACHE = None
+        return None
+    _DOCKER_REGISTRY_CONFIG_CACHE = config if isinstance(config, dict) else None
+    return _DOCKER_REGISTRY_CONFIG_CACHE
+
+
+_DOCKER_REGISTRY_CONFIG_CACHE: Optional[dict] = _DOCKER_INFO_UNSET  # type: ignore[assignment]
+
+
+def _reset_docker_registry_config_cache() -> None:
+    """Test hook: clear the registry-config probe memo between cases."""
+
+    global _DOCKER_REGISTRY_CONFIG_CACHE
+    _DOCKER_REGISTRY_CONFIG_CACHE = _DOCKER_INFO_UNSET  # type: ignore[assignment]
+
+
+def insecure_registry_daemon_json_fix(registry: str) -> str:
+    """Human-facing fix message for missing ``insecure-registries`` config.
+
+    Centralized so ``commands/dev.py`` and ``doctor.py`` give identical
+    instructions; drift between the two would make the fix harder to
+    follow when a user gets it from both paths.
+    """
+
+    return (
+        f"Docker requires '{registry}' in insecure-registries to push over HTTP.\n"
+        "  Add to ~/.docker/daemon.json (merge with existing keys):\n"
+        f'      {{ "insecure-registries": ["{registry}"] }}\n'
+        "  Then restart Docker Desktop.\n"
+        "  Alternative: install Podman, which honors --tls-verify=false at push time."
+    )
+
+
 def running_podman_machine_name() -> Optional[str]:
-    """Return the first running Podman machine name, if discoverable."""
+    """Return a running Podman machine name, if discoverable.
+
+    Sorted alphabetically so the choice is deterministic across runs
+    when more than one machine is running (jxstanford Medium #4); Podman
+    rarely surfaces multiple running machines, but stable behavior
+    matters when it does.
+    """
 
     try:
         result = subprocess.run(
@@ -427,8 +557,9 @@ def running_podman_machine_name() -> Optional[str]:
         return None
     if not isinstance(machines, list):
         return None
-    for machine in machines:
-        if isinstance(machine, dict) and machine.get("Running"):
-            name = machine.get("Name")
-            return name if isinstance(name, str) and name else None
-    return None
+    running_names = sorted(
+        m.get("Name", "")
+        for m in machines
+        if isinstance(m, dict) and m.get("Running") and isinstance(m.get("Name"), str)
+    )
+    return running_names[0] if running_names and running_names[0] else None
