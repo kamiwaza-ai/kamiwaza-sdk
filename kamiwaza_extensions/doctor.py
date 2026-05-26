@@ -586,10 +586,22 @@ class DoctorChecker:
         return results
 
     def _check_push_registry_endpoint(self, registry: str) -> CheckResult:
-        from kamiwaza_extensions.registry_resolution import running_podman_machine_name
+        from kamiwaza_extensions.registry_resolution import (
+            DOCKER_VM_HOST_ALIAS,
+            PODMAN_VM_HOST_ALIAS,
+            running_podman_machine_name,
+        )
 
-        machine = running_podman_machine_name()
-        if machine is not None and registry.startswith("host.containers.internal:"):
+        # Podman machine: probe from inside the VM via SSH.
+        if registry.startswith(f"{PODMAN_VM_HOST_ALIAS}:"):
+            machine = running_podman_machine_name()
+            if machine is None:
+                return CheckResult(
+                    "Registry push endpoint",
+                    "warn",
+                    f"{registry} is a Podman VM alias but no Podman machine is running",
+                    fix="Start the Podman machine or set KAMIWAZA_PUSH_REGISTRY",
+                )
             try:
                 result = subprocess.run(
                     [
@@ -626,34 +638,72 @@ class DoctorChecker:
                 fix=result.stderr.strip() or "Check KAMIWAZA_PUSH_REGISTRY",
                 exit_code=_registry_exit_code(),
             )
+
+        # Docker Desktop VM: alias only resolves inside the Docker VM, not
+        # from the macOS/Windows host. We don't run a one-shot ``docker run``
+        # probe here because it would pull an image just to confirm DNS;
+        # the push itself will surface a clearer error if the alias is wrong.
+        if registry.startswith(f"{DOCKER_VM_HOST_ALIAS}:"):
+            return CheckResult(
+                "Registry push endpoint",
+                "warn",
+                f"{registry} is a Docker Desktop VM alias; "
+                "skipping host-side probe (verified at push time)",
+            )
+
         return self._check_registry_http_endpoint("Registry push endpoint", registry)
 
     @staticmethod
     def _check_registry_http_endpoint(name: str, registry: str) -> CheckResult:
+        import warnings
+
         import requests
+        import urllib3
+        from kamiwaza_extensions.registry_resolution import is_loopback_registry
+
+        loopback = is_loopback_registry(registry)
+        # Probe HTTPS first for non-loopback registries: real registries
+        # almost always front /v2/ with TLS, and HTTPS-only registries
+        # whose port-80 returns an HTML landing page would otherwise be
+        # mis-reported as a hard failure on the first probe. For loopback
+        # registries (k0s/kind local dev), plain HTTP is the convention.
+        if loopback:
+            urls = (f"http://{registry}/v2/", f"https://{registry}/v2/")
+        else:
+            urls = (f"https://{registry}/v2/", f"http://{registry}/v2/")
 
         failures: list[str] = []
-        for url in (f"http://{registry}/v2/", f"https://{registry}/v2/"):
+        for url in urls:
+            # Skip TLS verification only for loopback dev registries that
+            # legitimately use self-signed or no cert. Real registries should
+            # be probed with the system CA bundle so a genuine cert problem
+            # surfaces in doctor output rather than getting silently masked.
+            verify = False if (loopback and url.startswith("https://")) else True
             try:
-                response = requests.get(url, timeout=5, verify=False)
+                if verify:
+                    response = requests.get(url, timeout=5)
+                else:
+                    # Suppress the ``InsecureRequestWarning`` that ``verify=False``
+                    # would otherwise emit to stderr; structured CheckResult is
+                    # the user-facing surface here.
+                    with warnings.catch_warnings():
+                        warnings.simplefilter(
+                            "ignore", urllib3.exceptions.InsecureRequestWarning
+                        )
+                        response = requests.get(url, timeout=5, verify=False)
             except requests.RequestException as exc:
                 failures.append(f"{url}: {exc}")
                 continue
             content_type = response.headers.get("content-type", "")
             body_start = (response.text or "").lstrip()[:64].lower()
-            if "text/html" in content_type.lower() or body_start.startswith(
+            is_html = "text/html" in content_type.lower() or body_start.startswith(
                 ("<!doctype html", "<html")
-            ):
-                return CheckResult(
-                    name,
-                    "fail",
-                    f"{url} returned HTML, not a registry /v2/ response",
-                    fix=(
-                        "Use the platform-advertised registry host or set "
-                        "KAMIWAZA_REGISTRY explicitly"
-                    ),
-                    exit_code=_registry_exit_code(),
-                )
+            )
+            if is_html:
+                # HTML on this URL is not a real /v2/ response — record it
+                # and continue so the alternate scheme still gets a chance.
+                failures.append(f"{url} returned HTML, not a registry /v2/ response")
+                continue
             if response.status_code in (200, 401):
                 return CheckResult(
                     name,
@@ -661,6 +711,20 @@ class DoctorChecker:
                     f"{url} returned {response.status_code}",
                 )
             failures.append(f"{url}: HTTP {response.status_code}")
+
+        # If every URL we tried returned HTML, the host is not serving a
+        # registry endpoint at all — that's a hard fail, not a warn.
+        if failures and all("returned HTML" in f for f in failures):
+            return CheckResult(
+                name,
+                "fail",
+                f"{registry} did not serve a registry /v2/ endpoint on HTTP or HTTPS",
+                fix=(
+                    "Use the platform-advertised registry host or set "
+                    "KAMIWAZA_REGISTRY explicitly"
+                ),
+                exit_code=_registry_exit_code(),
+            )
         return CheckResult(
             name,
             "warn",

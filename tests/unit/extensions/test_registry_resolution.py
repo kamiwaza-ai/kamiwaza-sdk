@@ -84,19 +84,52 @@ class TestPushRegistryResolution:
         return_value=True,
     )
     @patch(
+        "kamiwaza_extensions.registry_resolution._has_docker",
+        return_value=True,
+    )
+    @patch(
         "kamiwaza_extensions.registry_resolution.running_podman_machine_name",
         return_value="podman-machine-default",
     )
-    def test_loopback_registry_splits_for_podman_vm(
-        self, _mock_podman, _mock_vm, _mock_core
+    def test_loopback_registry_prefers_docker_alias_when_docker_present(
+        self, _mock_podman, _mock_docker, _mock_vm, _mock_core
     ):
+        # Default ``ImagePusher.push`` uses Docker unless ``insecure=True`` and
+        # Podman is installed — so when Docker is on PATH we must emit the
+        # Docker Desktop alias, even if a Podman machine happens to be
+        # running. (Review iteration 1, ENG-5719.)
         resolution = resolve_dev_registries(
             _conn(), kind_registry_detector=lambda: None
         )
 
         assert resolution.image_registry == "127.0.0.1:30010"
-        assert resolution.push_registry == "host.containers.internal:30010"
+        assert resolution.push_registry == "host.docker.internal:30010"
         assert resolution.push_split is True
+
+    @patch(
+        "kamiwaza_extensions.registry_resolution.detect_core_config_registry",
+        return_value="127.0.0.1:30010",
+    )
+    @patch(
+        "kamiwaza_extensions.registry_resolution.build_engine_runs_in_vm",
+        return_value=True,
+    )
+    @patch(
+        "kamiwaza_extensions.registry_resolution._has_docker",
+        return_value=False,
+    )
+    @patch(
+        "kamiwaza_extensions.registry_resolution.running_podman_machine_name",
+        return_value="podman-machine-default",
+    )
+    def test_loopback_registry_falls_back_to_podman_alias_without_docker(
+        self, _mock_podman, _mock_docker, _mock_vm, _mock_core
+    ):
+        resolution = resolve_dev_registries(
+            _conn(), kind_registry_detector=lambda: None
+        )
+
+        assert resolution.push_registry == "host.containers.internal:30010"
 
     @patch(
         "kamiwaza_extensions.registry_resolution.detect_core_config_registry",
@@ -115,6 +148,118 @@ class TestPushRegistryResolution:
 
         assert resolution.push_registry == "push.example:5000"
         assert resolution.push_registry_source == "KAMIWAZA_PUSH_REGISTRY"
+
+
+class TestEnvRegistryNormalization:
+    """``normalize_registry_env`` defends ``compose_transformer`` from
+    user-supplied URLs that would otherwise produce broken image refs."""
+
+    def test_strips_scheme_and_trailing_slash(self, monkeypatch):
+        monkeypatch.setenv("KAMIWAZA_REGISTRY", "https://reg.example:5000/")
+        resolution = resolve_dev_registries(
+            _conn(), kind_registry_detector=lambda: None
+        )
+        assert resolution.image_registry == "reg.example:5000"
+
+    def test_rejects_registry_with_path(self, monkeypatch):
+        monkeypatch.setenv("KAMIWAZA_REGISTRY", "reg.example:5000/extra/path")
+        with pytest.raises(ValueError, match="KAMIWAZA_REGISTRY"):
+            resolve_dev_registries(_conn(), kind_registry_detector=lambda: None)
+
+    def test_rejects_empty_value_after_normalization(self, monkeypatch):
+        monkeypatch.setenv("KAMIWAZA_PUSH_REGISTRY", "https:///")
+        with pytest.raises(ValueError, match="KAMIWAZA_PUSH_REGISTRY"):
+            resolve_dev_registries(_conn(), kind_registry_detector=lambda: None)
+
+
+class TestLoopbackDetection:
+    """Cover the ``ipaddress``-based detection so non-127.0.0.1 loopback
+    forms route through the VM alias instead of bypassing it silently."""
+
+    @pytest.mark.parametrize(
+        "registry,expected",
+        [
+            ("127.0.0.1:5000", True),
+            ("127.0.0.2:5000", True),  # any 127.0.0.0/8 is loopback
+            ("localhost:5001", True),
+            ("[::1]:5000", True),
+            ("0.0.0.0:5000", False),  # routable bind-all, not loopback
+            ("registry.example.com:5000", False),
+            ("10.0.0.5:5000", False),
+        ],
+    )
+    def test_is_loopback_registry(self, registry, expected):
+        from kamiwaza_extensions.registry_resolution import is_loopback_registry
+
+        assert is_loopback_registry(registry) is expected
+
+
+class TestReplaceRegistryHost:
+    def test_preserves_port_when_present(self):
+        from kamiwaza_extensions.registry_resolution import replace_registry_host
+
+        assert (
+            replace_registry_host("127.0.0.1:30010", "host.docker.internal")
+            == "host.docker.internal:30010"
+        )
+
+    def test_returns_original_when_no_explicit_port(self):
+        """Without a port we don't know what to substitute — returning the
+        host alone would silently flip the push from registry-port to
+        443/80. Leaving the input unchanged is the safer no-op."""
+
+        from kamiwaza_extensions.registry_resolution import replace_registry_host
+
+        assert (
+            replace_registry_host("127.0.0.1", "host.docker.internal")
+            == "127.0.0.1"
+        )
+
+
+class TestBuildEngineVmPlatformGate:
+    @patch(
+        "kamiwaza_extensions.registry_resolution.platform.system",
+        return_value="Linux",
+    )
+    @patch("kamiwaza_extensions.registry_resolution.subprocess.run")
+    def test_build_engine_vm_is_false_on_native_linux(
+        self, mock_run, _mock_system
+    ):
+        from kamiwaza_extensions.registry_resolution import build_engine_runs_in_vm
+
+        assert build_engine_runs_in_vm() is False
+        # Short-circuits before invoking ``docker info``.
+        mock_run.assert_not_called()
+
+    @patch(
+        "kamiwaza_extensions.registry_resolution.platform.system",
+        return_value="Windows",
+    )
+    @patch("kamiwaza_extensions.registry_resolution.subprocess.run")
+    def test_build_engine_vm_detects_windows_docker_desktop(
+        self, mock_run, _mock_system
+    ):
+        from kamiwaza_extensions.registry_resolution import build_engine_runs_in_vm
+
+        mock_run.return_value = MagicMock(returncode=0, stdout="linux|docker-desktop")
+        assert build_engine_runs_in_vm() is True
+
+    @patch(
+        "kamiwaza_extensions.registry_resolution.platform.system",
+        return_value="Windows",
+    )
+    @patch(
+        "kamiwaza_extensions.registry_resolution.subprocess.run",
+        side_effect=FileNotFoundError(),
+    )
+    def test_build_engine_vm_trusts_windows_even_without_docker_info(
+        self, _mock_run, _mock_system
+    ):
+        from kamiwaza_extensions.registry_resolution import build_engine_runs_in_vm
+
+        # Docker Desktop on Windows always virtualizes Linux even when
+        # ``docker info`` errors out (context not selected yet).
+        assert build_engine_runs_in_vm() is True
 
 
 class TestPushRefMap:

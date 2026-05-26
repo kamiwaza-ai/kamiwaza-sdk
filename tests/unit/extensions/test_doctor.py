@@ -77,9 +77,71 @@ class TestDoctorRegistryChecks:
                 "registry.kamiwaza.test",
             )
 
+        # Both probe URLs (HTTPS first for non-loopback, then HTTP) returned
+        # HTML, so the registry is unambiguously not serving /v2/ on either
+        # scheme — that's a hard fail with a registry-auth exit code.
         assert result.status == "fail"
-        assert "returned HTML" in result.message
+        assert "did not serve a registry /v2/ endpoint" in result.message
         assert result.exit_code == 20
+        assert result.fix is not None
+        assert "KAMIWAZA_REGISTRY" in result.fix
+
+    def test_registry_endpoint_prefers_https_when_http_serves_html(self):
+        """HTTPS-only registries with an HTML landing page on :80 must not
+        be misreported as broken — the HTTPS probe should still succeed."""
+
+        checker = DoctorChecker(config_dir=None)
+        html = MagicMock(
+            status_code=200,
+            headers={"content-type": "text/html; charset=utf-8"},
+            text="<!DOCTYPE html>",
+        )
+        v2_ok = MagicMock(
+            status_code=200,
+            headers={"content-type": "application/json"},
+            text="{}",
+        )
+        # Non-loopback host -> HTTPS probed first; both schemes use the same
+        # patched ``requests.get``. The HTTPS probe returns v2_ok and short-
+        # circuits before HTTP is tried.
+        with patch("requests.get", side_effect=[v2_ok, html]):
+            result = checker._check_registry_http_endpoint(
+                "Registry image endpoint",
+                "registry.kamiwaza.test",
+            )
+
+        assert result.status == "pass"
+        assert "https://registry.kamiwaza.test/v2/" in result.message
+
+    def test_registry_endpoint_loopback_uses_http_first_and_skips_verify(self):
+        """Loopback dev registries (k0s/kind) speak plain HTTP and almost
+        always present a self-signed cert if HTTPS is even reachable. Probe
+        order is HTTP-first, and the HTTPS fallback must pass ``verify=False``
+        without leaking ``InsecureRequestWarning`` to stderr."""
+
+        import warnings
+
+        checker = DoctorChecker(config_dir=None)
+        ok = MagicMock(
+            status_code=200,
+            headers={"content-type": "application/json"},
+            text="{}",
+        )
+
+        with patch("requests.get", return_value=ok) as mock_get:
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                result = checker._check_registry_http_endpoint(
+                    "Registry image endpoint",
+                    "127.0.0.1:30010",
+                )
+
+        assert result.status == "pass"
+        # HTTP probed first for loopback, succeeds, never falls back to HTTPS.
+        assert mock_get.call_args.args[0].startswith("http://127.0.0.1")
+        assert not any(
+            "InsecureRequestWarning" in str(w.message) for w in caught
+        )
 
     def test_registry_endpoint_accepts_v2_json_response(self):
         checker = DoctorChecker(config_dir=None)
@@ -95,6 +157,36 @@ class TestDoctorRegistryChecks:
             )
 
         assert result.status == "pass"
+
+    def test_push_endpoint_warns_on_docker_internal_alias(self):
+        """``host.docker.internal`` only resolves inside the Docker VM, so
+        the host-side probe is meaningless. Doctor should emit a clear
+        ``warn`` rather than a misleading hard failure."""
+
+        checker = DoctorChecker(config_dir=None)
+        result = checker._check_push_registry_endpoint(
+            "host.docker.internal:30010"
+        )
+        assert result.status == "warn"
+        assert "Docker Desktop" in result.message
+
+    @patch(
+        "kamiwaza_extensions.registry_resolution.running_podman_machine_name",
+        return_value=None,
+    )
+    def test_push_endpoint_warns_on_containers_internal_without_machine(
+        self, _mock_machine
+    ):
+        """``host.containers.internal`` is a Podman VM alias; if no machine
+        is running, the alias is unresolvable from the host and a probe
+        would be just noise — emit a targeted warn instead."""
+
+        checker = DoctorChecker(config_dir=None)
+        result = checker._check_push_registry_endpoint(
+            "host.containers.internal:30010"
+        )
+        assert result.status == "warn"
+        assert "Podman" in result.message
 
     @patch("kamiwaza_extensions.registry_resolution.detect_core_config_registry")
     def test_registry_readiness_reports_split(self, mock_core, tmp_path, monkeypatch):

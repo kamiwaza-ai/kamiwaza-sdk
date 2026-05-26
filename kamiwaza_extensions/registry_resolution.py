@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import platform
+import shutil
 import subprocess
 from dataclasses import dataclass
 from typing import Callable, Iterable, Optional
@@ -13,6 +15,17 @@ from urllib.parse import urlparse
 CORE_CONFIG_NAMESPACE = "kamiwaza"
 CORE_CONFIG_NAME = "core-config"
 REGISTRY_EXTERNAL_HOST_KEY = "KAMIWAZA_REGISTRY_EXTERNAL_HOST"
+
+# VM aliases used by Docker Desktop and Podman machine respectively to
+# expose the host's loopback interface to processes running in the VM.
+# ``host.docker.internal`` is the canonical Docker Desktop alias on macOS
+# and Windows; recent Podman releases also accept it, but emit
+# ``host.containers.internal`` by default. We prefer the docker alias
+# whenever Docker is the active build engine (the default in
+# ``ImagePusher.push``), and only fall back to the podman alias when
+# Docker is absent and a Podman machine is running.
+DOCKER_VM_HOST_ALIAS = "host.docker.internal"
+PODMAN_VM_HOST_ALIAS = "host.containers.internal"
 
 
 @dataclass(frozen=True)
@@ -64,7 +77,7 @@ def resolve_image_registry(
 
     env_registry = os.environ.get("KAMIWAZA_REGISTRY")
     if env_registry:
-        return env_registry.strip(), "KAMIWAZA_REGISTRY"
+        return normalize_registry_env("KAMIWAZA_REGISTRY", env_registry), "KAMIWAZA_REGISTRY"
 
     core_config_registry = detect_core_config_registry()
     if core_config_registry:
@@ -88,7 +101,10 @@ def resolve_push_registry(image_registry: str) -> tuple[str, str]:
 
     push_override = os.environ.get("KAMIWAZA_PUSH_REGISTRY")
     if push_override:
-        return push_override.strip(), "KAMIWAZA_PUSH_REGISTRY"
+        return (
+            normalize_registry_env("KAMIWAZA_PUSH_REGISTRY", push_override),
+            "KAMIWAZA_PUSH_REGISTRY",
+        )
 
     if not is_loopback_registry(image_registry):
         return image_registry, "image registry"
@@ -96,10 +112,36 @@ def resolve_push_registry(image_registry: str) -> tuple[str, str]:
     if not build_engine_runs_in_vm():
         return image_registry, "image registry"
 
-    host = "host.docker.internal"
-    if running_podman_machine_name() is not None:
-        host = "host.containers.internal"
+    # Prefer the Docker Desktop alias whenever Docker is on PATH, since
+    # ``ImagePusher.push`` only falls back to Podman when ``insecure=True``
+    # and Podman is installed. Only when Docker is genuinely absent and a
+    # Podman machine is running do we emit the Podman-specific alias —
+    # that prevents handing a Docker build engine a hostname that only
+    # resolves inside a Podman VM. (Review iteration 1, ENG-5719.)
+    host = DOCKER_VM_HOST_ALIAS
+    if not _has_docker() and running_podman_machine_name() is not None:
+        host = PODMAN_VM_HOST_ALIAS
     return replace_registry_host(image_registry, host), "build VM loopback alias"
+
+
+def normalize_registry_env(var_name: str, raw: str) -> str:
+    """Strip a user-supplied registry env var to a bare ``host[:port]`` form.
+
+    Tolerates pasted URLs (``https://reg:5000/``) but raises ``ValueError``
+    for values that still don't look like a registry reference after the
+    obvious cleanup, so the broken value never reaches ``compose_transformer``
+    and silently produces malformed image refs like ``https://reg:5000/foo``.
+    """
+
+    value = raw.strip()
+    if "://" in value:
+        value = value.split("://", 1)[1]
+    value = value.rstrip("/")
+    if not value or "/" in value or " " in value:
+        raise ValueError(
+            f"{var_name}={raw!r} is not a valid registry; expected 'host' or 'host:port'"
+        )
+    return value
 
 
 def detect_core_config_registry() -> Optional[str]:
@@ -204,22 +246,52 @@ def replace_registry_prefix(
 
 
 def is_loopback_registry(registry: str) -> bool:
+    """True when *registry* hostname routes back to the local interface.
+
+    Uses :class:`ipaddress.ip_address` so the full 127.0.0.0/8 range, the
+    IPv6 loopback ``::1``, and IPv4-mapped forms like ``::ffff:127.0.0.1``
+    are all caught — string-equality alone misses ``127.0.0.2`` and similar
+    cluster-side conventions.
+    """
+
     parsed = urlparse(f"//{registry}")
     host = (parsed.hostname or "").lower()
-    return host in {"localhost", "127.0.0.1", "::1"}
+    if not host:
+        return False
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def replace_registry_host(registry: str, host: str) -> str:
+    """Swap the registry hostname while preserving an explicit port.
+
+    Returns *registry* unchanged when no explicit port is present: silently
+    substituting only the host can corrupt the push (e.g., changing the
+    target port from a registry's 5000 to the default HTTPS 443). Callers
+    should ensure the input carries ``host:port`` before invoking.
+    """
+
     parsed = urlparse(f"//{registry}")
     if parsed.port is None:
-        return host
+        return registry
     return f"{host}:{parsed.port}"
 
 
 def build_engine_runs_in_vm() -> bool:
-    """Return True when the local Docker endpoint appears to be a VM."""
+    """Return True when the local Docker endpoint appears to be a VM.
 
-    if platform.system() != "Darwin":
+    Darwin always runs Docker Desktop / Colima / Podman machine inside a
+    Linux VM. Windows runs Docker Desktop inside WSL2 or Hyper-V, which
+    is the same nested-loopback problem ENG-5719 fixes. Native Linux is
+    excluded because ``docker.sock`` is the host kernel.
+    """
+
+    system = platform.system()
+    if system not in ("Darwin", "Windows"):
         return False
     try:
         result = subprocess.run(
@@ -229,10 +301,21 @@ def build_engine_runs_in_vm() -> bool:
             timeout=5,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
-        return False
+        # On Windows, Docker Desktop with the WSL2 backend always virtualizes
+        # Linux even when ``docker info`` errors out (e.g., the user hasn't
+        # selected a context yet). Trust the platform signal so the loopback
+        # remap still fires; on Darwin we have no equivalent signal without
+        # docker info, so fall back to the conservative answer.
+        return system == "Windows"
     if result.returncode != 0:
-        return False
+        return system == "Windows"
     return "linux" in result.stdout.lower()
+
+
+def _has_docker() -> bool:
+    """True when ``docker`` is on PATH. Used to pick the right VM alias."""
+
+    return shutil.which("docker") is not None
 
 
 def running_podman_machine_name() -> Optional[str]:
