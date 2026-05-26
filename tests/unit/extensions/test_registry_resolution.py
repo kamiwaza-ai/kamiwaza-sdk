@@ -9,12 +9,23 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from kamiwaza_extensions.registry_resolution import (
+    _reset_docker_info_cache,
     build_push_ref_map,
     replace_registry_prefix,
     resolve_dev_registries,
 )
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _clear_docker_info_cache():
+    """``_docker_info`` is memoized per process. Reset between cases so a
+    prior test's mocked subprocess outcome doesn't leak into the next."""
+
+    _reset_docker_info_cache()
+    yield
+    _reset_docker_info_cache()
 
 
 def _conn(url: str = "https://kamiwaza.test/api"):
@@ -84,7 +95,7 @@ class TestPushRegistryResolution:
         return_value=True,
     )
     @patch(
-        "kamiwaza_extensions.registry_resolution._has_docker",
+        "kamiwaza_extensions.registry_resolution._docker_is_working",
         return_value=True,
     )
     @patch(
@@ -115,7 +126,7 @@ class TestPushRegistryResolution:
         return_value=True,
     )
     @patch(
-        "kamiwaza_extensions.registry_resolution._has_docker",
+        "kamiwaza_extensions.registry_resolution._docker_is_working",
         return_value=False,
     )
     @patch(
@@ -125,6 +136,38 @@ class TestPushRegistryResolution:
     def test_loopback_registry_falls_back_to_podman_alias_without_docker(
         self, _mock_podman, _mock_docker, _mock_vm, _mock_core
     ):
+        resolution = resolve_dev_registries(
+            _conn(), kind_registry_detector=lambda: None
+        )
+
+        assert resolution.push_registry == "host.containers.internal:30010"
+
+    @patch(
+        "kamiwaza_extensions.registry_resolution.detect_core_config_registry",
+        return_value="127.0.0.1:30010",
+    )
+    @patch(
+        "kamiwaza_extensions.registry_resolution.build_engine_runs_in_vm",
+        return_value=True,
+    )
+    @patch(
+        "kamiwaza_extensions.registry_resolution._docker_is_working",
+        return_value=False,
+    )
+    @patch(
+        "kamiwaza_extensions.registry_resolution.running_podman_machine_name",
+        return_value="podman-machine-default",
+    )
+    def test_alias_follows_docker_daemon_not_just_path(
+        self, _mock_podman, _mock_docker_works, _mock_vm, _mock_core
+    ):
+        """CL iter-3 Important: docker CLI may be on PATH while the daemon
+        is down (e.g., Docker Desktop quit). In that case ``ImagePusher``
+        falls through to ``podman`` for insecure pushes, so we must emit
+        the Podman alias even though docker exists. Picking the alias
+        based purely on PATH would have doctor say one thing and the
+        push do another."""
+
         resolution = resolve_dev_registries(
             _conn(), kind_registry_detector=lambda: None
         )
@@ -326,6 +369,31 @@ class TestBuildEngineVmPlatformGate:
         from kamiwaza_extensions.registry_resolution import build_engine_runs_in_vm
 
         assert build_engine_runs_in_vm() is False
+
+
+class TestDockerInfoCache:
+    @patch("kamiwaza_extensions.registry_resolution.subprocess.run")
+    def test_docker_info_is_memoized_within_process(self, mock_run):
+        """``_docker_info`` should run ``docker info`` at most once per
+        CLI invocation to avoid the worst-case ~10s of sequential 5s
+        timeouts CR iter-3 flagged in the latency suggestion."""
+
+        from kamiwaza_extensions.registry_resolution import (
+            _docker_is_working,
+            build_engine_runs_in_vm,
+        )
+
+        mock_run.return_value = MagicMock(returncode=0, stdout="linux|fedora")
+        # Call the two consumers; both should hit the cache after the
+        # first invocation rather than spawning a new subprocess.
+        with patch(
+            "kamiwaza_extensions.registry_resolution.platform.system",
+            return_value="Darwin",
+        ):
+            assert _docker_is_working() is True
+            assert build_engine_runs_in_vm() is True
+
+        assert mock_run.call_count == 1
 
 
 class TestPushRefMap:

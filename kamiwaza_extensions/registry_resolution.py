@@ -112,14 +112,15 @@ def resolve_push_registry(image_registry: str) -> tuple[str, str]:
     if not build_engine_runs_in_vm():
         return image_registry, "image registry"
 
-    # Prefer the Docker Desktop alias whenever Docker is on PATH, since
-    # ``ImagePusher.push`` only falls back to Podman when ``insecure=True``
-    # and Podman is installed. Only when Docker is genuinely absent and a
-    # Podman machine is running do we emit the Podman-specific alias —
-    # that prevents handing a Docker build engine a hostname that only
-    # resolves inside a Podman VM. (Review iteration 1, ENG-5719.)
+    # Prefer the Docker Desktop alias whenever Docker is the *working*
+    # engine, since ``ImagePusher.push`` only falls back to Podman when
+    # ``insecure=True`` and Podman is installed. Pick the Podman alias
+    # whenever Docker isn't actually usable (CLI absent OR daemon down)
+    # and a Podman machine is running — otherwise doctor output would
+    # claim ``host.docker.internal`` while the push actually goes through
+    # ``podman``. (Review iteration 3, ENG-5719.)
     host = DOCKER_VM_HOST_ALIAS
-    if not _has_docker() and running_podman_machine_name() is not None:
+    if not _docker_is_working() and running_podman_machine_name() is not None:
         host = PODMAN_VM_HOST_ALIAS
     return replace_registry_host(image_registry, host), "build VM loopback alias"
 
@@ -324,6 +325,51 @@ def build_engine_runs_in_vm() -> bool:
     system = platform.system()
     if system not in ("Darwin", "Windows"):
         return False
+    docker = _docker_info()
+    if docker is None or not docker.ok:
+        # On Windows, Docker Desktop with the WSL2 backend always virtualizes
+        # Linux even when ``docker info`` errors out (e.g., the user hasn't
+        # selected a context yet). Trust the platform signal so the loopback
+        # remap still fires. On Darwin without a usable Docker engine, fall
+        # back to detecting a running Podman machine — that's the same
+        # nested-VM topology ENG-5719 needs to remap (codex iter-2 P2 gap).
+        if system == "Windows":
+            return True
+        return running_podman_machine_name() is not None
+    return "linux" in docker.output.lower()
+
+
+def _docker_is_working() -> bool:
+    """True iff ``docker info`` succeeded — i.e., the daemon is reachable.
+
+    Distinct from ``shutil.which("docker")``: docker may be installed but
+    the daemon down (Docker Desktop quit, context not selected). Picking
+    the VM host alias based on PATH alone leads to ``host.docker.internal``
+    being chosen even when ``ImagePusher`` will actually fall through to
+    Podman (claude iter-3 Important).
+    """
+
+    info = _docker_info()
+    return info is not None and info.ok
+
+
+@dataclass(frozen=True)
+class _DockerInfo:
+    ok: bool
+    output: str
+
+
+def _docker_info() -> Optional["_DockerInfo"]:
+    """Cached probe of ``docker info``. Returns None when docker is absent.
+
+    Memoized for the process lifetime to keep ``resolve_dev_registries``
+    and ``build_engine_runs_in_vm`` from invoking ``docker info`` twice on
+    the same CLI run.
+    """
+
+    global _DOCKER_INFO_CACHE
+    if _DOCKER_INFO_CACHE is not _DOCKER_INFO_UNSET:
+        return _DOCKER_INFO_CACHE
     try:
         result = subprocess.run(
             ["docker", "info", "--format", "{{.OSType}}|{{.OperatingSystem}}"],
@@ -332,24 +378,31 @@ def build_engine_runs_in_vm() -> bool:
             timeout=5,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
-        # On Windows, Docker Desktop with the WSL2 backend always virtualizes
-        # Linux even when ``docker info`` errors out (e.g., the user hasn't
-        # selected a context yet). Trust the platform signal so the loopback
-        # remap still fires. On Darwin without a Docker CLI, fall back to
-        # detecting a running Podman machine — that's the same nested-VM
-        # topology ENG-5719 needs to remap, and was the codex-iter2 P2 gap.
-        if system == "Windows":
-            return True
-        return running_podman_machine_name() is not None
-    if result.returncode != 0:
-        if system == "Windows":
-            return True
-        return running_podman_machine_name() is not None
-    return "linux" in result.stdout.lower()
+        _DOCKER_INFO_CACHE = None
+        return None
+    _DOCKER_INFO_CACHE = _DockerInfo(ok=(result.returncode == 0), output=result.stdout)
+    return _DOCKER_INFO_CACHE
+
+
+_DOCKER_INFO_UNSET: object = object()
+_DOCKER_INFO_CACHE: Optional["_DockerInfo"] = _DOCKER_INFO_UNSET  # type: ignore[assignment]
+
+
+def _reset_docker_info_cache() -> None:
+    """Test hook: clear the ``docker info`` memo between cases."""
+
+    global _DOCKER_INFO_CACHE
+    _DOCKER_INFO_CACHE = _DOCKER_INFO_UNSET  # type: ignore[assignment]
 
 
 def _has_docker() -> bool:
-    """True when ``docker`` is on PATH. Used to pick the right VM alias."""
+    """True when ``docker`` is on PATH. Used by VM-alias selection.
+
+    Distinct from ``_docker_is_working``: PATH presence answers "is the
+    CLI installed" while ``_docker_is_working`` answers "is the daemon
+    actually reachable". The latter is what alias selection uses now;
+    this remains for callers that only care whether the binary exists.
+    """
 
     return shutil.which("docker") is not None
 
