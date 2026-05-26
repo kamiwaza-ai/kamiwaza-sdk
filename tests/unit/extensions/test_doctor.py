@@ -367,18 +367,65 @@ class TestDoctorRegistryChecks:
         }
 
     @patch("kamiwaza_extensions.registry_resolution.detect_core_config_registry")
+    def test_registry_readiness_skips_insecure_check_for_secure_override(
+        self, mock_core, tmp_path, monkeypatch
+    ):
+        """claude iter-5 I1: a user-supplied ``KAMIWAZA_PUSH_REGISTRY``
+        pointing at a legitimate HTTPS registry must NOT trigger the
+        Docker insecure-registries fail. That gate is only meant for
+        insecure HTTP pushes; a secure private registry is by definition
+        not in ``insecure-registries`` and that's correct."""
+
+        monkeypatch.setenv(
+            "KAMIWAZA_PUSH_REGISTRY", "my-private-registry.example.com"
+        )
+        mock_core.return_value = "127.0.0.1:30010"
+        checker = DoctorChecker(config_dir=tmp_path / ".kamiwaza")
+        # Secure connection (verify_ssl=True) → not insecure → insecure-
+        # registries check must be skipped even though the push registry
+        # differs from the image registry.
+        checker._conn_mgr.get_active_connection = MagicMock(
+            return_value=MagicMock(url="https://kamiwaza.test/api", verify_ssl=True)
+        )
+        ok = MagicMock(
+            status_code=200,
+            headers={"content-type": "application/json"},
+            text="{}",
+        )
+        with (
+            patch("requests.get", return_value=ok),
+            patch(
+                "kamiwaza_extensions.registry_resolution.build_engine_runs_in_vm",
+                return_value=False,
+            ),
+            # Even if docker would reject the alias as insecure, the
+            # gate's ``insecure`` precondition must short-circuit first.
+            patch(
+                "kamiwaza_extensions.registry_resolution.docker_accepts_insecure_push_to",
+                return_value=False,
+            ),
+        ):
+            results = checker._check_registry_readiness()
+
+        assert "Docker insecure-registries" not in {r.name for r in results}
+
+    @patch("kamiwaza_extensions.registry_resolution.detect_core_config_registry")
     def test_registry_readiness_fails_on_missing_insecure_registries(
         self, mock_core, tmp_path
     ):
         """jxstanford iter-4 Critical #1: when docker is the active push
         engine and the auto-rewritten alias isn't in ``insecure-registries``,
         doctor must emit a hard fail with the daemon.json fix so the user
-        sees it before ``kz-ext dev`` push fails with a confusing TLS error."""
+        sees it before ``kz-ext dev`` push fails with a confusing TLS error.
+
+        Connection ``verify_ssl=False`` is required to trigger the gate
+        (claude iter-5 I1 follow-up): the check only fires when the push
+        is meant to be insecure."""
 
         mock_core.return_value = "127.0.0.1:30010"
         checker = DoctorChecker(config_dir=tmp_path / ".kamiwaza")
         checker._conn_mgr.get_active_connection = MagicMock(
-            return_value=MagicMock(url="https://kamiwaza.test/api", verify_ssl=True)
+            return_value=MagicMock(url="https://kamiwaza.test/api", verify_ssl=False)
         )
         ok = MagicMock(
             status_code=200,

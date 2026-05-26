@@ -388,6 +388,11 @@ def run_dev_remote(
     # ``insecure-registries``. Fail fast with a one-line daemon.json fix
     # (jxstanford iter-4 Critical #1) rather than letting the push spend
     # 30s timing out against HTTPS.
+    #
+    # Gate on ``insecure`` so a legitimate user-supplied
+    # ``KAMIWAZA_PUSH_REGISTRY=my-secure-registry.example`` (HTTPS) isn't
+    # spuriously refused for not being in ``insecure-registries`` — that
+    # registry isn't *meant* to be pushed over HTTP (claude iter-5 I1).
     from kamiwaza_extensions.registry_resolution import (
         docker_accepts_insecure_push_to,
         insecure_registry_daemon_json_fix,
@@ -398,6 +403,7 @@ def run_dev_remote(
     push_engine = select_push_engine(insecure=insecure)
     if (
         not no_push
+        and insecure
         and push_engine == "docker"
         and push_registry != registry
         and not docker_accepts_insecure_push_to(push_registry)

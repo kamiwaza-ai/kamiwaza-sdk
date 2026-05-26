@@ -225,3 +225,105 @@ class TestDevRemoteBuildsAtCanonicalRefs:
         assert captured["kwargs"]["target_refs"] == {
             "127.0.0.1:30010/my-app-api:dev1": "host.containers.internal:30010/my-app-api:dev1",
         }
+
+    def test_no_build_refuses_when_prior_build_engine_differs(
+        self, tmp_path, monkeypatch
+    ):
+        """jxstanford iter-4 High #1, claude iter-5 S2 (e2e coverage):
+        a ``--no-build`` resume whose active push engine differs from
+        ``last_build_engine`` must refuse with exit 1 before ImagePusher
+        is invoked. Docker and Podman keep separate image stores; the
+        previously-built image isn't visible to the engine that would
+        push, so retag/push would fail with a confusing error."""
+
+        from kamiwaza_extensions.commands import dev as dev_cmd
+        from kamiwaza_extensions.dev_state import DevState
+
+        # Active push will pick podman: insecure connection (verify_ssl=
+        # False) + podman on PATH. Prior build was docker → mismatch.
+        info = ExtensionInfo(
+            path=tmp_path,
+            name="my-app",
+            version="0.1.0",
+            metadata={"name": "my-app", "type": "app"},
+            compose_path=tmp_path / "docker-compose.yml",
+            compose_data={"services": {"api": {"build": {"context": "."}}}},
+        )
+
+        prior_state = DevState(
+            last_run_at="2026-05-26T00:00:00+00:00",
+            last_revision="0.1.0-dev-abc1234.1714999999",
+            last_successful_step="push",
+            cluster="https://kamiwaza.test/api",
+            extension_name="my-app",
+            last_registry="127.0.0.1:30010",
+            last_push_registry="host.containers.internal:30010",
+            last_build_engine="docker",
+        )
+
+        token = MagicMock(access_token="tok-abc")
+        conn_mgr = MagicMock()
+        conn_mgr.get_active_connection.return_value = _active_connection()
+        conn_mgr.get_token.return_value = token
+
+        detector = MagicMock()
+        detector.detect.return_value = info
+
+        tagger = MagicMock()
+        # Match the revision exactly so _is_resumable accepts.
+        tagger.generate_tag.return_value = "0.1.0-dev-abc1234.1714999999"
+        tagger.get_git_info.return_value = ("abc1234", False)
+
+        pusher = MagicMock()  # Should never be called when refuse fires.
+
+        with (
+            patch(
+                "kamiwaza_extensions.extension_detector.ExtensionDetector",
+                return_value=detector,
+            ),
+            patch(
+                "kamiwaza_extensions.connections.ConnectionManager",
+                return_value=conn_mgr,
+            ),
+            patch(
+                "kamiwaza_extensions.revision_tagger.RevisionTagger",
+                return_value=tagger,
+            ),
+            patch(
+                "kamiwaza_extensions.image_pusher.ImagePusher",
+                return_value=pusher,
+            ),
+            patch.object(
+                dev_cmd, "_detect_kind_registry", return_value="127.0.0.1:30010"
+            ),
+            patch(
+                "kamiwaza_extensions.registry_resolution.detect_core_config_registry",
+                return_value=None,
+            ),
+            patch(
+                "kamiwaza_extensions.dev_state.read_state",
+                return_value=prior_state,
+            ),
+            patch(
+                "kamiwaza_extensions.dev_state.resume_message",
+                return_value=None,
+            ),
+            # Force select_push_engine → "podman" so we have an actual
+            # mismatch with the prior build engine. Also pretend docker
+            # accepts the alias so the unrelated insecure-registries
+            # pre-flight doesn't fire first.
+            patch(
+                "kamiwaza_extensions.registry_resolution._has_podman",
+                return_value=True,
+            ),
+            patch(
+                "kamiwaza_extensions.registry_resolution.docker_accepts_insecure_push_to",
+                return_value=True,
+            ),
+            pytest.raises(click.exceptions.Exit) as exc_info,
+        ):
+            dev_cmd.run_dev_remote(no_build=True)
+
+        # Refuse exits before ImagePusher.push is invoked.
+        assert exc_info.value.exit_code == 1
+        pusher.push.assert_not_called()

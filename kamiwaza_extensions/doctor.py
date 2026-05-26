@@ -584,12 +584,21 @@ class DoctorChecker:
             )
         )
         if resolution.push_registry != resolution.image_registry:
-            results.append(self._check_push_registry_endpoint(resolution.push_registry))
+            results.append(
+                self._check_push_registry_endpoint(
+                    resolution.push_registry,
+                    connection_verify_ssl=verify_ssl,
+                )
+            )
             # The push registry differs from the image registry, which means
             # we'll retag and push to an alias. Docker won't push to that
             # alias over HTTP unless it's in ``insecure-registries``. Catch
             # this in doctor too (jxstanford iter-4 Critical #1) so users
             # see the fix before they hit it at ``kz-ext dev`` time.
+            #
+            # Gate on ``insecure`` (verify_ssl=False) so a legitimate
+            # user-supplied secure-HTTPS push override isn't refused for
+            # not being in ``insecure-registries`` (claude iter-5 I1).
             from kamiwaza_extensions.registry_resolution import (
                 docker_accepts_insecure_push_to,
                 insecure_registry_daemon_json_fix,
@@ -598,7 +607,8 @@ class DoctorChecker:
 
             insecure = not verify_ssl
             if (
-                select_push_engine(insecure=insecure) == "docker"
+                insecure
+                and select_push_engine(insecure=insecure) == "docker"
                 and not docker_accepts_insecure_push_to(resolution.push_registry)
             ):
                 results.append(
@@ -612,7 +622,12 @@ class DoctorChecker:
                 )
         return results
 
-    def _check_push_registry_endpoint(self, registry: str) -> CheckResult:
+    def _check_push_registry_endpoint(
+        self,
+        registry: str,
+        *,
+        connection_verify_ssl: Optional[bool] = None,
+    ) -> CheckResult:
         from kamiwaza_extensions.registry_resolution import (
             DOCKER_VM_HOST_ALIAS,
             PODMAN_VM_HOST_ALIAS,
@@ -678,7 +693,11 @@ class DoctorChecker:
                 "skipping host-side probe (verified at push time)",
             )
 
-        return self._check_registry_http_endpoint("Registry push endpoint", registry)
+        return self._check_registry_http_endpoint(
+            "Registry push endpoint",
+            registry,
+            connection_verify_ssl=connection_verify_ssl,
+        )
 
     def _check_registry_http_endpoint(
         self,
