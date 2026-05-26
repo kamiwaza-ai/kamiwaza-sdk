@@ -182,6 +182,59 @@ class MeshJobFailedError(KamiwazaError):
 
 
 # ----------------------------------------------------------------------------
+# Gate-package typed subclasses (T7.13 / ENG-4767 — WS-M5)
+#
+# Map server-emitted ``detail.reason`` shapes to SDK-side typed errors so
+# customer code can pattern-match on the gate-package failure mode instead
+# of inspecting the body. Server side raises FastAPI ``HTTPException(
+# status_code=N, detail={"reason": "X", ...})`` directly from the gate-
+# packages API handler (T7.2).
+# ----------------------------------------------------------------------------
+
+
+class GatePackageHashRequiredError(ValidationError):
+    """400 with ``detail.reason == "hash_required"`` — POST/PUT to
+    ``/api/authz/gate-packages`` without ``hash_digest`` in the request body.
+    Hash-pinning is mandatory at MVP per FR-89/FR-89a; customer code must
+    pin a known SHA-256 of the wheel."""
+
+
+class GatePackageHashMismatchError(KamiwazaError):
+    """422 with ``detail.reason == "hash_mismatch"`` — pip ``--require-hashes``
+    rejected the install because the wheel served from the index doesn't
+    match the supplied ``hash_digest``. Either the wheel was retagged on the
+    index or the customer pinned the wrong hash. Body carries the expected
+    vs observed digests."""
+
+
+class GatePackageInstallTimeoutError(KamiwazaError):
+    """504 with ``detail.reason == "install_timeout"`` — pip-install
+    subprocess exceeded the chart-configured ``authz.gatePackages.installTimeoutSeconds``
+    (default 120s). Compiled dependencies on slow hosts may need a higher
+    timeout. Body carries the configured limit + actual elapsed."""
+
+
+class GatePackageClasspathDropError(KamiwazaError):
+    """409 with ``detail.reason == "classpath_drop"`` — PUT-replace refused
+    because the new package's classpath set is not a superset of the
+    currently-bound classpaths. Customer must explicitly unbind the dropped
+    classpath first. Body carries the dropped classpath list."""
+
+
+class GatePackageUninstallBlockedError(KamiwazaError):
+    """409 with ``detail.reason == "uninstall_blocked"`` — DELETE refused
+    because one or more active bindings (``Cluster.executionGate`` or
+    ``Dataset.gate``) reference a classpath from the package. Customer must
+    unbind first. Body carries the blocking bindings."""
+
+
+class GatePackageNotFoundError(NotFoundError):
+    """404 with ``detail.reason == "gate_package_not_found"`` — GET/PUT/DELETE
+    on a name that doesn't exist in ``cluster_gate_packages``. Customer may
+    have a stale package name reference or a typo."""
+
+
+# ----------------------------------------------------------------------------
 # Response → typed-exception dispatch table (T7.2 — migrated from kamiwaza/)
 #
 # The status code is part of the match alongside the reason string to avoid
@@ -194,6 +247,13 @@ _REASON_TO_EXCEPTION: dict[tuple[int, str], type[KamiwazaError]] = {
     (503, "psk_propagation_timeout"): FederationPairTimeoutError,
     (403, "brokered_user_not_allowlisted"): BrokeredUserNotAllowlistedError,
     (403, "endpoint_requires_native_realm"): NativeRealmRequiredError,
+    # T7.13 / ENG-4767 — gate-package typed errors (WS-M5)
+    (400, "hash_required"): GatePackageHashRequiredError,
+    (422, "hash_mismatch"): GatePackageHashMismatchError,
+    (504, "install_timeout"): GatePackageInstallTimeoutError,
+    (409, "classpath_drop"): GatePackageClasspathDropError,
+    (409, "uninstall_blocked"): GatePackageUninstallBlockedError,
+    (404, "gate_package_not_found"): GatePackageNotFoundError,
 }
 
 

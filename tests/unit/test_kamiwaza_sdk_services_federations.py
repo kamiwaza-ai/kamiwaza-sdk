@@ -491,3 +491,101 @@ def test_federation_aware_services_reexported_from_kamiwaza_sdk_services() -> No
     }
     missing = expected - set(services.__all__)
     assert not missing, f"missing from kamiwaza_sdk.services.__all__: {missing}"
+
+
+# ---------------------------------------------------------------------------
+# ENG-5822 — per-pair brokering kwargs forward to create body
+# ---------------------------------------------------------------------------
+
+
+def test_pair_forwards_all_four_brokering_kwargs_when_supplied() -> None:
+    """ENG-5822 — when caller supplies the brokering tuple, all 4 fields
+    land on the create body so the server can persist them onto the
+    federation row. Mirrors the callback_hostname forwarding pattern."""
+    from kamiwaza_sdk.services.federations import FederationsAPI
+
+    client = _MockClient()
+    _stage_pair_responses(client)
+
+    api = FederationsAPI(client)
+    api.pair(
+        name="ORION",
+        role="initiator",
+        remote_url="https://orion.example.com",
+        local_kc_issuer_url="https://lyra.example.com/realms/kamiwaza",
+        local_kc_jwks_url=(
+            "https://lyra.example.com/realms/kamiwaza/protocol/openid-connect/certs"
+        ),
+        local_broker_client_id="kamiwaza-broker",
+        local_broker_client_secret="urn:li:dataHubSecret:test-broker",
+    )
+
+    _, body = _create_call(client)
+    assert body.get("local_kc_issuer_url") == (
+        "https://lyra.example.com/realms/kamiwaza"
+    )
+    assert body.get("local_kc_jwks_url") == (
+        "https://lyra.example.com/realms/kamiwaza/protocol/openid-connect/certs"
+    )
+    assert body.get("local_broker_client_id") == "kamiwaza-broker"
+    # URN-only contract — the SDK passes through verbatim; the server's
+    # @validator at the schema layer refuses raw secrets with a 422.
+    assert body.get("local_broker_client_secret") == (
+        "urn:li:dataHubSecret:test-broker"
+    )
+
+
+def test_pair_omits_brokering_kwargs_when_not_supplied() -> None:
+    """Pre-ENG-5822 callers: omitting the brokering kwargs leaves the
+    body unchanged, so the cluster's env-driven default path (KAMIWAZA_KC_*)
+    remains in effect server-side."""
+    from kamiwaza_sdk.services.federations import FederationsAPI
+
+    client = _MockClient()
+    _stage_pair_responses(client)
+
+    api = FederationsAPI(client)
+    api.pair(
+        name="ORION",
+        role="initiator",
+        remote_url="https://orion.example.com",
+    )
+
+    _, body = _create_call(client)
+    for key in (
+        "local_kc_issuer_url",
+        "local_kc_jwks_url",
+        "local_broker_client_id",
+        "local_broker_client_secret",
+    ):
+        assert key not in body, f"unexpected {key!r} in default-mode body"
+
+
+def test_pair_forwards_partial_brokering_kwargs_to_server() -> None:
+    """The SDK doesn't enforce the all-four-together contract client-side
+    — it lets the server's atomic validator surface the canonical error
+    (one source of truth for the contract). A partial set reaches the
+    server, which then refuses with a 422."""
+    from kamiwaza_sdk.services.federations import FederationsAPI
+
+    client = _MockClient()
+    _stage_pair_responses(client)
+
+    api = FederationsAPI(client)
+    api.pair(
+        name="ORION",
+        role="initiator",
+        remote_url="https://orion.example.com",
+        local_kc_issuer_url="https://lyra.example.com/realms/kamiwaza",
+    )
+
+    _, body = _create_call(client)
+    assert body.get("local_kc_issuer_url") == (
+        "https://lyra.example.com/realms/kamiwaza"
+    )
+    for key in (
+        "local_kc_jwks_url",
+        "local_broker_client_id",
+        "local_broker_client_secret",
+    ):
+        assert key not in body, f"unexpected {key!r} in partial-mode body"

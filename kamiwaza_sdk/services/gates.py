@@ -14,12 +14,33 @@ Server-side correlate: POST /api/authz/gates/discover (§4.2.3).
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from ..schemas.federation import GateDiscovery
 from .base_service import BaseService
 
+if TYPE_CHECKING:
+    from .gate_packages import GatePackagesAPI
+
 
 class GatesAPI(BaseService):
-    """Gate discovery on the local cluster."""
+    """Gate discovery on the local cluster + gate-packages sub-API."""
+
+    @property
+    def packages(self) -> "GatePackagesAPI":
+        """Gate-package install / replace / list / get / uninstall
+        (T7.10 / ENG-4765, WS-M5). Lazy-loaded sub-service.
+
+        Customer surface: ``kz.gates.packages.install("acme-gates==1.0.0",
+        hash_digest="sha256:...")``. Lives under ``kz.gates`` because
+        the two concerns are semantically related — gate-code lifecycle
+        and gate-code reflection both anchor on the gate registry.
+        """
+        if not hasattr(self, "_packages"):
+            from .gate_packages import GatePackagesAPI
+
+            self._packages = GatePackagesAPI(self.client)
+        return self._packages
 
     def discover(self, classpath: str) -> GateDiscovery:
         """Reflect on a Gate class by classpath; return its metadata.
