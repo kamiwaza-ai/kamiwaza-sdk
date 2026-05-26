@@ -171,6 +171,27 @@ class TestEnvRegistryNormalization:
         with pytest.raises(ValueError, match="KAMIWAZA_PUSH_REGISTRY"):
             resolve_dev_registries(_conn(), kind_registry_detector=lambda: None)
 
+    @pytest.mark.parametrize(
+        "bad_value,reason",
+        [
+            # Non-numeric port crashes urlparse(...).port deep in the stack
+            # unless we validate up front (iteration 2 CL Important #1).
+            ("127.0.0.1:not-a-port", "port"),
+            ("reg.example:0xff", "port"),
+            # Userinfo, query, fragment all silently mangle image refs
+            # downstream (iteration 2 CL Important #2).
+            ("user:pass@reg.example:5000", "'@'"),
+            ("reg.example:5000?foo=bar", "'\\?'"),
+            ("reg.example:5000#frag", "'#'"),
+            # Embedded whitespace beyond what str.strip removes.
+            ("reg.example\n:5000", "whitespace"),
+        ],
+    )
+    def test_rejects_malformed_values(self, monkeypatch, bad_value, reason):
+        monkeypatch.setenv("KAMIWAZA_REGISTRY", bad_value)
+        with pytest.raises(ValueError, match=reason):
+            resolve_dev_registries(_conn(), kind_registry_detector=lambda: None)
+
 
 class TestLoopbackDetection:
     """Cover the ``ipaddress``-based detection so non-127.0.0.1 loopback
@@ -260,6 +281,51 @@ class TestBuildEngineVmPlatformGate:
         # Docker Desktop on Windows always virtualizes Linux even when
         # ``docker info`` errors out (context not selected yet).
         assert build_engine_runs_in_vm() is True
+
+    @patch(
+        "kamiwaza_extensions.registry_resolution.platform.system",
+        return_value="Darwin",
+    )
+    @patch(
+        "kamiwaza_extensions.registry_resolution.running_podman_machine_name",
+        return_value="podman-machine-default",
+    )
+    @patch(
+        "kamiwaza_extensions.registry_resolution.subprocess.run",
+        side_effect=FileNotFoundError(),
+    )
+    def test_build_engine_vm_detects_podman_only_macos(
+        self, _mock_run, _mock_machine, _mock_system
+    ):
+        """Codex iter-2 P2: on a Podman-only macOS host (no Docker CLI),
+        ``docker info`` raises FileNotFoundError but the running Podman
+        machine is still a VM topology that needs the loopback remap."""
+
+        from kamiwaza_extensions.registry_resolution import build_engine_runs_in_vm
+
+        assert build_engine_runs_in_vm() is True
+
+    @patch(
+        "kamiwaza_extensions.registry_resolution.platform.system",
+        return_value="Darwin",
+    )
+    @patch(
+        "kamiwaza_extensions.registry_resolution.running_podman_machine_name",
+        return_value=None,
+    )
+    @patch(
+        "kamiwaza_extensions.registry_resolution.subprocess.run",
+        side_effect=FileNotFoundError(),
+    )
+    def test_build_engine_vm_false_on_macos_without_engine(
+        self, _mock_run, _mock_machine, _mock_system
+    ):
+        """Darwin without Docker AND without a running Podman machine is
+        not a VM topology — no remap should occur."""
+
+        from kamiwaza_extensions.registry_resolution import build_engine_runs_in_vm
+
+        assert build_engine_runs_in_vm() is False
 
 
 class TestPushRefMap:

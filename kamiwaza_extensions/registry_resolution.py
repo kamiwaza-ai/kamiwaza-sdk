@@ -131,16 +131,38 @@ def normalize_registry_env(var_name: str, raw: str) -> str:
     for values that still don't look like a registry reference after the
     obvious cleanup, so the broken value never reaches ``compose_transformer``
     and silently produces malformed image refs like ``https://reg:5000/foo``.
+
+    Rejects userinfo (``user:pass@reg``), query strings, fragments, and any
+    embedded whitespace — including ``\\n``/``\\t`` that ``str.strip`` leaves
+    in the interior of the value. Also rejects non-numeric port suffixes
+    such as ``127.0.0.1:not-a-port`` that would otherwise raise an
+    uncaught ``ValueError`` from ``urlparse().port`` deeper in the stack.
     """
 
     value = raw.strip()
     if "://" in value:
         value = value.split("://", 1)[1]
     value = value.rstrip("/")
-    if not value or "/" in value or " " in value:
+
+    def _fail(reason: str) -> None:
         raise ValueError(
-            f"{var_name}={raw!r} is not a valid registry; expected 'host' or 'host:port'"
+            f"{var_name}={raw!r} is not a valid registry ({reason}); "
+            "expected 'host' or 'host:port'"
         )
+
+    if not value:
+        _fail("empty after normalization")
+    if any(c.isspace() for c in value):
+        _fail("contains whitespace")
+    if any(c in value for c in ("/", "@", "?", "#")):
+        _fail("contains '/', '@', '?', or '#'")
+    # Validate numeric port (urlparse raises ValueError lazily on .port).
+    try:
+        parsed_port = urlparse(f"//{value}").port
+    except ValueError:
+        _fail("port is not an integer")
+    if ":" in value and parsed_port is None:
+        _fail("port suffix could not be parsed")
     return value
 
 
@@ -251,11 +273,15 @@ def is_loopback_registry(registry: str) -> bool:
     Uses :class:`ipaddress.ip_address` so the full 127.0.0.0/8 range, the
     IPv6 loopback ``::1``, and IPv4-mapped forms like ``::ffff:127.0.0.1``
     are all caught — string-equality alone misses ``127.0.0.2`` and similar
-    cluster-side conventions.
+    cluster-side conventions. Returns False (rather than raising) on
+    malformed input so callers don't have to wrap defensively.
     """
 
-    parsed = urlparse(f"//{registry}")
-    host = (parsed.hostname or "").lower()
+    try:
+        parsed = urlparse(f"//{registry}")
+        host = (parsed.hostname or "").lower()
+    except ValueError:
+        return False
     if not host:
         return False
     if host == "localhost":
@@ -272,13 +298,18 @@ def replace_registry_host(registry: str, host: str) -> str:
     Returns *registry* unchanged when no explicit port is present: silently
     substituting only the host can corrupt the push (e.g., changing the
     target port from a registry's 5000 to the default HTTPS 443). Callers
-    should ensure the input carries ``host:port`` before invoking.
+    should ensure the input carries ``host:port`` before invoking. Defensive
+    against malformed inputs (returns input unchanged on ``ValueError``)
+    even though ``normalize_registry_env`` rejects such values upstream.
     """
 
-    parsed = urlparse(f"//{registry}")
-    if parsed.port is None:
+    try:
+        parsed_port = urlparse(f"//{registry}").port
+    except ValueError:
         return registry
-    return f"{host}:{parsed.port}"
+    if parsed_port is None:
+        return registry
+    return f"{host}:{parsed_port}"
 
 
 def build_engine_runs_in_vm() -> bool:
@@ -304,11 +335,16 @@ def build_engine_runs_in_vm() -> bool:
         # On Windows, Docker Desktop with the WSL2 backend always virtualizes
         # Linux even when ``docker info`` errors out (e.g., the user hasn't
         # selected a context yet). Trust the platform signal so the loopback
-        # remap still fires; on Darwin we have no equivalent signal without
-        # docker info, so fall back to the conservative answer.
-        return system == "Windows"
+        # remap still fires. On Darwin without a Docker CLI, fall back to
+        # detecting a running Podman machine — that's the same nested-VM
+        # topology ENG-5719 needs to remap, and was the codex-iter2 P2 gap.
+        if system == "Windows":
+            return True
+        return running_podman_machine_name() is not None
     if result.returncode != 0:
-        return system == "Windows"
+        if system == "Windows":
+            return True
+        return running_podman_machine_name() is not None
     return "linux" in result.stdout.lower()
 
 
