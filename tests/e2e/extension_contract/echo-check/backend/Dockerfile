@@ -25,4 +25,9 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# --root-path threads $KAMIWAZA_APP_PATH into the ASGI scope so
+# trusted_routed_workroom_context() can validate `scope['root_path']`
+# against the runtime prefix. Without this, real routed requests
+# arrive with root_path="" and identity-header forwarding fails
+# silently (returns 403 / drops identity fields).
+CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --root-path \"${KAMIWAZA_APP_PATH:-}\""]

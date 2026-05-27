@@ -158,6 +158,14 @@ def _wait_for_response(harness: Any, url: str, headers: dict[str, str] | None = 
             continue
         if response.status_code == 200:
             return response
+        # Fail-fast on auth errors — retrying a 401/403 for the full
+        # probe_timeout_seconds (default 180s) just delays a guaranteed
+        # failure with no chance of recovery.
+        if response.status_code in (401, 403):
+            pytest.fail(
+                f"Probe got auth error {response.status_code} for {url}. "
+                f"Body: {response.text[:200].strip()}"
+            )
         last_summary = f"status={response.status_code} body={response.text[:200].strip()}"
         time.sleep(2)
     pytest.fail(f"Probe never succeeded for {url}. Last result: {last_summary}")

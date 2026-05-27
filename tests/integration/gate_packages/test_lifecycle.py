@@ -104,6 +104,24 @@ def cleanup_acme(kz) -> Iterator[None]:
         pass
 
 
+@pytest.fixture(scope="class", autouse=True)
+def _require_wheel_and_index() -> None:
+    """Skip the whole lifecycle class if the v1/v2 wheels or pip index aren't
+    materialized. Without this, test_install_v1 self-skips via wheel_dir() but
+    test_list_and_get / test_atomic_replace_to_v2 / test_uninstall still run
+    against state that was never installed and the autouse cleanup_acme
+    teardown wipes — leading to confusing `'acme-gates' not in names`
+    assertions on a clean cluster."""
+    wheel_root = os.getenv("M5_TEST_WHEEL_DIR", "").strip()
+    index = os.getenv("M5_TEST_INDEX_URL", "").strip()
+    if not wheel_root or not index:
+        pytest.skip(
+            "Lifecycle class requires both M5_TEST_WHEEL_DIR and "
+            "M5_TEST_INDEX_URL — set both to run the install/replace/"
+            "uninstall sequence end-to-end."
+        )
+
+
 class TestLifecycle:
     """TS-M5-24 (install) + TS-M5-25 (replace) + TS-M5-15 (uninstall)."""
 
@@ -147,9 +165,10 @@ class TestLifecycle:
             pytest.skip("acme-gates v1.0.1 wheel not built; replace test skipped")
         v2_hash = _sha256(v2)
 
-        # Bind acme-gates as an AttributeGate on a test dataset first to
-        # exercise the binding-aware classpath-superset check.
-        # (Bind step depends on dataset fixture — see test_bind_then_replace.)
+        # NOTE: The binding-aware classpath-superset check requires binding
+        # acme-gates as an AttributeGate on a test dataset first; that bind
+        # path isn't exercised by this suite yet (no dataset fixture).
+        # Current test covers only the unbound replace path.
 
         result = kz.gates.packages.replace(
             "acme-gates",

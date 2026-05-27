@@ -73,7 +73,13 @@ def test_pull_template_images_allows_explicit_local_fallback(monkeypatch) -> Non
 
 
 def test_live_extension_settings_uses_bootstrap_state_defaults(monkeypatch, tmp_path) -> None:
+    # Clear every env var LiveExtensionSettings.from_env() reads — otherwise
+    # the live workflow (which sets KAMIWAZA_BASE_URL + KAMIWAZA_API_KEY for
+    # the whole pytest run) makes these isolation tests pick up workflow
+    # secrets and assert against the wrong base URL.
     monkeypatch.delenv("KAMIWAZA_API_URL", raising=False)
+    monkeypatch.delenv("KAMIWAZA_BASE_URL", raising=False)
+    monkeypatch.delenv("KAMIWAZA_API_KEY", raising=False)
     monkeypatch.delenv("KAMIWAZA_APP_ORIGIN", raising=False)
     monkeypatch.delenv("KAMIWAZA_VERIFY_SSL", raising=False)
     monkeypatch.delenv("KAMIWAZA_USERNAME", raising=False)
@@ -94,6 +100,8 @@ def test_live_extension_settings_uses_bootstrap_state_defaults(monkeypatch, tmp_
 
 def test_live_extension_settings_accepts_auth_fronted_ping(monkeypatch, tmp_path) -> None:
     state = bootstrap_state_fixture(tmp_path)
+    monkeypatch.delenv("KAMIWAZA_BASE_URL", raising=False)
+    monkeypatch.delenv("KAMIWAZA_API_KEY", raising=False)
     monkeypatch.setattr("tests.e2e.extension_contract.support.settings.load_local_admin_password", lambda: None)
     monkeypatch.setenv("KAMIWAZA_USERNAME", "admin")
     monkeypatch.setenv("KAMIWAZA_PASSWORD", "secret")
@@ -117,6 +125,8 @@ def test_live_extension_settings_rejects_unexpected_ping_401(monkeypatch) -> Non
 
 def test_live_extension_settings_does_not_promote_allowed_non_admin(monkeypatch, tmp_path) -> None:
     monkeypatch.delenv("KAMIWAZA_API_URL", raising=False)
+    monkeypatch.delenv("KAMIWAZA_BASE_URL", raising=False)
+    monkeypatch.delenv("KAMIWAZA_API_KEY", raising=False)
     monkeypatch.delenv("KAMIWAZA_APP_ORIGIN", raising=False)
     monkeypatch.delenv("KAMIWAZA_VERIFY_SSL", raising=False)
     monkeypatch.delenv("KAMIWAZA_USERNAME", raising=False)
@@ -170,6 +180,8 @@ def test_origin_preflight_accepts_origin_health(monkeypatch) -> None:
 
 
 def test_live_extension_settings_falls_back_on_invalid_timeouts(monkeypatch, tmp_path) -> None:
+    monkeypatch.delenv("KAMIWAZA_BASE_URL", raising=False)
+    monkeypatch.delenv("KAMIWAZA_API_KEY", raising=False)
     monkeypatch.setenv("LIVE_EXTENSION_DEPLOY_TIMEOUT", "not-a-number")
     monkeypatch.setenv("LIVE_EXTENSION_PROBE_TIMEOUT", "still-bad")
     monkeypatch.setattr("tests.e2e.extension_contract.support.settings.load_local_admin_password", lambda: None)

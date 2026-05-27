@@ -75,7 +75,10 @@ class LiveExtensionSettings:
             if password and not username:
                 username = "admin"
                 control_plane_role_key = "admin"
-        verify_ssl = env_flag("KAMIWAZA_VERIFY_SSL", default=False)
+        # Default to TLS verification ON, matching tests/integration/gate_packages/
+        # test_lifecycle.py — never silently insecure. To opt out for dev clusters
+        # with self-signed certs, set KAMIWAZA_VERIFY_SSL=0 explicitly.
+        verify_ssl = env_flag("KAMIWAZA_VERIFY_SSL", default=True)
         if "KAMIWAZA_VERIFY_SSL" not in os.environ and bootstrap_state is not None:
             verify_ssl = bootstrap_state.verify_ssl
         return cls(
