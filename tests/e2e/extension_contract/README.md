@@ -57,7 +57,7 @@ make live-integration-bootstrap
 Run the harness:
 
 ```bash
-RUN_LIVE_EXTENSION_TESTS=1 pytest tests/extension_contract/
+RUN_LIVE_EXTENSION_TESTS=1 pytest tests/e2e/extension_contract/
 ```
 
 The harness builds echo-check from a clean checkout via `docker build` before

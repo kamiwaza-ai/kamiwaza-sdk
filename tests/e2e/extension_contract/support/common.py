@@ -10,8 +10,10 @@ import requests
 
 from .process_utils import decode_secret_value, parse_password_output, run_local_command
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-EXTENSION_FIXTURES_ROOT = REPO_ROOT / "tests" / "extension_contract"
+# Anchor against this file's own location rather than counting parents from
+# the repo root — keeps the path correct if the suite is relocated again.
+EXTENSION_FIXTURES_ROOT = Path(__file__).resolve().parent.parent  # tests/e2e/extension_contract/
+REPO_ROOT = EXTENSION_FIXTURES_ROOT.parents[2]
 DEFAULT_BOOTSTRAP_STATE = Path(".artifacts/live-routed-integration/bootstrap-state.json")
 DEFAULT_DEPLOYMENT_ARTIFACT_DIR = Path(".artifacts/live-extensions")
 _KUBECTL_SECRET_KEY_RE = re.compile(r"^[A-Za-z0-9._-]+$")
