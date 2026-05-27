@@ -1,0 +1,32 @@
+services:
+  app:
+    image: ghcr.io/kamiwaza-internal/kamiwaza/images/echo-check-app:0.2.0
+    ports:
+    - '8000'
+    environment:
+      API_HOST: 0.0.0.0
+      API_PORT: 8000
+      KAMIWAZA_USE_AUTH: ${KAMIWAZA_USE_AUTH:-true}
+      KAMIWAZA_API_URL: ${KAMIWAZA_API_URL:-https://host.docker.internal/api}
+      KAMIWAZA_PUBLIC_API_URL: ${KAMIWAZA_PUBLIC_API_URL:-https://localhost/api}
+      KAMIWAZA_VERIFY_SSL: ${KAMIWAZA_VERIFY_SSL:-true}
+      KAMIWAZA_APP_PATH: ${KAMIWAZA_APP_PATH:-}
+      KAMIWAZA_DEPLOYMENT_ID: ${KAMIWAZA_DEPLOYMENT_ID:-}
+      KAMIWAZA_WORKROOM_ID: ${KAMIWAZA_WORKROOM_ID:-}
+      SESSION_MAX_SECONDS: ${SESSION_MAX_SECONDS:-28800}
+    extra_hosts:
+    - host.docker.internal:host-gateway
+    healthcheck:
+      test:
+      - CMD
+      - curl
+      - -f
+      - http://localhost:8000/health
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 256M
