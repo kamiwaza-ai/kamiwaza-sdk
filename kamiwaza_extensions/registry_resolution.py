@@ -46,6 +46,7 @@ def resolve_dev_registries(
     connection,
     *,
     kind_registry_detector: Optional[Callable[[], Optional[str]]] = None,
+    push_engine: Optional[str] = None,
 ) -> RegistryResolution:
     """Resolve the deployment image registry and build-engine push registry.
 
@@ -53,13 +54,25 @@ def resolve_dev_registries(
     is where the local build engine pushes the same repository/tag. They are
     usually identical, except for macOS nested-VM topologies where loopback
     means different things from the build VM and from the k0s node.
+
+    ``push_engine`` ("docker" or "podman", optional) determines which VM
+    alias is appropriate when a loopback-in-VM remap fires. Pass the value
+    returned by ``select_push_engine(insecure=...)`` from the caller; if
+    omitted, defaults to "docker" (preserves prior behavior). The alias
+    *must* match the engine that will actually push, since
+    ``host.docker.internal`` is only resolvable from inside the Docker
+    Desktop VM (used by docker via its daemon) and ``host.containers.internal``
+    is only resolvable inside a Podman machine (R6 — discovered when
+    podman push from host CLI failed DNS lookup of host.docker.internal).
     """
 
     image_registry, image_source = resolve_image_registry(
         connection,
         kind_registry_detector=kind_registry_detector,
     )
-    push_registry, push_source = resolve_push_registry(image_registry)
+    push_registry, push_source = resolve_push_registry(
+        image_registry, push_engine=push_engine
+    )
     return RegistryResolution(
         image_registry=image_registry,
         image_registry_source=image_source,
@@ -96,8 +109,30 @@ def resolve_image_registry(
     raise ValueError("Could not derive registry from connection URL")
 
 
-def resolve_push_registry(image_registry: str) -> tuple[str, str]:
-    """Resolve the registry host reachable from the active build/push engine."""
+def resolve_push_registry(
+    image_registry: str, *, push_engine: Optional[str] = None
+) -> tuple[str, str]:
+    """Resolve the registry host reachable from the active build/push engine.
+
+    ``push_engine`` ("docker" / "podman") names the binary that will run
+    the push. The alias must match the engine that resolves it:
+
+    * **docker** — pushes via the daemon-in-VM, which resolves
+      ``host.docker.internal`` to the macOS/Windows host's interface.
+      Safe to rewrite to the docker VM alias whenever docker is working.
+    * **podman** — pushes from the host CLI (no remote daemon). The
+      podman binary uses the *host's* DNS resolver, so it can only
+      resolve ``host.containers.internal`` when a podman machine is
+      running (the machine adds the alias to the host's resolver).
+      Without a running podman machine, podman cannot resolve either
+      VM alias — but the host's ``localhost`` (which the underlying
+      port-forwarder, e.g. Docker Desktop or Lima, binds to the host
+      interface) still works. Skip the remap in that case so we don't
+      hand podman a hostname it can't resolve (R6 regression).
+
+    Defaults to "docker" when omitted to preserve pre-R6 behavior for
+    callers that haven't been threaded through yet.
+    """
 
     push_override = os.environ.get("KAMIWAZA_PUSH_REGISTRY")
     if push_override:
@@ -112,17 +147,31 @@ def resolve_push_registry(image_registry: str) -> tuple[str, str]:
     if not build_engine_runs_in_vm():
         return image_registry, "image registry"
 
-    # Prefer the Docker Desktop alias whenever Docker is the *working*
-    # engine, since ``ImagePusher.push`` only falls back to Podman when
-    # ``insecure=True`` and Podman is installed. Pick the Podman alias
-    # whenever Docker isn't actually usable (CLI absent OR daemon down)
-    # and a Podman machine is running — otherwise doctor output would
-    # claim ``host.docker.internal`` while the push actually goes through
-    # ``podman``. (Review iteration 3, ENG-5719.)
-    host = DOCKER_VM_HOST_ALIAS
-    if not _docker_is_working() and running_podman_machine_name() is not None:
-        host = PODMAN_VM_HOST_ALIAS
-    return replace_registry_host(image_registry, host), "build VM loopback alias"
+    engine = (push_engine or "docker").lower()
+    if engine == "podman":
+        # Podman pushes from host CLI; the alias must resolve in the
+        # host's resolver. Only a running podman machine sets that up.
+        if running_podman_machine_name() is not None:
+            return (
+                replace_registry_host(image_registry, PODMAN_VM_HOST_ALIAS),
+                "build VM loopback alias",
+            )
+        # No podman machine: skip remap. The host's loopback is reachable
+        # from the host CLI directly via whatever port-forwarder bound it
+        # (Docker Desktop, Lima, etc.). Remapping to a VM alias here would
+        # produce a hostname podman cannot resolve and the push would fail
+        # at the auth-ping step.
+        return image_registry, "image registry"
+
+    # Docker engine: requires the daemon to be reachable for the alias
+    # to be meaningful at push time. If the daemon is down, fall through
+    # to no-remap rather than hand docker an alias it can't honor.
+    if not _docker_is_working():
+        return image_registry, "image registry"
+    return (
+        replace_registry_host(image_registry, DOCKER_VM_HOST_ALIAS),
+        "build VM loopback alias",
+    )
 
 
 def normalize_registry_env(var_name: str, raw: str) -> str:

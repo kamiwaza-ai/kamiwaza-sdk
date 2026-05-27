@@ -368,12 +368,25 @@ def run_dev_remote(
 
     # 4. Derive image and push registries — must happen before the resume
     # check so we can compare the active destinations against dev-state.
-    from kamiwaza_extensions.registry_resolution import resolve_dev_registries
+    # Engine selection comes first so the resolver can choose a VM alias
+    # the active engine can actually resolve (R6 — `host.docker.internal`
+    # only resolves inside the Docker daemon's VM; podman from host CLI
+    # cannot resolve it at all).
+    from kamiwaza_extensions.registry_resolution import (
+        docker_accepts_insecure_push_to,
+        insecure_registry_daemon_json_fix,
+        resolve_dev_registries,
+        select_push_engine,
+    )
+
+    insecure = not connection.verify_ssl
+    push_engine = select_push_engine(insecure=insecure)
 
     try:
         registry_resolution = resolve_dev_registries(
             connection,
             kind_registry_detector=_detect_kind_registry,
+            push_engine=push_engine,
         )
     except ValueError as exc:
         console.print(f"[red]Error:[/red] {exc}")
@@ -381,26 +394,13 @@ def run_dev_remote(
     registry = registry_resolution.image_registry
     push_registry = registry_resolution.push_registry
 
-    # Pre-flight: the active push engine has to actually be able to push
-    # to ``push_registry`` insecurely. Docker only treats 127.0.0.0/8 as
-    # insecure by default, so the loopback→host.docker.internal rewrite
-    # silently breaks on a stock Docker Desktop unless the alias is in
-    # ``insecure-registries``. Fail fast with a one-line daemon.json fix
-    # (jxstanford iter-4 Critical #1) rather than letting the push spend
-    # 30s timing out against HTTPS.
-    #
-    # Gate on ``insecure`` so a legitimate user-supplied
-    # ``KAMIWAZA_PUSH_REGISTRY=my-secure-registry.example`` (HTTPS) isn't
-    # spuriously refused for not being in ``insecure-registries`` — that
-    # registry isn't *meant* to be pushed over HTTP (claude iter-5 I1).
-    from kamiwaza_extensions.registry_resolution import (
-        docker_accepts_insecure_push_to,
-        insecure_registry_daemon_json_fix,
-        select_push_engine,
-    )
-
-    insecure = not connection.verify_ssl
-    push_engine = select_push_engine(insecure=insecure)
+    # Pre-flight: when docker is the active engine pushing insecurely to
+    # the rewritten alias, the daemon must treat that alias as insecure
+    # (default ``insecure-registries`` only covers 127.0.0.0/8). Fail fast
+    # with a one-line daemon.json fix (jxstanford iter-4 Critical #1)
+    # rather than letting the push timeout against HTTPS. Gate on
+    # ``insecure`` so a legitimate user-supplied secure-HTTPS push
+    # override isn't refused (claude iter-5 I1).
     if (
         not no_push
         and insecure

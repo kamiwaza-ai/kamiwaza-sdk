@@ -550,9 +550,20 @@ class DoctorChecker:
             return []
 
         try:
-            from kamiwaza_extensions.registry_resolution import resolve_dev_registries
+            from kamiwaza_extensions.registry_resolution import (
+                resolve_dev_registries,
+                select_push_engine,
+            )
 
-            resolution = resolve_dev_registries(connection)
+            # Resolve registries against the same engine ``kz-ext dev``
+            # will actually pick — otherwise doctor reports a VM alias the
+            # push engine can't resolve (R6: podman from host CLI cannot
+            # resolve host.docker.internal).
+            verify_ssl_for_engine = getattr(connection, "verify_ssl", True)
+            resolution = resolve_dev_registries(
+                connection,
+                push_engine=select_push_engine(insecure=not verify_ssl_for_engine),
+            )
         except ValueError as exc:
             return [
                 CheckResult(

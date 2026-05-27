@@ -109,15 +109,16 @@ class TestPushRegistryResolution:
         "kamiwaza_extensions.registry_resolution.running_podman_machine_name",
         return_value="podman-machine-default",
     )
-    def test_loopback_registry_prefers_docker_alias_when_docker_present(
+    def test_loopback_registry_uses_docker_alias_when_docker_engine_works(
         self, _mock_podman, _mock_docker, _mock_vm, _mock_core
     ):
-        # Default ``ImagePusher.push`` uses Docker unless ``insecure=True`` and
-        # Podman is installed — so when Docker is on PATH we must emit the
-        # Docker Desktop alias, even if a Podman machine happens to be
-        # running. (Review iteration 1, ENG-5719.)
+        # Docker is the active push engine and the daemon is working →
+        # emit host.docker.internal so the daemon-in-VM resolves it to
+        # the macOS/Windows host loopback. (R6 refines iter-1: alias
+        # selection now keys on the actual engine that will push, not
+        # just on which binaries are available.)
         resolution = resolve_dev_registries(
-            _conn(), kind_registry_detector=lambda: None
+            _conn(), kind_registry_detector=lambda: None, push_engine="docker"
         )
 
         assert resolution.image_registry == "127.0.0.1:30010"
@@ -133,18 +134,17 @@ class TestPushRegistryResolution:
         return_value=True,
     )
     @patch(
-        "kamiwaza_extensions.registry_resolution._docker_is_working",
-        return_value=False,
-    )
-    @patch(
         "kamiwaza_extensions.registry_resolution.running_podman_machine_name",
         return_value="podman-machine-default",
     )
-    def test_loopback_registry_falls_back_to_podman_alias_without_docker(
-        self, _mock_podman, _mock_docker, _mock_vm, _mock_core
+    def test_loopback_registry_uses_podman_alias_when_podman_engine_with_machine(
+        self, _mock_podman, _mock_vm, _mock_core
     ):
+        # R6: alias selection is engine-aware. When the engine is podman
+        # AND a podman machine is running, the podman alias is what the
+        # host's resolver can reach (the machine sets up /etc/hosts).
         resolution = resolve_dev_registries(
-            _conn(), kind_registry_detector=lambda: None
+            _conn(), kind_registry_detector=lambda: None, push_engine="podman"
         )
 
         assert resolution.push_registry == "host.containers.internal:30010"
@@ -158,28 +158,92 @@ class TestPushRegistryResolution:
         return_value=True,
     )
     @patch(
+        "kamiwaza_extensions.registry_resolution.running_podman_machine_name",
+        return_value=None,
+    )
+    def test_loopback_registry_skips_remap_for_podman_without_machine(
+        self, _mock_podman, _mock_vm, _mock_core
+    ):
+        # R6 regression: with podman as the engine but NO podman machine
+        # running, the only resolver podman has access to is the host's.
+        # Neither host.docker.internal nor host.containers.internal
+        # resolves there, but the original loopback (127.0.0.1) does
+        # via whatever port-forwarder bound it (Docker Desktop, Lima).
+        # So leave the registry alone.
+        resolution = resolve_dev_registries(
+            _conn(), kind_registry_detector=lambda: None, push_engine="podman"
+        )
+
+        assert resolution.push_registry == "127.0.0.1:30010"
+        assert resolution.push_registry_source == "image registry"
+
+    @patch(
+        "kamiwaza_extensions.registry_resolution.detect_core_config_registry",
+        return_value="127.0.0.1:30010",
+    )
+    @patch(
+        "kamiwaza_extensions.registry_resolution.build_engine_runs_in_vm",
+        return_value=True,
+    )
+    @patch(
         "kamiwaza_extensions.registry_resolution._docker_is_working",
         return_value=False,
     )
-    @patch(
-        "kamiwaza_extensions.registry_resolution.running_podman_machine_name",
-        return_value="podman-machine-default",
-    )
-    def test_alias_follows_docker_daemon_not_just_path(
-        self, _mock_podman, _mock_docker_works, _mock_vm, _mock_core
+    def test_docker_engine_skips_remap_when_daemon_down(
+        self, _mock_docker_works, _mock_vm, _mock_core
     ):
-        """CL iter-3 Important: docker CLI may be on PATH while the daemon
-        is down (e.g., Docker Desktop quit). In that case ``ImagePusher``
-        falls through to ``podman`` for insecure pushes, so we must emit
-        the Podman alias even though docker exists. Picking the alias
-        based purely on PATH would have doctor say one thing and the
-        push do another."""
+        """R6 follow-up to claude iter-3 Important: docker engine but
+        daemon down → docker can't actually push regardless of alias, so
+        no remap. The original loopback at least surfaces a connection
+        failure rather than a misleading DNS error."""
 
         resolution = resolve_dev_registries(
-            _conn(), kind_registry_detector=lambda: None
+            _conn(), kind_registry_detector=lambda: None, push_engine="docker"
         )
 
-        assert resolution.push_registry == "host.containers.internal:30010"
+        assert resolution.push_registry == "127.0.0.1:30010"
+        assert resolution.push_registry_source == "image registry"
+
+    @patch(
+        "kamiwaza_extensions.registry_resolution.detect_core_config_registry",
+        return_value=None,
+    )
+    @patch(
+        "kamiwaza_extensions.registry_resolution.build_engine_runs_in_vm",
+        return_value=True,
+    )
+    @patch(
+        "kamiwaza_extensions.registry_resolution.running_podman_machine_name",
+        return_value=None,
+    )
+    def test_kind_plus_docker_desktop_plus_podman_uses_host_localhost(
+        self, _mock_podman, _mock_vm, _mock_core
+    ):
+        """R6 regression case (user-reported, kamiwaza v0.13.1):
+        kind exposes ``localhost:5001`` on the Mac host via Docker
+        Desktop's port-forwarder. User has Docker Desktop running and
+        podman also installed (via brew). insecure=True selects podman
+        as the push engine. Previously the resolver chose
+        ``host.docker.internal:5001`` (because docker daemon was
+        working), but podman from host CLI cannot resolve that alias,
+        so the push died at the auth-ping step with
+        ``dial tcp: lookup host.docker.internal: no such host``.
+
+        With R6, the resolver checks which engine will *actually* push
+        and only remaps when the chosen engine can resolve the alias.
+        Podman with no machine → no remap, leaving ``localhost:5001``
+        intact (reachable from host CLI via Docker Desktop's port-
+        forwarder)."""
+
+        resolution = resolve_dev_registries(
+            _conn(),
+            kind_registry_detector=lambda: "localhost:5001",
+            push_engine="podman",
+        )
+
+        assert resolution.image_registry == "localhost:5001"
+        assert resolution.push_registry == "localhost:5001"
+        assert resolution.push_split is False
 
     @patch(
         "kamiwaza_extensions.registry_resolution.detect_core_config_registry",

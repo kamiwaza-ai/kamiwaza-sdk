@@ -250,10 +250,14 @@ class TestDevRemoteBuildsAtCanonicalRefs:
             compose_data={"services": {"api": {"build": {"context": "."}}}},
         )
 
+        # ``last_successful_step="build"`` (not "push") so resume keeps
+        # push active — the engine-mismatch refuse must fire before
+        # ImagePusher is invoked. With "push" complete, resume would
+        # auto-skip push and the refuse check would have nothing to gate.
         prior_state = DevState(
             last_run_at="2026-05-26T00:00:00+00:00",
             last_revision="0.1.0-dev-abc1234.1714999999",
-            last_successful_step="push",
+            last_successful_step="build",
             cluster="https://kamiwaza.test/api",
             extension_name="my-app",
             last_registry="127.0.0.1:30010",
