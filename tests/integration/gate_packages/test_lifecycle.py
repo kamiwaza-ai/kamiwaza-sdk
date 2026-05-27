@@ -59,14 +59,12 @@ def kz():
     verify_flag = os.getenv("KAMIWAZA_VERIFY_SSL", "1").strip().lower()
     verify_ssl = verify_flag not in {"0", "false", "no", "off"}
     if not verify_ssl:
-        import warnings
-
-        warnings.warn(
+        # Use logger.warning so the message surfaces in pytest's captured
+        # output reliably; UserWarning is often hidden unless -W error.
+        logger.warning(
             "TLS verification disabled via KAMIWAZA_VERIFY_SSL=0; only use this "
             "for dev clusters with self-signed certs. Production envs should "
-            "install the CA into the trust store or use a properly-issued cert.",
-            UserWarning,
-            stacklevel=2,
+            "install the CA into the trust store or use a properly-issued cert."
         )
     from kamiwaza_sdk import KamiwazaClient
 

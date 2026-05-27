@@ -81,7 +81,9 @@ jobs:
           # ping_response_ok() treats that as available (cluster is up, just
           # protected). Match that behavior here: ANY HTTP response is "available",
           # only connection failures count as unavailable.
-          status=$(curl --max-time 5 -s -o /dev/null -w "%{http_code}" "${KAMIWAZA_BASE_URL}/ping" || echo "000")
+          # 10s probe (was 5s, raised because slow cluster cold-start could
+          # silently skip downstream steps).
+          status=$(curl --max-time 10 -s -o /dev/null -w "%{http_code}" "${KAMIWAZA_BASE_URL}/ping" || echo "000")
           if [ "$status" != "000" ]; then
             echo "Cluster reachable (HTTP $status)"
             echo "available=true" >> "$GITHUB_OUTPUT"
