@@ -376,15 +376,7 @@ except KamiwazaError as exc:
 
 ## Examples
 
-The `/examples` directory contains Jupyter notebooks demonstrating various use cases. To run them locally against a Kamiwaza dev cluster:
-
-```bash
-pip install kamiwaza-sdk[notebook]
-./scripts/start-jupyter-lab.sh
-```
-
-See [docs/jupyter-quickstart.md](docs/jupyter-quickstart.md) for the full setup (including pointing JupyterLab at a local k0s-lima dev cluster, customer staging, or any reachable Kamiwaza endpoint).
-
+The `/examples` directory contains Jupyter notebooks demonstrating various use cases. To run them locally against a Kamiwaza dev cluster, install JupyterLab in your env (`pip install jupyterlab ipywidgets`) and run `jupyter lab` from `examples/`. Set `KAMIWAZA_BASE_URL` and `KAMIWAZA_API_KEY` in the environment before launching so the notebooks can reach your cluster.
 
 1. [Model Download and Deployment](examples/01_download_and_deploy.ipynb) - A comprehensive guide to searching, downloading, deploying, and using models with the Kamiwaza SDK
 2. [Quick Model Deployment](examples/02_download_and_deploy_quick.ipynb) - Streamlined approach to download and deploy models using a single function

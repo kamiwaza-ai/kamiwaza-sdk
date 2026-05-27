@@ -27,20 +27,26 @@ def client_for_role(harness: Any, role_key: str) -> KamiwazaClient:
     if existing is not None:
         return existing
     current_persona = persona(harness, role_key)
+    verify = harness.settings.verify_ssl
     if harness.bootstrap_state is not None:
         api_key = harness.bootstrap_state.resolve_api_key(current_persona)
         if api_key:
-            client = KamiwazaClient(base_url=harness.settings.base_url, api_key=api_key)
+            client = KamiwazaClient(
+                base_url=harness.settings.base_url,
+                api_key=api_key,
+                verify=verify,
+            )
             _validate_client(client, role_key=role_key, mode="API-key")
             harness._persona_clients[role_key] = client
             return client
     password = harness.bootstrap_state.resolve_password(current_persona) if harness.bootstrap_state else None
     if not password:
         pytest.skip(f"Could not resolve credentials for persona {role_key!r}")
-    bootstrap_client = KamiwazaClient(base_url=harness.settings.base_url)
+    bootstrap_client = KamiwazaClient(base_url=harness.settings.base_url, verify=verify)
     harness._bootstrap_clients[role_key] = bootstrap_client
     client = KamiwazaClient(
         base_url=harness.settings.base_url,
+        verify=verify,
         authenticator=UserPasswordAuthenticator(
             username=current_persona.username,
             password=password,
@@ -75,13 +81,19 @@ def probe_headers(harness: Any, contract: Any) -> dict[str, str] | None:
 
 
 def build_live_client(settings: Any) -> KamiwazaClient:
+    verify = settings.verify_ssl
     if settings.api_key:
-        client = KamiwazaClient(base_url=settings.base_url, api_key=settings.api_key)
+        client = KamiwazaClient(
+            base_url=settings.base_url,
+            api_key=settings.api_key,
+            verify=verify,
+        )
         _validate_client(client, role_key="live harness client", mode="API-key")
         return client
-    bootstrap = KamiwazaClient(base_url=settings.base_url)
+    bootstrap = KamiwazaClient(base_url=settings.base_url, verify=verify)
     client = KamiwazaClient(
         base_url=settings.base_url,
+        verify=verify,
         authenticator=UserPasswordAuthenticator(
             username=settings.username or "admin",
             password=settings.password or "",

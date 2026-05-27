@@ -72,7 +72,10 @@ jobs:
             exit 0
           fi
           # 5s probe; if cluster is unreachable, skip rather than fail the whole PR.
-          if curl --max-time 5 -sf "${KAMIWAZA_BASE_URL}/health" > /dev/null 2>&1; then
+          # Use /ping (the canonical API liveness probe used by existing fixtures
+          # like tests/integration/test_ping_live.py) — not /health, which the
+          # Kamiwaza API root does not expose.
+          if curl --max-time 5 -sf "${KAMIWAZA_BASE_URL}/ping" > /dev/null 2>&1; then
             echo "available=true" >> "$GITHUB_OUTPUT"
           else
             echo "::warning::Live cluster at ${KAMIWAZA_BASE_URL} not reachable; skipping contract tests."

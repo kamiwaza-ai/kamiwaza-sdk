@@ -41,26 +41,6 @@ publish = [
 convert = [
     "anthropic>=0.30.0",
 ]
-# Jupyter notebook environment for running the SDK's example notebooks locally.
-# Install with:  pip install kamiwaza-sdk[notebook]
-# Launch with:   ./scripts/start-jupyter-lab.sh
-# See docs/jupyter-quickstart.md for the full local-dev workflow.
-notebook = [
-    "ipykernel>=6.29.5,<6.29.6",
-    "ipython>=8.29.0,<8.29.1",
-    "ipywidgets>=8.1.5,<8.1.6",
-    "jupyter_client>=8.6.3,<8.6.4",
-    "jupyter_core>=5.7.2,<5.7.3",
-    "jupyter_server>=2.14.2,<2.14.3",
-    "jupyterlab>=4.2.5,<4.2.6",
-    "jupyterlab_server>=2.27.3,<2.27.4",
-    "jupyterlab_widgets>=3.0.13,<3.0.14",
-    "nbclient>=0.10.0,<0.10.1",
-    "nbconvert>=7.16.6,<8.0.0",
-    "nbformat>=5.10.4,<5.10.5",
-    "notebook>=7.2.2,<7.2.3",
-    "openai>=1.53.0,<1.53.1",
-]
 all = [
     "boto3>=1.28.0",
     "anthropic>=0.30.0",
@@ -137,6 +117,10 @@ dev = [
     "twine>=4.0",
     "radon>=5.1",
     "pdoc>=14.0",
+    # Used by tests/e2e/extension_contract/echo-check/backend/tests/test_helpers.py
+    # to mint test JWTs; previously only declared in the nested backend's optional
+    # `test` extra, which the root `uv sync --group dev` doesn't install.
+    "PyJWT>=2.8",
 ]
 
 [tool.pytest.ini_options]
@@ -154,6 +138,7 @@ markers = [
     "requires_embedding_model: live tests that require an active platform embedding deployment",
     "requires_two_clusters: live tests that require a federation peer cluster reachable via KAMIWAZA_PEER_BASE_URL / KAMIWAZA_PEER_API_KEY (ENG-5784)",
     "extension_regression: D210 12-issue regression checklist (UAC-17 / EDX-OPS-2). See tests/unit/extensions/regression/inventory.yaml.",
+    "live_extension: live extension-contract tests against a real cluster (relocated from kamiwaza, env-gated by RUN_LIVE_EXTENSION_TESTS=1)",
 ]
 
 [tool.black]
