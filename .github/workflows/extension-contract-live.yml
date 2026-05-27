@@ -76,14 +76,17 @@ jobs:
             echo "available=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # 5s probe; if cluster is unreachable, skip rather than fail the whole PR.
-          # Use /ping (the canonical API liveness probe used by existing fixtures
-          # like tests/integration/test_ping_live.py) — not /health, which the
-          # Kamiwaza API root does not expose.
-          if curl --max-time 5 -sf "${KAMIWAZA_BASE_URL}/ping" > /dev/null 2>&1; then
+          # Probe /ping (canonical API liveness, used by tests/integration/test_ping_live.py).
+          # Auth-fronted clusters return 401 "Not authenticated" — the harness's
+          # ping_response_ok() treats that as available (cluster is up, just
+          # protected). Match that behavior here: ANY HTTP response is "available",
+          # only connection failures count as unavailable.
+          status=$(curl --max-time 5 -s -o /dev/null -w "%{http_code}" "${KAMIWAZA_BASE_URL}/ping" || echo "000")
+          if [ "$status" != "000" ]; then
+            echo "Cluster reachable (HTTP $status)"
             echo "available=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::warning::Live cluster at ${KAMIWAZA_BASE_URL} not reachable; skipping contract tests."
+            echo "::warning::Live cluster at ${KAMIWAZA_BASE_URL} not reachable (no HTTP response); skipping contract tests."
             echo "available=false" >> "$GITHUB_OUTPUT"
           fi
 

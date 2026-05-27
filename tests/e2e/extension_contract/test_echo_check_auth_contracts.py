@@ -4,7 +4,7 @@ import pytest
 
 from .contracts import ECHO_CHECK
 
-pytestmark = pytest.mark.live_extension
+pytestmark = [pytest.mark.live, pytest.mark.live_extension]
 
 
 @pytest.fixture(scope="module")

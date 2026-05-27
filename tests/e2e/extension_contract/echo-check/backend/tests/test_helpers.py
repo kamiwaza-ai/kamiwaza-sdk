@@ -45,6 +45,11 @@ def auth_headers(*, with_token: bool = False) -> dict[str, str]:
     if with_token:
         issued_at = int(time.time())
         expires_at = issued_at + TOKEN_EXP_SECONDS
+        # TEST-ONLY FIXTURE: kamiwaza_extensions_lib accepts unsigned JWTs
+        # only in its test-mode auth path (sid + iat + exp claims, no
+        # signature verification). This fixture never hits real validation —
+        # production extensions enforce signed tokens via the platform's
+        # mesh-proxy ext_authz envelope, not via this helper.
         token = jwt.encode(
             {"sid": "session-1", "iat": issued_at, "exp": expires_at},
             key="",
