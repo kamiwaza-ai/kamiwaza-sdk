@@ -162,11 +162,15 @@ def test_live_routed_integration_state_skips_lookup_when_live_tests_disabled(mon
     assert load_live_routed_integration_state() is None
 
 
-def test_live_routed_integration_state_fails_when_no_bootstrap_candidate_exists(monkeypatch, tmp_path: Path) -> None:
+def test_live_routed_integration_state_skips_when_no_bootstrap_candidate_exists(monkeypatch, tmp_path: Path) -> None:
+    # state_loader.py now calls pytest.skip (not pytest.fail) when no
+    # bootstrap candidate exists — RUN_LIVE_EXTENSION_TESTS=1 says "I
+    # want to run live tests if you can" not "this had better work."
+    # The Skipped exception subclass is raised by pytest.skip().
     monkeypatch.setenv("RUN_LIVE_EXTENSION_TESTS", "1")
     monkeypatch.setattr("tests.e2e.extension_contract.support.state_loader.bootstrap_state_candidates", lambda: [tmp_path / "missing-bootstrap-state.json"])
 
-    with pytest.raises(pytest.fail.Exception, match="no bootstrap state was found"):
+    with pytest.raises(pytest.skip.Exception, match="no bootstrap state was found"):
         load_live_routed_integration_state()
 
 

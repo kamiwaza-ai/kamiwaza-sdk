@@ -27,11 +27,14 @@ extended for M5b).
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 from pathlib import Path
 from typing import Iterator
 
 import pytest
+
+logger = logging.getLogger(__name__)
 
 pytestmark = pytest.mark.integration
 
@@ -89,41 +92,54 @@ def _sha256(path: Path) -> str:
     return f"sha256:{h.hexdigest()}"
 
 
+def _wheel_and_index_configured() -> bool:
+    """Both env vars must be set for the lifecycle suite to run safely."""
+    return bool(os.getenv("M5_TEST_WHEEL_DIR", "").strip()) and bool(
+        os.getenv("M5_TEST_INDEX_URL", "").strip()
+    )
+
+
 @pytest.fixture(scope="module", autouse=True)
 def cleanup_acme(kz) -> Iterator[None]:
-    """Ensure a clean starting state — uninstall any prior acme-gates."""
+    """Ensure a clean starting state — uninstall any prior acme-gates.
+
+    Module-scope fixtures fire BEFORE class-scope ones, so we cannot
+    rely on TestLifecycle's `_require_wheel_and_index` skip to gate this
+    cluster mutation. Gate on the same env vars directly so the
+    setup/teardown only runs when the lifecycle suite actually intends
+    to execute.
+    """
+    if not _wheel_and_index_configured():
+        yield
+        return
     try:
         kz.gates.packages.uninstall("acme-gates")
-    except Exception:
-        pass  # not installed; fine
+    except Exception as exc:  # noqa: BLE001
+        # Best-effort: not installed is fine; log so a real
+        # auth/connectivity failure isn't masked.
+        logger.warning("Pre-test cleanup of acme-gates failed: %s", exc)
     yield
-    # Module-level teardown — best-effort uninstall
     try:
         kz.gates.packages.uninstall("acme-gates")
-    except Exception:
-        pass
-
-
-@pytest.fixture(scope="class", autouse=True)
-def _require_wheel_and_index() -> None:
-    """Skip the whole lifecycle class if the v1/v2 wheels or pip index aren't
-    materialized. Without this, test_install_v1 self-skips via wheel_dir() but
-    test_list_and_get / test_atomic_replace_to_v2 / test_uninstall still run
-    against state that was never installed and the autouse cleanup_acme
-    teardown wipes — leading to confusing `'acme-gates' not in names`
-    assertions on a clean cluster."""
-    wheel_root = os.getenv("M5_TEST_WHEEL_DIR", "").strip()
-    index = os.getenv("M5_TEST_INDEX_URL", "").strip()
-    if not wheel_root or not index:
-        pytest.skip(
-            "Lifecycle class requires both M5_TEST_WHEEL_DIR and "
-            "M5_TEST_INDEX_URL — set both to run the install/replace/"
-            "uninstall sequence end-to-end."
-        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Post-test cleanup of acme-gates failed: %s", exc)
 
 
 class TestLifecycle:
     """TS-M5-24 (install) + TS-M5-25 (replace) + TS-M5-15 (uninstall)."""
+
+    @pytest.fixture(autouse=True)
+    def _require_wheel_and_index(self) -> None:
+        """Skip the whole lifecycle class if the v1/v2 wheels or pip index aren't
+        materialized. Scoped to *this class* (not module-level autouse) so
+        TestRegression / TestNetworkPolicyProbes are not over-skipped — they
+        don't need the wheel/index env vars."""
+        if not _wheel_and_index_configured():
+            pytest.skip(
+                "TestLifecycle requires both M5_TEST_WHEEL_DIR and "
+                "M5_TEST_INDEX_URL — set both to run the install/replace/"
+                "uninstall sequence end-to-end."
+            )
 
     def test_install_v1(self, kz, wheel_dir, index_url):
         """AC1 + AC3 + AC5: install → row appears with classpaths populated."""

@@ -14,16 +14,21 @@ from tests.e2e.extension_contract.support.harness import LiveExtensionHarness
 from tests.e2e.extension_contract.support.state import LiveRoutedIntegrationState
 
 
-def test_bootstrap_state_returns_none_when_pytest_fail_is_mocked(monkeypatch) -> None:
+def test_bootstrap_state_returns_none_when_pytest_skip_is_mocked(monkeypatch) -> None:
+    # state_loader.py:21 now calls pytest.skip (not pytest.fail) on
+    # FileNotFoundError from bootstrap_state_candidates. Mock pytest.skip
+    # so the call captures the message without raising Skipped, and
+    # verify the function returns None after the would-be-skip.
     monkeypatch.setenv("RUN_LIVE_EXTENSION_TESTS", "1")
     monkeypatch.setattr("tests.e2e.extension_contract.support.state_loader.bootstrap_state_candidates", lambda: (_ for _ in ()).throw(FileNotFoundError("missing bootstrap")))
-    failures: list[str] = []
-    monkeypatch.setattr("tests.e2e.extension_contract.support.state_loader.pytest.fail", lambda message: failures.append(str(message)))
+    skip_calls: list[str] = []
+    monkeypatch.setattr("tests.e2e.extension_contract.support.state_loader.pytest.skip", lambda message: skip_calls.append(str(message)))
 
     from tests.e2e.extension_contract.support.state_loader import load_live_routed_integration_state
 
     assert load_live_routed_integration_state() is None
-    assert failures == ["missing bootstrap"]
+    assert len(skip_calls) == 1
+    assert "missing bootstrap" in skip_calls[0]
 
 
 @pytest.mark.parametrize(
