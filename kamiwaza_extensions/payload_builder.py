@@ -258,9 +258,10 @@ class PayloadBuilder:
                     is_primary=is_primary,
                 )
 
+            service_image = svc.get("image", "")
             spec_kwargs: Dict[str, Any] = dict(
                 name=svc_name,
-                image=svc.get("image", ""),
+                image=service_image,
                 primary=is_primary,
                 ports=ports,
                 env=env if env else None,
@@ -269,6 +270,11 @@ class PayloadBuilder:
             )
             if health_check:
                 spec_kwargs["healthCheck"] = health_check
+            pull_policy = _service_extension_field(svc, "pullPolicy")
+            if pull_policy is None and _is_local_registry_image(str(service_image)):
+                pull_policy = "Always"
+            if pull_policy is not None:
+                spec_kwargs["pullPolicy"] = pull_policy
             automount = _service_extension_field(svc, "automountServiceAccountToken")
             if automount is not None:
                 spec_kwargs["automountServiceAccountToken"] = automount
@@ -547,6 +553,12 @@ def _service_extension_field(svc: Dict[str, Any], key: str) -> Optional[Any]:
     if isinstance(x_kamiwaza, dict) and key in x_kamiwaza:
         return x_kamiwaza[key]
     return None
+
+
+def _is_local_registry_image(image_ref: str) -> bool:
+    """Return true for refs served by the Kind local registry bridge."""
+
+    return image_ref.startswith(("localhost:5001/", "host.docker.internal:5001/"))
 
 
 def _service_env_map(svc: Dict[str, Any]) -> Dict[str, str]:

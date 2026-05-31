@@ -353,12 +353,17 @@ class TestServiceOverrides:
                             "readOnlyRootFilesystem": False,
                         },
                         "healthCheck": {"tcpSocket": {"port": 5432}},
+                        "pullPolicy": "Never",
                     },
                 },
                 "sandbox-controller": {
                     "image": "reg/sandbox-controller:dev",
                     "ports": ["8085"],
                     "x-kamiwaza": {"automountServiceAccountToken": True},
+                },
+                "local-tool": {
+                    "image": "host.docker.internal:5001/kzlocaluserimages/tool-demo:0.1.0",
+                    "ports": ["8000"],
                 },
             },
         }
@@ -372,7 +377,9 @@ class TestServiceOverrides:
             "readOnlyRootFilesystem": False,
         }
         assert services["postgres"]["healthCheck"] == {"tcpSocket": {"port": 5432}}
+        assert services["postgres"]["pullPolicy"] == "Never"
         assert services["sandbox-controller"]["automountServiceAccountToken"] is True
+        assert services["local-tool"]["pullPolicy"] == "Always"
 
     def test_kubernetes_sandbox_controller_emits_sandbox_spec(
         self, builder, metadata, connection
