@@ -109,6 +109,8 @@ class TestDevRemoteBuildsAtCanonicalRefs:
             "kamiwaza_extensions.image_builder.ImageBuilder",
             return_value=builder,
         ), patch.object(
+            dev_cmd, "_detect_kind_registry_pair", return_value=None,
+        ), patch.object(
             dev_cmd, "_detect_kind_registry", return_value="registry.kamiwaza.test",
         ), patch(
             "kamiwaza_extensions.dev_state.read_state", return_value=None,
@@ -126,4 +128,64 @@ class TestDevRemoteBuildsAtCanonicalRefs:
         # Tag rewritten, namespace preserved verbatim.
         assert captured["image_refs"] == {
             "omniparse": "ghcr.io/example/tool-omniparse/omniparse:0.1.0-dev-abc.123",
+        }
+
+    def test_kind_local_registry_rewrites_declared_registry_for_dev(
+        self, tmp_path, monkeypatch
+    ):
+        from kamiwaza_extensions.commands import dev as dev_cmd
+
+        info = _info_with_divergent_namespace(tmp_path)
+        captured: dict = {}
+
+        def _capture_and_raise(**kwargs):
+            captured.update(kwargs)
+            raise ImageBuildError("stop-after-capture")
+
+        token = MagicMock(access_token="tok-abc")
+        conn_mgr = MagicMock()
+        conn_mgr.get_active_connection.return_value = _active_connection()
+        conn_mgr.get_token.return_value = token
+
+        detector = MagicMock()
+        detector.detect.return_value = info
+
+        tagger = MagicMock()
+        tagger.generate_tag.return_value = "0.1.0-dev-abc.123"
+        tagger.get_git_info.return_value = ("abc1234", False)
+
+        builder = MagicMock()
+        builder.build.side_effect = _capture_and_raise
+
+        with patch(
+            "kamiwaza_extensions.extension_detector.ExtensionDetector",
+            return_value=detector,
+        ), patch(
+            "kamiwaza_extensions.connections.ConnectionManager",
+            return_value=conn_mgr,
+        ), patch(
+            "kamiwaza_extensions.revision_tagger.RevisionTagger",
+            return_value=tagger,
+        ), patch(
+            "kamiwaza_extensions.image_builder.ImageBuilder",
+            return_value=builder,
+        ), patch.object(
+            dev_cmd,
+            "_detect_kind_registry_pair",
+            return_value=dev_cmd._KindRegistry(
+                push_registry="localhost:5001",
+                pull_registry="host.docker.internal:5001",
+            ),
+        ), patch(
+            "kamiwaza_extensions.dev_state.read_state", return_value=None,
+        ), patch(
+            "kamiwaza_extensions.dev_state.resume_message", return_value=None,
+        ), pytest.raises(click.exceptions.Exit):
+            dev_cmd.run_dev_remote(no_push=True)
+
+        assert captured["image_refs"] == {
+            "omniparse": (
+                "localhost:5001/example/tool-omniparse/omniparse:"
+                "0.1.0-dev-abc.123"
+            ),
         }

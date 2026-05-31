@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
@@ -12,6 +13,14 @@ import typer
 from rich.console import Console
 
 console = Console(stderr=True)
+
+
+@dataclass(frozen=True)
+class _KindRegistry:
+    """Host-push and cluster-pull endpoints for a local Kind registry."""
+
+    push_registry: str
+    pull_registry: str
 
 
 # ---------------------------------------------------------------------------
@@ -217,10 +226,14 @@ def _decode_email(access_token: str) -> Optional[str]:
     return decode_email(access_token)
 
 
-def _detect_kind_registry() -> Optional[str]:
-    """Auto-detect a Kind local registry via the ``local-registry-hosting`` configmap.
+def _detect_kind_registry_pair() -> Optional[_KindRegistry]:
+    """Auto-detect a Kind local registry via the hosting configmap.
 
-    Returns ``localhost:<port>`` if found, else ``None``.
+    The configmap advertises the image registry ref that cluster nodes can
+    pull. On this workstation that is ``host.docker.internal:5001``; the host
+    process should still push to ``localhost:5001``. Keep both addresses so
+    ``kz-ext dev`` can build/push locally and write a pod-pullable image ref
+    without a manual CR patch.
     """
     try:
         result = subprocess.run(
@@ -241,14 +254,31 @@ def _detect_kind_registry() -> Optional[str]:
             line = line.strip()
             if line.startswith("host:"):
                 host_val = line.split(":", 1)[1].strip().strip('"').strip("'")
-                # Map host.docker.internal to localhost (it may not resolve on the host)
+                if not host_val:
+                    return None
                 parsed = urlparse(f"//{host_val}")
+                hostname = parsed.hostname or host_val.split(":", 1)[0]
                 port = parsed.port or 5001
-                console.print(f"[dim]Auto-detected Kind local registry: localhost:{port}[/dim]")
-                return f"localhost:{port}"
+                # Map the cluster-pull alias to the host-push endpoint.
+                push_host = "localhost" if hostname == "host.docker.internal" else hostname
+                push_registry = f"{push_host}:{port}" if port else push_host
+                console.print(
+                    "[dim]Auto-detected Kind local registry: "
+                    f"push {push_registry}, cluster pull {host_val}[/dim]"
+                )
+                return _KindRegistry(
+                    push_registry=push_registry,
+                    pull_registry=host_val,
+                )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
     return None
+
+
+def _detect_kind_registry() -> Optional[str]:
+    """Compatibility helper returning the host-push endpoint only."""
+    detected = _detect_kind_registry_pair()
+    return detected.push_registry if detected else None
 
 
 
@@ -301,6 +331,7 @@ def run_dev_remote(
     revision: Optional[str] = None,
     verbose: bool = False,
     sdk_repo: Optional[str] = None,
+    local_registry: Optional[bool] = None,
 ) -> None:
     """Build, push, and deploy extension to a Kamiwaza cluster."""
     from kamiwaza_sdk import KamiwazaClient
@@ -364,18 +395,56 @@ def run_dev_remote(
 
     # 4. Derive registry — must happen before the resume check so we can
     # compare the active registry against the one persisted in dev-state.
-    registry = os.environ.get("KAMIWAZA_REGISTRY")
-    if not registry:
+    #
+    # Dev deploys need a distinction that publish does not:
+    #   * host-push ref: where docker/podman pushes from the workstation
+    #   * cluster-pull ref: what Kubernetes can pull from inside Kind
+    #
+    # When a Kind local registry is present and the user did not explicitly
+    # opt out, make that local/offline path the default. This avoids pushing
+    # to whatever registry appears in compose's `image:` fields (GHCR, Docker
+    # Hub, private registries) and avoids CRs that later need manual patching.
+    explicit_registry = os.environ.get("KAMIWAZA_REGISTRY")
+    registry = explicit_registry
+    deploy_registry = explicit_registry
+    preserve_declared_registry = True
+    detected_kind_registry: Optional[_KindRegistry] = None
+    if local_registry is not False:
+        detected_kind_registry = _detect_kind_registry_pair()
+    if detected_kind_registry and (not explicit_registry or local_registry is True):
+        registry = detected_kind_registry.push_registry
+        deploy_registry = detected_kind_registry.pull_registry
+        preserve_declared_registry = False
+    elif local_registry is True:
+        console.print(
+            "[red]Error:[/red] --local-registry was requested but no Kind local "
+            "registry configmap was detected."
+        )
+        console.print(
+            "  Fix: create kube-public/local-registry-hosting, set KAMIWAZA_REGISTRY, "
+            "or rerun with --no-local-registry."
+        )
+        raise typer.Exit(code=1)
+    if not registry and local_registry is not False:
         registry = _detect_kind_registry()
+        deploy_registry = registry
     if not registry:
         # Fallback: convention registry.{cluster-domain}
         cluster_url = connection.url.removesuffix("/api")
         parsed = urlparse(cluster_url)
         if parsed.hostname:
             registry = f"registry.{parsed.hostname}"
+            deploy_registry = registry
         else:
             console.print("[red]Error:[/red] Could not derive registry from connection URL.")
             raise typer.Exit(code=1)
+    if not deploy_registry:
+        deploy_registry = registry
+    registry_resume_key = (
+        registry
+        if registry == deploy_registry
+        else f"{registry}->{deploy_registry}"
+    )
 
     # Read prior dev-state for resume hints (§4.2.9 DevStateFile, ENG-3887).
     # If the prior run wrote matching inputs (revision, cluster, service,
@@ -393,7 +462,7 @@ def run_dev_remote(
         connection.url,
         sdk_repo=sdk_repo,
         service=service,
-        registry=registry,
+        registry=registry_resume_key,
     )
     if resumable and not no_build and prior_state.is_step_complete("build"):
         console.print(
@@ -410,6 +479,10 @@ def run_dev_remote(
     console.print(f"  Extension:  [bold]{info.name}[/bold] ({info.version})")
     console.print(f"  Connection: {connection.name} ({connection.url})")
     console.print(f"  Revision:   {rev_tag}")
+    if registry == deploy_registry:
+        console.print(f"  Registry:   {registry}")
+    else:
+        console.print(f"  Registry:   push {registry} / cluster pull {deploy_registry}")
     # Surface auto-disabled TLS verify when the URL is a dev TLD so the
     # user knows why their KAMIWAZA_TLS_REJECT_UNAUTHORIZED ends up "0".
     # Skip the notice when the persisted setting already matched (no
@@ -434,7 +507,8 @@ def run_dev_remote(
         info.compose_data,
         extension_name=info.name,
         revision_tag=rev_tag,
-        registry=registry,
+        registry=deploy_registry,
+        preserve_declared_registry=preserve_declared_registry,
     )
     transformed = transformer.resolve_env_placeholders(transformed)
 
@@ -449,6 +523,7 @@ def run_dev_remote(
         registry=registry,
         extension_name=info.name,
         revision_tag=rev_tag,
+        preserve_declared_registry=preserve_declared_registry,
     )
 
     # 5b. Resolve SDK override for build
@@ -587,7 +662,7 @@ def run_dev_remote(
                 # (review re-re-re-review PR #84 H1).
                 service=service,
                 sdk_repo=sdk_repo,
-                registry=registry,
+                registry=registry_resume_key,
             )
         except OSError as state_exc:
             console.print(

@@ -24,6 +24,24 @@ def _replace_image_tag(image_ref: str, new_tag: str) -> str:
     return f"{ref}:{new_tag}"
 
 
+def _replace_image_registry_and_tag(
+    image_ref: str,
+    *,
+    registry: str,
+    new_tag: str,
+) -> str:
+    """Return *image_ref* under *registry* with its tag replaced.
+
+    Preserves the repository path below the original registry. For example,
+    ``ghcr.io/org/repo/api:old`` becomes
+    ``localhost:5001/org/repo/api:new``. This is used by ``kz-ext dev`` when
+    targeting a local Kind registry: the extension's canonical repository path
+    still matters, but the registry host must be the local push/pull endpoint.
+    """
+    _old_registry, repository, _old_tag = _split_image_ref(image_ref)
+    return f"{registry}/{repository}:{new_tag}"
+
+
 def _looks_registry_qualified(ref: str) -> bool:
     """Return True when *ref*'s first slash-separated component is a registry host.
 
@@ -84,6 +102,7 @@ def compute_canonical_refs(
     extension_name: str,
     revision_tag: str,
     appgarden_services: Optional[Dict[str, Any]] = None,
+    preserve_declared_registry: bool = True,
 ) -> Dict[str, str]:
     """Canonical image refs for every buildable service, keyed by service name.
 
@@ -119,6 +138,7 @@ def compute_canonical_refs(
             fallback_registry=registry,
             fallback_extension_name=extension_name,
             revision_tag=revision_tag,
+            preserve_declared_registry=preserve_declared_registry,
         )
     return out
 
@@ -130,6 +150,7 @@ def _canonical_build_ref(
     fallback_registry: str,
     fallback_extension_name: str,
     revision_tag: str,
+    preserve_declared_registry: bool = True,
 ) -> str:
     """Return the canonical registry image ref for a buildable service.
 
@@ -152,6 +173,12 @@ def _canonical_build_ref(
     if isinstance(declared, str):
         stripped = declared.strip()
         if stripped and _looks_registry_qualified(stripped):
+            if not preserve_declared_registry:
+                return _replace_image_registry_and_tag(
+                    stripped,
+                    registry=fallback_registry,
+                    new_tag=revision_tag,
+                )
             return _replace_image_tag(stripped, revision_tag)
     return (
         f"{fallback_registry}/{fallback_extension_name}-{svc_name}:{revision_tag}"
@@ -210,6 +237,7 @@ class ComposeTransformer:
         extension_name: str,
         revision_tag: str,
         registry: str,
+        preserve_declared_registry: bool = True,
     ) -> Dict[str, Any]:
         """Return a deployment-ready copy of *compose_data*.
 
@@ -241,6 +269,7 @@ class ComposeTransformer:
                 extension_name,
                 revision_tag,
                 registry,
+                preserve_declared_registry=preserve_declared_registry,
             )
 
         # Remove top-level networks (platform manages networking)
@@ -255,6 +284,7 @@ class ComposeTransformer:
         extension_name: str,
         revision_tag: str,
         registry: str,
+        preserve_declared_registry: bool = True,
     ) -> Dict[str, Any]:
         svc = copy.deepcopy(service)
 
@@ -284,6 +314,7 @@ class ComposeTransformer:
                 fallback_registry=registry,
                 fallback_extension_name=extension_name,
                 revision_tag=revision_tag,
+                preserve_declared_registry=preserve_declared_registry,
             )
         # Services without a build context — both external (postgres, redis)
         # and prebuilt-internal (e.g. a helper image published from another

@@ -223,6 +223,15 @@ def dev_callback(
         "--sdk-repo",
         help="Path to local kamiwaza-sdk checkout — bakes local runtime libs into images",
     ),
+    local_registry: Optional[bool] = typer.Option(
+        None,
+        "--local-registry/--no-local-registry",
+        help=(
+            "Use the detected Kind local registry for build/push and write the "
+            "cluster-pull registry into the deployment. Auto-enabled when a "
+            "Kind local registry is detected and KAMIWAZA_REGISTRY is unset."
+        ),
+    ),
 ) -> None:
     """Build, push, and deploy extension to Kamiwaza cluster.
 
@@ -241,6 +250,7 @@ def dev_callback(
             revision=revision,
             verbose=_state.verbose,
             sdk_repo=sdk_repo,
+            local_registry=local_registry,
         )
     except typer.Exit:
         raise

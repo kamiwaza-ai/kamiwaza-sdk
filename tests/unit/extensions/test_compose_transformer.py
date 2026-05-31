@@ -115,6 +115,30 @@ class TestBuildContextRemoval:
             "ghcr.io/kamiwazaai/my-app-api:1.0.0-dev"
         )
 
+    def test_can_rewrite_declared_registry_for_local_dev(self, transformer):
+        # `kz-ext dev` defaults to the local Kind registry when it is
+        # available. In that mode, explicit compose registries such as
+        # ghcr.io must not leak into the deployed CR; only the repository
+        # path below the registry is preserved.
+        compose = {
+            "services": {
+                "api": {
+                    "build": "./backend",
+                    "image": "ghcr.io/kamiwazaai/my-app-api:old-tag",
+                }
+            }
+        }
+        result = transformer.transform(
+            compose,
+            "my-app",
+            "1.0.0-dev",
+            "host.docker.internal:5001",
+            preserve_declared_registry=False,
+        )
+        assert result["services"]["api"]["image"] == (
+            "host.docker.internal:5001/kamiwazaai/my-app-api:1.0.0-dev"
+        )
+
     def test_unqualified_short_form_falls_back_to_legacy(self):
         # `image: foo/bar:tag` resolves to docker.io/foo/bar:tag under
         # docker's namespace rules — building/pushing at that path
