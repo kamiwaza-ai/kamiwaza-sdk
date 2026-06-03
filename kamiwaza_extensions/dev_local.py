@@ -215,22 +215,37 @@ class DevLocalRunner:
 
             # 6a. Load the developer's local-only compose override if present.
             # kz-ext builds an explicit ``-f`` list, which disables Compose's
-            # automatic ``docker-compose.override.yml`` loading. Re-add it so
+            # automatic ``<base-stem>.override.<ext>`` loading. Re-add it so
             # the documented local-only override path works (e.g. mounting the
             # Docker socket for SANDBOX_BACKEND=docker). Placed after the base
             # file but before kz-ext's generated overlays so functional
             # overlays (auth / extra-hosts) still win on conflict. See ENG-6281.
-            compose_dir = Path(info.compose_path).parent
-            for _override_name in (
-                "docker-compose.override.yml",
-                "docker-compose.override.yaml",
-            ):
-                _candidate = compose_dir / _override_name
-                if _candidate.is_file():
-                    local_override_file = str(_candidate)
-                    console.print(
-                        f"[dim]Loading local override: {_override_name}[/dim]"
-                    )
+            #
+            # Compose mirrors the override name to the *detected base file's*
+            # stem: a ``compose.yml`` base pairs with ``compose.override.yml``,
+            # a ``docker-compose.yaml`` base with
+            # ``docker-compose.override.yaml`` — see ``COMPOSE_FILENAMES`` for
+            # the four supported base names. Derive the candidate from the
+            # detected base (not a hardcoded ``docker-compose.override.*``) so
+            # the supported ``compose.{yml,yaml}`` bases don't silently lose
+            # their override — the very bug this fixes (PR #131 review High #1).
+            base_compose_path = Path(info.compose_path)
+            compose_dir = base_compose_path.parent
+            override_stem = base_compose_path.stem
+            base_ext = base_compose_path.suffix.lstrip(".") or "yml"
+            # Prefer the suffix matching the base file, then the alternate, so
+            # a ``compose.yml`` base finds ``compose.override.yml`` first but
+            # still picks up ``compose.override.yaml`` if that's what the
+            # developer wrote.
+            override_exts = [base_ext] + [
+                ext for ext in ("yml", "yaml") if ext != base_ext
+            ]
+            for ext in override_exts:
+                override_name = f"{override_stem}.override.{ext}"
+                candidate = compose_dir / override_name
+                if candidate.is_file():
+                    local_override_file = str(candidate)
+                    console.print(f"[dim]Loading local override: {override_name}[/dim]")
                     break
 
             # 7. Generate SDK override compose file
