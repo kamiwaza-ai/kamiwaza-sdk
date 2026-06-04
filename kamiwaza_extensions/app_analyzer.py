@@ -11,6 +11,7 @@ from typing import Any, Dict, Generator, List, Optional
 import yaml
 
 from kamiwaza_extensions import __version__
+from kamiwaza_extensions.compose_ports import extract_container_port
 from kamiwaza_extensions.constants import COMPOSE_FILENAMES
 from kamiwaza_extensions.monorepo import (
     MONOREPO_BARE_DIRS,
@@ -377,15 +378,12 @@ class AppAnalyzer:
                     if df.exists():
                         info.dockerfile = df
 
-                # Ports
+                # Ports — short, mapped, and long-form dict all resolve
+                # to the container port via the shared parser.
                 for port_spec in svc.get("ports", []):
-                    port_str = str(port_spec)
-                    # Extract container port
-                    parts = port_str.split(":")
-                    try:
-                        info.ports.append(int(parts[-1]))
-                    except ValueError:
-                        pass
+                    container_port = extract_container_port(port_spec)
+                    if container_port is not None:
+                        info.ports.append(container_port)
 
                 # Detect language from Dockerfile
                 if info.dockerfile and info.dockerfile.exists():
