@@ -31,3 +31,10 @@ class TestExtractContainerPort:
 
     def test_malformed_short_form(self):
         assert extract_container_port("not-a-port") is None
+
+    def test_bare_range_returns_lower_bound(self):
+        """Compose-spec ranges: lower bound is the representative port."""
+        assert extract_container_port("3000-3005") == 3000
+
+    def test_mapped_range_returns_container_lower_bound(self):
+        assert extract_container_port("9090-9091:3000-3001") == 3000

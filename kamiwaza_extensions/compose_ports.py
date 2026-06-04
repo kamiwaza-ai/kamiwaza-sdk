@@ -33,7 +33,14 @@ def extract_container_port(port_spec: Any) -> Optional[int]:
             return None
 
     port_str = str(port_spec).split("/", 1)[0]
+    container_part = port_str.rsplit(":", 1)[-1]
+    # Compose-spec allows ranges (``"3000-3005"`` bare or
+    # ``"9090-9091:3000-3001"`` mapped). Use the lower bound as the
+    # representative container port — sufficient for membership-style
+    # callers (frontend detection, analysis port lists).
+    if "-" in container_part:
+        container_part = container_part.split("-", 1)[0]
     try:
-        return int(port_str.rsplit(":", 1)[-1])
+        return int(container_part)
     except (ValueError, TypeError):
         return None
