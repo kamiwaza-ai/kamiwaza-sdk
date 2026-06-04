@@ -22,7 +22,7 @@ classifiers = [
 ]
 dependencies = [
     "requests",
-    "pydantic[email]",
+    "pydantic[email]>=2.11",
     "httpx",
     "openai>=1.0",
     "huggingface_hub>=0.23",

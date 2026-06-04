@@ -9,6 +9,7 @@ import socket
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from kamiwaza_extensions.compose_ports import extract_container_port
 from kamiwaza_sdk.schemas.extensions import (
     CreateExtension,
     ExtensionPort,
@@ -723,20 +724,7 @@ def _should_use_node_frontend_probe(svc_name: str, svc: Dict[str, Any]) -> bool:
 
     ports = svc.get("ports", [])
     for port in ports:
-        if isinstance(port, dict):
-            target = port.get("target")
-            if target is None:
-                continue
-            try:
-                container_port = int(target)
-            except (ValueError, TypeError):
-                continue
-        else:
-            port_str = str(port).split("/", 1)[0]
-            try:
-                container_port = int(port_str.rsplit(":", 1)[-1])
-            except ValueError:
-                continue
+        container_port = extract_container_port(port)
         if container_port in {3000, 3001, 4173, 5173}:
             return True
 
