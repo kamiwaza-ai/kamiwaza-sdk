@@ -40,8 +40,18 @@ def detect_service_type(
         if "frontend" in dockerfile.lower() or "frontend" in context.lower():
             return "frontend"
 
-    # Check ports
+    # Check ports — long-form dict carries the container port under
+    # ``target``. Mirrors ``_should_use_node_frontend_probe``.
     for port_spec in svc_config.get("ports", []):
+        if isinstance(port_spec, dict):
+            target = port_spec.get("target")
+            try:
+                container_port = int(target) if target is not None else None
+            except (ValueError, TypeError):
+                container_port = None
+            if container_port in (3000, 3001):
+                return "frontend"
+            continue
         port_str = str(port_spec)
         if ":3000" in port_str or ":3001" in port_str:
             return "frontend"

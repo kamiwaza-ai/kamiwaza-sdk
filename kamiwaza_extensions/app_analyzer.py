@@ -449,8 +449,16 @@ class AppAnalyzer:
             return
 
         for svc_name, svc in (result.compose_data.get("services") or {}).items():
-            # Host ports
+            # Host ports — long-form ``published`` is the explicit signal;
+            # target-only dict entries are not a host binding.
             for port_spec in svc.get("ports", []):
+                if isinstance(port_spec, dict):
+                    if port_spec.get("published") is not None:
+                        result.has_host_ports.append(
+                            f"{svc_name}: "
+                            f"{port_spec.get('published')}:{port_spec.get('target')}"
+                        )
+                    continue
                 port_str = str(port_spec)
                 if ":" in port_str:
                     result.has_host_ports.append(f"{svc_name}: {port_str}")
