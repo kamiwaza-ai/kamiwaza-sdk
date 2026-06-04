@@ -169,6 +169,61 @@ class TestRunValidate:
         assert output["passed"] is False
         assert any("container port 80 is privileged" in err for err in output["errors"])
 
+    def test_long_form_port_target_only_does_not_warn(self, tmp_path, capsys):
+        """ENG-5954: compose-spec long-form ports without ``published`` are
+        the standard kamiwaza pattern (no host port). They must not trip the
+        host-port-binding warning, which used to fire because ``str({...})``
+        contains a colon."""
+        from kamiwaza_extensions.commands.validate import run_validate
+
+        compose = {
+            "services": {
+                "web": {
+                    "image": "nginxinc/nginx-unprivileged:stable-alpine",
+                    "ports": [
+                        {
+                            "target": 19530,
+                            "protocol": "tcp",
+                            "name": "grpc",
+                            "app_protocol": "grpc",
+                        }
+                    ],
+                    "deploy": {"resources": {"limits": {"cpus": "1.0", "memory": "1G"}}},
+                },
+            },
+        }
+        (tmp_path / "kamiwaza.json").write_text(json.dumps(_valid_metadata()))
+        (tmp_path / "docker-compose.yml").write_text(yaml.dump(compose))
+
+        run_validate(path=str(tmp_path), json_output=True)
+
+        output = json.loads(capsys.readouterr().out)
+        assert output["passed"] is True
+        joined_warnings = " ".join(output.get("warnings", []))
+        assert "host port binding" not in joined_warnings
+
+    def test_long_form_port_with_published_warns(self, tmp_path, capsys):
+        """Long-form ports with ``published`` still surface as host bindings."""
+        from kamiwaza_extensions.commands.validate import run_validate
+
+        compose = {
+            "services": {
+                "web": {
+                    "image": "nginxinc/nginx-unprivileged:stable-alpine",
+                    "ports": [{"target": 8080, "published": 8080}],
+                    "deploy": {"resources": {"limits": {"cpus": "1.0", "memory": "1G"}}},
+                },
+            },
+        }
+        (tmp_path / "kamiwaza.json").write_text(json.dumps(_valid_metadata()))
+        (tmp_path / "docker-compose.yml").write_text(yaml.dump(compose))
+
+        run_validate(path=str(tmp_path), json_output=True)
+
+        output = json.loads(capsys.readouterr().out)
+        joined_warnings = " ".join(output.get("warnings", []))
+        assert "host port binding" in joined_warnings
+
     def test_validate_passes_for_unprivileged_static_runtime(self, tmp_path, capsys):
         from kamiwaza_extensions.commands.validate import run_validate
 

@@ -22,7 +22,7 @@ classifiers = [
 ]
 dependencies = [
     "requests",
-    "pydantic[email]",
+    "pydantic[email]>=2.11",
     "httpx",
     "openai>=1.0",
     "huggingface_hub>=0.23",
@@ -117,6 +117,10 @@ dev = [
     "twine>=4.0",
     "radon>=5.1",
     "pdoc>=14.0",
+    # Used by tests/e2e/extension_contract/echo-check/backend/tests/test_helpers.py
+    # to mint test JWTs; previously only declared in the nested backend's optional
+    # `test` extra, which the root `uv sync --group dev` doesn't install.
+    "PyJWT>=2.8",
 ]
 
 [tool.pytest.ini_options]
@@ -134,6 +138,7 @@ markers = [
     "requires_embedding_model: live tests that require an active platform embedding deployment",
     "requires_two_clusters: live tests that require a federation peer cluster reachable via KAMIWAZA_PEER_BASE_URL / KAMIWAZA_PEER_API_KEY (ENG-5784)",
     "extension_regression: D210 12-issue regression checklist (UAC-17 / EDX-OPS-2). See tests/unit/extensions/regression/inventory.yaml.",
+    "live_extension: live extension-contract tests against a real cluster (relocated from kamiwaza, env-gated by RUN_LIVE_EXTENSION_TESTS=1)",
 ]
 
 [tool.black]

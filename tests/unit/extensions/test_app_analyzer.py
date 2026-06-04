@@ -65,6 +65,36 @@ class TestAnalyze:
         assert len(result.has_host_ports) == 1
         assert "8080:8000" in result.has_host_ports[0]
 
+    def test_long_form_target_only_is_not_a_host_binding(self, tmp_path):
+        """ENG-5954: target-only long-form must not false-positive — the
+        old ``":" in str(port)`` check always matched on dicts."""
+        from kamiwaza_extensions.app_analyzer import AppAnalyzer
+
+        compose = {
+            "services": {
+                "app": {"ports": [{"target": 19530, "name": "grpc"}]}
+            }
+        }
+        (tmp_path / "docker-compose.yml").write_text(yaml.dump(compose))
+
+        result = AppAnalyzer().analyze(tmp_path)
+        assert result.has_host_ports == []
+
+    def test_long_form_published_is_a_host_binding(self, tmp_path):
+        """Long-form ``published`` is the explicit host-port signal."""
+        from kamiwaza_extensions.app_analyzer import AppAnalyzer
+
+        compose = {
+            "services": {
+                "app": {"ports": [{"target": 8000, "published": 8080}]}
+            }
+        }
+        (tmp_path / "docker-compose.yml").write_text(yaml.dump(compose))
+
+        result = AppAnalyzer().analyze(tmp_path)
+        assert len(result.has_host_ports) == 1
+        assert "8080:8000" in result.has_host_ports[0]
+
     def test_detect_bind_mounts(self, tmp_path):
         from kamiwaza_extensions.app_analyzer import AppAnalyzer
 

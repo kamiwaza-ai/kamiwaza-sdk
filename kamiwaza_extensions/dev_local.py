@@ -183,6 +183,7 @@ class DevLocalRunner:
         sdk_build_dockerfiles: List[str] = []
         extra_hosts_file: Optional[str] = None
         auth_env_file: Optional[str] = None
+        local_override_file: Optional[str] = None
         # Initialised here (not in 10a) so the ``finally`` cleanup always
         # has them in scope — even if an exception bubbles out of the
         # try body before the polling thread would have been spawned.
@@ -211,6 +212,41 @@ class DevLocalRunner:
                 compose_file_arg = patched_compose_file
             else:
                 compose_file_arg = str(info.compose_path)
+
+            # 6a. Load the developer's local-only compose override if present.
+            # kz-ext builds an explicit ``-f`` list, which disables Compose's
+            # automatic ``<base-stem>.override.<ext>`` loading. Re-add it so
+            # the documented local-only override path works (e.g. mounting the
+            # Docker socket for SANDBOX_BACKEND=docker). Placed after the base
+            # file but before kz-ext's generated overlays so functional
+            # overlays (auth / extra-hosts) still win on conflict. See ENG-6281.
+            #
+            # Compose mirrors the override name to the *detected base file's*
+            # stem: a ``compose.yml`` base pairs with ``compose.override.yml``,
+            # a ``docker-compose.yaml`` base with
+            # ``docker-compose.override.yaml`` — see ``COMPOSE_FILENAMES`` for
+            # the four supported base names. Derive the candidate from the
+            # detected base (not a hardcoded ``docker-compose.override.*``) so
+            # the supported ``compose.{yml,yaml}`` bases don't silently lose
+            # their override — the very bug this fixes (PR #131 review High #1).
+            base_compose_path = Path(info.compose_path)
+            compose_dir = base_compose_path.parent
+            override_stem = base_compose_path.stem
+            base_ext = base_compose_path.suffix.lstrip(".") or "yml"
+            # Prefer the suffix matching the base file, then the alternate, so
+            # a ``compose.yml`` base finds ``compose.override.yml`` first but
+            # still picks up ``compose.override.yaml`` if that's what the
+            # developer wrote.
+            override_exts = [base_ext] + [
+                ext for ext in ("yml", "yaml") if ext != base_ext
+            ]
+            for ext in override_exts:
+                override_name = f"{override_stem}.override.{ext}"
+                candidate = compose_dir / override_name
+                if candidate.is_file():
+                    local_override_file = str(candidate)
+                    console.print(f"[dim]Loading local override: {override_name}[/dim]")
+                    break
 
             # 7. Generate SDK override compose file
             if override_spec and info.compose_data:
@@ -346,6 +382,10 @@ class DevLocalRunner:
             # parent directory or with override files (review re-review
             # PR #84 M1).
             compose_prefix = compose_cmd + ["-f", compose_file_arg]
+            # User's local-only override loads after the base file but before
+            # kz-ext's generated overlays (ENG-6281).
+            if local_override_file:
+                compose_prefix += ["-f", local_override_file]
             if sdk_override_file:
                 compose_prefix += ["-f", sdk_override_file]
             # The build patch must apply to the same services the runtime
@@ -360,6 +400,7 @@ class DevLocalRunner:
                 compose_prefix += ["-f", auth_env_file]
             if (
                 patched_compose_file
+                or local_override_file
                 or sdk_override_file
                 or sdk_build_patch_file
                 or extra_hosts_file

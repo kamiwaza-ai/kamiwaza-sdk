@@ -1,0 +1,18 @@
+{
+  "name": "Echo Check",
+  "version": "0.2.0",
+  "kamiwaza_version": ">=0.10.0",
+  "source_type": "kamiwaza",
+  "visibility": "private",
+  "description": "Internal minimal app for live Kamiwaza contract compatibility checks",
+  "category": "developer-tools",
+  "author": "Kamiwaza",
+  "license": "MIT",
+  "risk_tier": 0,
+  "verified": false,
+  "internal_test_fixture": true,
+  "env_defaults": {
+    "KAMIWAZA_USE_AUTH": "true",
+    "SESSION_MAX_SECONDS": "28800"
+  }
+}

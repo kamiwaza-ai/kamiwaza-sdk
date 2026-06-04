@@ -97,9 +97,19 @@ class ComposeValidator:
             if not isinstance(svc_config, dict):
                 continue
 
-            # Host port bindings
+            # Host port bindings. Short-form (``"8000:8080"``) trips on the
+            # colon; long-form (``{"target": 8000, "published": 8080, ...}``)
+            # exposes the host-port intent via the ``published`` key.
             ports = svc_config.get("ports", [])
             for port in ports:
+                if isinstance(port, dict):
+                    if port.get("published") is not None:
+                        warnings.append(
+                            f"Service '{svc_name}': host port binding "
+                            f"'{port.get('published')}:{port.get('target')}' "
+                            "— may conflict in deployment"
+                        )
+                    continue
                 port_str = str(port)
                 if ":" in port_str:
                     warnings.append(f"Service '{svc_name}': host port binding '{port_str}' — may conflict in deployment")
