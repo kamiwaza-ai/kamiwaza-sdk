@@ -576,10 +576,24 @@ def _rewrite_url_hosts(
     return new_value if new_value != value else None
 
 
-def _strip_host_ports(ports: List[Any]) -> List[str]:
-    """``"3000:3000"`` -> ``"3000"``; ``"8080:3000/tcp"`` -> ``"3000/tcp"``."""
-    result = []
+def _strip_host_ports(ports: List[Any]) -> List[Any]:
+    """``"3000:3000"`` -> ``"3000"``; ``"8080:3000/tcp"`` -> ``"3000/tcp"``.
+
+    Long-form (compose-spec dict) entries are preserved verbatim except
+    for ``published`` / ``host_ip``, which would otherwise re-introduce a
+    host port binding through the back door. ENG-5954: long-form is the
+    only way to carry L7 protocol hints (``name`` + ``app_protocol``)
+    through to the K8s Service.
+    """
+    result: List[Any] = []
     for port in ports:
+        if isinstance(port, dict):
+            cleaned = {
+                k: v for k, v in port.items() if k not in ("published", "host_ip")
+            }
+            if cleaned.get("target") is not None:
+                result.append(cleaned)
+            continue
         s = str(port)
         if ":" in s:
             # Take the part after the last colon (container port + optional protocol)

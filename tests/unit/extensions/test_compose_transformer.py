@@ -69,6 +69,55 @@ class TestStripHostPorts:
         result = transformer.transform(compose, "test", "v1", "reg")
         assert result["services"]["web"]["ports"] == ["8000"]
 
+    def test_long_form_port_preserved_with_l7_hints(self, transformer):
+        """ENG-5954: compose-spec long-form ports must survive transform so
+        downstream PayloadBuilder can stamp name + appProtocol on the CR."""
+        compose = {
+            "services": {
+                "web": {
+                    "ports": [
+                        {
+                            "target": 19530,
+                            "protocol": "tcp",
+                            "name": "grpc",
+                            "app_protocol": "grpc",
+                        }
+                    ]
+                }
+            }
+        }
+        result = transformer.transform(compose, "test", "v1", "reg")
+        assert result["services"]["web"]["ports"] == [
+            {
+                "target": 19530,
+                "protocol": "tcp",
+                "name": "grpc",
+                "app_protocol": "grpc",
+            }
+        ]
+
+    def test_long_form_port_strips_published_and_host_ip(self, transformer):
+        """``published`` / ``host_ip`` are the long-form equivalents of
+        ``HOST:CONTAINER`` short-form — same stripping treatment."""
+        compose = {
+            "services": {
+                "web": {
+                    "ports": [
+                        {
+                            "target": 8080,
+                            "published": 8080,
+                            "host_ip": "127.0.0.1",
+                            "name": "http",
+                        }
+                    ]
+                }
+            }
+        }
+        result = transformer.transform(compose, "test", "v1", "reg")
+        assert result["services"]["web"]["ports"] == [
+            {"target": 8080, "name": "http"}
+        ]
+
 
 class TestStripBindMounts:
     def test_strips_relative_bind_mount(self, transformer):

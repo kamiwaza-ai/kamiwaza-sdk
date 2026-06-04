@@ -101,6 +101,150 @@ class TestBuild:
         assert payload.security.risk_tier == 1
 
 
+class TestParsePorts:
+    """ENG-5954 — compose-spec long-form port translation."""
+
+    def test_short_form_string_defaults_to_http(self):
+        ports = PayloadBuilder._parse_ports(["8000"])
+        assert len(ports) == 1
+        assert ports[0].container_port == 8000
+        assert ports[0].protocol == "TCP"
+        assert ports[0].name == "http"
+        assert ports[0].app_protocol is None
+
+    def test_short_form_udp_suffix(self):
+        ports = PayloadBuilder._parse_ports(["53/udp"])
+        assert len(ports) == 1
+        assert ports[0].container_port == 53
+        assert ports[0].protocol == "UDP"
+        assert ports[0].name == "http"
+
+    def test_long_form_name_and_app_protocol_propagate(self):
+        ports = PayloadBuilder._parse_ports(
+            [{"target": 19530, "protocol": "tcp", "name": "grpc", "app_protocol": "grpc"}]
+        )
+        assert len(ports) == 1
+        assert ports[0].container_port == 19530
+        assert ports[0].protocol == "TCP"
+        assert ports[0].name == "grpc"
+        assert ports[0].app_protocol == "grpc"
+
+    def test_long_form_name_only(self):
+        ports = PayloadBuilder._parse_ports([{"target": 9000, "name": "metrics"}])
+        assert len(ports) == 1
+        assert ports[0].container_port == 9000
+        assert ports[0].name == "metrics"
+        assert ports[0].app_protocol is None
+
+    def test_long_form_without_name_falls_back_to_http(self):
+        ports = PayloadBuilder._parse_ports([{"target": 8080, "protocol": "tcp"}])
+        assert len(ports) == 1
+        assert ports[0].name == "http"
+
+    def test_long_form_udp_protocol(self):
+        ports = PayloadBuilder._parse_ports(
+            [{"target": 53, "protocol": "udp", "name": "dns"}]
+        )
+        assert len(ports) == 1
+        assert ports[0].protocol == "UDP"
+        assert ports[0].name == "dns"
+
+    def test_long_form_camel_case_app_protocol_alias(self):
+        # accept both `app_protocol` (compose-spec) and `appProtocol` (k8s)
+        ports = PayloadBuilder._parse_ports(
+            [{"target": 19530, "name": "grpc", "appProtocol": "grpc"}]
+        )
+        assert len(ports) == 1
+        assert ports[0].app_protocol == "grpc"
+
+    def test_long_form_explicit_app_protocol_wins_over_appprotocol(self):
+        """When both keys are present, the compose-spec ``app_protocol`` wins
+        even if it's an empty string — explicit None check rather than a
+        falsy ``or`` fallback."""
+        ports = PayloadBuilder._parse_ports(
+            [
+                {
+                    "target": 19530,
+                    "name": "grpc",
+                    "app_protocol": "",
+                    "appProtocol": "http2",
+                }
+            ]
+        )
+        assert len(ports) == 1
+        assert ports[0].app_protocol == ""
+
+    def test_mixed_short_and_long_form(self):
+        ports = PayloadBuilder._parse_ports(
+            [
+                "8000",
+                {"target": 19530, "name": "grpc", "app_protocol": "grpc"},
+            ]
+        )
+        assert len(ports) == 2
+        assert ports[0].name == "http"
+        assert ports[0].container_port == 8000
+        assert ports[1].name == "grpc"
+        assert ports[1].app_protocol == "grpc"
+
+    def test_long_form_serializes_appprotocol_camel_case(self):
+        """CR must use camelCase appProtocol for K8s compatibility."""
+        ports = PayloadBuilder._parse_ports(
+            [{"target": 19530, "name": "grpc", "app_protocol": "grpc"}]
+        )
+        dumped = ports[0].model_dump(by_alias=True, exclude_none=True)
+        assert dumped["appProtocol"] == "grpc"
+        assert "app_protocol" not in dumped
+
+    def test_default_dump_emits_appprotocol_for_nested_payload(self):
+        """Regression: ExtensionService.create_extension / patch_extension
+        call .model_dump() without by_alias=True. Without
+        serialize_by_alias=True on ExtensionPort, the resulting JSON
+        carries the unknown ``app_protocol`` key and the K8s API server
+        silently drops the field. This test pins the parent-level shape
+        the real create path produces."""
+        from kamiwaza_sdk.schemas.extensions import (
+            CreateExtension,
+            ExtensionPort,
+            ExtensionServiceSpec,
+        )
+
+        req = CreateExtension(
+            name="service-milvus-x",
+            type="service",
+            version="2.4.0",
+            services=[
+                ExtensionServiceSpec(
+                    name="standalone",
+                    image="milvus/milvus:2.5.27",
+                    primary=True,
+                    ports=[
+                        ExtensionPort(
+                            container_port=19530,
+                            protocol="TCP",
+                            name="grpc",
+                            app_protocol="grpc",
+                        )
+                    ],
+                )
+            ],
+        )
+
+        # NO by_alias=True — mirrors ExtensionService.create_extension.
+        dumped = req.model_dump()
+        port_dict = dumped["services"][0]["ports"][0]
+        assert port_dict.get("appProtocol") == "grpc"
+        assert "app_protocol" not in port_dict
+
+    def test_long_form_missing_target_skipped(self):
+        ports = PayloadBuilder._parse_ports([{"name": "grpc"}])
+        assert ports == []
+
+    def test_long_form_invalid_target_skipped(self):
+        ports = PayloadBuilder._parse_ports([{"target": "not-a-number"}])
+        assert ports == []
+
+
 class TestAnnotations:
     """ENG-3887 / §4.2.9 — DeployedImageAnnotation on the CRD payload."""
 
@@ -793,6 +937,30 @@ class TestHealthChecks:
                 "frontend": {
                     "image": "registry.test/my-app-frontend:1.0.0-dev",
                     "ports": ["3000"],
+                },
+            },
+        }
+
+        payload = builder.build(metadata, transformed, connection, "test")
+        frontend = payload.services[0]
+
+        health_check = frontend.model_dump()["healthCheck"]
+        assert frontend.primary is True
+        assert health_check["exec"]["command"][0] == "node"
+
+    def test_frontend_long_form_port_3000_uses_node_probe(
+        self, builder, metadata, connection
+    ):
+        """ENG-5954: the Node-probe heuristic must recognize long-form
+        port targets too. Before the fix, ``str({"target": 3000, ...})``
+        was parsed as a single string and the int() conversion failed
+        silently, causing frontend services authored with long-form to
+        fall through to the HTTP probe."""
+        transformed = {
+            "services": {
+                "frontend": {
+                    "image": "registry.test/my-app-frontend:1.0.0-dev",
+                    "ports": [{"target": 3000, "name": "http"}],
                 },
             },
         }

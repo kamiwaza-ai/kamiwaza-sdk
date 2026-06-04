@@ -409,8 +409,23 @@ class PayloadBuilder:
 
     @staticmethod
     def _parse_ports(ports: List[Any]) -> List[ExtensionPort]:
+        """Translate compose-spec ports into CR ExtensionPort entries.
+
+        Accepts both short-form (``"19530"``, ``"19530/udp"``) and long-form
+        compose-spec port entries (``{target, protocol, name, app_protocol}``).
+        For short-form the port name defaults to ``"http"`` — matches the
+        long-standing app/tool extension behavior. Long-form entries pass
+        ``name`` and ``app_protocol`` through to the K8s Service, which
+        istio reads for L7 protocol selection (ENG-5954).
+        """
         result = []
         for p in ports:
+            if isinstance(p, dict):
+                parsed = PayloadBuilder._parse_port_dict(p)
+                if parsed is not None:
+                    result.append(parsed)
+                continue
+
             s = str(p)
             # Strip protocol suffix if present
             proto = "TCP"
@@ -426,6 +441,48 @@ class PayloadBuilder:
             except (ValueError, TypeError):
                 continue
         return result
+
+    @staticmethod
+    def _parse_port_dict(port: Dict[str, Any]) -> Optional[ExtensionPort]:
+        """Translate one compose-spec long-form port entry."""
+        # Compose-spec long-form: ``target`` is the container port.
+        # ``published`` (host port) is stripped upstream by the transformer's
+        # ``_strip_host_ports`` and never reaches this function in the normal
+        # pipeline — we don't fall back to it because doing so would silently
+        # promote a host-port intent into a container port for any direct
+        # caller that bypasses the transformer.
+        target = port.get("target")
+        if target is None:
+            return None
+
+        proto_raw = str(port.get("protocol", "tcp")).upper()
+        proto = proto_raw if proto_raw in ("TCP", "UDP") else "TCP"
+
+        # Long-form ports without an explicit name still default to "http"
+        # so existing extensions that adopt long-form syntax for unrelated
+        # reasons (e.g. adding ``protocol: tcp``) don't silently lose the
+        # historical port name.
+        name = port.get("name") or "http"
+
+        # Prefer the compose-spec ``app_protocol`` key; fall back to the
+        # k8s-shaped ``appProtocol`` only when the spec key is absent.
+        # Explicit ``in`` rather than ``or`` so an explicitly-empty
+        # ``app_protocol: ""`` is treated as "set to empty" rather than
+        # silently falling through to ``appProtocol``.
+        if "app_protocol" in port:
+            app_protocol = port["app_protocol"]
+        else:
+            app_protocol = port.get("appProtocol")
+
+        try:
+            return ExtensionPort(
+                container_port=int(target),
+                protocol=proto,
+                name=name,
+                app_protocol=app_protocol,
+            )
+        except (ValueError, TypeError):
+            return None
 
     @staticmethod
     def _parse_env(env: Any) -> List[Dict[str, Any]]:
@@ -666,11 +723,20 @@ def _should_use_node_frontend_probe(svc_name: str, svc: Dict[str, Any]) -> bool:
 
     ports = svc.get("ports", [])
     for port in ports:
-        port_str = str(port).split("/", 1)[0]
-        try:
-            container_port = int(port_str.rsplit(":", 1)[-1])
-        except ValueError:
-            continue
+        if isinstance(port, dict):
+            target = port.get("target")
+            if target is None:
+                continue
+            try:
+                container_port = int(target)
+            except (ValueError, TypeError):
+                continue
+        else:
+            port_str = str(port).split("/", 1)[0]
+            try:
+                container_port = int(port_str.rsplit(":", 1)[-1])
+            except ValueError:
+                continue
         if container_port in {3000, 3001, 4173, 5173}:
             return True
 
