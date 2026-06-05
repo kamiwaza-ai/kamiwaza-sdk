@@ -292,12 +292,23 @@ class PayloadBuilder:
     def make_dev_name(extension_name: str, user_id: Optional[str] = None) -> str:
         """Generate a unique dev deployment name.
 
-        Format: ``{name}-dev-{hash6}`` where *hash6* is derived from the
+        Format: ``{slug}-dev-{hash6}`` where *slug* is *extension_name*
+        coerced to a valid DNS-1123 label and *hash6* is derived from the
         user ID (or ``"local"`` when no user context).
+
+        The slug is sanitized because the platform rejects names that are not
+        valid DNS-1123 labels: a display name like ``"Hello Web"`` would
+        otherwise be sent verbatim and rejected by ``POST /api/extensions``
+        with HTTP 422, so no KamiwazaExtension CR is ever created (ENG-6472).
         """
         seed = user_id or "local"
         h = hashlib.sha256(seed.encode()).hexdigest()[:6]
-        return f"{extension_name}-dev-{h}"
+        suffix = f"-dev-{h}"
+        # DNS-1123 label: lowercase alphanumerics or '-', start/end alphanumeric,
+        # max 63 chars. Reserve room for the deterministic suffix.
+        slug = re.sub(r"[^a-z0-9]+", "-", extension_name.lower()).strip("-")
+        slug = slug[: 63 - len(suffix)].strip("-") or "ext"
+        return f"{slug}{suffix}"
 
     # ------------------------------------------------------------------
     # Internal helpers

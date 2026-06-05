@@ -827,6 +827,17 @@ class TestDevNaming:
         name = PayloadBuilder.make_dev_name("my-app")
         assert "dev-" in name
 
+    def test_display_name_sanitized_to_dns_label(self):
+        # Regression (ENG-6472): a display name with spaces/uppercase such as
+        # "Hello Web" must be coerced to a valid DNS-1123 label, otherwise the
+        # platform rejects POST /api/extensions with 422 and no CR is created.
+        import re
+
+        name = PayloadBuilder.make_dev_name("Hello Web", user_id="user-123")
+        assert re.fullmatch(r"[a-z0-9]([-a-z0-9]*[a-z0-9])?", name), name
+        assert len(name) <= 63
+        assert name.startswith("hello-web-dev-")
+
 
 class TestResourceParsing:
     def test_cpus_converted_to_millicpu(self, builder):
