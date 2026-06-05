@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import time
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -10,6 +11,11 @@ import pytest
 from kamiwaza_sdk import cli
 from kamiwaza_sdk.exceptions import AuthenticationError
 from kamiwaza_sdk.token_store import StoredToken, TokenStore
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python 3.10 fallback
+    import tomli as tomllib
 
 pytestmark = pytest.mark.unit
 
@@ -26,6 +32,12 @@ class MemoryStore(TokenStore):
 
     def clear(self):
         self.value = None
+
+
+def test_sdk_cli_console_script_declared():
+    pyproject = tomllib.loads(Path("pyproject.toml").read_text())
+
+    assert pyproject["project"]["scripts"]["kamiwaza"] == "kamiwaza_sdk.cli:main"
 
 
 def test_login_command_uses_authenticator(monkeypatch):
