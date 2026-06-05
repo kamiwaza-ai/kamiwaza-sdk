@@ -617,13 +617,31 @@ def run_dev_remote(
     if not no_push and image_refs:
         console.print(f"Pushing to {push_registry}...")
         try:
-            from kamiwaza_extensions.registry_resolution import build_push_ref_map
+            from kamiwaza_extensions.registry_resolution import (
+                build_push_ref_map,
+                is_loopback_registry,
+            )
 
+            # The local Kamiwaza dev registry is a stock anonymous
+            # ``registry:2`` — it requires no auth, and the connection token
+            # is a Kamiwaza *API* credential, not a registry credential. Skip
+            # the registry login for it. Beyond being unnecessary, the login
+            # is actively broken on the macOS podman-machine topology
+            # (ENG-5719): ``podman login <vm-alias>`` resolves the registry
+            # host client-side and fails ("no such host"), while
+            # ``podman push <vm-alias>`` resolves it inside the VM and
+            # succeeds. Gate on the loopback *image* registry (the canonical
+            # local registry) rather than the push alias, which is non-loopback
+            # after the build-VM remap. Authenticated registries (e.g. a
+            # ``registry.<domain>`` ingress) are non-loopback and still log in.
+            registry_login_token = (
+                None if is_loopback_registry(registry) else token.access_token
+            )
             pusher = ImagePusher()
             pusher.push(
                 image_refs,
                 registry=push_registry,
-                token=token.access_token,
+                token=registry_login_token,
                 insecure=not connection.verify_ssl,
                 verbose=verbose,
                 target_refs=build_push_ref_map(

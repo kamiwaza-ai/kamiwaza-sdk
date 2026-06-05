@@ -133,6 +133,38 @@ class TestPushOrchestration:
             verbose=False,
         )
 
+    @patch("kamiwaza_extensions.image_pusher._has_podman", return_value=True)
+    @patch.object(ImagePusher, "_login_registry")
+    @patch.object(ImagePusher, "_tag")
+    @patch.object(ImagePusher, "_push")
+    def test_no_token_skips_login_still_pushes(
+        self, mock_push, mock_tag, mock_login, _mock_hp, pusher
+    ):
+        # ENG-5719: the anonymous local dev registry needs no login. Passing
+        # token=None must skip the (spurious, macOS-podman-broken) login while
+        # still retagging+pushing to the build-VM alias.
+        pusher.push(
+            ["127.0.0.1:30010/app:v1"],
+            registry="host.containers.internal:30010",
+            token=None,
+            insecure=True,
+            target_refs={
+                "127.0.0.1:30010/app:v1": "host.containers.internal:30010/app:v1",
+            },
+        )
+        mock_login.assert_not_called()
+        mock_tag.assert_called_once_with(
+            "127.0.0.1:30010/app:v1",
+            "host.containers.internal:30010/app:v1",
+            use_podman=True,
+            verbose=False,
+        )
+        mock_push.assert_called_once_with(
+            "host.containers.internal:30010/app:v1",
+            use_podman=True,
+            verbose=False,
+        )
+
 
 # ENG-4370 — digest-pinning catalog references
 

@@ -225,6 +225,83 @@ class TestDevRemoteBuildsAtCanonicalRefs:
         assert captured["kwargs"]["target_refs"] == {
             "127.0.0.1:30010/my-app-api:dev1": "host.containers.internal:30010/my-app-api:dev1",
         }
+        # ENG-5719: the local (loopback) dev registry is an anonymous
+        # registry:2 — the login is skipped (token=None) so the macOS-podman
+        # host-side `podman login` can't break an otherwise-working push.
+        assert captured["kwargs"]["token"] is None
+
+    def test_non_loopback_registry_keeps_login_token(self, tmp_path, monkeypatch):
+        """ENG-5719: a non-loopback registry (e.g. an authenticated
+        ``registry.<domain>`` ingress or explicit remote ``KAMIWAZA_REGISTRY``)
+        must still receive the connection token so the registry login runs."""
+        from kamiwaza_extensions.commands import dev as dev_cmd
+        from kamiwaza_extensions.image_pusher import ImagePushError
+
+        monkeypatch.delenv("KAMIWAZA_PUSH_REGISTRY", raising=False)
+        monkeypatch.setenv("KAMIWAZA_REGISTRY", "registry.example:5000")
+        info = ExtensionInfo(
+            path=tmp_path,
+            name="my-app",
+            version="0.1.0",
+            metadata={"name": "my-app", "type": "app"},
+            compose_path=tmp_path / "docker-compose.yml",
+            compose_data={"services": {"api": {"build": {"context": "."}}}},
+        )
+
+        captured: dict = {}
+
+        def _capture_push(*args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+            raise ImagePushError("stop-after-capture")
+
+        token = MagicMock(access_token="tok-abc")
+        conn_mgr = MagicMock()
+        conn_mgr.get_active_connection.return_value = _active_connection()
+        conn_mgr.get_token.return_value = token
+
+        detector = MagicMock()
+        detector.detect.return_value = info
+
+        tagger = MagicMock()
+        tagger.generate_tag.return_value = "dev1"
+        tagger.get_git_info.return_value = ("abc1234", False)
+
+        pusher = MagicMock()
+        pusher.push.side_effect = _capture_push
+
+        with (
+            patch(
+                "kamiwaza_extensions.extension_detector.ExtensionDetector",
+                return_value=detector,
+            ),
+            patch(
+                "kamiwaza_extensions.connections.ConnectionManager",
+                return_value=conn_mgr,
+            ),
+            patch(
+                "kamiwaza_extensions.revision_tagger.RevisionTagger",
+                return_value=tagger,
+            ),
+            patch(
+                "kamiwaza_extensions.image_pusher.ImagePusher",
+                return_value=pusher,
+            ),
+            patch(
+                "kamiwaza_extensions.dev_state.read_state",
+                return_value=None,
+            ),
+            patch(
+                "kamiwaza_extensions.dev_state.resume_message",
+                return_value=None,
+            ),
+            pytest.raises(click.exceptions.Exit),
+        ):
+            dev_cmd.run_dev_remote(no_build=True)
+
+        # Non-loopback image registry → no push split, login token preserved.
+        assert captured["kwargs"]["registry"] == "registry.example:5000"
+        assert captured["kwargs"]["token"] == "tok-abc"
 
     def test_no_build_refuses_when_prior_build_engine_differs(
         self, tmp_path, monkeypatch
