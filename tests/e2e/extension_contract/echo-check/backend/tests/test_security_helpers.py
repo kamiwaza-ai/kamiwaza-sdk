@@ -103,6 +103,61 @@ def test_current_workroom_id_rejects_wrong_trusted_proxy_secret(monkeypatch) -> 
     assert _current_workroom_id(request, identity) is None
 
 
+def test_has_trusted_proxy_marker_fails_closed_on_non_ascii_header(monkeypatch) -> None:
+    """ENG-6495: Starlette decodes inbound header values as latin-1, so any
+    byte >= 0x80 yields a non-ASCII `str`. The original implementation called
+    ``hmac.compare_digest(str, str)``, which raises ``TypeError`` on such
+    inputs ("comparing strings with non-ASCII characters is not supported")
+    and surfaces as an unhandled 500 — distinguishing a gated protected
+    route from a truly absent route. The fix encodes both sides as UTF-8
+    bytes and wraps in a defensive try/except so any other exotic input
+    also returns ``False`` (fail-closed) rather than raising.
+    """
+    from app.workroom_trust import has_trusted_proxy_marker
+
+    monkeypatch.setenv("KAMIWAZA_TRUSTED_PROXY_SECRET", TRUSTED_PROXY_SECRET)
+
+    # latin-1 byte 0xff decodes to "ÿ" (U+00FF) — a single non-ASCII char.
+    # We pass it through the headers exactly as Starlette would deliver it.
+    raw_marker = bytes([0xFF])
+    request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/api/whoami",
+            "root_path": APP_PATH,
+            "headers": [(b"x-kamiwaza-trusted-proxy", raw_marker)],
+        }
+    )
+
+    # Must return False, NOT raise. The old implementation would raise
+    # TypeError inside compare_digest, which FastAPI would translate to
+    # an unhandled 500.
+    assert has_trusted_proxy_marker(request) is False
+
+
+def test_has_trusted_proxy_marker_matches_correct_secret(monkeypatch) -> None:
+    """Positive control: the bytes-encoded compare still accepts the
+    matching ASCII secret. Guards against an over-aggressive try/except
+    that silently rejects all inputs.
+    """
+    from app.workroom_trust import has_trusted_proxy_marker
+
+    monkeypatch.setenv("KAMIWAZA_TRUSTED_PROXY_SECRET", TRUSTED_PROXY_SECRET)
+
+    request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/api/whoami",
+            "root_path": APP_PATH,
+            "headers": [TRUSTED_PROXY_HEADER],
+        }
+    )
+
+    assert has_trusted_proxy_marker(request) is True
+
+
 def test_current_workroom_id_fails_closed_when_trusted_proxy_secret_unset(monkeypatch) -> None:
     """If the deployment hasn't configured KAMIWAZA_TRUSTED_PROXY_SECRET,
     the trusted-routed path is unavailable even with matching root_path

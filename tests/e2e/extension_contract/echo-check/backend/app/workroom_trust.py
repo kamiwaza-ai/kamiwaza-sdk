@@ -111,7 +111,27 @@ def has_trusted_proxy_marker(request: Request) -> bool:
     # shared secret. Amplified by echo-check being a starter template
     # extension authors copy verbatim — a weak primitive here would
     # propagate downstream.
-    return hmac.compare_digest(header_value, secret)
+    #
+    # ENG-6495: compare bytes, not strings. Starlette decodes inbound
+    # header values as latin-1, so any byte >= 0x80 yields a non-ASCII
+    # `str`. `hmac.compare_digest(str, str)` raises TypeError on such
+    # inputs ("comparing strings with non-ASCII characters is not
+    # supported"), and FastAPI surfaces that as an unhandled 500 — which
+    # distinguishes a gated protected route (500) from a truly absent
+    # route (404), partially defeating the defense-in-depth gate's
+    # route-hiding intent. Encoding both sides to UTF-8 bytes (or
+    # ASCII-safe ignoring is fine since the secret is configured by
+    # the operator with a known charset; UTF-8 is the safe superset
+    # here) sidesteps that. The try/except wrapper is belt-and-suspenders
+    # against any future input that still trips compare_digest — treat
+    # any error as "no marker" so the gate stays fail-closed.
+    try:
+        return hmac.compare_digest(
+            header_value.encode("utf-8"),
+            secret.encode("utf-8"),
+        )
+    except (UnicodeEncodeError, TypeError, ValueError):
+        return False
 
 
 async def require_routed_request(request: Request) -> None:
