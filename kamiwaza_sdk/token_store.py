@@ -40,7 +40,11 @@ class FileTokenStore(TokenStore):
     """Persist tokens as JSON under ~/.kamiwaza/token.json by default."""
 
     def __init__(self, path: Optional[Path | str] = None) -> None:
-        default_path = Path(os.environ.get("KAMIWAZA_TOKEN_PATH", Path.home() / ".kamiwaza" / "token.json"))
+        default_path = Path(
+            os.environ.get(
+                "KAMIWAZA_TOKEN_PATH", Path.home() / ".kamiwaza" / "token.json"
+            )
+        )
         self.path = Path(path) if path else default_path
 
     def load(self) -> Optional[StoredToken]:
@@ -72,3 +76,27 @@ class FileTokenStore(TokenStore):
             self.path.unlink()
         except FileNotFoundError:
             return
+
+
+class InMemoryTokenStore(TokenStore):
+    """In-memory token store for tests and isolated client contexts.
+
+    Each instance holds a single ``StoredToken`` in process memory and
+    persists nothing to disk. Use this when multiple ``KamiwazaClient``
+    instances must hold distinct credentials in the same process — the
+    default ``FileTokenStore`` is keyed only by path, so two authenticators
+    pointed at the default file would share (and overwrite) each other's
+    tokens. ENG-5955.
+    """
+
+    def __init__(self) -> None:
+        self._token: Optional[StoredToken] = None
+
+    def load(self) -> Optional[StoredToken]:
+        return self._token
+
+    def save(self, token: StoredToken) -> None:
+        self._token = token
+
+    def clear(self) -> None:
+        self._token = None

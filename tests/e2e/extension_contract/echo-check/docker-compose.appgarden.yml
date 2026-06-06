@@ -13,6 +13,14 @@ services:
       KAMIWAZA_APP_PATH: ${KAMIWAZA_APP_PATH:-}
       KAMIWAZA_DEPLOYMENT_ID: ${KAMIWAZA_DEPLOYMENT_ID:-}
       KAMIWAZA_WORKROOM_ID: ${KAMIWAZA_WORKROOM_ID:-}
+      # ENG-5956 follow-up — kamiwaza-sdk#134 RE-REVIEW H1: must be plumbed
+      # into the AppGarden artifact too, not just the local docker-compose.
+      # Without it, `trusted_routed_workroom_context()` always returns False
+      # in the live deployment and identity-header forwarding is suppressed
+      # → live contract tests fail with 403. The platform's routing layer
+      # (Traefik / istio ingress) is responsible for injecting the matching
+      # `x-kamiwaza-trusted-proxy` header on routed traffic.
+      KAMIWAZA_TRUSTED_PROXY_SECRET: ${KAMIWAZA_TRUSTED_PROXY_SECRET:-}
       SESSION_MAX_SECONDS: ${SESSION_MAX_SECONDS:-28800}
     extra_hosts:
     - host.docker.internal:host-gateway

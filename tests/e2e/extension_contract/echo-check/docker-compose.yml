@@ -1,8 +1,11 @@
 services:
   app:
+    # ENG-5957: build context is the SDK repo root so the Dockerfile can
+    # ``COPY kamiwaza_extensions_lib/`` and install the in-repo workspace
+    # member instead of resolving ``kamiwaza-extensions-lib`` from PyPI.
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      context: ../../../..
+      dockerfile: tests/e2e/extension_contract/echo-check/backend/Dockerfile
     image: ghcr.io/kamiwaza-internal/kamiwaza/images/echo-check-app:0.2.0-dev
     ports:
       - "8000"
@@ -16,6 +19,12 @@ services:
       KAMIWAZA_APP_PATH: ${KAMIWAZA_APP_PATH:-}
       KAMIWAZA_DEPLOYMENT_ID: ${KAMIWAZA_DEPLOYMENT_ID:-}
       KAMIWAZA_WORKROOM_ID: ${KAMIWAZA_WORKROOM_ID:-}
+      # ENG-5956 follow-up: shared secret the routing layer (Traefik / istio
+      # ingress) injects in `x-kamiwaza-trusted-proxy` for routed traffic so
+      # the app can distinguish it from direct container hits. The harness
+      # passes the matching value through here; production extensions get a
+      # real high-entropy secret from out-of-band config.
+      KAMIWAZA_TRUSTED_PROXY_SECRET: ${KAMIWAZA_TRUSTED_PROXY_SECRET:-}
       SESSION_MAX_SECONDS: ${SESSION_MAX_SECONDS:-28800}
     extra_hosts:
       - host.docker.internal:host-gateway

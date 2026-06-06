@@ -1,15 +1,11 @@
 FROM python:3.12-slim
 
-# NOTE: requirements.txt resolves `kamiwaza-extensions-lib` from the package
-# index (whatever is published), NOT the in-repo workspace member at
-# `<sdk-root>/kamiwaza_extensions_lib/`. PRs that modify the in-repo
-# extensions lib won't be tested through this live contract app until the
-# build context is widened to the SDK repo root and the lib is installed
-# from the workspace. Tracked as ENG-5957 (workspace integration follow-up).
-#
-# Also see ENG-5956: --root-path / app-level prefix combination needs
-# resolution before live extension-contract tests can validate routed
-# requests reliably.
+# Build context for this image is the SDK repo root (set via
+# docker-compose.yml ``context:`` and ``dockerfile:``), so the in-repo
+# workspace member ``kamiwaza_extensions_lib/`` can be installed
+# directly instead of resolving ``kamiwaza-extensions-lib`` from PyPI.
+# This lets PRs that modify the workspace member exercise their changes
+# through the live contract app. ENG-5957.
 
 RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
 
@@ -17,10 +13,16 @@ RUN useradd -m -u 1001 appuser
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Install the in-repo workspace member first; subsequent
+# ``requirements.txt`` install treats ``kamiwaza-extensions-lib`` as
+# already-satisfied.
+COPY kamiwaza_extensions_lib/ /tmp/kamiwaza_extensions_lib/
+RUN pip install --no-cache-dir /tmp/kamiwaza_extensions_lib/
 
-COPY --chown=appuser:appuser app ./app
+COPY tests/e2e/extension_contract/echo-check/backend/requirements.txt /tmp/req.txt
+RUN pip install --no-cache-dir -r /tmp/req.txt
+
+COPY --chown=appuser:appuser tests/e2e/extension_contract/echo-check/backend/app ./app
 
 USER 1001:1001
 
@@ -34,4 +36,12 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
 # against the runtime prefix. Without this, real routed requests
 # arrive with root_path="" and identity-header forwarding fails
 # silently (returns 403 / drops identity fields).
+#
+# ENG-5956 follow-up (kamiwaza-sdk#134 self-review H1): root_path alone is
+# not sufficient as a trust signal — uvicorn populates it on every request
+# including direct container traffic. The trusted-routed path now also
+# requires the `x-kamiwaza-trusted-proxy` header to match
+# `$KAMIWAZA_TRUSTED_PROXY_SECRET`, which the routing layer (Traefik /
+# istio ingress) injects only for routed traffic. The compose file passes
+# the secret in via env so the harness can mint matching test headers.
 CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --root-path \"${KAMIWAZA_APP_PATH:-}\""]

@@ -123,6 +123,21 @@ def deployment_env_vars(harness: Any, contract: Any) -> dict[str, str]:
     env_vars = {"KAMIWAZA_API_URL": harness.settings.base_url, "KAMIWAZA_VERIFY_SSL": "true" if harness.settings.verify_ssl else "false"}
     if contract.secret_encryption_key_env_var:
         env_vars[contract.secret_encryption_key_env_var] = harness.secret_encryption_key
+    # ENG-5956 follow-up — kamiwaza-sdk#134 RE-REVIEW H1: inject the
+    # trusted-proxy shared secret so the AppGarden-deployed container's
+    # ``trusted_routed_workroom_context()`` can validate routed requests.
+    # Read from LIVE_EXTENSION_TRUSTED_PROXY_SECRET (or
+    # KAMIWAZA_TRUSTED_PROXY_SECRET) so the harness operator can match
+    # whatever the platform's routing layer (Traefik / istio ingress)
+    # injects in ``x-kamiwaza-trusted-proxy`` on routed traffic. If unset
+    # the trusted-routed path stays fail-closed — which is the correct
+    # stance, since direct container traffic must not be trusted.
+    trusted_proxy_secret = (
+        os.getenv("LIVE_EXTENSION_TRUSTED_PROXY_SECRET", "").strip()
+        or os.getenv("KAMIWAZA_TRUSTED_PROXY_SECRET", "").strip()
+    )
+    if trusted_proxy_secret:
+        env_vars["KAMIWAZA_TRUSTED_PROXY_SECRET"] = trusted_proxy_secret
     env_vars.update(deployment_env_overrides())
     return env_vars
 

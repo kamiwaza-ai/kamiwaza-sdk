@@ -37,22 +37,31 @@ def test_runtime_contract(client: TestClient, monkeypatch: pytest.MonkeyPatch) -
     }
 
 
-def test_runtime_prefix_routes_work(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_routed_request_with_app_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ENG-5956: real routed deployment combines uvicorn ``--root-path``
+    with ``KAMIWAZA_APP_PATH`` env var. Starlette strips ``root_path`` from
+    ``scope['path']`` BEFORE route matching, so unprefixed routes are the
+    correct shape — adding an app-level ``prefix=runtime_prefix`` on top
+    causes 404 on every routed request.
+
+    This test reproduces the prod scenario: KAMIWAZA_APP_PATH is set AND
+    TestClient is constructed with ``root_path``. The container-side
+    ``/api/whoami`` must be reachable.
+    """
     monkeypatch.setenv("KAMIWAZA_APP_PATH", APP_PATH)
     import app.main as main_module
 
     reloaded = importlib.reload(main_module)
-    with TestClient(reloaded.app) as prefixed_client:
-        root_response = prefixed_client.get(APP_PATH)
-        response = prefixed_client.get(f"{APP_PATH}/api/runtime")
-        direct_api_response = prefixed_client.get("/api/runtime")
-        health_response = prefixed_client.get("/health")
+    with TestClient(reloaded.app, root_path=APP_PATH) as routed_client:
+        # Proxy delivers the full routed URL; uvicorn strips root_path,
+        # so the app sees scope["path"] = "/api/runtime".
+        response = routed_client.get(f"{APP_PATH}/api/runtime")
+        # Unprefixed health endpoint stays reachable for liveness probes.
+        health_response = routed_client.get("/health")
 
-    assert root_response.status_code == 200
-    assert root_response.json() == {"service": "echo-check", "status": "ok"}
     assert response.status_code == 200
     assert response.json()["kamiwaza_app_path"] == APP_PATH
-    assert direct_api_response.status_code == 404
+    assert response.json()["root_path"] == APP_PATH
     assert health_response.status_code == 200
 
 

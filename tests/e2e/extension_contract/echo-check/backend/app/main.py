@@ -15,7 +15,7 @@ from .workroom_trust import (
     normalized_workroom_id as _normalized_workroom_id,
 )
 from .workroom_trust import (
-    runtime_prefix as _runtime_prefix,
+    require_routed_request,
 )
 from .workroom_trust import (
     runtime_value as _runtime_value,
@@ -121,7 +121,10 @@ def _build_api_router() -> APIRouter:
         payload["status"] = "ok"
         return payload
 
-    @router.get("/api/observability")
+    @router.get(
+        "/api/observability",
+        dependencies=[Depends(require_routed_request)],
+    )
     async def observability(
         request: Request,
         marker: str = Query(..., min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$"),
@@ -147,7 +150,10 @@ def _build_api_router() -> APIRouter:
         )
         return payload
 
-    @router.get("/api/whoami")
+    @router.get(
+        "/api/whoami",
+        dependencies=[Depends(require_routed_request)],
+    )
     async def whoami(
         request: Request,
         identity: Any = Depends(require_auth),
@@ -167,7 +173,10 @@ def _build_api_router() -> APIRouter:
         )
         return payload
 
-    @router.get("/api/workroom-check/{workroom_id}")
+    @router.get(
+        "/api/workroom-check/{workroom_id}",
+        dependencies=[Depends(require_routed_request)],
+    )
     async def workroom_check(
         request: Request,
         identity: Any = Depends(require_auth),
@@ -202,22 +211,28 @@ def _build_api_router() -> APIRouter:
         )
         return payload
 
-    router.include_router(create_session_router(prefix="/api"))
+    # ENG-5956 RE-REVIEW #2 follow-up: gate /api/session on the trusted-proxy
+    # marker so direct (non-routed) container traffic returns 404 instead of
+    # echoing the platform envelope's identity. See workroom_trust.py
+    # docstring for the full trust-model layering.
+    router.include_router(
+        create_session_router(prefix="/api"),
+        dependencies=[Depends(require_routed_request)],
+    )
     return router
 
 
 def _register_routes(app: FastAPI) -> None:
-    runtime_prefix = _runtime_prefix()
-    if runtime_prefix:
-        app.include_router(_build_root_router(include_in_schema=False), prefix=runtime_prefix)
-        app.include_router(_build_api_router(), prefix=runtime_prefix)
-
-        @app.get("/health", include_in_schema=False)
-        async def container_health() -> dict[str, bool | str]:
-            return _health_payload()
-
-        return
-
+    # ENG-5956: in routed deployments uvicorn is started with
+    # ``--root-path "$KAMIWAZA_APP_PATH"``. Starlette strips ``root_path``
+    # from ``scope['path']`` BEFORE route matching, so the app must
+    # register UNPREFIXED routes — the app-level ``prefix=runtime_prefix``
+    # the prior implementation added stacked on top of the stripped root
+    # path and produced 404s on every routed request.
+    #
+    # Note: ``trusted_routed_workroom_context()`` still relies on
+    # ``scope['root_path']`` to validate the runtime prefix, which is why
+    # ``--root-path`` stays in the Dockerfile.
     app.include_router(_build_root_router(include_in_schema=False))
     app.include_router(_build_api_router())
 
