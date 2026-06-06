@@ -11,6 +11,11 @@ from app.main import app
 
 APP_PATH = "/runtime/apps/test-123"
 WORKROOM_ID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+# ENG-5956 follow-up: ``trusted_routed_workroom_context()`` now requires
+# both root_path AND a trusted-proxy shared-secret header (kamiwaza-sdk#134
+# self-review H1). Tests inject this value; production extensions get the
+# real secret out-of-band and the routing layer injects the header.
+TRUSTED_PROXY_SECRET = "test-trusted-proxy-secret"
 
 # Used by `auth_headers(with_token=True)` to embed a JWT `exp` claim that the
 # extensions-lib `/api/session` endpoint surfaces back as `expires_at`. Picked
@@ -41,6 +46,10 @@ def auth_headers(*, with_token: bool = False) -> dict[str, str]:
         "x-forwarded-proto": "https",
         "x-forwarded-prefix": APP_PATH,
         "x-forwarded-uri": f"{APP_PATH}/api/whoami",
+        # ENG-5956 follow-up: the trusted-proxy shared-secret marker that
+        # routed requests must now carry for ``trusted_routed_workroom_context``
+        # to return True. Direct (non-routed) traffic does not have this.
+        "x-kamiwaza-trusted-proxy": TRUSTED_PROXY_SECRET,
     }
     if with_token:
         issued_at = int(time.time())

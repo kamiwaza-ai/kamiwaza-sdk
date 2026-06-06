@@ -5,7 +5,13 @@ from starlette.requests import Request
 from app.main import _current_workroom_id, _safe_log_field, _workroom_role
 from app.workroom_trust import auth_enabled as _auth_enabled
 
-from .test_helpers import APP_PATH, WORKROOM_ID
+from .test_helpers import APP_PATH, TRUSTED_PROXY_SECRET, WORKROOM_ID
+
+# ENG-5956 follow-up: ``trusted_routed_workroom_context`` now requires both
+# root_path AND the proxy-injected shared-secret header. Positive-trust
+# tests below set the env var and inject the header; negative tests omit
+# one or both.
+TRUSTED_PROXY_HEADER = (b"x-kamiwaza-trusted-proxy", TRUSTED_PROXY_SECRET.encode("utf-8"))
 
 
 def test_safe_log_field_strips_newlines() -> None:
@@ -29,17 +35,95 @@ def test_auth_enabled_defaults_true(monkeypatch) -> None:
 def test_current_workroom_id_falls_back_to_forwarded_header(monkeypatch) -> None:
     monkeypatch.setenv("KAMIWAZA_APP_PATH", APP_PATH)
     monkeypatch.setenv("KAMIWAZA_USE_AUTH", "true")
+    monkeypatch.setenv("KAMIWAZA_TRUSTED_PROXY_SECRET", TRUSTED_PROXY_SECRET)
     request = Request(
         {
             "type": "http",
             "method": "GET",
             "path": "/api/whoami",
             "root_path": APP_PATH,
-            "headers": [(b"x-user-workroom-id", WORKROOM_ID.upper().encode("utf-8"))],
+            "headers": [
+                (b"x-user-workroom-id", WORKROOM_ID.upper().encode("utf-8")),
+                TRUSTED_PROXY_HEADER,
+            ],
         }
     )
     identity = type("Identity", (), {"workroom_id": None, "is_authenticated": True})()
     assert _current_workroom_id(request, identity) == WORKROOM_ID
+
+
+def test_current_workroom_id_rejects_forged_root_path_without_trusted_proxy_header(monkeypatch) -> None:
+    """ENG-5956 follow-up (kamiwaza-sdk#134 self-review H1) regression test.
+
+    A direct caller hitting the container port with `--root-path` set
+    (uvicorn populates `scope['root_path']` unconditionally) and forged
+    `x-user-*` headers MUST NOT be trusted. The new shared-secret marker
+    closes the gap that dropping the app-level prefix opened.
+    """
+    monkeypatch.setenv("KAMIWAZA_APP_PATH", APP_PATH)
+    monkeypatch.setenv("KAMIWAZA_USE_AUTH", "true")
+    monkeypatch.setenv("KAMIWAZA_TRUSTED_PROXY_SECRET", TRUSTED_PROXY_SECRET)
+    request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/api/whoami",
+            "root_path": APP_PATH,  # forged via direct uvicorn --root-path
+            "headers": [
+                (b"x-user-workroom-id", WORKROOM_ID.upper().encode("utf-8")),
+                (b"x-user-workroom-role", b"admin"),
+                # NOTE: no x-kamiwaza-trusted-proxy header — direct traffic
+                # does not have it.
+            ],
+        }
+    )
+    identity = type("Identity", (), {"workroom_id": None, "is_authenticated": True})()
+    assert _current_workroom_id(request, identity) is None
+    assert _workroom_role(request, identity) is None
+
+
+def test_current_workroom_id_rejects_wrong_trusted_proxy_secret(monkeypatch) -> None:
+    """An attacker who guesses the header NAME but not the SECRET is rejected."""
+    monkeypatch.setenv("KAMIWAZA_APP_PATH", APP_PATH)
+    monkeypatch.setenv("KAMIWAZA_USE_AUTH", "true")
+    monkeypatch.setenv("KAMIWAZA_TRUSTED_PROXY_SECRET", TRUSTED_PROXY_SECRET)
+    request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/api/whoami",
+            "root_path": APP_PATH,
+            "headers": [
+                (b"x-user-workroom-id", WORKROOM_ID.upper().encode("utf-8")),
+                (b"x-kamiwaza-trusted-proxy", b"wrong-secret"),
+            ],
+        }
+    )
+    identity = type("Identity", (), {"workroom_id": None, "is_authenticated": True})()
+    assert _current_workroom_id(request, identity) is None
+
+
+def test_current_workroom_id_fails_closed_when_trusted_proxy_secret_unset(monkeypatch) -> None:
+    """If the deployment hasn't configured KAMIWAZA_TRUSTED_PROXY_SECRET,
+    the trusted-routed path is unavailable even with matching root_path
+    and any header value. Extensions MUST opt in explicitly."""
+    monkeypatch.setenv("KAMIWAZA_APP_PATH", APP_PATH)
+    monkeypatch.setenv("KAMIWAZA_USE_AUTH", "true")
+    monkeypatch.delenv("KAMIWAZA_TRUSTED_PROXY_SECRET", raising=False)
+    request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/api/whoami",
+            "root_path": APP_PATH,
+            "headers": [
+                (b"x-user-workroom-id", WORKROOM_ID.upper().encode("utf-8")),
+                TRUSTED_PROXY_HEADER,
+            ],
+        }
+    )
+    identity = type("Identity", (), {"workroom_id": None, "is_authenticated": True})()
+    assert _current_workroom_id(request, identity) is None
 
 
 def test_current_workroom_id_rejects_prefixed_app_path_without_root_path(monkeypatch) -> None:
@@ -120,13 +204,17 @@ def test_workroom_role_rejects_untrusted_forwarded_header() -> None:
 def test_workroom_role_normalizes_forwarded_value(monkeypatch) -> None:
     monkeypatch.setenv("KAMIWAZA_APP_PATH", APP_PATH)
     monkeypatch.setenv("KAMIWAZA_USE_AUTH", "true")
+    monkeypatch.setenv("KAMIWAZA_TRUSTED_PROXY_SECRET", TRUSTED_PROXY_SECRET)
     request = Request(
         {
             "type": "http",
             "method": "GET",
             "path": "/api/whoami",
             "root_path": APP_PATH,
-            "headers": [(b"x-user-workroom-role", b"Editor")],
+            "headers": [
+                (b"x-user-workroom-role", b"Editor"),
+                TRUSTED_PROXY_HEADER,
+            ],
         }
     )
     identity = type(
@@ -208,13 +296,17 @@ def test_current_workroom_id_requires_auth_enabled_runtime(monkeypatch) -> None:
 def test_current_workroom_id_accepts_truthy_auth_runtime_values(monkeypatch) -> None:
     monkeypatch.setenv("KAMIWAZA_APP_PATH", APP_PATH)
     monkeypatch.setenv("KAMIWAZA_USE_AUTH", "1")
+    monkeypatch.setenv("KAMIWAZA_TRUSTED_PROXY_SECRET", TRUSTED_PROXY_SECRET)
     request = Request(
         {
             "type": "http",
             "method": "GET",
             "path": "/api/whoami",
             "root_path": APP_PATH,
-            "headers": [(b"x-user-workroom-id", WORKROOM_ID.upper().encode("utf-8"))],
+            "headers": [
+                (b"x-user-workroom-id", WORKROOM_ID.upper().encode("utf-8")),
+                TRUSTED_PROXY_HEADER,
+            ],
         }
     )
     identity = type("Identity", (), {"workroom_id": None, "is_authenticated": True})()
