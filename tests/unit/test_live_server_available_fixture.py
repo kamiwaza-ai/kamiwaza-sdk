@@ -56,20 +56,23 @@ def _make_response(status_code: int) -> requests.Response:
 def test_live_server_available_exits_when_unreachable(
     integration_conftest, live_server_fn, monkeypatch
 ) -> None:
-    """No response after retries -> pytest.exit, not pytest.skip cascade."""
+    """No response after retries -> pytest.exit, not pytest.skip cascade.
+
+    Also pins the retry contract: requests.get is invoked exactly 3 times before
+    the fixture gives up. A regression that short-circuits the loop or drops a
+    retry would still satisfy "raises Exit" but should still fail this test.
+    """
     monkeypatch.setattr(integration_conftest.time, "sleep", lambda _: None)
-    monkeypatch.setattr(
-        integration_conftest.requests,
-        "get",
-        Mock(side_effect=requests.ConnectionError("connection refused")),
-    )
+    mock_get = Mock(side_effect=requests.ConnectionError("connection refused"))
+    monkeypatch.setattr(integration_conftest.requests, "get", mock_get)
 
     with pytest.raises(Exit) as excinfo:
         live_server_fn("https://example.invalid/api")
 
     assert excinfo.value.returncode == 2
-    # System.exit re-raises pytest.Exit which preserves the message; we don't
-    # assert on the text here to avoid coupling to pytest's internals.
+    assert mock_get.call_count == 3, (
+        f"expected 3 retry attempts before exit, got {mock_get.call_count}"
+    )
 
 
 def test_live_server_available_exits_on_5xx(

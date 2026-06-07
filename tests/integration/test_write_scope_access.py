@@ -15,6 +15,14 @@ import pytest
 from kamiwaza_sdk import KamiwazaClient
 from kamiwaza_sdk.exceptions import APIError  # noqa: F401 – used in pytest.raises
 
+# These tests depend on ``live_write_client`` → ``live_session_write_key`` →
+# ``live_server_available`` and run against a live cluster. Without the marker
+# they get selected by ``make test`` (which runs ``-m "not integration and not
+# live and not e2e"``), and the session-scoped ``live_server_available`` fixture
+# would then ``pytest.exit`` the unit job on any runner without a reachable
+# Kamiwaza server. See ENG-6504.
+pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
+
 
 # ---------------------------------------------------------------------------
 # Health / status endpoints — should always work for authenticated users
