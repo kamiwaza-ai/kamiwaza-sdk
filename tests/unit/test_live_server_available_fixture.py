@@ -8,9 +8,10 @@ The integration conftest's ``live_server_available`` previously called
 fixtures and replays them on every dependent test, a single unreachable ``/ping``
 turned into 165 silent skips and a green smoke report (see ENG-6504).
 
-These tests pin the new contract: each of those three paths must raise
-``SystemExit`` via ``pytest.exit``, so the session terminates with a non-zero
-return code instead of cascading skips.
+These tests pin the new contract: each of those three paths must call
+``pytest.exit``, which raises ``_pytest.outcomes.Exit`` (a distinct exception
+from ``SystemExit``) so the session terminates with a non-zero return code
+instead of cascading skips.
 """
 
 from __future__ import annotations
@@ -22,6 +23,12 @@ from unittest.mock import Mock
 import pytest
 import requests
 from _pytest.outcomes import Exit
+
+# Mark the whole module so the regression guard runs in the ``make test-unit``
+# lane. Without this, ``pytest -m unit`` deselects all six tests and the guard
+# silently never executes — ironic for a PR whose thesis is "don't silently
+# skip" (PR #136 re-review Medium #1).
+pytestmark = pytest.mark.unit
 
 CONFTEST_PATH = (
     Path(__file__).resolve().parents[1] / "integration" / "conftest.py"

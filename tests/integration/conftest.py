@@ -983,7 +983,7 @@ def live_server_available(live_base_url: str) -> str:
                 verify=_verify_ssl_enabled(),
             )
             break
-        except requests.RequestException as exc:  # pragma: no cover - network guard
+        except requests.RequestException as exc:
             last_exc = exc
             if attempt < attempts - 1:
                 time.sleep(backoff_seconds)
