@@ -87,10 +87,10 @@ def test_cli_login_and_pat_flow(
     env = os.environ.copy()
     env.setdefault("PYTHONWARNINGS", "ignore")
 
-    pat_token = _cli_login_and_create_pat(
+    # _cli_login_and_create_pat asserts the session token, PAT, and cache match.
+    _cli_login_and_create_pat(
         base_args, env, live_username, live_password, token_path, pat_prefix="cli-m1"
     )
-    assert pat_token
 
 
 @pytest.mark.requires_deployable_model
