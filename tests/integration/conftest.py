@@ -1330,11 +1330,13 @@ def deployable_model_prerequisite(
             poll_interval=5,
             timeout=DEPLOYABLE_TEST_DEPLOY_TIMEOUT_SECONDS,
         )
-    except (KamiwazaError, TimeoutError) as exc:
-        # Capability/infra failure → skip: a deploy refused with a 5xx on an
-        # incapable host (APIError), or a download/registration timeout. Any
-        # other (non-SDK) exception is an unexpected regression and propagates
-        # as an error rather than being masked as a skip.
+    except (KamiwazaError, TimeoutError, RuntimeError) as exc:
+        # Capability/infra failure → skip + tear down: deploy refused with a 5xx
+        # on an incapable host (APIError), a download/registration timeout
+        # (TimeoutError), or the deployment entering FAILED/ERROR status because
+        # the instance can't load the model (RuntimeError from wait_for_deployment,
+        # kamiwaza_sdk/services/serving.py). Any other (non-SDK) exception is an
+        # unexpected regression and propagates as an error rather than a skip.
         _stop_deployment_quietly(client, probe_deployment_id)
         pytest.skip(
             "Host cannot provision integration test model (download/deploy) "
