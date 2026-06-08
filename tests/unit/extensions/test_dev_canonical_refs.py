@@ -408,3 +408,78 @@ class TestDevRemoteBuildsAtCanonicalRefs:
         # Refuse exits before ImagePusher.push is invoked.
         assert exc_info.value.exit_code == 1
         pusher.push.assert_not_called()
+
+
+class TestInsecurePreflightSource:
+    """ENG-5719 follow-up: the push pre-flight must derive ``insecure`` from
+    ``effective_verify_ssl()`` (env override / dev-hostname auto-disable /
+    persisted flag), not the persisted ``verify_ssl`` alone."""
+
+    def test_insecure_uses_effective_verify_ssl_not_persisted_flag(self, tmp_path):
+        from kamiwaza_extensions.commands import dev as dev_cmd
+
+        # Persisted verify_ssl=True, but a dev URL auto-disables TLS, so
+        # effective_verify_ssl() is False -> the insecure path must be picked.
+        # The old `not connection.verify_ssl` would compute insecure=False and
+        # select the secure Docker push path, then HTTPS-fail against the
+        # plain-HTTP loopback registry.
+        conn = ConnectionInfo(
+            name="dev",
+            url="https://kamiwaza.test/api",
+            active=True,
+            created_at=0.0,
+            verify_ssl=True,
+        )
+        assert conn.verify_ssl is True
+        assert conn.effective_verify_ssl() is False
+
+        info = ExtensionInfo(
+            path=tmp_path,
+            name="my-app",
+            version="0.1.0",
+            metadata={"name": "my-app", "type": "app"},
+            compose_path=tmp_path / "docker-compose.yml",
+            compose_data={"services": {"api": {"build": {"context": "."}}}},
+        )
+
+        conn_mgr = MagicMock()
+        conn_mgr.get_active_connection.return_value = conn
+        conn_mgr.get_token.return_value = MagicMock(access_token="tok")
+        detector = MagicMock()
+        detector.detect.return_value = info
+        tagger = MagicMock()
+        tagger.generate_tag.return_value = "0.1.0-dev-abc1234.1"
+        tagger.get_git_info.return_value = ("abc1234", False)
+
+        spy_select = MagicMock(return_value="docker")
+
+        with (
+            patch(
+                "kamiwaza_extensions.extension_detector.ExtensionDetector",
+                return_value=detector,
+            ),
+            patch(
+                "kamiwaza_extensions.connections.ConnectionManager",
+                return_value=conn_mgr,
+            ),
+            patch(
+                "kamiwaza_extensions.revision_tagger.RevisionTagger",
+                return_value=tagger,
+            ),
+            patch(
+                "kamiwaza_extensions.registry_resolution.select_push_engine",
+                spy_select,
+            ),
+            # Stop right after engine selection so we don't need the full
+            # build/push/deploy scaffolding; run_dev_remote converts the
+            # ValueError into Exit(1).
+            patch(
+                "kamiwaza_extensions.registry_resolution.resolve_dev_registries",
+                side_effect=ValueError("stop after engine selection"),
+            ),
+            pytest.raises(click.exceptions.Exit) as exc_info,
+        ):
+            dev_cmd.run_dev_remote(no_build=True)
+
+        assert exc_info.value.exit_code == 1
+        spy_select.assert_called_once_with(insecure=True)

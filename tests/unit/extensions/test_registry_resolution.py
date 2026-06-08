@@ -91,6 +91,44 @@ class TestImageRegistryResolution:
         )
         assert resolution.image_registry == "registry.cluster.example"
 
+    @patch(
+        "kamiwaza_extensions.registry_resolution.detect_core_config_registry",
+        return_value="should-not-leak:30010",
+    )
+    @patch(
+        "kamiwaza_extensions.registry_resolution.build_engine_runs_in_vm",
+        return_value=False,
+    )
+    def test_core_config_skipped_for_remote_connection(self, _mock_vm, mock_core):
+        # ENG-5719: for a non-local connection the kubectl-derived core-config
+        # registry must NOT be trusted -- it reads the developer's current kube
+        # context, which may point at an unrelated local cluster. Fall through
+        # to the connection-derived registry instead.
+        resolution = resolve_dev_registries(
+            _conn("https://api.example.com/api"),
+            kind_registry_detector=lambda: None,
+        )
+        assert resolution.image_registry == "registry.api.example.com"
+        mock_core.assert_not_called()
+
+    @patch(
+        "kamiwaza_extensions.registry_resolution.detect_core_config_registry",
+        return_value="127.0.0.1:30010",
+    )
+    @patch(
+        "kamiwaza_extensions.registry_resolution.build_engine_runs_in_vm",
+        return_value=False,
+    )
+    def test_core_config_used_for_local_connection(self, _mock_vm, mock_core):
+        # Local/dev connection (default kamiwaza.test): the core-config lookup
+        # is trusted, since kubectl plausibly targets the same local cluster.
+        resolution = resolve_dev_registries(
+            _conn("https://kamiwaza.test/api"),
+            kind_registry_detector=lambda: None,
+        )
+        assert resolution.image_registry == "127.0.0.1:30010"
+        mock_core.assert_called_once()
+
 
 class TestPushRegistryResolution:
     @patch(

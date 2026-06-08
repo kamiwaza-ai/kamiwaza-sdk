@@ -379,7 +379,13 @@ def run_dev_remote(
         select_push_engine,
     )
 
-    insecure = not connection.verify_ssl
+    # Derive `insecure` from the *effective* verify-SSL setting (env override /
+    # dev-hostname auto-disable / persisted flag), not the persisted flag alone.
+    # When TLS is auto-disabled for a dev URL but `verify_ssl` is still True,
+    # the persisted flag would select the secure Docker push path and skip the
+    # insecure-registry pre-flight -- then Docker attempts HTTPS against the
+    # plain-HTTP loopback registry and the push fails (ENG-5719 follow-up).
+    insecure = not connection.effective_verify_ssl()
     push_engine = select_push_engine(insecure=insecure)
 
     try:

@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from typing import Callable, Iterable, Optional
 from urllib.parse import urlparse
 
+from kamiwaza_extensions.connections import _is_dev_hostname
+
 CORE_CONFIG_NAMESPACE = "kamiwaza"
 CORE_CONFIG_NAME = "core-config"
 REGISTRY_EXTERNAL_HOST_KEY = "KAMIWAZA_REGISTRY_EXTERNAL_HOST"
@@ -92,9 +94,19 @@ def resolve_image_registry(
     if env_registry:
         return normalize_registry_env("KAMIWAZA_REGISTRY", env_registry), "KAMIWAZA_REGISTRY"
 
-    core_config_registry = detect_core_config_registry()
-    if core_config_registry:
-        return core_config_registry, f"{CORE_CONFIG_NAMESPACE}/{CORE_CONFIG_NAME}"
+    # Only trust the in-cluster core-config registry for local/dev connections.
+    # `detect_core_config_registry()` reads whatever cluster the developer's
+    # *current kube context* points at -- which, for a non-local connection, can
+    # be an unrelated local Kamiwaza install. Trusting it then would build/push
+    # image refs for the local cluster and ship them to the remote API, which
+    # cannot pull them (ENG-5719). For non-local connections, skip it and fall
+    # through to the connection-derived registry below. (Note: this still trusts
+    # the lookup for a LAN-IP connection -- a fully robust gate would match the
+    # kube context's API server to the connection host; tracked as follow-up.)
+    if _is_dev_hostname(connection.url):
+        core_config_registry = detect_core_config_registry()
+        if core_config_registry:
+            return core_config_registry, f"{CORE_CONFIG_NAMESPACE}/{CORE_CONFIG_NAME}"
 
     if kind_registry_detector is None:
         kind_registry_detector = detect_kind_registry
