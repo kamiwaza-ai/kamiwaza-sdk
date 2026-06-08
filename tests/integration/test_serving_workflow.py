@@ -41,6 +41,7 @@ def _ensure_model_cached(client, model):
         pytest.skip(f"Model download API unavailable: {exc}")
 
 
+@pytest.mark.requires_deployable_model
 def test_deploy_qwen_and_infer_with_strip_thinking(live_kamiwaza_client, ensure_repo_ready):
     client = live_kamiwaza_client
     model = ensure_repo_ready(client, TEST_REPO_ID)
