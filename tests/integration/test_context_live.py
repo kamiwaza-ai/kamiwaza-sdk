@@ -12,7 +12,7 @@ import pytest
 
 from kamiwaza_sdk import KamiwazaClient
 from kamiwaza_sdk.authentication import UserPasswordAuthenticator
-from kamiwaza_sdk.exceptions import APIError
+from kamiwaza_sdk.exceptions import APIError, NotFoundError
 from kamiwaza_sdk.services.context import ContextService
 
 pytestmark = [
@@ -323,9 +323,12 @@ def session_workroom(shared_context_service: ContextService) -> str:
     try:
         yield workroom_id
     finally:
+        # delete() raises NotFoundError (a sibling of APIError, not a subclass)
+        # when the workroom is already gone, so catch both to keep teardown
+        # best-effort -- matching the sibling test_workroom_isolation_live.py.
         try:
             workrooms.delete(workroom_id)
-        except APIError:
+        except (APIError, NotFoundError):
             pass
 
 
