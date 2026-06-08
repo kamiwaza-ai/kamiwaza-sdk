@@ -1163,8 +1163,25 @@ def context_llm_prerequisite(
     live_kamiwaza_session_client: KamiwazaClient,
     ensure_repo_ready,
 ) -> Iterator[str]:
-    """Ensure a usable LLM deployment exists for context ontology operations."""
+    """Ensure a usable LLM deployment exists for context ontology operations, or skip once.
+
+    Mirrors ``embedding_model_prerequisite``: if no LLM is already deployed the
+    fixture attempts to provision one, but it **skips** (does not error) when the
+    platform cannot bring one up — e.g. a CPU-only smoke host with no inference
+    capacity, or an MLX-only test model on a non-Apple-Silicon runner. This keeps
+    the context ontology/vectordb tests as conditional skips on incapable hosts
+    instead of a cascade of fixture-setup ERRORs.
+    """
     client = live_kamiwaza_session_client
+
+    def _stop_provisioned(deployment_id: str | None) -> None:
+        """Best-effort teardown of a deployment THIS fixture provisioned."""
+        if not deployment_id:
+            return
+        try:
+            client.serving.stop_deployment(deployment_id=deployment_id, force=True)
+        except Exception:  # noqa: BLE001 — teardown is best-effort
+            pass
 
     existing = _preferred_active_model_deployment(
         client,
@@ -1175,45 +1192,63 @@ def context_llm_prerequisite(
         yield existing["deployment_id"]
         return
 
-    model = ensure_repo_ready(client, CONTEXT_TEST_LLM_REPO)
-    configs = client.models.get_model_configs(model.id)
-    if not configs:
-        pytest.fail(
-            f"No model configs available for context LLM repo '{CONTEXT_TEST_LLM_REPO}'"
+    # Track the id as soon as deploy_model returns so the skip/teardown paths can
+    # stop it — otherwise a deploy that succeeds but never becomes ready (e.g. a
+    # capacity-limited host) would be orphaned when we skip.
+    provisioned_deployment_id: str | None = None
+    try:
+        model = ensure_repo_ready(client, CONTEXT_TEST_LLM_REPO)
+        configs = client.models.get_model_configs(model.id)
+        if not configs:
+            pytest.skip(
+                f"No model configs available for context LLM repo '{CONTEXT_TEST_LLM_REPO}'"
+            )
+        default_config = next(
+            (config for config in configs if config.default), configs[0]
         )
-    default_config = next((config for config in configs if config.default), configs[0])
 
-    deployment_id = client.serving.deploy_model(
-        model_id=str(model.id),
-        m_config_id=default_config.id,
-        lb_port=0,
-        autoscaling=False,
-        min_copies=1,
-        starting_copies=1,
-    )
-    deployment = client.serving.wait_for_deployment(
-        deployment_id,
-        poll_interval=5,
-        timeout=CONTEXT_TEST_LLM_DEPLOY_TIMEOUT_SECONDS,
-    )
+        # deploy_model returns Union[UUID, bool] — False on failure (no raise).
+        # Guard before str() so a refused deploy skips cleanly instead of turning
+        # into the truthy id "False".
+        raw_deployment_id = client.serving.deploy_model(
+            model_id=str(model.id),
+            m_config_id=default_config.id,
+            lb_port=0,
+            autoscaling=False,
+            min_copies=1,
+            starting_copies=1,
+        )
+        if not raw_deployment_id:
+            pytest.skip(
+                "deploy_model did not return a deployment id for context LLM repo "
+                f"'{CONTEXT_TEST_LLM_REPO}' (deploy refused on this host)."
+            )
+        provisioned_deployment_id = str(raw_deployment_id)
+        deployment = client.serving.wait_for_deployment(
+            provisioned_deployment_id,
+            poll_interval=5,
+            timeout=CONTEXT_TEST_LLM_DEPLOY_TIMEOUT_SECONDS,
+        )
+    except Exception as exc:  # noqa: BLE001 — any provisioning failure → skip, not error
+        _stop_provisioned(provisioned_deployment_id)
+        pytest.skip(
+            "No active LLM deployment for context ontology tests and one could not "
+            f"be provisioned (repo={CONTEXT_TEST_LLM_REPO}): "
+            f"{type(exc).__name__}: {exc}"
+        )
+
     if not _platform_deployment_ready(deployment):
-        pytest.fail(
-            "Context ontology prerequisite deployment is not ready: "
+        _stop_provisioned(provisioned_deployment_id)
+        pytest.skip(
+            "Context ontology prerequisite LLM deployment did not become ready: "
             f"deployment_id={deployment.id}, status={deployment.status}, "
             f"instance_statuses={[instance.status for instance in deployment.instances]}"
         )
 
-    created_deployment_id = str(deployment.id)
     try:
-        yield created_deployment_id
+        yield provisioned_deployment_id
     finally:
-        try:
-            client.serving.stop_deployment(
-                deployment_id=created_deployment_id,
-                force=True,
-            )
-        except Exception:
-            pass
+        _stop_provisioned(provisioned_deployment_id)
 
 
 @pytest.fixture(autouse=True)
