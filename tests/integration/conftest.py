@@ -1330,17 +1330,28 @@ def deployable_model_prerequisite(
             poll_interval=5,
             timeout=DEPLOYABLE_TEST_DEPLOY_TIMEOUT_SECONDS,
         )
-    except (KamiwazaError, TimeoutError, RuntimeError) as exc:
-        # Capability/infra failure → skip + tear down: deploy refused with a 5xx
-        # on an incapable host (APIError), a download/registration timeout
-        # (TimeoutError), or the deployment entering FAILED/ERROR status because
-        # the instance can't load the model (RuntimeError from wait_for_deployment,
-        # kamiwaza_sdk/services/serving.py). Any other (non-SDK) exception is an
-        # unexpected regression and propagates as an error rather than a skip.
+    except (TimeoutError, RuntimeError) as exc:
+        # Download/registration timeout, or the deployment entering FAILED/ERROR
+        # status because the instance can't load the model on this host
+        # (RuntimeError from wait_for_deployment, kamiwaza_sdk/services/serving.py)
+        # — capability/infra failure → skip + tear down.
         _stop_deployment_quietly(client, probe_deployment_id)
         pytest.skip(
             "Host cannot provision integration test model (download/deploy) "
             f"'{DEPLOYABLE_TEST_MODEL_REPO}': {type(exc).__name__}: {exc}"
+        )
+    except APIError as exc:
+        # Only a 5xx (server cannot bring the model up on this host) is a
+        # capability failure → skip. A 4xx (auth / scope / validation /
+        # request-shape) is a real regression and MUST fail, not be masked as a
+        # skip, so it is re-raised.
+        status_code = getattr(exc, "status_code", None)
+        _stop_deployment_quietly(client, probe_deployment_id)
+        if status_code is None or status_code < 500:
+            raise
+        pytest.skip(
+            "Host cannot provision integration test model (download/deploy) "
+            f"'{DEPLOYABLE_TEST_MODEL_REPO}': APIError {status_code}: {exc}"
         )
 
     ready = _platform_deployment_ready(deployment)
