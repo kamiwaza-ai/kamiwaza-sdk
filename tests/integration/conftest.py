@@ -120,10 +120,13 @@ CONTEXT_TEST_LLM_REPO = os.environ.get(
 CONTEXT_TEST_LLM_DEPLOY_TIMEOUT_SECONDS = float(
     os.environ.get("KAMIWAZA_CONTEXT_LLM_DEPLOY_TIMEOUT_SECONDS", "600")
 )
-DEPLOYABLE_TEST_MODEL_REPO = os.environ.get(
-    "KAMIWAZA_DEPLOYABLE_TEST_MODEL_REPO",
-    "mlx-community/Qwen3-4B-4bit",
-)
+# Must stay in sync with TEST_REPO_ID in test_serving_workflow.py and
+# test_cli_live.py: the capability probe deploys the SAME model the gated tests
+# deploy, so the gate's skip/run verdict matches what the tests will actually do.
+# Intentionally not env-overridable — an override here that the test modules
+# don't honor would let the probe pass while the tests deploy a different model
+# and fail instead of skip.
+DEPLOYABLE_TEST_MODEL_REPO = "mlx-community/Qwen3-4B-4bit"
 DEPLOYABLE_TEST_DEPLOY_TIMEOUT_SECONDS = float(
     os.environ.get("KAMIWAZA_DEPLOYABLE_TEST_DEPLOY_TIMEOUT_SECONDS", "600")
 )
@@ -1281,15 +1284,16 @@ def deployable_model_prerequisite(
     dependent tests perform their own deploys.
     """
     client = live_kamiwaza_session_client
-    if (
-        _preferred_active_model_deployment(
-            client,
-            desired_type="llm",
-            preferred_repo_id=DEPLOYABLE_TEST_MODEL_REPO,
-        )
-        is not None
-    ):
-        return  # a model is already deployed → host is capable
+    # Short-circuit ONLY when the exact test model is already deployed — a
+    # different active LLM does not prove this host can deploy DEPLOYABLE_TEST_MODEL_REPO
+    # (e.g. MLX on x86), so in that case we must still probe.
+    existing = _preferred_active_model_deployment(
+        client,
+        desired_type="llm",
+        preferred_repo_id=DEPLOYABLE_TEST_MODEL_REPO,
+    )
+    if existing is not None and existing.get("repo_model_id") == DEPLOYABLE_TEST_MODEL_REPO:
+        return  # the test model itself is already deployed → host is capable
 
     probe_deployment_id: str | None = None
     try:
