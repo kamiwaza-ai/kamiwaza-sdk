@@ -838,6 +838,18 @@ class TestDevNaming:
         assert len(name) <= 63
         assert name.startswith("hello-web-dev-")
 
+    def test_distinct_names_with_same_slug_get_distinct_dev_names(self):
+        # ENG-5719 review follow-up: two display names that normalize to the
+        # same DNS-1123 slug must not collide. The hash includes the original
+        # (pre-slug) name, so the second deployment can't silently patch over
+        # the first via ``run_dev_remote`` (which matches by dev name). The old
+        # user-only hash made both names "hello-web-dev-<userhash>".
+        a = PayloadBuilder.make_dev_name("Hello Web", user_id="user-123")
+        b = PayloadBuilder.make_dev_name("hello-web", user_id="user-123")
+        assert a.startswith("hello-web-dev-")
+        assert b.startswith("hello-web-dev-")
+        assert a != b
+
 
 class TestResourceParsing:
     def test_cpus_converted_to_millicpu(self, builder):

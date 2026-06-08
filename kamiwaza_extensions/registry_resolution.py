@@ -108,11 +108,20 @@ def resolve_image_registry(
         if core_config_registry:
             return core_config_registry, f"{CORE_CONFIG_NAMESPACE}/{CORE_CONFIG_NAME}"
 
-    if kind_registry_detector is None:
-        kind_registry_detector = detect_kind_registry
-    kind_registry = kind_registry_detector()
-    if kind_registry:
-        return kind_registry, "kind local-registry-hosting"
+        # The Kind detector reads the same local kube context as core-config
+        # (kube-public/local-registry-hosting), so it is only meaningful when
+        # the connection itself is local. For a non-local connection whose
+        # kubectl happens to point at a local Kind cluster, returning
+        # localhost:5001 would ship an unreachable image registry to the remote
+        # API -- the same ENG-5719 bug class the core-config gate prevents, so
+        # gate it on the dev hostname too. (The LAN-IP caveat above applies here
+        # as well: a robust gate would match the kube context's API server to
+        # the connection host.)
+        if kind_registry_detector is None:
+            kind_registry_detector = detect_kind_registry
+        kind_registry = kind_registry_detector()
+        if kind_registry:
+            return kind_registry, "kind local-registry-hosting"
 
     cluster_url = connection.url.removesuffix("/api")
     parsed = urlparse(cluster_url)

@@ -100,16 +100,20 @@ class TestImageRegistryResolution:
         return_value=False,
     )
     def test_core_config_skipped_for_remote_connection(self, _mock_vm, mock_core):
-        # ENG-5719: for a non-local connection the kubectl-derived core-config
-        # registry must NOT be trusted -- it reads the developer's current kube
-        # context, which may point at an unrelated local cluster. Fall through
-        # to the connection-derived registry instead.
+        # ENG-5719: for a non-local connection neither kubectl-derived local
+        # lookup may be trusted -- core-config AND the Kind detector both read
+        # the developer's current kube context, which may point at an unrelated
+        # local cluster. Both must be skipped and the connection-derived
+        # registry used instead. The Kind detector returns a value here to prove
+        # it is gated (not merely returning None).
+        kind_detector = MagicMock(return_value="localhost:5001")
         resolution = resolve_dev_registries(
             _conn("https://api.example.com/api"),
-            kind_registry_detector=lambda: None,
+            kind_registry_detector=kind_detector,
         )
         assert resolution.image_registry == "registry.api.example.com"
         mock_core.assert_not_called()
+        kind_detector.assert_not_called()
 
     @patch(
         "kamiwaza_extensions.registry_resolution.detect_core_config_registry",
