@@ -1326,10 +1326,14 @@ def deployable_model_prerequisite(
             poll_interval=5,
             timeout=DEPLOYABLE_TEST_DEPLOY_TIMEOUT_SECONDS,
         )
-    except Exception as exc:  # noqa: BLE001 — any provisioning failure → skip, not error
+    except (KamiwazaError, TimeoutError) as exc:
+        # Capability/infra failure → skip: a deploy refused with a 5xx on an
+        # incapable host (APIError), or a download/registration timeout. Any
+        # other (non-SDK) exception is an unexpected regression and propagates
+        # as an error rather than being masked as a skip.
         _stop_deployment_quietly(client, probe_deployment_id)
         pytest.skip(
-            "Host cannot deploy integration test model "
+            "Host cannot provision integration test model (download/deploy) "
             f"'{DEPLOYABLE_TEST_MODEL_REPO}': {type(exc).__name__}: {exc}"
         )
 
