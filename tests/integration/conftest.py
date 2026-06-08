@@ -120,6 +120,13 @@ CONTEXT_TEST_LLM_REPO = os.environ.get(
 CONTEXT_TEST_LLM_DEPLOY_TIMEOUT_SECONDS = float(
     os.environ.get("KAMIWAZA_CONTEXT_LLM_DEPLOY_TIMEOUT_SECONDS", "600")
 )
+DEPLOYABLE_TEST_MODEL_REPO = os.environ.get(
+    "KAMIWAZA_DEPLOYABLE_TEST_MODEL_REPO",
+    "mlx-community/Qwen3-4B-4bit",
+)
+DEPLOYABLE_TEST_DEPLOY_TIMEOUT_SECONDS = float(
+    os.environ.get("KAMIWAZA_DEPLOYABLE_TEST_DEPLOY_TIMEOUT_SECONDS", "600")
+)
 EMBEDDING_TEST_MODEL_REPO = os.environ.get(
     "KAMIWAZA_TEST_EMBEDDING_MODEL_REPO",
     "sentence-transformers/all-MiniLM-L6-v2",
@@ -492,6 +499,18 @@ def _platform_deployment_ready(deployment: object) -> bool:
         str(getattr(instance, "status", "")).upper() == "DEPLOYED"
         for instance in instances
     )
+
+
+def _stop_deployment_quietly(
+    client: KamiwazaClient, deployment_id: str | None
+) -> None:
+    """Best-effort stop of a deployment (used for capability probes / cleanup)."""
+    if not deployment_id:
+        return
+    try:
+        client.serving.stop_deployment(deployment_id=deployment_id, force=True)
+    except Exception:  # noqa: BLE001 — teardown is best-effort
+        pass
 
 
 def _active_model_deployments(
@@ -1247,10 +1266,88 @@ def context_llm_prerequisite(
         _stop_provisioned(provisioned_deployment_id)
 
 
+@pytest.fixture(scope="session")
+def deployable_model_prerequisite(
+    live_kamiwaza_session_client: KamiwazaClient,
+    ensure_repo_ready,
+) -> None:
+    """Skip once if this host cannot deploy the integration test model.
+
+    Serving/CLI tests that deploy ``DEPLOYABLE_TEST_MODEL_REPO`` (an MLX model)
+    fail with a 5xx on hosts without compatible inference capacity — e.g. the
+    x86 CPU Azure smoke. Probe deployability once per session and skip the
+    marked tests instead of failing them. Mirrors ``embedding_model_prerequisite``
+    / ``context_llm_prerequisite``; the probe tears down its own deployment so
+    dependent tests perform their own deploys.
+    """
+    client = live_kamiwaza_session_client
+    if (
+        _preferred_active_model_deployment(
+            client,
+            desired_type="llm",
+            preferred_repo_id=DEPLOYABLE_TEST_MODEL_REPO,
+        )
+        is not None
+    ):
+        return  # a model is already deployed → host is capable
+
+    probe_deployment_id: str | None = None
+    try:
+        model = ensure_repo_ready(client, DEPLOYABLE_TEST_MODEL_REPO)
+        configs = client.models.get_model_configs(model.id)
+        if not configs:
+            pytest.skip(
+                "No model configs available for deployable test model "
+                f"'{DEPLOYABLE_TEST_MODEL_REPO}'"
+            )
+        default_config = next(
+            (config for config in configs if config.default), configs[0]
+        )
+        raw_deployment_id = client.serving.deploy_model(
+            model_id=str(model.id),
+            m_config_id=default_config.id,
+            lb_port=0,
+            autoscaling=False,
+            min_copies=1,
+            starting_copies=1,
+        )
+        if not raw_deployment_id:
+            pytest.skip(
+                f"deploy_model returned no id for '{DEPLOYABLE_TEST_MODEL_REPO}' "
+                "(deploy refused on this host)."
+            )
+        probe_deployment_id = str(raw_deployment_id)
+        deployment = client.serving.wait_for_deployment(
+            probe_deployment_id,
+            poll_interval=5,
+            timeout=DEPLOYABLE_TEST_DEPLOY_TIMEOUT_SECONDS,
+        )
+    except Exception as exc:  # noqa: BLE001 — any provisioning failure → skip, not error
+        _stop_deployment_quietly(client, probe_deployment_id)
+        pytest.skip(
+            "Host cannot deploy integration test model "
+            f"'{DEPLOYABLE_TEST_MODEL_REPO}': {type(exc).__name__}: {exc}"
+        )
+
+    ready = _platform_deployment_ready(deployment)
+    _stop_deployment_quietly(client, probe_deployment_id)
+    if not ready:
+        pytest.skip(
+            f"Integration test model '{DEPLOYABLE_TEST_MODEL_REPO}' did not become "
+            "ready on this host."
+        )
+
+
 @pytest.fixture(autouse=True)
 def _require_embedding_model_for_marked_tests(request: pytest.FixtureRequest) -> None:
     if "requires_embedding_model" in request.keywords:
         request.getfixturevalue("embedding_model_prerequisite")
+
+
+@pytest.fixture(autouse=True)
+def _require_deployable_model_for_marked_tests(request: pytest.FixtureRequest) -> None:
+    if "requires_deployable_model" in request.keywords:
+        request.getfixturevalue("deployable_model_prerequisite")
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
