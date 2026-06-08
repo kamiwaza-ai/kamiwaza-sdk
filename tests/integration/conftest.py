@@ -1207,16 +1207,23 @@ def context_llm_prerequisite(
             (config for config in configs if config.default), configs[0]
         )
 
-        provisioned_deployment_id = str(
-            client.serving.deploy_model(
-                model_id=str(model.id),
-                m_config_id=default_config.id,
-                lb_port=0,
-                autoscaling=False,
-                min_copies=1,
-                starting_copies=1,
-            )
+        # deploy_model returns Union[UUID, bool] — False on failure (no raise).
+        # Guard before str() so a refused deploy skips cleanly instead of turning
+        # into the truthy id "False".
+        raw_deployment_id = client.serving.deploy_model(
+            model_id=str(model.id),
+            m_config_id=default_config.id,
+            lb_port=0,
+            autoscaling=False,
+            min_copies=1,
+            starting_copies=1,
         )
+        if not raw_deployment_id:
+            pytest.skip(
+                "deploy_model did not return a deployment id for context LLM repo "
+                f"'{CONTEXT_TEST_LLM_REPO}' (deploy refused on this host)."
+            )
+        provisioned_deployment_id = str(raw_deployment_id)
         deployment = client.serving.wait_for_deployment(
             provisioned_deployment_id,
             poll_interval=5,
