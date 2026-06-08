@@ -948,9 +948,17 @@ def _resolve_live_password_once(
 def live_server_available(live_base_url: str) -> str:
     """Ensure a running Kamiwaza server is reachable before running live tests.
 
-    Retries a few times before skipping: a ``pytest.skip`` raised from a
-    session-scoped fixture is cached for every dependent test, so a single
-    slow request against a cold platform can cascade into a whole-suite skip.
+    Retries a few times, then ``pytest.exit`` if the server is unreachable or
+    unhealthy. Earlier versions raised ``pytest.skip`` here, which pytest caches
+    on a session-scoped fixture and replays as a skip on every dependent test —
+    producing a green report with 165+ silent skips when the platform was
+    actually down (see ENG-6504). Exiting fails the run loudly with the actual
+    cause; tests that intentionally don't need a live server should not depend
+    on this fixture.
+
+    Auth-related skips in sibling fixtures (``live_kamiwaza_client``,
+    ``resolved_live_password``) stay as ``pytest.skip`` — missing credentials
+    is a legitimate opt-out, distinct from "infrastructure is broken."
     """
 
     health_url = f"{live_base_url}/ping"
@@ -971,22 +979,32 @@ def live_server_available(live_base_url: str) -> str:
                 verify=_verify_ssl_enabled(),
             )
             break
-        except requests.RequestException as exc:  # pragma: no cover - network guard
+        except requests.RequestException as exc:
             last_exc = exc
             if attempt < attempts - 1:
                 time.sleep(backoff_seconds)
+    # pytest's exit code 2 normally means EXIT_INTERRUPTED. We reuse it here
+    # because "infrastructure unreachable" is operationally the same shape
+    # from a pipeline perspective: the run did not complete normally, and any
+    # caller that already treats non-zero pytest exits as failure (e.g. the
+    # kajiya smoke runner) handles it without special-casing. The collision is
+    # intentional and documented.
+    _INFRA_UNAVAILABLE_RETURNCODE = 2
     if response is None:
-        pytest.skip(
-            f"Kamiwaza server unavailable at {live_base_url} after {attempts} attempts: {last_exc}"
+        pytest.exit(
+            f"Kamiwaza server unavailable at {live_base_url} after {attempts} attempts: {last_exc}",
+            returncode=_INFRA_UNAVAILABLE_RETURNCODE,
         )
     if response.status_code >= 500:
-        pytest.skip(
-            f"Kamiwaza server unhealthy at {health_url}: {response.status_code}"
+        pytest.exit(
+            f"Kamiwaza server unhealthy at {health_url}: {response.status_code}",
+            returncode=_INFRA_UNAVAILABLE_RETURNCODE,
         )
     if response.status_code >= 400 and response.status_code not in (401, 403):
-        pytest.skip(
+        pytest.exit(
             f"Kamiwaza server at {health_url} returned unexpected status {response.status_code}; "
-            "check base URL or ping route configuration."
+            "check base URL or ping route configuration.",
+            returncode=_INFRA_UNAVAILABLE_RETURNCODE,
         )
     return live_base_url
 
