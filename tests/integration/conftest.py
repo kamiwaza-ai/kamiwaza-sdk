@@ -1170,6 +1170,15 @@ def context_llm_prerequisite(
     """
     client = live_kamiwaza_session_client
 
+    def _stop_provisioned(deployment_id: str | None) -> None:
+        """Best-effort teardown of a deployment THIS fixture provisioned."""
+        if not deployment_id:
+            return
+        try:
+            client.serving.stop_deployment(deployment_id=deployment_id, force=True)
+        except Exception:  # noqa: BLE001 — teardown is best-effort
+            pass
+
     existing = _preferred_active_model_deployment(
         client,
         desired_type="llm",
@@ -1179,6 +1188,10 @@ def context_llm_prerequisite(
         yield existing["deployment_id"]
         return
 
+    # Track the id as soon as deploy_model returns so the skip/teardown paths can
+    # stop it — otherwise a deploy that succeeds but never becomes ready (e.g. a
+    # capacity-limited host) would be orphaned when we skip.
+    provisioned_deployment_id: str | None = None
     try:
         model = ensure_repo_ready(client, CONTEXT_TEST_LLM_REPO)
         configs = client.models.get_model_configs(model.id)
@@ -1190,20 +1203,23 @@ def context_llm_prerequisite(
             (config for config in configs if config.default), configs[0]
         )
 
-        deployment_id = client.serving.deploy_model(
-            model_id=str(model.id),
-            m_config_id=default_config.id,
-            lb_port=0,
-            autoscaling=False,
-            min_copies=1,
-            starting_copies=1,
+        provisioned_deployment_id = str(
+            client.serving.deploy_model(
+                model_id=str(model.id),
+                m_config_id=default_config.id,
+                lb_port=0,
+                autoscaling=False,
+                min_copies=1,
+                starting_copies=1,
+            )
         )
         deployment = client.serving.wait_for_deployment(
-            deployment_id,
+            provisioned_deployment_id,
             poll_interval=5,
             timeout=CONTEXT_TEST_LLM_DEPLOY_TIMEOUT_SECONDS,
         )
     except Exception as exc:  # noqa: BLE001 — any provisioning failure → skip, not error
+        _stop_provisioned(provisioned_deployment_id)
         pytest.skip(
             "No active LLM deployment for context ontology tests and one could not "
             f"be provisioned (repo={CONTEXT_TEST_LLM_REPO}): "
@@ -1211,23 +1227,17 @@ def context_llm_prerequisite(
         )
 
     if not _platform_deployment_ready(deployment):
+        _stop_provisioned(provisioned_deployment_id)
         pytest.skip(
             "Context ontology prerequisite LLM deployment did not become ready: "
             f"deployment_id={deployment.id}, status={deployment.status}, "
             f"instance_statuses={[instance.status for instance in deployment.instances]}"
         )
 
-    created_deployment_id = str(deployment.id)
     try:
-        yield created_deployment_id
+        yield provisioned_deployment_id
     finally:
-        try:
-            client.serving.stop_deployment(
-                deployment_id=created_deployment_id,
-                force=True,
-            )
-        except Exception:
-            pass
+        _stop_provisioned(provisioned_deployment_id)
 
 
 @pytest.fixture(autouse=True)
