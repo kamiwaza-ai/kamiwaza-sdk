@@ -1,5 +1,9 @@
-kamiwaza-extensions-lib>=0.4,<0.5
-
+# ENG-5957: ``kamiwaza-extensions-lib`` is installed from the in-repo
+# workspace member (``kamiwaza_extensions_lib/``) by the Dockerfile
+# BEFORE this file is consumed, so it does not appear here. PRs that
+# modify the workspace member therefore exercise their changes through
+# the live contract app instead of resolving the last-published PyPI
+# release.
 fastapi>=0.115.0
 pydantic>=2.7.0
 uvicorn[standard]>=0.30.0

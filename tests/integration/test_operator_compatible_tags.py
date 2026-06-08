@@ -20,6 +20,11 @@ from kamiwaza_extensions.platform_compat import (
     OPERATOR_IMAGE,
 )
 
+# The module docstring already says "Marked ``integration`` so it does not run
+# in the default ``make test`` path" — but the marker had drifted away. This
+# restores it so the GHCR resolve sanity-check stays out of the unit lane.
+pytestmark = pytest.mark.integration
+
 # OPERATOR_IMAGE is "ghcr.io/<owner>/<repo>" — split into the registry path
 # expected by GHCR's OCI distribution API.
 _GHCR_HOST = "ghcr.io"
