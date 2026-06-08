@@ -549,6 +549,20 @@ class DoctorChecker:
         if connection is None:
             return []
 
+        # Mirror what ``kz-ext dev`` actually does: derive engine selection,
+        # registry resolution, and the insecure-registry gate from the
+        # *effective* verify-SSL (env override / dev-hostname auto-disable /
+        # persisted flag), not the persisted ``verify_ssl`` alone. Otherwise
+        # doctor greenlights a config that ``dev`` then fails on -- e.g. a
+        # ``kamiwaza.test`` connection with ``verify_ssl=True`` whose TLS is
+        # auto-disabled (ENG-5719 follow-up). ``getattr`` fallback keeps
+        # doctor robust against connection objects without the method.
+        effective_verify = (
+            connection.effective_verify_ssl()
+            if hasattr(connection, "effective_verify_ssl")
+            else getattr(connection, "verify_ssl", True)
+        )
+
         try:
             from kamiwaza_extensions.registry_resolution import (
                 resolve_dev_registries,
@@ -559,7 +573,7 @@ class DoctorChecker:
             # will actually pick — otherwise doctor reports a VM alias the
             # push engine can't resolve (R6: podman from host CLI cannot
             # resolve host.docker.internal).
-            verify_ssl_for_engine = getattr(connection, "verify_ssl", True)
+            verify_ssl_for_engine = effective_verify
             resolution = resolve_dev_registries(
                 connection,
                 push_engine=select_push_engine(insecure=not verify_ssl_for_engine),
@@ -586,7 +600,7 @@ class DoctorChecker:
                 ),
             )
         ]
-        verify_ssl = getattr(connection, "verify_ssl", True)
+        verify_ssl = effective_verify
         results.append(
             self._check_registry_http_endpoint(
                 "Registry image endpoint",

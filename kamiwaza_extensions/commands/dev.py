@@ -400,23 +400,6 @@ def run_dev_remote(
     registry = registry_resolution.image_registry
     push_registry = registry_resolution.push_registry
 
-    # Pre-flight: when docker is the active engine pushing insecurely to
-    # the rewritten alias, the daemon must treat that alias as insecure
-    # (default ``insecure-registries`` only covers 127.0.0.0/8). Fail fast
-    # with a one-line daemon.json fix (jxstanford iter-4 Critical #1)
-    # rather than letting the push timeout against HTTPS. Gate on
-    # ``insecure`` so a legitimate user-supplied secure-HTTPS push
-    # override isn't refused (claude iter-5 I1).
-    if (
-        not no_push
-        and insecure
-        and push_engine == "docker"
-        and push_registry != registry
-        and not docker_accepts_insecure_push_to(push_registry)
-    ):
-        console.print(f"[red]Error:[/red] {insecure_registry_daemon_json_fix(push_registry)}")
-        raise typer.Exit(code=1)
-
     # Read prior dev-state for resume hints (§4.2.9 DevStateFile, ENG-3887).
     # If the prior run wrote matching inputs (revision, cluster, service,
     # sdk-repo, registry, push registry) and got past a step, skip that
@@ -621,6 +604,27 @@ def run_dev_remote(
 
     # 7. Push images
     if not no_push and image_refs:
+        # Pre-flight: when docker is the active engine pushing insecurely to
+        # the rewritten alias, the daemon must treat that alias as insecure
+        # (default ``insecure-registries`` only covers 127.0.0.0/8). Fail fast
+        # with a one-line daemon.json fix (jxstanford iter-4 Critical #1)
+        # rather than letting the push timeout against HTTPS. Gated inside the
+        # push branch -- after resume may have set ``no_push`` and once
+        # ``image_refs`` is known -- so a resume-skip or a build-context-less
+        # extension can't trip it when no push will happen (ENG-5719
+        # follow-up). Gate on ``insecure`` so a legitimate user-supplied
+        # secure-HTTPS push override isn't refused (claude iter-5 I1).
+        if (
+            insecure
+            and push_engine == "docker"
+            and push_registry != registry
+            and not docker_accepts_insecure_push_to(push_registry)
+        ):
+            console.print(
+                f"[red]Error:[/red] {insecure_registry_daemon_json_fix(push_registry)}"
+            )
+            raise typer.Exit(code=1)
+
         console.print(f"Pushing to {push_registry}...")
         try:
             from kamiwaza_extensions.registry_resolution import (
@@ -648,7 +652,14 @@ def run_dev_remote(
                 image_refs,
                 registry=push_registry,
                 token=registry_login_token,
-                insecure=not connection.verify_ssl,
+                # Use the *effective* verify-SSL -- the same value engine
+                # selection and the insecure-registry pre-flight derived above
+                # (env override / dev-hostname auto-disable / persisted flag),
+                # not the persisted flag alone. Otherwise the resolver
+                # validates one engine/TLS mode while the push runs another and
+                # Docker attempts HTTPS against the plain-HTTP loopback registry
+                # (ENG-5719 follow-up).
+                insecure=insecure,
                 verbose=verbose,
                 target_refs=build_push_ref_map(
                     image_refs,

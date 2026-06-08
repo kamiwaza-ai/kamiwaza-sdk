@@ -331,11 +331,17 @@ class TestDoctorRegistryChecks:
         monkeypatch.setenv("KAMIWAZA_PUSH_REGISTRY", "host.containers.internal:30010")
         mock_core.return_value = "127.0.0.1:30010"
         checker = DoctorChecker(config_dir=tmp_path / ".kamiwaza")
-        # Connection mock needs an explicit ``verify_ssl`` attribute (not a
-        # MagicMock auto-attr) so the new probe TLS-verify policy
-        # (jxstanford Medium #1) sees a real bool rather than truthy mock.
+        # Connection mock needs explicit ``verify_ssl`` AND
+        # ``effective_verify_ssl`` attributes (not MagicMock auto-attrs) so the
+        # probe TLS-verify policy (jxstanford Medium #1) and the effective-
+        # verify-SSL engine/gate logic (ENG-5719) see real bools rather than
+        # truthy mocks.
         checker._conn_mgr.get_active_connection = MagicMock(
-            return_value=MagicMock(url="https://kamiwaza.test/api", verify_ssl=True)
+            return_value=MagicMock(
+                url="https://kamiwaza.test/api",
+                verify_ssl=True,
+                effective_verify_ssl=MagicMock(return_value=True),
+            )
         )
         ok = MagicMock(
             status_code=200,
@@ -381,11 +387,16 @@ class TestDoctorRegistryChecks:
         )
         mock_core.return_value = "127.0.0.1:30010"
         checker = DoctorChecker(config_dir=tmp_path / ".kamiwaza")
-        # Secure connection (verify_ssl=True) → not insecure → insecure-
-        # registries check must be skipped even though the push registry
-        # differs from the image registry.
+        # Secure connection (effective verify-SSL True) → not insecure →
+        # insecure-registries check must be skipped even though the push
+        # registry differs from the image registry. ``effective_verify_ssl`` is
+        # set explicitly (ENG-5719) so the gate keys off a real bool.
         checker._conn_mgr.get_active_connection = MagicMock(
-            return_value=MagicMock(url="https://kamiwaza.test/api", verify_ssl=True)
+            return_value=MagicMock(
+                url="https://kamiwaza.test/api",
+                verify_ssl=True,
+                effective_verify_ssl=MagicMock(return_value=True),
+            )
         )
         ok = MagicMock(
             status_code=200,
@@ -425,7 +436,11 @@ class TestDoctorRegistryChecks:
         mock_core.return_value = "127.0.0.1:30010"
         checker = DoctorChecker(config_dir=tmp_path / ".kamiwaza")
         checker._conn_mgr.get_active_connection = MagicMock(
-            return_value=MagicMock(url="https://kamiwaza.test/api", verify_ssl=False)
+            return_value=MagicMock(
+                url="https://kamiwaza.test/api",
+                verify_ssl=False,
+                effective_verify_ssl=MagicMock(return_value=False),
+            )
         )
         ok = MagicMock(
             status_code=200,
@@ -464,6 +479,65 @@ class TestDoctorRegistryChecks:
         assert "insecure-registries" in (insecure_check.fix or "")
         assert "host.docker.internal" in (insecure_check.fix or "") or \
             "30010" in (insecure_check.fix or "")
+
+    @patch("kamiwaza_extensions.registry_resolution.detect_core_config_registry")
+    def test_registry_readiness_uses_effective_verify_ssl_for_dev_host(
+        self, mock_core, tmp_path
+    ):
+        """ENG-5719 follow-up: doctor must key engine selection and the
+        insecure-registries gate off ``effective_verify_ssl()``, not the
+        persisted flag — so it matches what ``kz-ext dev`` actually does. A
+        ``kamiwaza.test`` connection with persisted ``verify_ssl=True`` has TLS
+        auto-disabled (effective False), so ``dev`` pushes insecurely and hits
+        the gate. The old doctor read ``verify_ssl=True``, computed
+        ``insecure=False``, and silently skipped the gate — greenlighting a
+        config ``dev`` then failed on (the dev/doctor divergence)."""
+
+        mock_core.return_value = "127.0.0.1:30010"
+        checker = DoctorChecker(config_dir=tmp_path / ".kamiwaza")
+        # Persisted verify_ssl=True but effective False (dev-hostname auto-
+        # disable) — the divergence the old persisted-flag path missed.
+        checker._conn_mgr.get_active_connection = MagicMock(
+            return_value=MagicMock(
+                url="https://kamiwaza.test/api",
+                verify_ssl=True,
+                effective_verify_ssl=MagicMock(return_value=False),
+            )
+        )
+        ok = MagicMock(
+            status_code=200,
+            headers={"content-type": "application/json"},
+            text="{}",
+        )
+        with (
+            patch("requests.get", return_value=ok),
+            patch(
+                "kamiwaza_extensions.registry_resolution.build_engine_runs_in_vm",
+                return_value=True,
+            ),
+            patch(
+                "kamiwaza_extensions.registry_resolution._docker_is_working",
+                return_value=True,
+            ),
+            patch(
+                "kamiwaza_extensions.registry_resolution._has_podman",
+                return_value=False,
+            ),
+            patch(
+                "kamiwaza_extensions.registry_resolution.docker_accepts_insecure_push_to",
+                return_value=False,
+            ),
+        ):
+            results = checker._check_registry_readiness()
+
+        # effective verify-SSL is False → insecure=True → the gate fires,
+        # matching ``kz-ext dev``. Under the old persisted-flag logic this
+        # check would have been absent.
+        insecure_check = next(
+            (r for r in results if r.name == "Docker insecure-registries"), None
+        )
+        assert insecure_check is not None
+        assert insecure_check.status == "fail"
 
 
 @pytest.mark.unit

@@ -483,3 +483,209 @@ class TestInsecurePreflightSource:
 
         assert exc_info.value.exit_code == 1
         spy_select.assert_called_once_with(insecure=True)
+
+    def test_push_call_uses_effective_insecure_not_persisted_flag(
+        self, tmp_path, monkeypatch
+    ):
+        """ENG-5719 follow-up: the ``ImagePusher.push`` call itself must
+        receive ``insecure`` derived from ``effective_verify_ssl()`` — the
+        same value engine selection and the pre-flight use — not the persisted
+        ``verify_ssl``. A dev-host connection with persisted ``verify_ssl=True``
+        auto-disables TLS (effective False), so the push must be insecure; the
+        old ``not connection.verify_ssl`` computed ``insecure=False`` and drove
+        Docker-over-HTTPS against the plain-HTTP loopback registry — the exact
+        desync the resolver/pre-flight were already fixed for."""
+        from kamiwaza_extensions.commands import dev as dev_cmd
+        from kamiwaza_extensions.image_pusher import ImagePushError
+
+        monkeypatch.delenv("KAMIWAZA_PUSH_REGISTRY", raising=False)
+        conn = ConnectionInfo(
+            name="dev",
+            url="https://kamiwaza.test/api",
+            active=True,
+            created_at=0.0,
+            verify_ssl=True,
+        )
+        assert conn.verify_ssl is True
+        assert conn.effective_verify_ssl() is False
+
+        info = ExtensionInfo(
+            path=tmp_path,
+            name="my-app",
+            version="0.1.0",
+            metadata={"name": "my-app", "type": "app"},
+            compose_path=tmp_path / "docker-compose.yml",
+            compose_data={"services": {"api": {"build": {"context": "."}}}},
+        )
+
+        captured: dict = {}
+
+        def _capture_push(*args, **kwargs):
+            captured["kwargs"] = kwargs
+            raise ImagePushError("stop-after-capture")
+
+        conn_mgr = MagicMock()
+        conn_mgr.get_active_connection.return_value = conn
+        conn_mgr.get_token.return_value = MagicMock(access_token="tok-abc")
+        detector = MagicMock()
+        detector.detect.return_value = info
+        tagger = MagicMock()
+        tagger.generate_tag.return_value = "dev1"
+        tagger.get_git_info.return_value = ("abc1234", False)
+        pusher = MagicMock()
+        pusher.push.side_effect = _capture_push
+
+        with (
+            patch(
+                "kamiwaza_extensions.extension_detector.ExtensionDetector",
+                return_value=detector,
+            ),
+            patch(
+                "kamiwaza_extensions.connections.ConnectionManager",
+                return_value=conn_mgr,
+            ),
+            patch(
+                "kamiwaza_extensions.revision_tagger.RevisionTagger",
+                return_value=tagger,
+            ),
+            patch(
+                "kamiwaza_extensions.image_pusher.ImagePusher",
+                return_value=pusher,
+            ),
+            patch.object(
+                dev_cmd, "_detect_kind_registry", return_value="127.0.0.1:30010"
+            ),
+            patch(
+                "kamiwaza_extensions.registry_resolution.detect_core_config_registry",
+                return_value=None,
+            ),
+            # No VM remap → push registry == image registry → the unrelated
+            # insecure-registries pre-flight (push != registry) stays out and
+            # we land squarely on the push call.
+            patch(
+                "kamiwaza_extensions.registry_resolution.build_engine_runs_in_vm",
+                return_value=False,
+            ),
+            patch(
+                "kamiwaza_extensions.dev_state.read_state",
+                return_value=None,
+            ),
+            patch(
+                "kamiwaza_extensions.dev_state.resume_message",
+                return_value=None,
+            ),
+            pytest.raises(click.exceptions.Exit),
+        ):
+            dev_cmd.run_dev_remote(no_build=True)
+
+        # The old code passed ``insecure=not connection.verify_ssl`` (False here)
+        # and would have driven the secure push path; the fix forwards the
+        # effective ``insecure`` (True).
+        assert captured["kwargs"]["insecure"] is True
+
+    def test_insecure_preflight_skipped_when_resume_skips_push(
+        self, tmp_path, monkeypatch
+    ):
+        """ENG-5719 follow-up: the insecure-registries pre-flight must be
+        gated on the push actually running. It now lives inside the
+        ``if not no_push and image_refs`` branch, so a resume that auto-skips
+        an already-completed push cannot abort with a daemon.json error for a
+        push that won't happen. The conditions below (insecure dev host, docker
+        engine, remapped push alias, docker rejecting it) would have tripped
+        the old pre-flight — which ran *before* resume flipped ``no_push`` —
+        so this guards the ordering regression."""
+        from kamiwaza_extensions.commands import dev as dev_cmd
+        from kamiwaza_extensions.dev_state import DevState
+
+        # Explicit push alias != image registry, so the pre-flight's
+        # ``push_registry != registry`` precondition is satisfied.
+        monkeypatch.setenv("KAMIWAZA_PUSH_REGISTRY", "host.docker.internal:30010")
+
+        info = ExtensionInfo(
+            path=tmp_path,
+            name="my-app",
+            version="0.1.0",
+            metadata={"name": "my-app", "type": "app"},
+            compose_path=tmp_path / "docker-compose.yml",
+            compose_data={"services": {"api": {"build": {"context": "."}}}},
+        )
+
+        # Prior run completed "push" → resume must auto-skip build AND push.
+        prior_state = DevState(
+            last_run_at="2026-05-26T00:00:00+00:00",
+            last_revision="0.1.0-dev-abc1234.1714999999",
+            last_successful_step="push",
+            cluster="https://kamiwaza.test/api",
+            extension_name="my-app",
+            last_registry="127.0.0.1:30010",
+            last_push_registry="host.docker.internal:30010",
+            last_build_engine="docker",
+        )
+
+        conn_mgr = MagicMock()
+        conn_mgr.get_active_connection.return_value = _active_connection()
+        conn_mgr.get_token.return_value = MagicMock(access_token="tok-abc")
+        detector = MagicMock()
+        detector.detect.return_value = info
+        tagger = MagicMock()
+        tagger.generate_tag.return_value = "0.1.0-dev-abc1234.1714999999"
+        tagger.get_git_info.return_value = ("abc1234", False)
+        pusher = MagicMock()  # push is resume-skipped → never called.
+
+        # PayloadBuilder() is the first statement after the push branch; make
+        # it raise a sentinel so we assert we reached it (i.e. the pre-flight
+        # did NOT abort) without exercising the payload/apply machinery. If the
+        # pre-flight regressed it would raise click.Exit instead, which this
+        # ``pytest.raises(RuntimeError)`` would not swallow.
+        with (
+            patch(
+                "kamiwaza_extensions.extension_detector.ExtensionDetector",
+                return_value=detector,
+            ),
+            patch(
+                "kamiwaza_extensions.connections.ConnectionManager",
+                return_value=conn_mgr,
+            ),
+            patch(
+                "kamiwaza_extensions.revision_tagger.RevisionTagger",
+                return_value=tagger,
+            ),
+            patch(
+                "kamiwaza_extensions.image_pusher.ImagePusher",
+                return_value=pusher,
+            ),
+            patch.object(
+                dev_cmd, "_detect_kind_registry", return_value="127.0.0.1:30010"
+            ),
+            patch(
+                "kamiwaza_extensions.registry_resolution.detect_core_config_registry",
+                return_value=None,
+            ),
+            # Force docker as the push engine and have docker reject the alias —
+            # the pre-flight's remaining preconditions — so the only thing
+            # keeping it from firing is the resume push-skip gating.
+            patch(
+                "kamiwaza_extensions.registry_resolution.select_push_engine",
+                return_value="docker",
+            ),
+            patch(
+                "kamiwaza_extensions.registry_resolution.docker_accepts_insecure_push_to",
+                return_value=False,
+            ),
+            patch(
+                "kamiwaza_extensions.dev_state.read_state",
+                return_value=prior_state,
+            ),
+            patch(
+                "kamiwaza_extensions.dev_state.resume_message",
+                return_value=None,
+            ),
+            patch(
+                "kamiwaza_extensions.payload_builder.PayloadBuilder",
+                side_effect=RuntimeError("reached-payload-stage"),
+            ),
+            pytest.raises(RuntimeError, match="reached-payload-stage"),
+        ):
+            dev_cmd.run_dev_remote()
+
+        pusher.push.assert_not_called()
