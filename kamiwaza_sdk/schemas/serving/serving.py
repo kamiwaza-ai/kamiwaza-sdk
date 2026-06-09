@@ -77,6 +77,13 @@ class ModelDeployment(CreateModelDeployment):
     )
     single_node_mode: Optional[bool] = Field(default=False, description="Whether the deployment is in single node mode")
     status: str = Field(description="Status of the deployment")
+    last_error_code: Optional[str] = Field(
+        default=None,
+        description="Short error code for the last failure (e.g., OOM, CUDA_ERROR, MODEL_LOADING_FAILURE, CONTAINER_EXITED)",
+    )
+    last_error_message: Optional[str] = Field(
+        default=None, description="Last error message/explanation"
+    )
     instances: List[ModelInstance] = Field(default_factory=list, description="List of instances associated with the deployment")
 
     def __str__(self):

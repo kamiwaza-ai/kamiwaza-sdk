@@ -179,4 +179,7 @@ def test_serve_deploy_command_invokes_service(monkeypatch):
     assert summary["deployment_id"] == str(deployment_id)
     assert summary["status"] == "DEPLOYED"
     assert fake_serving.deploy_calls, "Expected deploy_model to be invoked"
+    # The CLI owns the wait via --wait/--timeout/--poll-interval; the SDK's
+    # internal deploy_model wait must stay off or those flags are void.
+    assert fake_serving.deploy_calls[0]["wait"] is False
     assert fake_serving.wait_kwargs == {"poll_interval": 0.5, "timeout": 2.5}
