@@ -45,14 +45,26 @@ class ServingService(BaseService):
         """Estimate the VRAM required for a model deployment."""
         return self.client.post("/serving/estimate_model_vram", json=deployment_request.model_dump())
     
-    def deploy_model(self, 
+    def deploy_model(self,
                 model_id: Optional[Union[str, UUID]] = None,
                 repo_id: Optional[str] = None,
                 m_config_id: Optional[Union[str, UUID]] = None,
                 m_file_id: Optional[Union[str, UUID]] = None,
+                *,
+                wait: bool = True,
+                timeout_seconds: int = 3600,
                 **kwargs) -> Union[UUID, bool]:
         """
         Deploy a model based on the provided model ID or repo ID and optional parameters.
+
+        The server accepts the deploy request asynchronously (ENG-6530)
+        and returns the deployment id immediately — it no longer blocks
+        until the deployment is ready. With ``wait=True`` (the default)
+        this method preserves the blocking behaviour by polling
+        ``wait_deployment_ready`` client-side, without the HTTP-timeout
+        cliff of the old long-blocking request. With ``wait=False`` the
+        deployment id is returned as soon as the server acknowledges the
+        request; use ``wait_deployment_ready`` to observe readiness.
 
         Args:
             model_id (Optional[Union[str, UUID]]): The ID of the model to deploy.
@@ -61,10 +73,20 @@ class ServingService(BaseService):
                                     Required if model_id is not provided.
             m_config_id (Optional[Union[str, UUID]]): The ID of the model configuration to use.
             m_file_id (Optional[Union[str, UUID]]): The ID of the specific model file to use.
+            wait (bool): Block until the deployment reaches DEPLOYED.
+                        Defaults to True. Skipped when the server refuses
+                        the deploy (returns False instead of an id).
+            timeout_seconds (int): Max seconds to wait when ``wait=True``.
             **kwargs: Additional deployment parameters (engine_name, min_copies, etc.)
 
         Returns:
             Union[UUID, bool]: The deployment ID if successful, or False if deployment failed.
+
+        Raises:
+            DeploymentFailedError: ``wait=True`` and the deployment
+                entered a FAILED/ERROR terminal status.
+            TimeoutError: ``wait=True`` and the deployment did not become
+                ready within ``timeout_seconds``.
         """
         # Ensure at least one identifier is provided
         if model_id is None and repo_id is None:
@@ -107,7 +129,12 @@ class ServingService(BaseService):
         request_dict['m_config_id'] = str(request_dict['m_config_id'])
     
         response = self.client.post("/serving/deploy_model", json=request_dict)
-        return UUID(response) if isinstance(response, str) else response
+        deployment_id = UUID(response) if isinstance(response, str) else response
+
+        if wait and isinstance(deployment_id, UUID):
+            self.wait_deployment_ready(deployment_id, timeout_seconds=timeout_seconds)
+
+        return deployment_id
     
 
 

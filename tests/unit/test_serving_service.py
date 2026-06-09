@@ -40,13 +40,57 @@ def test_deploy_model_builds_payload_with_repo_lookup(dummy_client):
     client.models = DummyModels()
     service = ServingService(client)
 
-    result = service.deploy_model(repo_id="mlx-community/Qwen3-4B-4bit", lb_port=0, autoscaling=False)
+    result = service.deploy_model(
+        repo_id="mlx-community/Qwen3-4B-4bit", lb_port=0, autoscaling=False, wait=False
+    )
 
     assert result == deployment_id
     method, path, payload = client.calls[0]
     assert (method, path) == ("post", "/serving/deploy_model")
     assert payload["json"]["m_id"] == str(model_id)
     assert payload["json"]["m_config_id"] == str(config_id)
+
+
+def test_deploy_model_waits_until_ready_by_default(mock_client):
+    deployment_id = uuid4()
+    mock_client.expect("POST", "/serving/deploy_model", str(deployment_id))
+    mock_client.expect(
+        "GET",
+        f"/serving/deployment/{deployment_id}",
+        _deployment_payload(deployment_id, "DEPLOYED"),
+    )
+    service = ServingService(mock_client)
+
+    result = service.deploy_model(model_id=uuid4(), m_config_id=uuid4())
+
+    assert result == deployment_id
+    get_calls = [call for call in mock_client.calls if call[0] == "GET"]
+    assert len(get_calls) == 1
+
+
+def test_deploy_model_wait_false_returns_id_immediately(mock_client):
+    deployment_id = uuid4()
+    mock_client.expect("POST", "/serving/deploy_model", str(deployment_id))
+    service = ServingService(mock_client)
+
+    result = service.deploy_model(model_id=uuid4(), m_config_id=uuid4(), wait=False)
+
+    assert result == deployment_id
+    assert [call[0] for call in mock_client.calls] == ["POST"]
+    # wait/timeout knobs are SDK-side only and must not leak into the request.
+    post_payload = mock_client.calls[0][2]["json"]
+    assert "wait" not in post_payload
+    assert "timeout_seconds" not in post_payload
+
+
+def test_deploy_model_returns_false_without_polling_when_deploy_refused(mock_client):
+    mock_client.expect("POST", "/serving/deploy_model", False)
+    service = ServingService(mock_client)
+
+    result = service.deploy_model(model_id=uuid4(), m_config_id=uuid4())
+
+    assert result is False
+    assert [call[0] for call in mock_client.calls] == ["POST"]
 
 
 def _deployment_payload(deployment_id: UUID, status: str, **extra) -> dict:
