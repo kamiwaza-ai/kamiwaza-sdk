@@ -152,6 +152,9 @@ class DeploymentFailedError(KamiwazaError, RuntimeError):
             the deployment carries one.
         last_error_code: Short server-side error code (e.g. ``"OOM"``,
             ``"MODEL_LOADING_FAILURE"``), when available.
+        deployment_id: Id of the deployment that failed, as a string, so
+            callers can stop/inspect the in-flight deployment even when
+            ``deploy_model(wait=True)`` raises before returning the id.
     """
 
     def __init__(
@@ -161,11 +164,13 @@ class DeploymentFailedError(KamiwazaError, RuntimeError):
         status: Optional[str] = None,
         last_error_message: Optional[str] = None,
         last_error_code: Optional[str] = None,
+        deployment_id: Optional[str] = None,
     ) -> None:
         super().__init__(message)
         self.status = status
         self.last_error_message = last_error_message
         self.last_error_code = last_error_code
+        self.deployment_id = deployment_id
 
 
 class VectorDBUnavailableError(APIError):

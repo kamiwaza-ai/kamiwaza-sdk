@@ -103,8 +103,10 @@ try:
 except DeploymentFailedError as e:
     # Terminal FAILED/ERROR/MUST_REDOWNLOAD status observed while waiting
     # for readiness (MUST_REDOWNLOAD = corrupted/incomplete model files).
+    # e.deployment_id identifies the in-flight deployment for cleanup.
     print(f"Deployment failed ({e.status}, {e.last_error_code}): {e.last_error_message}")
-except TimeoutError:
+except TimeoutError as e:
+    # Also carries e.deployment_id so the stuck deployment can be stopped.
     print("Deployment did not become ready in time")
 except APIError as e:
     print(f"Operation failed: {e}")

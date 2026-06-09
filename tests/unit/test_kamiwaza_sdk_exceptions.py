@@ -300,11 +300,22 @@ def test_deployment_failed_error_is_a_runtime_error() -> None:
 
 
 def test_deployment_failed_error_context_defaults_none() -> None:
-    """status / last_error_message / last_error_code default to None for
-    failure paths where the deployment carries no error metadata."""
+    """status / last_error_message / last_error_code / deployment_id default
+    to None for failure paths where the deployment carries no metadata."""
     from kamiwaza_sdk.exceptions import DeploymentFailedError
 
     err = DeploymentFailedError("deployment failed")
     assert err.status is None
     assert err.last_error_message is None
     assert err.last_error_code is None
+    assert err.deployment_id is None
+
+
+def test_deployment_failed_error_carries_deployment_id() -> None:
+    """Wait-phase failures must hand the caller the deployment id so the
+    in-flight deployment can be stopped or inspected — otherwise the id is
+    lost when deploy_model(wait=True) raises before returning it."""
+    from kamiwaza_sdk.exceptions import DeploymentFailedError
+
+    err = DeploymentFailedError("deployment failed", deployment_id="dep-123")
+    assert err.deployment_id == "dep-123"

@@ -22,7 +22,7 @@ from ..schemas.serving.inference import (
     UnloadModelRequest,
     UnloadModelResponse,
 )
-from ..exceptions import DeploymentFailedError
+from ..exceptions import APIError, DeploymentFailedError
 from .base_service import BaseService
 
 
@@ -85,8 +85,11 @@ class ServingService(BaseService):
         Raises:
             DeploymentFailedError: ``wait=True`` and the deployment
                 entered a FAILED/ERROR/MUST_REDOWNLOAD terminal status.
+                Carries ``deployment_id`` so the in-flight deployment can
+                be stopped/inspected.
             TimeoutError: ``wait=True`` and the deployment did not become
-                ready within ``timeout_seconds``.
+                ready within ``timeout_seconds``. Also carries a
+                ``deployment_id`` attribute.
         """
         # Ensure at least one identifier is provided
         if model_id is None and repo_id is None:
@@ -239,12 +242,17 @@ class ServingService(BaseService):
         Returns:
             The deployment once its status is ``DEPLOYED``.
 
+        Transient poll failures (connection blips, HTTP 5xx) are retried
+        up to ``DeploymentStatusPoller.MAX_TRANSIENT_POLL_ERRORS``
+        consecutive times before propagating.
+
         Raises:
             DeploymentFailedError: The deployment entered a FAILED/ERROR/
                 MUST_REDOWNLOAD terminal status. Carries ``status``,
-                ``last_error_message`` and ``last_error_code``.
+                ``last_error_message``, ``last_error_code`` and
+                ``deployment_id``.
             TimeoutError: The deployment did not become ready within
-                ``timeout_seconds``.
+                ``timeout_seconds``. Carries a ``deployment_id`` attribute.
         """
         return self.wait_for_deployment(
             deployment_id,
@@ -371,8 +379,25 @@ class ServingService(BaseService):
         return LoadModelResponse.model_validate(response)
 
 
+def _is_transient_poll_error(exc: APIError) -> bool:
+    """Connection-level failures (no status code) and server-side 5xx are
+    transient; 4xx client errors are not — retrying cannot fix the request."""
+    status_code = getattr(exc, "status_code", None)
+    return status_code is None or status_code >= 500
+
+
 class DeploymentStatusPoller:
-    """Utility helper that polls deployment status until completion."""
+    """Utility helper that polls deployment status until completion.
+
+    Tolerates up to ``MAX_TRANSIENT_POLL_ERRORS`` consecutive transient
+    poll failures (connection blips, HTTP 5xx) before propagating, so a
+    single blip cannot abort a default up-to-1-hour deploy wait. Errors
+    raised from the wait carry a ``deployment_id`` attribute so callers
+    can stop/inspect the in-flight deployment.
+    """
+
+    #: Consecutive transient poll failures tolerated before propagating.
+    MAX_TRANSIENT_POLL_ERRORS = 3
 
     def __init__(
         self,
@@ -400,31 +425,51 @@ class DeploymentStatusPoller:
         desired = {status.upper() for status in desired_status}
         failures = {status.upper() for status in failure_status}
         start = self._time()
+        transient_errors = 0
         while True:
-            deployment = self._service.get_deployment(deployment_uuid)
-            current = (deployment.status or "").upper()
-            if current in desired:
-                return deployment
-            if failures and current in failures:
-                last_error_message = getattr(deployment, "last_error_message", None)
-                last_error_code = getattr(deployment, "last_error_code", None)
-                message = (
-                    f"Deployment {deployment_uuid} entered failure status {deployment.status}"
-                )
-                if last_error_message:
-                    message = f"{message}: {last_error_message}"
-                raise DeploymentFailedError(
-                    message,
-                    status=deployment.status,
-                    last_error_message=last_error_message,
-                    last_error_code=last_error_code,
-                )
+            try:
+                deployment = self._service.get_deployment(deployment_uuid)
+            except APIError as exc:
+                transient_errors += 1
+                if (
+                    not _is_transient_poll_error(exc)
+                    or transient_errors >= self.MAX_TRANSIENT_POLL_ERRORS
+                ):
+                    raise
+            else:
+                transient_errors = 0
+                current = (deployment.status or "").upper()
+                if current in desired:
+                    return deployment
+                if failures and current in failures:
+                    self._raise_failure(deployment, deployment_uuid)
             if self._timeout is not None and (self._time() - start) > self._timeout:
-                raise TimeoutError(
+                timeout_error = TimeoutError(
                     f"Timed out waiting for deployment {deployment_uuid} to reach {desired}"
                 )
+                # Builtin TimeoutError for caller compatibility; carry the id
+                # programmatically rather than only inside the message string.
+                timeout_error.deployment_id = str(deployment_uuid)
+                raise timeout_error
             if self._poll_interval > 0:
                 self._sleep(self._poll_interval)
+
+    @staticmethod
+    def _raise_failure(deployment: ModelDeployment, deployment_uuid: UUID) -> None:
+        last_error_message = getattr(deployment, "last_error_message", None)
+        last_error_code = getattr(deployment, "last_error_code", None)
+        message = (
+            f"Deployment {deployment_uuid} entered failure status {deployment.status}"
+        )
+        if last_error_message:
+            message = f"{message}: {last_error_message}"
+        raise DeploymentFailedError(
+            message,
+            status=deployment.status,
+            last_error_message=last_error_message,
+            last_error_code=last_error_code,
+            deployment_id=str(deployment_uuid),
+        )
 
 
 class DeploymentLogStreamer:
