@@ -114,14 +114,14 @@ class TestStripHostPorts:
             }
         }
         result = transformer.transform(compose, "test", "v1", "reg")
-        assert result["services"]["web"]["ports"] == [
-            {"target": 8080, "name": "http"}
-        ]
+        assert result["services"]["web"]["ports"] == [{"target": 8080, "name": "http"}]
 
 
 class TestStripBindMounts:
     def test_strips_relative_bind_mount(self, transformer):
-        compose = {"services": {"web": {"volumes": ["./data:/app/data", "named:/app/persist"]}}}
+        compose = {
+            "services": {"web": {"volumes": ["./data:/app/data", "named:/app/persist"]}}
+        }
         result = transformer.transform(compose, "test", "v1", "reg")
         assert result["services"]["web"]["volumes"] == ["named:/app/persist"]
 
@@ -137,7 +137,9 @@ class TestStripBindMounts:
 
     def test_strips_home_dir_bind_mount(self, transformer):
         """ENG-4956: ~ paths are flagged by the validator, so deploy must strip them."""
-        compose = {"services": {"web": {"volumes": ["~/data:/app/data", "named:/app/persist"]}}}
+        compose = {
+            "services": {"web": {"volumes": ["~/data:/app/data", "named:/app/persist"]}}
+        }
         result = transformer.transform(compose, "test", "v1", "reg")
         assert result["services"]["web"]["volumes"] == ["named:/app/persist"]
 
@@ -200,7 +202,10 @@ class TestBuildContextRemoval:
             }
         }
         result = ComposeTransformer().transform(
-            compose, "my-app", "1.0.0-dev", "registry.test",
+            compose,
+            "my-app",
+            "1.0.0-dev",
+            "registry.test",
         )
         assert result["services"]["api"]["image"] == (
             "registry.test/my-app-api:1.0.0-dev"
@@ -219,7 +224,10 @@ class TestBuildContextRemoval:
             }
         }
         result = transformer.transform(
-            compose, "tool-omniparse", "2.0.14-dev", "ghcr.io/kamiwaza-internal/foo/images",
+            compose,
+            "tool-omniparse",
+            "2.0.14-dev",
+            "ghcr.io/kamiwaza-internal/foo/images",
         )
         assert result["services"]["omniparse-server"]["image"] == (
             "ghcr.io/kamiwaza-internal/foo/images/omniparse:2.0.14-dev"
@@ -228,9 +236,7 @@ class TestBuildContextRemoval:
     def test_dict_build_config(self, transformer):
         compose = {
             "services": {
-                "web": {
-                    "build": {"context": ".", "dockerfile": "frontend/Dockerfile"}
-                }
+                "web": {"build": {"context": ".", "dockerfile": "frontend/Dockerfile"}}
             }
         }
         result = transformer.transform(compose, "my-app", "v1", "reg")
@@ -265,13 +271,13 @@ class TestNonBuildableInternalImages:
             },
         }
         result = transformer.transform(
-            compose, "my-app", "1.0.0-dev-abc1234", "kamiwazaai",
+            compose,
+            "my-app",
+            "1.0.0-dev-abc1234",
+            "kamiwazaai",
         )
         # Tag preserved verbatim despite the SHA-pinned revision_tag.
-        assert (
-            result["services"]["helper"]["image"]
-            == "kamiwazaai/my-app-helper:0.5.0"
-        )
+        assert result["services"]["helper"]["image"] == "kamiwazaai/my-app-helper:0.5.0"
 
     def test_mixed_buildable_and_pattern_c(self, transformer):
         compose = {
@@ -282,7 +288,10 @@ class TestNonBuildableInternalImages:
             },
         }
         result = transformer.transform(
-            compose, "my-app", "1.0.0-dev-abc1234", "kamiwazaai",
+            compose,
+            "my-app",
+            "1.0.0-dev-abc1234",
+            "kamiwazaai",
         )
         # Buildable: rewritten with the revision tag.
         assert (
@@ -290,10 +299,7 @@ class TestNonBuildableInternalImages:
             == "kamiwazaai/my-app-backend:1.0.0-dev-abc1234"
         )
         # Pattern C: preserved verbatim.
-        assert (
-            result["services"]["helper"]["image"]
-            == "kamiwazaai/my-app-helper:0.5.0"
-        )
+        assert result["services"]["helper"]["image"] == "kamiwazaai/my-app-helper:0.5.0"
         # External: preserved verbatim.
         assert result["services"]["db"]["image"] == "postgres:15"
 
@@ -311,7 +317,9 @@ class TestResourceLimits:
             "services": {
                 "api": {
                     "image": "my-app/api:1",
-                    "deploy": {"resources": {"limits": {"cpus": "2.0", "memory": "4G"}}},
+                    "deploy": {
+                        "resources": {"limits": {"cpus": "2.0", "memory": "4G"}}
+                    },
                 }
             }
         }
@@ -329,7 +337,9 @@ class TestResourceLimits:
 
 class TestCleanup:
     def test_removes_extra_hosts(self, transformer):
-        compose = {"services": {"api": {"extra_hosts": ["host.docker.internal:host-gateway"]}}}
+        compose = {
+            "services": {"api": {"extra_hosts": ["host.docker.internal:host-gateway"]}}
+        }
         result = transformer.transform(compose, "test", "v1", "reg")
         assert "extra_hosts" not in result["services"]["api"]
 
@@ -339,7 +349,10 @@ class TestCleanup:
         assert "container_name" not in result["services"]["api"]
 
     def test_removes_networks(self, transformer):
-        compose = {"services": {"api": {"networks": ["default"]}}, "networks": {"default": None}}
+        compose = {
+            "services": {"api": {"networks": ["default"]}},
+            "networks": {"default": None},
+        }
         result = transformer.transform(compose, "test", "v1", "reg")
         assert "networks" not in result["services"]["api"]
         assert "networks" not in result
@@ -800,7 +813,8 @@ class TestCanonicalBuildRef:
         if declared_only:
             svc = {"image": image} if image is not None else {}
         return _canonical_build_ref(
-            svc, "api",
+            svc,
+            "api",
             fallback_registry="registry.test",
             fallback_extension_name="my-ext",
             revision_tag="2.0.0-dev",
@@ -816,14 +830,20 @@ class TestCanonicalBuildRef:
         assert self._call(image="   ") == "registry.test/my-ext-api:2.0.0-dev"
 
     def test_registry_qualified_declared_image_honored(self):
-        assert self._call(
-            image="ghcr.io/my-org/api:1.0",
-        ) == "ghcr.io/my-org/api:2.0.0-dev"
+        assert (
+            self._call(
+                image="ghcr.io/my-org/api:1.0",
+            )
+            == "ghcr.io/my-org/api:2.0.0-dev"
+        )
 
     def test_registry_with_port_honored(self):
-        assert self._call(
-            image="localhost:5000/api:1.0",
-        ) == "localhost:5000/api:2.0.0-dev"
+        assert (
+            self._call(
+                image="localhost:5000/api:1.0",
+            )
+            == "localhost:5000/api:2.0.0-dev"
+        )
 
     def test_unqualified_bare_repo_falls_back_to_legacy(self):
         # `image: api:latest` — docker push would send this to Docker
@@ -831,22 +851,31 @@ class TestCanonicalBuildRef:
         # registry. Override with the legacy form so the rewritten ref
         # matches what _retag_appgarden_compose / ComposeTransformer
         # write into the K8s payload.
-        assert self._call(
-            image="api:latest",
-        ) == "registry.test/my-ext-api:2.0.0-dev"
+        assert (
+            self._call(
+                image="api:latest",
+            )
+            == "registry.test/my-ext-api:2.0.0-dev"
+        )
 
     def test_unqualified_short_form_falls_back_to_legacy(self):
         # `image: my-org/api:1.0` — common dev convention that resolves
         # to docker.io/my-org/api:1.0 under docker's namespace rules.
         # Same regression hazard as the bare repo case.
-        assert self._call(
-            image="my-org/api:1.0",
-        ) == "registry.test/my-ext-api:2.0.0-dev"
+        assert (
+            self._call(
+                image="my-org/api:1.0",
+            )
+            == "registry.test/my-ext-api:2.0.0-dev"
+        )
 
     def test_strips_whitespace_around_qualified_ref(self):
-        assert self._call(
-            image="  ghcr.io/my-org/api:1.0  ",
-        ) == "ghcr.io/my-org/api:2.0.0-dev"
+        assert (
+            self._call(
+                image="  ghcr.io/my-org/api:1.0  ",
+            )
+            == "ghcr.io/my-org/api:2.0.0-dev"
+        )
 
 
 class TestSplitImageRef:
@@ -864,13 +893,17 @@ class TestSplitImageRef:
 
     def test_registry_qualified_with_tag(self):
         assert self._split("ghcr.io/kamiwaza/foo:1.0") == (
-            "ghcr.io", "kamiwaza/foo", "1.0",
+            "ghcr.io",
+            "kamiwaza/foo",
+            "1.0",
         )
 
     def test_registry_with_port(self):
         # The tag colon must not be confused with the registry port colon.
         assert self._split("localhost:5000/my-app:2.0.0-dev") == (
-            "localhost:5000", "my-app", "2.0.0-dev",
+            "localhost:5000",
+            "my-app",
+            "2.0.0-dev",
         )
 
     def test_localhost_without_port(self):
@@ -878,7 +911,9 @@ class TestSplitImageRef:
 
     def test_no_tag_defaults_to_latest(self):
         assert self._split("ghcr.io/kamiwaza/foo") == (
-            "ghcr.io", "kamiwaza/foo", "latest",
+            "ghcr.io",
+            "kamiwaza/foo",
+            "latest",
         )
 
     def test_strips_digest_before_splitting(self):
@@ -930,9 +965,12 @@ class TestRepoPart:
         assert self._repo("ghcr.io/kamiwaza/foo:1.0") == "ghcr.io/kamiwaza/foo"
 
     def test_strips_digest(self):
-        assert self._repo(
-            "ghcr.io/foo/bar:1.0@sha256:" + "a" * 64,
-        ) == "ghcr.io/foo/bar"
+        assert (
+            self._repo(
+                "ghcr.io/foo/bar:1.0@sha256:" + "a" * 64,
+            )
+            == "ghcr.io/foo/bar"
+        )
 
     def test_registry_with_port(self):
         assert self._repo("localhost:5000/my-app:dev") == "localhost:5000/my-app"
@@ -954,16 +992,13 @@ class TestRepoPart:
             "ghcr.io/kamiwaza-internal/"
             "kamiwaza-extensions-milvus/images/service-milvus:2.3.0"
         ) == (
-            "ghcr.io/kamiwaza-internal/"
-            "kamiwaza-extensions-milvus/images/service-milvus"
+            "ghcr.io/kamiwaza-internal/kamiwaza-extensions-milvus/images/service-milvus"
         )
 
     def test_two_refs_at_different_tags_share_repo(self):
         # The membership check that drives sibling-image retagging
         # depends on equal repos for refs at different tags.
-        assert self._repo("ghcr.io/org/app:1.0") == self._repo(
-            "ghcr.io/org/app:2.0"
-        )
+        assert self._repo("ghcr.io/org/app:1.0") == self._repo("ghcr.io/org/app:2.0")
 
 
 class TestComputeCanonicalRefs:
@@ -973,7 +1008,14 @@ class TestComputeCanonicalRefs:
     or appgarden precedence."""
 
     @staticmethod
-    def _call(source, *, appgarden=None, registry="registry.test", extension_name="my-ext", revision_tag="2.0.0-dev"):
+    def _call(
+        source,
+        *,
+        appgarden=None,
+        registry="registry.test",
+        extension_name="my-ext",
+        revision_tag="2.0.0-dev",
+    ):
         from kamiwaza_extensions.compose_transformer import compute_canonical_refs
 
         return compute_canonical_refs(
@@ -1090,7 +1132,8 @@ class TestCanonicalBuildRefImageBasename:
         if image is not None:
             svc["image"] = image
         return _canonical_build_ref(
-            svc, "api",
+            svc,
+            "api",
             fallback_registry="registry.test",
             fallback_extension_name="my-ext",
             revision_tag="2.0.0-dev",
@@ -1102,19 +1145,39 @@ class TestCanonicalBuildRefImageBasename:
         # fallback synthesis still uses fallback_extension_name.
         assert self._call() == "registry.test/my-ext-api:2.0.0-dev"
 
+    def test_invalid_display_name_is_sanitized_for_fallback_ref(self):
+        from kamiwaza_extensions.compose_transformer import _canonical_build_ref
+
+        assert (
+            _canonical_build_ref(
+                {"build": "."},
+                "api",
+                fallback_registry="registry.test",
+                fallback_extension_name="Hello Web",
+                revision_tag="2.0.0-dev",
+            )
+            == "registry.test/hello-web-api:2.0.0-dev"
+        )
+
     def test_basename_present_overrides_extension_name(self):
         # When supplied, the basename replaces fallback_extension_name in
         # the legacy {basename}-{svc} prefix.
-        assert self._call(
-            fallback_image_basename="custom-basename",
-        ) == "registry.test/custom-basename-api:2.0.0-dev"
+        assert (
+            self._call(
+                fallback_image_basename="custom-basename",
+            )
+            == "registry.test/custom-basename-api:2.0.0-dev"
+        )
 
     def test_basename_empty_string_falls_back_to_extension_name(self):
         # Defensive: an empty override is treated as absent (don't ship
         # `registry.test/-api:tag` if a misconfig leaks through).
-        assert self._call(
-            fallback_image_basename="",
-        ) == "registry.test/my-ext-api:2.0.0-dev"
+        assert (
+            self._call(
+                fallback_image_basename="",
+            )
+            == "registry.test/my-ext-api:2.0.0-dev"
+        )
 
     def test_basename_whitespace_only_falls_back_to_extension_name(self):
         # ExtensionDetector + MetadataValidator both normalize blank to
@@ -1122,17 +1185,23 @@ class TestCanonicalBuildRefImageBasename:
         # directly from tests and downstream sites that may bypass
         # those normalizers — strip here too so a "   " override
         # doesn't escape as `registry.test/   -api:tag`.
-        assert self._call(
-            fallback_image_basename="   ",
-        ) == "registry.test/my-ext-api:2.0.0-dev"
+        assert (
+            self._call(
+                fallback_image_basename="   ",
+            )
+            == "registry.test/my-ext-api:2.0.0-dev"
+        )
 
     def test_basename_ignored_when_image_registry_qualified(self):
         # Override only affects the legacy fallback. A registry-qualified
         # declared image still wins, exactly as without the override.
-        assert self._call(
-            image="ghcr.io/my-org/api:1.0",
-            fallback_image_basename="custom-basename",
-        ) == "ghcr.io/my-org/api:2.0.0-dev"
+        assert (
+            self._call(
+                image="ghcr.io/my-org/api:1.0",
+                fallback_image_basename="custom-basename",
+            )
+            == "ghcr.io/my-org/api:2.0.0-dev"
+        )
 
 
 class TestComposeTransformerImageBasenameRegression:
@@ -1159,8 +1228,7 @@ class TestComposeTransformerImageBasenameRegression:
             image_basename="outcome-d563-workroom-manager",
         )
         assert out["services"]["backend"]["image"] == (
-            "ghcr.io/kamiwaza-internal/"
-            "outcome-d563-workroom-manager-backend:0.13.0-dev"
+            "ghcr.io/kamiwaza-internal/outcome-d563-workroom-manager-backend:0.13.0-dev"
         )
         assert out["services"]["frontend"]["image"] == (
             "ghcr.io/kamiwaza-internal/"
@@ -1191,6 +1259,18 @@ class TestComposeTransformerImageBasenameRegression:
                 "outcome-d563-workroom-manager-frontend:0.13.0-dev"
             ),
         }
+
+    def test_display_name_sanitized_through_compute_canonical_refs(self):
+        from kamiwaza_extensions.compose_transformer import compute_canonical_refs
+
+        refs = compute_canonical_refs(
+            {"api": {"build": "."}},
+            registry="registry.test",
+            extension_name="Hello Web",
+            revision_tag="dev1",
+        )
+
+        assert refs == {"api": "registry.test/hello-web-api:dev1"}
 
     def test_basename_absent_preserves_legacy_workroom_manager_synthesis(self):
         # The regression: before this PR, the absence of image_basename

@@ -269,6 +269,43 @@ class TestPushOrchestration:
     @patch.object(ImagePusher, "_login_registry")
     @patch.object(ImagePusher, "_tag")
     @patch.object(ImagePusher, "_push")
+    def test_insecure_podman_keeps_external_refs_tls_verified(
+        self, mock_push, mock_tag, mock_login, _mock_hp, pusher
+    ):
+        pusher.push(
+            [
+                "127.0.0.1:30010/app:v1",
+                "ghcr.io/example/custom-api:v1",
+            ],
+            registry="host.containers.internal:30010",
+            token=None,
+            insecure=True,
+            target_refs={
+                "127.0.0.1:30010/app:v1": "host.containers.internal:30010/app:v1",
+            },
+        )
+
+        mock_login.assert_not_called()
+        mock_tag.assert_called_once_with(
+            "127.0.0.1:30010/app:v1",
+            "host.containers.internal:30010/app:v1",
+            use_podman=True,
+            verbose=False,
+        )
+        assert mock_push.call_args_list[0].kwargs["insecure"] is True
+        assert mock_push.call_args_list[0].args[0] == (
+            "host.containers.internal:30010/app:v1"
+        )
+        assert mock_push.call_args_list[1].kwargs["insecure"] is False
+        assert mock_push.call_args_list[1].args[0] == "ghcr.io/example/custom-api:v1"
+
+    @patch(
+        "kamiwaza_extensions.registry_resolution.podman_push_available",
+        return_value=True,
+    )
+    @patch.object(ImagePusher, "_login_registry")
+    @patch.object(ImagePusher, "_tag")
+    @patch.object(ImagePusher, "_push")
     def test_no_token_skips_login_still_pushes(
         self, mock_push, mock_tag, mock_login, _mock_hp, pusher
     ):

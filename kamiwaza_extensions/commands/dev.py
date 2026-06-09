@@ -480,22 +480,27 @@ def run_dev_remote(
     # inverse) on an image the new engine can't see (jxstanford iter-4
     # High #1). Refuse with an actionable error rather than letting
     # ImagePusher fail downstream with a confusing tag-not-found message.
+    prior_build_engine = (
+        (prior_state.last_build_engine or "docker")
+        if prior_state is not None and prior_state.is_step_complete("build")
+        else ""
+    )
     if (
         no_build
         and not no_push
         and resumable
         and prior_state is not None
-        and prior_state.last_build_engine
-        and prior_state.last_build_engine != push_engine
+        and prior_build_engine
+        and prior_build_engine != push_engine
     ):
         console.print(
-            f"[red]Error:[/red] Previous build used '{prior_state.last_build_engine}' "
+            f"[red]Error:[/red] Previous build used '{prior_build_engine}' "
             f"but this push will use '{push_engine}'.\n"
             "  Their image stores are separate, so the prior image isn't visible to "
             f"'{push_engine}'.\n"
             "  Rerun [bold]kz-ext dev[/bold] without --no-build to rebuild with the "
             "active engine, or restore the previous engine "
-            f"(e.g., start Docker Desktop if it was '{prior_state.last_build_engine}')."
+            f"(e.g., start Docker Desktop if it was '{prior_build_engine}')."
         )
         raise typer.Exit(code=1)
 

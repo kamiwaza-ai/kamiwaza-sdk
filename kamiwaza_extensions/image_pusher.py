@@ -38,6 +38,13 @@ class ImagePushError(RuntimeError):
     pass
 
 
+def _ref_targets_registry(image_ref: str, registry: str) -> bool:
+    """True when *image_ref* is under *registry*."""
+
+    target = registry.rstrip("/")
+    return image_ref == target or image_ref.startswith(f"{target}/")
+
+
 def _has_podman() -> bool:
     """Return True if the ``podman`` CLI is available on PATH.
 
@@ -67,7 +74,7 @@ class ImagePusher:
 
         If *token* is provided, authenticates with the registry first.
         When *insecure* is True and Podman is used, ``--tls-verify=false`` is
-        passed to bypass self-signed certificate errors.
+        passed only for pushed refs that target *registry*.
 
         ``target_refs`` optionally maps built/deployment refs to alternate
         push refs. This supports local topologies where the same registry is
@@ -102,6 +109,7 @@ class ImagePusher:
 
         for ref in image_refs:
             push_ref = (target_refs or {}).get(ref, ref)
+            ref_insecure = insecure and _ref_targets_registry(push_ref, registry)
             short = push_ref.rsplit("/", 1)[-1] if "/" in push_ref else push_ref
             console.print(f"  Pushing [bold]{short}[/bold]...")
             if push_ref != ref:
@@ -109,7 +117,7 @@ class ImagePusher:
             self._push(
                 push_ref,
                 use_podman=use_podman,
-                insecure=insecure,
+                insecure=ref_insecure,
                 verbose=verbose,
             )
             console.print(f"  [green]\u2713[/green] {short}")
