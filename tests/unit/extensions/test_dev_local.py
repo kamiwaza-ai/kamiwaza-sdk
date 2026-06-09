@@ -10,6 +10,8 @@ import pytest
 
 from kamiwaza_extensions.connections import ConnectionInfo
 from kamiwaza_extensions.dev_local import (
+    _resolve_env_value,
+    _resolve_extra_image_build_targets,
     apply_port_remaps,
     build_compose_extra_hosts,
     build_env_overlay,
@@ -1229,6 +1231,7 @@ class TestPollAndPrintUrls:
         get TWO URLs printed, not one — and the loop must terminate as
         soon as both are resolved, not spin to the 60s deadline."""
         import threading
+
         from kamiwaza_extensions import dev_local
 
         runner = self._runner()
@@ -1270,6 +1273,7 @@ class TestPollAndPrintUrls:
         the moment the single URL is resolved (PR #91 round-3 / Claude
         review)."""
         import threading
+
         from kamiwaza_extensions import dev_local
 
         runner = self._runner()
@@ -1510,3 +1514,129 @@ class TestDockerComposePortV1Compat:
             "3000",
         ]
         assert captured["cwd"] == "/Users/dev/my-app"
+
+
+# kaizen-shaped manifest + compose: an agent extra-image built from source
+# under a profile, alongside an ordinary buildable service that is NOT an
+# extra image, to verify selectivity.
+_META_WITH_EXTRA = {"extra_docker_images": ["ghcr.io/org/images/agent:{version}"]}
+_COMPOSE_WITH_EXTRA = {
+    "services": {
+        "backend": {
+            "image": "ghcr.io/org/images/backend:2.0.1",
+            "build": {"context": "."},
+        },
+        "agent": {
+            "image": "ghcr.io/org/images/agent:2.0.1",
+            "build": {"context": ".", "dockerfile": "backend/Dockerfile.agent"},
+            "profiles": ["image-only"],
+        },
+    }
+}
+
+
+@pytest.mark.unit
+class TestResolveExtraImageBuildTargets:
+    def test_matches_buildable_profile_gated_extra_image(self):
+        services, profiles = _resolve_extra_image_build_targets(
+            _META_WITH_EXTRA, _COMPOSE_WITH_EXTRA, "2.0.1"
+        )
+        # Only the agent: backend is buildable but is NOT an extra image.
+        assert services == ["agent"]
+        assert profiles == ["image-only"]
+
+    def test_substitutes_version_placeholder(self):
+        # Manifest ref carries {version}; compose pins the literal tag.
+        services, _ = _resolve_extra_image_build_targets(
+            {"extra_docker_images": ["ghcr.io/org/images/agent:{version}"]},
+            {
+                "services": {
+                    "agent": {
+                        "image": "ghcr.io/org/images/agent:3.1.4",
+                        "build": {"context": "."},
+                    }
+                }
+            },
+            "3.1.4",
+        )
+        assert services == ["agent"]
+
+    def test_skips_extra_ref_without_buildable_service(self):
+        # Declared as an extra image but the matching service has no build
+        # block → registry-only; pulled at `up`, not built here.
+        services, profiles = _resolve_extra_image_build_targets(
+            {"extra_docker_images": ["ghcr.io/org/images/agent:{version}"]},
+            {
+                "services": {
+                    "agent": {"image": "ghcr.io/org/images/agent:2.0.1"},
+                }
+            },
+            "2.0.1",
+        )
+        assert services == []
+        assert profiles == []
+
+    def test_empty_when_no_extra_docker_images(self):
+        assert _resolve_extra_image_build_targets({}, _COMPOSE_WITH_EXTRA, "2.0.1") == (
+            [],
+            [],
+        )
+
+    def test_empty_when_no_compose_data(self):
+        assert _resolve_extra_image_build_targets(_META_WITH_EXTRA, None, "2.0.1") == (
+            [],
+            [],
+        )
+
+    def test_dedupes_profiles_across_multiple_extra_images(self):
+        meta = {
+            "extra_docker_images": [
+                "ghcr.io/org/images/agent:{version}",
+                "ghcr.io/org/images/worker:{version}",
+            ]
+        }
+        compose = {
+            "services": {
+                "agent": {
+                    "image": "ghcr.io/org/images/agent:2.0.1",
+                    "build": {"context": "."},
+                    "profiles": ["image-only"],
+                },
+                "worker": {
+                    "image": "ghcr.io/org/images/worker:2.0.1",
+                    "build": {"context": "."},
+                    "profiles": ["image-only", "extras"],
+                },
+            }
+        }
+        services, profiles = _resolve_extra_image_build_targets(meta, compose, "2.0.1")
+        assert sorted(services) == ["agent", "worker"]
+        # Union, de-duplicated, order-preserving.
+        assert profiles == ["image-only", "extras"]
+
+
+@pytest.mark.unit
+class TestResolveEnvValue:
+    def test_shell_env_wins_over_dotenv(self, tmp_path, monkeypatch):
+        (tmp_path / ".env").write_text("SANDBOX_BACKEND=local\n")
+        monkeypatch.setenv("SANDBOX_BACKEND", "docker")
+        assert _resolve_env_value("SANDBOX_BACKEND", tmp_path) == "docker"
+
+    def test_reads_from_dotenv_when_not_in_shell(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("SANDBOX_BACKEND", raising=False)
+        (tmp_path / ".env").write_text("# comment\n\nSANDBOX_BACKEND=docker\nOTHER=x\n")
+        assert _resolve_env_value("SANDBOX_BACKEND", tmp_path) == "docker"
+
+    def test_strips_surrounding_quotes(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("SANDBOX_BACKEND", raising=False)
+        (tmp_path / ".env").write_text('SANDBOX_BACKEND="docker"\n')
+        assert _resolve_env_value("SANDBOX_BACKEND", tmp_path) == "docker"
+
+    def test_none_when_absent_everywhere(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("SANDBOX_BACKEND", raising=False)
+        (tmp_path / ".env").write_text("OTHER=x\n")
+        assert _resolve_env_value("SANDBOX_BACKEND", tmp_path) is None
+
+    def test_none_when_no_dotenv_and_no_shell(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("SANDBOX_BACKEND", raising=False)
+        assert _resolve_env_value("SANDBOX_BACKEND", tmp_path) is None
