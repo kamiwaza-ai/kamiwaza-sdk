@@ -61,6 +61,7 @@ class ImagePusher:
         insecure: bool = False,
         verbose: bool = False,
         target_refs: Optional[Dict[str, str]] = None,
+        engine: Optional[str] = None,
     ) -> None:
         """Push all images to the registry.
 
@@ -71,14 +72,24 @@ class ImagePusher:
         ``target_refs`` optionally maps built/deployment refs to alternate
         push refs. This supports local topologies where the same registry is
         reachable under different hostnames from the build VM and the cluster.
+
+        ``engine`` can force the push binary to ``"docker"`` or ``"podman"``.
+        When omitted, the historical auto-selection behavior is preserved.
         """
-        # Must mirror ``registry_resolution.select_push_engine``: that
-        # helper is what ``commands/dev.py`` uses to gate insecure-
-        # registries / engine-mismatch pre-flight checks (jxstanford
-        # Critical #1 + High #1). Changing this rule without updating
-        # ``select_push_engine`` will desync the pre-flight from the
-        # actual push behavior.
-        use_podman = insecure and _has_podman()
+        if engine is None:
+            # Must mirror ``registry_resolution.select_push_engine``: that
+            # helper is what callers use to gate insecure-registries /
+            # engine-mismatch pre-flight checks. Changing this rule without
+            # updating ``select_push_engine`` will desync the pre-flight from
+            # the actual push behavior.
+            use_podman = insecure and _has_podman()
+        else:
+            normalized_engine = engine.lower()
+            if normalized_engine not in ("docker", "podman"):
+                raise ImagePushError(
+                    f"Unsupported push engine '{engine}'; expected 'docker' or 'podman'"
+                )
+            use_podman = normalized_engine == "podman"
         if token:
             self._login_registry(registry, token, use_podman=use_podman)
 
@@ -252,6 +263,9 @@ class ImagePusher:
             raise ImagePushError(
                 f"{cli} not found. Install Docker/Podman or ensure '{cli}' is on PATH."
             )
+        except subprocess.CalledProcessError as exc:
+            detail = (exc.stderr or str(exc)).strip()
+            raise ImagePushError(f"Push failed for {image_ref}: {detail}") from exc
         except subprocess.TimeoutExpired as exc:
             raise ImagePushError(f"Push timed out after 600s for {image_ref}") from exc
 
@@ -284,6 +298,11 @@ class ImagePusher:
             raise ImagePushError(
                 f"{cli} not found. Install Docker/Podman or ensure '{cli}' is on PATH."
             )
+        except subprocess.CalledProcessError as exc:
+            detail = (exc.stderr or str(exc)).strip()
+            raise ImagePushError(
+                f"Retag failed for {source_ref} -> {target_ref}: {detail}"
+            ) from exc
         except subprocess.TimeoutExpired as exc:
             raise ImagePushError(
                 f"Retag timed out after 120s for {source_ref} -> {target_ref}"

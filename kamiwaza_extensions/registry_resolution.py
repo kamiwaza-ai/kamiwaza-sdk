@@ -12,11 +12,15 @@ from dataclasses import dataclass
 from typing import Callable, Iterable, Optional
 from urllib.parse import urlparse
 
-from kamiwaza_extensions.connections import _is_dev_hostname
-
 CORE_CONFIG_NAMESPACE = "kamiwaza"
 CORE_CONFIG_NAME = "core-config"
 REGISTRY_EXTERNAL_HOST_KEY = "KAMIWAZA_REGISTRY_EXTERNAL_HOST"
+_KUBE_CONTEXT_TRUSTED_SUFFIXES = (
+    ".test",
+    ".local",
+    ".localhost",
+    ".svc.cluster.local",
+)
 
 # VM aliases used by Docker Desktop and Podman machine respectively to
 # expose the host's loopback interface to processes running in the VM.
@@ -92,7 +96,9 @@ def resolve_image_registry(
 
     env_registry = os.environ.get("KAMIWAZA_REGISTRY")
     if env_registry:
-        return normalize_registry_env("KAMIWAZA_REGISTRY", env_registry), "KAMIWAZA_REGISTRY"
+        return normalize_registry_env(
+            "KAMIWAZA_REGISTRY", env_registry
+        ), "KAMIWAZA_REGISTRY"
 
     # Only trust the in-cluster core-config registry for local/dev connections.
     # `detect_core_config_registry()` reads whatever cluster the developer's
@@ -100,10 +106,8 @@ def resolve_image_registry(
     # be an unrelated local Kamiwaza install. Trusting it then would build/push
     # image refs for the local cluster and ship them to the remote API, which
     # cannot pull them (ENG-5719). For non-local connections, skip it and fall
-    # through to the connection-derived registry below. (Note: this still trusts
-    # the lookup for a LAN-IP connection -- a fully robust gate would match the
-    # kube context's API server to the connection host; tracked as follow-up.)
-    if _is_dev_hostname(connection.url):
+    # through to the connection-derived registry below.
+    if _trusts_local_kube_context(connection.url):
         core_config_registry = detect_core_config_registry()
         if core_config_registry:
             return core_config_registry, f"{CORE_CONFIG_NAMESPACE}/{CORE_CONFIG_NAME}"
@@ -114,9 +118,7 @@ def resolve_image_registry(
         # kubectl happens to point at a local Kind cluster, returning
         # localhost:5001 would ship an unreachable image registry to the remote
         # API -- the same ENG-5719 bug class the core-config gate prevents, so
-        # gate it on the dev hostname too. (The LAN-IP caveat above applies here
-        # as well: a robust gate would match the kube context's API server to
-        # the connection host.)
+        # gate it on the same local-kube-context predicate.
         if kind_registry_detector is None:
             kind_registry_detector = detect_kind_registry
         kind_registry = kind_registry_detector()
@@ -128,6 +130,32 @@ def resolve_image_registry(
     if parsed.hostname:
         return f"registry.{parsed.hostname}", "registry.<connection-hostname>"
     raise ValueError("Could not derive registry from connection URL")
+
+
+def _trusts_local_kube_context(url: str) -> bool:
+    """Return True when local kubectl registry discovery is plausibly in-scope.
+
+    ``ConnectionInfo.effective_verify_ssl`` intentionally treats any raw IP as
+    dev-like for TLS, because IP certs are normally self-signed. Registry
+    discovery is stricter: a LAN-IP API URL can point at a remote cluster while
+    kubectl points at an unrelated local one, so only loopback IPs and explicit
+    dev hostnames may use kube-context-derived registry values.
+    """
+
+    if not url:
+        return False
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except (ValueError, AttributeError):
+        return False
+    if not host:
+        return False
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return host.endswith(_KUBE_CONTEXT_TRUSTED_SUFFIXES)
 
 
 def resolve_push_registry(
@@ -334,7 +362,7 @@ def replace_registry_prefix(
         return new
     prefix = f"{old}/"
     if image_ref.startswith(prefix):
-        return f"{new}/{image_ref[len(prefix):]}"
+        return f"{new}/{image_ref[len(prefix) :]}"
     return image_ref
 
 

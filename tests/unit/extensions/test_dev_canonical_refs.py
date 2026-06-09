@@ -409,6 +409,96 @@ class TestDevRemoteBuildsAtCanonicalRefs:
         assert exc_info.value.exit_code == 1
         pusher.push.assert_not_called()
 
+    def test_no_build_allows_stale_prior_engine_when_not_resumable(self, tmp_path):
+        """The engine-mismatch guard only applies to a matching resume state.
+
+        A stale dev-state file from a different revision must not block an
+        explicit ``--no-build`` push; the user is asserting the image already
+        exists in the active engine's store for the current inputs.
+        """
+
+        from kamiwaza_extensions.commands import dev as dev_cmd
+        from kamiwaza_extensions.dev_state import DevState
+        from kamiwaza_extensions.image_pusher import ImagePushError
+
+        info = ExtensionInfo(
+            path=tmp_path,
+            name="my-app",
+            version="0.1.0",
+            metadata={"name": "my-app", "type": "app"},
+            compose_path=tmp_path / "docker-compose.yml",
+            compose_data={"services": {"api": {"build": {"context": "."}}}},
+        )
+        prior_state = DevState(
+            last_run_at="2026-05-26T00:00:00+00:00",
+            last_revision="old-revision",
+            last_successful_step="build",
+            cluster="https://kamiwaza.test/api",
+            extension_name="my-app",
+            last_registry="127.0.0.1:30010",
+            last_push_registry="127.0.0.1:30010",
+            last_build_engine="docker",
+        )
+
+        conn_mgr = MagicMock()
+        conn_mgr.get_active_connection.return_value = _active_connection()
+        conn_mgr.get_token.return_value = MagicMock(access_token="tok-abc")
+        detector = MagicMock()
+        detector.detect.return_value = info
+        tagger = MagicMock()
+        tagger.generate_tag.return_value = "new-revision"
+        tagger.get_git_info.return_value = ("abc1234", False)
+        pusher = MagicMock()
+        pusher.push.side_effect = ImagePushError("stop-after-capture")
+
+        with (
+            patch(
+                "kamiwaza_extensions.extension_detector.ExtensionDetector",
+                return_value=detector,
+            ),
+            patch(
+                "kamiwaza_extensions.connections.ConnectionManager",
+                return_value=conn_mgr,
+            ),
+            patch(
+                "kamiwaza_extensions.revision_tagger.RevisionTagger",
+                return_value=tagger,
+            ),
+            patch(
+                "kamiwaza_extensions.image_pusher.ImagePusher",
+                return_value=pusher,
+            ),
+            patch.object(
+                dev_cmd, "_detect_kind_registry", return_value="127.0.0.1:30010"
+            ),
+            patch(
+                "kamiwaza_extensions.registry_resolution.detect_core_config_registry",
+                return_value=None,
+            ),
+            patch(
+                "kamiwaza_extensions.registry_resolution.build_engine_runs_in_vm",
+                return_value=False,
+            ),
+            patch(
+                "kamiwaza_extensions.registry_resolution._has_podman",
+                return_value=True,
+            ),
+            patch(
+                "kamiwaza_extensions.dev_state.read_state",
+                return_value=prior_state,
+            ),
+            patch(
+                "kamiwaza_extensions.dev_state.resume_message",
+                return_value=None,
+            ),
+            pytest.raises(click.exceptions.Exit) as exc_info,
+        ):
+            dev_cmd.run_dev_remote(no_build=True)
+
+        assert exc_info.value.exit_code == 1
+        pusher.push.assert_called_once()
+        assert pusher.push.call_args.kwargs["engine"] == "podman"
+
 
 class TestInsecurePreflightSource:
     """ENG-5719 follow-up: the push pre-flight must derive ``insecure`` from
@@ -582,6 +672,206 @@ class TestInsecurePreflightSource:
         # and would have driven the secure push path; the fix forwards the
         # effective ``insecure`` (True).
         assert captured["kwargs"]["insecure"] is True
+
+    def test_insecure_preflight_skips_user_supplied_push_registry(
+        self, tmp_path, monkeypatch
+    ):
+        """A dev-host connection can be insecure while the explicit push
+        registry is a normal HTTPS registry. The Docker insecure-registry
+        preflight is only for the auto loopback alias, not every split
+        registry."""
+
+        from kamiwaza_extensions.commands import dev as dev_cmd
+        from kamiwaza_extensions.image_pusher import ImagePushError
+
+        monkeypatch.setenv("KAMIWAZA_PUSH_REGISTRY", "registry.example.com")
+        conn = ConnectionInfo(
+            name="dev",
+            url="https://kamiwaza.test/api",
+            active=True,
+            created_at=0.0,
+            verify_ssl=True,
+        )
+        assert conn.effective_verify_ssl() is False
+
+        info = ExtensionInfo(
+            path=tmp_path,
+            name="my-app",
+            version="0.1.0",
+            metadata={"name": "my-app", "type": "app"},
+            compose_path=tmp_path / "docker-compose.yml",
+            compose_data={"services": {"api": {"build": {"context": "."}}}},
+        )
+        pusher = MagicMock()
+        pusher.push.side_effect = ImagePushError("stop-after-capture")
+
+        conn_mgr = MagicMock()
+        conn_mgr.get_active_connection.return_value = conn
+        conn_mgr.get_token.return_value = MagicMock(access_token="tok-abc")
+        detector = MagicMock()
+        detector.detect.return_value = info
+        tagger = MagicMock()
+        tagger.generate_tag.return_value = "dev1"
+        tagger.get_git_info.return_value = ("abc1234", False)
+
+        with (
+            patch(
+                "kamiwaza_extensions.extension_detector.ExtensionDetector",
+                return_value=detector,
+            ),
+            patch(
+                "kamiwaza_extensions.connections.ConnectionManager",
+                return_value=conn_mgr,
+            ),
+            patch(
+                "kamiwaza_extensions.revision_tagger.RevisionTagger",
+                return_value=tagger,
+            ),
+            patch(
+                "kamiwaza_extensions.image_pusher.ImagePusher",
+                return_value=pusher,
+            ),
+            patch(
+                "kamiwaza_extensions.registry_resolution.detect_core_config_registry",
+                return_value="127.0.0.1:30010",
+            ),
+            patch(
+                "kamiwaza_extensions.registry_resolution._has_podman",
+                return_value=False,
+            ),
+            patch(
+                "kamiwaza_extensions.registry_resolution.docker_accepts_insecure_push_to",
+                return_value=False,
+            ),
+            patch(
+                "kamiwaza_extensions.dev_state.read_state",
+                return_value=None,
+            ),
+            patch(
+                "kamiwaza_extensions.dev_state.resume_message",
+                return_value=None,
+            ),
+            pytest.raises(click.exceptions.Exit),
+        ):
+            dev_cmd.run_dev_remote(no_build=True)
+
+        pusher.push.assert_called_once()
+        assert pusher.push.call_args.kwargs["registry"] == "registry.example.com"
+
+    def test_fresh_build_forces_docker_push_engine_with_podman_installed(
+        self, tmp_path, monkeypatch
+    ):
+        """Fresh ``kz-ext dev`` builds with Docker, so it must push with Docker.
+
+        If the push path auto-selected Podman merely because the connection is
+        insecure and Podman is installed, the Docker-built image would not be
+        visible to the push engine.
+        """
+
+        from kamiwaza_extensions.commands import dev as dev_cmd
+        from kamiwaza_extensions.image_pusher import ImagePushError
+
+        monkeypatch.delenv("KAMIWAZA_PUSH_REGISTRY", raising=False)
+        conn = ConnectionInfo(
+            name="dev",
+            url="https://kamiwaza.test/api",
+            active=True,
+            created_at=0.0,
+            verify_ssl=True,
+        )
+        assert conn.effective_verify_ssl() is False
+
+        info = ExtensionInfo(
+            path=tmp_path,
+            name="my-app",
+            version="0.1.0",
+            metadata={"name": "my-app", "type": "app"},
+            compose_path=tmp_path / "docker-compose.yml",
+            compose_data={"services": {"api": {"build": {"context": "."}}}},
+        )
+        built_ref = "127.0.0.1:30010/my-app-api:dev1"
+        captured: dict = {}
+
+        def _capture_push(*args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+            raise ImagePushError("stop-after-capture")
+
+        conn_mgr = MagicMock()
+        conn_mgr.get_active_connection.return_value = conn
+        conn_mgr.get_token.return_value = MagicMock(access_token="tok-abc")
+        detector = MagicMock()
+        detector.detect.return_value = info
+        tagger = MagicMock()
+        tagger.generate_tag.return_value = "dev1"
+        tagger.get_git_info.return_value = ("abc1234", False)
+        builder = MagicMock()
+        builder.build.return_value = [built_ref]
+        pusher = MagicMock()
+        pusher.push.side_effect = _capture_push
+
+        with (
+            patch(
+                "kamiwaza_extensions.extension_detector.ExtensionDetector",
+                return_value=detector,
+            ),
+            patch(
+                "kamiwaza_extensions.connections.ConnectionManager",
+                return_value=conn_mgr,
+            ),
+            patch(
+                "kamiwaza_extensions.revision_tagger.RevisionTagger",
+                return_value=tagger,
+            ),
+            patch(
+                "kamiwaza_extensions.image_builder.ImageBuilder",
+                return_value=builder,
+            ),
+            patch(
+                "kamiwaza_extensions.image_pusher.ImagePusher",
+                return_value=pusher,
+            ),
+            patch(
+                "kamiwaza_extensions.registry_resolution.detect_core_config_registry",
+                return_value="127.0.0.1:30010",
+            ),
+            patch(
+                "kamiwaza_extensions.registry_resolution.build_engine_runs_in_vm",
+                return_value=True,
+            ),
+            patch(
+                "kamiwaza_extensions.registry_resolution._docker_is_working",
+                return_value=True,
+            ),
+            patch(
+                "kamiwaza_extensions.registry_resolution._has_podman",
+                return_value=True,
+            ),
+            patch(
+                "kamiwaza_extensions.registry_resolution.docker_accepts_insecure_push_to",
+                return_value=True,
+            ),
+            patch(
+                "kamiwaza_extensions.dev_state.read_state",
+                return_value=None,
+            ),
+            patch(
+                "kamiwaza_extensions.dev_state.resume_message",
+                return_value=None,
+            ),
+            pytest.raises(click.exceptions.Exit),
+        ):
+            dev_cmd.run_dev_remote()
+
+        builder.build.assert_called_once()
+        assert builder.build.call_args.kwargs["registry"] == "127.0.0.1:30010"
+        assert captured["args"][0] == [built_ref]
+        assert captured["kwargs"]["registry"] == "host.docker.internal:30010"
+        assert captured["kwargs"]["target_refs"] == {
+            built_ref: "host.docker.internal:30010/my-app-api:dev1",
+        }
+        assert captured["kwargs"]["insecure"] is True
+        assert captured["kwargs"]["engine"] == "docker"
 
     def test_insecure_preflight_skipped_when_resume_skips_push(
         self, tmp_path, monkeypatch

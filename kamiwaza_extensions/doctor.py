@@ -177,8 +177,7 @@ def _bounds_outside_supported(
     if supported_upper is not None:
         if declared_upper is None:
             return (
-                f"declared has no upper bound but supported requires "
-                f"<{supported_upper}"
+                f"declared has no upper bound but supported requires <{supported_upper}"
             )
         if declared_upper > supported_upper:
             return (
@@ -549,9 +548,9 @@ class DoctorChecker:
         if connection is None:
             return []
 
-        # Mirror what ``kz-ext dev`` actually does: derive engine selection,
-        # registry resolution, and the insecure-registry gate from the
-        # *effective* verify-SSL (env override / dev-hostname auto-disable /
+        # Mirror what ``kz-ext dev`` actually does: derive registry resolution
+        # and the insecure-registry gate from the *effective* verify-SSL
+        # (env override / dev-hostname auto-disable /
         # persisted flag), not the persisted ``verify_ssl`` alone. Otherwise
         # doctor greenlights a config that ``dev`` then fails on -- e.g. a
         # ``kamiwaza.test`` connection with ``verify_ssl=True`` whose TLS is
@@ -565,18 +564,19 @@ class DoctorChecker:
 
         try:
             from kamiwaza_extensions.registry_resolution import (
+                docker_accepts_insecure_push_to,
+                insecure_registry_daemon_json_fix,
                 resolve_dev_registries,
-                select_push_engine,
             )
 
-            # Resolve registries against the same engine ``kz-ext dev``
-            # will actually pick — otherwise doctor reports a VM alias the
-            # push engine can't resolve (R6: podman from host CLI cannot
-            # resolve host.docker.internal).
-            verify_ssl_for_engine = effective_verify
+            # ``kz-ext dev`` builds with Docker on the default path today, so
+            # doctor validates the same Docker push topology. Explicit
+            # ``--no-build`` runs may push with Podman, but doctor has no flag
+            # context for that specialized path.
+            push_engine = "docker"
             resolution = resolve_dev_registries(
                 connection,
-                push_engine=select_push_engine(insecure=not verify_ssl_for_engine),
+                push_engine=push_engine,
             )
         except ValueError as exc:
             return [
@@ -621,19 +621,14 @@ class DoctorChecker:
             # this in doctor too (jxstanford iter-4 Critical #1) so users
             # see the fix before they hit it at ``kz-ext dev`` time.
             #
-            # Gate on ``insecure`` (verify_ssl=False) so a legitimate
-            # user-supplied secure-HTTPS push override isn't refused for
-            # not being in ``insecure-registries`` (claude iter-5 I1).
-            from kamiwaza_extensions.registry_resolution import (
-                docker_accepts_insecure_push_to,
-                insecure_registry_daemon_json_fix,
-                select_push_engine,
-            )
-
+            # Gate on the auto loopback-alias rewrite so a legitimate
+            # user-supplied secure-HTTPS push override isn't refused just
+            # because the active Kamiwaza connection itself is insecure.
             insecure = not verify_ssl
             if (
                 insecure
-                and select_push_engine(insecure=insecure) == "docker"
+                and push_engine == "docker"
+                and resolution.push_registry_source == "build VM loopback alias"
                 and not docker_accepts_insecure_push_to(resolution.push_registry)
             ):
                 results.append(
@@ -734,6 +729,7 @@ class DoctorChecker:
         import warnings
 
         import requests
+
         # Use the urllib3 vendored under ``requests`` rather than the top-
         # level package so we ride whatever version ``requests`` pins —
         # jxstanford Medium #6: ``urllib3`` isn't a declared dependency.
@@ -786,10 +782,16 @@ class DoctorChecker:
                 failures.append(f"{url}: {exc}")
                 continue
             content_type = response.headers.get("content-type", "")
-            body_start = (response.text or "").lstrip()[:64].lower()
-            is_html = "text/html" in content_type.lower() or body_start.startswith(
-                ("<!doctype html", "<html")
-            )
+            body_prefix = getattr(response, "content", b"")
+            if isinstance(body_prefix, bytes):
+                body_start = body_prefix[:512].lstrip().lower()
+                starts_html = body_start.startswith((b"<!doctype html", b"<html"))
+            elif isinstance(body_prefix, str):
+                body_start = body_prefix[:512].lstrip().lower()
+                starts_html = body_start.startswith(("<!doctype html", "<html"))
+            else:
+                starts_html = False
+            is_html = "text/html" in content_type.lower() or starts_html
             if is_html:
                 # HTML on this URL is not a real /v2/ response — record it
                 # and continue so the alternate scheme still gets a chance.

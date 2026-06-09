@@ -386,7 +386,15 @@ def run_dev_remote(
     # insecure-registry pre-flight -- then Docker attempts HTTPS against the
     # plain-HTTP loopback registry and the push fails (ENG-5719 follow-up).
     insecure = not connection.effective_verify_ssl()
-    push_engine = select_push_engine(insecure=insecure)
+    # ImageBuilder is Docker-only today. On a normal/fresh run, the push must
+    # use Docker too; otherwise Docker builds the image into Docker's store and
+    # a Podman push cannot see it. Explicit --no-build pushes still use the
+    # auto-selected engine because the user is asserting the image already
+    # exists in the active engine's store.
+    build_engine = "docker"
+    push_engine = (
+        build_engine if not no_build else select_push_engine(insecure=insecure)
+    )
 
     try:
         registry_resolution = resolve_dev_registries(
@@ -439,6 +447,7 @@ def run_dev_remote(
     if (
         no_build
         and not no_push
+        and resumable
         and prior_state is not None
         and prior_state.last_build_engine
         and prior_state.last_build_engine != push_engine
@@ -612,12 +621,14 @@ def run_dev_remote(
         # push branch -- after resume may have set ``no_push`` and once
         # ``image_refs`` is known -- so a resume-skip or a build-context-less
         # extension can't trip it when no push will happen (ENG-5719
-        # follow-up). Gate on ``insecure`` so a legitimate user-supplied
-        # secure-HTTPS push override isn't refused (claude iter-5 I1).
+        # follow-up). Gate on the auto loopback-alias rewrite so a legitimate
+        # user-supplied secure-HTTPS push override isn't refused just because
+        # the active Kamiwaza connection itself is insecure.
         if (
             insecure
             and push_engine == "docker"
             and push_registry != registry
+            and registry_resolution.push_registry_source == "build VM loopback alias"
             and not docker_accepts_insecure_push_to(push_registry)
         ):
             console.print(
@@ -666,6 +677,7 @@ def run_dev_remote(
                     image_registry=registry,
                     push_registry=push_registry,
                 ),
+                engine=push_engine,
             )
         except ImagePushError as exc:
             console.print(f"\n[red]Error:[/red] {exc}")
@@ -713,10 +725,7 @@ def run_dev_remote(
                 registry=registry,
                 push_registry=push_registry,
                 image_basename=info.image_basename,
-                # ImageBuilder always uses ``docker build`` today, so the
-                # build step records "docker". If a future Podman builder
-                # lands, plumb the engine through and replace this literal.
-                build_engine="docker" if step == "build" else "",
+                build_engine=build_engine if step == "build" else "",
             )
         except OSError as state_exc:
             console.print(

@@ -1,5 +1,6 @@
 """Tests for ImagePusher."""
 
+import subprocess
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -63,6 +64,26 @@ class TestPush:
         with pytest.raises(ImagePushError, match="Push failed"):
             pusher._push("reg.test/app:v1")
 
+    @patch("kamiwaza_extensions.image_pusher.subprocess.run")
+    def test_verbose_push_failure_raises_image_push_error(self, mock_run, pusher):
+        mock_run.side_effect = subprocess.CalledProcessError(
+            1, ["docker", "push", "reg.test/app:v1"], stderr="denied"
+        )
+        with pytest.raises(ImagePushError, match="Push failed"):
+            pusher._push("reg.test/app:v1", verbose=True)
+
+
+class TestTag:
+    @patch("kamiwaza_extensions.image_pusher.subprocess.run")
+    def test_verbose_tag_failure_raises_image_push_error(self, mock_run, pusher):
+        mock_run.side_effect = subprocess.CalledProcessError(
+            1,
+            ["docker", "tag", "reg.test/app:v1", "push.test/app:v1"],
+            stderr="missing image",
+        )
+        with pytest.raises(ImagePushError, match="Retag failed"):
+            pusher._tag("reg.test/app:v1", "push.test/app:v1", verbose=True)
+
 
 class TestPushOrchestration:
     @patch("kamiwaza_extensions.image_pusher._has_podman", return_value=True)
@@ -76,6 +97,24 @@ class TestPushOrchestration:
         mock_login.assert_called_once_with("reg", "tok", use_podman=True)
         mock_tag.assert_not_called()
         mock_push.assert_called_once_with("reg/app:v1", use_podman=True, verbose=False)
+
+    @patch("kamiwaza_extensions.image_pusher._has_podman", return_value=True)
+    @patch.object(ImagePusher, "_login_registry")
+    @patch.object(ImagePusher, "_tag")
+    @patch.object(ImagePusher, "_push")
+    def test_explicit_docker_engine_overrides_insecure_podman_auto_selection(
+        self, mock_push, mock_tag, mock_login, _mock_hp, pusher
+    ):
+        pusher.push(
+            ["reg/app:v1"],
+            registry="reg",
+            token="tok",
+            insecure=True,
+            engine="docker",
+        )
+        mock_login.assert_called_once_with("reg", "tok", use_podman=False)
+        mock_tag.assert_not_called()
+        mock_push.assert_called_once_with("reg/app:v1", use_podman=False, verbose=False)
 
     @patch("kamiwaza_extensions.image_pusher._has_podman", return_value=False)
     @patch.object(ImagePusher, "_login_registry")

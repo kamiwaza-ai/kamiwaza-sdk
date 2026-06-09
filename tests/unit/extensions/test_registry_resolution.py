@@ -117,6 +117,27 @@ class TestImageRegistryResolution:
 
     @patch(
         "kamiwaza_extensions.registry_resolution.detect_core_config_registry",
+        return_value="should-not-leak:30010",
+    )
+    @patch(
+        "kamiwaza_extensions.registry_resolution.build_engine_runs_in_vm",
+        return_value=False,
+    )
+    def test_core_config_skipped_for_lan_ip_connection(self, _mock_vm, mock_core):
+        # Raw IPs still disable TLS verification, but registry discovery must
+        # not trust the current kube context for non-loopback LAN IPs. That
+        # context may point at an unrelated local cluster.
+        kind_detector = MagicMock(return_value="localhost:5001")
+        resolution = resolve_dev_registries(
+            _conn("https://192.168.1.50/api"),
+            kind_registry_detector=kind_detector,
+        )
+        assert resolution.image_registry == "registry.192.168.1.50"
+        mock_core.assert_not_called()
+        kind_detector.assert_not_called()
+
+    @patch(
+        "kamiwaza_extensions.registry_resolution.detect_core_config_registry",
         return_value="127.0.0.1:30010",
     )
     @patch(
@@ -387,10 +408,7 @@ class TestReplaceRegistryHost:
 
         from kamiwaza_extensions.registry_resolution import replace_registry_host
 
-        assert (
-            replace_registry_host("127.0.0.1", "host.docker.internal")
-            == "127.0.0.1"
-        )
+        assert replace_registry_host("127.0.0.1", "host.docker.internal") == "127.0.0.1"
 
 
 class TestBuildEngineVmPlatformGate:
@@ -399,9 +417,7 @@ class TestBuildEngineVmPlatformGate:
         return_value="Linux",
     )
     @patch("kamiwaza_extensions.registry_resolution.subprocess.run")
-    def test_build_engine_vm_is_false_on_native_linux(
-        self, mock_run, _mock_system
-    ):
+    def test_build_engine_vm_is_false_on_native_linux(self, mock_run, _mock_system):
         from kamiwaza_extensions.registry_resolution import build_engine_runs_in_vm
 
         assert build_engine_runs_in_vm() is False

@@ -86,6 +86,27 @@ class TestDoctorRegistryChecks:
         assert result.fix is not None
         assert "KAMIWAZA_REGISTRY" in result.fix
 
+    def test_registry_endpoint_html_sniff_does_not_materialize_text(self):
+        checker = DoctorChecker(config_dir=None)
+
+        class HtmlResponse:
+            status_code = 200
+            headers = {"content-type": "application/octet-stream"}
+            content = b"   <html><body>login</body></html>"
+
+            @property
+            def text(self):
+                raise AssertionError("response.text should not be read")
+
+        with patch("requests.get", return_value=HtmlResponse()):
+            result = checker._check_registry_http_endpoint(
+                "Registry image endpoint",
+                "registry.kamiwaza.test",
+            )
+
+        assert result.status == "fail"
+        assert "did not serve a registry /v2/ endpoint" in result.message
+
     def test_registry_endpoint_prefers_https_when_http_serves_html(self):
         """HTTPS-only registries with an HTML landing page on :80 must not
         be misreported as broken — the HTTPS probe should still succeed."""
@@ -139,9 +160,7 @@ class TestDoctorRegistryChecks:
         assert result.status == "pass"
         # HTTP probed first for loopback, succeeds, never falls back to HTTPS.
         assert mock_get.call_args.args[0].startswith("http://127.0.0.1")
-        assert not any(
-            "InsecureRequestWarning" in str(w.message) for w in caught
-        )
+        assert not any("InsecureRequestWarning" in str(w.message) for w in caught)
 
     def test_registry_endpoint_loopback_https_fallback_skips_verify(self):
         """jxstanford Medium #2: the HTTP-success short-circuit in the
@@ -179,9 +198,7 @@ class TestDoctorRegistryChecks:
         assert second_call.args[0].startswith("https://127.0.0.1")
         assert second_call.kwargs.get("verify") is False
         # Even with verify=False, no warning leaks to the user's stderr.
-        assert not any(
-            "InsecureRequestWarning" in str(w.message) for w in caught
-        )
+        assert not any("InsecureRequestWarning" in str(w.message) for w in caught)
 
     def test_registry_endpoint_honors_connection_verify_ssl(self):
         """jxstanford Medium #1: a connection with verify_ssl=False (dev
@@ -257,9 +274,7 @@ class TestDoctorRegistryChecks:
         ``warn`` rather than a misleading hard failure."""
 
         checker = DoctorChecker(config_dir=None)
-        result = checker._check_push_registry_endpoint(
-            "host.docker.internal:30010"
-        )
+        result = checker._check_push_registry_endpoint("host.docker.internal:30010")
         assert result.status == "warn"
         assert "Docker Desktop" in result.message
 
@@ -320,9 +335,7 @@ class TestDoctorRegistryChecks:
         would be just noise — emit a targeted warn instead."""
 
         checker = DoctorChecker(config_dir=None)
-        result = checker._check_push_registry_endpoint(
-            "host.containers.internal:30010"
-        )
+        result = checker._check_push_registry_endpoint("host.containers.internal:30010")
         assert result.status == "warn"
         assert "Podman" in result.message
 
@@ -379,23 +392,21 @@ class TestDoctorRegistryChecks:
         """claude iter-5 I1: a user-supplied ``KAMIWAZA_PUSH_REGISTRY``
         pointing at a legitimate HTTPS registry must NOT trigger the
         Docker insecure-registries fail. That gate is only meant for
-        insecure HTTP pushes; a secure private registry is by definition
-        not in ``insecure-registries`` and that's correct."""
+        the auto loopback alias; a secure private registry is by definition
+        not in ``insecure-registries`` and that's correct even when the
+        active Kamiwaza connection is a dev host with TLS auto-disabled."""
 
-        monkeypatch.setenv(
-            "KAMIWAZA_PUSH_REGISTRY", "my-private-registry.example.com"
-        )
+        monkeypatch.setenv("KAMIWAZA_PUSH_REGISTRY", "my-private-registry.example.com")
         mock_core.return_value = "127.0.0.1:30010"
         checker = DoctorChecker(config_dir=tmp_path / ".kamiwaza")
-        # Secure connection (effective verify-SSL True) → not insecure →
-        # insecure-registries check must be skipped even though the push
-        # registry differs from the image registry. ``effective_verify_ssl`` is
-        # set explicitly (ENG-5719) so the gate keys off a real bool.
+        # Dev-host connection: effective verify-SSL is False, but the explicit
+        # push registry is user-supplied rather than the auto loopback alias,
+        # so the insecure-registries check must still be skipped.
         checker._conn_mgr.get_active_connection = MagicMock(
             return_value=MagicMock(
                 url="https://kamiwaza.test/api",
                 verify_ssl=True,
-                effective_verify_ssl=MagicMock(return_value=True),
+                effective_verify_ssl=MagicMock(return_value=False),
             )
         )
         ok = MagicMock(
@@ -409,8 +420,8 @@ class TestDoctorRegistryChecks:
                 "kamiwaza_extensions.registry_resolution.build_engine_runs_in_vm",
                 return_value=False,
             ),
-            # Even if docker would reject the alias as insecure, the
-            # gate's ``insecure`` precondition must short-circuit first.
+            # Even if docker would reject the registry as insecure, the
+            # user-supplied source must keep the auto-alias gate out.
             patch(
                 "kamiwaza_extensions.registry_resolution.docker_accepts_insecure_push_to",
                 return_value=False,
@@ -477,8 +488,9 @@ class TestDoctorRegistryChecks:
         assert insecure_check is not None
         assert insecure_check.status == "fail"
         assert "insecure-registries" in (insecure_check.fix or "")
-        assert "host.docker.internal" in (insecure_check.fix or "") or \
-            "30010" in (insecure_check.fix or "")
+        assert "host.docker.internal" in (insecure_check.fix or "") or "30010" in (
+            insecure_check.fix or ""
+        )
 
     @patch("kamiwaza_extensions.registry_resolution.detect_core_config_registry")
     def test_registry_readiness_uses_effective_verify_ssl_for_dev_host(
