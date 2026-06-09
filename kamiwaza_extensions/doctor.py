@@ -564,6 +564,7 @@ class DoctorChecker:
 
         try:
             from kamiwaza_extensions.registry_resolution import (
+                BUILD_VM_LOOPBACK_ALIAS_SOURCE,
                 docker_accepts_insecure_push_to,
                 insecure_registry_daemon_json_fix,
                 resolve_dev_registries,
@@ -628,7 +629,7 @@ class DoctorChecker:
             if (
                 insecure
                 and push_engine == "docker"
-                and resolution.push_registry_source == "build VM loopback alias"
+                and resolution.push_registry_source == BUILD_VM_LOOPBACK_ALIAS_SOURCE
                 and not docker_accepts_insecure_push_to(resolution.push_registry)
             ):
                 results.append(

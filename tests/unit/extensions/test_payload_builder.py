@@ -1,5 +1,7 @@
 """Tests for PayloadBuilder."""
 
+import hashlib
+
 import pytest
 
 from kamiwaza_extensions.connections import ConnectionInfo
@@ -121,7 +123,14 @@ class TestParsePorts:
 
     def test_long_form_name_and_app_protocol_propagate(self):
         ports = PayloadBuilder._parse_ports(
-            [{"target": 19530, "protocol": "tcp", "name": "grpc", "app_protocol": "grpc"}]
+            [
+                {
+                    "target": 19530,
+                    "protocol": "tcp",
+                    "name": "grpc",
+                    "app_protocol": "grpc",
+                }
+            ]
         )
         assert len(ports) == 1
         assert ports[0].container_port == 19530
@@ -329,9 +338,7 @@ class TestVerifySslPropagation:
         # Both conventional vars injected so explicit pod env beats
         # whatever the operator writes into the configmap.
         assert {"name": "KAMIWAZA_VERIFY_SSL", "value": "false"} in primary_env
-        assert (
-            {"name": "KAMIWAZA_TLS_REJECT_UNAUTHORIZED", "value": "0"} in primary_env
-        )
+        assert {"name": "KAMIWAZA_TLS_REJECT_UNAUTHORIZED", "value": "0"} in primary_env
 
     def test_dev_tld_auto_disables_verify(
         self,
@@ -711,7 +718,6 @@ class TestServiceOverrides:
             },
         }
 
-
     def test_non_kubernetes_backend_emits_no_sandbox_spec(
         self, builder, metadata, connection
     ):
@@ -786,9 +792,7 @@ class TestServiceOverrides:
                     }
                 },
             }
-            payload = builder.build(
-                metadata, transformed, connection, "my-app-dev-abc"
-            )
+            payload = builder.build(metadata, transformed, connection, "my-app-dev-abc")
             sandbox = (payload.model_extra or {})["sandbox"]
             assert sandbox["persistence"] is True, f"failed for {truthy!r}"
 
@@ -812,6 +816,19 @@ class TestDevNaming:
         name = PayloadBuilder.make_dev_name("my-app", user_id="user-123")
         assert name.startswith("my-app-dev-")
         assert len(name.split("-")[-1]) == 6  # 6 char hash
+
+    def test_dns_safe_name_preserves_legacy_hash_seed(self):
+        """Existing DNS-safe dev deployments used a user-only hash seed.
+
+        Keep that stable so upgrading the CLI patches the existing dev CR
+        instead of creating a second deployment under a new hash.
+        """
+
+        expected_hash = hashlib.sha256("user-123".encode()).hexdigest()[:6]
+        assert (
+            PayloadBuilder.make_dev_name("my-app", user_id="user-123")
+            == f"my-app-dev-{expected_hash}"
+        )
 
     def test_deterministic(self):
         a = PayloadBuilder.make_dev_name("my-app", user_id="user-123")
@@ -905,9 +922,8 @@ class TestResourceParsing:
         }
         with pytest.raises(ValueError) as exc_info:
             builder._parse_resources(svc)
-        assert (
-            "deploy.resources.requests is not a valid Docker Compose key"
-            in str(exc_info.value)
+        assert "deploy.resources.requests is not a valid Docker Compose key" in str(
+            exc_info.value
         )
 
 
@@ -1036,7 +1052,9 @@ class TestHealthChecks:
         assert health_check["httpGet"] == {
             "path": "/",
             "port": 8000,
-        }, f"service-type primary must probe / not /health; got {health_check['httpGet']!r}"
+        }, (
+            f"service-type primary must probe / not /health; got {health_check['httpGet']!r}"
+        )
 
     def test_tool_type_primary_probes_sse(self, builder, connection):
         """ENG-3901 / F-013 (final): tool primary probes ``/sse`` — the
@@ -1160,9 +1178,7 @@ class TestHealthCheckOverride:
         health_check = tool.model_dump()["healthCheck"]
         assert health_check["httpGet"] == {"path": "/v1/healthz", "port": 8000}
 
-    def test_no_metadata_override_falls_back_to_x_kamiwaza(
-        self, builder, connection
-    ):
+    def test_no_metadata_override_falls_back_to_x_kamiwaza(self, builder, connection):
         """Existing ``x-kamiwaza.healthCheck`` path stays intact."""
         metadata = {"name": "my-tool", "version": "1.0.0", "type": "tool"}
         transformed = {
@@ -1181,9 +1197,7 @@ class TestHealthCheckOverride:
         health_check = tool.model_dump()["healthCheck"]
         assert health_check["httpGet"] == {"path": "/compose", "port": 8000}
 
-    def test_no_overrides_keeps_default_sse_for_tool_primary(
-        self, builder, connection
-    ):
+    def test_no_overrides_keeps_default_sse_for_tool_primary(self, builder, connection):
         """Regression guard: tool extensions with no override still get /sse."""
         metadata = {"name": "my-tool", "version": "1.0.0", "type": "tool"}
         transformed = {

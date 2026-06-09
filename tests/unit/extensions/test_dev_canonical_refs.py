@@ -150,7 +150,7 @@ class TestDevRemoteBuildsAtCanonicalRefs:
         from kamiwaza_extensions.commands import dev as dev_cmd
         from kamiwaza_extensions.image_pusher import ImagePushError
 
-        monkeypatch.setenv("KAMIWAZA_PUSH_REGISTRY", "host.containers.internal:30010")
+        monkeypatch.delenv("KAMIWAZA_PUSH_REGISTRY", raising=False)
         info = ExtensionInfo(
             path=tmp_path,
             name="my-app",
@@ -207,6 +207,18 @@ class TestDevRemoteBuildsAtCanonicalRefs:
             patch(
                 "kamiwaza_extensions.registry_resolution.detect_core_config_registry",
                 return_value=None,
+            ),
+            patch(
+                "kamiwaza_extensions.registry_resolution.build_engine_runs_in_vm",
+                return_value=True,
+            ),
+            patch(
+                "kamiwaza_extensions.registry_resolution._has_podman",
+                return_value=True,
+            ),
+            patch(
+                "kamiwaza_extensions.registry_resolution.running_podman_machine_name",
+                return_value="podman-machine-default",
             ),
             patch(
                 "kamiwaza_extensions.dev_state.read_state",
@@ -757,6 +769,110 @@ class TestInsecurePreflightSource:
 
         pusher.push.assert_called_once()
         assert pusher.push.call_args.kwargs["registry"] == "registry.example.com"
+        assert pusher.push.call_args.kwargs["token"] == "tok-abc"
+
+    def test_insecure_preflight_skips_unused_loopback_alias_for_external_refs(
+        self, tmp_path, monkeypatch
+    ):
+        """Declared external build refs do not retag to the local VM alias.
+
+        Registry resolution may still find an auto loopback alias for fallback
+        refs, but the Docker insecure-registry preflight should only require
+        daemon config when at least one actual push ref maps to that alias.
+        """
+
+        from kamiwaza_extensions.commands import dev as dev_cmd
+        from kamiwaza_extensions.image_pusher import ImagePushError
+
+        monkeypatch.delenv("KAMIWAZA_PUSH_REGISTRY", raising=False)
+        conn = ConnectionInfo(
+            name="dev",
+            url="https://kamiwaza.test/api",
+            active=True,
+            created_at=0.0,
+            verify_ssl=True,
+        )
+        info = ExtensionInfo(
+            path=tmp_path,
+            name="my-app",
+            version="0.1.0",
+            metadata={"name": "my-app", "type": "app"},
+            compose_path=tmp_path / "docker-compose.yml",
+            compose_data={
+                "services": {
+                    "api": {
+                        "build": {"context": "."},
+                        "image": "ghcr.io/example/custom-api:0.1.0",
+                    }
+                }
+            },
+        )
+        pusher = MagicMock()
+        pusher.push.side_effect = ImagePushError("stop-after-capture")
+
+        conn_mgr = MagicMock()
+        conn_mgr.get_active_connection.return_value = conn
+        conn_mgr.get_token.return_value = MagicMock(access_token="tok-abc")
+        detector = MagicMock()
+        detector.detect.return_value = info
+        tagger = MagicMock()
+        tagger.generate_tag.return_value = "dev1"
+        tagger.get_git_info.return_value = ("abc1234", False)
+
+        with (
+            patch(
+                "kamiwaza_extensions.extension_detector.ExtensionDetector",
+                return_value=detector,
+            ),
+            patch(
+                "kamiwaza_extensions.connections.ConnectionManager",
+                return_value=conn_mgr,
+            ),
+            patch(
+                "kamiwaza_extensions.revision_tagger.RevisionTagger",
+                return_value=tagger,
+            ),
+            patch(
+                "kamiwaza_extensions.image_pusher.ImagePusher",
+                return_value=pusher,
+            ),
+            patch(
+                "kamiwaza_extensions.registry_resolution.detect_core_config_registry",
+                return_value="127.0.0.1:30010",
+            ),
+            patch(
+                "kamiwaza_extensions.registry_resolution.build_engine_runs_in_vm",
+                return_value=True,
+            ),
+            patch(
+                "kamiwaza_extensions.registry_resolution._docker_is_working",
+                return_value=True,
+            ),
+            patch(
+                "kamiwaza_extensions.registry_resolution._has_podman",
+                return_value=False,
+            ),
+            patch(
+                "kamiwaza_extensions.registry_resolution.docker_accepts_insecure_push_to",
+                return_value=False,
+            ) as mock_accepts,
+            patch(
+                "kamiwaza_extensions.dev_state.read_state",
+                return_value=None,
+            ),
+            patch(
+                "kamiwaza_extensions.dev_state.resume_message",
+                return_value=None,
+            ),
+            pytest.raises(click.exceptions.Exit),
+        ):
+            dev_cmd.run_dev_remote(no_build=True)
+
+        mock_accepts.assert_not_called()
+        pusher.push.assert_called_once()
+        assert pusher.push.call_args.args[0] == ["ghcr.io/example/custom-api:dev1"]
+        assert pusher.push.call_args.kwargs["registry"] == "host.docker.internal:30010"
+        assert pusher.push.call_args.kwargs["target_refs"] == {}
 
     def test_fresh_build_forces_docker_push_engine_with_podman_installed(
         self, tmp_path, monkeypatch

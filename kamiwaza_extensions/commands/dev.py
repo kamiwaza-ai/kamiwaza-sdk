@@ -373,8 +373,11 @@ def run_dev_remote(
     # only resolves inside the Docker daemon's VM; podman from host CLI
     # cannot resolve it at all).
     from kamiwaza_extensions.registry_resolution import (
+        BUILD_VM_LOOPBACK_ALIAS_SOURCE,
+        build_push_ref_map,
         docker_accepts_insecure_push_to,
         insecure_registry_daemon_json_fix,
+        is_loopback_registry,
         resolve_dev_registries,
         select_push_engine,
     )
@@ -613,6 +616,14 @@ def run_dev_remote(
 
     # 7. Push images
     if not no_push and image_refs:
+        push_ref_map = build_push_ref_map(
+            image_refs,
+            image_registry=registry,
+            push_registry=push_registry,
+        )
+        push_uses_auto_loopback_alias = (
+            registry_resolution.push_registry_source == BUILD_VM_LOOPBACK_ALIAS_SOURCE
+        )
         # Pre-flight: when docker is the active engine pushing insecurely to
         # the rewritten alias, the daemon must treat that alias as insecure
         # (default ``insecure-registries`` only covers 127.0.0.0/8). Fail fast
@@ -623,12 +634,16 @@ def run_dev_remote(
         # extension can't trip it when no push will happen (ENG-5719
         # follow-up). Gate on the auto loopback-alias rewrite so a legitimate
         # user-supplied secure-HTTPS push override isn't refused just because
-        # the active Kamiwaza connection itself is insecure.
+        # the active Kamiwaza connection itself is insecure. Also require at
+        # least one actual retag to that alias; declared external image refs may
+        # leave the push-ref map empty even when registry resolution found an
+        # alias for fallback refs.
         if (
             insecure
             and push_engine == "docker"
             and push_registry != registry
-            and registry_resolution.push_registry_source == "build VM loopback alias"
+            and push_uses_auto_loopback_alias
+            and push_ref_map
             and not docker_accepts_insecure_push_to(push_registry)
         ):
             console.print(
@@ -638,11 +653,6 @@ def run_dev_remote(
 
         console.print(f"Pushing to {push_registry}...")
         try:
-            from kamiwaza_extensions.registry_resolution import (
-                build_push_ref_map,
-                is_loopback_registry,
-            )
-
             # The local Kamiwaza dev registry is a stock anonymous
             # ``registry:2`` — it requires no auth, and the connection token
             # is a Kamiwaza *API* credential, not a registry credential. Skip
@@ -651,12 +661,20 @@ def run_dev_remote(
             # (ENG-5719): ``podman login <vm-alias>`` resolves the registry
             # host client-side and fails ("no such host"), while
             # ``podman push <vm-alias>`` resolves it inside the VM and
-            # succeeds. Gate on the loopback *image* registry (the canonical
-            # local registry) rather than the push alias, which is non-loopback
-            # after the build-VM remap. Authenticated registries (e.g. a
-            # ``registry.<domain>`` ingress) are non-loopback and still log in.
+            # succeeds. Skip login for a loopback push target or for the
+            # auto-generated loopback VM alias. Authenticated user overrides
+            # (e.g. ``KAMIWAZA_PUSH_REGISTRY=registry.example.com``) are
+            # non-loopback and still log in even when the image registry is
+            # loopback.
             registry_login_token = (
-                None if is_loopback_registry(registry) else token.access_token
+                None
+                if (
+                    is_loopback_registry(push_registry)
+                    or (
+                        push_uses_auto_loopback_alias and is_loopback_registry(registry)
+                    )
+                )
+                else token.access_token
             )
             pusher = ImagePusher()
             pusher.push(
@@ -672,11 +690,7 @@ def run_dev_remote(
                 # (ENG-5719 follow-up).
                 insecure=insecure,
                 verbose=verbose,
-                target_refs=build_push_ref_map(
-                    image_refs,
-                    image_registry=registry,
-                    push_registry=push_registry,
-                ),
+                target_refs=push_ref_map,
                 engine=push_engine,
             )
         except ImagePushError as exc:

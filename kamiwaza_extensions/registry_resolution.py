@@ -32,6 +32,7 @@ _KUBE_CONTEXT_TRUSTED_SUFFIXES = (
 # Docker is absent and a Podman machine is running.
 DOCKER_VM_HOST_ALIAS = "host.docker.internal"
 PODMAN_VM_HOST_ALIAS = "host.containers.internal"
+BUILD_VM_LOOPBACK_ALIAS_SOURCE = "build VM loopback alias"
 
 
 @dataclass(frozen=True)
@@ -203,7 +204,7 @@ def resolve_push_registry(
         if running_podman_machine_name() is not None:
             return (
                 replace_registry_host(image_registry, PODMAN_VM_HOST_ALIAS),
-                "build VM loopback alias",
+                BUILD_VM_LOOPBACK_ALIAS_SOURCE,
             )
         # No podman machine: skip remap. The host's loopback is reachable
         # from the host CLI directly via whatever port-forwarder bound it
@@ -219,7 +220,7 @@ def resolve_push_registry(
         return image_registry, "image registry"
     return (
         replace_registry_host(image_registry, DOCKER_VM_HOST_ALIAS),
-        "build VM loopback alias",
+        BUILD_VM_LOOPBACK_ALIAS_SOURCE,
     )
 
 
