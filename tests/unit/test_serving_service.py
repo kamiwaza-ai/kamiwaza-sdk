@@ -314,7 +314,9 @@ def test_log_streamer_respects_custom_stop_condition():
     service = _LogService(responses)
     streamer = DeploymentLogStreamer(service, poll_interval=0, sleep_fn=lambda _: None)
 
-    stop_after_two = lambda resp: resp.total_lines_seen >= 2
+    def stop_after_two(resp):
+        return resp.total_lines_seen >= 2
+
     lines = list(
         streamer.stream(
             deployment_id,
