@@ -394,6 +394,14 @@ class TestDevRemoteBuildsAtCanonicalRefs:
                 return_value=None,
             ),
             patch(
+                "kamiwaza_extensions.registry_resolution.build_engine_runs_in_vm",
+                return_value=True,
+            ),
+            patch(
+                "kamiwaza_extensions.registry_resolution.running_podman_machine_name",
+                return_value="podman-machine-default",
+            ),
+            patch(
                 "kamiwaza_extensions.dev_state.read_state",
                 return_value=prior_state,
             ),

@@ -404,6 +404,39 @@ def is_build_vm_loopback_alias_registry(registry: str) -> bool:
     return host in {DOCKER_VM_HOST_ALIAS, PODMAN_VM_HOST_ALIAS}
 
 
+def push_registry_uses_local_loopback_alias(
+    registry_resolution: RegistryResolution,
+) -> bool:
+    """True when push uses a VM alias for the local image registry."""
+
+    return is_loopback_registry(registry_resolution.image_registry) and (
+        registry_resolution.push_registry_source == BUILD_VM_LOOPBACK_ALIAS_SOURCE
+        or is_build_vm_loopback_alias_registry(registry_resolution.push_registry)
+    )
+
+
+def push_registry_requires_insecure_tls(
+    registry_resolution: RegistryResolution, *, api_insecure: bool
+) -> bool:
+    """Return the TLS mode needed by the resolved registry push target."""
+
+    push_registry_is_local_plain_http = (
+        is_loopback_registry(registry_resolution.push_registry)
+        or is_build_vm_loopback_alias_registry(registry_resolution.push_registry)
+        or (
+            registry_resolution.push_registry_source == BUILD_VM_LOOPBACK_ALIAS_SOURCE
+            and is_loopback_registry(registry_resolution.image_registry)
+        )
+    )
+    registry_was_user_supplied = (
+        registry_resolution.push_registry_source == "KAMIWAZA_PUSH_REGISTRY"
+        or registry_resolution.image_registry_source == "KAMIWAZA_REGISTRY"
+    )
+    return push_registry_is_local_plain_http or (
+        api_insecure and not registry_was_user_supplied
+    )
+
+
 def replace_registry_host(registry: str, host: str) -> str:
     """Swap the registry hostname while preserving an explicit port.
 

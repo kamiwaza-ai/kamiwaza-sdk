@@ -440,9 +440,9 @@ class TestDoctorRegistryChecks:
         doctor must emit a hard fail with the daemon.json fix so the user
         sees it before ``kz-ext dev`` push fails with a confusing TLS error.
 
-        Connection ``verify_ssl=False`` is required to trigger the gate
-        (claude iter-5 I1 follow-up): the check only fires when the push
-        is meant to be insecure."""
+        Connection ``verify_ssl=False`` is one way to trigger the gate
+        (claude iter-5 I1 follow-up): the check fires when the push target,
+        not necessarily the API connection, is meant to be insecure."""
 
         mock_core.return_value = "127.0.0.1:30010"
         checker = DoctorChecker(config_dir=tmp_path / ".kamiwaza")
@@ -491,6 +491,50 @@ class TestDoctorRegistryChecks:
         assert "host.docker.internal" in (insecure_check.fix or "") or "30010" in (
             insecure_check.fix or ""
         )
+
+    @patch("kamiwaza_extensions.registry_resolution.detect_core_config_registry")
+    def test_registry_readiness_fails_for_loopback_registry_even_with_strict_api_tls(
+        self, mock_core, tmp_path
+    ):
+        """Doctor must match ``kz-ext dev`` when API TLS is strict but the
+        resolved push target is the local plain-HTTP registry.
+
+        ``KAMIWAZA_VERIFY_SSL=true`` can make ``effective_verify_ssl()`` true
+        for a dev URL, but that does not make the local registry HTTPS. The
+        Docker insecure-registries gate is registry-specific."""
+
+        mock_core.return_value = "127.0.0.1:30010"
+        checker = DoctorChecker(config_dir=tmp_path / ".kamiwaza")
+        checker._conn_mgr.get_active_connection = MagicMock(
+            return_value=MagicMock(
+                url="https://kamiwaza.test/api",
+                verify_ssl=True,
+                effective_verify_ssl=MagicMock(return_value=True),
+            )
+        )
+        ok = MagicMock(
+            status_code=200,
+            headers={"content-type": "application/json"},
+            text="{}",
+        )
+        with (
+            patch("requests.get", return_value=ok),
+            patch(
+                "kamiwaza_extensions.registry_resolution.build_engine_runs_in_vm",
+                return_value=True,
+            ),
+            patch(
+                "kamiwaza_extensions.registry_resolution.docker_accepts_insecure_push_to",
+                return_value=False,
+            ),
+        ):
+            results = checker._check_registry_readiness()
+
+        insecure_check = next(
+            (r for r in results if r.name == "Docker insecure-registries"), None
+        )
+        assert insecure_check is not None
+        assert insecure_check.status == "fail"
 
     @patch("kamiwaza_extensions.registry_resolution.detect_core_config_registry")
     def test_registry_readiness_uses_effective_verify_ssl_for_dev_host(

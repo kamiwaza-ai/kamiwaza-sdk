@@ -9,12 +9,15 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from kamiwaza_extensions.registry_resolution import (
+    RegistryResolution,
     _reset_docker_info_cache,
     _reset_docker_registry_config_cache,
     build_push_ref_map,
     docker_accepts_insecure_push_to,
     insecure_registry_daemon_json_fix,
     is_build_vm_loopback_alias_registry,
+    push_registry_requires_insecure_tls,
+    push_registry_uses_local_loopback_alias,
     replace_registry_prefix,
     resolve_dev_registries,
     select_push_engine,
@@ -547,6 +550,40 @@ class TestBuildVmLoopbackAliasRegistry:
 
     def test_rejects_normal_external_registry(self):
         assert not is_build_vm_loopback_alias_registry("registry.example.com")
+
+
+class TestPushRegistryTlsPolicy:
+    def test_loopback_push_registry_requires_insecure_even_when_api_is_secure(self):
+        resolution = RegistryResolution(
+            image_registry="127.0.0.1:30010",
+            image_registry_source="kamiwaza/core-config",
+            push_registry="127.0.0.1:30010",
+            push_registry_source="image registry",
+        )
+
+        assert push_registry_requires_insecure_tls(resolution, api_insecure=False)
+
+    def test_vm_alias_push_registry_requires_insecure_even_when_user_supplied(self):
+        resolution = RegistryResolution(
+            image_registry="127.0.0.1:30010",
+            image_registry_source="kamiwaza/core-config",
+            push_registry="host.docker.internal:30010",
+            push_registry_source="KAMIWAZA_PUSH_REGISTRY",
+        )
+
+        assert push_registry_requires_insecure_tls(resolution, api_insecure=False)
+        assert push_registry_uses_local_loopback_alias(resolution)
+
+    def test_external_user_supplied_registry_stays_secure_for_dev_api(self):
+        resolution = RegistryResolution(
+            image_registry="127.0.0.1:30010",
+            image_registry_source="kamiwaza/core-config",
+            push_registry="registry.example.com",
+            push_registry_source="KAMIWAZA_PUSH_REGISTRY",
+        )
+
+        assert not push_registry_requires_insecure_tls(resolution, api_insecure=True)
+        assert not push_registry_uses_local_loopback_alias(resolution)
 
 
 class TestDockerInsecureRegistries:

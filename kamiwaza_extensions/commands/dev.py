@@ -75,37 +75,6 @@ def _build_patch_kwargs(
     return kwargs
 
 
-def _push_registry_requires_insecure_tls(
-    registry_resolution: Any, *, api_insecure: bool
-) -> bool:
-    """Return the TLS mode needed by the resolved registry push target."""
-
-    from kamiwaza_extensions.registry_resolution import (
-        BUILD_VM_LOOPBACK_ALIAS_SOURCE,
-        is_build_vm_loopback_alias_registry,
-        is_loopback_registry,
-    )
-
-    push_uses_auto_loopback_alias = (
-        registry_resolution.push_registry_source == BUILD_VM_LOOPBACK_ALIAS_SOURCE
-    )
-    push_registry_is_local_plain_http = (
-        is_loopback_registry(registry_resolution.push_registry)
-        or is_build_vm_loopback_alias_registry(registry_resolution.push_registry)
-        or (
-            push_uses_auto_loopback_alias
-            and is_loopback_registry(registry_resolution.image_registry)
-        )
-    )
-    registry_was_user_supplied = (
-        registry_resolution.push_registry_source == "KAMIWAZA_PUSH_REGISTRY"
-        or registry_resolution.image_registry_source == "KAMIWAZA_REGISTRY"
-    )
-    return push_registry_is_local_plain_http or (
-        api_insecure and not registry_was_user_supplied
-    )
-
-
 def _build_patch_service_specs(payload: Any) -> List[Any]:
     """Build the per-service ``PatchServiceSpec`` list from a
     ``CreateExtension`` payload, forwarding the new ``x-kamiwaza``
@@ -404,12 +373,12 @@ def run_dev_remote(
     # only resolves inside the Docker daemon's VM; podman from host CLI
     # cannot resolve it at all).
     from kamiwaza_extensions.registry_resolution import (
-        BUILD_VM_LOOPBACK_ALIAS_SOURCE,
         build_push_ref_map,
         docker_accepts_insecure_push_to,
         insecure_registry_daemon_json_fix,
-        is_build_vm_loopback_alias_registry,
         is_loopback_registry,
+        push_registry_requires_insecure_tls,
+        push_registry_uses_local_loopback_alias,
         resolve_dev_registries,
         select_push_engine,
     )
@@ -441,10 +410,7 @@ def run_dev_remote(
     registry = registry_resolution.image_registry
     push_registry = registry_resolution.push_registry
 
-    push_uses_auto_loopback_alias = (
-        registry_resolution.push_registry_source == BUILD_VM_LOOPBACK_ALIAS_SOURCE
-    )
-    push_insecure = _push_registry_requires_insecure_tls(
+    push_insecure = push_registry_requires_insecure_tls(
         registry_resolution,
         api_insecure=api_insecure,
     )
@@ -463,11 +429,7 @@ def run_dev_remote(
                 raise typer.Exit(code=1) from exc
             registry = registry_resolution.image_registry
             push_registry = registry_resolution.push_registry
-            push_uses_auto_loopback_alias = (
-                registry_resolution.push_registry_source
-                == BUILD_VM_LOOPBACK_ALIAS_SOURCE
-            )
-            push_insecure = _push_registry_requires_insecure_tls(
+            push_insecure = push_registry_requires_insecure_tls(
                 registry_resolution,
                 api_insecure=api_insecure,
             )
@@ -682,9 +644,8 @@ def run_dev_remote(
             image_registry=registry,
             push_registry=push_registry,
         )
-        push_uses_local_loopback_alias = is_loopback_registry(registry) and (
-            push_uses_auto_loopback_alias
-            or is_build_vm_loopback_alias_registry(push_registry)
+        push_uses_local_loopback_alias = push_registry_uses_local_loopback_alias(
+            registry_resolution
         )
         # Pre-flight: when docker is the active engine pushing insecurely to
         # the rewritten alias, the daemon must treat that alias as insecure

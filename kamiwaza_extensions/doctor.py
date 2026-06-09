@@ -564,9 +564,10 @@ class DoctorChecker:
 
         try:
             from kamiwaza_extensions.registry_resolution import (
-                BUILD_VM_LOOPBACK_ALIAS_SOURCE,
                 docker_accepts_insecure_push_to,
                 insecure_registry_daemon_json_fix,
+                push_registry_requires_insecure_tls,
+                push_registry_uses_local_loopback_alias,
                 resolve_dev_registries,
             )
 
@@ -622,14 +623,20 @@ class DoctorChecker:
             # this in doctor too (jxstanford iter-4 Critical #1) so users
             # see the fix before they hit it at ``kz-ext dev`` time.
             #
-            # Gate on the auto loopback-alias rewrite so a legitimate
+            # Gate on a local loopback-alias target so a legitimate
             # user-supplied secure-HTTPS push override isn't refused just
-            # because the active Kamiwaza connection itself is insecure.
-            insecure = not verify_ssl
+            # because the active Kamiwaza connection itself is insecure, while
+            # explicit ``host.*.internal`` local overrides still get checked.
+            # Uses the same registry-specific TLS policy as ``kz-ext dev`` so
+            # strict API TLS overrides don't hide a plain-HTTP local registry.
+            push_insecure = push_registry_requires_insecure_tls(
+                resolution,
+                api_insecure=not verify_ssl,
+            )
             if (
-                insecure
+                push_insecure
                 and push_engine == "docker"
-                and resolution.push_registry_source == BUILD_VM_LOOPBACK_ALIAS_SOURCE
+                and push_registry_uses_local_loopback_alias(resolution)
                 and not docker_accepts_insecure_push_to(resolution.push_registry)
             ):
                 results.append(
