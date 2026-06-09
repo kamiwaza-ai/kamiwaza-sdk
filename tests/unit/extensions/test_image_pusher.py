@@ -107,7 +107,10 @@ class TestTag:
 
 
 class TestPushOrchestration:
-    @patch("kamiwaza_extensions.image_pusher._has_podman", return_value=True)
+    @patch(
+        "kamiwaza_extensions.registry_resolution.podman_push_available",
+        return_value=True,
+    )
     @patch.object(ImagePusher, "_login_registry")
     @patch.object(ImagePusher, "_tag")
     @patch.object(ImagePusher, "_push")
@@ -124,7 +127,10 @@ class TestPushOrchestration:
             verbose=False,
         )
 
-    @patch("kamiwaza_extensions.image_pusher._has_podman", return_value=True)
+    @patch(
+        "kamiwaza_extensions.registry_resolution.podman_push_available",
+        return_value=True,
+    )
     @patch.object(ImagePusher, "_login_registry")
     @patch.object(ImagePusher, "_tag")
     @patch.object(ImagePusher, "_push")
@@ -149,7 +155,10 @@ class TestPushOrchestration:
             verbose=False,
         )
 
-    @patch("kamiwaza_extensions.image_pusher._has_podman", return_value=False)
+    @patch(
+        "kamiwaza_extensions.registry_resolution.podman_push_available",
+        return_value=False,
+    )
     @patch.object(ImagePusher, "_login_registry")
     @patch.object(ImagePusher, "_tag")
     @patch.object(ImagePusher, "_push")
@@ -168,7 +177,10 @@ class TestPushOrchestration:
             verbose=False,
         )
 
-    @patch("kamiwaza_extensions.image_pusher._has_podman", return_value=True)
+    @patch(
+        "kamiwaza_extensions.registry_resolution.podman_push_available",
+        return_value=True,
+    )
     @patch.object(ImagePusher, "_login_registry")
     @patch.object(ImagePusher, "_tag")
     @patch.object(ImagePusher, "_push")
@@ -211,7 +223,10 @@ class TestPushOrchestration:
             verbose=False,
         )
 
-    @patch("kamiwaza_extensions.image_pusher._has_podman", return_value=True)
+    @patch(
+        "kamiwaza_extensions.registry_resolution.podman_push_available",
+        return_value=True,
+    )
     @patch.object(ImagePusher, "_login_registry")
     @patch.object(ImagePusher, "_tag")
     @patch.object(ImagePusher, "_push")
@@ -247,7 +262,10 @@ class TestPushOrchestration:
             verbose=False,
         )
 
-    @patch("kamiwaza_extensions.image_pusher._has_podman", return_value=True)
+    @patch(
+        "kamiwaza_extensions.registry_resolution.podman_push_available",
+        return_value=True,
+    )
     @patch.object(ImagePusher, "_login_registry")
     @patch.object(ImagePusher, "_tag")
     @patch.object(ImagePusher, "_push")

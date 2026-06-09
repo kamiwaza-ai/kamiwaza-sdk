@@ -394,8 +394,14 @@ def run_dev_remote(
     # auto-selected engine because the user is asserting the image already
     # exists in the active engine's store.
     build_engine = "docker"
+    push_registry_override = os.environ.get("KAMIWAZA_PUSH_REGISTRY")
     push_engine = (
-        build_engine if not no_build else select_push_engine(insecure=api_insecure)
+        build_engine
+        if not no_build
+        else select_push_engine(
+            insecure=api_insecure,
+            push_registry=push_registry_override,
+        )
     )
 
     try:
@@ -415,7 +421,10 @@ def run_dev_remote(
         api_insecure=api_insecure,
     )
     if no_build:
-        selected_push_engine = select_push_engine(insecure=push_insecure)
+        selected_push_engine = select_push_engine(
+            insecure=push_insecure,
+            push_registry=push_registry,
+        )
         if selected_push_engine != push_engine:
             push_engine = selected_push_engine
             try:

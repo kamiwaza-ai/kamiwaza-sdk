@@ -341,7 +341,7 @@ class TestDoctorRegistryChecks:
 
     @patch("kamiwaza_extensions.registry_resolution.detect_core_config_registry")
     def test_registry_readiness_reports_split(self, mock_core, tmp_path, monkeypatch):
-        monkeypatch.setenv("KAMIWAZA_PUSH_REGISTRY", "host.containers.internal:30010")
+        monkeypatch.setenv("KAMIWAZA_PUSH_REGISTRY", "host.docker.internal:30010")
         mock_core.return_value = "127.0.0.1:30010"
         checker = DoctorChecker(config_dir=tmp_path / ".kamiwaza")
         # Connection mock needs explicit ``verify_ssl`` AND
@@ -378,7 +378,7 @@ class TestDoctorRegistryChecks:
             results = checker._check_registry_readiness()
 
         assert results[0].name == "Registry resolution"
-        assert "push=host.containers.internal:30010" in results[0].message
+        assert "push=host.docker.internal:30010" in results[0].message
         assert {r.name for r in results} == {
             "Registry resolution",
             "Registry image endpoint",
@@ -535,6 +535,73 @@ class TestDoctorRegistryChecks:
         )
         assert insecure_check is not None
         assert insecure_check.status == "fail"
+
+    @patch("kamiwaza_extensions.registry_resolution.detect_core_config_registry")
+    def test_registry_readiness_checks_explicit_docker_alias_for_non_loopback_image(
+        self, mock_core, tmp_path, monkeypatch
+    ):
+        """Doctor must treat explicit VM aliases as local push aliases even
+        when the image registry is not loopback."""
+
+        monkeypatch.setenv("KAMIWAZA_REGISTRY", "registry.kamiwaza.test")
+        monkeypatch.setenv("KAMIWAZA_PUSH_REGISTRY", "host.docker.internal:30010")
+        checker = DoctorChecker(config_dir=tmp_path / ".kamiwaza")
+        checker._conn_mgr.get_active_connection = MagicMock(
+            return_value=MagicMock(
+                url="https://kamiwaza.test/api",
+                verify_ssl=True,
+                effective_verify_ssl=MagicMock(return_value=True),
+            )
+        )
+        ok = MagicMock(
+            status_code=200,
+            headers={"content-type": "application/json"},
+            text="{}",
+        )
+        with (
+            patch("requests.get", return_value=ok),
+            patch(
+                "kamiwaza_extensions.registry_resolution.docker_accepts_insecure_push_to",
+                return_value=False,
+            ) as mock_accepts,
+        ):
+            results = checker._check_registry_readiness()
+
+        mock_core.assert_not_called()
+        mock_accepts.assert_called_once_with("host.docker.internal:30010")
+        insecure_check = next(
+            (r for r in results if r.name == "Docker insecure-registries"), None
+        )
+        assert insecure_check is not None
+        assert insecure_check.status == "fail"
+
+    @patch("kamiwaza_extensions.registry_resolution.detect_core_config_registry")
+    def test_registry_readiness_rejects_podman_alias_for_default_docker_engine(
+        self, mock_core, tmp_path, monkeypatch
+    ):
+        """Doctor validates the default fresh-build Docker push topology.
+
+        An explicit Podman VM alias is not reachable by Docker, so doctor
+        should fail during registry resolution instead of probing it through
+        Podman and greenlighting a fresh ``kz-ext dev`` run."""
+
+        monkeypatch.setenv("KAMIWAZA_PUSH_REGISTRY", "host.containers.internal:30010")
+        mock_core.return_value = "127.0.0.1:30010"
+        checker = DoctorChecker(config_dir=tmp_path / ".kamiwaza")
+        checker._conn_mgr.get_active_connection = MagicMock(
+            return_value=MagicMock(
+                url="https://kamiwaza.test/api",
+                verify_ssl=False,
+                effective_verify_ssl=MagicMock(return_value=False),
+            )
+        )
+
+        results = checker._check_registry_readiness()
+
+        assert len(results) == 1
+        assert results[0].name == "Registry resolution"
+        assert results[0].status == "fail"
+        assert "podman VM alias" in results[0].message
 
     @patch("kamiwaza_extensions.registry_resolution.detect_core_config_registry")
     def test_registry_readiness_uses_effective_verify_ssl_for_dev_host(

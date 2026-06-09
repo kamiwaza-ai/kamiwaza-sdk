@@ -17,6 +17,7 @@ from kamiwaza_extensions.registry_resolution import (
     insecure_registry_daemon_json_fix,
     is_build_vm_loopback_alias_registry,
     push_registry_requires_insecure_tls,
+    push_registry_alias_engine,
     push_registry_uses_local_loopback_alias,
     replace_registry_prefix,
     resolve_dev_registries,
@@ -528,8 +529,11 @@ class TestSelectPushEngine:
     and the dev pre-flight check uses this function directly — drift
     between them is what jxstanford's Critical and High both flagged."""
 
+    @patch(
+        "kamiwaza_extensions.registry_resolution.platform.system", return_value="Linux"
+    )
     @patch("kamiwaza_extensions.registry_resolution._has_podman", return_value=True)
-    def test_insecure_plus_podman_picks_podman(self, _mock):
+    def test_insecure_plus_usable_podman_picks_podman(self, _mock, _mock_system):
         assert select_push_engine(insecure=True) == "podman"
 
     @patch("kamiwaza_extensions.registry_resolution._has_podman", return_value=False)
@@ -542,6 +546,39 @@ class TestSelectPushEngine:
         # is the universal default even when podman is installed.
         assert select_push_engine(insecure=False) == "docker"
 
+    @patch(
+        "kamiwaza_extensions.registry_resolution.platform.system", return_value="Darwin"
+    )
+    @patch(
+        "kamiwaza_extensions.registry_resolution.running_podman_machine_name",
+        return_value=None,
+    )
+    @patch("kamiwaza_extensions.registry_resolution._has_podman", return_value=True)
+    def test_insecure_macos_without_podman_machine_picks_docker(
+        self, _mock_has_podman, _mock_machine, _mock_system
+    ):
+        assert select_push_engine(insecure=True) == "docker"
+
+    @patch("kamiwaza_extensions.registry_resolution._has_podman", return_value=True)
+    def test_explicit_docker_alias_pins_docker(self, _mock):
+        assert (
+            select_push_engine(
+                insecure=True,
+                push_registry="host.docker.internal:30010",
+            )
+            == "docker"
+        )
+
+    @patch("kamiwaza_extensions.registry_resolution._has_podman", return_value=False)
+    def test_explicit_podman_alias_pins_podman(self, _mock):
+        assert (
+            select_push_engine(
+                insecure=True,
+                push_registry="host.containers.internal:30010",
+            )
+            == "podman"
+        )
+
 
 class TestBuildVmLoopbackAliasRegistry:
     def test_detects_docker_and_podman_aliases(self):
@@ -550,6 +587,11 @@ class TestBuildVmLoopbackAliasRegistry:
 
     def test_rejects_normal_external_registry(self):
         assert not is_build_vm_loopback_alias_registry("registry.example.com")
+
+    def test_reports_required_engine(self):
+        assert push_registry_alias_engine("host.docker.internal:30010") == "docker"
+        assert push_registry_alias_engine("host.containers.internal:30010") == "podman"
+        assert push_registry_alias_engine("registry.example.com") is None
 
 
 class TestPushRegistryTlsPolicy:
@@ -574,6 +616,17 @@ class TestPushRegistryTlsPolicy:
         assert push_registry_requires_insecure_tls(resolution, api_insecure=False)
         assert push_registry_uses_local_loopback_alias(resolution)
 
+    def test_vm_alias_is_local_even_when_image_registry_is_non_loopback(self):
+        resolution = RegistryResolution(
+            image_registry="registry.kamiwaza.test",
+            image_registry_source="KAMIWAZA_REGISTRY",
+            push_registry="host.docker.internal:30010",
+            push_registry_source="KAMIWAZA_PUSH_REGISTRY",
+        )
+
+        assert push_registry_requires_insecure_tls(resolution, api_insecure=False)
+        assert push_registry_uses_local_loopback_alias(resolution)
+
     def test_external_user_supplied_registry_stays_secure_for_dev_api(self):
         resolution = RegistryResolution(
             image_registry="127.0.0.1:30010",
@@ -584,6 +637,62 @@ class TestPushRegistryTlsPolicy:
 
         assert not push_registry_requires_insecure_tls(resolution, api_insecure=True)
         assert not push_registry_uses_local_loopback_alias(resolution)
+
+
+class TestExplicitVmAliasValidation:
+    @patch(
+        "kamiwaza_extensions.registry_resolution.detect_core_config_registry",
+        return_value="127.0.0.1:30010",
+    )
+    def test_docker_alias_requires_docker_engine(self, _mock_core, monkeypatch):
+        monkeypatch.setenv("KAMIWAZA_PUSH_REGISTRY", "host.docker.internal:30010")
+
+        with pytest.raises(ValueError, match="docker VM alias"):
+            resolve_dev_registries(
+                _conn(),
+                kind_registry_detector=lambda: None,
+                push_engine="podman",
+            )
+
+    @patch(
+        "kamiwaza_extensions.registry_resolution.detect_core_config_registry",
+        return_value="127.0.0.1:30010",
+    )
+    @patch(
+        "kamiwaza_extensions.registry_resolution.running_podman_machine_name",
+        return_value="podman-machine-default",
+    )
+    def test_podman_alias_requires_podman_engine(
+        self, _mock_machine, _mock_core, monkeypatch
+    ):
+        monkeypatch.setenv("KAMIWAZA_PUSH_REGISTRY", "host.containers.internal:30010")
+
+        with pytest.raises(ValueError, match="podman VM alias"):
+            resolve_dev_registries(
+                _conn(),
+                kind_registry_detector=lambda: None,
+                push_engine="docker",
+            )
+
+    @patch(
+        "kamiwaza_extensions.registry_resolution.detect_core_config_registry",
+        return_value="127.0.0.1:30010",
+    )
+    @patch(
+        "kamiwaza_extensions.registry_resolution.running_podman_machine_name",
+        return_value=None,
+    )
+    def test_podman_alias_requires_running_machine(
+        self, _mock_machine, _mock_core, monkeypatch
+    ):
+        monkeypatch.setenv("KAMIWAZA_PUSH_REGISTRY", "host.containers.internal:30010")
+
+        with pytest.raises(ValueError, match="no Podman machine is running"):
+            resolve_dev_registries(
+                _conn(),
+                kind_registry_detector=lambda: None,
+                push_engine="podman",
+            )
 
 
 class TestDockerInsecureRegistries:

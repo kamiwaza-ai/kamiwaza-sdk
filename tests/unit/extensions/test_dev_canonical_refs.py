@@ -592,7 +592,7 @@ class TestInsecurePreflightSource:
             dev_cmd.run_dev_remote(no_build=True)
 
         assert exc_info.value.exit_code == 1
-        spy_select.assert_called_once_with(insecure=True)
+        spy_select.assert_called_once_with(insecure=True, push_registry=None)
 
     def test_push_call_uses_effective_insecure_not_persisted_flag(
         self, tmp_path, monkeypatch
@@ -843,6 +843,10 @@ class TestInsecurePreflightSource:
                 return_value=True,
             ),
             patch(
+                "kamiwaza_extensions.registry_resolution.running_podman_machine_name",
+                return_value="podman-machine-default",
+            ),
+            patch(
                 "kamiwaza_extensions.dev_state.read_state",
                 return_value=None,
             ),
@@ -938,6 +942,92 @@ class TestInsecurePreflightSource:
         assert exc_info.value.exit_code == 1
         mock_accepts.assert_called_once_with("host.docker.internal:30010")
         pusher.push.assert_not_called()
+
+    def test_explicit_docker_vm_alias_is_local_with_non_loopback_image_registry(
+        self, tmp_path, monkeypatch
+    ):
+        """An explicit VM alias is a local plain-HTTP push target even when
+        the deployment image registry is a non-loopback host.
+
+        This covers clusters where the kubelet pulls ``registry.kamiwaza.test``
+        while the local Docker engine reaches that same registry through
+        ``host.docker.internal``. The push must skip API-token login and still
+        use the Docker insecure-registry preflight."""
+
+        from kamiwaza_extensions.commands import dev as dev_cmd
+        from kamiwaza_extensions.image_pusher import ImagePushError
+
+        monkeypatch.setenv("KAMIWAZA_REGISTRY", "registry.kamiwaza.test")
+        monkeypatch.setenv("KAMIWAZA_PUSH_REGISTRY", "host.docker.internal:30010")
+        info = ExtensionInfo(
+            path=tmp_path,
+            name="my-app",
+            version="0.1.0",
+            metadata={"name": "my-app", "type": "app"},
+            compose_path=tmp_path / "docker-compose.yml",
+            compose_data={"services": {"api": {"build": {"context": "."}}}},
+        )
+
+        captured: dict = {}
+
+        def _capture_push(*args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+            raise ImagePushError("stop-after-capture")
+
+        conn_mgr = MagicMock()
+        conn_mgr.get_active_connection.return_value = _active_connection()
+        conn_mgr.get_token.return_value = MagicMock(access_token="tok-abc")
+        detector = MagicMock()
+        detector.detect.return_value = info
+        tagger = MagicMock()
+        tagger.generate_tag.return_value = "dev1"
+        tagger.get_git_info.return_value = ("abc1234", False)
+        pusher = MagicMock()
+        pusher.push.side_effect = _capture_push
+
+        with (
+            patch(
+                "kamiwaza_extensions.extension_detector.ExtensionDetector",
+                return_value=detector,
+            ),
+            patch(
+                "kamiwaza_extensions.connections.ConnectionManager",
+                return_value=conn_mgr,
+            ),
+            patch(
+                "kamiwaza_extensions.revision_tagger.RevisionTagger",
+                return_value=tagger,
+            ),
+            patch(
+                "kamiwaza_extensions.image_pusher.ImagePusher",
+                return_value=pusher,
+            ),
+            patch(
+                "kamiwaza_extensions.registry_resolution.docker_accepts_insecure_push_to",
+                return_value=True,
+            ) as mock_accepts,
+            patch(
+                "kamiwaza_extensions.dev_state.read_state",
+                return_value=None,
+            ),
+            patch(
+                "kamiwaza_extensions.dev_state.resume_message",
+                return_value=None,
+            ),
+            pytest.raises(click.exceptions.Exit),
+        ):
+            dev_cmd.run_dev_remote(no_build=True)
+
+        mock_accepts.assert_called_once_with("host.docker.internal:30010")
+        assert captured["args"][0] == ["registry.kamiwaza.test/my-app-api:dev1"]
+        assert captured["kwargs"]["registry"] == "host.docker.internal:30010"
+        assert captured["kwargs"]["target_refs"] == {
+            "registry.kamiwaza.test/my-app-api:dev1": "host.docker.internal:30010/my-app-api:dev1",
+        }
+        assert captured["kwargs"]["token"] is None
+        assert captured["kwargs"]["insecure"] is True
+        assert captured["kwargs"]["engine"] == "docker"
 
     def test_insecure_preflight_skips_unused_loopback_alias_for_external_refs(
         self, tmp_path, monkeypatch

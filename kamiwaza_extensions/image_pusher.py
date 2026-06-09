@@ -82,7 +82,9 @@ class ImagePusher:
             # engine-mismatch pre-flight checks. Changing this rule without
             # updating ``select_push_engine`` will desync the pre-flight from
             # the actual push behavior.
-            use_podman = insecure and _has_podman()
+            from kamiwaza_extensions.registry_resolution import podman_push_available
+
+            use_podman = insecure and podman_push_available()
         else:
             normalized_engine = engine.lower()
             if normalized_engine not in ("docker", "podman"):

@@ -184,10 +184,13 @@ def resolve_push_registry(
     callers that haven't been threaded through yet.
     """
 
+    engine = (push_engine or "docker").lower()
     push_override = os.environ.get("KAMIWAZA_PUSH_REGISTRY")
     if push_override:
+        push_registry = normalize_registry_env("KAMIWAZA_PUSH_REGISTRY", push_override)
+        validate_push_registry_for_engine(push_registry, engine)
         return (
-            normalize_registry_env("KAMIWAZA_PUSH_REGISTRY", push_override),
+            push_registry,
             "KAMIWAZA_PUSH_REGISTRY",
         )
 
@@ -197,7 +200,6 @@ def resolve_push_registry(
     if not build_engine_runs_in_vm():
         return image_registry, "image registry"
 
-    engine = (push_engine or "docker").lower()
     if engine == "podman":
         # Podman pushes from host CLI; the alias must resolve in the
         # host's resolver. Only a running podman machine sets that up.
@@ -396,20 +398,62 @@ def is_loopback_registry(registry: str) -> bool:
 def is_build_vm_loopback_alias_registry(registry: str) -> bool:
     """True when *registry* uses a Docker/Podman VM host-loopback alias."""
 
+    return push_registry_alias_engine(registry) is not None
+
+
+def push_registry_alias_engine(registry: str) -> Optional[str]:
+    """Return the only compatible push engine for a VM alias registry."""
+
+    host = _registry_hostname(registry)
+    if host == DOCKER_VM_HOST_ALIAS:
+        return "docker"
+    if host == PODMAN_VM_HOST_ALIAS:
+        return "podman"
+    return None
+
+
+def validate_push_registry_for_engine(registry: str, push_engine: str) -> None:
+    """Raise when an explicit VM alias cannot work with *push_engine*."""
+
+    alias_engine = push_registry_alias_engine(registry)
+    if alias_engine is None:
+        return
+    engine = push_engine.lower()
+    if alias_engine != engine:
+        raise ValueError(
+            f"{registry} is a {alias_engine} VM alias, but the active push engine "
+            f"is {engine}. Use the {alias_engine} engine for this alias or set "
+            "KAMIWAZA_PUSH_REGISTRY to a host reachable by the active engine."
+        )
+    if alias_engine == "podman" and running_podman_machine_name() is None:
+        raise ValueError(
+            f"{registry} is a Podman VM alias, but no Podman machine is running. "
+            "Start the Podman machine or set KAMIWAZA_PUSH_REGISTRY to a host "
+            "reachable by the active engine."
+        )
+
+
+def _registry_hostname(registry: str) -> str:
+    """Best-effort hostname extraction from a registry or pasted URL."""
+
     try:
-        parsed = urlparse(f"//{registry}")
+        value = registry.strip()
+        if "://" in value:
+            value = value.split("://", 1)[1]
+        value = value.rstrip("/")
+        parsed = urlparse(f"//{value}")
         host = (parsed.hostname or "").lower()
     except ValueError:
-        return False
-    return host in {DOCKER_VM_HOST_ALIAS, PODMAN_VM_HOST_ALIAS}
+        return ""
+    return host
 
 
 def push_registry_uses_local_loopback_alias(
     registry_resolution: RegistryResolution,
 ) -> bool:
-    """True when push uses a VM alias for the local image registry."""
+    """True when push uses a Docker/Podman VM loopback alias."""
 
-    return is_loopback_registry(registry_resolution.image_registry) and (
+    return (
         registry_resolution.push_registry_source == BUILD_VM_LOOPBACK_ALIAS_SOURCE
         or is_build_vm_loopback_alias_registry(registry_resolution.push_registry)
     )
@@ -561,17 +605,29 @@ def _has_podman() -> bool:
     return shutil.which("podman") is not None
 
 
-def select_push_engine(*, insecure: bool) -> str:
+def select_push_engine(*, insecure: bool, push_registry: Optional[str] = None) -> str:
     """Return the engine that will actually push (``'docker'`` / ``'podman'``).
 
-    Mirrors the selection rule inside ``ImagePusher.push``: Podman is only
-    used when the caller asked for an insecure push AND Podman is
-    installed. Docker is the default everywhere else. Centralizing the
-    rule here lets ``commands/dev.py`` and ``doctor.py`` check engine
-    consistency without copying the predicate.
+    Explicit Docker/Podman VM aliases pin the only engine that can resolve
+    them. Otherwise Podman is used only when the caller asked for an insecure
+    push and Podman is actually usable; Docker is the default everywhere else.
     """
 
-    return "podman" if (insecure and _has_podman()) else "docker"
+    if push_registry:
+        alias_engine = push_registry_alias_engine(push_registry)
+        if alias_engine is not None:
+            return alias_engine
+    return "podman" if (insecure and podman_push_available()) else "docker"
+
+
+def podman_push_available() -> bool:
+    """True when the Podman CLI can perform a host-initiated push."""
+
+    if not _has_podman():
+        return False
+    if platform.system() in ("Darwin", "Windows"):
+        return running_podman_machine_name() is not None
+    return True
 
 
 def docker_accepts_insecure_push_to(registry: str) -> bool:
@@ -674,8 +730,7 @@ def insecure_registry_daemon_json_fix(registry: str) -> str:
         f"Docker requires '{registry}' in insecure-registries to push over HTTP.\n"
         "  Add to ~/.docker/daemon.json (merge with existing keys):\n"
         f'      {{ "insecure-registries": ["{registry}"] }}\n'
-        "  Then restart Docker Desktop.\n"
-        "  Alternative: install Podman, which honors --tls-verify=false at push time."
+        "  Then restart Docker Desktop."
     )
 
 
