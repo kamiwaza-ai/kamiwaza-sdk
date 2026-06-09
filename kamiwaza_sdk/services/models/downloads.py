@@ -548,6 +548,13 @@ class ModelDownloadMixin:
                     # deploy_model blocking on readiness each retry costs up
                     # to the full wait timeout. Propagate the typed error.
                     raise
+                except TimeoutError:
+                    # The deploy wait timed out on a hung, non-terminal
+                    # deployment. Retrying stacks new deployments on top of
+                    # the still-in-flight one (worst case ~3x the wait plus
+                    # orphaned deployments) and would wrap away the
+                    # deployment_id attribute callers need for cleanup.
+                    raise
                 except Exception as e:
                     deploy_retry_count += 1
                     

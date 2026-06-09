@@ -85,6 +85,78 @@ def test_download_and_deploy_does_not_retry_terminal_deploy_failure(monkeypatch)
     assert len(deploy_calls) == 1
 
 
+def test_download_and_deploy_does_not_retry_deploy_wait_timeout(monkeypatch):
+    """A hung-but-not-terminal deployment surfaces as a builtin
+    TimeoutError from deploy_model(wait=True). Retrying redeploys on top
+    of the still-in-flight deployment — worst case ~3x the 3600s wait and
+    up to 3 orphaned deployments — and the blanket retry wrapped away the
+    deployment id needed for cleanup. The timeout must propagate
+    immediately with the deployment id intact."""
+    import time as time_module
+    from types import SimpleNamespace
+
+    deploy_calls: list[dict] = []
+    deployment_id = str(uuid.uuid4())
+
+    def hung_deploy(**kwargs):
+        deploy_calls.append(kwargs)
+        timeout_error = TimeoutError(
+            f"Timed out waiting for deployment {deployment_id} to reach DEPLOYED"
+        )
+        timeout_error.deployment_id = deployment_id
+        raise timeout_error
+
+    client = DummyClient({})
+    client.serving = SimpleNamespace(deploy_model=hung_deploy)
+    service = ModelService(client)
+    monkeypatch.setattr(service, "initiate_model_download", lambda *a, **k: None)
+    monkeypatch.setattr(
+        service,
+        "get_model_by_repo_id",
+        lambda repo_id: SimpleNamespace(id=uuid.uuid4(), m_files=[]),
+    )
+    monkeypatch.setattr(time_module, "sleep", lambda _seconds: None)
+
+    with pytest.raises(TimeoutError) as exc_info:
+        service.download_and_deploy_model("org/model", wait_for_download=False)
+
+    assert len(deploy_calls) == 1
+    assert exc_info.value.deployment_id == deployment_id
+
+
+def test_download_and_deploy_retries_transient_deploy_error(monkeypatch):
+    """Generic transient deploy errors (connection blips, 5xx) keep the
+    existing backoff retries; only typed terminal/timeout errors are
+    excluded from the retry loop."""
+    import time as time_module
+    from types import SimpleNamespace
+
+    deploy_calls: list[dict] = []
+    deployment_id = uuid.uuid4()
+
+    def flaky_deploy(**kwargs):
+        deploy_calls.append(kwargs)
+        if len(deploy_calls) < 3:
+            raise RuntimeError("connection reset")
+        return deployment_id
+
+    client = DummyClient({})
+    client.serving = SimpleNamespace(deploy_model=flaky_deploy)
+    service = ModelService(client)
+    monkeypatch.setattr(service, "initiate_model_download", lambda *a, **k: None)
+    monkeypatch.setattr(
+        service,
+        "get_model_by_repo_id",
+        lambda repo_id: SimpleNamespace(id=uuid.uuid4(), m_files=[]),
+    )
+    monkeypatch.setattr(time_module, "sleep", lambda _seconds: None)
+
+    result = service.download_and_deploy_model("org/model", wait_for_download=False)
+
+    assert len(deploy_calls) == 3
+    assert result["deployment_id"] == deployment_id
+
+
 def test_create_and_delete_model():
     model_id = str(uuid.uuid4())
     responses = {
