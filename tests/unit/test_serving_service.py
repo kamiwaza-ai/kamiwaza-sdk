@@ -5,6 +5,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from kamiwaza_sdk.exceptions import DeploymentFailedError
 from kamiwaza_sdk.schemas.serving.serving import (
     ContainerLogResponse,
     UIModelDeployment,
@@ -82,6 +83,69 @@ def test_deployment_schema_defaults_last_error_fields_to_none():
 
     assert deployment.last_error_message is None
     assert deployment.last_error_code is None
+
+
+def test_wait_deployment_ready_polls_until_deployed(mock_client):
+    deployment_id = uuid4()
+    mock_client.expect_sequence(
+        "GET",
+        f"/serving/deployment/{deployment_id}",
+        [
+            _deployment_payload(deployment_id, "DEPLOYING"),
+            _deployment_payload(deployment_id, "DEPLOYED"),
+        ],
+    )
+    service = ServingService(mock_client)
+
+    deployment = service.wait_deployment_ready(
+        deployment_id, poll_interval_seconds=0
+    )
+
+    assert deployment.status == "DEPLOYED"
+    get_calls = [call for call in mock_client.calls if call[0] == "GET"]
+    assert len(get_calls) == 2
+
+
+def test_wait_deployment_ready_raises_deployment_failed_error(mock_client):
+    deployment_id = uuid4()
+    mock_client.expect_sequence(
+        "GET",
+        f"/serving/deployment/{deployment_id}",
+        [
+            _deployment_payload(deployment_id, "DEPLOYING"),
+            _deployment_payload(
+                deployment_id,
+                "FAILED",
+                last_error_message="CUDA out of memory while loading weights",
+                last_error_code="OOM",
+            ),
+        ],
+    )
+    service = ServingService(mock_client)
+
+    with pytest.raises(DeploymentFailedError) as exc_info:
+        service.wait_deployment_ready(deployment_id, poll_interval_seconds=0)
+
+    err = exc_info.value
+    assert err.status == "FAILED"
+    assert err.last_error_message == "CUDA out of memory while loading weights"
+    assert err.last_error_code == "OOM"
+    assert "CUDA out of memory while loading weights" in str(err)
+
+
+def test_wait_deployment_ready_times_out(mock_client):
+    deployment_id = uuid4()
+    mock_client.expect(
+        "GET",
+        f"/serving/deployment/{deployment_id}",
+        _deployment_payload(deployment_id, "DEPLOYING"),
+    )
+    service = ServingService(mock_client)
+
+    with pytest.raises(TimeoutError):
+        service.wait_deployment_ready(
+            deployment_id, timeout_seconds=0, poll_interval_seconds=0
+        )
 
 
 class _StatusService:

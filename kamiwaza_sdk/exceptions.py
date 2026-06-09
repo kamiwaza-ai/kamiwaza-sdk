@@ -26,6 +26,7 @@ Hierarchy:
         TimeoutError
         NonAPIResponseError
         TransportNotSupportedError
+        DeploymentFailedError              (also RuntimeError; terminal deploy failure)
         FederationPairTimeoutError      (503 + psk_propagation_timeout)
         MeshJobTimeoutError             (mesh job exceeded wall-clock)
         MeshJobFailedError              (mesh job terminal FAILED state)
@@ -131,6 +132,38 @@ class NonAPIResponseError(KamiwazaError):
 
 class TransportNotSupportedError(KamiwazaError):
     """Raised when a retrieval transport cannot satisfy the request."""
+
+
+class DeploymentFailedError(KamiwazaError, RuntimeError):
+    """A model deployment reached a terminal failure status (ENG-6530).
+
+    Raised by client-side deployment polling (``ServingService.
+    wait_deployment_ready`` / ``deploy_model(wait=True)``) when the
+    deployment enters a FAILED/ERROR terminal state. Also subclasses
+    ``RuntimeError`` because ``wait_for_deployment`` historically raised
+    ``RuntimeError`` on failure statuses — existing ``except
+    RuntimeError`` callers keep working.
+
+    Attributes:
+        status: Terminal deployment status observed (e.g. ``"FAILED"``).
+        last_error_message: Server-reported failure explanation, when
+            the deployment carries one.
+        last_error_code: Short server-side error code (e.g. ``"OOM"``,
+            ``"MODEL_LOADING_FAILURE"``), when available.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status: Optional[str] = None,
+        last_error_message: Optional[str] = None,
+        last_error_code: Optional[str] = None,
+    ) -> None:
+        super().__init__(message)
+        self.status = status
+        self.last_error_message = last_error_message
+        self.last_error_code = last_error_code
 
 
 class VectorDBUnavailableError(APIError):

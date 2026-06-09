@@ -25,6 +25,7 @@ from ..schemas.serving.inference import (
     UnloadModelResponse,
 )
 from ..schemas.models.model_search import HubModelFileSearch
+from ..exceptions import DeploymentFailedError
 from .base_service import BaseService
 from urllib.parse import urlparse
 import os
@@ -196,7 +197,40 @@ class ServingService(BaseService):
             failure_status=failure_status,
         )
 
-    def stop_deployment(self, 
+    def wait_deployment_ready(
+        self,
+        deployment_id: Union[str, UUID],
+        timeout_seconds: int = 3600,
+        poll_interval_seconds: float = 5.0,
+    ) -> UIModelDeployment:
+        """Block until a deployment reaches the DEPLOYED terminal state.
+
+        The server accepts deploy requests asynchronously (ENG-6530) and
+        returns the deployment id immediately; readiness is observed by
+        polling ``get_deployment`` client-side.
+
+        Args:
+            deployment_id: The id returned by ``deploy_model``.
+            timeout_seconds: Max seconds to wait before giving up.
+            poll_interval_seconds: Seconds between status polls.
+
+        Returns:
+            The deployment once its status is ``DEPLOYED``.
+
+        Raises:
+            DeploymentFailedError: The deployment entered a FAILED/ERROR
+                terminal status. Carries ``status``,
+                ``last_error_message`` and ``last_error_code``.
+            TimeoutError: The deployment did not become ready within
+                ``timeout_seconds``.
+        """
+        return self.wait_for_deployment(
+            deployment_id,
+            poll_interval=poll_interval_seconds,
+            timeout=timeout_seconds,
+        )
+
+    def stop_deployment(self,
                     deployment_id: Optional[UUID] = None, 
                     repo_id: Optional[str] = None,
                     force: Optional[bool] = False) -> bool:
@@ -350,8 +384,18 @@ class DeploymentStatusPoller:
             if current in desired:
                 return deployment
             if failures and current in failures:
-                raise RuntimeError(
+                last_error_message = getattr(deployment, "last_error_message", None)
+                last_error_code = getattr(deployment, "last_error_code", None)
+                message = (
                     f"Deployment {deployment_uuid} entered failure status {deployment.status}"
+                )
+                if last_error_message:
+                    message = f"{message}: {last_error_message}"
+                raise DeploymentFailedError(
+                    message,
+                    status=deployment.status,
+                    last_error_message=last_error_message,
+                    last_error_code=last_error_code,
                 )
             if self._timeout is not None and (self._time() - start) > self._timeout:
                 raise TimeoutError(
