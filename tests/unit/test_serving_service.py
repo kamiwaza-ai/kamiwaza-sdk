@@ -5,7 +5,10 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from kamiwaza_sdk.schemas.serving.serving import ContainerLogResponse
+from kamiwaza_sdk.schemas.serving.serving import (
+    ContainerLogResponse,
+    UIModelDeployment,
+)
 from kamiwaza_sdk.services.serving import (
     DeploymentLogStreamer,
     DeploymentStatusPoller,
@@ -43,6 +46,42 @@ def test_deploy_model_builds_payload_with_repo_lookup(dummy_client):
     assert (method, path) == ("post", "/serving/deploy_model")
     assert payload["json"]["m_id"] == str(model_id)
     assert payload["json"]["m_config_id"] == str(config_id)
+
+
+def _deployment_payload(deployment_id: UUID, status: str, **extra) -> dict:
+    return {
+        "id": str(deployment_id),
+        "m_id": str(uuid4()),
+        "m_config_id": str(uuid4()),
+        "requested_at": "2026-06-09T00:00:00Z",
+        "status": status,
+        "instances": [],
+        **extra,
+    }
+
+
+def test_deployment_schema_preserves_last_error_fields():
+    deployment_id = uuid4()
+    payload = _deployment_payload(
+        deployment_id,
+        "FAILED",
+        last_error_message="CUDA out of memory while loading weights",
+        last_error_code="OOM",
+    )
+
+    deployment = UIModelDeployment.model_validate(payload)
+
+    assert deployment.last_error_message == "CUDA out of memory while loading weights"
+    assert deployment.last_error_code == "OOM"
+
+
+def test_deployment_schema_defaults_last_error_fields_to_none():
+    deployment = UIModelDeployment.model_validate(
+        _deployment_payload(uuid4(), "DEPLOYED")
+    )
+
+    assert deployment.last_error_message is None
+    assert deployment.last_error_code is None
 
 
 class _StatusService:
