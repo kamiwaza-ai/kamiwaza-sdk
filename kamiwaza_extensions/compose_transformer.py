@@ -11,6 +11,8 @@ from typing import Any, Dict, List, Optional, Tuple
 # transformer actually strips (ENG-4956).
 from kamiwaza_extensions.validators.compose import is_bind_mount
 
+_IMAGE_BASENAME_RE = re.compile(r"^[a-z0-9]([-a-z0-9._/]{0,126}[a-z0-9])?$")
+
 
 def _replace_image_tag(image_ref: str, new_tag: str) -> str:
     """Return *image_ref* with its tag (and any digest) replaced by *new_tag*.
@@ -70,7 +72,7 @@ def _split_image_ref(image_ref: str) -> Tuple[Optional[str], str, str]:
     last_colon = ref.rfind(":")
     if last_colon > last_slash:
         namespace = ref[:last_colon]
-        tag = ref[last_colon + 1:]
+        tag = ref[last_colon + 1 :]
     else:
         namespace = ref
         tag = "latest"
@@ -142,7 +144,8 @@ def compute_canonical_refs(
         # PR fixes.
         lookup = appgarden[name] if name in appgarden else svc
         out[name] = _canonical_build_ref(
-            lookup, name,
+            lookup,
+            name,
             fallback_registry=registry,
             fallback_extension_name=extension_name,
             revision_tag=revision_tag,
@@ -195,8 +198,29 @@ def _canonical_build_ref(
     # both normalize blank to None at their layers, but this function
     # is also called directly from tests and downstream call sites
     # that may bypass those normalizers.
-    basename = (fallback_image_basename or "").strip() or fallback_extension_name
+    basename = _fallback_image_basename(
+        fallback_extension_name,
+        fallback_image_basename=fallback_image_basename,
+    )
     return f"{fallback_registry}/{basename}-{svc_name}:{revision_tag}"
+
+
+def _fallback_image_basename(
+    extension_name: str, *, fallback_image_basename: Optional[str] = None
+) -> str:
+    """Return a safe basename for legacy fallback image refs."""
+
+    raw = (fallback_image_basename or "").strip() or extension_name
+    if _IMAGE_BASENAME_RE.match(raw) and ".." not in raw:
+        return raw
+
+    basename = raw.strip().lower()
+    basename = re.sub(r"[^a-z0-9._/-]+", "-", basename)
+    basename = re.sub(r"-{2,}", "-", basename)
+    basename = re.sub(r"\.{2,}", ".", basename)
+    basename = basename.strip("-._/")
+    basename = basename[:128].strip("-._/")
+    return basename or "extension"
 
 
 # Compose ``${VAR:-default}`` (use default if unset OR empty) and the
@@ -205,9 +229,7 @@ def _canonical_build_ref(
 # us and Kubernetes, so the var is always "unset" by the time the pod
 # starts. ``${VAR:?error}`` and bare ``${VAR}`` aren't matched (no safe
 # default → drop downstream).
-_DEFAULT_SUB_RE = re.compile(
-    r"^\$\{([A-Za-z_][A-Za-z0-9_]*):?-([^}]*)\}$"
-)
+_DEFAULT_SUB_RE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*):?-([^}]*)\}$")
 
 # Env var names that should be left to the platform's ConfigMap envFrom
 # injection (operator writes the cluster-internal value; an explicit
@@ -221,16 +243,25 @@ _PLATFORM_INJECTED_PREFIX = "KAMIWAZA_"
 # Default resource limits/requests by service pattern.
 # Limits = ceiling (burst during build), requests = reservation (steady state).
 _RESOURCE_DEFAULTS: List[tuple[re.Pattern, Dict[str, Dict[str, str]]]] = [
-    (re.compile(r"postgres|mysql|mariadb", re.I), {
-        "limits": {"cpus": "0.5", "memory": "512M"},
-    }),
-    (re.compile(r"redis|valkey", re.I), {
-        "limits": {"cpus": "0.25", "memory": "256M"},
-    }),
-    (re.compile(r"frontend|nginx|caddy", re.I), {
-        "limits": {"cpus": "2.0", "memory": "1G"},
-        "reservations": {"cpus": "0.25", "memory": "256M"},
-    }),
+    (
+        re.compile(r"postgres|mysql|mariadb", re.I),
+        {
+            "limits": {"cpus": "0.5", "memory": "512M"},
+        },
+    ),
+    (
+        re.compile(r"redis|valkey", re.I),
+        {
+            "limits": {"cpus": "0.25", "memory": "256M"},
+        },
+    ),
+    (
+        re.compile(r"frontend|nginx|caddy", re.I),
+        {
+            "limits": {"cpus": "2.0", "memory": "1G"},
+            "reservations": {"cpus": "0.25", "memory": "256M"},
+        },
+    ),
 ]
 _DEFAULT_LIMITS: Dict[str, Dict[str, str]] = {
     "limits": {"cpus": "1.0", "memory": "1G"},

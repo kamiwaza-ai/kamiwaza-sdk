@@ -292,12 +292,46 @@ class PayloadBuilder:
     def make_dev_name(extension_name: str, user_id: Optional[str] = None) -> str:
         """Generate a unique dev deployment name.
 
-        Format: ``{name}-dev-{hash6}`` where *hash6* is derived from the
-        user ID (or ``"local"`` when no user context).
+        Format: ``{slug}-dev-{hash6}`` where *slug* is *extension_name*
+        coerced to a valid DNS-1123 label and *hash6* is derived from the user
+        ID (or ``"local"`` when no user context). For legacy-safe names whose
+        old output was already a valid DNS label, the hash seed remains the user
+        seed alone so existing dev CRs keep the same name after upgrade.
+
+        The slug is sanitized because the platform rejects names that are not
+        valid DNS-1123 labels: a display name like ``"Hello Web"`` would
+        otherwise be sent verbatim and rejected by ``POST /api/extensions``
+        with HTTP 422, so no KamiwazaExtension CR is ever created (ENG-6472).
+
+        When sanitization or truncation is needed, the hash includes the
+        *pre-slug* name so two distinct names that normalize to the same
+        DNS-1123 slug (e.g. ``"Hello Web"`` and ``"hello-web"``, or two long
+        names sharing a truncated prefix) still produce distinct dev names.
+        Otherwise ``run_dev_remote`` -- which patches the extension matching the
+        name -- would let the second deployment silently overwrite the first
+        (ENG-5719 review follow-up). The name is stable per
+        ``(user, extension_name)`` so resume still works.
         """
-        seed = user_id or "local"
+        hash_len = 6
+        suffix_len = len("-dev-") + hash_len
+        user_seed = user_id or "local"
+        legacy_safe = (
+            len(extension_name) <= 63 - suffix_len
+            and re.fullmatch(r"[a-z0-9]([-a-z0-9]*[a-z0-9])?", extension_name)
+            is not None
+        )
+        # Newline-separate the two seed parts so ``("a", "b\nc")`` and
+        # ``("a\nb", "c")`` can't alias to the same digest. Preserve the old
+        # user-only seed when the old dev name was already valid, avoiding a
+        # one-time rename/orphan for existing DNS-safe dev deployments.
+        seed = user_seed if legacy_safe else f"{user_seed}\n{extension_name}"
         h = hashlib.sha256(seed.encode()).hexdigest()[:6]
-        return f"{extension_name}-dev-{h}"
+        suffix = f"-dev-{h}"
+        # DNS-1123 label: lowercase alphanumerics or '-', start/end alphanumeric,
+        # max 63 chars. Reserve room for the deterministic suffix.
+        slug = re.sub(r"[^a-z0-9]+", "-", extension_name.lower()).strip("-")
+        slug = slug[: 63 - len(suffix)].strip("-") or "ext"
+        return f"{slug}{suffix}"
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -785,7 +819,9 @@ def _service_env_map(svc: Dict[str, Any]) -> Dict[str, str]:
     return env
 
 
-def _sandbox_resources_from_env(env: Dict[str, str]) -> Optional[Dict[str, Dict[str, str]]]:
+def _sandbox_resources_from_env(
+    env: Dict[str, str],
+) -> Optional[Dict[str, Dict[str, str]]]:
     resources: Dict[str, Dict[str, str]] = {}
     requests: Dict[str, str] = {}
     limits: Dict[str, str] = {}

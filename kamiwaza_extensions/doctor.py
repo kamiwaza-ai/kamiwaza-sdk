@@ -42,6 +42,12 @@ def _is_kubectl_not_found_error(stderr: str) -> bool:
     return bool(_NOT_FOUND_FALLBACK_RE.search(stderr))
 
 
+def _registry_exit_code() -> int:
+    from kamiwaza_extensions.exit_codes import ExitCode
+
+    return int(ExitCode.REGISTRY_AUTH)
+
+
 @lru_cache(maxsize=1)
 def _uac_9d_hints() -> list[dict]:
     """Load UAC-9d class hints from the runtime lib's canonical JSON."""
@@ -171,8 +177,7 @@ def _bounds_outside_supported(
     if supported_upper is not None:
         if declared_upper is None:
             return (
-                f"declared has no upper bound but supported requires "
-                f"<{supported_upper}"
+                f"declared has no upper bound but supported requires <{supported_upper}"
             )
         if declared_upper > supported_upper:
             return (
@@ -350,6 +355,9 @@ class DoctorChecker:
 
         # Connection checks (if configured)
         results.append(self._check_connection())
+
+        # Registry checks (if configured)
+        results.extend(self._check_registry_readiness())
 
         # Cluster extension readiness — operator image / CRD / Deployment
         results.append(self.cluster_extension_readiness())
@@ -529,6 +537,309 @@ class DoctorChecker:
             "warn",
             f"{conn.name}: no health endpoint found",
             fix="Server is reachable but health check failed",
+        )
+
+    # ------------------------------------------------------------------
+    # Registry checks
+    # ------------------------------------------------------------------
+
+    def _check_registry_readiness(self) -> List[CheckResult]:
+        connection = self._conn_mgr.get_active_connection()
+        if connection is None:
+            return []
+
+        # Mirror what ``kz-ext dev`` actually does: derive registry resolution
+        # and the insecure-registry gate from the *effective* verify-SSL
+        # (env override / dev-hostname auto-disable /
+        # persisted flag), not the persisted ``verify_ssl`` alone. Otherwise
+        # doctor greenlights a config that ``dev`` then fails on -- e.g. a
+        # ``kamiwaza.test`` connection with ``verify_ssl=True`` whose TLS is
+        # auto-disabled (ENG-5719 follow-up). ``getattr`` fallback keeps
+        # doctor robust against connection objects without the method.
+        effective_verify = (
+            connection.effective_verify_ssl()
+            if hasattr(connection, "effective_verify_ssl")
+            else getattr(connection, "verify_ssl", True)
+        )
+
+        try:
+            from kamiwaza_extensions.registry_resolution import (
+                docker_accepts_insecure_push_to,
+                insecure_registry_daemon_json_fix,
+                push_registry_requires_insecure_tls,
+                push_registry_uses_local_loopback_alias,
+                resolve_dev_registries,
+                validate_push_registry_for_engine,
+            )
+
+            # ``kz-ext dev`` builds with Docker on the default path today, so
+            # doctor validates the same Docker push topology. Explicit
+            # ``--no-build`` runs may push with Podman, but doctor has no flag
+            # context for that specialized path.
+            push_engine = "docker"
+            resolution = resolve_dev_registries(
+                connection,
+                push_engine=push_engine,
+            )
+            validate_push_registry_for_engine(
+                resolution.push_registry,
+                push_engine,
+            )
+        except ValueError as exc:
+            return [
+                CheckResult(
+                    "Registry resolution",
+                    "fail",
+                    str(exc),
+                    fix="Set KAMIWAZA_REGISTRY explicitly or configure the platform registry",
+                )
+            ]
+
+        results = [
+            CheckResult(
+                "Registry resolution",
+                "pass",
+                (
+                    f"image={resolution.image_registry} "
+                    f"({resolution.image_registry_source}), "
+                    f"push={resolution.push_registry} "
+                    f"({resolution.push_registry_source})"
+                ),
+            )
+        ]
+        verify_ssl = effective_verify
+        results.append(
+            self._check_registry_http_endpoint(
+                "Registry image endpoint",
+                resolution.image_registry,
+                connection_verify_ssl=verify_ssl,
+            )
+        )
+        push_insecure = push_registry_requires_insecure_tls(
+            resolution,
+            api_insecure=not verify_ssl,
+        )
+        if resolution.push_registry != resolution.image_registry:
+            results.append(
+                self._check_push_registry_endpoint(
+                    resolution.push_registry,
+                    connection_verify_ssl=verify_ssl,
+                )
+            )
+        # Docker won't push over HTTP unless the target registry is in
+        # ``insecure-registries``. Catch this in doctor too so users see the fix
+        # before they hit it at ``kz-ext dev`` time. This applies to split VM
+        # aliases and to same-host derived registries such as
+        # ``registry.kamiwaza.test``.
+        if (
+            push_insecure
+            and push_engine == "docker"
+            and (
+                push_registry_uses_local_loopback_alias(resolution)
+                or resolution.push_registry == resolution.image_registry
+            )
+            and not docker_accepts_insecure_push_to(resolution.push_registry)
+        ):
+            results.append(
+                CheckResult(
+                    "Docker insecure-registries",
+                    "fail",
+                    f"Docker won't push insecurely to {resolution.push_registry}",
+                    fix=insecure_registry_daemon_json_fix(resolution.push_registry),
+                    exit_code=_registry_exit_code(),
+                )
+            )
+        return results
+
+    def _check_push_registry_endpoint(
+        self,
+        registry: str,
+        *,
+        connection_verify_ssl: Optional[bool] = None,
+    ) -> CheckResult:
+        from kamiwaza_extensions.registry_resolution import (
+            DOCKER_VM_HOST_ALIAS,
+            PODMAN_VM_HOST_ALIAS,
+            running_podman_machine_name,
+        )
+
+        # Podman machine: probe from inside the VM via SSH.
+        if registry.startswith(f"{PODMAN_VM_HOST_ALIAS}:"):
+            machine = running_podman_machine_name()
+            if machine is None:
+                return CheckResult(
+                    "Registry push endpoint",
+                    "warn",
+                    f"{registry} is a Podman VM alias but no Podman machine is running",
+                    fix="Start the Podman machine or set KAMIWAZA_PUSH_REGISTRY",
+                )
+            try:
+                result = subprocess.run(
+                    [
+                        "podman",
+                        "machine",
+                        "ssh",
+                        machine,
+                        "curl",
+                        "-fsS",
+                        f"http://{registry}/v2/",
+                        "-o",
+                        "/dev/null",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+            except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+                return CheckResult(
+                    "Registry push endpoint",
+                    "warn",
+                    f"Could not probe from Podman VM: {exc}",
+                )
+            if result.returncode == 0:
+                return CheckResult(
+                    "Registry push endpoint",
+                    "pass",
+                    f"{registry} reachable from Podman machine '{machine}'",
+                )
+            return CheckResult(
+                "Registry push endpoint",
+                "fail",
+                f"{registry} not reachable from Podman machine '{machine}'",
+                fix=result.stderr.strip() or "Check KAMIWAZA_PUSH_REGISTRY",
+                exit_code=_registry_exit_code(),
+            )
+
+        # Docker Desktop VM: alias only resolves inside the Docker VM, not
+        # from the macOS/Windows host. We don't run a one-shot ``docker run``
+        # probe here because it would pull an image just to confirm DNS;
+        # the push itself will surface a clearer error if the alias is wrong.
+        if registry.startswith(f"{DOCKER_VM_HOST_ALIAS}:"):
+            return CheckResult(
+                "Registry push endpoint",
+                "warn",
+                f"{registry} is a Docker Desktop VM alias; "
+                "skipping host-side probe (verified at push time)",
+            )
+
+        return self._check_registry_http_endpoint(
+            "Registry push endpoint",
+            registry,
+            connection_verify_ssl=connection_verify_ssl,
+        )
+
+    def _check_registry_http_endpoint(
+        self,
+        name: str,
+        registry: str,
+        *,
+        connection_verify_ssl: Optional[bool] = None,
+    ) -> CheckResult:
+        import warnings
+
+        import requests
+
+        # Use the urllib3 vendored under ``requests`` rather than the top-
+        # level package so we ride whatever version ``requests`` pins —
+        # jxstanford Medium #6: ``urllib3`` isn't a declared dependency.
+        from requests.packages import urllib3  # type: ignore[import-untyped]
+        from kamiwaza_extensions.registry_resolution import is_loopback_registry
+
+        loopback = is_loopback_registry(registry)
+        # Probe HTTPS first for non-loopback registries: real registries
+        # almost always front /v2/ with TLS, and HTTPS-only registries
+        # whose port-80 returns an HTML landing page would otherwise be
+        # mis-reported as a hard failure on the first probe. For loopback
+        # registries (k0s/kind local dev), plain HTTP is the convention.
+        if loopback:
+            urls = (f"http://{registry}/v2/", f"https://{registry}/v2/")
+        else:
+            urls = (f"https://{registry}/v2/", f"http://{registry}/v2/")
+
+        failures: list[str] = []
+        for url in urls:
+            # TLS verification policy:
+            #   - Loopback HTTPS: always skip verify (dev self-signed).
+            #   - Non-loopback HTTPS with connection.verify_ssl=False:
+            #     mirror the connection's choice so doctor doesn't
+            #     contradict every other request the SDK makes for the
+            #     same cluster (jxstanford Medium #1).
+            #   - Otherwise: verify against the system CA so real cert
+            #     issues surface in doctor output.
+            if url.startswith("https://"):
+                if loopback:
+                    verify = False
+                elif connection_verify_ssl is False:
+                    verify = False
+                else:
+                    verify = True
+            else:
+                verify = True
+            try:
+                if verify:
+                    response = requests.get(url, timeout=5)
+                else:
+                    # Suppress the ``InsecureRequestWarning`` that ``verify=False``
+                    # would otherwise emit to stderr; structured CheckResult is
+                    # the user-facing surface here.
+                    with warnings.catch_warnings():
+                        warnings.simplefilter(
+                            "ignore", urllib3.exceptions.InsecureRequestWarning
+                        )
+                        response = requests.get(url, timeout=5, verify=False)
+            except requests.RequestException as exc:
+                failures.append(f"{url}: {exc}")
+                continue
+            content_type = response.headers.get("content-type", "")
+            body_prefix = getattr(response, "content", b"")
+            if isinstance(body_prefix, bytes):
+                body_start = body_prefix[:512].lstrip().lower()
+                starts_html = body_start.startswith((b"<!doctype html", b"<html"))
+            elif isinstance(body_prefix, str):
+                body_start = body_prefix[:512].lstrip().lower()
+                starts_html = body_start.startswith(("<!doctype html", "<html"))
+            else:
+                starts_html = False
+            is_html = "text/html" in content_type.lower() or starts_html
+            if is_html:
+                # HTML on this URL is not a real /v2/ response — record it
+                # and continue so the alternate scheme still gets a chance.
+                failures.append(f"{url} returned HTML, not a registry /v2/ response")
+                continue
+            # Treat 200/401 as definitive registry-valid. Also accept 4xx
+            # whose ``WWW-Authenticate: Bearer ...`` proves a registry is
+            # behind a token authorizer (e.g., GHCR catalog disabled,
+            # jxstanford Medium #3).
+            if response.status_code in (200, 401) or (
+                400 <= response.status_code < 500
+                and "bearer"
+                in (response.headers.get("WWW-Authenticate", "") or "").lower()
+            ):
+                return CheckResult(
+                    name,
+                    "pass",
+                    f"{url} returned {response.status_code}",
+                )
+            failures.append(f"{url}: HTTP {response.status_code}")
+
+        # If every URL we tried returned HTML, the host is not serving a
+        # registry endpoint at all — that's a hard fail, not a warn.
+        if failures and all("returned HTML" in f for f in failures):
+            return CheckResult(
+                name,
+                "fail",
+                f"{registry} did not serve a registry /v2/ endpoint on HTTP or HTTPS",
+                fix=(
+                    "Use the platform-advertised registry host or set "
+                    "KAMIWAZA_REGISTRY explicitly"
+                ),
+                exit_code=_registry_exit_code(),
+            )
+        return CheckResult(
+            name,
+            "warn",
+            f"Could not confirm registry /v2/ endpoint for {registry}",
+            fix="; ".join(failures[-2:]) if failures else None,
         )
 
     # ------------------------------------------------------------------

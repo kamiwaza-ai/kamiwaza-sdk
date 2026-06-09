@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import re
-import subprocess
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
@@ -176,6 +175,7 @@ def _is_resumable(
     sdk_repo: Optional[str] = None,
     service: Optional[str] = None,
     registry: str = "",
+    push_registry: str = "",
     image_basename: Optional[str] = None,
 ) -> bool:
     """Return True when the prior dev-state can resume the current run.
@@ -199,9 +199,10 @@ def _is_resumable(
         Skipping build would silently redeploy stale SDK content.
         Conservatively: any non-equal sdk_repo (including None vs set)
         invalidates resume.
-      * **Registry** (``KAMIWAZA_REGISTRY`` / derived) — the prior push
-        targeted a specific registry; a different registry means the
-        image isn't there to skip-push to.
+      * **Registry / push registry** (``KAMIWAZA_REGISTRY`` /
+        ``KAMIWAZA_PUSH_REGISTRY`` / derived) — the prior push targeted
+        specific image and push registry addresses; a different address
+        means the image isn't there to skip-push to.
       * **image_basename** — kamiwaza.json override that controls the
         ``{registry}/{basename}-{svc}:{tag}`` legacy-fallback synthesis.
         Build/push and deploy refs depend on it, so a flipped override
@@ -217,7 +218,7 @@ def _is_resumable(
         return False
     if prior_state.cluster != connection_url:
         return False
-    # Service filter, sdk_repo, registry, and image_basename must all
+    # Service filter, sdk_repo, registry, push_registry, and image_basename must all
     # match. None vs "" are treated as equivalent for the Optional
     # fields (older state files didn't record them — refuse resume on
     # those by mismatching against current values when current is set).
@@ -226,6 +227,10 @@ def _is_resumable(
     if (prior_state.last_sdk_repo or None) != (sdk_repo or None):
         return False
     if prior_state.last_registry != registry:
+        return False
+    current_push_registry = push_registry or registry
+    prior_push_registry = prior_state.last_push_registry or prior_state.last_registry
+    if prior_push_registry != current_push_registry:
         return False
     if (prior_state.last_image_basename or None) != (image_basename or None):
         return False
@@ -244,39 +249,11 @@ def _decode_email(access_token: str) -> Optional[str]:
 
 
 def _detect_kind_registry() -> Optional[str]:
-    """Auto-detect a Kind local registry via the ``local-registry-hosting`` configmap.
+    """Compatibility wrapper for tests and callers that patch this helper."""
 
-    Returns ``localhost:<port>`` if found, else ``None``.
-    """
-    try:
-        result = subprocess.run(
-            [
-                "kubectl", "get", "configmap", "local-registry-hosting",
-                "-n", "kube-public",
-                "-o", "jsonpath={.data.localRegistryHosting\\.v1}",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if result.returncode != 0 or not result.stdout.strip():
-            return None
+    from kamiwaza_extensions.registry_resolution import detect_kind_registry
 
-        # Parse the YAML-ish output: host: "host.docker.internal:5001"
-        for line in result.stdout.strip().splitlines():
-            line = line.strip()
-            if line.startswith("host:"):
-                host_val = line.split(":", 1)[1].strip().strip('"').strip("'")
-                # Map host.docker.internal to localhost (it may not resolve on the host)
-                parsed = urlparse(f"//{host_val}")
-                port = parsed.port or 5001
-                console.print(f"[dim]Auto-detected Kind local registry: localhost:{port}[/dim]")
-                return f"localhost:{port}"
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
-    return None
-
-
+    return detect_kind_registry()
 
 
 def _delete_and_recreate(client, dev_name, payload, console):
@@ -314,7 +291,9 @@ def _delete_and_recreate(client, dev_name, payload, console):
             raise typer.Exit(code=1) from retry_exc
 
     if ext is None:
-        console.print("[red]Error:[/red] Timed out waiting for old deployment to be removed")
+        console.print(
+            "[red]Error:[/red] Timed out waiting for old deployment to be removed"
+        )
         raise typer.Exit(code=1)
     return ext
 
@@ -329,9 +308,6 @@ def run_dev_remote(
     sdk_repo: Optional[str] = None,
 ) -> None:
     """Build, push, and deploy extension to a Kamiwaza cluster."""
-    from kamiwaza_sdk import KamiwazaClient
-    from kamiwaza_sdk.exceptions import APIError
-
     from kamiwaza_extensions.compose_transformer import (
         ComposeTransformer,
         compute_canonical_refs,
@@ -352,6 +328,8 @@ def run_dev_remote(
     from kamiwaza_extensions.image_pusher import ImagePusher, ImagePushError
     from kamiwaza_extensions.payload_builder import PayloadBuilder
     from kamiwaza_extensions.revision_tagger import RevisionTagger
+    from kamiwaza_sdk import KamiwazaClient
+    from kamiwaza_sdk.exceptions import APIError
 
     # 1. Detect extension
     detector = ExtensionDetector()
@@ -388,27 +366,89 @@ def run_dev_remote(
                 "-- image tagged with 'dirty'."
             )
 
-    # 4. Derive registry — must happen before the resume check so we can
-    # compare the active registry against the one persisted in dev-state.
-    registry = os.environ.get("KAMIWAZA_REGISTRY")
-    if not registry:
-        registry = _detect_kind_registry()
-    if not registry:
-        # Fallback: convention registry.{cluster-domain}
-        cluster_url = connection.url.removesuffix("/api")
-        parsed = urlparse(cluster_url)
-        if parsed.hostname:
-            registry = f"registry.{parsed.hostname}"
-        else:
-            console.print("[red]Error:[/red] Could not derive registry from connection URL.")
-            raise typer.Exit(code=1)
+    # 4. Derive image and push registries — must happen before the resume
+    # check so we can compare the active destinations against dev-state.
+    # Engine selection comes first so the resolver can choose a VM alias
+    # the active engine can actually resolve (R6 — `host.docker.internal`
+    # only resolves inside the Docker daemon's VM; podman from host CLI
+    # cannot resolve it at all).
+    from kamiwaza_extensions.registry_resolution import (
+        build_push_ref_map,
+        docker_accepts_insecure_push_to,
+        insecure_registry_daemon_json_fix,
+        is_loopback_registry,
+        push_registry_requires_insecure_tls,
+        push_registry_uses_local_loopback_alias,
+        resolve_dev_registries,
+        select_push_engine,
+        validate_push_registry_for_engine,
+    )
+
+    # API TLS and registry TLS are related for default dev clusters, but not
+    # identical. Keep the API-side effective setting for initial local-registry
+    # engine selection, then refine the push TLS policy once the actual push
+    # registry/source is known.
+    api_insecure = not connection.effective_verify_ssl()
+    # ImageBuilder is Docker-only today. On a normal/fresh run, the push must
+    # use Docker too; otherwise Docker builds the image into Docker's store and
+    # a Podman push cannot see it. Explicit --no-build pushes still use the
+    # auto-selected engine because the user is asserting the image already
+    # exists in the active engine's store.
+    build_engine = "docker"
+    push_registry_override = os.environ.get("KAMIWAZA_PUSH_REGISTRY")
+    push_engine = (
+        build_engine
+        if not no_build
+        else select_push_engine(
+            insecure=api_insecure,
+            push_registry=push_registry_override,
+        )
+    )
+
+    try:
+        registry_resolution = resolve_dev_registries(
+            connection,
+            kind_registry_detector=_detect_kind_registry,
+            push_engine=push_engine,
+        )
+    except ValueError as exc:
+        console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+    registry = registry_resolution.image_registry
+    push_registry = registry_resolution.push_registry
+
+    push_insecure = push_registry_requires_insecure_tls(
+        registry_resolution,
+        api_insecure=api_insecure,
+    )
+    if no_build:
+        selected_push_engine = select_push_engine(
+            insecure=push_insecure,
+            push_registry=push_registry,
+        )
+        if selected_push_engine != push_engine:
+            push_engine = selected_push_engine
+            try:
+                registry_resolution = resolve_dev_registries(
+                    connection,
+                    kind_registry_detector=_detect_kind_registry,
+                    push_engine=push_engine,
+                )
+            except ValueError as exc:
+                console.print(f"[red]Error:[/red] {exc}")
+                raise typer.Exit(code=1) from exc
+            registry = registry_resolution.image_registry
+            push_registry = registry_resolution.push_registry
+            push_insecure = push_registry_requires_insecure_tls(
+                registry_resolution,
+                api_insecure=api_insecure,
+            )
 
     # Read prior dev-state for resume hints (§4.2.9 DevStateFile, ENG-3887).
     # If the prior run wrote matching inputs (revision, cluster, service,
-    # sdk-repo, registry) and got past a step, skip that step on this
-    # invocation. Different revision/cluster/service/sdk-repo/registry =
-    # different image content or destination = full pipeline (review
-    # re-re-re-review PR #84 H1).
+    # sdk-repo, registry, push registry) and got past a step, skip that
+    # step on this invocation. Different inputs = different image content
+    # or destination = full pipeline (review re-re-re-review PR #84 H1).
     prior_state = read_state(info.path)
     notice = resume_message(prior_state)
     if notice:
@@ -420,6 +460,7 @@ def run_dev_remote(
         sdk_repo=sdk_repo,
         service=service,
         registry=registry,
+        push_registry=push_registry,
         image_basename=info.image_basename,
     )
     if resumable and not no_build and prior_state.is_step_complete("build"):
@@ -433,15 +474,54 @@ def run_dev_remote(
         )
         no_push = True
 
+    # Engine consistency: Docker and Podman keep separate image stores, so
+    # a ``--no-build`` resume that would push with a different engine than
+    # the build used would call ``podman tag <docker-image>`` (or the
+    # inverse) on an image the new engine can't see (jxstanford iter-4
+    # High #1). Refuse with an actionable error rather than letting
+    # ImagePusher fail downstream with a confusing tag-not-found message.
+    prior_build_engine = (
+        (prior_state.last_build_engine or "docker")
+        if prior_state is not None and prior_state.is_step_complete("build")
+        else ""
+    )
+    if (
+        no_build
+        and not no_push
+        and resumable
+        and prior_state is not None
+        and prior_build_engine
+        and prior_build_engine != push_engine
+    ):
+        console.print(
+            f"[red]Error:[/red] Previous build used '{prior_build_engine}' "
+            f"but this push will use '{push_engine}'.\n"
+            "  Their image stores are separate, so the prior image isn't visible to "
+            f"'{push_engine}'.\n"
+            "  Rerun [bold]kz-ext dev[/bold] without --no-build to rebuild with the "
+            "active engine, or restore the previous engine "
+            f"(e.g., start Docker Desktop if it was '{prior_build_engine}')."
+        )
+        raise typer.Exit(code=1)
+
     # Print header
     console.print(f"  Extension:  [bold]{info.name}[/bold] ({info.version})")
     console.print(f"  Connection: {connection.name} ({connection.url})")
     console.print(f"  Revision:   {rev_tag}")
+    console.print(
+        f"  Registry:   {registry} ({registry_resolution.image_registry_source})"
+    )
+    if push_registry != registry:
+        console.print(
+            f"  Push via:   {push_registry} "
+            f"({registry_resolution.push_registry_source})"
+        )
     # Surface auto-disabled TLS verify when the URL is a dev TLD so the
     # user knows why their KAMIWAZA_TLS_REJECT_UNAUTHORIZED ends up "0".
     # Skip the notice when the persisted setting already matched (no
     # effective change) or when the user set the env var explicitly.
     from kamiwaza_extensions.connections import _VERIFY_SSL_FALSE_VALUES
+
     if (
         connection.verify_ssl
         and not connection.effective_verify_ssl()
@@ -517,7 +597,9 @@ def run_dev_remote(
                     or not override_spec.typescript_dist_path.is_dir()
                 ):
                     if not build_typescript_lib(override_spec):
-                        console.print("[yellow]Continuing without TypeScript override[/yellow]")
+                        console.print(
+                            "[yellow]Continuing without TypeScript override[/yellow]"
+                        )
                         override_spec = SdkOverrideSpec(
                             sdk_repo=override_spec.sdk_repo,
                             python=override_spec.python,
@@ -527,7 +609,9 @@ def run_dev_remote(
 
                 print_override_diagnostics(override_spec)
                 build_overrides = generate_build_overrides(
-                    override_spec, info.compose_data, extension_dir=info.path,
+                    override_spec,
+                    info.compose_data,
+                    extension_dir=info.path,
                 )
         console.print()
 
@@ -553,7 +637,9 @@ def run_dev_remote(
             raise typer.Exit(code=1) from exc
 
         if not image_refs:
-            console.print("[yellow]Warning:[/yellow] No images to build (no services with build contexts).")
+            console.print(
+                "[yellow]Warning:[/yellow] No images to build (no services with build contexts)."
+            )
         console.print()
     else:
         console.print("[dim]Skipping build (--no-build)[/dim]")
@@ -561,28 +647,98 @@ def run_dev_remote(
         # --no-build pushes hit the same registry path the deployment
         # payload will reference.
         if service:
-            image_refs = (
-                [canonical_refs[service]] if service in canonical_refs else []
-            )
+            image_refs = [canonical_refs[service]] if service in canonical_refs else []
         else:
             image_refs = list(canonical_refs.values())
         console.print()
 
     # 7. Push images
     if not no_push and image_refs:
-        console.print(f"Pushing to {registry}...")
+        push_ref_map = build_push_ref_map(
+            image_refs,
+            image_registry=registry,
+            push_registry=push_registry,
+        )
         try:
+            validate_push_registry_for_engine(
+                push_registry,
+                push_engine,
+                require_runtime=True,
+            )
+        except ValueError as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+        push_uses_local_loopback_alias = push_registry_uses_local_loopback_alias(
+            registry_resolution
+        )
+        push_targets_registry = any(
+            (push_ref := push_ref_map.get(ref, ref)) == push_registry
+            or push_ref.startswith(f"{push_registry}/")
+            for ref in image_refs
+        )
+        # Pre-flight: when Docker is the active engine pushing insecurely, the
+        # daemon must treat that target registry as insecure. This applies both
+        # to split VM aliases and same-host derived registries such as
+        # ``registry.kamiwaza.test``. Gated inside the push branch -- after
+        # resume may have set ``no_push`` and once image refs are known -- so a
+        # skipped push or build-context-less extension can't trip it. Also
+        # require at least one actual pushed ref to target this registry;
+        # declared external refs may leave an otherwise-resolved fallback alias
+        # unused.
+        if (
+            push_insecure
+            and push_engine == "docker"
+            and push_targets_registry
+            and not docker_accepts_insecure_push_to(push_registry)
+        ):
+            console.print(
+                f"[red]Error:[/red] {insecure_registry_daemon_json_fix(push_registry)}"
+            )
+            raise typer.Exit(code=1)
+
+        console.print(f"Pushing to {push_registry}...")
+        try:
+            # The local Kamiwaza dev registry is a stock anonymous
+            # ``registry:2`` — it requires no auth, and the connection token
+            # is a Kamiwaza *API* credential, not a registry credential. Skip
+            # the registry login for it. Beyond being unnecessary, the login
+            # is actively broken on the macOS podman-machine topology
+            # (ENG-5719): ``podman login <vm-alias>`` resolves the registry
+            # host client-side and fails ("no such host"), while
+            # ``podman push <vm-alias>`` resolves it inside the VM and
+            # succeeds. Skip login for a loopback push target or for local
+            # loopback VM aliases, including explicit
+            # ``KAMIWAZA_PUSH_REGISTRY=host.*.internal:<port>`` overrides.
+            # Authenticated user overrides (e.g.
+            # ``KAMIWAZA_PUSH_REGISTRY=registry.example.com``) are non-local
+            # and still log in even when the image registry is loopback.
+            registry_login_token = (
+                None
+                if (
+                    is_loopback_registry(push_registry)
+                    or push_uses_local_loopback_alias
+                )
+                else token.access_token
+            )
             pusher = ImagePusher()
             pusher.push(
                 image_refs,
-                registry=registry,
-                token=token.access_token,
-                insecure=not connection.verify_ssl,
+                registry=push_registry,
+                token=registry_login_token,
+                # Registry TLS is based on the push target/source. Local
+                # loopback registries and auto VM aliases are plain HTTP;
+                # explicit non-local registry overrides stay secure even when
+                # the Kamiwaza API connection is a dev host with TLS disabled.
+                insecure=push_insecure,
                 verbose=verbose,
+                target_refs=push_ref_map,
+                engine=push_engine,
             )
         except ImagePushError as exc:
             console.print(f"\n[red]Error:[/red] {exc}")
-            console.print("  Run: [bold]kz-ext doctor[/bold] to check connection and registry access.")
+            console.print(
+                "  Run: [bold]kz-ext doctor[/bold] to check connection and registry access."
+            )
             raise typer.Exit(code=1) from exc
         console.print()
     elif no_push:
@@ -591,7 +747,10 @@ def run_dev_remote(
     # 8. Build API payload
     payload_builder = PayloadBuilder()
     from kamiwaza_extensions.constants import extract_user_id
-    dev_name = PayloadBuilder.make_dev_name(info.name, user_id=extract_user_id(token.access_token))
+
+    dev_name = PayloadBuilder.make_dev_name(
+        info.name, user_id=extract_user_id(token.access_token)
+    )
     deployer_email = _decode_email(token.access_token)
     payload = payload_builder.build(
         metadata=info.metadata,
@@ -614,11 +773,14 @@ def run_dev_remote(
                 deployer=deployer_email or "",
                 # Persist the resume-key inputs so the next invocation can
                 # detect when service-filter / sdk-repo / registry /
-                # image_basename differ (review re-re-re-review PR #84 H1).
+                # push_registry / image_basename differ (review
+                # re-re-re-review PR #84 H1).
                 service=service,
                 sdk_repo=sdk_repo,
                 registry=registry,
+                push_registry=push_registry,
                 image_basename=info.image_basename,
+                build_engine=build_engine if step == "build" else "",
             )
         except OSError as state_exc:
             console.print(
@@ -635,6 +797,7 @@ def run_dev_remote(
 
     # 9. Deploy, poll, and print URL
     from kamiwaza_extensions.constants import ssl_env_override
+
     console.print(f"Deploying to {connection.url}...")
     with ssl_env_override(connection):
         client = KamiwazaClient(
@@ -661,7 +824,9 @@ def run_dev_remote(
 
             try:
                 ext = client.extensions.patch_extension(dev_name, patch)
-                console.print("  [green]\u2713[/green] Extension updated (zero-downtime)")
+                console.print(
+                    "  [green]\u2713[/green] Extension updated (zero-downtime)"
+                )
             except APIError as patch_exc:
                 if patch_exc.status_code == 405:
                     # Platform doesn't support PATCH yet — fall back
@@ -685,7 +850,9 @@ def run_dev_remote(
         try:
             timeout = int(os.environ.get("KAMIWAZA_DEV_TIMEOUT", "300"))
         except ValueError:
-            console.print("[yellow]Warning:[/yellow] Invalid KAMIWAZA_DEV_TIMEOUT, using 300s")
+            console.print(
+                "[yellow]Warning:[/yellow] Invalid KAMIWAZA_DEV_TIMEOUT, using 300s"
+            )
             timeout = 300
         poller = DeploymentPoller()
         try:
@@ -694,12 +861,14 @@ def run_dev_remote(
             # P9 (ENG-3887): print the dev-suffixed name even on timeout so
             # the user can locate the partial deployment via kz-ext status.
             console.print(f"\n[bold]Deployment name:[/bold] {dev_name}")
-            from kamiwaza_extensions.dev_diagnostics import diagnose_dev_timeout
             from kamiwaza_extensions.constants import EXTENSIONS_NAMESPACE
+            from kamiwaza_extensions.dev_diagnostics import diagnose_dev_timeout
             from kamiwaza_extensions.exit_codes import ExitCode
 
             diagnosis = diagnose_dev_timeout(
-                dev_name, EXTENSIONS_NAMESPACE, connection_url=connection.url,
+                dev_name,
+                EXTENSIONS_NAMESPACE,
+                connection_url=connection.url,
             )
             console.print(f"[red]Error:[/red] {exc}")
             console.print(f"  [dim]{diagnosis.message}[/dim]")
@@ -724,8 +893,12 @@ def run_dev_remote(
         url = ext.endpoints.external if ext.endpoints else None
         console.print("\n  [green]\u2713[/green] Rollout complete")
         console.print()
-        console.print(f"[bold]{info.name}[/bold] is running as [bold]{dev_name}[/bold] at:")
+        console.print(
+            f"[bold]{info.name}[/bold] is running as [bold]{dev_name}[/bold] at:"
+        )
         if url:
             console.print(f"  [blue]{url}[/blue]")
         else:
-            console.print("  [dim](no external URL reported — check kz-ext status)[/dim]")
+            console.print(
+                "  [dim](no external URL reported — check kz-ext status)[/dim]"
+            )
