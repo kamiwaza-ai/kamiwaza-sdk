@@ -50,6 +50,41 @@ def test_get_model_fetches_by_uuid():
     assert client.calls[0][1] == f"/models/{model_id}"
 
 
+def test_download_and_deploy_does_not_retry_terminal_deploy_failure(monkeypatch):
+    """A deployment that reached a terminal FAILED/ERROR/MUST_REDOWNLOAD
+    status will not succeed on an immediate redeploy; with deploy_model
+    now blocking on readiness by default, retrying three times costs up
+    to 3x the wait timeout. The typed error must propagate immediately."""
+    import time as time_module
+    from types import SimpleNamespace
+
+    from kamiwaza_sdk.exceptions import DeploymentFailedError
+
+    deploy_calls: list[dict] = []
+
+    def failing_deploy(**kwargs):
+        deploy_calls.append(kwargs)
+        raise DeploymentFailedError(
+            "Deployment entered failure status FAILED", status="FAILED"
+        )
+
+    client = DummyClient({})
+    client.serving = SimpleNamespace(deploy_model=failing_deploy)
+    service = ModelService(client)
+    monkeypatch.setattr(service, "initiate_model_download", lambda *a, **k: None)
+    monkeypatch.setattr(
+        service,
+        "get_model_by_repo_id",
+        lambda repo_id: SimpleNamespace(id=uuid.uuid4(), m_files=[]),
+    )
+    monkeypatch.setattr(time_module, "sleep", lambda _seconds: None)
+
+    with pytest.raises(DeploymentFailedError):
+        service.download_and_deploy_model("org/model", wait_for_download=False)
+
+    assert len(deploy_calls) == 1
+
+
 def test_create_and_delete_model():
     model_id = str(uuid.uuid4())
     responses = {
