@@ -785,6 +785,93 @@ class TestInsecurePreflightSource:
         assert pusher.push.call_args.kwargs["insecure"] is False
         assert pusher.push.call_args.kwargs["engine"] == "docker"
 
+    def test_insecure_preflight_checks_non_split_docker_registry(
+        self, tmp_path, monkeypatch
+    ):
+        """A derived non-loopback dev registry can still require HTTP push.
+
+        When image and push registry are both ``registry.<dev-host>``, there is
+        no retag map. Docker still needs that registry in insecure-registries
+        before it will push over HTTP, so the preflight must not be limited to
+        split VM-alias refs."""
+
+        from kamiwaza_extensions.commands import dev as dev_cmd
+
+        monkeypatch.delenv("KAMIWAZA_REGISTRY", raising=False)
+        monkeypatch.delenv("KAMIWAZA_PUSH_REGISTRY", raising=False)
+        conn = ConnectionInfo(
+            name="dev",
+            url="https://kamiwaza.test/api",
+            active=True,
+            created_at=0.0,
+            verify_ssl=True,
+        )
+        assert conn.effective_verify_ssl() is False
+        info = ExtensionInfo(
+            path=tmp_path,
+            name="my-app",
+            version="0.1.0",
+            metadata={"name": "my-app", "type": "app"},
+            compose_path=tmp_path / "docker-compose.yml",
+            compose_data={"services": {"api": {"build": {"context": "."}}}},
+        )
+        pusher = MagicMock()
+
+        conn_mgr = MagicMock()
+        conn_mgr.get_active_connection.return_value = conn
+        conn_mgr.get_token.return_value = MagicMock(access_token="tok-abc")
+        detector = MagicMock()
+        detector.detect.return_value = info
+        tagger = MagicMock()
+        tagger.generate_tag.return_value = "dev1"
+        tagger.get_git_info.return_value = ("abc1234", False)
+
+        with (
+            patch(
+                "kamiwaza_extensions.extension_detector.ExtensionDetector",
+                return_value=detector,
+            ),
+            patch(
+                "kamiwaza_extensions.connections.ConnectionManager",
+                return_value=conn_mgr,
+            ),
+            patch(
+                "kamiwaza_extensions.revision_tagger.RevisionTagger",
+                return_value=tagger,
+            ),
+            patch(
+                "kamiwaza_extensions.image_pusher.ImagePusher",
+                return_value=pusher,
+            ),
+            patch(
+                "kamiwaza_extensions.registry_resolution.detect_core_config_registry",
+                return_value=None,
+            ),
+            patch.object(dev_cmd, "_detect_kind_registry", return_value=None),
+            patch(
+                "kamiwaza_extensions.registry_resolution.podman_push_available",
+                return_value=False,
+            ),
+            patch(
+                "kamiwaza_extensions.registry_resolution.docker_accepts_insecure_push_to",
+                return_value=False,
+            ) as mock_accepts,
+            patch(
+                "kamiwaza_extensions.dev_state.read_state",
+                return_value=None,
+            ),
+            patch(
+                "kamiwaza_extensions.dev_state.resume_message",
+                return_value=None,
+            ),
+            pytest.raises(click.exceptions.Exit) as exc_info,
+        ):
+            dev_cmd.run_dev_remote(no_build=True)
+
+        assert exc_info.value.exit_code == 1
+        mock_accepts.assert_called_once_with("registry.kamiwaza.test")
+        pusher.push.assert_not_called()
+
     def test_explicit_podman_vm_alias_skips_login_for_local_registry(
         self, tmp_path, monkeypatch
     ):
@@ -865,6 +952,91 @@ class TestInsecurePreflightSource:
         assert pusher.push.call_args.kwargs["token"] is None
         assert pusher.push.call_args.kwargs["insecure"] is True
         assert pusher.push.call_args.kwargs["engine"] == "podman"
+
+    def test_completed_push_resume_does_not_require_running_podman_machine(
+        self, tmp_path, monkeypatch
+    ):
+        """Registry resolution must not require Podman machine liveness before
+        dev-state can skip an already-completed push."""
+
+        from kamiwaza_extensions.commands import dev as dev_cmd
+        from kamiwaza_extensions.dev_state import DevState
+
+        monkeypatch.setenv("KAMIWAZA_PUSH_REGISTRY", "host.containers.internal:30010")
+        info = ExtensionInfo(
+            path=tmp_path,
+            name="my-app",
+            version="0.1.0",
+            metadata={"name": "my-app", "type": "app"},
+            compose_path=tmp_path / "docker-compose.yml",
+            compose_data={"services": {"api": {"build": {"context": "."}}}},
+        )
+        prior_state = DevState(
+            last_run_at="2026-05-26T00:00:00+00:00",
+            last_revision="dev1",
+            last_successful_step="push",
+            cluster="https://kamiwaza.test/api",
+            extension_name="my-app",
+            last_registry="127.0.0.1:30010",
+            last_push_registry="host.containers.internal:30010",
+            last_build_engine="podman",
+        )
+
+        conn_mgr = MagicMock()
+        conn_mgr.get_active_connection.return_value = _active_connection()
+        conn_mgr.get_token.return_value = MagicMock(access_token="tok-abc")
+        detector = MagicMock()
+        detector.detect.return_value = info
+        tagger = MagicMock()
+        tagger.generate_tag.return_value = "dev1"
+        tagger.get_git_info.return_value = ("abc1234", False)
+        pusher = MagicMock()
+
+        with (
+            patch(
+                "kamiwaza_extensions.extension_detector.ExtensionDetector",
+                return_value=detector,
+            ),
+            patch(
+                "kamiwaza_extensions.connections.ConnectionManager",
+                return_value=conn_mgr,
+            ),
+            patch(
+                "kamiwaza_extensions.revision_tagger.RevisionTagger",
+                return_value=tagger,
+            ),
+            patch(
+                "kamiwaza_extensions.image_pusher.ImagePusher",
+                return_value=pusher,
+            ),
+            patch.object(
+                dev_cmd, "_detect_kind_registry", return_value="127.0.0.1:30010"
+            ),
+            patch(
+                "kamiwaza_extensions.registry_resolution.detect_core_config_registry",
+                return_value=None,
+            ),
+            patch(
+                "kamiwaza_extensions.registry_resolution.running_podman_machine_name",
+                return_value=None,
+            ),
+            patch(
+                "kamiwaza_extensions.dev_state.read_state",
+                return_value=prior_state,
+            ),
+            patch(
+                "kamiwaza_extensions.dev_state.resume_message",
+                return_value=None,
+            ),
+            patch(
+                "kamiwaza_extensions.payload_builder.PayloadBuilder",
+                side_effect=RuntimeError("reached-payload-stage"),
+            ),
+            pytest.raises(RuntimeError, match="reached-payload-stage"),
+        ):
+            dev_cmd.run_dev_remote(no_build=True)
+
+        pusher.push.assert_not_called()
 
     def test_insecure_preflight_checks_user_supplied_docker_vm_alias(
         self, tmp_path, monkeypatch

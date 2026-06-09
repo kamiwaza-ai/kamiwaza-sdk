@@ -569,6 +569,7 @@ class DoctorChecker:
                 push_registry_requires_insecure_tls,
                 push_registry_uses_local_loopback_alias,
                 resolve_dev_registries,
+                validate_push_registry_for_engine,
             )
 
             # ``kz-ext dev`` builds with Docker on the default path today, so
@@ -579,6 +580,10 @@ class DoctorChecker:
             resolution = resolve_dev_registries(
                 connection,
                 push_engine=push_engine,
+            )
+            validate_push_registry_for_engine(
+                resolution.push_registry,
+                push_engine,
             )
         except ValueError as exc:
             return [
@@ -610,6 +615,10 @@ class DoctorChecker:
                 connection_verify_ssl=verify_ssl,
             )
         )
+        push_insecure = push_registry_requires_insecure_tls(
+            resolution,
+            api_insecure=not verify_ssl,
+        )
         if resolution.push_registry != resolution.image_registry:
             results.append(
                 self._check_push_registry_endpoint(
@@ -617,37 +626,29 @@ class DoctorChecker:
                     connection_verify_ssl=verify_ssl,
                 )
             )
-            # The push registry differs from the image registry, which means
-            # we'll retag and push to an alias. Docker won't push to that
-            # alias over HTTP unless it's in ``insecure-registries``. Catch
-            # this in doctor too (jxstanford iter-4 Critical #1) so users
-            # see the fix before they hit it at ``kz-ext dev`` time.
-            #
-            # Gate on a local loopback-alias target so a legitimate
-            # user-supplied secure-HTTPS push override isn't refused just
-            # because the active Kamiwaza connection itself is insecure, while
-            # explicit ``host.*.internal`` local overrides still get checked.
-            # Uses the same registry-specific TLS policy as ``kz-ext dev`` so
-            # strict API TLS overrides don't hide a plain-HTTP local registry.
-            push_insecure = push_registry_requires_insecure_tls(
-                resolution,
-                api_insecure=not verify_ssl,
+        # Docker won't push over HTTP unless the target registry is in
+        # ``insecure-registries``. Catch this in doctor too so users see the fix
+        # before they hit it at ``kz-ext dev`` time. This applies to split VM
+        # aliases and to same-host derived registries such as
+        # ``registry.kamiwaza.test``.
+        if (
+            push_insecure
+            and push_engine == "docker"
+            and (
+                push_registry_uses_local_loopback_alias(resolution)
+                or resolution.push_registry == resolution.image_registry
             )
-            if (
-                push_insecure
-                and push_engine == "docker"
-                and push_registry_uses_local_loopback_alias(resolution)
-                and not docker_accepts_insecure_push_to(resolution.push_registry)
-            ):
-                results.append(
-                    CheckResult(
-                        "Docker insecure-registries",
-                        "fail",
-                        f"Docker won't push insecurely to {resolution.push_registry}",
-                        fix=insecure_registry_daemon_json_fix(resolution.push_registry),
-                        exit_code=_registry_exit_code(),
-                    )
+            and not docker_accepts_insecure_push_to(resolution.push_registry)
+        ):
+            results.append(
+                CheckResult(
+                    "Docker insecure-registries",
+                    "fail",
+                    f"Docker won't push insecurely to {resolution.push_registry}",
+                    fix=insecure_registry_daemon_json_fix(resolution.push_registry),
+                    exit_code=_registry_exit_code(),
                 )
+            )
         return results
 
     def _check_push_registry_endpoint(

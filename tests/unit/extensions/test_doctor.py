@@ -537,6 +537,49 @@ class TestDoctorRegistryChecks:
         assert insecure_check.status == "fail"
 
     @patch("kamiwaza_extensions.registry_resolution.detect_core_config_registry")
+    @patch("kamiwaza_extensions.registry_resolution.detect_kind_registry")
+    def test_registry_readiness_checks_non_split_docker_insecure_registry(
+        self, mock_kind, mock_core, tmp_path
+    ):
+        """Doctor must catch same-registry insecure Docker pushes too.
+
+        A dev-host API can derive ``registry.<dev-host>`` for both image and
+        push refs. There is no split alias, but Docker still needs daemon.json
+        insecure-registry configuration before it will push HTTP to that host."""
+
+        mock_core.return_value = None
+        mock_kind.return_value = None
+        checker = DoctorChecker(config_dir=tmp_path / ".kamiwaza")
+        checker._conn_mgr.get_active_connection = MagicMock(
+            return_value=MagicMock(
+                url="https://kamiwaza.test/api",
+                verify_ssl=True,
+                effective_verify_ssl=MagicMock(return_value=False),
+            )
+        )
+        ok = MagicMock(
+            status_code=200,
+            headers={"content-type": "application/json"},
+            text="{}",
+        )
+        with (
+            patch("requests.get", return_value=ok),
+            patch(
+                "kamiwaza_extensions.registry_resolution.docker_accepts_insecure_push_to",
+                return_value=False,
+            ) as mock_accepts,
+        ):
+            results = checker._check_registry_readiness()
+
+        assert "push=registry.kamiwaza.test" in results[0].message
+        mock_accepts.assert_called_once_with("registry.kamiwaza.test")
+        insecure_check = next(
+            (r for r in results if r.name == "Docker insecure-registries"), None
+        )
+        assert insecure_check is not None
+        assert insecure_check.status == "fail"
+
+    @patch("kamiwaza_extensions.registry_resolution.detect_core_config_registry")
     def test_registry_readiness_checks_explicit_docker_alias_for_non_loopback_image(
         self, mock_core, tmp_path, monkeypatch
     ):

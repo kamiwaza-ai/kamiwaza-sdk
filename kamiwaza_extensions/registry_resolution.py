@@ -188,7 +188,6 @@ def resolve_push_registry(
     push_override = os.environ.get("KAMIWAZA_PUSH_REGISTRY")
     if push_override:
         push_registry = normalize_registry_env("KAMIWAZA_PUSH_REGISTRY", push_override)
-        validate_push_registry_for_engine(push_registry, engine)
         return (
             push_registry,
             "KAMIWAZA_PUSH_REGISTRY",
@@ -412,7 +411,9 @@ def push_registry_alias_engine(registry: str) -> Optional[str]:
     return None
 
 
-def validate_push_registry_for_engine(registry: str, push_engine: str) -> None:
+def validate_push_registry_for_engine(
+    registry: str, push_engine: str, *, require_runtime: bool = False
+) -> None:
     """Raise when an explicit VM alias cannot work with *push_engine*."""
 
     alias_engine = push_registry_alias_engine(registry)
@@ -425,7 +426,11 @@ def validate_push_registry_for_engine(registry: str, push_engine: str) -> None:
             f"is {engine}. Use the {alias_engine} engine for this alias or set "
             "KAMIWAZA_PUSH_REGISTRY to a host reachable by the active engine."
         )
-    if alias_engine == "podman" and running_podman_machine_name() is None:
+    if (
+        require_runtime
+        and alias_engine == "podman"
+        and running_podman_machine_name() is None
+    ):
         raise ValueError(
             f"{registry} is a Podman VM alias, but no Podman machine is running. "
             "Start the Podman machine or set KAMIWAZA_PUSH_REGISTRY to a host "

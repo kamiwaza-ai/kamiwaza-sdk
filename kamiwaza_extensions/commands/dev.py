@@ -381,6 +381,7 @@ def run_dev_remote(
         push_registry_uses_local_loopback_alias,
         resolve_dev_registries,
         select_push_engine,
+        validate_push_registry_for_engine,
     )
 
     # API TLS and registry TLS are related for default dev clusters, but not
@@ -653,30 +654,36 @@ def run_dev_remote(
             image_registry=registry,
             push_registry=push_registry,
         )
+        try:
+            validate_push_registry_for_engine(
+                push_registry,
+                push_engine,
+                require_runtime=True,
+            )
+        except ValueError as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
         push_uses_local_loopback_alias = push_registry_uses_local_loopback_alias(
             registry_resolution
         )
-        # Pre-flight: when docker is the active engine pushing insecurely to
-        # the rewritten alias, the daemon must treat that alias as insecure
-        # (default ``insecure-registries`` only covers 127.0.0.0/8). Fail fast
-        # with a one-line daemon.json fix (jxstanford iter-4 Critical #1)
-        # rather than letting the push timeout against HTTPS. Gated inside the
-        # push branch -- after resume may have set ``no_push`` and once
-        # ``image_refs`` is known -- so a resume-skip or a build-context-less
-        # extension can't trip it when no push will happen (ENG-5719
-        # follow-up). Gate on a local loopback-alias target so a legitimate
-        # user-supplied secure-HTTPS push override isn't refused just because
-        # the active Kamiwaza connection itself is insecure, while explicit
-        # ``host.*.internal`` local overrides still get checked. Also require
-        # at least one actual retag to that alias; declared external image refs
-        # may leave the push-ref map empty even when registry resolution found
-        # an alias for fallback refs.
+        push_targets_registry = any(
+            (push_ref := push_ref_map.get(ref, ref)) == push_registry
+            or push_ref.startswith(f"{push_registry}/")
+            for ref in image_refs
+        )
+        # Pre-flight: when Docker is the active engine pushing insecurely, the
+        # daemon must treat that target registry as insecure. This applies both
+        # to split VM aliases and same-host derived registries such as
+        # ``registry.kamiwaza.test``. Gated inside the push branch -- after
+        # resume may have set ``no_push`` and once image refs are known -- so a
+        # skipped push or build-context-less extension can't trip it. Also
+        # require at least one actual pushed ref to target this registry;
+        # declared external refs may leave an otherwise-resolved fallback alias
+        # unused.
         if (
             push_insecure
             and push_engine == "docker"
-            and push_registry != registry
-            and push_uses_local_loopback_alias
-            and push_ref_map
+            and push_targets_registry
             and not docker_accepts_insecure_push_to(push_registry)
         ):
             console.print(

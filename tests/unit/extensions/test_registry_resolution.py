@@ -22,6 +22,7 @@ from kamiwaza_extensions.registry_resolution import (
     replace_registry_prefix,
     resolve_dev_registries,
     select_push_engine,
+    validate_push_registry_for_engine,
 )
 
 pytestmark = pytest.mark.unit
@@ -640,38 +641,30 @@ class TestPushRegistryTlsPolicy:
 
 
 class TestExplicitVmAliasValidation:
-    @patch(
-        "kamiwaza_extensions.registry_resolution.detect_core_config_registry",
-        return_value="127.0.0.1:30010",
-    )
-    def test_docker_alias_requires_docker_engine(self, _mock_core, monkeypatch):
-        monkeypatch.setenv("KAMIWAZA_PUSH_REGISTRY", "host.docker.internal:30010")
-
+    def test_docker_alias_requires_docker_engine(self):
         with pytest.raises(ValueError, match="docker VM alias"):
-            resolve_dev_registries(
-                _conn(),
-                kind_registry_detector=lambda: None,
-                push_engine="podman",
+            validate_push_registry_for_engine(
+                "host.docker.internal:30010",
+                "podman",
+            )
+
+    def test_podman_alias_requires_podman_engine(self):
+        with pytest.raises(ValueError, match="podman VM alias"):
+            validate_push_registry_for_engine(
+                "host.containers.internal:30010",
+                "docker",
             )
 
     @patch(
-        "kamiwaza_extensions.registry_resolution.detect_core_config_registry",
-        return_value="127.0.0.1:30010",
-    )
-    @patch(
         "kamiwaza_extensions.registry_resolution.running_podman_machine_name",
-        return_value="podman-machine-default",
+        return_value=None,
     )
-    def test_podman_alias_requires_podman_engine(
-        self, _mock_machine, _mock_core, monkeypatch
-    ):
-        monkeypatch.setenv("KAMIWAZA_PUSH_REGISTRY", "host.containers.internal:30010")
-
-        with pytest.raises(ValueError, match="podman VM alias"):
-            resolve_dev_registries(
-                _conn(),
-                kind_registry_detector=lambda: None,
-                push_engine="docker",
+    def test_podman_alias_runtime_requires_running_machine(self, _mock_machine):
+        with pytest.raises(ValueError, match="no Podman machine is running"):
+            validate_push_registry_for_engine(
+                "host.containers.internal:30010",
+                "podman",
+                require_runtime=True,
             )
 
     @patch(
@@ -682,17 +675,19 @@ class TestExplicitVmAliasValidation:
         "kamiwaza_extensions.registry_resolution.running_podman_machine_name",
         return_value=None,
     )
-    def test_podman_alias_requires_running_machine(
+    def test_podman_alias_resolution_does_not_require_running_machine(
         self, _mock_machine, _mock_core, monkeypatch
     ):
         monkeypatch.setenv("KAMIWAZA_PUSH_REGISTRY", "host.containers.internal:30010")
 
-        with pytest.raises(ValueError, match="no Podman machine is running"):
-            resolve_dev_registries(
-                _conn(),
-                kind_registry_detector=lambda: None,
-                push_engine="podman",
-            )
+        resolution = resolve_dev_registries(
+            _conn(),
+            kind_registry_detector=lambda: None,
+            push_engine="podman",
+        )
+
+        assert resolution.push_registry == "host.containers.internal:30010"
+        assert resolution.push_registry_source == "KAMIWAZA_PUSH_REGISTRY"
 
 
 class TestDockerInsecureRegistries:
