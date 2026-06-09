@@ -53,6 +53,7 @@ class ServingService(BaseService):
                 *,
                 wait: bool = True,
                 timeout_seconds: int = 3600,
+                poll_interval_seconds: float = 5.0,
                 **kwargs) -> Union[UUID, bool]:
         """
         Deploy a model based on the provided model ID or repo ID and optional parameters.
@@ -77,6 +78,8 @@ class ServingService(BaseService):
                         Defaults to True. Skipped when the server refuses
                         the deploy (returns False instead of an id).
             timeout_seconds (int): Max seconds to wait when ``wait=True``.
+            poll_interval_seconds (float): Seconds between status polls
+                when ``wait=True``.
             **kwargs: Additional deployment parameters (engine_name, min_copies, etc.)
 
         Returns:
@@ -135,7 +138,11 @@ class ServingService(BaseService):
         deployment_id = UUID(response) if isinstance(response, str) else response
 
         if wait and isinstance(deployment_id, UUID):
-            self.wait_deployment_ready(deployment_id, timeout_seconds=timeout_seconds)
+            self.wait_deployment_ready(
+                deployment_id,
+                timeout_seconds=timeout_seconds,
+                poll_interval_seconds=poll_interval_seconds,
+            )
 
         return deployment_id
     

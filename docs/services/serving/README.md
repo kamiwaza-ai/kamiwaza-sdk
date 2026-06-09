@@ -29,7 +29,7 @@ ray_status = client.serving.get_status()
 
 ### Available Methods
 - `estimate_model_vram(model_id: UUID) -> int`: Estimate model VRAM requirements
-- `deploy_model(model_id=..., repo_id=..., wait=True, timeout_seconds=3600, **kwargs) -> Union[UUID, bool]`: Deploy a model. The server accepts the request asynchronously and returns the deployment id immediately; with `wait=True` (default) the SDK polls client-side until the deployment is ready, with `wait=False` it returns the id right away
+- `deploy_model(model_id=..., repo_id=..., wait=True, timeout_seconds=3600, poll_interval_seconds=5.0, **kwargs) -> Union[UUID, bool]`: Deploy a model. The server accepts the request asynchronously and returns the deployment id immediately; with `wait=True` (default) the SDK polls client-side until the deployment is ready, with `wait=False` it returns the id right away
 - `wait_deployment_ready(deployment_id, timeout_seconds=3600, poll_interval_seconds=5.0) -> UIModelDeployment`: Poll an existing deployment until it reaches `DEPLOYED`; raises `DeploymentFailedError` on a FAILED/ERROR/MUST_REDOWNLOAD terminal status and `TimeoutError` past the deadline
 - `list_deployments() -> List[ModelDeployment]`: List all deployments
 - `list_active_deployments() -> List[UIModelDeployment]`: List only active deployments with running instances

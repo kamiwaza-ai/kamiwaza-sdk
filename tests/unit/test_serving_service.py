@@ -52,20 +52,62 @@ def test_deploy_model_builds_payload_with_repo_lookup(dummy_client):
 
 
 def test_deploy_model_waits_until_ready_by_default(mock_client):
+    """wait is omitted (default True) — the deploy polls through to
+    DEPLOYED. poll_interval_seconds/timeout_seconds are forwarded to the
+    wait so a status-match regression fails the suite in milliseconds
+    instead of spinning through the 3600s/5s production defaults."""
     deployment_id = uuid4()
     mock_client.expect("POST", "/serving/deploy_model", str(deployment_id))
-    mock_client.expect(
+    mock_client.expect_sequence(
         "GET",
         f"/serving/deployment/{deployment_id}",
-        _deployment_payload(deployment_id, "DEPLOYED"),
+        [
+            _deployment_payload(deployment_id, "DEPLOYING"),
+            _deployment_payload(deployment_id, "DEPLOYED"),
+        ],
     )
     service = ServingService(mock_client)
 
-    result = service.deploy_model(model_id=uuid4(), m_config_id=uuid4())
+    result = service.deploy_model(
+        model_id=uuid4(),
+        m_config_id=uuid4(),
+        poll_interval_seconds=0,
+        timeout_seconds=5,
+    )
 
     assert result == deployment_id
     get_calls = [call for call in mock_client.calls if call[0] == "GET"]
-    assert len(get_calls) == 1
+    assert len(get_calls) == 2
+    # SDK-side wait knob: must drive the poll, not leak into the request
+    # body via **kwargs (where it would otherwise land in the payload).
+    post_payload = mock_client.calls[0][2]["json"]
+    assert "poll_interval_seconds" not in post_payload
+
+
+def test_deploy_model_forwards_wait_knobs(mock_client, monkeypatch):
+    """poll_interval_seconds/timeout_seconds are SDK-side wait knobs and
+    must reach wait_deployment_ready — not be silently dropped by the
+    **kwargs -> CreateModelDeployment path (extras are discarded there,
+    so a typo'd knob would otherwise revert to the 5s/3600s defaults)."""
+    deployment_id = uuid4()
+    mock_client.expect("POST", "/serving/deploy_model", str(deployment_id))
+    service = ServingService(mock_client)
+    recorded = {}
+
+    def fake_wait(dep_id, timeout_seconds, poll_interval_seconds):
+        recorded["args"] = (dep_id, timeout_seconds, poll_interval_seconds)
+        return SimpleNamespace(status="DEPLOYED")
+
+    monkeypatch.setattr(service, "wait_deployment_ready", fake_wait)
+
+    service.deploy_model(
+        model_id=uuid4(),
+        m_config_id=uuid4(),
+        poll_interval_seconds=0.25,
+        timeout_seconds=42,
+    )
+
+    assert recorded["args"] == (deployment_id, 42, 0.25)
 
 
 def test_deploy_model_wait_false_returns_id_immediately(mock_client):
