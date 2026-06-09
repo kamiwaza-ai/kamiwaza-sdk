@@ -139,7 +139,9 @@ class DeploymentFailedError(KamiwazaError, RuntimeError):
 
     Raised by client-side deployment polling (``ServingService.
     wait_deployment_ready`` / ``deploy_model(wait=True)``) when the
-    deployment enters a FAILED/ERROR terminal state. Also subclasses
+    deployment enters a FAILED/ERROR/MUST_REDOWNLOAD terminal state
+    (MUST_REDOWNLOAD: the server detected corrupted or incomplete model
+    files; the deploy will not recover without a redownload). Also subclasses
     ``RuntimeError`` because ``wait_for_deployment`` historically raised
     ``RuntimeError`` on failure statuses — existing ``except
     RuntimeError`` callers keep working.

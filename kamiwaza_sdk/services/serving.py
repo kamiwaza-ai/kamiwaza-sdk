@@ -84,7 +84,7 @@ class ServingService(BaseService):
 
         Raises:
             DeploymentFailedError: ``wait=True`` and the deployment
-                entered a FAILED/ERROR terminal status.
+                entered a FAILED/ERROR/MUST_REDOWNLOAD terminal status.
             TimeoutError: ``wait=True`` and the deployment did not become
                 ready within ``timeout_seconds``.
         """
@@ -202,7 +202,7 @@ class ServingService(BaseService):
         deployment_id: Union[str, UUID],
         *,
         desired_status: Iterable[str] = ("DEPLOYED",),
-        failure_status: Iterable[str] = ("FAILED", "ERROR"),
+        failure_status: Iterable[str] = ("FAILED", "ERROR", "MUST_REDOWNLOAD"),
         poll_interval: float = 5.0,
         timeout: Optional[float] = 600.0,
     ) -> ModelDeployment:
@@ -240,8 +240,8 @@ class ServingService(BaseService):
             The deployment once its status is ``DEPLOYED``.
 
         Raises:
-            DeploymentFailedError: The deployment entered a FAILED/ERROR
-                terminal status. Carries ``status``,
+            DeploymentFailedError: The deployment entered a FAILED/ERROR/
+                MUST_REDOWNLOAD terminal status. Carries ``status``,
                 ``last_error_message`` and ``last_error_code``.
             TimeoutError: The deployment did not become ready within
                 ``timeout_seconds``.

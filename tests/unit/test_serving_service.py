@@ -177,6 +177,32 @@ def test_wait_deployment_ready_raises_deployment_failed_error(mock_client):
     assert "CUDA out of memory while loading weights" in str(err)
 
 
+def test_wait_deployment_ready_raises_on_must_redownload(mock_client):
+    """The server background-launch path (ENG-6530) has a third resting
+    terminal failure state, MUST_REDOWNLOAD (corrupted/incomplete model
+    files). The poll must short-circuit with the typed error instead of
+    burning the full timeout. The row may carry no last_error_* metadata,
+    so the message must be meaningful from the status alone."""
+    deployment_id = uuid4()
+    mock_client.expect_sequence(
+        "GET",
+        f"/serving/deployment/{deployment_id}",
+        [
+            _deployment_payload(deployment_id, "DEPLOYING"),
+            _deployment_payload(deployment_id, "MUST_REDOWNLOAD"),
+        ],
+    )
+    service = ServingService(mock_client)
+
+    with pytest.raises(DeploymentFailedError) as exc_info:
+        service.wait_deployment_ready(deployment_id, poll_interval_seconds=0)
+
+    err = exc_info.value
+    assert err.status == "MUST_REDOWNLOAD"
+    assert err.last_error_message is None
+    assert "MUST_REDOWNLOAD" in str(err)
+
+
 def test_wait_deployment_ready_times_out(mock_client):
     deployment_id = uuid4()
     mock_client.expect(
