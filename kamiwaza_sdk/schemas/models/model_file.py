@@ -11,7 +11,7 @@ class StorageType(str, Enum):
     GCS = 'gcs'
     AZUREBLOB = 'azureblob'
     SCRATCH = 'scratch'
-    OCI = 'oci'
+    OCI = 'oci'  # OCI-registry / ImageVolume-backed model files (ENG-6537)
 
     def __str__(self):
         return self.value
