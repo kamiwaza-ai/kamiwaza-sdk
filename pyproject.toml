@@ -137,6 +137,7 @@ markers = [
     "withoutresponses: tests needing real network access",
     "requires_embedding_model: live tests that require an active platform embedding deployment",
     "requires_two_clusters: live tests that require a federation peer cluster reachable via KAMIWAZA_PEER_BASE_URL / KAMIWAZA_PEER_API_KEY (ENG-5784)",
+    "requires_deployable_model: live tests that require the host to deploy the integration test model; skips on hosts without compatible inference capacity (e.g. x86 CPU smoke vs an MLX model)",
     "extension_regression: D210 12-issue regression checklist (UAC-17 / EDX-OPS-2). See tests/unit/extensions/regression/inventory.yaml.",
     "live_extension: live extension-contract tests against a real cluster (relocated from kamiwaza, env-gated by RUN_LIVE_EXTENSION_TESTS=1)",
 ]
