@@ -213,11 +213,12 @@ def resolve_push_registry(
         # at the auth-ping step.
         return image_registry, "image registry"
 
-    # Docker engine: requires the daemon to be reachable for the alias
-    # to be meaningful at push time. If the daemon is down, fall through
-    # to no-remap rather than hand docker an alias it can't honor.
-    if not _docker_is_working():
-        return image_registry, "image registry"
+    # Docker engine: use the stable Docker Desktop VM alias. Do not key the
+    # resolved push registry on daemon liveness; resume compares this value
+    # before it knows whether push will be skipped, so a stopped daemon must
+    # not turn a prior alias push back into 127.0.0.1 and invalidate resume.
+    # If an actual push runs while Docker is down, the push step reports the
+    # daemon failure directly.
     return (
         replace_registry_host(image_registry, DOCKER_VM_HOST_ALIAS),
         BUILD_VM_LOOPBACK_ALIAS_SOURCE,
@@ -392,6 +393,17 @@ def is_loopback_registry(registry: str) -> bool:
         return False
 
 
+def is_build_vm_loopback_alias_registry(registry: str) -> bool:
+    """True when *registry* uses a Docker/Podman VM host-loopback alias."""
+
+    try:
+        parsed = urlparse(f"//{registry}")
+        host = (parsed.hostname or "").lower()
+    except ValueError:
+        return False
+    return host in {DOCKER_VM_HOST_ALIAS, PODMAN_VM_HOST_ALIAS}
+
+
 def replace_registry_host(registry: str, host: str) -> str:
     """Swap the registry hostname while preserving an explicit port.
 
@@ -425,16 +437,21 @@ def build_engine_runs_in_vm() -> bool:
     if system not in ("Darwin", "Windows"):
         return False
     docker = _docker_info()
-    if docker is None or not docker.ok:
+    if docker is None:
         # On Windows, Docker Desktop with the WSL2 backend always virtualizes
-        # Linux even when ``docker info`` errors out (e.g., the user hasn't
-        # selected a context yet). Trust the platform signal so the loopback
-        # remap still fires. On Darwin without a usable Docker engine, fall
-        # back to detecting a running Podman machine — that's the same
-        # nested-VM topology ENG-5719 needs to remap (codex iter-2 P2 gap).
+        # Linux. Trust the platform signal so the loopback remap still fires
+        # even when the docker CLI probe is unavailable. On Darwin without a
+        # docker CLI, fall back to detecting a running Podman machine -- that's
+        # the same nested-VM topology ENG-5719 needs to remap.
         if system == "Windows":
             return True
         return running_podman_machine_name() is not None
+    if not docker.ok:
+        # Docker CLI is installed but the daemon/context is unavailable. On
+        # Darwin/Windows the build engine topology is still a VM; keep registry
+        # resolution stable and let the build/push step surface daemon health
+        # only when it actually needs Docker.
+        return True
     return "linux" in docker.output.lower()
 
 
@@ -442,10 +459,9 @@ def _docker_is_working() -> bool:
     """True iff ``docker info`` succeeded — i.e., the daemon is reachable.
 
     Distinct from ``shutil.which("docker")``: docker may be installed but
-    the daemon down (Docker Desktop quit, context not selected). Picking
-    the VM host alias based on PATH alone leads to ``host.docker.internal``
-    being chosen even when ``ImagePusher`` will actually fall through to
-    Podman (claude iter-3 Important).
+    the daemon down (Docker Desktop quit, context not selected). Kept for
+    callers/tests that need daemon health; registry naming intentionally does
+    not use this value because resume keys must remain stable.
     """
 
     info = _docker_info()
@@ -495,12 +511,12 @@ def _reset_docker_info_cache() -> None:
 
 
 def _has_docker() -> bool:
-    """True when ``docker`` is on PATH. Used by VM-alias selection.
+    """True when ``docker`` is on PATH.
 
     Distinct from ``_docker_is_working``: PATH presence answers "is the
     CLI installed" while ``_docker_is_working`` answers "is the daemon
-    actually reachable". The latter is what alias selection uses now;
-    this remains for callers that only care whether the binary exists.
+    actually reachable". This remains for callers that only care whether
+    the binary exists.
     """
 
     return shutil.which("docker") is not None

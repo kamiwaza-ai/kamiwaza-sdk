@@ -66,8 +66,8 @@ class ImagePusher:
         """Push all images to the registry.
 
         If *token* is provided, authenticates with the registry first.
-        When *insecure* is True and Podman is available, ``--tls-verify=false``
-        is passed to bypass self-signed certificate errors.
+        When *insecure* is True and Podman is used, ``--tls-verify=false`` is
+        passed to bypass self-signed certificate errors.
 
         ``target_refs`` optionally maps built/deployment refs to alternate
         push refs. This supports local topologies where the same registry is
@@ -91,7 +91,12 @@ class ImagePusher:
                 )
             use_podman = normalized_engine == "podman"
         if token:
-            self._login_registry(registry, token, use_podman=use_podman)
+            self._login_registry(
+                registry,
+                token,
+                use_podman=use_podman,
+                insecure=insecure,
+            )
 
         for ref in image_refs:
             push_ref = (target_refs or {}).get(ref, ref)
@@ -99,15 +104,26 @@ class ImagePusher:
             console.print(f"  Pushing [bold]{short}[/bold]...")
             if push_ref != ref:
                 self._tag(ref, push_ref, use_podman=use_podman, verbose=verbose)
-            self._push(push_ref, use_podman=use_podman, verbose=verbose)
+            self._push(
+                push_ref,
+                use_podman=use_podman,
+                insecure=insecure,
+                verbose=verbose,
+            )
             console.print(f"  [green]\u2713[/green] {short}")
 
     @staticmethod
-    def _login_registry(registry: str, token: str, *, use_podman: bool = False) -> None:
+    def _login_registry(
+        registry: str,
+        token: str,
+        *,
+        use_podman: bool = False,
+        insecure: bool = False,
+    ) -> None:
         """Authenticate with the container registry using a PAT via stdin."""
         cli = "podman" if use_podman else "docker"
         cmd = [cli, "login", registry, "-u", "token", "--password-stdin"]
-        if use_podman:
+        if use_podman and insecure:
             cmd.insert(2, "--tls-verify=false")
         try:
             proc = subprocess.run(
@@ -239,11 +255,15 @@ class ImagePusher:
 
     @staticmethod
     def _push(
-        image_ref: str, *, use_podman: bool = False, verbose: bool = False
+        image_ref: str,
+        *,
+        use_podman: bool = False,
+        insecure: bool = False,
+        verbose: bool = False,
     ) -> None:
         cli = "podman" if use_podman else "docker"
         cmd = [cli, "push", image_ref]
-        if use_podman:
+        if use_podman and insecure:
             cmd.insert(2, "--tls-verify=false")
         try:
             if verbose:

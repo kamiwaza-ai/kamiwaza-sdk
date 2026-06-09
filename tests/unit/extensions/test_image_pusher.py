@@ -29,10 +29,23 @@ class TestLoginRegistry:
     @patch("kamiwaza_extensions.image_pusher.subprocess.run")
     def test_podman_login_insecure(self, mock_run, pusher):
         mock_run.return_value = MagicMock(returncode=0, stderr="")
-        pusher._login_registry("reg.test", "my-token", use_podman=True)
+        pusher._login_registry(
+            "reg.test",
+            "my-token",
+            use_podman=True,
+            insecure=True,
+        )
         cmd = mock_run.call_args[0][0]
         assert cmd[0] == "podman"
         assert "--tls-verify=false" in cmd
+
+    @patch("kamiwaza_extensions.image_pusher.subprocess.run")
+    def test_podman_login_secure_keeps_tls_verification(self, mock_run, pusher):
+        mock_run.return_value = MagicMock(returncode=0, stderr="")
+        pusher._login_registry("reg.test", "my-token", use_podman=True)
+        cmd = mock_run.call_args[0][0]
+        assert cmd[0] == "podman"
+        assert "--tls-verify=false" not in cmd
 
     @patch("kamiwaza_extensions.image_pusher.subprocess.run")
     def test_login_failure_raises(self, mock_run, pusher):
@@ -53,10 +66,18 @@ class TestPush:
     @patch("kamiwaza_extensions.image_pusher.subprocess.run")
     def test_podman_push_insecure(self, mock_run, pusher):
         mock_run.return_value = MagicMock(returncode=0, stderr="")
-        pusher._push("reg.test/app:v1", use_podman=True)
+        pusher._push("reg.test/app:v1", use_podman=True, insecure=True)
         cmd = mock_run.call_args[0][0]
         assert cmd[0] == "podman"
         assert "--tls-verify=false" in cmd
+
+    @patch("kamiwaza_extensions.image_pusher.subprocess.run")
+    def test_podman_push_secure_keeps_tls_verification(self, mock_run, pusher):
+        mock_run.return_value = MagicMock(returncode=0, stderr="")
+        pusher._push("reg.test/app:v1", use_podman=True)
+        cmd = mock_run.call_args[0][0]
+        assert cmd[0] == "podman"
+        assert "--tls-verify=false" not in cmd
 
     @patch("kamiwaza_extensions.image_pusher.subprocess.run")
     def test_push_failure_raises(self, mock_run, pusher):
@@ -94,9 +115,14 @@ class TestPushOrchestration:
         self, mock_push, mock_tag, mock_login, _mock_hp, pusher
     ):
         pusher.push(["reg/app:v1"], registry="reg", token="tok", insecure=True)
-        mock_login.assert_called_once_with("reg", "tok", use_podman=True)
+        mock_login.assert_called_once_with("reg", "tok", use_podman=True, insecure=True)
         mock_tag.assert_not_called()
-        mock_push.assert_called_once_with("reg/app:v1", use_podman=True, verbose=False)
+        mock_push.assert_called_once_with(
+            "reg/app:v1",
+            use_podman=True,
+            insecure=True,
+            verbose=False,
+        )
 
     @patch("kamiwaza_extensions.image_pusher._has_podman", return_value=True)
     @patch.object(ImagePusher, "_login_registry")
@@ -112,9 +138,16 @@ class TestPushOrchestration:
             insecure=True,
             engine="docker",
         )
-        mock_login.assert_called_once_with("reg", "tok", use_podman=False)
+        mock_login.assert_called_once_with(
+            "reg", "tok", use_podman=False, insecure=True
+        )
         mock_tag.assert_not_called()
-        mock_push.assert_called_once_with("reg/app:v1", use_podman=False, verbose=False)
+        mock_push.assert_called_once_with(
+            "reg/app:v1",
+            use_podman=False,
+            insecure=True,
+            verbose=False,
+        )
 
     @patch("kamiwaza_extensions.image_pusher._has_podman", return_value=False)
     @patch.object(ImagePusher, "_login_registry")
@@ -124,9 +157,16 @@ class TestPushOrchestration:
         self, mock_push, mock_tag, mock_login, _mock_hp, pusher
     ):
         pusher.push(["reg/app:v1"], registry="reg", token="tok", insecure=True)
-        mock_login.assert_called_once_with("reg", "tok", use_podman=False)
+        mock_login.assert_called_once_with(
+            "reg", "tok", use_podman=False, insecure=True
+        )
         mock_tag.assert_not_called()
-        mock_push.assert_called_once_with("reg/app:v1", use_podman=False, verbose=False)
+        mock_push.assert_called_once_with(
+            "reg/app:v1",
+            use_podman=False,
+            insecure=True,
+            verbose=False,
+        )
 
     @patch("kamiwaza_extensions.image_pusher._has_podman", return_value=True)
     @patch.object(ImagePusher, "_login_registry")
@@ -136,9 +176,40 @@ class TestPushOrchestration:
         self, mock_push, mock_tag, mock_login, _mock_hp, pusher
     ):
         pusher.push(["reg/app:v1"], registry="reg", token="tok", insecure=False)
-        mock_login.assert_called_once_with("reg", "tok", use_podman=False)
+        mock_login.assert_called_once_with(
+            "reg", "tok", use_podman=False, insecure=False
+        )
         mock_tag.assert_not_called()
-        mock_push.assert_called_once_with("reg/app:v1", use_podman=False, verbose=False)
+        mock_push.assert_called_once_with(
+            "reg/app:v1",
+            use_podman=False,
+            insecure=False,
+            verbose=False,
+        )
+
+    @patch.object(ImagePusher, "_login_registry")
+    @patch.object(ImagePusher, "_tag")
+    @patch.object(ImagePusher, "_push")
+    def test_explicit_podman_engine_secure_keeps_tls_verification(
+        self, mock_push, mock_tag, mock_login, pusher
+    ):
+        pusher.push(
+            ["reg/app:v1"],
+            registry="reg",
+            token="tok",
+            insecure=False,
+            engine="podman",
+        )
+        mock_login.assert_called_once_with(
+            "reg", "tok", use_podman=True, insecure=False
+        )
+        mock_tag.assert_not_called()
+        mock_push.assert_called_once_with(
+            "reg/app:v1",
+            use_podman=True,
+            insecure=False,
+            verbose=False,
+        )
 
     @patch("kamiwaza_extensions.image_pusher._has_podman", return_value=True)
     @patch.object(ImagePusher, "_login_registry")
@@ -158,7 +229,10 @@ class TestPushOrchestration:
         )
 
         mock_login.assert_called_once_with(
-            "host.containers.internal:30010", "tok", use_podman=True
+            "host.containers.internal:30010",
+            "tok",
+            use_podman=True,
+            insecure=True,
         )
         mock_tag.assert_called_once_with(
             "127.0.0.1:30010/app:v1",
@@ -169,6 +243,7 @@ class TestPushOrchestration:
         mock_push.assert_called_once_with(
             "host.containers.internal:30010/app:v1",
             use_podman=True,
+            insecure=True,
             verbose=False,
         )
 
@@ -201,6 +276,7 @@ class TestPushOrchestration:
         mock_push.assert_called_once_with(
             "host.containers.internal:30010/app:v1",
             use_podman=True,
+            insecure=True,
             verbose=False,
         )
 

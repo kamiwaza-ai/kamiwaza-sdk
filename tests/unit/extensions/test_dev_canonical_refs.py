@@ -685,13 +685,17 @@ class TestInsecurePreflightSource:
         # effective ``insecure`` (True).
         assert captured["kwargs"]["insecure"] is True
 
-    def test_insecure_preflight_skips_user_supplied_push_registry(
+    def test_secure_user_supplied_push_registry_does_not_inherit_api_insecure(
         self, tmp_path, monkeypatch
     ):
         """A dev-host connection can be insecure while the explicit push
-        registry is a normal HTTPS registry. The Docker insecure-registry
-        preflight is only for the auto loopback alias, not every split
-        registry."""
+        registry is a normal HTTPS registry.
+
+        Registry push TLS must be based on the push target/source, not on the
+        Kamiwaza API URL. With ``--no-build`` and Podman installed, the old
+        code selected Podman from ``effective_verify_ssl()`` and then ran
+        ``podman login/push --tls-verify=false`` against this secure override.
+        """
 
         from kamiwaza_extensions.commands import dev as dev_cmd
         from kamiwaza_extensions.image_pusher import ImagePushError
@@ -749,7 +753,7 @@ class TestInsecurePreflightSource:
             ),
             patch(
                 "kamiwaza_extensions.registry_resolution._has_podman",
-                return_value=False,
+                return_value=True,
             ),
             patch(
                 "kamiwaza_extensions.registry_resolution.docker_accepts_insecure_push_to",
@@ -770,6 +774,162 @@ class TestInsecurePreflightSource:
         pusher.push.assert_called_once()
         assert pusher.push.call_args.kwargs["registry"] == "registry.example.com"
         assert pusher.push.call_args.kwargs["token"] == "tok-abc"
+        assert pusher.push.call_args.kwargs["insecure"] is False
+        assert pusher.push.call_args.kwargs["engine"] == "docker"
+
+    def test_explicit_podman_vm_alias_skips_login_for_local_registry(
+        self, tmp_path, monkeypatch
+    ):
+        """A user-supplied Podman VM alias for the local anonymous registry
+        is still local. Do not pass the Kamiwaza API token to ``podman login``;
+        the host-side login cannot resolve the alias, while the VM-side push
+        can."""
+
+        from kamiwaza_extensions.commands import dev as dev_cmd
+        from kamiwaza_extensions.image_pusher import ImagePushError
+
+        monkeypatch.setenv("KAMIWAZA_PUSH_REGISTRY", "host.containers.internal:30010")
+        info = ExtensionInfo(
+            path=tmp_path,
+            name="my-app",
+            version="0.1.0",
+            metadata={"name": "my-app", "type": "app"},
+            compose_path=tmp_path / "docker-compose.yml",
+            compose_data={"services": {"api": {"build": {"context": "."}}}},
+        )
+        pusher = MagicMock()
+        pusher.push.side_effect = ImagePushError("stop-after-capture")
+
+        conn_mgr = MagicMock()
+        conn_mgr.get_active_connection.return_value = _active_connection()
+        conn_mgr.get_token.return_value = MagicMock(access_token="tok-abc")
+        detector = MagicMock()
+        detector.detect.return_value = info
+        tagger = MagicMock()
+        tagger.generate_tag.return_value = "dev1"
+        tagger.get_git_info.return_value = ("abc1234", False)
+
+        with (
+            patch(
+                "kamiwaza_extensions.extension_detector.ExtensionDetector",
+                return_value=detector,
+            ),
+            patch(
+                "kamiwaza_extensions.connections.ConnectionManager",
+                return_value=conn_mgr,
+            ),
+            patch(
+                "kamiwaza_extensions.revision_tagger.RevisionTagger",
+                return_value=tagger,
+            ),
+            patch(
+                "kamiwaza_extensions.image_pusher.ImagePusher",
+                return_value=pusher,
+            ),
+            patch(
+                "kamiwaza_extensions.registry_resolution.detect_core_config_registry",
+                return_value="127.0.0.1:30010",
+            ),
+            patch(
+                "kamiwaza_extensions.registry_resolution._has_podman",
+                return_value=True,
+            ),
+            patch(
+                "kamiwaza_extensions.dev_state.read_state",
+                return_value=None,
+            ),
+            patch(
+                "kamiwaza_extensions.dev_state.resume_message",
+                return_value=None,
+            ),
+            pytest.raises(click.exceptions.Exit),
+        ):
+            dev_cmd.run_dev_remote(no_build=True)
+
+        pusher.push.assert_called_once()
+        assert pusher.push.call_args.kwargs["registry"] == (
+            "host.containers.internal:30010"
+        )
+        assert pusher.push.call_args.kwargs["token"] is None
+        assert pusher.push.call_args.kwargs["insecure"] is True
+        assert pusher.push.call_args.kwargs["engine"] == "podman"
+
+    def test_insecure_preflight_checks_user_supplied_docker_vm_alias(
+        self, tmp_path, monkeypatch
+    ):
+        """Explicit Docker VM aliases are local plain-HTTP aliases too.
+
+        A secure external override should skip the Docker insecure-registry
+        preflight, but ``host.docker.internal`` targeting the loopback image
+        registry still needs daemon.json coverage before retag/push runs.
+        """
+
+        from kamiwaza_extensions.commands import dev as dev_cmd
+
+        monkeypatch.setenv("KAMIWAZA_PUSH_REGISTRY", "host.docker.internal:30010")
+        info = ExtensionInfo(
+            path=tmp_path,
+            name="my-app",
+            version="0.1.0",
+            metadata={"name": "my-app", "type": "app"},
+            compose_path=tmp_path / "docker-compose.yml",
+            compose_data={"services": {"api": {"build": {"context": "."}}}},
+        )
+        pusher = MagicMock()
+
+        conn_mgr = MagicMock()
+        conn_mgr.get_active_connection.return_value = _active_connection()
+        conn_mgr.get_token.return_value = MagicMock(access_token="tok-abc")
+        detector = MagicMock()
+        detector.detect.return_value = info
+        tagger = MagicMock()
+        tagger.generate_tag.return_value = "dev1"
+        tagger.get_git_info.return_value = ("abc1234", False)
+
+        with (
+            patch(
+                "kamiwaza_extensions.extension_detector.ExtensionDetector",
+                return_value=detector,
+            ),
+            patch(
+                "kamiwaza_extensions.connections.ConnectionManager",
+                return_value=conn_mgr,
+            ),
+            patch(
+                "kamiwaza_extensions.revision_tagger.RevisionTagger",
+                return_value=tagger,
+            ),
+            patch(
+                "kamiwaza_extensions.image_pusher.ImagePusher",
+                return_value=pusher,
+            ),
+            patch(
+                "kamiwaza_extensions.registry_resolution.detect_core_config_registry",
+                return_value="127.0.0.1:30010",
+            ),
+            patch(
+                "kamiwaza_extensions.registry_resolution._has_podman",
+                return_value=False,
+            ),
+            patch(
+                "kamiwaza_extensions.registry_resolution.docker_accepts_insecure_push_to",
+                return_value=False,
+            ) as mock_accepts,
+            patch(
+                "kamiwaza_extensions.dev_state.read_state",
+                return_value=None,
+            ),
+            patch(
+                "kamiwaza_extensions.dev_state.resume_message",
+                return_value=None,
+            ),
+            pytest.raises(click.exceptions.Exit) as exc_info,
+        ):
+            dev_cmd.run_dev_remote(no_build=True)
+
+        assert exc_info.value.exit_code == 1
+        mock_accepts.assert_called_once_with("host.docker.internal:30010")
+        pusher.push.assert_not_called()
 
     def test_insecure_preflight_skips_unused_loopback_alias_for_external_refs(
         self, tmp_path, monkeypatch

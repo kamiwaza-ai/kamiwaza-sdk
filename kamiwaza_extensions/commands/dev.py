@@ -75,6 +75,37 @@ def _build_patch_kwargs(
     return kwargs
 
 
+def _push_registry_requires_insecure_tls(
+    registry_resolution: Any, *, api_insecure: bool
+) -> bool:
+    """Return the TLS mode needed by the resolved registry push target."""
+
+    from kamiwaza_extensions.registry_resolution import (
+        BUILD_VM_LOOPBACK_ALIAS_SOURCE,
+        is_build_vm_loopback_alias_registry,
+        is_loopback_registry,
+    )
+
+    push_uses_auto_loopback_alias = (
+        registry_resolution.push_registry_source == BUILD_VM_LOOPBACK_ALIAS_SOURCE
+    )
+    push_registry_is_local_plain_http = (
+        is_loopback_registry(registry_resolution.push_registry)
+        or is_build_vm_loopback_alias_registry(registry_resolution.push_registry)
+        or (
+            push_uses_auto_loopback_alias
+            and is_loopback_registry(registry_resolution.image_registry)
+        )
+    )
+    registry_was_user_supplied = (
+        registry_resolution.push_registry_source == "KAMIWAZA_PUSH_REGISTRY"
+        or registry_resolution.image_registry_source == "KAMIWAZA_REGISTRY"
+    )
+    return push_registry_is_local_plain_http or (
+        api_insecure and not registry_was_user_supplied
+    )
+
+
 def _build_patch_service_specs(payload: Any) -> List[Any]:
     """Build the per-service ``PatchServiceSpec`` list from a
     ``CreateExtension`` payload, forwarding the new ``x-kamiwaza``
@@ -377,18 +408,17 @@ def run_dev_remote(
         build_push_ref_map,
         docker_accepts_insecure_push_to,
         insecure_registry_daemon_json_fix,
+        is_build_vm_loopback_alias_registry,
         is_loopback_registry,
         resolve_dev_registries,
         select_push_engine,
     )
 
-    # Derive `insecure` from the *effective* verify-SSL setting (env override /
-    # dev-hostname auto-disable / persisted flag), not the persisted flag alone.
-    # When TLS is auto-disabled for a dev URL but `verify_ssl` is still True,
-    # the persisted flag would select the secure Docker push path and skip the
-    # insecure-registry pre-flight -- then Docker attempts HTTPS against the
-    # plain-HTTP loopback registry and the push fails (ENG-5719 follow-up).
-    insecure = not connection.effective_verify_ssl()
+    # API TLS and registry TLS are related for default dev clusters, but not
+    # identical. Keep the API-side effective setting for initial local-registry
+    # engine selection, then refine the push TLS policy once the actual push
+    # registry/source is known.
+    api_insecure = not connection.effective_verify_ssl()
     # ImageBuilder is Docker-only today. On a normal/fresh run, the push must
     # use Docker too; otherwise Docker builds the image into Docker's store and
     # a Podman push cannot see it. Explicit --no-build pushes still use the
@@ -396,7 +426,7 @@ def run_dev_remote(
     # exists in the active engine's store.
     build_engine = "docker"
     push_engine = (
-        build_engine if not no_build else select_push_engine(insecure=insecure)
+        build_engine if not no_build else select_push_engine(insecure=api_insecure)
     )
 
     try:
@@ -410,6 +440,37 @@ def run_dev_remote(
         raise typer.Exit(code=1) from exc
     registry = registry_resolution.image_registry
     push_registry = registry_resolution.push_registry
+
+    push_uses_auto_loopback_alias = (
+        registry_resolution.push_registry_source == BUILD_VM_LOOPBACK_ALIAS_SOURCE
+    )
+    push_insecure = _push_registry_requires_insecure_tls(
+        registry_resolution,
+        api_insecure=api_insecure,
+    )
+    if no_build:
+        selected_push_engine = select_push_engine(insecure=push_insecure)
+        if selected_push_engine != push_engine:
+            push_engine = selected_push_engine
+            try:
+                registry_resolution = resolve_dev_registries(
+                    connection,
+                    kind_registry_detector=_detect_kind_registry,
+                    push_engine=push_engine,
+                )
+            except ValueError as exc:
+                console.print(f"[red]Error:[/red] {exc}")
+                raise typer.Exit(code=1) from exc
+            registry = registry_resolution.image_registry
+            push_registry = registry_resolution.push_registry
+            push_uses_auto_loopback_alias = (
+                registry_resolution.push_registry_source
+                == BUILD_VM_LOOPBACK_ALIAS_SOURCE
+            )
+            push_insecure = _push_registry_requires_insecure_tls(
+                registry_resolution,
+                api_insecure=api_insecure,
+            )
 
     # Read prior dev-state for resume hints (§4.2.9 DevStateFile, ENG-3887).
     # If the prior run wrote matching inputs (revision, cluster, service,
@@ -621,8 +682,9 @@ def run_dev_remote(
             image_registry=registry,
             push_registry=push_registry,
         )
-        push_uses_auto_loopback_alias = (
-            registry_resolution.push_registry_source == BUILD_VM_LOOPBACK_ALIAS_SOURCE
+        push_uses_local_loopback_alias = is_loopback_registry(registry) and (
+            push_uses_auto_loopback_alias
+            or is_build_vm_loopback_alias_registry(push_registry)
         )
         # Pre-flight: when docker is the active engine pushing insecurely to
         # the rewritten alias, the daemon must treat that alias as insecure
@@ -632,17 +694,18 @@ def run_dev_remote(
         # push branch -- after resume may have set ``no_push`` and once
         # ``image_refs`` is known -- so a resume-skip or a build-context-less
         # extension can't trip it when no push will happen (ENG-5719
-        # follow-up). Gate on the auto loopback-alias rewrite so a legitimate
+        # follow-up). Gate on a local loopback-alias target so a legitimate
         # user-supplied secure-HTTPS push override isn't refused just because
-        # the active Kamiwaza connection itself is insecure. Also require at
-        # least one actual retag to that alias; declared external image refs may
-        # leave the push-ref map empty even when registry resolution found an
-        # alias for fallback refs.
+        # the active Kamiwaza connection itself is insecure, while explicit
+        # ``host.*.internal`` local overrides still get checked. Also require
+        # at least one actual retag to that alias; declared external image refs
+        # may leave the push-ref map empty even when registry resolution found
+        # an alias for fallback refs.
         if (
-            insecure
+            push_insecure
             and push_engine == "docker"
             and push_registry != registry
-            and push_uses_auto_loopback_alias
+            and push_uses_local_loopback_alias
             and push_ref_map
             and not docker_accepts_insecure_push_to(push_registry)
         ):
@@ -661,18 +724,17 @@ def run_dev_remote(
             # (ENG-5719): ``podman login <vm-alias>`` resolves the registry
             # host client-side and fails ("no such host"), while
             # ``podman push <vm-alias>`` resolves it inside the VM and
-            # succeeds. Skip login for a loopback push target or for the
-            # auto-generated loopback VM alias. Authenticated user overrides
-            # (e.g. ``KAMIWAZA_PUSH_REGISTRY=registry.example.com``) are
-            # non-loopback and still log in even when the image registry is
-            # loopback.
+            # succeeds. Skip login for a loopback push target or for local
+            # loopback VM aliases, including explicit
+            # ``KAMIWAZA_PUSH_REGISTRY=host.*.internal:<port>`` overrides.
+            # Authenticated user overrides (e.g.
+            # ``KAMIWAZA_PUSH_REGISTRY=registry.example.com``) are non-local
+            # and still log in even when the image registry is loopback.
             registry_login_token = (
                 None
                 if (
                     is_loopback_registry(push_registry)
-                    or (
-                        push_uses_auto_loopback_alias and is_loopback_registry(registry)
-                    )
+                    or push_uses_local_loopback_alias
                 )
                 else token.access_token
             )
@@ -681,14 +743,11 @@ def run_dev_remote(
                 image_refs,
                 registry=push_registry,
                 token=registry_login_token,
-                # Use the *effective* verify-SSL -- the same value engine
-                # selection and the insecure-registry pre-flight derived above
-                # (env override / dev-hostname auto-disable / persisted flag),
-                # not the persisted flag alone. Otherwise the resolver
-                # validates one engine/TLS mode while the push runs another and
-                # Docker attempts HTTPS against the plain-HTTP loopback registry
-                # (ENG-5719 follow-up).
-                insecure=insecure,
+                # Registry TLS is based on the push target/source. Local
+                # loopback registries and auto VM aliases are plain HTTP;
+                # explicit non-local registry overrides stay secure even when
+                # the Kamiwaza API connection is a dev host with TLS disabled.
+                insecure=push_insecure,
                 verbose=verbose,
                 target_refs=push_ref_map,
                 engine=push_engine,

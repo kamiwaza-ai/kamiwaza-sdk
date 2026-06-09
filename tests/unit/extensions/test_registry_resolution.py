@@ -14,6 +14,7 @@ from kamiwaza_extensions.registry_resolution import (
     build_push_ref_map,
     docker_accepts_insecure_push_to,
     insecure_registry_daemon_json_fix,
+    is_build_vm_loopback_alias_registry,
     replace_registry_prefix,
     resolve_dev_registries,
     select_push_engine,
@@ -248,24 +249,23 @@ class TestPushRegistryResolution:
         "kamiwaza_extensions.registry_resolution.build_engine_runs_in_vm",
         return_value=True,
     )
-    @patch(
-        "kamiwaza_extensions.registry_resolution._docker_is_working",
-        return_value=False,
-    )
-    def test_docker_engine_skips_remap_when_daemon_down(
-        self, _mock_docker_works, _mock_vm, _mock_core
+    def test_docker_engine_keeps_remap_when_daemon_down_for_stable_resume(
+        self, _mock_vm, _mock_core
     ):
-        """R6 follow-up to claude iter-3 Important: docker engine but
-        daemon down → docker can't actually push regardless of alias, so
-        no remap. The original loopback at least surfaces a connection
-        failure rather than a misleading DNS error."""
+        """Docker daemon health must not change the resolved push registry.
+
+        Resume compares ``last_push_registry`` before it knows whether push
+        will be skipped. If Docker Desktop is temporarily stopped after a prior
+        alias push, resolving back to ``127.0.0.1`` invalidates resume and
+        forces a push that then fails with Docker down.
+        """
 
         resolution = resolve_dev_registries(
             _conn(), kind_registry_detector=lambda: None, push_engine="docker"
         )
 
-        assert resolution.push_registry == "127.0.0.1:30010"
-        assert resolution.push_registry_source == "image registry"
+        assert resolution.push_registry == "host.docker.internal:30010"
+        assert resolution.push_registry_source == "build VM loopback alias"
 
     @patch(
         "kamiwaza_extensions.registry_resolution.detect_core_config_registry",
@@ -482,6 +482,25 @@ class TestBuildEngineVmPlatformGate:
         return_value="Darwin",
     )
     @patch(
+        "kamiwaza_extensions.registry_resolution.subprocess.run",
+    )
+    def test_build_engine_vm_stays_true_on_macos_when_docker_daemon_down(
+        self, mock_run, _mock_system
+    ):
+        """Docker CLI present but daemon/context unavailable is still the
+        Docker Desktop VM topology. Registry naming must stay stable so a
+        resume can skip push without depending on current daemon health."""
+
+        from kamiwaza_extensions.registry_resolution import build_engine_runs_in_vm
+
+        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="down")
+        assert build_engine_runs_in_vm() is True
+
+    @patch(
+        "kamiwaza_extensions.registry_resolution.platform.system",
+        return_value="Darwin",
+    )
+    @patch(
         "kamiwaza_extensions.registry_resolution.running_podman_machine_name",
         return_value=None,
     )
@@ -519,6 +538,15 @@ class TestSelectPushEngine:
         # Insecure=False means no need for --tls-verify=false; docker
         # is the universal default even when podman is installed.
         assert select_push_engine(insecure=False) == "docker"
+
+
+class TestBuildVmLoopbackAliasRegistry:
+    def test_detects_docker_and_podman_aliases(self):
+        assert is_build_vm_loopback_alias_registry("host.docker.internal:30010")
+        assert is_build_vm_loopback_alias_registry("host.containers.internal:30010")
+
+    def test_rejects_normal_external_registry(self):
+        assert not is_build_vm_loopback_alias_registry("registry.example.com")
 
 
 class TestDockerInsecureRegistries:
