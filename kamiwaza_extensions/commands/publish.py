@@ -16,7 +16,7 @@ from kamiwaza_extensions.compose_transformer import (
     _repo_part,
     compute_canonical_refs,
 )
-from kamiwaza_extensions.extension_detector import infer_extension_type
+from kamiwaza_extensions.extension_detector import ExtensionInfo, infer_extension_type
 
 console = Console(stderr=True)
 
@@ -277,7 +277,8 @@ def _auto_resolve_digests(
     return digest_map
 
 
-def run_publish(
+def _publish_one(
+    info: ExtensionInfo,
     *,
     stage: str,
     dry_run: bool = False,
@@ -289,21 +290,18 @@ def run_publish(
     digest: Optional[str] = None,
     catalog_schema: int = DEFAULT_CATALOG_SCHEMA,
 ) -> None:
-    """Build, push, and publish extension to catalog."""
+    """Build, push, and publish one detected extension to catalog."""
     from kamiwaza_extensions.catalog_publisher import (
         CatalogDedupError,
-        CatalogDedupGuard,
         CatalogPublishError,
         CatalogPublisher,
     )
     from kamiwaza_extensions.compose_transformer import ComposeTransformer
     from kamiwaza_extensions.exit_codes import ExitCode
-    from kamiwaza_extensions.extension_detector import ExtensionDetector
     from kamiwaza_extensions.image_builder import ImageBuilder, ImageBuildError
     from kamiwaza_extensions.image_pusher import (
         ImagePushError,
         ImagePusher,
-        validate_digest,
     )
     from kamiwaza_extensions.profile_manager import ProfileManager
     from kamiwaza_extensions.registry_builder import (
@@ -312,36 +310,6 @@ def run_publish(
     )
     from kamiwaza_extensions.validators.compose import ComposeValidator
     from kamiwaza_extensions.validators.metadata import MetadataValidator
-
-    # 0. Fail fast on bad --revision before any side effects (build, push,
-    # registry tag pollution). Previously this validated inside
-    # CatalogPublisher.publish, after image push had already happened —
-    # invalid revisions like 'foo/bar' or 'BAD CASE' would leak orphan
-    # tags into the registry (review re-review PR #84 M2).
-    if revision is not None:
-        try:
-            CatalogDedupGuard.validate_revision(revision)
-        except ValueError as exc:
-            console.print(f"[red]Error:[/red] {exc}")
-            raise typer.Exit(code=int(ExitCode.VALIDATION)) from exc
-
-    # Same fail-fast intent for --digest: reject malformed input before any
-    # build/push side effects. Format guard only — buildable-count check
-    # happens after compose data is loaded.
-    if digest is not None:
-        try:
-            validate_digest(digest)
-        except ValueError as exc:
-            # The exception text contains the user-supplied digest verbatim;
-            # rich console treats `[…]` as markup, so disable interpretation
-            # to avoid silent stripping or a markup-injection vector.
-            console.print("[red]Error:[/red] ", end="")
-            console.print(str(exc), markup=False)
-            raise typer.Exit(code=int(ExitCode.VALIDATION)) from exc
-
-    # 1. Detect extension
-    detector = ExtensionDetector()
-    info = detector.detect()
 
     if info.compose_data is None:
         console.print("[red]Error:[/red] No docker-compose.yml found.")
@@ -758,3 +726,83 @@ def run_publish(
         ]
         console.print(f"  Images:  {', '.join(pinned)}")
     console.print(f"  Catalog: {result.catalog_file}")
+
+
+def run_publish(
+    *,
+    stage: str,
+    dry_run: bool = False,
+    force: bool = False,
+    no_build: bool = False,
+    no_push: bool = False,
+    verbose: bool = False,
+    revision: Optional[str] = None,
+    digest: Optional[str] = None,
+    catalog_schema: int = DEFAULT_CATALOG_SCHEMA,
+    publish_all: bool = False,
+) -> None:
+    """Build, push, and publish extension(s) to catalog."""
+    from kamiwaza_extensions.catalog_publisher import CatalogDedupGuard
+    from kamiwaza_extensions.exit_codes import ExitCode
+    from kamiwaza_extensions.extension_detector import (
+        ExtensionDetector,
+        MultipleExtensionsError,
+    )
+    from kamiwaza_extensions.image_pusher import validate_digest
+
+    # 0. Fail fast on bad --revision before any side effects (build, push,
+    # registry tag pollution). Previously this validated inside
+    # CatalogPublisher.publish, after image push had already happened —
+    # invalid revisions like 'foo/bar' or 'BAD CASE' would leak orphan
+    # tags into the registry (review re-review PR #84 M2).
+    if revision is not None:
+        try:
+            CatalogDedupGuard.validate_revision(revision)
+        except ValueError as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(code=int(ExitCode.VALIDATION)) from exc
+
+    # Same fail-fast intent for --digest: reject malformed input before any
+    # build/push side effects.
+    if digest is not None:
+        try:
+            validate_digest(digest)
+        except ValueError as exc:
+            # The exception text contains the user-supplied digest verbatim;
+            # rich console treats `[…]` as markup, so disable interpretation
+            # to avoid silent stripping or a markup-injection vector.
+            console.print("[red]Error:[/red] ", end="")
+            console.print(str(exc), markup=False)
+            raise typer.Exit(code=int(ExitCode.VALIDATION)) from exc
+
+    if publish_all and digest is not None:
+        console.print(
+            "[red]Error:[/red] --all cannot be combined with --digest. "
+            "--digest pins one image; omit it to auto-resolve each extension."
+        )
+        raise typer.Exit(code=int(ExitCode.VALIDATION))
+
+    detector = ExtensionDetector()
+    try:
+        infos = detector.detect_all() if publish_all else [detector.detect()]
+    except MultipleExtensionsError as exc:
+        console.print(f"[red]Error:[/red] {exc}")
+        console.print(
+            "Re-run with [bold]--all[/bold] to publish every detected extension, "
+            "or run from inside a specific extension directory."
+        )
+        raise typer.Exit(code=1) from exc
+
+    for info in infos:
+        _publish_one(
+            info,
+            stage=stage,
+            dry_run=dry_run,
+            force=force,
+            no_build=no_build,
+            no_push=no_push,
+            verbose=verbose,
+            revision=revision,
+            digest=digest,
+            catalog_schema=catalog_schema,
+        )

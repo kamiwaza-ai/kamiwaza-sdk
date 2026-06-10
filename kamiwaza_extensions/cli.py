@@ -378,6 +378,11 @@ def publish(
             "(K8s/v3 extensions). Pass 2 to publish to the legacy v2 catalog."
         ),
     ),
+    publish_all: bool = typer.Option(
+        False,
+        "--all",
+        help="Publish every extension discovered under the current repository.",
+    ),
 ) -> None:
     """Publish extension to catalog."""
     from kamiwaza_extensions.commands.publish import run_publish
@@ -391,6 +396,7 @@ def publish(
         revision=revision,
         digest=digest,
         catalog_schema=catalog_schema,
+        publish_all=publish_all,
     )
 
 
