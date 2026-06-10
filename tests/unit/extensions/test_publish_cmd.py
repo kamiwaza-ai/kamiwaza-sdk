@@ -7,9 +7,11 @@ from typing import Any, Dict, Optional
 from unittest.mock import MagicMock, patch
 
 import pytest
+import typer
 from click.exceptions import Exit as ClickExit
 
 pytestmark = pytest.mark.unit
+CLI_EXIT_TYPES = (SystemExit, ClickExit, typer.Exit)
 
 
 def _make_extension_info(
@@ -182,6 +184,93 @@ class TestPublishHappyPath:
         mock_pusher.push.assert_called_once()
         mock_reg_builder.build_entry.assert_called_once()
         mock_publisher.publish.assert_called_once()
+
+
+class TestPublishAll:
+    @patch("kamiwaza_extensions.commands.publish._publish_one")
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_publish_all_detects_and_publishes_every_extension(
+        self,
+        mock_detector_cls,
+        mock_publish_one,
+        tmp_path,
+    ):
+        infos = [
+            _make_extension_info(tmp_path / "apps" / "connector-builder", name="connector-builder"),
+            _make_extension_info(
+                tmp_path / "tools" / "tool-data-connector-runtime",
+                name="tool-data-connector-runtime",
+            ),
+        ]
+        mock_detector = MagicMock()
+        mock_detector.detect_all.return_value = infos
+        mock_detector_cls.return_value = mock_detector
+
+        from kamiwaza_extensions.commands.publish import run_publish
+
+        run_publish(stage="dev", publish_all=True, revision="abc1234", no_build=True)
+
+        mock_detector.detect_all.assert_called_once()
+        mock_detector.detect.assert_not_called()
+        assert mock_publish_one.call_count == 2
+        assert [call.args[0].name for call in mock_publish_one.call_args_list] == [
+            "connector-builder",
+            "tool-data-connector-runtime",
+        ]
+        for call in mock_publish_one.call_args_list:
+            assert call.kwargs["stage"] == "dev"
+            assert call.kwargs["revision"] == "abc1234"
+            assert call.kwargs["no_build"] is True
+
+    @patch("kamiwaza_extensions.commands.publish._publish_one")
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_publish_without_all_keeps_single_extension_detection(
+        self,
+        mock_detector_cls,
+        mock_publish_one,
+        tmp_path,
+    ):
+        info = _make_extension_info(tmp_path)
+        mock_detector = MagicMock()
+        mock_detector.detect.return_value = info
+        mock_detector_cls.return_value = mock_detector
+
+        from kamiwaza_extensions.commands.publish import run_publish
+
+        run_publish(stage="dev")
+
+        mock_detector.detect.assert_called_once()
+        mock_detector.detect_all.assert_not_called()
+        mock_publish_one.assert_called_once()
+        assert mock_publish_one.call_args.args[0] is info
+
+    def test_publish_all_rejects_digest(self):
+        from kamiwaza_extensions.commands.publish import run_publish
+
+        with pytest.raises(CLI_EXIT_TYPES):
+            run_publish(
+                stage="dev",
+                publish_all=True,
+                digest="sha256:" + "a" * 64,
+            )
+
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_multi_extension_root_without_all_guides_user(self, mock_detector_cls, capsys):
+        from kamiwaza_extensions.commands.publish import run_publish
+        from kamiwaza_extensions.extension_detector import MultipleExtensionsError
+
+        mock_detector = MagicMock()
+        mock_detector.detect.side_effect = MultipleExtensionsError(
+            "Multiple kamiwaza.json found: apps/foo, tools/bar. "
+            "Run from inside a specific extension directory."
+        )
+        mock_detector_cls.return_value = mock_detector
+
+        with pytest.raises(CLI_EXIT_TYPES):
+            run_publish(stage="dev")
+
+        captured = capsys.readouterr()
+        assert "--all" in captured.err
 
 
 class TestPublishWithInfoFindings:
@@ -1074,7 +1163,7 @@ class TestPublishValidationFailure:
 
         from kamiwaza_extensions.commands.publish import run_publish
 
-        with pytest.raises((SystemExit, ClickExit)):
+        with pytest.raises(CLI_EXIT_TYPES):
             run_publish(stage="dev")
 
         # Build should never be called
@@ -1336,7 +1425,7 @@ class TestPublishProfileNotFound:
 
         from kamiwaza_extensions.commands.publish import run_publish
 
-        with pytest.raises((SystemExit, ClickExit)):
+        with pytest.raises(CLI_EXIT_TYPES):
             run_publish(stage="nonexistent")
 
 
@@ -1364,7 +1453,7 @@ class TestPublishNoCompose:
 
         from kamiwaza_extensions.commands.publish import run_publish
 
-        with pytest.raises((SystemExit, ClickExit)):
+        with pytest.raises(CLI_EXIT_TYPES):
             run_publish(stage="dev")
 
 # ------------------------------------------------------------------
@@ -1525,7 +1614,7 @@ class TestPublishDigest:
 
         from kamiwaza_extensions.commands.publish import run_publish
 
-        with pytest.raises((SystemExit, ClickExit)):
+        with pytest.raises(CLI_EXIT_TYPES):
             run_publish(stage="dev")
 
         # Preflight ran; push and resolve never did.
@@ -1779,7 +1868,7 @@ class TestPublishDigest:
     ):
         from kamiwaza_extensions.commands.publish import run_publish
 
-        with pytest.raises((SystemExit, ClickExit)):
+        with pytest.raises(CLI_EXIT_TYPES):
             run_publish(stage="dev", digest="not-a-digest")
 
         # Detection should NOT happen when format is bad — we fail fast.
@@ -1809,7 +1898,7 @@ class TestPublishDigest:
 
         from kamiwaza_extensions.commands.publish import run_publish
 
-        with pytest.raises((SystemExit, ClickExit)):
+        with pytest.raises(CLI_EXIT_TYPES):
             run_publish(stage="dev", digest=_DIGEST_USER_SUPPLIED)
 
         # Should never have built or pushed.
@@ -1842,7 +1931,7 @@ class TestPublishDigest:
 
         from kamiwaza_extensions.commands.publish import run_publish
 
-        with pytest.raises((SystemExit, ClickExit)):
+        with pytest.raises(CLI_EXIT_TYPES):
             run_publish(stage="dev", no_push=True)
 
         # Should never have built or attempted to resolve.
@@ -2137,7 +2226,7 @@ class TestPublishDigest:
 
         from kamiwaza_extensions.commands.publish import run_publish
 
-        with pytest.raises((SystemExit, ClickExit)):
+        with pytest.raises(CLI_EXIT_TYPES):
             run_publish(stage="dev", no_build=True, no_push=True)
 
     @patch("kamiwaza_extensions.image_pusher.ImagePusher.resolve_digest")
@@ -2308,7 +2397,7 @@ class TestPublishDigest:
 
         from kamiwaza_extensions.commands.publish import run_publish
 
-        with pytest.raises((SystemExit, ClickExit)):
+        with pytest.raises(CLI_EXIT_TYPES):
             run_publish(stage="dev", digest=_DIGEST_USER_SUPPLIED)  # not _DIGEST_BACKEND
 
         # Catalog publish never happened.
@@ -2352,7 +2441,7 @@ class TestPublishDigest:
 
         from kamiwaza_extensions.commands.publish import run_publish
 
-        with pytest.raises((SystemExit, ClickExit)):
+        with pytest.raises(CLI_EXIT_TYPES):
             run_publish(stage="dev")
 
         wired["reg_builder"].build_entry.assert_not_called()
