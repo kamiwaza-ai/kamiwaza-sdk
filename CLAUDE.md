@@ -109,6 +109,15 @@ All Pydantic models must use `Config.extra = "allow"` to handle new API fields g
 ### Progress Tracking
 Long-running operations (downloads, batch processing) should use the progress tracking framework with context managers. See examples in @.ai/knowledge/successful/service-patterns.md.
 
+### Async Deployment Waits (ENG-6530)
+The server accepts `POST /serving/deploy_model` asynchronously (202 + deployment id immediately); readiness is observed client-side:
+
+- `serving.deploy_model(..., wait=True, timeout_seconds=3600, poll_interval_seconds=5.0)` — `wait=True` is the **default** and polls until `DEPLOYED`; `wait=False` returns the id immediately.
+- `serving.wait_deployment_ready(deployment_id, timeout_seconds=..., poll_interval_seconds=...)` — poll an existing deployment to readiness.
+- `DeploymentFailedError` (subclasses `KamiwazaError` **and** `RuntimeError` for back-compat with old `wait_for_deployment` callers) is raised on a terminal `FAILED`/`ERROR`/`MUST_REDOWNLOAD` status; carries `.status`, `.last_error_code`, `.last_error_message`, `.deployment_id`. The timeout path raises `TimeoutError`, which also carries `.deployment_id` for cleanup.
+- `ModelDeployment` now exposes `last_error_code` / `last_error_message`.
+- When a caller owns its own wait loop (the CLI's `serve deploy --wait`, integration fixtures), pass `wait=False` so two timeouts never stack.
+
 ### OpenAI Compatibility
 The `openai` service provides drop-in compatibility with OpenAI's client library, translating between Kamiwaza and OpenAI formats transparently.
 
