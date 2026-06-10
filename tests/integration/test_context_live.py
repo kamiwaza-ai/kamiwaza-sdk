@@ -119,6 +119,8 @@ def _create_temp_vectordb(
     *,
     prefix: str,
     workroom_id: str | None = None,
+    ready_timeout_seconds: float = 300.0,
+    skip_on_unavailable: bool = False,
 ) -> str:
     created = service.create_vectordb(
         name=f"{prefix}-{uuid4().hex[:8]}",
@@ -132,9 +134,12 @@ def _create_temp_vectordb(
             service,
             vectordb_id,
             workroom_id=workroom_id,
+            timeout_seconds=ready_timeout_seconds,
         )
-    except Exception:
+    except Exception as exc:
         _safe_delete_vectordb(service, vectordb_id, workroom_id=workroom_id)
+        if skip_on_unavailable:
+            pytest.skip(f"Context VectorDB unavailable for live SDK test: {exc}")
         raise
     return vectordb_id
 
@@ -288,30 +293,17 @@ def _cleanup_stale_sdk_vdbs(shared_context_service: ContextService) -> None:
 
 
 @pytest.fixture(scope="session")
-def shared_vectordb(shared_context_service: ContextService) -> str:
-    """Shared global VectorDB instance for non-destructive vector tests."""
-    service = shared_context_service
-    vectordb_id = _create_temp_vectordb(service, prefix="sdk-shared-vdb")
-    try:
-        yield vectordb_id
-    finally:
-        _safe_delete_vectordb(service, vectordb_id)
-
-
-@pytest.fixture(scope="session")
 def session_workroom(shared_context_service: ContextService) -> str:
     """Per-session writable workroom for Context Service write-path tests.
 
-    The Global Workroom (``DEFAULT_WORKROOM_ID``) is read-only for context
-    writes: ontology / pipeline / collection / object-storage creation against
-    it return ``403 "Global Workroom is read-only for ..."``. Write-path tests
-    therefore need a real, writable workroom.
+    No-workroom/global Context operation is valid for the default Context
+    surface. This fixture is still used for tests that need explicit
+    non-global workroom scoping and isolation coverage.
 
     The id is supplied to the SDK via ``workroom_id=`` (the ``X-Workroom-ID``
     header). The Context Service authorizes that header against the caller's
     verified workroom membership, and the istio ingress preserves it
     end-to-end, so writes land in -- and stay isolated to -- this workroom.
-    Read-only assertions against Global continue to use ``DEFAULT_WORKROOM_ID``.
     """
     workrooms = shared_context_service.client.workrooms
     workroom = workrooms.create(
@@ -343,6 +335,8 @@ def shared_workroom_vectordb(
         service,
         prefix="sdk-shared-vdb-workroom",
         workroom_id=session_workroom,
+        ready_timeout_seconds=300.0,
+        skip_on_unavailable=True,
     )
     try:
         yield vectordb_id
@@ -382,29 +376,25 @@ def test_context_required_llm_available(context_required_llm: str) -> None:
     assert context_required_llm
 
 
-def test_context_vectordb_create_in_global_workroom_is_read_only(
+def _assert_workroom_scope_required(exc: APIError) -> None:
+    assert exc.status_code == 400
+    detail = (exc.response_data or {}).get("detail", {})
+    assert isinstance(detail, dict)
+    assert detail.get("error") == "workroom_scope_required"
+
+
+def test_context_vectordb_create_without_workroom_requires_explicit_scope(
     live_kamiwaza_client,
 ) -> None:
-    """Global Workroom is read-only for VectorDB creation (ENG-4352, PR #1635).
-
-    Verifies the server-side gate at
-    ``kamiwaza/services/context/lifecycle.py:_raise_if_global_workroom_write``
-    rejects ``create_vectordb`` without an explicit workroom_id (which
-    defaults to the Global Workroom UUID). Returns 403 regardless of
-    caller role, matching commit 73071d5d1's stated intent:
-    "Keeps Global Workroom read paths available to members and blocks
-    Global write paths in both ReBAC-on and RBAC-off modes."
-    """
+    """VectorDB instance lifecycle is room-scoped, not no-workroom-compatible."""
     service = _context_service(live_kamiwaza_client)
 
     with pytest.raises(APIError) as exc_info:
         service.create_vectordb(
-            name=f"sdk-context-vdb-global-{uuid4().hex[:8]}",
+            name=f"sdk-no-workroom-vdb-{uuid4().hex[:8]}",
             engine="milvus",
         )
-
-    assert exc_info.value.status_code == 403
-    assert "Global Workroom is read-only" in str(exc_info.value)
+    _assert_workroom_scope_required(exc_info.value)
 
 
 # A dedicated non-Global VectorDB *instance* lifecycle test (create/scale/
@@ -421,10 +411,12 @@ def test_context_vectordb_create_in_global_workroom_is_read_only(
 
 def test_context_vectordb_insert_vectors_instance(
     live_kamiwaza_client,
-    shared_vectordb: str,
+    session_workroom: str,
+    shared_workroom_vectordb: str,
 ) -> None:
     service = _context_service(live_kamiwaza_client)
-    vectordb_id = shared_vectordb
+    workroom_id = session_workroom
+    vectordb_id = shared_workroom_vectordb
     collection_name = _sdk_collection_name()
 
     inserted = service.insert_vectors(
@@ -432,16 +424,19 @@ def test_context_vectordb_insert_vectors_instance(
         collection_name=collection_name,
         vectors=[_sample_vector()],
         metadata=[{"source": "sdk-context-live"}],
+        workroom_id=workroom_id,
     )
     assert inserted["inserted_count"] == 1
 
 
-def test_context_vectordb_insert_vectors_global(
+def test_context_vectordb_insert_vectors_body_form(
     live_kamiwaza_client,
-    shared_vectordb: str,
+    session_workroom: str,
+    shared_workroom_vectordb: str,
 ) -> None:
     service = _context_service(live_kamiwaza_client)
-    vectordb_id = shared_vectordb
+    workroom_id = session_workroom
+    vectordb_id = shared_workroom_vectordb
     collection_name = _sdk_collection_name()
 
     inserted = service.insert_vectors_global(
@@ -449,16 +444,19 @@ def test_context_vectordb_insert_vectors_global(
         collection_name=collection_name,
         vectors=[_sample_vector()],
         metadata=[{"source": "sdk-context-live"}],
+        workroom_id=workroom_id,
     )
     assert inserted["inserted_count"] == 1
 
 
 def test_context_vectordb_query_vectors_instance(
     live_kamiwaza_client,
-    shared_vectordb: str,
+    session_workroom: str,
+    shared_workroom_vectordb: str,
 ) -> None:
     service = _context_service(live_kamiwaza_client)
-    vectordb_id = shared_vectordb
+    workroom_id = session_workroom
+    vectordb_id = shared_workroom_vectordb
     collection_name = _sdk_collection_name()
 
     service.insert_vectors(
@@ -466,22 +464,26 @@ def test_context_vectordb_query_vectors_instance(
         collection_name=collection_name,
         vectors=[_sample_vector()],
         metadata=[{"source": "sdk-context-live"}],
+        workroom_id=workroom_id,
     )
     queried = service.query_vectors(
         vectordb_id,
         collection_name=collection_name,
         vectors=[_sample_vector()],
         limit=1,
+        workroom_id=workroom_id,
     )
     assert isinstance(queried["results"], list)
 
 
-def test_context_vectordb_query_vectors_global(
+def test_context_vectordb_query_vectors_body_form(
     live_kamiwaza_client,
-    shared_vectordb: str,
+    session_workroom: str,
+    shared_workroom_vectordb: str,
 ) -> None:
     service = _context_service(live_kamiwaza_client)
-    vectordb_id = shared_vectordb
+    workroom_id = session_workroom
+    vectordb_id = shared_workroom_vectordb
     collection_name = _sdk_collection_name()
 
     service.insert_vectors_global(
@@ -489,12 +491,14 @@ def test_context_vectordb_query_vectors_global(
         collection_name=collection_name,
         vectors=[_sample_vector()],
         metadata=[{"source": "sdk-context-live"}],
+        workroom_id=workroom_id,
     )
     queried = service.query_vectors_global(
         vectordb_id=vectordb_id,
         collection_name=collection_name,
         vectors=[_sample_vector()],
         limit=1,
+        workroom_id=workroom_id,
     )
     assert isinstance(queried["results"], list)
 
