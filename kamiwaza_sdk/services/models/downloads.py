@@ -6,6 +6,7 @@ import sys
 from ...schemas.models.model import Model
 from ...schemas.models.model_file import ModelFile
 from ...schemas.models.model_search import HubModelFileSearch
+from ...exceptions import DeploymentFailedError
 from ...schemas.models.downloads import ModelDownloadRequest, ModelDownloadStatus
 from ...utils.download_tracker import DownloadTracker
 from ...utils.progress_formatter import ProgressFormatter
@@ -541,6 +542,19 @@ class ModelDownloadMixin:
                     
                     deployment_id = self.client.serving.deploy_model(repo_id=repo_id)
                     break  # Deployment successful, exit the retry loop
+                except DeploymentFailedError:
+                    # Terminal FAILED/ERROR/MUST_REDOWNLOAD status: an
+                    # immediate redeploy will not succeed, and with
+                    # deploy_model blocking on readiness each retry costs up
+                    # to the full wait timeout. Propagate the typed error.
+                    raise
+                except TimeoutError:
+                    # The deploy wait timed out on a hung, non-terminal
+                    # deployment. Retrying stacks new deployments on top of
+                    # the still-in-flight one (worst case ~3x the wait plus
+                    # orphaned deployments) and would wrap away the
+                    # deployment_id attribute callers need for cleanup.
+                    raise
                 except Exception as e:
                     deploy_retry_count += 1
                     

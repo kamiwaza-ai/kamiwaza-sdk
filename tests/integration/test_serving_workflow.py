@@ -67,6 +67,8 @@ def test_deploy_qwen_and_infer_with_strip_thinking(live_kamiwaza_client, ensure_
 
     deployments = []
     try:
+        # wait=False: both deploys are launched back-to-back and the explicit
+        # wait_for_deployment calls below own the WAIT_TIMEOUT budget.
         default_deployment = client.serving.deploy_model(
             model_id=str(model.id),
             m_config_id=default_config.id,
@@ -74,6 +76,7 @@ def test_deploy_qwen_and_infer_with_strip_thinking(live_kamiwaza_client, ensure_
             autoscaling=False,
             min_copies=1,
             starting_copies=1,
+            wait=False,
         )
         deployments.append(default_deployment)
 
@@ -84,6 +87,7 @@ def test_deploy_qwen_and_infer_with_strip_thinking(live_kamiwaza_client, ensure_
             autoscaling=False,
             min_copies=1,
             starting_copies=1,
+            wait=False,
         )
         deployments.append(strip_deployment)
 

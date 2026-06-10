@@ -264,3 +264,58 @@ def test_kamiwaza_sdk_error_aliases_kamiwaza_error() -> None:
     from kamiwaza_sdk.exceptions import KamiwazaError, KamiwazaSDKError
 
     assert KamiwazaSDKError is KamiwazaError
+
+
+# ---------------------------------------------------------------------------
+# DeploymentFailedError — ENG-6530 async deploy_model client-side polling
+# ---------------------------------------------------------------------------
+
+
+def test_deployment_failed_error_carries_failure_context() -> None:
+    """ENG-6530: when client-side polling observes a terminal failure
+    status, the typed error carries the status plus the deployment's
+    last_error_message / last_error_code so callers can react without
+    re-fetching the deployment."""
+    from kamiwaza_sdk.exceptions import DeploymentFailedError, KamiwazaError
+
+    err = DeploymentFailedError(
+        "deployment failed",
+        status="FAILED",
+        last_error_message="CUDA out of memory while loading weights",
+        last_error_code="OOM",
+    )
+    assert isinstance(err, KamiwazaError)
+    assert err.status == "FAILED"
+    assert err.last_error_message == "CUDA out of memory while loading weights"
+    assert err.last_error_code == "OOM"
+
+
+def test_deployment_failed_error_is_a_runtime_error() -> None:
+    """wait_for_deployment historically raised RuntimeError on failure
+    statuses; existing ``except RuntimeError`` callers (e.g. the
+    integration fixtures) must keep catching the typed replacement."""
+    from kamiwaza_sdk.exceptions import DeploymentFailedError
+
+    assert issubclass(DeploymentFailedError, RuntimeError)
+
+
+def test_deployment_failed_error_context_defaults_none() -> None:
+    """status / last_error_message / last_error_code / deployment_id default
+    to None for failure paths where the deployment carries no metadata."""
+    from kamiwaza_sdk.exceptions import DeploymentFailedError
+
+    err = DeploymentFailedError("deployment failed")
+    assert err.status is None
+    assert err.last_error_message is None
+    assert err.last_error_code is None
+    assert err.deployment_id is None
+
+
+def test_deployment_failed_error_carries_deployment_id() -> None:
+    """Wait-phase failures must hand the caller the deployment id so the
+    in-flight deployment can be stopped or inspected — otherwise the id is
+    lost when deploy_model(wait=True) raises before returning it."""
+    from kamiwaza_sdk.exceptions import DeploymentFailedError
+
+    err = DeploymentFailedError("deployment failed", deployment_id="dep-123")
+    assert err.deployment_id == "dep-123"
