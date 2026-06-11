@@ -14,7 +14,7 @@ console = Console(stderr=True)
 def run_status(*, name: Optional[str] = None, verbose: bool = False) -> None:
     """Display extension deployment status."""
     from kamiwaza_sdk import KamiwazaClient
-    from kamiwaza_sdk.exceptions import APIError
+    from kamiwaza_sdk.exceptions import APIError, NotFoundError
 
     from kamiwaza_extensions.connections import ConnectionManager
     from kamiwaza_extensions.constants import extract_user_id
@@ -98,8 +98,14 @@ def run_status(*, name: Optional[str] = None, verbose: bool = False) -> None:
         # endpoint only when it's available.
         try:
             ext = client.extensions.get_extension(dev_name)
-        except APIError as exc:
-            if exc.status_code == 404:
+        except (NotFoundError, APIError) as exc:
+            # get_extension converts a 404 into NotFoundError (which does
+            # NOT subclass APIError); keep the APIError/404 arm for older
+            # SDK behavior.
+            is_missing = isinstance(exc, NotFoundError) or (
+                getattr(exc, "status_code", None) == 404
+            )
+            if is_missing:
                 console.print(f"[red]Error:[/red] Extension '{dev_name}' not found.")
                 console.print("  Run: [bold]kz-ext dev[/bold] to deploy first.")
                 # A lingering catalog shadow is MOST dangerous exactly when

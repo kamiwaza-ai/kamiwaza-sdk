@@ -207,6 +207,58 @@ class TestRunDevUnload:
         assert "No catalog overlay exists" in capsys.readouterr().err
 
 
+class TestStatusMissingInstanceShowsOverlay:
+    def test_overlay_shown_when_extension_not_found(self, monkeypatch, capsys):
+        # get_extension raises NotFoundError (NOT an APIError subclass) for
+        # missing instances — the lingering-shadow display must still fire.
+        from kamiwaza_sdk.exceptions import NotFoundError
+
+        from kamiwaza_extensions.commands.status import run_status
+
+        connection = SimpleNamespace(
+            url="https://kamiwaza.test",
+            name="dev",
+            verify_ssl=True,
+            effective_verify_ssl=lambda: True,
+        )
+        conn_mgr = MagicMock()
+        conn_mgr.get_active_connection.return_value = connection
+        conn_mgr.get_token.return_value = SimpleNamespace(
+            access_token="x.eyJzdWIiOiJ1MSJ9.x"
+        )
+        monkeypatch.setattr(
+            "kamiwaza_extensions.connections.ConnectionManager", lambda: conn_mgr
+        )
+        monkeypatch.setattr(
+            "kamiwaza_extensions.extension_detector.ExtensionDetector.detect",
+            lambda self: _info(),
+        )
+        monkeypatch.setattr(
+            "kamiwaza_extensions.dev_state.read_state", lambda path: None
+        )
+
+        client = MagicMock()
+        client.extensions.get_extension.side_effect = NotFoundError("gone")
+        client.get.return_value = [
+            {
+                "template_name": "kaizen",
+                "shadow_version": "1.0.0-dev.feat-x.abc1234",
+                "git_sha": "abc1234",
+                "shadows_version": "1.0.0",
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+        ]
+        monkeypatch.setattr("kamiwaza_sdk.KamiwazaClient", lambda **kwargs: client)
+
+        with pytest.raises(typer.Exit):
+            run_status(name=None)
+
+        err = capsys.readouterr().err
+        assert "not found" in err
+        assert "Catalog overlay" in err
+        assert "abc1234" in err
+
+
 class TestStatusOverlayRendering:
     def _shadow(self, **overrides):
         shadow = {
