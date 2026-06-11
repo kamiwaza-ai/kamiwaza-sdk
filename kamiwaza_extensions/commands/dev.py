@@ -902,3 +902,205 @@ def run_dev_remote(
             console.print(
                 "  [dim](no external URL reported — check kz-ext status)[/dim]"
             )
+
+        # 12. Publish the local catalog overlay (ENG-6802) so NEW workrooms
+        # launched via the workroom manager get this build. Runs after the
+        # rollout proved the build starts; never fatal — the hot-swap above
+        # already succeeded.
+        _publish_catalog_overlay(
+            client,
+            info,
+            transformed=transformed,
+            canonical_refs=canonical_refs,
+            registry=registry,
+            push_registry=push_registry,
+            no_push=no_push,
+            service_filter=service,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Local catalog overlay (ENG-6802)
+# ---------------------------------------------------------------------------
+
+
+def _publish_catalog_overlay(
+    client: Any,
+    info: Any,
+    *,
+    transformed: Dict[str, Any],
+    canonical_refs: Dict[str, str],
+    registry: str,
+    push_registry: str,
+    no_push: bool,
+    service_filter: Optional[str],
+) -> None:
+    """Write this build into the cluster's local catalog overlay.
+
+    Shadows the extension's catalog template so new workrooms launch this
+    build. Skipped when the image can't be everything a fresh workroom
+    needs (``--no-push``: never reached the registry; ``--service``:
+    sibling services were not pushed at this revision). All failures are
+    non-fatal warnings — the dev hot-swap already succeeded.
+    """
+    from kamiwaza_extensions.catalog_overlay import (
+        build_overlay_entry,
+        build_overlay_version,
+        get_git_branch,
+        publish_overlay,
+    )
+    from kamiwaza_extensions.image_pusher import ImagePushError, ImagePusher
+    from kamiwaza_extensions.registry_resolution import build_push_ref_map
+    from kamiwaza_extensions.revision_tagger import RevisionTagger
+    from kamiwaza_sdk.exceptions import APIError
+
+    if no_push:
+        console.print(
+            "\n[dim]Catalog overlay skipped (--no-push: the cluster can't "
+            "pull an unpushed image).[/dim]"
+        )
+        return
+    if service_filter:
+        console.print(
+            "\n[dim]Catalog overlay skipped (--service: sibling services "
+            "were not pushed at this revision). Run kz-ext dev without "
+            "--service to shadow the catalog template.[/dim]"
+        )
+        return
+
+    sha, dirty = RevisionTagger.get_git_info()
+    branch = get_git_branch(cwd=str(info.path))
+    overlay_version = build_overlay_version(
+        info.version, branch=branch, sha=sha, dirty=dirty
+    )
+
+    push_ref_map = build_push_ref_map(
+        list(canonical_refs.values()),
+        image_registry=registry,
+        push_registry=push_registry,
+    )
+
+    def _resolve(ref: str) -> str:
+        try:
+            return ImagePusher.resolve_digest(ref)
+        except ImagePushError as exc:
+            raise RuntimeError(str(exc)) from exc
+
+    entry = build_overlay_entry(
+        version=overlay_version,
+        transformed_compose=transformed,
+        canonical_refs=canonical_refs,
+        push_ref_map=push_ref_map,
+        metadata=info.metadata,
+        git_sha=sha,
+        git_branch=branch,
+        dirty=dirty,
+        resolve_digest=_resolve,
+        warn=lambda msg: console.print(f"  [yellow]Warning:[/yellow] {msg}"),
+    )
+
+    try:
+        response = publish_overlay(client, info.name, entry)
+    except APIError as exc:
+        if exc.status_code in (404, 405):
+            console.print(
+                "\n[dim]Platform does not support catalog overlays — new "
+                "workrooms will keep using the upstream catalog build.[/dim]"
+            )
+            return
+        console.print(
+            f"\n[yellow]Warning:[/yellow] catalog overlay write failed: {exc}\n"
+            "  New workrooms will keep using the upstream catalog build."
+        )
+        return
+    except Exception as exc:
+        console.print(
+            f"\n[yellow]Warning:[/yellow] catalog overlay write failed: {exc}\n"
+            "  New workrooms will keep using the upstream catalog build."
+        )
+        return
+
+    shadow = response.get("shadow") or {}
+    shadows_version = shadow.get("shadows_version")
+    shadows_label = (
+        f" (shadows {shadows_version})" if shadows_version else " (no upstream entry)"
+    )
+    console.print(
+        f"\n  [green]✓[/green] Catalog overlay: [bold]{info.name}[/bold] "
+        f"{overlay_version}{shadows_label} — new workrooms will use this build."
+    )
+    running = response.get("running_deployments") or []
+    if running:
+        count = len(running)
+        plural = "s" if count != 1 else ""
+        console.print(
+            f"  [yellow]{count} running instance{plural}[/yellow] still on the "
+            "pre-shadow build — relaunch to pick up the dev build."
+        )
+    console.print("  [dim]Undo with: kz-ext dev --unload[/dim]")
+
+
+def run_dev_unload() -> None:
+    """Remove this extension's catalog overlay, restoring the upstream entry.
+
+    Leaves the running dev extension instance untouched — only new
+    workroom launches are affected.
+    """
+    from kamiwaza_extensions.catalog_overlay import remove_overlay
+    from kamiwaza_extensions.connections import ConnectionManager
+    from kamiwaza_extensions.constants import ssl_env_override
+    from kamiwaza_extensions.extension_detector import ExtensionDetector
+    from kamiwaza_sdk import KamiwazaClient
+    from kamiwaza_sdk.exceptions import APIError
+
+    detector = ExtensionDetector()
+    info = detector.detect()
+
+    conn_mgr = ConnectionManager()
+    connection = conn_mgr.get_active_connection()
+    if connection is None:
+        console.print("[red]Error:[/red] No Kamiwaza connection configured.")
+        console.print("  Run: [bold]kz-ext login <url>[/bold]")
+        raise typer.Exit(code=1)
+    token = conn_mgr.get_token()
+    if token is None:
+        console.print("[red]Error:[/red] Connection token expired or missing.")
+        console.print("  Run: [bold]kz-ext login[/bold] to re-authenticate.")
+        raise typer.Exit(code=1)
+
+    with ssl_env_override(connection):
+        client = KamiwazaClient(base_url=connection.url, api_key=token.access_token)
+        try:
+            response = remove_overlay(client, info.name)
+        except APIError as exc:
+            if exc.status_code == 404:
+                console.print(
+                    f"No catalog overlay exists for [bold]{info.name}[/bold] "
+                    f"on {connection.url}."
+                )
+                raise typer.Exit(code=1) from exc
+            if exc.status_code == 405:
+                console.print(
+                    "[red]Error:[/red] Platform does not support catalog overlays."
+                )
+                raise typer.Exit(code=1) from exc
+            console.print(f"[red]Error:[/red] Failed to remove overlay: {exc}")
+            raise typer.Exit(code=1) from exc
+
+    restored = response.get("restored_version")
+    if restored:
+        console.print(
+            f"  [green]✓[/green] Restored [bold]{info.name}[/bold] to upstream "
+            f"{restored} — new workrooms will use the catalog build."
+        )
+    elif response.get("template_removed"):
+        console.print(
+            f"  [green]✓[/green] Removed overlay for [bold]{info.name}[/bold] "
+            "(the template had no upstream catalog entry)."
+        )
+    else:
+        console.print(f"  [green]✓[/green] Removed overlay for [bold]{info.name}[/bold].")
+    console.print(
+        "  [dim]The running dev extension instance is unaffected — only new "
+        "workroom launches change.[/dim]"
+    )

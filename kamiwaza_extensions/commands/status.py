@@ -20,6 +20,8 @@ def run_status(*, name: Optional[str] = None, verbose: bool = False) -> None:
     from kamiwaza_extensions.constants import extract_user_id
     from kamiwaza_extensions.dev_state import read_state
 
+    extension_name: Optional[str] = None
+
     # Resolve connection + auth
     conn_mgr = ConnectionManager()
     connection = conn_mgr.get_active_connection()
@@ -41,6 +43,7 @@ def run_status(*, name: Optional[str] = None, verbose: bool = False) -> None:
 
         detector = ExtensionDetector()
         info = detector.detect()
+        extension_name = info.name
 
         # Prefer the dev-state file's `last_dev_name` (written by `kz-ext dev`
         # — see §4.2.9 / ENG-3887). Falls back to deriving the name from the
@@ -139,6 +142,89 @@ def run_status(*, name: Optional[str] = None, verbose: bool = False) -> None:
             )
 
         console.print(svc_table)
+
+        # Catalog overlay shadow (ENG-6802) — only in auto-detect mode,
+        # where the extension's catalog name is known.
+        if extension_name:
+            _print_overlay_status(client, extension_name)
+
+
+# Nudge once a shadow is old enough that "my env silently runs a stale
+# dev build" becomes the likely failure mode.
+SHADOW_STALENESS_DAYS = 7
+
+
+def _print_overlay_status(client: Any, extension_name: str) -> None:
+    """Show this extension's local catalog overlay shadow, if any.
+
+    Tolerates platforms without overlay support (pre-ENG-6802): any API
+    failure renders nothing — the overlay line is informational.
+    """
+    from kamiwaza_extensions.catalog_overlay import list_overlays
+
+    try:
+        overlays = list_overlays(client)
+    except Exception:
+        return
+
+    shadow = next(
+        (o for o in overlays if o.get("template_name") == extension_name), None
+    )
+    if shadow is None:
+        return
+
+    build = shadow.get("git_sha") or shadow.get("shadow_version") or "unknown"
+    branch = shadow.get("git_branch")
+    branch_label = f" (branch {branch})" if branch else ""
+    if shadow.get("dirty"):
+        build = f"{build}, dirty tree"
+
+    shadows_version = shadow.get("shadows_version")
+    shadowing = (
+        f"shadowing upstream {shadows_version}"
+        if shadows_version
+        else "no upstream catalog entry"
+    )
+
+    age_days = _age_days(shadow.get("updated_at"))
+    age_label = f", published {_format_age(age_days)}" if age_days is not None else ""
+
+    console.print()
+    console.print(
+        f"Catalog overlay: local dev build [bold]{build}[/bold]{branch_label}, "
+        f"{shadowing}{age_label}"
+    )
+    console.print("  [dim]New workrooms launch this build. Undo: kz-ext dev --unload[/dim]")
+    if age_days is not None and age_days >= SHADOW_STALENESS_DAYS:
+        console.print(
+            f"  [yellow]This shadow is {age_days} days old — re-run "
+            "kz-ext dev for a fresh build, or kz-ext dev --unload to "
+            "fall back to the catalog.[/yellow]"
+        )
+
+
+def _age_days(timestamp: Optional[str]) -> Optional[int]:
+    """Days elapsed since an ISO timestamp, or None when unparseable."""
+    if not timestamp or not isinstance(timestamp, str):
+        return None
+    from datetime import datetime, timezone
+
+    try:
+        parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    delta = datetime.now(timezone.utc) - parsed
+    return max(delta.days, 0)
+
+
+def _format_age(days: int) -> str:
+    if days == 0:
+        return "today"
+    if days == 1:
+        return "1 day ago"
+    return f"{days} days ago"
 
 
 def _read_annotation(ext: Any, key: str) -> Optional[str]:
