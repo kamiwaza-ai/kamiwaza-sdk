@@ -22,6 +22,7 @@ import copy
 import re
 import subprocess
 from typing import Any, Callable, Dict, List, Optional
+from urllib.parse import quote
 
 import yaml
 
@@ -69,11 +70,14 @@ def build_overlay_version(
     sha_part = "dirty" if dirty else (sha or "nogit")[:7]
     slug = _BRANCH_SLUG_RE.sub("-", (branch or "nobranch").lower()).strip("-")
 
-    # Fit within the platform's 40-char version column: the branch slug is
-    # the elastic part; base version, separators, and sha are kept intact.
-    slug_budget = MAX_VERSION_LENGTH - len(base_version) - len("-dev..") - len(sha_part)
+    # Fit within the platform's 40-char version column. The branch slug is
+    # the elastic part; the sha (the uniqueness component) is never cut, so
+    # for pathologically long base versions the base itself is trimmed.
+    overhead = len("-dev.") + 1 + len(".") + len(sha_part)  # 1 = min slug char
+    base = base_version[: max(MAX_VERSION_LENGTH - overhead, 1)]
+    slug_budget = MAX_VERSION_LENGTH - len(base) - len("-dev..") - len(sha_part)
     slug = slug[: max(slug_budget, 1)].strip("-") or "x"
-    return f"{base_version}-dev.{slug}.{sha_part}"[:MAX_VERSION_LENGTH]
+    return f"{base}-dev.{slug}.{sha_part}"
 
 
 def build_overlay_entry(
@@ -135,9 +139,34 @@ def build_overlay_entry(
     env_defaults = metadata.get("env_defaults")
     if isinstance(env_defaults, dict) and env_defaults:
         entry["env_defaults"] = {k: str(v) for k, v in env_defaults.items()}
-    for key in ("display_name", "description"):
+    if isinstance(metadata.get("env_metadata"), dict):
+        entry["env_metadata"] = metadata["env_metadata"]
+    # Platform-consumed catalog metadata: forward everything kamiwaza.json
+    # declares so the shadow template behaves like a published catalog entry
+    # would (required_env_vars gates launch env, strip_path_prefix shapes
+    # routing, etc.). Omitted keys keep the pre-shadow row values.
+    for key, expected_type in (
+        ("display_name", str),
+        ("description", str),
+        ("category", str),
+        ("author", str),
+        ("license", str),
+        ("homepage", str),
+        ("image", str),
+        ("kamiwaza_version", str),
+        ("preferred_model_type", str),
+        ("preferred_model_name", str),
+        ("tags", list),
+        ("capabilities", list),
+        ("required_env_vars", list),
+        ("strip_path_prefix", bool),
+        ("fail_if_model_type_unavailable", bool),
+        ("fail_if_model_name_unavailable", bool),
+    ):
         value = metadata.get(key)
-        if isinstance(value, str) and value:
+        if isinstance(value, expected_type) and (
+            expected_type is bool or value
+        ):
             entry[key] = value
     ext_type = metadata.get("type") or metadata.get("template_type")
     if isinstance(ext_type, str) and ext_type in ("app", "tool", "service"):
@@ -147,13 +176,13 @@ def build_overlay_entry(
 
 def publish_overlay(client: Any, name: str, entry: Dict[str, Any]) -> Dict[str, Any]:
     """PUT the overlay entry. Returns the apply response dict."""
-    response = client.put(f"{OVERLAY_PATH}/{name}", json=entry)
+    response = client.put(f"{OVERLAY_PATH}/{quote(name, safe='')}", json=entry)
     return response if isinstance(response, dict) else {}
 
 
 def remove_overlay(client: Any, name: str) -> Dict[str, Any]:
     """DELETE the overlay entry. Returns the remove response dict."""
-    response = client.delete(f"{OVERLAY_PATH}/{name}")
+    response = client.delete(f"{OVERLAY_PATH}/{quote(name, safe='')}")
     return response if isinstance(response, dict) else {}
 
 

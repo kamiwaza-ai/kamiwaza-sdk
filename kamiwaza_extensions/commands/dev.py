@@ -544,6 +544,12 @@ def run_dev_remote(
         registry=registry,
         image_basename=info.image_basename,
     )
+    # The catalog overlay (step 12) is a template destination: the platform
+    # performs install-time env substitution on catalog compose, so it must
+    # keep `${VAR}` / `${VAR:?required}` placeholders. Capture the
+    # pre-resolution compose for it; the K8s deploy payload below gets the
+    # resolved copy (resolve_env_placeholders returns a new dict).
+    catalog_compose = transformed
     transformed = transformer.resolve_env_placeholders(transformed)
 
     # Canonical image refs for every build-context service. Single
@@ -910,7 +916,7 @@ def run_dev_remote(
         _publish_catalog_overlay(
             client,
             info,
-            transformed=transformed,
+            transformed=catalog_compose,
             canonical_refs=canonical_refs,
             registry=registry,
             push_registry=push_registry,
@@ -968,8 +974,11 @@ def _publish_catalog_overlay(
         )
         return
 
+    # Both from the process cwd, matching RevisionTagger.generate_tag's
+    # earlier sha/dirty derivation — sha and branch must describe the same
+    # repo state.
     sha, dirty = RevisionTagger.get_git_info()
-    branch = get_git_branch(cwd=str(info.path))
+    branch = get_git_branch()
     overlay_version = build_overlay_version(
         info.version, branch=branch, sha=sha, dirty=dirty
     )

@@ -59,6 +59,18 @@ class TestBuildOverlayVersion:
         version = build_overlay_version("1.0.0", branch=None, sha=None, dirty=False)
         assert version == "1.0.0-dev.nobranch.nogit"
 
+    def test_long_base_version_never_cuts_sha(self):
+        version = build_overlay_version(
+            "1.0.0-rc1.post2.dev3.extremely.long.base",
+            branch="feat-x",
+            sha="abc1234",
+            dirty=False,
+        )
+        assert len(version) <= MAX_VERSION_LENGTH
+        # The sha is the uniqueness component — it must survive intact.
+        assert version.endswith(".abc1234")
+        assert "-dev." in version
+
     def test_not_pep440_parseable(self):
         # The unparseable version is itself a clobber guard on the platform.
         from packaging.version import InvalidVersion, Version
@@ -157,6 +169,47 @@ class TestBuildOverlayEntry:
             "dirty": True,
         }
 
+    def test_platform_consumed_metadata_forwarded(self):
+        # The platform reads these off template rows; a shadow that drops
+        # them would behave differently from a published catalog entry.
+        entry = build_overlay_entry(
+            version="v",
+            transformed_compose=TRANSFORMED,
+            canonical_refs={},
+            metadata={
+                "required_env_vars": ["API_KEY"],
+                "capabilities": ["graph"],
+                "tags": ["dev"],
+                "strip_path_prefix": False,
+                "kamiwaza_version": ">=0.7.0",
+                "env_metadata": {"API_KEY": {"type": "secret"}},
+                "fail_if_model_type_unavailable": True,
+            },
+        )
+        assert entry["required_env_vars"] == ["API_KEY"]
+        assert entry["capabilities"] == ["graph"]
+        assert entry["tags"] == ["dev"]
+        assert entry["strip_path_prefix"] is False
+        assert entry["kamiwaza_version"] == ">=0.7.0"
+        assert entry["env_metadata"] == {"API_KEY": {"type": "secret"}}
+        assert entry["fail_if_model_type_unavailable"] is True
+
+    def test_env_placeholders_survive_in_compose(self):
+        # The overlay is a template destination — install-time substitution
+        # happens platform-side, so `${VAR:?required}` must NOT be resolved.
+        compose = {
+            "services": {
+                "app": {
+                    "image": "registry/app:v1",
+                    "environment": {"API_KEY": "${API_KEY:?required}"},
+                }
+            }
+        }
+        entry = build_overlay_entry(
+            version="v", transformed_compose=compose, canonical_refs={}
+        )
+        assert "${API_KEY:?required}" in entry["compose_yml"]
+
 
 class TestOverlayClient:
     def test_publish_overlay(self):
@@ -187,6 +240,18 @@ class TestOverlayClient:
 
         assert list_overlays(client) == [{"template_name": "kaizen"}]
         client.get.assert_called_once_with("/apps/app_templates/catalog/overlay")
+
+    def test_names_are_url_quoted(self):
+        client = MagicMock()
+        client.put.return_value = {}
+        client.delete.return_value = {}
+
+        publish_overlay(client, "odd/name x", {"version": "v"})
+        remove_overlay(client, "odd/name x")
+
+        expected = "/apps/app_templates/catalog/overlay/odd%2Fname%20x"
+        assert client.put.call_args[0][0] == expected
+        assert client.delete.call_args[0][0] == expected
 
 
 class TestImportInvariant:
