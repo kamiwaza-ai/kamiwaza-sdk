@@ -86,6 +86,24 @@ class DeleteWorkroomResponse(WorkroomResponseModel):
     message: str
 
 
+class EnterWorkroomResponse(WorkroomResponseModel):
+    """Response from the backend workroom-enter endpoint."""
+
+    workroom_id: UUID
+    access_token: Optional[str] = None
+    expires_in: Optional[int] = None
+    message: str = "Workroom session bound"
+
+
+class LeaveWorkroomResponse(WorkroomResponseModel):
+    """Response from the backend workroom-leave endpoint."""
+
+    workroom_id: UUID
+    access_token: Optional[str] = None
+    expires_in: Optional[int] = None
+    message: str = "Returned to Global Workroom"
+
+
 class ExportManifestItem(WorkroomResponseModel):
     """A single item in the export manifest."""
 
