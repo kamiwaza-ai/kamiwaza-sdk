@@ -9,8 +9,10 @@ documents and knowledge held inside a **Workroom**.
 
 Every Context Service resource lives inside exactly one workroom. The SDK targets
 a workroom by passing `workroom_id` to a method (sent to the server as the
-`X-Workroom-ID` header). When omitted, the server resolves the caller's default
-workroom.
+`X-Workroom-ID` header). Some methods make `workroom_id` a **required**
+keyword-only argument (e.g. `list_collections`, `create_pipeline_job`, `search`,
+`retrieve`, `upload_file`); others accept it optionally, and when it is omitted
+the server resolves the caller's default workroom.
 
 ## Workrooms and the Global Workroom
 
@@ -35,7 +37,11 @@ by no single member.
 > writes.
 
 **Reads against the Global Workroom are always allowed** (results are
-requester-scoped where appropriate). Writes are blocked. Concretely:
+requester-scoped where appropriate). Writes are blocked. The table below lists
+the **server-side policy categories** — some (e.g. pipeline retry/rerun/delete,
+workroom archive/restore/purge) are enforced by the Context Service but are not
+all surfaced as `client.context` methods; the SDK exposes a subset (see the
+method lists below).
 
 | Operation category | Against a normal workroom | Against the Global Workroom |
 |--------------------|---------------------------|------------------------------|
@@ -72,6 +78,8 @@ from the Global Workroom.
 - `insert_vectors_global(...)` — connector-runtime catalog writes only (see note above)
 
 ```python
+# db_id, embedding, and my_workroom_id are values you supply.
+
 # Read from the shared Global catalog (allowed)
 hits = client.context.query_vectors_global(
     vectordb_id=db_id,
@@ -118,15 +126,25 @@ workroom, `403` on the Global Workroom.
 ## Error Handling
 
 ```python
-from kamiwaza import KamiwazaError
+from kamiwaza_sdk.exceptions import KamiwazaError
 
+# my_workroom_id is a workroom you own. The Global Workroom id is available as
+# client.context.DEFAULT_WORKROOM_ID.
 try:
-    client.context.create_ontology(name="my-graph", workroom_id=GLOBAL_ID)
+    client.context.create_ontology(
+        name="my-graph",
+        backend="graphiti",
+        workroom_id=client.context.DEFAULT_WORKROOM_ID,  # Global → will 403
+    )
 except KamiwazaError as exc:
     if exc.status_code == 403 and "read-only" in str(exc):
         # Expected: the Global Workroom is a shared, read-only catalog.
         # Retry the write against a workroom you own instead.
-        client.context.create_ontology(name="my-graph", workroom_id=my_workroom_id)
+        client.context.create_ontology(
+            name="my-graph",
+            backend="graphiti",
+            workroom_id=my_workroom_id,
+        )
     else:
         raise
 ```
