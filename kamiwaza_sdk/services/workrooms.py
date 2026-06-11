@@ -64,14 +64,16 @@ class WorkroomService(BaseService):
         Raises:
             APIError: If creation fails (e.g. limit exceeded -> 409).
         """
-        payload = CreateWorkroom(
-            name=name,
-            type=workroom_type,
-            description=description,
-            labels=labels,
-            classification=classification,
-            attributes=attributes,
-            scg_references=scg_references,
+        payload = CreateWorkroom.model_validate(
+            {
+                "name": name,
+                "type": workroom_type,
+                "description": description,
+                "labels": labels,
+                "classification": classification,
+                "attributes": attributes,
+                "scg_references": scg_references,
+            }
         )
         response = self.client.post(
             "/workrooms/",
@@ -145,8 +147,8 @@ class WorkroomService(BaseService):
             APIError: If validation fails (400) or workroom is read-only (409).
         """
         wid = self._ensure_uuid(workroom_id)
-        payload = UpdateWorkroom(
-            **self._provided_fields(
+        payload = UpdateWorkroom.model_validate(
+            self._provided_fields(
                 name=name,
                 description=description,
                 labels=labels,
