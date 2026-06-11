@@ -7,8 +7,10 @@ from ..exceptions import APIError, NotFoundError
 from ..schemas.workrooms import (
     CreateWorkroom,
     DeleteWorkroomResponse,
+    EnterWorkroomResponse,
     ExportManifest,
     IngestionSummary,
+    LeaveWorkroomResponse,
     UpdateWorkroom,
     Workroom,
 )
@@ -218,6 +220,26 @@ class WorkroomService(BaseService):
             if e.status_code == 404:
                 raise NotFoundError(f"Workroom {wid} not found")
             raise
+
+    # -------------------------------------------------------------------------
+    # Session binding
+    # -------------------------------------------------------------------------
+
+    def enter(self, workroom_id: Union[str, UUID]) -> EnterWorkroomResponse:
+        """Bind the current SDK session to a workroom."""
+        wid = self._ensure_uuid(workroom_id)
+        try:
+            response = self.client.post(f"/workrooms/{wid}/enter")
+            return EnterWorkroomResponse.model_validate(response)
+        except APIError as e:
+            if e.status_code == 404:
+                raise NotFoundError(f"Workroom {wid} not found")
+            raise
+
+    def leave(self) -> LeaveWorkroomResponse:
+        """Return the current SDK session to the Global Workroom."""
+        response = self.client.post("/workrooms/leave")
+        return LeaveWorkroomResponse.model_validate(response)
 
     # -------------------------------------------------------------------------
     # Export & ingestion

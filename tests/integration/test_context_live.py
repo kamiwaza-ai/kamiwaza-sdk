@@ -260,6 +260,26 @@ def _is_stale_sdk_resource(resource: dict, max_age: timedelta) -> bool:
 _STALE_THRESHOLD = timedelta(minutes=15)
 
 
+def _api_error_code(error: APIError) -> str | None:
+    """Extract the stable server error code from an APIError payload."""
+    payload = error.response_data
+    if not isinstance(payload, dict):
+        return None
+
+    detail = payload.get("detail")
+    if isinstance(detail, dict):
+        for key in ("error", "code", "reason"):
+            value = detail.get(key)
+            if isinstance(value, str):
+                return value
+
+    for key in ("error", "code", "reason"):
+        value = payload.get(key)
+        if isinstance(value, str):
+            return value
+    return None
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _cleanup_stale_sdk_vdbs(shared_context_service: ContextService) -> None:
     """Delete leftover sdk-* VDB/ontology instances from prior crashed runs.
@@ -288,17 +308,6 @@ def _cleanup_stale_sdk_vdbs(shared_context_service: ContextService) -> None:
 
 
 @pytest.fixture(scope="session")
-def shared_vectordb(shared_context_service: ContextService) -> str:
-    """Shared global VectorDB instance for non-destructive vector tests."""
-    service = shared_context_service
-    vectordb_id = _create_temp_vectordb(service, prefix="sdk-shared-vdb")
-    try:
-        yield vectordb_id
-    finally:
-        _safe_delete_vectordb(service, vectordb_id)
-
-
-@pytest.fixture(scope="session")
 def session_workroom(shared_context_service: ContextService) -> str:
     """Per-session writable workroom for Context Service write-path tests.
 
@@ -313,10 +322,15 @@ def session_workroom(shared_context_service: ContextService) -> str:
         description="Ephemeral workroom for SDK context live tests",
     )
     workroom_id = str(workroom.id)
-    shared_context_service.client.post(f"/workrooms/{workroom_id}/enter")
     try:
+        entered = workrooms.enter(workroom_id)
+        assert str(entered.workroom_id) == workroom_id
         yield workroom_id
     finally:
+        try:
+            workrooms.leave()
+        except APIError:
+            pass
         # delete() raises NotFoundError (a sibling of APIError, not a subclass)
         # when the workroom is already gone, so catch both to keep teardown
         # best-effort -- matching the sibling test_workroom_isolation_live.py.
@@ -389,7 +403,7 @@ def test_context_vectordb_create_without_workroom_requires_scope(
         )
 
     assert exc_info.value.status_code == 400
-    assert "workroom_scope_required" in str(exc_info.value)
+    assert _api_error_code(exc_info.value) == "workroom_scope_required"
 
 
 # A dedicated non-Global VectorDB *instance* lifecycle test (create/scale/
