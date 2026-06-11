@@ -87,7 +87,7 @@ class DeleteWorkroomResponse(WorkroomResponseModel):
 
 
 class EnterWorkroomResponse(WorkroomResponseModel):
-    """Response from entering a workroom session."""
+    """Response from the backend workroom-enter endpoint."""
 
     workroom_id: UUID
     access_token: Optional[str] = None
@@ -96,7 +96,7 @@ class EnterWorkroomResponse(WorkroomResponseModel):
 
 
 class LeaveWorkroomResponse(WorkroomResponseModel):
-    """Response from leaving a workroom session."""
+    """Response from the backend workroom-leave endpoint."""
 
     workroom_id: UUID
     access_token: Optional[str] = None

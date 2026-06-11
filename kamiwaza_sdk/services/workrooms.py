@@ -228,7 +228,12 @@ class WorkroomService(BaseService):
     # -------------------------------------------------------------------------
 
     def enter(self, workroom_id: Union[str, UUID]) -> EnterWorkroomResponse:
-        """Bind the current SDK session to a workroom."""
+        """Call the backend workroom-enter endpoint and return its response.
+
+        The SDK does not install returned access tokens into the configured
+        authenticator. Callers that need scoped Context access should continue
+        to pass explicit ``workroom_id`` values where the SDK exposes them.
+        """
         wid = self._ensure_uuid(workroom_id)
         try:
             response = self.client.post(f"/workrooms/{wid}/enter")
@@ -239,7 +244,11 @@ class WorkroomService(BaseService):
             raise
 
     def leave(self) -> LeaveWorkroomResponse:
-        """Return the current SDK session to the Global Workroom."""
+        """Call the backend workroom-leave endpoint and return its response.
+
+        Returned token fields are exposed for callers that manage tokens
+        themselves; this method does not mutate the SDK authenticator.
+        """
         response = self.client.post("/workrooms/leave")
         return LeaveWorkroomResponse.model_validate(response)
 

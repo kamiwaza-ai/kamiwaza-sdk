@@ -5,10 +5,12 @@ from __future__ import annotations
 import base64
 import os
 import time
+from collections.abc import Generator
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
+from pydantic import ValidationError
 
 from kamiwaza_sdk import KamiwazaClient
 from kamiwaza_sdk.authentication import UserPasswordAuthenticator
@@ -308,12 +310,15 @@ def _cleanup_stale_sdk_vdbs(shared_context_service: ContextService) -> None:
 
 
 @pytest.fixture(scope="session")
-def session_workroom(shared_context_service: ContextService) -> str:
+def session_workroom(
+    shared_context_service: ContextService,
+) -> Generator[str, None, None]:
     """Per-session writable workroom for Context Service write-path tests.
 
     Room-scoped Context routes require an explicit non-Global workroom scope.
-    Bind that workroom on the same SDK session that provisions shared test
-    resources so follow-up calls carry verified workroom authority.
+    Exercise the backend enter endpoint as a checked lifecycle seam, while
+    Context calls below pass explicit workroom_id so authority is not inferred
+    from SDK-local session state.
     """
     workrooms = shared_context_service.client.workrooms
     workroom = workrooms.create(
@@ -329,7 +334,7 @@ def session_workroom(shared_context_service: ContextService) -> str:
     finally:
         try:
             workrooms.leave()
-        except APIError:
+        except (APIError, ValidationError):
             pass
         # delete() raises NotFoundError (a sibling of APIError, not a subclass)
         # when the workroom is already gone, so catch both to keep teardown
@@ -344,7 +349,7 @@ def session_workroom(shared_context_service: ContextService) -> str:
 def shared_workroom_vectordb(
     shared_context_service: ContextService,
     session_workroom: str,
-) -> str:
+) -> Generator[str, None, None]:
     """Shared workroom-scoped VectorDB for collection/search/retrieve tests."""
     service = shared_context_service
     vectordb_id = _create_temp_vectordb(
@@ -366,7 +371,7 @@ def shared_workroom_vectordb(
 def shared_ontology(
     shared_context_service: ContextService,
     context_required_llm: str,
-) -> str:
+) -> Generator[str, None, None]:
     """Shared ontology instance for non-destructive ontology tests."""
     assert context_required_llm
     service = shared_context_service
