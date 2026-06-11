@@ -358,6 +358,7 @@ customer code can branch on the failure mode. All inherit from
 | `MeshJobTimeoutError`                  | `kz.jobs.wait(...)` budget expired before terminal state.       |
 | `MeshJobFailedError`                   | Job reached FAILED state and the caller asked for an exception. |
 | `NativeRealmRequiredError`             | Operation requires a native (non-brokered) realm user.          |
+| `KamiwazaError` 403 `...read-only...`  | Write aimed at the **Global Workroom** (shared read-only catalog) — by design; write to a workroom you own instead. See [Context Service](docs/services/context/README.md). |
 | `KamiwazaError` (catch-all)            | Other 4xx/5xx; check `.status_code` and `.body` for details.    |
 
 ```python
@@ -397,6 +398,7 @@ More examples coming soon!
 | `client.models` | Model management | [Models Service](docs/services/models/README.md) |
 | `client.serving` | Model deployment | [Serving Service](docs/services/serving/README.md) |
 | `client.vectordb` | Vector database | [VectorDB Service](docs/services/vectordb/README.md) |
+| `client.context` | Workroom-scoped vector DBs, ontologies, ingestion, retrieval | [Context Service](docs/services/context/README.md) |
 | `client.catalog` | Data management | [Catalog Service](docs/services/catalog/README.md) |
 | `client.embedding` | Text processing | [Embedding Service](docs/services/embedding/README.md) |
 | `client.retrieval` | Search | [Retrieval Service](docs/services/retrieval/README.md) |
