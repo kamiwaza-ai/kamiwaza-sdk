@@ -127,6 +127,71 @@ def _build_patch_service_specs(payload: Any) -> List[Any]:
     return patch_services
 
 
+def _resume_revision(prior_state: Any, rev_tag: str, resumable: bool) -> Optional[str]:
+    """Return the prior run's revision when this run must deploy its artifacts.
+
+    ``generate_tag`` stamps a fresh epoch suffix every invocation, so a
+    resumed run (same commit, clean tree) skips build/push while holding a
+    tag that was NEVER pushed — the deploy would PATCH the CR to a
+    nonexistent image and the rollout dies in ImagePullBackOff. Whenever
+    resume will reuse prior build/push artifacts, the deploy (and the
+    catalog overlay) must reference the prior revision tag those artifacts
+    actually carry. Returns None when no adoption is needed.
+    """
+    if (
+        resumable
+        and prior_state is not None
+        and prior_state.last_revision
+        and prior_state.last_revision != rev_tag
+        and (
+            prior_state.is_step_complete("build")
+            or prior_state.is_step_complete("push")
+        )
+    ):
+        return str(prior_state.last_revision)
+    return None
+
+
+def _prior_artifacts_in_registry(
+    info: Any,
+    prior_revision: str,
+    *,
+    registry: str,
+    push_registry: str,
+) -> bool:
+    """True when every buildable service's prior-revision image resolves.
+
+    Probes via the host-reachable push refs. Extensions with no buildable
+    services have nothing to verify (trivially true). Any probe failure —
+    missing manifest, docker unavailable, registry hiccup — returns False:
+    the safe answer is always "rebuild".
+    """
+    from kamiwaza_extensions.compose_transformer import compute_canonical_refs
+    from kamiwaza_extensions.image_pusher import ImagePusher
+    from kamiwaza_extensions.registry_resolution import build_push_ref_map
+
+    try:
+        canonical_refs = compute_canonical_refs(
+            (info.compose_data or {}).get("services") or {},
+            registry=registry,
+            extension_name=info.name,
+            revision_tag=prior_revision,
+            image_basename=info.image_basename,
+        )
+        if not canonical_refs:
+            return True
+        push_ref_map = build_push_ref_map(
+            list(canonical_refs.values()),
+            image_registry=registry,
+            push_registry=push_registry,
+        )
+        for ref in canonical_refs.values():
+            ImagePusher.resolve_digest(push_ref_map.get(ref, ref))
+        return True
+    except Exception:
+        return False
+
+
 # Match the default ``RevisionTagger.generate_tag`` format:
 # ``{version}-dev-{sha7+}.{epoch}`` where the sha portion is the git short
 # SHA (typically 7-12 hex chars). The epoch suffix is the only thing that
@@ -453,6 +518,11 @@ def run_dev_remote(
     notice = resume_message(prior_state)
     if notice:
         console.print(f"[dim]{notice}[/dim]")
+    # The catalog overlay (step 12) keys off the USER's --no-push intent.
+    # Resume flips `no_push` below when the prior run already pushed — but
+    # in that case the image IS in the registry, so the overlay must still
+    # be written.
+    user_no_push = no_push
     resumable = _is_resumable(
         prior_state,
         rev_tag,
@@ -463,6 +533,34 @@ def run_dev_remote(
         push_registry=push_registry,
         image_basename=info.image_basename,
     )
+    # Adopt the prior run's revision tag BEFORE the skip decisions print it:
+    # resume reuses the prior build/push artifacts, and those carry the
+    # prior tag — deploying this run's freshly-stamped tag would reference
+    # an image that was never pushed (ImagePullBackOff). Trust-but-verify:
+    # dev-state can record a revision whose artifacts never reached the
+    # registry (state written by a pre-fix CLI, or a `--no-push` run whose
+    # apply step recorded the tag), so probe the registry before adopting —
+    # on a miss, fall back to the full pipeline instead of resuming.
+    prior_revision = _resume_revision(prior_state, rev_tag, resumable)
+    if prior_revision is not None:
+        if _prior_artifacts_in_registry(
+            info,
+            prior_revision,
+            registry=registry,
+            push_registry=push_registry,
+        ):
+            console.print(
+                f"[dim]Resuming with prior revision {prior_revision} "
+                f"(same commit; artifacts verified in the registry).[/dim]"
+            )
+            rev_tag = prior_revision
+        else:
+            console.print(
+                f"[yellow]Prior revision {prior_revision} is not in the "
+                f"registry — dev-state is stale. Running the full "
+                f"pipeline.[/yellow]"
+            )
+            resumable = False
     if resumable and not no_build and prior_state.is_step_complete("build"):
         console.print(
             f"[dim]Skipping build — revision {rev_tag} already built in prior run.[/dim]"
@@ -544,6 +642,12 @@ def run_dev_remote(
         registry=registry,
         image_basename=info.image_basename,
     )
+    # The catalog overlay (step 12) is a template destination: the platform
+    # performs install-time env substitution on catalog compose, so it must
+    # keep `${VAR}` / `${VAR:?required}` placeholders. Capture the
+    # pre-resolution compose for it; the K8s deploy payload below gets the
+    # resolved copy (resolve_env_placeholders returns a new dict).
+    catalog_compose = transformed
     transformed = transformer.resolve_env_placeholders(transformed)
 
     # Canonical image refs for every build-context service. Single
@@ -902,3 +1006,240 @@ def run_dev_remote(
             console.print(
                 "  [dim](no external URL reported — check kz-ext status)[/dim]"
             )
+
+        # 12. Publish the local catalog overlay (ENG-6802) so NEW workrooms
+        # launched via the workroom manager get this build. Runs after the
+        # rollout proved the build starts; never fatal — the hot-swap above
+        # already succeeded.
+        _publish_catalog_overlay(
+            client,
+            info,
+            transformed=catalog_compose,
+            canonical_refs=canonical_refs,
+            registry=registry,
+            push_registry=push_registry,
+            no_push=user_no_push,
+            service_filter=service,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Local catalog overlay (ENG-6802)
+# ---------------------------------------------------------------------------
+
+
+def _publish_catalog_overlay(
+    client: Any,
+    info: Any,
+    *,
+    transformed: Dict[str, Any],
+    canonical_refs: Dict[str, str],
+    registry: str,
+    push_registry: str,
+    no_push: bool,
+    service_filter: Optional[str],
+) -> None:
+    """Write this build into the cluster's local catalog overlay.
+
+    Shadows the extension's catalog template so new workrooms launch this
+    build. Skipped when the image can't be everything a fresh workroom
+    needs (``--no-push``: never reached the registry; ``--service``:
+    sibling services were not pushed at this revision). All failures are
+    non-fatal warnings — the dev hot-swap already succeeded.
+    """
+    try:
+        _publish_catalog_overlay_inner(
+            client,
+            info,
+            transformed=transformed,
+            canonical_refs=canonical_refs,
+            registry=registry,
+            push_registry=push_registry,
+            no_push=no_push,
+            service_filter=service_filter,
+        )
+    except Exception as exc:
+        # Belt-and-braces: the inner helper already handles the realistic
+        # failure modes; nothing in overlay publication may fail a dev run
+        # whose rollout already succeeded.
+        console.print(
+            f"\n[yellow]Warning:[/yellow] catalog overlay write failed: {exc}\n"
+            "  New workrooms will keep using the upstream catalog build."
+        )
+
+
+def _publish_catalog_overlay_inner(
+    client: Any,
+    info: Any,
+    *,
+    transformed: Dict[str, Any],
+    canonical_refs: Dict[str, str],
+    registry: str,
+    push_registry: str,
+    no_push: bool,
+    service_filter: Optional[str],
+) -> None:
+    from kamiwaza_extensions.catalog_overlay import (
+        build_overlay_entry,
+        build_overlay_version,
+        get_git_branch,
+        publish_overlay,
+    )
+    from kamiwaza_extensions.image_pusher import ImagePushError, ImagePusher
+    from kamiwaza_extensions.registry_resolution import build_push_ref_map
+    from kamiwaza_extensions.revision_tagger import RevisionTagger
+    from kamiwaza_sdk.exceptions import APIError
+
+    if no_push:
+        console.print(
+            "\n[dim]Catalog overlay skipped (--no-push: the cluster can't "
+            "pull an unpushed image).[/dim]"
+        )
+        return
+    if service_filter:
+        console.print(
+            "\n[dim]Catalog overlay skipped (--service: sibling services "
+            "were not pushed at this revision). Run kz-ext dev without "
+            "--service to shadow the catalog template.[/dim]"
+        )
+        return
+
+    # Both from the process cwd, matching RevisionTagger.generate_tag's
+    # earlier sha/dirty derivation — sha and branch must describe the same
+    # repo state.
+    sha, dirty = RevisionTagger.get_git_info()
+    branch = get_git_branch()
+    overlay_version = build_overlay_version(
+        info.version, branch=branch, sha=sha, dirty=dirty
+    )
+
+    push_ref_map = build_push_ref_map(
+        list(canonical_refs.values()),
+        image_registry=registry,
+        push_registry=push_registry,
+    )
+
+    def _resolve(ref: str) -> str:
+        try:
+            return ImagePusher.resolve_digest(ref)
+        except ImagePushError as exc:
+            raise RuntimeError(str(exc)) from exc
+
+    entry = build_overlay_entry(
+        version=overlay_version,
+        transformed_compose=transformed,
+        canonical_refs=canonical_refs,
+        push_ref_map=push_ref_map,
+        metadata=info.metadata,
+        git_sha=sha,
+        git_branch=branch,
+        dirty=dirty,
+        resolve_digest=_resolve,
+        warn=lambda msg: console.print(f"  [yellow]Warning:[/yellow] {msg}"),
+    )
+
+    try:
+        response = publish_overlay(client, info.name, entry)
+    except APIError as exc:
+        if exc.status_code in (404, 405):
+            console.print(
+                "\n[dim]Platform does not support catalog overlays — new "
+                "workrooms will keep using the upstream catalog build.[/dim]"
+            )
+            return
+        console.print(
+            f"\n[yellow]Warning:[/yellow] catalog overlay write failed: {exc}\n"
+            "  New workrooms will keep using the upstream catalog build."
+        )
+        return
+    except Exception as exc:
+        console.print(
+            f"\n[yellow]Warning:[/yellow] catalog overlay write failed: {exc}\n"
+            "  New workrooms will keep using the upstream catalog build."
+        )
+        return
+
+    shadow = response.get("shadow") or {}
+    shadows_version = shadow.get("shadows_version")
+    shadows_label = (
+        f" (shadows {shadows_version})" if shadows_version else " (no upstream entry)"
+    )
+    console.print(
+        f"\n  [green]✓[/green] Catalog overlay: [bold]{info.name}[/bold] "
+        f"{overlay_version}{shadows_label} — new workrooms will use this build."
+    )
+    running = response.get("running_deployments") or []
+    if running:
+        count = len(running)
+        plural = "s" if count != 1 else ""
+        console.print(
+            f"  [yellow]{count} running instance{plural}[/yellow] still on the "
+            "pre-shadow build — relaunch to pick up the dev build."
+        )
+    console.print("  [dim]Undo with: kz-ext dev --unload[/dim]")
+
+
+def run_dev_unload() -> None:
+    """Remove this extension's catalog overlay, restoring the upstream entry.
+
+    Leaves the running dev extension instance untouched — only new
+    workroom launches are affected.
+    """
+    from kamiwaza_extensions.catalog_overlay import remove_overlay
+    from kamiwaza_extensions.connections import ConnectionManager
+    from kamiwaza_extensions.constants import ssl_env_override
+    from kamiwaza_extensions.extension_detector import ExtensionDetector
+    from kamiwaza_sdk import KamiwazaClient
+    from kamiwaza_sdk.exceptions import APIError
+
+    detector = ExtensionDetector()
+    info = detector.detect()
+
+    conn_mgr = ConnectionManager()
+    connection = conn_mgr.get_active_connection()
+    if connection is None:
+        console.print("[red]Error:[/red] No Kamiwaza connection configured.")
+        console.print("  Run: [bold]kz-ext login <url>[/bold]")
+        raise typer.Exit(code=1)
+    token = conn_mgr.get_token()
+    if token is None:
+        console.print("[red]Error:[/red] Connection token expired or missing.")
+        console.print("  Run: [bold]kz-ext login[/bold] to re-authenticate.")
+        raise typer.Exit(code=1)
+
+    with ssl_env_override(connection):
+        client = KamiwazaClient(base_url=connection.url, api_key=token.access_token)
+        try:
+            response = remove_overlay(client, info.name)
+        except APIError as exc:
+            if exc.status_code == 404:
+                console.print(
+                    f"No catalog overlay exists for [bold]{info.name}[/bold] "
+                    f"on {connection.url}."
+                )
+                raise typer.Exit(code=1) from exc
+            if exc.status_code == 405:
+                console.print(
+                    "[red]Error:[/red] Platform does not support catalog overlays."
+                )
+                raise typer.Exit(code=1) from exc
+            console.print(f"[red]Error:[/red] Failed to remove overlay: {exc}")
+            raise typer.Exit(code=1) from exc
+
+    restored = response.get("restored_version")
+    if restored:
+        console.print(
+            f"  [green]✓[/green] Restored [bold]{info.name}[/bold] to upstream "
+            f"{restored} — new workrooms will use the catalog build."
+        )
+    elif response.get("template_removed"):
+        console.print(
+            f"  [green]✓[/green] Removed overlay for [bold]{info.name}[/bold] "
+            "(the template had no upstream catalog entry)."
+        )
+    else:
+        console.print(f"  [green]✓[/green] Removed overlay for [bold]{info.name}[/bold].")
+    console.print(
+        "  [dim]The running dev extension instance is unaffected — only new "
+        "workroom launches change.[/dim]"
+    )

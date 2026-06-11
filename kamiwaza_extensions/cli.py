@@ -223,6 +223,11 @@ def dev_callback(
         "--sdk-repo",
         help="Path to local kamiwaza-sdk checkout — bakes local runtime libs into images",
     ),
+    unload: bool = typer.Option(
+        False,
+        "--unload",
+        help="Remove this extension's local catalog overlay, restoring the upstream catalog entry for new workrooms",
+    ),
 ) -> None:
     """Build, push, and deploy extension to Kamiwaza cluster.
 
@@ -230,6 +235,24 @@ def dev_callback(
     Use 'kz-ext dev local' for local Docker Compose development.
     """
     if ctx.invoked_subcommand is not None:
+        if unload:
+            # Callback options don't apply to subcommands; don't let the
+            # user believe the overlay was removed.
+            typer.secho(
+                "Warning: --unload is ignored with a subcommand. "
+                "Run plain `kz-ext dev --unload`.",
+                err=True,
+                fg="yellow",
+            )
+        return
+    if unload:
+        from kamiwaza_extensions.commands.dev import run_dev_unload
+        try:
+            run_dev_unload()
+        except typer.Exit:
+            raise
+        except Exception as exc:
+            _handle_exception(exc)
         return
     # No subcommand → run remote deploy
     from kamiwaza_extensions.commands.dev import run_dev_remote
