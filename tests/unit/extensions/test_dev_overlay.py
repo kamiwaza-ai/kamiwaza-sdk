@@ -269,6 +269,64 @@ class TestResumeRevisionAdoption:
         assert _resume_revision(None, "2.2.0-dev-0b1fbba.200", resumable=True) is None
 
 
+class TestPriorArtifactProbe:
+    """Adoption is trust-but-verify: dev-state can carry a revision whose
+    artifacts never reached the registry (pre-fix CLI state, --no-push
+    apply). Found live: a poisoned state file kept redeploying an
+    unpushed tag."""
+
+    def _info(self, with_build=True):
+        services = {"server": {"build": "."}} if with_build else {"db": {"image": "postgres:16"}}
+        return SimpleNamespace(
+            name="tool-omniparse",
+            compose_data={"services": services},
+            image_basename=None,
+        )
+
+    def test_true_when_all_digests_resolve(self):
+        from kamiwaza_extensions.commands.dev import _prior_artifacts_in_registry
+
+        with patch(
+            "kamiwaza_extensions.image_pusher.ImagePusher.resolve_digest",
+            return_value="sha256:" + "a" * 64,
+        ):
+            assert _prior_artifacts_in_registry(
+                self._info(),
+                "2.2.0-dev-0b1fbba.100",
+                registry="127.0.0.1:30010",
+                push_registry="host.docker.internal:30010",
+            )
+
+    def test_false_when_manifest_missing(self):
+        from kamiwaza_extensions.commands.dev import _prior_artifacts_in_registry
+        from kamiwaza_extensions.image_pusher import ImagePushError
+
+        with patch(
+            "kamiwaza_extensions.image_pusher.ImagePusher.resolve_digest",
+            side_effect=ImagePushError("manifest unknown"),
+        ):
+            assert not _prior_artifacts_in_registry(
+                self._info(),
+                "2.2.0-dev-0b1fbba.100",
+                registry="127.0.0.1:30010",
+                push_registry="host.docker.internal:30010",
+            )
+
+    def test_true_when_nothing_buildable(self):
+        from kamiwaza_extensions.commands.dev import _prior_artifacts_in_registry
+
+        with patch(
+            "kamiwaza_extensions.image_pusher.ImagePusher.resolve_digest",
+            side_effect=AssertionError("must not be called"),
+        ):
+            assert _prior_artifacts_in_registry(
+                self._info(with_build=False),
+                "2.2.0-dev-0b1fbba.100",
+                registry="127.0.0.1:30010",
+                push_registry="host.docker.internal:30010",
+            )
+
+
 class TestStatusMissingInstanceShowsOverlay:
     def test_overlay_shown_when_extension_not_found(self, monkeypatch, capsys):
         # get_extension raises NotFoundError (NOT an APIError subclass) for

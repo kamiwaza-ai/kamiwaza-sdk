@@ -152,6 +152,46 @@ def _resume_revision(prior_state: Any, rev_tag: str, resumable: bool) -> Optiona
     return None
 
 
+def _prior_artifacts_in_registry(
+    info: Any,
+    prior_revision: str,
+    *,
+    registry: str,
+    push_registry: str,
+) -> bool:
+    """True when every buildable service's prior-revision image resolves.
+
+    Probes via the host-reachable push refs. Extensions with no buildable
+    services have nothing to verify (trivially true). Any probe failure —
+    missing manifest, docker unavailable, registry hiccup — returns False:
+    the safe answer is always "rebuild".
+    """
+    from kamiwaza_extensions.compose_transformer import compute_canonical_refs
+    from kamiwaza_extensions.image_pusher import ImagePusher
+    from kamiwaza_extensions.registry_resolution import build_push_ref_map
+
+    try:
+        canonical_refs = compute_canonical_refs(
+            (info.compose_data or {}).get("services") or {},
+            registry=registry,
+            extension_name=info.name,
+            revision_tag=prior_revision,
+            image_basename=info.image_basename,
+        )
+        if not canonical_refs:
+            return True
+        push_ref_map = build_push_ref_map(
+            list(canonical_refs.values()),
+            image_registry=registry,
+            push_registry=push_registry,
+        )
+        for ref in canonical_refs.values():
+            ImagePusher.resolve_digest(push_ref_map.get(ref, ref))
+        return True
+    except Exception:
+        return False
+
+
 # Match the default ``RevisionTagger.generate_tag`` format:
 # ``{version}-dev-{sha7+}.{epoch}`` where the sha portion is the git short
 # SHA (typically 7-12 hex chars). The epoch suffix is the only thing that
@@ -496,14 +536,31 @@ def run_dev_remote(
     # Adopt the prior run's revision tag BEFORE the skip decisions print it:
     # resume reuses the prior build/push artifacts, and those carry the
     # prior tag — deploying this run's freshly-stamped tag would reference
-    # an image that was never pushed (ImagePullBackOff).
+    # an image that was never pushed (ImagePullBackOff). Trust-but-verify:
+    # dev-state can record a revision whose artifacts never reached the
+    # registry (state written by a pre-fix CLI, or a `--no-push` run whose
+    # apply step recorded the tag), so probe the registry before adopting —
+    # on a miss, fall back to the full pipeline instead of resuming.
     prior_revision = _resume_revision(prior_state, rev_tag, resumable)
     if prior_revision is not None:
-        console.print(
-            f"[dim]Resuming with prior revision {prior_revision} "
-            f"(same commit; artifacts already in the registry).[/dim]"
-        )
-        rev_tag = prior_revision
+        if _prior_artifacts_in_registry(
+            info,
+            prior_revision,
+            registry=registry,
+            push_registry=push_registry,
+        ):
+            console.print(
+                f"[dim]Resuming with prior revision {prior_revision} "
+                f"(same commit; artifacts verified in the registry).[/dim]"
+            )
+            rev_tag = prior_revision
+        else:
+            console.print(
+                f"[yellow]Prior revision {prior_revision} is not in the "
+                f"registry — dev-state is stale. Running the full "
+                f"pipeline.[/yellow]"
+            )
+            resumable = False
     if resumable and not no_build and prior_state.is_step_complete("build"):
         console.print(
             f"[dim]Skipping build — revision {rev_tag} already built in prior run.[/dim]"
