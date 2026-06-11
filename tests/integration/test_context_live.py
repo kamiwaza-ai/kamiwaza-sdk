@@ -302,16 +302,9 @@ def shared_vectordb(shared_context_service: ContextService) -> str:
 def session_workroom(shared_context_service: ContextService) -> str:
     """Per-session writable workroom for Context Service write-path tests.
 
-    The Global Workroom (``DEFAULT_WORKROOM_ID``) is read-only for context
-    writes: ontology / pipeline / collection / object-storage creation against
-    it return ``403 "Global Workroom is read-only for ..."``. Write-path tests
-    therefore need a real, writable workroom.
-
-    The id is supplied to the SDK via ``workroom_id=`` (the ``X-Workroom-ID``
-    header). The Context Service authorizes that header against the caller's
-    verified workroom membership, and the istio ingress preserves it
-    end-to-end, so writes land in -- and stay isolated to -- this workroom.
-    Read-only assertions against Global continue to use ``DEFAULT_WORKROOM_ID``.
+    Room-scoped Context routes require an explicit non-Global workroom scope.
+    Bind that workroom on the same SDK session that provisions shared test
+    resources so follow-up calls carry verified workroom authority.
     """
     workrooms = shared_context_service.client.workrooms
     workroom = workrooms.create(
@@ -320,6 +313,7 @@ def session_workroom(shared_context_service: ContextService) -> str:
         description="Ephemeral workroom for SDK context live tests",
     )
     workroom_id = str(workroom.id)
+    shared_context_service.client.post(f"/workrooms/{workroom_id}/enter")
     try:
         yield workroom_id
     finally:
@@ -382,19 +376,10 @@ def test_context_required_llm_available(context_required_llm: str) -> None:
     assert context_required_llm
 
 
-def test_context_vectordb_create_in_global_workroom_is_read_only(
+def test_context_vectordb_create_without_workroom_requires_scope(
     live_kamiwaza_client,
 ) -> None:
-    """Global Workroom is read-only for VectorDB creation (ENG-4352, PR #1635).
-
-    Verifies the server-side gate at
-    ``kamiwaza/services/context/lifecycle.py:_raise_if_global_workroom_write``
-    rejects ``create_vectordb`` without an explicit workroom_id (which
-    defaults to the Global Workroom UUID). Returns 403 regardless of
-    caller role, matching commit 73071d5d1's stated intent:
-    "Keeps Global Workroom read paths available to members and blocks
-    Global write paths in both ReBAC-on and RBAC-off modes."
-    """
+    """VectorDB creation is room-scoped and requires a non-Global workroom."""
     service = _context_service(live_kamiwaza_client)
 
     with pytest.raises(APIError) as exc_info:
@@ -403,8 +388,8 @@ def test_context_vectordb_create_in_global_workroom_is_read_only(
             engine="milvus",
         )
 
-    assert exc_info.value.status_code == 403
-    assert "Global Workroom is read-only" in str(exc_info.value)
+    assert exc_info.value.status_code == 400
+    assert "workroom_scope_required" in str(exc_info.value)
 
 
 # A dedicated non-Global VectorDB *instance* lifecycle test (create/scale/
@@ -420,11 +405,12 @@ def test_context_vectordb_create_in_global_workroom_is_read_only(
 
 
 def test_context_vectordb_insert_vectors_instance(
-    live_kamiwaza_client,
-    shared_vectordb: str,
+    shared_context_service: ContextService,
+    session_workroom: str,
+    shared_workroom_vectordb: str,
 ) -> None:
-    service = _context_service(live_kamiwaza_client)
-    vectordb_id = shared_vectordb
+    service = shared_context_service
+    vectordb_id = shared_workroom_vectordb
     collection_name = _sdk_collection_name()
 
     inserted = service.insert_vectors(
@@ -432,16 +418,18 @@ def test_context_vectordb_insert_vectors_instance(
         collection_name=collection_name,
         vectors=[_sample_vector()],
         metadata=[{"source": "sdk-context-live"}],
+        workroom_id=session_workroom,
     )
     assert inserted["inserted_count"] == 1
 
 
 def test_context_vectordb_insert_vectors_global(
-    live_kamiwaza_client,
-    shared_vectordb: str,
+    shared_context_service: ContextService,
+    session_workroom: str,
+    shared_workroom_vectordb: str,
 ) -> None:
-    service = _context_service(live_kamiwaza_client)
-    vectordb_id = shared_vectordb
+    service = shared_context_service
+    vectordb_id = shared_workroom_vectordb
     collection_name = _sdk_collection_name()
 
     inserted = service.insert_vectors_global(
@@ -449,16 +437,18 @@ def test_context_vectordb_insert_vectors_global(
         collection_name=collection_name,
         vectors=[_sample_vector()],
         metadata=[{"source": "sdk-context-live"}],
+        workroom_id=session_workroom,
     )
     assert inserted["inserted_count"] == 1
 
 
 def test_context_vectordb_query_vectors_instance(
-    live_kamiwaza_client,
-    shared_vectordb: str,
+    shared_context_service: ContextService,
+    session_workroom: str,
+    shared_workroom_vectordb: str,
 ) -> None:
-    service = _context_service(live_kamiwaza_client)
-    vectordb_id = shared_vectordb
+    service = shared_context_service
+    vectordb_id = shared_workroom_vectordb
     collection_name = _sdk_collection_name()
 
     service.insert_vectors(
@@ -466,22 +456,25 @@ def test_context_vectordb_query_vectors_instance(
         collection_name=collection_name,
         vectors=[_sample_vector()],
         metadata=[{"source": "sdk-context-live"}],
+        workroom_id=session_workroom,
     )
     queried = service.query_vectors(
         vectordb_id,
         collection_name=collection_name,
         vectors=[_sample_vector()],
         limit=1,
+        workroom_id=session_workroom,
     )
     assert isinstance(queried["results"], list)
 
 
 def test_context_vectordb_query_vectors_global(
-    live_kamiwaza_client,
-    shared_vectordb: str,
+    shared_context_service: ContextService,
+    session_workroom: str,
+    shared_workroom_vectordb: str,
 ) -> None:
-    service = _context_service(live_kamiwaza_client)
-    vectordb_id = shared_vectordb
+    service = shared_context_service
+    vectordb_id = shared_workroom_vectordb
     collection_name = _sdk_collection_name()
 
     service.insert_vectors_global(
@@ -489,12 +482,14 @@ def test_context_vectordb_query_vectors_global(
         collection_name=collection_name,
         vectors=[_sample_vector()],
         metadata=[{"source": "sdk-context-live"}],
+        workroom_id=session_workroom,
     )
     queried = service.query_vectors_global(
         vectordb_id=vectordb_id,
         collection_name=collection_name,
         vectors=[_sample_vector()],
         limit=1,
+        workroom_id=session_workroom,
     )
     assert isinstance(queried["results"], list)
 
@@ -643,10 +638,10 @@ def test_context_ontology_delete_group(
 
 @pytest.mark.requires_embedding_model
 def test_context_workroom_lists_and_job_creation(
-    live_kamiwaza_client,
+    shared_context_service: ContextService,
     session_workroom: str,
 ) -> None:
-    service = _context_service(live_kamiwaza_client)
+    service = shared_context_service
     workroom_id = session_workroom
     created_job_ids: list[str] = []
 
@@ -701,10 +696,10 @@ def test_context_workroom_lists_and_job_creation(
 
 @pytest.mark.requires_embedding_model
 def test_context_workroom_pipeline_followup_access(
-    live_kamiwaza_client,
+    shared_context_service: ContextService,
     session_workroom: str,
 ) -> None:
-    service = _context_service(live_kamiwaza_client)
+    service = shared_context_service
     workroom_id = session_workroom
 
     payload = base64.b64encode(b"hello context service").decode("utf-8")
@@ -733,11 +728,11 @@ def test_context_workroom_pipeline_followup_access(
 
 
 def test_context_workroom_collection_lifecycle(
-    live_kamiwaza_client,
+    shared_context_service: ContextService,
     session_workroom: str,
     shared_workroom_vectordb: str,
 ) -> None:
-    service = _context_service(live_kamiwaza_client)
+    service = shared_context_service
     workroom_id = session_workroom
     assert shared_workroom_vectordb
     collection_name = _sdk_collection_name()
@@ -783,11 +778,11 @@ def test_context_workroom_collection_lifecycle(
 
 @pytest.mark.requires_embedding_model
 def test_context_search_contract(
-    live_kamiwaza_client,
+    shared_context_service: ContextService,
     session_workroom: str,
     shared_workroom_vectordb: str,
 ) -> None:
-    service = _context_service(live_kamiwaza_client)
+    service = shared_context_service
     workroom_id = session_workroom
     assert shared_workroom_vectordb
 
@@ -801,11 +796,11 @@ def test_context_search_contract(
 
 @pytest.mark.requires_embedding_model
 def test_context_retrieve_contract(
-    live_kamiwaza_client,
+    shared_context_service: ContextService,
     session_workroom: str,
     shared_workroom_vectordb: str,
 ) -> None:
-    service = _context_service(live_kamiwaza_client)
+    service = shared_context_service
     workroom_id = session_workroom
     assert shared_workroom_vectordb
 
