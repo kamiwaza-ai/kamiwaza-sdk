@@ -127,6 +127,31 @@ def _build_patch_service_specs(payload: Any) -> List[Any]:
     return patch_services
 
 
+def _resume_revision(prior_state: Any, rev_tag: str, resumable: bool) -> Optional[str]:
+    """Return the prior run's revision when this run must deploy its artifacts.
+
+    ``generate_tag`` stamps a fresh epoch suffix every invocation, so a
+    resumed run (same commit, clean tree) skips build/push while holding a
+    tag that was NEVER pushed — the deploy would PATCH the CR to a
+    nonexistent image and the rollout dies in ImagePullBackOff. Whenever
+    resume will reuse prior build/push artifacts, the deploy (and the
+    catalog overlay) must reference the prior revision tag those artifacts
+    actually carry. Returns None when no adoption is needed.
+    """
+    if (
+        resumable
+        and prior_state is not None
+        and prior_state.last_revision
+        and prior_state.last_revision != rev_tag
+        and (
+            prior_state.is_step_complete("build")
+            or prior_state.is_step_complete("push")
+        )
+    ):
+        return str(prior_state.last_revision)
+    return None
+
+
 # Match the default ``RevisionTagger.generate_tag`` format:
 # ``{version}-dev-{sha7+}.{epoch}`` where the sha portion is the git short
 # SHA (typically 7-12 hex chars). The epoch suffix is the only thing that
@@ -468,6 +493,17 @@ def run_dev_remote(
         push_registry=push_registry,
         image_basename=info.image_basename,
     )
+    # Adopt the prior run's revision tag BEFORE the skip decisions print it:
+    # resume reuses the prior build/push artifacts, and those carry the
+    # prior tag — deploying this run's freshly-stamped tag would reference
+    # an image that was never pushed (ImagePullBackOff).
+    prior_revision = _resume_revision(prior_state, rev_tag, resumable)
+    if prior_revision is not None:
+        console.print(
+            f"[dim]Resuming with prior revision {prior_revision} "
+            f"(same commit; artifacts already in the registry).[/dim]"
+        )
+        rev_tag = prior_revision
     if resumable and not no_build and prior_state.is_step_complete("build"):
         console.print(
             f"[dim]Skipping build — revision {rev_tag} already built in prior run.[/dim]"

@@ -207,6 +207,68 @@ class TestRunDevUnload:
         assert "No catalog overlay exists" in capsys.readouterr().err
 
 
+class TestResumeRevisionAdoption:
+    """Resume must deploy the PRIOR run's tag — the freshly stamped epoch
+    tag was never built/pushed (found live: ImagePullBackOff during
+    ENG-6802 verification)."""
+
+    def _state(self, step="poll", revision="2.2.0-dev-0b1fbba.100"):
+        from kamiwaza_extensions.dev_state import DevState
+
+        return DevState(last_revision=revision, last_successful_step=step)
+
+    def test_adopts_prior_revision_when_push_complete(self):
+        from kamiwaza_extensions.commands.dev import _resume_revision
+
+        adopted = _resume_revision(
+            self._state(), "2.2.0-dev-0b1fbba.200", resumable=True
+        )
+        assert adopted == "2.2.0-dev-0b1fbba.100"
+
+    def test_adopts_when_only_build_complete(self):
+        # The local image store holds the prior tag; the push must push it.
+        from kamiwaza_extensions.commands.dev import _resume_revision
+
+        adopted = _resume_revision(
+            self._state(step="build"), "2.2.0-dev-0b1fbba.200", resumable=True
+        )
+        assert adopted == "2.2.0-dev-0b1fbba.100"
+
+    def test_no_adoption_when_not_resumable(self):
+        from kamiwaza_extensions.commands.dev import _resume_revision
+
+        assert (
+            _resume_revision(self._state(), "2.2.0-dev-0b1fbba.200", resumable=False)
+            is None
+        )
+
+    def test_no_adoption_when_no_steps_complete(self):
+        from kamiwaza_extensions.commands.dev import _resume_revision
+
+        assert (
+            _resume_revision(
+                self._state(step=""), "2.2.0-dev-0b1fbba.200", resumable=True
+            )
+            is None
+        )
+
+    def test_no_adoption_when_tags_already_match(self):
+        # Custom --revision: identical tags, nothing to adopt.
+        from kamiwaza_extensions.commands.dev import _resume_revision
+
+        assert (
+            _resume_revision(
+                self._state(revision="pinned-rev"), "pinned-rev", resumable=True
+            )
+            is None
+        )
+
+    def test_no_adoption_without_prior_state(self):
+        from kamiwaza_extensions.commands.dev import _resume_revision
+
+        assert _resume_revision(None, "2.2.0-dev-0b1fbba.200", resumable=True) is None
+
+
 class TestStatusMissingInstanceShowsOverlay:
     def test_overlay_shown_when_extension_not_found(self, monkeypatch, capsys):
         # get_extension raises NotFoundError (NOT an APIError subclass) for
