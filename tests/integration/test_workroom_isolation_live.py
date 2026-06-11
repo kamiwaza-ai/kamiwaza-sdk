@@ -238,10 +238,11 @@ class TestGlobalCannotSeeWorkspaces:
             assert wid != str(workroom_b.id), \
                 "Global sees Workspace B's extension -- Global->Workspace leak!"
 
-    def test_global_export_excludes_workspace_resources(self, sdk):
-        """Export manifest for Global should not reference workspace-scoped resources."""
-        manifest = sdk.workrooms.get_export_manifest(GLOBAL_WORKROOM_ID)
-        assert str(manifest.workroom_id) == GLOBAL_WORKROOM_ID
+    def test_global_export_manifest_returns_global_scope(self, sdk):
+        """Global export manifest returns the Global scope and manifest items."""
+        manifest = sdk.get(f"/workrooms/{GLOBAL_WORKROOM_ID}/export/manifest")
+        assert str(manifest["workroom_id"]) == GLOBAL_WORKROOM_ID
+        assert isinstance(manifest.get("items"), list)
 
 
 # ---------------------------------------------------------------------------
@@ -269,13 +270,14 @@ class TestWorkspaceCanSeeGlobal:
 
     def test_workspace_user_can_get_global_export_manifest(self, sdk, workroom_a):
         """User in Workspace A can get Global Workroom export manifest."""
-        manifest = sdk.workrooms.get_export_manifest(GLOBAL_WORKROOM_ID)
-        assert str(manifest.workroom_id) == GLOBAL_WORKROOM_ID
+        manifest = sdk.get(f"/workrooms/{GLOBAL_WORKROOM_ID}/export/manifest")
+        assert str(manifest["workroom_id"]) == GLOBAL_WORKROOM_ID
+        assert isinstance(manifest.get("items"), list)
 
     def test_workspace_user_can_get_global_ingestion_summary(self, sdk, workroom_a):
         """User in Workspace A can get Global Workroom ingestion summary."""
-        summary = sdk.workrooms.get_ingestion_summary(GLOBAL_WORKROOM_ID)
-        assert str(summary.workroom_id) == GLOBAL_WORKROOM_ID
+        summary = sdk.get(f"/workrooms/{GLOBAL_WORKROOM_ID}/ingestion/summary")
+        assert str(summary["workroom_id"]) == GLOBAL_WORKROOM_ID
 
 
 # ---------------------------------------------------------------------------
