@@ -194,6 +194,29 @@ class TestBuildOverlayEntry:
         assert entry["env_metadata"] == {"API_KEY": {"type": "secret"}}
         assert entry["fail_if_model_type_unavailable"] is True
 
+    def test_explicit_empty_metadata_is_forwarded(self):
+        # An explicit empty list is a deliberate clear of an upstream value
+        # (e.g. the dev build dropped its required env var) — it must reach
+        # the platform; only ABSENT keys keep pre-shadow values.
+        entry = build_overlay_entry(
+            version="v",
+            transformed_compose=TRANSFORMED,
+            canonical_refs={},
+            metadata={"required_env_vars": [], "env_defaults": {}},
+        )
+        assert entry["required_env_vars"] == []
+        assert entry["env_defaults"] == {}
+        assert "capabilities" not in entry  # absent stays absent
+
+    def test_bool_env_defaults_render_json_style(self):
+        entry = build_overlay_entry(
+            version="v",
+            transformed_compose=TRANSFORMED,
+            canonical_refs={},
+            metadata={"env_defaults": {"DEBUG": True, "VERBOSE": False}},
+        )
+        assert entry["env_defaults"] == {"DEBUG": "true", "VERBOSE": "false"}
+
     def test_env_placeholders_survive_in_compose(self):
         # The overlay is a template destination — install-time substitution
         # happens platform-side, so `${VAR:?required}` must NOT be resolved.

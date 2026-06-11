@@ -453,6 +453,11 @@ def run_dev_remote(
     notice = resume_message(prior_state)
     if notice:
         console.print(f"[dim]{notice}[/dim]")
+    # The catalog overlay (step 12) keys off the USER's --no-push intent.
+    # Resume flips `no_push` below when the prior run already pushed — but
+    # in that case the image IS in the registry, so the overlay must still
+    # be written.
+    user_no_push = no_push
     resumable = _is_resumable(
         prior_state,
         rev_tag,
@@ -920,7 +925,7 @@ def run_dev_remote(
             canonical_refs=canonical_refs,
             registry=registry,
             push_registry=push_registry,
-            no_push=no_push,
+            no_push=user_no_push,
             service_filter=service,
         )
 
@@ -949,6 +954,38 @@ def _publish_catalog_overlay(
     sibling services were not pushed at this revision). All failures are
     non-fatal warnings — the dev hot-swap already succeeded.
     """
+    try:
+        _publish_catalog_overlay_inner(
+            client,
+            info,
+            transformed=transformed,
+            canonical_refs=canonical_refs,
+            registry=registry,
+            push_registry=push_registry,
+            no_push=no_push,
+            service_filter=service_filter,
+        )
+    except Exception as exc:
+        # Belt-and-braces: the inner helper already handles the realistic
+        # failure modes; nothing in overlay publication may fail a dev run
+        # whose rollout already succeeded.
+        console.print(
+            f"\n[yellow]Warning:[/yellow] catalog overlay write failed: {exc}\n"
+            "  New workrooms will keep using the upstream catalog build."
+        )
+
+
+def _publish_catalog_overlay_inner(
+    client: Any,
+    info: Any,
+    *,
+    transformed: Dict[str, Any],
+    canonical_refs: Dict[str, str],
+    registry: str,
+    push_registry: str,
+    no_push: bool,
+    service_filter: Optional[str],
+) -> None:
     from kamiwaza_extensions.catalog_overlay import (
         build_overlay_entry,
         build_overlay_version,

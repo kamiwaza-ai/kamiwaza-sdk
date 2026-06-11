@@ -102,6 +102,11 @@ def run_status(*, name: Optional[str] = None, verbose: bool = False) -> None:
             if exc.status_code == 404:
                 console.print(f"[red]Error:[/red] Extension '{dev_name}' not found.")
                 console.print("  Run: [bold]kz-ext dev[/bold] to deploy first.")
+                # A lingering catalog shadow is MOST dangerous exactly when
+                # the dev instance is gone — still steering new workrooms
+                # with nothing visibly running. Surface it before exiting.
+                if extension_name:
+                    _print_overlay_status(client, extension_name)
                 raise typer.Exit(code=1) from exc
             raise
 

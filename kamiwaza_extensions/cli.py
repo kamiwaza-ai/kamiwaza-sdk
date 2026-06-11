@@ -235,6 +235,15 @@ def dev_callback(
     Use 'kz-ext dev local' for local Docker Compose development.
     """
     if ctx.invoked_subcommand is not None:
+        if unload:
+            # Callback options don't apply to subcommands; don't let the
+            # user believe the overlay was removed.
+            typer.secho(
+                "Warning: --unload is ignored with a subcommand. "
+                "Run plain `kz-ext dev --unload`.",
+                err=True,
+                fg="yellow",
+            )
         return
     if unload:
         from kamiwaza_extensions.commands.dev import run_dev_unload

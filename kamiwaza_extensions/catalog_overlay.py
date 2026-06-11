@@ -137,14 +137,21 @@ def build_overlay_entry(
         },
     }
     env_defaults = metadata.get("env_defaults")
-    if isinstance(env_defaults, dict) and env_defaults:
-        entry["env_defaults"] = {k: str(v) for k, v in env_defaults.items()}
+    if isinstance(env_defaults, dict):
+        # JSON-faithful string coercion: booleans render lowercase, as a
+        # JSON-serialized published catalog entry would carry them.
+        entry["env_defaults"] = {
+            k: (str(v).lower() if isinstance(v, bool) else str(v))
+            for k, v in env_defaults.items()
+        }
     if isinstance(metadata.get("env_metadata"), dict):
         entry["env_metadata"] = metadata["env_metadata"]
     # Platform-consumed catalog metadata: forward everything kamiwaza.json
     # declares so the shadow template behaves like a published catalog entry
     # would (required_env_vars gates launch env, strip_path_prefix shapes
-    # routing, etc.). Omitted keys keep the pre-shadow row values.
+    # routing, etc.). Presence-based: an explicit empty list is a deliberate
+    # clear and must reach the platform; only ABSENT keys keep the
+    # pre-shadow row values.
     for key, expected_type in (
         ("display_name", str),
         ("description", str),
@@ -164,9 +171,7 @@ def build_overlay_entry(
         ("fail_if_model_name_unavailable", bool),
     ):
         value = metadata.get(key)
-        if isinstance(value, expected_type) and (
-            expected_type is bool or value
-        ):
+        if isinstance(value, expected_type):
             entry[key] = value
     ext_type = metadata.get("type") or metadata.get("template_type")
     if isinstance(ext_type, str) and ext_type in ("app", "tool", "service"):

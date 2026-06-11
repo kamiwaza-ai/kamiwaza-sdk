@@ -124,6 +124,21 @@ class TestPublishCatalogOverlay:
 
         assert "overlay write failed" in capsys.readouterr().err
 
+    def test_entry_construction_errors_warn_but_do_not_fail(self, capsys):
+        # The non-fatal guarantee covers the WHOLE helper, not just the PUT:
+        # a rollout that already succeeded must never be failed by overlay
+        # bookkeeping.
+        client = MagicMock()
+        with patch(
+            "kamiwaza_extensions.registry_resolution.build_push_ref_map",
+            side_effect=RuntimeError("boom in entry construction"),
+        ):
+            _publish(client)  # must not raise
+
+        err = capsys.readouterr().err
+        assert "overlay write failed" in err
+        client.put.assert_not_called()
+
 
 class TestRunDevUnload:
     def _setup(self, monkeypatch, client):
