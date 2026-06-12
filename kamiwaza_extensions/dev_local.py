@@ -408,6 +408,50 @@ class DevLocalRunner:
             ):
                 compose_prefix += ["--project-directory", str(info.path)]
 
+            # Build extra_docker_images from source before `up` (ENG-6281).
+            # `up --build` only builds default-profile services, so
+            # profile-gated extra images (e.g. the agent runtime under
+            # `profiles: [image-only]`) are never rebuilt and go stale
+            # against their pinned tag. Mirror the cache-backed
+            # `up --build` pattern — always build, letting Docker's layer
+            # cache no-op when nothing changed. (Hash-based short-circuit is
+            # future work; tracked as an ENG-6281 follow-up.) Reuses
+            # compose_prefix so the same -f overlays apply — notably the
+            # sdk_build_patch_file that fixes pinned-version build merges.
+            extra_services, extra_profiles = _resolve_extra_image_build_targets(
+                info.metadata, info.compose_data, info.version
+            )
+            if extra_services:
+                sandbox_backend = _resolve_env_value("SANDBOX_BACKEND", info.path)
+                # Gate on the docker sandbox backend: skip only when
+                # SANDBOX_BACKEND is explicitly set to a non-docker value, so
+                # extensions that never set it still get their extra images.
+                if sandbox_backend is not None and sandbox_backend != "docker":
+                    console.print(
+                        f"[dim]Skipping extra image build "
+                        f"({', '.join(extra_services)}): "
+                        f"SANDBOX_BACKEND={sandbox_backend} (not 'docker').[/dim]"
+                    )
+                else:
+                    build_cmd = list(compose_prefix)
+                    for profile in extra_profiles:
+                        build_cmd += ["--profile", profile]
+                    build_cmd += ["build", *extra_services]
+                    console.print(
+                        f"[dim]Building extra images "
+                        f"({', '.join(extra_services)}):[/dim] "
+                        f"{' '.join(build_cmd)}"
+                    )
+                    build_rc = self._run_subprocess(
+                        build_cmd, env=env, cwd=str(info.path)
+                    )
+                    if build_rc != 0:
+                        console.print(
+                            "[red]Extra image build failed; "
+                            "aborting before `up`.[/red]"
+                        )
+                        return build_rc
+
             cmd = list(compose_prefix) + ["up", "--build"]
             if detach:
                 cmd.append("-d")
@@ -790,6 +834,78 @@ def build_env_overlay(
         env["KZ_EXT_DEV_LOCAL_AUTH"] = "1"
         env["KAMIWAZA_BEARER_TOKEN"] = bridge.bearer_token
     return env
+
+
+def _resolve_env_value(key: str, ext_path: Path) -> Optional[str]:
+    """Resolve an env var the way Docker Compose does, for gating decisions.
+
+    Precedence mirrors Compose: a value exported in the shell wins over the
+    extension's ``.env`` file. Returns ``None`` when set in neither.
+
+    Intentionally a minimal ``KEY=value`` scan (strips surrounding quotes) —
+    enough to read a gating flag like ``SANDBOX_BACKEND``. Full Compose
+    ``.env`` interpolation is deliberately not reproduced.
+    """
+    shell_value = os.environ.get(key)
+    if shell_value is not None:
+        return shell_value
+    env_file = ext_path / ".env"
+    if not env_file.exists():
+        return None
+    for raw_line in env_file.read_text().splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        name, _, value = line.partition("=")
+        if name.strip() == key:
+            return value.strip().strip('"').strip("'")
+    return None
+
+
+def _resolve_extra_image_build_targets(
+    metadata: Dict[str, Any],
+    compose_data: Optional[Dict[str, Any]],
+    version: str,
+) -> Tuple[List[str], List[str]]:
+    """Map manifest ``extra_docker_images`` to buildable compose services.
+
+    ``kz-ext dev local`` runs ``compose up --build``, which only builds
+    services in the active (default) profile. Images declared in
+    ``kamiwaza.json``'s ``extra_docker_images`` are typically profile-gated
+    (e.g. an agent runtime under ``profiles: [image-only]``), so they are
+    never rebuilt locally and silently go stale against their pinned tag
+    (ENG-6281). This locates the compose services that *produce* those
+    images so the caller can build them explicitly.
+
+    A service qualifies when its (``{version}``-substituted) ``image`` ref
+    matches an ``extra_docker_images`` entry AND it declares a ``build``
+    block. Registry-only refs (no matching buildable service) are ignored —
+    they are pulled at ``up`` time as before.
+
+    Returns ``(service_names, profiles)`` where ``profiles`` is the
+    de-duplicated union of profiles the matched services declare, so the
+    caller can enable them for the build.
+    """
+    raw_refs = metadata.get("extra_docker_images") or []
+    if not raw_refs or not compose_data:
+        return [], []
+    wanted = {str(ref).replace("{version}", version) for ref in raw_refs}
+    services = compose_data.get("services", {}) or {}
+    matched: List[str] = []
+    profiles: List[str] = []
+    for svc_name, svc in services.items():
+        if not isinstance(svc, dict):
+            continue
+        image = svc.get("image")
+        if not image or "build" not in svc:
+            continue
+        if str(image).replace("{version}", version) not in wanted:
+            continue
+        matched.append(svc_name)
+        for profile in svc.get("profiles", []) or []:
+            if profile not in profiles:
+                profiles.append(profile)
+    return matched, profiles
 
 
 def _write_compose_overlay(
