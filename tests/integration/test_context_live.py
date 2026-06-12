@@ -153,6 +153,21 @@ def _safe_delete_vectordb(
         pass
 
 
+def _safe_scale_vectordb(
+    service: ContextService,
+    vectordb_id: str,
+    *,
+    replicas: int,
+    workroom_id: str | None = None,
+) -> None:
+    try:
+        service.scale_vectordb(
+            vectordb_id, replicas=replicas, workroom_id=workroom_id
+        )
+    except APIError:
+        pass
+
+
 def _create_temp_ontology(service: ContextService, *, prefix: str) -> str:
     created = service.create_ontology(
         name=f"{prefix}-{uuid4().hex[:8]}",
@@ -511,6 +526,94 @@ def test_context_vectordb_query_vectors_global(
         workroom_id=session_workroom,
     )
     assert isinstance(queried["results"], list)
+
+
+def _vectordb_replicas(instance: dict) -> int | None:
+    """Read the replica count from a VectorDB instance payload.
+
+    The server may surface ``replicas`` at the top level or nested under
+    ``config`` depending on engine/version, so check both before giving up.
+    """
+    for source in (instance, instance.get("config") or {}):
+        if not isinstance(source, dict):
+            continue
+        value = source.get("replicas")
+        if isinstance(value, bool):  # guard: bool is an int subclass
+            continue
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and value.isdigit():
+            return int(value)
+    return None
+
+
+def test_context_vectordb_update_round_trips(
+    shared_context_service: ContextService,
+    session_workroom: str,
+    shared_workroom_vectordb: str,
+) -> None:
+    """update_vectordb mutation is observable via a follow-up get_vectordb.
+
+    Assertion posture is API round-trip: confirm the PUT is accepted and the
+    requested config/replicas change is reflected when the instance is re-read.
+    Physical replica provisioning is out of scope (local Milvus is single-node).
+    """
+    service = shared_context_service
+    vectordb_id = shared_workroom_vectordb
+
+    before = service.get_vectordb(vectordb_id, workroom_id=session_workroom)
+    baseline_replicas = _vectordb_replicas(before) or 1
+    config_marker = f"sdk-live-update-{uuid4().hex[:8]}"
+
+    updated = service.update_vectordb(
+        vectordb_id,
+        config={"sdk_test_marker": config_marker},
+        replicas=baseline_replicas,
+        workroom_id=session_workroom,
+    )
+    assert updated["id"] == vectordb_id
+
+    refetched = service.get_vectordb(vectordb_id, workroom_id=session_workroom)
+    assert refetched["id"] == vectordb_id
+    config = refetched.get("config")
+    assert isinstance(config, dict)
+    assert config.get("sdk_test_marker") == config_marker
+
+
+def test_context_vectordb_scale_reflects_requested_replicas(
+    shared_context_service: ContextService,
+    session_workroom: str,
+    shared_workroom_vectordb: str,
+) -> None:
+    """scale_vectordb is accepted and the response echoes the requested replicas.
+
+    Assertion posture is API round-trip, not physical provisioning: a single-node
+    local Milvus may clamp the effective replica count, so we assert the call
+    succeeds and the returned instance reflects the requested ``replicas``, then
+    scale back to the baseline (session teardown also deletes the VDB).
+    """
+    service = shared_context_service
+    vectordb_id = shared_workroom_vectordb
+
+    before = service.get_vectordb(vectordb_id, workroom_id=session_workroom)
+    baseline_replicas = _vectordb_replicas(before) or 1
+    target_replicas = baseline_replicas + 1
+
+    try:
+        scaled = service.scale_vectordb(
+            vectordb_id,
+            replicas=target_replicas,
+            workroom_id=session_workroom,
+        )
+        assert scaled["id"] == vectordb_id
+        assert _vectordb_replicas(scaled) == target_replicas
+    finally:
+        _safe_scale_vectordb(
+            service,
+            vectordb_id,
+            replicas=baseline_replicas,
+            workroom_id=session_workroom,
+        )
 
 
 @pytest.mark.requires_embedding_model

@@ -10,8 +10,8 @@ surface (see "Not yet wrapped by the SDK" below).
 | 2 | `GET` | `/context/vectordbs` | `list_vectordbs` | Y | Y | strict |
 | 3 | `GET` | `/context/vectordbs/{vectordb_id}` | `get_vectordb` | Y | Y | strict |
 | 4 | `POST` | `/context/vectordbs` | `create_vectordb` | Y | Y | strict |
-| 5 | `PUT` | `/context/vectordbs/{vectordb_id}` | `update_vectordb` | Y | N | unit-only |
-| 6 | `POST` | `/context/vectordbs/{vectordb_id}/scale` | `scale_vectordb` | Y | N | unit-only |
+| 5 | `PUT` | `/context/vectordbs/{vectordb_id}` | `update_vectordb` | Y | Y | round-trip |
+| 6 | `POST` | `/context/vectordbs/{vectordb_id}/scale` | `scale_vectordb` | Y | Y | round-trip |
 | 7 | `DELETE` | `/context/vectordbs/{vectordb_id}` | `delete_vectordb` | Y | Y | strict |
 | 8 | `POST` | `/context/vectordbs/{vectordb_id}/insert` | `insert_vectors` | Y | Y | strict |
 | 9 | `POST` | `/context/vectordbs/insert` | `insert_vectors_global` | Y | Y | strict |
@@ -48,11 +48,19 @@ legacy `/context/search/agentic` route is deprecated server-side ("use POST
 `/context/search/unified` rather than the deprecated path the row originally
 listed.
 
+`update_vectordb` and `scale_vectordb` (rows 5 & 6) carry **round-trip**
+assertion strength rather than **strict**: the live tests confirm the SDK call
+is accepted and the requested change is observable (the `update` config marker
+round-trips via a follow-up `get_vectordb`; the `scale` response echoes the
+requested `replicas`), but they do **not** assert physical replica provisioning.
+Local Milvus is single-node, so a real replica scale may clamp or no-op — the
+API round-trip is the meaningful, non-flaky contract these tests guard.
+
 ## Coverage Summary
 
 - Rows with an SDK method: **35/35**.
 - Unit coverage of wrapped methods: **35/35**.
-- Live coverage of wrapped methods: **33/35** — `update_vectordb` and `scale_vectordb` are unit-only (live coverage was dropped during the per-session-workroom refactor and not restored).
+- Live coverage of wrapped methods: **35/35** — `update_vectordb` and `scale_vectordb` live coverage was restored via workroom-scoped round-trip tests (the `session_workroom` + `shared_workroom_vectordb` fixtures), closing the gap left by the per-session-workroom refactor.
 
 ## Not yet wrapped by the SDK
 
@@ -66,5 +74,4 @@ each for intentional exclusion vs. a real gap before treating coverage as comple
 
 ## Next Actions
 
-- Restore live coverage for `update_vectordb` / `scale_vectordb`, or accept unit-only and document why.
 - Triage the "Not yet wrapped" routes so the tracked denominator reflects the real surface.
