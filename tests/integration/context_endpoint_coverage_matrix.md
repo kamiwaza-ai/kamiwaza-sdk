@@ -58,20 +58,91 @@ API round-trip is the meaningful, non-flaky contract these tests guard.
 
 ## Coverage Summary
 
-- Rows with an SDK method: **35/35**.
+These figures describe coverage **of the 35 wrapped routes above**, not of the
+full Context server surface (see "Not yet wrapped by the SDK" for the unwrapped
+remainder):
+
+- Wrapped rows with an SDK method: **35/35**.
 - Unit coverage of wrapped methods: **35/35**.
 - Live coverage of wrapped methods: **35/35** — `update_vectordb` and `scale_vectordb` live coverage was restored via workroom-scoped round-trip tests (the `session_workroom` + `shared_workroom_vectordb` fixtures), closing the gap left by the per-session-workroom refactor.
 
 ## Not yet wrapped by the SDK
 
-These live `/context` routes have no SDK method and are not tracked above. Triage
-each for intentional exclusion vs. a real gap before treating coverage as complete:
+The 35 rows above are **not** the full Context surface — they are the subset the
+SDK wraps today. The live `/context` router exposes **25** additional enumerated
+user-facing routes — **3** intentional exclusions plus **22** real-gap routes
+(verified against `kamiwaza/services/context/api/*.py`); the out-of-scope
+`/embedding-model/*` family lives entirely outside this count. Each is triaged
+below as either an **intentional exclusion** (with a one-line rationale) or a
+**real gap** tracked by a follow-up ticket. Real gaps are **not** implemented in
+this PR.
 
-- Search: `/search/simple`; `/search/agentic` and `/search/retrieve` are deprecated server-side (the SDK wraps the canonical `/search` + `/search/unified` paths instead)
-- Pipelines: `/pipelines/import-options` (GET/POST), `/pipelines/imports`, `/pipelines/items`, `/pipelines/items/rerun`, `/pipelines/{job_id}/items`, `/pipelines/{job_id}/retry`, `/pipelines/{job_id}/rerun`, `POST /pipelines/{job_id}/cancel`
-- Other: `/global-settings`, `/omniparses` CRUD, `/storage/*`, `/documents/{source_urn}`, audio-readiness
-- Embedding-model routes (`/embedding-model`) are intentionally out of scope.
+### Intentional exclusions (no SDK method, by design)
+
+| Method | Endpoint | Rationale |
+|---|---|---|
+| `POST` | `/context/search/simple` | Deprecated server-side (`deprecated=True`, "Use POST /search instead"); the SDK wraps the canonical `/search` dispatcher (`search`), which routes legacy-shaped payloads to the same handler. |
+| `POST` | `/context/search/agentic` | Deprecated server-side (`deprecated=True`, "Use POST /search with synthesize=true"); covered by `agentic_search` via `/context/search/unified`. |
+| `POST` | `/context/search/retrieve` | Deprecated server-side (`deprecated=True`, "Use POST /search with format_context=true"); the SDK wraps the canonical `/retrieve` (`retrieve`, row 33). |
+| (all) | `/context/embedding-model/*` | Out of scope per project decision (embedding-model lifecycle is managed outside the Context SDK surface). |
+
+### Real gaps (tracked by follow-up tickets, not implemented here)
+
+These routes are live, non-deprecated, and user-facing, but unwrapped. They are
+grouped into coherent follow-up areas for later waves:
+
+**Gap A — Pipeline source-import / replay ops** (`/context/pipelines/*`, 9 routes):
+
+| Method | Endpoint | Note |
+|---|---|---|
+| `GET` | `/context/pipelines/import-options` | Aggregated provider-neutral import options. |
+| `POST` | `/context/pipelines/import-options` | Evaluate selected source descriptors against import rules. |
+| `POST` | `/context/pipelines/imports` | Create a provider-neutral source-import job. |
+| `GET` | `/context/pipelines/items` | Workroom-wide source-import inventory/history. |
+| `POST` | `/context/pipelines/items/rerun` | Rerun selected inventory items by recorded source descriptor. |
+| `GET` | `/context/pipelines/{job_id}/items` | Per-item statuses for one job. |
+| `POST` | `/context/pipelines/{job_id}/retry` | Retry failed/incomplete items from a replayable import job. |
+| `POST` | `/context/pipelines/{job_id}/rerun` | Rerun all recorded source descriptors from a prior import job. |
+| `POST` | `/context/pipelines/{job_id}/cancel` | **Graceful cancel that preserves job history.** Distinct from the SDK's `cancel_pipeline_job` (row 31), which maps to `DELETE /context/pipelines/{job_id}` — a hard delete that cancels *and removes* the job + its recorded history. The non-destructive cancel verb is currently unreachable from the SDK. |
+
+**Gap B — Raw-file object storage CRUD** (`/context/storage/raw*`, 4 routes):
+
+| Method | Endpoint | Note |
+|---|---|---|
+| `POST` | `/context/storage/raw` | Store a raw file into workroom-scoped object storage. |
+| `GET` | `/context/storage/raw` | List raw files (filters, optional markings). |
+| `GET` | `/context/storage/raw/{file_id}` | Get one raw-file record (optional presigned download URL). |
+| `PUT` | `/context/storage/raw/{file_id}` | Edit plain-text raw-file content (If-Match concurrency). |
+
+**Gap C — OmniParse instance lifecycle CRUD** (`/context/omniparses*`, 5 routes):
+
+| Method | Endpoint | Note |
+|---|---|---|
+| `GET` | `/context/omniparses` | List OmniParse instances for the workroom. |
+| `GET` | `/context/omniparses/{omniparse_id}` | Get one instance. |
+| `POST` | `/context/omniparses` | Create a workroom-scoped instance. |
+| `PUT` | `/context/omniparses/{omniparse_id}` | Update an instance. |
+| `DELETE` | `/context/omniparses/{omniparse_id}` | Delete an instance. |
+
+**Gap D — Misc workroom config / document retrieval** (`/context/*`, 4 routes):
+
+| Method | Endpoint | Note |
+|---|---|---|
+| `GET` | `/context/global-settings` | Read global Context settings (ContextAdmin-scoped). |
+| `PATCH` | `/context/global-settings` | Update global Context settings (ContextAdmin-scoped). |
+| `GET` | `/context/documents/{source_urn}` | Presigned download URL for an original document by source URN. |
+| `GET` | `/context/audio-readiness` | Workroom-scoped audio-readiness probe (OmniParse audio support). |
+
+## Coverage scope note
+
+This matrix tracks **35 wrapped routes** against a live Context surface of
+**60 enumerated user-facing routes**: 35 wrapped + 3 intentional exclusions
+(the deprecated `/search/*` legacy paths) + 22 real-gap routes across Gaps A–D
+(9 + 4 + 5 + 4). The out-of-scope `/embedding-model/*` family is a wildcard
+counted **outside** this 60 — it is not enumerated here. The "35/35" figures in
+the Coverage Summary describe coverage **of the wrapped subset only**, not of the
+full server surface — every unwrapped route is accounted for above.
 
 ## Next Actions
 
-- Triage the "Not yet wrapped" routes so the tracked denominator reflects the real surface.
+- File the Gap A–D follow-up tickets (one per area) to wrap the real gaps in later waves.
