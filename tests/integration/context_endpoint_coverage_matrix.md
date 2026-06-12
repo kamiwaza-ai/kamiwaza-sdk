@@ -1,6 +1,8 @@
-# Context Endpoint Coverage Matrix (Feb 27, 2026)
+# Context Endpoint Coverage Matrix (updated Jun 12, 2026)
 
-Source of truth routes: `kamiwaza/services/context/api/*.py` (35 endpoints).
+Routes are defined in `kamiwaza/services/context/api/*.py`. This matrix tracks
+the subset of Context endpoints the SDK wraps — it is **not** the full server
+surface (see "Not yet wrapped by the SDK" below).
 
 | # | Method | Endpoint | SDK Method | Unit | Live | Assertion Strength |
 |---|---|---|---|---|---|---|
@@ -8,8 +10,8 @@ Source of truth routes: `kamiwaza/services/context/api/*.py` (35 endpoints).
 | 2 | `GET` | `/context/vectordbs` | `list_vectordbs` | Y | Y | strict |
 | 3 | `GET` | `/context/vectordbs/{vectordb_id}` | `get_vectordb` | Y | Y | strict |
 | 4 | `POST` | `/context/vectordbs` | `create_vectordb` | Y | Y | strict |
-| 5 | `PUT` | `/context/vectordbs/{vectordb_id}` | `update_vectordb` | Y | Y | strict |
-| 6 | `POST` | `/context/vectordbs/{vectordb_id}/scale` | `scale_vectordb` | Y | Y | strict |
+| 5 | `PUT` | `/context/vectordbs/{vectordb_id}` | `update_vectordb` | Y | N | unit-only |
+| 6 | `POST` | `/context/vectordbs/{vectordb_id}/scale` | `scale_vectordb` | Y | N | unit-only |
 | 7 | `DELETE` | `/context/vectordbs/{vectordb_id}` | `delete_vectordb` | Y | Y | strict |
 | 8 | `POST` | `/context/vectordbs/{vectordb_id}/insert` | `insert_vectors` | Y | Y | strict |
 | 9 | `POST` | `/context/vectordbs/insert` | `insert_vectors_global` | Y | Y | strict |
@@ -37,16 +39,32 @@ Source of truth routes: `kamiwaza/services/context/api/*.py` (35 endpoints).
 | 31 | `DELETE` | `/context/pipelines/{job_id}` | `cancel_pipeline_job` | Y | Y | strict |
 | 32 | `POST` | `/context/search` | `search` | Y | Y | strict |
 | 33 | `POST` | `/context/retrieve` | `retrieve` | Y | Y | strict |
-| 34 | `POST` | `/context/agentic/search` | `agentic_search` | Y | Y | strict |
+| 34 | `POST` | `/context/search/unified` | `agentic_search` | Y | Y | strict |
 | 35 | `POST` | `/context/upload/` | `upload_file` | Y | Y | strict |
+
+`agentic_search` wraps the canonical unified endpoint (`synthesize=True`). The
+legacy `/context/search/agentic` route is deprecated server-side ("use POST
+/search with synthesize=true instead"), so the SDK intentionally targets
+`/context/search/unified` rather than the deprecated path the row originally
+listed.
 
 ## Coverage Summary
 
-- Total endpoints: **35**
-- Unit coverage by method call presence: **35/35**
-- Live coverage by method call presence: **35/35**
-- All endpoint contracts in this matrix now run under strict assertions.
+- Rows with an SDK method: **35/35**.
+- Unit coverage of wrapped methods: **35/35**.
+- Live coverage of wrapped methods: **33/35** — `update_vectordb` and `scale_vectordb` are unit-only (live coverage was dropped during the per-session-workroom refactor and not restored).
+
+## Not yet wrapped by the SDK
+
+These live `/context` routes have no SDK method and are not tracked above. Triage
+each for intentional exclusion vs. a real gap before treating coverage as complete:
+
+- Search: `/search/simple`; `/search/agentic` and `/search/retrieve` are deprecated server-side (the SDK wraps the canonical `/search` + `/search/unified` paths instead)
+- Pipelines: `/pipelines/import-options` (GET/POST), `/pipelines/imports`, `/pipelines/items`, `/pipelines/items/rerun`, `/pipelines/{job_id}/items`, `/pipelines/{job_id}/retry`, `/pipelines/{job_id}/rerun`, `POST /pipelines/{job_id}/cancel`
+- Other: `/global-settings`, `/omniparses` CRUD, `/storage/*`, `/documents/{source_urn}`, audio-readiness
+- Embedding-model routes (`/embedding-model`) are intentionally out of scope.
 
 ## Next Actions
 
-- Maintain strict assertions for all routes and keep regressions failing fast.
+- Restore live coverage for `update_vectordb` / `scale_vectordb`, or accept unit-only and document why.
+- Triage the "Not yet wrapped" routes so the tracked denominator reflects the real surface.

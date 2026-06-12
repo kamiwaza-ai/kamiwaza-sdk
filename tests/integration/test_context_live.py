@@ -829,3 +829,22 @@ def test_context_retrieve_contract(
         vectordb_id=shared_workroom_vectordb,
     )
     assert isinstance(retrieve.get("sources"), list)
+
+
+@pytest.mark.requires_embedding_model
+def test_context_agentic_search_contract(
+    shared_context_service: ContextService,
+    session_workroom: str,
+    shared_workroom_vectordb: str,
+) -> None:
+    service = shared_context_service
+    workroom_id = session_workroom
+    assert shared_workroom_vectordb
+
+    result = service.agentic_search(
+        workroom_id=workroom_id,
+        query="hello context",
+        vectordb_id=shared_workroom_vectordb,
+    )
+    assert isinstance(result.get("results"), list)
+    assert isinstance(result.get("sources"), list)

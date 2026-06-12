@@ -551,6 +551,56 @@ class ContextService(BaseService):
             headers=self._merge_headers(workroom_id=workroom_id),
         )
 
+    def agentic_search(
+        self,
+        *,
+        workroom_id: str,
+        query: str,
+        collection_name: str | None = None,
+        top_k: int = 10,
+        score_threshold: float | None = None,
+        vectordb_id: str | None = None,
+        max_iterations: int = 1,
+        relevance_threshold: float = 0.7,
+        enable_graph_search: bool = False,
+        ontology_id: str | None = None,
+        group_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Run agentic search with LLM synthesis over a workroom's collections.
+
+        Targets the canonical unified search endpoint with ``synthesize=True``.
+        The legacy ``/context/search/agentic`` route is deprecated server-side
+        in favour of ``/context/search/unified``; this method wraps the latter so
+        callers stay on the supported path and receive the unified response shape
+        (``results``/``sources``/``synthesis``/``citations``). Set
+        ``max_iterations`` > 1 for iterative query refinement, or
+        ``enable_graph_search`` with ``ontology_id``/``group_ids`` to fold
+        knowledge-graph results into the synthesis.
+        """
+        payload: dict[str, Any] = {
+            "query": query,
+            "top_k": top_k,
+            "synthesize": True,
+            "max_iterations": max_iterations,
+            "relevance_threshold": relevance_threshold,
+            "enable_graph_search": enable_graph_search,
+        }
+        if collection_name is not None:
+            payload["collection_name"] = collection_name
+        if score_threshold is not None:
+            payload["score_threshold"] = score_threshold
+        if vectordb_id is not None:
+            payload["vectordb_id"] = vectordb_id
+        if ontology_id is not None:
+            payload["ontology_id"] = ontology_id
+        if group_ids is not None:
+            payload["group_ids"] = group_ids
+        return self.client.post(
+            f"{self._BASE_PATH}/search/unified",
+            json=payload,
+            headers=self._merge_headers(workroom_id=workroom_id),
+        )
+
     def upload_file(
         self,
         *,
