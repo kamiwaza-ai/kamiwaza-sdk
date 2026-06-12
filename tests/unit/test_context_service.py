@@ -635,3 +635,63 @@ def test_retrieve_builds_payload(dummy_client):
     assert kwargs["json"]["collection_names"] == ["c1", "c2"]
     assert kwargs["json"]["top_k"] == 3
     assert kwargs["json"]["score_threshold"] == 0.4
+
+
+def test_agentic_search_targets_unified_endpoint_with_synthesis(dummy_client):
+    responses = {("post", "/context/search/unified"): {"results": []}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.agentic_search(
+        workroom_id="ffffffff-ffff-ffff-ffff-ffffffffffff",
+        query="why is the sky blue",
+    )
+
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("post", "/context/search/unified")
+    assert kwargs["json"] == {
+        "query": "why is the sky blue",
+        "top_k": 10,
+        "synthesize": True,
+        "max_iterations": 1,
+        "relevance_threshold": 0.7,
+        "enable_graph_search": False,
+    }
+    assert kwargs["headers"]["X-Workroom-ID"] == "ffffffff-ffff-ffff-ffff-ffffffffffff"
+
+
+def test_agentic_search_includes_optional_graph_and_vector_fields(dummy_client):
+    responses = {("post", "/context/search/unified"): {"results": []}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.agentic_search(
+        workroom_id="ffffffff-ffff-ffff-ffff-ffffffffffff",
+        query="summarize incidents",
+        collection_name="docs",
+        top_k=5,
+        score_threshold=0.55,
+        vectordb_id="vdb-1",
+        max_iterations=3,
+        relevance_threshold=0.8,
+        enable_graph_search=True,
+        ontology_id="ont-1",
+        group_ids=["g1", "g2"],
+    )
+
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("post", "/context/search/unified")
+    assert kwargs["json"] == {
+        "query": "summarize incidents",
+        "top_k": 5,
+        "synthesize": True,
+        "max_iterations": 3,
+        "relevance_threshold": 0.8,
+        "enable_graph_search": True,
+        "collection_name": "docs",
+        "score_threshold": 0.55,
+        "vectordb_id": "vdb-1",
+        "ontology_id": "ont-1",
+        "group_ids": ["g1", "g2"],
+    }
+    assert kwargs["headers"]["X-Workroom-ID"] == "ffffffff-ffff-ffff-ffff-ffffffffffff"

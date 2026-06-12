@@ -829,3 +829,32 @@ def test_context_retrieve_contract(
         vectordb_id=shared_workroom_vectordb,
     )
     assert isinstance(retrieve.get("sources"), list)
+
+
+@pytest.mark.requires_embedding_model
+def test_context_agentic_search_contract(
+    shared_context_service: ContextService,
+    session_workroom: str,
+    shared_workroom_vectordb: str,
+    context_required_llm: str,
+) -> None:
+    # agentic_search always sends synthesize=True, so it needs a context LLM in
+    # addition to an embedding model -- gate on both prerequisites (like the
+    # ontology tests) so the test skips, rather than fails, on an LLM-less host.
+    assert context_required_llm
+    service = shared_context_service
+    workroom_id = session_workroom
+    assert shared_workroom_vectordb
+
+    result = service.agentic_search(
+        workroom_id=workroom_id,
+        query="hello context",
+        vectordb_id=shared_workroom_vectordb,
+    )
+    assert isinstance(result.get("results"), list)
+    assert isinstance(result.get("sources"), list)
+    # synthesize=True is always sent, so the unified response must carry the
+    # synthesis/citations fields (content depends on the LLM); assert presence
+    # so a server-side regression that silently drops synthesis is caught.
+    assert "synthesis" in result
+    assert "citations" in result
