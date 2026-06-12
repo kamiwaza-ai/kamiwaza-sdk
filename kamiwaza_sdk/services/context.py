@@ -575,7 +575,9 @@ class ContextService(BaseService):
         (``results``/``sources``/``synthesis``/``citations``). Set
         ``max_iterations`` > 1 for iterative query refinement, or
         ``enable_graph_search`` with ``ontology_id``/``group_ids`` to fold
-        knowledge-graph results into the synthesis.
+        knowledge-graph results into the synthesis. ``ontology_id`` and
+        ``group_ids`` only take effect when ``enable_graph_search`` is True; the
+        server ignores them otherwise.
         """
         payload: dict[str, Any] = {
             "query": query,
