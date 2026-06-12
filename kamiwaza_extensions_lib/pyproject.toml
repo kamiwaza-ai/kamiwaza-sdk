@@ -1,6 +1,6 @@
 [project]
 name = "kamiwaza-extensions-lib"
-version = "0.4.0"
+version = "0.4.1"
 description = "Runtime library for Kamiwaza extensions: auth middleware, identity extraction, model client, session management"
 readme = "README.md"
 license = "Apache-2.0"

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from urllib.parse import quote
+from urllib.parse import quote, urljoin
 
 from fastapi import APIRouter, Request
 
@@ -131,7 +131,12 @@ def create_session_router(prefix: str = "") -> APIRouter:
     async def logout(request: Request) -> dict:
         config = AuthConfig.from_env()
         if not config.use_auth:
-            return {"logout_url": None, "redirect_url": None}
+            return {
+                "logout_url": None,
+                "redirect_url": None,
+                "front_channel_logout_url": None,
+                "post_logout_redirect_uri": None,
+            }
 
         # Two URLs, two consumers (round-8 review High #4):
         # - ``logout_url`` returned to the client is browser-facing — the
@@ -153,25 +158,64 @@ def create_session_router(prefix: str = "") -> APIRouter:
         browser_logout_url = f"{browser_base}/auth/logout"
         backend_logout_url = f"{backend_base}/auth/logout"
 
-        # Terminate the platform session server-side so the user is
-        # actually logged out (the client only redirects to redirect_url).
+        # The browser sends the URL it wants to land on after logout; core
+        # validates it against its allowed hosts before echoing it back.
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = None
+        requested_redirect = None
+        if isinstance(payload, dict):
+            requested_redirect = payload.get("post_logout_redirect_uri") or payload.get(
+                "redirect_uri"
+            )
+
+        # Terminate the platform session server-side AND proxy core's logout
+        # response to the client (ENG-6911). The server-side POST clears
+        # core's session, but the auth-gateway / Keycloak SSO cookies live in
+        # the *browser* — only core's front-channel GET can clear those. Core
+        # returns that GET's URL as ``front_channel_logout_url``; we must hand
+        # it to the client or SSO silently re-authenticates on the next visit.
         from .auth import forward_auth_headers
 
+        front_channel_logout_url = None
+        post_logout_redirect_uri = None
         try:
             import httpx
 
             headers = forward_auth_headers(request.headers)
+            body = (
+                {"post_logout_redirect_uri": requested_redirect}
+                if requested_redirect
+                else {}
+            )
             async with httpx.AsyncClient(
                 verify=config.verify_ssl,
                 timeout=5,
             ) as client:
-                await client.post(backend_logout_url, headers=headers)
+                core_response = await client.post(
+                    backend_logout_url, headers=headers, json=body
+                )
+            core_data = core_response.json()
+            if isinstance(core_data, dict):
+                core_front_channel = core_data.get("front_channel_logout_url")
+                if core_front_channel:
+                    # Core returns a root-relative path; resolve it against
+                    # the browser-routable base so the client can navigate
+                    # to it from any origin (e.g. localhost:3000 under
+                    # ``kz-ext dev local --auth``).
+                    front_channel_logout_url = urljoin(
+                        f"{browser_base}/", core_front_channel
+                    )
+                post_logout_redirect_uri = core_data.get("post_logout_redirect_uri")
         except Exception:
-            pass  # Best-effort — redirect still happens
+            pass  # Best-effort — client falls back to its login redirect
 
         return {
             "logout_url": browser_logout_url,
             "redirect_url": f"{app_url}/logged-out",
+            "front_channel_logout_url": front_channel_logout_url,
+            "post_logout_redirect_uri": post_logout_redirect_uri,
         }
 
     return router

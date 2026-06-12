@@ -221,26 +221,109 @@ class TestLoginUrlEndpoint:
         assert resp.json()["login_url"] is None
 
 
+class _FakeCoreResponse:
+    """Stands in for httpx.Response from core's POST /api/auth/logout."""
+
+    def __init__(self, body):
+        self._body = body
+
+    def json(self):
+        return self._body
+
+
+def _fake_core_client(calls, core_body):
+    """Build a FakeAsyncClient class recording calls and returning core_body."""
+
+    class FakeAsyncClient:
+        def __init__(self, *, verify, timeout):
+            calls["verify"] = verify
+            calls["timeout"] = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, headers=None, json=None):
+            calls["url"] = url
+            calls["headers"] = headers or {}
+            calls["json"] = json
+            return _FakeCoreResponse(core_body)
+
+    return FakeAsyncClient
+
+
+# The response body core's POST /api/auth/logout actually returns
+# (kamiwaza/services/auth/api.py). ``front_channel_logout_url`` is
+# root-relative — the session router must absolutize it.
+_CORE_LOGOUT_BODY = {
+    "message": "Logged out successfully",
+    "session_termination_requested": True,
+    "front_channel_logout_url": (
+        "/api/auth/logout/front-channel?redirect_uri=https%3A%2F%2Fcluster.test%2F"
+    ),
+    "post_logout_redirect_uri": "https://cluster.test/",
+}
+
+
 @pytest.mark.unit
 class TestLogoutEndpoint:
-    def test_returns_logout_urls(self, monkeypatch):
+    def test_returns_browser_routable_front_channel_logout_url(self, monkeypatch):
+        """ENG-6911 — the logout response MUST carry core's front-channel
+        logout URL, resolved to a browser-routable absolute URL. The
+        previous contract returned only ``logout_url`` (the POST handler —
+        a browser GET there 405s) so the WRM frontend fell through to
+        ``/login`` and SSO silently re-authenticated."""
+        import httpx
+
+        calls = {}
+        monkeypatch.setattr(
+            httpx, "AsyncClient", _fake_core_client(calls, _CORE_LOGOUT_BODY)
+        )
         client = _make_app(monkeypatch, use_auth="true")
         resp = client.post("/auth/logout")
 
         assert resp.status_code == 200
         data = resp.json()
+        assert data["front_channel_logout_url"] == (
+            "https://cluster.test/api/auth/logout/front-channel"
+            "?redirect_uri=https%3A%2F%2Fcluster.test%2F"
+        )
+        assert data["post_logout_redirect_uri"] == "https://cluster.test/"
+        # Legacy fields stay for back-compat with existing consumers.
         assert data["logout_url"] == "https://cluster.test/api/auth/logout"
         assert data["redirect_url"] == (
             "https://cluster.test/runtime/apps/my-app/logged-out"
         )
 
-    def test_uses_configured_ssl_verification_for_logout_post(self, monkeypatch):
-        calls = {}
+    def test_forwards_post_logout_redirect_uri_to_core(self, monkeypatch):
+        """ENG-6911 — the browser's requested post-logout landing URL must
+        reach core's POST so core can validate and echo it back."""
+        import httpx
 
-        class FakeAsyncClient:
+        calls = {}
+        monkeypatch.setattr(
+            httpx, "AsyncClient", _fake_core_client(calls, _CORE_LOGOUT_BODY)
+        )
+        client = _make_app(monkeypatch, use_auth="true")
+        resp = client.post(
+            "/auth/logout",
+            json={"post_logout_redirect_uri": "https://cluster.test/login"},
+        )
+
+        assert resp.status_code == 200
+        assert calls["json"] == {
+            "post_logout_redirect_uri": "https://cluster.test/login"
+        }
+
+    def test_core_unreachable_returns_null_front_channel_fields(self, monkeypatch):
+        """When the server-side POST to core fails, the proxied fields are
+        null and the client falls back to its own login redirect."""
+
+        class FailingAsyncClient:
             def __init__(self, *, verify, timeout):
-                calls["verify"] = verify
-                calls["timeout"] = timeout
+                pass
 
             async def __aenter__(self):
                 return self
@@ -248,14 +331,30 @@ class TestLogoutEndpoint:
             async def __aexit__(self, exc_type, exc, tb):
                 return False
 
-            async def post(self, url, headers=None):
-                calls["url"] = url
-                calls["headers"] = headers or {}
+            async def post(self, url, headers=None, json=None):
+                raise RuntimeError("core unreachable")
 
         import httpx
 
+        monkeypatch.setattr(httpx, "AsyncClient", FailingAsyncClient)
+        client = _make_app(monkeypatch, use_auth="true")
+        resp = client.post("/auth/logout")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["front_channel_logout_url"] is None
+        assert data["post_logout_redirect_uri"] is None
+        # Legacy fields still present so the redirect fallback works.
+        assert data["logout_url"] == "https://cluster.test/api/auth/logout"
+
+    def test_uses_configured_ssl_verification_for_logout_post(self, monkeypatch):
+        import httpx
+
+        calls = {}
         monkeypatch.setenv("KAMIWAZA_VERIFY_SSL", "false")
-        monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+        monkeypatch.setattr(
+            httpx, "AsyncClient", _fake_core_client(calls, _CORE_LOGOUT_BODY)
+        )
         client = _make_app(monkeypatch, use_auth="true")
 
         resp = client.post("/auth/logout", headers={"x-auth-token": "token-123"})
@@ -271,8 +370,11 @@ class TestLogoutEndpoint:
         resp = client.post("/auth/logout")
 
         assert resp.status_code == 200
-        assert resp.json()["logout_url"] is None
-        assert resp.json()["redirect_url"] is None
+        data = resp.json()
+        assert data["logout_url"] is None
+        assert data["redirect_url"] is None
+        assert data["front_channel_logout_url"] is None
+        assert data["post_logout_redirect_uri"] is None
 
     def test_logout_post_uses_container_url_under_auth_split(self, monkeypatch):
         """PR #87 round-8 review High #4 — under ``kz-ext dev local
@@ -297,8 +399,9 @@ class TestLogoutEndpoint:
             async def __aexit__(self, exc_type, exc, tb):
                 return False
 
-            async def post(self, url, headers=None):
+            async def post(self, url, headers=None, json=None):
                 calls["url"] = url
+                return _FakeCoreResponse(_CORE_LOGOUT_BODY)
 
         import httpx
 

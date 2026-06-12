@@ -6,6 +6,23 @@ follow semver. The library is published to PyPI as a standalone package
 `kamiwaza-sdk` — extension authors pin against the `[lib]` minor range in
 `requirements.txt`.
 
+## [0.4.1] — 2026-06-12 (ENG-6911)
+
+### Fixed
+
+* **`POST /auth/logout` now proxies core's logout response** instead of
+  fabricating its own. The handler forwards the browser's
+  `post_logout_redirect_uri` (from the request body) to core's
+  `POST /api/auth/logout` and returns core's `front_channel_logout_url`
+  (absolutized against the browser-routable API base) and
+  `post_logout_redirect_uri` alongside the legacy `logout_url` /
+  `redirect_url` fields. Without the front-channel URL the browser's
+  auth-gateway / Keycloak SSO cookies were never cleared, so "logout"
+  silently re-authenticated on the next visit (Workroom Manager,
+  ENG-6911). The server-side `httpx.post` cannot substitute — core's
+  `Set-Cookie` clears land inside the backend container, never on the
+  browser.
+
 ## [0.4.0] — 2026-04-30 (D210 M3 — PR #87)
 
 ### Added
