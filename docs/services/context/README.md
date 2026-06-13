@@ -156,6 +156,54 @@ source-import and replay surface:
 Collection/pipeline/file **writes** follow the same rule: allowed in a normal
 workroom, `403` on the Global Workroom.
 
+## Raw-file Object Storage
+
+The SDK wraps the workroom-scoped raw-file object-storage CRUD surface
+(`/context/storage/raw`). These methods are keyword-only and take an explicit
+`workroom_id` (sent as the `X-Workroom-ID` header); they return raw `dict`
+records rather than typed models.
+
+### Available Methods
+
+- `store_raw_file(*, workroom_id, filename, content, ...)` — store a raw file
+  directly into workroom object storage (`POST /context/storage/raw`). `content`
+  accepts `bytes` or a `str` (UTF-8 encoded) and is base64-encoded on the wire
+  for you. Optional `content_type`, `source_urn`, `source_kind`, `source_ref`,
+  and `metadata` are forwarded only when set.
+- `list_raw_files(*, workroom_id, ...)` — list stored raw files
+  (`GET /context/storage/raw`), returning the `{"items": [...], "count": N}`
+  shape. Supports `source_urn` / `job_id` / `connector_id` filters, `limit` /
+  `offset` paging, and `include_markings=True` to attach aggregated security
+  markings.
+- `get_raw_file(file_id, *, workroom_id, ...)` — fetch one raw-file record
+  (`GET /context/storage/raw/{file_id}`). Set `include_download_url=True` for a
+  temporary presigned download URL (when S3 metadata exists); `expires_seconds`
+  (30–3600) overrides its TTL.
+- `update_raw_file(file_id, *, workroom_id, content, if_match=None)` — replace
+  the plain-text body of an editable raw file
+  (`PUT /context/storage/raw/{file_id}`). Pass the file's `updated_at` token from
+  a prior response as `if_match` for optimistic concurrency; a stale token
+  returns `409` with the current token in the error detail.
+
+```python
+# my_workroom_id is a workroom you own.
+stored = client.context.store_raw_file(
+    workroom_id=my_workroom_id,
+    filename="notes.txt",
+    content="hello raw storage",
+    content_type="text/plain",
+)
+file_id = stored["id"]
+
+current = client.context.get_raw_file(file_id, workroom_id=my_workroom_id)
+client.context.update_raw_file(
+    file_id,
+    workroom_id=my_workroom_id,
+    content="edited body",
+    if_match=current["updated_at"],  # optimistic concurrency
+)
+```
+
 ## Error Handling
 
 ```python
