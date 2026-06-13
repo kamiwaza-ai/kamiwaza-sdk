@@ -204,6 +204,48 @@ client.context.update_raw_file(
 )
 ```
 
+## OmniParse Instances
+
+The SDK wraps the workroom-scoped OmniParse instance lifecycle CRUD surface
+(`/context/omniparses`). OmniParse instances are the document-parsing runtimes
+that ingest pipelines depend on; wrapping them lets callers provision and manage
+OmniParse from automation rather than relying only on implicit lazy
+provisioning. These methods are keyword-only, take an explicit `workroom_id`
+(sent as the `X-Workroom-ID` header), and return raw `dict` / `list[dict]`
+records rather than typed models.
+
+### Available Methods
+
+- `list_omniparses(*, workroom_id)` — list OmniParse instances for a workroom
+  (`GET /context/omniparses`), returning a list of instance records.
+- `get_omniparse(omniparse_id, *, workroom_id)` — fetch one instance by id
+  (`GET /context/omniparses/{omniparse_id}`).
+- `create_omniparse(*, name, workroom_id, template_name="tool-omniparse", config=None)`
+  — provision an OmniParse runtime instance (`POST /context/omniparses`).
+  `template_name` selects the App Garden tool template; `config` carries optional
+  OmniParse environment configuration and is forwarded only when set.
+- `update_omniparse(omniparse_id, *, workroom_id, config=None)` — update an
+  instance's environment configuration (`PUT /context/omniparses/{omniparse_id}`).
+- `delete_omniparse(omniparse_id, *, workroom_id)` — delete an instance
+  (`DELETE /context/omniparses/{omniparse_id}`).
+
+```python
+# my_workroom_id is a workroom you own.
+instance = client.context.create_omniparse(
+    name="docs-parser",
+    workroom_id=my_workroom_id,
+    config={"replicas": 1},
+)
+instance_id = instance["id"]
+
+client.context.update_omniparse(
+    instance_id,
+    workroom_id=my_workroom_id,
+    config={"replicas": 2},
+)
+client.context.delete_omniparse(instance_id, workroom_id=my_workroom_id)
+```
+
 ## Error Handling
 
 ```python

@@ -1110,3 +1110,117 @@ def test_update_raw_file_sets_if_match_header(dummy_client):
     _, _, kwargs = client.calls[0]
     assert kwargs["headers"]["If-Match"] == "2026-06-12T00:00:00+00:00"
     assert kwargs["headers"]["X-Workroom-ID"] == WORKROOM
+
+
+# --- OmniParse instance lifecycle CRUD ---
+
+
+def test_list_omniparses_sets_workroom_header(dummy_client):
+    responses = {("get", "/context/omniparses"): []}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.list_omniparses(workroom_id=WORKROOM)
+
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("get", "/context/omniparses")
+    assert kwargs["headers"]["X-Workroom-ID"] == WORKROOM
+
+
+def test_get_omniparse_calls_expected_path(dummy_client):
+    responses = {("get", "/context/omniparses/op-1"): {"id": "op-1"}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.get_omniparse("op-1", workroom_id=WORKROOM)
+
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("get", "/context/omniparses/op-1")
+    assert kwargs["headers"]["X-Workroom-ID"] == WORKROOM
+
+
+def test_create_omniparse_builds_payload_with_defaults(dummy_client):
+    responses = {("post", "/context/omniparses"): {"id": "op-1"}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.create_omniparse(name="parser-a", workroom_id=WORKROOM)
+
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("post", "/context/omniparses")
+    assert kwargs["json"] == {
+        "name": "parser-a",
+        "template_name": "tool-omniparse",
+    }
+    assert kwargs["headers"]["X-Workroom-ID"] == WORKROOM
+
+
+def test_create_omniparse_includes_optional_fields(dummy_client):
+    responses = {("post", "/context/omniparses"): {"id": "op-1"}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.create_omniparse(
+        name="parser-b",
+        workroom_id=WORKROOM,
+        template_name="tool-omniparse-gpu",
+        config={"replicas": 2},
+    )
+
+    _, _, kwargs = client.calls[0]
+    assert kwargs["json"] == {
+        "name": "parser-b",
+        "template_name": "tool-omniparse-gpu",
+        "config": {"replicas": 2},
+    }
+
+
+def test_create_omniparse_omits_config_when_absent(dummy_client):
+    responses = {("post", "/context/omniparses"): {"id": "op-1"}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.create_omniparse(name="parser-c", workroom_id=WORKROOM)
+
+    _, _, kwargs = client.calls[0]
+    assert "config" not in kwargs["json"]
+
+
+def test_update_omniparse_sends_config(dummy_client):
+    responses = {("put", "/context/omniparses/op-1"): {"id": "op-1"}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.update_omniparse(
+        "op-1",
+        workroom_id=WORKROOM,
+        config={"timeout": 30},
+    )
+
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("put", "/context/omniparses/op-1")
+    assert kwargs["json"] == {"config": {"timeout": 30}}
+    assert kwargs["headers"]["X-Workroom-ID"] == WORKROOM
+
+
+def test_update_omniparse_sends_empty_body_when_config_absent(dummy_client):
+    responses = {("put", "/context/omniparses/op-1"): {"id": "op-1"}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.update_omniparse("op-1", workroom_id=WORKROOM)
+
+    _, _, kwargs = client.calls[0]
+    assert kwargs["json"] == {}
+
+
+def test_delete_omniparse_calls_expected_path(dummy_client):
+    responses = {("delete", "/context/omniparses/op-1"): {"message": "deleted"}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.delete_omniparse("op-1", workroom_id=WORKROOM)
+
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("delete", "/context/omniparses/op-1")
+    assert kwargs["headers"]["X-Workroom-ID"] == WORKROOM
