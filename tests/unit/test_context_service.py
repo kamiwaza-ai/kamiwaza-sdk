@@ -553,8 +553,23 @@ def test_get_pipeline_job_calls_expected_path(dummy_client):
     assert kwargs["headers"]["X-Workroom-ID"] == "ffffffff-ffff-ffff-ffff-ffffffffffff"
 
 
-def test_cancel_pipeline_job_calls_expected_path(dummy_client):
+def test_delete_pipeline_job_calls_expected_path(dummy_client):
     responses = {("delete", "/context/pipelines/job-1"): None}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.delete_pipeline_job(
+        workroom_id="ffffffff-ffff-ffff-ffff-ffffffffffff",
+        job_id="job-1",
+    )
+
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("delete", "/context/pipelines/job-1")
+    assert kwargs["headers"]["X-Workroom-ID"] == "ffffffff-ffff-ffff-ffff-ffffffffffff"
+
+
+def test_cancel_pipeline_job_posts_graceful_cancel(dummy_client):
+    responses = {("post", "/context/pipelines/job-1/cancel"): {"id": "job-1"}}
     client = dummy_client(responses)
     service = ContextService(client)
 
@@ -564,7 +579,223 @@ def test_cancel_pipeline_job_calls_expected_path(dummy_client):
     )
 
     method, path, kwargs = client.calls[0]
-    assert (method, path) == ("delete", "/context/pipelines/job-1")
+    assert (method, path) == ("post", "/context/pipelines/job-1/cancel")
+    assert kwargs["headers"]["X-Workroom-ID"] == "ffffffff-ffff-ffff-ffff-ffffffffffff"
+
+
+def test_get_import_options_calls_expected_path(dummy_client):
+    responses = {("get", "/context/pipelines/import-options"): {"providers": []}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.get_import_options(
+        workroom_id="ffffffff-ffff-ffff-ffff-ffffffffffff",
+    )
+
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("get", "/context/pipelines/import-options")
+    assert kwargs["headers"]["X-Workroom-ID"] == "ffffffff-ffff-ffff-ffff-ffffffffffff"
+
+
+def test_get_import_options_omits_header_without_workroom(dummy_client):
+    responses = {("get", "/context/pipelines/import-options"): {"providers": []}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.get_import_options()
+
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("get", "/context/pipelines/import-options")
+    assert "X-Workroom-ID" not in kwargs["headers"]
+
+
+def test_evaluate_import_options_posts_payload(dummy_client):
+    responses = {("post", "/context/pipelines/import-options"): {"can_submit": True}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.evaluate_import_options(
+        sources=[{"provider": "m365"}],
+        config={"collection_name": "docs"},
+        workroom_id="ffffffff-ffff-ffff-ffff-ffffffffffff",
+    )
+
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("post", "/context/pipelines/import-options")
+    assert kwargs["json"] == {
+        "sources": [{"provider": "m365"}],
+        "config": {"collection_name": "docs"},
+    }
+    assert kwargs["headers"]["X-Workroom-ID"] == "ffffffff-ffff-ffff-ffff-ffffffffffff"
+
+
+def test_evaluate_import_options_omits_config_when_absent(dummy_client):
+    responses = {("post", "/context/pipelines/import-options"): {"can_submit": False}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.evaluate_import_options(sources=[])
+
+    method, path, kwargs = client.calls[0]
+    assert kwargs["json"] == {"sources": []}
+
+
+def test_create_source_import_job_posts_payload(dummy_client):
+    responses = {("post", "/context/pipelines/imports"): {"id": "job-9"}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.create_source_import_job(
+        workroom_id="ffffffff-ffff-ffff-ffff-ffffffffffff",
+        sources=[{"provider": "m365"}],
+        config={"collection_name": "docs"},
+        callback={"url": "https://cb.test"},
+        idempotency_key="key-1",
+        force=True,
+    )
+
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("post", "/context/pipelines/imports")
+    assert kwargs["json"] == {
+        "sources": [{"provider": "m365"}],
+        "force": True,
+        "config": {"collection_name": "docs"},
+        "callback": {"url": "https://cb.test"},
+        "idempotency_key": "key-1",
+    }
+    assert kwargs["headers"]["X-Workroom-ID"] == "ffffffff-ffff-ffff-ffff-ffffffffffff"
+
+
+def test_create_source_import_job_defaults_force_false(dummy_client):
+    responses = {("post", "/context/pipelines/imports"): {"id": "job-9"}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.create_source_import_job(
+        workroom_id="ffffffff-ffff-ffff-ffff-ffffffffffff",
+        sources=[{"provider": "m365"}],
+    )
+
+    method, path, kwargs = client.calls[0]
+    assert kwargs["json"] == {"sources": [{"provider": "m365"}], "force": False}
+
+
+def test_list_import_items_calls_expected_path(dummy_client):
+    responses = {("get", "/context/pipelines/items"): {"items": [], "total_items": 0}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.list_import_items(
+        workroom_id="ffffffff-ffff-ffff-ffff-ffffffffffff",
+    )
+
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("get", "/context/pipelines/items")
+    assert kwargs["headers"]["X-Workroom-ID"] == "ffffffff-ffff-ffff-ffff-ffffffffffff"
+
+
+def test_rerun_import_items_posts_payload(dummy_client):
+    responses = {("post", "/context/pipelines/items/rerun"): {"id": "job-2"}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.rerun_import_items(
+        workroom_id="ffffffff-ffff-ffff-ffff-ffffffffffff",
+        item_keys=["item-a", "item-b"],
+        config={"collection_name": "docs"},
+        idempotency_key="key-2",
+        force=False,
+    )
+
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("post", "/context/pipelines/items/rerun")
+    assert kwargs["json"] == {
+        "item_keys": ["item-a", "item-b"],
+        "force": False,
+        "config": {"collection_name": "docs"},
+        "idempotency_key": "key-2",
+    }
+    assert kwargs["headers"]["X-Workroom-ID"] == "ffffffff-ffff-ffff-ffff-ffffffffffff"
+
+
+def test_rerun_import_items_defaults_force_true(dummy_client):
+    responses = {("post", "/context/pipelines/items/rerun"): {"id": "job-2"}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.rerun_import_items(
+        workroom_id="ffffffff-ffff-ffff-ffff-ffffffffffff",
+        item_keys=["item-a"],
+    )
+
+    method, path, kwargs = client.calls[0]
+    assert kwargs["json"] == {"item_keys": ["item-a"], "force": True}
+
+
+def test_list_pipeline_job_items_calls_expected_path(dummy_client):
+    responses = {
+        ("get", "/context/pipelines/job-1/items"): {"job_id": "job-1", "items": []}
+    }
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.list_pipeline_job_items(
+        workroom_id="ffffffff-ffff-ffff-ffff-ffffffffffff",
+        job_id="job-1",
+    )
+
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("get", "/context/pipelines/job-1/items")
+    assert kwargs["headers"]["X-Workroom-ID"] == "ffffffff-ffff-ffff-ffff-ffffffffffff"
+
+
+def test_retry_pipeline_job_posts_payload(dummy_client):
+    responses = {("post", "/context/pipelines/job-1/retry"): {"id": "job-3"}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.retry_pipeline_job(
+        workroom_id="ffffffff-ffff-ffff-ffff-ffffffffffff",
+        job_id="job-1",
+        idempotency_key="key-3",
+        force=True,
+    )
+
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("post", "/context/pipelines/job-1/retry")
+    assert kwargs["json"] == {"idempotency_key": "key-3", "force": True}
+    assert kwargs["headers"]["X-Workroom-ID"] == "ffffffff-ffff-ffff-ffff-ffffffffffff"
+
+
+def test_retry_pipeline_job_omits_unset_fields(dummy_client):
+    responses = {("post", "/context/pipelines/job-1/retry"): {"id": "job-3"}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.retry_pipeline_job(
+        workroom_id="ffffffff-ffff-ffff-ffff-ffffffffffff",
+        job_id="job-1",
+    )
+
+    method, path, kwargs = client.calls[0]
+    assert kwargs["json"] == {}
+
+
+def test_rerun_pipeline_job_posts_payload(dummy_client):
+    responses = {("post", "/context/pipelines/job-1/rerun"): {"id": "job-4"}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.rerun_pipeline_job(
+        workroom_id="ffffffff-ffff-ffff-ffff-ffffffffffff",
+        job_id="job-1",
+        callback={"url": "https://cb.test"},
+        force=False,
+    )
+
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("post", "/context/pipelines/job-1/rerun")
+    assert kwargs["json"] == {"callback": {"url": "https://cb.test"}, "force": False}
     assert kwargs["headers"]["X-Workroom-ID"] == "ffffffff-ffff-ffff-ffff-ffffffffffff"
 
 

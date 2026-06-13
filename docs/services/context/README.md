@@ -116,9 +116,42 @@ Reads (`list_*`, `get_*`, `search_knowledge`, `get_memory`, `get_episodes`,
 
 ### Available Methods
 - `list_collections(...)` / `create_collection(...)` / `get_collection(...)` / `delete_collection(...)`
-- `create_pipeline_job(...)` / `list_pipeline_jobs(...)` / `get_pipeline_job(...)` / `cancel_pipeline_job(...)`
+- `create_pipeline_job(...)` / `list_pipeline_jobs(...)` / `get_pipeline_job(...)`
 - `get_supported_file_types()`
 - `search(...)` / `retrieve(...)` / `upload_file(...)`
+
+#### Pipeline cancel vs. delete
+
+The SDK exposes two distinct teardown verbs for a pipeline job:
+
+- `cancel_pipeline_job(...)` — **graceful** cancel
+  (`POST /context/pipelines/{job_id}/cancel`). Stops the job but **preserves**
+  its recorded history; the job stays fetchable via `get_pipeline_job(...)`.
+- `delete_pipeline_job(...)` — **destructive** delete
+  (`DELETE /context/pipelines/{job_id}`). Cancels a pending/running job and then
+  removes the job **and** its history.
+
+> **Breaking change:** `cancel_pipeline_job(...)` previously mapped to the
+> destructive `DELETE` route. It now maps to the graceful cancel route, and the
+> destructive behavior moved to the new `delete_pipeline_job(...)`. Update any
+> caller that relied on the old `cancel_pipeline_job` to hard-delete a job.
+
+#### Provider-neutral source import and replay
+
+For Kaizen / import-shell automation, the SDK wraps the provider-neutral
+source-import and replay surface:
+
+- `get_import_options(...)` / `evaluate_import_options(...)` — aggregate and
+  validate import options for selected source descriptors.
+- `create_source_import_job(...)` — start a provider-neutral source-import job.
+- `list_import_items(...)` — workroom-wide source-import inventory/history.
+- `rerun_import_items(...)` — rerun selected inventory items by recorded source
+  descriptor.
+- `list_pipeline_job_items(...)` — per-item statuses for one job.
+- `retry_pipeline_job(...)` — retry failed/incomplete items from a replayable
+  import job.
+- `rerun_pipeline_job(...)` — rerun all recorded source descriptors from a prior
+  import job.
 
 Collection/pipeline/file **writes** follow the same rule: allowed in a normal
 workroom, `403` on the Global Workroom.

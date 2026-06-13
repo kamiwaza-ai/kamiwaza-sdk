@@ -808,7 +808,7 @@ def test_context_workroom_lists_and_job_creation(
     finally:
         for created_job_id in created_job_ids:
             try:
-                service.cancel_pipeline_job(
+                service.delete_pipeline_job(
                     workroom_id=workroom_id,
                     job_id=created_job_id,
                 )
@@ -841,12 +841,48 @@ def test_context_workroom_pipeline_followup_access(
     try:
         fetched_job = service.get_pipeline_job(workroom_id=workroom_id, job_id=job_id)
         assert fetched_job["id"] == job_id
+        # Graceful cancel preserves the job; it remains fetchable afterwards.
         service.cancel_pipeline_job(workroom_id=workroom_id, job_id=job_id)
+        preserved = service.get_pipeline_job(workroom_id=workroom_id, job_id=job_id)
+        assert preserved["id"] == job_id
     finally:
         try:
-            service.cancel_pipeline_job(workroom_id=workroom_id, job_id=job_id)
+            service.delete_pipeline_job(workroom_id=workroom_id, job_id=job_id)
         except APIError:
             pass
+
+
+def test_context_pipeline_import_options_live(
+    shared_context_service: ContextService,
+    session_workroom: str,
+) -> None:
+    """GET/POST import-options work against bare core (no data plane required)."""
+    service = shared_context_service
+    workroom_id = session_workroom
+
+    options = service.get_import_options(workroom_id=workroom_id)
+    assert isinstance(options, dict)
+
+    evaluation = service.evaluate_import_options(
+        sources=[],
+        workroom_id=workroom_id,
+    )
+    assert isinstance(evaluation, dict)
+    # With no sources selected there is nothing to submit.
+    assert evaluation.get("can_submit") is False
+
+
+def test_context_pipeline_import_items_inventory_live(
+    shared_context_service: ContextService,
+    session_workroom: str,
+) -> None:
+    """The workroom-wide import inventory listing is readable on bare core."""
+    service = shared_context_service
+    workroom_id = session_workroom
+
+    inventory = service.list_import_items(workroom_id=workroom_id)
+    assert isinstance(inventory, dict)
+    assert isinstance(inventory.get("items", []), list)
 
 
 def test_context_workroom_collection_lifecycle(
