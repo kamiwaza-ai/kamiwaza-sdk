@@ -29,6 +29,12 @@ from kamiwaza_sdk.exceptions import APIError, AuthenticationError, KamiwazaError
 from kamiwaza_sdk.schemas.auth import PATCreate
 from kamiwaza_sdk.token_store import StoredToken, TokenStore
 
+# Co-located capability-marker helpers (M5). Add this directory to the path so
+# the import resolves regardless of pytest's package-import mode (this conftest
+# is loaded by name, not as part of the ``integration`` package).
+sys.path.insert(0, str(Path(__file__).parent))
+import capability_markers as _cap  # noqa: E402
+
 DOCKER_COMPOSE_FILE = Path(__file__).parent / "docker" / "docker-compose.yml"
 SEED_SCRIPT = Path(__file__).parent / "docker" / "seed_minio.py"
 
@@ -1398,6 +1404,57 @@ def _require_two_clusters_for_marked_tests(request: pytest.FixtureRequest) -> No
             "requires_two_clusters: --live-peer-base-url is set but "
             "--live-peer-api-key / KAMIWAZA_PEER_API_KEY is missing."
         )
+
+
+@pytest.fixture(scope="session")
+def cluster_capability_snapshot(
+    live_kamiwaza_session_client: KamiwazaClient,
+) -> _cap.ClusterCapabilitySnapshot | None:
+    """Session-cached GPU/node inventory backing the capability markers (M5).
+
+    Built once from the live cluster via the SDK client. Returns ``None`` when
+    inventory can't be fetched so capability-marked tests skip (not fail) with a
+    clear reason rather than erroring.
+    """
+    client = live_kamiwaza_session_client
+    try:
+        hardware = client.cluster.list_hardware()
+    except Exception:  # noqa: BLE001 - inventory unavailable => undeterminable
+        hardware = None
+    node_count: int | None = None
+    try:
+        nodes = client.cluster.get_running_nodes()
+        node_count = sum(
+            1 for node in nodes if getattr(node, "alive", True) is not False
+        )
+    except Exception:  # noqa: BLE001
+        node_count = None
+    if hardware is None and node_count is None:
+        return None
+    return _cap.build_capability_snapshot(hardware or [], node_count=node_count)
+
+
+@pytest.fixture(autouse=True)
+def _enforce_capability_markers(request: pytest.FixtureRequest) -> None:
+    """Skip (never fail) capability-marked tests on under-provisioned hosts (M5).
+
+    Honors ``@pytest.mark.min_gpu_count(N)`` / ``min_gpu_mem(GB)`` /
+    ``gpu_vendor("nvidia"|"amd"|"none")`` / ``gpu_mig_support`` /
+    ``min_node_count(N)``. Tests without a capability marker are unaffected
+    (the snapshot fixture — and the live client it needs — are never touched).
+    """
+    marks = [
+        mark
+        for mark in request.node.iter_markers()
+        if mark.name in _cap.CAPABILITY_MARKER_NAMES
+    ]
+    if not marks:
+        return
+    requirements = _cap.collect_capability_requirements(marks)
+    snapshot = request.getfixturevalue("cluster_capability_snapshot")
+    reason = _cap.evaluate_capability_requirements(snapshot, requirements)
+    if reason:
+        pytest.skip(reason)
 
 
 @pytest.fixture(scope="session")
