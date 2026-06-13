@@ -91,10 +91,15 @@ def _deploy_or_skip(client, model, *, engine_name):
     default_config = next((c for c in configs if c.default), configs[0])
 
     try:
+        # wait=False (ENG-6530): deploy_model now defaults to wait=True and would
+        # block + raise DeploymentFailedError/TimeoutError itself. This caller
+        # owns the wait via _wait_or_skip, so return the id immediately and route
+        # readiness/failure through the skip-not-fail wait wrapper (no double-wait).
         raw_deployment_id = client.serving.deploy_model(
             model_id=str(model.id),
             m_config_id=default_config.id,
             engine_name=engine_name,
+            wait=False,
             lb_port=0,
             autoscaling=False,
             min_copies=1,
@@ -155,13 +160,15 @@ def _assert_chat_completion(client, deployment_id):
 # --------------------------------------------------------------------------- #
 # Engine matrix tests
 # --------------------------------------------------------------------------- #
-@pytest.mark.requires_deployable_model
 def test_deploy_and_infer_llamacpp_gguf(live_kamiwaza_client, ensure_repo_ready):
     """llamacpp arm of cmd_full: download GGUF, deploy engine_name='llamacpp', infer.
 
     Covers the CPU-capable GGUF inference path the SDK suite does not yet cover
-    (test_serving_workflow only covers MLX). No GPU marker — gate on
-    requires_deployable_model where it actually deploys.
+    (test_serving_workflow only covers MLX). No capability marker — llamacpp is
+    CPU-capable, so it is gated only by model availability (_ensure_repo_or_skip)
+    plus the deploy/wait skip-not-fail wrappers. requires_deployable_model is
+    deliberately NOT used: its prerequisite hard-codes the MLX test model and
+    would skip this on non-MLX hosts — the very hosts (x86 CPU) llamacpp targets.
     """
     client = live_kamiwaza_client
     model = _ensure_repo_or_skip(
@@ -212,6 +219,16 @@ def _certify_fractional_colocation(client, model):
     whole-GPU path would leave the 2nd deployment never reaching DEPLOYED), and
     assert EACH serves a chat prompt. Excludes the kubectl pod/device-node
     inspection (operator-only). Cleans up every deployment it creates.
+
+    Two known coarseness limitations (the full proof stays in cmd_full, which has
+    the operator-only device inspection):
+    - SKIP-vs-FAIL: a copy that deploys then FAILS/times-out during wait is
+      SKIPPED (via _wait_or_skip), not failed — deliberately, so a capable but
+      resource-pressured host does not false-fail. The flip side is that a genuine
+      whole-GPU co-location regression on a 1-GPU host reads as a skip.
+    - MULTI-GPU: min_gpu_count(1) only requires >=1 GPU, so on a multi-GPU host the
+      copies may land on SEPARATE devices and still pass (only instances + serve
+      are checked) — device-level co-location is not proven here.
     """
     deployment_ids: list[str] = []
     try:

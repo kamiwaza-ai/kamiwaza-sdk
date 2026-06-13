@@ -50,6 +50,10 @@ def _engine_present(client) -> bool:
     Method-Not-Allowed. A present engine validates the empty spec and returns
     400/422. Treat 404 and 405 as 'engine absent' so the module skips (not
     fails) on a develop baseline, and only exercises on a feature-branch build.
+
+    A 401/403 (auth/RBAC) is deliberately treated as 'present' — an auth
+    misconfiguration on a host that ships the engine is worth surfacing
+    downstream, not masking as a clean skip.
     """
     try:
         client.catalog.register_from_spec({})
