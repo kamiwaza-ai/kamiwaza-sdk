@@ -1085,3 +1085,67 @@ def test_context_list_raw_files_empty_contract(
     listing = service.list_raw_files(workroom_id=session_workroom, limit=5)
     assert isinstance(listing.get("items"), list)
     assert isinstance(listing.get("count"), int)
+
+
+# --- OmniParse instance lifecycle CRUD ---
+
+
+def test_context_list_omniparses_contract(
+    shared_context_service: ContextService,
+    session_workroom: str,
+) -> None:
+    """Listing OmniParse instances returns a list for a fresh workroom.
+
+    The list route is metadata-only (it reads the instance registry) and works
+    against bare core -- a freshly created workroom has no instances, so an
+    empty list is the expected contract. The create/update/delete routes
+    provision an OmniParse runtime via App Garden (template + container images),
+    which is data-plane-heavy and NOT available on the bare-core TRCM box, so
+    the full lifecycle is covered by the mocked unit tests and deferred here.
+    """
+    service = shared_context_service
+    listing = service.list_omniparses(workroom_id=session_workroom)
+    assert isinstance(listing, list)
+
+
+def test_context_omniparse_lifecycle_round_trip(
+    shared_context_service: ContextService,
+    session_workroom: str,
+) -> None:
+    """create -> get -> update -> delete an OmniParse instance.
+
+    Skips when the App Garden OmniParse data plane (tool template + images) is
+    not provisioned on this host -- the route is mocked-unit covered in that
+    case and the live debt is recorded in the PR body. Bare core cannot
+    provision the runtime, so this skip is expected on the TRCM box.
+    """
+    service = shared_context_service
+    workroom_id = session_workroom
+
+    try:
+        created = service.create_omniparse(
+            name=f"sdk-omniparse-{uuid4().hex[:8]}",
+            workroom_id=workroom_id,
+        )
+    except APIError as exc:
+        pytest.skip(
+            f"OmniParse data plane not provisioned on this host (status "
+            f"{exc.status_code}); lifecycle deferred to mocked unit tests"
+        )
+
+    instance_id = str(created["id"])
+    try:
+        fetched = service.get_omniparse(instance_id, workroom_id=workroom_id)
+        assert str(fetched["id"]) == instance_id
+
+        updated = service.update_omniparse(
+            instance_id,
+            workroom_id=workroom_id,
+            config={"sdk_live_marker": uuid4().hex[:8]},
+        )
+        assert str(updated["id"]) == instance_id
+    finally:
+        try:
+            service.delete_omniparse(instance_id, workroom_id=workroom_id)
+        except (APIError, NotFoundError):
+            pass

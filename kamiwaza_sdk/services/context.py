@@ -943,3 +943,83 @@ class ContextService(BaseService):
             json={"content": content},
             headers=headers,
         )
+
+    # OmniParse instance lifecycle CRUD
+
+    def list_omniparses(
+        self,
+        *,
+        workroom_id: str,
+    ) -> list[dict[str, Any]]:
+        """List OmniParse runtime instances for a workroom."""
+        return self.client.get(
+            f"{self._BASE_PATH}/omniparses",
+            headers=self._merge_headers(workroom_id=workroom_id),
+        )
+
+    def get_omniparse(
+        self,
+        omniparse_id: str,
+        *,
+        workroom_id: str,
+    ) -> dict[str, Any]:
+        """Get one OmniParse instance by ID within a workroom scope."""
+        return self.client.get(
+            f"{self._BASE_PATH}/omniparses/{omniparse_id}",
+            headers=self._merge_headers(workroom_id=workroom_id),
+        )
+
+    def create_omniparse(
+        self,
+        *,
+        name: str,
+        workroom_id: str,
+        template_name: str = "tool-omniparse",
+        config: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        """Provision an OmniParse runtime instance.
+
+        ``name`` is the instance name; ``template_name`` selects the App Garden
+        tool template (defaults to ``tool-omniparse``); ``config`` carries
+        optional OmniParse environment configuration.
+        """
+        payload: dict[str, Any] = {
+            "name": name,
+            "template_name": template_name,
+        }
+        if config is not None:
+            payload["config"] = config
+        return self.client.post(
+            f"{self._BASE_PATH}/omniparses",
+            json=payload,
+            headers=self._merge_headers(workroom_id=workroom_id),
+        )
+
+    def update_omniparse(
+        self,
+        omniparse_id: str,
+        *,
+        workroom_id: str,
+        config: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        """Update an OmniParse instance's environment configuration."""
+        payload: dict[str, Any] = {}
+        if config is not None:
+            payload["config"] = config
+        return self.client.put(
+            f"{self._BASE_PATH}/omniparses/{omniparse_id}",
+            json=payload,
+            headers=self._merge_headers(workroom_id=workroom_id),
+        )
+
+    def delete_omniparse(
+        self,
+        omniparse_id: str,
+        *,
+        workroom_id: str,
+    ) -> dict[str, Any]:
+        """Delete an OmniParse runtime instance."""
+        return self.client.delete(
+            f"{self._BASE_PATH}/omniparses/{omniparse_id}",
+            headers=self._merge_headers(workroom_id=workroom_id),
+        )

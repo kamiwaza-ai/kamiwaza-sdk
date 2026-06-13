@@ -54,6 +54,11 @@ surface (see "Not yet wrapped by the SDK" below).
 | 46 | `GET` | `/context/storage/raw` | `list_raw_files` | Y | conditional | strict |
 | 47 | `GET` | `/context/storage/raw/{file_id}` | `get_raw_file` | Y | conditional | round-trip |
 | 48 | `PUT` | `/context/storage/raw/{file_id}` | `update_raw_file` | Y | conditional | round-trip |
+| 49 | `GET` | `/context/omniparses` | `list_omniparses` | Y | Y | strict |
+| 50 | `GET` | `/context/omniparses/{omniparse_id}` | `get_omniparse` | Y | deferred | round-trip |
+| 51 | `POST` | `/context/omniparses` | `create_omniparse` | Y | deferred | round-trip |
+| 52 | `PUT` | `/context/omniparses/{omniparse_id}` | `update_omniparse` | Y | deferred | round-trip |
+| 53 | `DELETE` | `/context/omniparses/{omniparse_id}` | `delete_omniparse` | Y | deferred | round-trip |
 
 `agentic_search` wraps the canonical unified endpoint (`synthesize=True`). The
 legacy `/context/search/agentic` route is deprecated server-side ("use POST
@@ -85,6 +90,15 @@ data plane provisioned does not stand it up, so those rows fall back to the mock
 unit tests with the live-debt recorded in the PR body. The PUT edit asserts the
 stale-`If-Match` 409 optimistic-concurrency contract.
 
+OmniParse instance-lifecycle rows (49–53): the list route (row 49) is
+metadata-only and live-smokeable against bare core (a fresh workroom lists no
+instances). The create/get/update/delete CRUD (rows 50–53) provision an
+OmniParse runtime via App Garden (tool template + container images), which is
+**data-plane-heavy and not available on the bare-core TRCM box**, so their live
+coverage is **deferred**: the `create → get → update → delete` round-trip test
+attempts a create and `skip`s when the data plane is unprovisioned. These rows
+fall back to mocked unit tests and the live-debt is recorded in the PR body.
+
 `update_vectordb` and `scale_vectordb` (rows 5 & 6) carry **round-trip**
 assertion strength rather than **strict**: the live tests confirm the SDK call
 is accepted and the requested change is observable (the `update` config marker
@@ -95,19 +109,19 @@ API round-trip is the meaningful, non-flaky contract these tests guard.
 
 ## Coverage Summary
 
-These figures describe coverage **of the 48 wrapped routes above**, not of the
+These figures describe coverage **of the 53 wrapped routes above**, not of the
 full Context server surface (see "Not yet wrapped by the SDK" for the unwrapped
 remainder):
 
-- Wrapped rows with an SDK method: **48/48**.
-- Unit coverage of wrapped methods: **48/48**.
-- Live coverage of wrapped methods: **35/48** — the 9 Gap A pipeline rows are unit-covered (rows 36, 37, 39, and 44 also live against bare core; rows 38 and 40–43 are **deferred**), and the 4 raw-file rows (45–48) carry **conditional** live coverage that runs only when the host reports `workroom_object_storage` and otherwise skips (see the notes above). All 48 are unit-covered.
+- Wrapped rows with an SDK method: **53/53**.
+- Unit coverage of wrapped methods: **53/53**.
+- Live coverage of wrapped methods: **36/53** — the 9 Gap A pipeline rows are unit-covered (rows 36, 37, 39, and 44 also live against bare core; rows 38 and 40–43 are **deferred**), the 4 raw-file rows (45–48) carry **conditional** live coverage that runs only when the host reports `workroom_object_storage` and otherwise skips, and the 5 OmniParse rows (49–53) cover the list route live against bare core (row 49) with the create/get/update/delete CRUD (rows 50–53) **deferred** to mocked unit tests pending the App Garden data plane (see the notes above). All 53 are unit-covered.
 
 ## Not yet wrapped by the SDK
 
-The 48 rows above are **not** the full Context surface — they are the subset the
-SDK wraps today. The live `/context` router exposes **12** additional enumerated
-user-facing routes — **3** intentional exclusions plus **9** real-gap routes
+The 53 rows above are **not** the full Context surface — they are the subset the
+SDK wraps today. The live `/context` router exposes **7** additional enumerated
+user-facing routes — **3** intentional exclusions plus **4** real-gap routes
 (verified against `kamiwaza/services/context/api/*.py`); the out-of-scope
 `/embedding-model/*` family lives entirely outside this count. Each is triaged
 below as either an **intentional exclusion** (with a one-line rationale) or a
@@ -142,15 +156,12 @@ grouped into coherent follow-up areas for later waves:
 | `GET` | `/context/storage/raw/{file_id}` | Get one raw-file record (optional presigned download URL). |
 | `PUT` | `/context/storage/raw/{file_id}` | Edit plain-text raw-file content (If-Match concurrency). |
 
-**Gap B — OmniParse instance lifecycle CRUD** (`/context/omniparses*`, 5 routes):
-
-| Method | Endpoint | Note |
-|---|---|---|
-| `GET` | `/context/omniparses` | List OmniParse instances for the workroom. |
-| `GET` | `/context/omniparses/{omniparse_id}` | Get one instance. |
-| `POST` | `/context/omniparses` | Create a workroom-scoped instance. |
-| `PUT` | `/context/omniparses/{omniparse_id}` | Update an instance. |
-| `DELETE` | `/context/omniparses/{omniparse_id}` | Delete an instance. |
+> **Gap B (OmniParse instance lifecycle CRUD) is now wrapped** (rows 49–53
+> above): `list_omniparses` / `get_omniparse` / `create_omniparse` /
+> `update_omniparse` / `delete_omniparse`. The list route is live-smokeable
+> against bare core; the create/get/update/delete CRUD live coverage is
+> **deferred** pending the App Garden OmniParse data plane (mocked-unit covered).
+> The remaining gap below keeps its letter for continuity.
 
 **Gap C — Misc workroom config / document retrieval** (`/context/*`, 4 routes):
 
@@ -163,14 +174,14 @@ grouped into coherent follow-up areas for later waves:
 
 ## Coverage scope note
 
-This matrix tracks **44 wrapped routes** against a live Context surface of
-**60 enumerated user-facing routes**: 44 wrapped + 3 intentional exclusions
-(the deprecated `/search/*` legacy paths) + 13 real-gap routes across Gaps A–C
-(4 + 5 + 4). The out-of-scope `/embedding-model/*` family is a wildcard
-counted **outside** this 60 — it is not enumerated here. The "44/44" unit figure
-in the Coverage Summary describes coverage **of the wrapped subset only**, not of
-the full server surface — every unwrapped route is accounted for above.
+This matrix tracks **53 wrapped routes** against a live Context surface of
+**60 enumerated user-facing routes**: 53 wrapped + 3 intentional exclusions
+(the deprecated `/search/*` legacy paths) + 4 real-gap routes in Gap C. The
+out-of-scope `/embedding-model/*` family is a wildcard counted **outside** this
+60 — it is not enumerated here. The "53/53" unit figure in the Coverage Summary
+describes coverage **of the wrapped subset only**, not of the full server
+surface — every unwrapped route is accounted for above.
 
 ## Next Actions
 
-- File the Gap A–C follow-up tickets (one per area) to wrap the remaining real gaps in later waves.
+- Wrap the remaining Gap C real gaps (misc workroom config / document retrieval) in a later wave.
