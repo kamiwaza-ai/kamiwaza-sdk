@@ -1149,3 +1149,100 @@ def test_context_omniparse_lifecycle_round_trip(
             service.delete_omniparse(instance_id, workroom_id=workroom_id)
         except (APIError, NotFoundError):
             pass
+
+
+# --- Global settings / documents / audio readiness ---
+
+
+def test_context_global_settings_round_trips(
+    shared_context_service: ContextService,
+) -> None:
+    """get_global_settings reads platform config; update_global_settings patches it.
+
+    Platform-scoped (ContextAdmin), not workroom-scoped, and metadata-only, so it
+    works against bare core. Round-trips the omniparse SSL flags and restores the
+    original values. Skips if the caller lacks ContextAdmin authority on this host.
+    """
+    service = shared_context_service
+    try:
+        original = service.get_global_settings()
+    except APIError as exc:
+        pytest.skip(
+            f"global settings unavailable on this host (status {exc.status_code}); "
+            "covered by mocked unit tests"
+        )
+
+    assert isinstance(original, dict)
+    omniparse = original.get("omniparse") or {}
+    current = bool(omniparse.get("force_insecure_model_ssl", False))
+
+    try:
+        updated = service.update_global_settings(
+            omniparse={"force_insecure_model_ssl": not current},
+            reason="sdk live round-trip",
+        )
+    except APIError as exc:
+        pytest.skip(
+            f"global settings patch not permitted on this host (status "
+            f"{exc.status_code}); covered by mocked unit tests"
+        )
+
+    try:
+        assert (
+            bool(updated["omniparse"]["force_insecure_model_ssl"]) is not current
+        )
+    finally:
+        # Restore the original value so we don't mutate shared platform state.
+        service.update_global_settings(
+            omniparse={"force_insecure_model_ssl": current},
+            reason="sdk live round-trip restore",
+        )
+
+
+def test_context_audio_readiness_probe(
+    shared_context_service: ContextService,
+    session_workroom: str,
+) -> None:
+    """audio-readiness probe returns a readiness verdict for a fresh workroom.
+
+    Workroom-scoped GET that never side-effect-provisions an OmniParse instance,
+    so it is cheap on bare core. ``ready`` may be True or False depending on the
+    data plane; we assert the contract shape, not a specific verdict.
+    """
+    service = shared_context_service
+    result = service.get_audio_readiness(
+        workroom_id=session_workroom,
+        mime_type="audio/aiff",
+        filename="clip.aiff",
+    )
+    assert isinstance(result, dict)
+    assert isinstance(result.get("ready"), bool)
+    assert isinstance(result.get("code"), str)
+
+
+def test_context_document_download_url_requires_stored_document(
+    shared_context_service: ContextService,
+    session_workroom: str,
+) -> None:
+    """get_document_download_url against an unknown URN returns 404 (no document).
+
+    Generating a real presigned URL needs a previously stored document plus S3
+    object storage (the un-provisioned data plane on bare core), so the happy
+    path is deferred to mocked unit tests. Here we assert the lookup wiring: an
+    unknown source URN yields a NotFoundError, or the route reports storage is
+    not configured (501) on hosts without S3.
+    """
+    service = shared_context_service
+    try:
+        service.get_document_download_url(
+            f"urn:source:sdk-live-missing-{uuid4().hex[:8]}",
+            workroom_id=session_workroom,
+        )
+    except NotFoundError:
+        pass
+    except APIError as exc:
+        # 501 = document storage not configured on this host; expected on bare core.
+        if exc.status_code != 501:
+            raise
+    else:
+        pytest.fail("expected NotFoundError or 501 for an unknown source URN")

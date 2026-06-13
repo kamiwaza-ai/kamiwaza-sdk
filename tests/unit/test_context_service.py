@@ -1224,3 +1224,96 @@ def test_delete_omniparse_calls_expected_path(dummy_client):
     method, path, kwargs = client.calls[0]
     assert (method, path) == ("delete", "/context/omniparses/op-1")
     assert kwargs["headers"]["X-Workroom-ID"] == WORKROOM
+
+
+def test_get_global_settings_calls_expected_path_without_workroom(dummy_client):
+    responses = {("get", "/context/global-settings"): {"omniparse": {}}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    result = service.get_global_settings()
+
+    assert result == {"omniparse": {}}
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("get", "/context/global-settings")
+    # Platform-scoped: no workroom header is sent.
+    assert "headers" not in kwargs
+
+
+def test_update_global_settings_sends_payload_without_workroom(dummy_client):
+    responses = {("patch", "/context/global-settings"): {"omniparse": {}}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.update_global_settings(
+        omniparse={"force_insecure_model_ssl": True},
+        reason="rotate certs",
+    )
+
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("patch", "/context/global-settings")
+    assert kwargs["json"] == {
+        "omniparse": {"force_insecure_model_ssl": True},
+        "reason": "rotate certs",
+    }
+    assert "headers" not in kwargs
+
+
+def test_update_global_settings_omits_unset_fields(dummy_client):
+    responses = {("patch", "/context/global-settings"): {"omniparse": {}}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.update_global_settings()
+
+    _, _, kwargs = client.calls[0]
+    assert kwargs["json"] == {}
+
+
+def test_get_document_download_url_calls_expected_path(dummy_client):
+    urn = "urn:source:abc"
+    responses = {
+        (
+            "get",
+            f"/context/documents/{urn}",
+        ): {"download_url": "https://s3/presigned", "source_urn": urn}
+    }
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    result = service.get_document_download_url(urn, workroom_id=WORKROOM)
+
+    assert result["download_url"] == "https://s3/presigned"
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("get", f"/context/documents/{urn}")
+    assert kwargs["headers"]["X-Workroom-ID"] == WORKROOM
+
+
+def test_get_audio_readiness_no_optional_params(dummy_client):
+    responses = {("get", "/context/audio-readiness"): {"ready": True, "code": "ok"}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    result = service.get_audio_readiness(workroom_id=WORKROOM)
+
+    assert result["ready"] is True
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("get", "/context/audio-readiness")
+    assert kwargs["params"] is None
+    assert kwargs["headers"]["X-Workroom-ID"] == WORKROOM
+
+
+def test_get_audio_readiness_passes_optional_query_params(dummy_client):
+    responses = {("get", "/context/audio-readiness"): {"ready": False, "code": "x"}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.get_audio_readiness(
+        workroom_id=WORKROOM,
+        mime_type="audio/aiff",
+        filename="clip.aiff",
+    )
+
+    _, _, kwargs = client.calls[0]
+    assert kwargs["params"] == {"mime_type": "audio/aiff", "filename": "clip.aiff"}
+    assert kwargs["headers"]["X-Workroom-ID"] == WORKROOM
