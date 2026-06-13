@@ -246,6 +246,53 @@ client.context.update_omniparse(
 client.context.delete_omniparse(instance_id, workroom_id=my_workroom_id)
 ```
 
+## Global Settings, Document Download, and Audio Readiness
+
+These cover platform-wide Context configuration, presigned download of an
+original document, and an audio-ingest preflight probe.
+
+### Available Methods
+
+- `get_global_settings()` — read platform-wide Context global settings
+  (`GET /context/global-settings`). **Platform-scoped (ContextAdmin)**, not
+  workroom-scoped — no `X-Workroom-ID` header is sent.
+- `update_global_settings(*, omniparse=None, reason=None)` — patch the global
+  settings (`PATCH /context/global-settings`). `omniparse` is a partial settings
+  dict (e.g. `{"force_insecure_model_ssl": True}`); `reason` is an optional audit
+  annotation. Only the provided fields change. Also ContextAdmin-scoped.
+- `get_document_download_url(source_urn, *, workroom_id)` — get a presigned S3
+  download URL for an original document by source URN
+  (`GET /context/documents/{source_urn}`). Returns `download_url` plus
+  `filename` / `content_hash` / `source_urn`. Requires S3 document storage to be
+  enabled server-side.
+- `get_audio_readiness(*, workroom_id, mime_type=None, filename=None)` — probe
+  whether a workroom is ready to ingest audio
+  (`GET /context/audio-readiness`). Optional `mime_type` (e.g. `audio/aiff`) and
+  `filename` refine the check. Returns the readiness verdict
+  (`ready` / `code` / `message` / `remediation` / `details`). This GET never
+  side-effect-provisions an OmniParse instance.
+
+```python
+# Platform-scoped admin config (no workroom).
+settings = client.context.get_global_settings()
+client.context.update_global_settings(
+    omniparse={"force_insecure_model_ssl": False},
+    reason="rotate certs",
+)
+
+# Workroom-scoped: preflight audio ingest, then resolve a stored document.
+readiness = client.context.get_audio_readiness(
+    workroom_id=my_workroom_id,
+    mime_type="audio/aiff",
+)
+if readiness["ready"]:
+    download = client.context.get_document_download_url(
+        "urn:source:abc123",
+        workroom_id=my_workroom_id,
+    )
+    url = download["download_url"]
+```
+
 ## Error Handling
 
 ```python

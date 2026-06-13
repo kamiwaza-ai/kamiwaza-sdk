@@ -1023,3 +1023,79 @@ class ContextService(BaseService):
             f"{self._BASE_PATH}/omniparses/{omniparse_id}",
             headers=self._merge_headers(workroom_id=workroom_id),
         )
+
+    # Global settings / documents / audio readiness
+
+    def get_global_settings(self) -> dict[str, Any]:
+        """Read platform-wide Context global settings (ContextAdmin-scoped).
+
+        Platform-scoped, not workroom-scoped: no ``X-Workroom-ID`` header is
+        sent. Returns the current ``ContextGlobalSettings`` (e.g. the
+        ``omniparse`` SSL-enforcement flags).
+        """
+        return self.client.get(f"{self._BASE_PATH}/global-settings")
+
+    def update_global_settings(
+        self,
+        *,
+        omniparse: Optional[dict[str, Any]] = None,
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        """Update platform-wide Context global settings (ContextAdmin-scoped).
+
+        Platform-scoped, not workroom-scoped. ``omniparse`` is a partial
+        settings patch (e.g. ``{"force_insecure_model_ssl": True}``); ``reason``
+        is an optional audit annotation. Only the provided fields are changed.
+        """
+        payload: dict[str, Any] = {}
+        if omniparse is not None:
+            payload["omniparse"] = omniparse
+        if reason is not None:
+            payload["reason"] = reason
+        return self.client.patch(
+            f"{self._BASE_PATH}/global-settings",
+            json=payload,
+        )
+
+    def get_document_download_url(
+        self,
+        source_urn: str,
+        *,
+        workroom_id: str,
+    ) -> dict[str, Any]:
+        """Get a presigned download URL for an original document by source URN.
+
+        Looks up the document by ``source_urn`` within the workroom and returns
+        a ``download_url`` plus ``filename``/``content_hash``/``source_urn``.
+        Requires S3 document storage to be enabled server-side.
+        """
+        return self.client.get(
+            f"{self._BASE_PATH}/documents/{source_urn}",
+            headers=self._merge_headers(workroom_id=workroom_id),
+        )
+
+    def get_audio_readiness(
+        self,
+        *,
+        workroom_id: str,
+        mime_type: str | None = None,
+        filename: str | None = None,
+    ) -> dict[str, Any]:
+        """Probe whether a workroom is ready to ingest audio.
+
+        Workroom-scoped preflight before audio ingest. Optional ``mime_type``
+        (e.g. ``audio/aiff``) and ``filename`` refine the check. Returns the
+        readiness verdict (``ready``/``code``/``message``/``remediation``/
+        ``details``). This GET never side-effect-provisions an OmniParse
+        instance.
+        """
+        params: dict[str, Any] = {}
+        if mime_type is not None:
+            params["mime_type"] = mime_type
+        if filename is not None:
+            params["filename"] = filename
+        return self.client.get(
+            f"{self._BASE_PATH}/audio-readiness",
+            params=params or None,
+            headers=self._merge_headers(workroom_id=workroom_id),
+        )

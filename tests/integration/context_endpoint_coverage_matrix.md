@@ -59,6 +59,10 @@ surface (see "Not yet wrapped by the SDK" below).
 | 51 | `POST` | `/context/omniparses` | `create_omniparse` | Y | deferred | round-trip |
 | 52 | `PUT` | `/context/omniparses/{omniparse_id}` | `update_omniparse` | Y | deferred | round-trip |
 | 53 | `DELETE` | `/context/omniparses/{omniparse_id}` | `delete_omniparse` | Y | deferred | round-trip |
+| 54 | `GET` | `/context/global-settings` | `get_global_settings` | Y | Y | strict |
+| 55 | `PATCH` | `/context/global-settings` | `update_global_settings` | Y | Y | round-trip |
+| 56 | `GET` | `/context/documents/{source_urn}` | `get_document_download_url` | Y | deferred | strict |
+| 57 | `GET` | `/context/audio-readiness` | `get_audio_readiness` | Y | Y | strict |
 
 `agentic_search` wraps the canonical unified endpoint (`synthesize=True`). The
 legacy `/context/search/agentic` route is deprecated server-side ("use POST
@@ -109,24 +113,23 @@ API round-trip is the meaningful, non-flaky contract these tests guard.
 
 ## Coverage Summary
 
-These figures describe coverage **of the 53 wrapped routes above**, not of the
+These figures describe coverage **of the 57 wrapped routes above**, not of the
 full Context server surface (see "Not yet wrapped by the SDK" for the unwrapped
 remainder):
 
-- Wrapped rows with an SDK method: **53/53**.
-- Unit coverage of wrapped methods: **53/53**.
-- Live coverage of wrapped methods: **36/53** — the 9 Gap A pipeline rows are unit-covered (rows 36, 37, 39, and 44 also live against bare core; rows 38 and 40–43 are **deferred**), the 4 raw-file rows (45–48) carry **conditional** live coverage that runs only when the host reports `workroom_object_storage` and otherwise skips, and the 5 OmniParse rows (49–53) cover the list route live against bare core (row 49) with the create/get/update/delete CRUD (rows 50–53) **deferred** to mocked unit tests pending the App Garden data plane (see the notes above). All 53 are unit-covered.
+- Wrapped rows with an SDK method: **57/57**.
+- Unit coverage of wrapped methods: **57/57**.
+- Live coverage of wrapped methods: **39/57** — the 9 Gap A pipeline rows are unit-covered (rows 36, 37, 39, and 44 also live against bare core; rows 38 and 40–43 are **deferred**), the 4 raw-file rows (45–48) carry **conditional** live coverage that runs only when the host reports `workroom_object_storage` and otherwise skips, the 5 OmniParse rows (49–53) cover the list route live against bare core (row 49) with the create/get/update/delete CRUD (rows 50–53) **deferred** to mocked unit tests pending the App Garden data plane, and of the 4 Gap C config/document rows (54–57) the global-settings GET/PATCH (54–55) and audio-readiness (57) live-smoke against bare core while document download (56) is **deferred** pending a stored document + S3 (see the notes above). All 57 are unit-covered.
 
 ## Not yet wrapped by the SDK
 
-The 53 rows above are **not** the full Context surface — they are the subset the
-SDK wraps today. The live `/context` router exposes **7** additional enumerated
-user-facing routes — **3** intentional exclusions plus **4** real-gap routes
-(verified against `kamiwaza/services/context/api/*.py`); the out-of-scope
-`/embedding-model/*` family lives entirely outside this count. Each is triaged
-below as either an **intentional exclusion** (with a one-line rationale) or a
-**real gap** tracked by a follow-up ticket. Real gaps are **not** implemented in
-this PR.
+The 57 rows above are **not** the full Context surface — they are the subset the
+SDK wraps today. The live `/context` router exposes **3** additional enumerated
+user-facing routes — all **intentional exclusions** (the deprecated `/search/*`
+legacy paths), verified against `kamiwaza/services/context/api/*.py`; the
+out-of-scope `/embedding-model/*` family lives entirely outside this count. Each
+is triaged below as an **intentional exclusion** (with a one-line rationale). No
+unwrapped real-gap routes remain.
 
 ### Intentional exclusions (no SDK method, by design)
 
@@ -163,24 +166,24 @@ grouped into coherent follow-up areas for later waves:
 > **deferred** pending the App Garden OmniParse data plane (mocked-unit covered).
 > The remaining gap below keeps its letter for continuity.
 
-**Gap C — Misc workroom config / document retrieval** (`/context/*`, 4 routes):
-
-| Method | Endpoint | Note |
-|---|---|---|
-| `GET` | `/context/global-settings` | Read global Context settings (ContextAdmin-scoped). |
-| `PATCH` | `/context/global-settings` | Update global Context settings (ContextAdmin-scoped). |
-| `GET` | `/context/documents/{source_urn}` | Presigned download URL for an original document by source URN. |
-| `GET` | `/context/audio-readiness` | Workroom-scoped audio-readiness probe (OmniParse audio support). |
+> **Gap C (Misc workroom config / document retrieval) is now wrapped** (rows
+> 54–57 above): `get_global_settings` / `update_global_settings` (platform-scoped
+> ContextAdmin config, not workroom-scoped), `get_document_download_url`, and
+> `get_audio_readiness`. global-settings GET/PATCH and audio-readiness are
+> live-smokeable against bare core; the document-download happy path needs a
+> stored document plus S3 object storage (un-provisioned data plane), so its live
+> coverage is **deferred** (mocked-unit covered, with a live wiring-check for the
+> 404/501 path).
 
 ## Coverage scope note
 
-This matrix tracks **53 wrapped routes** against a live Context surface of
-**60 enumerated user-facing routes**: 53 wrapped + 3 intentional exclusions
-(the deprecated `/search/*` legacy paths) + 4 real-gap routes in Gap C. The
-out-of-scope `/embedding-model/*` family is a wildcard counted **outside** this
-60 — it is not enumerated here. The "53/53" unit figure in the Coverage Summary
-describes coverage **of the wrapped subset only**, not of the full server
-surface — every unwrapped route is accounted for above.
+This matrix tracks **57 wrapped routes** against a live Context surface of
+**60 enumerated user-facing routes**: 57 wrapped + 3 intentional exclusions
+(the deprecated `/search/*` legacy paths). The out-of-scope `/embedding-model/*`
+family is a wildcard counted **outside** this 60 — it is not enumerated here. The
+"57/57" unit figure in the Coverage Summary describes coverage **of the wrapped
+subset only**, not of the full server surface — every unwrapped route is
+accounted for above.
 
 ## Next Actions
 
