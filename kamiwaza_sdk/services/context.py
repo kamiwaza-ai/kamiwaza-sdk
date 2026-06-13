@@ -492,11 +492,190 @@ class ContextService(BaseService):
             headers=self._merge_headers(workroom_id=workroom_id),
         )
 
-    def cancel_pipeline_job(
+    def delete_pipeline_job(
         self, *, workroom_id: str, job_id: str
     ) -> dict[str, Any] | None:
+        """Destructively delete a pipeline job and its recorded history.
+
+        Maps to ``DELETE /context/pipelines/{job_id}``: pending/running jobs are
+        cancelled first, then the job and its history are removed. For a
+        non-destructive cancel that preserves history, use
+        :meth:`cancel_pipeline_job`.
+        """
         return self.client.delete(
             f"{self._BASE_PATH}/pipelines/{job_id}",
+            headers=self._merge_headers(workroom_id=workroom_id),
+        )
+
+    def cancel_pipeline_job(self, *, workroom_id: str, job_id: str) -> dict[str, Any]:
+        """Gracefully cancel a pipeline job, preserving its recorded history.
+
+        Maps to ``POST /context/pipelines/{job_id}/cancel``. Distinct from
+        :meth:`delete_pipeline_job`, which hard-deletes the job and its history.
+        """
+        return self.client.post(
+            f"{self._BASE_PATH}/pipelines/{job_id}/cancel",
+            headers=self._merge_headers(workroom_id=workroom_id),
+        )
+
+    def get_import_options(self, *, workroom_id: str | None = None) -> dict[str, Any]:
+        """Get aggregated provider-neutral import options for the workroom.
+
+        Maps to ``GET /context/pipelines/import-options``. The workroom scope is
+        optional; omit it for Global-level import options.
+        """
+        return self.client.get(
+            f"{self._BASE_PATH}/pipelines/import-options",
+            headers=self._merge_headers(workroom_id=workroom_id),
+        )
+
+    def evaluate_import_options(
+        self,
+        *,
+        sources: list[dict[str, Any]],
+        config: Optional[dict[str, Any]] = None,
+        workroom_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Evaluate selected source descriptors against Context import rules.
+
+        Maps to ``POST /context/pipelines/import-options``. Returns the import
+        options plus per-source validation (``can_submit``, ``validation_issues``,
+        ``normalized_config``).
+        """
+        payload: dict[str, Any] = {"sources": sources}
+        if config is not None:
+            payload["config"] = config
+        return self.client.post(
+            f"{self._BASE_PATH}/pipelines/import-options",
+            json=payload,
+            headers=self._merge_headers(workroom_id=workroom_id),
+        )
+
+    def create_source_import_job(
+        self,
+        *,
+        workroom_id: str,
+        sources: list[dict[str, Any]],
+        config: Optional[dict[str, Any]] = None,
+        callback: Optional[dict[str, Any]] = None,
+        idempotency_key: str | None = None,
+        force: bool = False,
+    ) -> dict[str, Any]:
+        """Create and start a provider-neutral source-import job.
+
+        Maps to ``POST /context/pipelines/imports``.
+        """
+        payload: dict[str, Any] = {"sources": sources, "force": force}
+        if config is not None:
+            payload["config"] = config
+        if callback is not None:
+            payload["callback"] = callback
+        if idempotency_key is not None:
+            payload["idempotency_key"] = idempotency_key
+        return self.client.post(
+            f"{self._BASE_PATH}/pipelines/imports",
+            json=payload,
+            headers=self._merge_headers(workroom_id=workroom_id),
+        )
+
+    def list_import_items(self, *, workroom_id: str) -> dict[str, Any]:
+        """List the workroom-wide source-import inventory/history.
+
+        Maps to ``GET /context/pipelines/items``.
+        """
+        return self.client.get(
+            f"{self._BASE_PATH}/pipelines/items",
+            headers=self._merge_headers(workroom_id=workroom_id),
+        )
+
+    def rerun_import_items(
+        self,
+        *,
+        workroom_id: str,
+        item_keys: list[str],
+        config: Optional[dict[str, Any]] = None,
+        callback: Optional[dict[str, Any]] = None,
+        idempotency_key: str | None = None,
+        force: bool = True,
+    ) -> dict[str, Any]:
+        """Rerun selected inventory items by their recorded source descriptors.
+
+        Maps to ``POST /context/pipelines/items/rerun``.
+        """
+        payload: dict[str, Any] = {"item_keys": item_keys, "force": force}
+        if config is not None:
+            payload["config"] = config
+        if callback is not None:
+            payload["callback"] = callback
+        if idempotency_key is not None:
+            payload["idempotency_key"] = idempotency_key
+        return self.client.post(
+            f"{self._BASE_PATH}/pipelines/items/rerun",
+            json=payload,
+            headers=self._merge_headers(workroom_id=workroom_id),
+        )
+
+    def list_pipeline_job_items(
+        self, *, workroom_id: str, job_id: str
+    ) -> dict[str, Any]:
+        """List canonical per-item statuses for one pipeline job.
+
+        Maps to ``GET /context/pipelines/{job_id}/items``.
+        """
+        return self.client.get(
+            f"{self._BASE_PATH}/pipelines/{job_id}/items",
+            headers=self._merge_headers(workroom_id=workroom_id),
+        )
+
+    def retry_pipeline_job(
+        self,
+        *,
+        workroom_id: str,
+        job_id: str,
+        callback: Optional[dict[str, Any]] = None,
+        idempotency_key: str | None = None,
+        force: bool | None = None,
+    ) -> dict[str, Any]:
+        """Retry failed/incomplete items from a replayable source-import job.
+
+        Maps to ``POST /context/pipelines/{job_id}/retry``.
+        """
+        payload: dict[str, Any] = {}
+        if callback is not None:
+            payload["callback"] = callback
+        if idempotency_key is not None:
+            payload["idempotency_key"] = idempotency_key
+        if force is not None:
+            payload["force"] = force
+        return self.client.post(
+            f"{self._BASE_PATH}/pipelines/{job_id}/retry",
+            json=payload,
+            headers=self._merge_headers(workroom_id=workroom_id),
+        )
+
+    def rerun_pipeline_job(
+        self,
+        *,
+        workroom_id: str,
+        job_id: str,
+        callback: Optional[dict[str, Any]] = None,
+        idempotency_key: str | None = None,
+        force: bool | None = None,
+    ) -> dict[str, Any]:
+        """Rerun all recorded source descriptors from a prior source-import job.
+
+        Maps to ``POST /context/pipelines/{job_id}/rerun``.
+        """
+        payload: dict[str, Any] = {}
+        if callback is not None:
+            payload["callback"] = callback
+        if idempotency_key is not None:
+            payload["idempotency_key"] = idempotency_key
+        if force is not None:
+            payload["force"] = force
+        return self.client.post(
+            f"{self._BASE_PATH}/pipelines/{job_id}/rerun",
+            json=payload,
             headers=self._merge_headers(workroom_id=workroom_id),
         )
 

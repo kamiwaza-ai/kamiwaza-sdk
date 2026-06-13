@@ -36,17 +36,42 @@ surface (see "Not yet wrapped by the SDK" below).
 | 28 | `GET` | `/context/pipelines/` | `list_pipeline_jobs` | Y | Y | strict |
 | 29 | `GET` | `/context/pipelines/supported-types` | `get_supported_file_types` | Y | Y | strict |
 | 30 | `GET` | `/context/pipelines/{job_id}` | `get_pipeline_job` | Y | Y | strict |
-| 31 | `DELETE` | `/context/pipelines/{job_id}` | `cancel_pipeline_job` | Y | Y | strict |
+| 31 | `DELETE` | `/context/pipelines/{job_id}` | `delete_pipeline_job` | Y | Y | strict |
 | 32 | `POST` | `/context/search` | `search` | Y | Y | strict |
 | 33 | `POST` | `/context/retrieve` | `retrieve` | Y | Y | strict |
 | 34 | `POST` | `/context/search/unified` | `agentic_search` | Y | Y | strict |
 | 35 | `POST` | `/context/upload/` | `upload_file` | Y | Y | strict |
+| 36 | `GET` | `/context/pipelines/import-options` | `get_import_options` | Y | Y | strict |
+| 37 | `POST` | `/context/pipelines/import-options` | `evaluate_import_options` | Y | Y | strict |
+| 38 | `POST` | `/context/pipelines/imports` | `create_source_import_job` | Y | deferred | strict |
+| 39 | `GET` | `/context/pipelines/items` | `list_import_items` | Y | Y | strict |
+| 40 | `POST` | `/context/pipelines/items/rerun` | `rerun_import_items` | Y | deferred | strict |
+| 41 | `GET` | `/context/pipelines/{job_id}/items` | `list_pipeline_job_items` | Y | deferred | strict |
+| 42 | `POST` | `/context/pipelines/{job_id}/retry` | `retry_pipeline_job` | Y | deferred | strict |
+| 43 | `POST` | `/context/pipelines/{job_id}/rerun` | `rerun_pipeline_job` | Y | deferred | strict |
+| 44 | `POST` | `/context/pipelines/{job_id}/cancel` | `cancel_pipeline_job` | Y | Y | strict |
 
 `agentic_search` wraps the canonical unified endpoint (`synthesize=True`). The
 legacy `/context/search/agentic` route is deprecated server-side ("use POST
 /search with synthesize=true instead"), so the SDK intentionally targets
 `/context/search/unified` rather than the deprecated path the row originally
 listed.
+
+Rows 31 and 44 are deliberately distinct cancel semantics. `delete_pipeline_job`
+(row 31, `DELETE /context/pipelines/{job_id}`) is the **destructive** verb — it
+cancels a pending/running job and then removes the job **and** its recorded
+history. `cancel_pipeline_job` (row 44, `POST /context/pipelines/{job_id}/cancel`)
+is the **graceful** verb — it cancels the job while **preserving** its history.
+The SDK previously bound `cancel_pipeline_job` to the destructive `DELETE`; that
+name was repointed to the graceful route and the destructive path renamed to
+`delete_pipeline_job` (a breaking rename).
+
+Gap A live coverage (rows 38, 40–43) is **deferred**: source-import creation,
+inventory rerun, and per-job retry/rerun replay all drive the OmniParse/Milvus
+data plane, which the bare-core live host does not provision. These rows are
+guarded by mocked unit tests; the live-debt is recorded in the PR body. The
+import-options surface (rows 36–37), the workroom-wide inventory listing
+(row 39), and the graceful cancel (row 44) are live-smokeable against bare core.
 
 `update_vectordb` and `scale_vectordb` (rows 5 & 6) carry **round-trip**
 assertion strength rather than **strict**: the live tests confirm the SDK call
@@ -58,19 +83,19 @@ API round-trip is the meaningful, non-flaky contract these tests guard.
 
 ## Coverage Summary
 
-These figures describe coverage **of the 35 wrapped routes above**, not of the
+These figures describe coverage **of the 44 wrapped routes above**, not of the
 full Context server surface (see "Not yet wrapped by the SDK" for the unwrapped
 remainder):
 
-- Wrapped rows with an SDK method: **35/35**.
-- Unit coverage of wrapped methods: **35/35**.
-- Live coverage of wrapped methods: **35/35** — `update_vectordb` and `scale_vectordb` live coverage was restored via workroom-scoped round-trip tests (the `session_workroom` + `shared_workroom_vectordb` fixtures), closing the gap left by the per-session-workroom refactor.
+- Wrapped rows with an SDK method: **44/44**.
+- Unit coverage of wrapped methods: **44/44**.
+- Live coverage of wrapped methods: **35/44** — the 9 newly wrapped Gap A pipeline rows are unit-covered; rows 36, 37, 39, and 44 are also live-covered against bare core, while rows 38 and 40–43 carry **deferred** live coverage because they require the un-provisioned OmniParse/Milvus data plane (see the Gap A note above).
 
 ## Not yet wrapped by the SDK
 
-The 35 rows above are **not** the full Context surface — they are the subset the
-SDK wraps today. The live `/context` router exposes **25** additional enumerated
-user-facing routes — **3** intentional exclusions plus **22** real-gap routes
+The 44 rows above are **not** the full Context surface — they are the subset the
+SDK wraps today. The live `/context` router exposes **16** additional enumerated
+user-facing routes — **3** intentional exclusions plus **13** real-gap routes
 (verified against `kamiwaza/services/context/api/*.py`); the out-of-scope
 `/embedding-model/*` family lives entirely outside this count. Each is triaged
 below as either an **intentional exclusion** (with a one-line rationale) or a
@@ -91,21 +116,12 @@ this PR.
 These routes are live, non-deprecated, and user-facing, but unwrapped. They are
 grouped into coherent follow-up areas for later waves:
 
-**Gap A — Pipeline source-import / replay ops** (`/context/pipelines/*`, 9 routes):
+> **Gap A (Pipeline source-import / replay ops) is now wrapped** (rows 36–44
+> above), including the breaking `cancel_pipeline_job` → `delete_pipeline_job`
+> rename plus the new graceful `cancel_pipeline_job`. The remaining gaps below
+> are renumbered accordingly.
 
-| Method | Endpoint | Note |
-|---|---|---|
-| `GET` | `/context/pipelines/import-options` | Aggregated provider-neutral import options. |
-| `POST` | `/context/pipelines/import-options` | Evaluate selected source descriptors against import rules. |
-| `POST` | `/context/pipelines/imports` | Create a provider-neutral source-import job. |
-| `GET` | `/context/pipelines/items` | Workroom-wide source-import inventory/history. |
-| `POST` | `/context/pipelines/items/rerun` | Rerun selected inventory items by recorded source descriptor. |
-| `GET` | `/context/pipelines/{job_id}/items` | Per-item statuses for one job. |
-| `POST` | `/context/pipelines/{job_id}/retry` | Retry failed/incomplete items from a replayable import job. |
-| `POST` | `/context/pipelines/{job_id}/rerun` | Rerun all recorded source descriptors from a prior import job. |
-| `POST` | `/context/pipelines/{job_id}/cancel` | **Graceful cancel that preserves job history.** Distinct from the SDK's `cancel_pipeline_job` (row 31), which maps to `DELETE /context/pipelines/{job_id}` — a hard delete that cancels *and removes* the job + its recorded history. The non-destructive cancel verb is currently unreachable from the SDK. |
-
-**Gap B — Raw-file object storage CRUD** (`/context/storage/raw*`, 4 routes):
+**Gap A — Raw-file object storage CRUD** (`/context/storage/raw*`, 4 routes):
 
 | Method | Endpoint | Note |
 |---|---|---|
@@ -114,7 +130,7 @@ grouped into coherent follow-up areas for later waves:
 | `GET` | `/context/storage/raw/{file_id}` | Get one raw-file record (optional presigned download URL). |
 | `PUT` | `/context/storage/raw/{file_id}` | Edit plain-text raw-file content (If-Match concurrency). |
 
-**Gap C — OmniParse instance lifecycle CRUD** (`/context/omniparses*`, 5 routes):
+**Gap B — OmniParse instance lifecycle CRUD** (`/context/omniparses*`, 5 routes):
 
 | Method | Endpoint | Note |
 |---|---|---|
@@ -124,7 +140,7 @@ grouped into coherent follow-up areas for later waves:
 | `PUT` | `/context/omniparses/{omniparse_id}` | Update an instance. |
 | `DELETE` | `/context/omniparses/{omniparse_id}` | Delete an instance. |
 
-**Gap D — Misc workroom config / document retrieval** (`/context/*`, 4 routes):
+**Gap C — Misc workroom config / document retrieval** (`/context/*`, 4 routes):
 
 | Method | Endpoint | Note |
 |---|---|---|
@@ -135,14 +151,14 @@ grouped into coherent follow-up areas for later waves:
 
 ## Coverage scope note
 
-This matrix tracks **35 wrapped routes** against a live Context surface of
-**60 enumerated user-facing routes**: 35 wrapped + 3 intentional exclusions
-(the deprecated `/search/*` legacy paths) + 22 real-gap routes across Gaps A–D
-(9 + 4 + 5 + 4). The out-of-scope `/embedding-model/*` family is a wildcard
-counted **outside** this 60 — it is not enumerated here. The "35/35" figures in
-the Coverage Summary describe coverage **of the wrapped subset only**, not of the
-full server surface — every unwrapped route is accounted for above.
+This matrix tracks **44 wrapped routes** against a live Context surface of
+**60 enumerated user-facing routes**: 44 wrapped + 3 intentional exclusions
+(the deprecated `/search/*` legacy paths) + 13 real-gap routes across Gaps A–C
+(4 + 5 + 4). The out-of-scope `/embedding-model/*` family is a wildcard
+counted **outside** this 60 — it is not enumerated here. The "44/44" unit figure
+in the Coverage Summary describes coverage **of the wrapped subset only**, not of
+the full server surface — every unwrapped route is accounted for above.
 
 ## Next Actions
 
-- File the Gap A–D follow-up tickets (one per area) to wrap the real gaps in later waves.
+- File the Gap A–C follow-up tickets (one per area) to wrap the remaining real gaps in later waves.
