@@ -140,6 +140,11 @@ markers = [
     "requires_deployable_model: live tests that require the host to deploy the integration test model; skips on hosts without compatible inference capacity (e.g. x86 CPU smoke vs an MLX model)",
     "extension_regression: D210 12-issue regression checklist (UAC-17 / EDX-OPS-2). See tests/unit/extensions/regression/inventory.yaml.",
     "live_extension: live extension-contract tests against a real cluster (relocated from kamiwaza, env-gated by RUN_LIVE_EXTENSION_TESTS=1)",
+    "min_gpu_count: live tests needing >= N GPU devices, e.g. @pytest.mark.min_gpu_count(2); skips on hosts with fewer (M5)",
+    "min_gpu_mem: live tests needing at least one GPU with >= N GB memory, e.g. @pytest.mark.min_gpu_mem(40); skips otherwise (M5)",
+    "gpu_vendor: live tests needing a GPU vendor — gpu_vendor('nvidia'|'amd') — or a CPU-only host — gpu_vendor('none'); skips otherwise (M5)",
+    "gpu_mig_support: live tests needing a MIG-capable GPU; skips on hosts without MIG (M5)",
+    "min_node_count: live tests needing >= N running nodes, e.g. @pytest.mark.min_node_count(2); skips on smaller clusters (M5)",
 ]
 
 [tool.black]
