@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from typing import Any, IO, Mapping, Optional
 
 from .base_service import BaseService
@@ -803,4 +804,142 @@ class ContextService(BaseService):
             files=files,
             params=params or None,
             headers=self._merge_headers(workroom_id=workroom_id),
+        )
+
+    # Raw-file object storage CRUD
+
+    def store_raw_file(
+        self,
+        *,
+        workroom_id: str,
+        filename: str,
+        content: bytes | str,
+        content_type: str | None = None,
+        source_urn: str | None = None,
+        source_kind: str | None = None,
+        source_ref: Optional[dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        """Store a raw file directly into workroom-scoped object storage.
+
+        ``content`` may be raw ``bytes`` or a ``str`` (UTF-8 encoded before
+        base64). The server expects the payload base64-encoded on the wire;
+        this method performs that encoding so callers pass plain content.
+
+        Args:
+            workroom_id: Owning workroom (sent as ``X-Workroom-ID``).
+            filename: Original filename for the stored raw file.
+            content: Raw file bytes (or a UTF-8 string).
+            content_type: Optional MIME type; the server guesses from the
+                filename when omitted.
+            source_urn: Optional source URN (``inline://`` / ``workspace://``
+                schemes only for inline create).
+            source_kind: Optional source mode (``inline`` or ``workspace``).
+            source_ref: Optional connector/source reference metadata.
+            metadata: Optional caller-supplied metadata to persist.
+
+        Returns:
+            The stored raw-file detail record.
+        """
+        raw_bytes = content.encode("utf-8") if isinstance(content, str) else content
+        payload: dict[str, Any] = {
+            "filename": filename,
+            "content_base64": base64.b64encode(raw_bytes).decode("ascii"),
+        }
+        if content_type is not None:
+            payload["content_type"] = content_type
+        if source_urn is not None:
+            payload["source_urn"] = source_urn
+        if source_kind is not None:
+            payload["source_kind"] = source_kind
+        if source_ref is not None:
+            payload["source_ref"] = source_ref
+        if metadata is not None:
+            payload["metadata"] = metadata
+        return self.client.post(
+            f"{self._BASE_PATH}/storage/raw",
+            json=payload,
+            headers=self._merge_headers(workroom_id=workroom_id),
+        )
+
+    def list_raw_files(
+        self,
+        *,
+        workroom_id: str,
+        source_urn: str | None = None,
+        job_id: str | None = None,
+        connector_id: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+        include_markings: bool = False,
+    ) -> dict[str, Any]:
+        """List raw files stored for a workroom.
+
+        Returns the server's ``{"items": [...], "count": N}`` response. Set
+        ``include_markings=True`` to attach aggregated security markings to
+        each row.
+        """
+        params: dict[str, Any] = {"limit": limit, "offset": offset}
+        if source_urn is not None:
+            params["source_urn"] = source_urn
+        if job_id is not None:
+            params["job_id"] = job_id
+        if connector_id is not None:
+            params["connector_id"] = connector_id
+        if include_markings:
+            params["include_markings"] = include_markings
+        return self.client.get(
+            f"{self._BASE_PATH}/storage/raw",
+            params=params,
+            headers=self._merge_headers(workroom_id=workroom_id),
+        )
+
+    def get_raw_file(
+        self,
+        file_id: str,
+        *,
+        workroom_id: str,
+        include_download_url: bool = False,
+        expires_seconds: int | None = None,
+    ) -> dict[str, Any]:
+        """Get one raw-file metadata record by ID and workroom scope.
+
+        Set ``include_download_url=True`` to request a temporary presigned
+        download URL (only populated when S3 metadata exists);
+        ``expires_seconds`` overrides the presigned URL TTL (30-3600s).
+        """
+        params: dict[str, Any] = {}
+        if include_download_url:
+            params["include_download_url"] = include_download_url
+        if expires_seconds is not None:
+            params["expires_seconds"] = expires_seconds
+        return self.client.get(
+            f"{self._BASE_PATH}/storage/raw/{file_id}",
+            params=params or None,
+            headers=self._merge_headers(workroom_id=workroom_id),
+        )
+
+    def update_raw_file(
+        self,
+        file_id: str,
+        *,
+        workroom_id: str,
+        content: str,
+        if_match: str | None = None,
+    ) -> dict[str, Any]:
+        """Edit the plain-text content of a raw file.
+
+        ``content`` is sent verbatim as the new file body (the server rejects
+        empty/whitespace-only content and enforces a UTF-8 byte cap). Pass the
+        file's ``updated_at`` token from a prior response as ``if_match`` for
+        optimistic concurrency control — a stale token returns HTTP 409 with
+        the current token in the response detail.
+        """
+        headers = self._merge_headers(workroom_id=workroom_id)
+        if if_match is not None:
+            headers["If-Match"] = if_match
+        return self.client.put(
+            f"{self._BASE_PATH}/storage/raw/{file_id}",
+            json={"content": content},
+            headers=headers,
         )

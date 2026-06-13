@@ -50,6 +50,10 @@ surface (see "Not yet wrapped by the SDK" below).
 | 42 | `POST` | `/context/pipelines/{job_id}/retry` | `retry_pipeline_job` | Y | deferred | strict |
 | 43 | `POST` | `/context/pipelines/{job_id}/rerun` | `rerun_pipeline_job` | Y | deferred | strict |
 | 44 | `POST` | `/context/pipelines/{job_id}/cancel` | `cancel_pipeline_job` | Y | Y | strict |
+| 45 | `POST` | `/context/storage/raw` | `store_raw_file` | Y | conditional | round-trip |
+| 46 | `GET` | `/context/storage/raw` | `list_raw_files` | Y | conditional | strict |
+| 47 | `GET` | `/context/storage/raw/{file_id}` | `get_raw_file` | Y | conditional | round-trip |
+| 48 | `PUT` | `/context/storage/raw/{file_id}` | `update_raw_file` | Y | conditional | round-trip |
 
 `agentic_search` wraps the canonical unified endpoint (`synthesize=True`). The
 legacy `/context/search/agentic` route is deprecated server-side ("use POST
@@ -73,6 +77,14 @@ guarded by mocked unit tests; the live-debt is recorded in the PR body. The
 import-options surface (rows 36–37), the workroom-wide inventory listing
 (row 39), and the graceful cancel (row 44) are live-smokeable against bare core.
 
+Raw-file object-storage rows (45–48) carry **conditional** live coverage: the
+store→get→list→`If-Match` edit round-trip and the listing contract test run only
+when the live host reports `workroom_object_storage` in `GET /context/health`
+capabilities, and `skip` otherwise. A bare-core host without the S3/object-storage
+data plane provisioned does not stand it up, so those rows fall back to the mocked
+unit tests with the live-debt recorded in the PR body. The PUT edit asserts the
+stale-`If-Match` 409 optimistic-concurrency contract.
+
 `update_vectordb` and `scale_vectordb` (rows 5 & 6) carry **round-trip**
 assertion strength rather than **strict**: the live tests confirm the SDK call
 is accepted and the requested change is observable (the `update` config marker
@@ -83,19 +95,19 @@ API round-trip is the meaningful, non-flaky contract these tests guard.
 
 ## Coverage Summary
 
-These figures describe coverage **of the 44 wrapped routes above**, not of the
+These figures describe coverage **of the 48 wrapped routes above**, not of the
 full Context server surface (see "Not yet wrapped by the SDK" for the unwrapped
 remainder):
 
-- Wrapped rows with an SDK method: **44/44**.
-- Unit coverage of wrapped methods: **44/44**.
-- Live coverage of wrapped methods: **35/44** — the 9 newly wrapped Gap A pipeline rows are unit-covered; rows 36, 37, 39, and 44 are also live-covered against bare core, while rows 38 and 40–43 carry **deferred** live coverage because they require the un-provisioned OmniParse/Milvus data plane (see the Gap A note above).
+- Wrapped rows with an SDK method: **48/48**.
+- Unit coverage of wrapped methods: **48/48**.
+- Live coverage of wrapped methods: **35/48** — the 9 Gap A pipeline rows are unit-covered (rows 36, 37, 39, and 44 also live against bare core; rows 38 and 40–43 are **deferred**), and the 4 raw-file rows (45–48) carry **conditional** live coverage that runs only when the host reports `workroom_object_storage` and otherwise skips (see the notes above). All 48 are unit-covered.
 
 ## Not yet wrapped by the SDK
 
-The 44 rows above are **not** the full Context surface — they are the subset the
-SDK wraps today. The live `/context` router exposes **16** additional enumerated
-user-facing routes — **3** intentional exclusions plus **13** real-gap routes
+The 48 rows above are **not** the full Context surface — they are the subset the
+SDK wraps today. The live `/context` router exposes **12** additional enumerated
+user-facing routes — **3** intentional exclusions plus **9** real-gap routes
 (verified against `kamiwaza/services/context/api/*.py`); the out-of-scope
 `/embedding-model/*` family lives entirely outside this count. Each is triaged
 below as either an **intentional exclusion** (with a one-line rationale) or a

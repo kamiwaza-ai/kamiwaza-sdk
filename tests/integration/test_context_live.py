@@ -997,3 +997,91 @@ def test_context_agentic_search_contract(
     # so a server-side regression that silently drops synthesis is caught.
     assert "synthesis" in result
     assert "citations" in result
+
+
+# --- Raw-file object storage CRUD ---
+
+
+def _object_storage_enabled(service: ContextService) -> bool:
+    """Return True when the live Context Service has workroom object storage."""
+    try:
+        health = service.health()
+    except APIError:
+        return False
+    caps = health.get("capabilities") or {}
+    return bool(caps.get("workroom_object_storage"))
+
+
+def test_context_raw_file_round_trip(
+    shared_context_service: ContextService,
+    session_workroom: str,
+) -> None:
+    """Store -> get -> list -> If-Match edit round trip against a fresh workroom.
+
+    Skips when workroom object storage is disabled (bare core without the
+    S3/object-storage data plane provisioned) -- the route is mocked-unit
+    covered in that case and the live debt is recorded in the PR body.
+    """
+    service = shared_context_service
+    workroom_id = session_workroom
+    if not _object_storage_enabled(service):
+        pytest.skip("workroom object storage not enabled on this host")
+
+    filename = f"sdk-raw-{uuid4().hex[:8]}.txt"
+    original = "hello raw storage"
+
+    stored = service.store_raw_file(
+        workroom_id=workroom_id,
+        filename=filename,
+        content=original,
+        content_type="text/plain",
+        source_urn="inline://sdk-live",
+        source_kind="inline",
+    )
+    file_id = str(stored["id"])
+    assert stored["filename"] == filename
+
+    fetched = service.get_raw_file(
+        file_id,
+        workroom_id=workroom_id,
+        include_download_url=True,
+    )
+    assert str(fetched["id"]) == file_id
+    assert fetched["filename"] == filename
+
+    listing = service.list_raw_files(workroom_id=workroom_id)
+    assert isinstance(listing.get("items"), list)
+    assert any(str(item["id"]) == file_id for item in listing["items"])
+
+    # If-Match optimistic concurrency: a stale token must be rejected with 409.
+    current_token = fetched.get("updated_at")
+    with pytest.raises(APIError) as exc_info:
+        service.update_raw_file(
+            file_id,
+            workroom_id=workroom_id,
+            content="should not persist",
+            if_match="1970-01-01T00:00:00+00:00",
+        )
+    assert exc_info.value.status_code == 409
+
+    edited = service.update_raw_file(
+        file_id,
+        workroom_id=workroom_id,
+        content="edited raw storage body",
+        if_match=current_token,
+    )
+    assert str(edited["id"]) == file_id
+
+
+def test_context_list_raw_files_empty_contract(
+    shared_context_service: ContextService,
+    session_workroom: str,
+) -> None:
+    """List raw files returns the {items, count} contract shape."""
+    service = shared_context_service
+    if not _object_storage_enabled(service):
+        pytest.skip("workroom object storage not enabled on this host")
+
+    listing = service.list_raw_files(workroom_id=session_workroom, limit=5)
+    assert isinstance(listing.get("items"), list)
+    assert isinstance(listing.get("count"), int)

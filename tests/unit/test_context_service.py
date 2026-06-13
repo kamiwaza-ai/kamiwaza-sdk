@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import io
 
 import pytest
@@ -926,3 +927,186 @@ def test_agentic_search_includes_optional_graph_and_vector_fields(dummy_client):
         "group_ids": ["g1", "g2"],
     }
     assert kwargs["headers"]["X-Workroom-ID"] == "ffffffff-ffff-ffff-ffff-ffffffffffff"
+
+
+# --- Raw-file object storage CRUD ---
+
+WORKROOM = "ffffffff-ffff-ffff-ffff-ffffffffffff"
+
+
+def test_store_raw_file_base64_encodes_bytes(dummy_client):
+    responses = {("post", "/context/storage/raw"): {"id": "rf-1"}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.store_raw_file(
+        workroom_id=WORKROOM,
+        filename="notes.txt",
+        content=b"hello world",
+    )
+
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("post", "/context/storage/raw")
+    assert kwargs["json"] == {
+        "filename": "notes.txt",
+        "content_base64": base64.b64encode(b"hello world").decode("ascii"),
+    }
+    assert kwargs["headers"]["X-Workroom-ID"] == WORKROOM
+
+
+def test_store_raw_file_encodes_str_as_utf8(dummy_client):
+    responses = {("post", "/context/storage/raw"): {"id": "rf-1"}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.store_raw_file(
+        workroom_id=WORKROOM,
+        filename="snowman.txt",
+        content="snowman ☃",
+    )
+
+    _, _, kwargs = client.calls[0]
+    expected = base64.b64encode("snowman ☃".encode("utf-8")).decode("ascii")
+    assert kwargs["json"]["content_base64"] == expected
+
+
+def test_store_raw_file_includes_optional_fields(dummy_client):
+    responses = {("post", "/context/storage/raw"): {"id": "rf-1"}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.store_raw_file(
+        workroom_id=WORKROOM,
+        filename="report.md",
+        content=b"# Title",
+        content_type="text/markdown",
+        source_urn="inline://report",
+        source_kind="inline",
+        source_ref={"origin": "editor"},
+        metadata={"tag": "draft"},
+    )
+
+    _, _, kwargs = client.calls[0]
+    body = kwargs["json"]
+    assert body["content_type"] == "text/markdown"
+    assert body["source_urn"] == "inline://report"
+    assert body["source_kind"] == "inline"
+    assert body["source_ref"] == {"origin": "editor"}
+    assert body["metadata"] == {"tag": "draft"}
+
+
+def test_store_raw_file_omits_unset_optional_fields(dummy_client):
+    responses = {("post", "/context/storage/raw"): {"id": "rf-1"}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.store_raw_file(
+        workroom_id=WORKROOM,
+        filename="notes.txt",
+        content=b"x",
+    )
+
+    _, _, kwargs = client.calls[0]
+    assert set(kwargs["json"]) == {"filename", "content_base64"}
+
+
+def test_list_raw_files_default_params(dummy_client):
+    responses = {("get", "/context/storage/raw"): {"items": [], "count": 0}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.list_raw_files(workroom_id=WORKROOM)
+
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("get", "/context/storage/raw")
+    assert kwargs["params"] == {"limit": 50, "offset": 0}
+    assert kwargs["headers"]["X-Workroom-ID"] == WORKROOM
+
+
+def test_list_raw_files_applies_filters_and_markings(dummy_client):
+    responses = {("get", "/context/storage/raw"): {"items": [], "count": 0}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.list_raw_files(
+        workroom_id=WORKROOM,
+        source_urn="inline://report",
+        job_id="job-1",
+        connector_id="conn-1",
+        limit=10,
+        offset=5,
+        include_markings=True,
+    )
+
+    _, _, kwargs = client.calls[0]
+    assert kwargs["params"] == {
+        "limit": 10,
+        "offset": 5,
+        "source_urn": "inline://report",
+        "job_id": "job-1",
+        "connector_id": "conn-1",
+        "include_markings": True,
+    }
+
+
+def test_get_raw_file_no_optional_params(dummy_client):
+    responses = {("get", "/context/storage/raw/rf-1"): {"id": "rf-1"}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.get_raw_file("rf-1", workroom_id=WORKROOM)
+
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("get", "/context/storage/raw/rf-1")
+    assert kwargs["params"] is None
+    assert kwargs["headers"]["X-Workroom-ID"] == WORKROOM
+
+
+def test_get_raw_file_requests_presigned_url(dummy_client):
+    responses = {("get", "/context/storage/raw/rf-1"): {"id": "rf-1"}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.get_raw_file(
+        "rf-1",
+        workroom_id=WORKROOM,
+        include_download_url=True,
+        expires_seconds=120,
+    )
+
+    _, _, kwargs = client.calls[0]
+    assert kwargs["params"] == {
+        "include_download_url": True,
+        "expires_seconds": 120,
+    }
+
+
+def test_update_raw_file_sends_content_without_if_match(dummy_client):
+    responses = {("put", "/context/storage/raw/rf-1"): {"id": "rf-1"}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.update_raw_file("rf-1", workroom_id=WORKROOM, content="new body")
+
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("put", "/context/storage/raw/rf-1")
+    assert kwargs["json"] == {"content": "new body"}
+    assert "If-Match" not in kwargs["headers"]
+    assert kwargs["headers"]["X-Workroom-ID"] == WORKROOM
+
+
+def test_update_raw_file_sets_if_match_header(dummy_client):
+    responses = {("put", "/context/storage/raw/rf-1"): {"id": "rf-1"}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.update_raw_file(
+        "rf-1",
+        workroom_id=WORKROOM,
+        content="new body",
+        if_match="2026-06-12T00:00:00+00:00",
+    )
+
+    _, _, kwargs = client.calls[0]
+    assert kwargs["headers"]["If-Match"] == "2026-06-12T00:00:00+00:00"
+    assert kwargs["headers"]["X-Workroom-ID"] == WORKROOM
