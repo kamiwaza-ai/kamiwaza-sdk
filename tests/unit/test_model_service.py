@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+import json
 import uuid
 
 import pytest
 
+from kamiwaza_sdk.schemas.models.external_endpoint import (
+    AWSBedrockChatEndpoint,
+    AWSBedrockIamCredential,
+    AWSTranscribeCredential,
+    AWSTranscribeEndpoint,
+)
 from kamiwaza_sdk.schemas.models.model import CreateModel
 from kamiwaza_sdk.services.models.base import ModelService
 
@@ -172,3 +179,76 @@ def test_create_and_delete_model():
 
     service.delete_model(model_id)
     assert client.calls[1][0] == "DELETE"
+
+
+def test_register_external_model_bedrock_builds_endpoint_blob():
+    model_id = str(uuid.uuid4())
+    responses = {("POST", "/models/"): {"id": model_id, "name": "bedrock-claude"}}
+    client = DummyClient(responses)
+    service = ModelService(client)
+
+    created = service.register_external_model(
+        name="bedrock-claude",
+        endpoint=AWSBedrockChatEndpoint(
+            region="us-east-1",
+            model_id="anthropic.claude-3-sonnet-20240229-v1:0",
+        ),
+        credential=AWSBedrockIamCredential(
+            aws_access_key_id="AKIAEXAMPLE",
+            aws_secret_access_key="secret",
+        ),
+    )
+
+    assert created.id == uuid.UUID(model_id)
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("POST", "/models/")
+    # No rotation requested -> no query param sent.
+    assert kwargs.get("params") is None
+
+    blob = kwargs["json"]["default_config"]["system_config"]["external_endpoint"]
+    assert blob["protocol"] == "aws_bedrock"
+    assert blob["region"] == "us-east-1"
+    assert blob["model_id"] == "anthropic.claude-3-sonnet-20240229-v1:0"
+
+    # Credential travels inline as a JSON string, never as a structured dict.
+    cred = json.loads(blob["credential_secret"])
+    assert cred == {
+        "auth_type": "iam",
+        "aws_access_key_id": "AKIAEXAMPLE",
+        "aws_secret_access_key": "secret",
+    }
+    assert kwargs["json"]["default_config"]["default"] is True
+
+
+def test_register_external_model_transcribe_force_replace_passes_query_param():
+    responses = {("POST", "/models/"): {"id": str(uuid.uuid4()), "name": "transcribe"}}
+    client = DummyClient(responses)
+    service = ModelService(client)
+
+    service.register_external_model(
+        name="transcribe",
+        endpoint=AWSTranscribeEndpoint(region="us-west-2", s3_bucket="my-bucket"),
+        credential=AWSTranscribeCredential(
+            aws_access_key_id="AKIAEXAMPLE",
+            aws_secret_access_key="secret",
+        ),
+        force_replace_credentials=True,
+    )
+
+    _, _, kwargs = client.calls[0]
+    assert kwargs["params"] == {"force_replace_credentials": True}
+    blob = kwargs["json"]["default_config"]["system_config"]["external_endpoint"]
+    assert blob["protocol"] == "aws_transcribe"
+    assert blob["s3_bucket"] == "my-bucket"
+    # Defaults are mirrored from the platform schema.
+    assert blob["s3_prefix"] == "transcribe-jobs/"
+
+
+def test_register_external_model_accepts_raw_credential_forms():
+    responses = {("POST", "/models/"): {"id": str(uuid.uuid4()), "name": "m"}}
+    service = ModelService(DummyClient(responses))
+
+    # dict credential is JSON-serialized verbatim
+    assert service._serialize_credential({"api_key": "k"}) == '{"api_key": "k"}'
+    # str credential passes through untouched (already-serialized)
+    assert service._serialize_credential('{"api_key": "k"}') == '{"api_key": "k"}'
