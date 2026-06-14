@@ -10,6 +10,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from kamiwaza_sdk.exceptions import APIError
 from kamiwaza_sdk.schemas.connector_spec import ConnectorSpec
 from kamiwaza_sdk.services.catalog import CatalogService, DatasetClient
 
@@ -76,6 +77,14 @@ def test_register_from_spec_unwraps_bare_string_response():
     client = Mock()
     client.post.return_value = "urn:li:dataset:bare"
     assert DatasetClient(client).register_from_spec(_spec_dict()) == "urn:li:dataset:bare"
+
+
+def test_register_from_spec_raises_on_dict_without_urn():
+    """A dict response carrying no URN key fails loudly, not silently."""
+    client = Mock()
+    client.post.return_value = {"unexpected": "shape"}
+    with pytest.raises(APIError):
+        DatasetClient(client).register_from_spec(_spec_dict())
 
 
 # --------------------------------------------------------------------------- #

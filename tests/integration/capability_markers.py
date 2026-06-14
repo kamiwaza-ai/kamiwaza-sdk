@@ -111,8 +111,16 @@ def _detect_mem_gb(gpu: dict) -> Optional[float]:
             return value / 1024.0
     for key in _MEM_BYTES_KEYS:
         value = _num(gpu.get(key))
-        if value is not None:
+        if value is None:
+            continue
+        # memory_total / total_memory are ambiguous — some sources emit MB, not
+        # bytes. A real GPU has >= ~1 GiB, so only treat the magnitude as bytes
+        # when it is plausibly bytes; otherwise fall back to MB, then GB-scale.
+        if value >= (1 << 30):
             return value / (1024.0**3)
+        if value >= 1024:
+            return value / 1024.0
+        return value
     return None
 
 
@@ -154,6 +162,13 @@ def build_capability_snapshot(
     ``hardware_entries`` may be SDK ``Hardware`` models or plain dicts.
     ``node_count`` should come from ``cluster.get_running_nodes()`` when
     available; otherwise it is inferred from distinct hardware node ids.
+
+    Aggregation is CLUSTER-WIDE and locality-unaware: ``gpu_count`` sums GPUs
+    across all nodes and ``gpu_mem_gb`` collects per-GPU memory across the whole
+    cluster. So ``min_gpu_count(N)`` / ``min_gpu_mem(GB)`` are coarse skip-gates —
+    they can pass when no single node/deployment can actually use N GPUs together.
+    Acceptable for skip-not-fail gating (an over-permissive gate still self-skips
+    at deploy time); true locality would need per-node modelling.
     """
     entries = list(hardware_entries or [])
     gpu_dicts: list[dict] = []
