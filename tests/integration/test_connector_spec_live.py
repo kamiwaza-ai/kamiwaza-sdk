@@ -12,10 +12,22 @@ publisher grant/revoke. The *data-plane* gated round-trip (register a Kamiwaza
 self-connector and materialize gated records) needs the engine's
 ``allow_private_hosts`` toggle plus a reachable source, so it is built and
 validated live in the M6 demo (ENG-6965), not here.
+
+Gate requirement (ENG-6970): register-from-spec binds an ``AttributeGate`` by
+classpath and validates it imports and is the right kind (design OQ-4). A stock
+engine ships NO concrete ``AttributeGate`` — ``default_gates.py`` carries only
+``AllowAllExecutionGate`` — because v1 gates are delivered as sanctioned
+gate-packages (``kamiwaza_extensions.*``), not bundled in core. So the gated
+happy-path register only runs when a real gate-package is installed: set
+``KAMIWAZA_CS_SMOKE_GATE_CLASSPATH`` to its classpath to exercise it; absent
+that, the happy-path skips (the full gated round-trip is validated in the M6
+demo, which ships its own gate-package). The spec-validation rejections do NOT
+need an importable gate — they fail at spec validation before gate binding.
 """
 
 from __future__ import annotations
 
+import os
 from uuid import uuid4
 
 import pytest
@@ -26,7 +38,14 @@ from kamiwaza_sdk.schemas.catalog import SecretCreate
 
 pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
 
-_GATE_CLASSPATH = "kamiwaza.services.authz.gates.attribute_gate.AttributeGate"
+# A real, importable gate-package classpath supplied by the operator/CI. None on
+# a stock engine (which ships no concrete AttributeGate, design OQ-4), in which
+# case the gated happy-path register skips.
+_REAL_GATE_CLASSPATH = os.environ.get("KAMIWAZA_CS_SMOKE_GATE_CLASSPATH")
+# Placeholder used ONLY by the spec-validation rejection specs: those are
+# rejected at spec validation before gate binding, so this is never imported
+# and never used to register a standing dataset.
+_PLACEHOLDER_GATE_CLASSPATH = "kamiwaza_extensions.cs_smoke.PlaceholderAttributeGate"
 
 
 def _unique(prefix: str) -> str:
@@ -92,7 +111,12 @@ def brokered_secret(cs_engine):
             pass
 
 
-def _spec(index: str, credential_ref: str) -> dict:
+def _spec(
+    index: str,
+    credential_ref: str,
+    *,
+    gate_classpath: str = _PLACEHOLDER_GATE_CLASSPATH,
+) -> dict:
     """A minimal valid connector spec; base_url is never fetched at register."""
     return {
         "platform": "kamiwaza",
@@ -102,7 +126,7 @@ def _spec(index: str, credential_ref: str) -> dict:
         "pagination": {"max_pages": 1, "page_size": 50},
         "auth": {"kind": "bearer", "credential_ref": credential_ref},
         "data_attribute_fields": ["data_class"],
-        "gate": {"type": _GATE_CLASSPATH, "config": {"data_class_field": "data_class"}},
+        "gate": {"type": gate_classpath, "config": {"data_class_field": "data_class"}},
     }
 
 
@@ -110,11 +134,21 @@ def _spec(index: str, credential_ref: str) -> dict:
 # register-from-spec — happy path
 # --------------------------------------------------------------------------- #
 def test_register_from_spec_returns_dataset_urn(cs_engine, brokered_secret):
+    if not _REAL_GATE_CLASSPATH:
+        pytest.skip(
+            "no importable AttributeGate configured: a stock engine ships none "
+            "(design OQ-4 — v1 gates are sanctioned gate-packages). Set "
+            "KAMIWAZA_CS_SMOKE_GATE_CLASSPATH to an installed gate-package "
+            "classpath to exercise the gated register here; the full gated "
+            "round-trip is validated in the M6 demo (ENG-6965)."
+        )
     client = cs_engine
     index = _unique("cs-smoke")
     dataset_urn: str | None = None
     try:
-        dataset_urn = client.catalog.register_from_spec(_spec(index, brokered_secret))
+        dataset_urn = client.catalog.register_from_spec(
+            _spec(index, brokered_secret, gate_classpath=_REAL_GATE_CLASSPATH)
+        )
         assert dataset_urn and dataset_urn.startswith("urn:li:dataset:")
         # The standing dataset is queryable through the catalog.
         fetched = client.catalog.get_dataset(dataset_urn)
