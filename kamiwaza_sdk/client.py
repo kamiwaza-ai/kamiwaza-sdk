@@ -526,6 +526,29 @@ class KamiwazaClient:
             response_text=response.text,
         )
 
+    def _assert_same_host(self, base_url: str) -> None:
+        """Require base_url to share the platform's scheme/host/port.
+
+        The platform bearer is attached to every request, so an off-host
+        base_url would leak the credential. In-cluster extensions (Kaizen)
+        share the platform ingress, so this never fires in normal use.
+        """
+        from urllib.parse import urlparse
+
+        _default_ports = {"https": 443, "http": 80}
+
+        def _origin(url: str) -> tuple:
+            p = urlparse(url)
+            return (p.scheme, p.hostname, p.port or _default_ports.get(p.scheme))
+
+        if _origin(base_url) != _origin(self.base_url):
+            home = urlparse(self.base_url)
+            raise ValueError(
+                f"base_url '{base_url}' is not on the platform host "
+                f"'{home.scheme}://{home.netloc}'; refusing to send the platform "
+                "credential off-host."
+            )
+
     def _request(
         self,
         method: str,
@@ -533,9 +556,16 @@ class KamiwazaClient:
         *,
         expect_json: bool = True,
         skip_auth: bool = False,
+        base_url: Optional[str] = None,
         **kwargs,
     ):
-        url = f"{self.base_url}/{endpoint.lstrip('/')}"
+        # base_url targets an in-cluster extension (e.g. Kaizen) on the platform
+        # ingress; it must stay same-host since the platform bearer is attached
+        # to every request.
+        if base_url is not None:
+            self._assert_same_host(base_url)
+        root = (base_url or self.base_url).rstrip("/")
+        url = f"{root}/{endpoint.lstrip('/')}"
         path = endpoint.lstrip("/")
         self.logger.debug(f"Making {method} request to {url}")
         kwargs = self._prepare_request_kwargs(skip_auth, kwargs)
@@ -796,3 +826,30 @@ class KamiwazaClient:
         if not hasattr(self, '_workrooms'):
             self._workrooms = WorkroomService(self)
         return self._workrooms
+
+    @property
+    def connectors(self):
+        """Cluster-wide external connectors (M365, Google, …)."""
+        if not hasattr(self, "_connectors"):
+            from .services.connectors import ConnectorService
+
+            self._connectors = ConnectorService(self)
+        return self._connectors
+
+    @property
+    def agents(self):
+        """Kaizen agents (per-workroom extension; methods take a base_url)."""
+        if not hasattr(self, "_agents"):
+            from .services.kaizen import AgentService
+
+            self._agents = AgentService(self)
+        return self._agents
+
+    @property
+    def conversations(self):
+        """Kaizen conversations (per-workroom extension; methods take a base_url)."""
+        if not hasattr(self, "_conversations"):
+            from .services.kaizen import ConversationService
+
+            self._conversations = ConversationService(self)
+        return self._conversations

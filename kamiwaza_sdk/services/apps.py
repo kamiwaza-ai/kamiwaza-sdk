@@ -57,6 +57,7 @@ class AppService(BaseService):
         min_copies: int = 1,
         starting_copies: int = 1,
         max_copies: Optional[int] = None,
+        workroom_id: Optional[str] = None,
     ) -> AppDeployment:
         """
         Deploy a new application from a template.
@@ -68,6 +69,10 @@ class AppService(BaseService):
             min_copies: Minimum number of instances
             starting_copies: Initial number of instances
             max_copies: Maximum number of instances (for autoscaling)
+            workroom_id: Workroom to deploy into. The platform derives the
+                deployment's workroom from the caller's resolved context, so
+                this is sent as the ``X-Workroom-Id`` header rather than a body
+                field.
 
         Returns:
             AppDeployment object with deployment details
@@ -85,15 +90,96 @@ class AppService(BaseService):
             max_copies=max_copies,
         )
 
+        headers = {"X-Workroom-Id": str(workroom_id)} if workroom_id else None
         try:
             response = self.client.post(
-                "/apps/deploy_app", json=deployment_request.model_dump()
+                "/apps/deploy_app",
+                # mode="json" so template_id (UUID) serializes to a string;
+                # the requests JSON encoder can't adapt a raw UUID.
+                json=deployment_request.model_dump(mode="json"),
+                headers=headers,
             )
             return AppDeployment.model_validate(response)
         except APIError as e:
             if "404" in str(e):
                 raise NotFoundError(f"Template {template_id} not found")
             raise
+
+    def find_template(
+        self, name: str, version: Optional[str] = None
+    ) -> Optional[AppTemplate]:
+        """Find a catalog template by name (and optional version).
+
+        Args:
+            name: Template name (exact match).
+            version: Optional version to disambiguate when multiple revisions
+                of the same name exist.
+
+        Returns:
+            The matching AppTemplate, or None if no template matches.
+        """
+        for template in self.list_templates():
+            if template.name != name:
+                continue
+            if version is not None and template.version != version:
+                continue
+            return template
+        return None
+
+    def install_by_name(
+        self,
+        name: str,
+        *,
+        version: Optional[str] = None,
+        deployment_name: Optional[str] = None,
+        env_vars: Optional[Dict[str, str]] = None,
+        workroom_id: Optional[str] = None,
+        min_copies: int = 1,
+        starting_copies: int = 1,
+        max_copies: Optional[int] = None,
+        sync_if_missing: bool = True,
+    ) -> AppDeployment:
+        """Install a catalog extension by name, resolving its template id.
+
+        This is the current install-by-name path: it resolves the named
+        catalog template and deploys it via the App Garden, so callers don't
+        hand-author a full extension CR. When the template isn't in the local
+        catalog yet and ``sync_if_missing`` is set, it imports the garden
+        catalog once and retries the lookup.
+
+        Args:
+            name: Catalog template/extension name (e.g. "kaizen").
+            version: Optional version to pin.
+            deployment_name: Name for the deployment (defaults to ``name``).
+            env_vars: Optional environment variables for the deployment.
+            workroom_id: Workroom to install into (X-Workroom-Id header).
+            min_copies / starting_copies / max_copies: Scaling parameters.
+            sync_if_missing: Import the garden catalog and retry if the named
+                template isn't found locally.
+
+        Returns:
+            AppDeployment for the installed extension.
+
+        Raises:
+            NotFoundError: If no template matches after an optional sync.
+        """
+        template = self.find_template(name, version)
+        if template is None and sync_if_missing:
+            self.import_garden_apps()
+            template = self.find_template(name, version)
+        if template is None:
+            suffix = f" (version {version})" if version else ""
+            raise NotFoundError(f"No catalog template named '{name}'{suffix} found")
+
+        return self.deploy(
+            template_id=template.id,
+            name=deployment_name or name,
+            env_vars=env_vars,
+            min_copies=min_copies,
+            starting_copies=starting_copies,
+            max_copies=max_copies,
+            workroom_id=workroom_id,
+        )
 
     def list_deployments(self) -> List[AppDeployment]:
         """
