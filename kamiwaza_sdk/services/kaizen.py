@@ -13,7 +13,6 @@ platform honors this header. A workroom-scoped token is the durable fix
 (tracked for the nightly-seeding work).
 """
 
-import re
 import time
 from typing import Any, Dict, List, Optional, Union
 
@@ -65,12 +64,14 @@ def _endpoint_from_extension(extension, *, public: bool) -> Optional[str]:
 def _find_workroom_extension(client, extension_name: str, workroom_id):
     """Find a workroom's extension by base name (the operator suffixes CR names).
 
-    A per-workroom extension's CR is named ``<extension_name>-<hash>`` and carries
-    its ``workroom_id``, so we match on BOTH: the exact ``workroom_id`` (so we
-    never pick another workroom's instance) and the base name + operator hash
-    suffix (so a same-prefix sibling like ``kaizen-admin-<hash>`` can't be
-    mistaken for ``kaizen``). Requires the client to be scoped into the workroom
-    — the platform only lists a workroom's extensions to a caller scoped into it.
+    The operator names a per-workroom CR ``<extension_name>-<hash>`` and stamps it
+    with its ``workroom_id``, so we match on both: the exact ``workroom_id`` (never
+    another workroom's instance) and the ``<extension_name>-`` prefix (the kaizen,
+    not milvus/omniparse). ``workroom_id`` is the strong discriminator; the
+    ambiguity guard below is the backstop if more than one ever matches — so the
+    prefix check doesn't need to over-anchor on the hash shape. Requires the client
+    to be scoped into the workroom — the platform only lists a workroom's
+    extensions to a caller scoped into it.
 
     Raises:
         ValueError: when no instance is visible yet (still provisioning) —
@@ -78,15 +79,12 @@ def _find_workroom_extension(client, extension_name: str, workroom_id):
         AmbiguousExtensionError: when more than one matches (a workroom should
             hold one) — deterministic, callers must not retry.
     """
-    # The operator suffixes the CR with a single hex hash segment (e.g.
-    # ``kaizen-4f8b3ae1``). Anchoring on that shape avoids matching a longer
-    # sibling name that merely shares the base prefix.
-    suffix_re = re.compile(rf"^{re.escape(extension_name)}-[0-9a-f]+$")
+    prefix = f"{extension_name}-"
     matches = [
         ext
         for ext in client.extensions.list_extensions()
         if str(getattr(ext, "workroom_id", "")) == str(workroom_id)
-        and (ext.name == extension_name or suffix_re.match(ext.name))
+        and ext.name.startswith(prefix)
     ]
     if not matches:
         raise ValueError(

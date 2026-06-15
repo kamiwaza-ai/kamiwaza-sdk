@@ -187,13 +187,14 @@ def test_resolve_base_url_workroom_ambiguous_raises():
         resolve_base_url(client, "kaizen", workroom_id="wr-A")
 
 
-def test_resolve_base_url_workroom_excludes_same_prefix_sibling():
-    # A sibling that merely shares the base prefix (kaizen-admin-<hash>) must NOT
-    # be mistaken for kaizen — only the base + operator hash suffix matches.
+def test_resolve_base_url_workroom_ignores_unsuffixed_exact_name():
+    # A per-workroom instance is always the operator's suffixed CR (kaizen-<hash>),
+    # so a bare exact-name extension is not matched — a stray one can't shadow the
+    # real instance or trip a false ambiguity.
     client = _client_listing(
         [
+            _ext("kaizen", "wr-A", external="https://x/bare"),
             _ext("kaizen-4f8b3ae1", "wr-A"),
-            _ext("kaizen-admin-99999999", "wr-A", external="https://x/admin"),
         ]
     )
 
