@@ -44,6 +44,27 @@ This project uses **uv** for dependency management and a **Makefile** for common
 - **By marker**: `uv run pytest -m "unit"`, `uv run pytest -m "live"`
 - **Exclude slow**: `uv run pytest -m "not integration and not live and not e2e"`
 
+## Continuous Integration
+
+CI lives in `.github/workflows/`. The core quality workflows — `python-tests`,
+`python-lint`, `python-mypy`, `python-complexity`, `python-coverage`,
+`python-build` — run on **pull requests** *and* on **push to `develop`/`main`**,
+so squash/rebase merges are re-validated on the commit that actually lands
+(PR-only CI never tested the merged tree). Each is path-filtered, so a merge that
+doesn't touch a workflow's paths correctly skips it; the changed-file diff jobs
+(lint/mypy/complexity/coverage) fall back to `github.event.before` for the diff
+base on push, since there's no `pull_request` context there.
+
+Two workflows are intentionally **not** push-triggered:
+
+- `extension-contract-live.yml` — hits a live, credentialed cluster; PR +
+  `workflow_dispatch` only (keeps cluster credentials out of post-merge runs).
+- `require-linear-issue.yml` — inspects PR title/body/branch, so it's PR-only by
+  nature.
+
+(`extension-go-reference-e2e.yml` already runs on push, path-gated to its own
+go-reference/identity paths.)
+
 ## Architecture Overview
 
 ### Client-Service Pattern
