@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from typing import Any, IO, Mapping, Optional
 
 from .base_service import BaseService
@@ -492,11 +493,190 @@ class ContextService(BaseService):
             headers=self._merge_headers(workroom_id=workroom_id),
         )
 
-    def cancel_pipeline_job(
+    def delete_pipeline_job(
         self, *, workroom_id: str, job_id: str
     ) -> dict[str, Any] | None:
+        """Destructively delete a pipeline job and its recorded history.
+
+        Maps to ``DELETE /context/pipelines/{job_id}``: pending/running jobs are
+        cancelled first, then the job and its history are removed. For a
+        non-destructive cancel that preserves history, use
+        :meth:`cancel_pipeline_job`.
+        """
         return self.client.delete(
             f"{self._BASE_PATH}/pipelines/{job_id}",
+            headers=self._merge_headers(workroom_id=workroom_id),
+        )
+
+    def cancel_pipeline_job(self, *, workroom_id: str, job_id: str) -> dict[str, Any]:
+        """Gracefully cancel a pipeline job, preserving its recorded history.
+
+        Maps to ``POST /context/pipelines/{job_id}/cancel``. Distinct from
+        :meth:`delete_pipeline_job`, which hard-deletes the job and its history.
+        """
+        return self.client.post(
+            f"{self._BASE_PATH}/pipelines/{job_id}/cancel",
+            headers=self._merge_headers(workroom_id=workroom_id),
+        )
+
+    def get_import_options(self, *, workroom_id: str | None = None) -> dict[str, Any]:
+        """Get aggregated provider-neutral import options for the workroom.
+
+        Maps to ``GET /context/pipelines/import-options``. The workroom scope is
+        optional; omit it for Global-level import options.
+        """
+        return self.client.get(
+            f"{self._BASE_PATH}/pipelines/import-options",
+            headers=self._merge_headers(workroom_id=workroom_id),
+        )
+
+    def evaluate_import_options(
+        self,
+        *,
+        sources: list[dict[str, Any]],
+        config: Optional[dict[str, Any]] = None,
+        workroom_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Evaluate selected source descriptors against Context import rules.
+
+        Maps to ``POST /context/pipelines/import-options``. Returns the import
+        options plus per-source validation (``can_submit``, ``validation_issues``,
+        ``normalized_config``).
+        """
+        payload: dict[str, Any] = {"sources": sources}
+        if config is not None:
+            payload["config"] = config
+        return self.client.post(
+            f"{self._BASE_PATH}/pipelines/import-options",
+            json=payload,
+            headers=self._merge_headers(workroom_id=workroom_id),
+        )
+
+    def create_source_import_job(
+        self,
+        *,
+        workroom_id: str,
+        sources: list[dict[str, Any]],
+        config: Optional[dict[str, Any]] = None,
+        callback: Optional[dict[str, Any]] = None,
+        idempotency_key: str | None = None,
+        force: bool = False,
+    ) -> dict[str, Any]:
+        """Create and start a provider-neutral source-import job.
+
+        Maps to ``POST /context/pipelines/imports``.
+        """
+        payload: dict[str, Any] = {"sources": sources, "force": force}
+        if config is not None:
+            payload["config"] = config
+        if callback is not None:
+            payload["callback"] = callback
+        if idempotency_key is not None:
+            payload["idempotency_key"] = idempotency_key
+        return self.client.post(
+            f"{self._BASE_PATH}/pipelines/imports",
+            json=payload,
+            headers=self._merge_headers(workroom_id=workroom_id),
+        )
+
+    def list_import_items(self, *, workroom_id: str) -> dict[str, Any]:
+        """List the workroom-wide source-import inventory/history.
+
+        Maps to ``GET /context/pipelines/items``.
+        """
+        return self.client.get(
+            f"{self._BASE_PATH}/pipelines/items",
+            headers=self._merge_headers(workroom_id=workroom_id),
+        )
+
+    def rerun_import_items(
+        self,
+        *,
+        workroom_id: str,
+        item_keys: list[str],
+        config: Optional[dict[str, Any]] = None,
+        callback: Optional[dict[str, Any]] = None,
+        idempotency_key: str | None = None,
+        force: bool = True,
+    ) -> dict[str, Any]:
+        """Rerun selected inventory items by their recorded source descriptors.
+
+        Maps to ``POST /context/pipelines/items/rerun``.
+        """
+        payload: dict[str, Any] = {"item_keys": item_keys, "force": force}
+        if config is not None:
+            payload["config"] = config
+        if callback is not None:
+            payload["callback"] = callback
+        if idempotency_key is not None:
+            payload["idempotency_key"] = idempotency_key
+        return self.client.post(
+            f"{self._BASE_PATH}/pipelines/items/rerun",
+            json=payload,
+            headers=self._merge_headers(workroom_id=workroom_id),
+        )
+
+    def list_pipeline_job_items(
+        self, *, workroom_id: str, job_id: str
+    ) -> dict[str, Any]:
+        """List canonical per-item statuses for one pipeline job.
+
+        Maps to ``GET /context/pipelines/{job_id}/items``.
+        """
+        return self.client.get(
+            f"{self._BASE_PATH}/pipelines/{job_id}/items",
+            headers=self._merge_headers(workroom_id=workroom_id),
+        )
+
+    def retry_pipeline_job(
+        self,
+        *,
+        workroom_id: str,
+        job_id: str,
+        callback: Optional[dict[str, Any]] = None,
+        idempotency_key: str | None = None,
+        force: bool | None = None,
+    ) -> dict[str, Any]:
+        """Retry failed/incomplete items from a replayable source-import job.
+
+        Maps to ``POST /context/pipelines/{job_id}/retry``.
+        """
+        payload: dict[str, Any] = {}
+        if callback is not None:
+            payload["callback"] = callback
+        if idempotency_key is not None:
+            payload["idempotency_key"] = idempotency_key
+        if force is not None:
+            payload["force"] = force
+        return self.client.post(
+            f"{self._BASE_PATH}/pipelines/{job_id}/retry",
+            json=payload,
+            headers=self._merge_headers(workroom_id=workroom_id),
+        )
+
+    def rerun_pipeline_job(
+        self,
+        *,
+        workroom_id: str,
+        job_id: str,
+        callback: Optional[dict[str, Any]] = None,
+        idempotency_key: str | None = None,
+        force: bool | None = None,
+    ) -> dict[str, Any]:
+        """Rerun all recorded source descriptors from a prior source-import job.
+
+        Maps to ``POST /context/pipelines/{job_id}/rerun``.
+        """
+        payload: dict[str, Any] = {}
+        if callback is not None:
+            payload["callback"] = callback
+        if idempotency_key is not None:
+            payload["idempotency_key"] = idempotency_key
+        if force is not None:
+            payload["force"] = force
+        return self.client.post(
+            f"{self._BASE_PATH}/pipelines/{job_id}/rerun",
+            json=payload,
             headers=self._merge_headers(workroom_id=workroom_id),
         )
 
@@ -622,6 +802,300 @@ class ContextService(BaseService):
         return self.client.post(
             f"{self._BASE_PATH}/upload/",
             files=files,
+            params=params or None,
+            headers=self._merge_headers(workroom_id=workroom_id),
+        )
+
+    # Raw-file object storage CRUD
+
+    def store_raw_file(
+        self,
+        *,
+        workroom_id: str,
+        filename: str,
+        content: bytes | str,
+        content_type: str | None = None,
+        source_urn: str | None = None,
+        source_kind: str | None = None,
+        source_ref: Optional[dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        """Store a raw file directly into workroom-scoped object storage.
+
+        ``content`` may be raw ``bytes`` or a ``str`` (UTF-8 encoded before
+        base64). The server expects the payload base64-encoded on the wire;
+        this method performs that encoding so callers pass plain content.
+
+        Args:
+            workroom_id: Owning workroom (sent as ``X-Workroom-ID``).
+            filename: Original filename for the stored raw file.
+            content: Raw file bytes (or a UTF-8 string).
+            content_type: Optional MIME type; the server guesses from the
+                filename when omitted.
+            source_urn: Optional source URN (``inline://`` / ``workspace://``
+                schemes only for inline create).
+            source_kind: Optional source mode (``inline`` or ``workspace``).
+            source_ref: Optional connector/source reference metadata.
+            metadata: Optional caller-supplied metadata to persist.
+
+        Returns:
+            The stored raw-file detail record.
+        """
+        raw_bytes = content.encode("utf-8") if isinstance(content, str) else content
+        payload: dict[str, Any] = {
+            "filename": filename,
+            "content_base64": base64.b64encode(raw_bytes).decode("ascii"),
+        }
+        if content_type is not None:
+            payload["content_type"] = content_type
+        if source_urn is not None:
+            payload["source_urn"] = source_urn
+        if source_kind is not None:
+            payload["source_kind"] = source_kind
+        if source_ref is not None:
+            payload["source_ref"] = source_ref
+        if metadata is not None:
+            payload["metadata"] = metadata
+        return self.client.post(
+            f"{self._BASE_PATH}/storage/raw",
+            json=payload,
+            headers=self._merge_headers(workroom_id=workroom_id),
+        )
+
+    def list_raw_files(
+        self,
+        *,
+        workroom_id: str,
+        source_urn: str | None = None,
+        job_id: str | None = None,
+        connector_id: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+        include_markings: bool = False,
+    ) -> dict[str, Any]:
+        """List raw files stored for a workroom.
+
+        Returns the server's ``{"items": [...], "count": N}`` response. Set
+        ``include_markings=True`` to attach aggregated security markings to
+        each row.
+        """
+        params: dict[str, Any] = {"limit": limit, "offset": offset}
+        if source_urn is not None:
+            params["source_urn"] = source_urn
+        if job_id is not None:
+            params["job_id"] = job_id
+        if connector_id is not None:
+            params["connector_id"] = connector_id
+        if include_markings:
+            params["include_markings"] = include_markings
+        return self.client.get(
+            f"{self._BASE_PATH}/storage/raw",
+            params=params,
+            headers=self._merge_headers(workroom_id=workroom_id),
+        )
+
+    def get_raw_file(
+        self,
+        file_id: str,
+        *,
+        workroom_id: str,
+        include_download_url: bool = False,
+        expires_seconds: int | None = None,
+    ) -> dict[str, Any]:
+        """Get one raw-file metadata record by ID and workroom scope.
+
+        Set ``include_download_url=True`` to request a temporary presigned
+        download URL (only populated when S3 metadata exists);
+        ``expires_seconds`` overrides the presigned URL TTL (30-3600s).
+        """
+        params: dict[str, Any] = {}
+        if include_download_url:
+            params["include_download_url"] = include_download_url
+        if expires_seconds is not None:
+            params["expires_seconds"] = expires_seconds
+        return self.client.get(
+            f"{self._BASE_PATH}/storage/raw/{file_id}",
+            params=params or None,
+            headers=self._merge_headers(workroom_id=workroom_id),
+        )
+
+    def update_raw_file(
+        self,
+        file_id: str,
+        *,
+        workroom_id: str,
+        content: str,
+        if_match: str | None = None,
+    ) -> dict[str, Any]:
+        """Edit the plain-text content of a raw file.
+
+        ``content`` is sent verbatim as the new file body (the server rejects
+        empty/whitespace-only content and enforces a UTF-8 byte cap). Pass the
+        file's ``updated_at`` token from a prior response as ``if_match`` for
+        optimistic concurrency control — a stale token returns HTTP 409 with
+        the current token in the response detail.
+        """
+        headers = self._merge_headers(workroom_id=workroom_id)
+        if if_match is not None:
+            headers["If-Match"] = if_match
+        return self.client.put(
+            f"{self._BASE_PATH}/storage/raw/{file_id}",
+            json={"content": content},
+            headers=headers,
+        )
+
+    # OmniParse instance lifecycle CRUD
+
+    def list_omniparses(
+        self,
+        *,
+        workroom_id: str,
+    ) -> list[dict[str, Any]]:
+        """List OmniParse runtime instances for a workroom."""
+        return self.client.get(
+            f"{self._BASE_PATH}/omniparses",
+            headers=self._merge_headers(workroom_id=workroom_id),
+        )
+
+    def get_omniparse(
+        self,
+        omniparse_id: str,
+        *,
+        workroom_id: str,
+    ) -> dict[str, Any]:
+        """Get one OmniParse instance by ID within a workroom scope."""
+        return self.client.get(
+            f"{self._BASE_PATH}/omniparses/{omniparse_id}",
+            headers=self._merge_headers(workroom_id=workroom_id),
+        )
+
+    def create_omniparse(
+        self,
+        *,
+        name: str,
+        workroom_id: str,
+        template_name: str = "tool-omniparse",
+        config: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        """Provision an OmniParse runtime instance.
+
+        ``name`` is the instance name; ``template_name`` selects the App Garden
+        tool template (defaults to ``tool-omniparse``); ``config`` carries
+        optional OmniParse environment configuration.
+        """
+        payload: dict[str, Any] = {
+            "name": name,
+            "template_name": template_name,
+        }
+        if config is not None:
+            payload["config"] = config
+        return self.client.post(
+            f"{self._BASE_PATH}/omniparses",
+            json=payload,
+            headers=self._merge_headers(workroom_id=workroom_id),
+        )
+
+    def update_omniparse(
+        self,
+        omniparse_id: str,
+        *,
+        workroom_id: str,
+        config: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        """Update an OmniParse instance's environment configuration."""
+        payload: dict[str, Any] = {}
+        if config is not None:
+            payload["config"] = config
+        return self.client.put(
+            f"{self._BASE_PATH}/omniparses/{omniparse_id}",
+            json=payload,
+            headers=self._merge_headers(workroom_id=workroom_id),
+        )
+
+    def delete_omniparse(
+        self,
+        omniparse_id: str,
+        *,
+        workroom_id: str,
+    ) -> dict[str, Any]:
+        """Delete an OmniParse runtime instance."""
+        return self.client.delete(
+            f"{self._BASE_PATH}/omniparses/{omniparse_id}",
+            headers=self._merge_headers(workroom_id=workroom_id),
+        )
+
+    # Global settings / documents / audio readiness
+
+    def get_global_settings(self) -> dict[str, Any]:
+        """Read platform-wide Context global settings (ContextAdmin-scoped).
+
+        Platform-scoped, not workroom-scoped: no ``X-Workroom-ID`` header is
+        sent. Returns the current ``ContextGlobalSettings`` (e.g. the
+        ``omniparse`` SSL-enforcement flags).
+        """
+        return self.client.get(f"{self._BASE_PATH}/global-settings")
+
+    def update_global_settings(
+        self,
+        *,
+        omniparse: Optional[dict[str, Any]] = None,
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        """Update platform-wide Context global settings (ContextAdmin-scoped).
+
+        Platform-scoped, not workroom-scoped. ``omniparse`` is a partial
+        settings patch (e.g. ``{"force_insecure_model_ssl": True}``); ``reason``
+        is an optional audit annotation. Only the provided fields are changed.
+        """
+        payload: dict[str, Any] = {}
+        if omniparse is not None:
+            payload["omniparse"] = omniparse
+        if reason is not None:
+            payload["reason"] = reason
+        return self.client.patch(
+            f"{self._BASE_PATH}/global-settings",
+            json=payload,
+        )
+
+    def get_document_download_url(
+        self,
+        source_urn: str,
+        *,
+        workroom_id: str,
+    ) -> dict[str, Any]:
+        """Get a presigned download URL for an original document by source URN.
+
+        Looks up the document by ``source_urn`` within the workroom and returns
+        a ``download_url`` plus ``filename``/``content_hash``/``source_urn``.
+        Requires S3 document storage to be enabled server-side.
+        """
+        return self.client.get(
+            f"{self._BASE_PATH}/documents/{source_urn}",
+            headers=self._merge_headers(workroom_id=workroom_id),
+        )
+
+    def get_audio_readiness(
+        self,
+        *,
+        workroom_id: str,
+        mime_type: str | None = None,
+        filename: str | None = None,
+    ) -> dict[str, Any]:
+        """Probe whether a workroom is ready to ingest audio.
+
+        Workroom-scoped preflight before audio ingest. Optional ``mime_type``
+        (e.g. ``audio/aiff``) and ``filename`` refine the check. Returns the
+        readiness verdict (``ready``/``code``/``message``/``remediation``/
+        ``details``). This GET never side-effect-provisions an OmniParse
+        instance.
+        """
+        params: dict[str, Any] = {}
+        if mime_type is not None:
+            params["mime_type"] = mime_type
+        if filename is not None:
+            params["filename"] = filename
+        return self.client.get(
+            f"{self._BASE_PATH}/audio-readiness",
             params=params or None,
             headers=self._merge_headers(workroom_id=workroom_id),
         )

@@ -116,12 +116,182 @@ Reads (`list_*`, `get_*`, `search_knowledge`, `get_memory`, `get_episodes`,
 
 ### Available Methods
 - `list_collections(...)` / `create_collection(...)` / `get_collection(...)` / `delete_collection(...)`
-- `create_pipeline_job(...)` / `list_pipeline_jobs(...)` / `get_pipeline_job(...)` / `cancel_pipeline_job(...)`
+- `create_pipeline_job(...)` / `list_pipeline_jobs(...)` / `get_pipeline_job(...)`
 - `get_supported_file_types()`
 - `search(...)` / `retrieve(...)` / `upload_file(...)`
 
+#### Pipeline cancel vs. delete
+
+The SDK exposes two distinct teardown verbs for a pipeline job:
+
+- `cancel_pipeline_job(...)` — **graceful** cancel
+  (`POST /context/pipelines/{job_id}/cancel`). Stops the job but **preserves**
+  its recorded history; the job stays fetchable via `get_pipeline_job(...)`.
+- `delete_pipeline_job(...)` — **destructive** delete
+  (`DELETE /context/pipelines/{job_id}`). Cancels a pending/running job and then
+  removes the job **and** its history.
+
+> **Breaking change:** `cancel_pipeline_job(...)` previously mapped to the
+> destructive `DELETE` route. It now maps to the graceful cancel route, and the
+> destructive behavior moved to the new `delete_pipeline_job(...)`. Update any
+> caller that relied on the old `cancel_pipeline_job` to hard-delete a job.
+
+#### Provider-neutral source import and replay
+
+For Kaizen / import-shell automation, the SDK wraps the provider-neutral
+source-import and replay surface:
+
+- `get_import_options(...)` / `evaluate_import_options(...)` — aggregate and
+  validate import options for selected source descriptors.
+- `create_source_import_job(...)` — start a provider-neutral source-import job.
+- `list_import_items(...)` — workroom-wide source-import inventory/history.
+- `rerun_import_items(...)` — rerun selected inventory items by recorded source
+  descriptor.
+- `list_pipeline_job_items(...)` — per-item statuses for one job.
+- `retry_pipeline_job(...)` — retry failed/incomplete items from a replayable
+  import job.
+- `rerun_pipeline_job(...)` — rerun all recorded source descriptors from a prior
+  import job.
+
 Collection/pipeline/file **writes** follow the same rule: allowed in a normal
 workroom, `403` on the Global Workroom.
+
+## Raw-file Object Storage
+
+The SDK wraps the workroom-scoped raw-file object-storage CRUD surface
+(`/context/storage/raw`). These methods are keyword-only and take an explicit
+`workroom_id` (sent as the `X-Workroom-ID` header); they return raw `dict`
+records rather than typed models.
+
+### Available Methods
+
+- `store_raw_file(*, workroom_id, filename, content, ...)` — store a raw file
+  directly into workroom object storage (`POST /context/storage/raw`). `content`
+  accepts `bytes` or a `str` (UTF-8 encoded) and is base64-encoded on the wire
+  for you. Optional `content_type`, `source_urn`, `source_kind`, `source_ref`,
+  and `metadata` are forwarded only when set.
+- `list_raw_files(*, workroom_id, ...)` — list stored raw files
+  (`GET /context/storage/raw`), returning the `{"items": [...], "count": N}`
+  shape. Supports `source_urn` / `job_id` / `connector_id` filters, `limit` /
+  `offset` paging, and `include_markings=True` to attach aggregated security
+  markings.
+- `get_raw_file(file_id, *, workroom_id, ...)` — fetch one raw-file record
+  (`GET /context/storage/raw/{file_id}`). Set `include_download_url=True` for a
+  temporary presigned download URL (when S3 metadata exists); `expires_seconds`
+  (30–3600) overrides its TTL.
+- `update_raw_file(file_id, *, workroom_id, content, if_match=None)` — replace
+  the plain-text body of an editable raw file
+  (`PUT /context/storage/raw/{file_id}`). Pass the file's `updated_at` token from
+  a prior response as `if_match` for optimistic concurrency; a stale token
+  returns `409` with the current token in the error detail.
+
+```python
+# my_workroom_id is a workroom you own.
+stored = client.context.store_raw_file(
+    workroom_id=my_workroom_id,
+    filename="notes.txt",
+    content="hello raw storage",
+    content_type="text/plain",
+)
+file_id = stored["id"]
+
+current = client.context.get_raw_file(file_id, workroom_id=my_workroom_id)
+client.context.update_raw_file(
+    file_id,
+    workroom_id=my_workroom_id,
+    content="edited body",
+    if_match=current["updated_at"],  # optimistic concurrency
+)
+```
+
+## OmniParse Instances
+
+The SDK wraps the workroom-scoped OmniParse instance lifecycle CRUD surface
+(`/context/omniparses`). OmniParse instances are the document-parsing runtimes
+that ingest pipelines depend on; wrapping them lets callers provision and manage
+OmniParse from automation rather than relying only on implicit lazy
+provisioning. These methods are keyword-only, take an explicit `workroom_id`
+(sent as the `X-Workroom-ID` header), and return raw `dict` / `list[dict]`
+records rather than typed models.
+
+### Available Methods
+
+- `list_omniparses(*, workroom_id)` — list OmniParse instances for a workroom
+  (`GET /context/omniparses`), returning a list of instance records.
+- `get_omniparse(omniparse_id, *, workroom_id)` — fetch one instance by id
+  (`GET /context/omniparses/{omniparse_id}`).
+- `create_omniparse(*, name, workroom_id, template_name="tool-omniparse", config=None)`
+  — provision an OmniParse runtime instance (`POST /context/omniparses`).
+  `template_name` selects the App Garden tool template; `config` carries optional
+  OmniParse environment configuration and is forwarded only when set.
+- `update_omniparse(omniparse_id, *, workroom_id, config=None)` — update an
+  instance's environment configuration (`PUT /context/omniparses/{omniparse_id}`).
+- `delete_omniparse(omniparse_id, *, workroom_id)` — delete an instance
+  (`DELETE /context/omniparses/{omniparse_id}`).
+
+```python
+# my_workroom_id is a workroom you own.
+instance = client.context.create_omniparse(
+    name="docs-parser",
+    workroom_id=my_workroom_id,
+    config={"replicas": 1},
+)
+instance_id = instance["id"]
+
+client.context.update_omniparse(
+    instance_id,
+    workroom_id=my_workroom_id,
+    config={"replicas": 2},
+)
+client.context.delete_omniparse(instance_id, workroom_id=my_workroom_id)
+```
+
+## Global Settings, Document Download, and Audio Readiness
+
+These cover platform-wide Context configuration, presigned download of an
+original document, and an audio-ingest preflight probe.
+
+### Available Methods
+
+- `get_global_settings()` — read platform-wide Context global settings
+  (`GET /context/global-settings`). **Platform-scoped (ContextAdmin)**, not
+  workroom-scoped — no `X-Workroom-ID` header is sent.
+- `update_global_settings(*, omniparse=None, reason=None)` — patch the global
+  settings (`PATCH /context/global-settings`). `omniparse` is a partial settings
+  dict (e.g. `{"force_insecure_model_ssl": True}`); `reason` is an optional audit
+  annotation. Only the provided fields change. Also ContextAdmin-scoped.
+- `get_document_download_url(source_urn, *, workroom_id)` — get a presigned S3
+  download URL for an original document by source URN
+  (`GET /context/documents/{source_urn}`). Returns `download_url` plus
+  `filename` / `content_hash` / `source_urn`. Requires S3 document storage to be
+  enabled server-side.
+- `get_audio_readiness(*, workroom_id, mime_type=None, filename=None)` — probe
+  whether a workroom is ready to ingest audio
+  (`GET /context/audio-readiness`). Optional `mime_type` (e.g. `audio/aiff`) and
+  `filename` refine the check. Returns the readiness verdict
+  (`ready` / `code` / `message` / `remediation` / `details`). This GET never
+  side-effect-provisions an OmniParse instance.
+
+```python
+# Platform-scoped admin config (no workroom).
+settings = client.context.get_global_settings()
+client.context.update_global_settings(
+    omniparse={"force_insecure_model_ssl": False},
+    reason="rotate certs",
+)
+
+# Workroom-scoped: preflight audio ingest, then resolve a stored document.
+readiness = client.context.get_audio_readiness(
+    workroom_id=my_workroom_id,
+    mime_type="audio/aiff",
+)
+if readiness["ready"]:
+    download = client.context.get_document_download_url(
+        "urn:source:abc123",
+        workroom_id=my_workroom_id,
+    )
+    url = download["download_url"]
+```
 
 ## Error Handling
 

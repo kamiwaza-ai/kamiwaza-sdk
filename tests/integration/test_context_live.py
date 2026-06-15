@@ -808,7 +808,7 @@ def test_context_workroom_lists_and_job_creation(
     finally:
         for created_job_id in created_job_ids:
             try:
-                service.cancel_pipeline_job(
+                service.delete_pipeline_job(
                     workroom_id=workroom_id,
                     job_id=created_job_id,
                 )
@@ -841,12 +841,48 @@ def test_context_workroom_pipeline_followup_access(
     try:
         fetched_job = service.get_pipeline_job(workroom_id=workroom_id, job_id=job_id)
         assert fetched_job["id"] == job_id
+        # Graceful cancel preserves the job; it remains fetchable afterwards.
         service.cancel_pipeline_job(workroom_id=workroom_id, job_id=job_id)
+        preserved = service.get_pipeline_job(workroom_id=workroom_id, job_id=job_id)
+        assert preserved["id"] == job_id
     finally:
         try:
-            service.cancel_pipeline_job(workroom_id=workroom_id, job_id=job_id)
+            service.delete_pipeline_job(workroom_id=workroom_id, job_id=job_id)
         except APIError:
             pass
+
+
+def test_context_pipeline_import_options_live(
+    shared_context_service: ContextService,
+    session_workroom: str,
+) -> None:
+    """GET/POST import-options work against bare core (no data plane required)."""
+    service = shared_context_service
+    workroom_id = session_workroom
+
+    options = service.get_import_options(workroom_id=workroom_id)
+    assert isinstance(options, dict)
+
+    evaluation = service.evaluate_import_options(
+        sources=[],
+        workroom_id=workroom_id,
+    )
+    assert isinstance(evaluation, dict)
+    # With no sources selected there is nothing to submit.
+    assert evaluation.get("can_submit") is False
+
+
+def test_context_pipeline_import_items_inventory_live(
+    shared_context_service: ContextService,
+    session_workroom: str,
+) -> None:
+    """The workroom-wide import inventory listing is readable on bare core."""
+    service = shared_context_service
+    workroom_id = session_workroom
+
+    inventory = service.list_import_items(workroom_id=workroom_id)
+    assert isinstance(inventory, dict)
+    assert isinstance(inventory.get("items", []), list)
 
 
 def test_context_workroom_collection_lifecycle(
@@ -961,3 +997,252 @@ def test_context_agentic_search_contract(
     # so a server-side regression that silently drops synthesis is caught.
     assert "synthesis" in result
     assert "citations" in result
+
+
+# --- Raw-file object storage CRUD ---
+
+
+def _object_storage_enabled(service: ContextService) -> bool:
+    """Return True when the live Context Service has workroom object storage."""
+    try:
+        health = service.health()
+    except APIError:
+        return False
+    caps = health.get("capabilities") or {}
+    return bool(caps.get("workroom_object_storage"))
+
+
+def test_context_raw_file_round_trip(
+    shared_context_service: ContextService,
+    session_workroom: str,
+) -> None:
+    """Store -> get -> list -> If-Match edit round trip against a fresh workroom.
+
+    Skips when workroom object storage is disabled (bare core without the
+    S3/object-storage data plane provisioned) -- the route is mocked-unit
+    covered in that case and the live debt is recorded in the PR body.
+    """
+    service = shared_context_service
+    workroom_id = session_workroom
+    if not _object_storage_enabled(service):
+        pytest.skip("workroom object storage not enabled on this host")
+
+    filename = f"sdk-raw-{uuid4().hex[:8]}.txt"
+    original = "hello raw storage"
+
+    stored = service.store_raw_file(
+        workroom_id=workroom_id,
+        filename=filename,
+        content=original,
+        content_type="text/plain",
+        source_urn="inline://sdk-live",
+        source_kind="inline",
+    )
+    file_id = str(stored["id"])
+    assert stored["filename"] == filename
+
+    fetched = service.get_raw_file(
+        file_id,
+        workroom_id=workroom_id,
+        include_download_url=True,
+    )
+    assert str(fetched["id"]) == file_id
+    assert fetched["filename"] == filename
+
+    listing = service.list_raw_files(workroom_id=workroom_id)
+    assert isinstance(listing.get("items"), list)
+    assert any(str(item["id"]) == file_id for item in listing["items"])
+
+    # If-Match optimistic concurrency: a stale token must be rejected with 409.
+    current_token = fetched.get("updated_at")
+    with pytest.raises(APIError) as exc_info:
+        service.update_raw_file(
+            file_id,
+            workroom_id=workroom_id,
+            content="should not persist",
+            if_match="1970-01-01T00:00:00+00:00",
+        )
+    assert exc_info.value.status_code == 409
+
+    edited = service.update_raw_file(
+        file_id,
+        workroom_id=workroom_id,
+        content="edited raw storage body",
+        if_match=current_token,
+    )
+    assert str(edited["id"]) == file_id
+
+
+def test_context_list_raw_files_empty_contract(
+    shared_context_service: ContextService,
+    session_workroom: str,
+) -> None:
+    """List raw files returns the {items, count} contract shape."""
+    service = shared_context_service
+    if not _object_storage_enabled(service):
+        pytest.skip("workroom object storage not enabled on this host")
+
+    listing = service.list_raw_files(workroom_id=session_workroom, limit=5)
+    assert isinstance(listing.get("items"), list)
+    assert isinstance(listing.get("count"), int)
+
+
+# --- OmniParse instance lifecycle CRUD ---
+
+
+def test_context_list_omniparses_contract(
+    shared_context_service: ContextService,
+    session_workroom: str,
+) -> None:
+    """Listing OmniParse instances returns a list for a fresh workroom.
+
+    The list route is metadata-only (it reads the instance registry) and works
+    against bare core -- a freshly created workroom has no instances, so an
+    empty list is the expected contract. The create/update/delete routes
+    provision an OmniParse runtime via App Garden (template + container images),
+    which is data-plane-heavy and NOT available on the bare-core TRCM box, so
+    the full lifecycle is covered by the mocked unit tests and deferred here.
+    """
+    service = shared_context_service
+    listing = service.list_omniparses(workroom_id=session_workroom)
+    assert isinstance(listing, list)
+
+
+def test_context_omniparse_lifecycle_round_trip(
+    shared_context_service: ContextService,
+    session_workroom: str,
+) -> None:
+    """create -> get -> update -> delete an OmniParse instance.
+
+    Skips when the App Garden OmniParse data plane (tool template + images) is
+    not provisioned on this host -- the route is mocked-unit covered in that
+    case and the live debt is recorded in the PR body. Bare core cannot
+    provision the runtime, so this skip is expected on the TRCM box.
+    """
+    service = shared_context_service
+    workroom_id = session_workroom
+
+    try:
+        created = service.create_omniparse(
+            name=f"sdk-omniparse-{uuid4().hex[:8]}",
+            workroom_id=workroom_id,
+        )
+    except APIError as exc:
+        pytest.skip(
+            f"OmniParse data plane not provisioned on this host (status "
+            f"{exc.status_code}); lifecycle deferred to mocked unit tests"
+        )
+
+    instance_id = str(created["id"])
+    try:
+        fetched = service.get_omniparse(instance_id, workroom_id=workroom_id)
+        assert str(fetched["id"]) == instance_id
+
+        updated = service.update_omniparse(
+            instance_id,
+            workroom_id=workroom_id,
+            config={"sdk_live_marker": uuid4().hex[:8]},
+        )
+        assert str(updated["id"]) == instance_id
+    finally:
+        try:
+            service.delete_omniparse(instance_id, workroom_id=workroom_id)
+        except (APIError, NotFoundError):
+            pass
+
+
+# --- Global settings / documents / audio readiness ---
+
+
+def test_context_global_settings_round_trips(
+    shared_context_service: ContextService,
+) -> None:
+    """get_global_settings reads platform config; update_global_settings patches it.
+
+    Platform-scoped (ContextAdmin), not workroom-scoped, and metadata-only, so it
+    works against bare core. Round-trips the omniparse SSL flags and restores the
+    original values. Skips if the caller lacks ContextAdmin authority on this host.
+    """
+    service = shared_context_service
+    try:
+        original = service.get_global_settings()
+    except APIError as exc:
+        pytest.skip(
+            f"global settings unavailable on this host (status {exc.status_code}); "
+            "covered by mocked unit tests"
+        )
+
+    assert isinstance(original, dict)
+    omniparse = original.get("omniparse") or {}
+    current = bool(omniparse.get("force_insecure_model_ssl", False))
+
+    try:
+        updated = service.update_global_settings(
+            omniparse={"force_insecure_model_ssl": not current},
+            reason="sdk live round-trip",
+        )
+    except APIError as exc:
+        pytest.skip(
+            f"global settings patch not permitted on this host (status "
+            f"{exc.status_code}); covered by mocked unit tests"
+        )
+
+    try:
+        assert (
+            bool(updated["omniparse"]["force_insecure_model_ssl"]) is not current
+        )
+    finally:
+        # Restore the original value so we don't mutate shared platform state.
+        service.update_global_settings(
+            omniparse={"force_insecure_model_ssl": current},
+            reason="sdk live round-trip restore",
+        )
+
+
+def test_context_audio_readiness_probe(
+    shared_context_service: ContextService,
+    session_workroom: str,
+) -> None:
+    """audio-readiness probe returns a readiness verdict for a fresh workroom.
+
+    Workroom-scoped GET that never side-effect-provisions an OmniParse instance,
+    so it is cheap on bare core. ``ready`` may be True or False depending on the
+    data plane; we assert the contract shape, not a specific verdict.
+    """
+    service = shared_context_service
+    result = service.get_audio_readiness(
+        workroom_id=session_workroom,
+        mime_type="audio/aiff",
+        filename="clip.aiff",
+    )
+    assert isinstance(result, dict)
+    assert isinstance(result.get("ready"), bool)
+    assert isinstance(result.get("code"), str)
+
+
+def test_context_document_download_url_requires_stored_document(
+    shared_context_service: ContextService,
+    session_workroom: str,
+) -> None:
+    """get_document_download_url against an unknown URN returns 404 (no document).
+
+    Generating a real presigned URL needs a previously stored document plus S3
+    object storage (the un-provisioned data plane on bare core), so the happy
+    path is deferred to mocked unit tests. Here we assert the lookup wiring: an
+    unknown source URN yields a NotFoundError, or the route reports storage is
+    not configured (501) on hosts without S3.
+    """
+    service = shared_context_service
+    try:
+        service.get_document_download_url(
+            f"urn:source:sdk-live-missing-{uuid4().hex[:8]}",
+            workroom_id=session_workroom,
+        )
+    except NotFoundError:
+        pass
+    except APIError as exc:
+        # 501 = document storage not configured on this host; expected on bare core.
+        if exc.status_code != 501:
+            raise
+    else:
+        pytest.fail("expected NotFoundError or 501 for an unknown source URN")
