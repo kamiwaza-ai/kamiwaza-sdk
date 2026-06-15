@@ -31,7 +31,7 @@ from ..schemas.models.external_endpoint import (
     AWSBedrockChatEndpoint,
     AWSTranscribeEndpoint,
 )
-from ..services.kaizen import wait_for_base_url
+from ..services.kaizen import AmbiguousExtensionError, wait_for_base_url
 from .client import build_client_from_env, scoped_client_for_workroom
 
 
@@ -166,7 +166,7 @@ def cmd_resolve_kaizen_url(args: argparse.Namespace, *, client) -> Optional[dict
             timeout_seconds=args.timeout,
             poll_interval_seconds=args.poll_interval,
         )
-    except TimeoutError as exc:
+    except (TimeoutError, AmbiguousExtensionError) as exc:
         raise SystemExit(str(exc))
     if args.raw:
         print(url)

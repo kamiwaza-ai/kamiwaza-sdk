@@ -8,6 +8,7 @@ from kamiwaza_sdk.exceptions import NotFoundError
 from kamiwaza_sdk.schemas.kaizen import LLMConfig
 from kamiwaza_sdk.services.kaizen import (
     AgentService,
+    AmbiguousExtensionError,
     ConversationService,
     resolve_base_url,
     wait_for_base_url,
@@ -179,10 +180,60 @@ def test_resolve_base_url_workroom_no_match_raises():
 
 def test_resolve_base_url_workroom_ambiguous_raises():
     # Two Kaizen in the SAME workroom is anomalous — fail loudly, don't guess.
+    # AmbiguousExtensionError (not ValueError) so the wait loop won't retry it.
     client = _client_listing([_ext("kaizen-aaaa", "wr-A"), _ext("kaizen-bbbb", "wr-A")])
 
-    with pytest.raises(ValueError, match="Multiple 'kaizen' extensions"):
+    with pytest.raises(AmbiguousExtensionError, match="Multiple 'kaizen' extensions"):
         resolve_base_url(client, "kaizen", workroom_id="wr-A")
+
+
+def test_resolve_base_url_workroom_excludes_same_prefix_sibling():
+    # A sibling that merely shares the base prefix (kaizen-admin-<hash>) must NOT
+    # be mistaken for kaizen — only the base + operator hash suffix matches.
+    client = _client_listing(
+        [
+            _ext("kaizen-4f8b3ae1", "wr-A"),
+            _ext("kaizen-admin-99999999", "wr-A", external="https://x/admin"),
+        ]
+    )
+
+    assert resolve_base_url(client, "kaizen", workroom_id="wr-A") == KAIZEN_URL
+
+
+def test_wait_for_base_url_does_not_retry_ambiguity(monkeypatch):
+    import kamiwaza_sdk.services.kaizen as kaizen_mod
+
+    slept: list = []
+    monkeypatch.setattr(kaizen_mod.time, "sleep", lambda s: slept.append(s))
+    client = _client_listing([_ext("kaizen-aaaa", "wr-A"), _ext("kaizen-bbbb", "wr-A")])
+
+    # Ambiguity is deterministic — it must propagate immediately, never poll.
+    with pytest.raises(AmbiguousExtensionError):
+        wait_for_base_url(client, "kaizen", workroom_id="wr-A", poll_interval_seconds=0)
+    assert slept == []
+
+
+def test_wait_for_base_url_caps_sleep_to_remaining(monkeypatch):
+    import kamiwaza_sdk.services.kaizen as kaizen_mod
+
+    # monotonic calls: deadline (0.0 -> deadline 1.0), attempt-1 remaining (0.0),
+    # attempt-2 remaining (1.0 -> deadline reached).
+    times = iter([0.0, 0.0, 1.0])
+    monkeypatch.setattr(kaizen_mod.time, "monotonic", lambda: next(times))
+    slept: list = []
+    monkeypatch.setattr(kaizen_mod.time, "sleep", lambda s: slept.append(s))
+    client = _client_listing([])  # nothing yet -> retryable ValueError
+
+    with pytest.raises(TimeoutError):
+        wait_for_base_url(
+            client,
+            "kaizen",
+            workroom_id="wr-A",
+            timeout_seconds=1,
+            poll_interval_seconds=60,
+        )
+    # Sleep capped to the 1s remaining, not the 60s poll interval.
+    assert slept == [1.0]
 
 
 def test_wait_for_base_url_workroom_retries_until_listed(monkeypatch):

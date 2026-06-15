@@ -274,6 +274,20 @@ def test_resolve_kaizen_url_timeout_exits_nonzero(monkeypatch):
         _run(["resolve-kaizen-url", "--workroom-id", "wr-9"], client)
 
 
+def test_resolve_kaizen_url_ambiguous_exits_nonzero(monkeypatch):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+
+    def ambiguous(*_a, **_k):
+        raise cli.AmbiguousExtensionError("Multiple 'kaizen' extensions in workroom")
+
+    monkeypatch.setattr(cli, "wait_for_base_url", ambiguous)
+
+    # Ambiguity is a clean non-zero exit (the message), not an uncaught traceback.
+    with pytest.raises(SystemExit):
+        _run(["resolve-kaizen-url", "--workroom-id", "wr-9"], client)
+
+
 def test_create_agent_uses_kaizen_base_url(capsys, monkeypatch):
     client = FakeClient()
     monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)

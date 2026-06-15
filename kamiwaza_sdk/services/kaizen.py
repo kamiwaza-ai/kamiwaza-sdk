@@ -13,16 +13,26 @@ platform honors this header. A workroom-scoped token is the durable fix
 (tracked for the nightly-seeding work).
 """
 
+import re
 import time
 from typing import Any, Dict, List, Optional, Union
 
-from ..exceptions import NotFoundError
+from ..exceptions import KamiwazaError, NotFoundError
 from ..schemas.kaizen import Agent, Conversation, LLMConfig
 from .base_service import BaseService
 
 # Kaizen route prefixes, relative to the extension's ingress root.
 _AGENTS_PATH = "api/agents/"
 _CONVERSATIONS_PATH = "api/conversations/"
+
+
+class AmbiguousExtensionError(KamiwazaError):
+    """More than one extension matched a workroom + base-name lookup.
+
+    A deterministic failure (a workroom should hold one instance of a given
+    extension), so callers must NOT retry it — unlike the transient "not visible
+    yet" / "no endpoint yet" states that resolve on a later poll.
+    """
 
 
 def _workroom_headers(workroom_id: Optional[Union[str, object]]) -> Dict[str, str]:
@@ -57,21 +67,26 @@ def _find_workroom_extension(client, extension_name: str, workroom_id):
 
     A per-workroom extension's CR is named ``<extension_name>-<hash>`` and carries
     its ``workroom_id``, so we match on BOTH: the exact ``workroom_id`` (so we
-    never pick another workroom's instance) and the base name (so we don't pick a
-    different extension in the same workroom). Requires the client to be scoped
-    into the workroom — the platform only lists a workroom's extensions to a
-    caller scoped into it.
+    never pick another workroom's instance) and the base name + operator hash
+    suffix (so a same-prefix sibling like ``kaizen-admin-<hash>`` can't be
+    mistaken for ``kaizen``). Requires the client to be scoped into the workroom
+    — the platform only lists a workroom's extensions to a caller scoped into it.
 
     Raises:
-        ValueError: when no instance is visible yet (still provisioning) or when
-            more than one matches (anomalous — a workroom should have one Kaizen).
+        ValueError: when no instance is visible yet (still provisioning) —
+            transient, callers may retry.
+        AmbiguousExtensionError: when more than one matches (a workroom should
+            hold one) — deterministic, callers must not retry.
     """
-    prefix = f"{extension_name}-"
+    # The operator suffixes the CR with a single hex hash segment (e.g.
+    # ``kaizen-4f8b3ae1``). Anchoring on that shape avoids matching a longer
+    # sibling name that merely shares the base prefix.
+    suffix_re = re.compile(rf"^{re.escape(extension_name)}-[0-9a-f]+$")
     matches = [
         ext
         for ext in client.extensions.list_extensions()
         if str(getattr(ext, "workroom_id", "")) == str(workroom_id)
-        and (ext.name == extension_name or ext.name.startswith(prefix))
+        and (ext.name == extension_name or suffix_re.match(ext.name))
     ]
     if not matches:
         raise ValueError(
@@ -80,7 +95,7 @@ def _find_workroom_extension(client, extension_name: str, workroom_id):
         )
     if len(matches) > 1:
         names = ", ".join(sorted(m.name for m in matches))
-        raise ValueError(
+        raise AmbiguousExtensionError(
             f"Multiple '{extension_name}' extensions in workroom '{workroom_id}' "
             f"({names}); cannot pick one unambiguously."
         )
@@ -132,7 +147,9 @@ def wait_for_base_url(
     visible yet (``NotFoundError`` / no workroom match) and/or its endpoints
     aren't published (``ValueError``). Both are transient, so retry until one
     resolves or ``timeout_seconds`` elapses. Mirrors
-    ``serving.wait_deployment_ready``'s wait contract.
+    ``serving.wait_deployment_ready``'s wait contract. A deterministic
+    ``AmbiguousExtensionError`` is NOT retried — it propagates immediately rather
+    than burning the full timeout on something that will never resolve.
 
     Args:
         client: An authenticated client (workroom-scoped if the extension is).
@@ -159,12 +176,15 @@ def wait_for_base_url(
             )
         except (ValueError, NotFoundError) as exc:
             last_err = exc
-        if time.monotonic() >= deadline:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
             raise TimeoutError(
                 f"Extension '{extension_name}' ingress not resolvable after "
                 f"{timeout_seconds:g}s ({attempts} attempts): {last_err}"
             )
-        time.sleep(poll_interval_seconds)
+        # Cap the sleep at the remaining budget so the wait stays bounded even
+        # when poll_interval_seconds exceeds the time left.
+        time.sleep(min(poll_interval_seconds, remaining))
 
 
 class AgentService(BaseService):
