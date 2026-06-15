@@ -41,6 +41,22 @@ def _clear_docker_info_cache():
     _reset_docker_registry_config_cache()
 
 
+@pytest.fixture(autouse=True)
+def _hermetic_core_config():
+    """Default: nothing advertised in core-config, so resolution never shells
+    out to a live ``kubectl``/cluster. Cases that exercise a core-config or
+    extension registry re-patch these with values (the decorator wins)."""
+
+    with patch(
+        "kamiwaza_extensions.registry_resolution.detect_extension_registry",
+        return_value=None,
+    ), patch(
+        "kamiwaza_extensions.registry_resolution.detect_core_config_registry",
+        return_value=None,
+    ):
+        yield
+
+
 def _conn(url: str = "https://kamiwaza.test/api"):
     return SimpleNamespace(url=url)
 
@@ -330,6 +346,88 @@ class TestPushRegistryResolution:
 
         assert resolution.push_registry == "push.example:5000"
         assert resolution.push_registry_source == "KAMIWAZA_PUSH_REGISTRY"
+
+
+class TestExtensionRegistryResolution:
+    """ENG-7051: extension images must target the node-routable extension
+    registry the installer advertises in core-config, not the model registry."""
+
+    @patch(
+        "kamiwaza_extensions.registry_resolution.detect_extension_registry",
+        return_value="host.docker.internal:5001",
+    )
+    @patch(
+        "kamiwaza_extensions.registry_resolution.detect_core_config_registry",
+        return_value="127.0.0.1:30010",
+    )
+    @patch(
+        "kamiwaza_extensions.registry_resolution.build_engine_runs_in_vm",
+        return_value=True,
+    )
+    def test_extension_registry_embedded_and_pushed_via_alias(
+        self, _mock_vm, _mock_core, _mock_ext
+    ):
+        # The extension registry (the node-routable VM alias) is embedded AND is
+        # the push target: the docker daemon-in-VM reaches the host registry via
+        # the alias. Pushing to 127.0.0.1 would hit the VM's own loopback, not
+        # the host kind-registry -- so there is no split. The model registry
+        # (127.0.0.1:30010) is ignored for extension images.
+        resolution = resolve_dev_registries(
+            _conn(), kind_registry_detector=lambda: None, push_engine="docker"
+        )
+
+        assert resolution.image_registry == "host.docker.internal:5001"
+        assert resolution.image_registry_source == (
+            "kamiwaza/core-config (KAMIWAZA_EXTENSION_REGISTRY)"
+        )
+        assert resolution.push_registry == "host.docker.internal:5001"
+        assert resolution.push_split is False
+
+    @patch(
+        "kamiwaza_extensions.registry_resolution.detect_extension_registry",
+        return_value="host.docker.internal:5001",
+    )
+    @patch(
+        "kamiwaza_extensions.registry_resolution.build_engine_runs_in_vm",
+        return_value=True,
+    )
+    def test_extension_registry_preferred_over_model_core_config(
+        self, _mock_vm, _mock_ext
+    ):
+        # Even with the model registry present (autouse leaves it None, so set
+        # it here), the advertised extension registry is what gets embedded.
+        with patch(
+            "kamiwaza_extensions.registry_resolution.detect_core_config_registry",
+            return_value="127.0.0.1:30010",
+        ) as mock_core:
+            resolution = resolve_dev_registries(
+                _conn(), kind_registry_detector=lambda: None, push_engine="docker"
+            )
+
+        assert resolution.image_registry == "host.docker.internal:5001"
+        # The model registry is never consulted for the extension image ref.
+        mock_core.assert_not_called()
+
+    @patch(
+        "kamiwaza_extensions.registry_resolution.detect_extension_registry",
+        return_value="host.docker.internal:5001",
+    )
+    @patch(
+        "kamiwaza_extensions.registry_resolution.build_engine_runs_in_vm",
+        return_value=False,
+    )
+    def test_extension_registry_not_split_when_build_engine_native(
+        self, _mock_vm, _mock_ext
+    ):
+        # Native (non-VM) build host reaches the alias directly; no loopback
+        # remap, so push targets the same registry as the image ref.
+        resolution = resolve_dev_registries(
+            _conn(), kind_registry_detector=lambda: None, push_engine="docker"
+        )
+
+        assert resolution.image_registry == "host.docker.internal:5001"
+        assert resolution.push_registry == "host.docker.internal:5001"
+        assert resolution.push_split is False
 
 
 class TestEnvRegistryNormalization:
