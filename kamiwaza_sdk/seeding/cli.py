@@ -8,6 +8,7 @@ no environment-specific data — the UAT/nightly profile lives in the caller.
 
 Example::
 
+    export KAMIWAZA_API_KEY="$(kamiwaza-seed login --password-env ADMIN_PW --raw)"
     kamiwaza-seed create-workroom --name uat
     kamiwaza-seed install-extension --name kaizen --workroom-id <wid>
     kamiwaza-seed register-external-model --protocol aws_bedrock \\
@@ -77,6 +78,25 @@ def _client_for_workroom(client, workroom_id: Optional[str]):
 
 
 # --- subcommand handlers ---------------------------------------------------
+
+
+def cmd_login(args: argparse.Namespace, *, client) -> Optional[dict]:
+    """Mint an access token via the password grant.
+
+    The password is read from a named env var only — never argv — so it doesn't
+    leak into shell history or process listings. ``--raw`` prints just the bare
+    token so a caller can do ``export KAMIWAZA_API_KEY="$(... --raw)"``.
+    """
+    password = _read_env_secret(args.password_env, what="login password")
+    if password is None:
+        raise SystemExit(
+            "Provide the password via --password-env (env var holding the password)."
+        )
+    token = client.auth.login_with_password(args.username, password).access_token
+    if args.raw:
+        print(token)
+        return None
+    return {"access_token": token}
 
 
 def cmd_create_workroom(args: argparse.Namespace, *, client) -> dict:
@@ -193,6 +213,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command")
 
+    p = sub.add_parser("login", help="Mint an access token via the password grant.")
+    p.add_argument("--username", default="admin")
+    p.add_argument(
+        "--password-env",
+        required=True,
+        help="Env var holding the password (read from env, never argv).",
+    )
+    p.add_argument(
+        "--raw",
+        action="store_true",
+        help="Print only the bare token (for KAMIWAZA_API_KEY=\"$(... --raw)\").",
+    )
+    p.set_defaults(func=cmd_login)
+
     p = sub.add_parser("create-workroom", help="Create one or more workrooms.")
     p.add_argument("--name", required=True)
     p.add_argument("--type", default="persistent", help="ephemeral or persistent")
@@ -298,7 +332,9 @@ def main(
     # the agent/conversation calls as a base_url override.
     client = client_factory(base_url=args.base_url)
     result = args.func(args, client=client)
-    print(json.dumps(result))
+    # Handlers that emit their own output (e.g. `login --raw`) return None.
+    if result is not None:
+        print(json.dumps(result))
     return 0
 
 
