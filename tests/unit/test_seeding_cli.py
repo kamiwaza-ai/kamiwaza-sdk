@@ -5,9 +5,17 @@ from types import SimpleNamespace
 
 import pytest
 
+from kamiwaza_sdk.exceptions import DeploymentFailedError
 from kamiwaza_sdk.seeding import cli
 
 pytestmark = pytest.mark.unit
+
+
+def _raiser(exc):
+    def _f(*_args, **_kwargs):
+        raise exc
+
+    return _f
 
 
 class RecordingService:
@@ -463,3 +471,45 @@ def test_deploy_model_requires_model_id_or_name():
     # --model-id / --name are a required mutually-exclusive group.
     with pytest.raises(SystemExit):
         _run(["deploy-model"], FakeClient())
+
+
+def test_deploy_model_converts_wait_failure_to_systemexit():
+    # The documented wait=True failure modes must surface as a clean SystemExit,
+    # not a raw traceback (matches cmd_resolve_kaizen_url).
+    for exc in (DeploymentFailedError("deploy failed"), TimeoutError("deploy timed out")):
+        client = FakeClient()
+        client.serving.deploy_model = _raiser(exc)
+        with pytest.raises(SystemExit):
+            _run(["deploy-model", "--model-id", "m1"], client)
+
+
+def test_deploy_model_server_refused_exits():
+    # A falsy deployment id means the server refused the deploy -> clean exit.
+    client = FakeClient()
+    client.serving.deploy_model = RecordingService(None)
+    with pytest.raises(SystemExit):
+        _run(["deploy-model", "--model-id", "m1"], client)
+
+
+def test_deploy_model_omits_endpoint_when_not_yet_listed(capsys):
+    # --no-wait can return before DEPLOYED; list_active_deployments only returns
+    # DEPLOYED ones, so the endpoint is omitted rather than wrong.
+    client = FakeClient()
+    client.serving.deploy_model = RecordingService("pending-dep")  # not in the listing
+    _run(["deploy-model", "--model-id", "m1", "--no-wait"], client)
+
+    out = json.loads(capsys.readouterr().out)
+    assert out == {"deployment_id": "pending-dep"}
+    assert "endpoint" not in out
+
+
+def test_deploy_model_duplicate_name_exits():
+    # Ambiguous name resolution must fail loudly, not pick one arbitrarily.
+    client = FakeClient()
+    client.models.list_models = RecordingService(
+        [SimpleNamespace(id="m1", name="dup"), SimpleNamespace(id="m2", name="dup")]
+    )
+    with pytest.raises(SystemExit):
+        _run(["deploy-model", "--name", "dup"], client)
+
+    assert client.serving.deploy_model.calls == []

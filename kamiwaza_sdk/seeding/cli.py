@@ -26,6 +26,7 @@ import os
 from pathlib import Path
 from typing import Callable, Dict, Optional, Union
 
+from ..exceptions import DeploymentFailedError
 from ..schemas.kaizen import LLMConfig
 from ..schemas.models.external_endpoint import (
     AWSBedrockChatEndpoint,
@@ -152,14 +153,26 @@ def _resolve_model_id(client, model_id: Optional[str], name: Optional[str]) -> s
     """Return the model id to deploy — given directly, or resolved by name."""
     if model_id:
         return model_id
-    for model in client.models.list_models():
-        if (getattr(model, "name", None) or "") == name:
-            return str(model.id)
-    raise SystemExit(f"No registered model named '{name}'.")
+    matches = [
+        m for m in client.models.list_models() if (getattr(m, "name", None) or "") == name
+    ]
+    if not matches:
+        raise SystemExit(f"No registered model named '{name}'.")
+    if len(matches) > 1:
+        # Deterministic: don't silently deploy an arbitrary one of a name collision.
+        raise SystemExit(
+            f"Multiple registered models named '{name}'; pass --model-id to disambiguate."
+        )
+    return str(matches[0].id)
 
 
 def _deployment_endpoint(client, deployment_id) -> Optional[str]:
-    """The OpenAI-compatible endpoint of a deployment, or None if not listed."""
+    """The OpenAI-compatible endpoint of a deployment, or None if not listed.
+
+    Lists all active deployments to find the one we just created: only
+    ``list_active_deployments`` computes the ``endpoint`` string (``get_deployment``
+    does not), so don't "optimize" this into a by-id fetch.
+    """
     for deployment in client.serving.list_active_deployments():
         if str(getattr(deployment, "id", "")) == str(deployment_id):
             return getattr(deployment, "endpoint", None)
@@ -175,13 +188,19 @@ def cmd_deploy_model(args: argparse.Namespace, *, client) -> dict:
     pass to ``create-agent --llm-base-url``.
     """
     model_id = _resolve_model_id(client, args.model_id, args.name)
-    deployment_id = client.serving.deploy_model(
-        model_id=model_id,
-        engine_name=args.engine_name,
-        wait=not args.no_wait,
-        timeout_seconds=args.timeout,
-        poll_interval_seconds=args.poll_interval,
-    )
+    try:
+        deployment_id = client.serving.deploy_model(
+            model_id=model_id,
+            engine_name=args.engine_name,
+            wait=not args.no_wait,
+            timeout_seconds=args.timeout,
+            poll_interval_seconds=args.poll_interval,
+        )
+    except (DeploymentFailedError, TimeoutError) as exc:
+        # Convert the documented wait=True failure modes to a clean message
+        # (mirrors cmd_resolve_kaizen_url) — a traceback is poor diagnostics for
+        # the nightly profile.
+        raise SystemExit(str(exc))
     if not deployment_id:
         raise SystemExit(f"Deploy request for model {model_id} was refused by the server.")
     result = {"deployment_id": str(deployment_id)}
@@ -363,7 +382,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--no-wait",
         action="store_true",
-        help="Return the deployment id immediately instead of waiting for DEPLOYED.",
+        help=(
+            "Return the deployment id immediately instead of waiting for DEPLOYED. "
+            "The endpoint is omitted from the output until the deployment is DEPLOYED."
+        ),
     )
     p.add_argument("--timeout", type=int, default=600, help="Max seconds to wait for DEPLOYED.")
     p.add_argument("--poll-interval", type=float, default=5.0, help="Seconds between readiness polls.")
