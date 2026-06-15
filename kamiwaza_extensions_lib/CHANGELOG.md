@@ -6,6 +6,26 @@ follow semver. The library is published to PyPI as a standalone package
 `kamiwaza-sdk` — extension authors pin against the `[lib]` minor range in
 `requirements.txt`.
 
+## [0.4.2] — 2026-06-15 (ENG-6911)
+
+### Fixed
+
+* **`POST /auth/logout` now builds the front-channel logout URL from the
+  browser-routable base directly** instead of reading it back from the
+  server-side `httpx.post` to core. Under `kz-ext dev` the platform sets
+  both `KAMIWAZA_API_URL` and `KAMIWAZA_PUBLIC_API_URL` to the public
+  ingress host, which the backend container cannot reach — so the 0.4.1
+  proxy POST failed (connection refused, swallowed by the best-effort
+  `except`), `front_channel_logout_url` came back `null`, and the browser
+  fell through to `/login` where SSO silently re-authenticated. The bug
+  0.4.1 set out to fix therefore still reproduced in the standard
+  deployment. The front-channel GET lives at a fixed core route the
+  *browser* can reach, so the handler now constructs
+  `front_channel_logout_url` itself (carrying the requested
+  `post_logout_redirect_uri` through as the `redirect_uri` query param).
+  The server-side POST remains best-effort token revocation and no longer
+  gates the response.
+
 ## [0.4.1] — 2026-06-12 (ENG-6911)
 
 ### Fixed

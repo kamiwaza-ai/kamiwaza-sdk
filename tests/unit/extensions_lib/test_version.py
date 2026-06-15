@@ -19,7 +19,7 @@ CHANGELOG_PATH = LIB_DIR / "CHANGELOG.md"
 LIB_PYPROJECT_PATH = LIB_DIR / "pyproject.toml"
 
 
-def test_version_is_0_4_1():
+def test_version_is_0_4_2():
     # M3 / PR #87 round-9 promoted the round-8 ``_url`` helpers to a
     # public ``url`` module (and re-exported ``backend_runtime_base`` /
     # ``public_base_url`` from the package root). Scaffolded extensions
@@ -27,9 +27,12 @@ def test_version_is_0_4_1():
     # ``compatibility.json`` was raised to ``>=0.4,<0.5`` to keep older
     # versions without the helpers from resolving. 0.4.1 (ENG-6911)
     # fixed the session router's logout to proxy core's front-channel
-    # logout URL — still within the ``>=0.4,<0.5`` compat range.
-    assert kamiwaza_extensions_lib.__version__ == "0.4.1", (
-        "Runtime lib is 0.4.1 (ENG-6911 logout front-channel fix). "
+    # logout URL; 0.4.2 (ENG-6911) corrected that fix to build the
+    # front-channel URL from the browser base directly, since the
+    # server-side proxy POST is unreachable in-cluster under ``kz-ext
+    # dev`` — still within the ``>=0.4,<0.5`` compat range.
+    assert kamiwaza_extensions_lib.__version__ == "0.4.2", (
+        "Runtime lib is 0.4.2 (ENG-6911 logout front-channel fix). "
         "Update both __version__ and CHANGELOG.md if the version is "
         "intentionally changing."
     )

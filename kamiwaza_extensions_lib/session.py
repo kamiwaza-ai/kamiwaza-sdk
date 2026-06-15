@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from urllib.parse import quote, urljoin
+from urllib.parse import quote, urlencode
 
 from fastapi import APIRouter, Request
 
@@ -170,16 +170,33 @@ def create_session_router(prefix: str = "") -> APIRouter:
                 "redirect_uri"
             )
 
-        # Terminate the platform session server-side AND proxy core's logout
-        # response to the client (ENG-6911). The server-side POST clears
-        # core's session, but the auth-gateway / Keycloak SSO cookies live in
-        # the *browser* — only core's front-channel GET can clear those. Core
-        # returns that GET's URL as ``front_channel_logout_url``; we must hand
-        # it to the client or SSO silently re-authenticates on the next visit.
+        # The front-channel GET is the ONLY thing that clears the auth-gateway
+        # / Keycloak SSO cookies in the *browser* and ends the SSO session
+        # (ENG-6911). It lives at a fixed core route, so build its
+        # browser-routable URL directly rather than reading it back from the
+        # server-side POST below. That POST runs INSIDE the backend container,
+        # and under ``kz-ext dev`` the API base is the public ingress host the
+        # container cannot reach (connection refused). Depending on its
+        # response would leave the client with no front-channel URL, the
+        # browser would fall through to ``/login``, and SSO would silently
+        # re-authenticate — the exact bug this fix targets. The browser CAN
+        # reach the public host, so a directly-constructed URL works regardless
+        # of in-cluster routing.
+        front_channel_logout_url = f"{browser_base}/auth/logout/front-channel"
+        if requested_redirect:
+            front_channel_logout_url += "?" + urlencode(
+                {"redirect_uri": requested_redirect}
+            )
+        post_logout_redirect_uri = requested_redirect
+
+        # Best-effort server-side session + token revocation (defense in
+        # depth): clears core's own session and revokes Keycloak tokens when
+        # the API base is container-routable. It MUST NOT block logout — the
+        # browser-side front-channel GET above is the authoritative SSO clear,
+        # so a failure here (e.g. public-only API base under ``kz-ext dev``) is
+        # swallowed and logout still works.
         from .auth import forward_auth_headers
 
-        front_channel_logout_url = None
-        post_logout_redirect_uri = None
         try:
             import httpx
 
@@ -193,23 +210,9 @@ def create_session_router(prefix: str = "") -> APIRouter:
                 verify=config.verify_ssl,
                 timeout=5,
             ) as client:
-                core_response = await client.post(
-                    backend_logout_url, headers=headers, json=body
-                )
-            core_data = core_response.json()
-            if isinstance(core_data, dict):
-                core_front_channel = core_data.get("front_channel_logout_url")
-                if core_front_channel:
-                    # Core returns a root-relative path; resolve it against
-                    # the browser-routable base so the client can navigate
-                    # to it from any origin (e.g. localhost:3000 under
-                    # ``kz-ext dev local --auth``).
-                    front_channel_logout_url = urljoin(
-                        f"{browser_base}/", core_front_channel
-                    )
-                post_logout_redirect_uri = core_data.get("post_logout_redirect_uri")
+                await client.post(backend_logout_url, headers=headers, json=body)
         except Exception:
-            pass  # Best-effort — client falls back to its login redirect
+            pass  # Best-effort — the browser-side front-channel GET still runs
 
         return {
             "logout_url": browser_logout_url,

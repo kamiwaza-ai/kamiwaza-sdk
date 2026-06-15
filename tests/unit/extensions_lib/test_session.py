@@ -254,9 +254,11 @@ def _fake_core_client(calls, core_body):
     return FakeAsyncClient
 
 
-# The response body core's POST /api/auth/logout actually returns
-# (kamiwaza/services/auth/api.py). ``front_channel_logout_url`` is
-# root-relative — the session router must absolutize it.
+# The response body core's POST /api/auth/logout returns
+# (kamiwaza/services/auth/api.py). The session router no longer reads this
+# body for the front-channel URL — it builds that URL from the browser base
+# directly (ENG-6911) — but the POST still fires for best-effort server-side
+# token revocation, so the fake client returns a plausible body.
 _CORE_LOGOUT_BODY = {
     "message": "Logged out successfully",
     "session_termination_requested": True,
@@ -270,11 +272,42 @@ _CORE_LOGOUT_BODY = {
 @pytest.mark.unit
 class TestLogoutEndpoint:
     def test_returns_browser_routable_front_channel_logout_url(self, monkeypatch):
-        """ENG-6911 — the logout response MUST carry core's front-channel
-        logout URL, resolved to a browser-routable absolute URL. The
-        previous contract returned only ``logout_url`` (the POST handler —
-        a browser GET there 405s) so the WRM frontend fell through to
-        ``/login`` and SSO silently re-authenticated."""
+        """ENG-6911 — the logout response MUST carry a browser-routable
+        front-channel logout URL (the GET that clears auth-gateway/Keycloak
+        SSO cookies). It is built from the browser base directly, NOT read
+        back from the server-side POST, so it is present even when that POST
+        cannot reach core in-cluster. The browser's requested redirect is
+        carried through as the GET's ``redirect_uri`` query param."""
+        import httpx
+
+        calls = {}
+        monkeypatch.setattr(
+            httpx, "AsyncClient", _fake_core_client(calls, _CORE_LOGOUT_BODY)
+        )
+        client = _make_app(monkeypatch, use_auth="true")
+        resp = client.post(
+            "/auth/logout",
+            json={"post_logout_redirect_uri": "https://cluster.test/login"},
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["front_channel_logout_url"] == (
+            "https://cluster.test/api/auth/logout/front-channel"
+            "?redirect_uri=https%3A%2F%2Fcluster.test%2Flogin"
+        )
+        assert data["post_logout_redirect_uri"] == "https://cluster.test/login"
+        # Legacy fields stay for back-compat with existing consumers.
+        assert data["logout_url"] == "https://cluster.test/api/auth/logout"
+        assert data["redirect_url"] == (
+            "https://cluster.test/runtime/apps/my-app/logged-out"
+        )
+
+    def test_front_channel_url_has_no_query_without_requested_redirect(
+        self, monkeypatch
+    ):
+        """With no redirect in the request body the front-channel URL is the
+        bare core route — core defaults the post-logout target itself."""
         import httpx
 
         calls = {}
@@ -288,14 +321,8 @@ class TestLogoutEndpoint:
         data = resp.json()
         assert data["front_channel_logout_url"] == (
             "https://cluster.test/api/auth/logout/front-channel"
-            "?redirect_uri=https%3A%2F%2Fcluster.test%2F"
         )
-        assert data["post_logout_redirect_uri"] == "https://cluster.test/"
-        # Legacy fields stay for back-compat with existing consumers.
-        assert data["logout_url"] == "https://cluster.test/api/auth/logout"
-        assert data["redirect_url"] == (
-            "https://cluster.test/runtime/apps/my-app/logged-out"
-        )
+        assert data["post_logout_redirect_uri"] is None
 
     def test_forwards_post_logout_redirect_uri_to_core(self, monkeypatch):
         """ENG-6911 — the browser's requested post-logout landing URL must
@@ -317,9 +344,14 @@ class TestLogoutEndpoint:
             "post_logout_redirect_uri": "https://cluster.test/login"
         }
 
-    def test_core_unreachable_returns_null_front_channel_fields(self, monkeypatch):
-        """When the server-side POST to core fails, the proxied fields are
-        null and the client falls back to its own login redirect."""
+    def test_core_unreachable_still_returns_front_channel(self, monkeypatch):
+        """ENG-6911 regression — the server-side POST to core is unreachable
+        in-cluster under ``kz-ext dev`` (the API base is the public ingress
+        host). The front-channel URL MUST still be returned, since it is built
+        from the browser base and the browser can reach it. The earlier fix
+        read this URL from the (failed) POST response and returned null here,
+        so logout looped back to ``/login`` and SSO silently re-authenticated.
+        """
 
         class FailingAsyncClient:
             def __init__(self, *, verify, timeout):
@@ -338,13 +370,20 @@ class TestLogoutEndpoint:
 
         monkeypatch.setattr(httpx, "AsyncClient", FailingAsyncClient)
         client = _make_app(monkeypatch, use_auth="true")
-        resp = client.post("/auth/logout")
+        resp = client.post(
+            "/auth/logout",
+            json={"post_logout_redirect_uri": "https://cluster.test/login"},
+        )
 
         assert resp.status_code == 200
         data = resp.json()
-        assert data["front_channel_logout_url"] is None
-        assert data["post_logout_redirect_uri"] is None
-        # Legacy fields still present so the redirect fallback works.
+        # The cookie/SSO-clearing GET is still handed to the browser despite
+        # the failed server-side POST — this is the whole point of the fix.
+        assert data["front_channel_logout_url"] == (
+            "https://cluster.test/api/auth/logout/front-channel"
+            "?redirect_uri=https%3A%2F%2Fcluster.test%2Flogin"
+        )
+        assert data["post_logout_redirect_uri"] == "https://cluster.test/login"
         assert data["logout_url"] == "https://cluster.test/api/auth/logout"
 
     def test_uses_configured_ssl_verification_for_logout_post(self, monkeypatch):
@@ -381,11 +420,10 @@ class TestLogoutEndpoint:
         --auth`` the runner sets ``KAMIWAZA_API_URL`` to
         ``host.docker.internal`` (container-routable) and
         ``KAMIWAZA_PUBLIC_API_URL`` to ``localhost`` (browser-routable).
-        The internal ``httpx.post(...)`` for server-side session
-        termination MUST use the container-routable host or it silently
-        fails (caught by the broad ``except Exception``); the response
-        body's ``logout_url`` MUST stay browser-routable so the
-        client-side redirect resolves.
+        The internal ``httpx.post(...)`` for best-effort server-side session
+        termination MUST use the container-routable host; the browser-facing
+        ``logout_url`` and ``front_channel_logout_url`` MUST stay
+        browser-routable so the client-side navigation resolves.
         """
         calls = {}
 
@@ -419,9 +457,12 @@ class TestLogoutEndpoint:
         assert resp.status_code == 200
         # Server-side POST hits the container-routable host
         assert calls["url"] == "http://host.docker.internal:8000/api/auth/logout"
-        # Browser-facing logout_url stays on the host the browser sees
+        # Browser-facing URLs stay on the host the browser sees
         data = resp.json()
         assert data["logout_url"] == "http://localhost:8000/api/auth/logout"
+        assert data["front_channel_logout_url"] == (
+            "http://localhost:8000/api/auth/logout/front-channel"
+        )
 
     def test_login_url_falls_back_to_api_url_when_public_unset(self, monkeypatch):
         """PR #87 round-8 review High #5 — legacy deployments without
