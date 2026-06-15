@@ -98,10 +98,37 @@ def test_login_missing_password_env_arg_exits():
         _run(["login", "--username", "admin"], FakeClient())
 
 
-def test_login_rejects_password_on_argv():
-    # The password must never be accepted from argv — only via --password-env.
+def test_login_rejects_password_on_argv(monkeypatch):
+    # The password must never be accepted from argv. argparse abbreviation is
+    # disabled, so `--password` is an unrecognized flag (not a prefix alias for
+    # `--password-env`) and parsing fails before any login is attempted — even
+    # if a same-named env var happens to exist.
+    client = FakeClient()
+    monkeypatch.setenv("s3cret", "leaked")  # would be picked up if `--password` aliased
+
     with pytest.raises(SystemExit):
-        _run(["login", "--password", "s3cret"], FakeClient())
+        _run(["login", "--password", "s3cret"], client)
+
+    assert client.auth.login_with_password.calls == []
+
+
+def test_secret_env_flags_reject_abbreviation(monkeypatch):
+    # Sibling sweep: the other secret-bearing subcommands disable abbreviation too,
+    # so `--credential` / `--llm-api-key` can't alias their `-env` forms.
+    monkeypatch.setenv("AWS_CRED", '{"auth_type":"iam"}')
+    monkeypatch.setenv("LLM_KEY", "sk-leaked")
+    parser = cli.build_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            ["register-external-model", "--protocol", "aws_bedrock", "--name", "n",
+             "--region", "r", "--model-id", "m", "--credential", "AWS_CRED"]
+        )
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            ["create-agent", "--kaizen-base-url", "u", "--name", "n", "--model", "m",
+             "--llm-api-key", "LLM_KEY"]
+        )
 
 
 def test_create_workroom_count_suffixes_names(capsys):

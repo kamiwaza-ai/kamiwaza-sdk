@@ -213,7 +213,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command")
 
-    p = sub.add_parser("login", help="Mint an access token via the password grant.")
+    # allow_abbrev=False: without it argparse accepts `--password` as a prefix of
+    # `--password-env`, silently treating a secret typed on argv as an env-var name.
+    p = sub.add_parser(
+        "login",
+        help="Mint an access token via the password grant.",
+        allow_abbrev=False,
+    )
     p.add_argument("--username", default="admin")
     p.add_argument(
         "--password-env",
@@ -234,7 +240,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--count", type=int, default=1, help="Create N suffixed workrooms.")
     p.set_defaults(func=cmd_create_workroom)
 
-    p = sub.add_parser("register-external-model", help="Register an external model.")
+    # allow_abbrev=False so `--credential` can't be accepted as a prefix of
+    # `--credential-env`, which would route a secret through argv.
+    p = sub.add_parser(
+        "register-external-model",
+        help="Register an external model.",
+        allow_abbrev=False,
+    )
     p.add_argument(
         "--protocol", required=True, choices=["aws_bedrock", "aws_transcribe"]
     )
@@ -265,7 +277,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.set_defaults(func=cmd_install_extension)
 
-    p = sub.add_parser("create-agent", help="Create a Kaizen agent.")
+    # allow_abbrev=False so `--llm-api-key` can't be accepted as a prefix of
+    # `--llm-api-key-env`, which would route a secret through argv.
+    p = sub.add_parser(
+        "create-agent", help="Create a Kaizen agent.", allow_abbrev=False
+    )
     p.add_argument(
         "--kaizen-base-url",
         required=True,
