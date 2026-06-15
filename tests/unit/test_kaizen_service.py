@@ -190,7 +190,7 @@ def test_wait_for_base_url_workroom_retries_until_listed(monkeypatch):
 
     monkeypatch.setattr(kaizen_mod.time, "sleep", lambda _s: None)
 
-    # Round 1: workroom has no Kaizen yet. Round 2: it's listed and ready.
+    # First poll: workroom has no Kaizen yet. Second poll: it's listed and ready.
     rounds = [[], [_ext("kaizen-4f8b3ae1", "wr-A")]]
 
     def list_extensions():
