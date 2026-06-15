@@ -14,7 +14,15 @@ from urllib.parse import urlparse
 
 CORE_CONFIG_NAMESPACE = "kamiwaza"
 CORE_CONFIG_NAME = "core-config"
+# Host address of the in-cluster *model* registry, reachable from the build
+# host (e.g. macOS) for OCI model pulls. NOT a node-routable extension image
+# registry -- see REGISTRY_EXTENSION_HOST_KEY (ENG-7051).
 REGISTRY_EXTERNAL_HOST_KEY = "KAMIWAZA_REGISTRY_EXTERNAL_HOST"
+# Node-routable address of the local extension/app image registry the cluster
+# node's containerd is provisioned to pull from (e.g. host.docker.internal:5001
+# on k0s/lima). Published by the installer in core-config; the deployment image
+# reference must use this, not the model registry above (ENG-7051).
+REGISTRY_EXTENSION_HOST_KEY = "KAMIWAZA_EXTENSION_REGISTRY"
 _KUBE_CONTEXT_TRUSTED_SUFFIXES = (
     ".test",
     ".local",
@@ -109,6 +117,23 @@ def resolve_image_registry(
     # cannot pull them (ENG-5719). For non-local connections, skip it and fall
     # through to the connection-derived registry below.
     if _trusts_local_kube_context(connection.url):
+        # The extension/app image registry the installer published in core-config
+        # (e.g. host.docker.internal:5001). This is the registry the cluster node
+        # is provisioned to pull extension images from, so it is the correct
+        # value to embed in the deployment payload (ENG-7051).
+        extension_registry = detect_extension_registry()
+        if extension_registry:
+            return (
+                extension_registry,
+                f"{CORE_CONFIG_NAMESPACE}/{CORE_CONFIG_NAME} ({REGISTRY_EXTENSION_HOST_KEY})",
+            )
+
+        # No dedicated extension registry advertised: fall back to the
+        # historical behavior. KAMIWAZA_REGISTRY_EXTERNAL_HOST is really the
+        # *model* registry's host address, so on k0s/lima this can yield a ref
+        # the node cannot pull -- doctor surfaces that separately; here we keep
+        # resolution unchanged so the extension key is a purely additive
+        # override (ENG-7051).
         core_config_registry = detect_core_config_registry()
         if core_config_registry:
             return core_config_registry, f"{CORE_CONFIG_NAMESPACE}/{CORE_CONFIG_NAME}"
@@ -194,6 +219,35 @@ def resolve_push_registry(
         )
 
     if not is_loopback_registry(image_registry):
+        # A VM host alias advertised by the platform (e.g. host.docker.internal:5001,
+        # the extension registry) is engine-specific: the docker daemon-in-VM
+        # resolves host.docker.internal, but a podman host-CLI push needs
+        # host.containers.internal. When the advertised alias doesn't match the
+        # active push engine, remap to the engine's alias so the push target
+        # stays reachable -- the embedded image ref keeps the advertised host
+        # (the node pulls via its certs.d), and the same registry is reachable
+        # under either alias (ENG-7051, Codex review). A real hostname has no
+        # alias engine and is returned unchanged.
+        alias_engine = push_registry_alias_engine(image_registry)
+        if (
+            alias_engine is not None
+            and alias_engine != engine
+            and build_engine_runs_in_vm()
+        ):
+            if engine == "podman" and running_podman_machine_name() is not None:
+                return (
+                    replace_registry_host(image_registry, PODMAN_VM_HOST_ALIAS),
+                    BUILD_VM_LOOPBACK_ALIAS_SOURCE,
+                )
+            if engine == "docker":
+                return (
+                    replace_registry_host(image_registry, DOCKER_VM_HOST_ALIAS),
+                    BUILD_VM_LOOPBACK_ALIAS_SOURCE,
+                )
+            # podman engine without a running machine: the host CLI resolves
+            # neither VM alias. Leave the registry as-is so
+            # validate_push_registry_for_engine surfaces an actionable error
+            # rather than silently pushing to an unreachable host.
         return image_registry, "image registry"
 
     if not build_engine_runs_in_vm():
@@ -268,8 +322,8 @@ def normalize_registry_env(var_name: str, raw: str) -> str:
     return value
 
 
-def detect_core_config_registry() -> Optional[str]:
-    """Best-effort read of the platform-advertised registry host."""
+def _read_core_config_key(key: str) -> Optional[str]:
+    """Best-effort read of a single ``core-config`` ConfigMap data key."""
 
     try:
         result = subprocess.run(
@@ -281,7 +335,7 @@ def detect_core_config_registry() -> Optional[str]:
                 "-n",
                 CORE_CONFIG_NAMESPACE,
                 "-o",
-                f"jsonpath={{.data.{REGISTRY_EXTERNAL_HOST_KEY}}}",
+                f"jsonpath={{.data.{key}}}",
             ],
             capture_output=True,
             text=True,
@@ -293,6 +347,25 @@ def detect_core_config_registry() -> Optional[str]:
         return None
     value = result.stdout.strip()
     return value or None
+
+
+def detect_core_config_registry() -> Optional[str]:
+    """Best-effort read of the platform-advertised *model* registry host."""
+
+    return _read_core_config_key(REGISTRY_EXTERNAL_HOST_KEY)
+
+
+def detect_extension_registry() -> Optional[str]:
+    """Best-effort read of the platform-advertised extension image registry.
+
+    This is the node-routable registry the cluster's containerd is provisioned
+    to pull extension/app images from (e.g. ``host.docker.internal:5001`` on
+    k0s/lima). Distinct from the model registry (:func:`detect_core_config_registry`):
+    the deployment image reference must use this value so the kubelet can pull
+    it (ENG-7051). Returns ``None`` when the installer has not published it.
+    """
+
+    return _read_core_config_key(REGISTRY_EXTENSION_HOST_KEY)
 
 
 def detect_kind_registry() -> Optional[str]:
