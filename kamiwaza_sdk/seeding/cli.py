@@ -148,6 +148,49 @@ def cmd_install_extension(args: argparse.Namespace, *, client) -> dict:
     return {"deployment_id": str(deployment.id), "name": deployment.name}
 
 
+def _resolve_model_id(client, model_id: Optional[str], name: Optional[str]) -> str:
+    """Return the model id to deploy — given directly, or resolved by name."""
+    if model_id:
+        return model_id
+    for model in client.models.list_models():
+        if (getattr(model, "name", None) or "") == name:
+            return str(model.id)
+    raise SystemExit(f"No registered model named '{name}'.")
+
+
+def _deployment_endpoint(client, deployment_id) -> Optional[str]:
+    """The OpenAI-compatible endpoint of a deployment, or None if not listed."""
+    for deployment in client.serving.list_active_deployments():
+        if str(getattr(deployment, "id", "")) == str(deployment_id):
+            return getattr(deployment, "endpoint", None)
+    return None
+
+
+def cmd_deploy_model(args: argparse.Namespace, *, client) -> dict:
+    """Deploy a registered model so it's callable.
+
+    External models (Bedrock/Transcribe) are only callable once deployed, so an
+    agent can't bind to one until this runs. Returns the deployment id and its
+    OpenAI-compatible endpoint (``…/runtime/models/<dep>/v1``) for the caller to
+    pass to ``create-agent --llm-base-url``.
+    """
+    model_id = _resolve_model_id(client, args.model_id, args.name)
+    deployment_id = client.serving.deploy_model(
+        model_id=model_id,
+        engine_name=args.engine_name,
+        wait=not args.no_wait,
+        timeout_seconds=args.timeout,
+        poll_interval_seconds=args.poll_interval,
+    )
+    if not deployment_id:
+        raise SystemExit(f"Deploy request for model {model_id} was refused by the server.")
+    result = {"deployment_id": str(deployment_id)}
+    endpoint = _deployment_endpoint(client, deployment_id)
+    if endpoint:
+        result["endpoint"] = endpoint
+    return result
+
+
 def cmd_resolve_kaizen_url(args: argparse.Namespace, *, client) -> Optional[dict]:
     """Resolve a workroom's Kaizen ingress root, waiting for it to come up.
 
@@ -304,6 +347,27 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-sync", action="store_true", help="Don't import the catalog if missing."
     )
     p.set_defaults(func=cmd_install_extension)
+
+    p = sub.add_parser(
+        "deploy-model",
+        help="Deploy a registered model so it's callable (external models need this before an agent can bind).",
+    )
+    g = p.add_mutually_exclusive_group(required=True)
+    g.add_argument("--model-id", default=None, help="ID of a registered model to deploy.")
+    g.add_argument("--name", default=None, help="Name of a registered model to resolve, then deploy.")
+    p.add_argument(
+        "--engine-name",
+        default="external_chat",
+        help="Serving engine (default external_chat; external_transcribe for Transcribe).",
+    )
+    p.add_argument(
+        "--no-wait",
+        action="store_true",
+        help="Return the deployment id immediately instead of waiting for DEPLOYED.",
+    )
+    p.add_argument("--timeout", type=int, default=600, help="Max seconds to wait for DEPLOYED.")
+    p.add_argument("--poll-interval", type=float, default=5.0, help="Seconds between readiness polls.")
+    p.set_defaults(func=cmd_deploy_model)
 
     p = sub.add_parser(
         "resolve-kaizen-url",
