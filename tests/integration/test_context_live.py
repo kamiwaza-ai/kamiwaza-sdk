@@ -27,6 +27,8 @@ DEFAULT_WORKROOM_ID = os.getenv(
     "KAMIWAZA_CONTEXT_WORKROOM_ID",
     ContextService.DEFAULT_WORKROOM_ID,
 )
+WORKROOM_BINDING_UNAVAILABLE_DETAIL = "workroom_binding_unavailable"
+WORKROOM_BINDING_UNAVAILABLE_CLASS = "binding_unavailable"
 TEST_VECTOR = [round(index * 0.01, 4) for index in range(1, 33)]
 
 
@@ -43,6 +45,29 @@ def _context_service(live_kamiwaza_client) -> ContextService:
     service = live_kamiwaza_client.context
     assert isinstance(service, ContextService)
     return service
+
+
+def _is_workroom_binding_unavailable(error: APIError) -> bool:
+    """Return True only for retryable Workrooms enter binding outages."""
+    if error.status_code != 503:
+        return False
+
+    payload = getattr(error, "response_data", None)
+    if not isinstance(payload, dict):
+        return False
+
+    detail = payload.get("detail")
+    if detail == WORKROOM_BINDING_UNAVAILABLE_DETAIL:
+        return True
+    if not isinstance(detail, dict):
+        return False
+    if detail.get("reason") == WORKROOM_BINDING_UNAVAILABLE_CLASS:
+        return True
+
+    structured = detail.get("error")
+    if not isinstance(structured, dict):
+        return False
+    return structured.get("class") == WORKROOM_BINDING_UNAVAILABLE_CLASS
 
 
 def _wait_for_vectordb_ready(
@@ -342,15 +367,26 @@ def session_workroom(
         description="Ephemeral workroom for SDK context live tests",
     )
     workroom_id = str(workroom.id)
+    did_enter = False
     try:
-        entered = workrooms.enter(workroom_id)
-        assert str(entered.workroom_id) == workroom_id
+        try:
+            entered = workrooms.enter(workroom_id)
+            did_enter = True
+            assert str(entered.workroom_id) == workroom_id
+        except APIError as exc:
+            if not _is_workroom_binding_unavailable(exc):
+                raise
+            pytest.skip(
+                "Workrooms enter binding is unavailable; skipping room-scoped "
+                "Context live tests instead of silently passing the lifecycle seam"
+            )
         yield workroom_id
     finally:
-        try:
-            workrooms.leave()
-        except (APIError, ValidationError):
-            pass
+        if did_enter:
+            try:
+                workrooms.leave()
+            except (APIError, ValidationError):
+                pass
         # delete() raises NotFoundError (a sibling of APIError, not a subclass)
         # when the workroom is already gone, so catch both to keep teardown
         # best-effort -- matching the sibling test_workroom_isolation_live.py.
@@ -410,20 +446,23 @@ def test_context_required_llm_available(context_required_llm: str) -> None:
     assert context_required_llm
 
 
-def test_context_vectordb_create_without_workroom_requires_scope(
+def test_context_vectordb_create_without_workroom_uses_global_scope(
     live_kamiwaza_client,
 ) -> None:
-    """VectorDB creation is room-scoped and requires a non-Global workroom."""
+    """No-workroom VectorDB creation is allowed under the Global/default scope."""
     service = _context_service(live_kamiwaza_client)
+    vectordb_id: str | None = None
 
-    with pytest.raises(APIError) as exc_info:
-        service.create_vectordb(
+    try:
+        created = service.create_vectordb(
             name=f"sdk-context-vdb-global-{uuid4().hex[:8]}",
             engine="milvus",
         )
-
-    assert exc_info.value.status_code == 400
-    assert _api_error_code(exc_info.value) == "workroom_scope_required"
+        vectordb_id = created["id"]
+        assert vectordb_id
+    finally:
+        if vectordb_id:
+            _safe_delete_vectordb(service, vectordb_id)
 
 
 # A dedicated non-Global VectorDB *instance* lifecycle test (create/scale/
