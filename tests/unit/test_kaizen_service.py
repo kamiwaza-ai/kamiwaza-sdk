@@ -4,11 +4,13 @@ from types import SimpleNamespace
 
 import pytest
 
+from kamiwaza_sdk.exceptions import NotFoundError
 from kamiwaza_sdk.schemas.kaizen import LLMConfig
 from kamiwaza_sdk.services.kaizen import (
     AgentService,
     ConversationService,
     resolve_base_url,
+    wait_for_base_url,
 )
 
 pytestmark = pytest.mark.unit
@@ -137,6 +139,122 @@ def test_resolve_base_url_raises_when_no_endpoint():
 
     with pytest.raises(ValueError, match="no published endpoint"):
         resolve_base_url(client, "kaizen")
+
+
+def _ext(name, workroom_id, *, external=KAIZEN_URL):
+    return SimpleNamespace(
+        name=name,
+        workroom_id=workroom_id,
+        endpoints=SimpleNamespace(external=external, public_api_url=None),
+    )
+
+
+def _client_listing(extensions):
+    return SimpleNamespace(
+        extensions=SimpleNamespace(list_extensions=lambda: list(extensions))
+    )
+
+
+def test_resolve_base_url_matches_workroom_by_base_name_and_id():
+    # The operator suffixes the CR name; match on base name + the exact workroom,
+    # and ignore other extensions (milvus) and other workrooms' Kaizen.
+    client = _client_listing(
+        [
+            _ext("kaizen-4f8b3ae1", "wr-A"),
+            _ext("kaizen-99999999", "wr-B"),  # another workroom's Kaizen
+            _ext("service-milvus-xyz", "wr-A", external="https://x/milvus"),
+        ]
+    )
+
+    assert resolve_base_url(client, "kaizen", workroom_id="wr-A") == KAIZEN_URL
+
+
+def test_resolve_base_url_workroom_no_match_raises():
+    # Kaizen exists, but only in a different workroom — must not be picked.
+    client = _client_listing([_ext("kaizen-99999999", "wr-B")])
+
+    with pytest.raises(ValueError, match="No 'kaizen' extension found"):
+        resolve_base_url(client, "kaizen", workroom_id="wr-A")
+
+
+def test_resolve_base_url_workroom_ambiguous_raises():
+    # Two Kaizen in the SAME workroom is anomalous — fail loudly, don't guess.
+    client = _client_listing([_ext("kaizen-aaaa", "wr-A"), _ext("kaizen-bbbb", "wr-A")])
+
+    with pytest.raises(ValueError, match="Multiple 'kaizen' extensions"):
+        resolve_base_url(client, "kaizen", workroom_id="wr-A")
+
+
+def test_wait_for_base_url_workroom_retries_until_listed(monkeypatch):
+    import kamiwaza_sdk.services.kaizen as kaizen_mod
+
+    monkeypatch.setattr(kaizen_mod.time, "sleep", lambda _s: None)
+
+    # Round 1: workroom has no Kaizen yet. Round 2: it's listed and ready.
+    rounds = [[], [_ext("kaizen-4f8b3ae1", "wr-A")]]
+
+    def list_extensions():
+        return rounds.pop(0)
+
+    client = SimpleNamespace(
+        extensions=SimpleNamespace(list_extensions=list_extensions)
+    )
+
+    url = wait_for_base_url(
+        client, "kaizen", workroom_id="wr-A", poll_interval_seconds=0
+    )
+    assert url == KAIZEN_URL
+    assert rounds == []
+
+
+def test_wait_for_base_url_returns_when_ready():
+    extension = SimpleNamespace(
+        endpoints=SimpleNamespace(external=KAIZEN_URL, public_api_url=None)
+    )
+    client = SimpleNamespace(
+        extensions=SimpleNamespace(get_extension=lambda name: extension)
+    )
+
+    assert wait_for_base_url(client, "kaizen-4f8b3ae1") == KAIZEN_URL
+
+
+def test_wait_for_base_url_retries_past_transient_states(monkeypatch):
+    import kamiwaza_sdk.services.kaizen as kaizen_mod
+
+    monkeypatch.setattr(kaizen_mod.time, "sleep", lambda _s: None)
+
+    ready = SimpleNamespace(
+        endpoints=SimpleNamespace(external=KAIZEN_URL, public_api_url=None)
+    )
+    unpublished = SimpleNamespace(
+        endpoints=SimpleNamespace(external=None, public_api_url=None)
+    )
+    # CR not visible yet (404), then present but no endpoint, then ready.
+    outcomes = [NotFoundError("nf"), unpublished, ready]
+
+    def get_extension(_name):
+        item = outcomes.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    client = SimpleNamespace(extensions=SimpleNamespace(get_extension=get_extension))
+
+    assert wait_for_base_url(client, "kaizen", poll_interval_seconds=0) == KAIZEN_URL
+    assert outcomes == []
+
+
+def test_wait_for_base_url_times_out():
+    unpublished = SimpleNamespace(
+        endpoints=SimpleNamespace(external=None, public_api_url=None)
+    )
+    client = SimpleNamespace(
+        extensions=SimpleNamespace(get_extension=lambda name: unpublished)
+    )
+
+    # timeout 0: the deadline is already past after the first failed attempt.
+    with pytest.raises(TimeoutError, match="not resolvable"):
+        wait_for_base_url(client, "kaizen", timeout_seconds=0)
 
 
 def test_agent_list_unwraps_agents_envelope():

@@ -11,6 +11,7 @@ Example::
     export KAMIWAZA_API_KEY="$(kamiwaza-seed login --password-env ADMIN_PW --raw)"
     kamiwaza-seed create-workroom --name uat
     kamiwaza-seed install-extension --name kaizen --workroom-id <wid>
+    URL="$(kamiwaza-seed resolve-kaizen-url --workroom-id <wid> --raw)"
     kamiwaza-seed register-external-model --protocol aws_bedrock \\
         --name claude --region us-east-1 \\
         --model-id anthropic.claude-3-sonnet-20240229-v1:0 \\
@@ -30,6 +31,7 @@ from ..schemas.models.external_endpoint import (
     AWSBedrockChatEndpoint,
     AWSTranscribeEndpoint,
 )
+from ..services.kaizen import wait_for_base_url
 from .client import build_client_from_env, scoped_client_for_workroom
 
 
@@ -144,6 +146,32 @@ def cmd_install_extension(args: argparse.Namespace, *, client) -> dict:
         sync_if_missing=not args.no_sync,
     )
     return {"deployment_id": str(deployment.id), "name": deployment.name}
+
+
+def cmd_resolve_kaizen_url(args: argparse.Namespace, *, client) -> Optional[dict]:
+    """Resolve a workroom's Kaizen ingress root, waiting for it to come up.
+
+    The operator names per-workroom CRs ``<name>-<hash>`` and stamps each with
+    its ``workroom_id``, so we enter the workroom (only then is its Kaizen
+    listed) and match on base name + workroom — never another workroom's Kaizen
+    or the first one we happen to see. ``--raw`` prints just the bare URL for
+    ``URL="$(... --raw)"``; a readiness timeout exits non-zero.
+    """
+    client = _client_for_workroom(client, args.workroom_id)
+    try:
+        url = wait_for_base_url(
+            client,
+            args.name,
+            workroom_id=args.workroom_id,
+            timeout_seconds=args.timeout,
+            poll_interval_seconds=args.poll_interval,
+        )
+    except TimeoutError as exc:
+        raise SystemExit(str(exc))
+    if args.raw:
+        print(url)
+        return None
+    return {"kaizen_base_url": url}
 
 
 def cmd_create_agent(args: argparse.Namespace, *, client) -> dict:
@@ -276,6 +304,39 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-sync", action="store_true", help="Don't import the catalog if missing."
     )
     p.set_defaults(func=cmd_install_extension)
+
+    p = sub.add_parser(
+        "resolve-kaizen-url",
+        help="Resolve a workroom's Kaizen ingress root (waits for ready).",
+    )
+    p.add_argument(
+        "--workroom-id",
+        required=True,
+        help="Workroom whose Kaizen instance to resolve.",
+    )
+    p.add_argument(
+        "--name",
+        default="kaizen",
+        help="Extension catalog/base name (default: kaizen).",
+    )
+    p.add_argument(
+        "--raw",
+        action="store_true",
+        help='Print only the bare URL (for URL="$(... --raw)").',
+    )
+    p.add_argument(
+        "--timeout",
+        type=float,
+        default=300.0,
+        help="Max seconds to wait for the ingress to resolve (default: 300).",
+    )
+    p.add_argument(
+        "--poll-interval",
+        type=float,
+        default=5.0,
+        help="Seconds between resolve attempts (default: 5).",
+    )
+    p.set_defaults(func=cmd_resolve_kaizen_url)
 
     # allow_abbrev=False so `--llm-api-key` can't be accepted as a prefix of
     # `--llm-api-key-env`, which would route a secret through argv.
