@@ -8,7 +8,7 @@ lightweight async library — not the full SDK with its sync HTTP client
 and 20+ service modules.
 """
 
-__version__ = "0.4.0"
+__version__ = "0.4.2"
 
 from .auth import forward_auth_headers, require_auth, require_role
 from .client import KamiwazaExtClient

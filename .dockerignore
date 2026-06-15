@@ -14,6 +14,14 @@
 !kamiwaza_extensions_lib/
 !kamiwaza_extensions_lib/**
 
+# TypeScript runtime lib — needed by `kz-ext dev --sdk-repo` frontend builds,
+# which `COPY --from=sdk kamiwaza-ai-extensions-lib`. Packed with
+# `npm pack --ignore-scripts`, so dist/ must already be present in the context.
+!kamiwaza-ai-extensions-lib/
+!kamiwaza-ai-extensions-lib/**
+# ...but never ship its installed deps into the build context.
+kamiwaza-ai-extensions-lib/node_modules/
+
 # Backend app + its requirements.txt.
 !tests/
 !tests/e2e/

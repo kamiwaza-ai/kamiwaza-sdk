@@ -4,6 +4,29 @@ Versions follow semver. Published to npm as a standalone package
 (`@kamiwaza-ai/extensions-lib`) and versioned independently from
 `kamiwaza-sdk`.
 
+## [0.4.1] — 2026-06-14 (ENG-6911)
+
+### Fixed
+
+* **`SessionProvider.logout()` now navigates to the platform front-channel
+  logout URL.** It previously read only `redirect_url` (→ `/logged-out`)
+  and never visited core's front-channel GET — the only endpoint that
+  clears the auth-gateway / Keycloak SSO cookies and ends the SSO session.
+  Extensions using the default `SessionProvider` therefore "logged out"
+  but silently re-authenticated on the next visit (same root cause as the
+  Workroom Manager bug fixed in the Python `kamiwaza-extensions-lib`
+  0.4.1). `logout()` now prefers `front_channel_logout_url` from the
+  logout response when present, falling back to the existing
+  `redirect_url` → logged-out behavior.
+* New exported helper `isTrustedFrontChannelUrl(url)` validates the
+  backend-provided front-channel URL. Unlike `isSafeRedirect`, it permits
+  a different origin than the app (the platform API host may differ from
+  the app host — e.g. split origins under `kz-ext dev local --auth`),
+  since the URL is produced by the extension's own backend and core
+  validates the embedded `redirect_uri` against its allowed hosts. It
+  still rejects non-http(s) schemes (`javascript:`, `data:`) and
+  protocol-relative URLs.
+
 ## [0.4.0] — 2026-04-30 (ENG-4318)
 
 ### Added

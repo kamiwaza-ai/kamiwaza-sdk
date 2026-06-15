@@ -1,7 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import React, { useEffect } from "react";
 import { render, waitFor, act } from "@testing-library/react";
-import { resolveLogoutRedirectTarget, SessionProvider } from "../src/client/SessionProvider";
+import {
+    isTrustedFrontChannelUrl,
+    resolveLogoutRedirectTarget,
+    SessionProvider,
+} from "../src/client/SessionProvider";
 import { useSession } from "../src/client/useSession";
 
 describe("SessionProvider logout redirect selection", () => {
@@ -24,6 +28,131 @@ describe("SessionProvider logout redirect selection", () => {
 
     it("uses the root logged-out page when no base path is present", () => {
         expect(resolveLogoutRedirectTarget("", {})).toBe("/logged-out");
+    });
+});
+
+describe("isTrustedFrontChannelUrl", () => {
+    it("accepts an absolute https platform URL on any origin", () => {
+        // Cross-origin to the app: the front-channel endpoint lives on the
+        // platform API host, which may differ from the app host.
+        expect(
+            isTrustedFrontChannelUrl(
+                "https://cluster.test/api/auth/logout/front-channel?redirect_uri=x"
+            )
+        ).toBe(true);
+    });
+
+    it("accepts a plain http absolute URL (dev-local split origin)", () => {
+        expect(
+            isTrustedFrontChannelUrl("http://localhost:8000/api/auth/logout/front-channel")
+        ).toBe(true);
+    });
+
+    it("accepts a safe relative path", () => {
+        expect(isTrustedFrontChannelUrl("/api/auth/logout/front-channel")).toBe(true);
+    });
+
+    it("rejects protocol-relative URLs", () => {
+        expect(isTrustedFrontChannelUrl("//evil.example.com/logout")).toBe(false);
+    });
+
+    it("rejects javascript: and empty values", () => {
+        expect(isTrustedFrontChannelUrl("javascript:alert(1)")).toBe(false);
+        expect(isTrustedFrontChannelUrl("")).toBe(false);
+    });
+});
+
+describe("SessionProvider logout navigation", () => {
+    let fetchSpy: ReturnType<typeof vi.fn>;
+    let assignSpy: ReturnType<typeof vi.fn>;
+    let originalLocation: Location;
+
+    const ANON_SESSION = {
+        user_id: null,
+        name: "Anonymous",
+        roles: [],
+        is_authenticated: false,
+        expires_at: null,
+    };
+
+    beforeEach(() => {
+        fetchSpy = vi.fn();
+        vi.stubGlobal("fetch", fetchSpy);
+        // App is served from a different origin than the platform API host,
+        // so the front-channel URL is cross-origin — exactly the case the
+        // same-origin guard would wrongly reject.
+        assignSpy = vi.fn();
+        originalLocation = window.location;
+        Object.defineProperty(window, "location", {
+            configurable: true,
+            value: { origin: "https://app.cluster.test", assign: assignSpy },
+        });
+    });
+
+    afterEach(() => {
+        vi.unstubAllGlobals();
+        Object.defineProperty(window, "location", {
+            configurable: true,
+            value: originalLocation,
+        });
+    });
+
+    function mockLogoutResponse(body: Record<string, unknown>) {
+        fetchSpy.mockImplementation((_url: string, init?: RequestInit) => {
+            const payload = init?.method === "POST" ? body : ANON_SESSION;
+            return Promise.resolve(
+                new Response(JSON.stringify(payload), {
+                    status: 200,
+                    headers: { "content-type": "application/json" },
+                })
+            );
+        });
+    }
+
+    function CaptureLogout(props: { onReady: (logout: () => Promise<void>) => void }) {
+        const ctx = useSession();
+        useEffect(() => {
+            if (!ctx.loading) props.onReady(ctx.logout);
+        }, [ctx.loading]);
+        return null;
+    }
+
+    async function renderAndLogout(): Promise<void> {
+        let logoutFn: (() => Promise<void>) | undefined;
+        await act(async () => {
+            render(
+                <SessionProvider refreshInterval={0}>
+                    <CaptureLogout onReady={(l) => (logoutFn = l)} />
+                </SessionProvider>
+            );
+        });
+        await waitFor(() => expect(logoutFn).toBeTruthy());
+        await act(async () => {
+            await logoutFn!();
+        });
+    }
+
+    it("navigates to the cross-origin front-channel logout URL (ENG-6911)", async () => {
+        const frontChannel =
+            "https://cluster.test/api/auth/logout/front-channel?redirect_uri=https%3A%2F%2Fapp.cluster.test%2F";
+        mockLogoutResponse({
+            front_channel_logout_url: frontChannel,
+            // Legacy fields the old client used — must NOT win over front-channel.
+            logout_url: "https://cluster.test/api/auth/logout",
+            redirect_url: "/logged-out",
+        });
+
+        await renderAndLogout();
+
+        expect(assignSpy).toHaveBeenCalledWith(frontChannel);
+    });
+
+    it("falls back to redirect_url when no front-channel URL is present", async () => {
+        mockLogoutResponse({ redirect_url: "/logged-out" });
+
+        await renderAndLogout();
+
+        expect(assignSpy).toHaveBeenCalledWith("/logged-out");
     });
 });
 
