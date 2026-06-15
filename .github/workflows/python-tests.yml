@@ -9,6 +9,14 @@ on:
       - 'uv.lock'
       - 'tests/**'
       - '.github/workflows/python-tests.yml'
+  push:
+    branches: [main, develop]
+    paths:
+      - '**.py'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'tests/**'
+      - '.github/workflows/python-tests.yml'
 
 permissions:
   contents: read
