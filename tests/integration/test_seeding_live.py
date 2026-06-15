@@ -13,7 +13,9 @@ from uuid import uuid4
 
 import pytest
 
+from kamiwaza_sdk.exceptions import APIError
 from kamiwaza_sdk.seeding import scoped_client_for_workroom
+from tests.integration.test_context_live import _is_workroom_binding_unavailable
 
 pytestmark = [pytest.mark.integration, pytest.mark.live]
 
@@ -32,7 +34,14 @@ def test_workroom_create_enter_scopes_a_client(live_write_client):
     name = f"seed-probe-{uuid4().hex[:8]}"
     workroom = live_write_client.workrooms.create(name=name, workroom_type="persistent")
     try:
-        scoped = scoped_client_for_workroom(live_write_client, workroom.id)
+        try:
+            scoped = scoped_client_for_workroom(live_write_client, workroom.id)
+        except APIError as exc:
+            if _is_workroom_binding_unavailable(exc):
+                pytest.skip(
+                    "Workrooms enter binding is unavailable; skipping scoped seeding client live test"
+                )
+            raise
         # Either a reminted-token client or a graceful fall back to the parent.
         assert scoped is not None
     finally:

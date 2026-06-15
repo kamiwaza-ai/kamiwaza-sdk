@@ -1,0 +1,39 @@
+# Seeder image for the nightly UAT-box seeding step.
+#
+# Self-contained delivery of the `kamiwaza-seed` CLI: `pip install .` installs
+# the SDK and its console scripts (kamiwaza-seed, including the `login`
+# subcommand) and resolves the kamiwaza-extensions-lib dependency from PyPI.
+# The build VM pulls this from GHCR, bundles it, and it relocates into the
+# in-cluster local registry under the org's `<registry>/images/seeder:<tag>`
+# rule — no clone+pip/venv on the box.
+#
+# amd64 only: CI install boxes are x86_64 RHEL9/Ubuntu. The companion workflow
+# builds for linux/amd64; arm64 is deferred until a consumer needs it.
+#
+# Build context is the repo root; copied paths are scoped by
+# Dockerfile.seeder.dockerignore so the shared root .dockerignore (which
+# blocks everything for the echo-check build) does not apply here. BuildKit
+# (CI) auto-detects that sibling ignore file; podman/buildah does not, so
+# local podman builds must pass `--ignorefile Dockerfile.seeder.dockerignore`.
+FROM python:3.12-slim
+
+# Non-root runtime.
+RUN groupadd -r -g 1001 seeder \
+    && useradd -r -u 1001 -g seeder -d /app seeder
+
+WORKDIR /app
+
+# Only the source needed to build the wheel. kamiwaza-extensions-lib is a
+# declared dependency resolved from PyPI (pip ignores the uv workspace source),
+# so the in-repo workspace member is not copied.
+COPY pyproject.toml README.md LICENSE MANIFEST.in ./
+COPY kamiwaza_sdk/ ./kamiwaza_sdk/
+COPY kamiwaza_client/ ./kamiwaza_client/
+COPY kamiwaza_extensions/ ./kamiwaza_extensions/
+
+RUN pip install --no-cache-dir .
+
+USER 1001
+
+ENTRYPOINT ["kamiwaza-seed"]
+CMD ["--help"]

@@ -130,6 +130,7 @@ testpaths = ["tests"]
 pythonpath = ["."]
 markers = [
     "unit: fast, deterministic tests that require no external services",
+    "asyncio: async tests requiring pytest-asyncio",
     "contract: schema/contract tests with recorded HTTP interactions",
     "integration: tests with local Docker/MinIO dependencies",
     "live: tests that talk to a running Kamiwaza deployment",
