@@ -151,9 +151,17 @@ def _ext(name, workroom_id, *, external=KAIZEN_URL):
 
 
 def _client_listing(extensions):
-    return SimpleNamespace(
-        extensions=SimpleNamespace(list_extensions=lambda: list(extensions))
-    )
+    # Record the workroom_id the resolver scopes the listing with. The platform
+    # only lists a workroom's extensions to a caller that sends X-Workroom-Id, so
+    # a resolver that drops the scope (the bug this guards) must fail loudly.
+    client = SimpleNamespace(seen_workroom_ids=[])
+
+    def list_extensions(workroom_id=None):
+        client.seen_workroom_ids.append(workroom_id)
+        return list(extensions)
+
+    client.extensions = SimpleNamespace(list_extensions=list_extensions)
+    return client
 
 
 def test_resolve_base_url_matches_workroom_by_base_name_and_id():
@@ -168,6 +176,9 @@ def test_resolve_base_url_matches_workroom_by_base_name_and_id():
     )
 
     assert resolve_base_url(client, "kaizen", workroom_id="wr-A") == KAIZEN_URL
+    # The listing MUST be scoped to the workroom (X-Workroom-Id); without it the
+    # platform returns only global extensions and the match silently misses.
+    assert client.seen_workroom_ids == ["wr-A"]
 
 
 def test_resolve_base_url_workroom_no_match_raises():
@@ -245,7 +256,7 @@ def test_wait_for_base_url_workroom_retries_until_listed(monkeypatch):
     # First poll: workroom has no Kaizen yet. Second poll: it's listed and ready.
     rounds = [[], [_ext("kaizen-4f8b3ae1", "wr-A")]]
 
-    def list_extensions():
+    def list_extensions(workroom_id=None):
         return rounds.pop(0)
 
     client = SimpleNamespace(

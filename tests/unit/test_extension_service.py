@@ -14,7 +14,6 @@ from kamiwaza_sdk.schemas.extensions import (
     ImagePatch,
     PatchExtension,
     PatchServiceSpec,
-    ServiceStatusDetail,
 )
 from kamiwaza_sdk.services.extensions import ExtensionService
 
@@ -69,6 +68,28 @@ def test_list_extensions():
     assert all(isinstance(e, Extension) for e in result)
     assert result[0].name == "ext-a"
     assert result[1].type == "tool"
+
+
+def test_list_extensions_scopes_to_workroom_with_header():
+    # The fix: workroom_id is translated into the X-Workroom-Id header on the
+    # GET, because the platform scopes the listing by that header. Without it the
+    # resolver only ever sees global extensions (the ENG-7048 bug).
+    client = DummyClient({("GET", "/extensions"): []})
+    service = ExtensionService(client)
+
+    service.list_extensions(workroom_id="wr-A")
+
+    assert client.calls[-1][2]["headers"] == {"X-Workroom-Id": "wr-A"}
+
+
+def test_list_extensions_without_workroom_sends_no_header():
+    # Backward compatible: existing no-arg callers must not send the header.
+    client = DummyClient({("GET", "/extensions"): []})
+    service = ExtensionService(client)
+
+    service.list_extensions()
+
+    assert "headers" not in client.calls[-1][2]
 
 
 def test_list_extensions_empty():
