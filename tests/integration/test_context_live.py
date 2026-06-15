@@ -45,6 +45,27 @@ def _context_service(live_kamiwaza_client) -> ContextService:
     return service
 
 
+def _is_workroom_binding_unavailable(error: APIError) -> bool:
+    """Return True only for retryable Workrooms enter binding outages."""
+    if error.status_code != 503:
+        return False
+
+    payload = error.response_data
+    if not isinstance(payload, dict):
+        return False
+
+    detail = payload.get("detail")
+    if detail == "workroom_binding_unavailable":
+        return True
+    if not isinstance(detail, dict):
+        return False
+
+    structured = detail.get("error")
+    if not isinstance(structured, dict):
+        return False
+    return structured.get("class") == "binding_unavailable"
+
+
 def _wait_for_vectordb_ready(
     service: ContextService,
     vectordb_id: str,
@@ -342,15 +363,22 @@ def session_workroom(
         description="Ephemeral workroom for SDK context live tests",
     )
     workroom_id = str(workroom.id)
+    did_enter = False
     try:
-        entered = workrooms.enter(workroom_id)
-        assert str(entered.workroom_id) == workroom_id
+        try:
+            entered = workrooms.enter(workroom_id)
+            assert str(entered.workroom_id) == workroom_id
+            did_enter = True
+        except APIError as exc:
+            if not _is_workroom_binding_unavailable(exc):
+                raise
         yield workroom_id
     finally:
-        try:
-            workrooms.leave()
-        except (APIError, ValidationError):
-            pass
+        if did_enter:
+            try:
+                workrooms.leave()
+            except (APIError, ValidationError):
+                pass
         # delete() raises NotFoundError (a sibling of APIError, not a subclass)
         # when the workroom is already gone, so catch both to keep teardown
         # best-effort -- matching the sibling test_workroom_isolation_live.py.
