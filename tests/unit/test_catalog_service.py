@@ -153,3 +153,69 @@ def test_catalog_service_normalizes_location_to_path(dummy_client):
 
     assert datasets[0].properties["path"] == "s3://bucket/key"
     assert "path" not in raw_properties, "original properties dict should remain untouched"
+
+
+def test_dataset_client_list_filters_locally_after_query_500():
+    class QueryFallbackClient:
+        def __init__(self):
+            self._recent_datasets = {
+                "urn:li:dataset:(file,sdk-dataset-1,PROD)": 1.0,
+            }
+            self.calls = []
+
+        def get(self, path, **kwargs):
+            self.calls.append((path, kwargs))
+            if kwargs.get("params") == {"query": "sdk-dataset"}:
+                raise APIError("DataHub search failed", status_code=500)
+            if kwargs.get("params") == {
+                "urn": "urn:li:dataset:(file,sdk-dataset-1,PROD)"
+            }:
+                return {
+                    "urn": "urn:li:dataset:(file,sdk-dataset-1,PROD)",
+                    "name": "sdk-dataset-1",
+                    "platform": "file",
+                    "environment": "PROD",
+                    "tags": [],
+                    "properties": {},
+                }
+            raise AssertionError(f"Unexpected call: {path} {kwargs}")
+
+    client = QueryFallbackClient()
+    datasets = DatasetClient(client).list(query="sdk-dataset")
+
+    assert [dataset.name for dataset in datasets] == ["sdk-dataset-1"]
+    assert client.calls == [
+        ("/catalog/datasets/", {"params": {"query": "sdk-dataset"}}),
+        (
+            "/catalog/datasets/by-urn",
+            {"params": {"urn": "urn:li:dataset:(file,sdk-dataset-1,PROD)"}},
+        ),
+    ]
+
+
+def test_secret_client_list_uses_recent_secret_after_query_500():
+    class QueryFallbackClient:
+        def __init__(self):
+            self._recent_secrets = {"urn:li:dataHubSecret:sdk-secret-1": 1.0}
+            self.calls = []
+
+        def get(self, path, **kwargs):
+            self.calls.append((path, kwargs))
+            if kwargs.get("params") == {"query": "sdk-secret"}:
+                raise APIError("DataHub search failed", status_code=500)
+            if path == "/catalog/secrets/v2/urn:li:dataHubSecret:sdk-secret-1":
+                return {
+                    "urn": "urn:li:dataHubSecret:sdk-secret-1",
+                    "name": "sdk-secret-1",
+                    "owner": "urn:li:corpuser:demo",
+                }
+            raise AssertionError(f"Unexpected call: {path} {kwargs}")
+
+    client = QueryFallbackClient()
+    secrets = SecretClient(client).list(query="sdk-secret")
+
+    assert [secret.name for secret in secrets] == ["sdk-secret-1"]
+    assert client.calls == [
+        ("/catalog/secrets/", {"params": {"query": "sdk-secret"}}),
+        ("/catalog/secrets/v2/urn:li:dataHubSecret:sdk-secret-1", {}),
+    ]

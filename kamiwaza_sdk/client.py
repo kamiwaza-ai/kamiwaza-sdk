@@ -223,6 +223,7 @@ class KamiwazaClient:
         self.base_url = resolved_base_url.rstrip("/")
         self.session = requests.Session()
         self._recent_datasets: "OrderedDict[str, float]" = OrderedDict()
+        self._recent_secrets: "OrderedDict[str, float]" = OrderedDict()
 
         # TLS verification: explicit kwargs > env vars > default True.
         # ca_bundle is sugar for verify=<path>; wins over verify when both.
@@ -313,6 +314,23 @@ class KamiwazaClient:
             self._prune_recent_datasets(now)
             return False
         return True
+
+    def _note_recent_secret_change(self, secret_urn: str) -> None:
+        """Mark a secret as recently created/updated for eventual-consistency retries."""
+        if not isinstance(secret_urn, str) or not secret_urn:
+            return
+        now = time.monotonic()
+        self._recent_secrets[secret_urn] = now
+        self._recent_secrets.move_to_end(secret_urn)
+        cutoff = now - self._RECENT_DATASET_TTL_SECONDS
+        while self._recent_secrets:
+            oldest_urn, oldest_ts = next(iter(self._recent_secrets.items()))
+            if (
+                oldest_ts >= cutoff
+                and len(self._recent_secrets) <= self._RECENT_DATASET_MAX
+            ):
+                break
+            self._recent_secrets.popitem(last=False)
 
     def _prepare_request_kwargs(
         self, skip_auth: bool, kwargs: dict[str, Any]
