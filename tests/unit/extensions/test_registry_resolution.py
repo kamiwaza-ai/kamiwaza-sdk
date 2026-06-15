@@ -43,14 +43,12 @@ def _clear_docker_info_cache():
 
 @pytest.fixture(autouse=True)
 def _hermetic_core_config():
-    """Default: nothing advertised in core-config, so resolution never shells
-    out to a live ``kubectl``/cluster. Cases that exercise a core-config or
-    extension registry re-patch these with values (the decorator wins)."""
+    """Default the model-registry lookup to "unconfigured" for this module so
+    resolution never shells out to a live ``kubectl``/cluster. (The extension
+    registry is stubbed suite-wide in ``conftest.py``.) Cases that exercise a
+    core-config value re-patch this (the decorator wins)."""
 
     with patch(
-        "kamiwaza_extensions.registry_resolution.detect_extension_registry",
-        return_value=None,
-    ), patch(
         "kamiwaza_extensions.registry_resolution.detect_core_config_registry",
         return_value=None,
     ):
