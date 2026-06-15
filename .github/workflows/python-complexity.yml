@@ -6,6 +6,11 @@ on:
     paths:
       - '**.py'
       - '.github/workflows/python-complexity.yml'
+  push:
+    branches: [main, develop]
+    paths:
+      - '**.py'
+      - '.github/workflows/python-complexity.yml'
 
 permissions:
   contents: read
@@ -15,7 +20,10 @@ jobs:
     name: Cyclomatic Complexity
     runs-on: ubuntu-latest
     env:
-      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      # On push events there is no pull_request context, so base.sha is empty;
+      # fall back to the pre-push tip (github.event.before) so the changed-file
+      # diff resolves on both event types.
+      BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
 
     steps:
       - uses: actions/checkout@v4

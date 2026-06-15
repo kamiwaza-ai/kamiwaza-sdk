@@ -39,6 +39,31 @@ export function resolveLogoutRedirectTarget(base: string, data: { redirect_url?:
 }
 
 /**
+ * Validate a backend-provided `front_channel_logout_url` before navigating.
+ *
+ * Unlike {@link isSafeRedirect}, this does NOT require same-origin: the
+ * front-channel logout endpoint is the platform's own (`/api/auth/logout/
+ * front-channel`) and may legitimately live on a different origin than the
+ * app — e.g. a split app/API origin under `kz-ext dev local --auth`, or any
+ * deployment where the platform API host differs from the app host. The URL
+ * is produced by the extension's own backend (core validates the embedded
+ * `redirect_uri` against its allowed hosts), so it is trusted as to origin.
+ * We still reject non-http(s) schemes (`javascript:`, `data:`) and
+ * protocol-relative URLs that could smuggle an off-platform navigation.
+ */
+export function isTrustedFrontChannelUrl(url: string): boolean {
+    if (!url) return false;
+    // Safe relative path (but not protocol-relative //evil.com).
+    if (url.startsWith("/")) return !url.startsWith("//");
+    try {
+        const parsed = new URL(url, window.location.origin);
+        return parsed.protocol === "https:" || parsed.protocol === "http:";
+    } catch {
+        return false;
+    }
+}
+
+/**
  * Provides session state to the component tree.
  *
  * Fetches the session from the backend on mount and periodically
@@ -119,6 +144,22 @@ export function SessionProvider({
             });
             if (res.ok) {
                 const data = await res.json();
+                // Prefer the platform front-channel logout URL — the only
+                // target that clears the auth-gateway / Keycloak SSO cookies
+                // and ends the SSO session. Navigating anywhere else (e.g.
+                // redirect_url → /logged-out) leaves the SSO session alive, so
+                // the next visit silently re-authenticates (ENG-6911). It is a
+                // backend-provided absolute platform URL and may cross origin
+                // to the API host, so it bypasses the same-origin guard below
+                // (validated by isTrustedFrontChannelUrl instead).
+                const frontChannel =
+                    typeof data.front_channel_logout_url === "string"
+                        ? data.front_channel_logout_url
+                        : "";
+                if (frontChannel && isTrustedFrontChannelUrl(frontChannel)) {
+                    navigateBrowser(frontChannel);
+                    return;
+                }
                 // Never GET-navigate to logout_url — it points at a POST endpoint.
                 const target = resolveLogoutRedirectTarget(base, data);
                 if (target && isSafeRedirect(target)) {
