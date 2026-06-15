@@ -219,11 +219,35 @@ def resolve_push_registry(
         )
 
     if not is_loopback_registry(image_registry):
-        # Already a VM host alias (e.g. host.docker.internal:5001, the extension
-        # registry the installer advertises) or a real hostname: the build
-        # engine pushes to it as-is. For the docker-in-VM alias this is the only
-        # correct target -- pushing to 127.0.0.1 would hit the *VM's* loopback,
-        # not the host registry (ENG-7051).
+        # A VM host alias advertised by the platform (e.g. host.docker.internal:5001,
+        # the extension registry) is engine-specific: the docker daemon-in-VM
+        # resolves host.docker.internal, but a podman host-CLI push needs
+        # host.containers.internal. When the advertised alias doesn't match the
+        # active push engine, remap to the engine's alias so the push target
+        # stays reachable -- the embedded image ref keeps the advertised host
+        # (the node pulls via its certs.d), and the same registry is reachable
+        # under either alias (ENG-7051, Codex review). A real hostname has no
+        # alias engine and is returned unchanged.
+        alias_engine = push_registry_alias_engine(image_registry)
+        if (
+            alias_engine is not None
+            and alias_engine != engine
+            and build_engine_runs_in_vm()
+        ):
+            if engine == "podman" and running_podman_machine_name() is not None:
+                return (
+                    replace_registry_host(image_registry, PODMAN_VM_HOST_ALIAS),
+                    BUILD_VM_LOOPBACK_ALIAS_SOURCE,
+                )
+            if engine == "docker":
+                return (
+                    replace_registry_host(image_registry, DOCKER_VM_HOST_ALIAS),
+                    BUILD_VM_LOOPBACK_ALIAS_SOURCE,
+                )
+            # podman engine without a running machine: the host CLI resolves
+            # neither VM alias. Leave the registry as-is so
+            # validate_push_registry_for_engine surfaces an actionable error
+            # rather than silently pushing to an unreachable host.
         return image_registry, "image registry"
 
     if not build_engine_runs_in_vm():

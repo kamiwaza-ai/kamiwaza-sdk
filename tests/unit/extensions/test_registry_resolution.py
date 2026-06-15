@@ -412,6 +412,36 @@ class TestExtensionRegistryResolution:
     )
     @patch(
         "kamiwaza_extensions.registry_resolution.build_engine_runs_in_vm",
+        return_value=True,
+    )
+    @patch(
+        "kamiwaza_extensions.registry_resolution.running_podman_machine_name",
+        return_value="podman-machine-default",
+    )
+    def test_extension_registry_docker_alias_remapped_for_podman_push(
+        self, _mock_machine, _mock_vm, _mock_ext
+    ):
+        # The advertised extension registry is the *docker* VM alias, but a
+        # podman push (e.g. --no-build on an insecure connection with a running
+        # machine) must target the podman alias. The embedded image ref keeps
+        # the advertised docker alias (the node pulls via certs.d); only the
+        # push target is remapped, so the engine-match validation passes.
+        resolution = resolve_dev_registries(
+            _conn(), kind_registry_detector=lambda: None, push_engine="podman"
+        )
+
+        assert resolution.image_registry == "host.docker.internal:5001"
+        assert resolution.push_registry == "host.containers.internal:5001"
+        assert resolution.push_split is True
+        # The remapped push target validates cleanly against the podman engine.
+        validate_push_registry_for_engine(resolution.push_registry, "podman")
+
+    @patch(
+        "kamiwaza_extensions.registry_resolution.detect_extension_registry",
+        return_value="host.docker.internal:5001",
+    )
+    @patch(
+        "kamiwaza_extensions.registry_resolution.build_engine_runs_in_vm",
         return_value=False,
     )
     def test_extension_registry_not_split_when_build_engine_native(
