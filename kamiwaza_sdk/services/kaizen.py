@@ -82,7 +82,7 @@ def _find_workroom_extension(client, extension_name: str, workroom_id):
     prefix = f"{extension_name}-"
     matches = [
         ext
-        for ext in client.extensions.list_extensions()
+        for ext in client.extensions.list_extensions(workroom_id=workroom_id)
         if str(getattr(ext, "workroom_id", "")) == str(workroom_id)
         and ext.name.startswith(prefix)
     ]
