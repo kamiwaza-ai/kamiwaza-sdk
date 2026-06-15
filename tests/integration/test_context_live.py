@@ -446,20 +446,23 @@ def test_context_required_llm_available(context_required_llm: str) -> None:
     assert context_required_llm
 
 
-def test_context_vectordb_create_without_workroom_requires_scope(
+def test_context_vectordb_create_without_workroom_uses_global_scope(
     live_kamiwaza_client,
 ) -> None:
-    """VectorDB creation is room-scoped and requires a non-Global workroom."""
+    """No-workroom VectorDB creation is allowed under the Global/default scope."""
     service = _context_service(live_kamiwaza_client)
+    vectordb_id: str | None = None
 
-    with pytest.raises(APIError) as exc_info:
-        service.create_vectordb(
+    try:
+        created = service.create_vectordb(
             name=f"sdk-context-vdb-global-{uuid4().hex[:8]}",
             engine="milvus",
         )
-
-    assert exc_info.value.status_code == 400
-    assert _api_error_code(exc_info.value) == "workroom_scope_required"
+        vectordb_id = created["id"]
+        assert vectordb_id
+    finally:
+        if vectordb_id:
+            _safe_delete_vectordb(service, vectordb_id)
 
 
 # A dedicated non-Global VectorDB *instance* lifecycle test (create/scale/

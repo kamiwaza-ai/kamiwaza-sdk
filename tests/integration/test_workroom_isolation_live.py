@@ -91,6 +91,23 @@ def _list_extensions(sdk: KamiwazaClient, workroom_id: str) -> list:
     return resp if isinstance(resp, list) else resp.get("items", [])
 
 
+def _resource_workroom_id(resource) -> str | None:
+    return (
+        resource.get("workroom_id")
+        if isinstance(resource, dict)
+        else getattr(resource, "workroom_id", None)
+    )
+
+
+def _assert_only_own_or_global(resources: list, own_workroom_id: str, label: str) -> None:
+    """Workspace views may include shared Global resources, never other workrooms."""
+    allowed = {own_workroom_id, GLOBAL_WORKROOM_ID}
+    for resource in resources:
+        wid = _resource_workroom_id(resource)
+        if wid is not None:
+            assert wid in allowed, f"{label} sees foreign non-Global resource: {wid}"
+
+
 # ---------------------------------------------------------------------------
 # 1. WORKROOM CRUD ISOLATION
 # ---------------------------------------------------------------------------
@@ -150,36 +167,20 @@ class TestSelfAccess:
     """Workspace A sees its own resources; B sees its own."""
 
     def test_connectors_scoped_to_own_workroom(self, sdk, workroom_a, workroom_b):
-        """Connectors listed with A's header return only A's connectors."""
+        """Connectors listed with A's header return only A or shared Global connectors."""
         a_connectors = _list_connectors(sdk, str(workroom_a.id))
         b_connectors = _list_connectors(sdk, str(workroom_b.id))
 
-        a_wids = {c.get("workroom_id") for c in a_connectors}
-        b_wids = {c.get("workroom_id") for c in b_connectors}
-
-        # Every connector returned for A must belong to A (or be empty)
-        for wid in a_wids:
-            if wid is not None:
-                assert wid == str(workroom_a.id), f"A sees non-A connector: {wid}"
-
-        for wid in b_wids:
-            if wid is not None:
-                assert wid == str(workroom_b.id), f"B sees non-B connector: {wid}"
+        _assert_only_own_or_global(a_connectors, str(workroom_a.id), "A")
+        _assert_only_own_or_global(b_connectors, str(workroom_b.id), "B")
 
     def test_extensions_scoped_to_own_workroom(self, sdk, workroom_a, workroom_b):
-        """Extensions listed with A's header return only A's extensions."""
+        """Extensions listed with A's header return only A or shared Global extensions."""
         a_exts = _list_extensions(sdk, str(workroom_a.id))
         b_exts = _list_extensions(sdk, str(workroom_b.id))
 
-        for ext in a_exts:
-            wid = ext.get("workroom_id") if isinstance(ext, dict) else getattr(ext, "workroom_id", None)
-            if wid is not None:
-                assert wid == str(workroom_a.id), f"A sees non-A extension: {wid}"
-
-        for ext in b_exts:
-            wid = ext.get("workroom_id") if isinstance(ext, dict) else getattr(ext, "workroom_id", None)
-            if wid is not None:
-                assert wid == str(workroom_b.id), f"B sees non-B extension: {wid}"
+        _assert_only_own_or_global(a_exts, str(workroom_a.id), "A")
+        _assert_only_own_or_global(b_exts, str(workroom_b.id), "B")
 
 
 # ---------------------------------------------------------------------------
@@ -205,7 +206,7 @@ class TestCrossWorkspaceBlocked:
         """B's extension listing must not include any of A's extensions."""
         b_exts = _list_extensions(sdk, str(workroom_b.id))
         for ext in b_exts:
-            wid = ext.get("workroom_id") if isinstance(ext, dict) else getattr(ext, "workroom_id", None)
+            wid = _resource_workroom_id(ext)
             assert wid != str(workroom_a.id), "B sees A's extension -- cross-workspace leak!"
 
     def test_workroom_export_only_shows_own_resources(self, sdk, workroom_a):
@@ -234,7 +235,7 @@ class TestGlobalCannotSeeWorkspaces:
         """Extensions listed under Global must not include B's extensions."""
         global_exts = _list_extensions(sdk, GLOBAL_WORKROOM_ID)
         for ext in global_exts:
-            wid = ext.get("workroom_id") if isinstance(ext, dict) else getattr(ext, "workroom_id", None)
+            wid = _resource_workroom_id(ext)
             assert wid != str(workroom_b.id), \
                 "Global sees Workspace B's extension -- Global->Workspace leak!"
 
