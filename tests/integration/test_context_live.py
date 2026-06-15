@@ -27,6 +27,8 @@ DEFAULT_WORKROOM_ID = os.getenv(
     "KAMIWAZA_CONTEXT_WORKROOM_ID",
     ContextService.DEFAULT_WORKROOM_ID,
 )
+WORKROOM_BINDING_UNAVAILABLE_DETAIL = "workroom_binding_unavailable"
+WORKROOM_BINDING_UNAVAILABLE_CLASS = "binding_unavailable"
 TEST_VECTOR = [round(index * 0.01, 4) for index in range(1, 33)]
 
 
@@ -50,20 +52,22 @@ def _is_workroom_binding_unavailable(error: APIError) -> bool:
     if error.status_code != 503:
         return False
 
-    payload = error.response_data
+    payload = getattr(error, "response_data", None)
     if not isinstance(payload, dict):
         return False
 
     detail = payload.get("detail")
-    if detail == "workroom_binding_unavailable":
+    if detail == WORKROOM_BINDING_UNAVAILABLE_DETAIL:
         return True
     if not isinstance(detail, dict):
         return False
+    if detail.get("reason") == WORKROOM_BINDING_UNAVAILABLE_CLASS:
+        return True
 
     structured = detail.get("error")
     if not isinstance(structured, dict):
         return False
-    return structured.get("class") == "binding_unavailable"
+    return structured.get("class") == WORKROOM_BINDING_UNAVAILABLE_CLASS
 
 
 def _wait_for_vectordb_ready(
@@ -367,11 +371,15 @@ def session_workroom(
     try:
         try:
             entered = workrooms.enter(workroom_id)
-            assert str(entered.workroom_id) == workroom_id
             did_enter = True
+            assert str(entered.workroom_id) == workroom_id
         except APIError as exc:
             if not _is_workroom_binding_unavailable(exc):
                 raise
+            pytest.skip(
+                "Workrooms enter binding is unavailable; skipping room-scoped "
+                "Context live tests instead of silently passing the lifecycle seam"
+            )
         yield workroom_id
     finally:
         if did_enter:
