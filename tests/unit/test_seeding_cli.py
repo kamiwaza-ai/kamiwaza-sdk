@@ -24,6 +24,11 @@ class FakeClient:
     """A client whose service methods record their calls."""
 
     def __init__(self):
+        self.auth = SimpleNamespace(
+            login_with_password=RecordingService(
+                SimpleNamespace(access_token="tok-123")
+            )
+        )
         self.workrooms = SimpleNamespace(
             create=RecordingService(SimpleNamespace(id="wr-1"))
         )
@@ -50,6 +55,80 @@ class FakeClient:
 def _run(argv, client):
     rc = cli.main(argv, client_factory=lambda **_kw: client)
     return rc
+
+
+def test_login_json_output_reads_password_from_env(capsys, monkeypatch):
+    client = FakeClient()
+    monkeypatch.setenv("ADMIN_PW", "s3cret")
+
+    _run(["login", "--username", "admin", "--password-env", "ADMIN_PW"], client)
+
+    call = client.auth.login_with_password.calls[0]
+    # Username is positional; the password comes from the env var, not argv.
+    assert call["args"] == ("admin", "s3cret")
+    assert json.loads(capsys.readouterr().out) == {"access_token": "tok-123"}
+
+
+def test_login_raw_prints_bare_token(capsys, monkeypatch):
+    client = FakeClient()
+    monkeypatch.setenv("ADMIN_PW", "s3cret")
+
+    _run(["login", "--password-env", "ADMIN_PW", "--raw"], client)
+
+    # --raw emits just the token (no JSON, no trailing structure) for $(...) capture.
+    assert capsys.readouterr().out.strip() == "tok-123"
+    # Username defaults to "admin".
+    assert client.auth.login_with_password.calls[0]["args"][0] == "admin"
+
+
+def test_login_empty_password_env_exits(monkeypatch):
+    client = FakeClient()
+    monkeypatch.setenv("ADMIN_PW", "")
+
+    with pytest.raises(SystemExit):
+        _run(["login", "--password-env", "ADMIN_PW"], client)
+
+    # Fail closed: an empty password must never reach the login call.
+    assert client.auth.login_with_password.calls == []
+
+
+def test_login_missing_password_env_arg_exits():
+    # --password-env is required; omitting it must fail rather than prompt.
+    with pytest.raises(SystemExit):
+        _run(["login", "--username", "admin"], FakeClient())
+
+
+def test_login_rejects_password_on_argv(monkeypatch):
+    # The password must never be accepted from argv. argparse abbreviation is
+    # disabled, so `--password` is an unrecognized flag (not a prefix alias for
+    # `--password-env`) and parsing fails before any login is attempted — even
+    # if a same-named env var happens to exist.
+    client = FakeClient()
+    monkeypatch.setenv("s3cret", "leaked")  # would be picked up if `--password` aliased
+
+    with pytest.raises(SystemExit):
+        _run(["login", "--password", "s3cret"], client)
+
+    assert client.auth.login_with_password.calls == []
+
+
+def test_secret_env_flags_reject_abbreviation(monkeypatch):
+    # Sibling sweep: the other secret-bearing subcommands disable abbreviation too,
+    # so `--credential` / `--llm-api-key` can't alias their `-env` forms.
+    monkeypatch.setenv("AWS_CRED", '{"auth_type":"iam"}')
+    monkeypatch.setenv("LLM_KEY", "sk-leaked")
+    parser = cli.build_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            ["register-external-model", "--protocol", "aws_bedrock", "--name", "n",
+             "--region", "r", "--model-id", "m", "--credential", "AWS_CRED"]
+        )
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            ["create-agent", "--kaizen-base-url", "u", "--name", "n", "--model", "m",
+             "--llm-api-key", "LLM_KEY"]
+        )
 
 
 def test_create_workroom_count_suffixes_names(capsys):
