@@ -660,6 +660,14 @@ class TestDevRemoteBuildsAtCanonicalRefs:
                 "kamiwaza_extensions.registry_resolution._has_podman",
                 return_value=True,
             ),
+            # On macOS/Windows ``podman_push_available()`` gates on a running
+            # Podman machine; pin it so the engine choice doesn't depend on the
+            # host (ENG-7006 — without this, a host with no running machine
+            # falls back to 'docker' and the assertion below fails).
+            patch(
+                "kamiwaza_extensions.registry_resolution.running_podman_machine_name",
+                return_value="podman-machine-default",
+            ),
             patch(
                 "kamiwaza_extensions.dev_state.read_state",
                 return_value=prior_state,
