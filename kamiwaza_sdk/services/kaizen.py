@@ -13,14 +13,25 @@ platform honors this header. A workroom-scoped token is the durable fix
 (tracked for the nightly-seeding work).
 """
 
+import time
 from typing import Any, Dict, List, Optional, Union
 
+from ..exceptions import KamiwazaError, NotFoundError
 from ..schemas.kaizen import Agent, Conversation, LLMConfig
 from .base_service import BaseService
 
 # Kaizen route prefixes, relative to the extension's ingress root.
 _AGENTS_PATH = "api/agents/"
 _CONVERSATIONS_PATH = "api/conversations/"
+
+
+class AmbiguousExtensionError(KamiwazaError):
+    """More than one extension matched a workroom + base-name lookup.
+
+    A deterministic failure (a workroom should hold one instance of a given
+    extension), so callers must NOT retry it — unlike the transient "not visible
+    yet" / "no endpoint yet" states that resolve on a later poll.
+    """
 
 
 def _workroom_headers(workroom_id: Optional[Union[str, object]]) -> Dict[str, str]:
@@ -30,37 +41,148 @@ def _workroom_headers(workroom_id: Optional[Union[str, object]]) -> Dict[str, st
     return {"X-Workroom-Id": str(workroom_id)}
 
 
-def resolve_base_url(
-    client, extension_name: str = "kaizen", *, public: bool = False
-) -> str:
-    """Best-effort lookup of a Kaizen instance's ingress root from the platform.
-
-    Reads the extension's resolved endpoints. Raises ValueError when no endpoint
-    is published yet (extension still provisioning) — callers that already know
-    the URL should pass ``base_url`` directly instead.
-    """
-    extension = client.extensions.get_extension(extension_name)
+def _endpoint_from_extension(extension, *, public: bool) -> Optional[str]:
+    """Pull the ingress (or public) URL off an extension's endpoints, or None."""
     endpoints = getattr(extension, "endpoints", None)
-    candidates = []
-    if endpoints is not None:
-        # ``external`` is the ingress-reachable URL; some deployments instead
-        # surface ``public_api_url`` / ``api_url`` (extra fields). Prefer the
-        # public-facing field when ``public`` is set, else the ingress URL.
-        order = (
-            ("public_api_url", "api_url", "external")
-            if public
-            else ("external", "api_url", "public_api_url")
-        )
-        for attr in order:
-            value = getattr(endpoints, attr, None)
-            if value:
-                candidates.append(value)
-    if not candidates:
+    if endpoints is None:
+        return None
+    # ``external`` is the ingress-reachable URL; some deployments instead surface
+    # ``public_api_url`` / ``api_url`` (extra fields). Prefer the public-facing
+    # field when ``public`` is set, else the ingress URL.
+    order = (
+        ("public_api_url", "api_url", "external")
+        if public
+        else ("external", "api_url", "public_api_url")
+    )
+    for attr in order:
+        value = getattr(endpoints, attr, None)
+        if value:
+            return str(value).rstrip("/")
+    return None
+
+
+def _find_workroom_extension(client, extension_name: str, workroom_id):
+    """Find a workroom's extension by base name (the operator suffixes CR names).
+
+    The operator names a per-workroom CR ``<extension_name>-<hash>`` and stamps it
+    with its ``workroom_id``, so we match on both: the exact ``workroom_id`` (never
+    another workroom's instance) and the ``<extension_name>-`` prefix (the kaizen,
+    not milvus/omniparse). ``workroom_id`` is the strong discriminator; the
+    ambiguity guard below is the backstop if more than one ever matches — so the
+    prefix check doesn't need to over-anchor on the hash shape. Requires the client
+    to be scoped into the workroom — the platform only lists a workroom's
+    extensions to a caller scoped into it.
+
+    Raises:
+        ValueError: when no instance is visible yet (still provisioning) —
+            transient, callers may retry.
+        AmbiguousExtensionError: when more than one matches (a workroom should
+            hold one) — deterministic, callers must not retry.
+    """
+    prefix = f"{extension_name}-"
+    matches = [
+        ext
+        for ext in client.extensions.list_extensions()
+        if str(getattr(ext, "workroom_id", "")) == str(workroom_id)
+        and ext.name.startswith(prefix)
+    ]
+    if not matches:
         raise ValueError(
-            f"Extension '{extension_name}' has no published endpoint yet; "
+            f"No '{extension_name}' extension found in workroom '{workroom_id}' yet; "
             "wait for it to become ready or pass base_url explicitly."
         )
-    return str(candidates[0]).rstrip("/")
+    if len(matches) > 1:
+        names = ", ".join(sorted(m.name for m in matches))
+        raise AmbiguousExtensionError(
+            f"Multiple '{extension_name}' extensions in workroom '{workroom_id}' "
+            f"({names}); cannot pick one unambiguously."
+        )
+    return matches[0]
+
+
+def resolve_base_url(
+    client,
+    extension_name: str = "kaizen",
+    *,
+    workroom_id: Optional[Union[str, object]] = None,
+    public: bool = False,
+) -> str:
+    """Look up an extension's ingress root from the platform.
+
+    With ``workroom_id``, resolves a per-workroom extension by base name +
+    workroom (the operator suffixes the CR name, so an exact lookup misses it).
+    Without it, does an exact ``get_extension`` lookup (cluster-scoped
+    extensions). Raises ValueError when no endpoint is published yet (extension
+    still provisioning) — callers that already know the URL should pass
+    ``base_url`` directly instead.
+    """
+    if workroom_id is not None:
+        extension = _find_workroom_extension(client, extension_name, workroom_id)
+    else:
+        extension = client.extensions.get_extension(extension_name)
+    url = _endpoint_from_extension(extension, public=public)
+    if url is None:
+        raise ValueError(
+            f"Extension '{getattr(extension, 'name', extension_name)}' has no "
+            "published endpoint yet; wait for it to become ready or pass "
+            "base_url explicitly."
+        )
+    return url
+
+
+def wait_for_base_url(
+    client,
+    extension_name: str = "kaizen",
+    *,
+    workroom_id: Optional[Union[str, object]] = None,
+    public: bool = False,
+    timeout_seconds: float = 300.0,
+    poll_interval_seconds: float = 5.0,
+) -> str:
+    """Poll :func:`resolve_base_url` until the extension publishes its ingress.
+
+    Right after an install the ingress isn't resolvable yet: the extension isn't
+    visible yet (``NotFoundError`` / no workroom match) and/or its endpoints
+    aren't published (``ValueError``). Both are transient, so retry until one
+    resolves or ``timeout_seconds`` elapses. Mirrors
+    ``serving.wait_deployment_ready``'s wait contract. A deterministic
+    ``AmbiguousExtensionError`` is NOT retried — it propagates immediately rather
+    than burning the full timeout on something that will never resolve.
+
+    Args:
+        client: An authenticated client (workroom-scoped if the extension is).
+        extension_name: Catalog/base name of the extension (e.g. "kaizen").
+        workroom_id: When set, resolve the per-workroom instance by base name +
+            workroom (see :func:`resolve_base_url`).
+        public: Prefer the public-facing endpoint over the ingress URL.
+        timeout_seconds: Max time to wait before giving up.
+        poll_interval_seconds: Delay between attempts.
+
+    Returns:
+        The resolved ingress root (no trailing slash).
+
+    Raises:
+        TimeoutError: If no endpoint resolves within ``timeout_seconds``.
+    """
+    deadline = time.monotonic() + timeout_seconds
+    attempts = 0
+    while True:
+        attempts += 1
+        try:
+            return resolve_base_url(
+                client, extension_name, workroom_id=workroom_id, public=public
+            )
+        except (ValueError, NotFoundError) as exc:
+            last_err = exc
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError(
+                f"Extension '{extension_name}' ingress not resolvable after "
+                f"{timeout_seconds:g}s ({attempts} attempts): {last_err}"
+            )
+        # Cap the sleep at the remaining budget so the wait stays bounded even
+        # when poll_interval_seconds exceeds the time left.
+        time.sleep(min(poll_interval_seconds, remaining))
 
 
 class AgentService(BaseService):
