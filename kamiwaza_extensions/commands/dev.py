@@ -378,6 +378,10 @@ def run_dev_remote(
         compute_canonical_refs,
     )
     from kamiwaza_extensions.connections import ConnectionManager
+    from kamiwaza_extensions.dev_env_image_refs import (
+        build_image_ref_map,
+        rewrite_env_image_refs,
+    )
     from kamiwaza_extensions.deployment_poller import (
         DeploymentFailedError,
         DeploymentPoller,
@@ -663,6 +667,29 @@ def run_dev_remote(
         revision_tag=rev_tag,
         image_basename=info.image_basename,
     )
+
+    # ENG-7110: image refs embedded in env values are a parallel surface the
+    # compose transform doesn't rewrite. Kaizen's backend spawns agent
+    # sandbox pods dynamically from ``AGENT_SERVER_IMAGE``, whose compose
+    # default is the *released* agent tag this dev build never pushed —
+    # ImagePullBackOff, chat 500. Rewrite that ref (and the sandbox
+    # ``SANDBOX_ALLOWED_IMAGE_PREFIXES`` allowlist, in lockstep) to the
+    # dev-built agent ref — the dev analog of ENG-5260's publish-side fix.
+    # ``build_image_ref_map`` mirrors ImageBuilder's per-service ref choice,
+    # so the env ref equals exactly what was built and pushed (the profiled
+    # ``image-only`` agent resolves to the ``{registry}/{ext}-agent`` fallback
+    # path). Applied to both the K8s payload (bare refs, post-resolve) and
+    # the catalog overlay compose (``${VAR:-default}`` form).
+    env_ref_map = build_image_ref_map(
+        info.compose_data.get("services") or {},
+        canonical_refs,
+        registry=registry,
+        extension_name=info.name,
+        revision_tag=rev_tag,
+        image_basename=info.image_basename,
+    )
+    transformed = rewrite_env_image_refs(transformed, env_ref_map)
+    catalog_compose = rewrite_env_image_refs(catalog_compose, env_ref_map)
 
     # 5b. Resolve SDK override for build
     build_overrides = None
