@@ -253,6 +253,48 @@ class TestParsePorts:
         ports = PayloadBuilder._parse_ports([{"target": "not-a-number"}])
         assert ports == []
 
+    def test_short_form_postgres_not_named_http(self):
+        # Unnamed short-form postgres must not inherit "http": istio reads the
+        # Service port name to pick the L7 codec, and an "http" name makes the
+        # sidecar answer the postgres SSL handshake with an HTTP response,
+        # CrashLooping the client backend.
+        ports = PayloadBuilder._parse_ports(["5432"])
+        assert len(ports) == 1
+        assert ports[0].container_port == 5432
+        assert ports[0].name == "tcp-postgres"
+        assert ports[0].name != "http"
+
+    def test_short_form_non_primary_unknown_gets_tcp_port_name(self):
+        # First port keeps the historical "http" default (app frontends/backends
+        # speak HTTP); a secondary unknown port falls back to opaque TCP.
+        ports = PayloadBuilder._parse_ports(["8000", "5555"])
+        assert len(ports) == 2
+        assert ports[0].name == "http"
+        assert ports[1].container_port == 5555
+        assert ports[1].name == "tcp-port-5555"
+
+    def test_long_form_postgres_without_name_not_http(self):
+        ports = PayloadBuilder._parse_ports([{"target": 5432, "protocol": "tcp"}])
+        assert len(ports) == 1
+        assert ports[0].name == "tcp-postgres"
+        assert ports[0].name != "http"
+
+    def test_known_tcp_backends_never_named_http(self):
+        # Acceptance regression: no well-known non-HTTP backend port may be
+        # translated to the "http" name, regardless of position.
+        for port in (5432, 3306, 6379, 27017, 9200, 5672, 9092):
+            parsed = PayloadBuilder._parse_ports([str(port)])
+            assert len(parsed) == 1
+            assert parsed[0].name != "http"
+            assert parsed[0].name.startswith("tcp-")
+
+    def test_primary_unknown_port_still_http(self):
+        # An unknown primary port preserves the long-standing "http" default so
+        # app frontends/backends on non-standard ports keep working.
+        ports = PayloadBuilder._parse_ports(["7000"])
+        assert len(ports) == 1
+        assert ports[0].name == "http"
+
 
 class TestAnnotations:
     """ENG-3887 / §4.2.9 — DeployedImageAnnotation on the CRD payload."""

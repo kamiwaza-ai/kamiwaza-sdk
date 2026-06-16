@@ -9,7 +9,10 @@ import socket
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from kamiwaza_extensions.compose_ports import extract_container_port
+from kamiwaza_extensions.compose_ports import (
+    default_service_port_name,
+    extract_container_port,
+)
 from kamiwaza_sdk.schemas.extensions import (
     CreateExtension,
     ExtensionPort,
@@ -448,15 +451,20 @@ class PayloadBuilder:
 
         Accepts both short-form (``"19530"``, ``"19530/udp"``) and long-form
         compose-spec port entries (``{target, protocol, name, app_protocol}``).
-        For short-form the port name defaults to ``"http"`` — matches the
-        long-standing app/tool extension behavior. Long-form entries pass
-        ``name`` and ``app_protocol`` through to the K8s Service, which
-        istio reads for L7 protocol selection (ENG-5954).
+        Ports without a declared name get a protocol-aware default via
+        ``default_service_port_name`` — known non-HTTP backends (postgres,
+        redis, ...) become ``tcp-*`` so istio treats them as opaque TCP rather
+        than applying the HTTP codec. The first port is treated as primary and
+        keeps the historical ``"http"`` default when its number is unknown.
+        Long-form entries pass ``name`` and ``app_protocol`` through to the K8s
+        Service, which istio reads for L7 protocol selection.
         """
-        result = []
+        result: List[ExtensionPort] = []
         for p in ports:
+            # The first successfully-parsed port is the primary (app) port.
+            is_primary = not result
             if isinstance(p, dict):
-                parsed = PayloadBuilder._parse_port_dict(p)
+                parsed = PayloadBuilder._parse_port_dict(p, is_primary=is_primary)
                 if parsed is not None:
                     result.append(parsed)
                 continue
@@ -470,15 +478,22 @@ class PayloadBuilder:
                     proto_str.upper() if proto_str.upper() in ("TCP", "UDP") else "TCP"
                 )
             try:
-                result.append(
-                    ExtensionPort(container_port=int(s), protocol=proto, name="http")
-                )
+                port_int = int(s)
             except (ValueError, TypeError):
                 continue
+            result.append(
+                ExtensionPort(
+                    container_port=port_int,
+                    protocol=proto,
+                    name=default_service_port_name(port_int, is_primary),
+                )
+            )
         return result
 
     @staticmethod
-    def _parse_port_dict(port: Dict[str, Any]) -> Optional[ExtensionPort]:
+    def _parse_port_dict(
+        port: Dict[str, Any], is_primary: bool = False
+    ) -> Optional[ExtensionPort]:
         """Translate one compose-spec long-form port entry."""
         # Compose-spec long-form: ``target`` is the container port.
         # ``published`` (host port) is stripped upstream by the transformer's
@@ -490,14 +505,21 @@ class PayloadBuilder:
         if target is None:
             return None
 
+        try:
+            container_port = int(target)
+        except (ValueError, TypeError):
+            return None
+
         proto_raw = str(port.get("protocol", "tcp")).upper()
         proto = proto_raw if proto_raw in ("TCP", "UDP") else "TCP"
 
-        # Long-form ports without an explicit name still default to "http"
-        # so existing extensions that adopt long-form syntax for unrelated
-        # reasons (e.g. adding ``protocol: tcp``) don't silently lose the
-        # historical port name.
-        name = port.get("name") or "http"
+        # Long-form ports without an explicit name fall back to the same
+        # protocol-aware default as short-form, so a non-HTTP backend that
+        # adopts long-form syntax for unrelated reasons (e.g. adding
+        # ``protocol: tcp``) isn't mislabeled ``http`` and broken on istio.
+        name = port.get("name") or default_service_port_name(
+            container_port, is_primary
+        )
 
         # Prefer the compose-spec ``app_protocol`` key; fall back to the
         # k8s-shaped ``appProtocol`` only when the spec key is absent.
@@ -511,7 +533,7 @@ class PayloadBuilder:
 
         try:
             return ExtensionPort(
-                container_port=int(target),
+                container_port=container_port,
                 protocol=proto,
                 name=name,
                 app_protocol=app_protocol,
