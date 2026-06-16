@@ -27,13 +27,16 @@ from typing import Any, Optional
 # / ``_KNOWN_TCP_PORT_NAMES`` / ``_service_port_name``). Keep both in lockstep
 # when adding a backend, or the two deploy paths will name the same port
 # differently.
-_HTTP_DEFAULT_PORTS = {80, 443, 3000, 5000, 8000, 8080, 8443, 9090}
+# 9200 is the Elasticsearch/OpenSearch HTTP REST port (the binary transport
+# protocol is 9300), so it belongs here, not in the TCP map.
+# TODO(ENG-7092): platform core's k8s_adapter still maps 9200 → tcp-elastic;
+# realign it there so the two compose→CR paths stay in lockstep.
+_HTTP_DEFAULT_PORTS = {80, 443, 3000, 5000, 8000, 8080, 8443, 9090, 9200}
 _KNOWN_TCP_PORT_NAMES = {
     5432: "tcp-postgres",
     3306: "tcp-mysql",
     6379: "tcp-redis",
     27017: "tcp-mongo",
-    9200: "tcp-elastic",
     5672: "tcp-amqp",
     9092: "tcp-kafka",
     2379: "tcp-etcd",

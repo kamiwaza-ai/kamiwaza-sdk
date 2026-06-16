@@ -284,7 +284,7 @@ class TestParsePorts:
         # translated to the "http" name, regardless of position — including
         # milvus/etcd, where each port here is the sole (primary) port, so this
         # also pins that a known-TCP backend wins over the primary→http default.
-        for port in (5432, 3306, 6379, 27017, 9200, 5672, 9092, 19530, 2379, 2380):
+        for port in (5432, 3306, 6379, 27017, 5672, 9092, 19530, 2379, 2380):
             parsed = PayloadBuilder._parse_ports([str(port)])
             assert len(parsed) == 1
             assert parsed[0].name != "http"
@@ -296,6 +296,15 @@ class TestParsePorts:
         ports = PayloadBuilder._parse_ports(["7000"])
         assert len(ports) == 1
         assert ports[0].name == "http"
+
+    def test_elasticsearch_rest_port_stays_http(self):
+        # 9200 is the ES/OpenSearch HTTP REST port (binary transport is 9300);
+        # it must keep the HTTP codec rather than being treated as opaque TCP,
+        # even as a non-primary port.
+        ports = PayloadBuilder._parse_ports(["8000", "9200"])
+        assert len(ports) == 2
+        assert ports[1].container_port == 9200
+        assert ports[1].name == "http"
 
 
 class TestAnnotations:

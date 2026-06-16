@@ -54,7 +54,6 @@ class TestDefaultServicePortName:
             (3306, "tcp-mysql"),
             (6379, "tcp-redis"),
             (27017, "tcp-mongo"),
-            (9200, "tcp-elastic"),
             (5672, "tcp-amqp"),
             (9092, "tcp-kafka"),
             (2379, "tcp-etcd"),
@@ -69,8 +68,12 @@ class TestDefaultServicePortName:
         assert default_service_port_name(port, is_primary=True) == expected
         assert default_service_port_name(port, is_primary=False) == expected
 
-    @pytest.mark.parametrize("port", [80, 443, 3000, 5000, 8000, 8080, 8443, 9090])
+    @pytest.mark.parametrize(
+        "port", [80, 443, 3000, 5000, 8000, 8080, 8443, 9090, 9200]
+    )
     def test_known_http_ports_are_http(self, port):
+        # 9200 is Elasticsearch/OpenSearch's HTTP REST port — it must stay HTTP
+        # so istio keeps applying the HTTP codec (the binary transport is 9300).
         assert default_service_port_name(port, is_primary=False) == "http"
 
     def test_unknown_primary_defaults_to_http(self):
