@@ -281,8 +281,10 @@ class TestParsePorts:
 
     def test_known_tcp_backends_never_named_http(self):
         # Acceptance regression: no well-known non-HTTP backend port may be
-        # translated to the "http" name, regardless of position.
-        for port in (5432, 3306, 6379, 27017, 9200, 5672, 9092):
+        # translated to the "http" name, regardless of position — including
+        # milvus/etcd, where each port here is the sole (primary) port, so this
+        # also pins that a known-TCP backend wins over the primary→http default.
+        for port in (5432, 3306, 6379, 27017, 9200, 5672, 9092, 19530, 2379, 2380):
             parsed = PayloadBuilder._parse_ports([str(port)])
             assert len(parsed) == 1
             assert parsed[0].name != "http"

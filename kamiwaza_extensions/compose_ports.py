@@ -20,6 +20,13 @@ from typing import Any, Optional
 # ``tcp*`` → raw TCP passthrough). Naming a non-HTTP backend port ``http`` makes
 # the sidecar apply HTTP parsing to a binary wire protocol — e.g. it answers a
 # postgres SSL handshake with an HTTP error, CrashLooping the client.
+#
+# This must stay in sync with the platform's compose→CR translation, which
+# carries the same maps and heuristic (the App-Garden install path). Canonical
+# source: ``kamiwaza/serving/garden/apps/k8s_adapter.py`` (``_HTTP_DEFAULT_PORTS``
+# / ``_KNOWN_TCP_PORT_NAMES`` / ``_service_port_name``). Keep both in lockstep
+# when adding a backend, or the two deploy paths will name the same port
+# differently.
 _HTTP_DEFAULT_PORTS = {80, 443, 3000, 5000, 8000, 8080, 8443, 9090}
 _KNOWN_TCP_PORT_NAMES = {
     5432: "tcp-postgres",
