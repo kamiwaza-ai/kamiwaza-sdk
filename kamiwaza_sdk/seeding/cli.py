@@ -26,6 +26,7 @@ import os
 from pathlib import Path
 from typing import Callable, Dict, Optional, Union
 
+from ..exceptions import DeploymentFailedError
 from ..schemas.kaizen import LLMConfig
 from ..schemas.models.external_endpoint import (
     AWSBedrockChatEndpoint,
@@ -146,6 +147,67 @@ def cmd_install_extension(args: argparse.Namespace, *, client) -> dict:
         sync_if_missing=not args.no_sync,
     )
     return {"deployment_id": str(deployment.id), "name": deployment.name}
+
+
+def _resolve_model_id(client, model_id: Optional[str], name: Optional[str]) -> str:
+    """Return the model id to deploy — given directly, or resolved by name."""
+    if model_id:
+        return model_id
+    matches = [
+        m for m in client.models.list_models() if (getattr(m, "name", None) or "") == name
+    ]
+    if not matches:
+        raise SystemExit(f"No registered model named '{name}'.")
+    if len(matches) > 1:
+        # Deterministic: don't silently deploy an arbitrary one of a name collision.
+        raise SystemExit(
+            f"Multiple registered models named '{name}'; pass --model-id to disambiguate."
+        )
+    return str(matches[0].id)
+
+
+def _deployment_endpoint(client, deployment_id) -> Optional[str]:
+    """The OpenAI-compatible endpoint of a deployment, or None if not listed.
+
+    Lists all active deployments to find the one we just created: only
+    ``list_active_deployments`` computes the ``endpoint`` string (``get_deployment``
+    does not), so don't "optimize" this into a by-id fetch.
+    """
+    for deployment in client.serving.list_active_deployments():
+        if str(getattr(deployment, "id", "")) == str(deployment_id):
+            return getattr(deployment, "endpoint", None)
+    return None
+
+
+def cmd_deploy_model(args: argparse.Namespace, *, client) -> dict:
+    """Deploy a registered model so it's callable.
+
+    External models (Bedrock/Transcribe) are only callable once deployed, so an
+    agent can't bind to one until this runs. Returns the deployment id and its
+    OpenAI-compatible endpoint (``…/runtime/models/<dep>/v1``) for the caller to
+    pass to ``create-agent --llm-base-url``.
+    """
+    model_id = _resolve_model_id(client, args.model_id, args.name)
+    try:
+        deployment_id = client.serving.deploy_model(
+            model_id=model_id,
+            engine_name=args.engine_name,
+            wait=not args.no_wait,
+            timeout_seconds=args.timeout,
+            poll_interval_seconds=args.poll_interval,
+        )
+    except (DeploymentFailedError, TimeoutError) as exc:
+        # Convert the documented wait=True failure modes to a clean message
+        # (mirrors cmd_resolve_kaizen_url) — a traceback is poor diagnostics for
+        # the nightly profile.
+        raise SystemExit(str(exc))
+    if not deployment_id:
+        raise SystemExit(f"Deploy request for model {model_id} was refused by the server.")
+    result = {"deployment_id": str(deployment_id)}
+    endpoint = _deployment_endpoint(client, deployment_id)
+    if endpoint:
+        result["endpoint"] = endpoint
+    return result
 
 
 def cmd_resolve_kaizen_url(args: argparse.Namespace, *, client) -> Optional[dict]:
@@ -304,6 +366,30 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-sync", action="store_true", help="Don't import the catalog if missing."
     )
     p.set_defaults(func=cmd_install_extension)
+
+    p = sub.add_parser(
+        "deploy-model",
+        help="Deploy a registered model so it's callable (external models need this before an agent can bind).",
+    )
+    g = p.add_mutually_exclusive_group(required=True)
+    g.add_argument("--model-id", default=None, help="ID of a registered model to deploy.")
+    g.add_argument("--name", default=None, help="Name of a registered model to resolve, then deploy.")
+    p.add_argument(
+        "--engine-name",
+        default="external_chat",
+        help="Serving engine (default external_chat; external_transcribe for Transcribe).",
+    )
+    p.add_argument(
+        "--no-wait",
+        action="store_true",
+        help=(
+            "Return the deployment id immediately instead of waiting for DEPLOYED. "
+            "The endpoint is omitted from the output until the deployment is DEPLOYED."
+        ),
+    )
+    p.add_argument("--timeout", type=int, default=600, help="Max seconds to wait for DEPLOYED.")
+    p.add_argument("--poll-interval", type=float, default=5.0, help="Seconds between readiness polls.")
+    p.set_defaults(func=cmd_deploy_model)
 
     p = sub.add_parser(
         "resolve-kaizen-url",
