@@ -777,6 +777,16 @@ def run_dev_remote(
         # Collect expected image refs for push from the canonical map so
         # --no-build pushes hit the same registry path the deployment
         # payload will reference.
+        #
+        # ENG-7110: profiled ``image-only`` services (the agent, referenced
+        # via AGENT_SERVER_IMAGE — see the env rewrite above) are excluded
+        # from canonical_refs and so are intentionally NOT in this push list.
+        # A full run builds+pushes them via ImageBuilder (which iterates all
+        # build-context services); under --no-build they rely on a prior
+        # run's registry push (resume adopts that revision tag, so the agent
+        # ref the env rewrite points at already exists). Re-pushing them here
+        # would tag from the local engine store, which a resumed run may no
+        # longer hold — regressing the path that works.
         if service:
             image_refs = [canonical_refs[service]] if service in canonical_refs else []
         else:
