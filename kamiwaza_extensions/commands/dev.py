@@ -680,6 +680,15 @@ def run_dev_remote(
     # ``image-only`` agent resolves to the ``{registry}/{ext}-agent`` fallback
     # path). Applied to both the K8s payload (bare refs, post-resolve) and
     # the catalog overlay compose (``${VAR:-default}`` form).
+    #
+    # Caveat: env_ref_map spans ALL build-context services, so under
+    # ``--service X`` or ``--no-build`` this can rewrite AGENT_SERVER_IMAGE to
+    # the agent ref even though the invocation builds/pushes only a subset.
+    # That's the same accepted partial-deploy sharp edge as the service
+    # ``image:`` fields (a ``--service backend`` run already deploys
+    # un-rebuilt siblings); a full run — or a prior run whose agent push the
+    # registry still holds (see the --no-build branch below) — is what makes
+    # the ref resolve.
     env_ref_map = build_image_ref_map(
         info.compose_data.get("services") or {},
         canonical_refs,

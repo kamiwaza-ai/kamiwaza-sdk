@@ -211,6 +211,38 @@ class TestRewriteEnvImageRefsCatalogSurface:
             f"${{AGENT_SERVER_IMAGE:-{_AGENT_BUILT}}}"
         )
 
+    def test_templated_allowlist_appended_in_lockstep(self):
+        """Regression (cron re-review High #1): a *templated*
+        ``${SANDBOX_ALLOWED_IMAGE_PREFIXES:-csv}`` must get the built prefix
+        appended inside the substitution form — same ``${VAR:-default}``
+        unwrap AGENT_SERVER_IMAGE gets. Before the fix, the CSV was split with
+        the ``${…:-``/``}`` still attached, no entry matched, and the lockstep
+        append silently dropped while AGENT_SERVER_IMAGE was still rewritten.
+        """
+        ref_map = _ref_map(_kaizen_compose()["services"])
+        compose = {
+            "services": {
+                "sandbox-controller": {
+                    "environment": {
+                        "SANDBOX_ALLOWED_IMAGE_PREFIXES": (
+                            f"${{SANDBOX_ALLOWED_IMAGE_PREFIXES:-ghcr.io/openhands/,{_AGENT_GHCR}}}"
+                        ),
+                    },
+                },
+            },
+        }
+
+        result = rewrite_env_image_refs(compose, ref_map)
+        wl = result["services"]["sandbox-controller"]["environment"][
+            "SANDBOX_ALLOWED_IMAGE_PREFIXES"
+        ]
+
+        # Substitution form preserved, built prefix appended inside it.
+        assert wl == (
+            f"${{SANDBOX_ALLOWED_IMAGE_PREFIXES:-ghcr.io/openhands/,"
+            f"{_AGENT_GHCR},{_REGISTRY}/{_EXT}-agent}}"
+        )
+
 
 class TestRewriteEnvImageRefsListForm:
     """Robustness: env may be a list of ``KEY=value`` strings, not a dict."""

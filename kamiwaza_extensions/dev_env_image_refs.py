@@ -84,8 +84,12 @@ def build_image_ref_map(
         declared = svc.get("image")
         if not isinstance(declared, str) or not declared.strip():
             continue
-        built = canonical_refs.get(name) or (
-            f"{registry}/{basename}-{name}:{revision_tag}"
+        # Presence, not truthiness — the exact mirror of ImageBuilder.build's
+        # ``svc_name in image_refs`` check.
+        built = (
+            canonical_refs[name]
+            if name in canonical_refs
+            else f"{registry}/{basename}-{name}:{revision_tag}"
         )
         out[_repo_part(declared.strip())] = built
     return out
@@ -165,14 +169,36 @@ def _rewrite_ref(ref: str, ref_map: Dict[str, str]) -> str:
 def _rewrite_prefix_csv_value(value: str, ref_map: Dict[str, str]) -> str:
     """Append built repo prefixes to an allowlist CSV, in lockstep.
 
-    Each entry that exactly names a built repo gets that repo's built
-    prefix appended (the built ref with its tag stripped). Originals are
-    preserved verbatim — some flows may still reference the source path,
-    and an over-broad replace could drop a still-valid prefix. Bare
-    namespace prefixes (``ghcr.io/openhands/``) name no built repo and
-    pass through, matching the platform's full-repo-only relocation rule.
+    Handles both the bare CSV (K8s payload, post ``resolve_env_placeholders``)
+    and the ``${VAR:-csv}`` form (catalog overlay, placeholders preserved) —
+    the same two shapes :func:`_rewrite_image_ref_value` handles. Without the
+    ``${VAR:-default}`` unwrap, a templated allowlist would be CSV-split with
+    the ``${…:-`` prefix / trailing ``}`` still attached, no entry would match
+    *ref_map*, and the lockstep append would silently drop — while
+    ``AGENT_SERVER_IMAGE`` (which IS unwrapped) still gets rewritten, defeating
+    the lockstep invariant for any extension that templates the allowlist.
     """
-    entries = [part.strip() for part in value.split(",")]
+    match = _DEFAULT_SUB_RE.match(value.strip())
+    if match:
+        prefix, default, brace = match.group(1), match.group(2), match.group(3)
+        new_csv = _append_built_prefixes(default, ref_map)
+        if new_csv == default:
+            return value
+        return f"{prefix}{new_csv}{brace}"
+    return _append_built_prefixes(value, ref_map)
+
+
+def _append_built_prefixes(csv: str, ref_map: Dict[str, str]) -> str:
+    """Append built repo prefixes to a bare allowlist CSV.
+
+    Each entry that exactly names a built repo gets that repo's built prefix
+    appended (the built ref with its tag stripped). Originals are preserved
+    verbatim — some flows may still reference the source path, and an
+    over-broad replace could drop a still-valid prefix. Bare namespace
+    prefixes (``ghcr.io/openhands/``) name no built repo and pass through,
+    matching the platform's full-repo-only relocation rule.
+    """
+    entries = [part.strip() for part in csv.split(",")]
     existing = set(entries)
     additions: List[str] = []
     for entry in entries:
@@ -183,5 +209,5 @@ def _rewrite_prefix_csv_value(value: str, ref_map: Dict[str, str]) -> str:
         if built_prefix not in existing and built_prefix not in additions:
             additions.append(built_prefix)
     if not additions:
-        return value
+        return csv
     return ",".join(entries + additions)
