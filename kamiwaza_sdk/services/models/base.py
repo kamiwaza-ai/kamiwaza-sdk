@@ -18,7 +18,19 @@ from .compatibility import CompatibilityMixin
 from ...model_selector import ModelAutoSelector
 
 
-class ModelService(BaseService, 
+# Maps an external-endpoint ``protocol`` discriminator to the canonical engine
+# name the platform routes external models through. Mirrors the frontend's
+# external-endpoint wizard (AwsBedrockForm / AwsTranscribeForm), which persists
+# the engine name in the config so the Deploy path can find it. ``aws_bedrock``
+# is the legacy protocol slug; the platform canonicalizes it to ``external_chat``
+# at registration, so the canonical value is sent directly.
+_ENGINE_NAME_BY_PROTOCOL: Dict[str, str] = {
+    "aws_bedrock": "external_chat",
+    "aws_transcribe": "external_transcribe",
+}
+
+
+class ModelService(BaseService,
                   ModelSearchMixin,
                   ModelDownloadMixin, 
                   ModelFileMixin, 
@@ -97,9 +109,12 @@ class ModelService(BaseService,
 
         Wraps the platform's external-endpoint registration: the ``endpoint``
         blob plus an inline ``credential_secret`` (the plaintext credential,
-        serialized to JSON) is submitted under ``default_config.system_config``.
-        The platform validates it, stores the credential as an encrypted Catalog
-        secret, strips the plaintext, and persists only the resolved URN.
+        serialized to JSON) is submitted, JSON-stringified, under
+        ``default_config.config.external_endpoint`` alongside the canonical
+        ``engine_name`` — matching how the frontend wizard registers external
+        endpoints so the deploy path can resolve the engine. The platform
+        validates it, stores the credential as an encrypted Catalog secret,
+        strips the plaintext, and persists only the resolved URN.
 
         Args:
             name: Model name shown in the platform.
@@ -121,15 +136,35 @@ class ModelService(BaseService,
         blob: Dict[str, Any] = endpoint.model_dump(exclude_none=True)
         blob["credential_secret"] = self._serialize_credential(credential)
 
-        # The blob lives in ``system_config`` (not ``config``): the platform
-        # JSON-stringifies system_config values before persisting them, whereas
-        # config values are stored raw and a nested dict fails to adapt at the
-        # DB layer. This also matches where the platform normalizes credentials.
+        protocol = blob.get("protocol")
+        engine_name = (
+            _ENGINE_NAME_BY_PROTOCOL.get(protocol)
+            if isinstance(protocol, str)
+            else None
+        )
+        if engine_name is None:
+            raise ValueError(
+                f"Unsupported external endpoint protocol: {protocol!r}"
+            )
+
+        # Mirror the frontend's external-endpoint registration (AwsBedrockForm /
+        # AwsTranscribeForm): ``engine_name`` and the JSON-stringified
+        # ``external_endpoint`` blob live under ``config``, not ``system_config``.
+        # The platform deploy path (and the UI Deploy button) reads
+        # ``engine_name`` out of ``config`` to route external models; leaving it
+        # in ``system_config`` makes the model undeployable without an explicit
+        # engine_name. Stringifying the blob sidesteps the nested-dict
+        # DB-adaptation problem that originally pushed it into system_config; the
+        # platform credential normalizer locates the blob in either container, so
+        # the inline credential is still encrypted to a URN.
         default_config: Dict[str, Any] = {
             "default": True,
             "name": config_name or f"{name} External Endpoint",
-            "config": {},
-            "system_config": {"external_endpoint": blob},
+            "config": {
+                "engine_name": engine_name,
+                "external_endpoint": json.dumps(blob),
+            },
+            "system_config": {},
         }
         model = CreateModel(
             name=name,
