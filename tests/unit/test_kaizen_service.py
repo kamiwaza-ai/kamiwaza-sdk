@@ -359,11 +359,14 @@ def test_is_serving_true_on_success():
     assert kwargs["headers"] == {"X-Workroom-Id": "wr-A"}
 
 
-def test_is_serving_false_on_503():
-    def unhealthy(*a, **k):
-        raise APIError("no healthy upstream", status_code=503)
+@pytest.mark.parametrize("status", [500, 502, 503, 504])
+def test_is_serving_false_on_5xx(status):
+    # Any 5xx means the gateway/backend isn't ready (no healthy upstream during
+    # pod startup is 503, but envoy can also emit 502/504 mid-startup).
+    def server_error(*a, **k):
+        raise APIError("server error", status_code=status)
 
-    client = SimpleNamespace(_request=unhealthy)
+    client = SimpleNamespace(_request=server_error)
     assert _is_serving(client, KAIZEN_URL, workroom_id=None) is False
 
 

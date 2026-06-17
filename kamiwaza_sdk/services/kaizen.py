@@ -134,15 +134,15 @@ def _is_serving(client, base_url: str, *, workroom_id) -> bool:
     """Probe the extension backend to confirm it answers, not just that it routes.
 
     A published ingress only means envoy has a route — right after install the
-    backend pod can still be starting, so the proxy returns ``503 no healthy
-    upstream`` (or refuses the connection outright), and a real call against the
-    URL would 503 too (ENG-7111). Treat 503 and transport errors (no response at
-    all) as "not ready yet"; any other outcome — a 2xx, or even a structured 4xx
-    — proves the backend is up and answering, which is all a caller needs before
-    using the URL.
+    backend pod can still be starting, so the gateway returns a 5xx (``503 no
+    healthy upstream``, or a ``502``/``504`` while the upstream is coming up) or
+    refuses the connection outright, and a real call against the URL would fail
+    too (ENG-7111). Treat any 5xx and transport errors (no response at all) as
+    "not ready yet"; a 2xx — or even a 4xx — means the backend answered at the
+    app layer, which is all a caller needs before using the URL.
 
-    In this client a 503 and a connection failure both surface as ``APIError``
-    (503 carries ``status_code=503``; a transport error carries
+    In this client a 5xx and a connection failure both surface as ``APIError``
+    (the 5xx carries its ``status_code``; a transport error carries
     ``status_code=None``). Other ``KamiwazaError`` subclasses (auth/validation)
     mean the backend returned a structured response, i.e. it is serving.
     """
@@ -154,7 +154,11 @@ def _is_serving(client, base_url: str, *, workroom_id) -> bool:
             headers=_workroom_headers(workroom_id),
         )
     except APIError as exc:
-        return getattr(exc, "status_code", None) not in (503, None)
+        status = getattr(exc, "status_code", None)
+        # No status = transport error before any response; any 5xx = the gateway
+        # or backend isn't ready yet. Both are transient startup states — keep
+        # polling. A 4xx means the backend answered, i.e. it is serving.
+        return status is not None and not 500 <= status <= 599
     except KamiwazaError:
         return True
     return True
