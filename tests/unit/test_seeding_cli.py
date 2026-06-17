@@ -64,7 +64,8 @@ class FakeClient:
             create=RecordingService(SimpleNamespace(id="agent-1"))
         )
         self.conversations = SimpleNamespace(
-            create=RecordingService(SimpleNamespace(id="conv-1"))
+            create=RecordingService(SimpleNamespace(id="conv-1")),
+            chat=RecordingService("Hello! I am claude."),
         )
         self.skills = SimpleNamespace(
             import_skill_package=RecordingService(SimpleNamespace(id="skill-1"))
@@ -513,3 +514,107 @@ def test_deploy_model_duplicate_name_exits():
         _run(["deploy-model", "--name", "dup"], client)
 
     assert client.serving.deploy_model.calls == []
+
+
+def test_chat_creates_conversation_and_returns_reply(capsys, monkeypatch):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+
+    _run(
+        [
+            "chat",
+            "--kaizen-base-url",
+            "https://kamiwaza.test/kaizen",
+            "--agent-id",
+            "agent-1",
+            "--message",
+            "hello there",
+            "--workroom-id",
+            "wr-1",
+        ],
+        client,
+    )
+
+    create = client.conversations.create.calls[0]["kwargs"]
+    assert create["agent_id"] == "agent-1"
+    assert create["base_url"] == "https://kamiwaza.test/kaizen"
+    chat = client.conversations.chat.calls[0]
+    assert chat["args"] == ("conv-1", "hello there")
+    assert chat["kwargs"]["workroom_id"] == "wr-1"
+    assert json.loads(capsys.readouterr().out) == {
+        "conversation_id": "conv-1",
+        "reply": "Hello! I am claude.",
+    }
+
+
+def test_chat_raw_prints_bare_reply(capsys, monkeypatch):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+
+    _run(
+        ["chat", "--kaizen-base-url", "u", "--agent-id", "a", "--message", "m", "--raw"],
+        client,
+    )
+
+    assert capsys.readouterr().out.strip() == "Hello! I am claude."
+
+
+def test_chat_empty_reply_exits_nonzero(monkeypatch):
+    client = FakeClient()
+    client.conversations.chat = RecordingService("")  # waited, but got nothing back
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+
+    with pytest.raises(SystemExit):
+        _run(
+            ["chat", "--kaizen-base-url", "u", "--agent-id", "a", "--message", "m"],
+            client,
+        )
+
+
+def test_chat_fire_and_forget_allows_empty_reply(capsys, monkeypatch):
+    client = FakeClient()
+    client.conversations.chat = RecordingService(None)
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+
+    _run(
+        [
+            "chat",
+            "--kaizen-base-url", "u",
+            "--agent-id", "a",
+            "--message", "m",
+            "--timeout", "0",
+        ],
+        client,
+    )
+
+    assert client.conversations.chat.calls[0]["kwargs"]["timeout_seconds"] == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "conversation_id": "conv-1",
+        "reply": None,
+    }
+
+
+def test_chat_agent_error_exits_nonzero(monkeypatch):
+    from kamiwaza_sdk.services.kaizen import ConversationError
+
+    client = FakeClient()
+    client.conversations.chat = _raiser(ConversationError("agent boom"))
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+
+    with pytest.raises(SystemExit, match="agent boom"):
+        _run(
+            ["chat", "--kaizen-base-url", "u", "--agent-id", "a", "--message", "m"],
+            client,
+        )
+
+
+def test_chat_timeout_exits_nonzero(monkeypatch):
+    client = FakeClient()
+    client.conversations.chat = _raiser(TimeoutError("no reply in time"))
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+
+    with pytest.raises(SystemExit, match="no reply in time"):
+        _run(
+            ["chat", "--kaizen-base-url", "u", "--agent-id", "a", "--message", "m"],
+            client,
+        )

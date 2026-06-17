@@ -34,6 +34,15 @@ class AmbiguousExtensionError(KamiwazaError):
     """
 
 
+class ConversationError(KamiwazaError):
+    """The agent surfaced an error event while processing a chat message.
+
+    A terminal failure for that turn (the agent reported it can't proceed), so
+    callers must NOT keep polling for a reply — distinct from the transient
+    "no reply yet" state that resolves on a later poll.
+    """
+
+
 def _workroom_headers(workroom_id: Optional[Union[str, object]]) -> Dict[str, str]:
     """Build the X-Workroom-Id header that scopes a Kaizen call to a workroom."""
     if workroom_id is None:
@@ -353,6 +362,71 @@ class AgentService(BaseService):
         return Agent.model_validate(response)
 
 
+def _agent_error_from_events(events: List[Dict[str, Any]]) -> Optional[str]:
+    """Return an agent error message from a list of event payloads, or None.
+
+    Kaizen serializes a failed turn as an ``AgentErrorEvent`` (``kind`` field)
+    carrying a user-facing ``error`` string — a terminal signal that the agent
+    can't answer, so :meth:`ConversationService.chat` stops waiting on it.
+    """
+    for event in events:
+        if event.get("kind") == "AgentErrorEvent":
+            return str(event.get("error") or "agent error")
+    return None
+
+
+def _has_finish_action(events: List[Dict[str, Any]]) -> bool:
+    """True if the agent emitted its terminal ``finish`` action this turn.
+
+    The run is done once a ``FinishAction`` lands, so its presence with no usable
+    reply text means the agent finished empty — a terminal state, not "not yet".
+    """
+    return any(
+        event.get("kind") == "ActionEvent"
+        and (event.get("action") or {}).get("kind") == "FinishAction"
+        for event in events
+    )
+
+
+def _reply_from_events(events: List[Dict[str, Any]]) -> Optional[str]:
+    """Return the latest non-empty agent reply text, or None.
+
+    The agent signals "done" two ways, and we accept either (latest wins):
+
+    * **The ``finish`` tool** — an ``ActionEvent`` whose ``action.kind`` is
+      ``FinishAction``, carrying the final answer in ``action.message``. This is
+      the canonical completion signal for the agent runtime, so it's the usual
+      source of the reply.
+    * **A plain assistant turn** — a ``MessageEvent`` whose ``llm_message.role``
+      is ``assistant``; its text is the concatenation of the message's ``text``
+      content blocks (image blocks ignored). Kept as a fallback for replies that
+      don't route through ``finish``.
+    """
+    reply: Optional[str] = None
+    for event in events:
+        kind = event.get("kind")
+        if kind == "ActionEvent":
+            action = event.get("action") or {}
+            if action.get("kind") == "FinishAction":
+                message = action.get("message")
+                if isinstance(message, str) and message.strip():
+                    reply = message.strip()
+            continue
+        if kind != "MessageEvent":
+            continue
+        message_obj = event.get("llm_message") or {}
+        if message_obj.get("role") != "assistant":
+            continue
+        text = "".join(
+            block.get("text", "")
+            for block in (message_obj.get("content") or [])
+            if isinstance(block, dict) and block.get("type") == "text"
+        ).strip()
+        if text:
+            reply = text
+    return reply
+
+
 class ConversationService(BaseService):
     """Create Kaizen conversations (auto-starts the agent sandbox)."""
 
@@ -463,3 +537,86 @@ class ConversationService(BaseService):
             params={"offset": offset, "limit": limit},
             headers=_workroom_headers(workroom_id),
         )
+
+    def chat(
+        self,
+        conversation_id: str,
+        message: str,
+        *,
+        base_url: str,
+        workroom_id: Optional[Union[str, object]] = None,
+        timeout_seconds: float = 60.0,
+        poll_interval_seconds: float = 3.0,
+    ) -> Optional[str]:
+        """Send a message, run the agent, and return its reply.
+
+        Wraps :meth:`send_message` + :meth:`run`, then polls :meth:`get_events`
+        until the agent's reply lands. Used to exercise an agent end to end
+        (e.g. proving a freshly seeded agent actually responds).
+
+        ``timeout_seconds`` is the wait budget: a positive value (the default)
+        waits up to that long and returns the reply text; pass ``0`` for
+        fire-and-forget — the message is sent and the run triggered, but the
+        method returns ``None`` immediately without waiting. Only this turn's
+        events are considered (the pre-run event count is the read offset), so
+        prior history in a reused conversation is ignored.
+
+        Args:
+            conversation_id: The conversation to post to.
+            message: The prompt to send.
+            base_url: The Kaizen instance API root.
+            workroom_id: Workroom scope (X-Workroom-Id header).
+            timeout_seconds: Max seconds to wait for the reply; ``0`` = don't wait.
+            poll_interval_seconds: Delay between event polls.
+
+        Returns:
+            The assistant's reply text; ``None`` when ``timeout_seconds`` is 0
+            (fire-and-forget) or the agent finished without any reply text.
+
+        Raises:
+            ConversationError: The agent emitted an error event for this turn.
+            TimeoutError: No reply arrived within ``timeout_seconds``.
+        """
+        self.send_message(
+            conversation_id, message, base_url=base_url, workroom_id=workroom_id
+        )
+        if not timeout_seconds:
+            self.run(conversation_id, base_url=base_url, workroom_id=workroom_id)
+            return None
+
+        # Read this turn's output only: events appended from here on. Captured
+        # after send (the just-queued user message is excluded) and before run.
+        baseline = self.get_events(
+            conversation_id, base_url=base_url, workroom_id=workroom_id, limit=1
+        ).get("total", 0)
+        self.run(conversation_id, base_url=base_url, workroom_id=workroom_id)
+
+        deadline = time.monotonic() + timeout_seconds
+        while True:
+            new_events = self.get_events(
+                conversation_id,
+                base_url=base_url,
+                workroom_id=workroom_id,
+                offset=baseline,
+            ).get("events", [])
+            error = _agent_error_from_events(new_events)
+            if error is not None:
+                raise ConversationError(
+                    f"Agent errored on conversation {conversation_id}: {error}"
+                )
+            reply = _reply_from_events(new_events)
+            if reply:
+                return reply
+            if _has_finish_action(new_events):
+                # Agent finished with no usable text — terminal, so don't burn
+                # the rest of the timeout waiting for a reply that won't come.
+                return None
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"No agent reply on conversation {conversation_id} after "
+                    f"{timeout_seconds:g}s."
+                )
+            # max(0, …) so a non-positive poll interval degrades to a busy-wait
+            # bounded by the timeout rather than raising from time.sleep().
+            time.sleep(max(0.0, min(poll_interval_seconds, remaining)))
