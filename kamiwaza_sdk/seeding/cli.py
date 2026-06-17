@@ -40,6 +40,17 @@ from ..services.kaizen import (
 from .client import build_client_from_env, scoped_client_for_workroom
 
 
+def _non_negative_float(value: str) -> float:
+    """argparse type for a seconds value that must be zero or positive."""
+    try:
+        parsed = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"invalid float value: '{value}'")
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be zero or a positive number of seconds")
+    return parsed
+
+
 def _parse_env(pairs: Optional[list[str]]) -> Optional[Dict[str, str]]:
     """Parse repeated ``KEY=VALUE`` args into an env dict."""
     if not pairs:
@@ -526,7 +537,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--timeout",
-        type=float,
+        type=_non_negative_float,
         default=60.0,
         help="Max seconds to wait for the reply (0 = fire-and-forget, don't wait).",
     )

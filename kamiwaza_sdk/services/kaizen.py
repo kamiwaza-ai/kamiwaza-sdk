@@ -362,16 +362,23 @@ class AgentService(BaseService):
         return Agent.model_validate(response)
 
 
+# Event ``kind`` values that mark a failed turn. The Kaizen backend serializes
+# the agent error as ``AgentErrorEvent``; ``ConversationErrorEvent`` is accepted
+# defensively so a backend that names it differently still surfaces a clear
+# error instead of degrading to a generic timeout.
+_ERROR_EVENT_KINDS = frozenset({"AgentErrorEvent", "ConversationErrorEvent"})
+
+
 def _agent_error_from_events(events: List[Dict[str, Any]]) -> Optional[str]:
     """Return an agent error message from a list of event payloads, or None.
 
-    Kaizen serializes a failed turn as an ``AgentErrorEvent`` (``kind`` field)
-    carrying a user-facing ``error`` string — a terminal signal that the agent
-    can't answer, so :meth:`ConversationService.chat` stops waiting on it.
+    A failed turn is a terminal signal that the agent can't answer, so
+    :meth:`ConversationService.chat` stops waiting on it. The message is read
+    from the event's ``error`` or ``message`` field.
     """
     for event in events:
-        if event.get("kind") == "AgentErrorEvent":
-            return str(event.get("error") or "agent error")
+        if event.get("kind") in _ERROR_EVENT_KINDS:
+            return str(event.get("error") or event.get("message") or "agent error")
     return None
 
 
@@ -528,7 +535,8 @@ class ConversationService(BaseService):
 
         Returns the raw events envelope ``{events, total, offset, limit}``.
         Event ``kind`` values include ``MessageEvent`` (the ``llm_message`` with
-        role/content), ``ConversationErrorEvent``, tool events, etc.
+        role/content), ``ActionEvent`` (incl. the terminal ``FinishAction``),
+        ``AgentErrorEvent``, tool events, etc.
         """
         return self.client._request(
             "GET",
@@ -555,11 +563,15 @@ class ConversationService(BaseService):
         (e.g. proving a freshly seeded agent actually responds).
 
         ``timeout_seconds`` is the wait budget: a positive value (the default)
-        waits up to that long and returns the reply text; pass ``0`` for
-        fire-and-forget — the message is sent and the run triggered, but the
-        method returns ``None`` immediately without waiting. Only this turn's
-        events are considered (the pre-run event count is the read offset), so
-        prior history in a reused conversation is ignored.
+        waits up to that long and returns the reply text; ``0`` is fire-and-forget
+        — the message is sent and the run triggered, but the method returns
+        ``None`` immediately without waiting. The reply is taken only once the
+        agent's run is terminal (a ``finish`` action or an error event), so an
+        interim assistant narration before the final answer is never mistaken
+        for the reply. Only this turn's events are considered (the pre-run event
+        count is the read offset), and only the first page of them
+        (``get_events`` default ``limit``); a verification turn is a handful of
+        events, so this is not paginated.
 
         Args:
             conversation_id: The conversation to post to.
@@ -570,13 +582,18 @@ class ConversationService(BaseService):
             poll_interval_seconds: Delay between event polls.
 
         Returns:
-            The assistant's reply text; ``None`` when ``timeout_seconds`` is 0
+            The agent's reply text; ``None`` when ``timeout_seconds`` is 0
             (fire-and-forget) or the agent finished without any reply text.
 
         Raises:
+            ValueError: ``timeout_seconds`` is negative.
             ConversationError: The agent emitted an error event for this turn.
-            TimeoutError: No reply arrived within ``timeout_seconds``.
+            TimeoutError: The agent did not finish within ``timeout_seconds``.
         """
+        if timeout_seconds < 0:
+            raise ValueError(
+                "timeout_seconds must be zero or a positive number of seconds."
+            )
         self.send_message(
             conversation_id, message, base_url=base_url, workroom_id=workroom_id
         )
@@ -604,13 +621,11 @@ class ConversationService(BaseService):
                 raise ConversationError(
                     f"Agent errored on conversation {conversation_id}: {error}"
                 )
-            reply = _reply_from_events(new_events)
-            if reply:
-                return reply
             if _has_finish_action(new_events):
-                # Agent finished with no usable text — terminal, so don't burn
-                # the rest of the timeout waiting for a reply that won't come.
-                return None
+                # The run is terminal — take the reply now (the finish message,
+                # or the last assistant text if finish carried none, or None).
+                # Don't accept interim assistant narration before this point.
+                return _reply_from_events(new_events)
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError(

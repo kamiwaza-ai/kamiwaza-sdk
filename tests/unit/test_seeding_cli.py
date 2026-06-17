@@ -608,6 +608,16 @@ def test_chat_agent_error_exits_nonzero(monkeypatch):
         )
 
 
+def test_chat_negative_timeout_rejected_by_parser():
+    # argparse rejects a negative --timeout before any client call.
+    with pytest.raises(SystemExit):
+        _run(
+            ["chat", "--kaizen-base-url", "u", "--agent-id", "a", "--message", "m",
+             "--timeout", "-5"],
+            FakeClient(),
+        )
+
+
 def test_chat_timeout_exits_nonzero(monkeypatch):
     client = FakeClient()
     client.conversations.chat = _raiser(TimeoutError("no reply in time"))

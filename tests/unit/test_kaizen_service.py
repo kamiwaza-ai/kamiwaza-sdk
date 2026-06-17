@@ -632,6 +632,11 @@ def test_agent_error_from_events_returns_message_or_none():
     assert _agent_error_from_events([_error_event("boom")]) == "boom"
     assert _agent_error_from_events([{"kind": "AgentErrorEvent"}]) == "agent error"
     assert _agent_error_from_events([_message_event("ok")]) is None
+    # Defensively accept the alternate error-event kind + its `message` field.
+    assert (
+        _agent_error_from_events([{"kind": "ConversationErrorEvent", "message": "nope"}])
+        == "nope"
+    )
 
 
 def test_chat_sends_message_runs_and_returns_reply(monkeypatch):
@@ -659,8 +664,8 @@ def test_chat_polls_until_reply_appears(monkeypatch):
 
     slept: list = []
     monkeypatch.setattr(kaizen_mod.time, "sleep", lambda s: slept.append(s))
-    # First poll: nothing yet. Second poll: the reply has landed.
-    client = ChatClient(polls=[[], [_message_event("done")]])
+    # First poll: nothing yet. Second poll: the agent finished with the reply.
+    client = ChatClient(polls=[[], [_finish_event("done")]])
     service = ConversationService(client)
 
     reply = service.chat("conv-1", "hi", base_url=KAIZEN_URL, poll_interval_seconds=0)
@@ -702,6 +707,24 @@ def test_chat_non_positive_poll_interval_does_not_raise(monkeypatch):
 
     assert service.chat("conv-1", "hi", base_url=KAIZEN_URL, poll_interval_seconds=-5) == "done"
     assert slept == [0.0]
+
+
+def test_chat_ignores_interim_assistant_text_before_finish(monkeypatch):
+    import kamiwaza_sdk.services.kaizen as kaizen_mod
+
+    monkeypatch.setattr(kaizen_mod.time, "sleep", lambda _s: None)
+    # First poll: only interim assistant narration, no finish yet — must NOT be
+    # returned. Second poll: the terminal finish carries the real answer.
+    client = ChatClient(polls=[[_message_event("Let me think…")], [_finish_event("real answer")]])
+    service = ConversationService(client)
+
+    assert service.chat("conv-1", "hi", base_url=KAIZEN_URL, poll_interval_seconds=0) == "real answer"
+
+
+def test_chat_negative_timeout_raises():
+    service = ConversationService(ChatClient(polls=[[_finish_event("x")]]))
+    with pytest.raises(ValueError, match="zero or a positive"):
+        service.chat("conv-1", "hi", base_url=KAIZEN_URL, timeout_seconds=-1)
 
 
 def test_chat_raises_conversation_error_on_agent_error(monkeypatch):
