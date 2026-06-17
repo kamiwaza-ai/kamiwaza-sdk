@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
+import warnings
 
 from .base_service import BaseService
 from ..exceptions import APIError
@@ -90,18 +91,53 @@ class DatasetClient(BaseService):
         return str(response)
 
     def list(self, query: Optional[str] = None) -> List[Dataset]:
+        """List datasets.
+
+        If the backend query endpoint returns HTTP 500, the SDK falls back to
+        best-effort local filtering. This can differ from DataHub query ranking
+        semantics but preserves recently-created resources during live
+        eventual-consistency failures.
+        """
         params = {"query": query} if query else None
         try:
             response = self.client.get(f"{self._BASE_PATH}/", params=params)
         except APIError as exc:
             if exc.status_code != 500 or not query:
                 raise
+            self._warn_query_fallback(query)
             recent_matches = self._list_recent_matches(query)
-            if recent_matches:
-                return recent_matches
-            response = self.client.get(f"{self._BASE_PATH}/")
-            return self._filter_dataset_payloads(response, query)
+            try:
+                response = self.client.get(f"{self._BASE_PATH}/")
+            except APIError:
+                if recent_matches:
+                    return recent_matches
+                raise
+            filtered = self._filter_dataset_payloads(response, query)
+            return self._merge_by_urn(filtered, recent_matches)
         return [Dataset.model_validate(item) for item in response]
+
+    @staticmethod
+    def _warn_query_fallback(query: str) -> None:
+        warnings.warn(
+            "Dataset query failed with HTTP 500; returning best-effort "
+            f"client-side filtered catalog results for query {query!r}.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+
+    @staticmethod
+    def _merge_by_urn(
+        primary: List[Dataset],
+        fallback: List[Dataset],
+    ) -> List[Dataset]:
+        merged = list(primary)
+        seen = {dataset.urn for dataset in merged}
+        for dataset in fallback:
+            if dataset.urn in seen:
+                continue
+            merged.append(dataset)
+            seen.add(dataset.urn)
+        return merged
 
     @staticmethod
     def _filter_dataset_payloads(response: Any, query: str) -> List[Dataset]:
@@ -254,18 +290,53 @@ class SecretClient(BaseService):
         return urn
 
     def list(self, query: Optional[str] = None) -> List[Secret]:
+        """List secrets.
+
+        If the backend query endpoint returns HTTP 500, the SDK falls back to
+        best-effort local filtering. This can differ from DataHub query ranking
+        semantics but preserves recently-created resources during live
+        eventual-consistency failures.
+        """
         params = {"query": query} if query else None
         try:
             response = self.client.get(f"{self._BASE_PATH}/", params=params)
         except APIError as exc:
             if exc.status_code != 500 or not query:
                 raise
+            self._warn_query_fallback(query)
             recent_matches = self._list_recent_matches(query)
-            if recent_matches:
-                return recent_matches
-            response = self.client.get(f"{self._BASE_PATH}/")
-            return self._filter_secret_payloads(response, query)
+            try:
+                response = self.client.get(f"{self._BASE_PATH}/")
+            except APIError:
+                if recent_matches:
+                    return recent_matches
+                raise
+            filtered = self._filter_secret_payloads(response, query)
+            return self._merge_by_urn(filtered, recent_matches)
         return [Secret.model_validate(item) for item in response]
+
+    @staticmethod
+    def _warn_query_fallback(query: str) -> None:
+        warnings.warn(
+            "Secret query failed with HTTP 500; returning best-effort "
+            f"client-side filtered catalog results for query {query!r}.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+
+    @staticmethod
+    def _merge_by_urn(
+        primary: List[Secret],
+        fallback: List[Secret],
+    ) -> List[Secret]:
+        merged = list(primary)
+        seen = {secret.urn for secret in merged}
+        for secret in fallback:
+            if secret.urn in seen:
+                continue
+            merged.append(secret)
+            seen.add(secret.urn)
+        return merged
 
     @staticmethod
     def _filter_secret_payloads(response: Any, query: str) -> List[Secret]:

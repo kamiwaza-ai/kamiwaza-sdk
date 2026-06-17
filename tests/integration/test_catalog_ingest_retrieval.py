@@ -30,7 +30,7 @@ def _ingest_sample_dataset(client, ingestion_environment: Dict[str, str]) -> str
         if exc.status_code == 500 and "Could not connect to the endpoint URL" in str(exc):
             pytest.skip(
                 "Live ingestion object-store endpoint is unreachable from the platform "
-                "(see docs-local/0.10.0/00-server-defects.md)"
+                "(see docs-local/00-server-defects.md)"
             )
         raise
     urns = ingest_response.urns

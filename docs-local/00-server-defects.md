@@ -2,6 +2,31 @@
 
 Track integration issues observed while exercising catalog, ingestion, and retrieval flows via the SDK.
 
+## 2026-06-17
+
+### Catalog container list endpoint returns 500
+
+`GET /catalog/containers/` can return HTTP 500 on the current live stack, even
+for the admin-gated setup probe used by the SDK live catalog endpoint tests.
+`tests/integration/test_catalog_endpoints.py` skips the affected container
+coverage when this exact 500 is observed so non-container catalog regressions
+remain visible.
+
+### Live S3 ingest endpoint unreachable from platform
+
+The SDK live ingestion fixture can stage S3-compatible test data, but the
+platform-side ingest worker can fail to connect to the configured object-store
+endpoint and return HTTP 500 with `Could not connect to the endpoint URL`.
+`tests/integration/test_catalog_ingest_retrieval.py` skips only that exact
+transport failure; other ingestion API failures still propagate.
+
+### Graphiti ontology readiness/provisioning does not become ready
+
+Context ontology provisioning can remain non-ready long enough to exhaust the
+SDK live test readiness timeout. `tests/integration/test_context_live.py` skips
+timeout-only readiness stalls after deleting the temporary ontology, while
+terminal failed/stopped ontology states remain hard failures.
+
 ## 2025-11-07
 
 ### PAT bearer tokens rejected by `/auth/users/me` _(resolved 2025-11-10 via `aud=kamiwaza-platform`)_

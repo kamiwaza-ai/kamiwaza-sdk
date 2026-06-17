@@ -206,12 +206,12 @@ def _create_temp_ontology(service: ContextService, *, prefix: str) -> str:
     assert ontology_id
     try:
         _wait_for_ontology_ready(service, ontology_id)
-    except (TimeoutError, RuntimeError) as exc:
+    except TimeoutError as exc:
         _safe_delete_ontology(service, ontology_id)
         pytest.skip(
             "Context ontology backend did not become ready; live cluster likely "
             "has the known Graphiti provisioning defect "
-            "(see docs-local/0.10.0/00-server-defects.md): "
+            "(see docs-local/00-server-defects.md): "
             f"{exc}"
         )
     except Exception:
