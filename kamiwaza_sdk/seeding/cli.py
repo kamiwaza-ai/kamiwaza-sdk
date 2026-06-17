@@ -32,8 +32,23 @@ from ..schemas.models.external_endpoint import (
     AWSBedrockChatEndpoint,
     AWSTranscribeEndpoint,
 )
-from ..services.kaizen import AmbiguousExtensionError, wait_for_base_url
+from ..services.kaizen import (
+    AmbiguousExtensionError,
+    ConversationError,
+    wait_for_base_url,
+)
 from .client import build_client_from_env, scoped_client_for_workroom
+
+
+def _non_negative_float(value: str) -> float:
+    """argparse type for a seconds value that must be zero or positive."""
+    try:
+        parsed = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"invalid float value: '{value}'")
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be zero or a positive number of seconds")
+    return parsed
 
 
 def _parse_env(pairs: Optional[list[str]]) -> Optional[Dict[str, str]]:
@@ -270,6 +285,44 @@ def cmd_create_conversation(args: argparse.Namespace, *, client) -> dict:
     return {"conversation_id": conversation.id}
 
 
+def cmd_chat(args: argparse.Namespace, *, client) -> Optional[dict]:
+    """Send a prompt to an agent and return its reply (exercises it end to end).
+
+    Opens a fresh conversation against ``--agent-id``, sends ``--message``, and
+    (with a positive ``--timeout``) waits for the agent's reply — proving the
+    agent can actually respond, not just that it was created. ``--raw`` prints
+    only the reply text. Exits non-zero on an agent error, an empty reply, or a
+    wait timeout (mirrors cmd_deploy_model / cmd_resolve_kaizen_url).
+    """
+    client = _client_for_workroom(client, args.workroom_id)
+    conversation = client.conversations.create(
+        base_url=args.kaizen_base_url,
+        agent_id=args.agent_id,
+        title=args.title,
+        workroom_id=args.workroom_id,
+    )
+    try:
+        reply = client.conversations.chat(
+            conversation.id,
+            args.message,
+            base_url=args.kaizen_base_url,
+            workroom_id=args.workroom_id,
+            timeout_seconds=args.timeout,
+            poll_interval_seconds=args.poll_interval,
+        )
+    except (TimeoutError, ConversationError) as exc:
+        raise SystemExit(str(exc))
+    # timeout=0 is fire-and-forget (no reply to assert); only fault an empty
+    # reply when a wait was requested.
+    if args.timeout and not reply:
+        raise SystemExit(f"Agent '{args.agent_id}' returned an empty reply.")
+    if args.raw:
+        if reply:
+            print(reply)
+        return None
+    return {"conversation_id": conversation.id, "reply": reply}
+
+
 def cmd_configure_m365(args: argparse.Namespace, *, client) -> dict:
     conn = client.connectors.create_m365(
         tenant_id=args.tenant_id,
@@ -463,6 +516,38 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--ephemeral", action="store_true")
     p.add_argument("--workroom-id", default=None)
     p.set_defaults(func=cmd_create_conversation)
+
+    p = sub.add_parser(
+        "chat",
+        help="Send a prompt to an agent and return its reply (exercises the agent end to end).",
+    )
+    p.add_argument(
+        "--kaizen-base-url",
+        required=True,
+        help="Kaizen instance API root (per-workroom).",
+    )
+    p.add_argument("--agent-id", required=True)
+    p.add_argument("--message", required=True, help="Prompt to send to the agent.")
+    p.add_argument("--workroom-id", default=None)
+    p.add_argument("--title", default=None, help="Conversation title (optional).")
+    p.add_argument(
+        "--raw",
+        action="store_true",
+        help='Print only the bare reply text (for REPLY="$(... --raw)").',
+    )
+    p.add_argument(
+        "--timeout",
+        type=_non_negative_float,
+        default=60.0,
+        help="Max seconds to wait for the reply (0 = fire-and-forget, don't wait).",
+    )
+    p.add_argument(
+        "--poll-interval",
+        type=float,
+        default=3.0,
+        help="Seconds between event polls while waiting (default: 3).",
+    )
+    p.set_defaults(func=cmd_chat)
 
     p = sub.add_parser("import-skill", help="Import a skill package (.zip).")
     p.add_argument("--file", required=True)

@@ -9,8 +9,12 @@ from kamiwaza_sdk.schemas.kaizen import LLMConfig
 from kamiwaza_sdk.services.kaizen import (
     AgentService,
     AmbiguousExtensionError,
+    ConversationError,
     ConversationService,
+    _agent_error_from_events,
+    _has_finish_action,
     _is_serving,
+    _reply_from_events,
     resolve_base_url,
     wait_for_base_url,
 )
@@ -529,3 +533,233 @@ def test_conversation_get_events_passes_pagination():
     assert (method, path) == ("GET", "api/conversations/conv-1/events")
     assert kwargs["params"] == {"offset": 5, "limit": 50}
     assert kwargs["headers"] == {"X-Workroom-Id": "wr-1"}
+
+
+# --- chat() + event helpers ------------------------------------------------
+
+
+def _message_event(text, role="assistant"):
+    return {
+        "kind": "MessageEvent",
+        "llm_message": {"role": role, "content": [{"type": "text", "text": text}]},
+    }
+
+
+def _error_event(message):
+    return {"kind": "AgentErrorEvent", "error": message}
+
+
+def _finish_event(text):
+    # The agent's canonical "done" signal: the `finish` tool, with the reply in
+    # action.message (the shape a live Kaizen run emits).
+    return {
+        "kind": "ActionEvent",
+        "tool_name": "finish",
+        "action": {"kind": "FinishAction", "message": text},
+    }
+
+
+class ChatClient:
+    """Scripts send/run/poll for ConversationService.chat tests.
+
+    The limit=1 baseline read returns ``baseline_total``; subsequent polling
+    reads pop from ``polls`` (the last entry repeats once exhausted, so a
+    never-answers run keeps returning the same empty list).
+    """
+
+    def __init__(self, polls, baseline_total=0):
+        self.polls = list(polls)
+        self.baseline_total = baseline_total
+        self.calls: list[tuple[str, str, dict]] = []
+
+    def _request(self, method, path, **kwargs):
+        self.calls.append((method, path, kwargs))
+        if path.endswith("/events"):
+            if kwargs.get("params", {}).get("limit") == 1:
+                return {"total": self.baseline_total, "events": []}
+            events = self.polls.pop(0) if len(self.polls) > 1 else self.polls[0]
+            return {"events": events}
+        return None  # messages / run -> 204
+
+
+def test_reply_from_events_reads_finish_action_message():
+    # The common happy path: the reply arrives via the `finish` tool with no
+    # assistant MessageEvent, so a MessageEvent-only reader would miss it.
+    events = [
+        {"kind": "SystemPromptEvent"},
+        _message_event("hi", role="user"),
+        _finish_event("Hello! I'm Kaizen."),
+    ]
+    assert _reply_from_events(events) == "Hello! I'm Kaizen."
+
+
+def test_reply_from_events_returns_latest_assistant_text():
+    events = [
+        _message_event("hi", role="user"),
+        {"kind": "ActionEvent", "tool_name": "bash"},
+        _message_event("partial"),
+        _message_event("final answer"),
+    ]
+    assert _reply_from_events(events) == "final answer"
+
+
+def test_reply_from_events_joins_text_blocks_and_ignores_images():
+    events = [
+        {
+            "kind": "MessageEvent",
+            "llm_message": {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "a"},
+                    {"type": "image_url", "image_url": {"url": "x"}},
+                    {"type": "text", "text": "b"},
+                ],
+            },
+        }
+    ]
+    assert _reply_from_events(events) == "ab"
+
+
+def test_reply_from_events_none_for_empty_user_only_or_blank():
+    assert _reply_from_events([]) is None
+    assert _reply_from_events([_message_event("hi", role="user")]) is None
+    assert _reply_from_events([_message_event("   ")]) is None
+    # A non-finish action (e.g. a tool call) is not a reply on its own.
+    assert _reply_from_events([{"kind": "ActionEvent", "tool_name": "bash"}]) is None
+
+
+def test_agent_error_from_events_returns_message_or_none():
+    assert _agent_error_from_events([_error_event("boom")]) == "boom"
+    assert _agent_error_from_events([{"kind": "AgentErrorEvent"}]) == "agent error"
+    assert _agent_error_from_events([_message_event("ok")]) is None
+    # Defensively accept the alternate error-event kind + its `message` field.
+    assert (
+        _agent_error_from_events([{"kind": "ConversationErrorEvent", "message": "nope"}])
+        == "nope"
+    )
+
+
+def test_chat_sends_message_runs_and_returns_reply(monkeypatch):
+    import kamiwaza_sdk.services.kaizen as kaizen_mod
+
+    monkeypatch.setattr(kaizen_mod.time, "sleep", lambda _s: None)
+    # Reply arrives via the finish tool, as it does on a live cluster.
+    client = ChatClient(polls=[[_finish_event("Hi, I'm Kaizen.")]])
+    service = ConversationService(client)
+
+    reply = service.chat("conv-1", "hello", base_url=KAIZEN_URL, workroom_id="wr-1")
+
+    assert reply == "Hi, I'm Kaizen."
+    paths = [(m, p) for m, p, _ in client.calls]
+    send_i = paths.index(("POST", "api/conversations/conv-1/messages"))
+    run_i = paths.index(("POST", "api/conversations/conv-1/run"))
+    # Order: send the message, then run, then read events for the reply.
+    assert send_i < run_i < len(paths) - 1
+    # Workroom scope rides the header on every leg.
+    assert client.calls[send_i][2]["headers"] == {"X-Workroom-Id": "wr-1"}
+
+
+def test_chat_polls_until_reply_appears(monkeypatch):
+    import kamiwaza_sdk.services.kaizen as kaizen_mod
+
+    slept: list = []
+    monkeypatch.setattr(kaizen_mod.time, "sleep", lambda s: slept.append(s))
+    # First poll: nothing yet. Second poll: the agent finished with the reply.
+    client = ChatClient(polls=[[], [_finish_event("done")]])
+    service = ConversationService(client)
+
+    reply = service.chat("conv-1", "hi", base_url=KAIZEN_URL, poll_interval_seconds=0)
+
+    assert reply == "done"
+    assert slept == [0]  # slept once between the two polls
+
+
+def test_has_finish_action_detects_terminal_finish():
+    assert _has_finish_action([_finish_event("done")]) is True
+    assert _has_finish_action([_finish_event("")]) is True  # empty but terminal
+    assert _has_finish_action([{"kind": "ActionEvent", "tool_name": "bash"}]) is False
+    assert _has_finish_action([_message_event("hi")]) is False
+
+
+def test_chat_returns_none_when_agent_finishes_empty(monkeypatch):
+    import kamiwaza_sdk.services.kaizen as kaizen_mod
+
+    slept: list = []
+    monkeypatch.setattr(kaizen_mod.time, "sleep", lambda s: slept.append(s))
+    # Agent finishes with an empty message: terminal, so return immediately
+    # rather than burning the timeout. cmd_chat faults the empty reply.
+    client = ChatClient(polls=[[_finish_event("")]])
+    service = ConversationService(client)
+
+    assert service.chat("conv-1", "hi", base_url=KAIZEN_URL) is None
+    assert slept == []  # returned on the first poll, never waited
+
+
+def test_chat_non_positive_poll_interval_does_not_raise(monkeypatch):
+    import kamiwaza_sdk.services.kaizen as kaizen_mod
+
+    slept: list = []
+    monkeypatch.setattr(kaizen_mod.time, "sleep", lambda s: slept.append(s))
+    # First poll empty, second has the reply; a negative interval must clamp to
+    # 0 at the sleep rather than raising ValueError out of the wait loop.
+    client = ChatClient(polls=[[], [_finish_event("done")]])
+    service = ConversationService(client)
+
+    assert service.chat("conv-1", "hi", base_url=KAIZEN_URL, poll_interval_seconds=-5) == "done"
+    assert slept == [0.0]
+
+
+def test_chat_ignores_interim_assistant_text_before_finish(monkeypatch):
+    import kamiwaza_sdk.services.kaizen as kaizen_mod
+
+    monkeypatch.setattr(kaizen_mod.time, "sleep", lambda _s: None)
+    # First poll: only interim assistant narration, no finish yet — must NOT be
+    # returned. Second poll: the terminal finish carries the real answer.
+    client = ChatClient(polls=[[_message_event("Let me think…")], [_finish_event("real answer")]])
+    service = ConversationService(client)
+
+    assert service.chat("conv-1", "hi", base_url=KAIZEN_URL, poll_interval_seconds=0) == "real answer"
+
+
+def test_chat_negative_timeout_raises():
+    service = ConversationService(ChatClient(polls=[[_finish_event("x")]]))
+    with pytest.raises(ValueError, match="zero or a positive"):
+        service.chat("conv-1", "hi", base_url=KAIZEN_URL, timeout_seconds=-1)
+
+
+def test_chat_raises_conversation_error_on_agent_error(monkeypatch):
+    import kamiwaza_sdk.services.kaizen as kaizen_mod
+
+    monkeypatch.setattr(kaizen_mod.time, "sleep", lambda _s: None)
+    client = ChatClient(polls=[[_error_event("model unreachable")]])
+    service = ConversationService(client)
+
+    with pytest.raises(ConversationError, match="model unreachable"):
+        service.chat("conv-1", "hi", base_url=KAIZEN_URL)
+
+
+def test_chat_fire_and_forget_returns_none_without_reading_events():
+    client = ChatClient(polls=[[_message_event("ignored")]])
+    service = ConversationService(client)
+
+    assert service.chat("conv-1", "hi", base_url=KAIZEN_URL, timeout_seconds=0) is None
+
+    paths = [(m, p) for m, p, _ in client.calls]
+    assert ("POST", "api/conversations/conv-1/messages") in paths
+    assert ("POST", "api/conversations/conv-1/run") in paths
+    # No events are read at all when not waiting.
+    assert not any(p.endswith("/events") for _, p, _ in client.calls)
+
+
+def test_chat_times_out_when_no_reply(monkeypatch):
+    import kamiwaza_sdk.services.kaizen as kaizen_mod
+
+    # deadline (0.0 -> 1.0), first remaining (0.0), second remaining (5.0 -> past).
+    times = iter([0.0, 0.0, 5.0])
+    monkeypatch.setattr(kaizen_mod.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(kaizen_mod.time, "sleep", lambda _s: None)
+    client = ChatClient(polls=[[]])  # never any reply
+    service = ConversationService(client)
+
+    with pytest.raises(TimeoutError, match="No agent reply"):
+        service.chat("conv-1", "hi", base_url=KAIZEN_URL, timeout_seconds=1)
