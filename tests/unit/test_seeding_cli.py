@@ -5,9 +5,17 @@ from types import SimpleNamespace
 
 import pytest
 
+from kamiwaza_sdk.exceptions import DeploymentFailedError
 from kamiwaza_sdk.seeding import cli
 
 pytestmark = pytest.mark.unit
+
+
+def _raiser(exc):
+    def _f(*_args, **_kwargs):
+        raise exc
+
+    return _f
 
 
 class RecordingService:
@@ -33,7 +41,21 @@ class FakeClient:
             create=RecordingService(SimpleNamespace(id="wr-1"))
         )
         self.models = SimpleNamespace(
-            register_external_model=RecordingService(SimpleNamespace(id="model-1"))
+            register_external_model=RecordingService(SimpleNamespace(id="model-1")),
+            list_models=RecordingService(
+                [SimpleNamespace(id="model-1", name="bedrock-uat")]
+            ),
+        )
+        self.serving = SimpleNamespace(
+            deploy_model=RecordingService("dep-xyz"),
+            list_active_deployments=RecordingService(
+                [
+                    SimpleNamespace(
+                        id="dep-xyz",
+                        endpoint="https://host/runtime/models/dep-xyz/v1",
+                    )
+                ]
+            ),
         )
         self.apps = SimpleNamespace(
             install_by_name=RecordingService(SimpleNamespace(id="dep-1", name="kaizen"))
@@ -222,6 +244,72 @@ def test_install_extension_passes_workroom_and_sync(capsys, monkeypatch):
     }
 
 
+def test_resolve_kaizen_url_scopes_and_matches_workroom(capsys, monkeypatch):
+    client = FakeClient()
+    scoped_calls: list = []
+    monkeypatch.setattr(
+        cli,
+        "scoped_client_for_workroom",
+        lambda c, wid: scoped_calls.append(wid) or c,
+    )
+    # Capture how resolution is invoked: the wait must be told BOTH the base name
+    # and the workroom id, so it matches the right workroom's Kaizen — not any.
+    seen: dict = {}
+
+    def fake_wait(_client, name, *, workroom_id, **_kw):
+        seen.update(name=name, workroom_id=workroom_id)
+        return "https://k/kaizen"
+
+    monkeypatch.setattr(cli, "wait_for_base_url", fake_wait)
+
+    _run(["resolve-kaizen-url", "--workroom-id", "wr-9"], client)
+
+    assert scoped_calls == ["wr-9"]
+    assert seen == {"name": "kaizen", "workroom_id": "wr-9"}
+    assert json.loads(capsys.readouterr().out) == {
+        "kaizen_base_url": "https://k/kaizen"
+    }
+
+
+def test_resolve_kaizen_url_raw_prints_bare_url(capsys, monkeypatch):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+    monkeypatch.setattr(cli, "wait_for_base_url", lambda *a, **k: "https://k/kaizen")
+
+    _run(["resolve-kaizen-url", "--workroom-id", "wr-9", "--raw"], client)
+
+    # --raw emits just the URL for $(...) capture — no JSON envelope.
+    assert capsys.readouterr().out.strip() == "https://k/kaizen"
+
+
+def test_resolve_kaizen_url_timeout_exits_nonzero(monkeypatch):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+
+    def time_out(*_a, **_k):
+        raise TimeoutError("ingress not resolvable")
+
+    monkeypatch.setattr(cli, "wait_for_base_url", time_out)
+
+    # A readiness timeout surfaces as a non-zero exit with the wait's message.
+    with pytest.raises(SystemExit):
+        _run(["resolve-kaizen-url", "--workroom-id", "wr-9"], client)
+
+
+def test_resolve_kaizen_url_ambiguous_exits_nonzero(monkeypatch):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+
+    def ambiguous(*_a, **_k):
+        raise cli.AmbiguousExtensionError("Multiple 'kaizen' extensions in workroom")
+
+    monkeypatch.setattr(cli, "wait_for_base_url", ambiguous)
+
+    # Ambiguity is a clean non-zero exit (the message), not an uncaught traceback.
+    with pytest.raises(SystemExit):
+        _run(["resolve-kaizen-url", "--workroom-id", "wr-9"], client)
+
+
 def test_create_agent_uses_kaizen_base_url(capsys, monkeypatch):
     client = FakeClient()
     monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
@@ -329,3 +417,99 @@ def test_no_subcommand_errors():
 def test_parse_env_rejects_bad_pair():
     with pytest.raises(SystemExit):
         cli._parse_env(["NOTAVALIDPAIR"])
+
+
+def test_deploy_model_by_id_emits_deployment_and_endpoint(capsys):
+    client = FakeClient()
+
+    _run(["deploy-model", "--model-id", "model-1"], client)
+
+    call = client.serving.deploy_model.calls[0]["kwargs"]
+    assert call["model_id"] == "model-1"
+    assert call["engine_name"] == "external_chat"  # default
+    assert call["wait"] is True
+    # Output threads the endpoint create-agent needs for --llm-base-url.
+    assert json.loads(capsys.readouterr().out) == {
+        "deployment_id": "dep-xyz",
+        "endpoint": "https://host/runtime/models/dep-xyz/v1",
+    }
+
+
+def test_deploy_model_resolves_name_to_id(capsys):
+    client = FakeClient()
+
+    _run(["deploy-model", "--name", "bedrock-uat"], client)
+
+    # The name is resolved against the registered models, then deployed by id.
+    assert client.models.list_models.calls  # lookup happened
+    assert client.serving.deploy_model.calls[0]["kwargs"]["model_id"] == "model-1"
+
+
+def test_deploy_model_unknown_name_exits():
+    client = FakeClient()
+
+    with pytest.raises(SystemExit):
+        _run(["deploy-model", "--name", "does-not-exist"], client)
+
+    assert client.serving.deploy_model.calls == []
+
+
+def test_deploy_model_engine_name_and_no_wait_pass_through():
+    client = FakeClient()
+
+    _run(
+        ["deploy-model", "--model-id", "m2", "--engine-name", "external_transcribe", "--no-wait"],
+        client,
+    )
+
+    call = client.serving.deploy_model.calls[0]["kwargs"]
+    assert call["engine_name"] == "external_transcribe"
+    assert call["wait"] is False
+
+
+def test_deploy_model_requires_model_id_or_name():
+    # --model-id / --name are a required mutually-exclusive group.
+    with pytest.raises(SystemExit):
+        _run(["deploy-model"], FakeClient())
+
+
+def test_deploy_model_converts_wait_failure_to_systemexit():
+    # The documented wait=True failure modes must surface as a clean SystemExit,
+    # not a raw traceback (matches cmd_resolve_kaizen_url).
+    for exc in (DeploymentFailedError("deploy failed"), TimeoutError("deploy timed out")):
+        client = FakeClient()
+        client.serving.deploy_model = _raiser(exc)
+        with pytest.raises(SystemExit):
+            _run(["deploy-model", "--model-id", "m1"], client)
+
+
+def test_deploy_model_server_refused_exits():
+    # A falsy deployment id means the server refused the deploy -> clean exit.
+    client = FakeClient()
+    client.serving.deploy_model = RecordingService(None)
+    with pytest.raises(SystemExit):
+        _run(["deploy-model", "--model-id", "m1"], client)
+
+
+def test_deploy_model_omits_endpoint_when_not_yet_listed(capsys):
+    # --no-wait can return before DEPLOYED; list_active_deployments only returns
+    # DEPLOYED ones, so the endpoint is omitted rather than wrong.
+    client = FakeClient()
+    client.serving.deploy_model = RecordingService("pending-dep")  # not in the listing
+    _run(["deploy-model", "--model-id", "m1", "--no-wait"], client)
+
+    out = json.loads(capsys.readouterr().out)
+    assert out == {"deployment_id": "pending-dep"}
+    assert "endpoint" not in out
+
+
+def test_deploy_model_duplicate_name_exits():
+    # Ambiguous name resolution must fail loudly, not pick one arbitrarily.
+    client = FakeClient()
+    client.models.list_models = RecordingService(
+        [SimpleNamespace(id="m1", name="dup"), SimpleNamespace(id="m2", name="dup")]
+    )
+    with pytest.raises(SystemExit):
+        _run(["deploy-model", "--name", "dup"], client)
+
+    assert client.serving.deploy_model.calls == []
