@@ -16,7 +16,7 @@ platform honors this header. A workroom-scoped token is the durable fix
 import time
 from typing import Any, Dict, List, Optional, Union
 
-from ..exceptions import KamiwazaError, NotFoundError
+from ..exceptions import APIError, KamiwazaError, NotFoundError
 from ..schemas.kaizen import Agent, Conversation, LLMConfig
 from .base_service import BaseService
 
@@ -130,6 +130,40 @@ def resolve_base_url(
     return url
 
 
+def _is_serving(client, base_url: str, *, workroom_id) -> bool:
+    """Probe the extension backend to confirm it answers, not just that it routes.
+
+    A published ingress only means envoy has a route — right after install the
+    backend pod can still be starting, so the gateway returns a 5xx (``503 no
+    healthy upstream``, or a ``502``/``504`` while the upstream is coming up) or
+    refuses the connection outright, and a real call against the URL would fail
+    too (ENG-7111). Treat any 5xx and transport errors (no response at all) as
+    "not ready yet"; a 2xx — or even a 4xx — means the backend answered at the
+    app layer, which is all a caller needs before using the URL.
+
+    In this client a 5xx and a connection failure both surface as ``APIError``
+    (the 5xx carries its ``status_code``; a transport error carries
+    ``status_code=None``). Other ``KamiwazaError`` subclasses (auth/validation)
+    mean the backend returned a structured response, i.e. it is serving.
+    """
+    try:
+        client._request(
+            "GET",
+            _AGENTS_PATH,
+            base_url=base_url,
+            headers=_workroom_headers(workroom_id),
+        )
+    except APIError as exc:
+        status = getattr(exc, "status_code", None)
+        # No status = transport error before any response; any 5xx = the gateway
+        # or backend isn't ready yet. Both are transient startup states — keep
+        # polling. A 4xx means the backend answered, i.e. it is serving.
+        return status is not None and not 500 <= status <= 599
+    except KamiwazaError:
+        return True
+    return True
+
+
 def wait_for_base_url(
     client,
     extension_name: str = "kaizen",
@@ -139,13 +173,20 @@ def wait_for_base_url(
     timeout_seconds: float = 300.0,
     poll_interval_seconds: float = 5.0,
 ) -> str:
-    """Poll :func:`resolve_base_url` until the extension publishes its ingress.
+    """Poll until the extension is resolvable AND actually serving requests.
 
-    Right after an install the ingress isn't resolvable yet: the extension isn't
-    visible yet (``NotFoundError`` / no workroom match) and/or its endpoints
-    aren't published (``ValueError``). Both are transient, so retry until one
-    resolves or ``timeout_seconds`` elapses. Mirrors
-    ``serving.wait_deployment_ready``'s wait contract. A deterministic
+    Two startup stages have to clear before the URL is usable, and both are
+    transient — retry until one resolves or ``timeout_seconds`` elapses:
+
+    1. **Ingress resolves.** Right after an install the extension isn't visible
+       yet (``NotFoundError`` / no workroom match) and/or its endpoints aren't
+       published (``ValueError``).
+    2. **Backend serves.** Once the ingress is published, envoy has a route but
+       the backend pod may still be starting — a call would get ``503 no healthy
+       upstream`` (ENG-7111). :func:`_is_serving` probes the backend and we keep
+       polling until it answers, so the returned URL is immediately usable.
+
+    Mirrors ``serving.wait_deployment_ready``'s wait contract. A deterministic
     ``AmbiguousExtensionError`` is NOT retried — it propagates immediately rather
     than burning the full timeout on something that will never resolve.
 
@@ -159,25 +200,41 @@ def wait_for_base_url(
         poll_interval_seconds: Delay between attempts.
 
     Returns:
-        The resolved ingress root (no trailing slash).
+        The resolved ingress root (no trailing slash), confirmed serving.
 
     Raises:
-        TimeoutError: If no endpoint resolves within ``timeout_seconds``.
+        TimeoutError: If the extension isn't serving within ``timeout_seconds``.
     """
     deadline = time.monotonic() + timeout_seconds
     attempts = 0
+    last_err: object = "not resolvable yet"
     while True:
         attempts += 1
         try:
-            return resolve_base_url(
+            url = resolve_base_url(
                 client, extension_name, workroom_id=workroom_id, public=public
             )
+            # The readiness probe rides the credentialed platform client, which
+            # refuses off-host URLs (it won't leak the bearer). The public URL
+            # may be off-host (browser-facing), so probe the same-host ingress
+            # endpoint — the route the backend actually serves on — and return
+            # whichever URL the caller asked for.
+            probe_url = (
+                url
+                if not public
+                else resolve_base_url(
+                    client, extension_name, workroom_id=workroom_id, public=False
+                )
+            )
+            if _is_serving(client, probe_url, workroom_id=workroom_id):
+                return url
+            last_err = "ingress published but backend not serving yet (503)"
         except (ValueError, NotFoundError) as exc:
             last_err = exc
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise TimeoutError(
-                f"Extension '{extension_name}' ingress not resolvable after "
+                f"Extension '{extension_name}' not serving after "
                 f"{timeout_seconds:g}s ({attempts} attempts): {last_err}"
             )
         # Cap the sleep at the remaining budget so the wait stays bounded even

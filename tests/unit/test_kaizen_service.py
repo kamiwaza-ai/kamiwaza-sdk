@@ -4,12 +4,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from kamiwaza_sdk.exceptions import NotFoundError
+from kamiwaza_sdk.exceptions import APIError, AuthenticationError, NotFoundError
 from kamiwaza_sdk.schemas.kaizen import LLMConfig
 from kamiwaza_sdk.services.kaizen import (
     AgentService,
     AmbiguousExtensionError,
     ConversationService,
+    _is_serving,
     resolve_base_url,
     wait_for_base_url,
 )
@@ -161,6 +162,9 @@ def _client_listing(extensions):
         return list(extensions)
 
     client.extensions = SimpleNamespace(list_extensions=list_extensions)
+    # Backend probe (_is_serving) succeeds by default; tests that exercise the
+    # not-serving path supply their own _request.
+    client._request = lambda *a, **k: {}
     return client
 
 
@@ -260,7 +264,8 @@ def test_wait_for_base_url_workroom_retries_until_listed(monkeypatch):
         return rounds.pop(0)
 
     client = SimpleNamespace(
-        extensions=SimpleNamespace(list_extensions=list_extensions)
+        extensions=SimpleNamespace(list_extensions=list_extensions),
+        _request=lambda *a, **k: {},  # backend serves once listed
     )
 
     url = wait_for_base_url(
@@ -275,7 +280,8 @@ def test_wait_for_base_url_returns_when_ready():
         endpoints=SimpleNamespace(external=KAIZEN_URL, public_api_url=None)
     )
     client = SimpleNamespace(
-        extensions=SimpleNamespace(get_extension=lambda name: extension)
+        extensions=SimpleNamespace(get_extension=lambda name: extension),
+        _request=lambda *a, **k: {},  # backend serves
     )
 
     assert wait_for_base_url(client, "kaizen-4f8b3ae1") == KAIZEN_URL
@@ -301,7 +307,10 @@ def test_wait_for_base_url_retries_past_transient_states(monkeypatch):
             raise item
         return item
 
-    client = SimpleNamespace(extensions=SimpleNamespace(get_extension=get_extension))
+    client = SimpleNamespace(
+        extensions=SimpleNamespace(get_extension=get_extension),
+        _request=lambda *a, **k: {},  # backend serves once published
+    )
 
     assert wait_for_base_url(client, "kaizen", poll_interval_seconds=0) == KAIZEN_URL
     assert outcomes == []
@@ -316,7 +325,140 @@ def test_wait_for_base_url_times_out():
     )
 
     # timeout 0: the deadline is already past after the first failed attempt.
-    with pytest.raises(TimeoutError, match="not resolvable"):
+    with pytest.raises(TimeoutError, match="not serving"):
+        wait_for_base_url(client, "kaizen", timeout_seconds=0)
+
+
+# --- backend-serving probe -------------------------------------------------
+
+
+def _serving_client(get_request):
+    """A client whose _request delegates to get_request (probe behavior)."""
+    extension = SimpleNamespace(
+        endpoints=SimpleNamespace(external=KAIZEN_URL, public_api_url=None)
+    )
+    return SimpleNamespace(
+        extensions=SimpleNamespace(get_extension=lambda name: extension),
+        _request=get_request,
+    )
+
+
+def test_is_serving_true_on_success():
+    calls: list = []
+
+    def ok(method, path, **kwargs):
+        calls.append((method, path, kwargs))
+        return {"agents": []}
+
+    client = SimpleNamespace(_request=ok)
+    assert _is_serving(client, KAIZEN_URL, workroom_id="wr-A") is True
+    # Probes the agents endpoint against the resolved base_url, workroom-scoped.
+    method, path, kwargs = calls[0]
+    assert (method, path) == ("GET", "api/agents/")
+    assert kwargs["base_url"] == KAIZEN_URL
+    assert kwargs["headers"] == {"X-Workroom-Id": "wr-A"}
+
+
+@pytest.mark.parametrize("status", [500, 502, 503, 504])
+def test_is_serving_false_on_5xx(status):
+    # Any 5xx means the gateway/backend isn't ready (no healthy upstream during
+    # pod startup is 503, but envoy can also emit 502/504 mid-startup).
+    def server_error(*a, **k):
+        raise APIError("server error", status_code=status)
+
+    client = SimpleNamespace(_request=server_error)
+    assert _is_serving(client, KAIZEN_URL, workroom_id=None) is False
+
+
+def test_is_serving_false_on_connection_error():
+    # A transport failure surfaces as APIError with no status_code — the route
+    # exists but nothing is answering yet, so keep polling.
+    def refused(*a, **k):
+        raise APIError("An error occurred while making the request: refused")
+
+    client = SimpleNamespace(_request=refused)
+    assert _is_serving(client, KAIZEN_URL, workroom_id=None) is False
+
+
+def test_is_serving_true_on_4xx():
+    # A 4xx means the backend answered — it's up, just rejecting this probe.
+    def not_found(*a, **k):
+        raise APIError("not found", status_code=404)
+
+    client = SimpleNamespace(_request=not_found)
+    assert _is_serving(client, KAIZEN_URL, workroom_id=None) is True
+
+
+def test_is_serving_true_on_structured_error():
+    # Non-APIError KamiwazaError subclasses (auth/validation) prove a response.
+    def unauthorized(*a, **k):
+        raise AuthenticationError("nope")
+
+    client = SimpleNamespace(_request=unauthorized)
+    assert _is_serving(client, KAIZEN_URL, workroom_id=None) is True
+
+
+def test_wait_for_base_url_polls_past_503_until_serving(monkeypatch):
+    import kamiwaza_sdk.services.kaizen as kaizen_mod
+
+    monkeypatch.setattr(kaizen_mod.time, "sleep", lambda _s: None)
+
+    # Ingress is published immediately, but the backend 503s twice (pod still
+    # starting) before it serves. wait must not return the URL until it serves.
+    outcomes = [
+        APIError("no healthy upstream", status_code=503),
+        APIError("no healthy upstream", status_code=503),
+        {"agents": []},
+    ]
+
+    def probe(*a, **k):
+        item = outcomes.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    client = _serving_client(probe)
+    assert wait_for_base_url(client, "kaizen", poll_interval_seconds=0) == KAIZEN_URL
+    assert outcomes == []
+
+
+def test_wait_for_base_url_public_probes_ingress_not_offhost_url():
+    # public=True returns the (possibly off-host) public URL, but the readiness
+    # probe must ride the same-host ingress URL — the credentialed client refuses
+    # off-host base_urls, so probing the public URL would never resolve.
+    ingress = "https://kamiwaza.test/runtime/apps/kaizen-4f8b3ae1"
+    public = "https://public.example/kaizen"
+    extension = SimpleNamespace(
+        endpoints=SimpleNamespace(external=ingress, public_api_url=public)
+    )
+    probed: list = []
+
+    def record(method, path, **kwargs):
+        probed.append(kwargs.get("base_url"))
+        return {"agents": []}
+
+    client = SimpleNamespace(
+        extensions=SimpleNamespace(get_extension=lambda name: extension),
+        _request=record,
+    )
+
+    assert wait_for_base_url(client, "kaizen-4f8b3ae1", public=True) == public
+    # Probe hit the ingress endpoint, never the off-host public URL.
+    assert probed == [ingress]
+
+
+def test_wait_for_base_url_times_out_when_published_but_never_serving(monkeypatch):
+    import kamiwaza_sdk.services.kaizen as kaizen_mod
+
+    monkeypatch.setattr(kaizen_mod.time, "sleep", lambda _s: None)
+
+    # Ingress resolves but the backend 503s forever — the timeout message must
+    # reflect "not serving", not "not resolvable".
+    def always_503(*a, **k):
+        raise APIError("no healthy upstream", status_code=503)
+
+    client = _serving_client(always_503)
+    with pytest.raises(TimeoutError, match="not serving yet"):
         wait_for_base_url(client, "kaizen", timeout_seconds=0)
 
 
