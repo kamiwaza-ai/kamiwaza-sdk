@@ -210,7 +210,19 @@ def wait_for_base_url(
             url = resolve_base_url(
                 client, extension_name, workroom_id=workroom_id, public=public
             )
-            if _is_serving(client, url, workroom_id=workroom_id):
+            # The readiness probe rides the credentialed platform client, which
+            # refuses off-host URLs (it won't leak the bearer). The public URL
+            # may be off-host (browser-facing), so probe the same-host ingress
+            # endpoint — the route the backend actually serves on — and return
+            # whichever URL the caller asked for.
+            probe_url = (
+                url
+                if not public
+                else resolve_base_url(
+                    client, extension_name, workroom_id=workroom_id, public=False
+                )
+            )
+            if _is_serving(client, probe_url, workroom_id=workroom_id):
                 return url
             last_err = "ingress published but backend not serving yet (503)"
         except (ValueError, NotFoundError) as exc:

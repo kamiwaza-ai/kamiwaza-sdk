@@ -419,6 +419,31 @@ def test_wait_for_base_url_polls_past_503_until_serving(monkeypatch):
     assert outcomes == []
 
 
+def test_wait_for_base_url_public_probes_ingress_not_offhost_url():
+    # public=True returns the (possibly off-host) public URL, but the readiness
+    # probe must ride the same-host ingress URL — the credentialed client refuses
+    # off-host base_urls, so probing the public URL would never resolve.
+    ingress = "https://kamiwaza.test/runtime/apps/kaizen-4f8b3ae1"
+    public = "https://public.example/kaizen"
+    extension = SimpleNamespace(
+        endpoints=SimpleNamespace(external=ingress, public_api_url=public)
+    )
+    probed: list = []
+
+    def record(method, path, **kwargs):
+        probed.append(kwargs.get("base_url"))
+        return {"agents": []}
+
+    client = SimpleNamespace(
+        extensions=SimpleNamespace(get_extension=lambda name: extension),
+        _request=record,
+    )
+
+    assert wait_for_base_url(client, "kaizen-4f8b3ae1", public=True) == public
+    # Probe hit the ingress endpoint, never the off-host public URL.
+    assert probed == [ingress]
+
+
 def test_wait_for_base_url_times_out_when_published_but_never_serving(monkeypatch):
     import kamiwaza_sdk.services.kaizen as kaizen_mod
 
