@@ -264,7 +264,18 @@ class SecretClient(BaseService):
             if recent_matches:
                 return recent_matches
             response = self.client.get(f"{self._BASE_PATH}/")
+            return self._filter_secret_payloads(response, query)
         return [Secret.model_validate(item) for item in response]
+
+    @staticmethod
+    def _filter_secret_payloads(response: Any, query: str) -> List[Secret]:
+        normalized_query = query.casefold()
+        return [
+            secret
+            for secret in (Secret.model_validate(item) for item in response)
+            if normalized_query in secret.name.casefold()
+            or normalized_query in secret.urn.casefold()
+        ]
 
     def _list_recent_matches(self, query: str) -> List[Secret]:
         recent = getattr(self.client, "_recent_secrets", {})

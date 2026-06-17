@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from kamiwaza_sdk.exceptions import APIError
-from kamiwaza_sdk.schemas.catalog import ContainerCreate, DatasetCreate, SecretCreate
+from kamiwaza_sdk.schemas.catalog import ContainerCreate, SecretCreate
 from kamiwaza_sdk.services.catalog import CatalogService, ContainerClient, DatasetClient, SecretClient
 
 pytestmark = pytest.mark.unit
@@ -218,4 +218,39 @@ def test_secret_client_list_uses_recent_secret_after_query_500():
     assert client.calls == [
         ("/catalog/secrets/", {"params": {"query": "sdk-secret"}}),
         ("/catalog/secrets/v2/urn:li:dataHubSecret:sdk-secret-1", {}),
+    ]
+
+
+def test_secret_client_list_filters_list_all_fallback_after_query_500():
+    class QueryFallbackClient:
+        def __init__(self):
+            self._recent_secrets = {}
+            self.calls = []
+
+        def get(self, path, **kwargs):
+            self.calls.append((path, kwargs))
+            if kwargs.get("params") == {"query": "wanted"}:
+                raise APIError("DataHub search failed", status_code=500)
+            if path == "/catalog/secrets/":
+                return [
+                    {
+                        "urn": "urn:li:dataHubSecret:wanted-secret",
+                        "name": "db-password",
+                        "owner": "urn:li:corpuser:demo",
+                    },
+                    {
+                        "urn": "urn:li:dataHubSecret:other-secret",
+                        "name": "other",
+                        "owner": "urn:li:corpuser:demo",
+                    },
+                ]
+            raise AssertionError(f"Unexpected call: {path} {kwargs}")
+
+    client = QueryFallbackClient()
+    secrets = SecretClient(client).list(query="wanted")
+
+    assert [secret.urn for secret in secrets] == ["urn:li:dataHubSecret:wanted-secret"]
+    assert client.calls == [
+        ("/catalog/secrets/", {"params": {"query": "wanted"}}),
+        ("/catalog/secrets/", {}),
     ]
