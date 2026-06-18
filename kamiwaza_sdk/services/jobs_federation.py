@@ -28,7 +28,7 @@ from __future__ import annotations
 import time
 from typing import Any, Optional
 
-from ..exceptions import MeshJobTimeoutError
+from ..exceptions import APIError, MeshJobTimeoutError
 from ..schemas.federation import JobResult
 from .base_service import BaseService
 
@@ -41,6 +41,17 @@ _POLL_BACKOFF_FACTOR = 2.0
 _POLL_BACKOFF_CAP_SECONDS = 5.0
 
 _TERMINAL_STATES = frozenset({"SUCCEEDED", "FAILED", "STOPPED", "CANCELED"})
+
+# A JobResult-shaped /result wrapper is identified by these two required-field
+# keys both present; a body without them is a bare marker (the job's own
+# KZ_MESH_RUN_ON_JSON:: output). See ``_marker_to_payload``.
+_JOBRESULT_WRAPPER_KEYS = ("job_id", "status")
+
+# The single field promoted out of a bare marker: the receiver-injected OBO
+# identity the audit-actor demo surfaces as ``JobResult.audit_actor``. Every
+# other bare-marker key stays opaque under ``result`` (never promoted or
+# validated against a JobResult field type).
+_BARE_MARKER_PROMOTED_FIELD = "audit_actor"
 
 
 class JobsAPI(BaseService):
@@ -248,10 +259,24 @@ class JobsAPI(BaseService):
                 status_body.get("status") if isinstance(status_body, dict) else None
             )
             if status in _TERMINAL_STATES:
-                result_body = self.client._request(
-                    "GET", f"/cluster/jobs/{job_id}/result"
+                # /result returns the job's KZ_MESH_RUN_ON_JSON:: marker payload
+                # (the job's own structured output) — NOT a JobResult. The
+                # authoritative terminal status comes from /status; job_id +
+                # status are injected last so a marker key can't shadow them.
+                # A 410 means the job emitted no marker (it didn't self-report a
+                # result) — status is still authoritative, so don't treat it fatal.
+                payload: dict[str, Any] = {}
+                try:
+                    result_body = self.client._request(
+                        "GET", f"/cluster/jobs/{job_id}/result"
+                    )
+                    payload = self._marker_to_payload(result_body)
+                except APIError as exc:
+                    if getattr(exc, "status_code", None) != 410:
+                        raise
+                return JobResult.model_validate(
+                    {**payload, "job_id": str(job_id), "status": status}
                 )
-                return JobResult.model_validate(result_body)
 
             time.sleep(delay)
             delay = min(delay * _POLL_BACKOFF_FACTOR, _POLL_BACKOFF_CAP_SECONDS)
@@ -261,6 +286,39 @@ class JobsAPI(BaseService):
             status_code=None,
             body={"job_id": job_id, "timeout_seconds": timeout},
         )
+
+    @staticmethod
+    def _marker_to_payload(result_body: Any) -> dict[str, Any]:
+        """Map a /result body into JobResult constructor fields.
+
+        /result returns one of two shapes, handled by two total rules:
+
+        - **JobResult wrapper** — the server's own JobResult dict, identified by
+          ``job_id`` AND ``status`` both present. Passes through wholesale, so
+          declared fields surface and undeclared keys stay as forward-compat
+          ``extra="allow"`` extras at top level.
+        - **Bare marker** — the job's own KZ_MESH_RUN_ON_JSON:: output, which is
+          opaque domain data. It nests under ``result`` untouched, so a key that
+          happens to be named like a JobResult field (``error``/``status``/
+          ``result``) is never promoted, validated against that field's type
+          (which could raise), or dropped. The one promoted field is
+          ``audit_actor`` (the OBO identity the audit demo surfaces) — and only
+          when it is a string, never a colliding non-string value.
+
+        A non-dict body wraps as ``{"result": <body>}``.
+        """
+        if not isinstance(result_body, dict):
+            return {"result": result_body}
+        if all(k in result_body for k in _JOBRESULT_WRAPPER_KEYS):
+            return dict(result_body)
+        domain = dict(result_body)
+        payload: dict[str, Any] = {}
+        actor = domain.get(_BARE_MARKER_PROMOTED_FIELD)
+        if isinstance(actor, str):
+            payload[_BARE_MARKER_PROMOTED_FIELD] = domain.pop(_BARE_MARKER_PROMOTED_FIELD)
+        if domain:
+            payload["result"] = domain
+        return payload
 
     @staticmethod
     def _build_run_body(
