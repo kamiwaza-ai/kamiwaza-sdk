@@ -52,7 +52,7 @@ def _assert_global_scope_if_exposed(resource: dict[str, object]) -> None:
     workroom_id = resource.get("workroom_id")
     if workroom_id is None:
         return
-    assert str(workroom_id) == DEFAULT_WORKROOM_ID
+    assert str(workroom_id) == ContextService.DEFAULT_WORKROOM_ID
 
 
 def _is_workroom_binding_unavailable(error: APIError) -> bool:
