@@ -103,6 +103,38 @@ def test_secret_client_preserves_opaque_urn(dummy_client):
     assert "params" not in client.calls[2][2]
 
 
+def test_secret_client_create_notes_recent_secret_change(dummy_client):
+    """SecretClient.create must register the created URN with
+    ``client._note_recent_secret_change`` so the HTTP-500 query fallback can
+    surface a just-created secret during live eventual-consistency failures.
+
+    ``SecretClient.list`` resolves recent matches via
+    ``_list_recent_matches`` → ``client._recent_secrets`` (populated by this
+    hook). The dataset twin is guarded by
+    ``test_kamiwaza_datasets.test_create_notes_recent_dataset_change_*``;
+    without this mirror, reverting the create→tracker wiring silently disables
+    the recent-secret fallback while every other unit test still passes. The
+    dict response also exercises ``_unwrap_secret_urn`` — the tracker must
+    receive the unwrapped URN string, not the raw payload.
+    """
+    expected_urn = "urn:li:dataHubSecret:demo"
+    responses = {("post", "/catalog/secrets/"): {"urn": expected_urn}}
+    client = dummy_client(responses)
+
+    seen: list[str] = []
+    client._note_recent_secret_change = seen.append
+
+    urn = SecretClient(client).create(
+        SecretCreate(name="demo", value="hunter2", owner="urn:li:corpuser:demo"),
+    )
+
+    assert urn == expected_urn
+    assert seen == [expected_urn], (
+        "SecretClient.create must call client._note_recent_secret_change(urn) "
+        "so the query-500 recent-secret fallback can find it."
+    )
+
+
 def test_dataset_client_encode_helper():
     encoded = DatasetClient.encode_path_urn("urn:li:dataset:(s3,my path,PROD)")
     assert "%2F" in encoded or "%28" in encoded
