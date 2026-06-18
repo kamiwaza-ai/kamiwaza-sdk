@@ -367,6 +367,31 @@ class AgentService(BaseService):
 # defensively so a backend that names it differently still surfaces a clear
 # error instead of degrading to a generic timeout.
 _ERROR_EVENT_KINDS = frozenset({"AgentErrorEvent", "ConversationErrorEvent"})
+_DONE_EXECUTION_STATUSES = frozenset({"finished", "completed", "done"})
+_ERROR_EXECUTION_STATUSES = frozenset({"error", "failed"})
+_READY_CONTAINER_STATUSES = frozenset({"active", "ready", "running", "serving"})
+_PENDING_CONTAINER_STATUSES = frozenset(
+    {
+        "creating",
+        "initializing",
+        "pending",
+        "provisioning",
+        "pulling",
+        "starting",
+        "waiting",
+    }
+)
+_TERMINAL_CONTAINER_STATUSES = frozenset(
+    {"deleted", "error", "failed", "stopped", "suspended"}
+)
+
+
+def _normalized_status(value: Optional[str]) -> Optional[str]:
+    """Normalize a Kaizen status value for case-insensitive comparisons."""
+    if value is None:
+        return None
+    status = str(value).strip().lower()
+    return status or None
 
 
 def _agent_error_from_events(events: List[Dict[str, Any]]) -> Optional[str]:
@@ -393,6 +418,16 @@ def _has_finish_action(events: List[Dict[str, Any]]) -> bool:
         and (event.get("action") or {}).get("kind") == "FinishAction"
         for event in events
     )
+
+
+def _assistant_text(message_obj: Dict[str, Any]) -> Optional[str]:
+    """Return the joined text blocks from an assistant message, or None."""
+    text = "".join(
+        block.get("text", "")
+        for block in (message_obj.get("content") or [])
+        if isinstance(block, dict) and block.get("type") == "text"
+    ).strip()
+    return text or None
 
 
 def _reply_from_events(events: List[Dict[str, Any]]) -> Optional[str]:
@@ -424,11 +459,9 @@ def _reply_from_events(events: List[Dict[str, Any]]) -> Optional[str]:
         message_obj = event.get("llm_message") or {}
         if message_obj.get("role") != "assistant":
             continue
-        text = "".join(
-            block.get("text", "")
-            for block in (message_obj.get("content") or [])
-            if isinstance(block, dict) and block.get("type") == "text"
-        ).strip()
+        if message_obj.get("tool_calls") or event.get("tool_calls"):
+            continue
+        text = _assistant_text(message_obj)
         if text:
             reply = text
     return reply
@@ -480,6 +513,69 @@ class ConversationService(BaseService):
             headers=_workroom_headers(workroom_id),
         )
         return Conversation.model_validate(response)
+
+    def get(
+        self,
+        conversation_id: str,
+        *,
+        base_url: str,
+        workroom_id: Optional[Union[str, object]] = None,
+    ) -> Conversation:
+        """Fetch a conversation, including execution/container status."""
+        response = self.client._request(
+            "GET",
+            f"api/conversations/{conversation_id}",
+            base_url=base_url,
+            headers=_workroom_headers(workroom_id),
+        )
+        return Conversation.model_validate(response)
+
+    def wait_until_ready(
+        self,
+        conversation_id: str,
+        *,
+        base_url: str,
+        workroom_id: Optional[Union[str, object]] = None,
+        timeout_seconds: float = 120.0,
+        poll_interval_seconds: float = 3.0,
+    ) -> Conversation:
+        """Wait until the conversation sandbox is active before messaging it.
+
+        Conversation creation can return while a cold sandbox is still coming
+        up. Poll the conversation's ``container_status`` and fail before sending
+        a message if the sandbox reaches a known terminal non-serving state.
+        Older Kaizen builds may omit this optional field; in that case, proceed
+        optimistically to preserve the pre-readiness-check behavior.
+        """
+        if timeout_seconds < 0:
+            raise ValueError(
+                "timeout_seconds must be zero or a positive number of seconds."
+            )
+
+        deadline = time.monotonic() + timeout_seconds
+        last_status: Optional[str] = None
+        while True:
+            conversation = self.get(
+                conversation_id, base_url=base_url, workroom_id=workroom_id
+            )
+            last_status = _normalized_status(conversation.container_status)
+            if last_status in _READY_CONTAINER_STATUSES:
+                return conversation
+            if last_status in _TERMINAL_CONTAINER_STATUSES:
+                raise ConversationError(
+                    f"Conversation {conversation_id} sandbox is not ready "
+                    f"(container_status={last_status})."
+                )
+            if last_status is None or last_status not in _PENDING_CONTAINER_STATUSES:
+                return conversation
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"Conversation {conversation_id} sandbox not ready after "
+                    f"{timeout_seconds:g}s (container_status={last_status or 'unknown'})."
+                )
+            time.sleep(max(0.0, min(poll_interval_seconds, remaining)))
 
     def send_message(
         self,
@@ -566,12 +662,12 @@ class ConversationService(BaseService):
         waits up to that long and returns the reply text; ``0`` is fire-and-forget
         — the message is sent and the run triggered, but the method returns
         ``None`` immediately without waiting. The reply is taken only once the
-        agent's run is terminal (a ``finish`` action or an error event), so an
-        interim assistant narration before the final answer is never mistaken
-        for the reply. Only this turn's events are considered (the pre-run event
-        count is the read offset), and only the first page of them
-        (``get_events`` default ``limit``); a verification turn is a handful of
-        events, so this is not paginated.
+        agent's run is terminal (a ``finish`` action, an error event, or a
+        completed conversation status), so an interim assistant narration before
+        the final answer is never mistaken for the reply. Only this turn's
+        events are considered (the pre-run event count is the read offset), and
+        only the first page of them (``get_events`` default ``limit``); a
+        verification turn is a handful of events, so this is not paginated.
 
         Args:
             conversation_id: The conversation to post to.
@@ -610,6 +706,16 @@ class ConversationService(BaseService):
 
         deadline = time.monotonic() + timeout_seconds
         while True:
+            conversation = self.get(
+                conversation_id, base_url=base_url, workroom_id=workroom_id
+            )
+            execution_status = _normalized_status(conversation.execution_status)
+            if execution_status in _ERROR_EXECUTION_STATUSES:
+                raise ConversationError(
+                    f"Agent errored on conversation {conversation_id} "
+                    f"(execution_status={execution_status})."
+                )
+
             new_events = self.get_events(
                 conversation_id,
                 base_url=base_url,
@@ -626,6 +732,21 @@ class ConversationService(BaseService):
                 # or the last assistant text if finish carried none, or None).
                 # Don't accept interim assistant narration before this point.
                 return _reply_from_events(new_events)
+            reply = _reply_from_events(new_events)
+            if execution_status in _DONE_EXECUTION_STATUSES:
+                return reply
+            if reply:
+                conversation = self.get(
+                    conversation_id, base_url=base_url, workroom_id=workroom_id
+                )
+                execution_status = _normalized_status(conversation.execution_status)
+                if execution_status in _ERROR_EXECUTION_STATUSES:
+                    raise ConversationError(
+                        f"Agent errored on conversation {conversation_id} "
+                        f"(execution_status={execution_status})."
+                    )
+                if execution_status in _DONE_EXECUTION_STATUSES:
+                    return reply
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError(
