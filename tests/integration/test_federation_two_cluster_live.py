@@ -271,9 +271,25 @@ class TestFederationTwoClusterWalkthrough:
     ) -> None:
         """T5.21 — initiator can probe the receiver's capabilities through the
         mesh. Validates the federation:operator ReBAC guard + HMAC signing.
+
+        ENG-7203 regression guard: a 401 here means the receiver stripped the
+        x-kz-mesh-* HMAC headers before ext-authz could verify them (the
+        verify-then-strip deploy fix regressed), so the mesh proxy returned
+        401 "Not authenticated". Any non-401 outcome (a ClusterCapabilities,
+        or a downstream brokered-user 403) means mesh authentication passed —
+        that is the fix working. We fail loudly and specifically on the 401.
         """
+        from kamiwaza_sdk.exceptions import AuthenticationError
+
         proxy = initiator_client.federations[paired_federation["name"]]
-        capabilities = proxy.probe()
+        try:
+            capabilities = proxy.probe()
+        except AuthenticationError as exc:
+            pytest.fail(
+                "ENG-7203 regression: mesh capabilities probe returned 401 "
+                "'Not authenticated' — the receiver stripped the x-kz-mesh-* "
+                f"HMAC headers before ext-authz could verify them: {exc!r}"
+            )
         # probe() raises if the mesh hop or capability schema fails.
         # local_node_id is the schema-declared cluster-identity field
         # (R5 H4 added the declaration). Pin the schema contract — no
