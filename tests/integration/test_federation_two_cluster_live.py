@@ -37,6 +37,38 @@ pytestmark = [
 ]
 
 
+def _mesh_call_or_skip(call):
+    """Run a mesh data-plane call and classify the outcome for ENG-7203.
+
+    * ``AuthenticationError`` (401) -> ``pytest.fail`` naming ENG-7203: the
+      receiver stripped the ``x-kz-mesh-*`` HMAC headers before ext-authz, so the
+      mesh proxy returned 401 "Not authenticated". A live 401 means the
+      verify-then-strip deploy fix regressed.
+    * ``APIError`` status 403 -> ``pytest.skip``: mesh auth PASSED (not the bug);
+      the caller hit a downstream gate (brokered-user allowlist or a missing
+      execution gate). The op-specific assertion needs that precondition.
+    * any other error propagates as a real failure.
+
+    Returns the call result on success.
+    """
+    from kamiwaza_sdk.exceptions import APIError, AuthenticationError
+
+    try:
+        return call()
+    except AuthenticationError as exc:
+        pytest.fail(
+            "ENG-7203 regression: mesh call returned 401 'Not authenticated' — "
+            f"x-kz-mesh-* HMAC stripped before ext-authz on the receiver: {exc!r}"
+        )
+    except APIError as exc:
+        if getattr(exc, "status_code", None) == 403:
+            pytest.skip(
+                "mesh auth verified (not the ENG-7203 401); caller hit a "
+                f"downstream gate (allowlist / execution gate): {exc!r}"
+            )
+        raise
+
+
 @pytest.fixture(scope="module")
 def federation_pair_name() -> str:
     """Per-run unique federation name so re-runs don't collide on stale state."""
@@ -287,31 +319,79 @@ class TestFederationTwoClusterWalkthrough:
 
         Any other error propagates as a real failure.
         """
-        from kamiwaza_sdk.exceptions import APIError, AuthenticationError
-
         proxy = initiator_client.federations[paired_federation["name"]]
-        try:
-            capabilities = proxy.probe()
-        except AuthenticationError as exc:
-            pytest.fail(
-                "ENG-7203 regression: mesh capabilities probe returned 401 "
-                "'Not authenticated' — the receiver stripped the x-kz-mesh-* "
-                f"HMAC headers before ext-authz could verify them: {exc!r}"
-            )
-        except APIError as exc:
-            if getattr(exc, "status_code", None) == 403:
-                pytest.skip(
-                    "mesh auth verified (not the ENG-7203 401); caller not yet "
-                    f"allowlisted on the peer: {exc!r}"
-                )
-            raise
-        # probe() raises if the mesh hop or capability schema fails.
+        capabilities = _mesh_call_or_skip(proxy.probe)
         # local_node_id is the schema-declared cluster-identity field
         # (R5 H4 added the declaration). Pin the schema contract — no
         # fallback chain, no extra="allow" passthrough gymnastics.
         assert (
             capabilities.local_node_id
         ), f"peer capabilities missing local_node_id: {capabilities!r}"
+
+    def test_federated_catalog_list_via_mesh(
+        self,
+        paired_federation: dict[str, str],
+        initiator_client: KamiwazaClient,
+    ) -> None:
+        """FED-06 — list the peer's catalog datasets through the mesh proxy.
+
+        ENG-7203 reachability guard: a 401 means the receiver stripped the mesh
+        HMAC (regression); a 200 list or a downstream brokered-user 403 means
+        mesh auth resolved. Content assertions need a seeded remote catalog —
+        a separate tier.
+        """
+        name = paired_federation["name"]
+        body = _mesh_call_or_skip(
+            lambda: initiator_client._request(
+                "GET", f"/mesh/{name}/api/catalog/datasets/"
+            )
+        )
+        assert isinstance(body, list)
+
+    def test_federated_retrieval_submit_via_mesh(
+        self,
+        paired_federation: dict[str, str],
+        initiator_client: KamiwazaClient,
+    ) -> None:
+        """FED-07 — submit a federated retrieval job through the mesh proxy.
+
+        ENG-7203 reachability guard (401-fail / 403-skip). Row-level result
+        assertions need a seeded remote dataset — a separate tier.
+        """
+        name = paired_federation["name"]
+        resp = _mesh_call_or_skip(
+            lambda: initiator_client._request(
+                "POST",
+                f"/mesh/{name}/api/retrieval/jobs",
+                json={"dataset_urns": [], "query": "eng7203-mesh-ping", "k": 1},
+            )
+        )
+        assert isinstance(resp, dict)
+
+    def test_federated_job_run_via_mesh(
+        self,
+        paired_federation: dict[str, str],
+        initiator_client: KamiwazaClient,
+    ) -> None:
+        """FED-19 — submit+run a federated Ray job through the mesh proxy.
+
+        ENG-7203 reachability guard (401-fail / 403-skip; a 403
+        no_execution_gate_configured_for_mesh is the mesh-auth-passed gate, not
+        the bug). SUCCEEDED + source=='mesh' assertions need an
+        AllowAllExecutionGate-enabled receiver — a separate tier.
+        """
+        name = paired_federation["name"]
+        resp = _mesh_call_or_skip(
+            lambda: initiator_client._request(
+                "POST",
+                f"/mesh/{name}/api/cluster/jobs/run",
+                json={
+                    "entrypoint": "python -c \"print('FED19-MESH-OK')\"",
+                    "timeout_seconds": 120,
+                },
+            )
+        )
+        assert isinstance(resp, dict)
 
     def test_brokered_user_allowlist_round_trip(
         self,
