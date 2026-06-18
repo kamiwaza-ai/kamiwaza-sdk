@@ -1400,7 +1400,10 @@ def _require_two_clusters_for_marked_tests(request: pytest.FixtureRequest) -> No
         return
     peer_url = str(request.config.getoption("live_peer_base_url")).strip()
     peer_key = str(request.config.getoption("live_peer_api_key")).strip()
-    peer_password = str(request.config.getoption("live_password")).strip()
+    # Use the RESOLVED live_password fixture (kz-login fallback, overridden in
+    # this conftest) rather than the raw --live-password option, so a kz-login
+    # credential satisfies the gate the same way the peer fixture consumes it.
+    peer_password = str(request.getfixturevalue("live_password")).strip()
     if not peer_url:
         pytest.skip(
             "requires_two_clusters: set --live-peer-base-url or "
@@ -1494,8 +1497,8 @@ def live_kamiwaza_peer_client(
     if live_password:
         client = KamiwazaClient(live_peer_base_url, verify=False)
         client.authenticator = UserPasswordAuthenticator(
-            live_username,
-            live_password,
+            live_username.strip(),
+            live_password.strip(),
             client._auth_service,
             token_store=_NoCacheTokenStore(),
         )

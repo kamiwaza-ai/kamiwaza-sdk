@@ -62,6 +62,12 @@ def _mesh_call_or_skip(call):
             f"x-kz-mesh-* HMAC stripped before ext-authz on the receiver: {exc!r}"
         )
     except APIError as exc:
+        # 403 = downstream gate (allowlist / execution gate); 404 = reached the
+        # receiver but the resource/dataset isn't seeded. Both prove the mesh
+        # path is alive, so they skip. Trade-off: a 404 from a genuinely
+        # broken/renamed mesh route is also downgraded to a skip — the
+        # 401/ENG-7203 hard-fail signal is preserved, but 404 is a broad bucket
+        # and weakens route-regression detection here.
         if getattr(exc, "status_code", None) in (403, 404):
             pytest.skip(
                 "mesh auth verified (not the ENG-7203 401); caller reached the "
@@ -115,6 +121,11 @@ def initiator_cluster_uuid(
     widened, any-authenticated surface.
     """
     feds = receiver_client._request("GET", "/cluster/federations") or []
+    if isinstance(feds, dict):
+        # Paginated {"items": [...]} shape — iterating the dict directly would
+        # walk keys and AttributeError on f.get(...). Normalize like the SDK's
+        # own _resolve_id does.
+        feds = feds.get("items") or []
     record = next(
         (f for f in feds if str(f.get("id")) == paired_federation["receiver_id"]),
         None,
@@ -487,6 +498,17 @@ class TestFederationTwoClusterWalkthrough:
         assert (
             result.status == "SUCCEEDED"
         ), f"federated job did not succeed: status={result.status} result={result}"
+        # Guard against a /result parse regression masquerading as an unmet
+        # precondition: our marker payload carried probe="eng7284", so it MUST
+        # round-trip through /result -> JobResult before we trust an empty
+        # audit_actor as "no identity injected" rather than "marker parse broke".
+        marker_probe = getattr(result, "probe", None) or (
+            result.result.get("probe") if isinstance(result.result, dict) else None
+        )
+        assert marker_probe == "eng7284", (
+            "result marker did not round-trip (possible /result parse regression): "
+            f"{result}"
+        )
         if not result.audit_actor:
             pytest.skip(
                 "audit-actor demo-gate precondition unmet: the receiver did not "

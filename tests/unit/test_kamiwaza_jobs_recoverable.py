@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
+
 
 def test_run_recoverable_false_uses_sync_endpoint(mock_client) -> None:
     """Default ``recoverable=False`` hits POST /cluster/jobs/run."""
@@ -82,3 +84,87 @@ def test_run_recoverable_true_forwards_runtime_env_to_submit(mock_client) -> Non
     assert body["target_cluster"] == "ORION"
     assert body["runtime_env"] == {"env_vars": {"X": "1"}}
     assert body["timeout_seconds"] == 300
+
+
+# --- wait() /result parsing (ENG-7284): /result returns the job's
+# KZ_MESH_RUN_ON_JSON:: marker payload, NOT a JobResult; status is
+# authoritative from /status; a 410 (no marker) is tolerated. -------------
+
+
+def _status_terminal(mock_client, job_id: str) -> None:
+    mock_client.expect("GET", f"/cluster/jobs/{job_id}/status", {"status": "SUCCEEDED"})
+
+
+def test_wait_tolerates_410_result_returns_status_only(mock_client) -> None:
+    """A job that emits no marker → /result 410; status is still authoritative."""
+    from kamiwaza_sdk.exceptions import APIError
+    from kamiwaza_sdk.services.jobs_federation import JobsAPI
+
+    jid = "job-410"
+    _status_terminal(mock_client, jid)
+    mock_client.raise_on(
+        "GET", f"/cluster/jobs/{jid}/result", APIError("logs expired", status_code=410)
+    )
+
+    with patch("time.sleep"):
+        result = JobsAPI(client=mock_client).wait(jid, timeout=300)
+
+    assert result.status == "SUCCEEDED"
+    assert result.job_id == jid
+    assert result.result is None
+
+
+def test_wait_injects_job_id_and_status_into_marker_payload(mock_client) -> None:
+    """/result is the bare marker payload (no job_id/status) → both injected."""
+    from kamiwaza_sdk.services.jobs_federation import JobsAPI
+
+    jid = "job-marker"
+    _status_terminal(mock_client, jid)
+    mock_client.expect(
+        "GET",
+        f"/cluster/jobs/{jid}/result",
+        {"audit_actor": "alice@cluster-a", "probe": "eng7284"},
+    )
+
+    with patch("time.sleep"):
+        result = JobsAPI(client=mock_client).wait(jid, timeout=300)
+
+    assert result.job_id == jid
+    assert result.status == "SUCCEEDED"
+    assert result.audit_actor == "alice@cluster-a"
+    assert getattr(result, "probe", None) == "eng7284"
+
+
+def test_wait_authoritative_status_shadows_marker(mock_client) -> None:
+    """A marker key for job_id/status must NOT shadow the authoritative poll
+    values (they're spread last)."""
+    from kamiwaza_sdk.services.jobs_federation import JobsAPI
+
+    jid = "job-real"
+    _status_terminal(mock_client, jid)
+    mock_client.expect(
+        "GET",
+        f"/cluster/jobs/{jid}/result",
+        {"job_id": "WRONG", "status": "FAILED", "audit_actor": "u"},
+    )
+
+    with patch("time.sleep"):
+        result = JobsAPI(client=mock_client).wait(jid, timeout=300)
+
+    assert result.job_id == jid  # not "WRONG"
+    assert result.status == "SUCCEEDED"  # /status wins, not the marker's "FAILED"
+
+
+def test_wait_propagates_non_410_result_error(mock_client) -> None:
+    """Only 410 is tolerated; any other /result error propagates."""
+    from kamiwaza_sdk.exceptions import APIError
+    from kamiwaza_sdk.services.jobs_federation import JobsAPI
+
+    jid = "job-500"
+    _status_terminal(mock_client, jid)
+    mock_client.raise_on(
+        "GET", f"/cluster/jobs/{jid}/result", APIError("server error", status_code=500)
+    )
+
+    with patch("time.sleep"), pytest.raises(APIError):
+        JobsAPI(client=mock_client).wait(jid, timeout=300)
