@@ -448,6 +448,8 @@ def _reply_from_events(events: List[Dict[str, Any]]) -> Optional[str]:
         message_obj = event.get("llm_message") or {}
         if message_obj.get("role") != "assistant":
             continue
+        if message_obj.get("tool_calls") or event.get("tool_calls"):
+            continue
         text = _assistant_text(message_obj)
         if text:
             reply = text
@@ -646,12 +648,11 @@ class ConversationService(BaseService):
         — the message is sent and the run triggered, but the method returns
         ``None`` immediately without waiting. The reply is taken only once the
         agent's run is terminal (a ``finish`` action, an error event, or a
-        completed conversation status with a reply present), so an interim
-        assistant narration before the final answer is never mistaken for the
-        reply. Only this turn's events are considered (the pre-run event count
-        is the read offset), and only the first page of them (``get_events``
-        default ``limit``); a verification turn is a handful of events, so this
-        is not paginated.
+        completed conversation status), so an interim assistant narration before
+        the final answer is never mistaken for the reply. Only this turn's
+        events are considered (the pre-run event count is the read offset), and
+        only the first page of them (``get_events`` default ``limit``); a
+        verification turn is a handful of events, so this is not paginated.
 
         Args:
             conversation_id: The conversation to post to.
@@ -717,7 +718,7 @@ class ConversationService(BaseService):
                 # Don't accept interim assistant narration before this point.
                 return _reply_from_events(new_events)
             reply = _reply_from_events(new_events)
-            if execution_status in _DONE_EXECUTION_STATUSES and reply:
+            if execution_status in _DONE_EXECUTION_STATUSES:
                 return reply
             remaining = deadline - time.monotonic()
             if remaining <= 0:

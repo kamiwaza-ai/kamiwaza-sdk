@@ -650,6 +650,21 @@ def test_reply_from_events_returns_latest_assistant_text():
     assert _reply_from_events(events) == "final answer"
 
 
+def test_reply_from_events_ignores_assistant_tool_call_text():
+    events = [
+        {
+            "kind": "MessageEvent",
+            "tool_calls": [{"id": "call-1"}],
+            "llm_message": {
+                "role": "assistant",
+                "tool_calls": None,
+                "content": [{"type": "text", "text": "Let me search..."}],
+            },
+        }
+    ]
+    assert _reply_from_events(events) is None
+
+
 def test_reply_from_events_joins_text_blocks_and_ignores_images():
     events = [
         {
@@ -799,6 +814,25 @@ def test_chat_returns_plain_assistant_reply_when_execution_finished(monkeypatch)
             poll_interval_seconds=0,
         )
         == "Hello! I'm Kaizen."
+    )
+
+
+def test_chat_returns_none_when_finished_without_final_reply(monkeypatch):
+    import kamiwaza_sdk.services.kaizen as kaizen_mod
+
+    monkeypatch.setattr(kaizen_mod.time, "sleep", lambda _s: None)
+    client = ChatClient(polls=[[]], execution_statuses=["finished"])
+    service = ConversationService(client)
+
+    assert (
+        service.chat(
+            "conv-1",
+            "hi",
+            base_url=KAIZEN_URL,
+            timeout_seconds=1,
+            poll_interval_seconds=0,
+        )
+        is None
     )
 
 
