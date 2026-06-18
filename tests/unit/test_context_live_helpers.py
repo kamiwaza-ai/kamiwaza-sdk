@@ -4,7 +4,10 @@ from uuid import uuid4
 import pytest
 
 from kamiwaza_sdk.exceptions import APIError
+from kamiwaza_sdk.services.context import ContextService
+import tests.integration.test_context_live as context_live
 from tests.integration.test_context_live import (
+    _assert_global_scope_if_exposed,
     _is_workroom_binding_unavailable,
     session_workroom,
 )
@@ -27,6 +30,25 @@ def test_workroom_binding_unavailable_detects_structured_503() -> None:
     )
 
     assert _is_workroom_binding_unavailable(error) is True
+
+
+def test_global_scope_assertion_uses_fixed_global_sentinel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(context_live, "DEFAULT_WORKROOM_ID", str(uuid4()))
+
+    _assert_global_scope_if_exposed(
+        {"workroom_id": ContextService.DEFAULT_WORKROOM_ID}
+    )
+
+
+def test_global_scope_assertion_skips_when_scope_not_exposed() -> None:
+    _assert_global_scope_if_exposed({})
+
+
+def test_global_scope_assertion_rejects_non_global_scope() -> None:
+    with pytest.raises(AssertionError):
+        _assert_global_scope_if_exposed({"workroom_id": str(uuid4())})
 
 
 def test_workroom_binding_unavailable_detects_legacy_503_detail() -> None:

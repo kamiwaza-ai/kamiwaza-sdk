@@ -47,6 +47,14 @@ def _context_service(live_kamiwaza_client) -> ContextService:
     return service
 
 
+def _assert_global_scope_if_exposed(resource: dict[str, object]) -> None:
+    """Assert Global scope when the server includes explicit scope metadata."""
+    workroom_id = resource.get("workroom_id")
+    if workroom_id is None:
+        return
+    assert str(workroom_id) == ContextService.DEFAULT_WORKROOM_ID
+
+
 def _is_workroom_binding_unavailable(error: APIError) -> bool:
     """Return True only for retryable Workrooms enter binding outages."""
     if error.status_code != 503:
@@ -460,6 +468,10 @@ def test_context_vectordb_create_without_workroom_uses_global_scope(
         )
         vectordb_id = created["id"]
         assert vectordb_id
+        _assert_global_scope_if_exposed(created)
+        _wait_for_vectordb_ready(service, vectordb_id)
+        ready = service.get_vectordb(vectordb_id)
+        _assert_global_scope_if_exposed(ready)
     finally:
         if vectordb_id:
             _safe_delete_vectordb(service, vectordb_id)
