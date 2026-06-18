@@ -34,6 +34,7 @@ from kamiwaza_sdk.token_store import StoredToken, TokenStore
 # is loaded by name, not as part of the ``integration`` package).
 sys.path.insert(0, str(Path(__file__).parent))
 import capability_markers as _cap  # noqa: E402
+import peer_auth as _peer_auth  # noqa: E402
 
 DOCKER_COMPOSE_FILE = Path(__file__).parent / "docker" / "docker-compose.yml"
 SEED_SCRIPT = Path(__file__).parent / "docker" / "seed_minio.py"
@@ -1494,19 +1495,42 @@ def live_kamiwaza_peer_client(
     """
     if not live_peer_base_url:
         pytest.skip("requires_two_clusters: KAMIWAZA_PEER_BASE_URL not set")
-    if live_password:
-        client = KamiwazaClient(live_peer_base_url, verify=False)
-        client.authenticator = UserPasswordAuthenticator(
+
+    peer_key = live_peer_api_key.strip()
+    has_password = bool(live_password)
+    has_peer_key = bool(peer_key)
+
+    password_client: KamiwazaClient | None = None
+    probe_ok: bool | None = None
+    if has_password:
+        password_client = KamiwazaClient(live_peer_base_url, verify=False)
+        password_client.authenticator = UserPasswordAuthenticator(
             live_username.strip(),
             live_password.strip(),
-            client._auth_service,
+            password_client._auth_service,
             token_store=_NoCacheTokenStore(),
         )
-        return client
-    if live_peer_api_key:
-        return KamiwazaClient(
-            live_peer_base_url, api_key=live_peer_api_key.strip(), verify=False
-        )
+        # Only probe when a peer key is available to fall back to: the primary
+        # admin password need not match the peer's, so verify the grant works
+        # on THIS peer and switch to the explicit --live-peer-api-key if it
+        # doesn't (ENG-7284 review M#2). With no peer key we keep the legacy
+        # lazy-auth path and add no setup-time failure surface.
+        if has_peer_key:
+            try:
+                password_client.authenticator.authenticate(requests.Session())
+                probe_ok = True
+            except Exception:
+                probe_ok = False
+
+    choice = _peer_auth.choose_peer_auth(
+        has_password=has_password,
+        has_peer_key=has_peer_key,
+        password_probe_ok=probe_ok,
+    )
+    if choice == _peer_auth.PASSWORD:
+        return password_client  # type: ignore[return-value]
+    if choice == _peer_auth.PEER_KEY:
+        return KamiwazaClient(live_peer_base_url, api_key=peer_key, verify=False)
     pytest.skip(
         "requires_two_clusters: peer needs admin password "
         "(--live-username/--live-password) or an admin access-token "

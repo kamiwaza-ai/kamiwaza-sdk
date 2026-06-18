@@ -114,8 +114,10 @@ def test_wait_tolerates_410_result_returns_status_only(mock_client) -> None:
     assert result.result is None
 
 
-def test_wait_injects_job_id_and_status_into_marker_payload(mock_client) -> None:
-    """/result is the bare marker payload (no job_id/status) → both injected."""
+def test_wait_promotes_known_fields_and_nests_job_output(mock_client) -> None:
+    """A declared JobResult field in the marker (audit_actor) promotes to top
+    level; an undeclared key (probe) is the job's own output and nests under
+    .result — NOT spread as a top-level extra."""
     from kamiwaza_sdk.services.jobs_federation import JobsAPI
 
     jid = "job-marker"
@@ -131,13 +133,55 @@ def test_wait_injects_job_id_and_status_into_marker_payload(mock_client) -> None
 
     assert result.job_id == jid
     assert result.status == "SUCCEEDED"
-    assert result.audit_actor == "alice@cluster-a"
-    assert getattr(result, "probe", None) == "eng7284"
+    assert result.audit_actor == "alice@cluster-a"  # declared field → promoted
+    assert result.result == {"probe": "eng7284"}  # undeclared output → nested
+    assert getattr(result, "probe", None) is None  # NOT a top-level extra
+
+
+def test_wait_nests_generic_marker_payload_under_result(mock_client) -> None:
+    """A structured job output like {"answer": 42} must land in .result, honoring
+    the README contract — not as a top-level extra leaving .result None."""
+    from kamiwaza_sdk.services.jobs_federation import JobsAPI
+
+    jid = "job-answer"
+    _status_terminal(mock_client, jid)
+    mock_client.expect(
+        "GET", f"/cluster/jobs/{jid}/result", {"answer": 42}
+    )
+
+    with patch("time.sleep"):
+        result = JobsAPI(client=mock_client).wait(jid, timeout=300)
+
+    assert result.result == {"answer": 42}
+    assert getattr(result, "answer", None) is None
+
+
+def test_wait_promotes_jobresult_shaped_error(mock_client) -> None:
+    """When /result is JobResult-shaped (a FAILED job's {job_id,status,error}),
+    declared fields promote — error must NOT be buried under .result. Locks the
+    contract that the {"answer": 42} nesting fix must not regress."""
+    from kamiwaza_sdk.services.jobs_federation import JobsAPI
+
+    jid = "job-err-shaped"
+    mock_client.expect("GET", f"/cluster/jobs/{jid}/status", {"status": "FAILED"})
+    mock_client.expect(
+        "GET",
+        f"/cluster/jobs/{jid}/result",
+        {"job_id": jid, "status": "FAILED", "error": "TypeError: bad arg"},
+    )
+
+    with patch("time.sleep"):
+        result = JobsAPI(client=mock_client).wait(jid, timeout=300)
+
+    assert result.status == "FAILED"
+    assert result.error == "TypeError: bad arg"  # promoted, not nested
+    assert result.result is None
 
 
 def test_wait_authoritative_status_shadows_marker(mock_client) -> None:
-    """A marker key for job_id/status must NOT shadow the authoritative poll
-    values (they're spread last)."""
+    """A marker carrying job_id/status must NOT override the authoritative poll
+    values: job_id + status are injected last so a colliding marker key cannot
+    shadow them."""
     from kamiwaza_sdk.services.jobs_federation import JobsAPI
 
     jid = "job-real"
@@ -153,6 +197,7 @@ def test_wait_authoritative_status_shadows_marker(mock_client) -> None:
 
     assert result.job_id == jid  # not "WRONG"
     assert result.status == "SUCCEEDED"  # /status wins, not the marker's "FAILED"
+    assert result.audit_actor == "u"  # declared field → promoted
 
 
 def test_wait_propagates_non_410_result_error(mock_client) -> None:

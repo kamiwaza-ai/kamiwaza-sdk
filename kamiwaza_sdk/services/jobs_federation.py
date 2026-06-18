@@ -42,6 +42,16 @@ _POLL_BACKOFF_CAP_SECONDS = 5.0
 
 _TERMINAL_STATES = frozenset({"SUCCEEDED", "FAILED", "STOPPED", "CANCELED"})
 
+# /result can return two shapes: a JobResult-shaped dict (e.g. a FAILED job's
+# {"job_id", "status", "error", ...}) OR the job's own KZ_MESH_RUN_ON_JSON::
+# marker payload (e.g. {"answer": 42}). Keys that are declared JobResult fields
+# are promoted to top level (so a FAILED job's ``error`` and a recoverable
+# job's explicit ``result`` surface as documented); any *other* key is the
+# job's own domain output and nests under ``result`` rather than polluting the
+# top level — which would otherwise leave ``result.result`` empty for a bare
+# ``{"answer": 42}`` output.
+_PROMOTED_MARKER_FIELDS = frozenset(JobResult.model_fields)
+
 
 class JobsAPI(BaseService):
     """Job submission for the local cluster + federated targets."""
@@ -250,8 +260,8 @@ class JobsAPI(BaseService):
             if status in _TERMINAL_STATES:
                 # /result returns the job's KZ_MESH_RUN_ON_JSON:: marker payload
                 # (the job's own structured output) — NOT a JobResult. The
-                # authoritative terminal status comes from /status; merge the two
-                # (job_id + status injected last so a marker key can't shadow them).
+                # authoritative terminal status comes from /status; job_id +
+                # status are injected last so a marker key can't shadow them.
                 # A 410 means the job emitted no marker (it didn't self-report a
                 # result) — status is still authoritative, so don't treat it fatal.
                 payload: dict[str, Any] = {}
@@ -259,11 +269,7 @@ class JobsAPI(BaseService):
                     result_body = self.client._request(
                         "GET", f"/cluster/jobs/{job_id}/result"
                     )
-                    payload = (
-                        result_body
-                        if isinstance(result_body, dict)
-                        else {"result": result_body}
-                    )
+                    payload = self._marker_to_payload(result_body)
                 except APIError as exc:
                     if getattr(exc, "status_code", None) != 410:
                         raise
@@ -279,6 +285,30 @@ class JobsAPI(BaseService):
             status_code=None,
             body={"job_id": job_id, "timeout_seconds": timeout},
         )
+
+    @staticmethod
+    def _marker_to_payload(result_body: Any) -> dict[str, Any]:
+        """Map a /result body into JobResult constructor fields.
+
+        Declared JobResult fields (``_PROMOTED_MARKER_FIELDS``) are promoted to
+        top level; any other key is the job's own domain output and nests under
+        ``result``. A non-dict body wraps as ``{"result": <body>}``. A body of
+        only promoted fields with no domain keys leaves ``result`` unset (None),
+        same as a job that emitted no marker at all.
+        """
+        if not isinstance(result_body, dict):
+            return {"result": result_body}
+        payload: dict[str, Any] = {
+            k: v for k, v in result_body.items() if k in _PROMOTED_MARKER_FIELDS
+        }
+        nested = {
+            k: v for k, v in result_body.items() if k not in _PROMOTED_MARKER_FIELDS
+        }
+        # Only nest domain keys when /result didn't already carry an explicit
+        # ``result`` — don't clobber a JobResult-shaped body's own result field.
+        if nested and "result" not in payload:
+            payload["result"] = nested
+        return payload
 
     @staticmethod
     def _build_run_body(
