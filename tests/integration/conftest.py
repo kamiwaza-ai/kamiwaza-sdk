@@ -1400,15 +1400,18 @@ def _require_two_clusters_for_marked_tests(request: pytest.FixtureRequest) -> No
         return
     peer_url = str(request.config.getoption("live_peer_base_url")).strip()
     peer_key = str(request.config.getoption("live_peer_api_key")).strip()
+    peer_password = str(request.config.getoption("live_password")).strip()
     if not peer_url:
         pytest.skip(
             "requires_two_clusters: set --live-peer-base-url or "
             "KAMIWAZA_PEER_BASE_URL to run."
         )
-    if not peer_key:
+    if not peer_key and not peer_password:
         pytest.skip(
-            "requires_two_clusters: --live-peer-base-url is set but "
-            "--live-peer-api-key / KAMIWAZA_PEER_API_KEY is missing."
+            "requires_two_clusters: --live-peer-base-url is set but no peer "
+            "admin credential — provide --live-username/--live-password "
+            "(preferred) or an admin access-token via --live-peer-api-key "
+            "(a PAT is non-admin)."
         )
 
 
@@ -1467,25 +1470,44 @@ def _enforce_capability_markers(request: pytest.FixtureRequest) -> None:
 def live_kamiwaza_peer_client(
     live_peer_base_url: str,
     live_peer_api_key: str,
+    live_username: str,
+    live_password: str,
 ) -> KamiwazaClient:
     """ENG-5784 — KamiwazaClient bound to the federation peer cluster.
 
-    Only resolves when both KAMIWAZA_PEER_BASE_URL + KAMIWAZA_PEER_API_KEY are
-    configured. Two-cluster tests should depend on this fixture alongside
-    the @pytest.mark.requires_two_clusters marker.
+    Resolves when KAMIWAZA_PEER_BASE_URL is set (alongside the
+    @pytest.mark.requires_two_clusters marker). Auth precedence is chosen for
+    what the two-cluster suite actually does — **admin** operations on the peer
+    (``federations.pair``):
+      - **Admin password** (reusing ``--live-username`` / ``--live-password``)
+        is preferred — it's the reliable admin path.
+      - ``--live-peer-api-key`` is the fallback and, when used, **must be an
+        admin access-token, not a PAT**: a PAT minted via ``/api/auth/pats`` is
+        deliberately non-admin (kamiwaza ``scope_mapping``: "prevents accidental
+        admin PAT minting") and would 403 the pairing setup; an access-token
+        also expires.
 
-    SSL verification is opted out per-client (dev clusters typically run
-    with self-signed certs) so the toggle is scoped to this client rather
-    than mutating process-wide environment.
+    SSL verification is opted out per-client (dev self-signed certs).
     """
     if not live_peer_base_url:
         pytest.skip("requires_two_clusters: KAMIWAZA_PEER_BASE_URL not set")
-    if not live_peer_api_key:
-        pytest.skip("requires_two_clusters: KAMIWAZA_PEER_API_KEY not set")
-    return KamiwazaClient(
-        live_peer_base_url,
-        api_key=live_peer_api_key.strip(),
-        verify=False,
+    if live_password:
+        client = KamiwazaClient(live_peer_base_url, verify=False)
+        client.authenticator = UserPasswordAuthenticator(
+            live_username,
+            live_password,
+            client._auth_service,
+            token_store=_NoCacheTokenStore(),
+        )
+        return client
+    if live_peer_api_key:
+        return KamiwazaClient(
+            live_peer_base_url, api_key=live_peer_api_key.strip(), verify=False
+        )
+    pytest.skip(
+        "requires_two_clusters: peer needs admin password "
+        "(--live-username/--live-password) or an admin access-token "
+        "(--live-peer-api-key; a PAT is non-admin)."
     )
 
 
