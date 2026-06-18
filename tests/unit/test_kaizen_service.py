@@ -535,6 +535,28 @@ def test_conversation_get_events_passes_pagination():
     assert kwargs["headers"] == {"X-Workroom-Id": "wr-1"}
 
 
+def test_conversation_get_returns_status():
+    responses = {
+        ("GET", "api/conversations/conv-1"): {
+            "id": "conv-1",
+            "agent_id": "agent-1",
+            "execution_status": "running",
+            "container_status": "active",
+        }
+    }
+    client = DummyClient(responses)
+    service = ConversationService(client)
+
+    conversation = service.get("conv-1", base_url=KAIZEN_URL, workroom_id="wr-1")
+
+    assert conversation.id == "conv-1"
+    assert conversation.execution_status == "running"
+    assert conversation.container_status == "active"
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("GET", "api/conversations/conv-1")
+    assert kwargs["headers"] == {"X-Workroom-Id": "wr-1"}
+
+
 # --- chat() + event helpers ------------------------------------------------
 
 
@@ -567,9 +589,17 @@ class ChatClient:
     never-answers run keeps returning the same empty list).
     """
 
-    def __init__(self, polls, baseline_total=0):
+    def __init__(
+        self,
+        polls,
+        baseline_total=0,
+        execution_statuses=None,
+        container_statuses=None,
+    ):
         self.polls = list(polls)
         self.baseline_total = baseline_total
+        self.execution_statuses = list(execution_statuses or ["running"])
+        self.container_statuses = list(container_statuses or ["active"])
         self.calls: list[tuple[str, str, dict]] = []
 
     def _request(self, method, path, **kwargs):
@@ -579,6 +609,23 @@ class ChatClient:
                 return {"total": self.baseline_total, "events": []}
             events = self.polls.pop(0) if len(self.polls) > 1 else self.polls[0]
             return {"events": events}
+        if method == "GET" and path.startswith("api/conversations/"):
+            execution_status = (
+                self.execution_statuses.pop(0)
+                if len(self.execution_statuses) > 1
+                else self.execution_statuses[0]
+            )
+            container_status = (
+                self.container_statuses.pop(0)
+                if len(self.container_statuses) > 1
+                else self.container_statuses[0]
+            )
+            return {
+                "id": "conv-1",
+                "agent_id": "agent-1",
+                "execution_status": execution_status,
+                "container_status": container_status,
+            }
         return None  # messages / run -> 204
 
 
@@ -719,6 +766,115 @@ def test_chat_ignores_interim_assistant_text_before_finish(monkeypatch):
     service = ConversationService(client)
 
     assert service.chat("conv-1", "hi", base_url=KAIZEN_URL, poll_interval_seconds=0) == "real answer"
+
+
+def test_chat_returns_plain_assistant_reply_when_execution_finished(monkeypatch):
+    import kamiwaza_sdk.services.kaizen as kaizen_mod
+
+    # Current broken behavior times out after seeing the reply because no
+    # FinishAction is present. The fixed path returns before checking remaining
+    # time once Kaizen marks the execution finished.
+    times = iter([0.0, 2.0])
+    monkeypatch.setattr(kaizen_mod.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(kaizen_mod.time, "sleep", lambda _s: None)
+    plain_reply = [
+        {
+            "kind": "MessageEvent",
+            "llm_message": {
+                "role": "assistant",
+                "tool_calls": None,
+                "content": [{"type": "text", "text": "Hello! I'm Kaizen."}],
+            },
+        }
+    ]
+    client = ChatClient(polls=[plain_reply], execution_statuses=["finished"])
+    service = ConversationService(client)
+
+    assert (
+        service.chat(
+            "conv-1",
+            "hi",
+            base_url=KAIZEN_URL,
+            timeout_seconds=1,
+            poll_interval_seconds=0,
+        )
+        == "Hello! I'm Kaizen."
+    )
+
+
+def test_chat_ignores_plain_assistant_reply_while_execution_running(monkeypatch):
+    import kamiwaza_sdk.services.kaizen as kaizen_mod
+
+    times = iter([0.0, 0.0, 0.0, 2.0])
+    monkeypatch.setattr(kaizen_mod.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(kaizen_mod.time, "sleep", lambda _s: None)
+    plain_reply = [
+        {
+            "kind": "MessageEvent",
+            "llm_message": {
+                "role": "assistant",
+                "tool_calls": None,
+                "content": [{"type": "text", "text": "Let me think..."}],
+            },
+        }
+    ]
+    client = ChatClient(
+        polls=[plain_reply, plain_reply, plain_reply],
+        execution_statuses=["running", "running", "running"],
+    )
+    service = ConversationService(client)
+
+    with pytest.raises(TimeoutError, match="No agent reply"):
+        service.chat(
+            "conv-1",
+            "hi",
+            base_url=KAIZEN_URL,
+            timeout_seconds=1,
+            poll_interval_seconds=0,
+        )
+
+
+def test_chat_raises_conversation_error_on_execution_error_status(monkeypatch):
+    import kamiwaza_sdk.services.kaizen as kaizen_mod
+
+    times = iter([0.0, 2.0])
+    monkeypatch.setattr(kaizen_mod.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(kaizen_mod.time, "sleep", lambda _s: None)
+    client = ChatClient(polls=[[]], execution_statuses=["error"])
+    service = ConversationService(client)
+
+    with pytest.raises(ConversationError, match="execution_status=error"):
+        service.chat("conv-1", "hi", base_url=KAIZEN_URL, timeout_seconds=1)
+
+
+def test_wait_until_ready_polls_until_container_active(monkeypatch):
+    import kamiwaza_sdk.services.kaizen as kaizen_mod
+
+    slept: list[float] = []
+    monkeypatch.setattr(kaizen_mod.time, "sleep", lambda s: slept.append(s))
+    client = ChatClient(
+        polls=[[]],
+        container_statuses=["provisioning", "initializing", "active"],
+    )
+    service = ConversationService(client)
+
+    conversation = service.wait_until_ready(
+        "conv-1", base_url=KAIZEN_URL, timeout_seconds=10, poll_interval_seconds=2
+    )
+
+    assert conversation.container_status == "active"
+    assert slept == [2, 2]
+
+
+def test_wait_until_ready_raises_on_terminal_container_status(monkeypatch):
+    import kamiwaza_sdk.services.kaizen as kaizen_mod
+
+    monkeypatch.setattr(kaizen_mod.time, "sleep", lambda _s: None)
+    client = ChatClient(polls=[[]], container_statuses=["error"])
+    service = ConversationService(client)
+
+    with pytest.raises(ConversationError, match="container_status=error"):
+        service.wait_until_ready("conv-1", base_url=KAIZEN_URL)
 
 
 def test_chat_negative_timeout_raises():

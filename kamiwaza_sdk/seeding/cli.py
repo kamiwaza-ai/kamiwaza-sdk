@@ -302,6 +302,13 @@ def cmd_chat(args: argparse.Namespace, *, client) -> Optional[dict]:
         workroom_id=args.workroom_id,
     )
     try:
+        client.conversations.wait_until_ready(
+            conversation.id,
+            base_url=args.kaizen_base_url,
+            workroom_id=args.workroom_id,
+            timeout_seconds=args.sandbox_timeout,
+            poll_interval_seconds=args.poll_interval,
+        )
         reply = client.conversations.chat(
             conversation.id,
             args.message,
@@ -540,6 +547,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=_non_negative_float,
         default=60.0,
         help="Max seconds to wait for the reply (0 = fire-and-forget, don't wait).",
+    )
+    p.add_argument(
+        "--sandbox-timeout",
+        type=_non_negative_float,
+        default=120.0,
+        help="Max seconds to wait for the agent sandbox before sending the message.",
     )
     p.add_argument(
         "--poll-interval",

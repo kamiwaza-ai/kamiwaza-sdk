@@ -65,6 +65,7 @@ class FakeClient:
         )
         self.conversations = SimpleNamespace(
             create=RecordingService(SimpleNamespace(id="conv-1")),
+            wait_until_ready=RecordingService(SimpleNamespace(id="conv-1")),
             chat=RecordingService("Hello! I am claude."),
         )
         self.skills = SimpleNamespace(
@@ -541,10 +542,55 @@ def test_chat_creates_conversation_and_returns_reply(capsys, monkeypatch):
     chat = client.conversations.chat.calls[0]
     assert chat["args"] == ("conv-1", "hello there")
     assert chat["kwargs"]["workroom_id"] == "wr-1"
+    wait = client.conversations.wait_until_ready.calls[0]
+    assert wait["args"] == ("conv-1",)
+    assert wait["kwargs"]["base_url"] == "https://kamiwaza.test/kaizen"
+    assert wait["kwargs"]["workroom_id"] == "wr-1"
+    assert wait["kwargs"]["timeout_seconds"] == 120.0
     assert json.loads(capsys.readouterr().out) == {
         "conversation_id": "conv-1",
         "reply": "Hello! I am claude.",
     }
+
+
+def test_chat_sandbox_timeout_flag_controls_ready_wait(capsys, monkeypatch):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+
+    _run(
+        [
+            "chat",
+            "--kaizen-base-url",
+            "u",
+            "--agent-id",
+            "a",
+            "--message",
+            "m",
+            "--sandbox-timeout",
+            "9",
+        ],
+        client,
+    )
+
+    assert client.conversations.wait_until_ready.calls[0]["kwargs"]["timeout_seconds"] == 9
+    assert json.loads(capsys.readouterr().out) == {
+        "conversation_id": "conv-1",
+        "reply": "Hello! I am claude.",
+    }
+
+
+def test_chat_sandbox_wait_timeout_exits_before_messaging(monkeypatch):
+    client = FakeClient()
+    client.conversations.wait_until_ready = _raiser(TimeoutError("sandbox not ready"))
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+
+    with pytest.raises(SystemExit, match="sandbox not ready"):
+        _run(
+            ["chat", "--kaizen-base-url", "u", "--agent-id", "a", "--message", "m"],
+            client,
+        )
+
+    assert client.conversations.chat.calls == []
 
 
 def test_chat_raw_prints_bare_reply(capsys, monkeypatch):
