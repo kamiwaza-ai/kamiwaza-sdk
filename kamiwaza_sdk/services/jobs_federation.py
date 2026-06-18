@@ -28,7 +28,7 @@ from __future__ import annotations
 import time
 from typing import Any, Optional
 
-from ..exceptions import MeshJobTimeoutError
+from ..exceptions import APIError, MeshJobTimeoutError
 from ..schemas.federation import JobResult
 from .base_service import BaseService
 
@@ -248,10 +248,28 @@ class JobsAPI(BaseService):
                 status_body.get("status") if isinstance(status_body, dict) else None
             )
             if status in _TERMINAL_STATES:
-                result_body = self.client._request(
-                    "GET", f"/cluster/jobs/{job_id}/result"
+                # /result returns the job's KZ_MESH_RUN_ON_JSON:: marker payload
+                # (the job's own structured output) — NOT a JobResult. The
+                # authoritative terminal status comes from /status; merge the two
+                # (job_id + status injected last so a marker key can't shadow them).
+                # A 410 means the job emitted no marker (it didn't self-report a
+                # result) — status is still authoritative, so don't treat it fatal.
+                payload: dict[str, Any] = {}
+                try:
+                    result_body = self.client._request(
+                        "GET", f"/cluster/jobs/{job_id}/result"
+                    )
+                    payload = (
+                        result_body
+                        if isinstance(result_body, dict)
+                        else {"result": result_body}
+                    )
+                except APIError as exc:
+                    if getattr(exc, "status_code", None) != 410:
+                        raise
+                return JobResult.model_validate(
+                    {**payload, "job_id": str(job_id), "status": status}
                 )
-                return JobResult.model_validate(result_body)
 
             time.sleep(delay)
             delay = min(delay * _POLL_BACKOFF_FACTOR, _POLL_BACKOFF_CAP_SECONDS)
