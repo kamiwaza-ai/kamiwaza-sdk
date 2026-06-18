@@ -114,10 +114,10 @@ def test_wait_tolerates_410_result_returns_status_only(mock_client) -> None:
     assert result.result is None
 
 
-def test_wait_promotes_known_fields_and_nests_job_output(mock_client) -> None:
-    """A declared JobResult field in the marker (audit_actor) promotes to top
-    level; an undeclared key (probe) is the job's own output and nests under
-    .result — NOT spread as a top-level extra."""
+def test_wait_promotes_audit_actor_and_nests_bare_marker(mock_client) -> None:
+    """A bare marker (no job_id+status wrapper) is the job's domain output: it
+    nests under .result, with audit_actor — the OBO-identity bridge — the sole
+    field promoted to top level."""
     from kamiwaza_sdk.services.jobs_federation import JobsAPI
 
     jid = "job-marker"
@@ -133,8 +133,8 @@ def test_wait_promotes_known_fields_and_nests_job_output(mock_client) -> None:
 
     assert result.job_id == jid
     assert result.status == "SUCCEEDED"
-    assert result.audit_actor == "alice@cluster-a"  # declared field → promoted
-    assert result.result == {"probe": "eng7284"}  # undeclared output → nested
+    assert result.audit_actor == "alice@cluster-a"  # the sole promoted field
+    assert result.result == {"probe": "eng7284"}  # domain output nested
     assert getattr(result, "probe", None) is None  # NOT a top-level extra
 
 
@@ -252,3 +252,83 @@ def test_wait_wraps_nondict_result_body(mock_client) -> None:
 
     assert result.result == [1, 2, 3]
     assert result.status == "SUCCEEDED"
+
+
+# --- Bare-marker field-collision regressions (ENG-7284 review High #1). A
+# job's domain output key that happens to be named like a JobResult field must
+# NOT be promoted+validated (would raise) or dropped — it stays opaque under
+# .result. -----------------------------------------------------------------
+
+
+def test_wait_bare_marker_error_dict_does_not_crash(mock_client) -> None:
+    """High#1(a): a bare marker with a non-string ``error`` key must not be
+    promoted to JobResult.error (Optional[str]) — that raised ValidationError,
+    crashing a SUCCEEDED job. It nests, opaque."""
+    from kamiwaza_sdk.services.jobs_federation import JobsAPI
+
+    jid = "job-err-dict"
+    _status_terminal(mock_client, jid)
+    mock_client.expect(
+        "GET", f"/cluster/jobs/{jid}/result", {"error": {"code": 1}, "answer": 42}
+    )
+
+    with patch("time.sleep"):
+        result = JobsAPI(client=mock_client).wait(jid, timeout=300)
+
+    assert result.status == "SUCCEEDED"  # no crash
+    assert result.error is None  # not promoted from domain output
+    assert result.result == {"error": {"code": 1}, "answer": 42}
+
+
+def test_wait_bare_marker_status_key_preserved(mock_client) -> None:
+    """High#1(b): a bare marker's own ``status`` output must survive under
+    .result, not be promoted then overwritten by the authoritative poll."""
+    from kamiwaza_sdk.services.jobs_federation import JobsAPI
+
+    jid = "job-status-key"
+    _status_terminal(mock_client, jid)
+    mock_client.expect(
+        "GET", f"/cluster/jobs/{jid}/result", {"status": "ok", "answer": 42}
+    )
+
+    with patch("time.sleep"):
+        result = JobsAPI(client=mock_client).wait(jid, timeout=300)
+
+    assert result.status == "SUCCEEDED"  # authoritative poll value
+    assert result.result == {"status": "ok", "answer": 42}  # job output intact
+
+
+def test_wait_bare_marker_result_key_not_dropped(mock_client) -> None:
+    """High#1(c): a bare marker with its own ``result`` key must not cause
+    sibling domain keys to be dropped."""
+    from kamiwaza_sdk.services.jobs_federation import JobsAPI
+
+    jid = "job-result-key"
+    _status_terminal(mock_client, jid)
+    mock_client.expect(
+        "GET", f"/cluster/jobs/{jid}/result", {"result": "primary", "answer": 42}
+    )
+
+    with patch("time.sleep"):
+        result = JobsAPI(client=mock_client).wait(jid, timeout=300)
+
+    assert result.result == {"result": "primary", "answer": 42}  # answer kept
+
+
+def test_wait_bare_marker_non_string_audit_actor_stays_nested(mock_client) -> None:
+    """Only a *string* audit_actor is promoted; a colliding non-string value
+    stays opaque under .result rather than raising on the str field."""
+    from kamiwaza_sdk.services.jobs_federation import JobsAPI
+
+    jid = "job-actor-dict"
+    _status_terminal(mock_client, jid)
+    mock_client.expect(
+        "GET", f"/cluster/jobs/{jid}/result", {"audit_actor": {"id": 1}, "answer": 42}
+    )
+
+    with patch("time.sleep"):
+        result = JobsAPI(client=mock_client).wait(jid, timeout=300)
+
+    assert result.status == "SUCCEEDED"  # no crash
+    assert result.audit_actor is None  # non-string → not promoted
+    assert result.result == {"audit_actor": {"id": 1}, "answer": 42}

@@ -42,13 +42,16 @@ _POLL_BACKOFF_CAP_SECONDS = 5.0
 
 _TERMINAL_STATES = frozenset({"SUCCEEDED", "FAILED", "STOPPED", "CANCELED"})
 
-# Declared JobResult fields. In a *bare marker* /result (the job's own
-# KZ_MESH_RUN_ON_JSON:: output, e.g. {"audit_actor": ..., "probe": ...}), these
-# keys promote to top level while any *other* key is the job's domain output and
-# nests under ``result`` — otherwise a bare ``{"answer": 42}`` would leave
-# ``result.result`` empty. A JobResult-shaped /result passes through wholesale
-# instead (see ``_marker_to_payload``), so this set governs only the bare case.
-_PROMOTED_MARKER_FIELDS = frozenset(JobResult.model_fields)
+# A JobResult-shaped /result wrapper is identified by these two required-field
+# keys both present; a body without them is a bare marker (the job's own
+# KZ_MESH_RUN_ON_JSON:: output). See ``_marker_to_payload``.
+_JOBRESULT_WRAPPER_KEYS = ("job_id", "status")
+
+# The single field promoted out of a bare marker: the receiver-injected OBO
+# identity the audit-actor demo surfaces as ``JobResult.audit_actor``. Every
+# other bare-marker key stays opaque under ``result`` (never promoted or
+# validated against a JobResult field type).
+_BARE_MARKER_PROMOTED_FIELD = "audit_actor"
 
 
 class JobsAPI(BaseService):
@@ -288,33 +291,33 @@ class JobsAPI(BaseService):
     def _marker_to_payload(result_body: Any) -> dict[str, Any]:
         """Map a /result body into JobResult constructor fields.
 
+        /result returns one of two shapes, handled by two total rules:
+
+        - **JobResult wrapper** — the server's own JobResult dict, identified by
+          ``job_id`` AND ``status`` both present. Passes through wholesale, so
+          declared fields surface and undeclared keys stay as forward-compat
+          ``extra="allow"`` extras at top level.
+        - **Bare marker** — the job's own KZ_MESH_RUN_ON_JSON:: output, which is
+          opaque domain data. It nests under ``result`` untouched, so a key that
+          happens to be named like a JobResult field (``error``/``status``/
+          ``result``) is never promoted, validated against that field's type
+          (which could raise), or dropped. The one promoted field is
+          ``audit_actor`` (the OBO identity the audit demo surfaces) — and only
+          when it is a string, never a colliding non-string value.
+
         A non-dict body wraps as ``{"result": <body>}``.
-
-        A JobResult-shaped body — the server's wrapper, identified by ``job_id``
-        AND ``status`` both present — passes through wholesale: declared fields
-        plus any undeclared keys stay at top level, preserving forward-compat
-        extras via ``extra="allow"``.
-
-        A bare marker (the job's own KZ_MESH_RUN_ON_JSON:: output) has no such
-        wrapper, so its declared fields (``_PROMOTED_MARKER_FIELDS``) promote and
-        its domain-output keys nest under ``result`` rather than polluting the
-        top level. A bare marker of only promoted fields leaves ``result`` unset
-        (None), same as a job that emitted no marker at all.
         """
         if not isinstance(result_body, dict):
             return {"result": result_body}
-        if "job_id" in result_body and "status" in result_body:
+        if all(k in result_body for k in _JOBRESULT_WRAPPER_KEYS):
             return dict(result_body)
-        payload: dict[str, Any] = {
-            k: v for k, v in result_body.items() if k in _PROMOTED_MARKER_FIELDS
-        }
-        nested = {
-            k: v for k, v in result_body.items() if k not in _PROMOTED_MARKER_FIELDS
-        }
-        # Only nest domain keys when the marker didn't already carry an explicit
-        # ``result`` key — don't clobber it.
-        if nested and "result" not in payload:
-            payload["result"] = nested
+        domain = dict(result_body)
+        payload: dict[str, Any] = {}
+        actor = domain.get(_BARE_MARKER_PROMOTED_FIELD)
+        if isinstance(actor, str):
+            payload[_BARE_MARKER_PROMOTED_FIELD] = domain.pop(_BARE_MARKER_PROMOTED_FIELD)
+        if domain:
+            payload["result"] = domain
         return payload
 
     @staticmethod
