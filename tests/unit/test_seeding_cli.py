@@ -65,13 +65,18 @@ class FakeClient:
         )
         self.conversations = SimpleNamespace(
             create=RecordingService(SimpleNamespace(id="conv-1")),
+            wait_until_ready=RecordingService(
+                SimpleNamespace(id="conv-1", container_status="active")
+            ),
             chat=RecordingService("Hello! I am claude."),
         )
         self.skills = SimpleNamespace(
             import_skill_package=RecordingService(SimpleNamespace(id="skill-1"))
         )
         self.connectors = SimpleNamespace(
-            create_m365=RecordingService(SimpleNamespace(id="conn-1", name="Microsoft 365"))
+            create_m365=RecordingService(
+                SimpleNamespace(id="conn-1", name="Microsoft 365")
+            )
         )
 
 
@@ -144,13 +149,33 @@ def test_secret_env_flags_reject_abbreviation(monkeypatch):
 
     with pytest.raises(SystemExit):
         parser.parse_args(
-            ["register-external-model", "--protocol", "aws_bedrock", "--name", "n",
-             "--region", "r", "--model-id", "m", "--credential", "AWS_CRED"]
+            [
+                "register-external-model",
+                "--protocol",
+                "aws_bedrock",
+                "--name",
+                "n",
+                "--region",
+                "r",
+                "--model-id",
+                "m",
+                "--credential",
+                "AWS_CRED",
+            ]
         )
     with pytest.raises(SystemExit):
         parser.parse_args(
-            ["create-agent", "--kaizen-base-url", "u", "--name", "n", "--model", "m",
-             "--llm-api-key", "LLM_KEY"]
+            [
+                "create-agent",
+                "--kaizen-base-url",
+                "u",
+                "--name",
+                "n",
+                "--model",
+                "m",
+                "--llm-api-key",
+                "LLM_KEY",
+            ]
         )
 
 
@@ -350,10 +375,14 @@ def test_create_agent_missing_llm_api_key_env_exits(monkeypatch):
         _run(
             [
                 "create-agent",
-                "--kaizen-base-url", "https://kamiwaza.test/kaizen",
-                "--name", "a",
-                "--model", "m",
-                "--llm-api-key-env", "MISSING_KEY_VAR",
+                "--kaizen-base-url",
+                "https://kamiwaza.test/kaizen",
+                "--name",
+                "a",
+                "--model",
+                "m",
+                "--llm-api-key-env",
+                "MISSING_KEY_VAR",
             ],
             client,
         )
@@ -459,7 +488,14 @@ def test_deploy_model_engine_name_and_no_wait_pass_through():
     client = FakeClient()
 
     _run(
-        ["deploy-model", "--model-id", "m2", "--engine-name", "external_transcribe", "--no-wait"],
+        [
+            "deploy-model",
+            "--model-id",
+            "m2",
+            "--engine-name",
+            "external_transcribe",
+            "--no-wait",
+        ],
         client,
     )
 
@@ -477,7 +513,10 @@ def test_deploy_model_requires_model_id_or_name():
 def test_deploy_model_converts_wait_failure_to_systemexit():
     # The documented wait=True failure modes must surface as a clean SystemExit,
     # not a raw traceback (matches cmd_resolve_kaizen_url).
-    for exc in (DeploymentFailedError("deploy failed"), TimeoutError("deploy timed out")):
+    for exc in (
+        DeploymentFailedError("deploy failed"),
+        TimeoutError("deploy timed out"),
+    ):
         client = FakeClient()
         client.serving.deploy_model = _raiser(exc)
         with pytest.raises(SystemExit):
@@ -538,6 +577,10 @@ def test_chat_creates_conversation_and_returns_reply(capsys, monkeypatch):
     create = client.conversations.create.calls[0]["kwargs"]
     assert create["agent_id"] == "agent-1"
     assert create["base_url"] == "https://kamiwaza.test/kaizen"
+    # The sandbox must be waited on (between create and chat) before messaging.
+    wait = client.conversations.wait_until_ready.calls[0]
+    assert wait["args"] == ("conv-1",)
+    assert wait["kwargs"]["workroom_id"] == "wr-1"
     chat = client.conversations.chat.calls[0]
     assert chat["args"] == ("conv-1", "hello there")
     assert chat["kwargs"]["workroom_id"] == "wr-1"
@@ -552,7 +595,16 @@ def test_chat_raw_prints_bare_reply(capsys, monkeypatch):
     monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
 
     _run(
-        ["chat", "--kaizen-base-url", "u", "--agent-id", "a", "--message", "m", "--raw"],
+        [
+            "chat",
+            "--kaizen-base-url",
+            "u",
+            "--agent-id",
+            "a",
+            "--message",
+            "m",
+            "--raw",
+        ],
         client,
     )
 
@@ -579,10 +631,14 @@ def test_chat_fire_and_forget_allows_empty_reply(capsys, monkeypatch):
     _run(
         [
             "chat",
-            "--kaizen-base-url", "u",
-            "--agent-id", "a",
-            "--message", "m",
-            "--timeout", "0",
+            "--kaizen-base-url",
+            "u",
+            "--agent-id",
+            "a",
+            "--message",
+            "m",
+            "--timeout",
+            "0",
         ],
         client,
     )
@@ -608,12 +664,38 @@ def test_chat_agent_error_exits_nonzero(monkeypatch):
         )
 
 
+def test_chat_sandbox_never_ready_exits_without_messaging(monkeypatch):
+    client = FakeClient()
+    client.conversations.wait_until_ready = _raiser(
+        TimeoutError("Sandbox container for conversation conv-1 not ready after 120s")
+    )
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+
+    with pytest.raises(SystemExit, match="not ready"):
+        _run(
+            ["chat", "--kaizen-base-url", "u", "--agent-id", "a", "--message", "m"],
+            client,
+        )
+
+    # A sandbox that never comes up must fail before any message is sent.
+    assert client.conversations.chat.calls == []
+
+
 def test_chat_negative_timeout_rejected_by_parser():
     # argparse rejects a negative --timeout before any client call.
     with pytest.raises(SystemExit):
         _run(
-            ["chat", "--kaizen-base-url", "u", "--agent-id", "a", "--message", "m",
-             "--timeout", "-5"],
+            [
+                "chat",
+                "--kaizen-base-url",
+                "u",
+                "--agent-id",
+                "a",
+                "--message",
+                "m",
+                "--timeout",
+                "-5",
+            ],
             FakeClient(),
         )
 

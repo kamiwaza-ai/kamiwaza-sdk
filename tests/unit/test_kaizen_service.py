@@ -125,7 +125,9 @@ def test_resolve_base_url_falls_back_to_api_url():
     # Deployment exposes only api_url (no external/public_api_url).
     extension = SimpleNamespace(
         endpoints=SimpleNamespace(
-            external=None, public_api_url=None, api_url="https://kamiwaza.test/kaizen-api/"
+            external=None,
+            public_api_url=None,
+            api_url="https://kamiwaza.test/kaizen-api/",
         )
     )
     client = SimpleNamespace(
@@ -498,7 +500,9 @@ def test_conversation_send_message_enqueues_without_json_response():
     client = DummyClient(responses)
     service = ConversationService(client)
 
-    result = service.send_message("conv-1", "hello", base_url=KAIZEN_URL, workroom_id="wr-1")
+    result = service.send_message(
+        "conv-1", "hello", base_url=KAIZEN_URL, workroom_id="wr-1"
+    )
 
     assert result is None
     method, path, kwargs = client.calls[0]
@@ -526,7 +530,9 @@ def test_conversation_get_events_passes_pagination():
     client = DummyClient(responses)
     service = ConversationService(client)
 
-    out = service.get_events("conv-1", base_url=KAIZEN_URL, workroom_id="wr-1", offset=5, limit=50)
+    out = service.get_events(
+        "conv-1", base_url=KAIZEN_URL, workroom_id="wr-1", offset=5, limit=50
+    )
 
     assert out == {"events": [], "total": 0}
     method, path, kwargs = client.calls[0]
@@ -562,23 +568,45 @@ def _finish_event(text):
 class ChatClient:
     """Scripts send/run/poll for ConversationService.chat tests.
 
-    The limit=1 baseline read returns ``baseline_total``; subsequent polling
-    reads pop from ``polls`` (the last entry repeats once exhausted, so a
-    never-answers run keeps returning the same empty list).
+    chat() reads the conversation's ``execution_status`` ONCE before the run
+    (the pre-run status, to tell a stale prior-turn status from this turn's),
+    then each wait iteration reads ``execution_status`` and this turn's events.
+    ``pre_status`` is that pre-run read (defaults to the first ``statuses``
+    entry). ``polls`` and ``statuses`` are parallel lists indexed by iteration
+    (the last entry repeats once exhausted). ``statuses`` defaults to ``running``
+    until the final poll, which is ``finished``. The limit=1 baseline read
+    returns ``baseline_total``.
     """
 
-    def __init__(self, polls, baseline_total=0):
+    def __init__(self, polls, statuses=None, pre_status=None, baseline_total=0):
         self.polls = list(polls)
+        if statuses is None:
+            statuses = ["running"] * (len(self.polls) - 1) + ["finished"]
+        self.statuses = list(statuses)
+        self.pre_status = pre_status if pre_status is not None else self.statuses[0]
         self.baseline_total = baseline_total
         self.calls: list[tuple[str, str, dict]] = []
+        self._i = 0  # wait-loop iteration index (events polls)
+        self._status_reads = 0  # GET execution_status reads (pre-run first)
 
     def _request(self, method, path, **kwargs):
         self.calls.append((method, path, kwargs))
         if path.endswith("/events"):
             if kwargs.get("params", {}).get("limit") == 1:
                 return {"total": self.baseline_total, "events": []}
-            events = self.polls.pop(0) if len(self.polls) > 1 else self.polls[0]
+            events = self.polls[min(self._i, len(self.polls) - 1)]
+            self._i += 1  # advance after consuming this iteration's events
             return {"events": events}
+        if method == "GET" and "/conversations/" in path:
+            # First status read is the pre-run capture; the rest are loop reads.
+            if self._status_reads == 0:
+                self._status_reads += 1
+                status = self.pre_status
+            else:
+                idx = self._status_reads - 1
+                self._status_reads += 1
+                status = self.statuses[min(idx, len(self.statuses) - 1)]
+            return {"id": "conv-1", "agent_id": "a", "execution_status": status}
         return None  # messages / run -> 204
 
 
@@ -634,7 +662,9 @@ def test_agent_error_from_events_returns_message_or_none():
     assert _agent_error_from_events([_message_event("ok")]) is None
     # Defensively accept the alternate error-event kind + its `message` field.
     assert (
-        _agent_error_from_events([{"kind": "ConversationErrorEvent", "message": "nope"}])
+        _agent_error_from_events(
+            [{"kind": "ConversationErrorEvent", "message": "nope"}]
+        )
         == "nope"
     )
 
@@ -705,7 +735,10 @@ def test_chat_non_positive_poll_interval_does_not_raise(monkeypatch):
     client = ChatClient(polls=[[], [_finish_event("done")]])
     service = ConversationService(client)
 
-    assert service.chat("conv-1", "hi", base_url=KAIZEN_URL, poll_interval_seconds=-5) == "done"
+    assert (
+        service.chat("conv-1", "hi", base_url=KAIZEN_URL, poll_interval_seconds=-5)
+        == "done"
+    )
     assert slept == [0.0]
 
 
@@ -715,10 +748,15 @@ def test_chat_ignores_interim_assistant_text_before_finish(monkeypatch):
     monkeypatch.setattr(kaizen_mod.time, "sleep", lambda _s: None)
     # First poll: only interim assistant narration, no finish yet — must NOT be
     # returned. Second poll: the terminal finish carries the real answer.
-    client = ChatClient(polls=[[_message_event("Let me think…")], [_finish_event("real answer")]])
+    client = ChatClient(
+        polls=[[_message_event("Let me think…")], [_finish_event("real answer")]]
+    )
     service = ConversationService(client)
 
-    assert service.chat("conv-1", "hi", base_url=KAIZEN_URL, poll_interval_seconds=0) == "real answer"
+    assert (
+        service.chat("conv-1", "hi", base_url=KAIZEN_URL, poll_interval_seconds=0)
+        == "real answer"
+    )
 
 
 def test_chat_negative_timeout_raises():
@@ -763,3 +801,245 @@ def test_chat_times_out_when_no_reply(monkeypatch):
 
     with pytest.raises(TimeoutError, match="No agent reply"):
         service.chat("conv-1", "hi", base_url=KAIZEN_URL, timeout_seconds=1)
+
+
+def test_conversation_get_returns_execution_status():
+    responses = {
+        ("GET", "api/conversations/conv-1"): {
+            "id": "conv-1",
+            "agent_id": "a",
+            "execution_status": "running",
+        }
+    }
+    client = DummyClient(responses)
+    service = ConversationService(client)
+
+    convo = service.get("conv-1", base_url=KAIZEN_URL, workroom_id="wr-1")
+
+    assert convo.execution_status == "running"
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("GET", "api/conversations/conv-1")
+    assert kwargs["headers"] == {"X-Workroom-Id": "wr-1"}
+
+
+def test_chat_returns_plain_assistant_reply_when_run_finished(monkeypatch):
+    import kamiwaza_sdk.services.kaizen as kaizen_mod
+
+    monkeypatch.setattr(kaizen_mod.time, "sleep", lambda _s: None)
+    # The Bedrock-agent shape: the answer is a plain assistant MessageEvent with
+    # no `finish` tool. The real lifecycle is pre-run 'finished' → 'running' →
+    # 'finished'+reply; the reply is returned once the run is observed finished
+    # (after it left the pre-run status, so a stale 'finished' can't short-circuit).
+    client = ChatClient(
+        polls=[[], [_message_event("Hello! I'm Kaizen.")]],
+        statuses=["running", "finished"],
+        pre_status="finished",
+    )
+    service = ConversationService(client)
+
+    assert (
+        service.chat("conv-1", "hi", base_url=KAIZEN_URL, poll_interval_seconds=0)
+        == "Hello! I'm Kaizen."
+    )
+
+
+def test_chat_ignores_interim_message_under_stale_finished_status(monkeypatch):
+    import kamiwaza_sdk.services.kaizen as kaizen_mod
+
+    monkeypatch.setattr(kaizen_mod.time, "sleep", lambda _s: None)
+    # Race guard: pre-run status is a stale 'finished', and the first poll still
+    # shows 'finished' while an INTERIM assistant message has landed before the
+    # run flips to 'running'. That interim text must NOT be returned; only the
+    # message present once the run is observed underway and finished is the reply.
+    client = ChatClient(
+        polls=[
+            [_message_event("thinking…")],
+            [_message_event("thinking…")],
+            [_message_event("thinking…"), _message_event("final answer")],
+        ],
+        statuses=["finished", "running", "finished"],
+        pre_status="finished",
+    )
+    service = ConversationService(client)
+
+    assert (
+        service.chat("conv-1", "hi", base_url=KAIZEN_URL, poll_interval_seconds=0)
+        == "final answer"
+    )
+
+
+def test_chat_ignores_assistant_text_while_run_still_running(monkeypatch):
+    import kamiwaza_sdk.services.kaizen as kaizen_mod
+
+    monkeypatch.setattr(kaizen_mod.time, "sleep", lambda _s: None)
+    # An assistant message present while the run is still 'running' (interim
+    # narration / thinking) must NOT be taken as the answer; only the message
+    # present once the run reports 'finished' is the reply.
+    client = ChatClient(
+        polls=[[_message_event("working on it…")], [_message_event("final answer")]],
+        statuses=["running", "finished"],
+    )
+    service = ConversationService(client)
+
+    assert (
+        service.chat("conv-1", "hi", base_url=KAIZEN_URL, poll_interval_seconds=0)
+        == "final answer"
+    )
+
+
+def test_chat_raises_when_execution_status_failed(monkeypatch):
+    import kamiwaza_sdk.services.kaizen as kaizen_mod
+
+    monkeypatch.setattr(kaizen_mod.time, "sleep", lambda _s: None)
+    # A run that fails after starting (e.g. the bound model isn't actually
+    # deployed) surfaces an error status once underway; chat() must fault, never
+    # report a false success.
+    client = ChatClient(polls=[[], []], statuses=["running", "error"])
+    service = ConversationService(client)
+
+    with pytest.raises(ConversationError, match="status 'error'"):
+        service.chat("conv-1", "hi", base_url=KAIZEN_URL)
+
+
+def test_chat_raises_when_run_reports_stuck(monkeypatch):
+    import kamiwaza_sdk.services.kaizen as kaizen_mod
+
+    monkeypatch.setattr(kaizen_mod.time, "sleep", lambda _s: None)
+    # Kaizen's stuck-loop detection is terminal-but-not-success: fail fast
+    # instead of polling out the whole timeout.
+    client = ChatClient(polls=[[], []], statuses=["running", "stuck"])
+    service = ConversationService(client)
+
+    with pytest.raises(ConversationError, match="status 'stuck'"):
+        service.chat("conv-1", "hi", base_url=KAIZEN_URL)
+
+
+def test_chat_fast_fails_on_fresh_error_status(monkeypatch):
+    import kamiwaza_sdk.services.kaizen as kaizen_mod
+
+    monkeypatch.setattr(kaizen_mod.time, "sleep", lambda _s: None)
+    # Fresh conversation: pre-run status is 'finished', and the run fails so fast
+    # the first poll already shows 'error' with no events yet. Because that
+    # differs from the pre-run status it's THIS turn's failure — raise promptly,
+    # don't poll out the whole timeout.
+    client = ChatClient(polls=[[]], statuses=["error"], pre_status="finished")
+    service = ConversationService(client)
+
+    with pytest.raises(ConversationError, match="status 'error'"):
+        service.chat("conv-1", "hi", base_url=KAIZEN_URL)
+
+
+def test_chat_ignores_stale_terminal_status_until_run_starts(monkeypatch):
+    import kamiwaza_sdk.services.kaizen as kaizen_mod
+
+    monkeypatch.setattr(kaizen_mod.time, "sleep", lambda _s: None)
+    # Reused conversation: the first poll still shows the PRIOR turn's terminal
+    # 'error' status before run() flips it to 'running'. chat() must not fault on
+    # that stale status — it should wait for this turn and return its reply.
+    client = ChatClient(
+        polls=[[], [_message_event("fresh answer")]],
+        statuses=["error", "finished"],
+    )
+    service = ConversationService(client)
+
+    assert (
+        service.chat("conv-1", "hi", base_url=KAIZEN_URL, poll_interval_seconds=0)
+        == "fresh answer"
+    )
+
+
+def test_chat_times_out_when_run_stuck_awaiting_confirmation(monkeypatch):
+    import kamiwaza_sdk.services.kaizen as kaizen_mod
+
+    times = iter([0.0, 0.0, 5.0])
+    monkeypatch.setattr(kaizen_mod.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(kaizen_mod.time, "sleep", lambda _s: None)
+    # A run stalled at waiting_for_confirmation is neither done nor failed: it
+    # must time out, not return the interim assistant message as the reply.
+    client = ChatClient(
+        polls=[[_message_event("Shall I proceed?")]],
+        statuses=["waiting_for_confirmation"],
+    )
+    service = ConversationService(client)
+
+    with pytest.raises(TimeoutError, match="No agent reply"):
+        service.chat("conv-1", "hi", base_url=KAIZEN_URL, timeout_seconds=1)
+
+
+# --- wait_until_ready (sandbox readiness) ----------------------------------
+
+
+class SandboxClient:
+    """Serves a scripted sequence of container_status values from the GET."""
+
+    def __init__(self, container_statuses):
+        self.container_statuses = list(container_statuses)
+        self.calls: list[tuple[str, str, dict]] = []
+        self._i = 0
+
+    def _request(self, method, path, **kwargs):
+        self.calls.append((method, path, kwargs))
+        status = self.container_statuses[min(self._i, len(self.container_statuses) - 1)]
+        self._i += 1
+        return {"id": "conv-1", "agent_id": "a", "container_status": status}
+
+
+def test_wait_until_ready_returns_when_active(monkeypatch):
+    import kamiwaza_sdk.services.kaizen as kaizen_mod
+
+    slept: list = []
+    monkeypatch.setattr(kaizen_mod.time, "sleep", lambda s: slept.append(s))
+    client = SandboxClient(["active"])
+    service = ConversationService(client)
+
+    convo = service.wait_until_ready("conv-1", base_url=KAIZEN_URL, workroom_id="wr-1")
+
+    assert convo.container_status == "active"
+    assert slept == []  # already active on the first read
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("GET", "api/conversations/conv-1")
+    assert kwargs["headers"] == {"X-Workroom-Id": "wr-1"}
+
+
+def test_wait_until_ready_polls_through_provisioning(monkeypatch):
+    import kamiwaza_sdk.services.kaizen as kaizen_mod
+
+    slept: list = []
+    monkeypatch.setattr(kaizen_mod.time, "sleep", lambda s: slept.append(s))
+    # A fresh box: the container starts provisioning and only later goes active.
+    client = SandboxClient(["initializing", "provisioning", "active"])
+    service = ConversationService(client)
+
+    service.wait_until_ready("conv-1", base_url=KAIZEN_URL, poll_interval_seconds=0)
+
+    assert slept == [0, 0]  # slept between the three reads
+
+
+def test_wait_until_ready_raises_on_terminal_container_status(monkeypatch):
+    import kamiwaza_sdk.services.kaizen as kaizen_mod
+
+    monkeypatch.setattr(kaizen_mod.time, "sleep", lambda _s: None)
+    client = SandboxClient(["suspended"])
+    service = ConversationService(client)
+
+    with pytest.raises(ConversationError, match="status 'suspended'"):
+        service.wait_until_ready("conv-1", base_url=KAIZEN_URL)
+
+
+def test_wait_until_ready_times_out(monkeypatch):
+    import kamiwaza_sdk.services.kaizen as kaizen_mod
+
+    times = iter([0.0, 0.0, 5.0])
+    monkeypatch.setattr(kaizen_mod.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(kaizen_mod.time, "sleep", lambda _s: None)
+    client = SandboxClient(["pending"])  # never goes active
+    service = ConversationService(client)
+
+    with pytest.raises(TimeoutError, match="not ready after"):
+        service.wait_until_ready("conv-1", base_url=KAIZEN_URL, timeout_seconds=1)
+
+
+def test_wait_until_ready_negative_timeout_raises():
+    service = ConversationService(SandboxClient(["active"]))
+    with pytest.raises(ValueError, match="zero or a positive"):
+        service.wait_until_ready("conv-1", base_url=KAIZEN_URL, timeout_seconds=-1)

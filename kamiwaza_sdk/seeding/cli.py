@@ -169,7 +169,9 @@ def _resolve_model_id(client, model_id: Optional[str], name: Optional[str]) -> s
     if model_id:
         return model_id
     matches = [
-        m for m in client.models.list_models() if (getattr(m, "name", None) or "") == name
+        m
+        for m in client.models.list_models()
+        if (getattr(m, "name", None) or "") == name
     ]
     if not matches:
         raise SystemExit(f"No registered model named '{name}'.")
@@ -217,7 +219,9 @@ def cmd_deploy_model(args: argparse.Namespace, *, client) -> dict:
         # the nightly profile.
         raise SystemExit(str(exc))
     if not deployment_id:
-        raise SystemExit(f"Deploy request for model {model_id} was refused by the server.")
+        raise SystemExit(
+            f"Deploy request for model {model_id} was refused by the server."
+        )
     result = {"deployment_id": str(deployment_id)}
     endpoint = _deployment_endpoint(client, deployment_id)
     if endpoint:
@@ -288,11 +292,12 @@ def cmd_create_conversation(args: argparse.Namespace, *, client) -> dict:
 def cmd_chat(args: argparse.Namespace, *, client) -> Optional[dict]:
     """Send a prompt to an agent and return its reply (exercises it end to end).
 
-    Opens a fresh conversation against ``--agent-id``, sends ``--message``, and
-    (with a positive ``--timeout``) waits for the agent's reply — proving the
-    agent can actually respond, not just that it was created. ``--raw`` prints
-    only the reply text. Exits non-zero on an agent error, an empty reply, or a
-    wait timeout (mirrors cmd_deploy_model / cmd_resolve_kaizen_url).
+    Opens a fresh conversation against ``--agent-id``, waits for its sandbox
+    container to come up, sends ``--message``, and (with a positive ``--timeout``)
+    waits for the agent's reply — proving the agent can actually respond, not just
+    that it was created. ``--raw`` prints only the reply text. Exits non-zero on a
+    sandbox that never comes up, an agent error, an empty reply, or a wait timeout
+    (mirrors cmd_deploy_model / cmd_resolve_kaizen_url).
     """
     client = _client_for_workroom(client, args.workroom_id)
     conversation = client.conversations.create(
@@ -302,6 +307,16 @@ def cmd_chat(args: argparse.Namespace, *, client) -> Optional[dict]:
         workroom_id=args.workroom_id,
     )
     try:
+        # create() provisions the sandbox container but it may still be starting
+        # on a fresh box; wait for it to be active before messaging (a stalled
+        # sandbox would otherwise look like an empty/timed-out reply).
+        client.conversations.wait_until_ready(
+            conversation.id,
+            base_url=args.kaizen_base_url,
+            workroom_id=args.workroom_id,
+            timeout_seconds=args.sandbox_timeout,
+            poll_interval_seconds=args.poll_interval,
+        )
         reply = client.conversations.chat(
             conversation.id,
             args.message,
@@ -372,7 +387,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--raw",
         action="store_true",
-        help="Print only the bare token (for KAMIWAZA_API_KEY=\"$(... --raw)\").",
+        help='Print only the bare token (for KAMIWAZA_API_KEY="$(... --raw)").',
     )
     p.set_defaults(func=cmd_login)
 
@@ -425,8 +440,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Deploy a registered model so it's callable (external models need this before an agent can bind).",
     )
     g = p.add_mutually_exclusive_group(required=True)
-    g.add_argument("--model-id", default=None, help="ID of a registered model to deploy.")
-    g.add_argument("--name", default=None, help="Name of a registered model to resolve, then deploy.")
+    g.add_argument(
+        "--model-id", default=None, help="ID of a registered model to deploy."
+    )
+    g.add_argument(
+        "--name",
+        default=None,
+        help="Name of a registered model to resolve, then deploy.",
+    )
     p.add_argument(
         "--engine-name",
         default="external_chat",
@@ -440,8 +461,15 @@ def build_parser() -> argparse.ArgumentParser:
             "The endpoint is omitted from the output until the deployment is DEPLOYED."
         ),
     )
-    p.add_argument("--timeout", type=int, default=600, help="Max seconds to wait for DEPLOYED.")
-    p.add_argument("--poll-interval", type=float, default=5.0, help="Seconds between readiness polls.")
+    p.add_argument(
+        "--timeout", type=int, default=600, help="Max seconds to wait for DEPLOYED."
+    )
+    p.add_argument(
+        "--poll-interval",
+        type=float,
+        default=5.0,
+        help="Seconds between readiness polls.",
+    )
     p.set_defaults(func=cmd_deploy_model)
 
     p = sub.add_parser(
@@ -542,6 +570,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Max seconds to wait for the reply (0 = fire-and-forget, don't wait).",
     )
     p.add_argument(
+        "--sandbox-timeout",
+        type=_non_negative_float,
+        default=120.0,
+        help="Max seconds to wait for the conversation sandbox to come up "
+        "before messaging (default: 120; a fresh box can be slow).",
+    )
+    p.add_argument(
         "--poll-interval",
         type=float,
         default=3.0,
@@ -557,10 +592,18 @@ def build_parser() -> argparse.ArgumentParser:
         "configure-m365",
         help="Register the cluster-wide M365 connector (tenant + client id).",
     )
-    p.add_argument("--tenant-id", required=True, help="Azure AD tenant ID (not secret).")
-    p.add_argument("--client-id", required=True, help="App-registration client ID (not secret).")
+    p.add_argument(
+        "--tenant-id", required=True, help="Azure AD tenant ID (not secret)."
+    )
+    p.add_argument(
+        "--client-id", required=True, help="App-registration client ID (not secret)."
+    )
     p.add_argument("--name", default="Microsoft 365")
-    p.add_argument("--scope", action="append", help="Graph scope (repeatable; defaults to the standard set).")
+    p.add_argument(
+        "--scope",
+        action="append",
+        help="Graph scope (repeatable; defaults to the standard set).",
+    )
     p.set_defaults(func=cmd_configure_m365)
 
     return parser

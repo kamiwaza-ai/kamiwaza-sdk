@@ -368,6 +368,27 @@ class AgentService(BaseService):
 # error instead of degrading to a generic timeout.
 _ERROR_EVENT_KINDS = frozenset({"AgentErrorEvent", "ConversationErrorEvent"})
 
+# ``execution_status`` is the authoritative "turn has settled" signal. An agent
+# that replies with a plain assistant message and never calls the ``finish`` tool
+# emits no FinishAction, so events alone can't tell us the run is done — the
+# status can. Reading the reply only at a DONE status keeps interim narration
+# (emitted while ``running``) from being taken as the final answer.
+_RUN_DONE_STATUSES = frozenset({"finished", "completed", "done"})
+# ``stuck`` is Kaizen's stuck-loop-detection status: terminal but not a success,
+# so fail fast on it rather than polling out the whole timeout.
+_RUN_FAILED_STATUSES = frozenset({"error", "errored", "failed", "stuck"})
+
+# A conversation's sandbox container (``container_status``) must be ``active``
+# before the agent can process a message. On a fresh box that container can take
+# a while to provision (``initializing``/``pending``/``provisioning``), so
+# sending a message before it's up races the sandbox; :meth:`wait_until_ready`
+# polls until it's active. ``suspended``/``stopped``/``error``/``deleted`` mean
+# it won't come up — fail rather than wait out the timeout.
+_CONTAINER_READY_STATUS = "active"
+_CONTAINER_FAILED_STATUSES = frozenset(
+    {"error", "errored", "failed", "stopped", "suspended", "deleted", "terminated"}
+)
+
 
 def _agent_error_from_events(events: List[Dict[str, Any]]) -> Optional[str]:
     """Return an agent error message from a list of event payloads, or None.
@@ -546,6 +567,75 @@ class ConversationService(BaseService):
             headers=_workroom_headers(workroom_id),
         )
 
+    def get(
+        self,
+        conversation_id: str,
+        *,
+        base_url: str,
+        workroom_id: Optional[Union[str, object]] = None,
+    ) -> Conversation:
+        """Fetch a conversation, including its ``execution_status``.
+
+        ``execution_status`` reports whether the agent's run is still working
+        (``running``) or has settled (``finished``/``error``); :meth:`chat` polls
+        it to know when a reply is ready.
+        """
+        response = self.client._request(
+            "GET",
+            f"api/conversations/{conversation_id}",
+            base_url=base_url,
+            headers=_workroom_headers(workroom_id),
+        )
+        return Conversation.model_validate(response)
+
+    def wait_until_ready(
+        self,
+        conversation_id: str,
+        *,
+        base_url: str,
+        workroom_id: Optional[Union[str, object]] = None,
+        timeout_seconds: float = 120.0,
+        poll_interval_seconds: float = 5.0,
+    ) -> Conversation:
+        """Poll until the conversation's sandbox container is ``active``.
+
+        :meth:`create` provisions a per-conversation sandbox container, but on a
+        fresh box that can take a while to come up; sending a message before it's
+        ready races the sandbox. This waits for ``container_status == "active"``
+        (mirrors :func:`wait_for_base_url` for the extension ingress). Returns the
+        ready :class:`Conversation`.
+
+        Raises:
+            ValueError: ``timeout_seconds`` is negative.
+            ConversationError: the container reached a terminal non-serving status
+                (``suspended``/``stopped``/``error``/…) — it won't become ready.
+            TimeoutError: the container was not ``active`` within the budget.
+        """
+        if timeout_seconds < 0:
+            raise ValueError(
+                "timeout_seconds must be zero or a positive number of seconds."
+            )
+        deadline = time.monotonic() + timeout_seconds
+        while True:
+            conversation = self.get(
+                conversation_id, base_url=base_url, workroom_id=workroom_id
+            )
+            status = (conversation.container_status or "").strip().lower()
+            if status == _CONTAINER_READY_STATUS:
+                return conversation
+            if status in _CONTAINER_FAILED_STATUSES:
+                raise ConversationError(
+                    f"Sandbox container for conversation {conversation_id} "
+                    f"reported status {status!r}; it will not become ready."
+                )
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"Sandbox container for conversation {conversation_id} not "
+                    f"ready after {timeout_seconds:g}s (last status {status!r})."
+                )
+            time.sleep(max(0.0, min(poll_interval_seconds, remaining)))
+
     def chat(
         self,
         conversation_id: str,
@@ -558,20 +648,29 @@ class ConversationService(BaseService):
     ) -> Optional[str]:
         """Send a message, run the agent, and return its reply.
 
-        Wraps :meth:`send_message` + :meth:`run`, then polls :meth:`get_events`
-        until the agent's reply lands. Used to exercise an agent end to end
-        (e.g. proving a freshly seeded agent actually responds).
+        Wraps :meth:`send_message` + :meth:`run`, then polls :meth:`get` (run
+        status) and :meth:`get_events` until the agent's reply lands. Used to
+        exercise an agent end to end (e.g. proving a freshly seeded agent
+        actually responds).
 
         ``timeout_seconds`` is the wait budget: a positive value (the default)
         waits up to that long and returns the reply text; ``0`` is fire-and-forget
         — the message is sent and the run triggered, but the method returns
-        ``None`` immediately without waiting. The reply is taken only once the
-        agent's run is terminal (a ``finish`` action or an error event), so an
-        interim assistant narration before the final answer is never mistaken
-        for the reply. Only this turn's events are considered (the pre-run event
-        count is the read offset), and only the first page of them
-        (``get_events`` default ``limit``); a verification turn is a handful of
-        events, so this is not paginated.
+        ``None`` immediately without waiting.
+
+        The reply is taken only once the run is **terminal**, established three
+        ways: the ``finish`` tool (``FinishAction``); an error (an error event or
+        an ``error``/``failed`` ``execution_status``) → raises; or the run
+        reaching a done ``execution_status`` (``finished``) with a reply present.
+        Gating on a done status means an interim assistant message emitted while
+        the run is still working — or a run that stalls (``waiting_for_confirmation``)
+        — is never mistaken for the final answer; a stalled run simply times out.
+        This matters for agents that answer with a plain assistant ``MessageEvent``
+        and never call ``finish`` (e.g. a Bedrock-backed agent), which would
+        otherwise wait forever for a FinishAction that never comes. Only this
+        turn's events are considered (the pre-run event count is the read offset),
+        and only the first page of them (``get_events`` default ``limit``); a
+        verification turn is a handful of events, so this is not paginated.
 
         Args:
             conversation_id: The conversation to post to.
@@ -601,31 +700,90 @@ class ConversationService(BaseService):
             self.run(conversation_id, base_url=base_url, workroom_id=workroom_id)
             return None
 
-        # Read this turn's output only: events appended from here on. Captured
-        # after send (the just-queued user message is excluded) and before run.
+        # run() only schedules the background run, so the first poll can still
+        # report the conversation's PRIOR state. Capture the pre-run status so a
+        # stale terminal status (a reused conversation's last turn, or this turn's
+        # initial 'finished') isn't read as this turn's outcome — it counts only
+        # once it has changed from this value (which still catches a real fresh
+        # failure: a new conversation's 'finished' → 'error' is a change).
+        pre_run_status = (
+            (
+                self.get(
+                    conversation_id, base_url=base_url, workroom_id=workroom_id
+                ).execution_status
+                or ""
+            )
+            .strip()
+            .lower()
+        )
+        # Event count before the run, so polling reads only this turn's events
+        # (the just-queued user message is excluded — it's counted here).
         baseline = self.get_events(
             conversation_id, base_url=base_url, workroom_id=workroom_id, limit=1
         ).get("total", 0)
         self.run(conversation_id, base_url=base_url, workroom_id=workroom_id)
 
         deadline = time.monotonic() + timeout_seconds
+        # True once the STATUS shows this turn's run is underway; gates both
+        # terminal branches so a stale status isn't read as this run's outcome.
+        saw_run_status = False
         while True:
+            # Read status before events: if the run reports done, the events
+            # fetched next already include the reply it settled with.
+            status = (
+                (
+                    self.get(
+                        conversation_id, base_url=base_url, workroom_id=workroom_id
+                    ).execution_status
+                    or ""
+                )
+                .strip()
+                .lower()
+            )
             new_events = self.get_events(
                 conversation_id,
                 base_url=base_url,
                 workroom_id=workroom_id,
                 offset=baseline,
             ).get("events", [])
+            # The run is underway — so a terminal status is THIS turn's — once the
+            # status goes non-terminal or differs from the pre-run value. NOT keyed
+            # on new_events: an interim assistant message is "events" but doesn't
+            # mean the run finished, so it must not unlock the terminal branches.
+            if status != pre_run_status or (
+                status
+                and status not in _RUN_DONE_STATUSES
+                and status not in _RUN_FAILED_STATUSES
+            ):
+                saw_run_status = True
             error = _agent_error_from_events(new_events)
             if error is not None:
                 raise ConversationError(
                     f"Agent errored on conversation {conversation_id}: {error}"
                 )
+            if saw_run_status and status in _RUN_FAILED_STATUSES:
+                raise ConversationError(
+                    f"Agent run on conversation {conversation_id} reported "
+                    f"status {status!r}."
+                )
             if _has_finish_action(new_events):
-                # The run is terminal — take the reply now (the finish message,
-                # or the last assistant text if finish carried none, or None).
-                # Don't accept interim assistant narration before this point.
+                # A FinishAction this turn is unambiguously terminal (it's a new
+                # event past the baseline), so take the reply now regardless of
+                # status — the finish message, the last assistant text if finish
+                # carried none, or None. Don't accept interim narration before it.
                 return _reply_from_events(new_events)
+            if saw_run_status and status in _RUN_DONE_STATUSES:
+                # Run settled without a finish tool (e.g. a plain assistant
+                # reply). Gated on saw_run_status so a stale 'finished' before
+                # the run starts can't return an interim message; return the
+                # reply once present (a genuinely empty run never produces one
+                # and times out). Trade-off: a run that starts AND finishes
+                # within one poll, never leaving 'finished', times out rather
+                # than returns — failing safe is preferred over false-passing a
+                # turn, and a real agent turn spans several polls.
+                reply = _reply_from_events(new_events)
+                if reply is not None:
+                    return reply
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError(
