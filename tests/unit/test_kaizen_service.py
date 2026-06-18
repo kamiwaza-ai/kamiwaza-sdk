@@ -836,6 +836,40 @@ def test_chat_returns_none_when_finished_without_final_reply(monkeypatch):
     )
 
 
+def test_chat_rechecks_status_when_plain_reply_seen_near_deadline(monkeypatch):
+    import kamiwaza_sdk.services.kaizen as kaizen_mod
+
+    times = iter([0.0, 2.0])
+    monkeypatch.setattr(kaizen_mod.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(kaizen_mod.time, "sleep", lambda _s: None)
+    plain_reply = [
+        {
+            "kind": "MessageEvent",
+            "llm_message": {
+                "role": "assistant",
+                "tool_calls": None,
+                "content": [{"type": "text", "text": "late plain reply"}],
+            },
+        }
+    ]
+    client = ChatClient(
+        polls=[plain_reply],
+        execution_statuses=["running", "finished"],
+    )
+    service = ConversationService(client)
+
+    assert (
+        service.chat(
+            "conv-1",
+            "hi",
+            base_url=KAIZEN_URL,
+            timeout_seconds=1,
+            poll_interval_seconds=0,
+        )
+        == "late plain reply"
+    )
+
+
 def test_chat_ignores_plain_assistant_reply_while_execution_running(monkeypatch):
     import kamiwaza_sdk.services.kaizen as kaizen_mod
 
@@ -898,6 +932,38 @@ def test_wait_until_ready_polls_until_container_active(monkeypatch):
 
     assert conversation.container_status == "active"
     assert slept == [2, 2]
+
+
+def test_wait_until_ready_proceeds_when_container_status_missing(monkeypatch):
+    import kamiwaza_sdk.services.kaizen as kaizen_mod
+
+    slept: list[float] = []
+    monkeypatch.setattr(kaizen_mod.time, "sleep", lambda s: slept.append(s))
+    client = ChatClient(polls=[[]], container_statuses=[None])
+    service = ConversationService(client)
+
+    conversation = service.wait_until_ready(
+        "conv-1", base_url=KAIZEN_URL, timeout_seconds=0, poll_interval_seconds=0
+    )
+
+    assert conversation.container_status is None
+    assert slept == []
+
+
+def test_wait_until_ready_accepts_ready_status_synonym(monkeypatch):
+    import kamiwaza_sdk.services.kaizen as kaizen_mod
+
+    slept: list[float] = []
+    monkeypatch.setattr(kaizen_mod.time, "sleep", lambda s: slept.append(s))
+    client = ChatClient(polls=[[]], container_statuses=["ready"])
+    service = ConversationService(client)
+
+    conversation = service.wait_until_ready(
+        "conv-1", base_url=KAIZEN_URL, timeout_seconds=0, poll_interval_seconds=0
+    )
+
+    assert conversation.container_status == "ready"
+    assert slept == []
 
 
 def test_wait_until_ready_raises_on_terminal_container_status(monkeypatch):

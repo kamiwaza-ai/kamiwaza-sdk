@@ -302,13 +302,14 @@ def cmd_chat(args: argparse.Namespace, *, client) -> Optional[dict]:
         workroom_id=args.workroom_id,
     )
     try:
-        client.conversations.wait_until_ready(
-            conversation.id,
-            base_url=args.kaizen_base_url,
-            workroom_id=args.workroom_id,
-            timeout_seconds=args.sandbox_timeout,
-            poll_interval_seconds=args.poll_interval,
-        )
+        if args.timeout:
+            client.conversations.wait_until_ready(
+                conversation.id,
+                base_url=args.kaizen_base_url,
+                workroom_id=args.workroom_id,
+                timeout_seconds=args.sandbox_timeout,
+                poll_interval_seconds=args.poll_interval,
+            )
         reply = client.conversations.chat(
             conversation.id,
             args.message,

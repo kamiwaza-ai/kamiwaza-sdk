@@ -633,6 +633,7 @@ def test_chat_fire_and_forget_allows_empty_reply(capsys, monkeypatch):
         client,
     )
 
+    assert client.conversations.wait_until_ready.calls == []
     assert client.conversations.chat.calls[0]["kwargs"]["timeout_seconds"] == 0
     assert json.loads(capsys.readouterr().out) == {
         "conversation_id": "conv-1",

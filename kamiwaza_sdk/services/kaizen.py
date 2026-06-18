@@ -369,7 +369,18 @@ class AgentService(BaseService):
 _ERROR_EVENT_KINDS = frozenset({"AgentErrorEvent", "ConversationErrorEvent"})
 _DONE_EXECUTION_STATUSES = frozenset({"finished", "completed", "done"})
 _ERROR_EXECUTION_STATUSES = frozenset({"error", "failed"})
-_READY_CONTAINER_STATUS = "active"
+_READY_CONTAINER_STATUSES = frozenset({"active", "ready", "running", "serving"})
+_PENDING_CONTAINER_STATUSES = frozenset(
+    {
+        "creating",
+        "initializing",
+        "pending",
+        "provisioning",
+        "pulling",
+        "starting",
+        "waiting",
+    }
+)
 _TERMINAL_CONTAINER_STATUSES = frozenset(
     {"deleted", "error", "failed", "stopped", "suspended"}
 )
@@ -532,7 +543,9 @@ class ConversationService(BaseService):
 
         Conversation creation can return while a cold sandbox is still coming
         up. Poll the conversation's ``container_status`` and fail before sending
-        a message if the sandbox reaches a terminal non-serving state.
+        a message if the sandbox reaches a known terminal non-serving state.
+        Older Kaizen builds may omit this optional field; in that case, proceed
+        optimistically to preserve the pre-readiness-check behavior.
         """
         if timeout_seconds < 0:
             raise ValueError(
@@ -546,13 +559,15 @@ class ConversationService(BaseService):
                 conversation_id, base_url=base_url, workroom_id=workroom_id
             )
             last_status = _normalized_status(conversation.container_status)
-            if last_status == _READY_CONTAINER_STATUS:
+            if last_status in _READY_CONTAINER_STATUSES:
                 return conversation
             if last_status in _TERMINAL_CONTAINER_STATUSES:
                 raise ConversationError(
                     f"Conversation {conversation_id} sandbox is not ready "
                     f"(container_status={last_status})."
                 )
+            if last_status is None or last_status not in _PENDING_CONTAINER_STATUSES:
+                return conversation
 
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -720,6 +735,18 @@ class ConversationService(BaseService):
             reply = _reply_from_events(new_events)
             if execution_status in _DONE_EXECUTION_STATUSES:
                 return reply
+            if reply:
+                conversation = self.get(
+                    conversation_id, base_url=base_url, workroom_id=workroom_id
+                )
+                execution_status = _normalized_status(conversation.execution_status)
+                if execution_status in _ERROR_EXECUTION_STATUSES:
+                    raise ConversationError(
+                        f"Agent errored on conversation {conversation_id} "
+                        f"(execution_status={execution_status})."
+                    )
+                if execution_status in _DONE_EXECUTION_STATUSES:
+                    return reply
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError(
