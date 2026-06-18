@@ -665,6 +665,24 @@ def test_chat_negative_timeout_rejected_by_parser():
         )
 
 
+def test_chat_negative_poll_interval_rejected_by_parser():
+    with pytest.raises(SystemExit):
+        _run(
+            [
+                "chat",
+                "--kaizen-base-url",
+                "u",
+                "--agent-id",
+                "a",
+                "--message",
+                "m",
+                "--poll-interval",
+                "-1",
+            ],
+            FakeClient(),
+        )
+
+
 def test_chat_timeout_exits_nonzero(monkeypatch):
     client = FakeClient()
     client.conversations.chat = _raiser(TimeoutError("no reply in time"))

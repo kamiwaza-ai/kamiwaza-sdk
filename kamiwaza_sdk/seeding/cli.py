@@ -557,7 +557,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--poll-interval",
-        type=float,
+        type=_non_negative_float,
         default=3.0,
         help="Seconds between event polls while waiting (default: 3).",
     )

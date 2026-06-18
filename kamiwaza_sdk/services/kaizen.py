@@ -702,15 +702,30 @@ class ConversationService(BaseService):
         baseline = self.get_events(
             conversation_id, base_url=base_url, workroom_id=workroom_id, limit=1
         ).get("total", 0)
+        pre_run_status = _normalized_status(
+            self.get(
+                conversation_id, base_url=base_url, workroom_id=workroom_id
+            ).execution_status
+        )
         self.run(conversation_id, base_url=base_url, workroom_id=workroom_id)
 
+        terminal_statuses = _DONE_EXECUTION_STATUSES | _ERROR_EXECUTION_STATUSES
+        status_applies_to_this_turn = pre_run_status not in terminal_statuses
         deadline = time.monotonic() + timeout_seconds
+        saw_done_without_reply = False
         while True:
             conversation = self.get(
                 conversation_id, base_url=base_url, workroom_id=workroom_id
             )
             execution_status = _normalized_status(conversation.execution_status)
-            if execution_status in _ERROR_EXECUTION_STATUSES:
+            if execution_status is not None and execution_status != pre_run_status:
+                status_applies_to_this_turn = True
+            if execution_status is not None and execution_status not in terminal_statuses:
+                status_applies_to_this_turn = True
+            if (
+                status_applies_to_this_turn
+                and execution_status in _ERROR_EXECUTION_STATUSES
+            ):
                 raise ConversationError(
                     f"Agent errored on conversation {conversation_id} "
                     f"(execution_status={execution_status})."
@@ -733,19 +748,41 @@ class ConversationService(BaseService):
                 # Don't accept interim assistant narration before this point.
                 return _reply_from_events(new_events)
             reply = _reply_from_events(new_events)
-            if execution_status in _DONE_EXECUTION_STATUSES:
-                return reply
+            if (
+                status_applies_to_this_turn
+                and execution_status in _DONE_EXECUTION_STATUSES
+            ):
+                if reply is not None:
+                    return reply
+                if saw_done_without_reply:
+                    return None
+                saw_done_without_reply = True
+                continue
+            saw_done_without_reply = False
             if reply:
                 conversation = self.get(
                     conversation_id, base_url=base_url, workroom_id=workroom_id
                 )
                 execution_status = _normalized_status(conversation.execution_status)
-                if execution_status in _ERROR_EXECUTION_STATUSES:
+                if execution_status is not None and execution_status != pre_run_status:
+                    status_applies_to_this_turn = True
+                if (
+                    execution_status is not None
+                    and execution_status not in terminal_statuses
+                ):
+                    status_applies_to_this_turn = True
+                if (
+                    status_applies_to_this_turn
+                    and execution_status in _ERROR_EXECUTION_STATUSES
+                ):
                     raise ConversationError(
                         f"Agent errored on conversation {conversation_id} "
                         f"(execution_status={execution_status})."
                     )
-                if execution_status in _DONE_EXECUTION_STATUSES:
+                if (
+                    status_applies_to_this_turn
+                    and execution_status in _DONE_EXECUTION_STATUSES
+                ):
                     return reply
             remaining = deadline - time.monotonic()
             if remaining <= 0:
