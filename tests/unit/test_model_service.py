@@ -205,7 +205,13 @@ def test_register_external_model_bedrock_builds_endpoint_blob():
     # No rotation requested -> no query param sent.
     assert kwargs.get("params") is None
 
-    blob = kwargs["json"]["default_config"]["system_config"]["external_endpoint"]
+    # Mirrors the frontend wizard: engine_name + JSON-stringified external_endpoint
+    # live under ``config`` (so the deploy path can resolve the engine), and
+    # ``system_config`` is empty. aws_bedrock canonicalizes to external_chat.
+    cfg = kwargs["json"]["default_config"]["config"]
+    assert cfg["engine_name"] == "external_chat"
+    assert kwargs["json"]["default_config"]["system_config"] == {}
+    blob = json.loads(cfg["external_endpoint"])
     assert blob["protocol"] == "aws_bedrock"
     assert blob["region"] == "us-east-1"
     assert blob["model_id"] == "anthropic.claude-3-sonnet-20240229-v1:0"
@@ -237,11 +243,30 @@ def test_register_external_model_transcribe_force_replace_passes_query_param():
 
     _, _, kwargs = client.calls[0]
     assert kwargs["params"] == {"force_replace_credentials": True}
-    blob = kwargs["json"]["default_config"]["system_config"]["external_endpoint"]
+    cfg = kwargs["json"]["default_config"]["config"]
+    assert cfg["engine_name"] == "external_transcribe"
+    assert kwargs["json"]["default_config"]["system_config"] == {}
+    blob = json.loads(cfg["external_endpoint"])
     assert blob["protocol"] == "aws_transcribe"
     assert blob["s3_bucket"] == "my-bucket"
     # Defaults are mirrored from the platform schema.
     assert blob["s3_prefix"] == "transcribe-jobs/"
+
+
+def test_register_external_model_unknown_protocol_raises():
+    from types import SimpleNamespace
+
+    service = ModelService(DummyClient({}))
+    # An endpoint whose blob carries a protocol with no engine mapping (only
+    # reachable via an untyped/extra-allowed endpoint) must fail fast, not
+    # silently register an undeployable model.
+    endpoint = SimpleNamespace(
+        model_dump=lambda exclude_none=True: {"protocol": "bogus", "region": "x"}
+    )
+    with pytest.raises(ValueError, match="Unsupported external endpoint protocol"):
+        service.register_external_model(
+            name="x", endpoint=endpoint, credential={"k": "v"}
+        )
 
 
 def test_register_external_model_accepts_raw_credential_forms():

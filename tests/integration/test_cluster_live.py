@@ -39,7 +39,12 @@ def _is_cluster_probe_not_authorized(error: APIError) -> bool:
     if not isinstance(payload, dict):
         return False
 
-    return payload.get("detail") == "not_authorized_to_probe_cluster"
+    detail = payload.get("detail")
+    if detail == "not_authorized_to_probe_cluster":
+        return True
+    if not isinstance(detail, dict):
+        return False
+    return detail.get("reason") == "not_authorized_to_probe_cluster"
 
 
 class TestClusterReadOperations:
