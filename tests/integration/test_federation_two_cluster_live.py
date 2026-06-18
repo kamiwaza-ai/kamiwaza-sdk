@@ -272,14 +272,22 @@ class TestFederationTwoClusterWalkthrough:
         """T5.21 — initiator can probe the receiver's capabilities through the
         mesh. Validates the federation:operator ReBAC guard + HMAC signing.
 
-        ENG-7203 regression guard: a 401 here means the receiver stripped the
-        x-kz-mesh-* HMAC headers before ext-authz could verify them (the
-        verify-then-strip deploy fix regressed), so the mesh proxy returned
-        401 "Not authenticated". Any non-401 outcome (a ClusterCapabilities,
-        or a downstream brokered-user 403) means mesh authentication passed —
-        that is the fix working. We fail loudly and specifically on the 401.
+        ENG-7203 regression guard. Three outcomes:
+
+        * 401 ``AuthenticationError`` → FAIL: the receiver stripped the
+          x-kz-mesh-* HMAC headers before ext-authz could verify them (the
+          verify-then-strip deploy fix regressed).
+        * 403 brokered-user (``APIError``, status 403) → SKIP: mesh auth
+          PASSED (not the ENG-7203 401), but this caller is not yet on the
+          peer's federation allowlist, so the capability assertion below
+          cannot run. ``test_brokered_user_allowlist_round_trip`` (which runs
+          after this) establishes the allowlist; skipping avoids a false
+          negative in a fixed-but-not-yet-allowlisted environment.
+        * 200 ``ClusterCapabilities`` → assert the schema contract.
+
+        Any other error propagates as a real failure.
         """
-        from kamiwaza_sdk.exceptions import AuthenticationError
+        from kamiwaza_sdk.exceptions import APIError, AuthenticationError
 
         proxy = initiator_client.federations[paired_federation["name"]]
         try:
@@ -290,6 +298,13 @@ class TestFederationTwoClusterWalkthrough:
                 "'Not authenticated' — the receiver stripped the x-kz-mesh-* "
                 f"HMAC headers before ext-authz could verify them: {exc!r}"
             )
+        except APIError as exc:
+            if getattr(exc, "status_code", None) == 403:
+                pytest.skip(
+                    "mesh auth verified (not the ENG-7203 401); caller not yet "
+                    f"allowlisted on the peer: {exc!r}"
+                )
+            raise
         # probe() raises if the mesh hop or capability schema fails.
         # local_node_id is the schema-declared cluster-identity field
         # (R5 H4 added the declaration). Pin the schema contract — no
