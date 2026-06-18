@@ -213,3 +213,42 @@ def test_wait_propagates_non_410_result_error(mock_client) -> None:
 
     with patch("time.sleep"), pytest.raises(APIError):
         JobsAPI(client=mock_client).wait(jid, timeout=300)
+
+
+def test_wait_preserves_extras_on_jobresult_shaped_body(mock_client) -> None:
+    """A JobResult-shaped /result (job_id + status present) carrying an
+    undeclared forward-compat field keeps that field as a top-level extra
+    (extra="allow"), NOT nested under .result — preserves the SDK forward-compat
+    contract (ENG-7284 review Med#1)."""
+    from kamiwaza_sdk.services.jobs_federation import JobsAPI
+
+    jid = "job-fwd-compat"
+    mock_client.expect("GET", f"/cluster/jobs/{jid}/status", {"status": "FAILED"})
+    mock_client.expect(
+        "GET",
+        f"/cluster/jobs/{jid}/result",
+        {"job_id": jid, "status": "FAILED", "error": "boom", "log_url": "s3://logs/x"},
+    )
+
+    with patch("time.sleep"):
+        result = JobsAPI(client=mock_client).wait(jid, timeout=300)
+
+    assert result.error == "boom"  # declared → promoted
+    assert getattr(result, "log_url", None) == "s3://logs/x"  # extra → top level
+    assert result.result is None  # NOT nested for a JobResult-shaped body
+
+
+def test_wait_wraps_nondict_result_body(mock_client) -> None:
+    """A non-dict /result body wraps under .result rather than failing
+    validation (locks the documented wrap branch)."""
+    from kamiwaza_sdk.services.jobs_federation import JobsAPI
+
+    jid = "job-list-result"
+    _status_terminal(mock_client, jid)
+    mock_client.expect("GET", f"/cluster/jobs/{jid}/result", [1, 2, 3])
+
+    with patch("time.sleep"):
+        result = JobsAPI(client=mock_client).wait(jid, timeout=300)
+
+    assert result.result == [1, 2, 3]
+    assert result.status == "SUCCEEDED"

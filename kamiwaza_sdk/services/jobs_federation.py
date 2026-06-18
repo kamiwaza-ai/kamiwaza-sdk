@@ -42,14 +42,12 @@ _POLL_BACKOFF_CAP_SECONDS = 5.0
 
 _TERMINAL_STATES = frozenset({"SUCCEEDED", "FAILED", "STOPPED", "CANCELED"})
 
-# /result can return two shapes: a JobResult-shaped dict (e.g. a FAILED job's
-# {"job_id", "status", "error", ...}) OR the job's own KZ_MESH_RUN_ON_JSON::
-# marker payload (e.g. {"answer": 42}). Keys that are declared JobResult fields
-# are promoted to top level (so a FAILED job's ``error`` and a recoverable
-# job's explicit ``result`` surface as documented); any *other* key is the
-# job's own domain output and nests under ``result`` rather than polluting the
-# top level — which would otherwise leave ``result.result`` empty for a bare
-# ``{"answer": 42}`` output.
+# Declared JobResult fields. In a *bare marker* /result (the job's own
+# KZ_MESH_RUN_ON_JSON:: output, e.g. {"audit_actor": ..., "probe": ...}), these
+# keys promote to top level while any *other* key is the job's domain output and
+# nests under ``result`` — otherwise a bare ``{"answer": 42}`` would leave
+# ``result.result`` empty. A JobResult-shaped /result passes through wholesale
+# instead (see ``_marker_to_payload``), so this set governs only the bare case.
 _PROMOTED_MARKER_FIELDS = frozenset(JobResult.model_fields)
 
 
@@ -290,22 +288,31 @@ class JobsAPI(BaseService):
     def _marker_to_payload(result_body: Any) -> dict[str, Any]:
         """Map a /result body into JobResult constructor fields.
 
-        Declared JobResult fields (``_PROMOTED_MARKER_FIELDS``) are promoted to
-        top level; any other key is the job's own domain output and nests under
-        ``result``. A non-dict body wraps as ``{"result": <body>}``. A body of
-        only promoted fields with no domain keys leaves ``result`` unset (None),
-        same as a job that emitted no marker at all.
+        A non-dict body wraps as ``{"result": <body>}``.
+
+        A JobResult-shaped body — the server's wrapper, identified by ``job_id``
+        AND ``status`` both present — passes through wholesale: declared fields
+        plus any undeclared keys stay at top level, preserving forward-compat
+        extras via ``extra="allow"``.
+
+        A bare marker (the job's own KZ_MESH_RUN_ON_JSON:: output) has no such
+        wrapper, so its declared fields (``_PROMOTED_MARKER_FIELDS``) promote and
+        its domain-output keys nest under ``result`` rather than polluting the
+        top level. A bare marker of only promoted fields leaves ``result`` unset
+        (None), same as a job that emitted no marker at all.
         """
         if not isinstance(result_body, dict):
             return {"result": result_body}
+        if "job_id" in result_body and "status" in result_body:
+            return dict(result_body)
         payload: dict[str, Any] = {
             k: v for k, v in result_body.items() if k in _PROMOTED_MARKER_FIELDS
         }
         nested = {
             k: v for k, v in result_body.items() if k not in _PROMOTED_MARKER_FIELDS
         }
-        # Only nest domain keys when /result didn't already carry an explicit
-        # ``result`` — don't clobber a JobResult-shaped body's own result field.
+        # Only nest domain keys when the marker didn't already carry an explicit
+        # ``result`` key — don't clobber it.
         if nested and "result" not in payload:
             payload["result"] = nested
         return payload
