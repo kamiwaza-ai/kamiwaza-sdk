@@ -668,6 +668,9 @@ class ConversationService(BaseService):
         events are considered (the pre-run event count is the read offset), and
         only the first page of them (``get_events`` default ``limit``); a
         verification turn is a handful of events, so this is not paginated.
+        When reusing a conversation, a terminal status that existed before this
+        run is treated as stale until the status changes, becomes non-terminal,
+        or a same-terminal plain reply is confirmed across consecutive polls.
 
         Args:
             conversation_id: The conversation to post to.
@@ -702,6 +705,7 @@ class ConversationService(BaseService):
         baseline = self.get_events(
             conversation_id, base_url=base_url, workroom_id=workroom_id, limit=1
         ).get("total", 0)
+        # This extra status read separates a stale terminal state from this run.
         pre_run_status = _normalized_status(
             self.get(
                 conversation_id, base_url=base_url, workroom_id=workroom_id
@@ -763,6 +767,8 @@ class ConversationService(BaseService):
                     return reply
                 if saw_done_without_reply:
                     return None
+                # Done can beat reply persistence; give Kaizen one immediate
+                # re-read before accepting "done with no reply" as terminal.
                 saw_done_without_reply = True
                 continue
             saw_done_without_reply = False
@@ -791,6 +797,9 @@ class ConversationService(BaseService):
                     execution_status == pre_run_status
                     and execution_status in _DONE_EXECUTION_STATUSES
                 ):
+                    # Fast reused runs may remain `finished` the whole time.
+                    # Require stability so a single stale/interim reply is not
+                    # accepted just because the previous turn was already done.
                     same_terminal_reply = (execution_status, reply)
                     if same_terminal_reply_seen == same_terminal_reply:
                         return reply

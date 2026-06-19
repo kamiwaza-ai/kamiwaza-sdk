@@ -312,6 +312,17 @@ def test_resolve_kaizen_url_ambiguous_exits_nonzero(monkeypatch):
         _run(["resolve-kaizen-url", "--workroom-id", "wr-9"], client)
 
 
+def test_resolve_kaizen_url_negative_poll_interval_rejected_by_parser(monkeypatch):
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+    monkeypatch.setattr(cli, "wait_for_base_url", lambda *a, **k: "https://k/kaizen")
+
+    with pytest.raises(SystemExit):
+        _run(
+            ["resolve-kaizen-url", "--workroom-id", "wr-9", "--poll-interval", "-1"],
+            FakeClient(),
+        )
+
+
 def test_create_agent_uses_kaizen_base_url(capsys, monkeypatch):
     client = FakeClient()
     monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
@@ -473,6 +484,14 @@ def test_deploy_model_requires_model_id_or_name():
     # --model-id / --name are a required mutually-exclusive group.
     with pytest.raises(SystemExit):
         _run(["deploy-model"], FakeClient())
+
+
+def test_deploy_model_nan_poll_interval_rejected_by_parser():
+    with pytest.raises(SystemExit):
+        _run(
+            ["deploy-model", "--model-id", "m1", "--poll-interval", "nan"],
+            FakeClient(),
+        )
 
 
 def test_deploy_model_converts_wait_failure_to_systemexit():
@@ -678,6 +697,24 @@ def test_chat_negative_poll_interval_rejected_by_parser():
                 "m",
                 "--poll-interval",
                 "-1",
+            ],
+            FakeClient(),
+        )
+
+
+def test_chat_nan_poll_interval_rejected_by_parser():
+    with pytest.raises(SystemExit):
+        _run(
+            [
+                "chat",
+                "--kaizen-base-url",
+                "u",
+                "--agent-id",
+                "a",
+                "--message",
+                "m",
+                "--poll-interval",
+                "nan",
             ],
             FakeClient(),
         )

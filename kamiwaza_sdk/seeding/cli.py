@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 from pathlib import Path
 from typing import Callable, Dict, Optional, Union
@@ -46,8 +47,10 @@ def _non_negative_float(value: str) -> float:
         parsed = float(value)
     except ValueError:
         raise argparse.ArgumentTypeError(f"invalid float value: '{value}'")
-    if parsed < 0:
-        raise argparse.ArgumentTypeError("must be zero or a positive number of seconds")
+    if not math.isfinite(parsed) or parsed < 0:
+        raise argparse.ArgumentTypeError(
+            "must be a finite zero or positive number of seconds"
+        )
     return parsed
 
 
@@ -449,7 +452,12 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument("--timeout", type=int, default=600, help="Max seconds to wait for DEPLOYED.")
-    p.add_argument("--poll-interval", type=float, default=5.0, help="Seconds between readiness polls.")
+    p.add_argument(
+        "--poll-interval",
+        type=_non_negative_float,
+        default=5.0,
+        help="Seconds between readiness polls.",
+    )
     p.set_defaults(func=cmd_deploy_model)
 
     p = sub.add_parser(
@@ -479,7 +487,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--poll-interval",
-        type=float,
+        type=_non_negative_float,
         default=5.0,
         help="Seconds between resolve attempts (default: 5).",
     )
