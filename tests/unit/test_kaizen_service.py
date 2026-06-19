@@ -918,7 +918,7 @@ def test_chat_raises_conversation_error_on_execution_error_status(monkeypatch):
 def test_chat_ignores_stale_finished_status_from_previous_turn(monkeypatch):
     import kamiwaza_sdk.services.kaizen as kaizen_mod
 
-    times = iter([0.0, 0.0, 0.0])
+    times = iter([0.0, 0.0, 0.0, 2.0])
     monkeypatch.setattr(kaizen_mod.time, "monotonic", lambda: next(times))
     monkeypatch.setattr(kaizen_mod.time, "sleep", lambda _s: None)
     final_reply = [
@@ -946,6 +946,40 @@ def test_chat_ignores_stale_finished_status_from_previous_turn(monkeypatch):
             poll_interval_seconds=0,
         )
         == "fresh answer"
+    )
+
+
+def test_chat_accepts_fast_plain_reply_when_status_stays_finished(monkeypatch):
+    import kamiwaza_sdk.services.kaizen as kaizen_mod
+
+    times = iter([0.0, 0.0, 0.0, 2.0])
+    monkeypatch.setattr(kaizen_mod.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(kaizen_mod.time, "sleep", lambda _s: None)
+    final_reply = [
+        {
+            "kind": "MessageEvent",
+            "llm_message": {
+                "role": "assistant",
+                "tool_calls": None,
+                "content": [{"type": "text", "text": "fresh fast answer"}],
+            },
+        }
+    ]
+    client = ChatClient(
+        polls=[final_reply, final_reply],
+        execution_statuses=["finished", "finished", "finished", "finished"],
+    )
+    service = ConversationService(client)
+
+    assert (
+        service.chat(
+            "conv-1",
+            "hi",
+            base_url=KAIZEN_URL,
+            timeout_seconds=1,
+            poll_interval_seconds=0,
+        )
+        == "fresh fast answer"
     )
 
 

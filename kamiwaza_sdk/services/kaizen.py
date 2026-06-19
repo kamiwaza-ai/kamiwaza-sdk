@@ -711,17 +711,24 @@ class ConversationService(BaseService):
 
         terminal_statuses = _DONE_EXECUTION_STATUSES | _ERROR_EXECUTION_STATUSES
         status_applies_to_this_turn = pre_run_status not in terminal_statuses
+
+        def status_marks_current_turn(execution_status: Optional[str]) -> bool:
+            return execution_status is not None and (
+                execution_status != pre_run_status
+                or execution_status not in terminal_statuses
+            )
+
         deadline = time.monotonic() + timeout_seconds
         saw_done_without_reply = False
+        same_terminal_reply_seen: Optional[tuple[str, str]] = None
         while True:
             conversation = self.get(
                 conversation_id, base_url=base_url, workroom_id=workroom_id
             )
             execution_status = _normalized_status(conversation.execution_status)
-            if execution_status is not None and execution_status != pre_run_status:
+            if status_marks_current_turn(execution_status):
                 status_applies_to_this_turn = True
-            if execution_status is not None and execution_status not in terminal_statuses:
-                status_applies_to_this_turn = True
+                same_terminal_reply_seen = None
             if (
                 status_applies_to_this_turn
                 and execution_status in _ERROR_EXECUTION_STATUSES
@@ -764,13 +771,9 @@ class ConversationService(BaseService):
                     conversation_id, base_url=base_url, workroom_id=workroom_id
                 )
                 execution_status = _normalized_status(conversation.execution_status)
-                if execution_status is not None and execution_status != pre_run_status:
+                if status_marks_current_turn(execution_status):
                     status_applies_to_this_turn = True
-                if (
-                    execution_status is not None
-                    and execution_status not in terminal_statuses
-                ):
-                    status_applies_to_this_turn = True
+                    same_terminal_reply_seen = None
                 if (
                     status_applies_to_this_turn
                     and execution_status in _ERROR_EXECUTION_STATUSES
@@ -784,6 +787,17 @@ class ConversationService(BaseService):
                     and execution_status in _DONE_EXECUTION_STATUSES
                 ):
                     return reply
+                if (
+                    execution_status == pre_run_status
+                    and execution_status in _DONE_EXECUTION_STATUSES
+                ):
+                    same_terminal_reply = (execution_status, reply)
+                    if same_terminal_reply_seen == same_terminal_reply:
+                        return reply
+                    same_terminal_reply_seen = same_terminal_reply
+                    continue
+            else:
+                same_terminal_reply_seen = None
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError(
