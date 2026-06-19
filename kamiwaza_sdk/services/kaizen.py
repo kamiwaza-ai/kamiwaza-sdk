@@ -672,6 +672,8 @@ class ConversationService(BaseService):
         When reusing a conversation, a terminal status that existed before this
         run is treated as stale until the status changes, becomes non-terminal,
         or a same-terminal plain reply is confirmed across consecutive polls.
+        Error statuses from a previous turn are not trusted by repetition alone;
+        same-status failures need an error event or a real status transition.
 
         Args:
             conversation_id: The conversation to post to.
@@ -690,9 +692,10 @@ class ConversationService(BaseService):
             ConversationError: The agent emitted an error event for this turn.
             TimeoutError: The agent did not finish within ``timeout_seconds``.
         """
-        if timeout_seconds < 0:
+        if not math.isfinite(timeout_seconds) or timeout_seconds < 0:
             raise ValueError(
-                "timeout_seconds must be zero or a positive number of seconds."
+                "timeout_seconds must be a finite zero or positive number "
+                "of seconds."
             )
         if not math.isfinite(poll_interval_seconds) or poll_interval_seconds < 0:
             raise ValueError(
@@ -731,33 +734,15 @@ class ConversationService(BaseService):
         deadline = time.monotonic() + timeout_seconds
         saw_done_without_reply = False
         same_terminal_reply_seen: Optional[tuple[str, str]] = None
-        same_terminal_error_seen: Optional[str] = None
 
         def update_status_freshness(execution_status: Optional[str]) -> None:
             nonlocal status_applies_to_this_turn
-            nonlocal same_terminal_error_seen
             nonlocal same_terminal_reply_seen
 
             if status_marks_current_turn(execution_status):
                 status_applies_to_this_turn = True
-                same_terminal_error_seen = None
                 same_terminal_reply_seen = None
                 return
-
-            if (
-                execution_status == pre_run_status
-                and execution_status in _ERROR_EXECUTION_STATUSES
-            ):
-                # One unchanged terminal read can be stale from the previous
-                # turn. Seeing the same error again without a transition is the
-                # best signal Kaizen gives that this turn also failed.
-                if same_terminal_error_seen == execution_status:
-                    status_applies_to_this_turn = True
-                    same_terminal_reply_seen = None
-                same_terminal_error_seen = execution_status
-                return
-
-            same_terminal_error_seen = None
 
         def terminal_status_reply(
             execution_status: Optional[str], reply: Optional[str]
