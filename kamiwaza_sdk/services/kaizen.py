@@ -13,6 +13,7 @@ platform honors this header. A workroom-scoped token is the durable fix
 (tracked for the nightly-seeding work).
 """
 
+import math
 import time
 from typing import Any, Dict, List, Optional, Union
 
@@ -547,9 +548,10 @@ class ConversationService(BaseService):
         Older Kaizen builds may omit this optional field; in that case, proceed
         optimistically to preserve the pre-readiness-check behavior.
         """
-        if timeout_seconds < 0:
+        if not math.isfinite(timeout_seconds) or timeout_seconds < 0:
             raise ValueError(
-                "timeout_seconds must be zero or a positive number of seconds."
+                "timeout_seconds must be a finite zero or positive number "
+                "of seconds."
             )
 
         deadline = time.monotonic() + timeout_seconds
@@ -668,6 +670,11 @@ class ConversationService(BaseService):
         events are considered (the pre-run event count is the read offset), and
         only the first page of them (``get_events`` default ``limit``); a
         verification turn is a handful of events, so this is not paginated.
+        When reusing a conversation, a terminal status that existed before this
+        run is treated as stale until the status changes, becomes non-terminal,
+        or a same-terminal plain reply is confirmed across consecutive polls.
+        Error statuses from a previous turn are not trusted by repetition alone;
+        same-status failures need an error event or a real status transition.
 
         Args:
             conversation_id: The conversation to post to.
@@ -682,13 +689,19 @@ class ConversationService(BaseService):
             (fire-and-forget) or the agent finished without any reply text.
 
         Raises:
-            ValueError: ``timeout_seconds`` is negative.
+            ValueError: ``timeout_seconds`` or ``poll_interval_seconds`` is invalid.
             ConversationError: The agent emitted an error event for this turn.
             TimeoutError: The agent did not finish within ``timeout_seconds``.
         """
-        if timeout_seconds < 0:
+        if not math.isfinite(timeout_seconds) or timeout_seconds < 0:
             raise ValueError(
-                "timeout_seconds must be zero or a positive number of seconds."
+                "timeout_seconds must be a finite zero or positive number "
+                "of seconds."
+            )
+        if not math.isfinite(poll_interval_seconds) or poll_interval_seconds < 0:
+            raise ValueError(
+                "poll_interval_seconds must be a finite zero or positive number "
+                "of seconds."
             )
         self.send_message(
             conversation_id, message, base_url=base_url, workroom_id=workroom_id
@@ -702,19 +715,56 @@ class ConversationService(BaseService):
         baseline = self.get_events(
             conversation_id, base_url=base_url, workroom_id=workroom_id, limit=1
         ).get("total", 0)
+        # This extra status read separates a stale terminal state from this run.
+        pre_run_status = _normalized_status(
+            self.get(
+                conversation_id, base_url=base_url, workroom_id=workroom_id
+            ).execution_status
+        )
         self.run(conversation_id, base_url=base_url, workroom_id=workroom_id)
 
-        deadline = time.monotonic() + timeout_seconds
-        while True:
-            conversation = self.get(
-                conversation_id, base_url=base_url, workroom_id=workroom_id
+        terminal_statuses = _DONE_EXECUTION_STATUSES | _ERROR_EXECUTION_STATUSES
+        status_applies_to_this_turn = pre_run_status not in terminal_statuses
+
+        def status_marks_current_turn(execution_status: Optional[str]) -> bool:
+            return execution_status is not None and (
+                execution_status != pre_run_status
+                or execution_status not in terminal_statuses
             )
-            execution_status = _normalized_status(conversation.execution_status)
+
+        deadline = time.monotonic() + timeout_seconds
+        saw_done_without_reply = False
+        same_terminal_reply_seen: Optional[tuple[str, str]] = None
+
+        def update_status_freshness(execution_status: Optional[str]) -> None:
+            nonlocal status_applies_to_this_turn
+            nonlocal same_terminal_reply_seen
+
+            if status_marks_current_turn(execution_status):
+                status_applies_to_this_turn = True
+                same_terminal_reply_seen = None
+                return
+
+        def terminal_status_reply(
+            execution_status: Optional[str], reply: Optional[str]
+        ) -> tuple[bool, Optional[str]]:
+            if not status_applies_to_this_turn:
+                return False, None
             if execution_status in _ERROR_EXECUTION_STATUSES:
                 raise ConversationError(
                     f"Agent errored on conversation {conversation_id} "
                     f"(execution_status={execution_status})."
                 )
+            if execution_status in _DONE_EXECUTION_STATUSES:
+                return True, reply
+            return False, None
+
+        while True:
+            conversation = self.get(
+                conversation_id, base_url=base_url, workroom_id=workroom_id
+            )
+            execution_status = _normalized_status(conversation.execution_status)
+            update_status_freshness(execution_status)
 
             new_events = self.get_events(
                 conversation_id,
@@ -733,26 +783,53 @@ class ConversationService(BaseService):
                 # Don't accept interim assistant narration before this point.
                 return _reply_from_events(new_events)
             reply = _reply_from_events(new_events)
-            if execution_status in _DONE_EXECUTION_STATUSES:
-                return reply
+            is_terminal_status, terminal_reply = terminal_status_reply(
+                execution_status, reply
+            )
+            if is_terminal_status:
+                if terminal_reply is not None:
+                    return terminal_reply
+                if saw_done_without_reply:
+                    return None
+                # Done can beat reply persistence; give Kaizen one immediate
+                # re-read before accepting "done with no reply" as terminal.
+                saw_done_without_reply = True
+                continue
+            saw_done_without_reply = False
             if reply:
                 conversation = self.get(
                     conversation_id, base_url=base_url, workroom_id=workroom_id
                 )
                 execution_status = _normalized_status(conversation.execution_status)
-                if execution_status in _ERROR_EXECUTION_STATUSES:
-                    raise ConversationError(
-                        f"Agent errored on conversation {conversation_id} "
-                        f"(execution_status={execution_status})."
-                    )
-                if execution_status in _DONE_EXECUTION_STATUSES:
-                    return reply
+                update_status_freshness(execution_status)
+                is_terminal_status, terminal_reply = terminal_status_reply(
+                    execution_status, reply
+                )
+                if is_terminal_status:
+                    return terminal_reply
+                if (
+                    execution_status == pre_run_status
+                    and execution_status in _DONE_EXECUTION_STATUSES
+                ):
+                    # Fast reused runs may remain `finished` the whole time.
+                    # Require stability so a single stale/interim reply is not
+                    # accepted just because the previous turn was already done.
+                    same_terminal_reply = (execution_status, reply)
+                    if same_terminal_reply_seen == same_terminal_reply:
+                        return reply
+                    same_terminal_reply_seen = same_terminal_reply
+                    # Fall through to the deadline/sleep below rather than
+                    # looping immediately: a reused conversation stuck terminal
+                    # with a *changing* reply would otherwise never match here,
+                    # busy-waiting forever and bypassing the timeout contract.
+            else:
+                same_terminal_reply_seen = None
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError(
                     f"No agent reply on conversation {conversation_id} after "
                     f"{timeout_seconds:g}s."
                 )
-            # max(0, …) so a non-positive poll interval degrades to a busy-wait
-            # bounded by the timeout rather than raising from time.sleep().
+            # max(0, …) keeps zero poll intervals bounded by the timeout rather
+            # than raising from time.sleep().
             time.sleep(max(0.0, min(poll_interval_seconds, remaining)))
