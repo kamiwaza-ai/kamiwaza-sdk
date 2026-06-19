@@ -728,12 +728,41 @@ class ConversationService(BaseService):
                 or execution_status not in terminal_statuses
             )
 
-        def current_terminal_outcome(
+        deadline = time.monotonic() + timeout_seconds
+        saw_done_without_reply = False
+        same_terminal_reply_seen: Optional[tuple[str, str]] = None
+        same_terminal_error_seen: Optional[str] = None
+
+        def update_status_freshness(execution_status: Optional[str]) -> None:
+            nonlocal status_applies_to_this_turn
+            nonlocal same_terminal_error_seen
+            nonlocal same_terminal_reply_seen
+
+            if status_marks_current_turn(execution_status):
+                status_applies_to_this_turn = True
+                same_terminal_error_seen = None
+                same_terminal_reply_seen = None
+                return
+
+            if (
+                execution_status == pre_run_status
+                and execution_status in _ERROR_EXECUTION_STATUSES
+            ):
+                # One unchanged terminal read can be stale from the previous
+                # turn. Seeing the same error again without a transition is the
+                # best signal Kaizen gives that this turn also failed.
+                if same_terminal_error_seen == execution_status:
+                    status_applies_to_this_turn = True
+                    same_terminal_reply_seen = None
+                same_terminal_error_seen = execution_status
+                return
+
+            same_terminal_error_seen = None
+
+        def terminal_status_reply(
             execution_status: Optional[str], reply: Optional[str]
         ) -> tuple[bool, Optional[str]]:
             if not status_applies_to_this_turn:
-                # Same-valued stale errors with no current-turn error event stay
-                # untrusted; otherwise a prior error could fail a new turn.
                 return False, None
             if execution_status in _ERROR_EXECUTION_STATUSES:
                 raise ConversationError(
@@ -744,17 +773,12 @@ class ConversationService(BaseService):
                 return True, reply
             return False, None
 
-        deadline = time.monotonic() + timeout_seconds
-        saw_done_without_reply = False
-        same_terminal_reply_seen: Optional[tuple[str, str]] = None
         while True:
             conversation = self.get(
                 conversation_id, base_url=base_url, workroom_id=workroom_id
             )
             execution_status = _normalized_status(conversation.execution_status)
-            if status_marks_current_turn(execution_status):
-                status_applies_to_this_turn = True
-                same_terminal_reply_seen = None
+            update_status_freshness(execution_status)
 
             new_events = self.get_events(
                 conversation_id,
@@ -773,10 +797,10 @@ class ConversationService(BaseService):
                 # Don't accept interim assistant narration before this point.
                 return _reply_from_events(new_events)
             reply = _reply_from_events(new_events)
-            is_terminal, terminal_reply = current_terminal_outcome(
+            is_terminal_status, terminal_reply = terminal_status_reply(
                 execution_status, reply
             )
-            if is_terminal:
+            if is_terminal_status:
                 if terminal_reply is not None:
                     return terminal_reply
                 if saw_done_without_reply:
@@ -791,13 +815,11 @@ class ConversationService(BaseService):
                     conversation_id, base_url=base_url, workroom_id=workroom_id
                 )
                 execution_status = _normalized_status(conversation.execution_status)
-                if status_marks_current_turn(execution_status):
-                    status_applies_to_this_turn = True
-                    same_terminal_reply_seen = None
-                is_terminal, terminal_reply = current_terminal_outcome(
+                update_status_freshness(execution_status)
+                is_terminal_status, terminal_reply = terminal_status_reply(
                     execution_status, reply
                 )
-                if is_terminal:
+                if is_terminal_status:
                     return terminal_reply
                 if (
                     execution_status == pre_run_status
