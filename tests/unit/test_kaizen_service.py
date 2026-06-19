@@ -757,18 +757,40 @@ def test_chat_returns_none_when_agent_finishes_empty(monkeypatch):
     assert slept == []  # returned on the first poll, never waited
 
 
-def test_chat_non_positive_poll_interval_does_not_raise(monkeypatch):
+def test_chat_zero_poll_interval_does_not_raise(monkeypatch):
     import kamiwaza_sdk.services.kaizen as kaizen_mod
 
     slept: list = []
     monkeypatch.setattr(kaizen_mod.time, "sleep", lambda s: slept.append(s))
-    # First poll empty, second has the reply; a negative interval must clamp to
-    # 0 at the sleep rather than raising ValueError out of the wait loop.
+    # First poll empty, second has the reply; zero is valid and sleeps without
+    # raising out of the wait loop.
     client = ChatClient(polls=[[], [_finish_event("done")]])
     service = ConversationService(client)
 
-    assert service.chat("conv-1", "hi", base_url=KAIZEN_URL, poll_interval_seconds=-5) == "done"
+    assert (
+        service.chat(
+            "conv-1", "hi", base_url=KAIZEN_URL, poll_interval_seconds=0
+        )
+        == "done"
+    )
     assert slept == [0.0]
+
+
+@pytest.mark.parametrize("poll_interval", [-1.0, float("nan"), float("inf")])
+def test_chat_rejects_invalid_poll_interval_without_side_effects(poll_interval):
+    client = ChatClient(polls=[[]])
+    service = ConversationService(client)
+
+    with pytest.raises(ValueError, match="poll_interval_seconds"):
+        service.chat(
+            "conv-1",
+            "hi",
+            base_url=KAIZEN_URL,
+            timeout_seconds=0,
+            poll_interval_seconds=poll_interval,
+        )
+
+    assert client.calls == []
 
 
 def test_chat_ignores_interim_assistant_text_before_finish(monkeypatch):
@@ -981,6 +1003,46 @@ def test_chat_accepts_fast_plain_reply_when_status_stays_finished(monkeypatch):
         )
         == "fresh fast answer"
     )
+
+
+def test_chat_same_terminal_changing_reply_respects_timeout(monkeypatch):
+    import kamiwaza_sdk.services.kaizen as kaizen_mod
+
+    times = iter([0.0, 0.0, 2.0])
+    slept: list[float] = []
+    monkeypatch.setattr(kaizen_mod.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(kaizen_mod.time, "sleep", lambda s: slept.append(s))
+
+    class ChangingReplyClient(ChatClient):
+        def __init__(self):
+            super().__init__(polls=[[]], execution_statuses=["finished"])
+            self.reply_polls = 0
+
+        def _request(self, method, path, **kwargs):
+            if (
+                path.endswith("/events")
+                and kwargs.get("params", {}).get("limit") != 1
+            ):
+                self.reply_polls += 1
+                if self.reply_polls > 3:
+                    raise AssertionError("chat() did not enforce its timeout")
+                return {"events": [_message_event(f"draft {self.reply_polls}")]}
+            return super()._request(method, path, **kwargs)
+
+    client = ChangingReplyClient()
+    service = ConversationService(client)
+
+    with pytest.raises(TimeoutError, match="No agent reply"):
+        service.chat(
+            "conv-1",
+            "hi",
+            base_url=KAIZEN_URL,
+            timeout_seconds=1,
+            poll_interval_seconds=0,
+        )
+
+    assert client.reply_polls == 2
+    assert slept == [0.0]
 
 
 def test_chat_missing_status_does_not_make_stale_terminal_status_fresh(monkeypatch):

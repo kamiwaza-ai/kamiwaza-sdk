@@ -13,6 +13,7 @@ platform honors this header. A workroom-scoped token is the durable fix
 (tracked for the nightly-seeding work).
 """
 
+import math
 import time
 from typing import Any, Dict, List, Optional, Union
 
@@ -685,13 +686,18 @@ class ConversationService(BaseService):
             (fire-and-forget) or the agent finished without any reply text.
 
         Raises:
-            ValueError: ``timeout_seconds`` is negative.
+            ValueError: ``timeout_seconds`` or ``poll_interval_seconds`` is invalid.
             ConversationError: The agent emitted an error event for this turn.
             TimeoutError: The agent did not finish within ``timeout_seconds``.
         """
         if timeout_seconds < 0:
             raise ValueError(
                 "timeout_seconds must be zero or a positive number of seconds."
+            )
+        if not math.isfinite(poll_interval_seconds) or poll_interval_seconds < 0:
+            raise ValueError(
+                "poll_interval_seconds must be a finite zero or positive number "
+                "of seconds."
             )
         self.send_message(
             conversation_id, message, base_url=base_url, workroom_id=workroom_id
@@ -722,6 +728,22 @@ class ConversationService(BaseService):
                 or execution_status not in terminal_statuses
             )
 
+        def current_terminal_outcome(
+            execution_status: Optional[str], reply: Optional[str]
+        ) -> tuple[bool, Optional[str]]:
+            if not status_applies_to_this_turn:
+                # Same-valued stale errors with no current-turn error event stay
+                # untrusted; otherwise a prior error could fail a new turn.
+                return False, None
+            if execution_status in _ERROR_EXECUTION_STATUSES:
+                raise ConversationError(
+                    f"Agent errored on conversation {conversation_id} "
+                    f"(execution_status={execution_status})."
+                )
+            if execution_status in _DONE_EXECUTION_STATUSES:
+                return True, reply
+            return False, None
+
         deadline = time.monotonic() + timeout_seconds
         saw_done_without_reply = False
         same_terminal_reply_seen: Optional[tuple[str, str]] = None
@@ -733,14 +755,6 @@ class ConversationService(BaseService):
             if status_marks_current_turn(execution_status):
                 status_applies_to_this_turn = True
                 same_terminal_reply_seen = None
-            if (
-                status_applies_to_this_turn
-                and execution_status in _ERROR_EXECUTION_STATUSES
-            ):
-                raise ConversationError(
-                    f"Agent errored on conversation {conversation_id} "
-                    f"(execution_status={execution_status})."
-                )
 
             new_events = self.get_events(
                 conversation_id,
@@ -759,12 +773,12 @@ class ConversationService(BaseService):
                 # Don't accept interim assistant narration before this point.
                 return _reply_from_events(new_events)
             reply = _reply_from_events(new_events)
-            if (
-                status_applies_to_this_turn
-                and execution_status in _DONE_EXECUTION_STATUSES
-            ):
-                if reply is not None:
-                    return reply
+            is_terminal, terminal_reply = current_terminal_outcome(
+                execution_status, reply
+            )
+            if is_terminal:
+                if terminal_reply is not None:
+                    return terminal_reply
                 if saw_done_without_reply:
                     return None
                 # Done can beat reply persistence; give Kaizen one immediate
@@ -780,19 +794,11 @@ class ConversationService(BaseService):
                 if status_marks_current_turn(execution_status):
                     status_applies_to_this_turn = True
                     same_terminal_reply_seen = None
-                if (
-                    status_applies_to_this_turn
-                    and execution_status in _ERROR_EXECUTION_STATUSES
-                ):
-                    raise ConversationError(
-                        f"Agent errored on conversation {conversation_id} "
-                        f"(execution_status={execution_status})."
-                    )
-                if (
-                    status_applies_to_this_turn
-                    and execution_status in _DONE_EXECUTION_STATUSES
-                ):
-                    return reply
+                is_terminal, terminal_reply = current_terminal_outcome(
+                    execution_status, reply
+                )
+                if is_terminal:
+                    return terminal_reply
                 if (
                     execution_status == pre_run_status
                     and execution_status in _DONE_EXECUTION_STATUSES
@@ -816,6 +822,6 @@ class ConversationService(BaseService):
                     f"No agent reply on conversation {conversation_id} after "
                     f"{timeout_seconds:g}s."
                 )
-            # max(0, …) so a non-positive poll interval degrades to a busy-wait
-            # bounded by the timeout rather than raising from time.sleep().
+            # max(0, …) keeps zero poll intervals bounded by the timeout rather
+            # than raising from time.sleep().
             time.sleep(max(0.0, min(poll_interval_seconds, remaining)))
