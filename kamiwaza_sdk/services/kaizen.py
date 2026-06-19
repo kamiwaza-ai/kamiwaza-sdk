@@ -548,9 +548,10 @@ class ConversationService(BaseService):
         Older Kaizen builds may omit this optional field; in that case, proceed
         optimistically to preserve the pre-readiness-check behavior.
         """
-        if timeout_seconds < 0:
+        if not math.isfinite(timeout_seconds) or timeout_seconds < 0:
             raise ValueError(
-                "timeout_seconds must be zero or a positive number of seconds."
+                "timeout_seconds must be a finite zero or positive number "
+                "of seconds."
             )
 
         deadline = time.monotonic() + timeout_seconds

@@ -1283,6 +1283,21 @@ def test_wait_until_ready_raises_on_terminal_container_status(monkeypatch):
 
 
 @pytest.mark.parametrize("timeout", [-1.0, float("nan"), float("inf")])
+def test_wait_until_ready_invalid_timeout_raises_without_side_effects(timeout):
+    client = ChatClient(polls=[[]], container_statuses=["active"])
+    service = ConversationService(client)
+
+    with pytest.raises(ValueError, match="timeout_seconds"):
+        service.wait_until_ready(
+            "conv-1",
+            base_url=KAIZEN_URL,
+            timeout_seconds=timeout,
+        )
+
+    assert client.calls == []
+
+
+@pytest.mark.parametrize("timeout", [-1.0, float("nan"), float("inf")])
 def test_chat_invalid_timeout_raises_without_side_effects(timeout):
     client = ChatClient(polls=[[_finish_event("x")]])
     service = ConversationService(client)
@@ -1291,6 +1306,7 @@ def test_chat_invalid_timeout_raises_without_side_effects(timeout):
         service.chat("conv-1", "hi", base_url=KAIZEN_URL, timeout_seconds=timeout)
 
     assert client.calls == []
+
 
 def test_chat_raises_conversation_error_on_agent_error(monkeypatch):
     import kamiwaza_sdk.services.kaizen as kaizen_mod
