@@ -804,7 +804,10 @@ class ConversationService(BaseService):
                     if same_terminal_reply_seen == same_terminal_reply:
                         return reply
                     same_terminal_reply_seen = same_terminal_reply
-                    continue
+                    # Fall through to the deadline/sleep below rather than
+                    # looping immediately: a reused conversation stuck terminal
+                    # with a *changing* reply would otherwise never match here,
+                    # busy-waiting forever and bypassing the timeout contract.
             else:
                 same_terminal_reply_seen = None
             remaining = deadline - time.monotonic()
