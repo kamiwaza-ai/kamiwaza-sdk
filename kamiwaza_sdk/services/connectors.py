@@ -7,15 +7,18 @@ the M365 tenant/client identifiers. The per-user OAuth connection is a separate
 interactive Device Code Flow and is intentionally not wrapped here.
 """
 
-from typing import List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 from uuid import UUID
 
 from .base_service import BaseService
 from ..exceptions import APIError, NotFoundError
 from ..schemas.connectors import (
     M365_DEFAULT_SCOPES,
+    AvailableConnector,
+    ConnectorSubscriptionCreate,
     ExternalConnector,
     ExternalConnectorCreate,
+    ExternalConnectorUpdate,
     M365ConnectorConfig,
 )
 
@@ -31,10 +34,42 @@ class ConnectorService(BaseService):
         )
         return [ExternalConnector.model_validate(item) for item in items]
 
+    def list_available(self) -> List[AvailableConnector]:
+        """List enabled connectors as user-safe metadata.
+
+        Mirrors the platform's ``/connectors/available`` endpoint used to drive
+        per-user account-connection UIs: only enabled connectors, with
+        non-sensitive fields. Use :meth:`list` for the full admin view.
+        """
+        response = self.client.get("/connectors/available")
+        items = (
+            response.get("items", response) if isinstance(response, dict) else response
+        )
+        return [AvailableConnector.model_validate(item) for item in items]
+
     def get(self, connector_id: Union[str, UUID]) -> ExternalConnector:
         """Get a connector by id."""
         try:
             response = self.client.get(f"/connectors/{connector_id}")
+            return ExternalConnector.model_validate(response)
+        except APIError as e:
+            if e.status_code == 404:
+                raise NotFoundError(f"Connector '{connector_id}' not found") from e
+            raise
+
+    def update(
+        self, connector_id: Union[str, UUID], request: ExternalConnectorUpdate
+    ) -> ExternalConnector:
+        """Update a connector's mutable fields (name/config/scopes/enabled).
+
+        Only the fields set on ``request`` are sent; unset (``None``) fields are
+        left unchanged. Raises :class:`NotFoundError` if the connector is absent.
+        """
+        try:
+            response = self.client.put(
+                f"/connectors/{connector_id}",
+                json=request.model_dump(mode="json", exclude_none=True),
+            )
             return ExternalConnector.model_validate(response)
         except APIError as e:
             if e.status_code == 404:
@@ -83,6 +118,39 @@ class ConnectorService(BaseService):
             enabled=enabled,
         )
         return self.create(request)
+
+    def subscribe(
+        self,
+        *,
+        manifest: Dict[str, Any],
+        endpoint: str,
+        config: Optional[Dict[str, Any]] = None,
+    ) -> ExternalConnector:
+        """Subscribe an out-of-core connector by manifest + endpoint (admin-scoped).
+
+        The connector runs out-of-process behind an HTTP/MCP ``endpoint``; the
+        platform stores its self-describing ``manifest`` (a
+        ``ConnectorSpec.to_manifest()`` dict) and registers a remote provider so
+        it participates in the registry/catalog like an in-core connector (google,
+        m365). A ``connector_type`` already served by a built-in or an existing
+        subscription is rejected by the platform (HTTP 400).
+
+        Args:
+            manifest: The connector's self-describing manifest.
+            endpoint: HTTP/MCP endpoint where the connector is reached.
+            config: Optional secret config (e.g. a service token); the platform
+                stores it encrypted. Omit for connectors that need no credential.
+
+        Returns:
+            ExternalConnector: The registered subscription.
+        """
+        request = ConnectorSubscriptionCreate(
+            manifest=manifest, endpoint=endpoint, config=config or {}
+        )
+        response = self.client.post(
+            "/connectors/subscriptions", json=request.model_dump(mode="json")
+        )
+        return ExternalConnector.model_validate(response)
 
     def delete(self, connector_id: Union[str, UUID]) -> bool:
         """Delete a connector by id."""

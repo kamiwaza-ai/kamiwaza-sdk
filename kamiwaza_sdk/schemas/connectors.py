@@ -62,3 +62,60 @@ class ExternalConnector(BaseModel):
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     redirect_uri: Optional[str] = None
+
+
+class ConnectorSubscriptionCreate(BaseModel):
+    """Subscribe an out-of-core connector by its manifest + endpoint.
+
+    The ``manifest`` is the connector's self-describing ``ConnectorSpec`` rendered
+    via ``to_manifest()`` (``connector_type`` + identity + ``auth_model.kind``);
+    ``endpoint`` is the HTTP/MCP URL the platform reaches it on. No secret values
+    appear here — the platform brokers credentials, they are not carried inline.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    manifest: Dict[str, Any] = Field(
+        ...,
+        description="The connector's self-describing manifest (ConnectorSpec.to_manifest()).",
+    )
+    endpoint: str = Field(
+        ...,
+        min_length=1,
+        max_length=2048,
+        description="HTTP/MCP endpoint where the connector is reached.",
+    )
+    config: Dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Provider-specific secret config (e.g. a service token), stored "
+            "encrypted by the platform. Empty when no credential is needed."
+        ),
+    )
+
+
+class ExternalConnectorUpdate(BaseModel):
+    """Partial update for a registered connector; only set fields are sent."""
+
+    model_config = ConfigDict(extra="allow")
+
+    name: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    config: Optional[Dict[str, Any]] = Field(default=None)
+    scopes: Optional[List[str]] = Field(default=None, min_length=1)
+    enabled: Optional[bool] = Field(default=None)
+
+
+class AvailableConnector(BaseModel):
+    """User-safe connector metadata for account-connection flows.
+
+    Mirrors an item from the platform's ``/connectors/available`` endpoint: only
+    enabled connectors, with non-sensitive fields (no timestamps or redirect URI).
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    id: UUID
+    name: str
+    connector_type: str
+    enabled: bool
+    scopes: List[str] = []
