@@ -125,6 +125,7 @@ class ConnectorService(BaseService):
         manifest: Dict[str, Any],
         endpoint: str,
         config: Optional[Dict[str, Any]] = None,
+        scopes: Optional[List[str]] = None,
         workload_principal_id: Optional[str] = None,
     ) -> ExternalConnector:
         """Subscribe an out-of-core connector by manifest + endpoint (admin-scoped).
@@ -152,6 +153,7 @@ class ConnectorService(BaseService):
             manifest=manifest,
             endpoint=endpoint,
             config=config or {},
+            scopes=scopes or [],
             workload_principal_id=workload_principal_id,
         )
         response = self.client.post(

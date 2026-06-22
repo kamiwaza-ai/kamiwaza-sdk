@@ -92,6 +92,13 @@ class ConnectorSubscriptionCreate(BaseModel):
             "encrypted by the platform. Empty when no credential is needed."
         ),
     )
+    scopes: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Scopes this connector is granted; the platform enforces requested "
+            "scope_subset ⊆ these. Needed for service_token connectors to mint."
+        ),
+    )
     workload_principal_id: Optional[str] = Field(
         default=None,
         description=(

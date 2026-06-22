@@ -199,6 +199,35 @@ def test_subscribe_binds_workload_principal():
     assert body["workload_principal_id"] == "sa-servicenow"
 
 
+def test_subscribe_sends_scopes():
+    """Granted scopes are sent so a service_token connector can mint."""
+    manifest = {
+        "connector_type": "servicenow",
+        "provider_id": "servicenow",
+        "provider_label": "ServiceNow",
+        "auth_model": {"kind": "service_token"},
+    }
+    resp = {
+        "id": str(uuid.uuid4()),
+        "name": "ServiceNow",
+        "connector_type": "servicenow",
+        "enabled": True,
+        "scopes": ["incident.read"],
+        "created_at": _TS,
+    }
+    client = DummyClient({("POST", "/connectors/subscriptions"): resp})
+    service = ConnectorService(client)
+
+    service.subscribe(
+        manifest=manifest,
+        endpoint="https://sn.example/mcp",
+        scopes=["incident.read"],
+    )
+
+    body = client.calls[0][2]["json"]
+    assert body["scopes"] == ["incident.read"]
+
+
 def test_list_available_unwraps_items_envelope():
     item = {
         "id": str(uuid.uuid4()),
