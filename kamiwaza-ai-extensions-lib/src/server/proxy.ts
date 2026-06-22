@@ -53,12 +53,14 @@ const DENY_RESPONSE_HEADERS = new Set([
 
 type NextRequest = Request;
 type NextResponse = Response;
-// Next.js 15 made dynamic route `params` async (a Promise). These proxy
-// handlers ignore params entirely, but the type must stay assignable to
-// Next's RouteHandlerConfig constraint, so accept the Promise-wrapped shape.
+// Next.js 14 passes dynamic route `params` synchronously; Next.js 15 made
+// them async (a Promise). These proxy handlers ignore params entirely, but
+// the type must stay assignable to Next's RouteHandlerConfig constraint on
+// BOTH majors (the lib's peer range is `next >=14`), so accept either shape.
+type RouteParams = Record<string, string | string[]>;
 type RouteHandler = (
     request: NextRequest,
-    context?: { params?: Promise<Record<string, string | string[]>> }
+    context?: { params?: RouteParams | Promise<RouteParams> }
 ) => Promise<NextResponse>;
 
 function buildForwardHeaders(incoming: Headers): Record<string, string> {
