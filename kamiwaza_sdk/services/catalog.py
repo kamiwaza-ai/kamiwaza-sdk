@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
-import warnings
 
 from .base_service import BaseService
 from ..exceptions import APIError
@@ -91,79 +90,9 @@ class DatasetClient(BaseService):
         return str(response)
 
     def list(self, query: Optional[str] = None) -> List[Dataset]:
-        """List datasets.
-
-        If the backend query endpoint returns HTTP 500, the SDK falls back to
-        best-effort local filtering. This can differ from DataHub query ranking
-        semantics but preserves recently-created resources during live
-        eventual-consistency failures.
-        """
         params = {"query": query} if query else None
-        try:
-            response = self.client.get(f"{self._BASE_PATH}/", params=params)
-        except APIError as exc:
-            if exc.status_code != 500 or not query:
-                raise
-            self._warn_query_fallback(query)
-            recent_matches = self._list_recent_matches(query)
-            try:
-                response = self.client.get(f"{self._BASE_PATH}/")
-            except APIError:
-                if recent_matches:
-                    return recent_matches
-                raise
-            filtered = self._filter_dataset_payloads(response, query)
-            return self._merge_by_urn(filtered, recent_matches)
+        response = self.client.get(f"{self._BASE_PATH}/", params=params)
         return [Dataset.model_validate(item) for item in response]
-
-    @staticmethod
-    def _warn_query_fallback(query: str) -> None:
-        warnings.warn(
-            "Dataset query failed with HTTP 500; returning best-effort "
-            f"client-side filtered catalog results for query {query!r}.",
-            RuntimeWarning,
-            stacklevel=2,
-        )
-
-    @staticmethod
-    def _merge_by_urn(
-        primary: List[Dataset],
-        fallback: List[Dataset],
-    ) -> List[Dataset]:
-        merged = list(primary)
-        seen = {dataset.urn for dataset in merged}
-        for dataset in fallback:
-            if dataset.urn in seen:
-                continue
-            merged.append(dataset)
-            seen.add(dataset.urn)
-        return merged
-
-    @staticmethod
-    def _filter_dataset_payloads(response: Any, query: str) -> List[Dataset]:
-        normalized_query = query.casefold()
-        return [
-            dataset
-            for dataset in (Dataset.model_validate(item) for item in response)
-            if normalized_query in dataset.name.casefold()
-            or normalized_query in dataset.urn.casefold()
-        ]
-
-    def _list_recent_matches(self, query: str) -> List[Dataset]:
-        recent = getattr(self.client, "_recent_datasets", {})
-        if not recent:
-            return []
-
-        normalized_query = query.casefold()
-        matches: list[Dataset] = []
-        for urn in list(recent):
-            if normalized_query not in str(urn).casefold():
-                continue
-            try:
-                matches.append(self.get(str(urn)))
-            except APIError:
-                continue
-        return matches
 
     def get(self, dataset_urn: str) -> Dataset:
         response = self.client.get(
@@ -283,86 +212,12 @@ class SecretClient(BaseService):
             params={"clobber": str(clobber).lower()},
             json=body,
         )
-        urn = self._unwrap_secret_urn(response)
-        note = getattr(self.client, "_note_recent_secret_change", None)
-        if callable(note):
-            note(urn)
-        return urn
+        return self._unwrap_secret_urn(response)
 
     def list(self, query: Optional[str] = None) -> List[Secret]:
-        """List secrets.
-
-        If the backend query endpoint returns HTTP 500, the SDK falls back to
-        best-effort local filtering. This can differ from DataHub query ranking
-        semantics but preserves recently-created resources during live
-        eventual-consistency failures.
-        """
         params = {"query": query} if query else None
-        try:
-            response = self.client.get(f"{self._BASE_PATH}/", params=params)
-        except APIError as exc:
-            if exc.status_code != 500 or not query:
-                raise
-            self._warn_query_fallback(query)
-            recent_matches = self._list_recent_matches(query)
-            try:
-                response = self.client.get(f"{self._BASE_PATH}/")
-            except APIError:
-                if recent_matches:
-                    return recent_matches
-                raise
-            filtered = self._filter_secret_payloads(response, query)
-            return self._merge_by_urn(filtered, recent_matches)
+        response = self.client.get(f"{self._BASE_PATH}/", params=params)
         return [Secret.model_validate(item) for item in response]
-
-    @staticmethod
-    def _warn_query_fallback(query: str) -> None:
-        warnings.warn(
-            "Secret query failed with HTTP 500; returning best-effort "
-            f"client-side filtered catalog results for query {query!r}.",
-            RuntimeWarning,
-            stacklevel=2,
-        )
-
-    @staticmethod
-    def _merge_by_urn(
-        primary: List[Secret],
-        fallback: List[Secret],
-    ) -> List[Secret]:
-        merged = list(primary)
-        seen = {secret.urn for secret in merged}
-        for secret in fallback:
-            if secret.urn in seen:
-                continue
-            merged.append(secret)
-            seen.add(secret.urn)
-        return merged
-
-    @staticmethod
-    def _filter_secret_payloads(response: Any, query: str) -> List[Secret]:
-        normalized_query = query.casefold()
-        return [
-            secret
-            for secret in (Secret.model_validate(item) for item in response)
-            if normalized_query in secret.name.casefold()
-            or normalized_query in secret.urn.casefold()
-        ]
-
-    def _list_recent_matches(self, query: str) -> List[Secret]:
-        recent = getattr(self.client, "_recent_secrets", {})
-        if not recent:
-            return []
-
-        normalized_query = query.casefold()
-        matches: list[Secret] = []
-        for urn in list(recent):
-            if normalized_query not in str(urn).casefold():
-                continue
-            try:
-                matches.append(self.get(str(urn)))
-            except APIError:
-                continue
-        return matches
 
     def get(self, secret_urn: str) -> Secret:
         try:

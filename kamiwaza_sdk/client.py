@@ -152,8 +152,8 @@ def _verify_ssl_disabled_from_env() -> bool:
 
 
 class KamiwazaClient:
-    _RECENT_CATALOG_CHANGE_TTL_SECONDS = 30.0
-    _RECENT_CATALOG_CHANGE_MAX = 1024
+    _RECENT_DATASET_TTL_SECONDS = 30.0
+    _RECENT_DATASET_MAX = 1024
 
     # Retry window for PUT-after-create/update schema operations.
     # Total sleep time sums to 5.0s.
@@ -223,7 +223,6 @@ class KamiwazaClient:
         self.base_url = resolved_base_url.rstrip("/")
         self.session = requests.Session()
         self._recent_datasets: "OrderedDict[str, float]" = OrderedDict()
-        self._recent_secrets: "OrderedDict[str, float]" = OrderedDict()
 
         # TLS verification: explicit kwargs > env vars > default True.
         # ca_bundle is sugar for verify=<path>; wins over verify when both.
@@ -281,36 +280,26 @@ class KamiwazaClient:
 
     def _note_recent_dataset_change(self, dataset_urn: str) -> None:
         """Mark a dataset as recently created/updated for eventual-consistency retries."""
-        self._note_recent_catalog_change(self._recent_datasets, dataset_urn)
-
-    def _note_recent_catalog_change(
-        self, recent: "OrderedDict[str, float]", urn: str
-    ) -> None:
-        if not isinstance(urn, str) or not urn:
+        if not isinstance(dataset_urn, str) or not dataset_urn:
             return
         now = time.monotonic()
-        recent[urn] = now
+        self._recent_datasets[dataset_urn] = now
         # Ensure touch moves the URN to the end so prune removes the oldest first.
-        recent.move_to_end(urn)
-        self._prune_recent_catalog_changes(recent, now)
+        self._recent_datasets.move_to_end(dataset_urn)
+        self._prune_recent_datasets(now)
 
     def _prune_recent_datasets(self, now: Optional[float] = None) -> None:
-        self._prune_recent_catalog_changes(self._recent_datasets, now)
-
-    def _prune_recent_catalog_changes(
-        self, recent: "OrderedDict[str, float]", now: Optional[float] = None
-    ) -> None:
         now = time.monotonic() if now is None else now
-        cutoff = now - self._RECENT_CATALOG_CHANGE_TTL_SECONDS
+        cutoff = now - self._RECENT_DATASET_TTL_SECONDS
 
-        while recent:
-            oldest_urn, oldest_ts = next(iter(recent.items()))
+        while self._recent_datasets:
+            oldest_urn, oldest_ts = next(iter(self._recent_datasets.items()))
             if (
                 oldest_ts >= cutoff
-                and len(recent) <= self._RECENT_CATALOG_CHANGE_MAX
+                and len(self._recent_datasets) <= self._RECENT_DATASET_MAX
             ):
                 break
-            recent.popitem(last=False)
+            self._recent_datasets.popitem(last=False)
 
     def _dataset_recently_changed(self, dataset_urn: str) -> bool:
         if not isinstance(dataset_urn, str) or not dataset_urn:
@@ -319,15 +308,11 @@ class KamiwazaClient:
         if ts is None:
             return False
         now = time.monotonic()
-        if now - ts > self._RECENT_CATALOG_CHANGE_TTL_SECONDS:
+        if now - ts > self._RECENT_DATASET_TTL_SECONDS:
             self._recent_datasets.pop(dataset_urn, None)
             self._prune_recent_datasets(now)
             return False
         return True
-
-    def _note_recent_secret_change(self, secret_urn: str) -> None:
-        """Mark a secret as recently created/updated for eventual-consistency retries."""
-        self._note_recent_catalog_change(self._recent_secrets, secret_urn)
 
     def _prepare_request_kwargs(
         self, skip_auth: bool, kwargs: dict[str, Any]
