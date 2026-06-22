@@ -170,6 +170,35 @@ def test_subscribe_sends_secret_config():
     assert body["config"] == {"service_token": "sk-sn-1"}
 
 
+def test_subscribe_binds_workload_principal():
+    """The minting workload principal is sent so the platform can bind it."""
+    manifest = {
+        "connector_type": "servicenow",
+        "provider_id": "servicenow",
+        "provider_label": "ServiceNow",
+        "auth_model": {"kind": "service_token"},
+    }
+    resp = {
+        "id": str(uuid.uuid4()),
+        "name": "ServiceNow",
+        "connector_type": "servicenow",
+        "enabled": True,
+        "scopes": [],
+        "created_at": _TS,
+    }
+    client = DummyClient({("POST", "/connectors/subscriptions"): resp})
+    service = ConnectorService(client)
+
+    service.subscribe(
+        manifest=manifest,
+        endpoint="https://sn.example/mcp",
+        workload_principal_id="sa-servicenow",
+    )
+
+    body = client.calls[0][2]["json"]
+    assert body["workload_principal_id"] == "sa-servicenow"
+
+
 def test_list_available_unwraps_items_envelope():
     item = {
         "id": str(uuid.uuid4()),

@@ -92,6 +92,15 @@ class ConnectorSubscriptionCreate(BaseModel):
             "encrypted by the platform. Empty when no credential is needed."
         ),
     )
+    workload_principal_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Service-account principal allowed to mint per-user tokens for this "
+            "connector out-of-core. Bound at install; the platform compares it "
+            "against the caller's principal at mint time. None for connectors "
+            "that never mint out-of-core."
+        ),
+    )
 
 
 class ExternalConnectorUpdate(BaseModel):

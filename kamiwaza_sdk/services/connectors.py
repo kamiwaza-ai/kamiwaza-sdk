@@ -125,6 +125,7 @@ class ConnectorService(BaseService):
         manifest: Dict[str, Any],
         endpoint: str,
         config: Optional[Dict[str, Any]] = None,
+        workload_principal_id: Optional[str] = None,
     ) -> ExternalConnector:
         """Subscribe an out-of-core connector by manifest + endpoint (admin-scoped).
 
@@ -140,12 +141,18 @@ class ConnectorService(BaseService):
             endpoint: HTTP/MCP endpoint where the connector is reached.
             config: Optional secret config (e.g. a service token); the platform
                 stores it encrypted. Omit for connectors that need no credential.
+            workload_principal_id: Service-account principal permitted to mint
+                per-user tokens for this connector out-of-core; bound here at
+                install. Omit for connectors that never mint out-of-core.
 
         Returns:
             ExternalConnector: The registered subscription.
         """
         request = ConnectorSubscriptionCreate(
-            manifest=manifest, endpoint=endpoint, config=config or {}
+            manifest=manifest,
+            endpoint=endpoint,
+            config=config or {},
+            workload_principal_id=workload_principal_id,
         )
         response = self.client.post(
             "/connectors/subscriptions", json=request.model_dump(mode="json")
