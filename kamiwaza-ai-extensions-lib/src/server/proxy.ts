@@ -53,15 +53,14 @@ const DENY_RESPONSE_HEADERS = new Set([
 
 type NextRequest = Request;
 type NextResponse = Response;
-// Next.js 14 passes dynamic route `params` synchronously; Next.js 15 made
-// them async (a Promise). These proxy handlers ignore params entirely, but
-// the type must stay assignable to Next's RouteHandlerConfig constraint on
-// BOTH majors (the lib's peer range is `next >=14`), so accept either shape.
-type RouteParams = Record<string, string | string[]>;
-type RouteHandler = (
-    request: NextRequest,
-    context?: { params?: RouteParams | Promise<RouteParams> }
-) => Promise<NextResponse>;
+// These proxy handlers ignore the route `context`/`params` entirely. Next 14
+// passes `params` synchronously while Next 15 made it a Promise, so any typed
+// second parameter is a cross-major compatibility hazard against Next's
+// generated route-handler constraint. A handler that declares only `request`
+// is assignable to Next's `(request, context) => ...` route type on BOTH
+// majors (a function with fewer parameters is assignable), so we omit the
+// second parameter rather than try to model the per-version `params` shape.
+type RouteHandler = (request: NextRequest) => Promise<NextResponse>;
 
 function buildForwardHeaders(incoming: Headers): Record<string, string> {
     const out: Record<string, string> = {};
