@@ -1,6 +1,6 @@
 # AGENTS.md
 
-This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
+This file provides shared guidance to AI coding agents (Claude Code, Codex, and others) when working with code in this repository.
 
 ## Project Overview
 
@@ -44,6 +44,27 @@ This project uses **uv** for dependency management and a **Makefile** for common
 - **By marker**: `uv run pytest -m "unit"`, `uv run pytest -m "live"`
 - **Exclude slow**: `uv run pytest -m "not integration and not live and not e2e"`
 
+## Continuous Integration
+
+CI lives in `.github/workflows/`. The core quality workflows — `python-tests`,
+`python-lint`, `python-mypy`, `python-complexity`, `python-coverage`,
+`python-build` — run on **pull requests** *and* on **push to `develop`/`main`**,
+so squash/rebase merges are re-validated on the commit that actually lands
+(PR-only CI never tested the merged tree). Each is path-filtered, so a merge that
+doesn't touch a workflow's paths correctly skips it; the changed-file diff jobs
+(lint/mypy/complexity/coverage) fall back to `github.event.before` for the diff
+base on push, since there's no `pull_request` context there.
+
+Two workflows are intentionally **not** push-triggered:
+
+- `extension-contract-live.yml` — hits a live, credentialed cluster; PR +
+  `workflow_dispatch` only (keeps cluster credentials out of post-merge runs).
+- `require-linear-issue.yml` — inspects PR title/body/branch, so it's PR-only by
+  nature.
+
+(`extension-go-reference-e2e.yml` already runs on push, path-gated to its own
+go-reference/identity paths.)
+
 ## Architecture Overview
 
 ### Client-Service Pattern
@@ -64,6 +85,23 @@ Complex services use mixin composition for modularity:
 - `ModelsService` = BaseService + SearchMixin + DownloadMixin + FileMixin + ConfigMixin
 - Each mixin handles a specific feature area
 - See @.ai/knowledge/successful/service-patterns.md for why this works well
+
+### Federation-Aware Services (mesh-v1.0.0)
+
+The Federation API + SDK MVP unified the SDK surface in WS-M3.2 and added federation-aware services. Notes for new contributors:
+
+- **Canonical import:** `from kamiwaza_sdk import KamiwazaClient` (the legacy top-level `kamiwaza` package has been retired; the `kamiwaza_sdk` namespace is the only supported one).
+- **Base URL convention:** `KamiwazaClient(base_url=".../api", verify=...)` — `base_url` must end with `/api`. `verify=` / `ca_bundle=` kwargs accept self-signed certs in dev (T7.13).
+- **Federation-aware services on the client:**
+  - `kz.federations` — pair / list / probe federations (T7.5)
+  - `kz.jobs` — submit, run(recoverable=True), cancel, list cluster jobs (T7.6)
+  - `kz.cluster` — diagnose, capabilities, operations, set_execution_gate, clear_execution_gate (T7.7)
+  - `kz.gates` — discover (M2/M3 introduced); `kz.gates.packages` — install/replace/uninstall hash-pinned gate packages (M5 / T7.10)
+  - `kz.subjects` / `kz.datasets` — AuthzSubjects CRUD + dataset attribute-gate bindings (M3)
+  - `kz.retrieval` — federated retrieval cancel + list (M2)
+  - `kz.auth` — `UserPasswordAuthenticator` for live integration tests
+- **Pattern when a federation surface is missing:** the canonical PRD + Design at `../kamiwaza-docs-engineering-internal/docs/specifications/core/federation-api-and-sdk/` is the source of truth. The M5 smoke playbook at `../kamiwaza-docs-engineering-internal/docs/mesh-v1.0.0/demos/m5-gate-packages-smoke.md` shows the canonical install→discover→bind→replace→uninstall sequence.
+- **Service-doc sync:** kamiwaza-docs syncs `docs/services/<svc>/README.md` from this repo at build time (see kamiwaza-docs agent guidance). When you add federation-aware methods to a service, update that service's `docs/services/<svc>/README.md` here so customer docs catch up.
 
 ## Quick Start for New Contributors
 
@@ -128,3 +166,13 @@ Before implementing, review @.ai/knowledge/failures/common-pitfalls.md to avoid:
 2. Run full test suite: `make test`
 3. Build distribution: `make build` (or `uv build`)
 4. Use `release.sh` for automated release (uses `uv build` and `uv publish`)
+
+## Agent-specific instructions
+
+`AGENTS.md` is the single source of truth for agent guidance in this repo, read by all tools — Claude Code (via `CLAUDE.md`'s `@AGENTS.md` import), Codex, and others. Keep shared, tool-neutral instructions here. `CLAUDE.md` is a sealed pointer — do not add content to it.
+
+When an instruction must apply to ONE agent only, carve it out instead of editing the shared files:
+
+- **Claude, path-scoped** — add `.claude/rules/<name>.md` with a `paths:` glob.
+- **Claude, always-on** — add `.claude/rules/<name>.md` with no `paths:`.
+- **Codex** — mark any Codex-only prose in this file as "Codex only:".
