@@ -7,8 +7,10 @@ from ..exceptions import APIError, NotFoundError
 from ..schemas.workrooms import (
     CreateWorkroom,
     DeleteWorkroomResponse,
+    EnterWorkroomResponse,
     ExportManifest,
     IngestionSummary,
+    LeaveWorkroomResponse,
     UpdateWorkroom,
     Workroom,
 )
@@ -62,14 +64,16 @@ class WorkroomService(BaseService):
         Raises:
             APIError: If creation fails (e.g. limit exceeded -> 409).
         """
-        payload = CreateWorkroom(
-            name=name,
-            type=workroom_type,
-            description=description,
-            labels=labels,
-            classification=classification,
-            attributes=attributes,
-            scg_references=scg_references,
+        payload = CreateWorkroom.model_validate(
+            {
+                "name": name,
+                "type": workroom_type,
+                "description": description,
+                "labels": labels,
+                "classification": classification,
+                "attributes": attributes,
+                "scg_references": scg_references,
+            }
         )
         response = self.client.post(
             "/workrooms/",
@@ -143,8 +147,8 @@ class WorkroomService(BaseService):
             APIError: If validation fails (400) or workroom is read-only (409).
         """
         wid = self._ensure_uuid(workroom_id)
-        payload = UpdateWorkroom(
-            **self._provided_fields(
+        payload = UpdateWorkroom.model_validate(
+            self._provided_fields(
                 name=name,
                 description=description,
                 labels=labels,
@@ -218,6 +222,35 @@ class WorkroomService(BaseService):
             if e.status_code == 404:
                 raise NotFoundError(f"Workroom {wid} not found")
             raise
+
+    # -------------------------------------------------------------------------
+    # Session binding
+    # -------------------------------------------------------------------------
+
+    def enter(self, workroom_id: Union[str, UUID]) -> EnterWorkroomResponse:
+        """Call the backend workroom-enter endpoint and return its response.
+
+        The SDK does not install returned access tokens into the configured
+        authenticator. Callers that need scoped Context access should continue
+        to pass explicit ``workroom_id`` values where the SDK exposes them.
+        """
+        wid = self._ensure_uuid(workroom_id)
+        try:
+            response = self.client.post(f"/workrooms/{wid}/enter")
+            return EnterWorkroomResponse.model_validate(response)
+        except APIError as e:
+            if e.status_code == 404:
+                raise NotFoundError(f"Workroom {wid} not found")
+            raise
+
+    def leave(self) -> LeaveWorkroomResponse:
+        """Call the backend workroom-leave endpoint and return its response.
+
+        Returned token fields are exposed for callers that manage tokens
+        themselves; this method does not mutate the SDK authenticator.
+        """
+        response = self.client.post("/workrooms/leave")
+        return LeaveWorkroomResponse.model_validate(response)
 
     # -------------------------------------------------------------------------
     # Export & ingestion
