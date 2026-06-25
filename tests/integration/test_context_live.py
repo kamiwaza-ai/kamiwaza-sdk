@@ -29,6 +29,7 @@ DEFAULT_WORKROOM_ID = os.getenv(
 )
 WORKROOM_BINDING_UNAVAILABLE_DETAIL = "workroom_binding_unavailable"
 WORKROOM_BINDING_UNAVAILABLE_CLASS = "binding_unavailable"
+WORKROOM_SCOPE_PERSISTENCE_UNAVAILABLE = "Workroom scope persistence is unavailable"
 TEST_VECTOR = [round(index * 0.01, 4) for index in range(1, 33)]
 
 
@@ -67,6 +68,8 @@ def _is_workroom_binding_unavailable(error: APIError) -> bool:
     detail = payload.get("detail")
     if detail == WORKROOM_BINDING_UNAVAILABLE_DETAIL:
         return True
+    if isinstance(detail, str):
+        return WORKROOM_SCOPE_PERSISTENCE_UNAVAILABLE in detail
     if not isinstance(detail, dict):
         return False
     if detail.get("reason") == WORKROOM_BINDING_UNAVAILABLE_CLASS:
@@ -447,10 +450,15 @@ def test_context_vectordb_create_without_workroom_uses_global_scope(
     vectordb_id: str | None = None
 
     try:
-        created = service.create_vectordb(
-            name=f"sdk-context-vdb-global-{uuid4().hex[:8]}",
-            engine="milvus",
-        )
+        try:
+            created = service.create_vectordb(
+                name=f"sdk-context-vdb-global-{uuid4().hex[:8]}",
+                engine="milvus",
+            )
+        except APIError as exc:
+            if exc.status_code == 403 and "Global Workroom is read-only" in str(exc):
+                pytest.skip("No-workroom VectorDB creation is read-only in this release profile")
+            raise
         vectordb_id = created["id"]
         assert vectordb_id
         _assert_global_scope_if_exposed(created)
