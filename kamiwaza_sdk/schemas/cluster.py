@@ -1,6 +1,6 @@
 # kamiwaza_sdk/schemas/cluster.py
 
-from pydantic import BaseModel, Field, EmailStr
+from pydantic import BaseModel, ConfigDict, Field, EmailStr
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from uuid import UUID
@@ -76,6 +76,21 @@ class NodeDetails(BaseModel):
     location: Optional[Location] = None
     hardware: Optional[Hardware] = None
     node_list_node: Optional[NodeListNode] = None
+
+class ClusterCapabilities(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    gpu_count: int = Field(default=0, description="Total GPUs available to the cluster")
+    federation_count: int = Field(default=0, description="Number of configured federations")
+    ray_ready: bool = Field(default=False, description="Whether Ray is ready for serving")
+    available_platforms: List[str] = Field(default_factory=list, description="Supported serving platforms")
+    cluster_ip: Optional[str] = Field(default=None, description="Cluster IP address")
+    gpu_inventory_source: Optional[str] = Field(default=None, description="GPU inventory source")
+    gpu_types: List[str] = Field(default_factory=list, description="Detected GPU types")
+    gpus: List[Dict[str, Any]] = Field(default_factory=list, description="GPU inventory entries")
+    hostname: Optional[str] = Field(default=None, description="Cluster hostname")
+    local_node_id: Optional[UUID] = Field(default=None, description="Local node ID")
+    ray_node_id: Optional[str] = Field(default=None, description="Ray node ID")
 
 model_config = {
     "from_attributes": True
