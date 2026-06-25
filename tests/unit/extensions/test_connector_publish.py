@@ -99,6 +99,10 @@ def _patches(publisher_mock):
             return_value=profile,
         ),
         patch(
+            "kamiwaza_extensions.image_pusher.ImagePusher.check_buildx_available",
+            return_value=None,
+        ),
+        patch(
             "kamiwaza_extensions.image_pusher.ImagePusher.resolve_digest",
             return_value="sha256:abc123",
         ),
@@ -114,8 +118,8 @@ def test_publish_connector_publishes_manifest_to_connectors_catalog():
     publisher.publish.return_value = SimpleNamespace(
         action="insert", catalog_file="garden/v3/connectors.json", version="1.0.0"
     )
-    p_profile, p_digest, p_pub = _patches(publisher)
-    with p_profile, p_digest, p_pub:
+    p_profile, p_buildx, p_digest, p_pub = _patches(publisher)
+    with p_profile, p_buildx, p_digest, p_pub:
         publish_connector(_info(), stage="prod")
 
     publisher.publish.assert_called_once()
@@ -133,13 +137,41 @@ def test_publish_connector_skips_digest_resolution_on_no_push():
     publisher.publish.return_value = SimpleNamespace(
         action="insert", catalog_file="garden/v3/connectors.json", version="1.0.0"
     )
-    p_profile, p_digest, p_pub = _patches(publisher)
-    with p_profile, p_digest as digest_mock, p_pub:
+    p_profile, p_buildx, p_digest, p_pub = _patches(publisher)
+    with p_profile, p_buildx as buildx_mock, p_digest as digest_mock, p_pub:
         publish_connector(_info(), stage="prod", no_push=True)
 
+    # --no-push does no registry round-trip at all: neither preflight nor resolve.
+    buildx_mock.assert_not_called()
     digest_mock.assert_not_called()
     entry = publisher.publish.call_args.kwargs["entry"]
     assert "image_digest" not in entry["deployment"]
+
+
+def test_publish_connector_verifies_supplied_digest_against_registry():
+    """A supplied --digest that disagrees with the registry aborts (not trusted blind)."""
+    publisher = MagicMock()
+    p_profile, p_buildx, p_digest, p_pub = _patches(publisher)  # registry -> sha256:abc123
+    with p_profile, p_buildx, p_digest as digest_mock, p_pub, pytest.raises(typer.Exit):
+        publish_connector(_info(), stage="prod", digest="sha256:wrongwrong")
+
+    digest_mock.assert_called_once()  # resolved to verify, not skipped
+    publisher.publish.assert_not_called()
+
+
+def test_publish_connector_accepts_matching_supplied_digest():
+    """A supplied --digest that matches the registry is verified and pinned."""
+    publisher = MagicMock()
+    publisher.publish.return_value = SimpleNamespace(
+        action="insert", catalog_file="garden/v3/connectors.json", version="1.0.0"
+    )
+    p_profile, p_buildx, p_digest, p_pub = _patches(publisher)  # registry -> sha256:abc123
+    with p_profile, p_buildx, p_digest as digest_mock, p_pub:
+        publish_connector(_info(), stage="prod", digest="sha256:abc123")
+
+    digest_mock.assert_called_once()  # verified against the registry
+    entry = publisher.publish.call_args.kwargs["entry"]
+    assert entry["deployment"]["image_digest"] == "sha256:abc123"
 
 
 def test_publish_connector_rejects_kamiwaza_json_without_manifest():
