@@ -258,3 +258,37 @@ def test_update_maps_404_to_not_found():
     service = ConnectorService(_RaisingClient())
     with pytest.raises(NotFoundError):
         service.update(uuid.uuid4(), ConnectorUpdate(enabled=True))
+
+
+def test_external_connector_aliases_preserve_old_names():
+    """The pre-rename ExternalConnector* names still import and alias the new ones."""
+    from kamiwaza_sdk.schemas.connectors import (
+        Connector,
+        ExternalConnector,
+        ExternalConnectorCreate,
+        ExternalConnectorUpdate,
+    )
+
+    assert ExternalConnector is Connector
+    assert ExternalConnectorCreate is ConnectorCreate
+    assert ExternalConnectorUpdate is ConnectorUpdate
+
+
+def test_create_allows_empty_scopes():
+    """A catalog/service-token connector with no OAuth scopes is creatable."""
+    resp = _connector()
+    resp["scopes"] = []
+    client = DummyClient({("POST", "/connectors"): resp})
+    service = ConnectorService(client)
+
+    conn = service.create(
+        ConnectorCreate(
+            name="ServiceNow",
+            connector_type="servicenow",
+            config={"service_token_ref": "urn:secret:sn"},
+        )
+    )
+
+    assert conn.connector_type == "m365"  # echoes the response connector_type
+    body = client.calls[0][2]["json"]
+    assert body["scopes"] == []

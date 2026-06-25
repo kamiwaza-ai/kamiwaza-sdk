@@ -112,6 +112,8 @@ class ConnectorService(BaseService):
             endpoint: HTTP/MCP endpoint where the connector is reached.
             config: Optional secret config (e.g. a service token); the platform
                 stores it encrypted. Omit for connectors that need no credential.
+            scopes: Scopes this connector is granted; needed for service_token
+                connectors to mint per-user tokens. Omit when no scopes apply.
             workload_principal_id: Service-account principal permitted to mint
                 per-user tokens for this connector out-of-core; bound here at
                 install. Omit for connectors that never mint out-of-core.
@@ -127,7 +129,8 @@ class ConnectorService(BaseService):
             workload_principal_id=workload_principal_id,
         )
         response = self.client.post(
-            "/connectors/subscriptions", json=request.model_dump(mode="json")
+            "/connectors/subscriptions",
+            json=request.model_dump(mode="json", exclude_none=True),
         )
         return Connector.model_validate(response)
 

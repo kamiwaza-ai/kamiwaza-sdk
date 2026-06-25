@@ -50,7 +50,11 @@ class ConnectorCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     connector_type: str = Field(..., min_length=1)
     config: Dict[str, Any] = Field(..., description="Provider-specific configuration")
-    scopes: List[str] = Field(..., min_length=1, description="OAuth scopes")
+    # Empty is valid: a service-token / catalog connector mints via its service
+    # token rather than OAuth scopes, so it legitimately needs zero scopes. The
+    # response and subscription models already treat [] as valid, so this stays
+    # consistent with them.
+    scopes: List[str] = Field(default_factory=list, description="OAuth scopes")
     enabled: bool = True
 
 
@@ -131,6 +135,10 @@ class AvailableConnector(BaseModel):
 
     Mirrors an item from the platform's ``/connectors/available`` endpoint: only
     enabled connectors, with non-sensitive fields (no timestamps or redirect URI).
+
+    The user-safe guarantee is enforced server-side by the endpoint, not by this
+    model: ``extra="allow"`` means any additional field the server returns is
+    retained, so this class does not by itself filter out sensitive fields.
     """
 
     model_config = ConfigDict(extra="allow")
@@ -140,3 +148,11 @@ class AvailableConnector(BaseModel):
     connector_type: str
     enabled: bool
     scopes: List[str] = []
+
+
+# Deprecated aliases: these schemas were renamed ExternalConnector* -> Connector*
+# (PR #193). The old names are kept so existing importers keep working; prefer the
+# Connector* names in new code.
+ExternalConnector = Connector
+ExternalConnectorCreate = ConnectorCreate
+ExternalConnectorUpdate = ConnectorUpdate
