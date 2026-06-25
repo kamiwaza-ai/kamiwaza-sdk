@@ -1235,6 +1235,9 @@ def context_llm_prerequisite(
             autoscaling=False,
             min_copies=1,
             starting_copies=1,
+            # The fixture's wait_for_deployment below owns the timeout; the
+            # SDK-internal wait would block up to its own 3600s default first.
+            wait=False,
         )
         if not raw_deployment_id:
             pytest.skip(
@@ -1314,6 +1317,9 @@ def deployable_model_prerequisite(
             autoscaling=False,
             min_copies=1,
             starting_copies=1,
+            # The probe's wait_for_deployment below owns the timeout
+            # (DEPLOYABLE_TEST_DEPLOY_TIMEOUT_SECONDS), not the SDK default.
+            wait=False,
         )
         if not raw_deployment_id:
             pytest.skip(
