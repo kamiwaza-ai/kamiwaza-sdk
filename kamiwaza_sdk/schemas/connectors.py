@@ -1,15 +1,15 @@
 # kamiwaza_sdk/schemas/connectors.py
 
-"""Pydantic models for the external-connectors API (M365, Google, …).
+"""Pydantic models for the connectors API (M365, Google, …).
 
-This covers the cluster-wide connector *app registration* (admin-scoped): the
-tenant/client identifiers an operator registers once per cluster. The per-user
-OAuth connection (Device Code Flow) is a separate, interactive flow and is not
-modeled here — users connect themselves.
+This covers cluster-wide connector *registration* (admin-scoped): the manifest
++ config an operator registers once per cluster. The per-user OAuth connection
+(Device Code Flow) is a separate, interactive flow and is not modeled here —
+users connect themselves.
 """
 
 from datetime import datetime
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -37,19 +37,24 @@ class M365ConnectorConfig(BaseModel):
     client_id: str = Field(..., min_length=1, description="App registration client ID")
 
 
-class ExternalConnectorCreate(BaseModel):
-    """Request to register a cluster-wide connector (admin-scoped)."""
+class ConnectorCreate(BaseModel):
+    """Request to register a cluster-wide connector (admin-scoped).
+
+    ``connector_type`` is an open string — the platform resolves it against the
+    published catalog rather than a fixed enum, so new connector types need no
+    SDK change.
+    """
 
     model_config = ConfigDict(extra="allow")
 
     name: str = Field(..., min_length=1, max_length=255)
-    connector_type: Literal["m365", "google", "confluence"]
+    connector_type: str = Field(..., min_length=1)
     config: Dict[str, Any] = Field(..., description="Provider-specific configuration")
     scopes: List[str] = Field(..., min_length=1, description="OAuth scopes")
     enabled: bool = True
 
 
-class ExternalConnector(BaseModel):
+class Connector(BaseModel):
     """Connector response (sensitive config is never echoed back)."""
 
     model_config = ConfigDict(extra="allow")
@@ -110,7 +115,7 @@ class ConnectorSubscriptionCreate(BaseModel):
     )
 
 
-class ExternalConnectorUpdate(BaseModel):
+class ConnectorUpdate(BaseModel):
     """Partial update for a registered connector; only set fields are sent."""
 
     model_config = ConfigDict(extra="allow")

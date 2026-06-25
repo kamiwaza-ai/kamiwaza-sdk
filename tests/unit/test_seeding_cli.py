@@ -72,7 +72,7 @@ class FakeClient:
             import_skill_package=RecordingService(SimpleNamespace(id="skill-1"))
         )
         self.connectors = SimpleNamespace(
-            create_m365=RecordingService(SimpleNamespace(id="conn-1", name="Microsoft 365"))
+            create=RecordingService(SimpleNamespace(id="conn-1", name="Microsoft 365"))
         )
 
 
@@ -412,10 +412,11 @@ def test_configure_m365_passes_tenant_and_client(capsys):
         client,
     )
 
-    call = client.connectors.create_m365.calls[0]["kwargs"]
-    assert call["tenant_id"] == "tenant-abc"
-    assert call["client_id"] == "client-xyz"
-    assert call["scopes"] is None  # default set applied in the service
+    request = client.connectors.create.calls[0]["args"][0]
+    assert request.connector_type == "m365"
+    assert request.config["tenant_id"] == "tenant-abc"
+    assert request.config["client_id"] == "client-xyz"
+    assert request.scopes  # default M365 scopes applied by the seeder
     assert json.loads(capsys.readouterr().out) == {
         "connector_id": "conn-1",
         "name": "Microsoft 365",

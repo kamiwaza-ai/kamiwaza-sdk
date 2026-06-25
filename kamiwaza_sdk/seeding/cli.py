@@ -335,12 +335,24 @@ def cmd_chat(args: argparse.Namespace, *, client) -> Optional[dict]:
 
 
 def cmd_configure_m365(args: argparse.Namespace, *, client) -> dict:
-    conn = client.connectors.create_m365(
-        tenant_id=args.tenant_id,
-        client_id=args.client_id,
-        name=args.name,
-        scopes=args.scope or None,
+    # Per-type seeding convenience: the generic connectors client is
+    # type-agnostic, so the M365-specific config/scope shape lives here.
+    from ..schemas.connectors import (
+        M365_DEFAULT_SCOPES,
+        ConnectorCreate,
+        M365ConnectorConfig,
     )
+
+    request = ConnectorCreate(
+        name=args.name,
+        connector_type="m365",
+        config=M365ConnectorConfig(
+            tenant_id=args.tenant_id, client_id=args.client_id
+        ).model_dump(),
+        scopes=args.scope or list(M365_DEFAULT_SCOPES),
+        enabled=True,
+    )
+    conn = client.connectors.create(request)
     return {"connector_id": str(conn.id), "name": conn.name}
 
 

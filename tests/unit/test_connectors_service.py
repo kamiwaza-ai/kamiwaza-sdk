@@ -7,7 +7,8 @@ import pytest
 from kamiwaza_sdk.exceptions import APIError, NotFoundError
 from kamiwaza_sdk.schemas.connectors import (
     M365_DEFAULT_SCOPES,
-    ExternalConnectorUpdate,
+    ConnectorCreate,
+    ConnectorUpdate,
 )
 from kamiwaza_sdk.services.connectors import ConnectorService
 
@@ -45,12 +46,19 @@ def _connector(name="Microsoft 365"):
     }
 
 
-def test_create_m365_builds_config_and_default_scopes():
+def test_create_posts_connector():
     resp = _connector()
     client = DummyClient({("POST", "/connectors"): resp})
     service = ConnectorService(client)
 
-    conn = service.create_m365(tenant_id="tenant-abc", client_id="client-xyz")
+    conn = service.create(
+        ConnectorCreate(
+            name="Microsoft 365",
+            connector_type="m365",
+            config={"tenant_id": "tenant-abc", "client_id": "client-xyz"},
+            scopes=M365_DEFAULT_SCOPES,
+        )
+    )
 
     assert conn.connector_type == "m365"
     method, path, kwargs = client.calls[0]
@@ -58,24 +66,7 @@ def test_create_m365_builds_config_and_default_scopes():
     body = kwargs["json"]
     assert body["connector_type"] == "m365"
     assert body["config"] == {"tenant_id": "tenant-abc", "client_id": "client-xyz"}
-    # tenant/client are the only config — no client_secret.
-    assert "client_secret" not in body["config"]
-    assert body["scopes"] == M365_DEFAULT_SCOPES
     assert body["name"] == "Microsoft 365"
-
-
-def test_create_m365_custom_name_and_scopes():
-    resp = _connector(name="Corp M365")
-    client = DummyClient({("POST", "/connectors"): resp})
-    service = ConnectorService(client)
-
-    service.create_m365(
-        tenant_id="t", client_id="c", name="Corp M365", scopes=["User.Read"]
-    )
-
-    body = client.calls[0][2]["json"]
-    assert body["name"] == "Corp M365"
-    assert body["scopes"] == ["User.Read"]
 
 
 def test_list_unwraps_items_envelope():
@@ -254,7 +245,7 @@ def test_update_sends_only_set_fields():
     client = DummyClient({("PUT", f"/connectors/{cid}"): resp})
     service = ConnectorService(client)
 
-    conn = service.update(cid, ExternalConnectorUpdate(enabled=False))
+    conn = service.update(cid, ConnectorUpdate(enabled=False))
 
     assert conn.enabled is False
     method, path, kwargs = client.calls[0]
@@ -266,4 +257,4 @@ def test_update_sends_only_set_fields():
 def test_update_maps_404_to_not_found():
     service = ConnectorService(_RaisingClient())
     with pytest.raises(NotFoundError):
-        service.update(uuid.uuid4(), ExternalConnectorUpdate(enabled=True))
+        service.update(uuid.uuid4(), ConnectorUpdate(enabled=True))
