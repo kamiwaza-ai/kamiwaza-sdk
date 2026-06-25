@@ -45,7 +45,7 @@ def infer_extension_type(metadata: Dict[str, Any]) -> str:
     drifting; consolidated here.
     """
     explicit = metadata.get("type") or metadata.get("template_type")
-    if explicit in ("app", "tool", "service"):
+    if explicit in ("app", "tool", "service", "connector"):
         return explicit
 
     name = metadata.get("name", "")
@@ -53,6 +53,9 @@ def infer_extension_type(metadata: Dict[str, Any]) -> str:
         return "tool"
     if name.startswith("service-"):
         return "service"
+    # NB: connectors are identified ONLY by an explicit `type: "connector"`.
+    # No `connector-` name-prefix heuristic — it would misclassify legitimate
+    # apps like `connector-builder` (the Data Connector Builder app).
 
     return "app"
 
