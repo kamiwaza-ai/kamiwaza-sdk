@@ -404,23 +404,41 @@ def test_import_skill_reads_file(capsys, tmp_path):
     assert json.loads(capsys.readouterr().out) == {"skill_id": "skill-1"}
 
 
-def test_configure_m365_passes_tenant_and_client(capsys):
+def test_configure_connector_passes_type_and_config(capsys):
     client = FakeClient()
 
     _run(
-        ["configure-m365", "--tenant-id", "tenant-abc", "--client-id", "client-xyz"],
+        [
+            "configure-connector",
+            "--type",
+            "m365",
+            "--name",
+            "Microsoft 365",
+            "--config-json",
+            '{"tenant_id": "tenant-abc", "client_id": "client-xyz"}',
+            "--scope",
+            "Files.Read.All",
+        ],
         client,
     )
 
     request = client.connectors.create.calls[0]["args"][0]
     assert request.connector_type == "m365"
-    assert request.config["tenant_id"] == "tenant-abc"
-    assert request.config["client_id"] == "client-xyz"
-    assert request.scopes  # default M365 scopes applied by the seeder
+    assert request.config == {"tenant_id": "tenant-abc", "client_id": "client-xyz"}
+    assert request.scopes == ["Files.Read.All"]
     assert json.loads(capsys.readouterr().out) == {
         "connector_id": "conn-1",
         "name": "Microsoft 365",
     }
+
+
+def test_configure_connector_rejects_bad_config_json():
+    client = FakeClient()
+    with pytest.raises(SystemExit):
+        _run(
+            ["configure-connector", "--type", "m365", "--name", "X", "--config-json", "{bad"],
+            client,
+        )
 
 
 def test_no_subcommand_errors():

@@ -5,16 +5,15 @@ import uuid
 import pytest
 
 from kamiwaza_sdk.exceptions import APIError, NotFoundError
-from kamiwaza_sdk.schemas.connectors import (
-    M365_DEFAULT_SCOPES,
-    ConnectorCreate,
-    ConnectorUpdate,
-)
+from kamiwaza_sdk.schemas.connectors import ConnectorCreate, ConnectorUpdate
 from kamiwaza_sdk.services.connectors import ConnectorService
 
 pytestmark = pytest.mark.unit
 
 _TS = "2026-01-01T00:00:00Z"
+# Representative scopes for the example connector; the SDK no longer ships
+# connector-specific scope defaults.
+_SCOPES = ["Files.Read.All", "Mail.Read"]
 
 
 class DummyClient:
@@ -41,7 +40,7 @@ def _connector(name="Microsoft 365"):
         "name": name,
         "connector_type": "m365",
         "enabled": True,
-        "scopes": M365_DEFAULT_SCOPES,
+        "scopes": _SCOPES,
         "created_at": _TS,
     }
 
@@ -56,7 +55,7 @@ def test_create_posts_connector():
             name="Microsoft 365",
             connector_type="m365",
             config={"tenant_id": "tenant-abc", "client_id": "client-xyz"},
-            scopes=M365_DEFAULT_SCOPES,
+            scopes=_SCOPES,
         )
     )
 
@@ -69,29 +68,8 @@ def test_create_posts_connector():
     assert body["name"] == "Microsoft 365"
 
 
-def test_create_m365_shim_builds_m365_request(recwarn):
-    # Back-compat: the removed create_m365 is restored as a deprecated shim that
-    # delegates to create() with the M365 shape (review High #1).
-    resp = _connector()
-    client = DummyClient({("POST", "/connectors"): resp})
-    service = ConnectorService(client)
-
-    conn = service.create_m365(tenant_id="tenant-abc", client_id="client-xyz")
-
-    assert conn.connector_type == "m365"
-    method, path, kwargs = client.calls[0]
-    assert (method, path) == ("POST", "/connectors")
-    body = kwargs["json"]
-    assert body["connector_type"] == "m365"
-    assert body["config"]["tenant_id"] == "tenant-abc"
-    assert body["config"]["client_id"] == "client-xyz"
-    assert body["scopes"] == M365_DEFAULT_SCOPES
-    assert any(issubclass(w.category, DeprecationWarning) for w in recwarn)
-
-
 def test_external_connector_aliases_are_back_compat():
-    # Renamed schemas keep deprecated aliases so existing imports don't break
-    # (review High #2).
+    # Renamed schemas keep deprecated aliases so existing imports don't break.
     from kamiwaza_sdk.schemas.connectors import (
         Connector,
         ConnectorUpdate as CU,
@@ -261,7 +239,7 @@ def test_list_available_unwraps_items_envelope():
         "name": "Microsoft 365",
         "connector_type": "m365",
         "enabled": True,
-        "scopes": M365_DEFAULT_SCOPES,
+        "scopes": _SCOPES,
     }
     client = DummyClient({("GET", "/connectors/available"): {"items": [item]}})
     service = ConnectorService(client)

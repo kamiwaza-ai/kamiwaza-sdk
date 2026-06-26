@@ -1,11 +1,12 @@
 # kamiwaza_sdk/schemas/connectors.py
 
-"""Pydantic models for the connectors API (M365, Google, …).
+"""Pydantic models for the connectors API.
 
 This covers cluster-wide connector *registration* (admin-scoped): the manifest
-+ config an operator registers once per cluster. The per-user OAuth connection
-(Device Code Flow) is a separate, interactive flow and is not modeled here —
-users connect themselves.
++ config an operator registers once per cluster. The client is connector-agnostic
+— ``config`` is an opaque dict validated server-side against the connector's
+published manifest config_schema, so no connector type is modeled here. The
+per-user OAuth connection is a separate, interactive flow and is not modeled here.
 """
 
 from datetime import datetime
@@ -13,28 +14,6 @@ from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
-
-# Default M365 Graph scopes, matching the platform connector UI defaults.
-M365_DEFAULT_SCOPES: List[str] = [
-    "User.Read",
-    "Files.ReadWrite.All",
-    "Sites.ReadWrite.All",
-    "Mail.ReadWrite",
-    "Calendars.ReadWrite",
-]
-
-
-class M365ConnectorConfig(BaseModel):
-    """Cluster-wide M365 app-registration config (Device Code Flow, public client).
-
-    Both fields are public Azure AD identifiers — not secrets. No client_secret
-    is used (Device Code Flow is a public-client flow).
-    """
-
-    model_config = ConfigDict(extra="allow")
-
-    tenant_id: str = Field(..., min_length=1, description="Azure AD tenant ID")
-    client_id: str = Field(..., min_length=1, description="App registration client ID")
 
 
 class ConnectorCreate(BaseModel):

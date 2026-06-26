@@ -1,16 +1,16 @@
 # kamiwaza_sdk/services/connectors.py
 
-"""Client service for cluster-wide connectors (M365, Google, …).
+"""Client service for cluster-wide connectors.
 
-Registers the connector *app* (admin-scoped, one per type per cluster) — e.g.
-the M365 tenant/client identifiers, or an out-of-core connector by manifest +
-endpoint. The per-user OAuth connection is a separate interactive Device Code
-Flow and is intentionally not wrapped here. The client is type-agnostic: a
-``connector_type`` is an open string the platform resolves against the catalog,
-so new connectors need no SDK change (per-type seeding lives in the seeder).
+Registers the connector *app* (admin-scoped, one per type per cluster) — either a
+catalog connector by ``connector_type`` + config, or an out-of-core connector by
+manifest + endpoint. The client is connector-agnostic: ``connector_type`` is an
+open string the platform resolves against the catalog, and ``config`` is an opaque
+dict the platform validates against the connector's manifest config_schema, so new
+connectors need no SDK change. The per-user OAuth connection is a separate
+interactive flow and is intentionally not wrapped here.
 """
 
-import warnings
 from typing import Any, Dict, List, Optional, Union
 from uuid import UUID
 
@@ -22,8 +22,6 @@ from ..schemas.connectors import (
     ConnectorCreate,
     ConnectorSubscriptionCreate,
     ConnectorUpdate,
-    M365_DEFAULT_SCOPES,
-    M365ConnectorConfig,
 )
 
 
@@ -91,40 +89,6 @@ class ConnectorService(BaseService):
             "/connectors", json=request.model_dump(mode="json")
         )
         return Connector.model_validate(response)
-
-    def create_m365(
-        self,
-        *,
-        tenant_id: str,
-        client_id: str,
-        name: str = "Microsoft 365",
-        scopes: Optional[List[str]] = None,
-        enabled: bool = True,
-    ) -> Connector:
-        """Deprecated back-compat shim — use :meth:`create`.
-
-        Equivalent to ``create(ConnectorCreate(connector_type="m365", ...))``.
-        The M365 shape now lives in the seeder (``cmd_configure_m365``); this
-        wrapper preserves the pre-refactor ``client.connectors.create_m365(...)``
-        call site. ``tenant_id``/``client_id`` are public Azure AD identifiers
-        (Device Code Flow uses no client secret).
-        """
-        warnings.warn(
-            "create_m365() is deprecated; use "
-            "create(ConnectorCreate(connector_type='m365', ...)).",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        request = ConnectorCreate(
-            name=name,
-            connector_type="m365",
-            config=M365ConnectorConfig(
-                tenant_id=tenant_id, client_id=client_id
-            ).model_dump(),
-            scopes=scopes or list(M365_DEFAULT_SCOPES),
-            enabled=enabled,
-        )
-        return self.create(request)
 
     def subscribe(
         self,
