@@ -1057,7 +1057,13 @@ class TestResolvePortConflicts:
                 "backend": {"ports": ["59301:8000"]},
             }
         }
-        assert resolve_port_conflicts(compose) == {}
+        # Hermetic: don't depend on these host ports actually being free on
+        # the runner (CI had one bound → false conflict). The behavior under
+        # test is "all ports free → no remaps", so force availability.
+        with patch(
+            "kamiwaza_extensions.dev_local.is_port_available", return_value=True
+        ):
+            assert resolve_port_conflicts(compose) == {}
 
     def test_detects_conflict(self):
         import socket
