@@ -794,6 +794,22 @@ def run_publish(
         raise typer.Exit(code=1) from exc
 
     for info in infos:
+        # Connectors have no compose and aren't built by kz-ext — they publish
+        # their self-describing manifest to connectors.json via a dedicated path.
+        if infer_extension_type(info.metadata) == "connector":
+            from kamiwaza_extensions.connector_publisher import publish_connector
+
+            publish_connector(
+                info,
+                stage=stage,
+                dry_run=dry_run,
+                force=force,
+                no_push=no_push,
+                revision=revision,
+                digest=digest,
+                catalog_schema=catalog_schema,
+            )
+            continue
         _publish_one(
             info,
             stage=stage,

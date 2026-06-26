@@ -334,13 +334,29 @@ def cmd_chat(args: argparse.Namespace, *, client) -> Optional[dict]:
     return {"conversation_id": conversation.id, "reply": reply}
 
 
-def cmd_configure_m365(args: argparse.Namespace, *, client) -> dict:
-    conn = client.connectors.create_m365(
-        tenant_id=args.tenant_id,
-        client_id=args.client_id,
+def cmd_configure_connector(args: argparse.Namespace, *, client) -> dict:
+    # Connector-agnostic: the config is an opaque JSON object the platform
+    # validates against the connector's published manifest config_schema, so the
+    # seeder needs no per-connector shape.
+    import json
+
+    from ..schemas.connectors import ConnectorCreate
+
+    try:
+        config = json.loads(args.config_json) if args.config_json else {}
+    except json.JSONDecodeError as e:
+        raise SystemExit(f"--config-json is not valid JSON: {e}") from e
+    if not isinstance(config, dict):
+        raise SystemExit("--config-json must be a JSON object")
+
+    request = ConnectorCreate(
         name=args.name,
-        scopes=args.scope or None,
+        connector_type=args.type,
+        config=config,
+        scopes=args.scope or [],
+        enabled=True,
     )
+    conn = client.connectors.create(request)
     return {"connector_id": str(conn.id), "name": conn.name}
 
 
@@ -576,14 +592,29 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_import_skill)
 
     p = sub.add_parser(
-        "configure-m365",
-        help="Register the cluster-wide M365 connector (tenant + client id).",
+        "configure-connector",
+        help="Register a cluster-wide connector (connector-agnostic).",
     )
-    p.add_argument("--tenant-id", required=True, help="Azure AD tenant ID (not secret).")
-    p.add_argument("--client-id", required=True, help="App-registration client ID (not secret).")
-    p.add_argument("--name", default="Microsoft 365")
-    p.add_argument("--scope", action="append", help="Graph scope (repeatable; defaults to the standard set).")
-    p.set_defaults(func=cmd_configure_m365)
+    p.add_argument(
+        "--type",
+        required=True,
+        help="connector_type, resolved against the published catalog (e.g. m365).",
+    )
+    p.add_argument("--name", required=True, help="Display name for the connector.")
+    p.add_argument(
+        "--config-json",
+        default="{}",
+        help=(
+            "Provider config as a JSON object; validated server-side against the "
+            "connector's manifest config_schema."
+        ),
+    )
+    p.add_argument(
+        "--scope",
+        action="append",
+        help="OAuth scope (repeatable); omit for service-token connectors.",
+    )
+    p.set_defaults(func=cmd_configure_connector)
 
     return parser
 
