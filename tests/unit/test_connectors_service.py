@@ -69,6 +69,42 @@ def test_create_posts_connector():
     assert body["name"] == "Microsoft 365"
 
 
+def test_create_m365_shim_builds_m365_request(recwarn):
+    # Back-compat: the removed create_m365 is restored as a deprecated shim that
+    # delegates to create() with the M365 shape (review High #1).
+    resp = _connector()
+    client = DummyClient({("POST", "/connectors"): resp})
+    service = ConnectorService(client)
+
+    conn = service.create_m365(tenant_id="tenant-abc", client_id="client-xyz")
+
+    assert conn.connector_type == "m365"
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("POST", "/connectors")
+    body = kwargs["json"]
+    assert body["connector_type"] == "m365"
+    assert body["config"]["tenant_id"] == "tenant-abc"
+    assert body["config"]["client_id"] == "client-xyz"
+    assert body["scopes"] == M365_DEFAULT_SCOPES
+    assert any(issubclass(w.category, DeprecationWarning) for w in recwarn)
+
+
+def test_external_connector_aliases_are_back_compat():
+    # Renamed schemas keep deprecated aliases so existing imports don't break
+    # (review High #2).
+    from kamiwaza_sdk.schemas.connectors import (
+        Connector,
+        ConnectorUpdate as CU,
+        ExternalConnector,
+        ExternalConnectorCreate,
+        ExternalConnectorUpdate,
+    )
+
+    assert ExternalConnector is Connector
+    assert ExternalConnectorCreate is ConnectorCreate
+    assert ExternalConnectorUpdate is CU
+
+
 def test_list_unwraps_items_envelope():
     client = DummyClient({("GET", "/connectors"): {"items": [_connector()]}})
     service = ConnectorService(client)
