@@ -41,10 +41,10 @@ class ExecuteRequest(BaseModel):
     op: str = Field(min_length=1)
     subject_token: str | None = None
     params: dict[str, Any] = Field(default_factory=dict)
-    # Reserved: an opaque resume position core replays so a state-aware connector
-    # continues where it left off (the request side of OpResult.state). Stateless
-    # connectors ignore it; it is forwarded to the dispatcher when a connector opts
-    # into state-aware ops.
+    # Reserved (not yet wired): an opaque resume position core would replay so a
+    # state-aware connector continues where it left off (the request side of
+    # OpResult.state). Accepted on the wire but not yet forwarded to the
+    # dispatcher; wiring it through dispatcher.execute is a follow-up.
     state: str | None = None
 
 
