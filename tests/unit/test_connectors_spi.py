@@ -270,3 +270,66 @@ def test_mint_request_lease_bounds() -> None:
     # the proxy request inherits the same bound
     with pytest.raises(ValidationError):
         ConnectorProxyRequest(url="https://api.acme.test/x", lease_duration=10)
+
+
+def test_from_json_schema_required_field_must_be_supplied() -> None:
+    # An externally-authored manifest: a property both `required` AND carrying a
+    # `default`. `required` wins — from_json_schema must reconstruct it as
+    # must-supply so validate({}) rejects the missing field.
+    schema = {
+        "type": "object",
+        "properties": {"client_secret": {"type": "string", "default": "x"}},
+        "required": ["client_secret"],
+    }
+    cfg = ConfigSchema.from_json_schema(schema)
+    with pytest.raises(InvalidConfigException):
+        cfg.validate({})
+    cfg.validate({"client_secret": "abc"})  # ok when supplied
+
+
+def test_oauth_descriptor_resolved_fills_placeholders() -> None:
+    d = OAuthDescriptor(
+        authorization_endpoint="https://login.test/{tenant_id}/authorize",
+        token_endpoint="https://login.test/{tenant_id}/token",
+        revocation_endpoint=None,
+    )
+    r = d.resolved({"tenant_id": "contoso"})
+    assert r.authorization_endpoint == "https://login.test/contoso/authorize"
+    assert r.token_endpoint == "https://login.test/contoso/token"
+    assert r.revocation_endpoint is None  # None stays None
+    # Fixed endpoints (no placeholders) are a no-op.
+    fixed = OAuthDescriptor(
+        authorization_endpoint="https://accounts.test/auth",
+        token_endpoint="https://accounts.test/token",
+    )
+    assert fixed.resolved({"tenant_id": "x"}) == fixed
+
+
+def test_missing_scopes_default_is_empty() -> None:
+    # The base provider grants access by configuration, not per-surface scopes.
+    assert _DummyProvider().missing_scopes("files", {"read"}) == []
+
+
+def test_lifespan_rebuilds_after_owned_close() -> None:
+    built: list[_StubDispatcher] = []
+
+    def build() -> _StubDispatcher:
+        disp = _StubDispatcher(verify_result={"ok": True})
+        built.append(disp)
+        return disp
+
+    app = create_connector_app(
+        title="kamiwaza-connector-dummy",
+        provider=_DummyProvider(),
+        build_dispatcher=build,
+        error_type=_BoomError,
+        classify_error=lambda exc: (500, "internal", None),
+        dispatcher=None,
+    )
+    # Two lifespan passes: each must build + close its OWN dispatcher, never serve
+    # through the previous (closed) one.
+    for _ in range(2):
+        with TestClient(app) as client:
+            assert client.post("/v1/verify", json={}).json() == {"ok": True}
+    assert len(built) == 2
+    assert all(d.closed for d in built)

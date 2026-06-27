@@ -101,7 +101,11 @@ class ConfigSchema:
                 type=type_by_value.get((prop or {}).get("type", "string"), ConfigType.STRING),
                 required=name in required,
                 secret=bool((prop or {}).get("writeOnly")),
-                default=(prop or {}).get("default"),
+                # A property listed in JSON Schema ``required`` must be supplied —
+                # ``required`` wins over a ``default``. Carrying the default would
+                # make ``must_supply`` false and let ``validate({})`` accept a
+                # missing required field from an externally-authored manifest.
+                default=None if name in required else (prop or {}).get("default"),
                 description=(prop or {}).get("description", ""),
             )
             for name, prop in properties.items()

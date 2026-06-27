@@ -110,6 +110,10 @@ def create_connector_app(
         finally:
             if own:
                 await app.state.dispatcher.aclose()
+                # Clear the closed dispatcher so a later lifespan pass (restart /
+                # repeated TestClient context) rebuilds instead of serving through
+                # a closed one.
+                app.state.dispatcher = None
 
     app = FastAPI(title=title, lifespan=_lifespan)
     app.state.dispatcher = dispatcher
