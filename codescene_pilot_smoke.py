@@ -35,3 +35,5 @@ def _smoke_classify(values, threshold, mode, flags):
 # touch to trigger pull_request.synchronize (ENG-7796)
 
 # live-repro 427cd87
+
+# retrigger after Contents:Read (ENG-7796)
