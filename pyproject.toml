@@ -41,6 +41,11 @@ publish = [
 convert = [
     "anthropic>=0.30.0",
 ]
+# Install contract for connector repos building against kamiwaza_sdk.connectors.
+connector = [
+    "fastapi>=0.100.0",
+    "pydantic[email]>=2.11",
+]
 all = [
     "boto3>=1.28.0",
     "anthropic>=0.30.0",
