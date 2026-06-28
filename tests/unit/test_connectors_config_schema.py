@@ -1,0 +1,227 @@
+"""Tests for the declarative connector config contract."""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+from kamiwaza_sdk.connectors.config_schema import (
+    ConfigField,
+    ConfigOption,
+    ConfigOutput,
+    ConfigSchema,
+    ConfigType,
+    Importance,
+)
+from kamiwaza_sdk.connectors.exceptions import InvalidConfigException
+
+pytestmark = pytest.mark.unit
+
+
+def _schema() -> ConfigSchema:
+    return ConfigSchema(
+        (
+            ConfigField("client_id", description="OAuth client id"),
+            ConfigField("client_secret", secret=True),
+            ConfigField("timeout", type=ConfigType.INTEGER, required=False, default=30),
+        )
+    )
+
+
+class TestValidate:
+    def test_accepts_valid_config(self):
+        _schema().validate({"client_id": "a", "client_secret": "b"})
+
+    def test_missing_required_raises(self):
+        with pytest.raises(InvalidConfigException):
+            _schema().validate({"client_id": "a"})
+
+    def test_optional_with_default_may_be_omitted(self):
+        _schema().validate({"client_id": "a", "client_secret": "b"})
+
+    def test_wrong_type_raises(self):
+        with pytest.raises(InvalidConfigException):
+            _schema().validate({"client_id": "a", "client_secret": "b", "timeout": "x"})
+
+    def test_bool_is_not_an_integer(self):
+        with pytest.raises(InvalidConfigException):
+            _schema().validate(
+                {"client_id": "a", "client_secret": "b", "timeout": True}
+            )
+
+    def test_collects_all_errors(self):
+        with pytest.raises(InvalidConfigException) as exc:
+            _schema().validate({"timeout": "x"})
+        msg = str(exc.value)
+        assert "client_id" in msg and "client_secret" in msg and "timeout" in msg
+
+    def test_extra_keys_ignored(self):
+        _schema().validate({"client_id": "a", "client_secret": "b", "extra": "x"})
+
+    def test_empty_schema_is_permissive(self):
+        ConfigSchema().validate({"anything": 1})
+
+
+class TestJsonSchema:
+    def test_shape_and_required(self):
+        js = _schema().to_json_schema()
+        assert js["type"] == "object"
+        assert set(js["required"]) == {"client_id", "client_secret"}
+        assert js["properties"]["timeout"]["type"] == "integer"
+        assert js["properties"]["timeout"]["default"] == 30
+
+    def test_secret_field_marked_write_only(self):
+        js = _schema().to_json_schema()
+        assert js["properties"]["client_secret"]["writeOnly"] is True
+        assert "writeOnly" not in js["properties"]["client_id"]
+
+    def test_json_safe(self):
+        js = _schema().to_json_schema()
+        assert json.loads(json.dumps(js)) == js
+
+
+def test_secret_fields():
+    assert _schema().secret_fields() == ("client_secret",)
+
+
+def test_label_defaults_to_humanized_name():
+    assert ConfigField("client_id").label == "Client Id"
+    assert ConfigField("client_id", display_name="Client ID").label == "Client ID"
+
+
+class TestValidation:
+    def test_pattern_enforced(self):
+        schema = ConfigSchema(
+            (
+                ConfigField(
+                    "client_id",
+                    pattern=r"\.example\.com$",
+                    pattern_error="must end with .example.com",
+                ),
+            )
+        )
+        schema.validate({"client_id": "app.example.com"})
+        with pytest.raises(InvalidConfigException) as exc:
+            schema.validate({"client_id": "nope"})
+        assert "must end with .example.com" in str(exc.value)
+
+    def test_select_value_must_be_an_option(self):
+        schema = ConfigSchema(
+            (
+                ConfigField(
+                    "region",
+                    required=False,
+                    options=(ConfigOption("us"), ConfigOption("eu")),
+                ),
+            )
+        )
+        schema.validate({"region": "us"})
+        with pytest.raises(InvalidConfigException):
+            schema.validate({"region": "mars"})
+
+    def test_list_multiselect_each_value_must_be_an_option(self):
+        schema = ConfigSchema(
+            (
+                ConfigField(
+                    "caps",
+                    type=ConfigType.LIST,
+                    required=False,
+                    options=(ConfigOption("a"), ConfigOption("b")),
+                ),
+            )
+        )
+        schema.validate({"caps": ["a", "b"]})
+        with pytest.raises(InvalidConfigException):
+            schema.validate({"caps": ["a", "z"]})
+
+    def test_default_template_satisfies_required(self):
+        schema = ConfigSchema(
+            (ConfigField("redirect_uri", default_template="{origin}/cb"),)
+        )
+        schema.validate({})
+
+
+class TestScopeFields:
+    def _schema(self) -> ConfigSchema:
+        return ConfigSchema(
+            (
+                ConfigField("client_id"),
+                ConfigField(
+                    "scopes",
+                    type=ConfigType.LIST,
+                    out=ConfigOutput.SCOPES,
+                    options=(ConfigOption("read", default_selected=True),),
+                ),
+            )
+        )
+
+    def test_scope_field_not_validated_as_config(self):
+        self._schema().validate({"client_id": "a"})
+
+    def test_scope_field_names(self):
+        assert self._schema().scope_field_names() == ("scopes",)
+
+    def test_scope_field_excluded_from_json_schema(self):
+        js = self._schema().to_json_schema()
+        assert "scopes" not in js["properties"]
+        assert "client_id" in js["properties"]
+
+
+class TestFormSpec:
+    def _rich(self) -> ConfigSchema:
+        return ConfigSchema(
+            (
+                ConfigField(
+                    "client_id",
+                    display_name="Client ID",
+                    description="from console",
+                    placeholder="x.apps",
+                    importance=Importance.HIGH,
+                    group="Credentials",
+                    order=1,
+                    pattern=r"\.apps$",
+                ),
+                ConfigField(
+                    "scopes",
+                    type=ConfigType.LIST,
+                    required=False,
+                    out=ConfigOutput.SCOPES,
+                    group="Permissions",
+                    order=2,
+                    options=(
+                        ConfigOption(
+                            "gmail",
+                            label="Gmail",
+                            description="read mail",
+                            default_selected=True,
+                        ),
+                        ConfigOption("drive", label="Drive"),
+                    ),
+                ),
+            )
+        )
+
+    def test_form_spec_carries_rich_metadata(self):
+        spec = self._rich().to_form_spec()
+        client_id, scopes = spec[0], spec[1]
+        assert client_id["label"] == "Client ID"
+        assert client_id["importance"] == "high"
+        assert client_id["group"] == "Credentials"
+        assert client_id["pattern"] == r"\.apps$"
+        assert scopes["type"] == "list"
+        assert scopes["out"] == "scopes"
+        assert scopes["options"][0] == {
+            "value": "gmail",
+            "label": "Gmail",
+            "description": "read mail",
+            "default_selected": True,
+        }
+
+    def test_form_spec_round_trips(self):
+        schema = self._rich()
+        rebuilt = ConfigSchema.from_form_spec(schema.to_form_spec())
+        assert rebuilt.to_form_spec() == schema.to_form_spec()
+
+    def test_form_spec_json_safe(self):
+        spec = self._rich().to_form_spec()
+        assert json.loads(json.dumps(spec)) == spec
