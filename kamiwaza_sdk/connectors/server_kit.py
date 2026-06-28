@@ -109,11 +109,12 @@ def create_connector_app(
             yield
         finally:
             if own:
-                await app.state.dispatcher.aclose()
-                # Clear the closed dispatcher so a later lifespan pass (restart /
-                # repeated TestClient context) rebuilds instead of serving through
-                # a closed one.
+                # Null the ref BEFORE closing so a raising aclose() can't leave a
+                # closed dispatcher on app.state for a later lifespan pass (restart
+                # / repeated TestClient context) to serve through.
+                disp = app.state.dispatcher
                 app.state.dispatcher = None
+                await disp.aclose()
 
     app = FastAPI(title=title, lifespan=_lifespan)
     app.state.dispatcher = dispatcher

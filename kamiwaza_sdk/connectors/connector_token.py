@@ -49,7 +49,9 @@ class ConnectorMintRequest(BaseModel):
 class ConnectorMintResponse(BaseModel):
     """Response carrying a short-lived provider access token."""
 
-    model_config = ConfigDict(from_attributes=True)
+    # extra="allow": retain fields a newer core adds so an older connector that
+    # round-trips (model_validate -> model_dump) this response doesn't drop them.
+    model_config = ConfigDict(from_attributes=True, extra="allow")
 
     access_token: str = Field(
         ..., description="Provider access token (use directly against the provider API)"

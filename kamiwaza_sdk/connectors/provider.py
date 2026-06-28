@@ -85,8 +85,10 @@ class OAuthDescriptor:
     as ordered pairs, so the descriptor stays frozen/hashable and JSON-stable.
     """
 
-    authorization_endpoint: str
     token_endpoint: str
+    # Optional: a device_code (RFC 8628) connector ships no authorization_endpoint
+    # (only token + device_authorization), so this is None for that flow.
+    authorization_endpoint: str | None = None
     revocation_endpoint: str | None = None
     # RFC 8628 device-authorization endpoint, for connectors that declare
     # ``flow="device_code"`` (public clients with no redirect, e.g. M365).
@@ -111,7 +113,8 @@ class OAuthDescriptor:
     def from_manifest(cls, data: dict[str, Any]) -> OAuthDescriptor:
         """Reconstruct a descriptor from a manifest produced by :meth:`to_manifest`."""
         return cls(
-            authorization_endpoint=data["authorization_endpoint"],
+            # Optional for device_code manifests (only token + device endpoints).
+            authorization_endpoint=data.get("authorization_endpoint"),
             token_endpoint=data["token_endpoint"],
             revocation_endpoint=data.get("revocation_endpoint"),
             device_authorization_endpoint=data.get("device_authorization_endpoint"),
@@ -143,7 +146,11 @@ class OAuthDescriptor:
 
         return replace(
             self,
-            authorization_endpoint=fill(self.authorization_endpoint),
+            authorization_endpoint=(
+                fill(self.authorization_endpoint)
+                if self.authorization_endpoint
+                else None
+            ),
             token_endpoint=fill(self.token_endpoint),
             revocation_endpoint=(
                 fill(self.revocation_endpoint) if self.revocation_endpoint else None

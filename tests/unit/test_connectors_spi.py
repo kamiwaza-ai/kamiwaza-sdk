@@ -19,8 +19,10 @@ from kamiwaza_sdk.connectors import (
     ConfigSchema,
     ConfigType,
     ConnectorMintRequest,
+    ConnectorMintResponse,
     ConnectorProvider,
     ConnectorProxyRequest,
+    ConnectorProxyResponse,
     ConnectorSpec,
     ConstraintDescriptor,
     DeploymentDescriptor,
@@ -333,3 +335,74 @@ def test_lifespan_rebuilds_after_owned_close() -> None:
             assert client.post("/v1/verify", json={}).json() == {"ok": True}
     assert len(built) == 2
     assert all(d.closed for d in built)
+
+
+def test_lifespan_clears_state_even_if_aclose_raises() -> None:
+    # If the owned dispatcher's aclose() raises during shutdown, app.state must
+    # still be nulled (the ref is cleared BEFORE close), so a later pass rebuilds.
+    class _RaisingClose(_StubDispatcher):
+        async def aclose(self) -> None:
+            raise RuntimeError("close failed")
+
+    disp = _RaisingClose(verify_result={"ok": True})
+    app = create_connector_app(
+        title="kamiwaza-connector-dummy",
+        provider=_DummyProvider(),
+        build_dispatcher=lambda: disp,
+        error_type=_BoomError,
+        classify_error=lambda exc: (500, "internal", None),
+        dispatcher=None,
+    )
+    try:
+        with TestClient(app) as client:
+            client.post("/v1/verify", json={})
+    except RuntimeError:
+        pass  # the raising aclose propagates out of shutdown
+    assert app.state.dispatcher is None
+
+
+# --- forward-compat / device-code edge cases ---------------------------------
+
+
+def test_oauth_device_code_manifest_loads_without_auth_endpoint() -> None:
+    # A device_code (RFC 8628) connector ships only token + device endpoints.
+    # from_manifest must not KeyError on the missing authorization_endpoint.
+    data = {
+        "token_endpoint": "https://login.test/token",
+        "device_authorization_endpoint": "https://login.test/devicecode",
+        "flow": "device_code",
+    }
+    d = OAuthDescriptor.from_manifest(data)
+    assert d.authorization_endpoint is None
+    assert d.flow == "device_code"
+    assert d.device_authorization_endpoint == "https://login.test/devicecode"
+    # resolved() must tolerate the None auth endpoint too.
+    assert d.resolved({"tenant_id": "x"}).authorization_endpoint is None
+    # and it round-trips inside a full ConnectorSpec.
+    spec = ConnectorSpec(
+        connector_type="m365",
+        provider_id="m365",
+        provider_label="Microsoft 365",
+        oauth=d,
+    )
+    assert ConnectorSpec.from_manifest(spec.to_manifest()) == spec
+
+
+def test_response_models_retain_extra_fields() -> None:
+    # extra="allow": a newer core's added fields survive validate -> dump on an
+    # older connector.
+    mint = ConnectorMintResponse.model_validate(
+        {
+            "access_token": "t",
+            "lease_id": "l",
+            "granted_scopes": [],
+            "expires_in": 1,
+            "broker_lease_expires_in": 1,
+            "new_core_field": "keep-me",
+        }
+    )
+    assert mint.model_dump()["new_core_field"] == "keep-me"
+    proxy = ConnectorProxyResponse.model_validate(
+        {"status_code": 200, "body": None, "new_core_field": "keep-me"}
+    )
+    assert proxy.model_dump()["new_core_field"] == "keep-me"

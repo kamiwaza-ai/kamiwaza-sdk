@@ -46,7 +46,9 @@ class ConnectorProxyRequest(ConnectorMintRequest):
 class ConnectorProxyResponse(BaseModel):
     """The upstream response, returned to the connector."""
 
-    model_config = ConfigDict(from_attributes=True)
+    # extra="allow": retain fields a newer core adds (forward-compat), matching
+    # the SDK's other response schemas.
+    model_config = ConfigDict(from_attributes=True, extra="allow")
 
     status_code: int = Field(..., description="Upstream HTTP status code")
     body: Any = Field(None, description="Parsed JSON response body (v1 is JSON-only)")
