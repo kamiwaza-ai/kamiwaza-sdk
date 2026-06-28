@@ -388,6 +388,33 @@ def test_oauth_device_code_manifest_loads_without_auth_endpoint() -> None:
     assert ConnectorSpec.from_manifest(spec.to_manifest()) == spec
 
 
+def test_from_json_schema_tolerates_nullable_type_array() -> None:
+    # JSON Schema nullable form expresses type as a list (["integer","null"]).
+    # from_json_schema must not crash (TypeError: unhashable list) — it picks the
+    # non-null type, and a non-string/unknown type falls back to string.
+    schema = {
+        "type": "object",
+        "properties": {
+            "port": {"type": ["integer", "null"]},
+            "weird": {"type": 123},
+        },
+    }
+    by_name = {f.name: f for f in ConfigSchema.from_json_schema(schema).fields}
+    assert by_name["port"].type is ConfigType.INTEGER
+    assert by_name["weird"].type is ConfigType.STRING
+
+
+def test_mint_response_access_token_not_in_repr() -> None:
+    resp = ConnectorMintResponse(
+        access_token="super-secret-token",
+        lease_id="lease-1",
+        granted_scopes=[],
+        expires_in=1,
+        broker_lease_expires_in=1,
+    )
+    assert "super-secret-token" not in repr(resp)
+
+
 def test_response_models_retain_extra_fields() -> None:
     # extra="allow": a newer core's added fields survive validate -> dump on an
     # older connector.

@@ -95,10 +95,21 @@ class ConfigSchema:
         properties = schema.get("properties") or {}
         required = set(schema.get("required") or ())
         type_by_value = {t.value: t for t in ConfigType}
+
+        def _config_type(raw: Any) -> ConfigType:
+            # JSON Schema allows a nullable type as a list (["string","null"]);
+            # pick the first non-"null" entry. Non-str / unknown types fall back
+            # to string (matches the documented behavior).
+            if isinstance(raw, list):
+                raw = next((t for t in raw if t != "null"), "string")
+            if not isinstance(raw, str):
+                return ConfigType.STRING
+            return type_by_value.get(raw, ConfigType.STRING)
+
         fields = tuple(
             ConfigField(
                 name=name,
-                type=type_by_value.get((prop or {}).get("type", "string"), ConfigType.STRING),
+                type=_config_type((prop or {}).get("type", "string")),
                 required=name in required,
                 secret=bool((prop or {}).get("writeOnly")),
                 # A property listed in JSON Schema ``required`` must be supplied —

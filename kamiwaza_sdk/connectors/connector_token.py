@@ -54,7 +54,9 @@ class ConnectorMintResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True, extra="allow")
 
     access_token: str = Field(
-        ..., description="Provider access token (use directly against the provider API)"
+        ...,
+        repr=False,  # live bearer token — keep it out of repr()/logs/tracebacks
+        description="Provider access token (use directly against the provider API)",
     )
     lease_id: str = Field(..., description="Lease identifier for tracking / revocation")
     granted_scopes: list[str] = Field(
