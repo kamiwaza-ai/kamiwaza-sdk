@@ -145,7 +145,13 @@ class ConfigField:
 
     @property
     def must_supply(self) -> bool:
-        """Whether the admin must provide a value (required, no default of any kind)."""
+        """Whether the admin must provide a value (required, no default of any kind).
+
+        A directly-declared ``required=True`` field that *also* carries a ``default``
+        (or ``default_template``) is therefore NOT must-supply -- the default satisfies
+        it. JSON-Schema ``required`` is stronger intent, so :meth:`ConfigSchema.from_json_schema`
+        drops the default for a required field to keep it must-supply.
+        """
         return self.required and self.default is None and not self.default_template
 
     def _allowed(self) -> set[str]:
@@ -177,30 +183,38 @@ class ConfigField:
 
     @classmethod
     def from_spec(cls, data: dict[str, Any]) -> ConfigField:
-        """Reconstruct a field from a spec produced by :meth:`to_spec`."""
-        return cls(
-            name=data["name"],
-            type=_enum(ConfigType, data.get("type"), ConfigType.STRING),
-            required=bool(data.get("required", True)),
-            secret=bool(data.get("secret", False)),
-            default=data.get("default"),
-            description=data.get("description", ""),
-            display_name=data.get("label", ""),
-            placeholder=data.get("placeholder", ""),
-            importance=_enum(Importance, data.get("importance"), Importance.MEDIUM),
-            group=data.get("group", ""),
-            order=int(data.get("order", 0)),
-            width=_enum(FieldWidth, data.get("width"), FieldWidth.MEDIUM),
-            pattern=data.get("pattern", ""),
-            pattern_error=data.get("pattern_error", ""),
-            options=tuple(
-                ConfigOption.from_dict(o) for o in (data.get("options") or [])
-            ),
-            default_template=data.get("default_template", ""),
-            depends_on=data.get("depends_on", ""),
-            visible_when=tuple(data.get("visible_when") or ()),
-            out=_enum(ConfigOutput, data.get("out"), ConfigOutput.CONFIG),
-        )
+        """Reconstruct a field from a spec produced by :meth:`to_spec`.
+
+        Fails with :class:`InvalidConfigException` (not a raw KeyError/ValueError) on a
+        malformed spec -- a missing ``name``/option ``value`` or a non-numeric
+        ``order`` -- consistent with the forgiving enum handling.
+        """
+        try:
+            return cls(
+                name=data["name"],
+                type=_enum(ConfigType, data.get("type"), ConfigType.STRING),
+                required=bool(data.get("required", True)),
+                secret=bool(data.get("secret", False)),
+                default=data.get("default"),
+                description=data.get("description", ""),
+                display_name=data.get("label", ""),
+                placeholder=data.get("placeholder", ""),
+                importance=_enum(Importance, data.get("importance"), Importance.MEDIUM),
+                group=data.get("group", ""),
+                order=int(data.get("order", 0) or 0),
+                width=_enum(FieldWidth, data.get("width"), FieldWidth.MEDIUM),
+                pattern=data.get("pattern", ""),
+                pattern_error=data.get("pattern_error", ""),
+                options=tuple(
+                    ConfigOption.from_dict(o) for o in (data.get("options") or [])
+                ),
+                default_template=data.get("default_template", ""),
+                depends_on=data.get("depends_on", ""),
+                visible_when=tuple(data.get("visible_when") or ()),
+                out=_enum(ConfigOutput, data.get("out"), ConfigOutput.CONFIG),
+            )
+        except (KeyError, ValueError, TypeError) as exc:
+            raise InvalidConfigException(f"malformed config field spec: {exc}") from exc
 
 
 def _enum(enum_cls: type, value: Any, fallback: Any) -> Any:
@@ -209,6 +223,35 @@ def _enum(enum_cls: type, value: Any, fallback: Any) -> Any:
         return enum_cls(value)
     except ValueError:
         return fallback
+
+
+# Cap the input length a manifest-supplied regex runs against. The pattern comes from
+# the connector manifest and the value from admin input; bounding the length blunts
+# catastrophic-backtracking (ReDoS) blowup on a hostile/buggy pattern.
+# ponytail: length cap, not a regex timeout -- add a timeout if untrusted manifests
+# ever ship patterns.
+_MAX_PATTERN_INPUT = 1024
+
+
+def _pattern_errors(field: ConfigField, value: str) -> list[str]:
+    """Apply a field's regex, failing closed on a too-long input or bad pattern.
+
+    A malformed manifest pattern raises ``re.error``; surface it as a config error
+    rather than letting a raw ``re.error`` escape as an uncaught 500. ``re.search`` is
+    unanchored -- it matches a substring unless the pattern anchors with ``^``/``$``.
+    """
+    if len(value) > _MAX_PATTERN_INPUT:
+        return [f"config {field.name} is too long to validate (>{_MAX_PATTERN_INPUT})"]
+    try:
+        matched = re.search(field.pattern, value) is not None
+    except re.error:
+        return [f"config {field.name} has an invalid validation pattern"]
+    if not matched:
+        return [
+            field.pattern_error
+            or f"config {field.name} does not match the required format"
+        ]
+    return []
 
 
 @dataclass(frozen=True)
@@ -237,6 +280,11 @@ class ConfigSchema:
         """
         errors: list[str] = []
         for field in self._config_fields():
+            # A field gated by depends_on/visible_when is only required/validated when
+            # active, so a conditionally-required field hidden by its controller is not
+            # falsely required (matches what the form renderer shows).
+            if not self._is_active(field, config):
+                continue
             value = config.get(field.name)
             if value is None:
                 if field.must_supply:
@@ -254,24 +302,36 @@ class ConfigSchema:
             raise InvalidConfigException("; ".join(errors))
 
     @staticmethod
+    def _is_active(field: ConfigField, config: dict[str, Any]) -> bool:
+        """Whether a field is shown (and thus required/validated) given visibility.
+
+        No ``depends_on`` -> always active. Otherwise active only when the controlling
+        field's value is one of ``visible_when`` -- the same rule the form renderer
+        applies, so validate() never requires a field the admin cannot see.
+        """
+        if not field.depends_on:
+            return True
+        return str(config.get(field.depends_on)) in field.visible_when
+
+    @staticmethod
     def _value_errors(field: ConfigField, value: Any) -> list[str]:
-        """Per-value checks (allowed options, regex pattern) once the type is right."""
+        """Per-value checks (element types, allowed options, regex) once type is right."""
         errors: list[str] = []
+        candidates = value if field.type is ConfigType.LIST else [value]
+        # The emitted schema declares LIST items as strings; enforce that so a list
+        # value can't smuggle non-strings past validation.
+        if field.type is ConfigType.LIST and any(
+            not isinstance(v, str) for v in candidates
+        ):
+            return [f"config {field.name} must be a list of strings"]
         if field.options:
             allowed = field._allowed()
-            candidates = value if field.type is ConfigType.LIST else [value]
             bad = [str(v) for v in candidates if str(v) not in allowed]
             if bad:
-                errors.append(f"config {field.name} has invalid value(s): {bad}")
-        if (
-            field.pattern
-            and field.type is ConfigType.STRING
-            and not re.search(field.pattern, value)
-        ):
-            errors.append(
-                field.pattern_error
-                or f"config {field.name} does not match the required format"
-            )
+                # Bound the echo so a large/hostile input can't bloat the message.
+                errors.append(f"config {field.name} has invalid value(s): {bad[:5]}")
+        if field.pattern and field.type is ConfigType.STRING:
+            errors.extend(_pattern_errors(field, value))
         return errors
 
     def to_form_spec(self) -> list[dict[str, Any]]:
@@ -324,12 +384,17 @@ class ConfigSchema:
         """Rebuild a (basic) ConfigSchema from a JSON Schema.
 
         For a connector that ships only the legacy JSON Schema (no form spec), this
-        recovers enough to validate: required, type, secret, default, description.
-        Prefer :meth:`from_form_spec` when the manifest carries the rich field specs.
+        recovers enough to validate: required, type, secret, default, description,
+        pattern, and (from ``enum``) the allowed options. Prefer :meth:`from_form_spec`
+        when the manifest carries the rich field specs.
         """
         properties = schema.get("properties") or {}
         required = set(schema.get("required") or ())
+        # JSON Schema spells a LIST field "array"; map it back so a LIST round-trips
+        # (to_json_schema emits "array") instead of collapsing to STRING and then
+        # rejecting valid list values.
         type_by_value = {t.value: t for t in ConfigType}
+        type_by_value["array"] = ConfigType.LIST
 
         def _resolve_type(raw: Any) -> ConfigType:
             # Tolerate a nullable type array (e.g. ["integer", "null"]) and any
@@ -339,6 +404,11 @@ class ConfigSchema:
             if not isinstance(raw, str):
                 return ConfigType.STRING
             return type_by_value.get(raw, ConfigType.STRING)
+
+        def _options(prop: dict[str, Any]) -> tuple[ConfigOption, ...]:
+            # enum lives on the field for a scalar select, or on items for an array.
+            enum = prop.get("enum") or (prop.get("items") or {}).get("enum") or ()
+            return tuple(ConfigOption(str(v)) for v in enum)
 
         fields = tuple(
             ConfigField(
@@ -351,6 +421,7 @@ class ConfigSchema:
                 default=None if name in required else (prop or {}).get("default"),
                 description=(prop or {}).get("description", ""),
                 pattern=(prop or {}).get("pattern", ""),
+                options=_options(prop or {}),
             )
             for name, prop in properties.items()
         )

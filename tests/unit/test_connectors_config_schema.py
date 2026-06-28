@@ -11,6 +11,7 @@ from kamiwaza_sdk.connectors.config_schema import (
     ConfigOutput,
     ConfigSchema,
     ConfigType,
+    FieldWidth,
     Importance,
 )
 from kamiwaza_sdk.connectors.exceptions import InvalidConfigException
@@ -267,3 +268,114 @@ def test_from_form_spec_tolerates_unknown_enum_values():
     assert field.type is ConfigType.STRING
     assert field.importance is Importance.MEDIUM
     assert field.out is ConfigOutput.CONFIG
+
+
+class TestJsonSchemaRoundTrip:
+    def test_list_field_round_trips_through_json_schema(self):
+        # H1: to_json_schema emits a LIST as {"type":"array"}; from_json_schema must
+        # map it back to LIST (not STRING) and rebuild options from the enum.
+        schema = ConfigSchema(
+            (
+                ConfigField(
+                    "regions",
+                    type=ConfigType.LIST,
+                    required=False,
+                    options=(ConfigOption("us"), ConfigOption("eu")),
+                ),
+            )
+        )
+        rebuilt = ConfigSchema.from_json_schema(schema.to_json_schema())
+        assert rebuilt.fields[0].type is ConfigType.LIST
+        rebuilt.validate({"regions": ["us"]})  # valid list no longer rejected
+        with pytest.raises(InvalidConfigException):
+            rebuilt.validate({"regions": ["mars"]})  # options recovered from enum
+
+
+class TestVisibility:
+    def _schema(self) -> ConfigSchema:
+        return ConfigSchema(
+            (
+                ConfigField("mode", required=False),
+                ConfigField(
+                    "advanced_token",
+                    required=True,
+                    depends_on="mode",
+                    visible_when=("advanced",),
+                ),
+            )
+        )
+
+    def test_hidden_required_field_is_not_required(self):
+        # H2: required field hidden by its controller must not be falsely required.
+        self._schema().validate({"mode": "basic"})
+
+    def test_visible_required_field_is_enforced(self):
+        with pytest.raises(InvalidConfigException):
+            self._schema().validate({"mode": "advanced"})
+        self._schema().validate({"mode": "advanced", "advanced_token": "t"})
+
+
+class TestPatternHardening:
+    def test_malformed_pattern_raises_typed_error_not_re_error(self):
+        # H3: a bad manifest pattern is a config error, not an uncaught re.error/500.
+        schema = ConfigSchema((ConfigField("x", pattern="(unclosed"),))
+        with pytest.raises(InvalidConfigException):
+            schema.validate({"x": "abc"})
+
+    def test_overlong_value_rejected_before_running_regex(self):
+        # H3: an over-length input is rejected up-front, so a ReDoS pattern never runs.
+        schema = ConfigSchema((ConfigField("x", pattern=r"(a+)+$"),))
+        with pytest.raises(InvalidConfigException):
+            schema.validate({"x": "a" * 5000})
+
+
+def test_list_rejects_non_string_elements():
+    # M1: LIST items are strings in the emitted schema; enforce it.
+    schema = ConfigSchema((ConfigField("tags", type=ConfigType.LIST, required=False),))
+    with pytest.raises(InvalidConfigException):
+        schema.validate({"tags": ["a", 1]})
+
+
+def test_from_spec_rejects_malformed_spec():
+    # M2: malformed spec -> typed error, not a raw KeyError/ValueError.
+    with pytest.raises(InvalidConfigException):
+        ConfigField.from_spec({})  # missing name
+    with pytest.raises(InvalidConfigException):
+        ConfigField.from_spec({"name": "x", "order": "nope"})  # non-int order
+
+
+def test_json_schema_and_form_spec_cover_the_same_fields():
+    # M3: config_schema (validation) and config_fields (form) must stay consistent --
+    # the form carries every field; the JSON Schema carries exactly the non-scope ones.
+    schema = ConfigSchema(
+        (
+            ConfigField("client_id"),
+            ConfigField(
+                "scopes",
+                type=ConfigType.LIST,
+                required=False,
+                out=ConfigOutput.SCOPES,
+                options=(ConfigOption("read"),),
+            ),
+        )
+    )
+    form_names = {f["name"] for f in schema.to_form_spec()}
+    js_props = set(schema.to_json_schema()["properties"])
+    scope_names = set(schema.scope_field_names())
+    assert form_names == {"client_id", "scopes"}
+    assert js_props == form_names - scope_names == {"client_id"}
+
+
+def test_public_api_exports_the_form_types():
+    # H4: connector authors must reach the form types from the package root.
+    from kamiwaza_sdk.connectors import ConfigOption as Opt
+    from kamiwaza_sdk.connectors import ConfigOutput as Out
+    from kamiwaza_sdk.connectors import FieldWidth as Width
+    from kamiwaza_sdk.connectors import Importance as Imp
+
+    assert (Opt, Out, Width, Imp) == (
+        ConfigOption,
+        ConfigOutput,
+        FieldWidth,
+        Importance,
+    )
