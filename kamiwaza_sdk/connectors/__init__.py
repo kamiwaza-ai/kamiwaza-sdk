@@ -15,7 +15,15 @@ instead of vendoring the platform source.
 
 from __future__ import annotations
 
-from .config_schema import ConfigField, ConfigSchema, ConfigType
+from .config_schema import (
+    ConfigField,
+    ConfigOption,
+    ConfigOutput,
+    ConfigSchema,
+    ConfigType,
+    FieldWidth,
+    Importance,
+)
 from .connector_proxy import ConnectorProxyRequest, ConnectorProxyResponse
 from .connector_token import ConnectorMintRequest, ConnectorMintResponse
 from .exceptions import ConnectorException, InvalidConfigException
@@ -40,28 +48,32 @@ from .server_kit import (
 )
 
 __all__ = [
+    "AuthModel",
     "ConfigField",
+    "ConfigOption",
+    "ConfigOutput",
     "ConfigSchema",
     "ConfigType",
-    "AuthModel",
-    "PerUserOAuth",
-    "ServiceToken",
-    "auth_model_from_kind",
-    "OAuthDescriptor",
-    "DeploymentDescriptor",
-    "ConstraintDescriptor",
-    "SurfaceDescriptor",
-    "ConnectorSpec",
-    "ConnectorProvider",
-    "validate_icon",
-    "create_connector_app",
-    "ExecuteRequest",
-    "VerifyRequest",
-    "OpResult",
-    "ConnectorProxyRequest",
-    "ConnectorProxyResponse",
+    "ConnectorException",
     "ConnectorMintRequest",
     "ConnectorMintResponse",
-    "ConnectorException",
+    "ConnectorProvider",
+    "ConnectorProxyRequest",
+    "ConnectorProxyResponse",
+    "ConnectorSpec",
+    "ConstraintDescriptor",
+    "DeploymentDescriptor",
+    "ExecuteRequest",
+    "FieldWidth",
+    "Importance",
     "InvalidConfigException",
+    "OAuthDescriptor",
+    "OpResult",
+    "PerUserOAuth",
+    "ServiceToken",
+    "SurfaceDescriptor",
+    "VerifyRequest",
+    "auth_model_from_kind",
+    "create_connector_app",
+    "validate_icon",
 ]

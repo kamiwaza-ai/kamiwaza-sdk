@@ -375,12 +375,16 @@ class ConnectorSpec:
             icon=data.get("icon"),
             auth_model=auth_model_from_kind(data["auth_model"]["kind"]),
             egress_allowlist=tuple(data.get("egress_allowlist") or ()),
-            oauth=OAuthDescriptor.from_manifest(data["oauth"])
-            if data.get("oauth")
-            else None,
-            deployment=DeploymentDescriptor.from_manifest(data["deployment"])
-            if data.get("deployment")
-            else None,
+            oauth=(
+                OAuthDescriptor.from_manifest(data["oauth"])
+                if data.get("oauth")
+                else None
+            ),
+            deployment=(
+                DeploymentDescriptor.from_manifest(data["deployment"])
+                if data.get("deployment")
+                else None
+            ),
             surfaces=tuple(
                 SurfaceDescriptor.from_manifest(s) for s in (data.get("surfaces") or [])
             ),
@@ -474,10 +478,15 @@ class ConnectorProvider(ABC):
     def to_manifest(self) -> dict[str, Any]:
         """Return the connector's full self-description for registration / the UI.
 
-        Combines the identity/auth/egress spec with the admin-form config JSON
-        Schema (and, later, operation descriptors) so one manifest carries
-        everything the platform needs to register and configure the connector.
+        Combines the identity/auth/egress spec with the admin-config declaration so
+        one manifest carries everything the platform needs to register, validate, and
+        render the connector. ``config_schema`` is the validation-faithful JSON
+        Schema; ``config_fields`` is the ordered rich form spec the admin UI renders
+        the configuration form from (labels, groups, options, defaults, validation),
+        so the platform ships no connector-specific form.
         """
+        schema = self.config_schema()
         manifest = self.spec().to_manifest()
-        manifest["config_schema"] = self.config_schema().to_json_schema()
+        manifest["config_schema"] = schema.to_json_schema()
+        manifest["config_fields"] = schema.to_form_spec()
         return manifest
