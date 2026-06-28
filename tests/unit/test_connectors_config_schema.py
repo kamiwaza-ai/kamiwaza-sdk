@@ -314,6 +314,25 @@ class TestVisibility:
             self._schema().validate({"mode": "advanced"})
         self._schema().validate({"mode": "advanced", "advanced_token": "t"})
 
+    def test_defaulted_controller_still_activates_a_gated_field(self):
+        # A controller omitted from config falls back to its declared default, so a
+        # field gated on that default is validated (fail-closed) even with no value
+        # supplied for the controller.
+        schema = ConfigSchema(
+            (
+                ConfigField("mode", required=False, default="advanced"),
+                ConfigField(
+                    "advanced_token",
+                    required=True,
+                    depends_on="mode",
+                    visible_when=("advanced",),
+                ),
+            )
+        )
+        with pytest.raises(InvalidConfigException):
+            schema.validate({})  # mode defaults to "advanced" -> token required
+        schema.validate({"advanced_token": "t"})
+
 
 class TestPatternHardening:
     def test_malformed_pattern_raises_typed_error_not_re_error(self):

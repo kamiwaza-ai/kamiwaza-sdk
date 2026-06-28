@@ -301,17 +301,29 @@ class ConfigSchema:
         if errors:
             raise InvalidConfigException("; ".join(errors))
 
-    @staticmethod
-    def _is_active(field: ConfigField, config: dict[str, Any]) -> bool:
+    def _is_active(self, field: ConfigField, config: dict[str, Any]) -> bool:
         """Whether a field is shown (and thus required/validated) given visibility.
 
         No ``depends_on`` -> always active. Otherwise active only when the controlling
         field's value is one of ``visible_when`` -- the same rule the form renderer
         applies, so validate() never requires a field the admin cannot see.
+
+        The controller value is compared as a string, so ``visible_when`` lists the
+        controlling values verbatim (e.g. ``("advanced",)``; a boolean controller uses
+        ``("True",)``). When the controller is absent from ``config`` its declared
+        ``default`` is used -- the value the form would have materialized -- so a field
+        gated by a *defaulted* controller is still validated (fail-closed).
         """
         if not field.depends_on:
             return True
-        return str(config.get(field.depends_on)) in field.visible_when
+        raw = config.get(field.depends_on)
+        if raw is None:
+            controller = next(
+                (f for f in self.fields if f.name == field.depends_on), None
+            )
+            if controller is not None:
+                raw = controller.default
+        return str(raw) in field.visible_when
 
     @staticmethod
     def _value_errors(field: ConfigField, value: Any) -> list[str]:
