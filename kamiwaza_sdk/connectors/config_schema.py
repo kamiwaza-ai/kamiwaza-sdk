@@ -330,15 +330,25 @@ class ConfigSchema:
         properties = schema.get("properties") or {}
         required = set(schema.get("required") or ())
         type_by_value = {t.value: t for t in ConfigType}
+
+        def _resolve_type(raw: Any) -> ConfigType:
+            # Tolerate a nullable type array (e.g. ["integer", "null"]) and any
+            # non-string type node by falling back to STRING.
+            if isinstance(raw, list):
+                raw = next((t for t in raw if t != "null"), "string")
+            if not isinstance(raw, str):
+                return ConfigType.STRING
+            return type_by_value.get(raw, ConfigType.STRING)
+
         fields = tuple(
             ConfigField(
                 name=name,
-                type=type_by_value.get(
-                    (prop or {}).get("type", "string"), ConfigType.STRING
-                ),
+                type=_resolve_type((prop or {}).get("type", "string")),
                 required=name in required,
                 secret=bool((prop or {}).get("writeOnly")),
-                default=(prop or {}).get("default"),
+                # `required` wins over a declared default: a required field stays
+                # must-supply, so its default can't suppress the missing-field check.
+                default=None if name in required else (prop or {}).get("default"),
                 description=(prop or {}).get("description", ""),
                 pattern=(prop or {}).get("pattern", ""),
             )

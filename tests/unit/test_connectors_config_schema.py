@@ -225,3 +225,45 @@ class TestFormSpec:
     def test_form_spec_json_safe(self):
         spec = self._rich().to_form_spec()
         assert json.loads(json.dumps(spec)) == spec
+
+
+class TestJsonSchemaFromConfigFields:
+    def test_list_config_field_becomes_array_with_enum(self):
+        schema = ConfigSchema(
+            (
+                ConfigField(
+                    "regions",
+                    type=ConfigType.LIST,
+                    required=False,
+                    options=(ConfigOption("us"), ConfigOption("eu")),
+                ),
+            )
+        )
+        prop = schema.to_json_schema()["properties"]["regions"]
+        assert prop["type"] == "array"
+        assert prop["items"]["enum"] == ["us", "eu"]
+
+    def test_select_carries_enum_and_string_pattern(self):
+        schema = ConfigSchema(
+            (
+                ConfigField(
+                    "tier",
+                    required=False,
+                    options=(ConfigOption("a"), ConfigOption("b")),
+                ),
+                ConfigField("host", pattern=r"\.example\.com$"),
+            )
+        )
+        props = schema.to_json_schema()["properties"]
+        assert props["tier"]["enum"] == ["a", "b"]
+        assert props["host"]["pattern"] == r"\.example\.com$"
+
+
+def test_from_form_spec_tolerates_unknown_enum_values():
+    # Unknown type/importance/out strings fall back to the default members.
+    field = ConfigSchema.from_form_spec(
+        [{"name": "x", "type": "bogus", "importance": "nope", "out": "huh"}]
+    ).fields[0]
+    assert field.type is ConfigType.STRING
+    assert field.importance is Importance.MEDIUM
+    assert field.out is ConfigOutput.CONFIG
