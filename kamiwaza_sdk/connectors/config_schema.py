@@ -210,7 +210,14 @@ class ConfigField:
                 ),
                 default_template=data.get("default_template", ""),
                 depends_on=data.get("depends_on", ""),
-                visible_when=tuple(data.get("visible_when") or ()),
+                # A bare string is wrapped, not iterated -- a connector author writing
+                # ``visible_when="advanced"`` would otherwise char-splat into
+                # ``("a","d","v",...)``.
+                visible_when=(
+                    (data["visible_when"],)
+                    if isinstance(data.get("visible_when"), str)
+                    else tuple(data.get("visible_when") or ())
+                ),
                 out=_enum(ConfigOutput, data.get("out"), ConfigOutput.CONFIG),
             )
         except (KeyError, ValueError, TypeError) as exc:

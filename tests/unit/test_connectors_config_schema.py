@@ -398,3 +398,12 @@ def test_public_api_exports_the_form_types():
         FieldWidth,
         Importance,
     )
+
+
+def test_from_form_spec_wraps_a_bare_visible_when_string():
+    # A connector author writing visible_when="advanced" (a bare string, not a tuple)
+    # must not char-splat into ("a","d","v",...).
+    field = ConfigSchema.from_form_spec(
+        [{"name": "x", "depends_on": "mode", "visible_when": "advanced"}]
+    ).fields[0]
+    assert field.visible_when == ("advanced",)
