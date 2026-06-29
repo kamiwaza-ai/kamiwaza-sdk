@@ -179,6 +179,70 @@ def test_verify() -> None:
     assert resp.json() == {"ok": True}
 
 
+# --- /v1/whoami: optional identity probe per dispatcher ---------------------
+
+
+class _WhoamiDispatcher(_StubDispatcher):
+    """Dispatcher that implements whoami; record the token it received."""
+
+    def __init__(self, identity: dict) -> None:
+        super().__init__(verify_result={"ok": True})
+        self._identity = identity
+        self.whoami_tokens: list[str] = []
+
+    async def whoami(self, *, access_token: str) -> dict:
+        self.whoami_tokens.append(access_token)
+        return self._identity
+
+
+def test_whoami_routes_to_dispatcher_when_implemented() -> None:
+    """A dispatcher with whoami gets the identity call routed through."""
+    dispatcher = _WhoamiDispatcher(
+        {"email": "user@example.com", "name": "User"}
+    )
+    with TestClient(_app(dispatcher)) as client:
+        resp = client.post("/v1/whoami", json={"access_token": "hs-at"})
+    assert resp.status_code == 200
+    assert resp.json() == {"email": "user@example.com", "name": "User"}
+    assert dispatcher.whoami_tokens == ["hs-at"]
+
+
+def test_whoami_returns_404_when_dispatcher_does_not_implement_it() -> None:
+    """An OIDC-only connector (or one shipped before whoami) responds 404.
+
+    Core's connect fallback treats this the same as an empty payload — the
+    UI keeps its documented "Unknown account" label until the connector
+    ships the probe.
+    """
+    with TestClient(_app(_StubDispatcher())) as client:
+        # Base _StubDispatcher has no whoami method.
+        resp = client.post("/v1/whoami", json={"access_token": "tok"})
+    assert resp.status_code == 404
+    assert resp.json()["error"]["kind"] == "whoami_not_implemented"
+
+
+def test_whoami_rejects_empty_access_token() -> None:
+    """Pydantic validation: empty access_token never reaches the dispatcher."""
+    dispatcher = _WhoamiDispatcher({})
+    with TestClient(_app(dispatcher)) as client:
+        resp = client.post("/v1/whoami", json={"access_token": ""})
+    assert resp.status_code == 422
+    assert dispatcher.whoami_tokens == []
+
+
+def test_whoami_classifies_connector_error() -> None:
+    """Connector errors raised inside whoami flow through the classifier."""
+
+    class _ExplodingWhoami(_StubDispatcher):
+        async def whoami(self, *, access_token: str) -> dict:
+            raise _BoomError("upstream blew up")
+
+    with TestClient(_app(_ExplodingWhoami())) as client:
+        resp = client.post("/v1/whoami", json={"access_token": "tok"})
+    assert resp.status_code == 429  # _app's classify_error maps _BoomError -> 429
+    assert resp.json()["error"]["kind"] == "rate_limited"
+
+
 def test_lifespan_builds_and_closes_owned_dispatcher() -> None:
     built: list[_StubDispatcher] = []
 
