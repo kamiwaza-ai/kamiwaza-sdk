@@ -32,6 +32,7 @@ from kamiwaza_sdk.connectors import (
     PerUserOAuth,
     ServiceToken,
     SurfaceDescriptor,
+    WhoamiRequest,
     auth_model_from_kind,
     create_connector_app,
     validate_icon,
@@ -241,6 +242,24 @@ def test_whoami_classifies_connector_error() -> None:
         resp = client.post("/v1/whoami", json={"access_token": "tok"})
     assert resp.status_code == 429  # _app's classify_error maps _BoomError -> 429
     assert resp.json()["error"]["kind"] == "rate_limited"
+
+
+def test_whoami_returns_404_when_handler_not_callable() -> None:
+    """A non-callable ``whoami`` attribute folds into the 404 contract, not 500."""
+
+    class _NonCallableWhoami(_StubDispatcher):
+        whoami = "not a method"  # truthy but not callable
+
+    with TestClient(_app(_NonCallableWhoami())) as client:
+        resp = client.post("/v1/whoami", json={"access_token": "tok"})
+    assert resp.status_code == 404
+    assert resp.json()["error"]["kind"] == "whoami_not_implemented"
+
+
+def test_whoami_request_token_not_in_repr() -> None:
+    """The raw provider access token must not surface in repr()/logs/tracebacks."""
+    req = WhoamiRequest(access_token="super-secret-token")
+    assert "super-secret-token" not in repr(req)
 
 
 def test_lifespan_builds_and_closes_owned_dispatcher() -> None:

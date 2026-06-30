@@ -44,6 +44,7 @@ from .server_kit import (
     ExecuteRequest,
     OpResult,
     VerifyRequest,
+    WhoamiRequest,
     create_connector_app,
 )
 
@@ -73,6 +74,7 @@ __all__ = [
     "ServiceToken",
     "SurfaceDescriptor",
     "VerifyRequest",
+    "WhoamiRequest",
     "auth_model_from_kind",
     "create_connector_app",
     "validate_icon",

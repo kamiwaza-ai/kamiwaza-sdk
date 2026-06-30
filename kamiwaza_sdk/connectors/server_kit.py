@@ -78,7 +78,9 @@ class WhoamiRequest(BaseModel):
     provider call goes through the proxy.
     """
 
-    access_token: str = Field(min_length=1)
+    # Live bearer token — keep it out of repr()/logs/tracebacks (matches the
+    # connector_token bearer-field convention).
+    access_token: str = Field(min_length=1, repr=False)
 
 
 @dataclass
@@ -213,7 +215,9 @@ def create_connector_app(
         """
         dispatcher = request.app.state.dispatcher
         handler = getattr(dispatcher, "whoami", None)
-        if handler is None:
+        # Absent OR non-callable (a stray truthy attribute) both mean "no probe"
+        # -> the clean 404 contract, never a 500.
+        if not callable(handler):
             return JSONResponse(
                 status_code=404,
                 content={
