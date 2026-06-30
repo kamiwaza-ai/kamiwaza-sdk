@@ -18,6 +18,7 @@ from kamiwaza_sdk.connectors import (
     ConfigField,
     ConfigSchema,
     ConfigType,
+    ConnectorIdentityProxyRequest,
     ConnectorMintRequest,
     ConnectorMintResponse,
     ConnectorProvider,
@@ -355,6 +356,18 @@ def test_mint_request_lease_bounds() -> None:
     # the proxy request inherits the same bound
     with pytest.raises(ValidationError):
         ConnectorProxyRequest(url="https://api.acme.test/x", lease_duration=10)
+
+
+def test_identity_proxy_request_requires_token_and_hides_it() -> None:
+    # The pre-connection whoami request carries the provider token itself (no
+    # connection to mint from yet); it must be supplied and must not surface in repr.
+    with pytest.raises(ValidationError):
+        ConnectorIdentityProxyRequest(url="https://api.acme.test/userinfo")
+    req = ConnectorIdentityProxyRequest(
+        url="https://api.acme.test/userinfo", access_token="prov-secret"
+    )
+    assert req.response_format == "json"
+    assert "prov-secret" not in repr(req)
 
 
 def test_from_json_schema_required_field_must_be_supplied() -> None:

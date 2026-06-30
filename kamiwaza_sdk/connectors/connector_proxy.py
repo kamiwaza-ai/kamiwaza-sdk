@@ -43,6 +43,34 @@ class ConnectorProxyRequest(ConnectorMintRequest):
     )
 
 
+class ConnectorIdentityProxyRequest(BaseModel):
+    """A connector's pre-connection identity fetch for core to execute.
+
+    Used only by the ``/v1/whoami`` OAuth-callback path. Unlike
+    ``ConnectorProxyRequest`` there is no connection or acting subject yet, so core
+    can't mint a scoped credential from storage -- the connector supplies the
+    freshly-minted provider ``access_token`` (which core just handed it) and core
+    performs the egress the connector pod cannot, enforcing the same workload
+    binding + egress allowlist. The token never leaves the deployment mesh and is
+    kept out of logs/reprs.
+    """
+
+    method: Literal["GET", "POST"] = Field("GET", description="HTTP method")
+    url: str = Field(
+        ...,
+        description="Absolute URL; its host must be in the connector's egress allowlist",
+    )
+    params: dict[str, Any] | None = Field(None, description="Query parameters")
+    body: dict[str, Any] | None = Field(None, description="JSON body (POST)")
+    # Identity endpoints are JSON; binary downloads never go through this path.
+    response_format: Literal["json"] = Field("json", description="JSON-only")
+    access_token: str = Field(
+        ...,
+        repr=False,
+        description="Freshly-minted provider token; core attaches it as the bearer",
+    )
+
+
 class ConnectorProxyResponse(BaseModel):
     """The upstream response, returned to the connector."""
 
