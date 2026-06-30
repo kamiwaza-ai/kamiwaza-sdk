@@ -176,3 +176,9 @@ When an instruction must apply to ONE agent only, carve it out instead of editin
 - **Claude, path-scoped** — add `.claude/rules/<name>.md` with a `paths:` glob.
 - **Claude, always-on** — add `.claude/rules/<name>.md` with no `paths:`.
 - **Codex** — mark any Codex-only prose in this file as "Codex only:".
+
+<!-- quality-gates:ai-context START — managed by /quality-gates:install; do not edit between markers (version=1, source=quality-gates) -->
+## Code Health
+When a CodeScene gate reports a degraded/declined verdict, or when weighing a
+Code-Health refactor, read `.ai/quality-gates.md` before deciding.
+<!-- quality-gates:ai-context END -->
