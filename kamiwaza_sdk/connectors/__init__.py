@@ -24,7 +24,11 @@ from .config_schema import (
     FieldWidth,
     Importance,
 )
-from .connector_proxy import ConnectorProxyRequest, ConnectorProxyResponse
+from .connector_proxy import (
+    ConnectorIdentityProxyRequest,
+    ConnectorProxyRequest,
+    ConnectorProxyResponse,
+)
 from .connector_token import ConnectorMintRequest, ConnectorMintResponse
 from .exceptions import ConnectorException, InvalidConfigException
 from .provider import (
@@ -59,6 +63,7 @@ __all__ = [
     "ConnectorMintRequest",
     "ConnectorMintResponse",
     "ConnectorProvider",
+    "ConnectorIdentityProxyRequest",
     "ConnectorProxyRequest",
     "ConnectorProxyResponse",
     "ConnectorSpec",
