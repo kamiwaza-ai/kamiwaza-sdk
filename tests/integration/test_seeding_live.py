@@ -17,7 +17,7 @@ from kamiwaza_sdk.exceptions import APIError
 from kamiwaza_sdk.seeding import scoped_client_for_workroom
 from tests.integration.test_context_live import _is_workroom_binding_unavailable
 
-pytestmark = [pytest.mark.integration, pytest.mark.live]
+pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
 
 
 def test_find_template_resolves_against_live_catalog(live_write_client):

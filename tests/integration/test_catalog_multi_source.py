@@ -465,6 +465,7 @@ def test_catalog_postgres_ingestion_metadata(live_kamiwaza_client, catalog_stack
                 "dataset_urn": orders,
                 "transport": "inline",
                 "format_hint": "parquet",
+                "credential_override": json.dumps({"password": pg["password"]}),
             },
         )
         assert job["transport"] == "inline"
