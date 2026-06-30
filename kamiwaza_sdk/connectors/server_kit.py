@@ -6,6 +6,7 @@ Every deployed connector exposes the same contract to core:
   GET  /manifest       the connector's self-describing manifest (self-registration)
   POST /v1/execute     {op, subject_token, params} -> {body}
   POST /v1/verify      {subject_token} -> capability probe
+  POST /v1/whoami      {access_token} -> {email?, name?, account_id?}   (optional)
 
 Only three things vary per connector: its *provider* (for ``/manifest``), how it
 builds its *dispatcher* from the workload env, and how it maps its own error types
@@ -13,6 +14,14 @@ to HTTP status codes. :func:`create_connector_app` owns everything else — so a
 connector's ``server.py`` is just those bindings, and new connectors inherit the
 whole contract (including self-registration) for free. This is the in-core form of
 the deferred ``kamiwaza-connector-sdk``.
+
+``/v1/whoami`` is the OAuth-2.0 (non-OIDC) identity fallback core invokes from
+its OAuth callback for connectors whose token response carries no ``id_token``.
+A dispatcher that implements ``async def whoami(access_token)`` gets the route
+mounted automatically; one that doesn't responds 404 and core falls back to the
+documented "Unknown account" UI label. The hook is optional and additive —
+OIDC connectors (Google, M365) don't need it because the id_token already
+carries the email.
 
 Import-light (fastapi + pydantic only) so connector images can import it without
 pulling the core service stack.
@@ -52,6 +61,26 @@ class VerifyRequest(BaseModel):
     """A request to probe the connection's live capabilities."""
 
     subject_token: str | None = None
+
+
+class WhoamiRequest(BaseModel):
+    """A request to resolve the connected account's identity from a fresh
+    provider access token.
+
+    Used by core's OAuth callback path for OAuth-2.0 (non-OIDC) providers that
+    don't return an ``id_token``. The connector receives the just-minted
+    access token and calls the provider's identity endpoint with it directly
+    (the provider host is on the connector's egress allowlist), returning a
+    standardized ``{email?, name?, account_id?}`` payload. The connector sees
+    the raw token only for this one identity call — the OAuth callback has no
+    user JWT, so core's proxy mint isn't available yet; after whoami the
+    token is sealed into core's credential store and every subsequent
+    provider call goes through the proxy.
+    """
+
+    # Live bearer token — keep it out of repr()/logs/tracebacks (matches the
+    # connector_token bearer-field convention).
+    access_token: str = Field(min_length=1, repr=False)
 
 
 @dataclass
@@ -171,6 +200,36 @@ def create_connector_app(
             return await request.app.state.dispatcher.verify(
                 subject_token=req.subject_token
             )
+        except error_type as exc:
+            return _error_response(exc)
+
+    @app.post("/v1/whoami")
+    async def whoami(req: WhoamiRequest, request: Request) -> Any:
+        """Resolve the connected account's identity (optional per dispatcher).
+
+        Dispatchers without a ``whoami`` method respond 404 — core's connect
+        fallback treats that the same as a connector that returned an empty
+        payload (the UI keeps the documented "Unknown account" label until
+        the connector ships the probe). Adding a connector for an OIDC
+        provider does not require implementing this.
+        """
+        dispatcher = request.app.state.dispatcher
+        handler = getattr(dispatcher, "whoami", None)
+        # Absent OR non-callable (a stray truthy attribute) both mean "no probe"
+        # -> the clean 404 contract, never a 500.
+        if not callable(handler):
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "error": {
+                        "kind": "whoami_not_implemented",
+                        "message": "connector does not expose a whoami probe",
+                        "upstream_status": None,
+                    }
+                },
+            )
+        try:
+            return await handler(access_token=req.access_token)
         except error_type as exc:
             return _error_response(exc)
 
