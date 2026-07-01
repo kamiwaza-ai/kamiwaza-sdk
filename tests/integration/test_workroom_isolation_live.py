@@ -16,6 +16,7 @@ Requirements:
     - A running Kamiwaza instance (auto-skips if unavailable)
     - Authenticated SDK client (API key or user/password)
 """
+
 from __future__ import annotations
 
 from uuid import uuid4
@@ -24,6 +25,7 @@ import pytest
 
 from kamiwaza_sdk import KamiwazaClient
 from kamiwaza_sdk.exceptions import APIError, NotFoundError
+from test_support.workroom_isolation import list_connectors as _list_connectors
 
 pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
 
@@ -38,6 +40,7 @@ def _unique(prefix: str) -> str:
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def sdk(live_kamiwaza_client) -> KamiwazaClient:
     """Authenticated SDK client."""
@@ -47,7 +50,9 @@ def sdk(live_kamiwaza_client) -> KamiwazaClient:
 @pytest.fixture
 def workroom_a(sdk: KamiwazaClient):
     """Create an ephemeral Workroom A, delete on teardown."""
-    wr = sdk.workrooms.create(_unique("wr-a"), "ephemeral", description="Isolation test A")
+    wr = sdk.workrooms.create(
+        _unique("wr-a"), "ephemeral", description="Isolation test A"
+    )
     yield wr
     try:
         sdk.workrooms.delete(str(wr.id))
@@ -58,22 +63,14 @@ def workroom_a(sdk: KamiwazaClient):
 @pytest.fixture
 def workroom_b(sdk: KamiwazaClient):
     """Create an ephemeral Workroom B, delete on teardown."""
-    wr = sdk.workrooms.create(_unique("wr-b"), "ephemeral", description="Isolation test B")
+    wr = sdk.workrooms.create(
+        _unique("wr-b"), "ephemeral", description="Isolation test B"
+    )
     yield wr
     try:
         sdk.workrooms.delete(str(wr.id))
     except (APIError, NotFoundError):
         pass
-
-
-# ---------------------------------------------------------------------------
-# Helpers -- raw HTTP wrappers that inject X-Workroom-Id
-# ---------------------------------------------------------------------------
-
-def _list_connectors(sdk: KamiwazaClient, workroom_id: str) -> list:
-    """List DDE connectors scoped to a workroom via header."""
-    resp = sdk.get("/dde/connectors/", headers={"X-Workroom-Id": workroom_id})
-    return resp.get("items", [])
 
 
 def _list_deployments(sdk: KamiwazaClient, workroom_id: str | None = None) -> list:
@@ -94,6 +91,7 @@ def _list_extensions(sdk: KamiwazaClient, workroom_id: str) -> list:
 # ---------------------------------------------------------------------------
 # 1. WORKROOM CRUD ISOLATION
 # ---------------------------------------------------------------------------
+
 
 class TestWorkroomCrudIsolation:
     """Verify workroom CRUD operations respect ownership."""
@@ -146,6 +144,7 @@ class TestWorkroomCrudIsolation:
 # 2. SELF-ACCESS: A -> A, B -> B
 # ---------------------------------------------------------------------------
 
+
 class TestSelfAccess:
     """Workspace A sees its own resources; B sees its own."""
 
@@ -172,12 +171,20 @@ class TestSelfAccess:
         b_exts = _list_extensions(sdk, str(workroom_b.id))
 
         for ext in a_exts:
-            wid = ext.get("workroom_id") if isinstance(ext, dict) else getattr(ext, "workroom_id", None)
+            wid = (
+                ext.get("workroom_id")
+                if isinstance(ext, dict)
+                else getattr(ext, "workroom_id", None)
+            )
             if wid is not None:
                 assert wid == str(workroom_a.id), f"A sees non-A extension: {wid}"
 
         for ext in b_exts:
-            wid = ext.get("workroom_id") if isinstance(ext, dict) else getattr(ext, "workroom_id", None)
+            wid = (
+                ext.get("workroom_id")
+                if isinstance(ext, dict)
+                else getattr(ext, "workroom_id", None)
+            )
             if wid is not None:
                 assert wid == str(workroom_b.id), f"B sees non-B extension: {wid}"
 
@@ -186,6 +193,7 @@ class TestSelfAccess:
 # 3. CROSS-WORKSPACE: A <-> B = NEVER
 # ---------------------------------------------------------------------------
 
+
 class TestCrossWorkspaceBlocked:
     """Nothing outside of A can see into A; nothing outside of B can see into B."""
 
@@ -193,20 +201,30 @@ class TestCrossWorkspaceBlocked:
         """B's connector listing must not include any of A's connectors."""
         b_connectors = _list_connectors(sdk, str(workroom_b.id))
         b_wids = {c.get("workroom_id") for c in b_connectors}
-        assert str(workroom_a.id) not in b_wids, "B sees A's connectors -- cross-workspace leak!"
+        assert str(workroom_a.id) not in b_wids, (
+            "B sees A's connectors -- cross-workspace leak!"
+        )
 
     def test_a_cannot_see_b_connectors(self, sdk, workroom_a, workroom_b):
         """A's connector listing must not include any of B's connectors."""
         a_connectors = _list_connectors(sdk, str(workroom_a.id))
         a_wids = {c.get("workroom_id") for c in a_connectors}
-        assert str(workroom_b.id) not in a_wids, "A sees B's connectors -- cross-workspace leak!"
+        assert str(workroom_b.id) not in a_wids, (
+            "A sees B's connectors -- cross-workspace leak!"
+        )
 
     def test_b_cannot_see_a_extensions(self, sdk, workroom_a, workroom_b):
         """B's extension listing must not include any of A's extensions."""
         b_exts = _list_extensions(sdk, str(workroom_b.id))
         for ext in b_exts:
-            wid = ext.get("workroom_id") if isinstance(ext, dict) else getattr(ext, "workroom_id", None)
-            assert wid != str(workroom_a.id), "B sees A's extension -- cross-workspace leak!"
+            wid = (
+                ext.get("workroom_id")
+                if isinstance(ext, dict)
+                else getattr(ext, "workroom_id", None)
+            )
+            assert wid != str(workroom_a.id), (
+                "B sees A's extension -- cross-workspace leak!"
+            )
 
     def test_workroom_export_only_shows_own_resources(self, sdk, workroom_a):
         """Export manifest for A should not reference B's resources."""
@@ -220,6 +238,7 @@ class TestCrossWorkspaceBlocked:
 # 4. GLOBAL -> WORKSPACE = NEVER
 # ---------------------------------------------------------------------------
 
+
 class TestGlobalCannotSeeWorkspaces:
     """From Global Workroom context, workspace-scoped resources are invisible."""
 
@@ -227,16 +246,22 @@ class TestGlobalCannotSeeWorkspaces:
         """Connectors listed under Global must not include A's connectors."""
         global_connectors = _list_connectors(sdk, GLOBAL_WORKROOM_ID)
         global_wids = {c.get("workroom_id") for c in global_connectors}
-        assert str(workroom_a.id) not in global_wids, \
+        assert str(workroom_a.id) not in global_wids, (
             "Global sees Workspace A's connectors -- Global->Workspace leak!"
+        )
 
     def test_global_extensions_exclude_workspace_b(self, sdk, workroom_b):
         """Extensions listed under Global must not include B's extensions."""
         global_exts = _list_extensions(sdk, GLOBAL_WORKROOM_ID)
         for ext in global_exts:
-            wid = ext.get("workroom_id") if isinstance(ext, dict) else getattr(ext, "workroom_id", None)
-            assert wid != str(workroom_b.id), \
+            wid = (
+                ext.get("workroom_id")
+                if isinstance(ext, dict)
+                else getattr(ext, "workroom_id", None)
+            )
+            assert wid != str(workroom_b.id), (
                 "Global sees Workspace B's extension -- Global->Workspace leak!"
+            )
 
     def test_global_export_excludes_workspace_resources(self, sdk):
         """Export manifest for Global should not reference workspace-scoped resources."""
@@ -247,6 +272,7 @@ class TestGlobalCannotSeeWorkspaces:
 # ---------------------------------------------------------------------------
 # 5. WORKSPACE -> GLOBAL (default: allowed)
 # ---------------------------------------------------------------------------
+
 
 class TestWorkspaceCanSeeGlobal:
     """By default (Admin ON), workspace context can access Global resources.
@@ -281,6 +307,7 @@ class TestWorkspaceCanSeeGlobal:
 # ---------------------------------------------------------------------------
 # 6. LIFECYCLE + ISOLATION INTERACTIONS
 # ---------------------------------------------------------------------------
+
 
 class TestLifecycleIsolation:
     """Verify workroom lifecycle operations don't break isolation."""
@@ -323,10 +350,13 @@ class TestLifecycleIsolation:
 # 7. SENTINEL VALUE: ?workroom_id=all (admin bypass)
 # ---------------------------------------------------------------------------
 
+
 class TestSentinelAllBypass:
     """The ?workroom_id=all sentinel bypasses workroom filtering (admin use)."""
 
-    def test_deployments_all_returns_across_workrooms(self, sdk, workroom_a, workroom_b):
+    def test_deployments_all_returns_across_workrooms(
+        self, sdk, workroom_a, workroom_b
+    ):
         """Passing workroom_id=all returns deployments from all workrooms."""
         all_deployments = _list_deployments(sdk, workroom_id="all")
         assert isinstance(all_deployments, list)
@@ -338,5 +368,6 @@ class TestSentinelAllBypass:
         for c in items:
             wid = c.get("workroom_id")
             if wid is not None:
-                assert wid == GLOBAL_WORKROOM_ID, \
+                assert wid == GLOBAL_WORKROOM_ID, (
                     f"No-header request returned non-Global connector: {wid}"
+                )
