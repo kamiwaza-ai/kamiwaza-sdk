@@ -174,6 +174,23 @@ def _is_serving(client, base_url: str, *, workroom_id) -> bool:
     return True
 
 
+# Statuses from a resolve_base_url listing that mean "cluster still settling",
+# not a permanent failure: no status (transport error before any response), any
+# 5xx (gateway/upstream not ready), 403 (workroom rebac grant not applied yet on
+# a fresh box), 429 (rate limited). Anything else is a real error and propagates.
+_TRANSIENT_RESOLVE_STATUSES = frozenset({403, 429})
+
+
+def _is_transient_resolve_error(exc: APIError) -> bool:
+    """True if an APIError from ``resolve_base_url`` is a transient startup state."""
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        return True
+    if 500 <= status <= 599:
+        return True
+    return status in _TRANSIENT_RESOLVE_STATUSES
+
+
 def wait_for_base_url(
     client,
     extension_name: str = "kaizen",
@@ -240,6 +257,17 @@ def wait_for_base_url(
                 return url
             last_err = "ingress published but backend not serving yet (503)"
         except (ValueError, NotFoundError) as exc:
+            last_err = exc
+        except APIError as exc:
+            # resolve_base_url lists the workroom's extensions on the platform
+            # API; on a freshly-installed box that call can transiently fail
+            # while the cluster settles — a 5xx/no-response from the gateway or a
+            # 403 before the workroom's rebac grant lands (ENG-7111 sibling).
+            # Treat those as "not ready yet" and keep polling; a non-transient
+            # error (401 bad token, 400 bad request) can't clear on its own, so
+            # surface it now instead of burning the whole timeout.
+            if not _is_transient_resolve_error(exc):
+                raise
             last_err = exc
         remaining = deadline - time.monotonic()
         if remaining <= 0:
