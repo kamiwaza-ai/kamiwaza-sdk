@@ -18,16 +18,18 @@ Requirements:
 """
 from __future__ import annotations
 
+import time
 from uuid import uuid4
 
 import pytest
 
 from kamiwaza_sdk import KamiwazaClient
-from kamiwaza_sdk.exceptions import APIError, NotFoundError
+from kamiwaza_sdk.exceptions import APIError, KamiwazaError, NotFoundError
 
 pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
 
 GLOBAL_WORKROOM_ID = "ffffffff-ffff-ffff-ffff-ffffffffffff"
+_SELF_ACCESS_CONNECTOR_RETRY_DELAYS_SECONDS = (0.5, 1.0)
 
 
 def _unique(prefix: str) -> str:
@@ -74,6 +76,48 @@ def _list_connectors(sdk: KamiwazaClient, workroom_id: str) -> list:
     """List DDE connectors scoped to a workroom via header."""
     resp = sdk.get("/dde/connectors/", headers={"X-Workroom-Id": workroom_id})
     return resp.get("items", [])
+
+
+def _list_connectors_self_access(
+    sdk: KamiwazaClient,
+    workroom_id: str,
+    *,
+    label: str,
+) -> list:
+    """List connectors for an allowed self-access check, retrying transient 403s.
+
+    This retry is intentionally scoped to the positive A->A/B->B smoke path.
+    Negative isolation checks must fail immediately so real cross-workroom
+    authorization regressions are never hidden by retry behavior.
+    """
+    attempts = 0
+    last_error: KamiwazaError | None = None
+    delays = (None, *_SELF_ACCESS_CONNECTOR_RETRY_DELAYS_SECONDS)
+    for delay in delays:
+        attempts += 1
+        if delay is not None:
+            time.sleep(delay)
+        try:
+            return _list_connectors(sdk, workroom_id)
+        except KamiwazaError as exc:
+            if exc.status_code != 403:
+                raise
+            last_error = exc
+
+    if last_error is None:  # Defensive guard; the retry loop should always set this.
+        raise RuntimeError("connector self-access retry exhausted without an error")
+    status_code = last_error.status_code
+    response_data = getattr(last_error, "response_data", None)
+    if response_data is None:
+        response_data = last_error.body
+    raise APIError(
+        "positive connector self-access failed after transient 403 retry: "
+        f"label={label} endpoint=/dde/connectors/ workroom_id={workroom_id} "
+        f"status={status_code} attempts={attempts}",
+        status_code=status_code,
+        response_text=getattr(last_error, "response_text", None),
+        response_data=response_data,
+    ) from last_error
 
 
 def _list_deployments(sdk: KamiwazaClient, workroom_id: str | None = None) -> list:
@@ -168,8 +212,16 @@ class TestSelfAccess:
 
     def test_connectors_scoped_to_own_workroom(self, sdk, workroom_a, workroom_b):
         """Connectors listed with A's header return only A or shared Global connectors."""
-        a_connectors = _list_connectors(sdk, str(workroom_a.id))
-        b_connectors = _list_connectors(sdk, str(workroom_b.id))
+        a_connectors = _list_connectors_self_access(
+            sdk,
+            str(workroom_a.id),
+            label="A",
+        )
+        b_connectors = _list_connectors_self_access(
+            sdk,
+            str(workroom_b.id),
+            label="B",
+        )
 
         _assert_only_own_or_global(a_connectors, str(workroom_a.id), "A")
         _assert_only_own_or_global(b_connectors, str(workroom_b.id), "B")
@@ -192,13 +244,23 @@ class TestCrossWorkspaceBlocked:
 
     def test_b_cannot_see_a_connectors(self, sdk, workroom_a, workroom_b):
         """B's connector listing must not include any of A's connectors."""
-        b_connectors = _list_connectors(sdk, str(workroom_b.id))
+        # This request is B -> B self-access; the leak assertion below stays strict.
+        b_connectors = _list_connectors_self_access(
+            sdk,
+            str(workroom_b.id),
+            label="B",
+        )
         b_wids = {c.get("workroom_id") for c in b_connectors}
         assert str(workroom_a.id) not in b_wids, "B sees A's connectors -- cross-workspace leak!"
 
     def test_a_cannot_see_b_connectors(self, sdk, workroom_a, workroom_b):
         """A's connector listing must not include any of B's connectors."""
-        a_connectors = _list_connectors(sdk, str(workroom_a.id))
+        # This request is A -> A self-access; the leak assertion below stays strict.
+        a_connectors = _list_connectors_self_access(
+            sdk,
+            str(workroom_a.id),
+            label="A",
+        )
         a_wids = {c.get("workroom_id") for c in a_connectors}
         assert str(workroom_b.id) not in a_wids, "A sees B's connectors -- cross-workspace leak!"
 
