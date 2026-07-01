@@ -14,6 +14,7 @@ from kamiwaza_sdk.services.kaizen import (
     _agent_error_from_events,
     _has_finish_action,
     _is_serving,
+    _is_transient_resolve_error,
     _reply_from_events,
     resolve_base_url,
     wait_for_base_url,
@@ -319,10 +320,12 @@ def test_wait_for_base_url_does_not_retry_non_transient_api_error(monkeypatch):
     slept: list = []
     monkeypatch.setattr(kaizen_mod.time, "sleep", lambda s: slept.append(s))
 
-    # A genuine auth failure (401) is not a startup blip — surface it immediately
+    # A genuine bad request (400) is not a startup blip — surface it immediately
     # rather than burning the whole timeout polling a request that can't succeed.
+    # (400 is used rather than 401 because the real client intercepts 401 in its
+    # token-refresh path and raises AuthenticationError, never a bare APIError.)
     def list_extensions(workroom_id=None):
-        raise APIError("unauthorized", status_code=401)
+        raise APIError("bad request", status_code=400)
 
     client = SimpleNamespace(
         extensions=SimpleNamespace(list_extensions=list_extensions),
@@ -332,6 +335,29 @@ def test_wait_for_base_url_does_not_retry_non_transient_api_error(monkeypatch):
     with pytest.raises(APIError):
         wait_for_base_url(client, "kaizen", workroom_id="wr-A", poll_interval_seconds=0)
     assert slept == []
+
+
+@pytest.mark.parametrize(
+    "status,expected",
+    [
+        (None, True),  # transport error before any response — cluster settling
+        (500, True),  # any 5xx — gateway/upstream not ready
+        (503, True),  # no healthy upstream while backend comes up
+        (599, True),  # upper 5xx bound
+        (403, True),  # workroom rebac grant not applied yet on a fresh box
+        (429, True),  # rate limited
+        (400, False),  # bad request — can't clear on its own
+        (401, False),  # auth failure — surface immediately
+        (404, False),  # not found — handled separately, not transient here
+        (200, False),  # a non-error status is never transient
+    ],
+)
+def test_is_transient_resolve_error_classifies_statuses(status, expected):
+    # Table-driven check of the pure classifier so every retryable/terminal
+    # status is pinned independently of the wait_for_base_url poll loop.
+    assert (
+        _is_transient_resolve_error(APIError("boom", status_code=status)) is expected
+    )
 
 
 def test_wait_for_base_url_returns_when_ready():
