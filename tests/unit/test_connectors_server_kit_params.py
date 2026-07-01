@@ -41,6 +41,29 @@ def test_var_keyword_op_keeps_everything():
     assert accepted_params(_accepts_kwargs, params) == params
 
 
+def test_dropped_params_logged_at_debug():
+    """Dropped keys are recorded (names only, never values) for contract-drift
+    observability."""
+    import logging
+
+    from kamiwaza_sdk.connectors import server_kit as sk
+
+    messages: list[str] = []
+    handler = logging.Handler()
+    handler.emit = lambda record: messages.append(record.getMessage())  # type: ignore[method-assign]
+    sk._LOG.addHandler(handler)
+    previous = sk._LOG.level
+    sk._LOG.setLevel(logging.DEBUG)
+    try:
+        accepted_params(_content_plain, {"node_id": "n", "mime_type": "x", "bogus": 1})
+    finally:
+        sk._LOG.removeHandler(handler)
+        sk._LOG.setLevel(previous)
+    blob = "\n".join(messages)
+    assert "mime_type" in blob and "bogus" in blob  # dropped keys are named
+    assert "node_id" not in blob  # a kept param is not reported as dropped
+
+
 class _Ops:
     async def get_content(self, *, node_id, subject_token=None):
         return {"node_id": node_id}
