@@ -79,12 +79,9 @@ _COMPOSE_ENV_CACHE: dict[str, str] | None = None
 _COMPOSE_ENV_ERROR: str | None = None
 _LIVE_PASSWORD_CACHE: dict[tuple[str, str, str], tuple[str, str | None]] = {}
 # Memoize PAT probe (``GET /auth/users/me``) results for the session.
-# ``_api_key_auth_works`` is called once in ``live_session_api_key`` and
-# once in ``live_session_write_key`` (plus any future fixture that needs
-# to validate a PAT). Without caching, the same PAT gets probed against
-# Keycloak on every call, which is noise at best and a lockout vector at
-# worst. Cache both success and failure so a bad PAT doesn't keep
-# re-probing either.
+# Without caching, the same PAT can get probed repeatedly against Keycloak,
+# which is noise at best and a lockout vector at worst. Cache both success
+# and failure so a bad PAT doesn't keep re-probing either.
 _API_KEY_PROBE_CACHE: dict[tuple[str, str], tuple[bool, str]] = {}
 _PROBE_TIMEOUT_SECONDS = 10.0
 _PROBE_ERROR_TRUNCATE = 200
@@ -1701,9 +1698,7 @@ def live_session_api_key(
 @pytest.fixture(scope="session")
 def live_session_write_key(
     live_server_available: str,
-    live_api_key: str,
-    resolved_live_password: str,
-    live_username: str,
+    live_session_api_key: str,
 ) -> Iterator[str]:
     """
     Session PAT with **write** scope for authorization-regression tests.
@@ -1713,26 +1708,12 @@ def live_session_write_key(
     starts requiring admin, these tests will surface the regression as a 403.
     """
 
-    # Only skip when the env PAT is usable — otherwise a stale env PAT would
-    # also prevent the write-scope regression guard from running.
-    api_key = live_api_key.strip()
-    if api_key and _api_key_auth_works(live_server_available, api_key)[0]:
+    bootstrap_api_key = live_session_api_key.strip()
+    if not bootstrap_api_key:
         yield ""
         return
 
-    username = live_username.strip()
-    password = resolved_live_password.strip()
-    if not username or not password:
-        yield ""
-        return
-
-    bootstrap_client = KamiwazaClient(live_server_available)
-    bootstrap_client.authenticator = UserPasswordAuthenticator(
-        username,
-        password,
-        bootstrap_client._auth_service,
-        token_store=_NoCacheTokenStore(),
-    )
+    bootstrap_client = KamiwazaClient(live_server_available, api_key=bootstrap_api_key)
 
     pat_response = bootstrap_client.auth.create_pat(
         PATCreate(
@@ -1900,9 +1881,18 @@ def catalog_stack_environment() -> Iterator[dict[str, object]]:
     minio_endpoint_runtime = _runtime_endpoint(minio_endpoint_local)
 
     env = compose_env.copy()
+    state_dir = Path(
+        os.environ.get("CATALOG_STACK_STATE_DIR", CATALOG_STACK_DIR / "state")
+    ).resolve()
+    data_dir = Path(
+        os.environ.get(
+            "CATALOG_STACK_DATA_DIR",
+            state_dir / "generated-data",
+        )
+    ).resolve()
     env["INGESTION_STACK_COMPOSE"] = str(CATALOG_STACK_COMPOSE)
-    env["STATE_DIR"] = str((CATALOG_STACK_DIR / "state").resolve())
-    env["DATA_DIR"] = str((CATALOG_STACK_DIR / "data").resolve())
+    env["STATE_DIR"] = str(state_dir)
+    env["DATA_DIR"] = str(data_dir)
     env["MINIO_ENDPOINT"] = minio_endpoint_local
     env["MINIO_BUCKET"] = CATALOG_MINIO_BUCKET
     env["MINIO_PREFIX"] = CATALOG_MINIO_PREFIX
@@ -1937,7 +1927,7 @@ def catalog_stack_environment() -> Iterator[dict[str, object]]:
             "small_key": f"{CATALOG_MINIO_PREFIX}/inline-small.parquet",
             "large_key": f"{CATALOG_MINIO_PREFIX}/inline-large.parquet",
         },
-        "file_root": str((CATALOG_STACK_DIR / "state" / "test-data").resolve()),
+        "file_root": str((state_dir / "test-data").resolve()),
         "postgres": {
             "host": _runtime_host(CATALOG_POSTGRES["host"]),
             "port": int(CATALOG_POSTGRES["port"]),
