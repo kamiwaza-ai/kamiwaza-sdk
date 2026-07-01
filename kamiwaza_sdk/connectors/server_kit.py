@@ -97,16 +97,28 @@ def get_connector_logger(name: str) -> logging.Logger:
     return _LOG.getChild(name)
 
 
+def _resolve_log_level() -> int:
+    """Numeric level from ``KAMIWAZA_CONNECTOR_LOG_LEVEL``; ``INFO`` on an unknown
+    value so a typo'd env var can never crash connector app construction."""
+    name = os.environ.get("KAMIWAZA_CONNECTOR_LOG_LEVEL", "INFO").upper()
+    level = logging.getLevelName(name)
+    return level if isinstance(level, int) else logging.INFO
+
+
 def _ensure_connector_logging() -> None:
-    """Attach one stderr handler to the framework logger (idempotent).
+    """Configure the framework logger for a standalone connector app.
 
     A connector process is a standalone app, but uvicorn only configures its own
     loggers -- so without this the app's INFO logs are invisible and failures are
-    swallowed behind the bare access line. The framework wires up its own
-    namespace logger with ``propagate=False`` so it neither duplicates through
-    uvicorn/root nor depends on the connector calling ``logging.basicConfig``.
-    Level from ``KAMIWAZA_CONNECTOR_LOG_LEVEL`` (default ``INFO``).
+    swallowed behind the bare access line. Level and ``propagate`` are set
+    **unconditionally** (a pre-existing handler must never leave the logger at the
+    default WARNING and silently drop the INFO op-outcome lines); the stderr
+    handler is attached once. ``propagate=False`` keeps lines from duplicating
+    through uvicorn/root. Level from ``KAMIWAZA_CONNECTOR_LOG_LEVEL`` (default
+    ``INFO``).
     """
+    _LOG.setLevel(_resolve_log_level())
+    _LOG.propagate = False
     if _LOG.handlers:
         return
     handler = logging.StreamHandler()
@@ -114,8 +126,6 @@ def _ensure_connector_logging() -> None:
         logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
     )
     _LOG.addHandler(handler)
-    _LOG.setLevel(os.environ.get("KAMIWAZA_CONNECTOR_LOG_LEVEL", "INFO").upper())
-    _LOG.propagate = False
 
 
 class ExecuteRequest(BaseModel):
@@ -259,15 +269,19 @@ def create_connector_app(
         status, kind, _ = classify_error(exc)
         _LOG.warning(
             "connector=%s op=%s params=%s outcome=error kind=%s status=%s "
-            "dur_ms=%d: %s",
+            "dur_ms=%d error_type=%s",
             title,
             op,
             keys,
             kind,
             status,
             duration_ms,
-            exc,
+            type(exc).__name__,
         )
+        # Full exception text only at DEBUG: a provider error message can embed
+        # upstream response fragments / user data, so it stays out of the default
+        # WARNING line (operators opt in via KAMIWAZA_CONNECTOR_LOG_LEVEL=DEBUG).
+        _LOG.debug("connector=%s op=%s error detail: %s", title, op, exc)
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:

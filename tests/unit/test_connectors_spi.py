@@ -12,8 +12,6 @@ from __future__ import annotations
 
 import pytest
 from fastapi.testclient import TestClient
-from pydantic import ValidationError
-
 from kamiwaza_sdk.connectors import (
     ConfigField,
     ConfigSchema,
@@ -38,6 +36,7 @@ from kamiwaza_sdk.connectors import (
     create_connector_app,
     validate_icon,
 )
+from pydantic import ValidationError
 
 
 class _DummyProvider(ConnectorProvider):
@@ -583,4 +582,9 @@ def test_execute_error_is_logged_at_warning() -> None:
     finally:
         detach()
     assert resp.status_code == 429
-    assert any("outcome=error" in m and "kind=rate_limited" in m for m in messages)
+    blob = "\n".join(messages)
+    assert "outcome=error" in blob and "kind=rate_limited" in blob
+    assert "error_type=_BoomError" in blob
+    # The raw exception text is DEBUG-only (can embed upstream fragments), so it
+    # must not appear in the default-level (INFO) capture.
+    assert "kaboom" not in blob

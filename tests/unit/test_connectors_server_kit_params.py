@@ -1,7 +1,6 @@
 """Unit tests for the connector dispatch param-tolerance helper."""
 
 import pytest
-
 from kamiwaza_sdk.connectors.server_kit import accepted_params
 
 pytestmark = pytest.mark.unit
@@ -40,6 +39,18 @@ def test_var_keyword_op_keeps_everything():
     """An op that declares **kwargs opts out of filtering entirely."""
     params = {"node_id": "n1", "mime_type": "x", "anything": "y"}
     assert accepted_params(_accepts_kwargs, params) == params
+
+
+class _Ops:
+    async def get_content(self, *, node_id, subject_token=None):
+        return {"node_id": node_id}
+
+
+def test_bound_method_signature_is_respected():
+    """inspect.signature drops ``self`` on a bound method, so a real op method
+    (the connector dispatch shape) filters correctly."""
+    got = accepted_params(_Ops().get_content, {"node_id": "n", "mime_type": "x"})
+    assert got == {"node_id": "n"}
 
 
 def test_missing_required_param_still_raises_at_call():
