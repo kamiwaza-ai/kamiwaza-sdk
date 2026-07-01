@@ -72,6 +72,16 @@ def accepted_params(fn: Callable[..., Any], params: dict[str, Any]) -> dict[str,
         if param.kind
         in (inspect.Parameter.KEYWORD_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
     }
+    dropped = [key for key in params if key not in allowed]
+    if dropped:
+        # Observability for core<->connector contract drift: a genuinely mistyped
+        # or newly-forwarded key is dropped silently at the op boundary, so record
+        # which keys were dropped (names only -- never values) at DEBUG.
+        _LOG.debug(
+            "dropping params not declared by %s: %s",
+            getattr(fn, "__qualname__", repr(fn)),
+            sorted(dropped),
+        )
     return {key: value for key, value in params.items() if key in allowed}
 
 
