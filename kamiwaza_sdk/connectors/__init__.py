@@ -49,7 +49,9 @@ from .server_kit import (
     OpResult,
     VerifyRequest,
     WhoamiRequest,
+    accepted_params,
     create_connector_app,
+    get_connector_logger,
 )
 
 __all__ = [
@@ -60,10 +62,10 @@ __all__ = [
     "ConfigSchema",
     "ConfigType",
     "ConnectorException",
+    "ConnectorIdentityProxyRequest",
     "ConnectorMintRequest",
     "ConnectorMintResponse",
     "ConnectorProvider",
-    "ConnectorIdentityProxyRequest",
     "ConnectorProxyRequest",
     "ConnectorProxyResponse",
     "ConnectorSpec",
@@ -80,7 +82,9 @@ __all__ = [
     "SurfaceDescriptor",
     "VerifyRequest",
     "WhoamiRequest",
+    "accepted_params",
     "auth_model_from_kind",
     "create_connector_app",
+    "get_connector_logger",
     "validate_icon",
 ]

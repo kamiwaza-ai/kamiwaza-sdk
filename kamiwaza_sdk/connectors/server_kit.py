@@ -29,6 +29,10 @@ pulling the core service stack.
 
 from __future__ import annotations
 
+import inspect
+import logging
+import os
+import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -42,6 +46,86 @@ from pydantic import BaseModel, Field
 DispatcherFactory = Callable[[], Any]
 # Maps a connector error -> (http_status, error_kind, upstream_status | None).
 ErrorClassifier = Callable[[Exception], "tuple[int, str, int | None]"]
+
+
+def accepted_params(fn: Callable[..., Any], params: dict[str, Any]) -> dict[str, Any]:
+    """Drop params the op ``fn`` does not declare (unless it accepts ``**kwargs``).
+
+    Core forwards content-routing hints (e.g. ``mime_type``) to every content op
+    uniformly, and a node's ``content.query`` can carry provider-specific keys; an
+    op that does not consume a given key must ignore it rather than fail with a
+    ``TypeError``. A genuinely missing *required* param still raises when the op is
+    called, so real contract mismatches stay loud.
+
+    Framework behaviour so every connector dispatcher tolerates the platform's
+    content-param contract without copy-pasting the filter. Call it at the dispatch
+    call site: ``await fn(subject_token=tok, **accepted_params(fn, params))``.
+    """
+    signature = inspect.signature(fn)
+    if any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in signature.parameters.values()
+    ):
+        return params
+    allowed = {
+        name
+        for name, param in signature.parameters.items()
+        if param.kind
+        in (inspect.Parameter.KEYWORD_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    }
+    return {key: value for key, value in params.items() if key in allowed}
+
+
+# One namespace for every connector so operators filter/format connector logs in
+# one place. Op code should use ``get_connector_logger`` rather than the stdlib
+# ``logging.getLogger`` so it lands under this namespace and inherits the handler.
+_LOG = logging.getLogger("kamiwaza_sdk.connectors")
+
+
+def get_connector_logger(name: str) -> logging.Logger:
+    """A namespaced logger for connector op code (child of the framework logger).
+
+    Logging discipline for connectors:
+
+    - **Never** log a ``subject_token`` / ``access_token`` / provider bearer, or a
+      raw param *value* -- params can carry user data (a search query, a file
+      path). Log op names and param *keys* only.
+    - Use ``exception``/``error`` for failures the operator must act on,
+      ``warning`` for handled/expected faults, ``info`` for op outcomes, ``debug``
+      for detail. The framework already logs every op's outcome + latency, so op
+      code should add only what the framework can't see.
+    """
+    return _LOG.getChild(name)
+
+
+def _resolve_log_level() -> int:
+    """Numeric level from ``KAMIWAZA_CONNECTOR_LOG_LEVEL``; ``INFO`` on an unknown
+    value so a typo'd env var can never crash connector app construction."""
+    name = os.environ.get("KAMIWAZA_CONNECTOR_LOG_LEVEL", "INFO").upper()
+    level = logging.getLevelName(name)
+    return level if isinstance(level, int) else logging.INFO
+
+
+def _ensure_connector_logging() -> None:
+    """Configure the framework logger for a standalone connector app.
+
+    A connector process is a standalone app, but uvicorn only configures its own
+    loggers -- so without this the app's INFO logs are invisible and failures are
+    swallowed behind the bare access line. Level and ``propagate`` are set
+    **unconditionally** (a pre-existing handler must never leave the logger at the
+    default WARNING and silently drop the INFO op-outcome lines); the stderr
+    handler is attached once. ``propagate=False`` keeps lines from duplicating
+    through uvicorn/root. Level from ``KAMIWAZA_CONNECTOR_LOG_LEVEL`` (default
+    ``INFO``).
+    """
+    _LOG.setLevel(_resolve_log_level())
+    _LOG.propagate = False
+    if _LOG.handlers:
+        return
+    handler = logging.StreamHandler()
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
+    )
+    _LOG.addHandler(handler)
 
 
 class ExecuteRequest(BaseModel):
@@ -145,6 +229,7 @@ def create_connector_app(
                 app.state.dispatcher = None
                 await disp.aclose()
 
+    _ensure_connector_logging()
     app = FastAPI(title=title, lifespan=_lifespan)
     app.state.dispatcher = dispatcher
 
@@ -153,9 +238,50 @@ def create_connector_app(
         return JSONResponse(
             status_code=status,
             content={
-                "error": {"kind": kind, "message": str(exc), "upstream_status": upstream}
+                "error": {
+                    "kind": kind,
+                    "message": str(exc),
+                    "upstream_status": upstream,
+                }
             },
         )
+
+    def _log_outcome(
+        op: str,
+        started: float,
+        *,
+        params: dict[str, Any] | None = None,
+        exc: Exception | None = None,
+    ) -> None:
+        """Log one op's outcome + latency. Secret-safe: param *keys* only, never
+        values or tokens."""
+        duration_ms = int((time.monotonic() - started) * 1000)
+        keys = sorted(params) if params else []
+        if exc is None:
+            _LOG.info(
+                "connector=%s op=%s params=%s outcome=ok dur_ms=%d",
+                title,
+                op,
+                keys,
+                duration_ms,
+            )
+            return
+        status, kind, _ = classify_error(exc)
+        _LOG.warning(
+            "connector=%s op=%s params=%s outcome=error kind=%s status=%s "
+            "dur_ms=%d error_type=%s",
+            title,
+            op,
+            keys,
+            kind,
+            status,
+            duration_ms,
+            type(exc).__name__,
+        )
+        # Full exception text only at DEBUG: a provider error message can embed
+        # upstream response fragments / user data, so it stays out of the default
+        # WARNING line (operators opt in via KAMIWAZA_CONNECTOR_LOG_LEVEL=DEBUG).
+        _LOG.debug("connector=%s op=%s error detail: %s", title, op, exc)
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
@@ -175,12 +301,15 @@ def create_connector_app(
 
     @app.post("/v1/execute")
     async def execute(req: ExecuteRequest, request: Request) -> Any:
+        started = time.monotonic()
         try:
             result = await request.app.state.dispatcher.execute(
                 req.op, subject_token=req.subject_token, params=req.params
             )
         except error_type as exc:
+            _log_outcome(req.op, started, params=req.params, exc=exc)
             return _error_response(exc)
+        _log_outcome(req.op, started, params=req.params)
         # An op may return an OpResult to hand continuation (state/session) back to
         # core; a plain return value is the body with no continuation. The
         # continuation keys are only added when present, so a stateless op's response
@@ -196,12 +325,16 @@ def create_connector_app(
 
     @app.post("/v1/verify")
     async def verify(req: VerifyRequest, request: Request) -> Any:
+        started = time.monotonic()
         try:
-            return await request.app.state.dispatcher.verify(
+            result = await request.app.state.dispatcher.verify(
                 subject_token=req.subject_token
             )
         except error_type as exc:
+            _log_outcome("verify", started, exc=exc)
             return _error_response(exc)
+        _log_outcome("verify", started)
+        return result
 
     @app.post("/v1/whoami")
     async def whoami(req: WhoamiRequest, request: Request) -> Any:
@@ -228,9 +361,13 @@ def create_connector_app(
                     }
                 },
             )
+        started = time.monotonic()
         try:
-            return await handler(access_token=req.access_token)
+            result = await handler(access_token=req.access_token)
         except error_type as exc:
+            _log_outcome("whoami", started, exc=exc)
             return _error_response(exc)
+        _log_outcome("whoami", started)
+        return result
 
     return app

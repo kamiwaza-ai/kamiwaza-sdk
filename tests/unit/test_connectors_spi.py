@@ -12,8 +12,6 @@ from __future__ import annotations
 
 import pytest
 from fastapi.testclient import TestClient
-from pydantic import ValidationError
-
 from kamiwaza_sdk.connectors import (
     ConfigField,
     ConfigSchema,
@@ -38,6 +36,7 @@ from kamiwaza_sdk.connectors import (
     create_connector_app,
     validate_icon,
 )
+from pydantic import ValidationError
 
 
 class _DummyProvider(ConnectorProvider):
@@ -199,9 +198,7 @@ class _WhoamiDispatcher(_StubDispatcher):
 
 def test_whoami_routes_to_dispatcher_when_implemented() -> None:
     """A dispatcher with whoami gets the identity call routed through."""
-    dispatcher = _WhoamiDispatcher(
-        {"email": "user@example.com", "name": "User"}
-    )
+    dispatcher = _WhoamiDispatcher({"email": "user@example.com", "name": "User"})
     with TestClient(_app(dispatcher)) as client:
         resp = client.post("/v1/whoami", json={"access_token": "hs-at"})
     assert resp.status_code == 200
@@ -529,3 +526,65 @@ def test_response_models_retain_extra_fields() -> None:
         {"status_code": 200, "body": None, "new_core_field": "keep-me"}
     )
     assert proxy.model_dump()["new_core_field"] == "keep-me"
+
+
+# --- framework logging -------------------------------------------------------
+
+
+def _capture_connector_logs():
+    """Attach a capturing handler to the framework logger (returns messages, detach)."""
+    import logging
+
+    logger = logging.getLogger("kamiwaza_sdk.connectors")
+    messages: list[str] = []
+    handler = logging.Handler()
+    handler.emit = lambda record: messages.append(record.getMessage())  # type: ignore[method-assign]
+    logger.addHandler(handler)
+    return messages, lambda: logger.removeHandler(handler)
+
+
+def test_execute_logs_outcome_and_redacts_token_and_values() -> None:
+    messages, detach = _capture_connector_logs()
+    try:
+        with TestClient(_app(_StubDispatcher(execute_result={"ok": 1}))) as client:
+            resp = client.post(
+                "/v1/execute",
+                json={
+                    "op": "files.get_content",
+                    "subject_token": "SECRET-TOKEN",
+                    "params": {
+                        "node_id": "NODEVAL",
+                        "drive_id": "DRIVEVAL",
+                        "mime_type": "application/pdf",
+                    },
+                },
+            )
+    finally:
+        detach()
+    assert resp.status_code == 200
+    blob = "\n".join(messages)
+    assert "op=files.get_content" in blob and "outcome=ok" in blob
+    # param KEYS are logged for debuggability...
+    assert "node_id" in blob and "drive_id" in blob and "mime_type" in blob
+    # ...but never the acting-subject token or any param VALUE.
+    assert "SECRET-TOKEN" not in blob
+    assert "application/pdf" not in blob
+    assert "NODEVAL" not in blob and "DRIVEVAL" not in blob
+
+
+def test_execute_error_is_logged_at_warning() -> None:
+    messages, detach = _capture_connector_logs()
+    try:
+        with TestClient(
+            _app(_StubDispatcher(execute_exc=_BoomError("kaboom")))
+        ) as client:
+            resp = client.post("/v1/execute", json={"op": "list", "params": {}})
+    finally:
+        detach()
+    assert resp.status_code == 429
+    blob = "\n".join(messages)
+    assert "outcome=error" in blob and "kind=rate_limited" in blob
+    assert "error_type=_BoomError" in blob
+    # The raw exception text is DEBUG-only (can embed upstream fragments), so it
+    # must not appear in the default-level (INFO) capture.
+    assert "kaboom" not in blob
