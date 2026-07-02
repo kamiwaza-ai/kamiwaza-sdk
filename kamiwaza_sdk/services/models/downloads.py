@@ -1,4 +1,4 @@
-from typing import List, Optional, Dict, Any
+from typing import TYPE_CHECKING, List, Optional, Dict, Any
 import time
 from datetime import datetime
 import sys
@@ -6,21 +6,8 @@ from ...schemas.models.model_search import HubModelFileSearch
 from ...exceptions import DeploymentFailedError
 from ...schemas.models.downloads import ModelDownloadRequest, ModelDownloadStatus
 from ...utils.download_tracker import DownloadTracker
+from ...utils.model_file_readiness import model_file_download_satisfied
 from ...utils.progress_formatter import ProgressFormatter
-
-
-def _model_file_download_satisfied(file: Any) -> bool:
-    """Match the platform's model-file completion predicate.
-
-    ``download`` is request/selection intent. A file is actually ready only
-    after the server has storage, no active worker, and no queued redownload.
-    """
-
-    return (
-        bool(getattr(file, "storage_location", None))
-        and not bool(getattr(file, "is_downloading", False))
-        and getattr(file, "dl_requested_at", None) is None
-    )
 
 
 def _partition_model_download_files(files: List[Any]) -> tuple[List[Any], List[Any], List[Any]]:
@@ -31,7 +18,7 @@ def _partition_model_download_files(files: List[Any]) -> tuple[List[Any], List[A
     for file in files:
         if bool(getattr(file, "is_downloading", False)):
             downloading_files.append(file)
-        elif _model_file_download_satisfied(file):
+        elif model_file_download_satisfied(file):
             downloaded_files.append(file)
         else:
             pending_files.append(file)
@@ -56,6 +43,16 @@ def _calculate_model_download_progress(
 
 class ModelDownloadMixin:
     """Mixin for model download functionality."""
+
+    if TYPE_CHECKING:
+        client: Any
+        quant_manager: Any
+
+        def search_models(self, *args: Any, **kwargs: Any) -> List[Any]: ...
+
+        def search_hub_model_files(self, *args: Any, **kwargs: Any) -> List[Any]: ...
+
+        def get_model_by_repo_id(self, *args: Any, **kwargs: Any) -> Any: ...
     
     def initiate_model_download(self, repo_id: str, quantization: str = 'q6_k') -> Dict[str, Any]:
         """
@@ -127,7 +124,7 @@ class ModelDownloadMixin:
         files_to_download = []
         
         for file in compatible_files:
-            if _model_file_download_satisfied(file):
+            if model_file_download_satisfied(file):
                 already_downloaded_files.append(file)
             else:
                 files_to_download.append(file.name)
@@ -188,10 +185,10 @@ class ModelDownloadMixin:
                 # Add files section
                 files = self.get('files', [])
                 already_downloaded = [
-                    f for f in files if _model_file_download_satisfied(f)
+                    f for f in files if model_file_download_satisfied(f)
                 ]
                 to_download = [
-                    f for f in files if not _model_file_download_satisfied(f)
+                    f for f in files if not model_file_download_satisfied(f)
                 ]
                 
                 if already_downloaded:

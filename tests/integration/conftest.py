@@ -28,6 +28,7 @@ from kamiwaza_sdk.authentication import UserPasswordAuthenticator
 from kamiwaza_sdk.exceptions import APIError, AuthenticationError, KamiwazaError
 from kamiwaza_sdk.schemas.auth import PATCreate
 from kamiwaza_sdk.token_store import StoredToken, TokenStore
+from kamiwaza_sdk.utils.model_file_readiness import model_file_download_satisfied
 
 # Co-located capability-marker helpers (M5). Add this directory to the path so
 # the import resolves regardless of pytest's package-import mode (this conftest
@@ -1781,12 +1782,7 @@ def _model_has_ready_target_files(model: Any, quantization: str) -> bool:
     target_files = _target_files_for_quantization(model, quantization)
     if not target_files:
         return False
-    return all(
-        bool(getattr(f, "storage_location", None))
-        and not bool(getattr(f, "is_downloading", False))
-        and getattr(f, "dl_requested_at", None) is None
-        for f in target_files
-    )
+    return all(model_file_download_satisfied(f) for f in target_files)
 
 
 def _get_model_by_repo_id_with_files(
