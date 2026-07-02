@@ -15,10 +15,10 @@ from urllib.parse import urlparse
 
 OPERATOR_IMAGE = "ghcr.io/kamiwaza-internal/operators/images/extension-operator"
 
-# Tags this CLI version is known-compatible with. Maintained as part of
-# each SDK release cut; CI sanity-check confirms each tag resolves at GHCR.
+# The extension CLI is released in lockstep with the platform/operator. This
+# is the tested compatibility contract, not a claim that older tags cannot work.
 OPERATOR_COMPATIBLE_TAGS: Tuple[str, ...] = (
-    "release-0.12.1",
+    "release-1.0.0",
 )
 
 OPERATOR_NAMESPACE = "kamiwaza-system"
