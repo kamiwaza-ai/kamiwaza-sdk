@@ -28,6 +28,7 @@ from kamiwaza_sdk.authentication import UserPasswordAuthenticator
 from kamiwaza_sdk.exceptions import APIError, AuthenticationError, KamiwazaError
 from kamiwaza_sdk.schemas.auth import PATCreate
 from kamiwaza_sdk.token_store import StoredToken, TokenStore
+from kamiwaza_sdk.utils.model_file_readiness import model_file_download_satisfied
 
 # Co-located capability-marker helpers (M5). Add this directory to the path so
 # the import resolves regardless of pytest's package-import mode (this conftest
@@ -79,12 +80,9 @@ _COMPOSE_ENV_CACHE: dict[str, str] | None = None
 _COMPOSE_ENV_ERROR: str | None = None
 _LIVE_PASSWORD_CACHE: dict[tuple[str, str, str], tuple[str, str | None]] = {}
 # Memoize PAT probe (``GET /auth/users/me``) results for the session.
-# ``_api_key_auth_works`` is called once in ``live_session_api_key`` and
-# once in ``live_session_write_key`` (plus any future fixture that needs
-# to validate a PAT). Without caching, the same PAT gets probed against
-# Keycloak on every call, which is noise at best and a lockout vector at
-# worst. Cache both success and failure so a bad PAT doesn't keep
-# re-probing either.
+# Without caching, the same PAT can get probed repeatedly against Keycloak,
+# which is noise at best and a lockout vector at worst. Cache both success
+# and failure so a bad PAT doesn't keep re-probing either.
 _API_KEY_PROBE_CACHE: dict[tuple[str, str], tuple[bool, str]] = {}
 _PROBE_TIMEOUT_SECONDS = 10.0
 _PROBE_ERROR_TRUNCATE = 200
@@ -1701,9 +1699,7 @@ def live_session_api_key(
 @pytest.fixture(scope="session")
 def live_session_write_key(
     live_server_available: str,
-    live_api_key: str,
-    resolved_live_password: str,
-    live_username: str,
+    live_session_api_key: str,
 ) -> Iterator[str]:
     """
     Session PAT with **write** scope for authorization-regression tests.
@@ -1713,26 +1709,12 @@ def live_session_write_key(
     starts requiring admin, these tests will surface the regression as a 403.
     """
 
-    # Only skip when the env PAT is usable — otherwise a stale env PAT would
-    # also prevent the write-scope regression guard from running.
-    api_key = live_api_key.strip()
-    if api_key and _api_key_auth_works(live_server_available, api_key)[0]:
+    bootstrap_api_key = live_session_api_key.strip()
+    if not bootstrap_api_key:
         yield ""
         return
 
-    username = live_username.strip()
-    password = resolved_live_password.strip()
-    if not username or not password:
-        yield ""
-        return
-
-    bootstrap_client = KamiwazaClient(live_server_available)
-    bootstrap_client.authenticator = UserPasswordAuthenticator(
-        username,
-        password,
-        bootstrap_client._auth_service,
-        token_store=_NoCacheTokenStore(),
-    )
+    bootstrap_client = KamiwazaClient(live_server_available, api_key=bootstrap_api_key)
 
     pat_response = bootstrap_client.auth.create_pat(
         PATCreate(
@@ -1776,6 +1758,43 @@ def live_password(resolved_live_password: str) -> str:
     return resolved_live_password
 
 
+def _target_files_for_quantization(model: Any, quantization: str) -> list[Any]:
+    files = list(getattr(model, "m_files", None) or [])
+    if not files:
+        return []
+
+    gguf_files = [
+        f
+        for f in files
+        if str(getattr(f, "name", "") or "").lower().endswith(".gguf")
+    ]
+    if not gguf_files:
+        return files
+
+    from kamiwaza_sdk.utils.quant_manager import QuantizationManager
+
+    return QuantizationManager().filter_files_by_quantization(
+        gguf_files, quantization
+    )
+
+
+def _model_has_ready_target_files(model: Any, quantization: str) -> bool:
+    target_files = _target_files_for_quantization(model, quantization)
+    if not target_files:
+        return False
+    return all(model_file_download_satisfied(f) for f in target_files)
+
+
+def _get_model_by_repo_id_with_files(
+    client: KamiwazaClient,
+    repo_id: str,
+) -> Any | None:
+    for model in client.models.list_models(load_files=True):
+        if getattr(model, "repo_modelId", None) == repo_id:
+            return model
+    return None
+
+
 @pytest.fixture(scope="session")
 def ensure_repo_ready() -> Callable[[KamiwazaClient, str], object]:
     """Ensure a Hugging Face repo is present in the live catalog (downloading if needed)."""
@@ -1788,8 +1807,8 @@ def ensure_repo_ready() -> Callable[[KamiwazaClient, str], object]:
         wait_timeout: int = 900,
         poll_interval: int = 5,
     ):
-        model = client.models.get_model_by_repo_id(repo_id)
-        if model:
+        model = _get_model_by_repo_id_with_files(client, repo_id)
+        if model and _model_has_ready_target_files(model, quantization):
             return model
 
         client.models.initiate_model_download(repo_id, quantization=quantization)
@@ -1803,12 +1822,13 @@ def ensure_repo_ready() -> Callable[[KamiwazaClient, str], object]:
 
         deadline = time.time() + wait_timeout if wait_timeout else None
         while True:
-            model = client.models.get_model_by_repo_id(repo_id)
-            if model:
+            model = _get_model_by_repo_id_with_files(client, repo_id)
+            if model and _model_has_ready_target_files(model, quantization):
                 return model
             if deadline and time.time() >= deadline:
                 raise TimeoutError(
-                    f"Timed out waiting for {repo_id} to register after download"
+                    f"Timed out waiting for {repo_id} target files to be ready "
+                    "after download"
                 )
             time.sleep(poll_interval)
 
@@ -1900,9 +1920,18 @@ def catalog_stack_environment() -> Iterator[dict[str, object]]:
     minio_endpoint_runtime = _runtime_endpoint(minio_endpoint_local)
 
     env = compose_env.copy()
+    state_dir = Path(
+        os.environ.get("CATALOG_STACK_STATE_DIR", CATALOG_STACK_DIR / "state")
+    ).resolve()
+    data_dir = Path(
+        os.environ.get(
+            "CATALOG_STACK_DATA_DIR",
+            state_dir / "generated-data",
+        )
+    ).resolve()
     env["INGESTION_STACK_COMPOSE"] = str(CATALOG_STACK_COMPOSE)
-    env["STATE_DIR"] = str((CATALOG_STACK_DIR / "state").resolve())
-    env["DATA_DIR"] = str((CATALOG_STACK_DIR / "data").resolve())
+    env["STATE_DIR"] = str(state_dir)
+    env["DATA_DIR"] = str(data_dir)
     env["MINIO_ENDPOINT"] = minio_endpoint_local
     env["MINIO_BUCKET"] = CATALOG_MINIO_BUCKET
     env["MINIO_PREFIX"] = CATALOG_MINIO_PREFIX
@@ -1937,7 +1966,7 @@ def catalog_stack_environment() -> Iterator[dict[str, object]]:
             "small_key": f"{CATALOG_MINIO_PREFIX}/inline-small.parquet",
             "large_key": f"{CATALOG_MINIO_PREFIX}/inline-large.parquet",
         },
-        "file_root": str((CATALOG_STACK_DIR / "state" / "test-data").resolve()),
+        "file_root": str((state_dir / "test-data").resolve()),
         "postgres": {
             "host": _runtime_host(CATALOG_POSTGRES["host"]),
             "port": int(CATALOG_POSTGRES["port"]),

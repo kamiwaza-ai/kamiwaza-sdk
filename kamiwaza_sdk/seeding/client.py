@@ -20,20 +20,11 @@ def scoped_client_for_workroom(
 ) -> KamiwazaClient:
     """Return a client whose calls are scoped to ``workroom_id``.
 
-    Workroom *enter* re-mints a JWT carrying the workroom claim; using that
-    token scopes subsequent platform deploys and Kaizen agent creation via the
-    trusted identity (``identity.workroom_id``) — the durable path, rather than
-    the legacy ``X-Workroom-Id`` transport hint. Falls back to the original
-    client when the platform does not remint a token (e.g. the Global workroom).
+    This is SDK-local request scoping for automation: the returned client adds
+    the explicit workroom scope header to each request. It does not call
+    ``workrooms.enter`` or mutate server-side selected-session binding.
     """
-    response = client.workrooms.enter(workroom_id)
-    token = getattr(response, "access_token", None)
-    if not token:
-        return client
-    scoped = KamiwazaClient(base_url=client.base_url, api_key=token)
-    # Carry over the TLS setting (e.g. self-signed dev cert) from the parent.
-    scoped.session.verify = client.session.verify
-    return scoped
+    return client.workroom_scope(workroom_id)
 
 
 def build_client_from_env(

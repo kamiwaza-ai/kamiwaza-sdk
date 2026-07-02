@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import pytest
 
 from kamiwaza_sdk.client import KamiwazaClient
@@ -19,34 +17,27 @@ def _platform_client() -> KamiwazaClient:
     return client
 
 
-def test_scoped_client_uses_workroom_enter_token():
+def test_scoped_client_uses_local_workroom_scope_without_enter():
     client = _platform_client()
-    client._workrooms = SimpleNamespace(
-        enter=lambda wid: SimpleNamespace(
-            access_token="workroom-token", workroom_id=wid
-        )
-    )
+    client._workrooms = object()
 
     scoped = scoped_client_for_workroom(client, "wr-1")
 
     assert scoped is not client
     assert scoped.base_url == "https://example.test/api"
-    # The scoped client authenticates with the workroom-scoped token.
-    assert scoped.authenticator.api_key == "workroom-token"
+    assert scoped.authenticator is client.authenticator
+    assert scoped._default_headers == {"X-Workroom-Id": "wr-1"}
     # TLS setting carries over from the parent.
     assert scoped.session.verify is False
 
 
-def test_scoped_client_falls_back_when_no_token_reminted():
+def test_scoped_client_for_global_still_returns_scoped_client():
     client = _platform_client()
-    client._workrooms = SimpleNamespace(
-        enter=lambda wid: SimpleNamespace(access_token=None, workroom_id=wid)
-    )
 
     scoped = scoped_client_for_workroom(client, "global")
 
-    # No reminted token (e.g. Global workroom) -> reuse the original client.
-    assert scoped is client
+    assert scoped is not client
+    assert scoped._default_headers == {"X-Workroom-Id": "global"}
 
 
 def test_build_client_from_env_requires_base_url(monkeypatch):

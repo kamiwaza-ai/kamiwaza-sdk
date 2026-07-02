@@ -15,7 +15,6 @@ import pytest
 
 from kamiwaza_sdk.exceptions import APIError
 from kamiwaza_sdk.seeding import scoped_client_for_workroom
-from tests.integration.test_context_live import _is_workroom_binding_unavailable
 
 pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
 
@@ -29,20 +28,38 @@ def test_find_template_resolves_against_live_catalog(live_write_client):
     assert live_write_client.apps.find_template("seed-probe-does-not-exist") is None
 
 
-def test_workroom_create_enter_scopes_a_client(live_write_client):
-    """Create a workroom, mint a workroom-scoped client via enter, then clean up."""
+def _is_binding_invalid(error: APIError) -> bool:
+    payload = getattr(error, "response_data", None)
+    detail = payload.get("detail") if isinstance(payload, dict) else None
+    if isinstance(detail, dict):
+        structured = detail.get("error")
+        if isinstance(structured, dict):
+            return structured.get("class") == "binding_invalid"
+    return detail == "workroom_binding_invalid"
+
+
+def test_workroom_create_scopes_a_client_locally(live_write_client, live_kamiwaza_client):
+    """Create a workroom, derive an explicit workroom-scoped client, then clean up."""
     name = f"seed-probe-{uuid4().hex[:8]}"
     workroom = live_write_client.workrooms.create(name=name, workroom_type="persistent")
     try:
-        try:
-            scoped = scoped_client_for_workroom(live_write_client, workroom.id)
-        except APIError as exc:
-            if _is_workroom_binding_unavailable(exc):
-                pytest.skip(
-                    "Workrooms enter binding is unavailable; skipping scoped seeding client live test"
-                )
-            raise
-        # Either a reminted-token client or a graceful fall back to the parent.
-        assert scoped is not None
+        scoped = scoped_client_for_workroom(live_write_client, workroom.id)
+
+        assert scoped is not live_write_client
+        assert scoped._default_headers == {"X-Workroom-Id": str(workroom.id)}
     finally:
-        live_write_client.workrooms.delete(workroom.id)
+        live_kamiwaza_client.workrooms.admin_delete(workroom.id)
+
+
+def test_pat_workroom_enter_is_rejected(live_write_client, live_kamiwaza_client):
+    """PAT clients use explicit workroom scope, not selected-session enter."""
+    name = f"seed-enter-pat-{uuid4().hex[:8]}"
+    workroom = live_write_client.workrooms.create(name=name, workroom_type="persistent")
+    try:
+        with pytest.raises(APIError) as exc_info:
+            live_write_client.workrooms.enter(workroom.id)
+
+        assert exc_info.value.status_code == 409
+        assert _is_binding_invalid(exc_info.value)
+    finally:
+        live_kamiwaza_client.workrooms.admin_delete(workroom.id)
