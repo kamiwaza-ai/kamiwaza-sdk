@@ -1789,6 +1789,16 @@ def _model_has_ready_target_files(model: Any, quantization: str) -> bool:
     )
 
 
+def _get_model_by_repo_id_with_files(
+    client: KamiwazaClient,
+    repo_id: str,
+) -> Any | None:
+    for model in client.models.list_models(load_files=True):
+        if getattr(model, "repo_modelId", None) == repo_id:
+            return model
+    return None
+
+
 @pytest.fixture(scope="session")
 def ensure_repo_ready() -> Callable[[KamiwazaClient, str], object]:
     """Ensure a Hugging Face repo is present in the live catalog (downloading if needed)."""
@@ -1801,7 +1811,7 @@ def ensure_repo_ready() -> Callable[[KamiwazaClient, str], object]:
         wait_timeout: int = 900,
         poll_interval: int = 5,
     ):
-        model = client.models.get_model_by_repo_id(repo_id)
+        model = _get_model_by_repo_id_with_files(client, repo_id)
         if model and _model_has_ready_target_files(model, quantization):
             return model
 
@@ -1816,7 +1826,7 @@ def ensure_repo_ready() -> Callable[[KamiwazaClient, str], object]:
 
         deadline = time.time() + wait_timeout if wait_timeout else None
         while True:
-            model = client.models.get_model_by_repo_id(repo_id)
+            model = _get_model_by_repo_id_with_files(client, repo_id)
             if model and _model_has_ready_target_files(model, quantization):
                 return model
             if deadline and time.time() >= deadline:
