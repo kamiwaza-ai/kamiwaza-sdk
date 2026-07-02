@@ -17,7 +17,7 @@ import math
 import time
 from typing import Any, Dict, List, Optional, Union
 
-from ..exceptions import APIError, KamiwazaError, NotFoundError
+from ..exceptions import APIError, AuthorizationError, KamiwazaError, NotFoundError
 from ..schemas.kaizen import Agent, Conversation, LLMConfig
 from .base_service import BaseService
 
@@ -174,6 +174,35 @@ def _is_serving(client, base_url: str, *, workroom_id) -> bool:
     return True
 
 
+# Statuses that are retryable regardless of resolve scope. The full policy
+# (no-status, 5xx, scoped 403) lives in _is_transient_resolve_error.
+_TRANSIENT_RESOLVE_STATUSES = frozenset({429})
+
+
+def _is_transient_resolve_error(exc: KamiwazaError, *, workroom_scoped: bool) -> bool:
+    """True if an error from ``resolve_base_url`` is a transient startup state.
+
+    Transient: no status (transport error before any response), any 5xx
+    (gateway/upstream not ready), 429 (rate limited), and — only when the
+    resolve is scoped to a workroom — 403 (the workroom's rebac grant may
+    still be propagating on a fresh box). On the unscoped path a 403 is a
+    genuine permission denial that can't clear on its own, so it propagates
+    instead of burning the timeout into an opaque ``TimeoutError``.
+
+    Accepts any ``KamiwazaError`` because a rebac 403 surfaces as an
+    ``AuthorizationError`` subclass rather than ``APIError``; both carry
+    ``status_code`` from the response boundary.
+    """
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        return True
+    if 500 <= status <= 599:
+        return True
+    if status == 403:
+        return workroom_scoped
+    return status in _TRANSIENT_RESOLVE_STATUSES
+
+
 def wait_for_base_url(
     client,
     extension_name: str = "kaizen",
@@ -240,6 +269,24 @@ def wait_for_base_url(
                 return url
             last_err = "ingress published but backend not serving yet (503)"
         except (ValueError, NotFoundError) as exc:
+            last_err = exc
+        except (APIError, AuthorizationError) as exc:
+            # resolve_base_url lists the workroom's extensions on the platform
+            # API; on a freshly-installed box that call can transiently fail
+            # while the cluster settles — a 5xx/no-response from the gateway or a
+            # 403 before the workroom's rebac grant lands (ENG-7111 sibling).
+            # The 403 arrives either as a plain APIError or, when the body
+            # carries a recognized detail.reason, as an AuthorizationError
+            # subclass (a SIBLING of APIError — e.g.
+            # BrokeredUserNotAllowlistedError while the grant propagates), so
+            # both are caught and classified by status code.
+            # Treat transient ones as "not ready yet" and keep polling; a
+            # non-transient error (401 bad token, 400 bad request) can't clear
+            # on its own, so surface it now instead of burning the whole timeout.
+            if not _is_transient_resolve_error(
+                exc, workroom_scoped=workroom_id is not None
+            ):
+                raise
             last_err = exc
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -550,8 +597,7 @@ class ConversationService(BaseService):
         """
         if not math.isfinite(timeout_seconds) or timeout_seconds < 0:
             raise ValueError(
-                "timeout_seconds must be a finite zero or positive number "
-                "of seconds."
+                "timeout_seconds must be a finite zero or positive number of seconds."
             )
 
         deadline = time.monotonic() + timeout_seconds
@@ -695,8 +741,7 @@ class ConversationService(BaseService):
         """
         if not math.isfinite(timeout_seconds) or timeout_seconds < 0:
             raise ValueError(
-                "timeout_seconds must be a finite zero or positive number "
-                "of seconds."
+                "timeout_seconds must be a finite zero or positive number of seconds."
             )
         if not math.isfinite(poll_interval_seconds) or poll_interval_seconds < 0:
             raise ValueError(

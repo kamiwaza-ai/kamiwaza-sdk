@@ -4,7 +4,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from kamiwaza_sdk.exceptions import APIError, AuthenticationError, NotFoundError
+from kamiwaza_sdk.exceptions import (
+    APIError,
+    AuthenticationError,
+    BrokeredUserNotAllowlistedError,
+    NotFoundError,
+)
 from kamiwaza_sdk.schemas.kaizen import LLMConfig
 from kamiwaza_sdk.services.kaizen import (
     AgentService,
@@ -14,6 +19,7 @@ from kamiwaza_sdk.services.kaizen import (
     _agent_error_from_events,
     _has_finish_action,
     _is_serving,
+    _is_transient_resolve_error,
     _reply_from_events,
     resolve_base_url,
     wait_for_base_url,
@@ -125,7 +131,9 @@ def test_resolve_base_url_falls_back_to_api_url():
     # Deployment exposes only api_url (no external/public_api_url).
     extension = SimpleNamespace(
         endpoints=SimpleNamespace(
-            external=None, public_api_url=None, api_url="https://kamiwaza.test/kaizen-api/"
+            external=None,
+            public_api_url=None,
+            api_url="https://kamiwaza.test/kaizen-api/",
         )
     )
     client = SimpleNamespace(
@@ -168,7 +176,7 @@ def _client_listing(extensions):
     client.extensions = SimpleNamespace(list_extensions=list_extensions)
     # Backend probe (_is_serving) succeeds by default; tests that exercise the
     # not-serving path supply their own _request.
-    client._request = lambda *a, **k: {}
+    client._request = lambda *_a, **_k: {}
     return client
 
 
@@ -269,7 +277,7 @@ def test_wait_for_base_url_workroom_retries_until_listed(monkeypatch):
 
     client = SimpleNamespace(
         extensions=SimpleNamespace(list_extensions=list_extensions),
-        _request=lambda *a, **k: {},  # backend serves once listed
+        _request=lambda *_a, **_k: {},  # backend serves once listed
     )
 
     url = wait_for_base_url(
@@ -279,13 +287,192 @@ def test_wait_for_base_url_workroom_retries_until_listed(monkeypatch):
     assert rounds == []
 
 
+def test_wait_for_base_url_retries_transient_api_error_from_resolve(monkeypatch):
+    import kamiwaza_sdk.services.kaizen as kaizen_mod
+
+    monkeypatch.setattr(kaizen_mod.time, "sleep", lambda _s: None)
+
+    # A freshly-installed box can 403 (or 5xx) on the platform /extensions listing
+    # while the workroom's rebac grant / gateway route settle, then succeed. That
+    # transient must be retried, not propagated — otherwise resolve-kaizen-url
+    # crashes the nightly seed's agent step (observed as a 403 mid-poll).
+    rounds = [
+        APIError("transient authz", status_code=403),
+        [_ext("kaizen-4f8b3ae1", "wr-A")],
+    ]
+
+    def list_extensions(workroom_id=None):
+        item = rounds.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    client = SimpleNamespace(
+        extensions=SimpleNamespace(list_extensions=list_extensions),
+        _request=lambda *_a, **_k: {},  # backend serves once listed
+    )
+
+    url = wait_for_base_url(
+        client, "kaizen", workroom_id="wr-A", poll_interval_seconds=0
+    )
+    assert url == KAIZEN_URL
+    assert rounds == []
+
+
+def test_wait_for_base_url_retries_transient_authorization_error(monkeypatch):
+    import kamiwaza_sdk.services.kaizen as kaizen_mod
+
+    monkeypatch.setattr(kaizen_mod.time, "sleep", lambda _s: None)
+
+    # The rebac 403 on a fresh box surfaces as an AuthorizationError SUBCLASS
+    # (via error_for_response's typed dispatch), which is a sibling of APIError
+    # — an `except APIError` alone would let it crash the poll (the observed
+    # nightly failure). It must be caught and classified transient by its 403.
+    rounds = [
+        BrokeredUserNotAllowlistedError("grant not propagated", status_code=403),
+        [_ext("kaizen-4f8b3ae1", "wr-A")],
+    ]
+
+    def list_extensions(workroom_id=None):
+        item = rounds.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    client = SimpleNamespace(
+        extensions=SimpleNamespace(list_extensions=list_extensions),
+        _request=lambda *_a, **_k: {},
+    )
+
+    url = wait_for_base_url(
+        client, "kaizen", workroom_id="wr-A", poll_interval_seconds=0
+    )
+    assert url == KAIZEN_URL
+    assert rounds == []
+
+
+def test_wait_for_base_url_retries_transient_5xx_from_resolve(monkeypatch):
+    import kamiwaza_sdk.services.kaizen as kaizen_mod
+
+    monkeypatch.setattr(kaizen_mod.time, "sleep", lambda _s: None)
+
+    # A gateway 503 while the upstream warms must ride the same loop path as
+    # the 403 case (not just the pure classifier).
+    rounds = [
+        APIError("no healthy upstream", status_code=503),
+        [_ext("kaizen-4f8b3ae1", "wr-A")],
+    ]
+
+    def list_extensions(workroom_id=None):
+        item = rounds.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    client = SimpleNamespace(
+        extensions=SimpleNamespace(list_extensions=list_extensions),
+        _request=lambda *_a, **_k: {},
+    )
+
+    url = wait_for_base_url(
+        client, "kaizen", workroom_id="wr-A", poll_interval_seconds=0
+    )
+    assert url == KAIZEN_URL
+    assert rounds == []
+
+
+def test_is_transient_resolve_error_accepts_authorization_error():
+    # The classifier must work on AuthorizationError subclasses, not just
+    # APIError — both carry status_code from the response boundary.
+    err = BrokeredUserNotAllowlistedError("not allowlisted yet", status_code=403)
+    assert _is_transient_resolve_error(err, workroom_scoped=True) is True
+
+
+def test_wait_for_base_url_does_not_retry_unscoped_403(monkeypatch):
+    import kamiwaza_sdk.services.kaizen as kaizen_mod
+
+    slept: list = []
+    monkeypatch.setattr(kaizen_mod.time, "sleep", lambda s: slept.append(s))
+
+    # Without a workroom scope there is no rebac grant to wait for — a 403 on
+    # the get_extension path is a genuine permission denial. It must surface
+    # immediately instead of burning the whole timeout into an opaque
+    # TimeoutError that buries the authorization failure.
+    def get_extension(_name):
+        raise APIError("forbidden", status_code=403)
+
+    client = SimpleNamespace(
+        extensions=SimpleNamespace(get_extension=get_extension),
+        _request=lambda *_a, **_k: {},
+    )
+
+    with pytest.raises(APIError):
+        wait_for_base_url(client, "kaizen", poll_interval_seconds=0)
+    assert slept == []
+
+
+def test_wait_for_base_url_does_not_retry_non_transient_api_error(monkeypatch):
+    import kamiwaza_sdk.services.kaizen as kaizen_mod
+
+    slept: list = []
+    monkeypatch.setattr(kaizen_mod.time, "sleep", lambda s: slept.append(s))
+
+    # A genuine bad request (400) is not a startup blip — surface it immediately
+    # rather than burning the whole timeout polling a request that can't succeed.
+    # (400 is used rather than 401 because the real client intercepts 401 in its
+    # token-refresh path and raises AuthenticationError, never a bare APIError.)
+    def list_extensions(workroom_id=None):
+        raise APIError("bad request", status_code=400)
+
+    client = SimpleNamespace(
+        extensions=SimpleNamespace(list_extensions=list_extensions),
+        _request=lambda *_a, **_k: {},
+    )
+
+    with pytest.raises(APIError):
+        wait_for_base_url(client, "kaizen", workroom_id="wr-A", poll_interval_seconds=0)
+    assert slept == []
+
+
+@pytest.mark.parametrize(
+    "status,workroom_scoped,expected",
+    [
+        (None, True, True),  # transport error before any response — settling
+        (None, False, True),  # ...regardless of scope
+        (500, True, True),  # any 5xx — gateway/upstream not ready
+        (500, False, True),  # ...regardless of scope
+        (503, True, True),  # no healthy upstream while backend comes up
+        (599, True, True),  # upper 5xx bound
+        (403, True, True),  # workroom rebac grant not applied yet on a fresh box
+        (403, False, False),  # unscoped 403 = real permission denial — surface it
+        (429, True, True),  # rate limited
+        (429, False, True),  # ...regardless of scope
+        (400, True, False),  # bad request — can't clear on its own
+        (401, True, False),  # auth failure — surface immediately
+        (404, True, False),  # not found — handled separately, not transient here
+        (200, True, False),  # a non-error status is never transient
+    ],
+)
+def test_is_transient_resolve_error_classifies_statuses(
+    status, workroom_scoped, expected
+):
+    # Table-driven check of the pure classifier so every retryable/terminal
+    # status is pinned independently of the wait_for_base_url poll loop.
+    assert (
+        _is_transient_resolve_error(
+            APIError("boom", status_code=status), workroom_scoped=workroom_scoped
+        )
+        is expected
+    )
+
+
 def test_wait_for_base_url_returns_when_ready():
     extension = SimpleNamespace(
         endpoints=SimpleNamespace(external=KAIZEN_URL, public_api_url=None)
     )
     client = SimpleNamespace(
         extensions=SimpleNamespace(get_extension=lambda name: extension),
-        _request=lambda *a, **k: {},  # backend serves
+        _request=lambda *_a, **_k: {},  # backend serves
     )
 
     assert wait_for_base_url(client, "kaizen-4f8b3ae1") == KAIZEN_URL
@@ -313,7 +500,7 @@ def test_wait_for_base_url_retries_past_transient_states(monkeypatch):
 
     client = SimpleNamespace(
         extensions=SimpleNamespace(get_extension=get_extension),
-        _request=lambda *a, **k: {},  # backend serves once published
+        _request=lambda *_a, **_k: {},  # backend serves once published
     )
 
     assert wait_for_base_url(client, "kaizen", poll_interval_seconds=0) == KAIZEN_URL
@@ -367,7 +554,7 @@ def test_is_serving_true_on_success():
 def test_is_serving_false_on_5xx(status):
     # Any 5xx means the gateway/backend isn't ready (no healthy upstream during
     # pod startup is 503, but envoy can also emit 502/504 mid-startup).
-    def server_error(*a, **k):
+    def server_error(*_a, **_k):
         raise APIError("server error", status_code=status)
 
     client = SimpleNamespace(_request=server_error)
@@ -377,7 +564,7 @@ def test_is_serving_false_on_5xx(status):
 def test_is_serving_false_on_connection_error():
     # A transport failure surfaces as APIError with no status_code — the route
     # exists but nothing is answering yet, so keep polling.
-    def refused(*a, **k):
+    def refused(*_a, **_k):
         raise APIError("An error occurred while making the request: refused")
 
     client = SimpleNamespace(_request=refused)
@@ -386,7 +573,7 @@ def test_is_serving_false_on_connection_error():
 
 def test_is_serving_true_on_4xx():
     # A 4xx means the backend answered — it's up, just rejecting this probe.
-    def not_found(*a, **k):
+    def not_found(*_a, **_k):
         raise APIError("not found", status_code=404)
 
     client = SimpleNamespace(_request=not_found)
@@ -395,7 +582,7 @@ def test_is_serving_true_on_4xx():
 
 def test_is_serving_true_on_structured_error():
     # Non-APIError KamiwazaError subclasses (auth/validation) prove a response.
-    def unauthorized(*a, **k):
+    def unauthorized(*_a, **_k):
         raise AuthenticationError("nope")
 
     client = SimpleNamespace(_request=unauthorized)
@@ -415,7 +602,7 @@ def test_wait_for_base_url_polls_past_503_until_serving(monkeypatch):
         {"agents": []},
     ]
 
-    def probe(*a, **k):
+    def probe(*_a, **_k):
         item = outcomes.pop(0)
         if isinstance(item, Exception):
             raise item
@@ -458,7 +645,7 @@ def test_wait_for_base_url_times_out_when_published_but_never_serving(monkeypatc
 
     # Ingress resolves but the backend 503s forever — the timeout message must
     # reflect "not serving", not "not resolvable".
-    def always_503(*a, **k):
+    def always_503(*_a, **_k):
         raise APIError("no healthy upstream", status_code=503)
 
     client = _serving_client(always_503)
@@ -498,7 +685,9 @@ def test_conversation_send_message_enqueues_without_json_response():
     client = DummyClient(responses)
     service = ConversationService(client)
 
-    result = service.send_message("conv-1", "hello", base_url=KAIZEN_URL, workroom_id="wr-1")
+    result = service.send_message(
+        "conv-1", "hello", base_url=KAIZEN_URL, workroom_id="wr-1"
+    )
 
     assert result is None
     method, path, kwargs = client.calls[0]
@@ -526,7 +715,9 @@ def test_conversation_get_events_passes_pagination():
     client = DummyClient(responses)
     service = ConversationService(client)
 
-    out = service.get_events("conv-1", base_url=KAIZEN_URL, workroom_id="wr-1", offset=5, limit=50)
+    out = service.get_events(
+        "conv-1", base_url=KAIZEN_URL, workroom_id="wr-1", offset=5, limit=50
+    )
 
     assert out == {"events": [], "total": 0}
     method, path, kwargs = client.calls[0]
@@ -696,7 +887,9 @@ def test_agent_error_from_events_returns_message_or_none():
     assert _agent_error_from_events([_message_event("ok")]) is None
     # Defensively accept the alternate error-event kind + its `message` field.
     assert (
-        _agent_error_from_events([{"kind": "ConversationErrorEvent", "message": "nope"}])
+        _agent_error_from_events(
+            [{"kind": "ConversationErrorEvent", "message": "nope"}]
+        )
         == "nope"
     )
 
@@ -768,9 +961,7 @@ def test_chat_zero_poll_interval_does_not_raise(monkeypatch):
     service = ConversationService(client)
 
     assert (
-        service.chat(
-            "conv-1", "hi", base_url=KAIZEN_URL, poll_interval_seconds=0
-        )
+        service.chat("conv-1", "hi", base_url=KAIZEN_URL, poll_interval_seconds=0)
         == "done"
     )
     assert slept == [0.0]
@@ -799,10 +990,15 @@ def test_chat_ignores_interim_assistant_text_before_finish(monkeypatch):
     monkeypatch.setattr(kaizen_mod.time, "sleep", lambda _s: None)
     # First poll: only interim assistant narration, no finish yet — must NOT be
     # returned. Second poll: the terminal finish carries the real answer.
-    client = ChatClient(polls=[[_message_event("Let me think…")], [_finish_event("real answer")]])
+    client = ChatClient(
+        polls=[[_message_event("Let me think…")], [_finish_event("real answer")]]
+    )
     service = ConversationService(client)
 
-    assert service.chat("conv-1", "hi", base_url=KAIZEN_URL, poll_interval_seconds=0) == "real answer"
+    assert (
+        service.chat("conv-1", "hi", base_url=KAIZEN_URL, poll_interval_seconds=0)
+        == "real answer"
+    )
 
 
 def test_chat_returns_plain_assistant_reply_when_execution_finished(monkeypatch):
@@ -843,7 +1039,9 @@ def test_chat_returns_none_when_finished_without_final_reply(monkeypatch):
     import kamiwaza_sdk.services.kaizen as kaizen_mod
 
     monkeypatch.setattr(kaizen_mod.time, "sleep", lambda _s: None)
-    client = ChatClient(polls=[[]], execution_statuses=["running", "finished", "finished"])
+    client = ChatClient(
+        polls=[[]], execution_statuses=["running", "finished", "finished"]
+    )
     service = ConversationService(client)
 
     assert (
@@ -1019,10 +1217,7 @@ def test_chat_same_terminal_changing_reply_respects_timeout(monkeypatch):
             self.reply_polls = 0
 
         def _request(self, method, path, **kwargs):
-            if (
-                path.endswith("/events")
-                and kwargs.get("params", {}).get("limit") != 1
-            ):
+            if path.endswith("/events") and kwargs.get("params", {}).get("limit") != 1:
                 self.reply_polls += 1
                 if self.reply_polls > 3:
                     raise AssertionError("chat() did not enforce its timeout")

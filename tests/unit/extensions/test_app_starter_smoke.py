@@ -63,7 +63,9 @@ BINARY_SYNC_FILES = {
 }
 
 
-def _scaffold_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str = "chatbot-app") -> Path:
+def _scaffold_app(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str = "chatbot-app"
+) -> Path:
     target = tmp_path / "scaffolded-app"
     target.mkdir()
     monkeypatch.chdir(target)
@@ -82,6 +84,21 @@ def _point_frontend_to_local_runtime(frontend_dir: Path) -> None:
     package_json_path = frontend_dir / "package.json"
     package_json = json.loads(package_json_path.read_text())
     package_json["dependencies"]["@kamiwaza-ai/extensions-lib"] = f"file:{LOCAL_TS_LIB}"
+    # Pin the app's `next` to the exact version the local extensions-lib is
+    # actually using. Both trees float on `^15.0.0`, so the day a new next
+    # patch ships, the freshly-installed app and the lib's node_modules hold
+    # DIFFERENT next instances and their NextRequest types stop being
+    # assignable — `npm run build` then fails on an upstream release rather
+    # than on anything in this repo. Prefer the lib's installed copy (what
+    # the compiler will really see; _ensure_local_ts_runtime_built ran
+    # first), falling back to its lockfile on a pristine checkout.
+    installed_next = LOCAL_TS_LIB / "node_modules" / "next" / "package.json"
+    if installed_next.exists():
+        lib_next = json.loads(installed_next.read_text())["version"]
+    else:
+        lib_lock = json.loads((LOCAL_TS_LIB / "package-lock.json").read_text())
+        lib_next = lib_lock["packages"]["node_modules/next"]["version"]
+    package_json["dependencies"]["next"] = lib_next
     package_json_path.write_text(f"{json.dumps(package_json, indent=4)}\n")
 
 
@@ -107,7 +124,11 @@ def _ensure_local_ts_runtime_built() -> None:
     _run(["npm", "install"], LOCAL_TS_LIB)
     _run(["npm", "run", "build"], LOCAL_TS_LIB)
 
-    missing_entrypoints = [str(entrypoint) for entrypoint in LOCAL_TS_RUNTIME_ENTRYPOINTS if not entrypoint.exists()]
+    missing_entrypoints = [
+        str(entrypoint)
+        for entrypoint in LOCAL_TS_RUNTIME_ENTRYPOINTS
+        if not entrypoint.exists()
+    ]
     if missing_entrypoints:
         raise AssertionError(
             "Local TypeScript runtime build did not produce expected entrypoints:\n"
@@ -125,7 +146,9 @@ def _load_backend_module(backend_dir: Path, module_name: str):
     return module
 
 
-def _exercise_backend_chat(extension_dir: Path, monkeypatch: pytest.MonkeyPatch, module_name: str) -> None:
+def _exercise_backend_chat(
+    extension_dir: Path, monkeypatch: pytest.MonkeyPatch, module_name: str
+) -> None:
     module = _load_backend_module(extension_dir / "backend", module_name)
     seen: dict[str, object] = {}
 
@@ -178,7 +201,10 @@ def _exercise_backend_chat(extension_dir: Path, monkeypatch: pytest.MonkeyPatch,
             },
         )
         assert response.status_code == 200
-        assert response.json()["choices"][0]["message"]["content"] == "Hello from smoke test"
+        assert (
+            response.json()["choices"][0]["message"]["content"]
+            == "Hello from smoke test"
+        )
         assert seen["model"] == "kamiwaza"
     finally:
         module.app.dependency_overrides.clear()
@@ -221,16 +247,12 @@ def test_template_chat_endpoint_uses_container_routable_url_under_auth_split(
     scaffolded = _scaffold_app(tmp_path, monkeypatch)
 
     # Simulate the round-5 split env that --auth produces.
-    monkeypatch.setenv(
-        "KAMIWAZA_API_URL", "http://host.docker.internal:8000/api"
-    )
+    monkeypatch.setenv("KAMIWAZA_API_URL", "http://host.docker.internal:8000/api")
     monkeypatch.setenv("KAMIWAZA_PUBLIC_API_URL", "http://localhost:8000")
     monkeypatch.setenv("KAMIWAZA_USE_AUTH", "true")
     monkeypatch.setenv("KZ_EXT_DEV_LOCAL_AUTH", "1")
 
-    module = _load_backend_module(
-        scaffolded / "backend", "scaffolded_split_env"
-    )
+    module = _load_backend_module(scaffolded / "backend", "scaffolded_split_env")
 
     # Path 1: access_path-based endpoint (the typical platform shape).
     endpoint = module._normalize_model_endpoint(
@@ -261,9 +283,7 @@ def test_template_chat_endpoint_uses_container_routable_url_under_auth_split(
 
 
 @pytest.mark.unit
-def test_template_chat_endpoint_preserves_backend_path_prefix(
-    tmp_path, monkeypatch
-):
+def test_template_chat_endpoint_preserves_backend_path_prefix(tmp_path, monkeypatch):
     """PR #87 round-9 review High (Comprehensive) regression — when
     ``KAMIWAZA_API_URL`` carries an ingress sub-path (e.g.
     ``https://gateway.example.com/foo/api`` for an ext-instance behind
@@ -279,17 +299,11 @@ def test_template_chat_endpoint_preserves_backend_path_prefix(
     """
     scaffolded = _scaffold_app(tmp_path, monkeypatch)
 
-    monkeypatch.setenv(
-        "KAMIWAZA_API_URL", "https://gateway.example.com/foo/api"
-    )
-    monkeypatch.setenv(
-        "KAMIWAZA_PUBLIC_API_URL", "https://gateway.example.com/foo"
-    )
+    monkeypatch.setenv("KAMIWAZA_API_URL", "https://gateway.example.com/foo/api")
+    monkeypatch.setenv("KAMIWAZA_PUBLIC_API_URL", "https://gateway.example.com/foo")
     monkeypatch.setenv("KAMIWAZA_USE_AUTH", "true")
 
-    module = _load_backend_module(
-        scaffolded / "backend", "scaffolded_path_prefix"
-    )
+    module = _load_backend_module(scaffolded / "backend", "scaffolded_path_prefix")
 
     rehosted = module._normalize_model_endpoint(
         endpoint="https://gateway.example.com/runtime/models/dep-1/v1",
@@ -324,17 +338,11 @@ def test_template_chat_endpoint_does_not_double_prefix_already_prefixed_endpoint
     """
     scaffolded = _scaffold_app(tmp_path, monkeypatch)
 
-    monkeypatch.setenv(
-        "KAMIWAZA_API_URL", "https://gateway.example.com/foo/api"
-    )
-    monkeypatch.setenv(
-        "KAMIWAZA_PUBLIC_API_URL", "https://gateway.example.com/foo/api"
-    )
+    monkeypatch.setenv("KAMIWAZA_API_URL", "https://gateway.example.com/foo/api")
+    monkeypatch.setenv("KAMIWAZA_PUBLIC_API_URL", "https://gateway.example.com/foo/api")
     monkeypatch.setenv("KAMIWAZA_USE_AUTH", "true")
 
-    module = _load_backend_module(
-        scaffolded / "backend", "scaffolded_already_prefixed"
-    )
+    module = _load_backend_module(scaffolded / "backend", "scaffolded_already_prefixed")
 
     # Endpoint already carries ``/foo`` — re-host must NOT re-add it.
     rehosted = module._normalize_model_endpoint(
@@ -355,9 +363,9 @@ def test_template_chat_endpoint_does_not_double_prefix_already_prefixed_endpoint
         endpoint="https://gateway.example.com/runtime/models/dep-2/v1",
         access_path="",
     )
-    assert rehosted_browser == "https://gateway.example.com/foo/runtime/models/dep-2/v1", (
-        f"prefix should be prepended for non-prefixed endpoint, got {rehosted_browser!r}"
-    )
+    assert (
+        rehosted_browser == "https://gateway.example.com/foo/runtime/models/dep-2/v1"
+    ), f"prefix should be prepended for non-prefixed endpoint, got {rehosted_browser!r}"
 
     sys.modules.pop("scaffolded_already_prefixed", None)
 
@@ -401,7 +409,9 @@ def _exercise_backend_chat_error_path(
     class FakeCompletions:
         async def create(self, model, messages):
             raise APIStatusError(
-                message="upstream failed", response=fake_response, body=sensitive_body,
+                message="upstream failed",
+                response=fake_response,
+                body=sensitive_body,
             )
 
     class FakeChatClient:
@@ -475,7 +485,9 @@ def test_template_sanitizes_upstream_model_errors(tmp_path, monkeypatch):
     # Template path (used for new scaffolds going forward).
     extension_dir = _scaffold_app(tmp_path, monkeypatch, name="sanitize-template-app")
     _exercise_backend_chat_error_path(
-        extension_dir, monkeypatch, module_name="sanitize_template_main",
+        extension_dir,
+        monkeypatch,
+        module_name="sanitize_template_main",
     )
 
 
@@ -484,7 +496,9 @@ def test_example_sanitizes_upstream_model_errors(tmp_path, monkeypatch):
     # Example path (the checked-in chatbot-app).
     extension_dir = _copy_example(tmp_path)
     _exercise_backend_chat_error_path(
-        extension_dir, monkeypatch, module_name="sanitize_example_main",
+        extension_dir,
+        monkeypatch,
+        module_name="sanitize_example_main",
     )
 
 
@@ -493,7 +507,9 @@ def test_example_sanitizes_upstream_model_errors(tmp_path, monkeypatch):
 def test_template_info_endpoint_does_not_leak_internal_api_url(tmp_path, monkeypatch):
     extension_dir = _scaffold_app(tmp_path, monkeypatch, name="info-template-app")
     _exercise_info_endpoint(
-        extension_dir, monkeypatch, module_name="info_template_main",
+        extension_dir,
+        monkeypatch,
+        module_name="info_template_main",
     )
 
 
@@ -501,8 +517,11 @@ def test_template_info_endpoint_does_not_leak_internal_api_url(tmp_path, monkeyp
 def test_example_info_endpoint_does_not_leak_internal_api_url(tmp_path, monkeypatch):
     extension_dir = _copy_example(tmp_path)
     _exercise_info_endpoint(
-        extension_dir, monkeypatch, module_name="info_example_main",
+        extension_dir,
+        monkeypatch,
+        module_name="info_example_main",
     )
+
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
@@ -533,7 +552,8 @@ def test_compose_does_not_pin_host_ports(compose_path):
 
 @pytest.mark.unit
 def test_anonymous_identity_byte_identical_between_require_auth_and_session(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ):
     """ENG-3889 P5: under USE_AUTH=false, ``require_auth()`` and ``/session``
     must return the same canonical anonymous Identity so the frontend sees
@@ -571,8 +591,13 @@ def test_anonymous_identity_byte_identical_between_require_auth_and_session(
     # Public-fields subset surfaced by /session — must match the runtime lib's
     # canonical Anonymous identity exactly.
     public_fields = {
-        "user_id", "email", "name", "roles", "workroom_id",
-        "workroom_role", "is_authenticated",
+        "user_id",
+        "email",
+        "name",
+        "roles",
+        "workroom_id",
+        "workroom_role",
+        "is_authenticated",
     }
     canonical_public = canonical.model_dump(include=public_fields)
     session_public = {k: response.json().get(k) for k in public_fields}
@@ -624,7 +649,9 @@ def test_app_starter_and_example_build_against_local_sdk_repo(
         pytest.skip("npm is required for frontend starter smoke tests")
 
     if factory == "_scaffold":
-        extension_dir = _scaffold_app(tmp_path, monkeypatch, name=f"{source_name}-chatbot-app")
+        extension_dir = _scaffold_app(
+            tmp_path, monkeypatch, name=f"{source_name}-chatbot-app"
+        )
     else:
         extension_dir = _copy_example(tmp_path)
 
