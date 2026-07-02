@@ -1115,6 +1115,39 @@ def live_kamiwaza_session_client(
 
 
 @pytest.fixture(scope="session")
+def live_workroom_session_client(
+    live_server_available: str,
+    resolved_live_password: str,
+    live_username: str,
+) -> KamiwazaClient:
+    """Password-session client for live tests that exercise workroom enter.
+
+    PAT/API-key clients intentionally cannot mutate selected-workroom session
+    state on DB-backed binding installs. Tests that call ``workrooms.enter``
+    must use a real session token so a 409 ``binding_invalid`` remains a core
+    regression signal instead of a fixture artifact.
+    """
+    os.environ.setdefault("KAMIWAZA_VERIFY_SSL", "false")
+
+    username = live_username.strip()
+    password = resolved_live_password.strip()
+    if not username or not password:
+        pytest.skip(
+            "Unable to build workroom session client. "
+            "Provide username/password (kz-login-backed) to exercise workroom enter."
+        )
+
+    client = KamiwazaClient(live_server_available)
+    client.authenticator = UserPasswordAuthenticator(
+        username,
+        password,
+        client._auth_service,
+        token_store=_NoCacheTokenStore(),
+    )
+    return client
+
+
+@pytest.fixture(scope="session")
 def embedding_model_prerequisite(
     live_kamiwaza_session_client: KamiwazaClient,
 ) -> dict[str, str]:

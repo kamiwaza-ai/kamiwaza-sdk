@@ -12,8 +12,6 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from kamiwaza_sdk import KamiwazaClient
-from kamiwaza_sdk.authentication import UserPasswordAuthenticator
 from kamiwaza_sdk.exceptions import APIError, NotFoundError
 from kamiwaza_sdk.services.context import ContextService
 
@@ -266,33 +264,12 @@ def _safe_delete_group(
 
 @pytest.fixture(scope="session")
 def shared_context_service(
-    live_server_available: str,
-    live_session_api_key: str,
-    resolved_live_password: str,
-    live_username: str,
+    live_workroom_session_client,
 ) -> ContextService:
     """Session-scoped context service client for shared provisioning fixtures."""
     os.environ.setdefault("KAMIWAZA_VERIFY_SSL", "false")
 
-    api_key = live_session_api_key.strip()
-    if api_key:
-        client = KamiwazaClient(live_server_available, api_key=api_key)
-    else:
-        username = live_username.strip()
-        password = resolved_live_password.strip()
-        if not username or not password:
-            pytest.skip(
-                "Unable to build authenticated context client. "
-                "Provide username/password (kz-login-backed) or KAMIWAZA_API_KEY."
-            )
-        client = KamiwazaClient(live_server_available)
-        client.authenticator = UserPasswordAuthenticator(
-            username,
-            password,
-            client._auth_service,
-        )
-
-    service = client.context
+    service = live_workroom_session_client.context
     assert isinstance(service, ContextService)
     return service
 

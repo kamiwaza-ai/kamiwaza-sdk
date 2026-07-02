@@ -29,13 +29,14 @@ def test_find_template_resolves_against_live_catalog(live_write_client):
     assert live_write_client.apps.find_template("seed-probe-does-not-exist") is None
 
 
-def test_workroom_create_enter_scopes_a_client(live_write_client):
+def test_workroom_create_enter_scopes_a_client(live_workroom_session_client):
     """Create a workroom, mint a workroom-scoped client via enter, then clean up."""
+    client = live_workroom_session_client
     name = f"seed-probe-{uuid4().hex[:8]}"
-    workroom = live_write_client.workrooms.create(name=name, workroom_type="persistent")
+    workroom = client.workrooms.create(name=name, workroom_type="persistent")
     try:
         try:
-            scoped = scoped_client_for_workroom(live_write_client, workroom.id)
+            scoped = scoped_client_for_workroom(client, workroom.id)
         except APIError as exc:
             if _is_workroom_binding_unavailable(exc):
                 pytest.skip(
@@ -45,4 +46,4 @@ def test_workroom_create_enter_scopes_a_client(live_write_client):
         # Either a reminted-token client or a graceful fall back to the parent.
         assert scoped is not None
     finally:
-        live_write_client.workrooms.delete(workroom.id)
+        client.workrooms.delete(workroom.id)
