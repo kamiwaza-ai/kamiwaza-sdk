@@ -100,7 +100,6 @@ def _deploy_or_skip(client, model, *, engine_name):
             model_id=str(model.id),
             m_config_id=default_config.id,
             engine_name=engine_name,
-            wait=False,
             lb_port=0,
             autoscaling=False,
             min_copies=1,
