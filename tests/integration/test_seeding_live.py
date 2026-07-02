@@ -29,7 +29,7 @@ def test_find_template_resolves_against_live_catalog(live_write_client):
     assert live_write_client.apps.find_template("seed-probe-does-not-exist") is None
 
 
-def test_workroom_create_enter_scopes_a_client(live_write_client):
+def test_workroom_create_enter_scopes_a_client(live_write_client, live_kamiwaza_client):
     """Create a workroom, mint a workroom-scoped client via enter, then clean up."""
     name = f"seed-probe-{uuid4().hex[:8]}"
     workroom = live_write_client.workrooms.create(name=name, workroom_type="persistent")
@@ -45,4 +45,4 @@ def test_workroom_create_enter_scopes_a_client(live_write_client):
         # Either a reminted-token client or a graceful fall back to the parent.
         assert scoped is not None
     finally:
-        live_write_client.workrooms.delete(workroom.id)
+        live_kamiwaza_client.workrooms.admin_delete(workroom.id)

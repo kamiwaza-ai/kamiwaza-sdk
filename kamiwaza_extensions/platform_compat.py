@@ -19,7 +19,6 @@ OPERATOR_IMAGE = "ghcr.io/kamiwaza-internal/operators/images/extension-operator"
 # each SDK release cut; CI sanity-check confirms each tag resolves at GHCR.
 OPERATOR_COMPATIBLE_TAGS: Tuple[str, ...] = (
     "release-0.12.1",
-    "release-0.12.2",
 )
 
 OPERATOR_NAMESPACE = "kamiwaza-system"

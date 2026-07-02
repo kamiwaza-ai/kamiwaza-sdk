@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import datetime, timezone
 
 import pytest
 
@@ -162,6 +163,101 @@ def test_download_and_deploy_retries_transient_deploy_error(monkeypatch):
 
     assert len(deploy_calls) == 3
     assert result["deployment_id"] == deployment_id
+
+
+def test_initiate_model_download_requests_flagged_file_without_storage(monkeypatch):
+    """download=True marks selection/request state; storage_location marks readiness."""
+    from types import SimpleNamespace
+
+    file_id = uuid.uuid4()
+    target_file = SimpleNamespace(
+        id=file_id,
+        name="Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+        download=True,
+        storage_location=None,
+    )
+    model = SimpleNamespace(
+        repo_modelId="org/model-GGUF",
+        hub="hf",
+        name="model-GGUF",
+        m_files=[target_file],
+    )
+    client = DummyClient({("POST", "/models/download/"): {"result": True}})
+    service = ModelService(client)
+    monkeypatch.setattr(
+        service,
+        "search_models",
+        lambda repo_id, load_files=True: [model],
+    )
+
+    result = service.initiate_model_download("org/model-GGUF", quantization="q4_k")
+
+    assert result["download_request"] is not None
+    assert client.calls[0][0:2] == ("POST", "/models/download/")
+    assert client.calls[0][2]["json"]["files_to_download"] == [
+        "Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
+    ]
+
+
+def test_initiate_model_download_requests_file_with_pending_redownload(monkeypatch):
+    """A stale storage_location is not ready while dl_requested_at is set."""
+    from types import SimpleNamespace
+
+    file_id = uuid.uuid4()
+    target_file = SimpleNamespace(
+        id=file_id,
+        name="Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+        download=True,
+        storage_location="oci://models/org-model/q4_k_m",
+        is_downloading=False,
+        dl_requested_at=datetime.now(timezone.utc),
+    )
+    model = SimpleNamespace(
+        repo_modelId="org/model-GGUF",
+        hub="hf",
+        name="model-GGUF",
+        m_files=[target_file],
+    )
+    client = DummyClient({("POST", "/models/download/"): {"result": True}})
+    service = ModelService(client)
+    monkeypatch.setattr(service, "search_models", lambda *a, **k: [model])
+
+    result = service.initiate_model_download("org/model-GGUF", quantization="q4_k")
+
+    assert result["download_request"] is not None
+    assert client.calls[0][0:2] == ("POST", "/models/download/")
+    assert client.calls[0][2]["json"]["files_to_download"] == [
+        "Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
+    ]
+
+
+def test_initiate_model_download_skips_completed_storage_file(monkeypatch):
+    from types import SimpleNamespace
+
+    file_id = uuid.uuid4()
+    target_file = SimpleNamespace(
+        id=file_id,
+        name="Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+        download=True,
+        storage_location="oci://models/org-model/q4_k_m",
+        is_downloading=False,
+        dl_requested_at=None,
+    )
+    model = SimpleNamespace(
+        repo_modelId="org/model-GGUF",
+        hub="hf",
+        name="model-GGUF",
+        m_files=[target_file],
+    )
+    client = DummyClient({})
+    service = ModelService(client)
+    monkeypatch.setattr(service, "search_models", lambda *a, **k: [model])
+
+    result = service.initiate_model_download("org/model-GGUF", quantization="q4_k")
+
+    assert result["download_request"] is None
+    assert result["files"] == [target_file]
+    assert client.calls == []
 
 
 def test_create_and_delete_model():

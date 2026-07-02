@@ -36,7 +36,7 @@ import pytest
 
 logger = logging.getLogger(__name__)
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
 
 
 def _env(name: str) -> str:

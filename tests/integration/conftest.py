@@ -1757,6 +1757,38 @@ def live_password(resolved_live_password: str) -> str:
     return resolved_live_password
 
 
+def _target_files_for_quantization(model: Any, quantization: str) -> list[Any]:
+    files = list(getattr(model, "m_files", None) or [])
+    if not files:
+        return []
+
+    gguf_files = [
+        f
+        for f in files
+        if str(getattr(f, "name", "") or "").lower().endswith(".gguf")
+    ]
+    if not gguf_files:
+        return files
+
+    from kamiwaza_sdk.utils.quant_manager import QuantizationManager
+
+    return QuantizationManager().filter_files_by_quantization(
+        gguf_files, quantization
+    )
+
+
+def _model_has_ready_target_files(model: Any, quantization: str) -> bool:
+    target_files = _target_files_for_quantization(model, quantization)
+    if not target_files:
+        return False
+    return all(
+        bool(getattr(f, "storage_location", None))
+        and not bool(getattr(f, "is_downloading", False))
+        and getattr(f, "dl_requested_at", None) is None
+        for f in target_files
+    )
+
+
 @pytest.fixture(scope="session")
 def ensure_repo_ready() -> Callable[[KamiwazaClient, str], object]:
     """Ensure a Hugging Face repo is present in the live catalog (downloading if needed)."""
@@ -1770,7 +1802,7 @@ def ensure_repo_ready() -> Callable[[KamiwazaClient, str], object]:
         poll_interval: int = 5,
     ):
         model = client.models.get_model_by_repo_id(repo_id)
-        if model:
+        if model and _model_has_ready_target_files(model, quantization):
             return model
 
         client.models.initiate_model_download(repo_id, quantization=quantization)
@@ -1785,11 +1817,12 @@ def ensure_repo_ready() -> Callable[[KamiwazaClient, str], object]:
         deadline = time.time() + wait_timeout if wait_timeout else None
         while True:
             model = client.models.get_model_by_repo_id(repo_id)
-            if model:
+            if model and _model_has_ready_target_files(model, quantization):
                 return model
             if deadline and time.time() >= deadline:
                 raise TimeoutError(
-                    f"Timed out waiting for {repo_id} to register after download"
+                    f"Timed out waiting for {repo_id} target files to be ready "
+                    "after download"
                 )
             time.sleep(poll_interval)
 

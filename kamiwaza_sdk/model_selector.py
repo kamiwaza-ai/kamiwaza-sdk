@@ -263,6 +263,11 @@ class ModelAutoSelector:
         index: Dict[str, bool] = {}
         for model in models:
             files = getattr(model, "m_files", None) or []
-            if any(getattr(f, "download", False) for f in files):
+            if any(
+                bool(getattr(f, "storage_location", None))
+                and not bool(getattr(f, "is_downloading", False))
+                and getattr(f, "dl_requested_at", None) is None
+                for f in files
+            ):
                 index[model.repo_modelId] = True
         return index
