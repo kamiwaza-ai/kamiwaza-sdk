@@ -31,6 +31,22 @@ pat = client.auth.create_pat(PATCreate(name="local-bootstrap")).token
 print("Save this token:", pat)
 ```
 
+### Workroom-scoped automation
+
+PAT/API-key clients should scope automation per request instead of calling
+`workrooms.enter()`, which is reserved for real selected-session binding. Use a
+local scoped client when a block of SDK calls should target one workroom:
+
+```python
+with client.workroom_scope(workroom_id) as scoped:
+    scoped.context.create_vectordb(name="project-vdb", engine="milvus")
+```
+
+`workroom_scope()` returns a new client that adds the explicit workroom scope
+header to its requests. It does not mutate the parent client or server-side
+selected-session state. It is not a client-side security boundary; the server
+must still authorize the caller for the requested workroom on every request.
+
 ## Federation walkthrough (kamiwaza-mesh-v1.0.0)
 
 > Available in **kamiwaza-sdk 1.0.0+** under the new top-level

@@ -378,6 +378,10 @@ def run_dev_remote(
         compute_canonical_refs,
     )
     from kamiwaza_extensions.connections import ConnectionManager
+    from kamiwaza_extensions.dev_env_image_refs import (
+        build_image_ref_map,
+        rewrite_env_image_refs,
+    )
     from kamiwaza_extensions.deployment_poller import (
         DeploymentFailedError,
         DeploymentPoller,
@@ -664,6 +668,38 @@ def run_dev_remote(
         image_basename=info.image_basename,
     )
 
+    # ENG-7110: image refs embedded in env values are a parallel surface the
+    # compose transform doesn't rewrite. Kaizen's backend spawns agent
+    # sandbox pods dynamically from ``AGENT_SERVER_IMAGE``, whose compose
+    # default is the *released* agent tag this dev build never pushed —
+    # ImagePullBackOff, chat 500. Rewrite that ref (and the sandbox
+    # ``SANDBOX_ALLOWED_IMAGE_PREFIXES`` allowlist, in lockstep) to the
+    # dev-built agent ref — the dev analog of ENG-5260's publish-side fix.
+    # ``build_image_ref_map`` mirrors ImageBuilder's per-service ref choice,
+    # so the env ref equals exactly what was built and pushed (the profiled
+    # ``image-only`` agent resolves to the ``{registry}/{ext}-agent`` fallback
+    # path). Applied to both the K8s payload (bare refs, post-resolve) and
+    # the catalog overlay compose (``${VAR:-default}`` form).
+    #
+    # Caveat: env_ref_map spans ALL build-context services, so under
+    # ``--service X`` or ``--no-build`` this can rewrite AGENT_SERVER_IMAGE to
+    # the agent ref even though the invocation builds/pushes only a subset.
+    # That's the same accepted partial-deploy sharp edge as the service
+    # ``image:`` fields (a ``--service backend`` run already deploys
+    # un-rebuilt siblings); a full run — or a prior run whose agent push the
+    # registry still holds (see the --no-build branch below) — is what makes
+    # the ref resolve.
+    env_ref_map = build_image_ref_map(
+        info.compose_data.get("services") or {},
+        canonical_refs,
+        registry=registry,
+        extension_name=info.name,
+        revision_tag=rev_tag,
+        image_basename=info.image_basename,
+    )
+    transformed = rewrite_env_image_refs(transformed, env_ref_map)
+    catalog_compose = rewrite_env_image_refs(catalog_compose, env_ref_map)
+
     # 5b. Resolve SDK override for build
     build_overrides = None
     if sdk_repo and not no_build:
@@ -750,6 +786,16 @@ def run_dev_remote(
         # Collect expected image refs for push from the canonical map so
         # --no-build pushes hit the same registry path the deployment
         # payload will reference.
+        #
+        # ENG-7110: profiled ``image-only`` services (the agent, referenced
+        # via AGENT_SERVER_IMAGE — see the env rewrite above) are excluded
+        # from canonical_refs and so are intentionally NOT in this push list.
+        # A full run builds+pushes them via ImageBuilder (which iterates all
+        # build-context services); under --no-build they rely on a prior
+        # run's registry push (resume adopts that revision tag, so the agent
+        # ref the env rewrite points at already exists). Re-pushing them here
+        # would tag from the local engine store, which a resumed run may no
+        # longer hold — regressing the path that works.
         if service:
             image_refs = [canonical_refs[service]] if service in canonical_refs else []
         else:

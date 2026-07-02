@@ -69,6 +69,7 @@ _RETRY_WALL_CLOCK_BUDGET_SECONDS = 90.0
 """Hard cap on total wall-clock time spent in psk_propagation_timeout retry."""
 
 _PSK_PROPAGATION_TIMEOUT_REASON = "psk_propagation_timeout"
+_WORKROOM_SCOPE_HEADER = "X-Workroom-Id"
 
 
 def _is_psk_propagation_timeout(response: Any) -> bool:
@@ -223,6 +224,7 @@ class KamiwazaClient:
         self.base_url = resolved_base_url.rstrip("/")
         self.session = requests.Session()
         self._recent_datasets: "OrderedDict[str, float]" = OrderedDict()
+        self._default_headers: dict[str, str] = {}
 
         # TLS verification: explicit kwargs > env vars > default True.
         # ca_bundle is sugar for verify=<path>; wins over verify when both.
@@ -319,6 +321,15 @@ class KamiwazaClient:
     ) -> dict[str, Any]:
         if "headers" not in kwargs:
             kwargs["headers"] = {}
+        else:
+            kwargs["headers"] = dict(kwargs["headers"] or {})
+
+        if self._default_headers:
+            existing = {str(key).lower() for key in kwargs["headers"]}
+            for key, value in self._default_headers.items():
+                if key.lower() not in existing:
+                    kwargs["headers"][key] = value
+                    existing.add(key.lower())
 
         if self.authenticator and not skip_auth:
             self.authenticator.authenticate(self.session)
@@ -526,6 +537,29 @@ class KamiwazaClient:
             response_text=response.text,
         )
 
+    def _assert_same_host(self, base_url: str) -> None:
+        """Require base_url to share the platform's scheme/host/port.
+
+        The platform bearer is attached to every request, so an off-host
+        base_url would leak the credential. In-cluster extensions (Kaizen)
+        share the platform ingress, so this never fires in normal use.
+        """
+        from urllib.parse import urlparse
+
+        _default_ports = {"https": 443, "http": 80}
+
+        def _origin(url: str) -> tuple:
+            p = urlparse(url)
+            return (p.scheme, p.hostname, p.port or _default_ports.get(p.scheme))
+
+        if _origin(base_url) != _origin(self.base_url):
+            home = urlparse(self.base_url)
+            raise ValueError(
+                f"base_url '{base_url}' is not on the platform host "
+                f"'{home.scheme}://{home.netloc}'; refusing to send the platform "
+                "credential off-host."
+            )
+
     def _request(
         self,
         method: str,
@@ -533,9 +567,16 @@ class KamiwazaClient:
         *,
         expect_json: bool = True,
         skip_auth: bool = False,
+        base_url: Optional[str] = None,
         **kwargs,
     ):
-        url = f"{self.base_url}/{endpoint.lstrip('/')}"
+        # base_url targets an in-cluster extension (e.g. Kaizen) on the platform
+        # ingress; it must stay same-host since the platform bearer is attached
+        # to every request.
+        if base_url is not None:
+            self._assert_same_host(base_url)
+        root = (base_url or self.base_url).rstrip("/")
+        url = f"{root}/{endpoint.lstrip('/')}"
         path = endpoint.lstrip("/")
         self.logger.debug(f"Making {method} request to {url}")
         kwargs = self._prepare_request_kwargs(skip_auth, kwargs)
@@ -600,6 +641,31 @@ class KamiwazaClient:
 
     def patch(self, endpoint: str, **kwargs):
         return self._request("PATCH", endpoint, **kwargs)
+
+    def workroom_scope(self, workroom_id: Any | None) -> "KamiwazaClient":
+        """Return a client whose requests target ``workroom_id``.
+
+        Scopes a local SDK client instance to the specified workroom id by
+        adding the explicit workroom scope header to each request. ``None``
+        returns a client with no workroom scope. Client-only: this does not call
+        ``workrooms.enter`` and does not mutate server-side selected-session
+        binding or the parent client.
+        """
+        scoped = type(self)(
+            base_url=self.base_url,
+            authenticator=self.authenticator,
+            verify=self.session.verify,
+        )
+        # Preserve exact parent auth state; __init__ may otherwise consult env vars.
+        scoped.authenticator = self.authenticator
+        scoped.session.headers.update(self.session.headers)
+        scoped.session.cookies.update(self.session.cookies)
+        scoped._default_headers = dict(self._default_headers)
+        if workroom_id is None:
+            scoped._default_headers.pop(_WORKROOM_SCOPE_HEADER, None)
+        else:
+            scoped._default_headers[_WORKROOM_SCOPE_HEADER] = str(workroom_id)
+        return scoped
 
     # Lazy load the services
     @property
@@ -796,3 +862,30 @@ class KamiwazaClient:
         if not hasattr(self, '_workrooms'):
             self._workrooms = WorkroomService(self)
         return self._workrooms
+
+    @property
+    def connectors(self):
+        """Cluster-wide external connectors (M365, Google, …)."""
+        if not hasattr(self, "_connectors"):
+            from .services.connectors import ConnectorService
+
+            self._connectors = ConnectorService(self)
+        return self._connectors
+
+    @property
+    def agents(self):
+        """Kaizen agents (per-workroom extension; methods take a base_url)."""
+        if not hasattr(self, "_agents"):
+            from .services.kaizen import AgentService
+
+            self._agents = AgentService(self)
+        return self._agents
+
+    @property
+    def conversations(self):
+        """Kaizen conversations (per-workroom extension; methods take a base_url)."""
+        if not hasattr(self, "_conversations"):
+            from .services.kaizen import ConversationService
+
+            self._conversations = ConversationService(self)
+        return self._conversations

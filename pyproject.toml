@@ -41,6 +41,11 @@ publish = [
 convert = [
     "anthropic>=0.30.0",
 ]
+# Install contract for connector repos building against kamiwaza_sdk.connectors.
+connector = [
+    "fastapi>=0.100.0",
+    "pydantic[email]>=2.11",
+]
 all = [
     "boto3>=1.28.0",
     "anthropic>=0.30.0",
@@ -59,6 +64,7 @@ build-backend = "setuptools.build_meta"
 
 [project.scripts]
 kz-ext = "kamiwaza_extensions.cli:app"
+kamiwaza-seed = "kamiwaza_sdk.seeding.cli:main"
 
 # `kamiwaza-extensions-lib` is published as its own PyPI distribution
 # from `kamiwaza_extensions_lib/pyproject.toml`. For local dev / tests we
@@ -129,6 +135,7 @@ testpaths = ["tests"]
 pythonpath = ["."]
 markers = [
     "unit: fast, deterministic tests that require no external services",
+    "asyncio: async tests requiring pytest-asyncio",
     "contract: schema/contract tests with recorded HTTP interactions",
     "integration: tests with local Docker/MinIO dependencies",
     "live: tests that talk to a running Kamiwaza deployment",

@@ -1,0 +1,24 @@
+# Dockerfile-specific ignore for Dockerfile.seeder (BuildKit picks this over
+# the shared root .dockerignore, which is tailored to the echo-check build).
+#
+# Block everything, then unblock exactly the source the seeder wheel needs.
+**
+
+!pyproject.toml
+!README.md
+!LICENSE
+!MANIFEST.in
+!kamiwaza_sdk/
+!kamiwaza_sdk/**
+!kamiwaza_client/
+!kamiwaza_client/**
+!kamiwaza_extensions/
+!kamiwaza_extensions/**
+
+# Drop churn artifacts even from the unblocked trees.
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/*.egg-info/

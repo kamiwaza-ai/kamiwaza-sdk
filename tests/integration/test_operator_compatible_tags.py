@@ -10,7 +10,11 @@ Design reference: §4.2.16 OperatorImagePin maintenance contract.
 
 from __future__ import annotations
 
+import base64
+import json
 import os
+import subprocess
+from pathlib import Path
 
 import pytest
 import requests
@@ -20,23 +24,80 @@ from kamiwaza_extensions.platform_compat import (
     OPERATOR_IMAGE,
 )
 
-# The module docstring already says "Marked ``integration`` so it does not run
-# in the default ``make test`` path" — but the marker had drifted away. This
-# restores it so the GHCR resolve sanity-check stays out of the unit lane.
-pytestmark = pytest.mark.integration
+# This test intentionally talks to GHCR, so it must opt out of the
+# pytest-responses HTTP mock while remaining in the integration lane.
+pytestmark = [pytest.mark.integration, pytest.mark.withoutresponses]
 
 # OPERATOR_IMAGE is "ghcr.io/<owner>/<repo>" — split into the registry path
 # expected by GHCR's OCI distribution API.
 _GHCR_HOST = "ghcr.io"
 _OWNER_REPO = OPERATOR_IMAGE.removeprefix(f"{_GHCR_HOST}/")
+_MANIFEST_ACCEPT = ", ".join(
+    [
+        "application/vnd.oci.image.manifest.v1+json",
+        "application/vnd.oci.image.index.v1+json",
+        "application/vnd.docker.distribution.manifest.v2+json",
+        "application/vnd.docker.distribution.manifest.list.v2+json",
+    ]
+)
+
+
+def _github_username() -> str:
+    if actor := os.environ.get("GITHUB_ACTOR"):
+        return actor
+    try:
+        return subprocess.check_output(
+            ["gh", "api", "user", "--jq", ".login"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return "x-access-token"
+
+
+def _docker_ghcr_credentials() -> tuple[str, str] | None:
+    config_path = Path(os.environ.get("DOCKER_CONFIG", Path.home() / ".docker"))
+    if config_path.is_dir():
+        config_path = config_path / "config.json"
+    try:
+        auths = json.loads(config_path.read_text()).get("auths", {})
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+
+    ghcr_auth = auths.get(_GHCR_HOST) or auths.get(f"https://{_GHCR_HOST}")
+    if not isinstance(ghcr_auth, dict) or "auth" not in ghcr_auth:
+        return None
+    try:
+        decoded = base64.b64decode(ghcr_auth["auth"]).decode()
+    except (ValueError, UnicodeDecodeError):
+        return None
+    username, sep, password = decoded.partition(":")
+    if not sep or not password:
+        return None
+    return username or "x-access-token", password
+
+
+def _ghcr_basic_auth() -> tuple[str, str] | None:
+    token = (
+        os.environ.get("GHCR_TOKEN")
+        or os.environ.get("GITHUB_TOKEN")
+        or os.environ.get("GH_TOKEN")
+    )
+    if token:
+        return _github_username(), token
+    return _docker_ghcr_credentials()
 
 
 def _ghcr_token(scope: str) -> str | None:
-    """Fetch an anonymous read token for a GHCR repo, if the repo is public."""
+    """Fetch a GHCR registry token, using local credentials when available."""
+    kwargs = {}
+    if basic_auth := _ghcr_basic_auth():
+        kwargs["auth"] = basic_auth
     resp = requests.get(
         f"https://{_GHCR_HOST}/token",
         params={"scope": f"repository:{scope}:pull"},
         timeout=10,
+        **kwargs,
     )
     if not resp.ok:
         return None
@@ -49,7 +110,7 @@ def test_compatible_tag_resolves_at_ghcr(tag: str) -> None:
     if os.environ.get("KAMIWAZA_SKIP_GHCR_CHECK"):
         pytest.skip("KAMIWAZA_SKIP_GHCR_CHECK set")
 
-    headers = {"Accept": "application/vnd.oci.image.manifest.v1+json"}
+    headers = {"Accept": _MANIFEST_ACCEPT}
     token = _ghcr_token(_OWNER_REPO)
     if token:
         headers["Authorization"] = f"Bearer {token}"

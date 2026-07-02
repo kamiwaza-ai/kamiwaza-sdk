@@ -22,7 +22,8 @@ outcome only.
 skip-not-fail: every test is gated so under-provisioned hosts SKIP rather than
 fail. GPU/MIG gating uses the M5 capability markers (autouse-enforced via
 ``conftest._enforce_capability_markers`` + ``cluster_capability_snapshot``);
-deployability uses ``requires_deployable_model`` and a 5xx/timeout -> skip wrap.
+engine-specific deployability is handled by each test's download/deploy wrapper,
+with 5xx/timeout outcomes converted to skips.
 
 CAVEAT: ``ensure_repo_ready`` selects a GGUF quant but cannot pin one exact
 filename the way the smoke's ``files_to_download`` does, so the GGUF tests
@@ -45,7 +46,7 @@ pytestmark = [
 # files_to_download; the SDK download surface cannot reproduce that pin, so the
 # GGUF tests skip-not-fail if the repo can't be made ready.
 LLAMACPP_REPO = "unsloth/Qwen3-4B-Instruct-2507-GGUF"
-LLAMACPP_QUANT = "q4_k_m"
+LLAMACPP_QUANT = "q4_k"
 VLLM_REPO = "Qwen/Qwen3-4B-Instruct-2507"
 
 WAIT_TIMEOUT = 600
@@ -104,6 +105,9 @@ def _deploy_or_skip(client, model, *, engine_name):
             autoscaling=False,
             min_copies=1,
             starting_copies=1,
+            # The helper's wait_for_deployment below owns the timeout; keep
+            # deploy-create failures separate from readiness failures.
+            wait=False,
         )
     except APIError as exc:
         status_code = getattr(exc, "status_code", None)

@@ -14,6 +14,19 @@ on:
       - 'MANIFEST.in'
       - 'release.sh'
       - '.github/workflows/python-build.yml'
+  push:
+    branches: [main, develop]
+    paths:
+      - 'kamiwaza_sdk/**'
+      - 'kamiwaza_client/**'
+      - 'kamiwaza_extensions/**'
+      - 'kamiwaza_extensions_lib/**'
+      - 'kamiwaza-ai-extensions-lib/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'MANIFEST.in'
+      - 'release.sh'
+      - '.github/workflows/python-build.yml'
 
 permissions:
   contents: read

@@ -30,6 +30,23 @@ from kamiwaza_sdk.exceptions import APIError
 pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
 
 
+def _is_cluster_probe_not_authorized(error: APIError) -> bool:
+    """Return True for the stable cluster capabilities ReBAC denial."""
+    if error.status_code != 403:
+        return False
+
+    payload = getattr(error, "response_data", None)
+    if not isinstance(payload, dict):
+        return False
+
+    detail = payload.get("detail")
+    if detail == "not_authorized_to_probe_cluster":
+        return True
+    if not isinstance(detail, dict):
+        return False
+    return detail.get("reason") == "not_authorized_to_probe_cluster"
+
+
 class TestClusterReadOperations:
     """Tests for read-only cluster operations."""
 
@@ -102,14 +119,22 @@ class TestClusterCapabilities:
     def test_get_cluster_capabilities(self, live_kamiwaza_client) -> None:
         """TS4.004: GET /cluster/cluster_capabilities - Get cluster capabilities.
 
-        Note: This endpoint may not be exposed via SDK, testing via direct API call.
+        ReBAC-enabled hosts require viewer/owner on cluster:<local_uuid>.
+        Smoke users without that grant should skip, not fail the full SDK suite.
         """
         try:
-            result = live_kamiwaza_client.get("/cluster/cluster_capabilities")
-            assert isinstance(result, (dict, list))
+            result = live_kamiwaza_client.cluster.capabilities()
+            assert isinstance(result.gpu_count, int)
+            assert isinstance(result.federation_count, int)
+            assert isinstance(result.ray_ready, bool)
         except APIError as exc:
             if exc.status_code == 404:
                 pytest.skip("cluster_capabilities endpoint not available")
+            if _is_cluster_probe_not_authorized(exc):
+                pytest.skip(
+                    "cluster_capabilities requires viewer/owner on "
+                    "cluster:<local_uuid>"
+                )
             raise
 
 

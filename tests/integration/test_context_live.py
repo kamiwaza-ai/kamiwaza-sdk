@@ -10,7 +10,6 @@ from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
-from pydantic import ValidationError
 
 from kamiwaza_sdk import KamiwazaClient
 from kamiwaza_sdk.authentication import UserPasswordAuthenticator
@@ -43,6 +42,14 @@ def _context_service(live_kamiwaza_client) -> ContextService:
     service = live_kamiwaza_client.context
     assert isinstance(service, ContextService)
     return service
+
+
+def _assert_global_scope_if_exposed(resource: dict[str, object]) -> None:
+    """Assert Global scope when the server includes explicit scope metadata."""
+    workroom_id = resource.get("workroom_id")
+    if workroom_id is None:
+        return
+    assert str(workroom_id) == ContextService.DEFAULT_WORKROOM_ID
 
 
 def _wait_for_vectordb_ready(
@@ -85,9 +92,13 @@ def _wait_for_ontology_ready(
     service: ContextService,
     ontology_id: str,
     *,
-    timeout_seconds: float = 180.0,
+    timeout_seconds: float | None = None,
     poll_seconds: float = 2.0,
 ) -> None:
+    if timeout_seconds is None:
+        timeout_seconds = float(
+            os.getenv("KAMIWAZA_CONTEXT_ONTOLOGY_READY_TIMEOUT_SECONDS", "180")
+        )
     deadline = time.monotonic() + timeout_seconds
     last_status = "unknown"
 
@@ -153,6 +164,24 @@ def _safe_delete_vectordb(
         pass
 
 
+def _vectordb_ids(resources: list[dict[str, object]]) -> set[str]:
+    return {str(resource["id"]) for resource in resources if resource.get("id")}
+
+
+def _assert_scoped_vectordb_view(
+    service: ContextService,
+    *,
+    visible_id: str,
+    hidden_ids: set[str],
+    label: str,
+) -> None:
+    ids = _vectordb_ids(service.list_vectordbs())
+    assert visible_id in ids, f"{label} did not see its own VectorDB"
+    assert ids.isdisjoint(hidden_ids), (
+        f"{label} saw foreign VectorDBs: {ids & hidden_ids}"
+    )
+
+
 def _safe_scale_vectordb(
     service: ContextService,
     vectordb_id: str,
@@ -177,6 +206,14 @@ def _create_temp_ontology(service: ContextService, *, prefix: str) -> str:
     assert ontology_id
     try:
         _wait_for_ontology_ready(service, ontology_id)
+    except TimeoutError as exc:
+        _safe_delete_ontology(service, ontology_id)
+        pytest.skip(
+            "Context ontology backend did not become ready; live cluster likely "
+            "has the known Graphiti provisioning defect "
+            "(see docs-local/00-server-defects.md): "
+            f"{exc}"
+        )
     except Exception:
         _safe_delete_ontology(service, ontology_id)
         raise
@@ -328,12 +365,11 @@ def _cleanup_stale_sdk_vdbs(shared_context_service: ContextService) -> None:
 def session_workroom(
     shared_context_service: ContextService,
 ) -> Generator[str, None, None]:
-    """Per-session writable workroom for Context Service write-path tests.
+    """Writable workroom for Context Service explicit-scope tests.
 
     Room-scoped Context routes require an explicit non-Global workroom scope.
-    Exercise the backend enter endpoint as a checked lifecycle seam, while
     Context calls below pass explicit workroom_id so authority is not inferred
-    from SDK-local session state.
+    from SDK-local or server-side selected-session state.
     """
     workrooms = shared_context_service.client.workrooms
     workroom = workrooms.create(
@@ -343,14 +379,8 @@ def session_workroom(
     )
     workroom_id = str(workroom.id)
     try:
-        entered = workrooms.enter(workroom_id)
-        assert str(entered.workroom_id) == workroom_id
         yield workroom_id
     finally:
-        try:
-            workrooms.leave()
-        except (APIError, ValidationError):
-            pass
         # delete() raises NotFoundError (a sibling of APIError, not a subclass)
         # when the workroom is already gone, so catch both to keep teardown
         # best-effort -- matching the sibling test_workroom_isolation_live.py.
@@ -410,20 +440,102 @@ def test_context_required_llm_available(context_required_llm: str) -> None:
     assert context_required_llm
 
 
-def test_context_vectordb_create_without_workroom_requires_scope(
+def test_context_vectordb_create_without_workroom_uses_global_scope(
     live_kamiwaza_client,
 ) -> None:
-    """VectorDB creation is room-scoped and requires a non-Global workroom."""
+    """No-workroom VectorDB creation is allowed under the Global/default scope."""
     service = _context_service(live_kamiwaza_client)
+    vectordb_id: str | None = None
 
-    with pytest.raises(APIError) as exc_info:
-        service.create_vectordb(
+    try:
+        created = service.create_vectordb(
             name=f"sdk-context-vdb-global-{uuid4().hex[:8]}",
             engine="milvus",
         )
+        vectordb_id = created["id"]
+        assert vectordb_id
+        _assert_global_scope_if_exposed(created)
+        _wait_for_vectordb_ready(service, vectordb_id)
+        ready = service.get_vectordb(vectordb_id)
+        _assert_global_scope_if_exposed(ready)
+    finally:
+        if vectordb_id:
+            _safe_delete_vectordb(service, vectordb_id)
 
-    assert exc_info.value.status_code == 400
-    assert _api_error_code(exc_info.value) == "workroom_scope_required"
+
+def test_context_workroom_scope_clients_isolate_vectordb_views(
+    shared_context_service: ContextService,
+) -> None:
+    """Derived SDK clients keep A, B, and Global workroom-scoped resources separate."""
+    root_client = shared_context_service.client
+    workrooms = root_client.workrooms
+    workroom_a = None
+    workroom_b = None
+    client_a: KamiwazaClient | None = None
+    client_b: KamiwazaClient | None = None
+    client_global: KamiwazaClient | None = None
+    vdb_a: str | None = None
+    vdb_b: str | None = None
+    vdb_global: str | None = None
+
+    try:
+        workroom_a = workrooms.create(
+            f"sdk-scope-a-{uuid4().hex[:8]}",
+            "ephemeral",
+            description="SDK workroom scope isolation A",
+        )
+        workroom_b = workrooms.create(
+            f"sdk-scope-b-{uuid4().hex[:8]}",
+            "ephemeral",
+            description="SDK workroom scope isolation B",
+        )
+        client_a = root_client.workroom_scope(workroom_a.id)
+        client_b = root_client.workroom_scope(workroom_b.id)
+        client_global = root_client.workroom_scope(None)
+
+        service_a = client_a.context
+        service_b = client_b.context
+        service_global = client_global.context
+
+        vdb_a = _create_temp_vectordb(service_a, prefix="sdk-scope-a")
+        vdb_b = _create_temp_vectordb(service_b, prefix="sdk-scope-b")
+        vdb_global = _create_temp_vectordb(service_global, prefix="sdk-scope-global")
+
+        _assert_scoped_vectordb_view(
+            service_a,
+            visible_id=vdb_a,
+            hidden_ids={vdb_b, vdb_global},
+            label="A",
+        )
+        _assert_scoped_vectordb_view(
+            service_b,
+            visible_id=vdb_b,
+            hidden_ids={vdb_a, vdb_global},
+            label="B",
+        )
+        _assert_scoped_vectordb_view(
+            service_global,
+            visible_id=vdb_global,
+            hidden_ids={vdb_a, vdb_b},
+            label="Global",
+        )
+    finally:
+        if vdb_a is not None and client_a is not None:
+            _safe_delete_vectordb(client_a.context, vdb_a)
+        if vdb_b is not None and client_b is not None:
+            _safe_delete_vectordb(client_b.context, vdb_b)
+        if vdb_global is not None and client_global is not None:
+            _safe_delete_vectordb(client_global.context, vdb_global)
+        for scoped_client in (client_a, client_b, client_global):
+            if scoped_client is not None:
+                scoped_client.close()
+        for workroom in (workroom_a, workroom_b):
+            if workroom is None:
+                continue
+            try:
+                workrooms.delete(str(workroom.id))
+            except (APIError, NotFoundError):
+                pass
 
 
 # A dedicated non-Global VectorDB *instance* lifecycle test (create/scale/

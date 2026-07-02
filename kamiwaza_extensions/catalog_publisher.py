@@ -36,6 +36,7 @@ _TYPE_FILE_MAP: Dict[str, str] = {
     "app": "apps.json",
     "tool": "tools.json",
     "service": "apps.json",  # Services are treated as apps in the catalog
+    "connector": "connectors.json",
 }
 
 # Lock time-to-live in seconds.  If a lock is older than this, it is
@@ -237,8 +238,10 @@ class CatalogPublisher:
         """Full publish flow: lock, backup, download, merge, upload, verify, unlock.
 
         Args:
-            entry: Catalog entry dict (from ``RegistryBuilder.build_entry``).
-            extension_type: One of ``"app"``, ``"tool"``, or ``"service"``.
+            entry: Catalog entry dict (from ``RegistryBuilder.build_entry`` for
+                compose extensions, or the connector entry builder for connectors).
+            extension_type: One of ``"app"``, ``"tool"``, ``"service"``, or
+                ``"connector"``.
             force: Overwrite existing entry with same (name, semver, revision).
             dry_run: Perform merge logic but skip all S3 writes.
             preview_image_path: Local path to preview image to upload.

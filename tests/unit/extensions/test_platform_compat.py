@@ -23,6 +23,9 @@ class TestPlatformCompatConstants:
     def test_compatible_tags_non_empty(self):
         assert len(OPERATOR_COMPATIBLE_TAGS) >= 1
 
+    def test_compatible_tags_are_lockstep_for_sdk_1_0(self):
+        assert OPERATOR_COMPATIBLE_TAGS == ("release-1.0.0",)
+
     def test_every_compatible_tag_matches_release_grammar(self):
         # TS-13 sanity-check (offline portion): every tag in the pin list
         # must follow the canonical release-X.Y.Z grammar so a typo can be
@@ -36,9 +39,9 @@ class TestPlatformCompatConstants:
 @pytest.mark.unit
 class TestParseImageRef:
     def test_simple_tag(self):
-        repo, tag = parse_image_ref("ghcr.io/x/y:release-0.12.1")
+        repo, tag = parse_image_ref("ghcr.io/x/y:release-1.0.0")
         assert repo == "ghcr.io/x/y"
-        assert tag == "release-0.12.1"
+        assert tag == "release-1.0.0"
 
     def test_no_tag(self):
         repo, tag = parse_image_ref("ghcr.io/x/y")
@@ -125,7 +128,7 @@ class TestIsDigestRef:
     def test_release_tag_returns_false(self):
         from kamiwaza_extensions.platform_compat import is_digest_ref
 
-        assert is_digest_ref("release-0.12.1") is False
+        assert is_digest_ref("release-1.0.0") is False
         assert is_digest_ref("v0.1.1") is False
 
     def test_none_returns_false(self):

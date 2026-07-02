@@ -425,3 +425,61 @@ def test_pair_accepts_remote_url_positional(
         "ORION", "initiator", "https://orion.example.com", remote_admin_token="pat"
     )
     assert capture.captured_urls[0] == "https://example.test/api/cluster/federations"
+
+
+# ---------------------------------------------------------------------------
+# ENG-7203: mesh probe() 401-vs-not-401 discriminator (SDK side)
+#
+# The receiver gateway stripped the x-kz-mesh-* HMAC headers before ext-authz,
+# so /api/mesh/* returned 401 "Not authenticated" for valid callers. The live
+# two-cluster test (test_federation_two_cluster_live) is the true end-to-end
+# guard; these unit tests lock the SDK-boundary contract it depends on: a mesh
+# 401 must surface as AuthenticationError, and the (fixed) downstream 403 from
+# the brokered-user allowlist must be distinguishable from it. Transport is
+# stubbed here, so these do NOT catch a gateway regression — they keep the
+# typed signal stable so the live layer's assertion stays meaningful.
+# ---------------------------------------------------------------------------
+
+
+def test_probe_mesh_401_raises_authentication_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A mesh ``probe()`` that receives 401 surfaces as ``AuthenticationError``
+    — the exact ENG-7203 signal (HMAC stripped before ext-authz)."""
+    from kamiwaza_sdk.exceptions import AuthenticationError
+
+    client = KamiwazaClient(
+        base_url="https://example.test/api", api_key="fake", verify=False
+    )
+    monkeypatch.setattr(client.session, "request", _error_session(401, None))
+    with pytest.raises(AuthenticationError):
+        client.federations["ORION"].probe()
+
+
+def test_probe_mesh_403_brokered_is_distinguishable_from_401(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Once the receiver verifies the mesh HMAC, a caller not on the peer's
+    federation allowlist gets a 403 (detail.reason='unauthorized_brokered_user'),
+    NOT a 401. That outcome must be a ``KamiwazaError`` that is NOT
+    ``AuthenticationError`` so "fixed but not allowlisted" is never confused
+    with the ENG-7203 401.
+
+    Note: the receiver emits ``unauthorized_brokered_user`` on the mesh path,
+    which the typed-dispatch table does not yet map (it only knows
+    ``brokered_user_not_allowlisted``), so this currently surfaces as the base
+    ``APIError``. The discriminator below holds regardless of that gap.
+    """
+    from kamiwaza_sdk.exceptions import AuthenticationError, KamiwazaError
+
+    client = KamiwazaClient(
+        base_url="https://example.test/api", api_key="fake", verify=False
+    )
+    monkeypatch.setattr(
+        client.session,
+        "request",
+        _error_session(403, "unauthorized_brokered_user"),
+    )
+    with pytest.raises(KamiwazaError) as exc_info:
+        client.federations["ORION"].probe()
+    assert not isinstance(exc_info.value, AuthenticationError)
