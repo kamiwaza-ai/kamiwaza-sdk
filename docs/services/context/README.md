@@ -30,6 +30,8 @@ with client.workroom_scope(my_workroom_id) as scoped:
 
 The scoped client only adds the explicit workroom header on SDK requests; it
 does not change the parent client or mutate server-side selected-session state.
+It is not a client-side security boundary; the server must still authorize the
+caller for the requested workroom on every request.
 
 ## Workrooms and the Global Workroom
 
