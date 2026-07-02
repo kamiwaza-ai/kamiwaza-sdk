@@ -69,6 +69,7 @@ _RETRY_WALL_CLOCK_BUDGET_SECONDS = 90.0
 """Hard cap on total wall-clock time spent in psk_propagation_timeout retry."""
 
 _PSK_PROPAGATION_TIMEOUT_REASON = "psk_propagation_timeout"
+_WORKROOM_SCOPE_HEADER = "X-Workroom-Id"
 
 
 def _is_psk_propagation_timeout(response: Any) -> bool:
@@ -223,6 +224,7 @@ class KamiwazaClient:
         self.base_url = resolved_base_url.rstrip("/")
         self.session = requests.Session()
         self._recent_datasets: "OrderedDict[str, float]" = OrderedDict()
+        self._default_headers: dict[str, str] = {}
 
         # TLS verification: explicit kwargs > env vars > default True.
         # ca_bundle is sugar for verify=<path>; wins over verify when both.
@@ -319,6 +321,15 @@ class KamiwazaClient:
     ) -> dict[str, Any]:
         if "headers" not in kwargs:
             kwargs["headers"] = {}
+        else:
+            kwargs["headers"] = dict(kwargs["headers"] or {})
+
+        if self._default_headers:
+            existing = {str(key).lower() for key in kwargs["headers"]}
+            for key, value in self._default_headers.items():
+                if key.lower() not in existing:
+                    kwargs["headers"][key] = value
+                    existing.add(key.lower())
 
         if self.authenticator and not skip_auth:
             self.authenticator.authenticate(self.session)
@@ -630,6 +641,31 @@ class KamiwazaClient:
 
     def patch(self, endpoint: str, **kwargs):
         return self._request("PATCH", endpoint, **kwargs)
+
+    def workroom_scope(self, workroom_id: Any | None) -> "KamiwazaClient":
+        """Return a client whose requests target ``workroom_id``.
+
+        Scopes a local SDK client instance to the specified workroom id by
+        adding the explicit workroom scope header to each request. ``None``
+        returns a client with no workroom scope. Client-only: this does not call
+        ``workrooms.enter`` and does not mutate server-side selected-session
+        binding or the parent client.
+        """
+        scoped = type(self)(
+            base_url=self.base_url,
+            authenticator=self.authenticator,
+            verify=self.session.verify,
+        )
+        # Preserve exact parent auth state; __init__ may otherwise consult env vars.
+        scoped.authenticator = self.authenticator
+        scoped.session.headers.update(self.session.headers)
+        scoped.session.cookies.update(self.session.cookies)
+        scoped._default_headers = dict(self._default_headers)
+        if workroom_id is None:
+            scoped._default_headers.pop(_WORKROOM_SCOPE_HEADER, None)
+        else:
+            scoped._default_headers[_WORKROOM_SCOPE_HEADER] = str(workroom_id)
+        return scoped
 
     # Lazy load the services
     @property
