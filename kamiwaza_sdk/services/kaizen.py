@@ -17,7 +17,7 @@ import math
 import time
 from typing import Any, Dict, List, Optional, Union
 
-from ..exceptions import APIError, KamiwazaError, NotFoundError
+from ..exceptions import APIError, AuthorizationError, KamiwazaError, NotFoundError
 from ..schemas.kaizen import Agent, Conversation, LLMConfig
 from .base_service import BaseService
 
@@ -181,8 +181,13 @@ def _is_serving(client, base_url: str, *, workroom_id) -> bool:
 _TRANSIENT_RESOLVE_STATUSES = frozenset({403, 429})
 
 
-def _is_transient_resolve_error(exc: APIError) -> bool:
-    """True if an APIError from ``resolve_base_url`` is a transient startup state."""
+def _is_transient_resolve_error(exc: KamiwazaError) -> bool:
+    """True if an error from ``resolve_base_url`` is a transient startup state.
+
+    Accepts any ``KamiwazaError`` because a rebac 403 surfaces as an
+    ``AuthorizationError`` subclass rather than ``APIError``; both carry
+    ``status_code`` from the response boundary.
+    """
     status = getattr(exc, "status_code", None)
     if status is None:
         return True
@@ -258,14 +263,19 @@ def wait_for_base_url(
             last_err = "ingress published but backend not serving yet (503)"
         except (ValueError, NotFoundError) as exc:
             last_err = exc
-        except APIError as exc:
+        except (APIError, AuthorizationError) as exc:
             # resolve_base_url lists the workroom's extensions on the platform
             # API; on a freshly-installed box that call can transiently fail
             # while the cluster settles — a 5xx/no-response from the gateway or a
             # 403 before the workroom's rebac grant lands (ENG-7111 sibling).
-            # Treat those as "not ready yet" and keep polling; a non-transient
-            # error (401 bad token, 400 bad request) can't clear on its own, so
-            # surface it now instead of burning the whole timeout.
+            # The 403 arrives either as a plain APIError or, when the body
+            # carries a recognized detail.reason, as an AuthorizationError
+            # subclass (a SIBLING of APIError — e.g.
+            # BrokeredUserNotAllowlistedError while the grant propagates), so
+            # both are caught and classified by status code.
+            # Treat transient ones as "not ready yet" and keep polling; a
+            # non-transient error (401 bad token, 400 bad request) can't clear
+            # on its own, so surface it now instead of burning the whole timeout.
             if not _is_transient_resolve_error(exc):
                 raise
             last_err = exc
@@ -578,8 +588,7 @@ class ConversationService(BaseService):
         """
         if not math.isfinite(timeout_seconds) or timeout_seconds < 0:
             raise ValueError(
-                "timeout_seconds must be a finite zero or positive number "
-                "of seconds."
+                "timeout_seconds must be a finite zero or positive number of seconds."
             )
 
         deadline = time.monotonic() + timeout_seconds
@@ -723,8 +732,7 @@ class ConversationService(BaseService):
         """
         if not math.isfinite(timeout_seconds) or timeout_seconds < 0:
             raise ValueError(
-                "timeout_seconds must be a finite zero or positive number "
-                "of seconds."
+                "timeout_seconds must be a finite zero or positive number of seconds."
             )
         if not math.isfinite(poll_interval_seconds) or poll_interval_seconds < 0:
             raise ValueError(

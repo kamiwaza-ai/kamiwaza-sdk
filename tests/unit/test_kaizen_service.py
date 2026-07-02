@@ -4,7 +4,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from kamiwaza_sdk.exceptions import APIError, AuthenticationError, NotFoundError
+from kamiwaza_sdk.exceptions import (
+    APIError,
+    AuthenticationError,
+    BrokeredUserNotAllowlistedError,
+    NotFoundError,
+)
 from kamiwaza_sdk.schemas.kaizen import LLMConfig
 from kamiwaza_sdk.services.kaizen import (
     AgentService,
@@ -314,6 +319,75 @@ def test_wait_for_base_url_retries_transient_api_error_from_resolve(monkeypatch)
     assert rounds == []
 
 
+def test_wait_for_base_url_retries_transient_authorization_error(monkeypatch):
+    import kamiwaza_sdk.services.kaizen as kaizen_mod
+
+    monkeypatch.setattr(kaizen_mod.time, "sleep", lambda _s: None)
+
+    # The rebac 403 on a fresh box surfaces as an AuthorizationError SUBCLASS
+    # (via error_for_response's typed dispatch), which is a sibling of APIError
+    # — an `except APIError` alone would let it crash the poll (the observed
+    # nightly failure). It must be caught and classified transient by its 403.
+    rounds = [
+        BrokeredUserNotAllowlistedError("grant not propagated", status_code=403),
+        [_ext("kaizen-4f8b3ae1", "wr-A")],
+    ]
+
+    def list_extensions(workroom_id=None):
+        item = rounds.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    client = SimpleNamespace(
+        extensions=SimpleNamespace(list_extensions=list_extensions),
+        _request=lambda *_a, **_k: {},
+    )
+
+    url = wait_for_base_url(
+        client, "kaizen", workroom_id="wr-A", poll_interval_seconds=0
+    )
+    assert url == KAIZEN_URL
+    assert rounds == []
+
+
+def test_wait_for_base_url_retries_transient_5xx_from_resolve(monkeypatch):
+    import kamiwaza_sdk.services.kaizen as kaizen_mod
+
+    monkeypatch.setattr(kaizen_mod.time, "sleep", lambda _s: None)
+
+    # A gateway 503 while the upstream warms must ride the same loop path as
+    # the 403 case (not just the pure classifier).
+    rounds = [
+        APIError("no healthy upstream", status_code=503),
+        [_ext("kaizen-4f8b3ae1", "wr-A")],
+    ]
+
+    def list_extensions(workroom_id=None):
+        item = rounds.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    client = SimpleNamespace(
+        extensions=SimpleNamespace(list_extensions=list_extensions),
+        _request=lambda *_a, **_k: {},
+    )
+
+    url = wait_for_base_url(
+        client, "kaizen", workroom_id="wr-A", poll_interval_seconds=0
+    )
+    assert url == KAIZEN_URL
+    assert rounds == []
+
+
+def test_is_transient_resolve_error_accepts_authorization_error():
+    # The classifier must work on AuthorizationError subclasses, not just
+    # APIError — both carry status_code from the response boundary.
+    err = BrokeredUserNotAllowlistedError("not allowlisted yet", status_code=403)
+    assert _is_transient_resolve_error(err) is True
+
+
 def test_wait_for_base_url_does_not_retry_non_transient_api_error(monkeypatch):
     import kamiwaza_sdk.services.kaizen as kaizen_mod
 
@@ -355,9 +429,7 @@ def test_wait_for_base_url_does_not_retry_non_transient_api_error(monkeypatch):
 def test_is_transient_resolve_error_classifies_statuses(status, expected):
     # Table-driven check of the pure classifier so every retryable/terminal
     # status is pinned independently of the wait_for_base_url poll loop.
-    assert (
-        _is_transient_resolve_error(APIError("boom", status_code=status)) is expected
-    )
+    assert _is_transient_resolve_error(APIError("boom", status_code=status)) is expected
 
 
 def test_wait_for_base_url_returns_when_ready():
