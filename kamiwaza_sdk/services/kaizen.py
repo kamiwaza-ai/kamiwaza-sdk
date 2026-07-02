@@ -174,15 +174,20 @@ def _is_serving(client, base_url: str, *, workroom_id) -> bool:
     return True
 
 
-# Statuses from a resolve_base_url listing that mean "cluster still settling",
-# not a permanent failure: no status (transport error before any response), any
-# 5xx (gateway/upstream not ready), 403 (workroom rebac grant not applied yet on
-# a fresh box), 429 (rate limited). Anything else is a real error and propagates.
-_TRANSIENT_RESOLVE_STATUSES = frozenset({403, 429})
+# Statuses that are retryable regardless of resolve scope. The full policy
+# (no-status, 5xx, scoped 403) lives in _is_transient_resolve_error.
+_TRANSIENT_RESOLVE_STATUSES = frozenset({429})
 
 
-def _is_transient_resolve_error(exc: KamiwazaError) -> bool:
+def _is_transient_resolve_error(exc: KamiwazaError, *, workroom_scoped: bool) -> bool:
     """True if an error from ``resolve_base_url`` is a transient startup state.
+
+    Transient: no status (transport error before any response), any 5xx
+    (gateway/upstream not ready), 429 (rate limited), and — only when the
+    resolve is scoped to a workroom — 403 (the workroom's rebac grant may
+    still be propagating on a fresh box). On the unscoped path a 403 is a
+    genuine permission denial that can't clear on its own, so it propagates
+    instead of burning the timeout into an opaque ``TimeoutError``.
 
     Accepts any ``KamiwazaError`` because a rebac 403 surfaces as an
     ``AuthorizationError`` subclass rather than ``APIError``; both carry
@@ -193,6 +198,8 @@ def _is_transient_resolve_error(exc: KamiwazaError) -> bool:
         return True
     if 500 <= status <= 599:
         return True
+    if status == 403:
+        return workroom_scoped
     return status in _TRANSIENT_RESOLVE_STATUSES
 
 
@@ -276,7 +283,9 @@ def wait_for_base_url(
             # Treat transient ones as "not ready yet" and keep polling; a
             # non-transient error (401 bad token, 400 bad request) can't clear
             # on its own, so surface it now instead of burning the whole timeout.
-            if not _is_transient_resolve_error(exc):
+            if not _is_transient_resolve_error(
+                exc, workroom_scoped=workroom_id is not None
+            ):
                 raise
             last_err = exc
         remaining = deadline - time.monotonic()

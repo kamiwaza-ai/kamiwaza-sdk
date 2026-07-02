@@ -385,7 +385,30 @@ def test_is_transient_resolve_error_accepts_authorization_error():
     # The classifier must work on AuthorizationError subclasses, not just
     # APIError — both carry status_code from the response boundary.
     err = BrokeredUserNotAllowlistedError("not allowlisted yet", status_code=403)
-    assert _is_transient_resolve_error(err) is True
+    assert _is_transient_resolve_error(err, workroom_scoped=True) is True
+
+
+def test_wait_for_base_url_does_not_retry_unscoped_403(monkeypatch):
+    import kamiwaza_sdk.services.kaizen as kaizen_mod
+
+    slept: list = []
+    monkeypatch.setattr(kaizen_mod.time, "sleep", lambda s: slept.append(s))
+
+    # Without a workroom scope there is no rebac grant to wait for — a 403 on
+    # the get_extension path is a genuine permission denial. It must surface
+    # immediately instead of burning the whole timeout into an opaque
+    # TimeoutError that buries the authorization failure.
+    def get_extension(_name):
+        raise APIError("forbidden", status_code=403)
+
+    client = SimpleNamespace(
+        extensions=SimpleNamespace(get_extension=get_extension),
+        _request=lambda *_a, **_k: {},
+    )
+
+    with pytest.raises(APIError):
+        wait_for_base_url(client, "kaizen", poll_interval_seconds=0)
+    assert slept == []
 
 
 def test_wait_for_base_url_does_not_retry_non_transient_api_error(monkeypatch):
@@ -412,24 +435,35 @@ def test_wait_for_base_url_does_not_retry_non_transient_api_error(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "status,expected",
+    "status,workroom_scoped,expected",
     [
-        (None, True),  # transport error before any response — cluster settling
-        (500, True),  # any 5xx — gateway/upstream not ready
-        (503, True),  # no healthy upstream while backend comes up
-        (599, True),  # upper 5xx bound
-        (403, True),  # workroom rebac grant not applied yet on a fresh box
-        (429, True),  # rate limited
-        (400, False),  # bad request — can't clear on its own
-        (401, False),  # auth failure — surface immediately
-        (404, False),  # not found — handled separately, not transient here
-        (200, False),  # a non-error status is never transient
+        (None, True, True),  # transport error before any response — settling
+        (None, False, True),  # ...regardless of scope
+        (500, True, True),  # any 5xx — gateway/upstream not ready
+        (500, False, True),  # ...regardless of scope
+        (503, True, True),  # no healthy upstream while backend comes up
+        (599, True, True),  # upper 5xx bound
+        (403, True, True),  # workroom rebac grant not applied yet on a fresh box
+        (403, False, False),  # unscoped 403 = real permission denial — surface it
+        (429, True, True),  # rate limited
+        (429, False, True),  # ...regardless of scope
+        (400, True, False),  # bad request — can't clear on its own
+        (401, True, False),  # auth failure — surface immediately
+        (404, True, False),  # not found — handled separately, not transient here
+        (200, True, False),  # a non-error status is never transient
     ],
 )
-def test_is_transient_resolve_error_classifies_statuses(status, expected):
+def test_is_transient_resolve_error_classifies_statuses(
+    status, workroom_scoped, expected
+):
     # Table-driven check of the pure classifier so every retryable/terminal
     # status is pinned independently of the wait_for_base_url poll loop.
-    assert _is_transient_resolve_error(APIError("boom", status_code=status)) is expected
+    assert (
+        _is_transient_resolve_error(
+            APIError("boom", status_code=status), workroom_scoped=workroom_scoped
+        )
+        is expected
+    )
 
 
 def test_wait_for_base_url_returns_when_ready():
