@@ -18,7 +18,9 @@ from .base_service import BaseService
 from ..exceptions import APIError, NotFoundError
 from ..schemas.connectors import (
     AvailableConnector,
+    CatalogConnector,
     Connector,
+    ConnectorCatalogRegister,
     ConnectorCreate,
     ConnectorSubscriptionCreate,
     ConnectorUpdate,
@@ -89,6 +91,20 @@ class ConnectorService(BaseService):
             "/connectors", json=request.model_dump(mode="json")
         )
         return Connector.model_validate(response)
+
+    def register_type(self, request: ConnectorCatalogRegister) -> CatalogConnector:
+        """Register a connector *type* in the cluster's DB-backed catalog (admin).
+
+        Parity with registering an app template: stores the connector's manifest so
+        it surfaces in ``GET /connectors/catalog`` as a configurable entry the admin
+        can then set up (fill config + create the instance). Idempotent per
+        ``connector_type`` — re-registering updates the stored manifest. Registers
+        the type only; it deploys no workload and stores no config.
+        """
+        response = self.client.post(
+            "/connectors/catalog", json=request.model_dump(mode="json")
+        )
+        return CatalogConnector.model_validate(response)
 
     def subscribe(
         self,
