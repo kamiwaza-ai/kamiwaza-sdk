@@ -232,6 +232,26 @@ def test_error_for_response_falls_back_on_403_without_reason() -> None:
     assert not isinstance(err, NativeRealmRequiredError)
 
 
+def test_error_for_response_dispatches_generic_404_to_not_found() -> None:
+    """A plain 404 without detail.reason still surfaces as NotFoundError."""
+    from kamiwaza_sdk.exceptions import NotFoundError, error_for_response
+
+    body = {"detail": "Document not found"}
+    err = error_for_response(404, body, "Missing document")
+    assert isinstance(err, NotFoundError)
+    assert err.status_code == 404
+    assert err.body == body
+
+
+def test_error_for_response_prefers_specific_404_reason() -> None:
+    """A known 404 detail.reason keeps its more specific subclass."""
+    from kamiwaza_sdk.exceptions import GatePackageNotFoundError, error_for_response
+
+    body = {"detail": {"reason": "gate_package_not_found"}}
+    err = error_for_response(404, body, "Missing package")
+    assert isinstance(err, GatePackageNotFoundError)
+
+
 def test_error_for_response_handles_none_body() -> None:
     """Non-JSON or empty responses produce body=None; dispatch must not
     crash and falls back to KamiwazaError."""

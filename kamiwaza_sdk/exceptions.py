@@ -323,8 +323,8 @@ def error_for_response(status_code: int, body: Any, message: str) -> KamiwazaErr
             if isinstance(reason_value, str):
                 reason = reason_value
 
-    cls: type[KamiwazaError] = KamiwazaError
+    cls: type[KamiwazaError] = NotFoundError if status_code == 404 else KamiwazaError
     if reason is not None:
-        cls = _REASON_TO_EXCEPTION.get((status_code, reason), KamiwazaError)
+        cls = _REASON_TO_EXCEPTION.get((status_code, reason), cls)
 
     return cls(message, status_code=status_code, body=body)
