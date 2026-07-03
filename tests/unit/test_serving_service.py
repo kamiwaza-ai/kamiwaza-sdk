@@ -51,6 +51,66 @@ def test_deploy_model_builds_payload_with_repo_lookup(dummy_client):
     assert payload["json"]["m_config_id"] == str(config_id)
 
 
+def _active_deployment_payload(
+    deployment_id: UUID,
+    *,
+    access_path: str | None = "/runtime/models/dep-1",
+    lb_port: int = 0,
+) -> dict:
+    return {
+        "id": str(deployment_id),
+        "m_id": str(uuid4()),
+        "m_config_id": str(uuid4()),
+        "requested_at": "2026-06-09T00:00:00Z",
+        "status": "DEPLOYED",
+        "access_path": access_path,
+        "lb_port": lb_port,
+        "instances": [
+            {
+                "id": str(uuid4()),
+                "deployment_id": str(deployment_id),
+                "deployed_at": "2026-06-09T00:01:00Z",
+                "status": "DEPLOYED",
+            }
+        ],
+        "m_name": "test-model",
+    }
+
+
+def test_list_active_deployments_preserves_runtime_origin_port(mock_client):
+    deployment_id = uuid4()
+    mock_client.base_url = "https://kamiwaza.test:18446/api"
+    mock_client.expect("GET", "/serving/deployments", [_active_deployment_payload(deployment_id)])
+    service = ServingService(mock_client)
+
+    deployments = service.list_active_deployments()
+
+    assert deployments[0].endpoint == "https://kamiwaza.test:18446/runtime/models/dep-1/v1"
+
+
+def test_list_active_deployments_preserves_gateway_path_prefix(mock_client):
+    deployment_id = uuid4()
+    mock_client.base_url = "https://gateway.example.com/kamiwaza/api"
+    mock_client.expect("GET", "/serving/deployments", [_active_deployment_payload(deployment_id)])
+    service = ServingService(mock_client)
+
+    deployments = service.list_active_deployments()
+
+    assert deployments[0].endpoint == "https://gateway.example.com/kamiwaza/runtime/models/dep-1/v1"
+
+
+def test_list_active_deployments_uses_runtime_base_override(mock_client, monkeypatch):
+    deployment_id = uuid4()
+    mock_client.base_url = "http://127.0.0.1:17779/api"
+    monkeypatch.setenv("KAMIWAZA_RUNTIME_BASE_URL", "https://kamiwaza.test:18446/api")
+    mock_client.expect("GET", "/serving/deployments", [_active_deployment_payload(deployment_id)])
+    service = ServingService(mock_client)
+
+    deployments = service.list_active_deployments()
+
+    assert deployments[0].endpoint == "https://kamiwaza.test:18446/runtime/models/dep-1/v1"
+
+
 def test_deploy_model_waits_until_ready_by_default(mock_client):
     """wait is omitted (default True) — the deploy polls through to
     DEPLOYED. poll_interval_seconds/timeout_seconds are forwarded to the

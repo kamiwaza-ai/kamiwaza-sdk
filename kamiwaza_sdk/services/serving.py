@@ -4,7 +4,7 @@ import os
 import time
 from typing import Callable, Iterable, Iterator, List, Optional, Union
 from uuid import UUID
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 from ..schemas.serving.serving import (
     ActiveModelDeployment,
@@ -153,14 +153,10 @@ class ServingService(BaseService):
         deployments = self.list_deployments()
         active = []
 
-        use_ssl = True
-        if os.environ.get("KAMIWAZA_USE_HTTPS", "true").lower() == "false":
-            use_ssl = False
-        scheme = "https" if use_ssl else "http"
-
-        # Parse the base URL to get host
-        parsed_url = urlparse(self.client.base_url)
-        host = parsed_url.netloc.split(':')[0]  # Remove port if present
+        runtime_origin = self._runtime_origin()
+        parsed_runtime_origin = urlparse(runtime_origin)
+        runtime_scheme = parsed_runtime_origin.scheme
+        runtime_host = parsed_runtime_origin.hostname or parsed_runtime_origin.netloc
         
         for deployment in deployments:
             running_instance = next(
@@ -174,13 +170,13 @@ class ServingService(BaseService):
                     path = access_path if access_path.startswith("/") else f"/{access_path}"
                     path = path.rstrip("/")
                     if path.endswith("/v1"):
-                        endpoint = f"{scheme}://{host}{path}"
+                        endpoint = f"{runtime_origin}{path}"
                     else:
-                        endpoint = f"{scheme}://{host}{path}/v1"
+                        endpoint = f"{runtime_origin}{path}/v1"
                 elif deployment.lb_port and deployment.lb_port != 443:
-                    endpoint = f"{scheme}://{host}:{deployment.lb_port}/v1"
+                    endpoint = f"{runtime_scheme}://{runtime_host}:{deployment.lb_port}/v1"
                 else:
-                    endpoint = f"{scheme}://{host}/runtime/models/{deployment.id}/v1"
+                    endpoint = f"{runtime_origin}/runtime/models/{deployment.id}/v1"
                 
                 active_deployment = ActiveModelDeployment(
                     id=deployment.id,
@@ -194,6 +190,26 @@ class ServingService(BaseService):
                 active.append(active_deployment)
 
         return active
+
+    def _runtime_origin(self) -> str:
+        source = (
+            os.environ.get("KAMIWAZA_RUNTIME_BASE_URL")
+            or os.environ.get("KAMIWAZA_PUBLIC_API_URL")
+            or self.client.base_url
+        )
+        parsed_url = urlparse(source)
+        scheme = parsed_url.scheme or "https"
+        use_https = os.environ.get("KAMIWAZA_USE_HTTPS")
+        if use_https is not None:
+            scheme = "http" if use_https.lower() == "false" else "https"
+
+        path = parsed_url.path.rstrip("/")
+        if path.endswith("/api"):
+            path = path[:-4]
+
+        return urlunparse(
+            (scheme, parsed_url.netloc, path.rstrip("/"), "", "", "")
+        ).rstrip("/")
 
 
     def list_deployments(self, model_id: Optional[UUID] = None) -> List[UIModelDeployment]:
