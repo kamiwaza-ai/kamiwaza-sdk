@@ -110,6 +110,8 @@ class ServingService(BaseService):
         
         # Convert model_id to UUID if it's a string
         model_id = UUID(model_id) if isinstance(model_id, str) else model_id
+        if model_id is None:
+            raise ValueError("Either model_id or repo_id must resolve to a model")
         
         # If m_config_id is not provided, fetch the default configuration
         if m_config_id is None:
@@ -118,6 +120,8 @@ class ServingService(BaseService):
                 raise ValueError("No configurations found for this model")
             default_config = next((config for config in configs if config.default), configs[0])
             m_config_id = default_config.id
+        m_config_id = UUID(m_config_id) if isinstance(m_config_id, str) else m_config_id
+        m_file_id = UUID(m_file_id) if isinstance(m_file_id, str) else m_file_id
 
         # Prepare the deployment request
         deployment_request = CreateModelDeployment(
@@ -181,7 +185,7 @@ class ServingService(BaseService):
                 active_deployment = ActiveModelDeployment(
                     id=deployment.id,
                     m_id=deployment.m_id,
-                    m_name=deployment.m_name,
+                    m_name=deployment.m_name or "",
                     status=deployment.status,
                     instances=[i for i in deployment.instances if i.status == 'DEPLOYED'],
                     lb_port=deployment.lb_port,
@@ -250,7 +254,7 @@ class ServingService(BaseService):
         deployment_id: Union[str, UUID],
         timeout_seconds: int = 3600,
         poll_interval_seconds: float = 5.0,
-    ) -> UIModelDeployment:
+    ) -> ModelDeployment:
         """Block until a deployment reaches the DEPLOYED terminal state.
 
         The server accepts deploy requests asynchronously (ENG-6530) and
@@ -472,7 +476,7 @@ class DeploymentStatusPoller:
                 )
                 # Builtin TimeoutError for caller compatibility; carry the id
                 # programmatically rather than only inside the message string.
-                timeout_error.deployment_id = str(deployment_uuid)
+                setattr(timeout_error, "deployment_id", str(deployment_uuid))
                 raise timeout_error
             if self._poll_interval > 0:
                 self._sleep(self._poll_interval)
