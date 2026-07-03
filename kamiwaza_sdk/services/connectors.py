@@ -102,7 +102,8 @@ class ConnectorService(BaseService):
         the type only; it deploys no workload and stores no config.
         """
         response = self.client.post(
-            "/connectors/catalog", json=request.model_dump(mode="json")
+            "/connectors/catalog",
+            json=request.model_dump(mode="json", exclude_none=True),
         )
         return CatalogConnector.model_validate(response)
 
