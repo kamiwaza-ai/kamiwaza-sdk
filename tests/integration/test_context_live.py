@@ -5,14 +5,16 @@ from __future__ import annotations
 import base64
 import os
 import time
+from collections.abc import Generator
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
+from pydantic import ValidationError
 
 from kamiwaza_sdk import KamiwazaClient
 from kamiwaza_sdk.authentication import UserPasswordAuthenticator
-from kamiwaza_sdk.exceptions import APIError
+from kamiwaza_sdk.exceptions import APIError, NotFoundError
 from kamiwaza_sdk.services.context import ContextService
 
 pytestmark = [
@@ -25,6 +27,9 @@ DEFAULT_WORKROOM_ID = os.getenv(
     "KAMIWAZA_CONTEXT_WORKROOM_ID",
     ContextService.DEFAULT_WORKROOM_ID,
 )
+WORKROOM_BINDING_UNAVAILABLE_DETAIL = "workroom_binding_unavailable"
+WORKROOM_BINDING_UNAVAILABLE_CLASS = "binding_unavailable"
+WORKROOM_SCOPE_PERSISTENCE_UNAVAILABLE = "Workroom scope persistence is unavailable"
 TEST_VECTOR = [round(index * 0.01, 4) for index in range(1, 33)]
 
 
@@ -41,6 +46,39 @@ def _context_service(live_kamiwaza_client) -> ContextService:
     service = live_kamiwaza_client.context
     assert isinstance(service, ContextService)
     return service
+
+
+def _assert_global_scope_if_exposed(resource: dict[str, object]) -> None:
+    """Assert Global scope when the server includes explicit scope metadata."""
+    workroom_id = resource.get("workroom_id")
+    if workroom_id is None:
+        return
+    assert str(workroom_id) == ContextService.DEFAULT_WORKROOM_ID
+
+
+def _is_workroom_binding_unavailable(error: APIError) -> bool:
+    """Return True only for retryable Workrooms enter binding outages."""
+    if error.status_code != 503:
+        return False
+
+    payload = getattr(error, "response_data", None)
+    if not isinstance(payload, dict):
+        return False
+
+    detail = payload.get("detail")
+    if detail == WORKROOM_BINDING_UNAVAILABLE_DETAIL:
+        return True
+    if isinstance(detail, str):
+        return WORKROOM_SCOPE_PERSISTENCE_UNAVAILABLE in detail
+    if not isinstance(detail, dict):
+        return False
+    if detail.get("reason") == WORKROOM_BINDING_UNAVAILABLE_CLASS:
+        return True
+
+    structured = detail.get("error")
+    if not isinstance(structured, dict):
+        return False
+    return structured.get("class") == WORKROOM_BINDING_UNAVAILABLE_CLASS
 
 
 def _wait_for_vectordb_ready(
@@ -260,6 +298,26 @@ def _is_stale_sdk_resource(resource: dict, max_age: timedelta) -> bool:
 _STALE_THRESHOLD = timedelta(minutes=15)
 
 
+def _api_error_code(error: APIError) -> str | None:
+    """Extract the stable server error code from an APIError payload."""
+    payload = error.response_data
+    if not isinstance(payload, dict):
+        return None
+
+    detail = payload.get("detail")
+    if isinstance(detail, dict):
+        for key in ("error", "code", "reason"):
+            value = detail.get(key)
+            if isinstance(value, str):
+                return value
+
+    for key in ("error", "code", "reason"):
+        value = payload.get(key)
+        if isinstance(value, str):
+            return value
+    return None
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _cleanup_stale_sdk_vdbs(shared_context_service: ContextService) -> None:
     """Delete leftover sdk-* VDB/ontology instances from prior crashed runs.
@@ -288,24 +346,63 @@ def _cleanup_stale_sdk_vdbs(shared_context_service: ContextService) -> None:
 
 
 @pytest.fixture(scope="session")
-def shared_vectordb(shared_context_service: ContextService) -> str:
-    """Shared global VectorDB instance for non-destructive vector tests."""
-    service = shared_context_service
-    vectordb_id = _create_temp_vectordb(service, prefix="sdk-shared-vdb")
+def session_workroom(
+    shared_context_service: ContextService,
+) -> Generator[str, None, None]:
+    """Per-session writable workroom for Context Service write-path tests.
+
+    Room-scoped Context routes require an explicit non-Global workroom scope.
+    Exercise the backend enter endpoint as a checked lifecycle seam, while
+    Context calls below pass explicit workroom_id so authority is not inferred
+    from SDK-local session state.
+    """
+    workrooms = shared_context_service.client.workrooms
+    workroom = workrooms.create(
+        f"sdk-ctx-session-{uuid4().hex[:8]}",
+        "ephemeral",
+        description="Ephemeral workroom for SDK context live tests",
+    )
+    workroom_id = str(workroom.id)
+    did_enter = False
     try:
-        yield vectordb_id
+        try:
+            entered = workrooms.enter(workroom_id)
+            did_enter = True
+            assert str(entered.workroom_id) == workroom_id
+        except APIError as exc:
+            if not _is_workroom_binding_unavailable(exc):
+                raise
+            pytest.skip(
+                "Workrooms enter binding is unavailable; skipping room-scoped "
+                "Context live tests instead of silently passing the lifecycle seam"
+            )
+        yield workroom_id
     finally:
-        _safe_delete_vectordb(service, vectordb_id)
+        if did_enter:
+            try:
+                workrooms.leave()
+            except (APIError, ValidationError):
+                pass
+        # delete() raises NotFoundError (a sibling of APIError, not a subclass)
+        # when the workroom is already gone, so catch both to keep teardown
+        # best-effort -- matching the sibling test_workroom_isolation_live.py.
+        try:
+            workrooms.delete(workroom_id)
+        except (APIError, NotFoundError):
+            pass
 
 
 @pytest.fixture(scope="session")
-def shared_workroom_vectordb(shared_context_service: ContextService) -> str:
+def shared_workroom_vectordb(
+    shared_context_service: ContextService,
+    session_workroom: str,
+) -> Generator[str, None, None]:
     """Shared workroom-scoped VectorDB for collection/search/retrieve tests."""
     service = shared_context_service
     vectordb_id = _create_temp_vectordb(
         service,
         prefix="sdk-shared-vdb-workroom",
-        workroom_id=DEFAULT_WORKROOM_ID,
+        workroom_id=session_workroom,
     )
     try:
         yield vectordb_id
@@ -313,7 +410,7 @@ def shared_workroom_vectordb(shared_context_service: ContextService) -> str:
         _safe_delete_vectordb(
             service,
             vectordb_id,
-            workroom_id=DEFAULT_WORKROOM_ID,
+            workroom_id=session_workroom,
         )
 
 
@@ -321,7 +418,7 @@ def shared_workroom_vectordb(shared_context_service: ContextService) -> str:
 def shared_ontology(
     shared_context_service: ContextService,
     context_required_llm: str,
-) -> str:
+) -> Generator[str, None, None]:
     """Shared ontology instance for non-destructive ontology tests."""
     assert context_required_llm
     service = shared_context_service
@@ -345,37 +442,53 @@ def test_context_required_llm_available(context_required_llm: str) -> None:
     assert context_required_llm
 
 
-def test_context_vectordb_lifecycle_global(live_kamiwaza_client) -> None:
+def test_context_vectordb_create_without_workroom_uses_global_scope(
+    live_kamiwaza_client,
+) -> None:
+    """No-workroom VectorDB creation is allowed under the Global/default scope."""
     service = _context_service(live_kamiwaza_client)
-
-    name = f"sdk-context-vdb-{uuid4().hex[:8]}"
-    created = service.create_vectordb(name=name, engine="milvus")
-    vectordb_id = created["id"]
+    vectordb_id: str | None = None
 
     try:
-        fetched = service.get_vectordb(vectordb_id)
-        assert fetched["id"] == vectordb_id
-        assert fetched["name"] == name
-
-        updated = service.update_vectordb(
-            vectordb_id,
-            config={"SDK_CONTEXT_TEST": "1"},
-            replicas=1,
-        )
-        assert updated["id"] == vectordb_id
-
-        scaled = service.scale_vectordb(vectordb_id, replicas=1)
-        assert scaled["id"] == vectordb_id
+        try:
+            created = service.create_vectordb(
+                name=f"sdk-context-vdb-global-{uuid4().hex[:8]}",
+                engine="milvus",
+            )
+        except APIError as exc:
+            if exc.status_code == 403 and "Global Workroom is read-only" in str(exc):
+                pytest.skip("No-workroom VectorDB creation is read-only in this release profile")
+            raise
+        vectordb_id = created["id"]
+        assert vectordb_id
+        _assert_global_scope_if_exposed(created)
+        _wait_for_vectordb_ready(service, vectordb_id)
+        ready = service.get_vectordb(vectordb_id)
+        _assert_global_scope_if_exposed(ready)
     finally:
-        _safe_delete_vectordb(service, vectordb_id)
+        if vectordb_id:
+            _safe_delete_vectordb(service, vectordb_id)
+
+
+# A dedicated non-Global VectorDB *instance* lifecycle test (create/scale/
+# delete the VDB itself in a user workroom) stays in the kamiwaza repo's
+# tests/integration/services/context. Workroom-scoped *write* coverage on the
+# SDK side runs through the ``session_workroom`` fixture instead: the
+# collection, pipeline, search, and retrieve tests below exercise writes
+# against a real per-session workroom. The ``X-Workroom-ID`` header the SDK
+# sets is preserved end-to-end -- the istio ingress strip-identity-headers
+# filter explicitly exempts it (it is a client scope *request*, authorized
+# server-side against verified workroom membership, not a spoofable identity
+# assertion), so the header reaches the Context Service unmodified.
 
 
 def test_context_vectordb_insert_vectors_instance(
-    live_kamiwaza_client,
-    shared_vectordb: str,
+    shared_context_service: ContextService,
+    session_workroom: str,
+    shared_workroom_vectordb: str,
 ) -> None:
-    service = _context_service(live_kamiwaza_client)
-    vectordb_id = shared_vectordb
+    service = shared_context_service
+    vectordb_id = shared_workroom_vectordb
     collection_name = _sdk_collection_name()
 
     inserted = service.insert_vectors(
@@ -383,16 +496,18 @@ def test_context_vectordb_insert_vectors_instance(
         collection_name=collection_name,
         vectors=[_sample_vector()],
         metadata=[{"source": "sdk-context-live"}],
+        workroom_id=session_workroom,
     )
     assert inserted["inserted_count"] == 1
 
 
 def test_context_vectordb_insert_vectors_global(
-    live_kamiwaza_client,
-    shared_vectordb: str,
+    shared_context_service: ContextService,
+    session_workroom: str,
+    shared_workroom_vectordb: str,
 ) -> None:
-    service = _context_service(live_kamiwaza_client)
-    vectordb_id = shared_vectordb
+    service = shared_context_service
+    vectordb_id = shared_workroom_vectordb
     collection_name = _sdk_collection_name()
 
     inserted = service.insert_vectors_global(
@@ -400,16 +515,18 @@ def test_context_vectordb_insert_vectors_global(
         collection_name=collection_name,
         vectors=[_sample_vector()],
         metadata=[{"source": "sdk-context-live"}],
+        workroom_id=session_workroom,
     )
     assert inserted["inserted_count"] == 1
 
 
 def test_context_vectordb_query_vectors_instance(
-    live_kamiwaza_client,
-    shared_vectordb: str,
+    shared_context_service: ContextService,
+    session_workroom: str,
+    shared_workroom_vectordb: str,
 ) -> None:
-    service = _context_service(live_kamiwaza_client)
-    vectordb_id = shared_vectordb
+    service = shared_context_service
+    vectordb_id = shared_workroom_vectordb
     collection_name = _sdk_collection_name()
 
     service.insert_vectors(
@@ -417,22 +534,25 @@ def test_context_vectordb_query_vectors_instance(
         collection_name=collection_name,
         vectors=[_sample_vector()],
         metadata=[{"source": "sdk-context-live"}],
+        workroom_id=session_workroom,
     )
     queried = service.query_vectors(
         vectordb_id,
         collection_name=collection_name,
         vectors=[_sample_vector()],
         limit=1,
+        workroom_id=session_workroom,
     )
     assert isinstance(queried["results"], list)
 
 
 def test_context_vectordb_query_vectors_global(
-    live_kamiwaza_client,
-    shared_vectordb: str,
+    shared_context_service: ContextService,
+    session_workroom: str,
+    shared_workroom_vectordb: str,
 ) -> None:
-    service = _context_service(live_kamiwaza_client)
-    vectordb_id = shared_vectordb
+    service = shared_context_service
+    vectordb_id = shared_workroom_vectordb
     collection_name = _sdk_collection_name()
 
     service.insert_vectors_global(
@@ -440,12 +560,14 @@ def test_context_vectordb_query_vectors_global(
         collection_name=collection_name,
         vectors=[_sample_vector()],
         metadata=[{"source": "sdk-context-live"}],
+        workroom_id=session_workroom,
     )
     queried = service.query_vectors_global(
         vectordb_id=vectordb_id,
         collection_name=collection_name,
         vectors=[_sample_vector()],
         limit=1,
+        workroom_id=session_workroom,
     )
     assert isinstance(queried["results"], list)
 
@@ -593,9 +715,12 @@ def test_context_ontology_delete_group(
 
 
 @pytest.mark.requires_embedding_model
-def test_context_workroom_lists_and_job_creation(live_kamiwaza_client) -> None:
-    service = _context_service(live_kamiwaza_client)
-    workroom_id = DEFAULT_WORKROOM_ID
+def test_context_workroom_lists_and_job_creation(
+    shared_context_service: ContextService,
+    session_workroom: str,
+) -> None:
+    service = shared_context_service
+    workroom_id = session_workroom
     created_job_ids: list[str] = []
 
     vectordbs = service.list_vectordbs(workroom_id=workroom_id)
@@ -648,9 +773,12 @@ def test_context_workroom_lists_and_job_creation(live_kamiwaza_client) -> None:
 
 
 @pytest.mark.requires_embedding_model
-def test_context_workroom_pipeline_followup_access(live_kamiwaza_client) -> None:
-    service = _context_service(live_kamiwaza_client)
-    workroom_id = DEFAULT_WORKROOM_ID
+def test_context_workroom_pipeline_followup_access(
+    shared_context_service: ContextService,
+    session_workroom: str,
+) -> None:
+    service = shared_context_service
+    workroom_id = session_workroom
 
     payload = base64.b64encode(b"hello context service").decode("utf-8")
     job = service.create_pipeline_job(
@@ -678,11 +806,12 @@ def test_context_workroom_pipeline_followup_access(live_kamiwaza_client) -> None
 
 
 def test_context_workroom_collection_lifecycle(
-    live_kamiwaza_client,
+    shared_context_service: ContextService,
+    session_workroom: str,
     shared_workroom_vectordb: str,
 ) -> None:
-    service = _context_service(live_kamiwaza_client)
-    workroom_id = DEFAULT_WORKROOM_ID
+    service = shared_context_service
+    workroom_id = session_workroom
     assert shared_workroom_vectordb
     collection_name = _sdk_collection_name()
     created = False
@@ -727,11 +856,12 @@ def test_context_workroom_collection_lifecycle(
 
 @pytest.mark.requires_embedding_model
 def test_context_search_contract(
-    live_kamiwaza_client,
+    shared_context_service: ContextService,
+    session_workroom: str,
     shared_workroom_vectordb: str,
 ) -> None:
-    service = _context_service(live_kamiwaza_client)
-    workroom_id = DEFAULT_WORKROOM_ID
+    service = shared_context_service
+    workroom_id = session_workroom
     assert shared_workroom_vectordb
 
     search = service.search(
@@ -744,11 +874,12 @@ def test_context_search_contract(
 
 @pytest.mark.requires_embedding_model
 def test_context_retrieve_contract(
-    live_kamiwaza_client,
+    shared_context_service: ContextService,
+    session_workroom: str,
     shared_workroom_vectordb: str,
 ) -> None:
-    service = _context_service(live_kamiwaza_client)
-    workroom_id = DEFAULT_WORKROOM_ID
+    service = shared_context_service
+    workroom_id = session_workroom
     assert shared_workroom_vectordb
 
     retrieve = service.retrieve(

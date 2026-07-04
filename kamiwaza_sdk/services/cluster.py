@@ -4,7 +4,7 @@ from typing import List, Optional, Dict, Any
 from uuid import UUID
 from ..schemas.cluster import (
     CreateLocation, Location, CreateHardware, Hardware,
-    CreateCluster, Cluster, Node, NodeDetails, NodeListNode
+    CreateCluster, Cluster, ClusterCapabilities, Node, NodeDetails, NodeListNode
 )
 from .base_service import BaseService
 
@@ -81,6 +81,11 @@ class ClusterService(BaseService):
     def get_runtime_config(self) -> Dict[str, Any]:
         """Retrieve the runtime configuration of the cluster."""
         return self.client.get("/cluster/runtime_config")
+
+    def capabilities(self) -> ClusterCapabilities:
+        """Retrieve cluster capabilities."""
+        response = self.client.get("/cluster/cluster_capabilities")
+        return ClusterCapabilities.model_validate(response)
 
     def get_hostname(self) -> Dict[str, str]:
         """Get the hostname for the cluster."""

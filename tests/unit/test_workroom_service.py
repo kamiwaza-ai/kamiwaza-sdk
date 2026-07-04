@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import uuid
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
@@ -461,6 +462,79 @@ def test_archive_not_found_raises(dummy_client):
 
     with pytest.raises(NotFoundError):
         service.archive(WORKROOM_ID)
+
+
+# =============================================================================
+# Session Binding
+# =============================================================================
+
+
+def test_enter_posts_to_enter_endpoint(dummy_client):
+    responses = {
+        ("post", f"/workrooms/{WORKROOM_UUID}/enter"): {
+            "workroom_id": WORKROOM_ID,
+            "access_token": "scoped-token",
+            "expires_in": 3600,
+            "message": "Workroom session bound",
+        }
+    }
+    client = dummy_client(responses)
+    service = WorkroomService(client)
+
+    result = service.enter(WORKROOM_ID)
+
+    assert client.calls[0][1] == f"/workrooms/{WORKROOM_UUID}/enter"
+    assert result.workroom_id == WORKROOM_UUID
+    assert result.access_token == "scoped-token"
+    assert result.expires_in == 3600
+
+
+def test_leave_posts_to_leave_endpoint(dummy_client):
+    responses = {
+        ("post", "/workrooms/leave"): {
+            "workroom_id": "ffffffff-ffff-ffff-ffff-ffffffffffff",
+            "access_token": "global-token",
+            "expires_in": 3600,
+            "message": "Returned to Global Workroom",
+        }
+    }
+    client = dummy_client(responses)
+    service = WorkroomService(client)
+
+    result = service.leave()
+
+    assert client.calls[0][1] == "/workrooms/leave"
+    assert str(result.workroom_id) == "ffffffff-ffff-ffff-ffff-ffffffffffff"
+    assert result.access_token == "global-token"
+    assert result.expires_in == 3600
+
+
+def test_enter_leave_expose_tokens_without_mutating_client_auth(dummy_client):
+    responses = {
+        ("post", f"/workrooms/{WORKROOM_UUID}/enter"): {
+            "workroom_id": WORKROOM_ID,
+            "access_token": "scoped-token",
+            "expires_in": 3600,
+            "message": "Workroom session bound",
+        },
+        ("post", "/workrooms/leave"): {
+            "workroom_id": "ffffffff-ffff-ffff-ffff-ffffffffffff",
+            "access_token": "global-token",
+            "expires_in": 3600,
+            "message": "Returned to Global Workroom",
+        },
+    }
+    client = dummy_client(responses)
+    session = SimpleNamespace(headers={"Authorization": "Bearer original"})
+    setattr(client, "session", session)
+    service = WorkroomService(client)
+
+    entered = service.enter(WORKROOM_ID)
+    left = service.leave()
+
+    assert entered.access_token == "scoped-token"
+    assert left.access_token == "global-token"
+    assert session.headers["Authorization"] == "Bearer original"
 
 
 # =============================================================================

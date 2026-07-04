@@ -120,6 +120,16 @@ CONTEXT_TEST_LLM_REPO = os.environ.get(
 CONTEXT_TEST_LLM_DEPLOY_TIMEOUT_SECONDS = float(
     os.environ.get("KAMIWAZA_CONTEXT_LLM_DEPLOY_TIMEOUT_SECONDS", "600")
 )
+# Must stay in sync with TEST_REPO_ID in test_serving_workflow.py and
+# test_cli_live.py: the capability probe deploys the SAME model the gated tests
+# deploy, so the gate's skip/run verdict matches what the tests will actually do.
+# Intentionally not env-overridable — an override here that the test modules
+# don't honor would let the probe pass while the tests deploy a different model
+# and fail instead of skip.
+DEPLOYABLE_TEST_MODEL_REPO = "mlx-community/Qwen3-4B-4bit"
+DEPLOYABLE_TEST_DEPLOY_TIMEOUT_SECONDS = float(
+    os.environ.get("KAMIWAZA_DEPLOYABLE_TEST_DEPLOY_TIMEOUT_SECONDS", "600")
+)
 EMBEDDING_TEST_MODEL_REPO = os.environ.get(
     "KAMIWAZA_TEST_EMBEDDING_MODEL_REPO",
     "sentence-transformers/all-MiniLM-L6-v2",
@@ -492,6 +502,18 @@ def _platform_deployment_ready(deployment: object) -> bool:
         str(getattr(instance, "status", "")).upper() == "DEPLOYED"
         for instance in instances
     )
+
+
+def _stop_deployment_quietly(
+    client: KamiwazaClient, deployment_id: str | None
+) -> None:
+    """Best-effort stop of a deployment (used for capability probes / cleanup)."""
+    if not deployment_id:
+        return
+    try:
+        client.serving.stop_deployment(deployment_id=deployment_id, force=True)
+    except Exception:  # noqa: BLE001 — teardown is best-effort
+        pass
 
 
 def _active_model_deployments(
@@ -948,9 +970,17 @@ def _resolve_live_password_once(
 def live_server_available(live_base_url: str) -> str:
     """Ensure a running Kamiwaza server is reachable before running live tests.
 
-    Retries a few times before skipping: a ``pytest.skip`` raised from a
-    session-scoped fixture is cached for every dependent test, so a single
-    slow request against a cold platform can cascade into a whole-suite skip.
+    Retries a few times, then ``pytest.exit`` if the server is unreachable or
+    unhealthy. Earlier versions raised ``pytest.skip`` here, which pytest caches
+    on a session-scoped fixture and replays as a skip on every dependent test —
+    producing a green report with 165+ silent skips when the platform was
+    actually down (see ENG-6504). Exiting fails the run loudly with the actual
+    cause; tests that intentionally don't need a live server should not depend
+    on this fixture.
+
+    Auth-related skips in sibling fixtures (``live_kamiwaza_client``,
+    ``resolved_live_password``) stay as ``pytest.skip`` — missing credentials
+    is a legitimate opt-out, distinct from "infrastructure is broken."
     """
 
     health_url = f"{live_base_url}/ping"
@@ -971,22 +1001,32 @@ def live_server_available(live_base_url: str) -> str:
                 verify=_verify_ssl_enabled(),
             )
             break
-        except requests.RequestException as exc:  # pragma: no cover - network guard
+        except requests.RequestException as exc:
             last_exc = exc
             if attempt < attempts - 1:
                 time.sleep(backoff_seconds)
+    # pytest's exit code 2 normally means EXIT_INTERRUPTED. We reuse it here
+    # because "infrastructure unreachable" is operationally the same shape
+    # from a pipeline perspective: the run did not complete normally, and any
+    # caller that already treats non-zero pytest exits as failure (e.g. the
+    # kajiya smoke runner) handles it without special-casing. The collision is
+    # intentional and documented.
+    _INFRA_UNAVAILABLE_RETURNCODE = 2
     if response is None:
-        pytest.skip(
-            f"Kamiwaza server unavailable at {live_base_url} after {attempts} attempts: {last_exc}"
+        pytest.exit(
+            f"Kamiwaza server unavailable at {live_base_url} after {attempts} attempts: {last_exc}",
+            returncode=_INFRA_UNAVAILABLE_RETURNCODE,
         )
     if response.status_code >= 500:
-        pytest.skip(
-            f"Kamiwaza server unhealthy at {health_url}: {response.status_code}"
+        pytest.exit(
+            f"Kamiwaza server unhealthy at {health_url}: {response.status_code}",
+            returncode=_INFRA_UNAVAILABLE_RETURNCODE,
         )
     if response.status_code >= 400 and response.status_code not in (401, 403):
-        pytest.skip(
+        pytest.exit(
             f"Kamiwaza server at {health_url} returned unexpected status {response.status_code}; "
-            "check base URL or ping route configuration."
+            "check base URL or ping route configuration.",
+            returncode=_INFRA_UNAVAILABLE_RETURNCODE,
         )
     return live_base_url
 
@@ -1141,8 +1181,25 @@ def context_llm_prerequisite(
     live_kamiwaza_session_client: KamiwazaClient,
     ensure_repo_ready,
 ) -> Iterator[str]:
-    """Ensure a usable LLM deployment exists for context ontology operations."""
+    """Ensure a usable LLM deployment exists for context ontology operations, or skip once.
+
+    Mirrors ``embedding_model_prerequisite``: if no LLM is already deployed the
+    fixture attempts to provision one, but it **skips** (does not error) when the
+    platform cannot bring one up — e.g. a CPU-only smoke host with no inference
+    capacity, or an MLX-only test model on a non-Apple-Silicon runner. This keeps
+    the context ontology/vectordb tests as conditional skips on incapable hosts
+    instead of a cascade of fixture-setup ERRORs.
+    """
     client = live_kamiwaza_session_client
+
+    def _stop_provisioned(deployment_id: str | None) -> None:
+        """Best-effort teardown of a deployment THIS fixture provisioned."""
+        if not deployment_id:
+            return
+        try:
+            client.serving.stop_deployment(deployment_id=deployment_id, force=True)
+        except Exception:  # noqa: BLE001 — teardown is best-effort
+            pass
 
     existing = _preferred_active_model_deployment(
         client,
@@ -1153,51 +1210,171 @@ def context_llm_prerequisite(
         yield existing["deployment_id"]
         return
 
-    model = ensure_repo_ready(client, CONTEXT_TEST_LLM_REPO)
-    configs = client.models.get_model_configs(model.id)
-    if not configs:
-        pytest.fail(
-            f"No model configs available for context LLM repo '{CONTEXT_TEST_LLM_REPO}'"
+    # Track the id as soon as deploy_model returns so the skip/teardown paths can
+    # stop it — otherwise a deploy that succeeds but never becomes ready (e.g. a
+    # capacity-limited host) would be orphaned when we skip.
+    provisioned_deployment_id: str | None = None
+    try:
+        model = ensure_repo_ready(client, CONTEXT_TEST_LLM_REPO)
+        configs = client.models.get_model_configs(model.id)
+        if not configs:
+            pytest.skip(
+                f"No model configs available for context LLM repo '{CONTEXT_TEST_LLM_REPO}'"
+            )
+        default_config = next(
+            (config for config in configs if config.default), configs[0]
         )
-    default_config = next((config for config in configs if config.default), configs[0])
 
-    deployment_id = client.serving.deploy_model(
-        model_id=str(model.id),
-        m_config_id=default_config.id,
-        lb_port=0,
-        autoscaling=False,
-        min_copies=1,
-        starting_copies=1,
-    )
-    deployment = client.serving.wait_for_deployment(
-        deployment_id,
-        poll_interval=5,
-        timeout=CONTEXT_TEST_LLM_DEPLOY_TIMEOUT_SECONDS,
-    )
+        # deploy_model returns Union[UUID, bool] — False on failure (no raise).
+        # Guard before str() so a refused deploy skips cleanly instead of turning
+        # into the truthy id "False".
+        raw_deployment_id = client.serving.deploy_model(
+            model_id=str(model.id),
+            m_config_id=default_config.id,
+            lb_port=0,
+            autoscaling=False,
+            min_copies=1,
+            starting_copies=1,
+            # The fixture's wait_for_deployment below owns the timeout; the
+            # SDK-internal wait would block up to its own 3600s default first.
+            wait=False,
+        )
+        if not raw_deployment_id:
+            pytest.skip(
+                "deploy_model did not return a deployment id for context LLM repo "
+                f"'{CONTEXT_TEST_LLM_REPO}' (deploy refused on this host)."
+            )
+        provisioned_deployment_id = str(raw_deployment_id)
+        deployment = client.serving.wait_for_deployment(
+            provisioned_deployment_id,
+            poll_interval=5,
+            timeout=CONTEXT_TEST_LLM_DEPLOY_TIMEOUT_SECONDS,
+        )
+    except Exception as exc:  # noqa: BLE001 — any provisioning failure → skip, not error
+        _stop_provisioned(provisioned_deployment_id)
+        pytest.skip(
+            "No active LLM deployment for context ontology tests and one could not "
+            f"be provisioned (repo={CONTEXT_TEST_LLM_REPO}): "
+            f"{type(exc).__name__}: {exc}"
+        )
+
     if not _platform_deployment_ready(deployment):
-        pytest.fail(
-            "Context ontology prerequisite deployment is not ready: "
+        _stop_provisioned(provisioned_deployment_id)
+        pytest.skip(
+            "Context ontology prerequisite LLM deployment did not become ready: "
             f"deployment_id={deployment.id}, status={deployment.status}, "
             f"instance_statuses={[instance.status for instance in deployment.instances]}"
         )
 
-    created_deployment_id = str(deployment.id)
     try:
-        yield created_deployment_id
+        yield provisioned_deployment_id
     finally:
-        try:
-            client.serving.stop_deployment(
-                deployment_id=created_deployment_id,
-                force=True,
+        _stop_provisioned(provisioned_deployment_id)
+
+
+@pytest.fixture(scope="session")
+def deployable_model_prerequisite(
+    live_kamiwaza_session_client: KamiwazaClient,
+    ensure_repo_ready,
+) -> None:
+    """Skip once if this host cannot deploy the integration test model.
+
+    Serving/CLI tests that deploy ``DEPLOYABLE_TEST_MODEL_REPO`` (an MLX model)
+    fail with a 5xx on hosts without compatible inference capacity — e.g. the
+    x86 CPU Azure smoke. Probe deployability once per session and skip the
+    marked tests instead of failing them. Mirrors ``embedding_model_prerequisite``
+    / ``context_llm_prerequisite``; the probe tears down its own deployment so
+    dependent tests perform their own deploys.
+    """
+    client = live_kamiwaza_session_client
+    # Short-circuit ONLY when the exact test model is already deployed — a
+    # different active LLM does not prove this host can deploy DEPLOYABLE_TEST_MODEL_REPO
+    # (e.g. MLX on x86), so in that case we must still probe.
+    existing = _preferred_active_model_deployment(
+        client,
+        desired_type="llm",
+        preferred_repo_id=DEPLOYABLE_TEST_MODEL_REPO,
+    )
+    if existing is not None and existing.get("repo_model_id") == DEPLOYABLE_TEST_MODEL_REPO:
+        return  # the test model itself is already deployed → host is capable
+
+    probe_deployment_id: str | None = None
+    try:
+        model = ensure_repo_ready(client, DEPLOYABLE_TEST_MODEL_REPO)
+        configs = client.models.get_model_configs(model.id)
+        if not configs:
+            pytest.skip(
+                "No model configs available for deployable test model "
+                f"'{DEPLOYABLE_TEST_MODEL_REPO}'"
             )
-        except Exception:
-            pass
+        default_config = next(
+            (config for config in configs if config.default), configs[0]
+        )
+        raw_deployment_id = client.serving.deploy_model(
+            model_id=str(model.id),
+            m_config_id=default_config.id,
+            lb_port=0,
+            autoscaling=False,
+            min_copies=1,
+            starting_copies=1,
+            # The probe's wait_for_deployment below owns the timeout
+            # (DEPLOYABLE_TEST_DEPLOY_TIMEOUT_SECONDS), not the SDK default.
+            wait=False,
+        )
+        if not raw_deployment_id:
+            pytest.skip(
+                f"deploy_model returned no id for '{DEPLOYABLE_TEST_MODEL_REPO}' "
+                "(deploy refused on this host)."
+            )
+        probe_deployment_id = str(raw_deployment_id)
+        deployment = client.serving.wait_for_deployment(
+            probe_deployment_id,
+            poll_interval=5,
+            timeout=DEPLOYABLE_TEST_DEPLOY_TIMEOUT_SECONDS,
+        )
+    except (TimeoutError, RuntimeError) as exc:
+        # Download/registration timeout, or the deployment entering FAILED/ERROR
+        # status because the instance can't load the model on this host
+        # (RuntimeError from wait_for_deployment, kamiwaza_sdk/services/serving.py)
+        # — capability/infra failure → skip + tear down.
+        _stop_deployment_quietly(client, probe_deployment_id)
+        pytest.skip(
+            "Host cannot provision integration test model (download/deploy) "
+            f"'{DEPLOYABLE_TEST_MODEL_REPO}': {type(exc).__name__}: {exc}"
+        )
+    except APIError as exc:
+        # Only a 5xx (server cannot bring the model up on this host) is a
+        # capability failure → skip. A 4xx (auth / scope / validation /
+        # request-shape) is a real regression and MUST fail, not be masked as a
+        # skip, so it is re-raised.
+        status_code = getattr(exc, "status_code", None)
+        _stop_deployment_quietly(client, probe_deployment_id)
+        if status_code is None or status_code < 500:
+            raise
+        pytest.skip(
+            "Host cannot provision integration test model (download/deploy) "
+            f"'{DEPLOYABLE_TEST_MODEL_REPO}': APIError {status_code}: {exc}"
+        )
+
+    ready = _platform_deployment_ready(deployment)
+    _stop_deployment_quietly(client, probe_deployment_id)
+    if not ready:
+        pytest.skip(
+            f"Integration test model '{DEPLOYABLE_TEST_MODEL_REPO}' did not become "
+            "ready on this host."
+        )
 
 
 @pytest.fixture(autouse=True)
 def _require_embedding_model_for_marked_tests(request: pytest.FixtureRequest) -> None:
     if "requires_embedding_model" in request.keywords:
         request.getfixturevalue("embedding_model_prerequisite")
+
+
+@pytest.fixture(autouse=True)
+def _require_deployable_model_for_marked_tests(request: pytest.FixtureRequest) -> None:
+    if "requires_deployable_model" in request.keywords:
+        request.getfixturevalue("deployable_model_prerequisite")
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
