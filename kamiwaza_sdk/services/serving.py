@@ -178,6 +178,7 @@ class ServingService(BaseService):
                     else:
                         endpoint = f"{runtime_origin}{path}/v1"
                 elif deployment.lb_port and deployment.lb_port != 443:
+                    # Direct load-balancer ports bypass any gateway path prefix.
                     endpoint = f"{runtime_scheme}://{runtime_host}:{deployment.lb_port}/v1"
                 else:
                     endpoint = f"{runtime_origin}/runtime/models/{deployment.id}/v1"
@@ -196,11 +197,13 @@ class ServingService(BaseService):
         return active
 
     def _runtime_origin(self) -> str:
-        source = (
+        source_value = (
             os.environ.get("KAMIWAZA_RUNTIME_BASE_URL")
-            or os.environ.get("KAMIWAZA_PUBLIC_API_URL")
             or self.client.base_url
+            or os.environ.get("KAMIWAZA_PUBLIC_API_URL")
+            or ""
         )
+        source = str(source_value)
         parsed_url = urlparse(source)
         scheme = parsed_url.scheme or "https"
         use_https = os.environ.get("KAMIWAZA_USE_HTTPS")
@@ -212,7 +215,7 @@ class ServingService(BaseService):
             path = path[:-4]
 
         return urlunparse(
-            (scheme, parsed_url.netloc, path.rstrip("/"), "", "", "")
+            (scheme, parsed_url.netloc, path, "", "", "")
         ).rstrip("/")
 
 

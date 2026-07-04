@@ -77,7 +77,14 @@ def _active_deployment_payload(
     }
 
 
-def test_list_active_deployments_preserves_runtime_origin_port(mock_client):
+def _clear_runtime_url_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("KAMIWAZA_RUNTIME_BASE_URL", raising=False)
+    monkeypatch.delenv("KAMIWAZA_PUBLIC_API_URL", raising=False)
+    monkeypatch.delenv("KAMIWAZA_USE_HTTPS", raising=False)
+
+
+def test_list_active_deployments_preserves_runtime_origin_port(mock_client, monkeypatch):
+    _clear_runtime_url_env(monkeypatch)
     deployment_id = uuid4()
     mock_client.base_url = "https://kamiwaza.test:18446/api"
     mock_client.expect("GET", "/serving/deployments", [_active_deployment_payload(deployment_id)])
@@ -88,7 +95,8 @@ def test_list_active_deployments_preserves_runtime_origin_port(mock_client):
     assert deployments[0].endpoint == "https://kamiwaza.test:18446/runtime/models/dep-1/v1"
 
 
-def test_list_active_deployments_preserves_gateway_path_prefix(mock_client):
+def test_list_active_deployments_preserves_gateway_path_prefix(mock_client, monkeypatch):
+    _clear_runtime_url_env(monkeypatch)
     deployment_id = uuid4()
     mock_client.base_url = "https://gateway.example.com/kamiwaza/api"
     mock_client.expect("GET", "/serving/deployments", [_active_deployment_payload(deployment_id)])
@@ -100,8 +108,10 @@ def test_list_active_deployments_preserves_gateway_path_prefix(mock_client):
 
 
 def test_list_active_deployments_uses_runtime_base_override(mock_client, monkeypatch):
+    _clear_runtime_url_env(monkeypatch)
     deployment_id = uuid4()
     mock_client.base_url = "http://127.0.0.1:17779/api"
+    monkeypatch.setenv("KAMIWAZA_PUBLIC_API_URL", "http://localhost:8000/api")
     monkeypatch.setenv("KAMIWAZA_RUNTIME_BASE_URL", "https://kamiwaza.test:18446/api")
     mock_client.expect("GET", "/serving/deployments", [_active_deployment_payload(deployment_id)])
     service = ServingService(mock_client)
@@ -109,6 +119,22 @@ def test_list_active_deployments_uses_runtime_base_override(mock_client, monkeyp
     deployments = service.list_active_deployments()
 
     assert deployments[0].endpoint == "https://kamiwaza.test:18446/runtime/models/dep-1/v1"
+
+
+def test_list_active_deployments_prefers_client_base_url_over_public_url(
+    mock_client,
+    monkeypatch,
+):
+    _clear_runtime_url_env(monkeypatch)
+    deployment_id = uuid4()
+    mock_client.base_url = "http://host.docker.internal:8000/api"
+    monkeypatch.setenv("KAMIWAZA_PUBLIC_API_URL", "http://localhost:8000/api")
+    mock_client.expect("GET", "/serving/deployments", [_active_deployment_payload(deployment_id)])
+    service = ServingService(mock_client)
+
+    deployments = service.list_active_deployments()
+
+    assert deployments[0].endpoint == "http://host.docker.internal:8000/runtime/models/dep-1/v1"
 
 
 def test_deploy_model_waits_until_ready_by_default(mock_client):

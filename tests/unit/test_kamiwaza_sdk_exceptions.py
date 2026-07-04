@@ -11,11 +11,11 @@ Per WS-M3.2 design (§6.2 v0.3.7), the unified hierarchy is:
 
     KamiwazaError                     (base — extended with status_code + body kwargs)
         ├─ APIError                   (existing legacy)
+        │      └─ NotFoundError       (existing legacy)
         ├─ AuthenticationError        (existing legacy)
         ├─ AuthorizationError         (existing legacy)
         │      └─ NativeRealmRequiredError      (NEW M3.2)
         │      └─ BrokeredUserNotAllowlistedError (NEW M3.2)
-        ├─ NotFoundError              (existing legacy)
         ├─ ValidationError            (existing legacy)
         ├─ TimeoutError               (existing legacy)
         ├─ FederationPairTimeoutError (NEW M3.2)
@@ -142,6 +142,23 @@ def test_authorization_subclasses_inherit_correctly() -> None:
 
     assert issubclass(NativeRealmRequiredError, AuthorizationError)
     assert issubclass(BrokeredUserNotAllowlistedError, AuthorizationError)
+
+
+def test_not_found_error_inherits_api_error_for_compatibility() -> None:
+    """Service modules catch APIError to translate or retry 404s."""
+    from kamiwaza_sdk.exceptions import APIError, NotFoundError
+
+    assert issubclass(NotFoundError, APIError)
+    err = NotFoundError(
+        "missing",
+        status_code=404,
+        body={"detail": "Document not found"},
+        response_text='{"detail":"Document not found"}',
+    )
+    assert err.status_code == 404
+    assert err.response_data == {"detail": "Document not found"}
+    assert err.body == {"detail": "Document not found"}
+    assert err.response_text == '{"detail":"Document not found"}'
 
 
 # ---------------------------------------------------------------------------
