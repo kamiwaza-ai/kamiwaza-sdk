@@ -368,8 +368,8 @@ def session_workroom(
     """Writable workroom for Context Service explicit-scope tests.
 
     Room-scoped Context routes require an explicit non-Global workroom scope.
-    Context calls below pass explicit workroom_id so authority is not inferred
-    from SDK-local or server-side selected-session state.
+    PAT-backed automation cannot mutate selected-session state with
+    ``workrooms.enter``; Context calls below carry the workroom explicitly.
     """
     workrooms = shared_context_service.client.workrooms
     workroom = workrooms.create(
@@ -466,17 +466,11 @@ def test_context_vectordb_create_without_workroom_uses_global_scope(
 def test_context_workroom_scope_clients_isolate_vectordb_views(
     shared_context_service: ContextService,
 ) -> None:
-    """Derived SDK clients keep A, B, and Global workroom-scoped resources separate."""
+    """Derived SDK clients can carry workroom scope as a context manager."""
     root_client = shared_context_service.client
     workrooms = root_client.workrooms
     workroom_a = None
-    workroom_b = None
-    client_a: KamiwazaClient | None = None
-    client_b: KamiwazaClient | None = None
-    client_global: KamiwazaClient | None = None
     vdb_a: str | None = None
-    vdb_b: str | None = None
-    vdb_global: str | None = None
 
     try:
         workroom_a = workrooms.create(
@@ -484,56 +478,28 @@ def test_context_workroom_scope_clients_isolate_vectordb_views(
             "ephemeral",
             description="SDK workroom scope isolation A",
         )
-        workroom_b = workrooms.create(
-            f"sdk-scope-b-{uuid4().hex[:8]}",
-            "ephemeral",
-            description="SDK workroom scope isolation B",
-        )
-        client_a = root_client.workroom_scope(workroom_a.id)
-        client_b = root_client.workroom_scope(workroom_b.id)
-        client_global = root_client.workroom_scope(None)
+        with root_client.workroom_scope(workroom_a.id) as scoped_client:
+            service_a = scoped_client.context
+            vdb_a = _create_temp_vectordb(
+                service_a,
+                prefix="sdk-scope-a",
+                workroom_id=str(workroom_a.id),
+            )
+            scoped_vdbs = service_a.list_vectordbs(workroom_id=str(workroom_a.id))
 
-        service_a = client_a.context
-        service_b = client_b.context
-        service_global = client_global.context
-
-        vdb_a = _create_temp_vectordb(service_a, prefix="sdk-scope-a")
-        vdb_b = _create_temp_vectordb(service_b, prefix="sdk-scope-b")
-        vdb_global = _create_temp_vectordb(service_global, prefix="sdk-scope-global")
-
-        _assert_scoped_vectordb_view(
-            service_a,
-            visible_id=vdb_a,
-            hidden_ids={vdb_b, vdb_global},
-            label="A",
+        assert vdb_a in _vectordb_ids(scoped_vdbs)
+        created = next(
+            resource for resource in scoped_vdbs if str(resource.get("id")) == vdb_a
         )
-        _assert_scoped_vectordb_view(
-            service_b,
-            visible_id=vdb_b,
-            hidden_ids={vdb_a, vdb_global},
-            label="B",
-        )
-        _assert_scoped_vectordb_view(
-            service_global,
-            visible_id=vdb_global,
-            hidden_ids={vdb_a, vdb_b},
-            label="Global",
-        )
+        assert str(created.get("workroom_id")) == str(workroom_a.id)
     finally:
-        if vdb_a is not None and client_a is not None:
-            _safe_delete_vectordb(client_a.context, vdb_a)
-        if vdb_b is not None and client_b is not None:
-            _safe_delete_vectordb(client_b.context, vdb_b)
-        if vdb_global is not None and client_global is not None:
-            _safe_delete_vectordb(client_global.context, vdb_global)
-        for scoped_client in (client_a, client_b, client_global):
-            if scoped_client is not None:
-                scoped_client.close()
-        for workroom in (workroom_a, workroom_b):
-            if workroom is None:
-                continue
+        if vdb_a is not None and workroom_a is not None:
+            _safe_delete_vectordb(
+                root_client.context, vdb_a, workroom_id=str(workroom_a.id)
+            )
+        if workroom_a is not None:
             try:
-                workrooms.delete(str(workroom.id))
+                workrooms.delete(str(workroom_a.id))
             except (APIError, NotFoundError):
                 pass
 

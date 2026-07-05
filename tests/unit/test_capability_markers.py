@@ -52,6 +52,12 @@ def test_build_snapshot_parses_memory_bytes_to_gb():
     assert snap.gpu_mem_gb and snap.gpu_mem_gb[0] == pytest.approx(24.0, abs=0.01)
 
 
+def test_build_snapshot_parses_platform_vram_string_to_gb():
+    snap = cap.build_capability_snapshot([_hw([{"type": "cuda", "vram": "31.00"}])])
+    assert snap.gpu_vendors == frozenset({"nvidia"})
+    assert snap.gpu_mem_gb and snap.gpu_mem_gb[0] == pytest.approx(31.0, abs=0.01)
+
+
 def test_build_snapshot_detects_vendor_from_explicit_key():
     snap = cap.build_capability_snapshot([_hw([{"vendor": "AMD"}])])
     assert snap.gpu_vendors == frozenset({"amd"})
@@ -79,6 +85,18 @@ def test_build_snapshot_empty_inventory_is_cpu_only():
     assert snap.gpu_count == 0
     assert snap.gpu_mem_gb == ()
     assert snap.node_count == 1
+
+
+def test_build_snapshot_ignores_explicitly_inactive_hardware_entries():
+    snap = cap.build_capability_snapshot(
+        [
+            {"active": False, "node_id": "old", "gpus": [{"type": "cuda", "vram": "31"}]},
+            {"active": True, "node_id": "new", "gpus": [{"type": "cuda", "vram": "24"}]},
+        ],
+        node_count=1,
+    )
+    assert snap.gpu_count == 1
+    assert snap.gpu_mem_gb == (24.0,)
 
 
 # --------------------------------------------------------------------------- #
