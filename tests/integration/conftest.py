@@ -136,13 +136,12 @@ CONTEXT_TEST_LLM_DEPLOY_TIMEOUT_SECONDS = float(
     os.environ.get("KAMIWAZA_CONTEXT_LLM_DEPLOY_TIMEOUT_SECONDS", "600")
 )
 # Must stay in sync with TEST_REPO_ID in test_serving_workflow.py and
-# test_cli_live.py: the capability probe deploys the SAME model the gated tests
-# deploy, so the gate's skip/run verdict matches what the tests will actually do.
-# Intentionally not env-overridable — an override here that the test modules
-# don't honor would let the probe pass while the tests deploy a different model
-# and fail instead of skip.
+# test_cli_live.py: the capability probe deploys the same model through the
+# same default-engine path the gated tests use, so the gate's skip/run verdict
+# matches what the tests will actually do. Intentionally not env-overridable —
+# an override here that the test modules don't honor would let the probe pass
+# while the tests deploy a different model and fail instead of skip.
 DEPLOYABLE_TEST_MODEL_REPO = "mlx-community/Qwen3-4B-4bit"
-DEPLOYABLE_TEST_MODEL_ENGINE = "mlx"
 DEPLOYABLE_TEST_DEPLOY_TIMEOUT_SECONDS = float(
     os.environ.get("KAMIWAZA_DEPLOYABLE_TEST_DEPLOY_TIMEOUT_SECONDS", "600")
 )
@@ -1388,7 +1387,6 @@ def deployable_model_prerequisite(
         raw_deployment_id = client.serving.deploy_model(
             model_id=str(model.id),
             m_config_id=default_config.id,
-            engine_name=DEPLOYABLE_TEST_MODEL_ENGINE,
             lb_port=0,
             autoscaling=False,
             min_copies=1,
@@ -1425,12 +1423,6 @@ def deployable_model_prerequisite(
         # skip, so it is re-raised.
         status_code = getattr(exc, "status_code", None)
         _stop_deployment_quietly(client, probe_deployment_id)
-        if status_code in {400, 404, 422} and DEPLOYABLE_TEST_MODEL_ENGINE in str(exc):
-            pytest.skip(
-                "Host cannot provision integration test model "
-                f"'{DEPLOYABLE_TEST_MODEL_REPO}' with required engine "
-                f"'{DEPLOYABLE_TEST_MODEL_ENGINE}': APIError {status_code}: {exc}"
-            )
         if status_code is None or status_code < 500:
             raise
         pytest.skip(

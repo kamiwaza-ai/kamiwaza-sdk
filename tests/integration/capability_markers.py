@@ -163,10 +163,11 @@ def build_capability_snapshot(
     available; otherwise it is inferred from distinct hardware node ids.
     """
     entries = list(hardware_entries or [])
+    active_entries = [
+        hardware for hardware in entries if _hardware_active(hardware) is not False
+    ]
     gpu_dicts: list[dict] = []
-    for hardware in entries:
-        if _hardware_active(hardware) is False:
-            continue
+    for hardware in active_entries:
         gpus = _hardware_gpus(hardware)
         if gpus:
             gpu_dicts.extend(gpu for gpu in gpus if isinstance(gpu, dict))
@@ -186,7 +187,7 @@ def build_capability_snapshot(
             mig_flags.append(mig)
 
     if node_count is None:
-        node_count = len({_hardware_node_key(hw) for hw in entries})
+        node_count = len({_hardware_node_key(hw) for hw in active_entries})
 
     return ClusterCapabilitySnapshot(
         gpu_count=len(gpu_dicts),

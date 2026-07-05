@@ -99,6 +99,17 @@ def test_build_snapshot_ignores_explicitly_inactive_hardware_entries():
     assert snap.gpu_mem_gb == (24.0,)
 
 
+def test_build_snapshot_ignores_inactive_hardware_for_fallback_node_count():
+    snap = cap.build_capability_snapshot(
+        [
+            {"active": False, "node_id": "old", "gpus": [{"type": "cuda", "vram": "31"}]},
+            {"active": True, "node_id": "new", "gpus": []},
+        ]
+    )
+
+    assert snap.node_count == 1
+
+
 # --------------------------------------------------------------------------- #
 # collect_capability_requirements
 # --------------------------------------------------------------------------- #

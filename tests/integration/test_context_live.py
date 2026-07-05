@@ -168,20 +168,6 @@ def _vectordb_ids(resources: list[dict[str, object]]) -> set[str]:
     return {str(resource["id"]) for resource in resources if resource.get("id")}
 
 
-def _assert_scoped_vectordb_view(
-    service: ContextService,
-    *,
-    visible_id: str,
-    hidden_ids: set[str],
-    label: str,
-) -> None:
-    ids = _vectordb_ids(service.list_vectordbs())
-    assert visible_id in ids, f"{label} did not see its own VectorDB"
-    assert ids.isdisjoint(hidden_ids), (
-        f"{label} saw foreign VectorDBs: {ids & hidden_ids}"
-    )
-
-
 def _safe_scale_vectordb(
     service: ContextService,
     vectordb_id: str,
@@ -483,9 +469,8 @@ def test_context_workroom_scope_clients_isolate_vectordb_views(
             vdb_a = _create_temp_vectordb(
                 service_a,
                 prefix="sdk-scope-a",
-                workroom_id=str(workroom_a.id),
             )
-            scoped_vdbs = service_a.list_vectordbs(workroom_id=str(workroom_a.id))
+            scoped_vdbs = service_a.list_vectordbs()
 
         assert vdb_a in _vectordb_ids(scoped_vdbs)
         created = next(
@@ -625,18 +610,16 @@ def _vectordb_replicas(instance: dict) -> int | None:
     return None
 
 
-def test_context_vectordb_update_round_trips(
+def test_context_vectordb_update_accepts_config_and_redacts_public_response(
     shared_context_service: ContextService,
     session_workroom: str,
     shared_workroom_vectordb: str,
 ) -> None:
-    """update_vectordb mutation is observable via a follow-up get_vectordb.
+    """update_vectordb accepts config while public reads redact that config.
 
-    Assertion posture is API round-trip: confirm the PUT is accepted and the
-    public replica change is reflected when the instance is re-read. Config
-    patches are accepted by the endpoint, but the public VectorDBInstance schema
-    intentionally redacts config so credentials do not leak through lifecycle
-    responses.
+    Assertion posture is acceptance + public-shape: config patches are accepted
+    by the endpoint, but the public VectorDBInstance schema intentionally
+    redacts config so credentials do not leak through lifecycle responses.
     """
     service = shared_context_service
     vectordb_id = shared_workroom_vectordb
