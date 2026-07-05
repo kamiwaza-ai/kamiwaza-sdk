@@ -68,6 +68,22 @@ def test_runtime_host_uses_linux_kube_bridge(
     )
 
 
+def test_runtime_host_falls_back_when_ip_binary_is_missing(
+    integration_conftest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("KAMIWAZA_RUNTIME_HOST", raising=False)
+    monkeypatch.setattr(integration_conftest.sys, "platform", "linux")
+    monkeypatch.setattr(integration_conftest, "RUNTIME_HOST_ALIAS", "host.docker.internal")
+
+    def fake_run(*_args: Any, **_kwargs: Any) -> Any:
+        raise FileNotFoundError("ip")
+
+    monkeypatch.setattr(integration_conftest.subprocess, "run", fake_run)
+
+    assert integration_conftest._runtime_host("localhost") == "host.docker.internal"
+
+
 def test_runtime_endpoint_leaves_remote_hosts_alone(
     integration_conftest,
     monkeypatch: pytest.MonkeyPatch,

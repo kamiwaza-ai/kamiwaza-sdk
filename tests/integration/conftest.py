@@ -424,12 +424,15 @@ def _runtime_host_for_cluster() -> str:
 
 
 def _interface_ipv4(interface: str) -> str:
-    result = subprocess.run(
-        ["ip", "-4", "-o", "addr", "show", "dev", interface],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            ["ip", "-4", "-o", "addr", "show", "dev", interface],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return ""
     if result.returncode != 0:
         return ""
     for line in result.stdout.splitlines():
