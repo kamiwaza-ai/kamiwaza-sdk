@@ -385,7 +385,7 @@ def _runtime_endpoint(endpoint: str) -> str:
     if host not in {"localhost", "127.0.0.1", "::1"}:
         return endpoint
 
-    target_host = os.environ.get("KAMIWAZA_RUNTIME_HOST", RUNTIME_HOST_ALIAS).strip()
+    target_host = _runtime_host_for_cluster()
     if not target_host:
         return endpoint
 
@@ -396,10 +396,41 @@ def _runtime_endpoint(endpoint: str) -> str:
 
 def _runtime_host(host: str) -> str:
     if host in {"localhost", "127.0.0.1", "::1"}:
-        target = os.environ.get("KAMIWAZA_RUNTIME_HOST", RUNTIME_HOST_ALIAS).strip()
+        target = _runtime_host_for_cluster()
         if target:
             return target
     return host
+
+
+def _runtime_host_for_cluster() -> str:
+    explicit = os.environ.get("KAMIWAZA_RUNTIME_HOST", "").strip()
+    if explicit:
+        return explicit
+
+    if sys.platform.startswith("linux"):
+        for interface in ("kube-bridge", "cni0"):
+            address = _interface_ipv4(interface)
+            if address:
+                return address
+
+    return RUNTIME_HOST_ALIAS.strip()
+
+
+def _interface_ipv4(interface: str) -> str:
+    result = subprocess.run(
+        ["ip", "-4", "-o", "addr", "show", "dev", interface],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return ""
+    for line in result.stdout.splitlines():
+        fields = line.split()
+        for index, field in enumerate(fields):
+            if field == "inet" and index + 1 < len(fields):
+                return fields[index + 1].split("/", 1)[0]
+    return ""
 
 
 def _runtime_bootstrap(bootstrap: str) -> str:
