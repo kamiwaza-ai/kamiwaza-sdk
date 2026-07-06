@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Iterator, Optional, Sequence
+from typing import TYPE_CHECKING, Iterator, Optional, Sequence
 
 from ..exceptions import (
     APIError,
@@ -25,6 +25,9 @@ from ..schemas.retrieval import (
     TransportType,
 )
 from ..utils import reveal_secrets
+
+if TYPE_CHECKING:
+    import pyarrow as pa  # type: ignore[import-untyped]
 
 
 @dataclass
@@ -89,11 +92,17 @@ class RetrievalService(BaseService):
         """Backward-compatible alias for :meth:`stream_events`."""
         return self.stream_events(job_id)
 
-    def flight_batches(self, job: RetrievalJob, **tls_kwargs):
+    def flight_batches(self, job: RetrievalJob, **tls_kwargs) -> "Iterator[pa.RecordBatch]":
         """Stream Arrow record batches for a grpc-transport retrieval job.
 
         Thin wrapper around :func:`kamiwaza_sdk.services.retrieval_flight.open_flight_stream`
         that extracts the handshake and job_id from *job*.
+
+        When the caller does not supply ``ca_cert_path`` or ``tls_root_certs``,
+        the method attempts to bridge TLS settings from the underlying HTTP
+        session: if ``self.client.session.verify`` is a string path to a CA
+        bundle, that path is used as ``ca_cert_path``.  When ``verify`` is a
+        boolean (or absent), no automatic bridging occurs.
 
         Args:
             job: A ``RetrievalJob`` whose ``transport`` is ``grpc`` and which
@@ -111,6 +120,14 @@ class RetrievalService(BaseService):
 
         if not job.grpc:
             raise TransportNotSupportedError("Job has no Flight handshake")
+
+        # Bridge TLS from the HTTP session when the caller didn't pass certs.
+        session = getattr(self.client, "session", None)
+        if session is not None:
+            verify = getattr(session, "verify", None)
+            if isinstance(verify, str):
+                tls_kwargs.setdefault("ca_cert_path", verify)
+
         return open_flight_stream(job.grpc, job_id=job.job_id, **tls_kwargs)
 
     def create_inline_job(

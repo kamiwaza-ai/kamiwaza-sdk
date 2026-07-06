@@ -3,21 +3,26 @@ from __future__ import annotations
 
 import contextlib
 import json
+import time
 from typing import TYPE_CHECKING, Iterator, Optional
 
-from ..exceptions import FlightUnavailableError, KamiwazaError
+from ..exceptions import FlightUnavailableError, KamiwazaError, TransportNotSupportedError
 from ..schemas.retrieval import GrpcHandshake
 
 if TYPE_CHECKING:
-    import pyarrow as pa
+    import pyarrow as pa  # type: ignore[import-untyped]
 
 # Re-export so existing `from .retrieval_flight import FlightUnavailableError` keeps working.
 __all__ = ["FlightUnavailableError", "open_flight_stream"]
 
+# Per-endpoint pre-stream retry settings.
+_ENDPOINT_RETRY_ATTEMPTS = 3
+_ENDPOINT_RETRY_BACKOFFS = (0.5, 1.0)
+
 
 def _require_flight():
     try:
-        import pyarrow.flight as flight
+        import pyarrow.flight as flight  # type: ignore[import-untyped]
 
         return flight
     except ImportError as exc:
@@ -37,7 +42,9 @@ def open_flight_stream(
     """Yield Arrow record batches for a retrieval job handshake.
 
     Tries each endpoint in ``handshake.endpoints`` in order, falling over to
-    the next on any *pre-stream* connection error.  Raises
+    the next on any *pre-stream* connection error.  Each endpoint is attempted
+    up to ``_ENDPOINT_RETRY_ATTEMPTS`` times with short sleeps between retries
+    before the endpoint is marked failed and the next one is tried.  Raises
     ``FlightUnavailableError`` if all endpoints are exhausted before streaming
     begins.
 
@@ -61,11 +68,26 @@ def open_flight_stream(
 
     Raises:
         FlightUnavailableError: When no endpoint in the handshake could be
-            reached *before* streaming began.
+            reached *before* streaming began, or when the handshake advertises
+            no endpoints at all.
+        TransportNotSupportedError: When the handshake protocol is not
+            ``"arrow-flight"``.
         Exception: The original exception when a failure occurs mid-stream
             (after at least one batch has been yielded).
         KamiwazaError: When pyarrow is not installed.
     """
+    # Early validation — performed before pyarrow import so callers without
+    # pyarrow still get clean errors for obviously-wrong handshakes.
+    if handshake.protocol and handshake.protocol != "arrow-flight":
+        raise TransportNotSupportedError(
+            f"Unsupported Flight protocol: {handshake.protocol!r}; "
+            "this client only supports 'arrow-flight'"
+        )
+    if not handshake.endpoints:
+        raise FlightUnavailableError(
+            "Handshake advertised no Flight endpoints (server-side configuration issue)"
+        )
+
     flight = _require_flight()
 
     if tls_root_certs is None and ca_cert_path:
@@ -75,32 +97,43 @@ def open_flight_stream(
     ticket = flight.Ticket(
         json.dumps({"job_id": job_id, "token": handshake.token}).encode()
     )
+
+    connect_kwargs: dict = {}
+    if tls_root_certs is not None:
+        connect_kwargs["tls_root_certs"] = tls_root_certs
+    if override_hostname:
+        connect_kwargs["override_hostname"] = override_hostname
+
     errors: list[str] = []
     for endpoint in handshake.endpoints:
-        client = None
         yielded = False
-        try:
-            connect_kwargs: dict = {}
-            if tls_root_certs is not None:
-                connect_kwargs["tls_root_certs"] = tls_root_certs
-            if override_hostname:
-                connect_kwargs["override_hostname"] = override_hostname
-            client = flight.connect(endpoint.location, **connect_kwargs)
-            reader = client.do_get(ticket)
-            for chunk in reader:
-                yielded = True
-                yield chunk.data
-            return
-        except Exception as exc:  # noqa: BLE001
-            if yielded:
-                # Mid-stream failure: re-raise to avoid re-delivering data from
-                # offset 0 on the next endpoint (silent duplication).
-                raise
-            errors.append(f"{endpoint.location}: {exc}")
-        finally:
-            if client is not None:
-                with contextlib.suppress(Exception):
-                    client.close()
+        last_exc: Optional[Exception] = None
+        for attempt in range(_ENDPOINT_RETRY_ATTEMPTS):
+            client = None
+            try:
+                client = flight.connect(endpoint.location, **connect_kwargs)
+                reader = client.do_get(ticket)
+                for chunk in reader:
+                    yielded = True
+                    yield chunk.data
+                return
+            except Exception as exc:  # noqa: BLE001
+                if yielded:
+                    # Mid-stream failure: re-raise to avoid re-delivering data
+                    # from offset 0 on the next endpoint (silent duplication).
+                    raise
+                last_exc = exc
+                if attempt < _ENDPOINT_RETRY_ATTEMPTS - 1:
+                    time.sleep(
+                        _ENDPOINT_RETRY_BACKOFFS[
+                            min(attempt, len(_ENDPOINT_RETRY_BACKOFFS) - 1)
+                        ]
+                    )
+            finally:
+                if client is not None:
+                    with contextlib.suppress(Exception):
+                        client.close()
+        errors.append(f"{endpoint.location}: {last_exc}")
     raise FlightUnavailableError(
         "No Flight endpoint reachable: " + "; ".join(errors)
     )

@@ -1,82 +1,25 @@
-"""Unit tests for the Arrow Flight streaming client."""
-from __future__ import annotations
+"""Unit tests for the Arrow Flight streaming client (pyarrow required).
 
-from datetime import datetime, timezone
-from unittest.mock import MagicMock
+Pyarrow-free tests live in test_retrieval_flight_schema.py so they run even
+when pyarrow is absent.
+"""
+from __future__ import annotations
 
 import pytest
 
-# ---------------------------------------------------------------------------
-# Tests that don't need pyarrow at all
-# ---------------------------------------------------------------------------
-
-pytestmark = pytest.mark.unit
-
-
-def test_flight_batches_raises_when_no_grpc_handshake():
-    """RetrievalService.flight_batches must raise TransportNotSupportedError when job.grpc is None."""
-    from kamiwaza_sdk.exceptions import TransportNotSupportedError
-    from kamiwaza_sdk.schemas.retrieval import (
-        DatasetDescriptor,
-        RetrievalJob,
-        TransportType,
-    )
-    from kamiwaza_sdk.services.retrieval import RetrievalService
-
-    mock_client = MagicMock()
-    svc = RetrievalService(mock_client)
-    job = RetrievalJob(
-        job_id="00000000-0000-0000-0000-000000000099",
-        transport=TransportType.GRPC,
-        status="ready",
-        dataset=DatasetDescriptor(urn="urn:li:dataset:test", platform="test"),
-        grpc=None,
-    )
-    with pytest.raises(TransportNotSupportedError):
-        svc.flight_batches(job)
-
-
-# ---------------------------------------------------------------------------
-# Schema tests (no pyarrow needed)
-# ---------------------------------------------------------------------------
-
-
-def test_grpchandshake_legacy_endpoint_lifted():
-    """A legacy dict with a bare ``endpoint`` string is normalised to ``endpoints`` list."""
-    from kamiwaza_sdk.schemas.retrieval import GrpcHandshake
-
-    hs = GrpcHandshake.model_validate(
-        {
-            "endpoint": "0.0.0.0:6130",
-            "token": "tok",
-            "expires_at": "2099-01-01T00:00:00Z",
-        }
-    )
-    assert len(hs.endpoints) == 1
-    assert hs.endpoints[0].location == "0.0.0.0:6130"
-
-
-def test_grpchandshake_missing_both_yields_empty():
-    """When both ``endpoint`` and ``endpoints`` are absent, endpoints defaults to []."""
-    from kamiwaza_sdk.schemas.retrieval import GrpcHandshake
-
-    hs = GrpcHandshake.model_validate(
-        {"token": "tok", "expires_at": "2099-01-01T00:00:00Z"}
-    )
-    assert hs.endpoints == []
-
-
-# ---------------------------------------------------------------------------
-# Tests that require pyarrow.flight
-# ---------------------------------------------------------------------------
-
+# Must be at the top of the file so the entire module is skipped (not just
+# individual tests) when pyarrow.flight is unavailable.
 pytest.importorskip("pyarrow.flight")
+
+from datetime import datetime, timezone  # noqa: E402
 
 from kamiwaza_sdk.schemas.retrieval import FlightEndpoint, GrpcHandshake  # noqa: E402
 from kamiwaza_sdk.services.retrieval_flight import (  # noqa: E402
     FlightUnavailableError,
     open_flight_stream,
 )
+
+pytestmark = pytest.mark.unit
 
 
 def test_handshake_schema_parses_endpoints():
@@ -117,6 +60,7 @@ def test_open_flight_stream_tries_endpoints_in_order(monkeypatch):
         return FakeClient(ok=(location == "grpc://good:6130"))
 
     monkeypatch.setattr("pyarrow.flight.connect", fake_connect)
+    monkeypatch.setattr("kamiwaza_sdk.services.retrieval_flight.time.sleep", lambda _: None)
     hs = GrpcHandshake(
         endpoints=[
             FlightEndpoint(location="grpc://bad:6130"),
@@ -126,7 +70,11 @@ def test_open_flight_stream_tries_endpoints_in_order(monkeypatch):
         expires_at=datetime.now(timezone.utc),
     )
     list(open_flight_stream(hs, job_id="00000000-0000-0000-0000-000000000001"))
-    assert calls == ["grpc://bad:6130", "grpc://good:6130"]
+    # The bad endpoint is retried _ENDPOINT_RETRY_ATTEMPTS times, then good succeeds once.
+    from kamiwaza_sdk.services.retrieval_flight import _ENDPOINT_RETRY_ATTEMPTS
+
+    assert calls.count("grpc://bad:6130") == _ENDPOINT_RETRY_ATTEMPTS
+    assert calls.count("grpc://good:6130") == 1
 
 
 def test_all_endpoints_fail_raises(monkeypatch):
@@ -134,6 +82,7 @@ def test_all_endpoints_fail_raises(monkeypatch):
         raise Exception(f"conn refused at {location}")
 
     monkeypatch.setattr("pyarrow.flight.connect", fake_connect)
+    monkeypatch.setattr("kamiwaza_sdk.services.retrieval_flight.time.sleep", lambda _: None)
     hs = GrpcHandshake(
         endpoints=[FlightEndpoint(location="grpc://dead:6130")],
         token="t",
@@ -184,10 +133,48 @@ def test_midstream_failure_propagates_not_fallback(monkeypatch):
     assert second_connect_called == [], "fallback to second endpoint must not happen after mid-stream failure"
 
 
-def test_flight_unavailable_error_importable_from_exceptions():
-    """FlightUnavailableError must live in kamiwaza_sdk.exceptions."""
-    from kamiwaza_sdk.exceptions import FlightUnavailableError as FUE  # noqa: F401
-    from kamiwaza_sdk.services.retrieval_flight import FlightUnavailableError as FUE2
+def test_per_endpoint_retry_on_prestream_failure(monkeypatch):
+    """Pre-stream failures are retried up to _ENDPOINT_RETRY_ATTEMPTS times per endpoint."""
+    from kamiwaza_sdk.services.retrieval_flight import _ENDPOINT_RETRY_ATTEMPTS
 
-    # Both names must resolve to the same class
-    assert FUE is FUE2
+    connect_calls: list[str] = []
+
+    class FakeReader:
+        def __iter__(self):
+            return iter([])
+
+    class FakeClient:
+        def __init__(self, fail: bool) -> None:
+            self._fail = fail
+
+        def do_get(self, ticket, options=None):
+            if self._fail:
+                raise ConnectionRefusedError("pre-stream fail")
+            return FakeReader()
+
+        def close(self):
+            pass
+
+    # First endpoint always fails (pre-stream); second always succeeds.
+    def fake_connect(location, **kw):
+        connect_calls.append(location)
+        return FakeClient(fail=(location == "grpc://flaky:6130"))
+
+    monkeypatch.setattr("pyarrow.flight.connect", fake_connect)
+    # Suppress sleeps to keep the test fast.
+    monkeypatch.setattr("kamiwaza_sdk.services.retrieval_flight.time.sleep", lambda _: None)
+
+    hs = GrpcHandshake(
+        endpoints=[
+            FlightEndpoint(location="grpc://flaky:6130"),
+            FlightEndpoint(location="grpc://good:6130"),
+        ],
+        token="t",
+        expires_at=datetime.now(timezone.utc),
+    )
+    list(open_flight_stream(hs, job_id="00000000-0000-0000-0000-000000000004"))
+
+    # Flaky endpoint should be attempted exactly _ENDPOINT_RETRY_ATTEMPTS times.
+    assert connect_calls.count("grpc://flaky:6130") == _ENDPOINT_RETRY_ATTEMPTS
+    # Good endpoint should succeed on the first attempt.
+    assert connect_calls.count("grpc://good:6130") == 1
