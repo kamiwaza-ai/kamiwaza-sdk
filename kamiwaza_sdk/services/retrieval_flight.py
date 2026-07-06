@@ -1,18 +1,18 @@
 """Arrow Flight consumption for retrieval jobs (requires kamiwaza-sdk[flight])."""
 from __future__ import annotations
 
+import contextlib
 import json
 from typing import TYPE_CHECKING, Iterator, Optional
 
-from ..exceptions import KamiwazaError
+from ..exceptions import FlightUnavailableError, KamiwazaError
 from ..schemas.retrieval import GrpcHandshake
 
 if TYPE_CHECKING:
     import pyarrow as pa
 
-
-class FlightUnavailableError(KamiwazaError):
-    """No advertised Flight endpoint could be reached."""
+# Re-export so existing `from .retrieval_flight import FlightUnavailableError` keeps working.
+__all__ = ["FlightUnavailableError", "open_flight_stream"]
 
 
 def _require_flight():
@@ -37,8 +37,17 @@ def open_flight_stream(
     """Yield Arrow record batches for a retrieval job handshake.
 
     Tries each endpoint in ``handshake.endpoints`` in order, falling over to
-    the next on any connection error.  Raises ``FlightUnavailableError`` if
-    all endpoints are exhausted.
+    the next on any *pre-stream* connection error.  Raises
+    ``FlightUnavailableError`` if all endpoints are exhausted before streaming
+    begins.
+
+    **Endpoint semantics**: endpoints are connection *alternatives*, not resume
+    points.  Fallback to the next endpoint happens only for failures that occur
+    before any batch has been yielded (connect / ``do_get`` / first-batch
+    errors).  If a failure occurs after at least one batch has already been
+    delivered to the caller, the error propagates immediately — attempting
+    another endpoint from the beginning would silently re-deliver all data from
+    offset 0, causing duplicate rows.
 
     Args:
         handshake: gRPC handshake returned by the server for a grpc-transport job.
@@ -51,7 +60,10 @@ def open_flight_stream(
         Arrow RecordBatch objects streamed from the Flight server.
 
     Raises:
-        FlightUnavailableError: When no endpoint in the handshake could be reached.
+        FlightUnavailableError: When no endpoint in the handshake could be
+            reached *before* streaming began.
+        Exception: The original exception when a failure occurs mid-stream
+            (after at least one batch has been yielded).
         KamiwazaError: When pyarrow is not installed.
     """
     flight = _require_flight()
@@ -65,6 +77,8 @@ def open_flight_stream(
     )
     errors: list[str] = []
     for endpoint in handshake.endpoints:
+        client = None
+        yielded = False
         try:
             connect_kwargs: dict = {}
             if tls_root_certs is not None:
@@ -74,10 +88,19 @@ def open_flight_stream(
             client = flight.connect(endpoint.location, **connect_kwargs)
             reader = client.do_get(ticket)
             for chunk in reader:
+                yielded = True
                 yield chunk.data
             return
-        except Exception as exc:  # noqa: BLE001 — endpoint fallback by design
+        except Exception as exc:  # noqa: BLE001
+            if yielded:
+                # Mid-stream failure: re-raise to avoid re-delivering data from
+                # offset 0 on the next endpoint (silent duplication).
+                raise
             errors.append(f"{endpoint.location}: {exc}")
+        finally:
+            if client is not None:
+                with contextlib.suppress(Exception):
+                    client.close()
     raise FlightUnavailableError(
         "No Flight endpoint reachable: " + "; ".join(errors)
     )

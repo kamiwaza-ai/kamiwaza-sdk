@@ -268,6 +268,16 @@ class GatePackageUninstallBlockedError(KamiwazaError):
     unbind first. Body carries the blocking bindings."""
 
 
+
+class FlightUnavailableError(KamiwazaError):
+    """No advertised Arrow Flight endpoint could be reached.
+
+    Raised by ``open_flight_stream`` when every endpoint in the
+    ``GrpcHandshake.endpoints`` list fails *before* streaming begins.
+    Once at least one batch has been yielded, mid-stream failures propagate
+    as the original exception rather than falling back to the next endpoint.
+    """
+
 class GatePackageNotFoundError(NotFoundError):
     """404 with ``detail.reason == "gate_package_not_found"`` — GET/PUT/DELETE
     on a name that doesn't exist in ``cluster_gate_packages``. Customer may

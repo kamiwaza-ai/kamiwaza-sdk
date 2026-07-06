@@ -6,7 +6,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
 
 class TransportType(str, Enum):
@@ -60,10 +60,29 @@ class FlightEndpoint(BaseModel):
 class GrpcHandshake(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    endpoints: List[FlightEndpoint]
+    endpoints: List[FlightEndpoint] = Field(default_factory=list)
     token: str
     expires_at: datetime
     protocol: str = "arrow-flight"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _lift_legacy_endpoint(cls, data: Any) -> Any:
+        """Tolerate legacy server payloads that send a single string ``endpoint``.
+
+        Old servers return ``{"endpoint": "host:port", "token": ..., "expires_at": ...}``
+        without the ``endpoints`` list.  When ``endpoints`` is absent or empty and a
+        bare string ``endpoint`` key is present, lift it into the expected list shape.
+        """
+        if not isinstance(data, dict):
+            return data
+        endpoints = data.get("endpoints")
+        if not endpoints:
+            legacy = data.get("endpoint")
+            if isinstance(legacy, str):
+                data = dict(data)
+                data["endpoints"] = [{"location": legacy}]
+        return data
 
 
 class RetrievalJob(BaseModel):
