@@ -89,6 +89,30 @@ class RetrievalService(BaseService):
         """Backward-compatible alias for :meth:`stream_events`."""
         return self.stream_events(job_id)
 
+    def flight_batches(self, job: RetrievalJob, **tls_kwargs):
+        """Stream Arrow record batches for a grpc-transport retrieval job.
+
+        Thin wrapper around :func:`kamiwaza_sdk.services.retrieval_flight.open_flight_stream`
+        that extracts the handshake and job_id from *job*.
+
+        Args:
+            job: A ``RetrievalJob`` whose ``transport`` is ``grpc`` and which
+                carries a populated ``grpc`` handshake.
+            **tls_kwargs: Forwarded verbatim to ``open_flight_stream``
+                (``ca_cert_path``, ``tls_root_certs``, ``override_hostname``).
+
+        Returns:
+            An iterator of ``pyarrow.RecordBatch`` objects.
+
+        Raises:
+            TransportNotSupportedError: When the job has no Flight handshake.
+        """
+        from .retrieval_flight import open_flight_stream
+
+        if not job.grpc:
+            raise TransportNotSupportedError("Job has no Flight handshake")
+        return open_flight_stream(job.grpc, job_id=job.job_id, **tls_kwargs)
+
     def create_inline_job(
         self,
         dataset_urn: str,

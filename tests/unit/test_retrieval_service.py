@@ -143,10 +143,10 @@ def test_materialize_grpc_returns_handshake(dummy_client):
         "status": "queued",
         "dataset": {"urn": "urn", "platform": "s3", "path": None, "format": None},
         "grpc": {
-            "endpoint": "grpc://localhost:50051",
+            "endpoints": [{"location": "grpc://localhost:50051"}],
             "token": "secret",
             "expires_at": "2025-01-01T00:00:00Z",
-            "protocol": "kamiwaza.retrieval.v1",
+            "protocol": "arrow-flight",
         },
     }
     responses = {("post", "/retrieval/jobs"): job_payload}
@@ -155,7 +155,7 @@ def test_materialize_grpc_returns_handshake(dummy_client):
     result = service.materialize(RetrievalRequest(dataset_urn="urn", transport="grpc"))
 
     assert result.grpc is not None
-    assert result.grpc.endpoint == "grpc://localhost:50051"
+    assert result.grpc.endpoints[0].location == "grpc://localhost:50051"
 
 
 def test_create_job_translates_not_found():

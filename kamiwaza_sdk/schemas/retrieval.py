@@ -6,7 +6,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 
 class TransportType(str, Enum):
@@ -51,11 +51,19 @@ class JobProgress(BaseModel):
     chunks_emitted: Optional[int] = None
 
 
+class FlightEndpoint(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    location: str
+
+
 class GrpcHandshake(BaseModel):
-    endpoint: str
+    model_config = ConfigDict(extra="allow")
+
+    endpoints: List[FlightEndpoint]
     token: str
     expires_at: datetime
-    protocol: str = "kamiwaza.retrieval.v1"
+    protocol: str = "arrow-flight"
 
 
 class RetrievalJob(BaseModel):
