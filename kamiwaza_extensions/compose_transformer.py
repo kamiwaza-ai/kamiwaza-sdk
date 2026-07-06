@@ -283,6 +283,7 @@ class ComposeTransformer:
         revision_tag: str,
         registry: str,
         image_basename: Optional[str] = None,
+        image_refs: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """Return a deployment-ready copy of *compose_data*.
 
@@ -298,6 +299,10 @@ class ComposeTransformer:
         the prefix in the legacy ``{registry}/{basename}-{svc}:{tag}``
         fallback synthesis; see ``_canonical_build_ref`` for the
         precedence rules.
+
+        ``image_refs`` can override the computed image for buildable
+        services. The dev pipeline uses this when it needs to relocate a
+        declared publish registry ref into the cluster-local dev registry.
 
         Env-value ``${VAR}`` placeholders pass through unchanged. Callers
         shipping the result to a destination that does NOT perform its
@@ -320,6 +325,7 @@ class ComposeTransformer:
                 revision_tag,
                 registry,
                 image_basename=image_basename,
+                image_ref=(image_refs or {}).get(svc_name),
             )
 
         # Remove top-level networks (platform manages networking)
@@ -335,6 +341,7 @@ class ComposeTransformer:
         revision_tag: str,
         registry: str,
         image_basename: Optional[str] = None,
+        image_ref: Optional[str] = None,
     ) -> Dict[str, Any]:
         svc = copy.deepcopy(service)
 
@@ -358,7 +365,7 @@ class ComposeTransformer:
             # only owns the tag (stage suffix or --revision SHA). Fall
             # back to the legacy {ext}-{svc} convention when no image
             # is declared (auto-generated image fields).
-            svc["image"] = _canonical_build_ref(
+            svc["image"] = image_ref or _canonical_build_ref(
                 svc,
                 service_name,
                 fallback_registry=registry,

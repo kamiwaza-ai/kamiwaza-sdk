@@ -1,14 +1,12 @@
-"""Tests that ``run_dev_remote`` passes canonical image refs to the builder.
+"""Tests that ``run_dev_remote`` passes dev image refs to the builder.
 
-The build/push refs in dev.py must match the namespace declared in
-compose, the same way ``ComposeTransformer`` rewrites them. Without
-``image_refs=`` plumbed through to ``ImageBuilder.build``, the builder
-defaults to the legacy ``{registry}/{ext}-{svc}:{tag}`` form while the
-K8s payload (built from the transformed compose) references the
-declared namespace — extensions that publish under a non-conventional
-path (e.g. ``ghcr.io/.../tool-omniparse/omniparse``) hit
-ImagePullBackOff because the image lives at a different path than the
-pod pulls from.
+The build/push refs in dev.py must match the transformed K8s payload.
+For dev deploys, registry-qualified source images are relocated into
+the resolved dev image registry while preserving their repository path.
+Without ``image_refs=`` plumbed through to ``ImageBuilder.build``, the
+builder defaults to the legacy ``{registry}/{ext}-{svc}:{tag}`` form
+while the payload references a different path, producing
+ImagePullBackOff.
 """
 
 from __future__ import annotations
@@ -60,11 +58,10 @@ def _active_connection() -> ConnectionInfo:
 
 
 class TestDevRemoteBuildsAtCanonicalRefs:
-    """``ImageBuilder.build`` must receive ``image_refs`` that honor the
-    compose-declared namespace — same source-of-truth as the K8s
-    payload's image refs."""
+    """``ImageBuilder.build`` must receive ``image_refs`` that match the
+    K8s payload's dev-local image refs."""
 
-    def test_divergent_image_namespace_flows_through_to_builder(
+    def test_divergent_image_namespace_relocates_to_dev_registry(
         self, tmp_path, monkeypatch
     ):
         from kamiwaza_extensions.commands import dev as dev_cmd
@@ -139,9 +136,12 @@ class TestDevRemoteBuildsAtCanonicalRefs:
             "ImageBuilder.build must receive image_refs= so the built ref "
             "matches the transformed compose's declared namespace."
         )
-        # Tag rewritten, namespace preserved verbatim.
+        # Tag rewritten, source registry replaced with the dev image registry.
         assert captured["image_refs"] == {
-            "omniparse": "ghcr.io/example/tool-omniparse/omniparse:0.1.0-dev-abc.123",
+            "omniparse": (
+                "registry.kamiwaza.test/example/tool-omniparse/omniparse:"
+                "0.1.0-dev-abc.123"
+            ),
         }
 
     def test_display_name_fallback_image_refs_are_sanitized(self, tmp_path):
@@ -1366,14 +1366,13 @@ class TestInsecurePreflightSource:
         assert captured["kwargs"]["insecure"] is True
         assert captured["kwargs"]["engine"] == "docker"
 
-    def test_insecure_preflight_skips_unused_loopback_alias_for_external_refs(
+    def test_dev_relocated_external_refs_use_loopback_alias_preflight(
         self, tmp_path, monkeypatch
     ):
-        """Declared external build refs do not retag to the local VM alias.
+        """Declared build refs relocate to the local dev registry.
 
-        Registry resolution may still find an auto loopback alias for fallback
-        refs, but the Docker insecure-registry preflight should only require
-        daemon config when at least one actual push ref maps to that alias.
+        The Docker insecure-registry preflight must run because the relocated
+        ref is pushed through the host.docker.internal split alias.
         """
 
         from kamiwaza_extensions.commands import dev as dev_cmd
@@ -1449,7 +1448,7 @@ class TestInsecurePreflightSource:
             ),
             patch(
                 "kamiwaza_extensions.registry_resolution.docker_accepts_insecure_push_to",
-                return_value=False,
+                return_value=True,
             ) as mock_accepts,
             patch(
                 "kamiwaza_extensions.dev_state.read_state",
@@ -1463,19 +1462,25 @@ class TestInsecurePreflightSource:
         ):
             dev_cmd.run_dev_remote(no_build=True)
 
-        mock_accepts.assert_not_called()
+        mock_accepts.assert_called_once_with("host.docker.internal:30010")
         pusher.push.assert_called_once()
-        assert pusher.push.call_args.args[0] == ["ghcr.io/example/custom-api:dev1"]
+        assert pusher.push.call_args.args[0] == [
+            "127.0.0.1:30010/example/custom-api:dev1"
+        ]
         assert pusher.push.call_args.kwargs["registry"] == "host.docker.internal:30010"
-        assert pusher.push.call_args.kwargs["target_refs"] == {}
+        assert pusher.push.call_args.kwargs["target_refs"] == {
+            "127.0.0.1:30010/example/custom-api:dev1": (
+                "host.docker.internal:30010/example/custom-api:dev1"
+            ),
+        }
 
-    def test_podman_external_refs_do_not_retag_to_local_alias(
+    def test_podman_dev_relocated_external_refs_retag_to_local_alias(
         self, tmp_path, monkeypatch
     ):
-        """Declared external build refs stay external on the Podman path too.
+        """Declared build refs relocate on the Podman path too.
 
-        ``ImagePusher`` owns per-ref TLS for this mixed batch; this test keeps
-        ``run_dev_remote`` from inventing a local retag map for external refs.
+        ``kz-ext dev`` builds the deployment ref under the dev registry, then
+        retags to the host-reachable Podman alias for the push.
         """
 
         from kamiwaza_extensions.commands import dev as dev_cmd
@@ -1560,11 +1565,17 @@ class TestInsecurePreflightSource:
 
         mock_accepts.assert_not_called()
         pusher.push.assert_called_once()
-        assert pusher.push.call_args.args[0] == ["ghcr.io/example/custom-api:dev1"]
+        assert pusher.push.call_args.args[0] == [
+            "127.0.0.1:30010/example/custom-api:dev1"
+        ]
         assert pusher.push.call_args.kwargs["registry"] == (
             "host.containers.internal:30010"
         )
-        assert pusher.push.call_args.kwargs["target_refs"] == {}
+        assert pusher.push.call_args.kwargs["target_refs"] == {
+            "127.0.0.1:30010/example/custom-api:dev1": (
+                "host.containers.internal:30010/example/custom-api:dev1"
+            ),
+        }
         assert pusher.push.call_args.kwargs["engine"] == "podman"
 
     def test_fresh_build_forces_docker_push_engine_with_podman_installed(

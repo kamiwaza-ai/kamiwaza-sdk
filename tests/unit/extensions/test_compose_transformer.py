@@ -184,6 +184,26 @@ class TestBuildContextRemoval:
             "ghcr.io/kamiwazaai/my-app-api:1.0.0-dev"
         )
 
+    def test_image_refs_override_buildable_service_image(self, transformer):
+        compose = {
+            "services": {
+                "api": {
+                    "build": "./backend",
+                    "image": "ghcr.io/kamiwazaai/my-app-api:old-tag",
+                }
+            }
+        }
+        result = transformer.transform(
+            compose,
+            "my-app",
+            "1.0.0-dev",
+            "registry.test",
+            image_refs={"api": "registry.test/kamiwazaai/my-app-api:1.0.0-dev"},
+        )
+        assert result["services"]["api"]["image"] == (
+            "registry.test/kamiwazaai/my-app-api:1.0.0-dev"
+        )
+
     def test_unqualified_short_form_falls_back_to_legacy(self):
         # `image: foo/bar:tag` resolves to docker.io/foo/bar:tag under
         # docker's namespace rules — building/pushing at that path

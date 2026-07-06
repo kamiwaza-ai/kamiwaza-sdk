@@ -152,6 +152,31 @@ def _resume_revision(prior_state: Any, rev_tag: str, resumable: bool) -> Optiona
     return None
 
 
+def _relocate_dev_image_refs_to_registry(
+    image_refs: Dict[str, str],
+    *,
+    registry: str,
+) -> Dict[str, str]:
+    """Return dev image refs rooted in *registry*.
+
+    Shared canonical refs preserve registry-qualified source images for
+    publish/catalog workflows. For ``kz-ext dev`` the build, push, and CR
+    payload must instead point at the resolved dev image registry so the
+    local cluster can pull what the command pushed.
+    """
+    from kamiwaza_extensions.compose_transformer import _split_image_ref
+
+    target_registry = registry.rstrip("/")
+    out: Dict[str, str] = {}
+    for service, image_ref in image_refs.items():
+        ref_registry, repository, tag = _split_image_ref(image_ref)
+        if ref_registry == target_registry:
+            out[service] = image_ref
+        else:
+            out[service] = f"{target_registry}/{repository}:{tag}"
+    return out
+
+
 def _prior_artifacts_in_registry(
     info: Any,
     prior_revision: str,
@@ -177,6 +202,10 @@ def _prior_artifacts_in_registry(
             extension_name=info.name,
             revision_tag=prior_revision,
             image_basename=info.image_basename,
+        )
+        canonical_refs = _relocate_dev_image_refs_to_registry(
+            canonical_refs,
+            registry=registry,
         )
         if not canonical_refs:
             return True
@@ -639,12 +668,28 @@ def run_dev_remote(
 
     # 5. Transform compose
     transformer = ComposeTransformer()
+    # Canonical image refs for every build-context service. Start from the
+    # shared publish/dev derivation, then relocate any registry-qualified
+    # source refs into the resolved dev image registry. This keeps the image
+    # we build and push aligned with the ref the K8s payload will pull while
+    # leaving publish's source-registry behavior untouched.
+    canonical_refs: Dict[str, str] = _relocate_dev_image_refs_to_registry(
+        compute_canonical_refs(
+            info.compose_data.get("services") or {},
+            registry=registry,
+            extension_name=info.name,
+            revision_tag=rev_tag,
+            image_basename=info.image_basename,
+        ),
+        registry=registry,
+    )
     transformed = transformer.transform(
         info.compose_data,
         extension_name=info.name,
         revision_tag=rev_tag,
         registry=registry,
         image_basename=info.image_basename,
+        image_refs=canonical_refs,
     )
     # The catalog overlay (step 12) is a template destination: the platform
     # performs install-time env substitution on catalog compose, so it must
@@ -653,20 +698,6 @@ def run_dev_remote(
     # resolved copy (resolve_env_placeholders returns a new dict).
     catalog_compose = transformed
     transformed = transformer.resolve_env_placeholders(transformed)
-
-    # Canonical image refs for every build-context service. Single
-    # source of truth shared with the transformed compose so the image
-    # we build and push matches the ref the K8s payload will pull. The
-    # transformer honors a service's declared image namespace; without
-    # this map ImageBuilder would synthesize the legacy {ext}-{svc}
-    # form and ship a pod referencing an image that was never pushed.
-    canonical_refs: Dict[str, str] = compute_canonical_refs(
-        info.compose_data.get("services") or {},
-        registry=registry,
-        extension_name=info.name,
-        revision_tag=rev_tag,
-        image_basename=info.image_basename,
-    )
 
     # ENG-7110: image refs embedded in env values are a parallel surface the
     # compose transform doesn't rewrite. Kaizen's backend spawns agent
