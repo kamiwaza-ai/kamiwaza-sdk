@@ -306,6 +306,7 @@ def _publish_one(
     from kamiwaza_extensions.profile_manager import ProfileManager
     from kamiwaza_extensions.registry_builder import (
         RegistryBuilder,
+        find_uncovered_env_image_refs,
         resolve_extra_image,
     )
     from kamiwaza_extensions.validators.compose import ComposeValidator
@@ -676,6 +677,19 @@ def _publish_one(
         revision=revision,
         digest_map=digest_map or None,
     )
+
+    # Coverage gate (ENG-8270): a registry-owned image ref that only lives
+    # in a compose env value (a dynamic-spawn image like Kaizen's
+    # AGENT_SERVER_IMAGE default) must be covered by docker_images /
+    # extra_docker_images — those lists are what offline bundles relocate.
+    # An uncovered ref ships an entry whose sandbox image is unpullable on
+    # every air-gapped install, so reject it here rather than on the box.
+    coverage_violations = find_uncovered_env_image_refs(entry, registry)
+    if coverage_violations:
+        console.print("  [red]✗ catalog entry validation failed[/red]")
+        for violation in coverage_violations:
+            console.print(f"\n[red]Error:[/red] {violation}")
+        raise typer.Exit(code=int(ExitCode.VALIDATION))
 
     # 8. Publish to catalog
     console.print("  Publishing catalog...", end="")
