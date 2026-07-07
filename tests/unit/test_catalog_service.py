@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from kamiwaza_sdk.exceptions import APIError
-from kamiwaza_sdk.schemas.catalog import ContainerCreate, DatasetCreate, SecretCreate
+from kamiwaza_sdk.exceptions import NotFoundError
+from kamiwaza_sdk.schemas.catalog import ContainerCreate, SecretCreate
 from kamiwaza_sdk.services.catalog import CatalogService, ContainerClient, DatasetClient, SecretClient
 
 pytestmark = pytest.mark.unit
@@ -101,6 +101,62 @@ def test_secret_client_preserves_opaque_urn(dummy_client):
     assert "params" not in client.calls[1][2]
     assert client.calls[2][1].endswith(raw)
     assert "params" not in client.calls[2][2]
+
+
+def test_secret_client_falls_back_to_by_urn_after_v2_not_found():
+    class FallbackClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str, dict]] = []
+
+        def get(self, path: str, **kwargs):
+            self.calls.append(("get", path, kwargs))
+            if path == "/catalog/secrets/v2/urn:li:dataHubSecret:demo":
+                raise NotFoundError(
+                    "missing",
+                    status_code=404,
+                    response_data={"detail": "not found"},
+                )
+            if path == "/catalog/secrets/by-urn":
+                return {
+                    "urn": kwargs["params"]["urn"],
+                    "name": "demo",
+                    "owner": "urn:li:corpuser:demo",
+                }
+            raise AssertionError(f"Unexpected GET {path}")
+
+        def delete(self, path: str, **kwargs):
+            self.calls.append(("delete", path, kwargs))
+            if path == "/catalog/secrets/v2/urn:li:dataHubSecret:demo":
+                raise NotFoundError(
+                    "missing",
+                    status_code=404,
+                    response_data={"detail": "not found"},
+                )
+            if path == "/catalog/secrets/by-urn":
+                return None
+            raise AssertionError(f"Unexpected DELETE {path}")
+
+    client = FallbackClient()
+    secrets = SecretClient(client)
+
+    secret = secrets.get("urn:li:dataHubSecret:demo")
+    secrets.delete("urn:li:dataHubSecret:demo")
+
+    assert secret.urn == "urn:li:dataHubSecret:demo"
+    assert client.calls == [
+        ("get", "/catalog/secrets/v2/urn:li:dataHubSecret:demo", {}),
+        (
+            "get",
+            "/catalog/secrets/by-urn",
+            {"params": {"urn": "urn:li:dataHubSecret:demo"}},
+        ),
+        ("delete", "/catalog/secrets/v2/urn:li:dataHubSecret:demo", {}),
+        (
+            "delete",
+            "/catalog/secrets/by-urn",
+            {"params": {"urn": "urn:li:dataHubSecret:demo"}},
+        ),
+    ]
 
 
 def test_dataset_client_encode_helper():
