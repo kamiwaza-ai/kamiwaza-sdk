@@ -57,7 +57,7 @@ KAMIWAZA_PEER_API_KEY=... \
 | Marker | What it covers | Skip behavior |
 |---|---|---|
 | `live` | Tests that talk to a running Kamiwaza deployment | always selected when running `-m live` |
-| `requires_embedding_model` | Live tests that need an active platform embedding deployment | auto-provisioned by `embedding_model_prerequisite` fixture; skipped if provisioning fails |
+| `requires_embedding_model` | Live tests that need a platform embedding deployment that can generate embeddings | auto-provisioned by `embedding_model_prerequisite`, then probed by `embedding_test_target`; skipped if provisioning or the functional probe fails |
 | `requires_two_clusters` | Live tests that need a federation peer cluster (ENG-5784) | auto-deselected at collection when `KAMIWAZA_PEER_BASE_URL` is unset; skipped at run time with an explicit reason when peer URL is set but `KAMIWAZA_PEER_API_KEY` is missing (partial-creds case) |
 
 ## Adding a federation-aware integration test

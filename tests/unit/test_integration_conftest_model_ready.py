@@ -109,3 +109,42 @@ def test_ensure_repo_ready_post_download_poll_loads_model_files(
     assert client.models.list_calls == [True, True]
     assert client.models.download_calls == 1
     assert client.models.wait_calls == 1
+
+
+def test_requires_embedding_model_marker_requires_functional_embedding_probe(
+    integration_conftest,
+) -> None:
+    class Request:
+        def __init__(self, keywords: dict[str, object]) -> None:
+            self.keywords = keywords
+            self.requested: list[str] = []
+
+        def getfixturevalue(self, name: str) -> object:
+            self.requested.append(name)
+            return object()
+
+    request = Request({"requires_embedding_model": object()})
+
+    integration_conftest._require_embedding_model_for_marked_tests.__wrapped__(request)
+
+    assert request.requested == ["embedding_test_target"]
+
+
+def test_requires_embedding_model_marker_leaves_unmarked_tests_alone(
+    integration_conftest,
+) -> None:
+    class Request:
+        keywords: dict[str, object] = {}
+
+        def __init__(self) -> None:
+            self.requested: list[str] = []
+
+        def getfixturevalue(self, name: str) -> object:
+            self.requested.append(name)
+            return object()
+
+    request = Request()
+
+    integration_conftest._require_embedding_model_for_marked_tests.__wrapped__(request)
+
+    assert request.requested == []
