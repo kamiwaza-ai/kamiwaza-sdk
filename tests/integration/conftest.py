@@ -1441,8 +1441,9 @@ def deployable_model_prerequisite(
 
 @pytest.fixture(autouse=True)
 def _require_embedding_model_for_marked_tests(request: pytest.FixtureRequest) -> None:
+    """Require a functional embedding endpoint, not just a deployment row."""
     if "requires_embedding_model" in request.keywords:
-        request.getfixturevalue("embedding_model_prerequisite")
+        request.getfixturevalue("embedding_test_target")
 
 
 @pytest.fixture(autouse=True)
