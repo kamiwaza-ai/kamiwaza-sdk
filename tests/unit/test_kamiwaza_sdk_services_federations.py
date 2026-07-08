@@ -185,6 +185,49 @@ def test_pair_uses_caller_supplied_preshared_key_verbatim() -> None:
     assert body["preshared_key"] == "custom-psk-from-vault-12345"
 
 
+def test_pair_forwards_shared_idp_fields_when_supplied() -> None:
+    """ENG-8213 — supplying shared_issuer_url (+ optional jwks/ca) creates the
+    federation in shared_idp mode; the SDK forwards them on the create body."""
+    from kamiwaza_sdk.services.federations import FederationsAPI
+
+    client = _MockClient()
+    _stage_pair_responses(client)
+
+    api = FederationsAPI(client)
+    api.pair(
+        name="ORION",
+        role="initiator",
+        remote_url="https://orion.example.com",
+        shared_issuer_url="https://idp.example.com/realms/federated",
+        shared_jwks_url=(
+            "https://idp.example.com/realms/federated/protocol/openid-connect/certs"
+        ),
+        shared_ca_pem="-----BEGIN CERTIFICATE-----\nX\n-----END CERTIFICATE-----",
+    )
+
+    _, body = _create_call(client)
+    assert body["shared_issuer_url"] == "https://idp.example.com/realms/federated"
+    assert body["shared_jwks_url"].endswith("/certs")
+    assert "BEGIN CERTIFICATE" in body["shared_ca_pem"]
+
+
+def test_pair_omits_shared_idp_fields_when_not_supplied() -> None:
+    """Without shared_issuer_url the create body carries no shared_* keys
+    (the federation stays peer_kc)."""
+    from kamiwaza_sdk.services.federations import FederationsAPI
+
+    client = _MockClient()
+    _stage_pair_responses(client)
+
+    api = FederationsAPI(client)
+    api.pair(name="ORION", role="initiator", remote_url="https://orion.example.com")
+
+    _, body = _create_call(client)
+    assert "shared_issuer_url" not in body
+    assert "shared_jwks_url" not in body
+    assert "shared_ca_pem" not in body
+
+
 def test_pair_minted_psk_is_unique_per_call() -> None:
     """Two consecutive pair() calls without caller PSK must mint distinct
     values — otherwise two adjacent demos would share a PSK accidentally."""

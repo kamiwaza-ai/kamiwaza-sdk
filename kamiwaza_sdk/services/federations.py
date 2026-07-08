@@ -67,6 +67,9 @@ class FederationsAPI(BaseService):
         local_kc_jwks_url: Optional[str] = None,
         local_broker_client_id: Optional[str] = None,
         local_broker_client_secret: Optional[str] = None,
+        shared_issuer_url: Optional[str] = None,
+        shared_jwks_url: Optional[str] = None,
+        shared_ca_pem: Optional[str] = None,
     ) -> Federation:
         """Initiate or accept a federation pairing.
 
@@ -174,6 +177,18 @@ class FederationsAPI(BaseService):
             create_body["local_broker_client_id"] = local_broker_client_id
         if local_broker_client_secret is not None:
             create_body["local_broker_client_secret"] = local_broker_client_secret
+        # ENG-8213 — shared_idp (Alt C). Supplying ``shared_issuer_url`` creates
+        # the federation in the receiver-controlled shared_idp mode (both
+        # clusters trust this shared realm) instead of the legacy source-trusted
+        # peer_kc mode, and it is NOT gated by ALLOW_UNTRUSTED_FEDERATION.
+        # ``shared_jwks_url`` is derived from the issuer server-side when omitted;
+        # ``shared_ca_pem`` pins the JWKS-fetch trust root for a self-signed realm.
+        if shared_issuer_url is not None:
+            create_body["shared_issuer_url"] = shared_issuer_url
+        if shared_jwks_url is not None:
+            create_body["shared_jwks_url"] = shared_jwks_url
+        if shared_ca_pem is not None:
+            create_body["shared_ca_pem"] = shared_ca_pem
 
         created = self.client._request(
             "POST",
