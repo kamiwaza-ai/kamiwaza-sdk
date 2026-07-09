@@ -171,6 +171,16 @@ _EMBEDDING_NAME_PATTERNS = re.compile(
     r"(?i)(bge|e5[-_]|nomic[-_]?embed|gte[-_]|all[-_]minilm|"
     r"instructor|jina[-_]?embed|text[-_]?embedding|embed)"
 )
+_HARNESS_PROVISIONED_KEY = "_harness_provisioned"
+_HARNESS_EMBEDDING_STOPPED_NOTE = (
+    "harness-provisioned embedding deployment was stopped"
+)
+_HARNESS_EMBEDDING_STOP_ATTEMPTED_NOTE = (
+    "harness-provisioned embedding deployment stop was attempted"
+)
+_HARNESS_EMBEDDING_NO_DEPLOYMENT_ID_NOTE = (
+    "harness-provisioned embedding deployment had no deployment id to stop"
+)
 
 
 def _http_trace_enabled() -> bool:
@@ -555,14 +565,15 @@ def _platform_deployment_ready(deployment: object) -> bool:
 
 def _stop_deployment_quietly(
     client: KamiwazaClient, deployment_id: str | None
-) -> None:
+) -> bool:
     """Best-effort stop of a deployment (used for capability probes / cleanup)."""
     if not deployment_id:
-        return
+        return False
     try:
         client.serving.stop_deployment(deployment_id=deployment_id, force=True)
     except Exception:  # noqa: BLE001 — teardown is best-effort
-        pass
+        return False
+    return True
 
 
 def _active_model_deployments(
@@ -642,6 +653,14 @@ def _active_embedding_deployment(client: KamiwazaClient) -> dict[str, str] | Non
         desired_type="embedding",
         preferred_repo_id=EMBEDDING_TEST_MODEL_REPO,
     )
+
+
+def _mark_embedding_deployment(
+    deployment: dict[str, str], *, harness_provisioned: bool
+) -> dict[str, str]:
+    marked = dict(deployment)
+    marked[_HARNESS_PROVISIONED_KEY] = "true" if harness_provisioned else "false"
+    return marked
 
 
 def _unique_nonempty_values(*values: str) -> list[str]:
@@ -1179,7 +1198,7 @@ def embedding_model_prerequisite(
 
     deployment = _active_embedding_deployment(client)
     if deployment is not None:
-        return deployment
+        return _mark_embedding_deployment(deployment, harness_provisioned=False)
 
     request_message = _maybe_request_embedding_download_and_deploy(
         client,
@@ -1195,7 +1214,11 @@ def embedding_model_prerequisite(
         nudge_after_seconds=EMBEDDING_TEST_DEPLOY_NUDGE_SECONDS,
     )
     if deployment is not None:
-        return deployment
+        return _mark_embedding_deployment(
+            deployment,
+            harness_provisioned=deployment.get("repo_model_id")
+            == EMBEDDING_TEST_MODEL_REPO,
+        )
 
     details = [f"repo={EMBEDDING_TEST_MODEL_REPO}"]
     if request_message:
@@ -1237,9 +1260,23 @@ def embedding_test_target(
                 }
             failures.append(f"{model}/{provider_type}: {probe_error}")
 
+    cleanup_notes: list[str] = []
+    if embedding_model_prerequisite.get(_HARNESS_PROVISIONED_KEY) == "true":
+        deployment_id = embedding_model_prerequisite.get("deployment_id")
+        stopped = _stop_deployment_quietly(
+            client,
+            deployment_id,
+        )
+        if stopped:
+            cleanup_notes.append(_HARNESS_EMBEDDING_STOPPED_NOTE)
+        elif deployment_id:
+            cleanup_notes.append(_HARNESS_EMBEDDING_STOP_ATTEMPTED_NOTE)
+        else:
+            cleanup_notes.append(_HARNESS_EMBEDDING_NO_DEPLOYMENT_ID_NOTE)
+
     pytest.skip(
         "Embedding deployment is present, but the embedding endpoint could not use "
-        f"any preferred test target ({'; '.join(failures)})."
+        f"any preferred test target ({'; '.join(failures + cleanup_notes)})."
     )
 
 
