@@ -19,7 +19,6 @@ pytestmark = [
     pytest.mark.integration,
     pytest.mark.live,
     pytest.mark.withoutresponses,
-    pytest.mark.requires_embedding_model,
 ]
 
 
@@ -60,6 +59,8 @@ class TestEmbeddingProviders:
 
 class TestEmbeddingChunking:
     """Tests for text chunking operations."""
+
+    pytestmark = pytest.mark.requires_embedding_model
 
     def test_chunk_text_simple(
         self, live_kamiwaza_client, embedding_test_target: dict[str, str]
@@ -109,6 +110,8 @@ class TestEmbeddingChunking:
 class TestEmbeddingGeneration:
     """Tests for embedding generation operations."""
 
+    pytestmark = pytest.mark.requires_embedding_model
+
     def test_create_embedding_post(
         self, live_kamiwaza_client, embedding_test_target: dict[str, str]
     ) -> None:
@@ -149,6 +152,8 @@ class TestEmbeddingGeneration:
 class TestEmbeddingBatch:
     """Tests for batch embedding operations."""
 
+    pytestmark = pytest.mark.requires_embedding_model
+
     def test_embed_chunks_batch(
         self, live_kamiwaza_client, embedding_test_target: dict[str, str]
     ) -> None:
@@ -178,6 +183,8 @@ class TestEmbeddingBatch:
 
 class TestEmbeddingIntegrated:
     """End-to-end embedding workflow tests."""
+
+    pytestmark = pytest.mark.requires_embedding_model
 
     def test_chunk_and_embed_workflow(
         self, live_kamiwaza_client, embedding_test_target: dict[str, str]
