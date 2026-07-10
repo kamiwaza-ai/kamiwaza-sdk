@@ -1,0 +1,71 @@
+"""T7.10 / ENG-5044 — Gate discovery on the canonical surface.
+
+WS-M3.2 service migration. Brings the gate-discovery surface from
+``kamiwaza/gates.py`` (T5.4 / ENG-4691) into ``kamiwaza_sdk.services.gates``
+per design v0.3.7 §4.2.11.
+
+Customer-facing API (M2 scope):
+
+    kz.gates.discover(classpath)   -> GateDiscovery
+
+Full gates surface (set_gate / clear_gate / packages.*) ships in WS-M5.
+Server-side correlate: POST /api/authz/gates/discover (§4.2.3).
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from ..schemas.federation import GateDiscovery
+from .base_service import BaseService
+
+if TYPE_CHECKING:
+    from .gate_packages import GatePackagesAPI
+
+
+class GatesAPI(BaseService):
+    """Gate discovery on the local cluster + gate-packages sub-API."""
+
+    @property
+    def packages(self) -> "GatePackagesAPI":
+        """Gate-package install / replace / list / get / uninstall
+        (T7.10 / ENG-4765, WS-M5). Lazy-loaded sub-service.
+
+        Customer surface: ``kz.gates.packages.install("acme-gates==1.0.0",
+        hash_digest="sha256:...")``. Lives under ``kz.gates`` because
+        the two concerns are semantically related — gate-code lifecycle
+        and gate-code reflection both anchor on the gate registry.
+        """
+        if not hasattr(self, "_packages"):
+            from .gate_packages import GatePackagesAPI
+
+            self._packages = GatePackagesAPI(self.client)
+        return self._packages
+
+    def discover(self, classpath: str) -> GateDiscovery:
+        """Reflect on a Gate class by classpath; return its metadata.
+
+        Per design §4.2.3: imports the class server-side, classifies it
+        as execution or attribute gate, returns name + required_attributes
+        + config_schema. The authoring guide's "discover before bind"
+        workflow uses this to validate gate configuration before writing
+        the binding to runtime config.
+
+        Args:
+            classpath: Dotted fully-qualified classpath, e.g.
+                ``"my_policy.MyExecutionGate"``.
+
+        Returns:
+            GateDiscovery — typed reflection payload.
+
+        Raises:
+            KamiwazaError: 404 classpath_unimportable when the module or
+                class can't be loaded; 400 not_a_gate when the loaded
+                class isn't an AttributeGate / ExecutionGate subclass.
+        """
+        response = self.client._request(
+            "POST",
+            "/authz/gates/discover",
+            json={"classpath": classpath},
+        )
+        return GateDiscovery.model_validate(response)

@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from rich.console import Console
 
@@ -38,8 +38,22 @@ class ImagePushError(RuntimeError):
     pass
 
 
+def _ref_targets_registry(image_ref: str, registry: str) -> bool:
+    """True when *image_ref* is under *registry*."""
+
+    target = registry.rstrip("/")
+    return image_ref == target or image_ref.startswith(f"{target}/")
+
+
 def _has_podman() -> bool:
-    """Return True if the ``podman`` CLI is available on PATH."""
+    """Return True if the ``podman`` CLI is available on PATH.
+
+    Same predicate as ``registry_resolution._has_podman``; both feed
+    ``select_push_engine``, which is the single source of truth for
+    *engine selection*. The duplication avoids an import cycle on the
+    hot push path. If the selection rule changes, update
+    ``select_push_engine`` and every caller listed there.
+    """
     return shutil.which("podman") is not None
 
 
@@ -53,29 +67,73 @@ class ImagePusher:
         token: Optional[str] = None,
         insecure: bool = False,
         verbose: bool = False,
+        target_refs: Optional[Dict[str, str]] = None,
+        engine: Optional[str] = None,
     ) -> None:
         """Push all images to the registry.
 
         If *token* is provided, authenticates with the registry first.
-        When *insecure* is True and Podman is available, ``--tls-verify=false``
-        is passed to bypass self-signed certificate errors.
+        When *insecure* is True and Podman is used, ``--tls-verify=false`` is
+        passed only for pushed refs that target *registry*.
+
+        ``target_refs`` optionally maps built/deployment refs to alternate
+        push refs. This supports local topologies where the same registry is
+        reachable under different hostnames from the build VM and the cluster.
+
+        ``engine`` can force the push binary to ``"docker"`` or ``"podman"``.
+        When omitted, the historical auto-selection behavior is preserved.
         """
-        use_podman = insecure and _has_podman()
+        if engine is None:
+            # Must mirror ``registry_resolution.select_push_engine``: that
+            # helper is what callers use to gate insecure-registries /
+            # engine-mismatch pre-flight checks. Changing this rule without
+            # updating ``select_push_engine`` will desync the pre-flight from
+            # the actual push behavior.
+            from kamiwaza_extensions.registry_resolution import podman_push_available
+
+            use_podman = insecure and podman_push_available()
+        else:
+            normalized_engine = engine.lower()
+            if normalized_engine not in ("docker", "podman"):
+                raise ImagePushError(
+                    f"Unsupported push engine '{engine}'; expected 'docker' or 'podman'"
+                )
+            use_podman = normalized_engine == "podman"
         if token:
-            self._login_registry(registry, token, use_podman=use_podman)
+            self._login_registry(
+                registry,
+                token,
+                use_podman=use_podman,
+                insecure=insecure,
+            )
 
         for ref in image_refs:
-            short = ref.rsplit("/", 1)[-1] if "/" in ref else ref
+            push_ref = (target_refs or {}).get(ref, ref)
+            ref_insecure = insecure and _ref_targets_registry(push_ref, registry)
+            short = push_ref.rsplit("/", 1)[-1] if "/" in push_ref else push_ref
             console.print(f"  Pushing [bold]{short}[/bold]...")
-            self._push(ref, use_podman=use_podman, verbose=verbose)
+            if push_ref != ref:
+                self._tag(ref, push_ref, use_podman=use_podman, verbose=verbose)
+            self._push(
+                push_ref,
+                use_podman=use_podman,
+                insecure=ref_insecure,
+                verbose=verbose,
+            )
             console.print(f"  [green]\u2713[/green] {short}")
 
     @staticmethod
-    def _login_registry(registry: str, token: str, *, use_podman: bool = False) -> None:
+    def _login_registry(
+        registry: str,
+        token: str,
+        *,
+        use_podman: bool = False,
+        insecure: bool = False,
+    ) -> None:
         """Authenticate with the container registry using a PAT via stdin."""
         cli = "podman" if use_podman else "docker"
         cmd = [cli, "login", registry, "-u", "token", "--password-stdin"]
-        if use_podman:
+        if use_podman and insecure:
             cmd.insert(2, "--tls-verify=false")
         try:
             proc = subprocess.run(
@@ -158,8 +216,13 @@ class ImagePusher:
         import json as _json
 
         cmd = [
-            "docker", "buildx", "imagetools", "inspect", image_ref,
-            "--format", "{{json .Manifest}}",
+            "docker",
+            "buildx",
+            "imagetools",
+            "inspect",
+            image_ref,
+            "--format",
+            "{{json .Manifest}}",
         ]
         try:
             result = subprocess.run(
@@ -197,16 +260,20 @@ class ImagePusher:
             )
         digest = manifest.get("digest")
         if not isinstance(digest, str) or not DIGEST_PATTERN.match(digest):
-            raise ImagePushError(
-                f"Unexpected digest field for {image_ref}: {digest!r}"
-            )
+            raise ImagePushError(f"Unexpected digest field for {image_ref}: {digest!r}")
         return digest
 
     @staticmethod
-    def _push(image_ref: str, *, use_podman: bool = False, verbose: bool = False) -> None:
+    def _push(
+        image_ref: str,
+        *,
+        use_podman: bool = False,
+        insecure: bool = False,
+        verbose: bool = False,
+    ) -> None:
         cli = "podman" if use_podman else "docker"
         cmd = [cli, "push", image_ref]
-        if use_podman:
+        if use_podman and insecure:
             cmd.insert(2, "--tls-verify=false")
         try:
             if verbose:
@@ -226,7 +293,47 @@ class ImagePusher:
             raise ImagePushError(
                 f"{cli} not found. Install Docker/Podman or ensure '{cli}' is on PATH."
             )
+        except subprocess.CalledProcessError as exc:
+            detail = (exc.stderr or str(exc)).strip()
+            raise ImagePushError(f"Push failed for {image_ref}: {detail}") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise ImagePushError(f"Push timed out after 600s for {image_ref}") from exc
+
+    @staticmethod
+    def _tag(
+        source_ref: str,
+        target_ref: str,
+        *,
+        use_podman: bool = False,
+        verbose: bool = False,
+    ) -> None:
+        cli = "podman" if use_podman else "docker"
+        cmd = [cli, "tag", source_ref, target_ref]
+        try:
+            if verbose:
+                subprocess.run(cmd, check=True, timeout=120)
+            else:
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                )
+                if result.returncode != 0:
+                    raise ImagePushError(
+                        f"Retag failed for {source_ref} -> {target_ref}: "
+                        f"{result.stderr.strip()}"
+                    )
+        except FileNotFoundError:
+            raise ImagePushError(
+                f"{cli} not found. Install Docker/Podman or ensure '{cli}' is on PATH."
+            )
+        except subprocess.CalledProcessError as exc:
+            detail = (exc.stderr or str(exc)).strip()
+            raise ImagePushError(
+                f"Retag failed for {source_ref} -> {target_ref}: {detail}"
+            ) from exc
         except subprocess.TimeoutExpired as exc:
             raise ImagePushError(
-                f"Push timed out after 600s for {image_ref}"
+                f"Retag timed out after 120s for {source_ref} -> {target_ref}"
             ) from exc

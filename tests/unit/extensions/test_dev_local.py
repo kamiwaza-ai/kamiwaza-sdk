@@ -604,6 +604,131 @@ class TestRunnerEnvPassthroughOverlay:
 
 
 @pytest.mark.unit
+class TestRunnerLocalComposeOverride:
+    """ENG-6281 / PR #131 — kz-ext builds an explicit ``-f`` list, which
+    disables Compose's automatic ``<stem>.override.<ext>`` loading. The
+    runner must re-add the developer's local-only override so the
+    documented Docker-socket-mount path works, placed *after* the base
+    file but *before* kz-ext's generated overlays, and must NOT delete
+    the user's own file in cleanup."""
+
+    def _make_runner(self, monkeypatch, info):
+        """Wire a DevLocalRunner that captures the compose argv without
+        touching the real environment. Returns ``(runner, captured)``."""
+        from kamiwaza_extensions import dev_local as dev_local_mod
+        from kamiwaza_extensions import sdk_override as sdk_override_mod
+        from kamiwaza_extensions.dev_local import DevLocalRunner
+
+        runner = DevLocalRunner()
+        runner._detector = MagicMock()
+        runner._detector.detect.return_value = info
+        runner._conn_mgr = MagicMock()
+        runner._conn_mgr.get_active_connection.return_value = ConnectionInfo(
+            name="dev",
+            url="https://kamiwaza.test/api",
+            active=True,
+            created_at=0.0,
+        )
+
+        monkeypatch.setattr(
+            dev_local_mod, "detect_compose_command", lambda: ["docker", "compose"]
+        )
+        monkeypatch.setattr(
+            sdk_override_mod, "resolve_sdk_override", lambda *a, **kw: None
+        )
+        monkeypatch.setattr(
+            dev_local_mod, "resolve_port_conflicts", lambda *a, **kw: {}
+        )
+
+        captured: dict = {}
+
+        def capture_subprocess(cmd, *, env, cwd):
+            captured["cmd"] = list(cmd)
+            return 0
+
+        runner._run_subprocess = capture_subprocess
+        runner._print_urls = MagicMock()
+        return runner, captured
+
+    def _make_info(self, tmp_path, compose_name="docker-compose.yml"):
+        import yaml as _yaml
+
+        compose_data = {
+            "services": {
+                "frontend": {"build": "./frontend", "ports": ["3000"]},
+                "backend": {"build": "./backend", "ports": ["8000"]},
+            }
+        }
+        compose_path = tmp_path / compose_name
+        compose_path.write_text(_yaml.dump(compose_data))
+
+        info = MagicMock()
+        info.name = "my-app"
+        info.path = tmp_path
+        info.compose_path = compose_path
+        info.compose_data = compose_data
+        info.metadata = {"type": "app"}
+        return info
+
+    def test_runner_loads_docker_compose_override_when_present(
+        self, tmp_path, monkeypatch
+    ):
+        info = self._make_info(tmp_path, "docker-compose.yml")
+        override_path = tmp_path / "docker-compose.override.yml"
+        override_path.write_text("services:\n  backend:\n    volumes: []\n")
+
+        runner, captured = self._make_runner(monkeypatch, info)
+        assert runner.run(detach=False, auth=False) == 0
+
+        cmd = captured["cmd"]
+        # The override must be wired in via `-f` (without the flag compose
+        # ignores it) ...
+        idx = cmd.index(str(override_path))
+        assert cmd[idx - 1] == "-f", f"override not preceded by `-f`. cmd={cmd!r}"
+        # ... after the base compose file ...
+        base_idx = cmd.index(str(info.compose_path))
+        assert base_idx < idx, (
+            f"override must load after the base file so it patches it, "
+            f"not before. cmd={cmd!r}"
+        )
+        # ... and the user's own file must survive cleanup — deleting a
+        # developer's file would be a nasty surprise.
+        assert override_path.is_file(), "user's override file was deleted in cleanup"
+
+    def test_runner_does_not_add_override_when_absent(self, tmp_path, monkeypatch):
+        info = self._make_info(tmp_path, "docker-compose.yml")
+        # No override file written.
+        runner, captured = self._make_runner(monkeypatch, info)
+        assert runner.run(detach=False, auth=False) == 0
+
+        cmd = captured["cmd"]
+        # Exactly one `-f` (the base compose file) — no phantom override.
+        assert cmd.count("-f") == 1, f"expected only the base `-f`. cmd={cmd!r}"
+        assert str(info.compose_path) in cmd
+
+    def test_runner_loads_override_for_compose_yml_base(self, tmp_path, monkeypatch):
+        """PR #131 review High #1 — the override name must mirror the
+        detected base stem. A ``compose.yml`` base pairs with
+        ``compose.override.yml``; hardcoding ``docker-compose.override.*``
+        would silently ignore it, reproducing the exact bug this fixes."""
+        info = self._make_info(tmp_path, "compose.yml")
+        override_path = tmp_path / "compose.override.yml"
+        override_path.write_text("services:\n  backend:\n    volumes: []\n")
+
+        runner, captured = self._make_runner(monkeypatch, info)
+        assert runner.run(detach=False, auth=False) == 0
+
+        cmd = captured["cmd"]
+        assert str(override_path) in cmd, (
+            f"compose.override.yml not loaded for compose.yml base — "
+            f"override discovery is not stem-derived. cmd={cmd!r}"
+        )
+        idx = cmd.index(str(override_path))
+        assert cmd[idx - 1] == "-f"
+        assert override_path.is_file()
+
+
+@pytest.mark.unit
 class TestRunnerAuthExtensionTypeGate:
     """PR #87 round-5 review High #2 — `--auth` is only meaningful for
     `app`-type extensions (the bridge mechanism is the Next.js
@@ -787,16 +912,22 @@ class TestParsePortMapping:
 @pytest.mark.unit
 class TestIsPortAvailable:
     def test_available_port(self):
-        # High ephemeral port should be available
-        assert is_port_available(59123) is True
+        import socket
+
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.bind(("0.0.0.0", 0))
+        port = sock.getsockname()[1]
+        sock.close()
+
+        assert is_port_available(port) is True
 
     def test_occupied_port_via_bind(self):
         import socket
 
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.bind(("0.0.0.0", 59124))
+        sock.bind(("0.0.0.0", 0))
         try:
-            assert is_port_available(59124) is False
+            assert is_port_available(sock.getsockname()[1]) is False
         finally:
             sock.close()
 
@@ -805,10 +936,10 @@ class TestIsPortAvailable:
 
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.bind(("0.0.0.0", 59125))
+        sock.bind(("0.0.0.0", 0))
         sock.listen(1)
         try:
-            assert is_port_available(59125) is False
+            assert is_port_available(sock.getsockname()[1]) is False
         finally:
             sock.close()
 
@@ -834,9 +965,12 @@ class TestIsPortAvailable:
         except (AttributeError, OSError):
             pass
         try:
-            sock.bind(("::1", 59126))
+            try:
+                sock.bind(("::1", 0))
+            except OSError as exc:
+                pytest.skip(f"IPv6 loopback bind unavailable: {exc}")
             sock.listen(1)
-            assert is_port_available(59126) is False
+            assert is_port_available(sock.getsockname()[1]) is False
         finally:
             sock.close()
 
@@ -863,9 +997,12 @@ class TestIsPortAvailable:
         except (AttributeError, OSError):
             pass
         try:
-            sock.bind(("::1", 59127))
+            try:
+                sock.bind(("::1", 0))
+            except OSError as exc:
+                pytest.skip(f"IPv6 loopback bind unavailable: {exc}")
             # No listen() — connect probe will get ECONNREFUSED.
-            assert is_port_available(59127) is False
+            assert is_port_available(sock.getsockname()[1]) is False
         finally:
             sock.close()
 
@@ -932,24 +1069,31 @@ class TestResolvePortConflicts:
                 "backend": {"ports": ["59301:8000"]},
             }
         }
-        assert resolve_port_conflicts(compose) == {}
+        # Hermetic: don't depend on these host ports actually being free on
+        # the runner (CI had one bound → false conflict). The behavior under
+        # test is "all ports free → no remaps", so force availability.
+        with patch(
+            "kamiwaza_extensions.dev_local.is_port_available", return_value=True
+        ):
+            assert resolve_port_conflicts(compose) == {}
 
     def test_detects_conflict(self):
         import socket
 
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.bind(("0.0.0.0", 59302))
+        sock.bind(("0.0.0.0", 0))
         try:
+            occupied_port = sock.getsockname()[1]
             compose = {
                 "services": {
-                    "frontend": {"ports": ["59302:3000"]},
+                    "frontend": {"ports": [f"{occupied_port}:3000"]},
                 }
             }
             remaps = resolve_port_conflicts(compose)
             assert "frontend" in remaps
             orig, new = remaps["frontend"]
-            assert orig == 59302
-            assert new > 59302
+            assert orig == occupied_port
+            assert new > occupied_port
         finally:
             sock.close()
 

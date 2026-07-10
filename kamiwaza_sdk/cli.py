@@ -165,6 +165,9 @@ def serve_deploy_command(
         duration=args.duration,
         autoscaling=args.autoscaling,
         force_cpu=args.force_cpu,
+        # The CLI owns the wait: the args.wait-gated wait_for_deployment below
+        # is the single authoritative wait so --timeout/--poll-interval hold.
+        wait=False,
     )
 
     summary: dict[str, str] = {"deployment_id": str(deployment_id)}

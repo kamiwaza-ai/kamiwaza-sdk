@@ -46,6 +46,7 @@ class ValidationSummary:
     passed: bool = False
     errors: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
+    info: List[str] = field(default_factory=list)
 
 
 @dataclass

@@ -35,7 +35,16 @@ def run_validate(*, path: Optional[str], json_output: bool) -> None:
         ext_dir = ExtensionDetector().find_root(start_dir)
     except (ExtensionNotFoundError, MultipleExtensionsError) as exc:
         if json_output:
-            typer.echo(json_mod.dumps({"passed": False, "errors": [str(exc)], "warnings": []}))
+            typer.echo(
+                json_mod.dumps(
+                    {
+                        "passed": False,
+                        "errors": [str(exc)],
+                        "warnings": [],
+                        "info": [],
+                    }
+                )
+            )
         else:
             console.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(code=1) from exc
@@ -72,12 +81,15 @@ def run_validate(*, path: Optional[str], json_output: bool) -> None:
     # Merge results
     all_errors = meta_result.errors[:]
     all_warnings = meta_result.warnings[:]
+    all_info = meta_result.info[:]
     if compose_result:
         all_errors.extend(compose_result.errors)
         all_warnings.extend(compose_result.warnings)
+        all_info.extend(compose_result.info)
     if runtime_result:
         all_errors.extend(runtime_result.errors)
         all_warnings.extend(runtime_result.warnings)
+        all_info.extend(runtime_result.info)
 
     passed = len(all_errors) == 0
 
@@ -86,6 +98,7 @@ def run_validate(*, path: Optional[str], json_output: bool) -> None:
             "passed": passed,
             "errors": all_errors,
             "warnings": all_warnings,
+            "info": all_info,
         }
         typer.echo(json_mod.dumps(output, indent=2))
     else:
@@ -95,6 +108,9 @@ def run_validate(*, path: Optional[str], json_output: bool) -> None:
         if all_warnings:
             for warn in all_warnings:
                 console.print(f"  [yellow]![/yellow] {warn}")
+        if all_info:
+            for info_msg in all_info:
+                console.print(f"  [cyan]i[/cyan] {info_msg}")
         if passed:
             console.print("[green]✓ Validation passed[/green]", highlight=False)
             if all_warnings:

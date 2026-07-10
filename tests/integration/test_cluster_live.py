@@ -30,6 +30,23 @@ from kamiwaza_sdk.exceptions import APIError
 pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
 
 
+def _is_cluster_probe_not_authorized(error: APIError) -> bool:
+    """Return True for the stable cluster capabilities ReBAC denial."""
+    if error.status_code != 403:
+        return False
+
+    payload = getattr(error, "response_data", None)
+    if not isinstance(payload, dict):
+        return False
+
+    detail = payload.get("detail")
+    if detail == "not_authorized_to_probe_cluster":
+        return True
+    if not isinstance(detail, dict):
+        return False
+    return detail.get("reason") == "not_authorized_to_probe_cluster"
+
+
 class TestClusterReadOperations:
     """Tests for read-only cluster operations."""
 
@@ -102,14 +119,22 @@ class TestClusterCapabilities:
     def test_get_cluster_capabilities(self, live_kamiwaza_client) -> None:
         """TS4.004: GET /cluster/cluster_capabilities - Get cluster capabilities.
 
-        Note: This endpoint may not be exposed via SDK, testing via direct API call.
+        ReBAC-enabled hosts require viewer/owner on cluster:<local_uuid>.
+        Smoke users without that grant should skip, not fail the full SDK suite.
         """
         try:
-            result = live_kamiwaza_client.get("/cluster/cluster_capabilities")
-            assert isinstance(result, (dict, list))
+            result = live_kamiwaza_client.cluster.capabilities()
+            assert isinstance(result.gpu_count, int)
+            assert isinstance(result.federation_count, int)
+            assert isinstance(result.ray_ready, bool)
         except APIError as exc:
             if exc.status_code == 404:
                 pytest.skip("cluster_capabilities endpoint not available")
+            if _is_cluster_probe_not_authorized(exc):
+                pytest.skip(
+                    "cluster_capabilities requires viewer/owner on "
+                    "cluster:<local_uuid>"
+                )
             raise
 
 
@@ -341,69 +366,10 @@ class TestFederationListOperations:
             raise
 
 
-class TestFederationOperationsNotAvailable:
-    """Tests documenting federation operations that require multi-cluster setup.
-
-    These tests are skipped because they require a second cluster to test.
-    They serve as documentation of what endpoints exist.
-    """
-
-    @pytest.mark.skip(reason="Requires second cluster for federation")
-    def test_create_federation(self, live_kamiwaza_client) -> None:
-        """TS4.011: POST /cluster/federations - Create federation."""
-        pass
-
-    @pytest.mark.skip(reason="Requires existing federation")
-    def test_get_federation(self, live_kamiwaza_client) -> None:
-        """TS4.013: GET /cluster/federations/{federation_id}."""
-        pass
-
-    @pytest.mark.skip(reason="Requires existing federation")
-    def test_update_federation(self, live_kamiwaza_client) -> None:
-        """TS4.014: PUT /cluster/federations/{federation_id}."""
-        pass
-
-    @pytest.mark.skip(reason="Requires existing federation")
-    def test_delete_federation(self, live_kamiwaza_client) -> None:
-        """TS4.012: DELETE /cluster/federations/{federation_id}."""
-        pass
-
-    @pytest.mark.skip(reason="Requires existing federation")
-    def test_pair_federation(self, live_kamiwaza_client) -> None:
-        """TS4.016: POST /cluster/federations/{federation_id}/pair."""
-        pass
-
-    @pytest.mark.skip(reason="Requires existing federation")
-    def test_disconnect_federation(self, live_kamiwaza_client) -> None:
-        """TS4.015: POST /cluster/federations/{federation_id}/disconnect."""
-        pass
-
-    @pytest.mark.skip(reason="Requires existing federation")
-    def test_ping_federation(self, live_kamiwaza_client) -> None:
-        """TS4.017: POST /cluster/federations/{federation_id}/ping."""
-        pass
-
-    @pytest.mark.skip(reason="Two-node pairing moved to .env configuration")
-    def test_attach_pairing(self, live_kamiwaza_client) -> None:
-        """TS4.001: POST /cluster/attach_pairing."""
-        pass
-
-    @pytest.mark.skip(reason="Two-node pairing moved to .env configuration")
-    def test_detach_pairing(self, live_kamiwaza_client) -> None:
-        """TS4.007: POST /cluster/detach_pairing."""
-        pass
-
-    @pytest.mark.skip(reason="Requires remote cluster initiating pairing")
-    def test_pair_federation_handler(self, live_kamiwaza_client) -> None:
-        """TS4.029: POST /cluster/pair_federation."""
-        pass
-
-    @pytest.mark.skip(reason="Requires remote cluster for reciprocation")
-    def test_federation_reciprocation(self, live_kamiwaza_client) -> None:
-        """TS4.005: POST /cluster/cluster_federation_reciprocation."""
-        pass
-
-    @pytest.mark.skip(reason="Requires remote cluster initiating disconnect")
-    def test_disconnect_federation_handler(self, live_kamiwaza_client) -> None:
-        """TS4.008: POST /cluster/disconnect_federation."""
-        pass
+# ENG-5784 — 12 dead `@pytest.mark.skip` placeholders for federation
+# operations were removed from this file. They had no real assertions
+# (all `pass` bodies) and were never executable in any cluster
+# configuration. Live two-cluster coverage now lives in
+# `test_federation_two_cluster_live.py`, gated by the
+# `requires_two_clusters` marker + the `KAMIWAZA_PEER_BASE_URL` /
+# `KAMIWAZA_PEER_API_KEY` env vars (see `tests/integration/conftest.py`).

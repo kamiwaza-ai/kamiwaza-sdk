@@ -11,7 +11,13 @@ from pydantic import BaseModel, ConfigDict, Field
 class ExtensionPort(BaseModel):
     """Port exposed by an extension service container."""
 
-    model_config = ConfigDict(extra="allow")
+    # serialize_by_alias keeps ``appProtocol`` camelCase in the JSON payload
+    # even when the parent (CreateExtension / patch payloads) is dumped with
+    # default model_dump(). Without it the K8s API server sees the unknown
+    # ``app_protocol`` key and drops the field.
+    model_config = ConfigDict(
+        extra="allow", populate_by_name=True, serialize_by_alias=True
+    )
 
     name: Optional[str] = None
     container_port: int = Field(
@@ -19,6 +25,14 @@ class ExtensionPort(BaseModel):
     )
     protocol: Literal["TCP", "UDP"] = Field(
         default="TCP", description="Port protocol (TCP or UDP)"
+    )
+    # L7 protocol hint. Mirrors corev1.ServicePort.appProtocol; istio reads
+    # this to pick the right L7 filter (grpc, http, http2) instead of falling
+    # back to name-prefix sniffing.
+    app_protocol: Optional[str] = Field(
+        default=None,
+        alias="appProtocol",
+        description="Application protocol hint (e.g., http, http2, grpc)",
     )
 
 

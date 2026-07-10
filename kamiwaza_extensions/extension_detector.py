@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import yaml
 
@@ -23,6 +23,12 @@ class ExtensionInfo:
     metadata: Dict[str, Any]
     compose_path: Optional[Path] = None
     compose_data: Optional[Dict[str, Any]] = field(default=None, repr=False)
+    # Optional override for the image-ref basename, populated from
+    # ``kamiwaza.json``'s ``image_basename`` field. When None, image
+    # refs fall back to ``name`` (today's behavior). Needed for repos
+    # whose bake target / pushed image basename diverges from ``name``;
+    # see ``_canonical_build_ref``.
+    image_basename: Optional[str] = None
 
 
 def infer_extension_type(metadata: Dict[str, Any]) -> str:
@@ -39,7 +45,7 @@ def infer_extension_type(metadata: Dict[str, Any]) -> str:
     drifting; consolidated here.
     """
     explicit = metadata.get("type") or metadata.get("template_type")
-    if explicit in ("app", "tool", "service"):
+    if explicit in ("app", "tool", "service", "connector"):
         return explicit
 
     name = metadata.get("name", "")
@@ -47,6 +53,9 @@ def infer_extension_type(metadata: Dict[str, Any]) -> str:
         return "tool"
     if name.startswith("service-"):
         return "service"
+    # NB: connectors are identified ONLY by an explicit `type: "connector"`.
+    # No `connector-` name-prefix heuristic — it would misclassify legitimate
+    # apps like `connector-builder` (the Data Connector Builder app).
 
     return "app"
 
@@ -78,8 +87,28 @@ class ExtensionDetector:
         """
         root = start_dir or Path.cwd()
         ext_dir = self._find_root(root)
+        return self._load_info(ext_dir)
+
+    def detect_all(self, start_dir: Optional[Path] = None) -> List[ExtensionInfo]:
+        """Find every extension under *start_dir* and load metadata.
+
+        Root-level ``kamiwaza.json`` keeps the existing single-extension
+        behavior and wins over nested monorepo manifests. Otherwise this
+        returns all unique manifests discovered by the same shallow +
+        monorepo-convention search used by ``detect()``.
+        """
+        root = start_dir or Path.cwd()
+        return [self._load_info(ext_dir) for ext_dir in self._find_roots(root)]
+
+    def _load_info(self, ext_dir: Path) -> ExtensionInfo:
         metadata = self._load_metadata(ext_dir)
         compose_path, compose_data = self._load_compose(ext_dir)
+        raw_basename = metadata.get("image_basename")
+        image_basename = (
+            raw_basename.strip()
+            if isinstance(raw_basename, str) and raw_basename.strip()
+            else None
+        )
         return ExtensionInfo(
             path=ext_dir,
             name=metadata.get("name", ext_dir.name),
@@ -87,6 +116,7 @@ class ExtensionDetector:
             metadata=metadata,
             compose_path=compose_path,
             compose_data=compose_data,
+            image_basename=image_basename,
         )
 
     def find_root(self, start_dir: Optional[Path] = None) -> Path:
@@ -110,8 +140,18 @@ class ExtensionDetector:
     # ------------------------------------------------------------------
 
     def _find_root(self, start: Path) -> Path:
+        unique = self._find_roots(start)
+        if len(unique) == 1:
+            return unique[0]
+        dirs = ", ".join(str(d.relative_to(start)) for d in unique)
+        raise MultipleExtensionsError(
+            f"Multiple kamiwaza.json found: {dirs}. "
+            "Run from inside a specific extension directory."
+        )
+
+    def _find_roots(self, start: Path) -> List[Path]:
         if (start / "kamiwaza.json").exists():
-            return start
+            return [start]
 
         candidates: list[Path] = []
         # Shallow search: any direct subdirectory containing kamiwaza.json.
@@ -127,14 +167,8 @@ class ExtensionDetector:
             {c.resolve(): c for c in candidates}.values(),
             key=lambda p: (p.parent.name, p.name),
         )
-        if len(unique) == 1:
-            return unique[0]
-        if len(unique) > 1:
-            dirs = ", ".join(str(d.relative_to(start)) for d in unique)
-            raise MultipleExtensionsError(
-                f"Multiple kamiwaza.json found: {dirs}. "
-                "Run from inside a specific extension directory."
-            )
+        if unique:
+            return unique
 
         raise ExtensionNotFoundError(
             "No kamiwaza.json found. "

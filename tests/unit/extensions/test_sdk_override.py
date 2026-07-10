@@ -251,6 +251,15 @@ class TestDetectServiceType:
         config = {"ports": ["8000:8000"]}
         assert detect_service_type("svc", config) == "backend"
 
+    def test_long_form_port_3000(self):
+        """ENG-5954: dict-form ports classify same as short-form."""
+        config = {"ports": [{"target": 3000, "name": "http"}]}
+        assert detect_service_type("svc", config) == "frontend"
+
+    def test_long_form_port_8000(self):
+        config = {"ports": [{"target": 8000}]}
+        assert detect_service_type("svc", config) == "backend"
+
     def test_default_backend(self):
         assert detect_service_type("worker", {}) == "backend"
 

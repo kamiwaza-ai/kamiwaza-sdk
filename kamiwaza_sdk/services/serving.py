@@ -17,17 +17,13 @@ from ..schemas.serving.serving import (
     UIModelDeployment,
 )
 from ..schemas.serving.inference import (
-    GenerateRequest,
-    GenerateResponse,
     LoadModelRequest,
     LoadModelResponse,
     UnloadModelRequest,
     UnloadModelResponse,
 )
-from ..schemas.models.model_search import HubModelFileSearch
+from ..exceptions import APIError, DeploymentFailedError
 from .base_service import BaseService
-from urllib.parse import urlparse
-import os
 
 
 class ServingService(BaseService):
@@ -49,14 +45,27 @@ class ServingService(BaseService):
         """Estimate the VRAM required for a model deployment."""
         return self.client.post("/serving/estimate_model_vram", json=deployment_request.model_dump())
     
-    def deploy_model(self, 
+    def deploy_model(self,
                 model_id: Optional[Union[str, UUID]] = None,
                 repo_id: Optional[str] = None,
                 m_config_id: Optional[Union[str, UUID]] = None,
                 m_file_id: Optional[Union[str, UUID]] = None,
+                *,
+                wait: bool = True,
+                timeout_seconds: int = 3600,
+                poll_interval_seconds: float = 5.0,
                 **kwargs) -> Union[UUID, bool]:
         """
         Deploy a model based on the provided model ID or repo ID and optional parameters.
+
+        The server accepts the deploy request asynchronously (ENG-6530)
+        and returns the deployment id immediately — it no longer blocks
+        until the deployment is ready. With ``wait=True`` (the default)
+        this method preserves the blocking behaviour by polling
+        ``wait_deployment_ready`` client-side, without the HTTP-timeout
+        cliff of the old long-blocking request. With ``wait=False`` the
+        deployment id is returned as soon as the server acknowledges the
+        request; use ``wait_deployment_ready`` to observe readiness.
 
         Args:
             model_id (Optional[Union[str, UUID]]): The ID of the model to deploy.
@@ -65,10 +74,25 @@ class ServingService(BaseService):
                                     Required if model_id is not provided.
             m_config_id (Optional[Union[str, UUID]]): The ID of the model configuration to use.
             m_file_id (Optional[Union[str, UUID]]): The ID of the specific model file to use.
+            wait (bool): Block until the deployment reaches DEPLOYED.
+                        Defaults to True. Skipped when the server refuses
+                        the deploy (returns False instead of an id).
+            timeout_seconds (int): Max seconds to wait when ``wait=True``.
+            poll_interval_seconds (float): Seconds between status polls
+                when ``wait=True``.
             **kwargs: Additional deployment parameters (engine_name, min_copies, etc.)
 
         Returns:
             Union[UUID, bool]: The deployment ID if successful, or False if deployment failed.
+
+        Raises:
+            DeploymentFailedError: ``wait=True`` and the deployment
+                entered a FAILED/ERROR/MUST_REDOWNLOAD terminal status.
+                Carries ``deployment_id`` so the in-flight deployment can
+                be stopped/inspected.
+            TimeoutError: ``wait=True`` and the deployment did not become
+                ready within ``timeout_seconds``. Also carries a
+                ``deployment_id`` attribute.
         """
         # Ensure at least one identifier is provided
         if model_id is None and repo_id is None:
@@ -111,7 +135,16 @@ class ServingService(BaseService):
         request_dict['m_config_id'] = str(request_dict['m_config_id'])
     
         response = self.client.post("/serving/deploy_model", json=request_dict)
-        return UUID(response) if isinstance(response, str) else response
+        deployment_id = UUID(response) if isinstance(response, str) else response
+
+        if wait and isinstance(deployment_id, UUID):
+            self.wait_deployment_ready(
+                deployment_id,
+                timeout_seconds=timeout_seconds,
+                poll_interval_seconds=poll_interval_seconds,
+            )
+
+        return deployment_id
     
 
 
@@ -179,7 +212,7 @@ class ServingService(BaseService):
         deployment_id: Union[str, UUID],
         *,
         desired_status: Iterable[str] = ("DEPLOYED",),
-        failure_status: Iterable[str] = ("FAILED", "ERROR"),
+        failure_status: Iterable[str] = ("FAILED", "ERROR", "MUST_REDOWNLOAD"),
         poll_interval: float = 5.0,
         timeout: Optional[float] = 600.0,
     ) -> ModelDeployment:
@@ -196,7 +229,45 @@ class ServingService(BaseService):
             failure_status=failure_status,
         )
 
-    def stop_deployment(self, 
+    def wait_deployment_ready(
+        self,
+        deployment_id: Union[str, UUID],
+        timeout_seconds: int = 3600,
+        poll_interval_seconds: float = 5.0,
+    ) -> UIModelDeployment:
+        """Block until a deployment reaches the DEPLOYED terminal state.
+
+        The server accepts deploy requests asynchronously (ENG-6530) and
+        returns the deployment id immediately; readiness is observed by
+        polling ``get_deployment`` client-side.
+
+        Args:
+            deployment_id: The id returned by ``deploy_model``.
+            timeout_seconds: Max seconds to wait before giving up.
+            poll_interval_seconds: Seconds between status polls.
+
+        Returns:
+            The deployment once its status is ``DEPLOYED``.
+
+        Transient poll failures (connection blips, HTTP 5xx) are retried
+        up to ``DeploymentStatusPoller.MAX_TRANSIENT_POLL_ERRORS``
+        consecutive times before propagating.
+
+        Raises:
+            DeploymentFailedError: The deployment entered a FAILED/ERROR/
+                MUST_REDOWNLOAD terminal status. Carries ``status``,
+                ``last_error_message``, ``last_error_code`` and
+                ``deployment_id``.
+            TimeoutError: The deployment did not become ready within
+                ``timeout_seconds``. Carries a ``deployment_id`` attribute.
+        """
+        return self.wait_for_deployment(
+            deployment_id,
+            poll_interval=poll_interval_seconds,
+            timeout=timeout_seconds,
+        )
+
+    def stop_deployment(self,
                     deployment_id: Optional[UUID] = None, 
                     repo_id: Optional[str] = None,
                     force: Optional[bool] = False) -> bool:
@@ -315,8 +386,25 @@ class ServingService(BaseService):
         return LoadModelResponse.model_validate(response)
 
 
+def _is_transient_poll_error(exc: APIError) -> bool:
+    """Connection-level failures (no status code) and server-side 5xx are
+    transient; 4xx client errors are not — retrying cannot fix the request."""
+    status_code = getattr(exc, "status_code", None)
+    return status_code is None or status_code >= 500
+
+
 class DeploymentStatusPoller:
-    """Utility helper that polls deployment status until completion."""
+    """Utility helper that polls deployment status until completion.
+
+    Tolerates up to ``MAX_TRANSIENT_POLL_ERRORS`` consecutive transient
+    poll failures (connection blips, HTTP 5xx) before propagating, so a
+    single blip cannot abort a default up-to-1-hour deploy wait. Errors
+    raised from the wait carry a ``deployment_id`` attribute so callers
+    can stop/inspect the in-flight deployment.
+    """
+
+    #: Consecutive transient poll failures tolerated before propagating.
+    MAX_TRANSIENT_POLL_ERRORS = 3
 
     def __init__(
         self,
@@ -344,21 +432,51 @@ class DeploymentStatusPoller:
         desired = {status.upper() for status in desired_status}
         failures = {status.upper() for status in failure_status}
         start = self._time()
+        transient_errors = 0
         while True:
-            deployment = self._service.get_deployment(deployment_uuid)
-            current = (deployment.status or "").upper()
-            if current in desired:
-                return deployment
-            if failures and current in failures:
-                raise RuntimeError(
-                    f"Deployment {deployment_uuid} entered failure status {deployment.status}"
-                )
+            try:
+                deployment = self._service.get_deployment(deployment_uuid)
+            except APIError as exc:
+                transient_errors += 1
+                if (
+                    not _is_transient_poll_error(exc)
+                    or transient_errors >= self.MAX_TRANSIENT_POLL_ERRORS
+                ):
+                    raise
+            else:
+                transient_errors = 0
+                current = (deployment.status or "").upper()
+                if current in desired:
+                    return deployment
+                if failures and current in failures:
+                    self._raise_failure(deployment, deployment_uuid)
             if self._timeout is not None and (self._time() - start) > self._timeout:
-                raise TimeoutError(
+                timeout_error = TimeoutError(
                     f"Timed out waiting for deployment {deployment_uuid} to reach {desired}"
                 )
+                # Builtin TimeoutError for caller compatibility; carry the id
+                # programmatically rather than only inside the message string.
+                timeout_error.deployment_id = str(deployment_uuid)
+                raise timeout_error
             if self._poll_interval > 0:
                 self._sleep(self._poll_interval)
+
+    @staticmethod
+    def _raise_failure(deployment: ModelDeployment, deployment_uuid: UUID) -> None:
+        last_error_message = getattr(deployment, "last_error_message", None)
+        last_error_code = getattr(deployment, "last_error_code", None)
+        message = (
+            f"Deployment {deployment_uuid} entered failure status {deployment.status}"
+        )
+        if last_error_message:
+            message = f"{message}: {last_error_message}"
+        raise DeploymentFailedError(
+            message,
+            status=deployment.status,
+            last_error_message=last_error_message,
+            last_error_code=last_error_code,
+            deployment_id=str(deployment_uuid),
+        )
 
 
 class DeploymentLogStreamer:

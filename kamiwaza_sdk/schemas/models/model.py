@@ -21,6 +21,12 @@ class CreateModel(BaseModel):
     private: Optional[bool] = None
     m_files: List[ModelFile] = []
     modelcard: Optional[str] = None
+    # External-model registration: the platform reads an ``external_endpoint``
+    # blob out of ``default_config.system_config`` and resolves any inline
+    # ``credential_secret`` into a Catalog URN server-side. Left as a free-form
+    # dict to mirror the platform's CreateModel; built type-safely by
+    # ModelService.register_external_model.
+    default_config: Optional[Dict[str, Any]] = None
 
     def __str__(self):
         return (

@@ -1,5 +1,7 @@
 """Tests for PayloadBuilder."""
 
+import hashlib
+
 import pytest
 
 from kamiwaza_extensions.connections import ConnectionInfo
@@ -101,6 +103,210 @@ class TestBuild:
         assert payload.security.risk_tier == 1
 
 
+class TestParsePorts:
+    """ENG-5954 — compose-spec long-form port translation."""
+
+    def test_short_form_string_defaults_to_http(self):
+        ports = PayloadBuilder._parse_ports(["8000"])
+        assert len(ports) == 1
+        assert ports[0].container_port == 8000
+        assert ports[0].protocol == "TCP"
+        assert ports[0].name == "http"
+        assert ports[0].app_protocol is None
+
+    def test_short_form_udp_suffix(self):
+        ports = PayloadBuilder._parse_ports(["53/udp"])
+        assert len(ports) == 1
+        assert ports[0].container_port == 53
+        assert ports[0].protocol == "UDP"
+        assert ports[0].name == "http"
+
+    def test_long_form_name_and_app_protocol_propagate(self):
+        ports = PayloadBuilder._parse_ports(
+            [
+                {
+                    "target": 19530,
+                    "protocol": "tcp",
+                    "name": "grpc",
+                    "app_protocol": "grpc",
+                }
+            ]
+        )
+        assert len(ports) == 1
+        assert ports[0].container_port == 19530
+        assert ports[0].protocol == "TCP"
+        assert ports[0].name == "grpc"
+        assert ports[0].app_protocol == "grpc"
+
+    def test_long_form_name_only(self):
+        ports = PayloadBuilder._parse_ports([{"target": 9000, "name": "metrics"}])
+        assert len(ports) == 1
+        assert ports[0].container_port == 9000
+        assert ports[0].name == "metrics"
+        assert ports[0].app_protocol is None
+
+    def test_long_form_without_name_falls_back_to_http(self):
+        ports = PayloadBuilder._parse_ports([{"target": 8080, "protocol": "tcp"}])
+        assert len(ports) == 1
+        assert ports[0].name == "http"
+
+    def test_long_form_udp_protocol(self):
+        ports = PayloadBuilder._parse_ports(
+            [{"target": 53, "protocol": "udp", "name": "dns"}]
+        )
+        assert len(ports) == 1
+        assert ports[0].protocol == "UDP"
+        assert ports[0].name == "dns"
+
+    def test_long_form_camel_case_app_protocol_alias(self):
+        # accept both `app_protocol` (compose-spec) and `appProtocol` (k8s)
+        ports = PayloadBuilder._parse_ports(
+            [{"target": 19530, "name": "grpc", "appProtocol": "grpc"}]
+        )
+        assert len(ports) == 1
+        assert ports[0].app_protocol == "grpc"
+
+    def test_long_form_explicit_app_protocol_wins_over_appprotocol(self):
+        """When both keys are present, the compose-spec ``app_protocol`` wins
+        even if it's an empty string — explicit None check rather than a
+        falsy ``or`` fallback."""
+        ports = PayloadBuilder._parse_ports(
+            [
+                {
+                    "target": 19530,
+                    "name": "grpc",
+                    "app_protocol": "",
+                    "appProtocol": "http2",
+                }
+            ]
+        )
+        assert len(ports) == 1
+        assert ports[0].app_protocol == ""
+
+    def test_mixed_short_and_long_form(self):
+        ports = PayloadBuilder._parse_ports(
+            [
+                "8000",
+                {"target": 19530, "name": "grpc", "app_protocol": "grpc"},
+            ]
+        )
+        assert len(ports) == 2
+        assert ports[0].name == "http"
+        assert ports[0].container_port == 8000
+        assert ports[1].name == "grpc"
+        assert ports[1].app_protocol == "grpc"
+
+    def test_long_form_serializes_appprotocol_camel_case(self):
+        """CR must use camelCase appProtocol for K8s compatibility."""
+        ports = PayloadBuilder._parse_ports(
+            [{"target": 19530, "name": "grpc", "app_protocol": "grpc"}]
+        )
+        dumped = ports[0].model_dump(by_alias=True, exclude_none=True)
+        assert dumped["appProtocol"] == "grpc"
+        assert "app_protocol" not in dumped
+
+    def test_default_dump_emits_appprotocol_for_nested_payload(self):
+        """Regression: ExtensionService.create_extension / patch_extension
+        call .model_dump() without by_alias=True. Without
+        serialize_by_alias=True on ExtensionPort, the resulting JSON
+        carries the unknown ``app_protocol`` key and the K8s API server
+        silently drops the field. This test pins the parent-level shape
+        the real create path produces."""
+        from kamiwaza_sdk.schemas.extensions import (
+            CreateExtension,
+            ExtensionPort,
+            ExtensionServiceSpec,
+        )
+
+        req = CreateExtension(
+            name="service-milvus-x",
+            type="service",
+            version="2.4.0",
+            services=[
+                ExtensionServiceSpec(
+                    name="standalone",
+                    image="milvus/milvus:2.5.27",
+                    primary=True,
+                    ports=[
+                        ExtensionPort(
+                            container_port=19530,
+                            protocol="TCP",
+                            name="grpc",
+                            app_protocol="grpc",
+                        )
+                    ],
+                )
+            ],
+        )
+
+        # NO by_alias=True — mirrors ExtensionService.create_extension.
+        dumped = req.model_dump()
+        port_dict = dumped["services"][0]["ports"][0]
+        assert port_dict.get("appProtocol") == "grpc"
+        assert "app_protocol" not in port_dict
+
+    def test_long_form_missing_target_skipped(self):
+        ports = PayloadBuilder._parse_ports([{"name": "grpc"}])
+        assert ports == []
+
+    def test_long_form_invalid_target_skipped(self):
+        ports = PayloadBuilder._parse_ports([{"target": "not-a-number"}])
+        assert ports == []
+
+    def test_short_form_postgres_not_named_http(self):
+        # Unnamed short-form postgres must not inherit "http": istio reads the
+        # Service port name to pick the L7 codec, and an "http" name makes the
+        # sidecar answer the postgres SSL handshake with an HTTP response,
+        # CrashLooping the client backend.
+        ports = PayloadBuilder._parse_ports(["5432"])
+        assert len(ports) == 1
+        assert ports[0].container_port == 5432
+        assert ports[0].name == "tcp-postgres"
+        assert ports[0].name != "http"
+
+    def test_short_form_non_primary_unknown_gets_tcp_port_name(self):
+        # First port keeps the historical "http" default (app frontends/backends
+        # speak HTTP); a secondary unknown port falls back to opaque TCP.
+        ports = PayloadBuilder._parse_ports(["8000", "5555"])
+        assert len(ports) == 2
+        assert ports[0].name == "http"
+        assert ports[1].container_port == 5555
+        assert ports[1].name == "tcp-port-5555"
+
+    def test_long_form_postgres_without_name_not_http(self):
+        ports = PayloadBuilder._parse_ports([{"target": 5432, "protocol": "tcp"}])
+        assert len(ports) == 1
+        assert ports[0].name == "tcp-postgres"
+        assert ports[0].name != "http"
+
+    def test_known_tcp_backends_never_named_http(self):
+        # Acceptance regression: no well-known non-HTTP backend port may be
+        # translated to the "http" name, regardless of position — including
+        # milvus/etcd, where each port here is the sole (primary) port, so this
+        # also pins that a known-TCP backend wins over the primary→http default.
+        for port in (5432, 3306, 6379, 27017, 5672, 9092, 19530, 2379, 2380):
+            parsed = PayloadBuilder._parse_ports([str(port)])
+            assert len(parsed) == 1
+            assert parsed[0].name != "http"
+            assert parsed[0].name.startswith("tcp-")
+
+    def test_primary_unknown_port_still_http(self):
+        # An unknown primary port preserves the long-standing "http" default so
+        # app frontends/backends on non-standard ports keep working.
+        ports = PayloadBuilder._parse_ports(["7000"])
+        assert len(ports) == 1
+        assert ports[0].name == "http"
+
+    def test_elasticsearch_rest_port_stays_http(self):
+        # 9200 is the ES/OpenSearch HTTP REST port (binary transport is 9300);
+        # it must keep the HTTP codec rather than being treated as opaque TCP,
+        # even as a non-primary port.
+        ports = PayloadBuilder._parse_ports(["8000", "9200"])
+        assert len(ports) == 2
+        assert ports[1].container_port == 9200
+        assert ports[1].name == "http"
+
+
 class TestAnnotations:
     """ENG-3887 / §4.2.9 — DeployedImageAnnotation on the CRD payload."""
 
@@ -185,9 +391,7 @@ class TestVerifySslPropagation:
         # Both conventional vars injected so explicit pod env beats
         # whatever the operator writes into the configmap.
         assert {"name": "KAMIWAZA_VERIFY_SSL", "value": "false"} in primary_env
-        assert (
-            {"name": "KAMIWAZA_TLS_REJECT_UNAUTHORIZED", "value": "0"} in primary_env
-        )
+        assert {"name": "KAMIWAZA_TLS_REJECT_UNAUTHORIZED", "value": "0"} in primary_env
 
     def test_dev_tld_auto_disables_verify(
         self,
@@ -319,6 +523,165 @@ class TestServiceRefRewritesAnnotation:
         assert ANNOTATION_SERVICE_REF_REWRITES not in annotations
 
 
+class TestComposeVolumes:
+    """ENG-4834: named compose volumes must reach the kext payload."""
+
+    def test_named_volume_becomes_empty_dir_and_volume_mount(
+        self, builder, metadata, connection
+    ):
+        transformed = {
+            "services": {
+                "tool": {
+                    "image": "registry.test/tool:dev",
+                    "ports": ["8000"],
+                    "volumes": ["omniparse-data:/data"],
+                },
+            },
+            "volumes": {"omniparse-data": None},
+        }
+
+        payload = builder.build(metadata, transformed, connection, "tool-dev-abc")
+        tool = payload.services[0].model_dump()
+
+        assert (payload.model_extra or {})["volumes"] == [
+            {"name": "omniparse-data", "emptyDir": {}}
+        ]
+        assert payload.model_dump()["volumes"] == [
+            {"name": "omniparse-data", "emptyDir": {}}
+        ]
+        assert tool["volumeMounts"] == [
+            {"name": "omniparse-data", "mountPath": "/data"}
+        ]
+
+    def test_shared_named_volume_is_declared_once(self, builder, metadata, connection):
+        transformed = {
+            "services": {
+                "api": {
+                    "image": "registry.test/api:dev",
+                    "ports": ["8000"],
+                    "volumes": ["shared-data:/cache"],
+                },
+                "worker": {
+                    "image": "registry.test/worker:dev",
+                    "volumes": ["shared-data:/cache"],
+                },
+            },
+        }
+
+        payload = builder.build(metadata, transformed, connection, "app-dev-abc")
+        services = {svc.name: svc.model_dump() for svc in payload.services}
+
+        assert (payload.model_extra or {})["volumes"] == [
+            {"name": "shared-data", "emptyDir": {}}
+        ]
+        assert services["api"]["volumeMounts"] == [
+            {"name": "shared-data", "mountPath": "/cache"}
+        ]
+        assert services["worker"]["volumeMounts"] == [
+            {"name": "shared-data", "mountPath": "/cache"}
+        ]
+
+    def test_long_form_volume_is_supported_and_read_only(
+        self, builder, metadata, connection
+    ):
+        transformed = {
+            "services": {
+                "backend": {
+                    "image": "registry.test/backend:dev",
+                    "ports": ["8000"],
+                    "volumes": [
+                        {
+                            "type": "volume",
+                            "source": "backend_data",
+                            "target": "/app/persist",
+                            "read_only": True,
+                        }
+                    ],
+                },
+            },
+        }
+
+        payload = builder.build(metadata, transformed, connection, "app-dev-abc")
+        backend = payload.services[0].model_dump()
+
+        assert (payload.model_extra or {})["volumes"] == [
+            {"name": "backend-data", "emptyDir": {}}
+        ]
+        assert backend["volumeMounts"] == [
+            {
+                "name": "backend-data",
+                "mountPath": "/app/persist",
+                "readOnly": True,
+            }
+        ]
+
+    def test_no_volumes_keeps_payload_unchanged(
+        self, builder, metadata, transformed_compose, connection
+    ):
+        payload = builder.build(
+            metadata, transformed_compose, connection, "app-dev-abc"
+        )
+
+        assert "volumes" not in (payload.model_extra or {})
+        assert all(
+            "volumeMounts" not in (svc.model_extra or {}) for svc in payload.services
+        )
+
+    def test_interpolated_host_path_is_not_emitted_as_empty_dir(
+        self, builder, metadata, connection
+    ):
+        """PR-113 review High #1: a shell-interpolated bind source
+        (``${PWD}/src``) must NOT be normalized into a named volume and
+        emitted as an emptyDir over the image's baked files. It is a
+        host path and the validator rejects it; the payload builder must
+        agree and drop it."""
+        transformed = {
+            "services": {
+                "tool": {
+                    "image": "registry.test/tool:dev",
+                    "ports": ["8000"],
+                    "volumes": [
+                        "${PWD}/src:/app/src",
+                        "$HOME/.cache:/cache",
+                    ],
+                },
+            },
+        }
+
+        payload = builder.build(metadata, transformed, connection, "tool-dev-abc")
+        tool = payload.services[0].model_dump()
+
+        assert "volumes" not in (payload.model_extra or {})
+        assert "volumeMounts" not in tool
+
+    def test_user_volume_named_tmp_avoids_operator_collision(
+        self, builder, metadata, connection
+    ):
+        """PR-113 review High #2: the operator injects volumes named
+        ``tmp`` and ``data``. A user compose volume that normalizes to
+        either must be renamed so the reconciled Deployment has no
+        duplicate volume names (K8s rejects duplicates)."""
+        transformed = {
+            "services": {
+                "tool": {
+                    "image": "registry.test/tool:dev",
+                    "ports": ["8000"],
+                    "volumes": ["tmp:/scratch", "data:/store"],
+                },
+            },
+        }
+
+        payload = builder.build(metadata, transformed, connection, "tool-dev-abc")
+        tool = payload.services[0].model_dump()
+
+        emitted = {v["name"] for v in (payload.model_extra or {})["volumes"]}
+        assert emitted.isdisjoint({"tmp", "data"})
+        mount_names = {m["name"] for m in tool["volumeMounts"]}
+        # Mounts must reference the renamed volumes, not the reserved ones.
+        assert mount_names == emitted
+        assert mount_names.isdisjoint({"tmp", "data"})
+
+
 class TestEnvParsing:
     def test_list_format(self, builder):
         result = builder._parse_env(["KEY=value", "BARE_KEY"])
@@ -408,7 +771,6 @@ class TestServiceOverrides:
             },
         }
 
-
     def test_non_kubernetes_backend_emits_no_sandbox_spec(
         self, builder, metadata, connection
     ):
@@ -483,9 +845,7 @@ class TestServiceOverrides:
                     }
                 },
             }
-            payload = builder.build(
-                metadata, transformed, connection, "my-app-dev-abc"
-            )
+            payload = builder.build(metadata, transformed, connection, "my-app-dev-abc")
             sandbox = (payload.model_extra or {})["sandbox"]
             assert sandbox["persistence"] is True, f"failed for {truthy!r}"
 
@@ -510,6 +870,19 @@ class TestDevNaming:
         assert name.startswith("my-app-dev-")
         assert len(name.split("-")[-1]) == 6  # 6 char hash
 
+    def test_dns_safe_name_preserves_legacy_hash_seed(self):
+        """Existing DNS-safe dev deployments used a user-only hash seed.
+
+        Keep that stable so upgrading the CLI patches the existing dev CR
+        instead of creating a second deployment under a new hash.
+        """
+
+        expected_hash = hashlib.sha256("user-123".encode()).hexdigest()[:6]
+        assert (
+            PayloadBuilder.make_dev_name("my-app", user_id="user-123")
+            == f"my-app-dev-{expected_hash}"
+        )
+
     def test_deterministic(self):
         a = PayloadBuilder.make_dev_name("my-app", user_id="user-123")
         b = PayloadBuilder.make_dev_name("my-app", user_id="user-123")
@@ -523,6 +896,29 @@ class TestDevNaming:
     def test_no_user_uses_local(self):
         name = PayloadBuilder.make_dev_name("my-app")
         assert "dev-" in name
+
+    def test_display_name_sanitized_to_dns_label(self):
+        # Regression (ENG-6472): a display name with spaces/uppercase such as
+        # "Hello Web" must be coerced to a valid DNS-1123 label, otherwise the
+        # platform rejects POST /api/extensions with 422 and no CR is created.
+        import re
+
+        name = PayloadBuilder.make_dev_name("Hello Web", user_id="user-123")
+        assert re.fullmatch(r"[a-z0-9]([-a-z0-9]*[a-z0-9])?", name), name
+        assert len(name) <= 63
+        assert name.startswith("hello-web-dev-")
+
+    def test_distinct_names_with_same_slug_get_distinct_dev_names(self):
+        # ENG-5719 review follow-up: two display names that normalize to the
+        # same DNS-1123 slug must not collide. The hash includes the original
+        # (pre-slug) name, so the second deployment can't silently patch over
+        # the first via ``run_dev_remote`` (which matches by dev name). The old
+        # user-only hash made both names "hello-web-dev-<userhash>".
+        a = PayloadBuilder.make_dev_name("Hello Web", user_id="user-123")
+        b = PayloadBuilder.make_dev_name("hello-web", user_id="user-123")
+        assert a.startswith("hello-web-dev-")
+        assert b.startswith("hello-web-dev-")
+        assert a != b
 
 
 class TestResourceParsing:
@@ -540,6 +936,48 @@ class TestResourceParsing:
 
     def test_no_resources_returns_none(self, builder):
         assert builder._parse_resources({}) is None
+
+    def test_reservations_maps_to_requests(self, builder):
+        # ENG-5426: Compose `reservations` is the term that maps to K8s
+        # `requests`. The compose-side `requests` key is now rejected by
+        # ComposeValidator, so the parser only reads `reservations`.
+        svc = {
+            "deploy": {
+                "resources": {
+                    "limits": {"cpus": "1.0", "memory": "1G"},
+                    "reservations": {"cpus": "0.5", "memory": "512M"},
+                }
+            }
+        }
+        res = builder._parse_resources(svc)
+        assert res.limits["cpu"] == "1000m"
+        assert res.requests["cpu"] == "500m"
+        assert res.requests["memory"] == "512M"
+
+    def test_parse_resources_raises_on_requests_key(self, builder):
+        # ENG-5426 (Codex H1): `run_dev_remote` builds payloads without
+        # invoking ComposeValidator, so a parser that *silently* dropped
+        # an unknown `requests` key would reproduce the ENG-5424
+        # over-reservation incident on the `kz-ext dev` path. Pair the
+        # validator's fail-fast at validate-time with the parser's
+        # fail-fast at parse-time. Dev-path-level coverage is implicit:
+        # `run_dev_remote → payload_builder.build → _parse_resources` is
+        # a straight call chain (payload_builder.py:333), and the dev
+        # tests mock `PayloadBuilder` wholesale, so the parser layer is
+        # where this contract is most cleanly pinned.
+        svc = {
+            "deploy": {
+                "resources": {
+                    "limits": {"cpus": "1.0", "memory": "1G"},
+                    "requests": {"cpus": "0.5", "memory": "512M"},
+                }
+            }
+        }
+        with pytest.raises(ValueError) as exc_info:
+            builder._parse_resources(svc)
+        assert "deploy.resources.requests is not a valid Docker Compose key" in str(
+            exc_info.value
+        )
 
 
 class TestResolveType:
@@ -602,6 +1040,30 @@ class TestHealthChecks:
         assert frontend.primary is True
         assert health_check["exec"]["command"][0] == "node"
 
+    def test_frontend_long_form_port_3000_uses_node_probe(
+        self, builder, metadata, connection
+    ):
+        """ENG-5954: the Node-probe heuristic must recognize long-form
+        port targets too. Before the fix, ``str({"target": 3000, ...})``
+        was parsed as a single string and the int() conversion failed
+        silently, causing frontend services authored with long-form to
+        fall through to the HTTP probe."""
+        transformed = {
+            "services": {
+                "frontend": {
+                    "image": "registry.test/my-app-frontend:1.0.0-dev",
+                    "ports": [{"target": 3000, "name": "http"}],
+                },
+            },
+        }
+
+        payload = builder.build(metadata, transformed, connection, "test")
+        frontend = payload.services[0]
+
+        health_check = frontend.model_dump()["healthCheck"]
+        assert frontend.primary is True
+        assert health_check["exec"]["command"][0] == "node"
+
     def test_non_frontend_primary_uses_http_probe(self, builder, metadata, connection):
         transformed = {
             "services": {
@@ -643,7 +1105,9 @@ class TestHealthChecks:
         assert health_check["httpGet"] == {
             "path": "/",
             "port": 8000,
-        }, f"service-type primary must probe / not /health; got {health_check['httpGet']!r}"
+        }, (
+            f"service-type primary must probe / not /health; got {health_check['httpGet']!r}"
+        )
 
     def test_tool_type_primary_probes_sse(self, builder, connection):
         """ENG-3901 / F-013 (final): tool primary probes ``/sse`` — the
@@ -690,3 +1154,175 @@ class TestHealthChecks:
         backend = next(s for s in payload.services if s.name == "backend")
         health_check = backend.model_dump()["healthCheck"]
         assert health_check["httpGet"] == {"path": "/health", "port": 8000}
+
+
+class TestHealthCheckOverride:
+    """ENG-4832: per-service healthCheck override in ``kamiwaza.json``.
+
+    Lets tool/service extensions whose primary doesn't serve ``/sse``
+    (REST-only, MCP-at-/mcp, gRPC, FastMCP feature-flagged off) declare
+    a probe that actually matches what the container exposes, instead
+    of hitting the ``/sse``-on-every-tool default and CrashLoopBackOff.
+    """
+
+    def test_metadata_override_replaces_default_for_tool_primary(
+        self, builder, connection
+    ):
+        """Omniparse-style REST-only tool: probe /v1/healthz, not /sse."""
+        metadata = {
+            "name": "my-tool",
+            "version": "1.0.0",
+            "type": "tool",
+            "services": {
+                "tool": {
+                    "healthCheck": {
+                        "httpGet": {"path": "/v1/healthz", "port": 8000},
+                        "initialDelaySeconds": 10,
+                        "periodSeconds": 10,
+                    },
+                },
+            },
+        }
+        transformed = {
+            "services": {
+                "tool": {
+                    "image": "registry.test/my-tool:1.0.0",
+                    "ports": ["8000"],
+                },
+            },
+        }
+        payload = builder.build(metadata, transformed, connection, "test")
+        tool = payload.services[0]
+        health_check = tool.model_dump()["healthCheck"]
+        assert tool.primary is True
+        assert health_check["httpGet"] == {"path": "/v1/healthz", "port": 8000}
+        assert health_check["initialDelaySeconds"] == 10
+        assert health_check["periodSeconds"] == 10
+
+    def test_metadata_override_wins_over_x_kamiwaza(self, builder, connection):
+        """When both kamiwaza.json and compose declare a probe, metadata wins.
+
+        Locks the precedence: catalog metadata is the single source of truth,
+        compose ``x-kamiwaza`` is the legacy fallback.
+        """
+        metadata = {
+            "name": "my-tool",
+            "version": "1.0.0",
+            "type": "tool",
+            "services": {
+                "tool": {
+                    "healthCheck": {"httpGet": {"path": "/v1/healthz", "port": 8000}},
+                },
+            },
+        }
+        transformed = {
+            "services": {
+                "tool": {
+                    "image": "registry.test/my-tool:1.0.0",
+                    "ports": ["8000"],
+                    "x-kamiwaza": {
+                        "healthCheck": {"httpGet": {"path": "/old", "port": 8000}},
+                    },
+                },
+            },
+        }
+        payload = builder.build(metadata, transformed, connection, "test")
+        tool = payload.services[0]
+        health_check = tool.model_dump()["healthCheck"]
+        assert health_check["httpGet"] == {"path": "/v1/healthz", "port": 8000}
+
+    def test_no_metadata_override_falls_back_to_x_kamiwaza(self, builder, connection):
+        """Existing ``x-kamiwaza.healthCheck`` path stays intact."""
+        metadata = {"name": "my-tool", "version": "1.0.0", "type": "tool"}
+        transformed = {
+            "services": {
+                "tool": {
+                    "image": "registry.test/my-tool:1.0.0",
+                    "ports": ["8000"],
+                    "x-kamiwaza": {
+                        "healthCheck": {"httpGet": {"path": "/compose", "port": 8000}},
+                    },
+                },
+            },
+        }
+        payload = builder.build(metadata, transformed, connection, "test")
+        tool = payload.services[0]
+        health_check = tool.model_dump()["healthCheck"]
+        assert health_check["httpGet"] == {"path": "/compose", "port": 8000}
+
+    def test_no_overrides_keeps_default_sse_for_tool_primary(self, builder, connection):
+        """Regression guard: tool extensions with no override still get /sse."""
+        metadata = {"name": "my-tool", "version": "1.0.0", "type": "tool"}
+        transformed = {
+            "services": {
+                "tool": {
+                    "image": "registry.test/my-tool:1.0.0",
+                    "ports": ["8000"],
+                },
+            },
+        }
+        payload = builder.build(metadata, transformed, connection, "test")
+        tool = payload.services[0]
+        health_check = tool.model_dump()["healthCheck"]
+        assert health_check["httpGet"] == {"path": "/sse", "port": 8000}
+
+    def test_metadata_override_per_service_only_affects_named_service(
+        self, builder, connection
+    ):
+        """Override on one service doesn't leak into siblings."""
+        metadata = {
+            "name": "my-app",
+            "version": "1.0.0",
+            "type": "app",
+            "services": {
+                "backend": {
+                    "healthCheck": {"httpGet": {"path": "/v1/ready", "port": 8000}},
+                },
+            },
+        }
+        transformed = {
+            "services": {
+                "frontend": {
+                    "image": "registry.test/my-app-frontend:1.0.0",
+                    "ports": ["3000"],
+                    "environment": ["NEXT_PUBLIC_API_URL=http://backend:8000"],
+                },
+                "backend": {
+                    "image": "registry.test/my-app-backend:1.0.0",
+                    "ports": ["8000"],
+                },
+            },
+        }
+        payload = builder.build(metadata, transformed, connection, "test")
+        backend = next(s for s in payload.services if s.name == "backend")
+        frontend = next(s for s in payload.services if s.name == "frontend")
+        assert backend.model_dump()["healthCheck"]["httpGet"] == {
+            "path": "/v1/ready",
+            "port": 8000,
+        }
+        # Frontend keeps the Node-based default probe — untouched by the
+        # backend-only override.
+        assert frontend.model_dump()["healthCheck"]["exec"]["command"][0] == "node"
+
+    def test_metadata_services_not_a_dict_is_ignored(self, builder, connection):
+        """Malformed metadata.services falls back cleanly to defaults."""
+        metadata = {
+            "name": "my-tool",
+            "version": "1.0.0",
+            "type": "tool",
+            "services": "not-a-dict",
+        }
+        transformed = {
+            "services": {
+                "tool": {
+                    "image": "registry.test/my-tool:1.0.0",
+                    "ports": ["8000"],
+                },
+            },
+        }
+        payload = builder.build(metadata, transformed, connection, "test")
+        tool = payload.services[0]
+        assert tool.model_dump()["healthCheck"]["httpGet"] == {
+            "path": "/sse",
+            "port": 8000,
+        }

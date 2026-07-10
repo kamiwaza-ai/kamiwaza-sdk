@@ -11,6 +11,7 @@ from typing import Any, Dict, Generator, List, Optional
 import yaml
 
 from kamiwaza_extensions import __version__
+from kamiwaza_extensions.compose_ports import extract_container_port
 from kamiwaza_extensions.constants import COMPOSE_FILENAMES
 from kamiwaza_extensions.monorepo import (
     MONOREPO_BARE_DIRS,
@@ -377,15 +378,12 @@ class AppAnalyzer:
                     if df.exists():
                         info.dockerfile = df
 
-                # Ports
+                # Ports — short, mapped, and long-form dict all resolve
+                # to the container port via the shared parser.
                 for port_spec in svc.get("ports", []):
-                    port_str = str(port_spec)
-                    # Extract container port
-                    parts = port_str.split(":")
-                    try:
-                        info.ports.append(int(parts[-1]))
-                    except ValueError:
-                        pass
+                    container_port = extract_container_port(port_spec)
+                    if container_port is not None:
+                        info.ports.append(container_port)
 
                 # Detect language from Dockerfile
                 if info.dockerfile and info.dockerfile.exists():
@@ -449,8 +447,16 @@ class AppAnalyzer:
             return
 
         for svc_name, svc in (result.compose_data.get("services") or {}).items():
-            # Host ports
+            # Host ports — long-form ``published`` is the explicit signal;
+            # target-only dict entries are not a host binding.
             for port_spec in svc.get("ports", []):
+                if isinstance(port_spec, dict):
+                    if port_spec.get("published") is not None:
+                        result.has_host_ports.append(
+                            f"{svc_name}: "
+                            f"{port_spec.get('published')}:{port_spec.get('target')}"
+                        )
+                    continue
                 port_str = str(port_spec)
                 if ":" in port_str:
                     result.has_host_ports.append(f"{svc_name}: {port_str}")

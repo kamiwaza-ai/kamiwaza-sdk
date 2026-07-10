@@ -10,6 +10,8 @@ from typing import Any, Dict, List, Optional
 
 from rich.console import Console
 
+from kamiwaza_extensions.compose_transformer import _fallback_image_basename
+
 console = Console(stderr=True)
 
 
@@ -33,6 +35,7 @@ class ImageBuilder:
         verbose: bool = False,
         build_overrides: Optional[List[Any]] = None,
         image_refs: Optional[Dict[str, str]] = None,
+        image_basename: Optional[str] = None,
     ) -> List[str]:
         """Build images and return the list of image references.
 
@@ -49,9 +52,13 @@ class ImageBuilder:
             image_refs: Optional per-service canonical image refs keyed by
                 service name. When provided, services found in the map are
                 built at the supplied ref; services not in the map fall
-                back to the legacy ``{registry}/{ext}-{svc}:{tag}`` form.
-                Callers that own canonical-ref derivation (run_publish)
-                pass this so build/push and catalog-write stay in lockstep.
+                back to the legacy ``{registry}/{basename}-{svc}:{tag}``
+                form. Callers that own canonical-ref derivation
+                (run_publish) pass this so build/push and catalog-write
+                stay in lockstep.
+            image_basename: Optional override for the ``{basename}``
+                segment in the legacy fallback form. When None, falls
+                back to ``extension_name``.
 
         Returns:
             List of image references that were built.
@@ -64,6 +71,10 @@ class ImageBuilder:
 
         services = compose_data.get("services") or {}
         built: List[str] = []
+        basename = _fallback_image_basename(
+            extension_name,
+            fallback_image_basename=image_basename,
+        )
 
         for svc_name, svc in services.items():
             if service_filter and svc_name != service_filter:
@@ -74,8 +85,10 @@ class ImageBuilder:
             if image_refs is not None and svc_name in image_refs:
                 image_ref = image_refs[svc_name]
             else:
-                image_ref = f"{registry}/{extension_name}-{svc_name}:{revision_tag}"
-            dockerfile, context = self._resolve_build_config(svc["build"], extension_dir)
+                image_ref = f"{registry}/{basename}-{svc_name}:{revision_tag}"
+            dockerfile, context = self._resolve_build_config(
+                svc["build"], extension_dir
+            )
 
             override = override_map.get(svc_name)
             sdk_label = " (with local SDK libs)" if override else ""
@@ -83,7 +96,11 @@ class ImageBuilder:
 
             if override:
                 self._docker_build_with_override(
-                    image_ref, dockerfile, context, override, verbose=verbose,
+                    image_ref,
+                    dockerfile,
+                    context,
+                    override,
+                    verbose=verbose,
                 )
             else:
                 self._docker_build(image_ref, dockerfile, context, verbose=verbose)
@@ -127,17 +144,22 @@ class ImageBuilder:
         verbose: bool = False,
     ) -> None:
         cmd = [
-            "docker", "build",
+            "docker",
+            "build",
             "--load",
-            "-t", image_ref,
-            "-f", str(dockerfile),
+            "-t",
+            image_ref,
+            "-f",
+            str(dockerfile),
             str(context),
         ]
         try:
             if verbose:
                 subprocess.run(cmd, check=True, timeout=3600)
             else:
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+                result = subprocess.run(
+                    cmd, capture_output=True, text=True, timeout=3600
+                )
                 if result.returncode != 0:
                     # Show last 20 lines of output on failure
                     lines = (result.stdout + result.stderr).strip().splitlines()
@@ -169,20 +191,28 @@ class ImageBuilder:
         try:
             # Read original Dockerfile and apply SDK overlay
             from kamiwaza_extensions.sdk_override import apply_build_overlay
+
             original_content = dockerfile.read_text()
             patched_content = apply_build_overlay(original_content, override)
 
             fd = tempfile.NamedTemporaryFile(
-                mode="w", suffix=".Dockerfile", prefix="kz-sdk-", delete=False,
+                mode="w",
+                suffix=".Dockerfile",
+                prefix="kz-sdk-",
+                delete=False,
             )
             fd.write(patched_content)
             fd.close()
             patched_file = fd.name
 
             cmd = [
-                "docker", "build", "--load",
-                "-t", image_ref,
-                "-f", patched_file,
+                "docker",
+                "build",
+                "--load",
+                "-t",
+                image_ref,
+                "-f",
+                patched_file,
             ]
             for ctx_name, ctx_path in override.additional_build_contexts.items():
                 cmd.extend(["--build-context", f"{ctx_name}={ctx_path}"])
@@ -194,7 +224,11 @@ class ImageBuilder:
                     subprocess.run(cmd, check=True, timeout=3600, env=env)
                 else:
                     result = subprocess.run(
-                        cmd, capture_output=True, text=True, timeout=3600, env=env,
+                        cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=3600,
+                        env=env,
                     )
                     if result.returncode != 0:
                         lines = (result.stdout + result.stderr).strip().splitlines()

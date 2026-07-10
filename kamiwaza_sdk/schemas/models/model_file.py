@@ -8,6 +8,8 @@ from uuid import UUID
 class StorageType(str, Enum):
     FILE = 'file'
     S3 = 's3'
+    GCS = 'gcs'
+    AZUREBLOB = 'azureblob'
     SCRATCH = 'scratch'
     OCI = 'oci'  # OCI-registry / ImageVolume-backed model files (ENG-6537)
 
@@ -18,7 +20,7 @@ class CreateModelFile(BaseModel):
     """Object with fields required to create a ModelFile"""
     name: str = Field(..., description="The name of the model file")
     size: Optional[int] = Field(None, description="The size of the model file in bytes")
-    storage_type: Optional[StorageType] = Field(None, description="The type of storage where the file is located (file, s3, scratch, or oci)")
+    storage_type: Optional[StorageType] = Field(None, description="The type of storage where the file is located (file, s3, gcs, azureblob, scratch, oci)")
     storage_host: str = Field(default="localhost", description="Host where the file is stored")
     storage_location: Optional[str] = Field(None, description="The location path or key where the file is stored")
 

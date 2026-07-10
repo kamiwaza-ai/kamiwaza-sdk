@@ -1,0 +1,41 @@
+# ENG-5957: The only docker build using this directory as context is
+# tests/e2e/extension_contract/echo-check/backend/Dockerfile, which only
+# needs:
+#   - kamiwaza_extensions_lib/   (workspace member)
+#   - tests/e2e/extension_contract/echo-check/backend/  (app + requirements)
+#
+# Everything else inflates the build context unnecessarily or risks
+# pulling sensitive files (.env, venvs, build caches) into image layers.
+
+# Block everything by default, then unblock the small set we need.
+**
+
+# Workspace member that the Dockerfile installs first.
+!kamiwaza_extensions_lib/
+!kamiwaza_extensions_lib/**
+
+# TypeScript runtime lib — needed by `kz-ext dev --sdk-repo` frontend builds,
+# which `COPY --from=sdk kamiwaza-ai-extensions-lib`. Packed with
+# `npm pack --ignore-scripts`, so dist/ must already be present in the context.
+!kamiwaza-ai-extensions-lib/
+!kamiwaza-ai-extensions-lib/**
+# ...but never ship its installed deps into the build context.
+kamiwaza-ai-extensions-lib/node_modules/
+
+# Backend app + its requirements.txt.
+!tests/
+!tests/e2e/
+!tests/e2e/extension_contract/
+!tests/e2e/extension_contract/echo-check/
+!tests/e2e/extension_contract/echo-check/backend/
+!tests/e2e/extension_contract/echo-check/backend/app/
+!tests/e2e/extension_contract/echo-check/backend/app/**
+!tests/e2e/extension_contract/echo-check/backend/requirements.txt
+
+# Even within those whitelisted dirs, exclude churn artifacts.
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/*.egg-info/

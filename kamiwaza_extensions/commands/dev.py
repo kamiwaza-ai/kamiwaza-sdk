@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import re
-import subprocess
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
@@ -61,6 +60,18 @@ def _build_patch_kwargs(
     sandbox = extra.get("sandbox")
     if sandbox:
         kwargs["sandbox"] = sandbox
+    # Always forward ``volumes`` (even when empty) so removing a named
+    # volume from compose actually clears the stale top-level volume on
+    # the persisted CR. Same iterative-dev contract that drives the
+    # ``kamiwaza``/annotations forwarding above.
+    #
+    # Safe against operator-managed mounts: the kamiwaza-extension-
+    # operator rebuilds each Deployment's volume list every reconcile as
+    # ``[tmp emptyDir] + (data PVC if persistence) + svc.Volumes``. The
+    # ``tmp``/``data`` volumes are injected at reconcile time and are
+    # never stored in ``svc.Volumes``, so PATCHing ``volumes: []`` clears
+    # only user-declared volumes and cannot wipe operator-managed ones.
+    kwargs["volumes"] = extra.get("volumes") or []
     return kwargs
 
 
@@ -105,8 +116,80 @@ def _build_patch_service_specs(payload: Any) -> List[Any]:
         ):
             if field in svc_extra and svc_extra[field] is not None:
                 setattr(spec, field, svc_extra[field])
+        # Always forward ``volumeMounts`` (even when empty) so removing
+        # a volume from compose clears the stale per-service mount on
+        # the persisted CR; consistent with the top-level ``volumes``
+        # forwarding in ``_build_patch_kwargs``. The operator appends
+        # ``svc.VolumeMounts`` after its own ``tmp``/``data`` mounts, so
+        # an empty list clears only user-declared mounts.
+        spec.volumeMounts = svc_extra.get("volumeMounts") or []
         patch_services.append(spec)
     return patch_services
+
+
+def _resume_revision(prior_state: Any, rev_tag: str, resumable: bool) -> Optional[str]:
+    """Return the prior run's revision when this run must deploy its artifacts.
+
+    ``generate_tag`` stamps a fresh epoch suffix every invocation, so a
+    resumed run (same commit, clean tree) skips build/push while holding a
+    tag that was NEVER pushed — the deploy would PATCH the CR to a
+    nonexistent image and the rollout dies in ImagePullBackOff. Whenever
+    resume will reuse prior build/push artifacts, the deploy (and the
+    catalog overlay) must reference the prior revision tag those artifacts
+    actually carry. Returns None when no adoption is needed.
+    """
+    if (
+        resumable
+        and prior_state is not None
+        and prior_state.last_revision
+        and prior_state.last_revision != rev_tag
+        and (
+            prior_state.is_step_complete("build")
+            or prior_state.is_step_complete("push")
+        )
+    ):
+        return str(prior_state.last_revision)
+    return None
+
+
+def _prior_artifacts_in_registry(
+    info: Any,
+    prior_revision: str,
+    *,
+    registry: str,
+    push_registry: str,
+) -> bool:
+    """True when every buildable service's prior-revision image resolves.
+
+    Probes via the host-reachable push refs. Extensions with no buildable
+    services have nothing to verify (trivially true). Any probe failure —
+    missing manifest, docker unavailable, registry hiccup — returns False:
+    the safe answer is always "rebuild".
+    """
+    from kamiwaza_extensions.compose_transformer import compute_canonical_refs
+    from kamiwaza_extensions.image_pusher import ImagePusher
+    from kamiwaza_extensions.registry_resolution import build_push_ref_map
+
+    try:
+        canonical_refs = compute_canonical_refs(
+            (info.compose_data or {}).get("services") or {},
+            registry=registry,
+            extension_name=info.name,
+            revision_tag=prior_revision,
+            image_basename=info.image_basename,
+        )
+        if not canonical_refs:
+            return True
+        push_ref_map = build_push_ref_map(
+            list(canonical_refs.values()),
+            image_registry=registry,
+            push_registry=push_registry,
+        )
+        for ref in canonical_refs.values():
+            ImagePusher.resolve_digest(push_ref_map.get(ref, ref))
+        return True
+    except Exception:
+        return False
 
 
 # Match the default ``RevisionTagger.generate_tag`` format:
@@ -157,6 +240,8 @@ def _is_resumable(
     sdk_repo: Optional[str] = None,
     service: Optional[str] = None,
     registry: str = "",
+    push_registry: str = "",
+    image_basename: Optional[str] = None,
 ) -> bool:
     """Return True when the prior dev-state can resume the current run.
 
@@ -179,9 +264,14 @@ def _is_resumable(
         Skipping build would silently redeploy stale SDK content.
         Conservatively: any non-equal sdk_repo (including None vs set)
         invalidates resume.
-      * **Registry** (``KAMIWAZA_REGISTRY`` / derived) — the prior push
-        targeted a specific registry; a different registry means the
-        image isn't there to skip-push to.
+      * **Registry / push registry** (``KAMIWAZA_REGISTRY`` /
+        ``KAMIWAZA_PUSH_REGISTRY`` / derived) — the prior push targeted
+        specific image and push registry addresses; a different address
+        means the image isn't there to skip-push to.
+      * **image_basename** — kamiwaza.json override that controls the
+        ``{registry}/{basename}-{svc}:{tag}`` legacy-fallback synthesis.
+        Build/push and deploy refs depend on it, so a flipped override
+        under the same ``--revision`` must invalidate resume.
     """
     if prior_state is None:
         return False
@@ -193,15 +283,21 @@ def _is_resumable(
         return False
     if prior_state.cluster != connection_url:
         return False
-    # Service filter, sdk_repo, and registry must all match. None vs ""
-    # are treated as equivalent for service/sdk_repo (older state files
-    # didn't record them — refuse resume on those by mismatching against
-    # current values when current is set).
+    # Service filter, sdk_repo, registry, push_registry, and image_basename must all
+    # match. None vs "" are treated as equivalent for the Optional
+    # fields (older state files didn't record them — refuse resume on
+    # those by mismatching against current values when current is set).
     if (prior_state.last_service or None) != (service or None):
         return False
     if (prior_state.last_sdk_repo or None) != (sdk_repo or None):
         return False
     if prior_state.last_registry != registry:
+        return False
+    current_push_registry = push_registry or registry
+    prior_push_registry = prior_state.last_push_registry or prior_state.last_registry
+    if prior_push_registry != current_push_registry:
+        return False
+    if (prior_state.last_image_basename or None) != (image_basename or None):
         return False
     return True
 
@@ -218,39 +314,11 @@ def _decode_email(access_token: str) -> Optional[str]:
 
 
 def _detect_kind_registry() -> Optional[str]:
-    """Auto-detect a Kind local registry via the ``local-registry-hosting`` configmap.
+    """Compatibility wrapper for tests and callers that patch this helper."""
 
-    Returns ``localhost:<port>`` if found, else ``None``.
-    """
-    try:
-        result = subprocess.run(
-            [
-                "kubectl", "get", "configmap", "local-registry-hosting",
-                "-n", "kube-public",
-                "-o", "jsonpath={.data.localRegistryHosting\\.v1}",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if result.returncode != 0 or not result.stdout.strip():
-            return None
+    from kamiwaza_extensions.registry_resolution import detect_kind_registry
 
-        # Parse the YAML-ish output: host: "host.docker.internal:5001"
-        for line in result.stdout.strip().splitlines():
-            line = line.strip()
-            if line.startswith("host:"):
-                host_val = line.split(":", 1)[1].strip().strip('"').strip("'")
-                # Map host.docker.internal to localhost (it may not resolve on the host)
-                parsed = urlparse(f"//{host_val}")
-                port = parsed.port or 5001
-                console.print(f"[dim]Auto-detected Kind local registry: localhost:{port}[/dim]")
-                return f"localhost:{port}"
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
-    return None
-
-
+    return detect_kind_registry()
 
 
 def _delete_and_recreate(client, dev_name, payload, console):
@@ -288,7 +356,9 @@ def _delete_and_recreate(client, dev_name, payload, console):
             raise typer.Exit(code=1) from retry_exc
 
     if ext is None:
-        console.print("[red]Error:[/red] Timed out waiting for old deployment to be removed")
+        console.print(
+            "[red]Error:[/red] Timed out waiting for old deployment to be removed"
+        )
         raise typer.Exit(code=1)
     return ext
 
@@ -303,14 +373,15 @@ def run_dev_remote(
     sdk_repo: Optional[str] = None,
 ) -> None:
     """Build, push, and deploy extension to a Kamiwaza cluster."""
-    from kamiwaza_sdk import KamiwazaClient
-    from kamiwaza_sdk.exceptions import APIError
-
     from kamiwaza_extensions.compose_transformer import (
         ComposeTransformer,
         compute_canonical_refs,
     )
     from kamiwaza_extensions.connections import ConnectionManager
+    from kamiwaza_extensions.dev_env_image_refs import (
+        build_image_ref_map,
+        rewrite_env_image_refs,
+    )
     from kamiwaza_extensions.deployment_poller import (
         DeploymentFailedError,
         DeploymentPoller,
@@ -326,6 +397,8 @@ def run_dev_remote(
     from kamiwaza_extensions.image_pusher import ImagePusher, ImagePushError
     from kamiwaza_extensions.payload_builder import PayloadBuilder
     from kamiwaza_extensions.revision_tagger import RevisionTagger
+    from kamiwaza_sdk import KamiwazaClient
+    from kamiwaza_sdk.exceptions import APIError
 
     # 1. Detect extension
     detector = ExtensionDetector()
@@ -362,31 +435,98 @@ def run_dev_remote(
                 "-- image tagged with 'dirty'."
             )
 
-    # 4. Derive registry — must happen before the resume check so we can
-    # compare the active registry against the one persisted in dev-state.
-    registry = os.environ.get("KAMIWAZA_REGISTRY")
-    if not registry:
-        registry = _detect_kind_registry()
-    if not registry:
-        # Fallback: convention registry.{cluster-domain}
-        cluster_url = connection.url.removesuffix("/api")
-        parsed = urlparse(cluster_url)
-        if parsed.hostname:
-            registry = f"registry.{parsed.hostname}"
-        else:
-            console.print("[red]Error:[/red] Could not derive registry from connection URL.")
-            raise typer.Exit(code=1)
+    # 4. Derive image and push registries — must happen before the resume
+    # check so we can compare the active destinations against dev-state.
+    # Engine selection comes first so the resolver can choose a VM alias
+    # the active engine can actually resolve (R6 — `host.docker.internal`
+    # only resolves inside the Docker daemon's VM; podman from host CLI
+    # cannot resolve it at all).
+    from kamiwaza_extensions.registry_resolution import (
+        build_push_ref_map,
+        docker_accepts_insecure_push_to,
+        insecure_registry_daemon_json_fix,
+        is_loopback_registry,
+        push_registry_requires_insecure_tls,
+        push_registry_uses_local_loopback_alias,
+        resolve_dev_registries,
+        select_push_engine,
+        validate_push_registry_for_engine,
+    )
+
+    # API TLS and registry TLS are related for default dev clusters, but not
+    # identical. Keep the API-side effective setting for initial local-registry
+    # engine selection, then refine the push TLS policy once the actual push
+    # registry/source is known.
+    api_insecure = not connection.effective_verify_ssl()
+    # ImageBuilder is Docker-only today. On a normal/fresh run, the push must
+    # use Docker too; otherwise Docker builds the image into Docker's store and
+    # a Podman push cannot see it. Explicit --no-build pushes still use the
+    # auto-selected engine because the user is asserting the image already
+    # exists in the active engine's store.
+    build_engine = "docker"
+    push_registry_override = os.environ.get("KAMIWAZA_PUSH_REGISTRY")
+    push_engine = (
+        build_engine
+        if not no_build
+        else select_push_engine(
+            insecure=api_insecure,
+            push_registry=push_registry_override,
+        )
+    )
+
+    try:
+        registry_resolution = resolve_dev_registries(
+            connection,
+            kind_registry_detector=_detect_kind_registry,
+            push_engine=push_engine,
+        )
+    except ValueError as exc:
+        console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+    registry = registry_resolution.image_registry
+    push_registry = registry_resolution.push_registry
+
+    push_insecure = push_registry_requires_insecure_tls(
+        registry_resolution,
+        api_insecure=api_insecure,
+    )
+    if no_build:
+        selected_push_engine = select_push_engine(
+            insecure=push_insecure,
+            push_registry=push_registry,
+        )
+        if selected_push_engine != push_engine:
+            push_engine = selected_push_engine
+            try:
+                registry_resolution = resolve_dev_registries(
+                    connection,
+                    kind_registry_detector=_detect_kind_registry,
+                    push_engine=push_engine,
+                )
+            except ValueError as exc:
+                console.print(f"[red]Error:[/red] {exc}")
+                raise typer.Exit(code=1) from exc
+            registry = registry_resolution.image_registry
+            push_registry = registry_resolution.push_registry
+            push_insecure = push_registry_requires_insecure_tls(
+                registry_resolution,
+                api_insecure=api_insecure,
+            )
 
     # Read prior dev-state for resume hints (§4.2.9 DevStateFile, ENG-3887).
     # If the prior run wrote matching inputs (revision, cluster, service,
-    # sdk-repo, registry) and got past a step, skip that step on this
-    # invocation. Different revision/cluster/service/sdk-repo/registry =
-    # different image content or destination = full pipeline (review
-    # re-re-re-review PR #84 H1).
+    # sdk-repo, registry, push registry) and got past a step, skip that
+    # step on this invocation. Different inputs = different image content
+    # or destination = full pipeline (review re-re-re-review PR #84 H1).
     prior_state = read_state(info.path)
     notice = resume_message(prior_state)
     if notice:
         console.print(f"[dim]{notice}[/dim]")
+    # The catalog overlay (step 12) keys off the USER's --no-push intent.
+    # Resume flips `no_push` below when the prior run already pushed — but
+    # in that case the image IS in the registry, so the overlay must still
+    # be written.
+    user_no_push = no_push
     resumable = _is_resumable(
         prior_state,
         rev_tag,
@@ -394,7 +534,37 @@ def run_dev_remote(
         sdk_repo=sdk_repo,
         service=service,
         registry=registry,
+        push_registry=push_registry,
+        image_basename=info.image_basename,
     )
+    # Adopt the prior run's revision tag BEFORE the skip decisions print it:
+    # resume reuses the prior build/push artifacts, and those carry the
+    # prior tag — deploying this run's freshly-stamped tag would reference
+    # an image that was never pushed (ImagePullBackOff). Trust-but-verify:
+    # dev-state can record a revision whose artifacts never reached the
+    # registry (state written by a pre-fix CLI, or a `--no-push` run whose
+    # apply step recorded the tag), so probe the registry before adopting —
+    # on a miss, fall back to the full pipeline instead of resuming.
+    prior_revision = _resume_revision(prior_state, rev_tag, resumable)
+    if prior_revision is not None:
+        if _prior_artifacts_in_registry(
+            info,
+            prior_revision,
+            registry=registry,
+            push_registry=push_registry,
+        ):
+            console.print(
+                f"[dim]Resuming with prior revision {prior_revision} "
+                f"(same commit; artifacts verified in the registry).[/dim]"
+            )
+            rev_tag = prior_revision
+        else:
+            console.print(
+                f"[yellow]Prior revision {prior_revision} is not in the "
+                f"registry — dev-state is stale. Running the full "
+                f"pipeline.[/yellow]"
+            )
+            resumable = False
     if resumable and not no_build and prior_state.is_step_complete("build"):
         console.print(
             f"[dim]Skipping build — revision {rev_tag} already built in prior run.[/dim]"
@@ -406,15 +576,54 @@ def run_dev_remote(
         )
         no_push = True
 
+    # Engine consistency: Docker and Podman keep separate image stores, so
+    # a ``--no-build`` resume that would push with a different engine than
+    # the build used would call ``podman tag <docker-image>`` (or the
+    # inverse) on an image the new engine can't see (jxstanford iter-4
+    # High #1). Refuse with an actionable error rather than letting
+    # ImagePusher fail downstream with a confusing tag-not-found message.
+    prior_build_engine = (
+        (prior_state.last_build_engine or "docker")
+        if prior_state is not None and prior_state.is_step_complete("build")
+        else ""
+    )
+    if (
+        no_build
+        and not no_push
+        and resumable
+        and prior_state is not None
+        and prior_build_engine
+        and prior_build_engine != push_engine
+    ):
+        console.print(
+            f"[red]Error:[/red] Previous build used '{prior_build_engine}' "
+            f"but this push will use '{push_engine}'.\n"
+            "  Their image stores are separate, so the prior image isn't visible to "
+            f"'{push_engine}'.\n"
+            "  Rerun [bold]kz-ext dev[/bold] without --no-build to rebuild with the "
+            "active engine, or restore the previous engine "
+            f"(e.g., start Docker Desktop if it was '{prior_build_engine}')."
+        )
+        raise typer.Exit(code=1)
+
     # Print header
     console.print(f"  Extension:  [bold]{info.name}[/bold] ({info.version})")
     console.print(f"  Connection: {connection.name} ({connection.url})")
     console.print(f"  Revision:   {rev_tag}")
+    console.print(
+        f"  Registry:   {registry} ({registry_resolution.image_registry_source})"
+    )
+    if push_registry != registry:
+        console.print(
+            f"  Push via:   {push_registry} "
+            f"({registry_resolution.push_registry_source})"
+        )
     # Surface auto-disabled TLS verify when the URL is a dev TLD so the
     # user knows why their KAMIWAZA_TLS_REJECT_UNAUTHORIZED ends up "0".
     # Skip the notice when the persisted setting already matched (no
     # effective change) or when the user set the env var explicitly.
     from kamiwaza_extensions.connections import _VERIFY_SSL_FALSE_VALUES
+
     if (
         connection.verify_ssl
         and not connection.effective_verify_ssl()
@@ -435,7 +644,14 @@ def run_dev_remote(
         extension_name=info.name,
         revision_tag=rev_tag,
         registry=registry,
+        image_basename=info.image_basename,
     )
+    # The catalog overlay (step 12) is a template destination: the platform
+    # performs install-time env substitution on catalog compose, so it must
+    # keep `${VAR}` / `${VAR:?required}` placeholders. Capture the
+    # pre-resolution compose for it; the K8s deploy payload below gets the
+    # resolved copy (resolve_env_placeholders returns a new dict).
+    catalog_compose = transformed
     transformed = transformer.resolve_env_placeholders(transformed)
 
     # Canonical image refs for every build-context service. Single
@@ -449,7 +665,40 @@ def run_dev_remote(
         registry=registry,
         extension_name=info.name,
         revision_tag=rev_tag,
+        image_basename=info.image_basename,
     )
+
+    # ENG-7110: image refs embedded in env values are a parallel surface the
+    # compose transform doesn't rewrite. Kaizen's backend spawns agent
+    # sandbox pods dynamically from ``AGENT_SERVER_IMAGE``, whose compose
+    # default is the *released* agent tag this dev build never pushed —
+    # ImagePullBackOff, chat 500. Rewrite that ref (and the sandbox
+    # ``SANDBOX_ALLOWED_IMAGE_PREFIXES`` allowlist, in lockstep) to the
+    # dev-built agent ref — the dev analog of ENG-5260's publish-side fix.
+    # ``build_image_ref_map`` mirrors ImageBuilder's per-service ref choice,
+    # so the env ref equals exactly what was built and pushed (the profiled
+    # ``image-only`` agent resolves to the ``{registry}/{ext}-agent`` fallback
+    # path). Applied to both the K8s payload (bare refs, post-resolve) and
+    # the catalog overlay compose (``${VAR:-default}`` form).
+    #
+    # Caveat: env_ref_map spans ALL build-context services, so under
+    # ``--service X`` or ``--no-build`` this can rewrite AGENT_SERVER_IMAGE to
+    # the agent ref even though the invocation builds/pushes only a subset.
+    # That's the same accepted partial-deploy sharp edge as the service
+    # ``image:`` fields (a ``--service backend`` run already deploys
+    # un-rebuilt siblings); a full run — or a prior run whose agent push the
+    # registry still holds (see the --no-build branch below) — is what makes
+    # the ref resolve.
+    env_ref_map = build_image_ref_map(
+        info.compose_data.get("services") or {},
+        canonical_refs,
+        registry=registry,
+        extension_name=info.name,
+        revision_tag=rev_tag,
+        image_basename=info.image_basename,
+    )
+    transformed = rewrite_env_image_refs(transformed, env_ref_map)
+    catalog_compose = rewrite_env_image_refs(catalog_compose, env_ref_map)
 
     # 5b. Resolve SDK override for build
     build_overrides = None
@@ -488,7 +737,9 @@ def run_dev_remote(
                     or not override_spec.typescript_dist_path.is_dir()
                 ):
                     if not build_typescript_lib(override_spec):
-                        console.print("[yellow]Continuing without TypeScript override[/yellow]")
+                        console.print(
+                            "[yellow]Continuing without TypeScript override[/yellow]"
+                        )
                         override_spec = SdkOverrideSpec(
                             sdk_repo=override_spec.sdk_repo,
                             python=override_spec.python,
@@ -498,7 +749,9 @@ def run_dev_remote(
 
                 print_override_diagnostics(override_spec)
                 build_overrides = generate_build_overrides(
-                    override_spec, info.compose_data, extension_dir=info.path,
+                    override_spec,
+                    info.compose_data,
+                    extension_dir=info.path,
                 )
         console.print()
 
@@ -517,42 +770,125 @@ def run_dev_remote(
                 verbose=verbose,
                 build_overrides=build_overrides,
                 image_refs=canonical_refs,
+                image_basename=info.image_basename,
             )
         except ImageBuildError as exc:
             console.print(f"\n[red]Error:[/red] {exc}")
             raise typer.Exit(code=1) from exc
 
         if not image_refs:
-            console.print("[yellow]Warning:[/yellow] No images to build (no services with build contexts).")
+            console.print(
+                "[yellow]Warning:[/yellow] No images to build (no services with build contexts)."
+            )
         console.print()
     else:
         console.print("[dim]Skipping build (--no-build)[/dim]")
         # Collect expected image refs for push from the canonical map so
         # --no-build pushes hit the same registry path the deployment
         # payload will reference.
+        #
+        # ENG-7110: profiled ``image-only`` services (the agent, referenced
+        # via AGENT_SERVER_IMAGE — see the env rewrite above) are excluded
+        # from canonical_refs and so are intentionally NOT in this push list.
+        # A full run builds+pushes them via ImageBuilder (which iterates all
+        # build-context services); under --no-build they rely on a prior
+        # run's registry push (resume adopts that revision tag, so the agent
+        # ref the env rewrite points at already exists). Re-pushing them here
+        # would tag from the local engine store, which a resumed run may no
+        # longer hold — regressing the path that works.
         if service:
-            image_refs = (
-                [canonical_refs[service]] if service in canonical_refs else []
-            )
+            image_refs = [canonical_refs[service]] if service in canonical_refs else []
         else:
             image_refs = list(canonical_refs.values())
         console.print()
 
     # 7. Push images
     if not no_push and image_refs:
-        console.print(f"Pushing to {registry}...")
+        push_ref_map = build_push_ref_map(
+            image_refs,
+            image_registry=registry,
+            push_registry=push_registry,
+        )
         try:
+            validate_push_registry_for_engine(
+                push_registry,
+                push_engine,
+                require_runtime=True,
+            )
+        except ValueError as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+        push_uses_local_loopback_alias = push_registry_uses_local_loopback_alias(
+            registry_resolution
+        )
+        push_targets_registry = any(
+            (push_ref := push_ref_map.get(ref, ref)) == push_registry
+            or push_ref.startswith(f"{push_registry}/")
+            for ref in image_refs
+        )
+        # Pre-flight: when Docker is the active engine pushing insecurely, the
+        # daemon must treat that target registry as insecure. This applies both
+        # to split VM aliases and same-host derived registries such as
+        # ``registry.kamiwaza.test``. Gated inside the push branch -- after
+        # resume may have set ``no_push`` and once image refs are known -- so a
+        # skipped push or build-context-less extension can't trip it. Also
+        # require at least one actual pushed ref to target this registry;
+        # declared external refs may leave an otherwise-resolved fallback alias
+        # unused.
+        if (
+            push_insecure
+            and push_engine == "docker"
+            and push_targets_registry
+            and not docker_accepts_insecure_push_to(push_registry)
+        ):
+            console.print(
+                f"[red]Error:[/red] {insecure_registry_daemon_json_fix(push_registry)}"
+            )
+            raise typer.Exit(code=1)
+
+        console.print(f"Pushing to {push_registry}...")
+        try:
+            # The local Kamiwaza dev registry is a stock anonymous
+            # ``registry:2`` — it requires no auth, and the connection token
+            # is a Kamiwaza *API* credential, not a registry credential. Skip
+            # the registry login for it. Beyond being unnecessary, the login
+            # is actively broken on the macOS podman-machine topology
+            # (ENG-5719): ``podman login <vm-alias>`` resolves the registry
+            # host client-side and fails ("no such host"), while
+            # ``podman push <vm-alias>`` resolves it inside the VM and
+            # succeeds. Skip login for a loopback push target or for local
+            # loopback VM aliases, including explicit
+            # ``KAMIWAZA_PUSH_REGISTRY=host.*.internal:<port>`` overrides.
+            # Authenticated user overrides (e.g.
+            # ``KAMIWAZA_PUSH_REGISTRY=registry.example.com``) are non-local
+            # and still log in even when the image registry is loopback.
+            registry_login_token = (
+                None
+                if (
+                    is_loopback_registry(push_registry)
+                    or push_uses_local_loopback_alias
+                )
+                else token.access_token
+            )
             pusher = ImagePusher()
             pusher.push(
                 image_refs,
-                registry=registry,
-                token=token.access_token,
-                insecure=not connection.verify_ssl,
+                registry=push_registry,
+                token=registry_login_token,
+                # Registry TLS is based on the push target/source. Local
+                # loopback registries and auto VM aliases are plain HTTP;
+                # explicit non-local registry overrides stay secure even when
+                # the Kamiwaza API connection is a dev host with TLS disabled.
+                insecure=push_insecure,
                 verbose=verbose,
+                target_refs=push_ref_map,
+                engine=push_engine,
             )
         except ImagePushError as exc:
             console.print(f"\n[red]Error:[/red] {exc}")
-            console.print("  Run: [bold]kz-ext doctor[/bold] to check connection and registry access.")
+            console.print(
+                "  Run: [bold]kz-ext doctor[/bold] to check connection and registry access."
+            )
             raise typer.Exit(code=1) from exc
         console.print()
     elif no_push:
@@ -561,7 +897,10 @@ def run_dev_remote(
     # 8. Build API payload
     payload_builder = PayloadBuilder()
     from kamiwaza_extensions.constants import extract_user_id
-    dev_name = PayloadBuilder.make_dev_name(info.name, user_id=extract_user_id(token.access_token))
+
+    dev_name = PayloadBuilder.make_dev_name(
+        info.name, user_id=extract_user_id(token.access_token)
+    )
     deployer_email = _decode_email(token.access_token)
     payload = payload_builder.build(
         metadata=info.metadata,
@@ -583,11 +922,15 @@ def run_dev_remote(
                 extension_name=info.name,
                 deployer=deployer_email or "",
                 # Persist the resume-key inputs so the next invocation can
-                # detect when service-filter / sdk-repo / registry differ
-                # (review re-re-re-review PR #84 H1).
+                # detect when service-filter / sdk-repo / registry /
+                # push_registry / image_basename differ (review
+                # re-re-re-review PR #84 H1).
                 service=service,
                 sdk_repo=sdk_repo,
                 registry=registry,
+                push_registry=push_registry,
+                image_basename=info.image_basename,
+                build_engine=build_engine if step == "build" else "",
             )
         except OSError as state_exc:
             console.print(
@@ -604,6 +947,7 @@ def run_dev_remote(
 
     # 9. Deploy, poll, and print URL
     from kamiwaza_extensions.constants import ssl_env_override
+
     console.print(f"Deploying to {connection.url}...")
     with ssl_env_override(connection):
         client = KamiwazaClient(
@@ -630,7 +974,9 @@ def run_dev_remote(
 
             try:
                 ext = client.extensions.patch_extension(dev_name, patch)
-                console.print("  [green]\u2713[/green] Extension updated (zero-downtime)")
+                console.print(
+                    "  [green]\u2713[/green] Extension updated (zero-downtime)"
+                )
             except APIError as patch_exc:
                 if patch_exc.status_code == 405:
                     # Platform doesn't support PATCH yet — fall back
@@ -654,7 +1000,9 @@ def run_dev_remote(
         try:
             timeout = int(os.environ.get("KAMIWAZA_DEV_TIMEOUT", "300"))
         except ValueError:
-            console.print("[yellow]Warning:[/yellow] Invalid KAMIWAZA_DEV_TIMEOUT, using 300s")
+            console.print(
+                "[yellow]Warning:[/yellow] Invalid KAMIWAZA_DEV_TIMEOUT, using 300s"
+            )
             timeout = 300
         poller = DeploymentPoller()
         try:
@@ -663,12 +1011,14 @@ def run_dev_remote(
             # P9 (ENG-3887): print the dev-suffixed name even on timeout so
             # the user can locate the partial deployment via kz-ext status.
             console.print(f"\n[bold]Deployment name:[/bold] {dev_name}")
-            from kamiwaza_extensions.dev_diagnostics import diagnose_dev_timeout
             from kamiwaza_extensions.constants import EXTENSIONS_NAMESPACE
+            from kamiwaza_extensions.dev_diagnostics import diagnose_dev_timeout
             from kamiwaza_extensions.exit_codes import ExitCode
 
             diagnosis = diagnose_dev_timeout(
-                dev_name, EXTENSIONS_NAMESPACE, connection_url=connection.url,
+                dev_name,
+                EXTENSIONS_NAMESPACE,
+                connection_url=connection.url,
             )
             console.print(f"[red]Error:[/red] {exc}")
             console.print(f"  [dim]{diagnosis.message}[/dim]")
@@ -693,8 +1043,249 @@ def run_dev_remote(
         url = ext.endpoints.external if ext.endpoints else None
         console.print("\n  [green]\u2713[/green] Rollout complete")
         console.print()
-        console.print(f"[bold]{info.name}[/bold] is running as [bold]{dev_name}[/bold] at:")
+        console.print(
+            f"[bold]{info.name}[/bold] is running as [bold]{dev_name}[/bold] at:"
+        )
         if url:
             console.print(f"  [blue]{url}[/blue]")
         else:
-            console.print("  [dim](no external URL reported — check kz-ext status)[/dim]")
+            console.print(
+                "  [dim](no external URL reported — check kz-ext status)[/dim]"
+            )
+
+        # 12. Publish the local catalog overlay (ENG-6802) so NEW workrooms
+        # launched via the workroom manager get this build. Runs after the
+        # rollout proved the build starts; never fatal — the hot-swap above
+        # already succeeded.
+        _publish_catalog_overlay(
+            client,
+            info,
+            transformed=catalog_compose,
+            canonical_refs=canonical_refs,
+            registry=registry,
+            push_registry=push_registry,
+            no_push=user_no_push,
+            service_filter=service,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Local catalog overlay (ENG-6802)
+# ---------------------------------------------------------------------------
+
+
+def _publish_catalog_overlay(
+    client: Any,
+    info: Any,
+    *,
+    transformed: Dict[str, Any],
+    canonical_refs: Dict[str, str],
+    registry: str,
+    push_registry: str,
+    no_push: bool,
+    service_filter: Optional[str],
+) -> None:
+    """Write this build into the cluster's local catalog overlay.
+
+    Shadows the extension's catalog template so new workrooms launch this
+    build. Skipped when the image can't be everything a fresh workroom
+    needs (``--no-push``: never reached the registry; ``--service``:
+    sibling services were not pushed at this revision). All failures are
+    non-fatal warnings — the dev hot-swap already succeeded.
+    """
+    try:
+        _publish_catalog_overlay_inner(
+            client,
+            info,
+            transformed=transformed,
+            canonical_refs=canonical_refs,
+            registry=registry,
+            push_registry=push_registry,
+            no_push=no_push,
+            service_filter=service_filter,
+        )
+    except Exception as exc:
+        # Belt-and-braces: the inner helper already handles the realistic
+        # failure modes; nothing in overlay publication may fail a dev run
+        # whose rollout already succeeded.
+        console.print(
+            f"\n[yellow]Warning:[/yellow] catalog overlay write failed: {exc}\n"
+            "  New workrooms will keep using the upstream catalog build."
+        )
+
+
+def _publish_catalog_overlay_inner(
+    client: Any,
+    info: Any,
+    *,
+    transformed: Dict[str, Any],
+    canonical_refs: Dict[str, str],
+    registry: str,
+    push_registry: str,
+    no_push: bool,
+    service_filter: Optional[str],
+) -> None:
+    from kamiwaza_extensions.catalog_overlay import (
+        build_overlay_entry,
+        build_overlay_version,
+        get_git_branch,
+        publish_overlay,
+    )
+    from kamiwaza_extensions.image_pusher import ImagePushError, ImagePusher
+    from kamiwaza_extensions.registry_resolution import build_push_ref_map
+    from kamiwaza_extensions.revision_tagger import RevisionTagger
+    from kamiwaza_sdk.exceptions import APIError
+
+    if no_push:
+        console.print(
+            "\n[dim]Catalog overlay skipped (--no-push: the cluster can't "
+            "pull an unpushed image).[/dim]"
+        )
+        return
+    if service_filter:
+        console.print(
+            "\n[dim]Catalog overlay skipped (--service: sibling services "
+            "were not pushed at this revision). Run kz-ext dev without "
+            "--service to shadow the catalog template.[/dim]"
+        )
+        return
+
+    # Both from the process cwd, matching RevisionTagger.generate_tag's
+    # earlier sha/dirty derivation — sha and branch must describe the same
+    # repo state.
+    sha, dirty = RevisionTagger.get_git_info()
+    branch = get_git_branch()
+    overlay_version = build_overlay_version(
+        info.version, branch=branch, sha=sha, dirty=dirty
+    )
+
+    push_ref_map = build_push_ref_map(
+        list(canonical_refs.values()),
+        image_registry=registry,
+        push_registry=push_registry,
+    )
+
+    def _resolve(ref: str) -> str:
+        try:
+            return ImagePusher.resolve_digest(ref)
+        except ImagePushError as exc:
+            raise RuntimeError(str(exc)) from exc
+
+    entry = build_overlay_entry(
+        version=overlay_version,
+        transformed_compose=transformed,
+        canonical_refs=canonical_refs,
+        push_ref_map=push_ref_map,
+        metadata=info.metadata,
+        git_sha=sha,
+        git_branch=branch,
+        dirty=dirty,
+        resolve_digest=_resolve,
+        warn=lambda msg: console.print(f"  [yellow]Warning:[/yellow] {msg}"),
+    )
+
+    try:
+        response = publish_overlay(client, info.name, entry)
+    except APIError as exc:
+        if exc.status_code in (404, 405):
+            console.print(
+                "\n[dim]Platform does not support catalog overlays — new "
+                "workrooms will keep using the upstream catalog build.[/dim]"
+            )
+            return
+        console.print(
+            f"\n[yellow]Warning:[/yellow] catalog overlay write failed: {exc}\n"
+            "  New workrooms will keep using the upstream catalog build."
+        )
+        return
+    except Exception as exc:
+        console.print(
+            f"\n[yellow]Warning:[/yellow] catalog overlay write failed: {exc}\n"
+            "  New workrooms will keep using the upstream catalog build."
+        )
+        return
+
+    shadow = response.get("shadow") or {}
+    shadows_version = shadow.get("shadows_version")
+    shadows_label = (
+        f" (shadows {shadows_version})" if shadows_version else " (no upstream entry)"
+    )
+    console.print(
+        f"\n  [green]✓[/green] Catalog overlay: [bold]{info.name}[/bold] "
+        f"{overlay_version}{shadows_label} — new workrooms will use this build."
+    )
+    running = response.get("running_deployments") or []
+    if running:
+        count = len(running)
+        plural = "s" if count != 1 else ""
+        console.print(
+            f"  [yellow]{count} running instance{plural}[/yellow] still on the "
+            "pre-shadow build — relaunch to pick up the dev build."
+        )
+    console.print("  [dim]Undo with: kz-ext dev --unload[/dim]")
+
+
+def run_dev_unload() -> None:
+    """Remove this extension's catalog overlay, restoring the upstream entry.
+
+    Leaves the running dev extension instance untouched — only new
+    workroom launches are affected.
+    """
+    from kamiwaza_extensions.catalog_overlay import remove_overlay
+    from kamiwaza_extensions.connections import ConnectionManager
+    from kamiwaza_extensions.constants import ssl_env_override
+    from kamiwaza_extensions.extension_detector import ExtensionDetector
+    from kamiwaza_sdk import KamiwazaClient
+    from kamiwaza_sdk.exceptions import APIError
+
+    detector = ExtensionDetector()
+    info = detector.detect()
+
+    conn_mgr = ConnectionManager()
+    connection = conn_mgr.get_active_connection()
+    if connection is None:
+        console.print("[red]Error:[/red] No Kamiwaza connection configured.")
+        console.print("  Run: [bold]kz-ext login <url>[/bold]")
+        raise typer.Exit(code=1)
+    token = conn_mgr.get_token()
+    if token is None:
+        console.print("[red]Error:[/red] Connection token expired or missing.")
+        console.print("  Run: [bold]kz-ext login[/bold] to re-authenticate.")
+        raise typer.Exit(code=1)
+
+    with ssl_env_override(connection):
+        client = KamiwazaClient(base_url=connection.url, api_key=token.access_token)
+        try:
+            response = remove_overlay(client, info.name)
+        except APIError as exc:
+            if exc.status_code == 404:
+                console.print(
+                    f"No catalog overlay exists for [bold]{info.name}[/bold] "
+                    f"on {connection.url}."
+                )
+                raise typer.Exit(code=1) from exc
+            if exc.status_code == 405:
+                console.print(
+                    "[red]Error:[/red] Platform does not support catalog overlays."
+                )
+                raise typer.Exit(code=1) from exc
+            console.print(f"[red]Error:[/red] Failed to remove overlay: {exc}")
+            raise typer.Exit(code=1) from exc
+
+    restored = response.get("restored_version")
+    if restored:
+        console.print(
+            f"  [green]✓[/green] Restored [bold]{info.name}[/bold] to upstream "
+            f"{restored} — new workrooms will use the catalog build."
+        )
+    elif response.get("template_removed"):
+        console.print(
+            f"  [green]✓[/green] Removed overlay for [bold]{info.name}[/bold] "
+            "(the template had no upstream catalog entry)."
+        )
+    else:
+        console.print(f"  [green]✓[/green] Removed overlay for [bold]{info.name}[/bold].")
+    console.print(
+        "  [dim]The running dev extension instance is unaffected — only new "
+        "workroom launches change.[/dim]"
+    )

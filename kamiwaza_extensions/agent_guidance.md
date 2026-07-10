@@ -20,6 +20,9 @@ Every extension must end up with:
    `name`, `version`, `type` (or legacy `template_type`) ∈ `{"app", "tool", "service"}`,
    `source_type`, `visibility`, `description`, `risk_tier`,
    `kz_ext_version` (or legacy `kamiwaza_version`).
+   Optional `image_basename` overrides `name` as the prefix in the
+   ``{registry}/{basename}-{svc}:{tag}`` image-ref fallback — needed
+   when the bake target / pushed image basename diverges from `name`.
 2. **`docker-compose.yml`** at the extension root. Each service must
    declare `deploy.resources.limits` (cpus + memory) and a healthcheck
    on the primary HTTP service.

@@ -6,6 +6,13 @@ import copy
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
+# Reuse the validator's bind-mount detection so the "stripped at deploy"
+# info message ComposeValidator emits stays in sync with what the
+# transformer actually strips (ENG-4956).
+from kamiwaza_extensions.validators.compose import is_bind_mount
+
+_IMAGE_BASENAME_RE = re.compile(r"^[a-z0-9]([-a-z0-9._/]{0,126}[a-z0-9])?$")
+
 
 def _replace_image_tag(image_ref: str, new_tag: str) -> str:
     """Return *image_ref* with its tag (and any digest) replaced by *new_tag*.
@@ -65,7 +72,7 @@ def _split_image_ref(image_ref: str) -> Tuple[Optional[str], str, str]:
     last_colon = ref.rfind(":")
     if last_colon > last_slash:
         namespace = ref[:last_colon]
-        tag = ref[last_colon + 1:]
+        tag = ref[last_colon + 1 :]
     else:
         namespace = ref
         tag = "latest"
@@ -77,6 +84,22 @@ def _split_image_ref(image_ref: str) -> Tuple[Optional[str], str, str]:
     return registry, repository, tag
 
 
+def _repo_part(image_ref: str) -> str:
+    """Return ``registry/repository`` from *image_ref*, stripping tag and digest.
+
+    Returns the bare ``repository`` for unqualified refs (no registry host).
+    Built on ``_split_image_ref`` so registry-host detection and tag-vs-port
+    disambiguation stay consistent with the rest of the ref-handling helpers.
+
+    Used by ``_retag_appgarden_compose`` to identify sibling services whose
+    ``image:`` field points at the same registry repo as a service this
+    publish actually built — those siblings consume the same retagged +
+    digest-pinned ref instead of their source-authored tag.
+    """
+    registry, repository, _ = _split_image_ref(image_ref)
+    return f"{registry}/{repository}" if registry else repository
+
+
 def compute_canonical_refs(
     source_services: Optional[Dict[str, Any]],
     *,
@@ -84,6 +107,7 @@ def compute_canonical_refs(
     extension_name: str,
     revision_tag: str,
     appgarden_services: Optional[Dict[str, Any]] = None,
+    image_basename: Optional[str] = None,
 ) -> Dict[str, str]:
     """Canonical image refs for every buildable service, keyed by service name.
 
@@ -101,6 +125,11 @@ def compute_canonical_refs(
     Filters out profile-gated services (matches ``buildable_services``
     in ``run_publish``) so profile-only helpers don't leak into the
     push list under ``--no-build``.
+
+    ``image_basename`` (when present and non-empty) overrides
+    ``extension_name`` for the legacy ``{registry}/{basename}-{svc}:{tag}``
+    synthesis — needed when the bake target / pushed image basename
+    diverges from the kamiwaza.json ``name``.
     """
     appgarden = appgarden_services or {}
     out: Dict[str, str] = {}
@@ -115,10 +144,12 @@ def compute_canonical_refs(
         # PR fixes.
         lookup = appgarden[name] if name in appgarden else svc
         out[name] = _canonical_build_ref(
-            lookup, name,
+            lookup,
+            name,
             fallback_registry=registry,
             fallback_extension_name=extension_name,
             revision_tag=revision_tag,
+            fallback_image_basename=image_basename,
         )
     return out
 
@@ -130,6 +161,7 @@ def _canonical_build_ref(
     fallback_registry: str,
     fallback_extension_name: str,
     revision_tag: str,
+    fallback_image_basename: Optional[str] = None,
 ) -> str:
     """Return the canonical registry image ref for a buildable service.
 
@@ -137,11 +169,18 @@ def _canonical_build_ref(
     explicit registry host (``ghcr.io/...``, ``localhost:5000/...``),
     the namespace is preserved and only the tag is rewritten to
     *revision_tag*. Unqualified refs (``api:latest``,
-    ``my-org/api:1.0``) and missing/empty declarations fall back to
-    the legacy
-    ``{fallback_registry}/{fallback_extension_name}-{svc_name}:{revision_tag}``
+    ``my-org/api:1.0``) and missing/empty declarations fall back to the
+    legacy ``{fallback_registry}/{basename}-{svc_name}:{revision_tag}``
     form — those would otherwise route ``docker push`` to Docker Hub
     while the cluster registry expects the rewritten path.
+
+    ``fallback_image_basename`` (when truthy) overrides
+    ``fallback_extension_name`` as the ``{basename}`` segment. This
+    lets a repo whose bake target / pushed image basename diverges
+    from its kamiwaza.json ``name`` (e.g. ``name=workroom-manager`` but
+    images pushed as ``outcome-d563-workroom-manager-<svc>``) declare
+    the override via ``image_basename`` in kamiwaza.json without
+    touching the manifest's primary identifier.
 
     Shared by ``ComposeTransformer.transform_service``,
     ``_retag_appgarden_compose``, ``ImageBuilder.build``, and
@@ -153,9 +192,35 @@ def _canonical_build_ref(
         stripped = declared.strip()
         if stripped and _looks_registry_qualified(stripped):
             return _replace_image_tag(stripped, revision_tag)
-    return (
-        f"{fallback_registry}/{fallback_extension_name}-{svc_name}:{revision_tag}"
+    # Strip whitespace so a malformed-but-truthy override (e.g. "   "
+    # — caller forgot to normalize) doesn't synthesize a broken
+    # `{registry}/   -svc:tag`. ExtensionDetector + MetadataValidator
+    # both normalize blank to None at their layers, but this function
+    # is also called directly from tests and downstream call sites
+    # that may bypass those normalizers.
+    basename = _fallback_image_basename(
+        fallback_extension_name,
+        fallback_image_basename=fallback_image_basename,
     )
+    return f"{fallback_registry}/{basename}-{svc_name}:{revision_tag}"
+
+
+def _fallback_image_basename(
+    extension_name: str, *, fallback_image_basename: Optional[str] = None
+) -> str:
+    """Return a safe basename for legacy fallback image refs."""
+
+    raw = (fallback_image_basename or "").strip() or extension_name
+    if _IMAGE_BASENAME_RE.match(raw) and ".." not in raw:
+        return raw
+
+    basename = raw.strip().lower()
+    basename = re.sub(r"[^a-z0-9._/-]+", "-", basename)
+    basename = re.sub(r"-{2,}", "-", basename)
+    basename = re.sub(r"\.{2,}", ".", basename)
+    basename = basename.strip("-._/")
+    basename = basename[:128].strip("-._/")
+    return basename or "extension"
 
 
 # Compose ``${VAR:-default}`` (use default if unset OR empty) and the
@@ -164,9 +229,7 @@ def _canonical_build_ref(
 # us and Kubernetes, so the var is always "unset" by the time the pod
 # starts. ``${VAR:?error}`` and bare ``${VAR}`` aren't matched (no safe
 # default → drop downstream).
-_DEFAULT_SUB_RE = re.compile(
-    r"^\$\{([A-Za-z_][A-Za-z0-9_]*):?-([^}]*)\}$"
-)
+_DEFAULT_SUB_RE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*):?-([^}]*)\}$")
 
 # Env var names that should be left to the platform's ConfigMap envFrom
 # injection (operator writes the cluster-internal value; an explicit
@@ -180,16 +243,25 @@ _PLATFORM_INJECTED_PREFIX = "KAMIWAZA_"
 # Default resource limits/requests by service pattern.
 # Limits = ceiling (burst during build), requests = reservation (steady state).
 _RESOURCE_DEFAULTS: List[tuple[re.Pattern, Dict[str, Dict[str, str]]]] = [
-    (re.compile(r"postgres|mysql|mariadb", re.I), {
-        "limits": {"cpus": "0.5", "memory": "512M"},
-    }),
-    (re.compile(r"redis|valkey", re.I), {
-        "limits": {"cpus": "0.25", "memory": "256M"},
-    }),
-    (re.compile(r"frontend|nginx|caddy", re.I), {
-        "limits": {"cpus": "2.0", "memory": "1G"},
-        "reservations": {"cpus": "0.25", "memory": "256M"},
-    }),
+    (
+        re.compile(r"postgres|mysql|mariadb", re.I),
+        {
+            "limits": {"cpus": "0.5", "memory": "512M"},
+        },
+    ),
+    (
+        re.compile(r"redis|valkey", re.I),
+        {
+            "limits": {"cpus": "0.25", "memory": "256M"},
+        },
+    ),
+    (
+        re.compile(r"frontend|nginx|caddy", re.I),
+        {
+            "limits": {"cpus": "2.0", "memory": "1G"},
+            "reservations": {"cpus": "0.25", "memory": "256M"},
+        },
+    ),
 ]
 _DEFAULT_LIMITS: Dict[str, Dict[str, str]] = {
     "limits": {"cpus": "1.0", "memory": "1G"},
@@ -210,6 +282,7 @@ class ComposeTransformer:
         extension_name: str,
         revision_tag: str,
         registry: str,
+        image_basename: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Return a deployment-ready copy of *compose_data*.
 
@@ -220,6 +293,11 @@ class ComposeTransformer:
         4. Add / update ``image`` fields with *registry*/*revision_tag*
         5. Add resource limits if missing
         6. Remove ``extra_hosts``, ``container_name``, ``networks`` keys
+
+        ``image_basename`` (when present) overrides ``extension_name`` as
+        the prefix in the legacy ``{registry}/{basename}-{svc}:{tag}``
+        fallback synthesis; see ``_canonical_build_ref`` for the
+        precedence rules.
 
         Env-value ``${VAR}`` placeholders pass through unchanged. Callers
         shipping the result to a destination that does NOT perform its
@@ -241,6 +319,7 @@ class ComposeTransformer:
                 extension_name,
                 revision_tag,
                 registry,
+                image_basename=image_basename,
             )
 
         # Remove top-level networks (platform manages networking)
@@ -255,6 +334,7 @@ class ComposeTransformer:
         extension_name: str,
         revision_tag: str,
         registry: str,
+        image_basename: Optional[str] = None,
     ) -> Dict[str, Any]:
         svc = copy.deepcopy(service)
 
@@ -284,6 +364,7 @@ class ComposeTransformer:
                 fallback_registry=registry,
                 fallback_extension_name=extension_name,
                 revision_tag=revision_tag,
+                fallback_image_basename=image_basename,
             )
         # Services without a build context — both external (postgres, redis)
         # and prebuilt-internal (e.g. a helper image published from another
@@ -526,10 +607,24 @@ def _rewrite_url_hosts(
     return new_value if new_value != value else None
 
 
-def _strip_host_ports(ports: List[Any]) -> List[str]:
-    """``"3000:3000"`` -> ``"3000"``; ``"8080:3000/tcp"`` -> ``"3000/tcp"``."""
-    result = []
+def _strip_host_ports(ports: List[Any]) -> List[Any]:
+    """``"3000:3000"`` -> ``"3000"``; ``"8080:3000/tcp"`` -> ``"3000/tcp"``.
+
+    Long-form (compose-spec dict) entries are preserved verbatim except
+    for ``published`` / ``host_ip``, which would otherwise re-introduce a
+    host port binding through the back door. ENG-5954: long-form is the
+    only way to carry L7 protocol hints (``name`` + ``app_protocol``)
+    through to the K8s Service.
+    """
+    result: List[Any] = []
     for port in ports:
+        if isinstance(port, dict):
+            cleaned = {
+                k: v for k, v in port.items() if k not in ("published", "host_ip")
+            }
+            if cleaned.get("target") is not None:
+                result.append(cleaned)
+            continue
         s = str(port)
         if ":" in s:
             # Take the part after the last colon (container port + optional protocol)
@@ -541,22 +636,23 @@ def _strip_host_ports(ports: List[Any]) -> List[str]:
 
 
 def _strip_bind_mounts(volumes: List[Any]) -> List[str]:
-    """Keep named volumes, remove bind mounts (``./``, ``../``, absolute paths)."""
-    kept = []
+    """Keep named volumes, remove bind mounts.
+
+    String bind-mount detection is delegated to the validator's
+    ``is_bind_mount`` so every host-path form ``ComposeValidator``
+    flags as "stripped at deploy" (absolute/relative paths, ``~``, and
+    Windows drive letters) is actually stripped here. See ENG-4956.
+    """
+    kept: List[Any] = []
     for vol in volumes:
         if isinstance(vol, dict):
-            # Long-form volume — check type
+            # Long-form volume — keep named volumes; bind/tmpfs are stripped.
             if vol.get("type") == "volume":
                 kept.append(vol)
-            # bind / tmpfs types are stripped
             continue
         s = str(vol)
-        if s.startswith("/") or s.startswith("./") or s.startswith("../"):
+        if is_bind_mount(s):
             continue
-        if ":" in s:
-            host_part = s.split(":", 1)[0]
-            if host_part.startswith("/") or host_part.startswith("./") or host_part.startswith("../"):
-                continue
         kept.append(s)
     return kept
 

@@ -2,6 +2,9 @@
 /docs-local/*
 !/docs-local/00-server-defects.md
 
+# T5.16 pdoc-generated API reference (regenerate via `make docs`)
+/docs/api/
+
 # Virtual environments
 notebook-venv/
 venv/

@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import os
 import time
+from collections.abc import Generator
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
@@ -12,7 +13,7 @@ import pytest
 
 from kamiwaza_sdk import KamiwazaClient
 from kamiwaza_sdk.authentication import UserPasswordAuthenticator
-from kamiwaza_sdk.exceptions import APIError
+from kamiwaza_sdk.exceptions import APIError, NotFoundError
 from kamiwaza_sdk.services.context import ContextService
 
 pytestmark = [
@@ -41,6 +42,14 @@ def _context_service(live_kamiwaza_client) -> ContextService:
     service = live_kamiwaza_client.context
     assert isinstance(service, ContextService)
     return service
+
+
+def _assert_global_scope_if_exposed(resource: dict[str, object]) -> None:
+    """Assert Global scope when the server includes explicit scope metadata."""
+    workroom_id = resource.get("workroom_id")
+    if workroom_id is None:
+        return
+    assert str(workroom_id) == ContextService.DEFAULT_WORKROOM_ID
 
 
 def _wait_for_vectordb_ready(
@@ -83,9 +92,13 @@ def _wait_for_ontology_ready(
     service: ContextService,
     ontology_id: str,
     *,
-    timeout_seconds: float = 180.0,
+    timeout_seconds: float | None = None,
     poll_seconds: float = 2.0,
 ) -> None:
+    if timeout_seconds is None:
+        timeout_seconds = float(
+            os.getenv("KAMIWAZA_CONTEXT_ONTOLOGY_READY_TIMEOUT_SECONDS", "180")
+        )
     deadline = time.monotonic() + timeout_seconds
     last_status = "unknown"
 
@@ -151,6 +164,25 @@ def _safe_delete_vectordb(
         pass
 
 
+def _vectordb_ids(resources: list[dict[str, object]]) -> set[str]:
+    return {str(resource["id"]) for resource in resources if resource.get("id")}
+
+
+def _safe_scale_vectordb(
+    service: ContextService,
+    vectordb_id: str,
+    *,
+    replicas: int,
+    workroom_id: str | None = None,
+) -> None:
+    try:
+        service.scale_vectordb(
+            vectordb_id, replicas=replicas, workroom_id=workroom_id
+        )
+    except APIError:
+        pass
+
+
 def _create_temp_ontology(service: ContextService, *, prefix: str) -> str:
     created = service.create_ontology(
         name=f"{prefix}-{uuid4().hex[:8]}",
@@ -160,6 +192,14 @@ def _create_temp_ontology(service: ContextService, *, prefix: str) -> str:
     assert ontology_id
     try:
         _wait_for_ontology_ready(service, ontology_id)
+    except TimeoutError as exc:
+        _safe_delete_ontology(service, ontology_id)
+        pytest.skip(
+            "Context ontology backend did not become ready; live cluster likely "
+            "has the known Graphiti provisioning defect "
+            "(see docs-local/00-server-defects.md): "
+            f"{exc}"
+        )
     except Exception:
         _safe_delete_ontology(service, ontology_id)
         raise
@@ -260,6 +300,26 @@ def _is_stale_sdk_resource(resource: dict, max_age: timedelta) -> bool:
 _STALE_THRESHOLD = timedelta(minutes=15)
 
 
+def _api_error_code(error: APIError) -> str | None:
+    """Extract the stable server error code from an APIError payload."""
+    payload = error.response_data
+    if not isinstance(payload, dict):
+        return None
+
+    detail = payload.get("detail")
+    if isinstance(detail, dict):
+        for key in ("error", "code", "reason"):
+            value = detail.get(key)
+            if isinstance(value, str):
+                return value
+
+    for key in ("error", "code", "reason"):
+        value = payload.get(key)
+        if isinstance(value, str):
+            return value
+    return None
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _cleanup_stale_sdk_vdbs(shared_context_service: ContextService) -> None:
     """Delete leftover sdk-* VDB/ontology instances from prior crashed runs.
@@ -288,24 +348,45 @@ def _cleanup_stale_sdk_vdbs(shared_context_service: ContextService) -> None:
 
 
 @pytest.fixture(scope="session")
-def shared_vectordb(shared_context_service: ContextService) -> str:
-    """Shared global VectorDB instance for non-destructive vector tests."""
-    service = shared_context_service
-    vectordb_id = _create_temp_vectordb(service, prefix="sdk-shared-vdb")
+def session_workroom(
+    shared_context_service: ContextService,
+) -> Generator[str, None, None]:
+    """Writable workroom for Context Service explicit-scope tests.
+
+    Room-scoped Context routes require an explicit non-Global workroom scope.
+    PAT-backed automation cannot mutate selected-session state with
+    ``workrooms.enter``; Context calls below carry the workroom explicitly.
+    """
+    workrooms = shared_context_service.client.workrooms
+    workroom = workrooms.create(
+        f"sdk-ctx-session-{uuid4().hex[:8]}",
+        "ephemeral",
+        description="Ephemeral workroom for SDK context live tests",
+    )
+    workroom_id = str(workroom.id)
     try:
-        yield vectordb_id
+        yield workroom_id
     finally:
-        _safe_delete_vectordb(service, vectordb_id)
+        # delete() raises NotFoundError (a sibling of APIError, not a subclass)
+        # when the workroom is already gone, so catch both to keep teardown
+        # best-effort -- matching the sibling test_workroom_isolation_live.py.
+        try:
+            workrooms.delete(workroom_id)
+        except (APIError, NotFoundError):
+            pass
 
 
 @pytest.fixture(scope="session")
-def shared_workroom_vectordb(shared_context_service: ContextService) -> str:
+def shared_workroom_vectordb(
+    shared_context_service: ContextService,
+    session_workroom: str,
+) -> Generator[str, None, None]:
     """Shared workroom-scoped VectorDB for collection/search/retrieve tests."""
     service = shared_context_service
     vectordb_id = _create_temp_vectordb(
         service,
         prefix="sdk-shared-vdb-workroom",
-        workroom_id=DEFAULT_WORKROOM_ID,
+        workroom_id=session_workroom,
     )
     try:
         yield vectordb_id
@@ -313,7 +394,7 @@ def shared_workroom_vectordb(shared_context_service: ContextService) -> str:
         _safe_delete_vectordb(
             service,
             vectordb_id,
-            workroom_id=DEFAULT_WORKROOM_ID,
+            workroom_id=session_workroom,
         )
 
 
@@ -321,7 +402,7 @@ def shared_workroom_vectordb(shared_context_service: ContextService) -> str:
 def shared_ontology(
     shared_context_service: ContextService,
     context_required_llm: str,
-) -> str:
+) -> Generator[str, None, None]:
     """Shared ontology instance for non-destructive ontology tests."""
     assert context_required_llm
     service = shared_context_service
@@ -345,37 +426,88 @@ def test_context_required_llm_available(context_required_llm: str) -> None:
     assert context_required_llm
 
 
-def test_context_vectordb_lifecycle_global(live_kamiwaza_client) -> None:
+def test_context_vectordb_create_without_workroom_uses_global_scope(
+    live_kamiwaza_client,
+) -> None:
+    """No-workroom VectorDB creation is allowed under the Global/default scope."""
     service = _context_service(live_kamiwaza_client)
-
-    name = f"sdk-context-vdb-{uuid4().hex[:8]}"
-    created = service.create_vectordb(name=name, engine="milvus")
-    vectordb_id = created["id"]
+    vectordb_id: str | None = None
 
     try:
-        fetched = service.get_vectordb(vectordb_id)
-        assert fetched["id"] == vectordb_id
-        assert fetched["name"] == name
-
-        updated = service.update_vectordb(
-            vectordb_id,
-            config={"SDK_CONTEXT_TEST": "1"},
-            replicas=1,
+        created = service.create_vectordb(
+            name=f"sdk-context-vdb-global-{uuid4().hex[:8]}",
+            engine="milvus",
         )
-        assert updated["id"] == vectordb_id
-
-        scaled = service.scale_vectordb(vectordb_id, replicas=1)
-        assert scaled["id"] == vectordb_id
+        vectordb_id = created["id"]
+        assert vectordb_id
+        _assert_global_scope_if_exposed(created)
+        _wait_for_vectordb_ready(service, vectordb_id)
+        ready = service.get_vectordb(vectordb_id)
+        _assert_global_scope_if_exposed(ready)
     finally:
-        _safe_delete_vectordb(service, vectordb_id)
+        if vectordb_id:
+            _safe_delete_vectordb(service, vectordb_id)
+
+
+def test_context_workroom_scope_clients_isolate_vectordb_views(
+    shared_context_service: ContextService,
+) -> None:
+    """Derived SDK clients can carry workroom scope as a context manager."""
+    root_client = shared_context_service.client
+    workrooms = root_client.workrooms
+    workroom_a = None
+    vdb_a: str | None = None
+
+    try:
+        workroom_a = workrooms.create(
+            f"sdk-scope-a-{uuid4().hex[:8]}",
+            "ephemeral",
+            description="SDK workroom scope isolation A",
+        )
+        with root_client.workroom_scope(workroom_a.id) as scoped_client:
+            service_a = scoped_client.context
+            vdb_a = _create_temp_vectordb(
+                service_a,
+                prefix="sdk-scope-a",
+            )
+            scoped_vdbs = service_a.list_vectordbs()
+
+        assert vdb_a in _vectordb_ids(scoped_vdbs)
+        created = next(
+            resource for resource in scoped_vdbs if str(resource.get("id")) == vdb_a
+        )
+        assert str(created.get("workroom_id")) == str(workroom_a.id)
+    finally:
+        if vdb_a is not None and workroom_a is not None:
+            _safe_delete_vectordb(
+                root_client.context, vdb_a, workroom_id=str(workroom_a.id)
+            )
+        if workroom_a is not None:
+            try:
+                workrooms.delete(str(workroom_a.id))
+            except (APIError, NotFoundError):
+                pass
+
+
+# A dedicated non-Global VectorDB *instance* lifecycle test (create/scale/
+# delete the VDB itself in a user workroom) stays in the kamiwaza repo's
+# tests/integration/services/context. Workroom-scoped *write* coverage on the
+# SDK side runs through the ``session_workroom`` fixture instead: the
+# collection, pipeline, search, and retrieve tests below exercise writes
+# against a real per-session workroom. The ``X-Workroom-ID`` header the SDK
+# sets is preserved end-to-end -- the istio ingress strip-identity-headers
+# filter explicitly exempts it (it is a client scope *request*, authorized
+# server-side against verified workroom membership, not a spoofable identity
+# assertion), so the header reaches the Context Service unmodified.
 
 
 def test_context_vectordb_insert_vectors_instance(
-    live_kamiwaza_client,
-    shared_vectordb: str,
+    shared_context_service: ContextService,
+    session_workroom: str,
+    shared_workroom_vectordb: str,
 ) -> None:
-    service = _context_service(live_kamiwaza_client)
-    vectordb_id = shared_vectordb
+    service = shared_context_service
+    vectordb_id = shared_workroom_vectordb
     collection_name = _sdk_collection_name()
 
     inserted = service.insert_vectors(
@@ -383,16 +515,18 @@ def test_context_vectordb_insert_vectors_instance(
         collection_name=collection_name,
         vectors=[_sample_vector()],
         metadata=[{"source": "sdk-context-live"}],
+        workroom_id=session_workroom,
     )
     assert inserted["inserted_count"] == 1
 
 
 def test_context_vectordb_insert_vectors_global(
-    live_kamiwaza_client,
-    shared_vectordb: str,
+    shared_context_service: ContextService,
+    session_workroom: str,
+    shared_workroom_vectordb: str,
 ) -> None:
-    service = _context_service(live_kamiwaza_client)
-    vectordb_id = shared_vectordb
+    service = shared_context_service
+    vectordb_id = shared_workroom_vectordb
     collection_name = _sdk_collection_name()
 
     inserted = service.insert_vectors_global(
@@ -400,16 +534,18 @@ def test_context_vectordb_insert_vectors_global(
         collection_name=collection_name,
         vectors=[_sample_vector()],
         metadata=[{"source": "sdk-context-live"}],
+        workroom_id=session_workroom,
     )
     assert inserted["inserted_count"] == 1
 
 
 def test_context_vectordb_query_vectors_instance(
-    live_kamiwaza_client,
-    shared_vectordb: str,
+    shared_context_service: ContextService,
+    session_workroom: str,
+    shared_workroom_vectordb: str,
 ) -> None:
-    service = _context_service(live_kamiwaza_client)
-    vectordb_id = shared_vectordb
+    service = shared_context_service
+    vectordb_id = shared_workroom_vectordb
     collection_name = _sdk_collection_name()
 
     service.insert_vectors(
@@ -417,22 +553,25 @@ def test_context_vectordb_query_vectors_instance(
         collection_name=collection_name,
         vectors=[_sample_vector()],
         metadata=[{"source": "sdk-context-live"}],
+        workroom_id=session_workroom,
     )
     queried = service.query_vectors(
         vectordb_id,
         collection_name=collection_name,
         vectors=[_sample_vector()],
         limit=1,
+        workroom_id=session_workroom,
     )
     assert isinstance(queried["results"], list)
 
 
 def test_context_vectordb_query_vectors_global(
-    live_kamiwaza_client,
-    shared_vectordb: str,
+    shared_context_service: ContextService,
+    session_workroom: str,
+    shared_workroom_vectordb: str,
 ) -> None:
-    service = _context_service(live_kamiwaza_client)
-    vectordb_id = shared_vectordb
+    service = shared_context_service
+    vectordb_id = shared_workroom_vectordb
     collection_name = _sdk_collection_name()
 
     service.insert_vectors_global(
@@ -440,14 +579,104 @@ def test_context_vectordb_query_vectors_global(
         collection_name=collection_name,
         vectors=[_sample_vector()],
         metadata=[{"source": "sdk-context-live"}],
+        workroom_id=session_workroom,
     )
     queried = service.query_vectors_global(
         vectordb_id=vectordb_id,
         collection_name=collection_name,
         vectors=[_sample_vector()],
         limit=1,
+        workroom_id=session_workroom,
     )
     assert isinstance(queried["results"], list)
+
+
+def _vectordb_replicas(instance: dict) -> int | None:
+    """Read the replica count from a VectorDB instance payload.
+
+    The server may surface ``replicas`` at the top level or nested under
+    ``config`` depending on engine/version, so check both before giving up.
+    """
+    for source in (instance, instance.get("config") or {}):
+        if not isinstance(source, dict):
+            continue
+        value = source.get("replicas")
+        if isinstance(value, bool):  # guard: bool is an int subclass
+            continue
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and value.isdigit():
+            return int(value)
+    return None
+
+
+def test_context_vectordb_update_accepts_config_and_redacts_public_response(
+    shared_context_service: ContextService,
+    session_workroom: str,
+    shared_workroom_vectordb: str,
+) -> None:
+    """update_vectordb accepts config while public reads redact that config.
+
+    Assertion posture is acceptance + public-shape: config patches are accepted
+    by the endpoint, but the public VectorDBInstance schema intentionally
+    redacts config so credentials do not leak through lifecycle responses.
+    """
+    service = shared_context_service
+    vectordb_id = shared_workroom_vectordb
+
+    before = service.get_vectordb(vectordb_id, workroom_id=session_workroom)
+    baseline_replicas = _vectordb_replicas(before) or 1
+    config_marker = f"sdk-live-update-{uuid4().hex[:8]}"
+
+    updated = service.update_vectordb(
+        vectordb_id,
+        config={"sdk_test_marker": config_marker},
+        replicas=baseline_replicas,
+        workroom_id=session_workroom,
+    )
+    assert updated["id"] == vectordb_id
+    assert _vectordb_replicas(updated) == baseline_replicas
+
+    refetched = service.get_vectordb(vectordb_id, workroom_id=session_workroom)
+    assert refetched["id"] == vectordb_id
+    assert "config" not in refetched
+    assert _vectordb_replicas(refetched) == baseline_replicas
+
+
+def test_context_vectordb_scale_reflects_requested_replicas(
+    shared_context_service: ContextService,
+    session_workroom: str,
+    shared_workroom_vectordb: str,
+) -> None:
+    """scale_vectordb is accepted and the response echoes the requested replicas.
+
+    Assertion posture is API round-trip, not physical provisioning: a single-node
+    local Milvus may clamp the effective replica count, so we assert the call
+    succeeds and the returned instance reflects the requested ``replicas``, then
+    scale back to the baseline (session teardown also deletes the VDB).
+    """
+    service = shared_context_service
+    vectordb_id = shared_workroom_vectordb
+
+    before = service.get_vectordb(vectordb_id, workroom_id=session_workroom)
+    baseline_replicas = _vectordb_replicas(before) or 1
+    target_replicas = baseline_replicas + 1
+
+    try:
+        scaled = service.scale_vectordb(
+            vectordb_id,
+            replicas=target_replicas,
+            workroom_id=session_workroom,
+        )
+        assert scaled["id"] == vectordb_id
+        assert _vectordb_replicas(scaled) == target_replicas
+    finally:
+        _safe_scale_vectordb(
+            service,
+            vectordb_id,
+            replicas=baseline_replicas,
+            workroom_id=session_workroom,
+        )
 
 
 @pytest.mark.requires_embedding_model
@@ -593,9 +822,12 @@ def test_context_ontology_delete_group(
 
 
 @pytest.mark.requires_embedding_model
-def test_context_workroom_lists_and_job_creation(live_kamiwaza_client) -> None:
-    service = _context_service(live_kamiwaza_client)
-    workroom_id = DEFAULT_WORKROOM_ID
+def test_context_workroom_lists_and_job_creation(
+    shared_context_service: ContextService,
+    session_workroom: str,
+) -> None:
+    service = shared_context_service
+    workroom_id = session_workroom
     created_job_ids: list[str] = []
 
     vectordbs = service.list_vectordbs(workroom_id=workroom_id)
@@ -639,7 +871,7 @@ def test_context_workroom_lists_and_job_creation(live_kamiwaza_client) -> None:
     finally:
         for created_job_id in created_job_ids:
             try:
-                service.cancel_pipeline_job(
+                service.delete_pipeline_job(
                     workroom_id=workroom_id,
                     job_id=created_job_id,
                 )
@@ -648,9 +880,12 @@ def test_context_workroom_lists_and_job_creation(live_kamiwaza_client) -> None:
 
 
 @pytest.mark.requires_embedding_model
-def test_context_workroom_pipeline_followup_access(live_kamiwaza_client) -> None:
-    service = _context_service(live_kamiwaza_client)
-    workroom_id = DEFAULT_WORKROOM_ID
+def test_context_workroom_pipeline_followup_access(
+    shared_context_service: ContextService,
+    session_workroom: str,
+) -> None:
+    service = shared_context_service
+    workroom_id = session_workroom
 
     payload = base64.b64encode(b"hello context service").decode("utf-8")
     job = service.create_pipeline_job(
@@ -669,20 +904,57 @@ def test_context_workroom_pipeline_followup_access(live_kamiwaza_client) -> None
     try:
         fetched_job = service.get_pipeline_job(workroom_id=workroom_id, job_id=job_id)
         assert fetched_job["id"] == job_id
+        # Graceful cancel preserves the job; it remains fetchable afterwards.
         service.cancel_pipeline_job(workroom_id=workroom_id, job_id=job_id)
+        preserved = service.get_pipeline_job(workroom_id=workroom_id, job_id=job_id)
+        assert preserved["id"] == job_id
     finally:
         try:
-            service.cancel_pipeline_job(workroom_id=workroom_id, job_id=job_id)
+            service.delete_pipeline_job(workroom_id=workroom_id, job_id=job_id)
         except APIError:
             pass
 
 
+def test_context_pipeline_import_options_live(
+    shared_context_service: ContextService,
+    session_workroom: str,
+) -> None:
+    """GET/POST import-options work against bare core (no data plane required)."""
+    service = shared_context_service
+    workroom_id = session_workroom
+
+    options = service.get_import_options(workroom_id=workroom_id)
+    assert isinstance(options, dict)
+
+    evaluation = service.evaluate_import_options(
+        sources=[],
+        workroom_id=workroom_id,
+    )
+    assert isinstance(evaluation, dict)
+    # With no sources selected there is nothing to submit.
+    assert evaluation.get("can_submit") is False
+
+
+def test_context_pipeline_import_items_inventory_live(
+    shared_context_service: ContextService,
+    session_workroom: str,
+) -> None:
+    """The workroom-wide import inventory listing is readable on bare core."""
+    service = shared_context_service
+    workroom_id = session_workroom
+
+    inventory = service.list_import_items(workroom_id=workroom_id)
+    assert isinstance(inventory, dict)
+    assert isinstance(inventory.get("items", []), list)
+
+
 def test_context_workroom_collection_lifecycle(
-    live_kamiwaza_client,
+    shared_context_service: ContextService,
+    session_workroom: str,
     shared_workroom_vectordb: str,
 ) -> None:
-    service = _context_service(live_kamiwaza_client)
-    workroom_id = DEFAULT_WORKROOM_ID
+    service = shared_context_service
+    workroom_id = session_workroom
     assert shared_workroom_vectordb
     collection_name = _sdk_collection_name()
     created = False
@@ -727,11 +999,12 @@ def test_context_workroom_collection_lifecycle(
 
 @pytest.mark.requires_embedding_model
 def test_context_search_contract(
-    live_kamiwaza_client,
+    shared_context_service: ContextService,
+    session_workroom: str,
     shared_workroom_vectordb: str,
 ) -> None:
-    service = _context_service(live_kamiwaza_client)
-    workroom_id = DEFAULT_WORKROOM_ID
+    service = shared_context_service
+    workroom_id = session_workroom
     assert shared_workroom_vectordb
 
     search = service.search(
@@ -744,11 +1017,12 @@ def test_context_search_contract(
 
 @pytest.mark.requires_embedding_model
 def test_context_retrieve_contract(
-    live_kamiwaza_client,
+    shared_context_service: ContextService,
+    session_workroom: str,
     shared_workroom_vectordb: str,
 ) -> None:
-    service = _context_service(live_kamiwaza_client)
-    workroom_id = DEFAULT_WORKROOM_ID
+    service = shared_context_service
+    workroom_id = session_workroom
     assert shared_workroom_vectordb
 
     retrieve = service.retrieve(
@@ -757,3 +1031,282 @@ def test_context_retrieve_contract(
         vectordb_id=shared_workroom_vectordb,
     )
     assert isinstance(retrieve.get("sources"), list)
+
+
+@pytest.mark.requires_embedding_model
+def test_context_agentic_search_contract(
+    shared_context_service: ContextService,
+    session_workroom: str,
+    shared_workroom_vectordb: str,
+    context_required_llm: str,
+) -> None:
+    # agentic_search always sends synthesize=True, so it needs a context LLM in
+    # addition to an embedding model -- gate on both prerequisites (like the
+    # ontology tests) so the test skips, rather than fails, on an LLM-less host.
+    assert context_required_llm
+    service = shared_context_service
+    workroom_id = session_workroom
+    assert shared_workroom_vectordb
+
+    result = service.agentic_search(
+        workroom_id=workroom_id,
+        query="hello context",
+        vectordb_id=shared_workroom_vectordb,
+    )
+    assert isinstance(result.get("results"), list)
+    assert isinstance(result.get("sources"), list)
+    # synthesize=True is always sent, so the unified response must carry the
+    # synthesis/citations fields (content depends on the LLM); assert presence
+    # so a server-side regression that silently drops synthesis is caught.
+    assert "synthesis" in result
+    assert "citations" in result
+
+
+# --- Raw-file object storage CRUD ---
+
+
+def _object_storage_enabled(service: ContextService) -> bool:
+    """Return True when the live Context Service has workroom object storage."""
+    try:
+        health = service.health()
+    except APIError:
+        return False
+    caps = health.get("capabilities") or {}
+    return bool(caps.get("workroom_object_storage"))
+
+
+def test_context_raw_file_round_trip(
+    shared_context_service: ContextService,
+    session_workroom: str,
+) -> None:
+    """Store -> get -> list -> If-Match edit round trip against a fresh workroom.
+
+    Skips when workroom object storage is disabled (bare core without the
+    S3/object-storage data plane provisioned) -- the route is mocked-unit
+    covered in that case and the live debt is recorded in the PR body.
+    """
+    service = shared_context_service
+    workroom_id = session_workroom
+    if not _object_storage_enabled(service):
+        pytest.skip("workroom object storage not enabled on this host")
+
+    filename = f"sdk-raw-{uuid4().hex[:8]}.txt"
+    original = "hello raw storage"
+
+    stored = service.store_raw_file(
+        workroom_id=workroom_id,
+        filename=filename,
+        content=original,
+        content_type="text/plain",
+        source_urn="inline://sdk-live",
+        source_kind="inline",
+    )
+    file_id = str(stored["id"])
+    assert stored["filename"] == filename
+
+    fetched = service.get_raw_file(
+        file_id,
+        workroom_id=workroom_id,
+        include_download_url=True,
+    )
+    assert str(fetched["id"]) == file_id
+    assert fetched["filename"] == filename
+
+    listing = service.list_raw_files(workroom_id=workroom_id)
+    assert isinstance(listing.get("items"), list)
+    assert any(str(item["id"]) == file_id for item in listing["items"])
+
+    # If-Match optimistic concurrency: a stale token must be rejected with 409.
+    current_token = fetched.get("updated_at")
+    with pytest.raises(APIError) as exc_info:
+        service.update_raw_file(
+            file_id,
+            workroom_id=workroom_id,
+            content="should not persist",
+            if_match="1970-01-01T00:00:00+00:00",
+        )
+    assert exc_info.value.status_code == 409
+
+    edited = service.update_raw_file(
+        file_id,
+        workroom_id=workroom_id,
+        content="edited raw storage body",
+        if_match=current_token,
+    )
+    assert str(edited["id"]) == file_id
+
+
+def test_context_list_raw_files_empty_contract(
+    shared_context_service: ContextService,
+    session_workroom: str,
+) -> None:
+    """List raw files returns the {items, count} contract shape."""
+    service = shared_context_service
+    if not _object_storage_enabled(service):
+        pytest.skip("workroom object storage not enabled on this host")
+
+    listing = service.list_raw_files(workroom_id=session_workroom, limit=5)
+    assert isinstance(listing.get("items"), list)
+    assert isinstance(listing.get("count"), int)
+
+
+# --- OmniParse instance lifecycle CRUD ---
+
+
+def test_context_list_omniparses_contract(
+    shared_context_service: ContextService,
+    session_workroom: str,
+) -> None:
+    """Listing OmniParse instances returns a list for a fresh workroom.
+
+    The list route is metadata-only (it reads the instance registry) and works
+    against bare core -- a freshly created workroom has no instances, so an
+    empty list is the expected contract. The create/update/delete routes
+    provision an OmniParse runtime via App Garden (template + container images),
+    which is data-plane-heavy and NOT available on the bare-core TRCM box, so
+    the full lifecycle is covered by the mocked unit tests and deferred here.
+    """
+    service = shared_context_service
+    listing = service.list_omniparses(workroom_id=session_workroom)
+    assert isinstance(listing, list)
+
+
+def test_context_omniparse_lifecycle_round_trip(
+    shared_context_service: ContextService,
+    session_workroom: str,
+) -> None:
+    """create -> get -> update -> delete an OmniParse instance.
+
+    Skips when the App Garden OmniParse data plane (tool template + images) is
+    not provisioned on this host -- the route is mocked-unit covered in that
+    case and the live debt is recorded in the PR body. Bare core cannot
+    provision the runtime, so this skip is expected on the TRCM box.
+    """
+    service = shared_context_service
+    workroom_id = session_workroom
+
+    try:
+        created = service.create_omniparse(
+            name=f"sdk-omniparse-{uuid4().hex[:8]}",
+            workroom_id=workroom_id,
+        )
+    except APIError as exc:
+        pytest.skip(
+            f"OmniParse data plane not provisioned on this host (status "
+            f"{exc.status_code}); lifecycle deferred to mocked unit tests"
+        )
+
+    instance_id = str(created["id"])
+    try:
+        fetched = service.get_omniparse(instance_id, workroom_id=workroom_id)
+        assert str(fetched["id"]) == instance_id
+
+        updated = service.update_omniparse(
+            instance_id,
+            workroom_id=workroom_id,
+            config={"sdk_live_marker": uuid4().hex[:8]},
+        )
+        assert str(updated["id"]) == instance_id
+    finally:
+        try:
+            service.delete_omniparse(instance_id, workroom_id=workroom_id)
+        except (APIError, NotFoundError):
+            pass
+
+
+# --- Global settings / documents / audio readiness ---
+
+
+def test_context_global_settings_round_trips(
+    shared_context_service: ContextService,
+) -> None:
+    """get_global_settings reads platform config; update_global_settings patches it.
+
+    Platform-scoped (ContextAdmin), not workroom-scoped, and metadata-only, so it
+    works against bare core. Round-trips the omniparse SSL flags and restores the
+    original values. Skips if the caller lacks ContextAdmin authority on this host.
+    """
+    service = shared_context_service
+    try:
+        original = service.get_global_settings()
+    except APIError as exc:
+        pytest.skip(
+            f"global settings unavailable on this host (status {exc.status_code}); "
+            "covered by mocked unit tests"
+        )
+
+    assert isinstance(original, dict)
+    omniparse = original.get("omniparse") or {}
+    current = bool(omniparse.get("force_insecure_model_ssl", False))
+
+    try:
+        updated = service.update_global_settings(
+            omniparse={"force_insecure_model_ssl": not current},
+            reason="sdk live round-trip",
+        )
+    except APIError as exc:
+        pytest.skip(
+            f"global settings patch not permitted on this host (status "
+            f"{exc.status_code}); covered by mocked unit tests"
+        )
+
+    try:
+        assert (
+            bool(updated["omniparse"]["force_insecure_model_ssl"]) is not current
+        )
+    finally:
+        # Restore the original value so we don't mutate shared platform state.
+        service.update_global_settings(
+            omniparse={"force_insecure_model_ssl": current},
+            reason="sdk live round-trip restore",
+        )
+
+
+def test_context_audio_readiness_probe(
+    shared_context_service: ContextService,
+    session_workroom: str,
+) -> None:
+    """audio-readiness probe returns a readiness verdict for a fresh workroom.
+
+    Workroom-scoped GET that never side-effect-provisions an OmniParse instance,
+    so it is cheap on bare core. ``ready`` may be True or False depending on the
+    data plane; we assert the contract shape, not a specific verdict.
+    """
+    service = shared_context_service
+    result = service.get_audio_readiness(
+        workroom_id=session_workroom,
+        mime_type="audio/aiff",
+        filename="clip.aiff",
+    )
+    assert isinstance(result, dict)
+    assert isinstance(result.get("ready"), bool)
+    assert isinstance(result.get("code"), str)
+
+
+def test_context_document_download_url_requires_stored_document(
+    shared_context_service: ContextService,
+    session_workroom: str,
+) -> None:
+    """get_document_download_url against an unknown URN returns 404 (no document).
+
+    Generating a real presigned URL needs a previously stored document plus S3
+    object storage (the un-provisioned data plane on bare core), so the happy
+    path is deferred to mocked unit tests. Here we assert the lookup wiring: an
+    unknown source URN yields a NotFoundError, or the route reports storage is
+    not configured (501) on hosts without S3.
+    """
+    service = shared_context_service
+    try:
+        service.get_document_download_url(
+            f"urn:source:sdk-live-missing-{uuid4().hex[:8]}",
+            workroom_id=session_workroom,
+        )
+    except NotFoundError:
+        pass
+    except APIError as exc:
+        # 404 = generic legacy SDK APIError mapping for unknown documents.
+        # 501 = document storage not configured on this host; expected on bare core.
+        if exc.status_code not in {404, 501}:
+            raise
+    else:
+        pytest.fail("expected NotFoundError or 501 for an unknown source URN")

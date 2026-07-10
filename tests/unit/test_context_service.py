@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import io
 
 import pytest
@@ -553,8 +554,23 @@ def test_get_pipeline_job_calls_expected_path(dummy_client):
     assert kwargs["headers"]["X-Workroom-ID"] == "ffffffff-ffff-ffff-ffff-ffffffffffff"
 
 
-def test_cancel_pipeline_job_calls_expected_path(dummy_client):
+def test_delete_pipeline_job_calls_expected_path(dummy_client):
     responses = {("delete", "/context/pipelines/job-1"): None}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.delete_pipeline_job(
+        workroom_id="ffffffff-ffff-ffff-ffff-ffffffffffff",
+        job_id="job-1",
+    )
+
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("delete", "/context/pipelines/job-1")
+    assert kwargs["headers"]["X-Workroom-ID"] == "ffffffff-ffff-ffff-ffff-ffffffffffff"
+
+
+def test_cancel_pipeline_job_posts_graceful_cancel(dummy_client):
+    responses = {("post", "/context/pipelines/job-1/cancel"): {"id": "job-1"}}
     client = dummy_client(responses)
     service = ContextService(client)
 
@@ -564,7 +580,223 @@ def test_cancel_pipeline_job_calls_expected_path(dummy_client):
     )
 
     method, path, kwargs = client.calls[0]
-    assert (method, path) == ("delete", "/context/pipelines/job-1")
+    assert (method, path) == ("post", "/context/pipelines/job-1/cancel")
+    assert kwargs["headers"]["X-Workroom-ID"] == "ffffffff-ffff-ffff-ffff-ffffffffffff"
+
+
+def test_get_import_options_calls_expected_path(dummy_client):
+    responses = {("get", "/context/pipelines/import-options"): {"providers": []}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.get_import_options(
+        workroom_id="ffffffff-ffff-ffff-ffff-ffffffffffff",
+    )
+
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("get", "/context/pipelines/import-options")
+    assert kwargs["headers"]["X-Workroom-ID"] == "ffffffff-ffff-ffff-ffff-ffffffffffff"
+
+
+def test_get_import_options_omits_header_without_workroom(dummy_client):
+    responses = {("get", "/context/pipelines/import-options"): {"providers": []}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.get_import_options()
+
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("get", "/context/pipelines/import-options")
+    assert "X-Workroom-ID" not in kwargs["headers"]
+
+
+def test_evaluate_import_options_posts_payload(dummy_client):
+    responses = {("post", "/context/pipelines/import-options"): {"can_submit": True}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.evaluate_import_options(
+        sources=[{"provider": "m365"}],
+        config={"collection_name": "docs"},
+        workroom_id="ffffffff-ffff-ffff-ffff-ffffffffffff",
+    )
+
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("post", "/context/pipelines/import-options")
+    assert kwargs["json"] == {
+        "sources": [{"provider": "m365"}],
+        "config": {"collection_name": "docs"},
+    }
+    assert kwargs["headers"]["X-Workroom-ID"] == "ffffffff-ffff-ffff-ffff-ffffffffffff"
+
+
+def test_evaluate_import_options_omits_config_when_absent(dummy_client):
+    responses = {("post", "/context/pipelines/import-options"): {"can_submit": False}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.evaluate_import_options(sources=[])
+
+    method, path, kwargs = client.calls[0]
+    assert kwargs["json"] == {"sources": []}
+
+
+def test_create_source_import_job_posts_payload(dummy_client):
+    responses = {("post", "/context/pipelines/imports"): {"id": "job-9"}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.create_source_import_job(
+        workroom_id="ffffffff-ffff-ffff-ffff-ffffffffffff",
+        sources=[{"provider": "m365"}],
+        config={"collection_name": "docs"},
+        callback={"url": "https://cb.test"},
+        idempotency_key="key-1",
+        force=True,
+    )
+
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("post", "/context/pipelines/imports")
+    assert kwargs["json"] == {
+        "sources": [{"provider": "m365"}],
+        "force": True,
+        "config": {"collection_name": "docs"},
+        "callback": {"url": "https://cb.test"},
+        "idempotency_key": "key-1",
+    }
+    assert kwargs["headers"]["X-Workroom-ID"] == "ffffffff-ffff-ffff-ffff-ffffffffffff"
+
+
+def test_create_source_import_job_defaults_force_false(dummy_client):
+    responses = {("post", "/context/pipelines/imports"): {"id": "job-9"}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.create_source_import_job(
+        workroom_id="ffffffff-ffff-ffff-ffff-ffffffffffff",
+        sources=[{"provider": "m365"}],
+    )
+
+    method, path, kwargs = client.calls[0]
+    assert kwargs["json"] == {"sources": [{"provider": "m365"}], "force": False}
+
+
+def test_list_import_items_calls_expected_path(dummy_client):
+    responses = {("get", "/context/pipelines/items"): {"items": [], "total_items": 0}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.list_import_items(
+        workroom_id="ffffffff-ffff-ffff-ffff-ffffffffffff",
+    )
+
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("get", "/context/pipelines/items")
+    assert kwargs["headers"]["X-Workroom-ID"] == "ffffffff-ffff-ffff-ffff-ffffffffffff"
+
+
+def test_rerun_import_items_posts_payload(dummy_client):
+    responses = {("post", "/context/pipelines/items/rerun"): {"id": "job-2"}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.rerun_import_items(
+        workroom_id="ffffffff-ffff-ffff-ffff-ffffffffffff",
+        item_keys=["item-a", "item-b"],
+        config={"collection_name": "docs"},
+        idempotency_key="key-2",
+        force=False,
+    )
+
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("post", "/context/pipelines/items/rerun")
+    assert kwargs["json"] == {
+        "item_keys": ["item-a", "item-b"],
+        "force": False,
+        "config": {"collection_name": "docs"},
+        "idempotency_key": "key-2",
+    }
+    assert kwargs["headers"]["X-Workroom-ID"] == "ffffffff-ffff-ffff-ffff-ffffffffffff"
+
+
+def test_rerun_import_items_defaults_force_true(dummy_client):
+    responses = {("post", "/context/pipelines/items/rerun"): {"id": "job-2"}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.rerun_import_items(
+        workroom_id="ffffffff-ffff-ffff-ffff-ffffffffffff",
+        item_keys=["item-a"],
+    )
+
+    method, path, kwargs = client.calls[0]
+    assert kwargs["json"] == {"item_keys": ["item-a"], "force": True}
+
+
+def test_list_pipeline_job_items_calls_expected_path(dummy_client):
+    responses = {
+        ("get", "/context/pipelines/job-1/items"): {"job_id": "job-1", "items": []}
+    }
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.list_pipeline_job_items(
+        workroom_id="ffffffff-ffff-ffff-ffff-ffffffffffff",
+        job_id="job-1",
+    )
+
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("get", "/context/pipelines/job-1/items")
+    assert kwargs["headers"]["X-Workroom-ID"] == "ffffffff-ffff-ffff-ffff-ffffffffffff"
+
+
+def test_retry_pipeline_job_posts_payload(dummy_client):
+    responses = {("post", "/context/pipelines/job-1/retry"): {"id": "job-3"}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.retry_pipeline_job(
+        workroom_id="ffffffff-ffff-ffff-ffff-ffffffffffff",
+        job_id="job-1",
+        idempotency_key="key-3",
+        force=True,
+    )
+
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("post", "/context/pipelines/job-1/retry")
+    assert kwargs["json"] == {"idempotency_key": "key-3", "force": True}
+    assert kwargs["headers"]["X-Workroom-ID"] == "ffffffff-ffff-ffff-ffff-ffffffffffff"
+
+
+def test_retry_pipeline_job_omits_unset_fields(dummy_client):
+    responses = {("post", "/context/pipelines/job-1/retry"): {"id": "job-3"}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.retry_pipeline_job(
+        workroom_id="ffffffff-ffff-ffff-ffff-ffffffffffff",
+        job_id="job-1",
+    )
+
+    method, path, kwargs = client.calls[0]
+    assert kwargs["json"] == {}
+
+
+def test_rerun_pipeline_job_posts_payload(dummy_client):
+    responses = {("post", "/context/pipelines/job-1/rerun"): {"id": "job-4"}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.rerun_pipeline_job(
+        workroom_id="ffffffff-ffff-ffff-ffff-ffffffffffff",
+        job_id="job-1",
+        callback={"url": "https://cb.test"},
+        force=False,
+    )
+
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("post", "/context/pipelines/job-1/rerun")
+    assert kwargs["json"] == {"callback": {"url": "https://cb.test"}, "force": False}
     assert kwargs["headers"]["X-Workroom-ID"] == "ffffffff-ffff-ffff-ffff-ffffffffffff"
 
 
@@ -635,3 +867,453 @@ def test_retrieve_builds_payload(dummy_client):
     assert kwargs["json"]["collection_names"] == ["c1", "c2"]
     assert kwargs["json"]["top_k"] == 3
     assert kwargs["json"]["score_threshold"] == 0.4
+
+
+def test_agentic_search_targets_unified_endpoint_with_synthesis(dummy_client):
+    responses = {("post", "/context/search/unified"): {"results": []}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.agentic_search(
+        workroom_id="ffffffff-ffff-ffff-ffff-ffffffffffff",
+        query="why is the sky blue",
+    )
+
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("post", "/context/search/unified")
+    assert kwargs["json"] == {
+        "query": "why is the sky blue",
+        "top_k": 10,
+        "synthesize": True,
+        "max_iterations": 1,
+        "relevance_threshold": 0.7,
+        "enable_graph_search": False,
+    }
+    assert kwargs["headers"]["X-Workroom-ID"] == "ffffffff-ffff-ffff-ffff-ffffffffffff"
+
+
+def test_agentic_search_includes_optional_graph_and_vector_fields(dummy_client):
+    responses = {("post", "/context/search/unified"): {"results": []}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.agentic_search(
+        workroom_id="ffffffff-ffff-ffff-ffff-ffffffffffff",
+        query="summarize incidents",
+        collection_name="docs",
+        top_k=5,
+        score_threshold=0.55,
+        vectordb_id="vdb-1",
+        max_iterations=3,
+        relevance_threshold=0.8,
+        enable_graph_search=True,
+        ontology_id="ont-1",
+        group_ids=["g1", "g2"],
+    )
+
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("post", "/context/search/unified")
+    assert kwargs["json"] == {
+        "query": "summarize incidents",
+        "top_k": 5,
+        "synthesize": True,
+        "max_iterations": 3,
+        "relevance_threshold": 0.8,
+        "enable_graph_search": True,
+        "collection_name": "docs",
+        "score_threshold": 0.55,
+        "vectordb_id": "vdb-1",
+        "ontology_id": "ont-1",
+        "group_ids": ["g1", "g2"],
+    }
+    assert kwargs["headers"]["X-Workroom-ID"] == "ffffffff-ffff-ffff-ffff-ffffffffffff"
+
+
+# --- Raw-file object storage CRUD ---
+
+WORKROOM = "ffffffff-ffff-ffff-ffff-ffffffffffff"
+
+
+def test_store_raw_file_base64_encodes_bytes(dummy_client):
+    responses = {("post", "/context/storage/raw"): {"id": "rf-1"}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.store_raw_file(
+        workroom_id=WORKROOM,
+        filename="notes.txt",
+        content=b"hello world",
+    )
+
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("post", "/context/storage/raw")
+    assert kwargs["json"] == {
+        "filename": "notes.txt",
+        "content_base64": base64.b64encode(b"hello world").decode("ascii"),
+    }
+    assert kwargs["headers"]["X-Workroom-ID"] == WORKROOM
+
+
+def test_store_raw_file_encodes_str_as_utf8(dummy_client):
+    responses = {("post", "/context/storage/raw"): {"id": "rf-1"}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.store_raw_file(
+        workroom_id=WORKROOM,
+        filename="snowman.txt",
+        content="snowman ☃",
+    )
+
+    _, _, kwargs = client.calls[0]
+    expected = base64.b64encode("snowman ☃".encode("utf-8")).decode("ascii")
+    assert kwargs["json"]["content_base64"] == expected
+
+
+def test_store_raw_file_includes_optional_fields(dummy_client):
+    responses = {("post", "/context/storage/raw"): {"id": "rf-1"}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.store_raw_file(
+        workroom_id=WORKROOM,
+        filename="report.md",
+        content=b"# Title",
+        content_type="text/markdown",
+        source_urn="inline://report",
+        source_kind="inline",
+        source_ref={"origin": "editor"},
+        metadata={"tag": "draft"},
+    )
+
+    _, _, kwargs = client.calls[0]
+    body = kwargs["json"]
+    assert body["content_type"] == "text/markdown"
+    assert body["source_urn"] == "inline://report"
+    assert body["source_kind"] == "inline"
+    assert body["source_ref"] == {"origin": "editor"}
+    assert body["metadata"] == {"tag": "draft"}
+
+
+def test_store_raw_file_omits_unset_optional_fields(dummy_client):
+    responses = {("post", "/context/storage/raw"): {"id": "rf-1"}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.store_raw_file(
+        workroom_id=WORKROOM,
+        filename="notes.txt",
+        content=b"x",
+    )
+
+    _, _, kwargs = client.calls[0]
+    assert set(kwargs["json"]) == {"filename", "content_base64"}
+
+
+def test_list_raw_files_default_params(dummy_client):
+    responses = {("get", "/context/storage/raw"): {"items": [], "count": 0}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.list_raw_files(workroom_id=WORKROOM)
+
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("get", "/context/storage/raw")
+    assert kwargs["params"] == {"limit": 50, "offset": 0}
+    assert kwargs["headers"]["X-Workroom-ID"] == WORKROOM
+
+
+def test_list_raw_files_applies_filters_and_markings(dummy_client):
+    responses = {("get", "/context/storage/raw"): {"items": [], "count": 0}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.list_raw_files(
+        workroom_id=WORKROOM,
+        source_urn="inline://report",
+        job_id="job-1",
+        connector_id="conn-1",
+        limit=10,
+        offset=5,
+        include_markings=True,
+    )
+
+    _, _, kwargs = client.calls[0]
+    assert kwargs["params"] == {
+        "limit": 10,
+        "offset": 5,
+        "source_urn": "inline://report",
+        "job_id": "job-1",
+        "connector_id": "conn-1",
+        "include_markings": True,
+    }
+
+
+def test_get_raw_file_no_optional_params(dummy_client):
+    responses = {("get", "/context/storage/raw/rf-1"): {"id": "rf-1"}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.get_raw_file("rf-1", workroom_id=WORKROOM)
+
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("get", "/context/storage/raw/rf-1")
+    assert kwargs["params"] is None
+    assert kwargs["headers"]["X-Workroom-ID"] == WORKROOM
+
+
+def test_get_raw_file_requests_presigned_url(dummy_client):
+    responses = {("get", "/context/storage/raw/rf-1"): {"id": "rf-1"}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.get_raw_file(
+        "rf-1",
+        workroom_id=WORKROOM,
+        include_download_url=True,
+        expires_seconds=120,
+    )
+
+    _, _, kwargs = client.calls[0]
+    assert kwargs["params"] == {
+        "include_download_url": True,
+        "expires_seconds": 120,
+    }
+
+
+def test_update_raw_file_sends_content_without_if_match(dummy_client):
+    responses = {("put", "/context/storage/raw/rf-1"): {"id": "rf-1"}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.update_raw_file("rf-1", workroom_id=WORKROOM, content="new body")
+
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("put", "/context/storage/raw/rf-1")
+    assert kwargs["json"] == {"content": "new body"}
+    assert "If-Match" not in kwargs["headers"]
+    assert kwargs["headers"]["X-Workroom-ID"] == WORKROOM
+
+
+def test_update_raw_file_sets_if_match_header(dummy_client):
+    responses = {("put", "/context/storage/raw/rf-1"): {"id": "rf-1"}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.update_raw_file(
+        "rf-1",
+        workroom_id=WORKROOM,
+        content="new body",
+        if_match="2026-06-12T00:00:00+00:00",
+    )
+
+    _, _, kwargs = client.calls[0]
+    assert kwargs["headers"]["If-Match"] == "2026-06-12T00:00:00+00:00"
+    assert kwargs["headers"]["X-Workroom-ID"] == WORKROOM
+
+
+# --- OmniParse instance lifecycle CRUD ---
+
+
+def test_list_omniparses_sets_workroom_header(dummy_client):
+    responses = {("get", "/context/omniparses"): []}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.list_omniparses(workroom_id=WORKROOM)
+
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("get", "/context/omniparses")
+    assert kwargs["headers"]["X-Workroom-ID"] == WORKROOM
+
+
+def test_get_omniparse_calls_expected_path(dummy_client):
+    responses = {("get", "/context/omniparses/op-1"): {"id": "op-1"}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.get_omniparse("op-1", workroom_id=WORKROOM)
+
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("get", "/context/omniparses/op-1")
+    assert kwargs["headers"]["X-Workroom-ID"] == WORKROOM
+
+
+def test_create_omniparse_builds_payload_with_defaults(dummy_client):
+    responses = {("post", "/context/omniparses"): {"id": "op-1"}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.create_omniparse(name="parser-a", workroom_id=WORKROOM)
+
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("post", "/context/omniparses")
+    assert kwargs["json"] == {
+        "name": "parser-a",
+        "template_name": "tool-omniparse",
+    }
+    assert kwargs["headers"]["X-Workroom-ID"] == WORKROOM
+
+
+def test_create_omniparse_includes_optional_fields(dummy_client):
+    responses = {("post", "/context/omniparses"): {"id": "op-1"}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.create_omniparse(
+        name="parser-b",
+        workroom_id=WORKROOM,
+        template_name="tool-omniparse-gpu",
+        config={"replicas": 2},
+    )
+
+    _, _, kwargs = client.calls[0]
+    assert kwargs["json"] == {
+        "name": "parser-b",
+        "template_name": "tool-omniparse-gpu",
+        "config": {"replicas": 2},
+    }
+
+
+def test_create_omniparse_omits_config_when_absent(dummy_client):
+    responses = {("post", "/context/omniparses"): {"id": "op-1"}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.create_omniparse(name="parser-c", workroom_id=WORKROOM)
+
+    _, _, kwargs = client.calls[0]
+    assert "config" not in kwargs["json"]
+
+
+def test_update_omniparse_sends_config(dummy_client):
+    responses = {("put", "/context/omniparses/op-1"): {"id": "op-1"}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.update_omniparse(
+        "op-1",
+        workroom_id=WORKROOM,
+        config={"timeout": 30},
+    )
+
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("put", "/context/omniparses/op-1")
+    assert kwargs["json"] == {"config": {"timeout": 30}}
+    assert kwargs["headers"]["X-Workroom-ID"] == WORKROOM
+
+
+def test_update_omniparse_sends_empty_body_when_config_absent(dummy_client):
+    responses = {("put", "/context/omniparses/op-1"): {"id": "op-1"}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.update_omniparse("op-1", workroom_id=WORKROOM)
+
+    _, _, kwargs = client.calls[0]
+    assert kwargs["json"] == {}
+
+
+def test_delete_omniparse_calls_expected_path(dummy_client):
+    responses = {("delete", "/context/omniparses/op-1"): {"message": "deleted"}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.delete_omniparse("op-1", workroom_id=WORKROOM)
+
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("delete", "/context/omniparses/op-1")
+    assert kwargs["headers"]["X-Workroom-ID"] == WORKROOM
+
+
+def test_get_global_settings_calls_expected_path_without_workroom(dummy_client):
+    responses = {("get", "/context/global-settings"): {"omniparse": {}}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    result = service.get_global_settings()
+
+    assert result == {"omniparse": {}}
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("get", "/context/global-settings")
+    # Platform-scoped: no workroom header is sent.
+    assert "headers" not in kwargs
+
+
+def test_update_global_settings_sends_payload_without_workroom(dummy_client):
+    responses = {("patch", "/context/global-settings"): {"omniparse": {}}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.update_global_settings(
+        omniparse={"force_insecure_model_ssl": True},
+        reason="rotate certs",
+    )
+
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("patch", "/context/global-settings")
+    assert kwargs["json"] == {
+        "omniparse": {"force_insecure_model_ssl": True},
+        "reason": "rotate certs",
+    }
+    assert "headers" not in kwargs
+
+
+def test_update_global_settings_omits_unset_fields(dummy_client):
+    responses = {("patch", "/context/global-settings"): {"omniparse": {}}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.update_global_settings()
+
+    _, _, kwargs = client.calls[0]
+    assert kwargs["json"] == {}
+
+
+def test_get_document_download_url_calls_expected_path(dummy_client):
+    urn = "urn:source:abc"
+    responses = {
+        (
+            "get",
+            f"/context/documents/{urn}",
+        ): {"download_url": "https://s3/presigned", "source_urn": urn}
+    }
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    result = service.get_document_download_url(urn, workroom_id=WORKROOM)
+
+    assert result["download_url"] == "https://s3/presigned"
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("get", f"/context/documents/{urn}")
+    assert kwargs["headers"]["X-Workroom-ID"] == WORKROOM
+
+
+def test_get_audio_readiness_no_optional_params(dummy_client):
+    responses = {("get", "/context/audio-readiness"): {"ready": True, "code": "ok"}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    result = service.get_audio_readiness(workroom_id=WORKROOM)
+
+    assert result["ready"] is True
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("get", "/context/audio-readiness")
+    assert kwargs["params"] is None
+    assert kwargs["headers"]["X-Workroom-ID"] == WORKROOM
+
+
+def test_get_audio_readiness_passes_optional_query_params(dummy_client):
+    responses = {("get", "/context/audio-readiness"): {"ready": False, "code": "x"}}
+    client = dummy_client(responses)
+    service = ContextService(client)
+
+    service.get_audio_readiness(
+        workroom_id=WORKROOM,
+        mime_type="audio/aiff",
+        filename="clip.aiff",
+    )
+
+    _, _, kwargs = client.calls[0]
+    assert kwargs["params"] == {"mime_type": "audio/aiff", "filename": "clip.aiff"}
+    assert kwargs["headers"]["X-Workroom-ID"] == WORKROOM

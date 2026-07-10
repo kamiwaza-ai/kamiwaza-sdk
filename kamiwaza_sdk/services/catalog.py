@@ -18,6 +18,7 @@ from ..schemas.catalog import (
     Secret,
     SecretCreate,
 )
+from ..schemas.connector_spec import ConnectorSpec
 from ..utils import reveal_secrets
 
 
@@ -42,6 +43,51 @@ class DatasetClient(BaseService):
         if callable(note):
             note(urn)
         return urn
+
+    def register_from_spec(self, spec: "ConnectorSpec | dict[str, Any]") -> str:
+        """Register a standing governed dataset from a connector spec (CSE).
+
+        ``spec`` may be a :class:`ConnectorSpec` or a plain dict. Returns the
+        new dataset URN. The engine validates the spec (``extra='forbid'``) and
+        pulls nothing at registration time; credentials are referenced by a
+        catalog secret URN, never inlined.
+        """
+        if isinstance(spec, ConnectorSpec):
+            body = spec.model_dump(exclude_none=True, mode="json")
+        else:
+            body = dict(spec)
+        response = self.client.post(
+            f"{self._BASE_PATH}/register-from-spec", json=body
+        )
+        urn = self._unwrap_dataset_urn(response)
+        note = getattr(self.client, "_note_recent_dataset_change", None)
+        if callable(note):
+            note(urn)
+        return urn
+
+    def add_publisher(self, subject_user_id: str) -> None:
+        """Grant a subject the cluster-level ``publisher`` relation (admin)."""
+        self.client.post(
+            f"{self._BASE_PATH}/publishers",
+            json={"subject_user_id": subject_user_id},
+        )
+
+    def remove_publisher(self, subject_user_id: str) -> None:
+        """Revoke a subject's cluster-level ``publisher`` relation (admin)."""
+        self.client.delete(
+            f"{self._BASE_PATH}/publishers",
+            json={"subject_user_id": subject_user_id},
+        )
+
+    @staticmethod
+    def _unwrap_dataset_urn(response: Any) -> str:
+        """Return the dataset URN from a register-from-spec response."""
+        if isinstance(response, dict):
+            for key in ("dataset_urn", "urn"):
+                value = response.get(key)
+                if value:
+                    return str(value)
+        return str(response)
 
     def list(self, query: Optional[str] = None) -> List[Dataset]:
         params = {"query": query} if query else None
@@ -279,6 +325,18 @@ class CatalogService(BaseService):
         dataset_urn = self.datasets.create(payload)
         dataset = self.datasets.get(dataset_urn)
         return self._normalize_dataset(dataset)
+
+    def register_from_spec(self, spec: "ConnectorSpec | dict[str, Any]") -> str:
+        """Register a governed dataset from a connector spec; return its URN (CSE)."""
+        return self.datasets.register_from_spec(spec)
+
+    def add_publisher(self, subject_user_id: str) -> None:
+        """Grant a subject the cluster-level ``publisher`` relation (admin)."""
+        self.datasets.add_publisher(subject_user_id)
+
+    def remove_publisher(self, subject_user_id: str) -> None:
+        """Revoke a subject's cluster-level ``publisher`` relation (admin)."""
+        self.datasets.remove_publisher(subject_user_id)
 
     def list_containers(self, query: Optional[str] = None) -> List[Container]:
         return self.containers.list(query=query)

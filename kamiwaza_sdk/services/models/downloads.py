@@ -1,18 +1,58 @@
-from typing import List, Optional, Union, Dict, Any, Set
-from uuid import UUID
+from typing import TYPE_CHECKING, List, Optional, Dict, Any
 import time
 from datetime import datetime
 import sys
-from ...schemas.models.model import Model
-from ...schemas.models.model_file import ModelFile
 from ...schemas.models.model_search import HubModelFileSearch
+from ...exceptions import DeploymentFailedError
 from ...schemas.models.downloads import ModelDownloadRequest, ModelDownloadStatus
 from ...utils.download_tracker import DownloadTracker
+from ...utils.model_file_readiness import model_file_download_satisfied
 from ...utils.progress_formatter import ProgressFormatter
+
+
+def _partition_model_download_files(files: List[Any]) -> tuple[List[Any], List[Any], List[Any]]:
+    downloading_files: List[Any] = []
+    downloaded_files: List[Any] = []
+    pending_files: List[Any] = []
+
+    for file in files:
+        if bool(getattr(file, "is_downloading", False)):
+            downloading_files.append(file)
+        elif model_file_download_satisfied(file):
+            downloaded_files.append(file)
+        else:
+            pending_files.append(file)
+
+    return downloading_files, downloaded_files, pending_files
+
+
+def _calculate_model_download_progress(
+    target_files: List[Any], downloading_files: List[Any], downloaded_files: List[Any]
+) -> float:
+    if downloading_files:
+        total_progress = 0.0
+        for file in downloading_files:
+            total_progress += getattr(file, 'download_percentage', 0) or 0
+        return total_progress / len(downloading_files)
+
+    if target_files and len(downloaded_files) == len(target_files):
+        return 100
+
+    return 0
 
 
 class ModelDownloadMixin:
     """Mixin for model download functionality."""
+
+    if TYPE_CHECKING:
+        client: Any
+        quant_manager: Any
+
+        def search_models(self, *args: Any, **kwargs: Any) -> List[Any]: ...
+
+        def search_hub_model_files(self, *args: Any, **kwargs: Any) -> List[Any]: ...
+
+        def get_model_by_repo_id(self, *args: Any, **kwargs: Any) -> Any: ...
     
     def initiate_model_download(self, repo_id: str, quantization: str = 'q6_k') -> Dict[str, Any]:
         """
@@ -84,7 +124,7 @@ class ModelDownloadMixin:
         files_to_download = []
         
         for file in compatible_files:
-            if hasattr(file, 'download') and file.download:
+            if model_file_download_satisfied(file):
                 already_downloaded_files.append(file)
             else:
                 files_to_download.append(file.name)
@@ -144,8 +184,12 @@ class ModelDownloadMixin:
                 
                 # Add files section
                 files = self.get('files', [])
-                already_downloaded = [f for f in files if hasattr(f, 'download') and f.download]
-                to_download = [f for f in files if not (hasattr(f, 'download') and f.download)]
+                already_downloaded = [
+                    f for f in files if model_file_download_satisfied(f)
+                ]
+                to_download = [
+                    f for f in files if not model_file_download_satisfied(f)
+                ]
                 
                 if already_downloaded:
                     output.append("Already downloaded files:")
@@ -474,7 +518,7 @@ class ModelDownloadMixin:
         try:
             # Step 1: Initiate download for the model
             print(f"Initiating download for {repo_id} with quantization {quantization}...")
-            download_result = self.initiate_model_download(repo_id, quantization)
+            self.initiate_model_download(repo_id, quantization)
             
             # Step 2: Wait for download to complete if requested
             if wait_for_download:
@@ -485,7 +529,7 @@ class ModelDownloadMixin:
                 status_list = self.check_download_status(repo_id)
                 
                 if status_list:
-                    print(f"Waiting for download to complete...")
+                    print("Waiting for download to complete...")
                     # Use our simplified wait_for_download method
                     status_list = self.wait_for_download(repo_id, timeout=timeout)
                     
@@ -509,11 +553,11 @@ class ModelDownloadMixin:
                             target_files = quant_manager.filter_files_by_quantization(gguf_files, quantization)
                             
                             if target_files:
-                                downloaded_files = [f for f in target_files if hasattr(f, 'download') and f.download]
+                                _, downloaded_files, _ = _partition_model_download_files(target_files)
                                 if downloaded_files and len(downloaded_files) == len(target_files):
                                     print(f"Model files for {repo_id} are already downloaded.")
                                 else:
-                                    print(f"Warning: Some files may not be fully downloaded. Proceeding anyway...")
+                                    print("Warning: Some files may not be fully downloaded. Proceeding anyway...")
                             else:
                                 print(f"Warning: No files found matching quantization {quantization}. Proceeding anyway...")
                     except Exception as e:
@@ -541,6 +585,19 @@ class ModelDownloadMixin:
                     
                     deployment_id = self.client.serving.deploy_model(repo_id=repo_id)
                     break  # Deployment successful, exit the retry loop
+                except DeploymentFailedError:
+                    # Terminal FAILED/ERROR/MUST_REDOWNLOAD status: an
+                    # immediate redeploy will not succeed, and with
+                    # deploy_model blocking on readiness each retry costs up
+                    # to the full wait timeout. Propagate the typed error.
+                    raise
+                except TimeoutError:
+                    # The deploy wait timed out on a hung, non-terminal
+                    # deployment. Retrying stacks new deployments on top of
+                    # the still-in-flight one (worst case ~3x the wait plus
+                    # orphaned deployments) and would wrap away the
+                    # deployment_id attribute callers need for cleanup.
+                    raise
                 except Exception as e:
                     deploy_retry_count += 1
                     
@@ -561,17 +618,23 @@ class ModelDownloadMixin:
             
             # Get files from the model
             files = model.m_files if hasattr(model, 'm_files') and model.m_files else []
+            target_files = [f for f in files if f.name and f.name.lower().endswith('.gguf')]
+            downloading_files, downloaded_files, pending_files = _partition_model_download_files(target_files)
+            all_downloaded = bool(target_files) and len(downloaded_files) == len(target_files)
+            total_progress = _calculate_model_download_progress(
+                target_files, downloading_files, downloaded_files
+            )
             
             # Create result dictionary with deployment information
             result = {
                 "model": model,
-                "target_files": [f for f in files if f.name and f.name.lower().endswith('.gguf')],
-                "downloading_files": [f for f in files if hasattr(f, 'is_downloading') and f.is_downloading],
-                "downloaded_files": [f for f in files if hasattr(f, 'download') and f.download],
-                "pending_files": [],
-                "total_progress": 100 if files else 0,
-                "all_downloaded": bool(files),
-                "any_downloading": False,
+                "target_files": target_files,
+                "downloading_files": downloading_files,
+                "downloaded_files": downloaded_files,
+                "pending_files": pending_files,
+                "total_progress": total_progress,
+                "all_downloaded": all_downloaded,
+                "any_downloading": bool(downloading_files),
                 "deployment_id": deployment_id
             }
             
@@ -644,18 +707,10 @@ class ModelDownloadMixin:
                 target_files = files
             
             # Analyze download status
-            downloading_files = [f for f in target_files if hasattr(f, 'is_downloading') and f.is_downloading]
-            downloaded_files = [f for f in target_files if hasattr(f, 'download') and f.download]
-            pending_files = [f for f in target_files if f not in downloading_files and f not in downloaded_files]
-            
-            # Calculate overall progress
-            total_progress = 0
-            if downloading_files:
-                for file in downloading_files:
-                    total_progress += getattr(file, 'download_percentage', 0) or 0
-                total_progress /= len(downloading_files)
-            elif downloaded_files and len(downloaded_files) == len(target_files):
-                total_progress = 100
+            downloading_files, downloaded_files, pending_files = _partition_model_download_files(target_files)
+            total_progress = _calculate_model_download_progress(
+                target_files, downloading_files, downloaded_files
+            )
             
             return {
                 "model": model,

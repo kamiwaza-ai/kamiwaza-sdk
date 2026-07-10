@@ -5,7 +5,11 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from kamiwaza_sdk.schemas.serving.serving import ContainerLogResponse
+from kamiwaza_sdk.exceptions import APIError, DeploymentFailedError
+from kamiwaza_sdk.schemas.serving.serving import (
+    ContainerLogResponse,
+    UIModelDeployment,
+)
 from kamiwaza_sdk.services.serving import (
     DeploymentLogStreamer,
     DeploymentStatusPoller,
@@ -36,13 +40,229 @@ def test_deploy_model_builds_payload_with_repo_lookup(dummy_client):
     client.models = DummyModels()
     service = ServingService(client)
 
-    result = service.deploy_model(repo_id="mlx-community/Qwen3-4B-4bit", lb_port=0, autoscaling=False)
+    result = service.deploy_model(
+        repo_id="mlx-community/Qwen3-4B-4bit", lb_port=0, autoscaling=False, wait=False
+    )
 
     assert result == deployment_id
     method, path, payload = client.calls[0]
     assert (method, path) == ("post", "/serving/deploy_model")
     assert payload["json"]["m_id"] == str(model_id)
     assert payload["json"]["m_config_id"] == str(config_id)
+
+
+def test_deploy_model_waits_until_ready_by_default(mock_client):
+    """wait is omitted (default True) — the deploy polls through to
+    DEPLOYED. poll_interval_seconds/timeout_seconds are forwarded to the
+    wait so a status-match regression fails the suite in milliseconds
+    instead of spinning through the 3600s/5s production defaults."""
+    deployment_id = uuid4()
+    mock_client.expect("POST", "/serving/deploy_model", str(deployment_id))
+    mock_client.expect_sequence(
+        "GET",
+        f"/serving/deployment/{deployment_id}",
+        [
+            _deployment_payload(deployment_id, "DEPLOYING"),
+            _deployment_payload(deployment_id, "DEPLOYED"),
+        ],
+    )
+    service = ServingService(mock_client)
+
+    result = service.deploy_model(
+        model_id=uuid4(),
+        m_config_id=uuid4(),
+        poll_interval_seconds=0,
+        timeout_seconds=5,
+    )
+
+    assert result == deployment_id
+    get_calls = [call for call in mock_client.calls if call[0] == "GET"]
+    assert len(get_calls) == 2
+    # SDK-side wait knob: must drive the poll, not leak into the request
+    # body via **kwargs (where it would otherwise land in the payload).
+    post_payload = mock_client.calls[0][2]["json"]
+    assert "poll_interval_seconds" not in post_payload
+
+
+def test_deploy_model_forwards_wait_knobs(mock_client, monkeypatch):
+    """poll_interval_seconds/timeout_seconds are SDK-side wait knobs and
+    must reach wait_deployment_ready — not be silently dropped by the
+    **kwargs -> CreateModelDeployment path (extras are discarded there,
+    so a typo'd knob would otherwise revert to the 5s/3600s defaults)."""
+    deployment_id = uuid4()
+    mock_client.expect("POST", "/serving/deploy_model", str(deployment_id))
+    service = ServingService(mock_client)
+    recorded = {}
+
+    def fake_wait(dep_id, timeout_seconds, poll_interval_seconds):
+        recorded["args"] = (dep_id, timeout_seconds, poll_interval_seconds)
+        return SimpleNamespace(status="DEPLOYED")
+
+    monkeypatch.setattr(service, "wait_deployment_ready", fake_wait)
+
+    service.deploy_model(
+        model_id=uuid4(),
+        m_config_id=uuid4(),
+        poll_interval_seconds=0.25,
+        timeout_seconds=42,
+    )
+
+    assert recorded["args"] == (deployment_id, 42, 0.25)
+
+
+def test_deploy_model_wait_false_returns_id_immediately(mock_client):
+    deployment_id = uuid4()
+    mock_client.expect("POST", "/serving/deploy_model", str(deployment_id))
+    service = ServingService(mock_client)
+
+    result = service.deploy_model(model_id=uuid4(), m_config_id=uuid4(), wait=False)
+
+    assert result == deployment_id
+    assert [call[0] for call in mock_client.calls] == ["POST"]
+    # wait/timeout knobs are SDK-side only and must not leak into the request.
+    post_payload = mock_client.calls[0][2]["json"]
+    assert "wait" not in post_payload
+    assert "timeout_seconds" not in post_payload
+
+
+def test_deploy_model_returns_false_without_polling_when_deploy_refused(mock_client):
+    mock_client.expect("POST", "/serving/deploy_model", False)
+    service = ServingService(mock_client)
+
+    result = service.deploy_model(model_id=uuid4(), m_config_id=uuid4())
+
+    assert result is False
+    assert [call[0] for call in mock_client.calls] == ["POST"]
+
+
+def _deployment_payload(deployment_id: UUID, status: str, **extra) -> dict:
+    return {
+        "id": str(deployment_id),
+        "m_id": str(uuid4()),
+        "m_config_id": str(uuid4()),
+        "requested_at": "2026-06-09T00:00:00Z",
+        "status": status,
+        "instances": [],
+        **extra,
+    }
+
+
+def test_deployment_schema_preserves_last_error_fields():
+    deployment_id = uuid4()
+    payload = _deployment_payload(
+        deployment_id,
+        "FAILED",
+        last_error_message="CUDA out of memory while loading weights",
+        last_error_code="OOM",
+    )
+
+    deployment = UIModelDeployment.model_validate(payload)
+
+    assert deployment.last_error_message == "CUDA out of memory while loading weights"
+    assert deployment.last_error_code == "OOM"
+
+
+def test_deployment_schema_defaults_last_error_fields_to_none():
+    deployment = UIModelDeployment.model_validate(
+        _deployment_payload(uuid4(), "DEPLOYED")
+    )
+
+    assert deployment.last_error_message is None
+    assert deployment.last_error_code is None
+
+
+def test_wait_deployment_ready_polls_until_deployed(mock_client):
+    deployment_id = uuid4()
+    mock_client.expect_sequence(
+        "GET",
+        f"/serving/deployment/{deployment_id}",
+        [
+            _deployment_payload(deployment_id, "DEPLOYING"),
+            _deployment_payload(deployment_id, "DEPLOYED"),
+        ],
+    )
+    service = ServingService(mock_client)
+
+    deployment = service.wait_deployment_ready(
+        deployment_id, poll_interval_seconds=0
+    )
+
+    assert deployment.status == "DEPLOYED"
+    get_calls = [call for call in mock_client.calls if call[0] == "GET"]
+    assert len(get_calls) == 2
+
+
+def test_wait_deployment_ready_raises_deployment_failed_error(mock_client):
+    deployment_id = uuid4()
+    mock_client.expect_sequence(
+        "GET",
+        f"/serving/deployment/{deployment_id}",
+        [
+            _deployment_payload(deployment_id, "DEPLOYING"),
+            _deployment_payload(
+                deployment_id,
+                "FAILED",
+                last_error_message="CUDA out of memory while loading weights",
+                last_error_code="OOM",
+            ),
+        ],
+    )
+    service = ServingService(mock_client)
+
+    with pytest.raises(DeploymentFailedError) as exc_info:
+        service.wait_deployment_ready(deployment_id, poll_interval_seconds=0)
+
+    err = exc_info.value
+    assert err.status == "FAILED"
+    assert err.last_error_message == "CUDA out of memory while loading weights"
+    assert err.last_error_code == "OOM"
+    assert err.deployment_id == str(deployment_id)
+    assert "CUDA out of memory while loading weights" in str(err)
+
+
+def test_wait_deployment_ready_raises_on_must_redownload(mock_client):
+    """The server background-launch path (ENG-6530) has a third resting
+    terminal failure state, MUST_REDOWNLOAD (corrupted/incomplete model
+    files). The poll must short-circuit with the typed error instead of
+    burning the full timeout. The row may carry no last_error_* metadata,
+    so the message must be meaningful from the status alone."""
+    deployment_id = uuid4()
+    mock_client.expect_sequence(
+        "GET",
+        f"/serving/deployment/{deployment_id}",
+        [
+            _deployment_payload(deployment_id, "DEPLOYING"),
+            _deployment_payload(deployment_id, "MUST_REDOWNLOAD"),
+        ],
+    )
+    service = ServingService(mock_client)
+
+    with pytest.raises(DeploymentFailedError) as exc_info:
+        service.wait_deployment_ready(deployment_id, poll_interval_seconds=0)
+
+    err = exc_info.value
+    assert err.status == "MUST_REDOWNLOAD"
+    assert err.last_error_message is None
+    assert "MUST_REDOWNLOAD" in str(err)
+
+
+def test_wait_deployment_ready_times_out(mock_client):
+    deployment_id = uuid4()
+    mock_client.expect(
+        "GET",
+        f"/serving/deployment/{deployment_id}",
+        _deployment_payload(deployment_id, "DEPLOYING"),
+    )
+    service = ServingService(mock_client)
+
+    with pytest.raises(TimeoutError) as exc_info:
+        service.wait_deployment_ready(
+            deployment_id, timeout_seconds=0, poll_interval_seconds=0
+        )
+
+    # Callers need the id to stop/inspect the in-flight deployment; the
+    # message string is not a programmatic surface.
+    assert exc_info.value.deployment_id == str(deployment_id)
 
 
 class _StatusService:
@@ -99,6 +319,102 @@ def test_status_poller_raises_on_failure_status():
 
     with pytest.raises(RuntimeError):
         poller.wait_for(deployment_id, desired_status=["DEPLOYED"], failure_status=["FAILED"])
+
+
+class _FlakyStatusService:
+    """get_deployment stub: Exception outcomes raise, str outcomes are
+    returned as the deployment status. The last outcome repeats."""
+
+    def __init__(self, outcomes: list):
+        self.outcomes = outcomes
+        self.calls = 0
+
+    def get_deployment(self, deployment_id: UUID):
+        idx = min(self.calls, len(self.outcomes) - 1)
+        self.calls += 1
+        outcome = self.outcomes[idx]
+        if isinstance(outcome, Exception):
+            raise outcome
+        return SimpleNamespace(status=outcome, id=deployment_id)
+
+
+def _fast_poller(service) -> DeploymentStatusPoller:
+    return DeploymentStatusPoller(
+        service,
+        poll_interval=0,
+        timeout=10.0,
+        sleep_fn=lambda _: None,
+        time_fn=_TimeStub(step=0.01),
+    )
+
+
+def test_status_poller_retries_transient_api_errors():
+    """A single 5xx/connection blip over a default up-to-1-hour wait must
+    not abort the deploy wait; transient errors are retried."""
+    deployment_id = uuid4()
+    service = _FlakyStatusService(
+        [
+            APIError("bad gateway", status_code=502),
+            APIError("connection reset"),  # no status_code: connection-level
+            "DEPLOYED",
+        ]
+    )
+
+    deployment = _fast_poller(service).wait_for(
+        deployment_id, desired_status=["DEPLOYED"], failure_status=["FAILED"]
+    )
+
+    assert deployment.status == "DEPLOYED"
+    assert service.calls == 3
+
+
+def test_status_poller_resets_transient_count_on_successful_poll():
+    deployment_id = uuid4()
+    service = _FlakyStatusService(
+        [
+            APIError("blip", status_code=503),
+            APIError("blip", status_code=503),
+            "DEPLOYING",
+            APIError("blip", status_code=503),
+            APIError("blip", status_code=503),
+            "DEPLOYED",
+        ]
+    )
+
+    deployment = _fast_poller(service).wait_for(
+        deployment_id, desired_status=["DEPLOYED"], failure_status=["FAILED"]
+    )
+
+    assert deployment.status == "DEPLOYED"
+    assert service.calls == 6
+
+
+def test_status_poller_propagates_after_consecutive_transient_errors():
+    deployment_id = uuid4()
+    service = _FlakyStatusService([APIError("bad gateway", status_code=502)])
+
+    with pytest.raises(APIError):
+        _fast_poller(service).wait_for(
+            deployment_id, desired_status=["DEPLOYED"], failure_status=["FAILED"]
+        )
+
+    assert service.calls == DeploymentStatusPoller.MAX_TRANSIENT_POLL_ERRORS
+
+
+def test_status_poller_propagates_client_errors_immediately():
+    """4xx means the request itself is wrong (gone deployment, bad auth);
+    retrying cannot help and must not delay the failure."""
+    deployment_id = uuid4()
+    service = _FlakyStatusService(
+        [APIError("not found", status_code=404), "DEPLOYED"]
+    )
+
+    with pytest.raises(APIError):
+        _fast_poller(service).wait_for(
+            deployment_id, desired_status=["DEPLOYED"], failure_status=["FAILED"]
+        )
+
+    assert service.calls == 1
 
 
 def test_status_poller_times_out_when_threshold_exceeded():
@@ -167,7 +483,9 @@ def test_log_streamer_respects_custom_stop_condition():
     service = _LogService(responses)
     streamer = DeploymentLogStreamer(service, poll_interval=0, sleep_fn=lambda _: None)
 
-    stop_after_two = lambda resp: resp.total_lines_seen >= 2
+    def stop_after_two(resp):
+        return resp.total_lines_seen >= 2
+
     lines = list(
         streamer.stream(
             deployment_id,

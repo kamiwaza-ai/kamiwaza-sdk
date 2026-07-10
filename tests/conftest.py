@@ -1,90 +1,11 @@
 from __future__ import annotations
 
-import os
-import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, Tuple
 
 import pytest
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
-def _load_env_file(env_file: Path) -> None:
-    if not env_file.exists():
-        return
-    for raw_line in env_file.read_text().splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        key = key.strip()
-        value = value.strip()
-        if not key:
-            continue
-        if value.startswith(("'", '"')) and value.endswith(("'", '"')) and len(value) >= 2:
-            value = value[1:-1]
-        if key not in os.environ:
-            os.environ[key] = value
-
-def _load_local_env() -> None:
-    candidates: list[Path] = [PROJECT_ROOT / ".env.local"]
-    root = os.environ.get("KAMIWAZA_ROOT")
-    if root:
-        candidates.append(Path(root).expanduser() / ".env.local")
-
-    seen: set[Path] = set()
-    for env_file in candidates:
-        try:
-            resolved = env_file.resolve()
-        except FileNotFoundError:
-            resolved = env_file
-        if resolved in seen:
-            continue
-        seen.add(resolved)
-        _load_env_file(env_file)
-
-_load_local_env()
-
-DEFAULT_BASE_URL = (
-    os.environ.get("KAMIWAZA_BASE_URL")
-    or os.environ.get("KAMIWAZA_BASE_URI")
-    or "https://kamiwaza.test/api"
-).rstrip("/")
-
-
-def pytest_addoption(parser: pytest.Parser) -> None:
-    group = parser.getgroup("kamiwaza")
-    group.addoption(
-        "--live-base-url",
-        action="store",
-        default=DEFAULT_BASE_URL,
-        help="Base URL used by live/e2e tests (defaults to env KAMIWAZA_BASE_URL or https://kamiwaza.test/api).",
-    )
-    group.addoption(
-        "--live-api-key",
-        action="store",
-        default=os.environ.get("KAMIWAZA_API_KEY", ""),
-        help="API key used by live/e2e tests (defaults to env KAMIWAZA_API_KEY).",
-    )
-    group.addoption(
-        "--live-username",
-        action="store",
-        default=os.environ.get("KAMIWAZA_USERNAME", "admin"),
-        help="Username used for live/e2e password auth fallback (defaults to admin).",
-    )
-    group.addoption(
-        "--live-password",
-        action="store",
-        default=os.environ.get("KAMIWAZA_PASSWORD", ""),
-        help=(
-            "Password used for live/e2e password auth fallback "
-            "(defaults to env KAMIWAZA_PASSWORD, else integration fixture resolves via kz-login)."
-        ),
-    )
+from _kamiwaza_pytest_options import DEFAULT_BASE_URL, PROJECT_ROOT
 
 
 @pytest.fixture(scope="session")
@@ -128,7 +49,9 @@ class DummyAPIClient:
         key = (method, path)
         if key not in self.responses:
             available = ", ".join(f"{m} {p}" for m, p in self.responses)
-            raise AssertionError(f"Unexpected request {method} {path}. Known: {available}")
+            raise AssertionError(
+                f"Unexpected request {method} {path}. Known: {available}"
+            )
         return self.responses[key]
 
     def get(self, path: str, **kwargs) -> Any:
@@ -157,6 +80,96 @@ def dummy_client() -> Callable[[Dict[Tuple[str, str], Any]], DummyAPIClient]:
     return _factory
 
 
+class MockClient:
+    """Shared mock for ``kamiwaza_sdk`` federation-aware service tests.
+
+    Mocks at the ``_request`` boundary so service code that calls
+    ``self.client._request(method, path, **kwargs)`` exercises real
+    service logic (path construction, body serialization, response
+    parsing) without an httpx/requests round-trip.
+
+    Path-matching is exact — the legacy ``Kamiwaza`` client transparently
+    prepended ``/api`` to base_url; ``KamiwazaClient`` documents
+    ``base_url=".../api"`` so service paths are unprefixed. Tests use
+    unprefixed paths in ``expect()`` to match the canonical contract.
+
+    Also supports the legacy positional method API (``mock.get(path)``,
+    ``mock.post(path)``, …) for service modules that haven't been
+    migrated to ``_request``-style yet, plus a ``raise_on(...)`` helper
+    for tests asserting on error paths.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, dict]] = []
+        self._responses: dict[tuple[str, str], Any] = {}
+        # Per-key FIFO queue for tests that need sequenced responses
+        # (e.g. polling-style ``jobs.wait`` where the same GET evolves
+        # PENDING → RUNNING → SUCCEEDED across calls).
+        self._queue: dict[tuple[str, str], list[Any]] = {}
+        self._raises: dict[tuple[str, str], BaseException] = {}
+
+    def expect(self, method: str, path: str, response: Any) -> None:
+        """Queue a single response for ``method path``. Last expectation wins."""
+        self._responses[(method.upper(), path)] = response
+
+    def expect_sequence(self, method: str, path: str, responses: list[Any]) -> None:
+        """Queue an ordered list of responses for ``method path``. Pulled FIFO.
+
+        After the queue is drained, falls back to ``_responses[key]`` (if set)
+        or raises ``AssertionError``. Use this for polling-style tests where
+        the same request returns different states across calls.
+        """
+        self._queue[(method.upper(), path)] = list(responses)
+
+    def raise_on(self, method: str, path: str, exc: BaseException) -> None:
+        """Configure a request to raise ``exc`` instead of returning."""
+        self._raises[(method.upper(), path)] = exc
+
+    def _dispatch(self, method: str, path: str, **kwargs: Any) -> Any:
+        upper = method.upper()
+        key = (upper, path)
+        self.calls.append((upper, path, kwargs))
+        if key in self._raises:
+            raise self._raises[key]
+        queued = self._queue.get(key)
+        if queued:
+            return queued.pop(0)
+        response = self._responses.get(key)
+        if response is None:
+            known = ", ".join(f"{m} {p}" for m, p in self._responses)
+            raise AssertionError(
+                f"MockClient: no expectation set for {upper} {path}. "
+                f"Known: {known or '(none)'}"
+            )
+        return response
+
+    # ─── canonical KamiwazaClient surface ────────────────────────────────
+    def _request(self, method: str, path: str, **kwargs: Any) -> Any:
+        return self._dispatch(method, path, **kwargs)
+
+    # ─── legacy convenience methods (some service code still uses them) ──
+    def get(self, path: str, **kwargs: Any) -> Any:
+        return self._dispatch("GET", path, **kwargs)
+
+    def post(self, path: str, **kwargs: Any) -> Any:
+        return self._dispatch("POST", path, **kwargs)
+
+    def put(self, path: str, **kwargs: Any) -> Any:
+        return self._dispatch("PUT", path, **kwargs)
+
+    def patch(self, path: str, **kwargs: Any) -> Any:
+        return self._dispatch("PATCH", path, **kwargs)
+
+    def delete(self, path: str, **kwargs: Any) -> Any:
+        return self._dispatch("DELETE", path, **kwargs)
+
+
+@pytest.fixture
+def mock_client() -> "MockClient":
+    """Fresh ``MockClient`` per test for federation-aware service tests."""
+    return MockClient()
+
+
 @pytest.fixture(scope="session")
 def live_base_url(pytestconfig: pytest.Config) -> str:
     return str(pytestconfig.getoption("live_base_url")).rstrip("/")
@@ -175,6 +188,23 @@ def live_username(pytestconfig: pytest.Config) -> str:
 @pytest.fixture(scope="session")
 def live_password(pytestconfig: pytest.Config) -> str:
     return str(pytestconfig.getoption("live_password"))
+
+
+@pytest.fixture(scope="session")
+def live_peer_base_url(pytestconfig: pytest.Config) -> str:
+    """Peer-cluster base URL for two-cluster federation tests (ENG-5784).
+
+    Returns empty string when not configured — collection-side hooks
+    auto-deselect ``@pytest.mark.requires_two_clusters`` tests in that
+    case, so test bodies can assume both env vars are set.
+    """
+    return str(pytestconfig.getoption("live_peer_base_url")).rstrip("/")
+
+
+@pytest.fixture(scope="session")
+def live_peer_api_key(pytestconfig: pytest.Config) -> str:
+    """Peer-cluster API key for two-cluster federation tests (ENG-5784)."""
+    return str(pytestconfig.getoption("live_peer_api_key"))
 
 
 @pytest.fixture

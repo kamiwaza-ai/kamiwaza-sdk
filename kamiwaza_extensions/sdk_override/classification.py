@@ -19,6 +19,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, List, Optional
 
+from kamiwaza_extensions.compose_ports import extract_container_port
+
 
 def detect_service_type(
     svc_name: str,
@@ -40,10 +42,11 @@ def detect_service_type(
         if "frontend" in dockerfile.lower() or "frontend" in context.lower():
             return "frontend"
 
-    # Check ports
+    # Check ports — uses the shared compose-port parser so all three
+    # spec shapes (bare, host:container, long-form dict) classify the
+    # same way. Mirrors ``_should_use_node_frontend_probe``.
     for port_spec in svc_config.get("ports", []):
-        port_str = str(port_spec)
-        if ":3000" in port_str or ":3001" in port_str:
+        if extract_container_port(port_spec) in (3000, 3001):
             return "frontend"
 
     return "backend"

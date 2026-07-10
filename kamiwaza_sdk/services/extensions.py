@@ -3,7 +3,7 @@
 """Service for managing K8s-native extensions via the platform API."""
 
 import logging
-from typing import List
+from typing import List, Optional, Union
 
 from ..exceptions import APIError, NotFoundError
 from ..schemas.extensions import (
@@ -22,13 +22,25 @@ class ExtensionService(BaseService):
         super().__init__(client)
         self.logger = logging.getLogger(__name__)
 
-    def list_extensions(self) -> List[Extension]:
+    def list_extensions(
+        self, workroom_id: Optional[Union[str, object]] = None
+    ) -> List[Extension]:
         """List extensions visible to the current user.
+
+        Args:
+            workroom_id: When set, scope the listing to a workroom via the
+                ``X-Workroom-Id`` header. The platform only lists a workroom's
+                per-workroom extensions to a caller that sends this header, so a
+                global PAT must pass it explicitly — a workroom-claim token alone
+                does not drive this endpoint's scoping.
 
         Returns:
             List of Extension objects.
         """
-        response = self.client.get("/extensions")
+        kwargs = {}
+        if workroom_id is not None:
+            kwargs["headers"] = {"X-Workroom-Id": str(workroom_id)}
+        response = self.client.get("/extensions", **kwargs)
         return [Extension.model_validate(item) for item in response]
 
     def get_extension(self, name: str) -> Extension:

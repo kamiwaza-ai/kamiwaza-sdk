@@ -16,6 +16,13 @@ COMPOSE_FILENAMES = (
     "compose.yaml",
 )
 
+# All compose-file names a version bump / drift check should inspect. Includes
+# the appgarden deployment overlay alongside the canonical compose names.
+ALL_COMPOSE_FILENAMES = COMPOSE_FILENAMES + (
+    "docker-compose.appgarden.yml",
+    "docker-compose.appgarden.yaml",
+)
+
 EXTENSIONS_NAMESPACE = "kamiwaza-extensions"
 
 

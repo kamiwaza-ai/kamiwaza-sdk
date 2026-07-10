@@ -1,0 +1,132 @@
+name: extensions/contract-live
+
+# Extension contract tests against a live Kamiwaza cluster.
+#
+# Relocated from kamiwaza-internal/kamiwaza on 2026-05-27. Tests the SDK's
+# contract against a real platform: auth flow, deployment lifecycle, log
+# streaming, gate-package install/replace/uninstall, NetworkPolicy gating.
+#
+# Triggers:
+#
+#   - PRs touching tests/e2e/extension_contract/** or
+#     tests/integration/gate_packages/** — per-PR signal while the suite is
+#     still settling in its new home.
+#   - workflow_dispatch — manual trigger (e.g., to validate against a
+#     specific cluster endpoint).
+#   - schedule (commented out for v1) — TODO: enable nightly cron once the
+#     per-PR signal pattern is stable and a long-lived dev cluster is
+#     reachable from CI.
+#
+# Job requires repository secrets:
+#   - KAMIWAZA_BASE_URL    (e.g., https://contract-tests.kamiwaza.dev/api)
+#   - KAMIWAZA_API_KEY     (PAT for an admin persona on that cluster)
+#
+# If those secrets aren't present (e.g., for fork PRs), the job skips cleanly.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'tests/e2e/extension_contract/**'
+      - 'tests/integration/gate_packages/**'
+      - 'kamiwaza_sdk/**'
+      - 'pyproject.toml'
+      - '.github/workflows/extension-contract-live.yml'
+  workflow_dispatch:
+  # TODO: enable nightly cron once the per-PR signal pattern is stable:
+  # schedule:
+  #   - cron: '13 7 * * *'  # 07:13 UTC daily — off the :00 fleet collision
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    name: Extension contract (live cluster)
+    runs-on: ubuntu-latest
+    # 30-min ceiling: deploy probes default to 900s and HTTP probes to 180s;
+    # without this the job could run for hours on a stuck cluster before
+    # GitHub's 6-hour default cuts it. 30 min is generous for the install →
+    # replace → uninstall sequence on a healthy cluster.
+    timeout-minutes: 30
+    # Skip cleanly if secrets aren't available (fork PRs, etc.).
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'schedule' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          version: "0.7.5"
+          enable-cache: true
+
+      - name: Install SDK + dev deps
+        run: uv sync --group dev
+
+      - name: Probe live cluster availability
+        id: probe
+        env:
+          KAMIWAZA_BASE_URL: ${{ secrets.KAMIWAZA_BASE_URL }}
+        run: |
+          if [ -z "$KAMIWAZA_BASE_URL" ]; then
+            echo "::warning::KAMIWAZA_BASE_URL secret not configured; skipping contract tests."
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Probe /ping (canonical API liveness, used by tests/integration/test_ping_live.py).
+          # Auth-fronted clusters return 401 "Not authenticated" — the harness's
+          # ping_response_ok() treats that as available (cluster is up, just
+          # protected). Match that behavior here: ANY HTTP response is "available",
+          # only connection failures count as unavailable.
+          # 10s probe (was 5s, raised because slow cluster cold-start could
+          # silently skip downstream steps).
+          status=$(curl --max-time 10 -s -o /dev/null -w "%{http_code}" "${KAMIWAZA_BASE_URL}/ping" || echo "000")
+          if [ "$status" != "000" ]; then
+            echo "Cluster reachable (HTTP $status)"
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Live cluster at ${KAMIWAZA_BASE_URL} not reachable (no HTTP response); skipping contract tests."
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # NOTE: The live extension-contract test step that used to live here
+      # (`pytest tests/e2e/extension_contract/` with RUN_LIVE_EXTENSION_TESTS=1)
+      # was removed. The session fixture requires a cross-repo
+      # `../deploy/.artifacts/.../bootstrap-state.json` artifact with
+      # persona credentials, which CI can't materialize. With state_loader.py
+      # set to pytest.skip on missing state, every live_extension test
+      # silently skipped and this step provided zero signal. Re-enable once
+      # we have a way to materialize bootstrap state in CI (a separate
+      # ENG ticket — kept out of this PR's scope).
+      # The harness UNIT tests (test_harness_*.py) don't need live state
+      # and run in the regular python-tests.yml workflow.
+
+      - name: Run echo-check backend unit tests
+        if: steps.probe.outputs.available == 'true'
+        # The backend has its own pytest suite that imports `from app.main`,
+        # which only resolves with `backend/` as the working directory.
+        # echo-check/conftest.py keeps this subtree out of root collection
+        # via collect_ignore = ["backend"] (otherwise the SDK-root pytest
+        # would ModuleNotFoundError on `app`). Run it explicitly here.
+        # The `--extra test` is critical: backend/pyproject.toml declares
+        # pytest only in [project.optional-dependencies].test, so without
+        # this flag uv would create a fresh .venv without pytest and the
+        # step would fail with "Failed to spawn: pytest".
+        working-directory: tests/e2e/extension_contract/echo-check/backend
+        run: |
+          uv run --extra test pytest tests/ -v --tb=short
+
+      - name: Run gate-packages lifecycle test
+        if: steps.probe.outputs.available == 'true'
+        env:
+          KAMIWAZA_BASE_URL: ${{ secrets.KAMIWAZA_BASE_URL }}
+          KAMIWAZA_ADMIN_TOKEN: ${{ secrets.KAMIWAZA_API_KEY }}
+          M5_TEST_WHEEL_DIR: ${{ secrets.M5_TEST_WHEEL_DIR }}
+          M5_TEST_INDEX_URL: ${{ secrets.M5_TEST_INDEX_URL }}
+        run: |
+          # This test additionally needs M5_TEST_WHEEL_DIR + M5_TEST_INDEX_URL;
+          # it self-skips via pytest.skip() if those aren't present.
+          uv run pytest tests/integration/gate_packages/ -v --tb=short

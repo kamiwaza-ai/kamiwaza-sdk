@@ -7,7 +7,6 @@ import yaml
 
 from kamiwaza_extensions.extension_detector import (
     ExtensionDetector,
-    ExtensionInfo,
     ExtensionNotFoundError,
     MultipleExtensionsError,
 )
@@ -76,6 +75,32 @@ class TestMetadataLoading:
         with pytest.raises(ExtensionNotFoundError, match="Cannot read"):
             detector.detect(tmp_path)
 
+    def test_image_basename_absent_is_none(self, detector, tmp_path):
+        (tmp_path / "kamiwaza.json").write_text(
+            json.dumps({"name": "x", "version": "1.0.0"})
+        )
+        info = detector.detect(tmp_path)
+        assert info.image_basename is None
+
+    def test_image_basename_present_is_loaded(self, detector, tmp_path):
+        (tmp_path / "kamiwaza.json").write_text(json.dumps({
+            "name": "workroom-manager",
+            "version": "0.13.0",
+            "image_basename": "outcome-d563-workroom-manager",
+        }))
+        info = detector.detect(tmp_path)
+        assert info.image_basename == "outcome-d563-workroom-manager"
+
+    def test_image_basename_empty_string_is_none(self, detector, tmp_path):
+        # An empty/whitespace override would synthesize bad refs like
+        # `registry/-svc:tag`; normalize to None so the legacy fallback
+        # (extension_name) is used.
+        (tmp_path / "kamiwaza.json").write_text(json.dumps({
+            "name": "x", "version": "1.0.0", "image_basename": "   ",
+        }))
+        info = detector.detect(tmp_path)
+        assert info.image_basename is None
+
 
 class TestComposeLoading:
     def test_compose_loaded(self, detector, ext_dir):
@@ -132,6 +157,23 @@ class TestMonorepoDiscovery:
         assert "apps/foo" in str(exc.value)
         assert "tools/bar" in str(exc.value)
 
+    def test_detect_all_returns_every_monorepo_extension(self, detector, tmp_path):
+        for sub, ext_type in (("apps/foo", "app"), ("tools/bar", "tool")):
+            d = tmp_path / sub
+            d.mkdir(parents=True)
+            (d / "kamiwaza.json").write_text(
+                json.dumps({"name": d.name, "version": "1.0.0", "type": ext_type})
+            )
+            (d / "docker-compose.yml").write_text("services: {}")
+
+        infos = detector.detect_all(tmp_path)
+
+        assert [info.name for info in infos] == ["foo", "bar"]
+        assert [info.path.relative_to(tmp_path).as_posix() for info in infos] == [
+            "apps/foo",
+            "tools/bar",
+        ]
+
     def test_root_kamiwaza_json_wins_over_monorepo(self, detector, tmp_path):
         (tmp_path / "kamiwaza.json").write_text(json.dumps({"name": "root"}))
         (tmp_path / "apps").mkdir()
@@ -142,3 +184,15 @@ class TestMonorepoDiscovery:
 
         assert info.path == tmp_path
         assert info.name == "root"
+
+    def test_detect_all_root_kamiwaza_json_wins_over_monorepo(self, detector, tmp_path):
+        (tmp_path / "kamiwaza.json").write_text(json.dumps({"name": "root"}))
+        nested = tmp_path / "apps" / "decoy"
+        nested.mkdir(parents=True)
+        (nested / "kamiwaza.json").write_text(json.dumps({"name": "decoy"}))
+
+        infos = detector.detect_all(tmp_path)
+
+        assert len(infos) == 1
+        assert infos[0].path == tmp_path
+        assert infos[0].name == "root"

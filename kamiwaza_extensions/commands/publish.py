@@ -13,9 +13,10 @@ from rich.console import Console
 from kamiwaza_extensions.catalog_publisher import DEFAULT_CATALOG_SCHEMA
 from kamiwaza_extensions.compose_transformer import (
     _canonical_build_ref,
+    _repo_part,
     compute_canonical_refs,
 )
-from kamiwaza_extensions.extension_detector import infer_extension_type
+from kamiwaza_extensions.extension_detector import ExtensionInfo, infer_extension_type
 
 console = Console(stderr=True)
 
@@ -67,28 +68,36 @@ def _retag_appgarden_compose(
     extension_name: str,
     image_tag: str,
     registry: str,
+    image_basename: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Rewrite image tags on services that this publish actually owns.
+    """Rewrite image tags on services whose image repo this publish built.
 
-    A service is "owned" by this publish if it has a ``build:`` block in
-    the source ``docker-compose.yml`` and is *not* gated by ``profiles:``
-    (i.e. ``ImageBuilder`` will build and push an image for it; this
-    mirrors the ``buildable_services`` filter ``run_publish`` uses to
-    derive ``published_refs``/``digest_map``). For those services we set
-    ``image: {registry}/{ext}-{svc}:{image_tag}`` so the catalog points
-    at the image we just built with the resolved ``--stage`` / ``--revision``
-    tag. External refs (``ghcr.io/.../neo4j``) and any service the
-    extension's ``sync-compose.py`` invented are passed through verbatim.
+    Ownership: a service is "owned" if either its name is in the source
+    compose's buildable set, or its ``image:`` points at a registry
+    repo one of those buildable services produces (the
+    multi-service-one-image idiom — e.g. an ``init`` container reusing
+    the main image to chown/migrate/seed). Owned services are retagged
+    via ``_canonical_build_ref`` so their declared namespace is
+    preserved and the tag becomes ``--stage`` / ``--revision``.
 
-    The appgarden file is otherwise considered deployment-ready by the
-    extension's authoring intent and passed through unchanged: host port
+    The repo-membership check is the safety boundary: refs we did not
+    build (third-party images, services in our namespace at a repo we
+    don't produce) pass through verbatim. Without sibling-image
+    retagging, the catalog would point at the source-authored tag
+    (never pushed) → ImagePullBackOff on deploy. See ENG-5648.
+
+    Profile-gated services are dropped, matching
+    ``ComposeTransformer.transform``'s policy — local-only services
+    must not reach the deployment-ready catalog entry.
+
+    The appgarden file is otherwise considered deployment-ready by
+    ``sync-compose.py`` and passed through unchanged: host port
     bindings, bind mounts, ``extra_hosts``, ``container_name``,
-    top-level ``networks``, env-value placeholders, and the
+    top-level ``networks``, env placeholders, and the
     ``_ensure_resource_limits`` defaults that ``ComposeTransformer``
-    used to backfill are NOT applied here. ``sync-compose.py`` owns that
-    shape; if a service is missing ``deploy.resources.limits``,
-    ``ComposeValidator`` will surface the warning and the catalog ships
-    without the auto-fill.
+    backfills are NOT applied here. ``ComposeValidator`` surfaces
+    warnings on missing ``deploy.resources.limits``; the catalog
+    ships without auto-fill.
     """
     out = copy.deepcopy(appgarden_data)
     source_services = (
@@ -96,31 +105,51 @@ def _retag_appgarden_compose(
         if isinstance(source_compose_data, dict)
         else {}
     )
-    # Mirror `buildable_services` (publish.py): exclude `profiles:`-gated
-    # services. Without this filter, a `build: + profiles:` service that
-    # leaks into the authored appgarden file would be retagged into the
-    # catalog while being absent from `published_refs`/`digest_map` — a
-    # local-only ref shipping with no corresponding push.
-    build_services = {
+    appgarden_services = out.get("services") or {}
+    profiled_in_appgarden = [
+        name
+        for name, svc in appgarden_services.items()
+        if isinstance(svc, dict) and svc.get("profiles")
+    ]
+    for name in profiled_in_appgarden:
+        del appgarden_services[name]
+    # Shared derivation: keeps this gate aligned with run_publish's
+    # published_refs and the dev pipeline.
+    canonical_by_name = compute_canonical_refs(
+        source_services,
+        registry=registry,
+        extension_name=extension_name,
+        revision_tag=image_tag,
+        appgarden_services=appgarden_services,
+        image_basename=image_basename,
+    )
+    built_repos = {_repo_part(ref) for ref in canonical_by_name.values()}
+    # Block repo-match on source-side profiled services: their image
+    # repo can collide with a non-profiled build service's repo, and
+    # the appgarden-side delete above doesn't catch this case.
+    profiled_source_names = {
         name
         for name, svc in source_services.items()
-        if isinstance(svc, dict) and "build" in svc and not svc.get("profiles")
+        if isinstance(svc, dict) and svc.get("profiles")
     }
-    for svc_name, svc in (out.get("services") or {}).items():
+    for svc_name, svc in appgarden_services.items():
         if not isinstance(svc, dict):
             continue
-        if svc_name in build_services:
-            # The appgarden compose's image field is the canonical
-            # declaration of where this build's image lives in the
-            # registry — set by the extension's sync-compose.py from
-            # its docker-compose.yml. We only own the *tag* (stage
-            # suffix or --revision SHA); the namespace stays what the
-            # extension authored.
+        img = svc.get("image")
+        repo_owned = (
+            isinstance(img, str)
+            and bool(img)
+            and _repo_part(img) in built_repos
+            and svc_name not in profiled_source_names
+        )
+        if svc_name in canonical_by_name or repo_owned:
+            # Preserve declared namespace; we only rewrite the tag.
             svc["image"] = _canonical_build_ref(
                 svc, svc_name,
                 fallback_registry=registry,
                 fallback_extension_name=extension_name,
                 revision_tag=image_tag,
+                fallback_image_basename=image_basename,
             )
     return out
 
@@ -161,12 +190,19 @@ def _collect_buildable_image_names(
     extension_name: str,
     version: str,
     registry: str,
+    image_basename: Optional[str] = None,
 ) -> List[str]:
-    """Return short image names (``name:tag``) for services with build contexts."""
+    """Return short image names (``basename:tag``) for services with build contexts.
+
+    Display-only (dry-run preview). ``image_basename`` (when set) overrides
+    ``extension_name`` so the preview matches what the live path would
+    actually push.
+    """
+    basename = image_basename or extension_name
     names: List[str] = []
     for svc_name, svc in (compose_data.get("services") or {}).items():
         if "build" in svc:
-            names.append(f"{extension_name}-{svc_name}:{version}")
+            names.append(f"{basename}-{svc_name}:{version}")
     return names
 
 
@@ -241,7 +277,8 @@ def _auto_resolve_digests(
     return digest_map
 
 
-def run_publish(
+def _publish_one(
+    info: ExtensionInfo,
     *,
     stage: str,
     dry_run: bool = False,
@@ -253,56 +290,26 @@ def run_publish(
     digest: Optional[str] = None,
     catalog_schema: int = DEFAULT_CATALOG_SCHEMA,
 ) -> None:
-    """Build, push, and publish extension to catalog."""
+    """Build, push, and publish one detected extension to catalog."""
     from kamiwaza_extensions.catalog_publisher import (
         CatalogDedupError,
-        CatalogDedupGuard,
         CatalogPublishError,
         CatalogPublisher,
     )
     from kamiwaza_extensions.compose_transformer import ComposeTransformer
     from kamiwaza_extensions.exit_codes import ExitCode
-    from kamiwaza_extensions.extension_detector import ExtensionDetector
     from kamiwaza_extensions.image_builder import ImageBuilder, ImageBuildError
     from kamiwaza_extensions.image_pusher import (
         ImagePushError,
         ImagePusher,
-        validate_digest,
     )
     from kamiwaza_extensions.profile_manager import ProfileManager
-    from kamiwaza_extensions.registry_builder import RegistryBuilder
+    from kamiwaza_extensions.registry_builder import (
+        RegistryBuilder,
+        resolve_extra_image,
+    )
     from kamiwaza_extensions.validators.compose import ComposeValidator
     from kamiwaza_extensions.validators.metadata import MetadataValidator
-
-    # 0. Fail fast on bad --revision before any side effects (build, push,
-    # registry tag pollution). Previously this validated inside
-    # CatalogPublisher.publish, after image push had already happened —
-    # invalid revisions like 'foo/bar' or 'BAD CASE' would leak orphan
-    # tags into the registry (review re-review PR #84 M2).
-    if revision is not None:
-        try:
-            CatalogDedupGuard.validate_revision(revision)
-        except ValueError as exc:
-            console.print(f"[red]Error:[/red] {exc}")
-            raise typer.Exit(code=int(ExitCode.VALIDATION)) from exc
-
-    # Same fail-fast intent for --digest: reject malformed input before any
-    # build/push side effects. Format guard only — buildable-count check
-    # happens after compose data is loaded.
-    if digest is not None:
-        try:
-            validate_digest(digest)
-        except ValueError as exc:
-            # The exception text contains the user-supplied digest verbatim;
-            # rich console treats `[…]` as markup, so disable interpretation
-            # to avoid silent stripping or a markup-injection vector.
-            console.print("[red]Error:[/red] ", end="")
-            console.print(str(exc), markup=False)
-            raise typer.Exit(code=int(ExitCode.VALIDATION)) from exc
-
-    # 1. Detect extension
-    detector = ExtensionDetector()
-    info = detector.detect()
 
     if info.compose_data is None:
         console.print("[red]Error:[/red] No docker-compose.yml found.")
@@ -382,13 +389,22 @@ def run_publish(
     meta_result = meta_validator.validate(info.path / "kamiwaza.json")
 
     compose_validator = ComposeValidator()
-    compose_result = compose_validator.validate(publish_compose_path, info.path)
+    # An authored appgarden compose is published via `_retag_appgarden_compose`,
+    # which bypasses `ComposeTransformer` — so bind mounts and missing resource
+    # limits are NOT stripped/backfilled and must surface as warnings, not info.
+    compose_result = compose_validator.validate(
+        publish_compose_path,
+        info.path,
+        transformer_handled=appgarden_data is None,
+    )
 
     all_errors = meta_result.errors[:]
     all_warnings = meta_result.warnings[:]
+    all_info = meta_result.info[:]
     if compose_result:
         all_errors.extend(compose_result.errors)
         all_warnings.extend(compose_result.warnings)
+        all_info.extend(compose_result.info)
 
     if all_errors:
         console.print("          [red]\u2717 failed[/red]")
@@ -402,6 +418,8 @@ def run_publish(
             console.print(f"    [yellow]![/yellow] {warn}")
     else:
         console.print("          [green]\u2713[/green] passed")
+    for info_msg in all_info:
+        console.print(f"    [cyan]i[/cyan] {info_msg}")
 
     # 3. Resolve publish profile
     profile_mgr = ProfileManager()
@@ -449,6 +467,7 @@ def run_publish(
             extension_name=info.name,
             image_tag=image_tag,
             registry=registry,
+            image_basename=info.image_basename,
         )
     else:
         transformer = ComposeTransformer()
@@ -457,6 +476,7 @@ def run_publish(
             extension_name=info.name,
             revision_tag=image_tag,
             registry=registry,
+            image_basename=info.image_basename,
         )
 
     # Canonical image refs for every build-context service. Single
@@ -476,12 +496,14 @@ def run_publish(
         extension_name=info.name,
         revision_tag=image_tag,
         appgarden_services=appgarden_services,
+        image_basename=info.image_basename,
     )
 
     # -- Dry-run path (still runs merge check to detect conflicts) --
     if dry_run:
         short_names = _collect_buildable_image_names(
-            info.compose_data, info.name, image_tag, registry
+            info.compose_data, info.name, image_tag, registry,
+            image_basename=info.image_basename,
         )
         console.print(
             f"  Would build images:    {', '.join(short_names) if short_names else '(none)'}"
@@ -549,6 +571,7 @@ def run_publish(
                 registry=registry,
                 verbose=verbose,
                 image_refs=canonical_refs,
+                image_basename=info.image_basename,
             )
         except ImageBuildError as exc:
             console.print("    [red]\u2717 build failed[/red]")
@@ -624,6 +647,24 @@ def run_publish(
         else:
             digest_map = _auto_resolve_digests(published_refs)
 
+    # `{version}` extras under our registry are retagged and digest-
+    # pinned. Literal extras under our registry keep their tag but may
+    # be digest-pinned. External refs and `@sha256:`-pinned refs keep
+    # their declared form. Refs already in digest_map are left alone —
+    # re-resolving would overwrite an explicit `--digest` user pin.
+    resolved_extras = [
+        resolve_extra_image(img, registry, version, stage, revision)
+        for img in (info.metadata.get("extra_docker_images") or [])
+    ]
+    extras_to_resolve = [
+        r for r in resolved_extras
+        if r.startswith(f"{registry}/")
+        and "@" not in r
+        and r not in digest_map
+    ]
+    if extras_to_resolve:
+        digest_map.update(_auto_resolve_digests(extras_to_resolve))
+
     # 7. Build catalog entry
     reg_builder = RegistryBuilder()
     entry = reg_builder.build_entry(
@@ -685,3 +726,99 @@ def run_publish(
         ]
         console.print(f"  Images:  {', '.join(pinned)}")
     console.print(f"  Catalog: {result.catalog_file}")
+
+
+def run_publish(
+    *,
+    stage: str,
+    dry_run: bool = False,
+    force: bool = False,
+    no_build: bool = False,
+    no_push: bool = False,
+    verbose: bool = False,
+    revision: Optional[str] = None,
+    digest: Optional[str] = None,
+    catalog_schema: int = DEFAULT_CATALOG_SCHEMA,
+    publish_all: bool = False,
+) -> None:
+    """Build, push, and publish extension(s) to catalog."""
+    from kamiwaza_extensions.catalog_publisher import CatalogDedupGuard
+    from kamiwaza_extensions.exit_codes import ExitCode
+    from kamiwaza_extensions.extension_detector import (
+        ExtensionDetector,
+        MultipleExtensionsError,
+    )
+    from kamiwaza_extensions.image_pusher import validate_digest
+
+    # 0. Fail fast on bad --revision before any side effects (build, push,
+    # registry tag pollution). Previously this validated inside
+    # CatalogPublisher.publish, after image push had already happened —
+    # invalid revisions like 'foo/bar' or 'BAD CASE' would leak orphan
+    # tags into the registry (review re-review PR #84 M2).
+    if revision is not None:
+        try:
+            CatalogDedupGuard.validate_revision(revision)
+        except ValueError as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(code=int(ExitCode.VALIDATION)) from exc
+
+    # Same fail-fast intent for --digest: reject malformed input before any
+    # build/push side effects.
+    if digest is not None:
+        try:
+            validate_digest(digest)
+        except ValueError as exc:
+            # The exception text contains the user-supplied digest verbatim;
+            # rich console treats `[…]` as markup, so disable interpretation
+            # to avoid silent stripping or a markup-injection vector.
+            console.print("[red]Error:[/red] ", end="")
+            console.print(str(exc), markup=False)
+            raise typer.Exit(code=int(ExitCode.VALIDATION)) from exc
+
+    if publish_all and digest is not None:
+        console.print(
+            "[red]Error:[/red] --all cannot be combined with --digest. "
+            "--digest pins one image; omit it to auto-resolve each extension."
+        )
+        raise typer.Exit(code=int(ExitCode.VALIDATION))
+
+    detector = ExtensionDetector()
+    try:
+        infos = detector.detect_all() if publish_all else [detector.detect()]
+    except MultipleExtensionsError as exc:
+        console.print(f"[red]Error:[/red] {exc}")
+        console.print(
+            "Re-run with [bold]--all[/bold] to publish every detected extension, "
+            "or run from inside a specific extension directory."
+        )
+        raise typer.Exit(code=1) from exc
+
+    for info in infos:
+        # Connectors have no compose and aren't built by kz-ext — they publish
+        # their self-describing manifest to connectors.json via a dedicated path.
+        if infer_extension_type(info.metadata) == "connector":
+            from kamiwaza_extensions.connector_publisher import publish_connector
+
+            publish_connector(
+                info,
+                stage=stage,
+                dry_run=dry_run,
+                force=force,
+                no_push=no_push,
+                revision=revision,
+                digest=digest,
+                catalog_schema=catalog_schema,
+            )
+            continue
+        _publish_one(
+            info,
+            stage=stage,
+            dry_run=dry_run,
+            force=force,
+            no_build=no_build,
+            no_push=no_push,
+            verbose=verbose,
+            revision=revision,
+            digest=digest,
+            catalog_schema=catalog_schema,
+        )

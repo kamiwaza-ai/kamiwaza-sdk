@@ -223,6 +223,11 @@ def dev_callback(
         "--sdk-repo",
         help="Path to local kamiwaza-sdk checkout — bakes local runtime libs into images",
     ),
+    unload: bool = typer.Option(
+        False,
+        "--unload",
+        help="Remove this extension's local catalog overlay, restoring the upstream catalog entry for new workrooms",
+    ),
 ) -> None:
     """Build, push, and deploy extension to Kamiwaza cluster.
 
@@ -230,6 +235,24 @@ def dev_callback(
     Use 'kz-ext dev local' for local Docker Compose development.
     """
     if ctx.invoked_subcommand is not None:
+        if unload:
+            # Callback options don't apply to subcommands; don't let the
+            # user believe the overlay was removed.
+            typer.secho(
+                "Warning: --unload is ignored with a subcommand. "
+                "Run plain `kz-ext dev --unload`.",
+                err=True,
+                fg="yellow",
+            )
+        return
+    if unload:
+        from kamiwaza_extensions.commands.dev import run_dev_unload
+        try:
+            run_dev_unload()
+        except typer.Exit:
+            raise
+        except Exception as exc:
+            _handle_exception(exc)
         return
     # No subcommand → run remote deploy
     from kamiwaza_extensions.commands.dev import run_dev_remote
@@ -323,10 +346,11 @@ def port_forward(
 @run_with_error_handling
 def bump(
     level: str = typer.Option("patch", "--level", "-l", help="Bump level: major, minor, or patch"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview file changes without writing"),
 ) -> None:
-    """Bump extension version in kamiwaza.json."""
+    """Bump extension version across kamiwaza.json, compose, Dockerfile, pyproject, package.json."""
     from kamiwaza_extensions.commands.bump import run_bump
-    run_bump(level=level)
+    run_bump(level=level, dry_run=dry_run)
 
 
 @app.command()
@@ -377,6 +401,11 @@ def publish(
             "(K8s/v3 extensions). Pass 2 to publish to the legacy v2 catalog."
         ),
     ),
+    publish_all: bool = typer.Option(
+        False,
+        "--all",
+        help="Publish every extension discovered under the current repository.",
+    ),
 ) -> None:
     """Publish extension to catalog."""
     from kamiwaza_extensions.commands.publish import run_publish
@@ -390,6 +419,7 @@ def publish(
         revision=revision,
         digest=digest,
         catalog_schema=catalog_schema,
+        publish_all=publish_all,
     )
 
 
