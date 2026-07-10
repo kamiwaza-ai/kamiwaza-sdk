@@ -373,9 +373,15 @@ class PayloadBuilder:
 
             is_primary = svc_name == primary_name
 
-            # Inject platform env vars
-            if is_primary and app_path:
+            # Inject platform env vars. The runtime-path contract threads the
+            # routing identity into EVERY extension-owned service — the
+            # frontend relocates its Next artifact and the backend derives
+            # Uvicorn root_path + cookie scope from the same values, so
+            # primary-only injection would 404 the backend under the
+            # un-stripped prefix.
+            if app_path:
                 env.append({"name": "KAMIWAZA_APP_PATH", "value": app_path})
+                env.append({"name": "KAMIWAZA_ROUTING_MODE", "value": "path"})
             if not verify_ssl:
                 # K8s rule: explicit ``env`` wins over ``envFrom``
                 # (ConfigMap injection). Inject BOTH conventional

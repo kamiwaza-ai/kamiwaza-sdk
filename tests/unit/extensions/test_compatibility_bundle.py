@@ -136,7 +136,7 @@ class TestPythonRuntimeLibCheck:
         # Round-9: compat floor moved to >=0.4,<0.5; >=0.4,<0.5 is the
         # canonical "fully inside the supported window" pin.
         req = tmp_path / "requirements.txt"
-        req.write_text("kamiwaza-extensions-lib>=0.4,<0.5\nfastapi>=0.100\n")
+        req.write_text("kamiwaza-extensions-lib>=0.5,<0.6\nfastapi>=0.100\n")
         result = checker._check_python_runtime_lib(req)
         assert result.status == "pass"
 
@@ -200,7 +200,7 @@ class TestPythonRuntimeLibCheck:
         (Round-9: bumped to >=0.4 to match the new compat floor.)
         """
         req = tmp_path / "requirements.txt"
-        req.write_text("kamiwaza-extensions-lib[fastapi]>=0.4,<0.5\n")
+        req.write_text("kamiwaza-extensions-lib[fastapi]>=0.5,<0.6\n")
         result = checker._check_python_runtime_lib(req)
         assert result.status == "pass"
 
@@ -251,8 +251,8 @@ class TestPythonRuntimeLibCheck:
     @pytest.mark.parametrize(
         "spec,expected",
         [
-            ("kamiwaza-extensions-lib~=0.4.0", "pass"),  # >=0.4.0,<0.5 ⊂ supported
-            ("kamiwaza-extensions-lib~=0.4.5", "pass"),  # >=0.4.5,<0.5 ⊂ supported
+            ("kamiwaza-extensions-lib~=0.5.0", "pass"),  # >=0.4.0,<0.5 ⊂ supported
+            ("kamiwaza-extensions-lib~=0.5.5", "pass"),  # >=0.4.5,<0.5 ⊂ supported
             # Below the new floor — admits 0.3.x which lacks the public ``url`` module.
             ("kamiwaza-extensions-lib~=0.3.0", "warn"),  # >=0.3.0,<0.4 — below floor
             ("kamiwaza-extensions-lib~=0.2.0", "warn"),  # >=0.2.0,<0.3 — below floor
@@ -314,7 +314,7 @@ class TestTypeScriptRuntimeLibCheck:
         pkg.write_text(
             json.dumps(
                 {
-                    "dependencies": {"@kamiwaza-ai/extensions-lib": "^0.4.0"},
+                    "dependencies": {"@kamiwaza-ai/extensions-lib": "^0.5.0"},
                 }
             )
         )
@@ -353,12 +353,12 @@ class TestTypeScriptRuntimeLibCheck:
             ),  # caret 0.3 below supported floor (PR #87 round-6 codex P2)
             ("~0.3.0", "warn"),  # tilde 0.3 below supported floor
             (
-                "^0.4.0",
+                "^0.5.0",
                 "pass",
             ),  # caret 0.4.0 = >=0.4.0,<0.5.0 ⊂ supported (ENG-4318 release)
-            ("~0.4.0", "pass"),  # tilde 0.4.0 = >=0.4.0,<0.5.0 ⊂ supported
+            ("~0.5.0", "pass"),  # tilde 0.4.0 = >=0.4.0,<0.5.0 ⊂ supported
             ("0.3.5", "warn"),  # exact pin below supported floor
-            ("0.4.0", "pass"),  # exact pin in window
+            ("0.5.0", "pass"),  # exact pin in window
         ],
     )
     def test_full_containment_check_for_npm_specs(

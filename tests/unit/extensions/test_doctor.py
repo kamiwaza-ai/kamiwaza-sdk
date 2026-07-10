@@ -726,7 +726,7 @@ class TestDoctorExtensionChecks:
         # module that scaffolded extensions import). PR-86 H7/M6 made
         # this check range-vs-range accurate — anything below 0.4 will
         # now correctly warn as below the floor.
-        req_file.write_text("kamiwaza-extensions-lib>=0.4.0,<0.5\nfastapi\n")
+        req_file.write_text("kamiwaza-extensions-lib>=0.5.0,<0.6\nfastapi\n")
         checker = DoctorChecker(config_dir=tmp_path / ".kamiwaza")
         result = checker._check_python_runtime_lib(req_file)
         assert result.status == "pass"
@@ -741,7 +741,7 @@ class TestDoctorExtensionChecks:
     def test_ts_runtime_lib_found(self, tmp_path):
         pkg_file = tmp_path / "package.json"
         pkg_file.write_text(
-            json.dumps({"dependencies": {"@kamiwaza-ai/extensions-lib": "^0.4.0"}})
+            json.dumps({"dependencies": {"@kamiwaza-ai/extensions-lib": "^0.5.0"}})
         )
         checker = DoctorChecker(config_dir=tmp_path / ".kamiwaza")
         result = checker._check_ts_runtime_lib(pkg_file)

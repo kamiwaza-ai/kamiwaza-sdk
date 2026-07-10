@@ -131,7 +131,6 @@ _APP_FILES: tuple[TemplateOwnedFile, ...] = (
     _owned("frontend/next.config.js", strategy="overwrite"),
     _owned("frontend/package.json"),
     _owned("frontend/postcss.config.js", strategy="overwrite"),
-    _owned("frontend/start.mjs", strategy="overwrite"),
     _owned("frontend/tailwind.config.ts", strategy="overwrite"),
     _owned("frontend/tsconfig.json", strategy="overwrite"),
     _owned("frontend/public/kmza-icon.png", strategy="overwrite"),
@@ -153,6 +152,11 @@ _APP_FILES: tuple[TemplateOwnedFile, ...] = (
     # headers when KZ_EXT_DEV_LOCAL_AUTH=1 (set by `kz-ext dev local
     # --auth`). See ENG-4318.
     _owned("frontend/src/middleware.ts"),
+    # Runtime-path contract routes — the lazy deployment-config endpoint
+    # and the frontend liveness route the container health check probes.
+    # Pure scaffold; overwriting is fine.
+    _owned("frontend/src/app/kamiwaza/runtime.json/route.ts", strategy="overwrite"),
+    _owned("frontend/src/app/health/route.ts", strategy="overwrite"),
     # Author-owned in spirit — the home page and global stylesheet are
     # where authors will spend most of their time. They're listed in
     # AUTHOR_OWNED_DENYLIST below.

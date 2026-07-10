@@ -89,6 +89,21 @@ class TestBuild:
         assert len(fe.ports) == 1
         assert fe.ports[0].container_port == 3000
 
+    def test_routing_env_injected_into_every_service(
+        self, builder, metadata, transformed_compose, connection
+    ):
+        """The runtime-path contract needs KAMIWAZA_APP_PATH and
+        KAMIWAZA_ROUTING_MODE on ALL extension-owned services (the backend
+        derives root_path/cookie scope from them), not just the primary."""
+        payload = builder.build(metadata, transformed_compose, connection, "my-app-dev-1")
+        for service in payload.services:
+            env = {e["name"]: e["value"] for e in (service.env or [])}
+            assert env.get("KAMIWAZA_APP_PATH") == "/runtime/apps/my-app-dev-1", (
+                service.name,
+                env,
+            )
+            assert env.get("KAMIWAZA_ROUTING_MODE") == "path", (service.name, env)
+
     def test_kamiwaza_integration(
         self, builder, metadata, transformed_compose, connection
     ):

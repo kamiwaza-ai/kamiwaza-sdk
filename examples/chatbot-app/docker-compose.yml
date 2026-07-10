@@ -11,6 +11,17 @@ services:
       - "3000"
     environment:
       - BACKEND_URL=http://backend:8000
+      # Runtime-path routing (dual-artifact contract). The platform injects
+      # these at deploy; defaults keep local runs in port mode. Threaded to
+      # EVERY extension-owned service — do not rely on primary-only
+      # injection.
+      - KAMIWAZA_ROUTING_MODE=${KAMIWAZA_ROUTING_MODE:-}
+      - KAMIWAZA_APP_PATH=${KAMIWAZA_APP_PATH:-}
+      - KAMIWAZA_APP_PATH_URL=${KAMIWAZA_APP_PATH_URL:-}
+      - KAMIWAZA_APP_URL=${KAMIWAZA_APP_URL:-}
+      - KAMIWAZA_APP_PORT=${KAMIWAZA_APP_PORT:-}
+      - KAMIWAZA_DEPLOYMENT_ID=${KAMIWAZA_DEPLOYMENT_ID:-}
+      - KAMIWAZA_ORIGIN=${KAMIWAZA_ORIGIN:-}
       # Local-dev auth bridge env vars (ENG-4318). Empty in production
       # and standalone `kz-ext dev local`; populated by the runner under
       # `kz-ext dev local --auth` so the createLocalDevAuthMiddleware()
@@ -37,6 +48,15 @@ services:
       - KAMIWAZA_USE_AUTH=${KAMIWAZA_USE_AUTH:-false}
       - KAMIWAZA_APP_NAME=${KAMIWAZA_APP_NAME:-chatbot-app}
       - KAMIWAZA_APP_URL=${KAMIWAZA_APP_URL:-http://localhost:3000}
+      # Runtime-path routing — same set as the frontend service (the
+      # backend needs root_path + cookie scope; see kamiwaza_extensions_lib
+      # runtime/asgi).
+      - KAMIWAZA_ROUTING_MODE=${KAMIWAZA_ROUTING_MODE:-}
+      - KAMIWAZA_APP_PATH=${KAMIWAZA_APP_PATH:-}
+      - KAMIWAZA_APP_PATH_URL=${KAMIWAZA_APP_PATH_URL:-}
+      - KAMIWAZA_APP_PORT=${KAMIWAZA_APP_PORT:-}
+      - KAMIWAZA_DEPLOYMENT_ID=${KAMIWAZA_DEPLOYMENT_ID:-}
+      - KAMIWAZA_ORIGIN=${KAMIWAZA_ORIGIN:-}
       - KAMIWAZA_API_KEY=${KAMIWAZA_API_KEY:-}
       - KAMIWAZA_VERIFY_SSL=${KAMIWAZA_VERIFY_SSL:-}
       # Local-dev auth bridge (ENG-4318) — same passthrough as frontend

@@ -53,7 +53,11 @@ SYNC_FILES = [
     # review caught the example shipping the env passthrough but not
     # the middleware to consume it.
     Path("frontend/src/middleware.ts"),
-    Path("frontend/start.mjs"),
+    # Runtime-path contract: lazy runtime config + frontend liveness routes;
+    # start.mjs (the spawn-time `next build`) is gone — the dual-artifact
+    # Dockerfile's boot entrypoint replaced it.
+    Path("frontend/src/app/kamiwaza/runtime.json/route.ts"),
+    Path("frontend/src/app/health/route.ts"),
     Path("frontend/tailwind.config.ts"),
     Path("frontend/tsconfig.json"),
 ]
