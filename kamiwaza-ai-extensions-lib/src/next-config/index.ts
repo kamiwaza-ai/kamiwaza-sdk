@@ -23,11 +23,6 @@ export const SUPPORTED_NEXT_VERSIONS: readonly string[] = ["15.5.19"];
 
 export type KamiwazaBuildVariant = "path" | "port";
 
-export interface WithKamiwazaAppGardenOptions {
-    /** Override the detected Next version (used by tests and the canary). */
-    nextVersion?: string;
-}
-
 function detectNextVersion(): string | undefined {
     try {
         // Works from both the CJS and ESM bundle outputs.
@@ -41,9 +36,25 @@ function detectNextVersion(): string | undefined {
     }
 }
 
+/**
+ * Internal indirection for tests. There is deliberately NO public way to
+ * override the detected Next version — the exact pin is the compatibility
+ * contract (B5).
+ */
+export const _internals = { detectNextVersion };
+
 function resolveVariant(): KamiwazaBuildVariant | undefined {
     const variant = process.env.KZ_NEXT_BUILD_VARIANT;
     if (variant === "path" || variant === "port") {
+        // `next dev` sets NODE_ENV=development before loading the config; a
+        // stray variant (e.g. leaked into .env) must not turn dev into a
+        // sentinel build with no relocator in front of it (N1).
+        if (process.env.NODE_ENV === "development") {
+            console.warn(
+                `[withKamiwazaAppGarden] ignoring KZ_NEXT_BUILD_VARIANT=${variant} in development`,
+            );
+            return undefined;
+        }
         return variant;
     }
     if (variant != null && variant !== "") {
@@ -54,10 +65,7 @@ function resolveVariant(): KamiwazaBuildVariant | undefined {
     return undefined;
 }
 
-export function withKamiwazaAppGarden(
-    config: NextConfig = {},
-    options: WithKamiwazaAppGardenOptions = {},
-): NextConfig {
+export function withKamiwazaAppGarden(config: NextConfig = {}): NextConfig {
     const variant = resolveVariant();
 
     if (config.basePath !== undefined) {
@@ -84,6 +92,11 @@ export function withKamiwazaAppGarden(
             "experimental.sri is incompatible with runtime relocation (integrity would reject patched bytes)",
         );
     }
+    if (experimental.serverSourceMaps) {
+        throw new Error(
+            "experimental.serverSourceMaps ships production source maps, which are incompatible with runtime relocation",
+        );
+    }
     if (experimental.manualClientBasePath) {
         throw new Error(
             "experimental.manualClientBasePath conflicts with the managed base path contract",
@@ -93,8 +106,14 @@ export function withKamiwazaAppGarden(
     // The pin only gates production image builds; plain `next dev` may run
     // whatever patch version is installed locally.
     if (variant !== undefined) {
-        const nextVersion = options.nextVersion ?? detectNextVersion();
-        if (nextVersion !== undefined && !SUPPORTED_NEXT_VERSIONS.includes(nextVersion)) {
+        const nextVersion = _internals.detectNextVersion();
+        if (nextVersion === undefined) {
+            throw new Error(
+                "could not detect the installed Next version; production build variants " +
+                    "require the exact supported version to be resolvable",
+            );
+        }
+        if (!SUPPORTED_NEXT_VERSIONS.includes(nextVersion)) {
             throw new Error(
                 `Next ${nextVersion} is not validated for runtime relocation; ` +
                     `supported: ${SUPPORTED_NEXT_VERSIONS.join(", ")}. ` +

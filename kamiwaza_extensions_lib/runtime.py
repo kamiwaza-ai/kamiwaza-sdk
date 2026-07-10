@@ -17,20 +17,29 @@ from dataclasses import dataclass
 from typing import Literal, Mapping
 
 _SEGMENT_RE = re.compile(r"^[A-Za-z0-9._~-]+$")
+_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+_MAX_PATH_LENGTH = 512
+_MAX_SEGMENT_LENGTH = 128
 
 __all__ = ["RuntimeRouting", "normalize_app_path", "with_app_path"]
 
 
 def normalize_app_path(value: str | None) -> str:
     """Normalize an app path: one leading slash, no trailing slashes,
-    conservative segment grammar. Empty-ish input ("", "/", None)
-    normalizes to "". Raises ``ValueError`` on invalid input.
+    conservative segment grammar, bounded length. Empty-ish input
+    ("", "/", None) normalizes to "". Raises ``ValueError`` on invalid
+    input — including raw control characters BEFORE trimming (a trailing
+    newline in an env value is a misconfiguration, not whitespace).
     """
     if value is None:
         return ""
+    if _CONTROL_RE.search(value):
+        raise ValueError(f"invalid app path (control characters): {value!r}")
     trimmed = value.strip()
     if trimmed in ("", "/"):
         return ""
+    if len(trimmed) > _MAX_PATH_LENGTH:
+        raise ValueError(f"invalid app path (exceeds maximum length {_MAX_PATH_LENGTH})")
 
     with_leading = trimmed if trimmed.startswith("/") else f"/{trimmed}"
     without_trailing = with_leading.rstrip("/")
@@ -39,6 +48,7 @@ def normalize_app_path(value: str | None) -> str:
         if (
             segment in ("", ".", "..")
             or "%" in segment
+            or len(segment) > _MAX_SEGMENT_LENGTH
             or not _SEGMENT_RE.match(segment)
         ):
             raise ValueError(f"invalid app path: {value!r}")
@@ -57,7 +67,11 @@ def with_app_path(path: str, app_path: str | None = None) -> str:
         return path
     if not path.startswith("/") or path.startswith("//"):
         return path
-    if path == prefix or path.startswith(f"{prefix}/"):
+    # Boundary-aware already-prefixed check: '/', '?', '#', or end-of-string
+    # after the exact prefix all count.
+    if path == prefix:
+        return path
+    if path.startswith(prefix) and path[len(prefix)] in "/?#":
         return path
     if path == "/":
         return prefix

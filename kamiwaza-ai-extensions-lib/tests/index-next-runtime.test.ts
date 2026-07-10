@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -82,7 +82,7 @@ describe("buildRelocationManifest", () => {
     it("fails when the sentinel appears in a binary file", async () => {
         writeStandardFixture();
         write(
-            "public/poisoned.png",
+            ".next/server/poisoned.png",
             Buffer.concat([Buffer.from([0x89, 0x50, 0x00]), Buffer.from(SENTINEL)]),
         );
         await expect(
@@ -112,6 +112,114 @@ describe("buildRelocationManifest", () => {
         await expect(
             buildRelocationManifest({ root, sentinel: SENTINEL, nextVersion: "15.5.19" }),
         ).rejects.toThrow(/cache/i);
+    });
+
+    it("classifies redirect .meta output as JSON and indexes it (B4)", async () => {
+        writeStandardFixture();
+        write(
+            ".next/server/app/go.meta",
+            JSON.stringify({ status: 307, headers: { location: `${SENTINEL}/other` } }),
+        );
+        const manifest = await buildRelocationManifest({
+            root,
+            sentinel: SENTINEL,
+            nextVersion: "15.5.19",
+        });
+        const entry = manifest.files.find((f) => f.path === ".next/server/app/go.meta");
+        expect(entry?.kind).toBe("json");
+        expect(entry?.occurrences).toBe(1);
+    });
+
+    it("rejects any source map under the artifact even without the sentinel (S5)", async () => {
+        writeStandardFixture();
+        write(".next/static/chunks/clean.js.map", `{"version":3,"mappings":"AAAA"}`);
+        await expect(
+            buildRelocationManifest({ root, sentinel: SENTINEL, nextVersion: "15.5.19" }),
+        ).rejects.toThrow(/source map/i);
+    });
+
+    it("allows dependency-shipped source maps inside node_modules (S5 scope)", async () => {
+        writeStandardFixture();
+        write("node_modules/somepkg/dist/index.js.map", `{"version":3}`);
+        const manifest = await buildRelocationManifest({
+            root,
+            sentinel: SENTINEL,
+            nextVersion: "15.5.19",
+        });
+        expect(manifest.files.length).toBeGreaterThan(0);
+    });
+
+    it("rejects sentinel occurrences under public/ (B2)", async () => {
+        writeStandardFixture();
+        write("public/config.txt", `base=${SENTINEL}`);
+        await expect(
+            buildRelocationManifest({ root, sentinel: SENTINEL, nextVersion: "15.5.19" }),
+        ).rejects.toThrow(/public/i);
+    });
+
+    it("rejects a sentinel hidden behind a file symlink (B3)", async () => {
+        writeStandardFixture();
+        write(".hidden-target.js", `const p = "${SENTINEL}";`);
+        symlinkSync(
+            path.join(root, ".hidden-target.js"),
+            path.join(root, ".next/server/linked.js"),
+        );
+        await expect(
+            buildRelocationManifest({ root, sentinel: SENTINEL, nextVersion: "15.5.19" }),
+        ).rejects.toThrow(/symlink/i);
+    });
+
+    it("rejects broken and cyclic symlinks (B3)", async () => {
+        writeStandardFixture();
+        symlinkSync(path.join(root, "does-not-exist"), path.join(root, ".next/broken"));
+        await expect(
+            buildRelocationManifest({ root, sentinel: SENTINEL, nextVersion: "15.5.19" }),
+        ).rejects.toThrow(/symlink/i);
+
+        rmSync(path.join(root, ".next/broken"));
+        symlinkSync(path.join(root, ".next/loop"), path.join(root, ".next/loop"));
+        await expect(
+            buildRelocationManifest({ root, sentinel: SENTINEL, nextVersion: "15.5.19" }),
+        ).rejects.toThrow(/symlink/i);
+    });
+
+    it("rejects symlinks escaping the artifact root (B3)", async () => {
+        writeStandardFixture();
+        symlinkSync("/etc/hosts", path.join(root, ".next/escape"));
+        await expect(
+            buildRelocationManifest({ root, sentinel: SENTINEL, nextVersion: "15.5.19" }),
+        ).rejects.toThrow(/symlink|escape/i);
+    });
+
+    it("indexes a textual .body via its sibling .meta content type (S3)", async () => {
+        writeStandardFixture();
+        write(".next/server/app/feed.body", `{"base":"${SENTINEL}"}`);
+        write(
+            ".next/server/app/feed.meta",
+            JSON.stringify({ status: 200, headers: { "content-type": "application/json" } }),
+        );
+        const manifest = await buildRelocationManifest({
+            root,
+            sentinel: SENTINEL,
+            nextVersion: "15.5.19",
+        });
+        const entry = manifest.files.find((f) => f.path === ".next/server/app/feed.body");
+        expect(entry?.occurrences).toBe(1);
+    });
+
+    it("rejects a sentinel inside a binary .body (S3)", async () => {
+        writeStandardFixture();
+        write(
+            ".next/server/app/blob.body",
+            Buffer.concat([Buffer.from([0x89, 0x50]), Buffer.from(SENTINEL)]),
+        );
+        write(
+            ".next/server/app/blob.meta",
+            JSON.stringify({ status: 200, headers: { "content-type": "image/png" } }),
+        );
+        await expect(
+            buildRelocationManifest({ root, sentinel: SENTINEL, nextVersion: "15.5.19" }),
+        ).rejects.toThrow(/body|binary/i);
     });
 
     it("fails when mandatory roles carry no sentinel occurrences", async () => {

@@ -5,9 +5,16 @@
  * Runs at image-build time against the ASSEMBLED path-variant runtime
  * (standalone server.js + .next + public + traced node_modules). Records
  * every sentinel-bearing text file with occurrence count, size, and sha256
- * so the boot relocator can verify and patch fail-closed. Any sentinel in a
- * binary/unrecognized file, in node_modules, in a source map, or a present
- * .next/cache directory fails the image build.
+ * so the boot relocator can verify and patch fail-closed.
+ *
+ * Fail-closed conditions (image build fails):
+ *   - sentinel in a binary/unrecognized file, in node_modules, or under
+ *     public/ (public assets are served verbatim and never patched)
+ *   - any source map outside node_modules
+ *   - any broken, cyclic, directory, or root-escaping symlink; or a
+ *     sentinel behind a file symlink
+ *   - a .next/cache directory in the artifact
+ *   - mandatory relocation roles with zero occurrences
  *
  * Stdlib only — this file ships in the runtime image.
  *
@@ -18,7 +25,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { readdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
@@ -30,13 +37,17 @@ const TEXT_KINDS = new Map([
     [".mjs", "js"],
     [".cjs", "js"],
     [".json", "json"],
+    [".meta", "json"], // Next static output: redirect/route metadata
     [".html", "html"],
     [".htm", "html"],
     [".rsc", "rsc"],
     [".css", "css"],
     [".txt", "txt"],
-    [".body", "txt"],
 ]);
+
+// Content types whose .body payload is safe to treat as relocatable text.
+const TEXTUAL_BODY_CONTENT_TYPE_RE =
+    /^(text\/|application\/(json|javascript|xml|x-ndjson|xhtml\+xml)|image\/svg\+xml)/i;
 
 // Roles that must contain the sentinel in a healthy path-variant build. If
 // none of a role's candidate files carries an occurrence, the artifact is
@@ -50,32 +61,75 @@ const MANDATORY_ROLES = [
     { name: "client chunks", test: (p) => p.startsWith(".next/static/") && p.endsWith(".js") },
 ];
 
-function countOccurrences(haystack, needle) {
+/** Count occurrences of an ASCII needle at the byte level. */
+export function countBufferOccurrences(buffer, needleBuffer) {
+    if (needleBuffer.length === 0) {
+        throw new Error("empty needle");
+    }
     let count = 0;
-    let index = haystack.indexOf(needle);
+    let index = buffer.indexOf(needleBuffer);
     while (index !== -1) {
         count += 1;
-        index = haystack.indexOf(needle, index + needle.length);
+        index = buffer.indexOf(needleBuffer, index + needleBuffer.length);
     }
     return count;
 }
 
+async function checkSymlink(root, rel) {
+    const absolute = path.join(root, rel);
+    let resolved;
+    try {
+        resolved = await realpath(absolute);
+    } catch (error) {
+        throw new Error(
+            `broken or cyclic symlink in artifact: ${rel} (${error.code ?? error.message})`,
+        );
+    }
+    const rootReal = await realpath(root);
+    if (resolved !== rootReal && !resolved.startsWith(`${rootReal}${path.sep}`)) {
+        throw new Error(`symlink escapes the artifact root: ${rel} -> ${resolved}`);
+    }
+    const target = await stat(resolved);
+    if (target.isDirectory()) {
+        throw new Error(`directory symlinks are not supported in the artifact: ${rel}`);
+    }
+    return resolved;
+}
+
 async function walk(root, relative = "") {
-    const absolute = path.join(root, relative);
+    const absolute = relative === "" ? root : path.join(root, relative);
     const entries = await readdir(absolute, { withFileTypes: true });
     const files = [];
     for (const entry of entries) {
         const rel = relative === "" ? entry.name : `${relative}/${entry.name}`;
         if (entry.isSymbolicLink()) {
-            continue;
-        }
-        if (entry.isDirectory()) {
+            files.push({ rel, symlink: true });
+        } else if (entry.isDirectory()) {
             files.push(...(await walk(root, rel)));
         } else if (entry.isFile()) {
-            files.push(rel);
+            files.push({ rel, symlink: false });
         }
     }
     return files;
+}
+
+async function classifyBody(root, rel, sentinel) {
+    const metaPath = path.join(root, rel.replace(/\.body$/, ".meta"));
+    let contentType = "";
+    try {
+        const meta = JSON.parse(await readFile(metaPath, "utf8"));
+        contentType =
+            meta?.headers?.["content-type"] ?? meta?.headers?.["Content-Type"] ?? "";
+    } catch {
+        contentType = "";
+    }
+    if (TEXTUAL_BODY_CONTENT_TYPE_RE.test(contentType)) {
+        return "txt";
+    }
+    throw new Error(
+        `sentinel found in non-textual .body ${rel} (content-type ${JSON.stringify(contentType)}); ` +
+            "binary response bodies cannot be relocated",
+    );
 }
 
 /**
@@ -101,26 +155,54 @@ export async function buildRelocationManifest({ root, sentinel, nextVersion }) {
     const sentinelBuffer = Buffer.from(sentinel, "utf8");
     const files = [];
 
-    for (const rel of await walk(root)) {
-        const buffer = await readFile(path.join(root, rel));
-        if (!buffer.includes(sentinelBuffer)) {
+    for (const { rel, symlink } of await walk(root)) {
+        const inNodeModules = rel.startsWith("node_modules/") || rel.includes("/node_modules/");
+
+        if (symlink) {
+            const resolved = await checkSymlink(root, rel);
+            const buffer = await readFile(resolved);
+            if (buffer.includes(sentinelBuffer)) {
+                throw new Error(
+                    `sentinel found behind symlink ${rel}; symlinked content is never relocated`,
+                );
+            }
             continue;
         }
 
-        const text = buffer.toString("utf8");
-        const occurrences = countOccurrences(text, sentinel);
+        const buffer = await readFile(path.join(root, rel));
+        const hasSentinel = buffer.includes(sentinelBuffer);
 
-        if (rel.startsWith("node_modules/") || rel.includes("/node_modules/")) {
-            throw new Error(
-                `sentinel found in node_modules (${rel}); dependencies must not embed the base path`,
-            );
+        if (inNodeModules) {
+            if (hasSentinel) {
+                throw new Error(
+                    `sentinel found in node_modules (${rel}); dependencies must not embed the base path`,
+                );
+            }
+            continue;
         }
+
         if (rel.endsWith(".map")) {
             throw new Error(
-                `sentinel found in source map ${rel}; production source maps must not ship in the runtime`,
+                `source map in runtime artifact: ${rel}; production source maps must not ship ` +
+                    "(relocation would desynchronize them)",
             );
         }
-        const kind = TEXT_KINDS.get(path.extname(rel).toLowerCase());
+
+        if (!hasSentinel) {
+            continue;
+        }
+
+        if (rel.startsWith("public/")) {
+            throw new Error(
+                `sentinel found under public/ (${rel}); public assets are served verbatim — ` +
+                    "use appAsset()/runtime config instead of baking the base path into public files",
+            );
+        }
+
+        let kind = TEXT_KINDS.get(path.extname(rel).toLowerCase());
+        if (kind === undefined && rel.endsWith(".body")) {
+            kind = await classifyBody(root, rel, sentinel);
+        }
         if (kind === undefined) {
             throw new Error(
                 `sentinel found in binary or unrecognized file ${rel}; refusing to index it for relocation`,
@@ -131,7 +213,7 @@ export async function buildRelocationManifest({ root, sentinel, nextVersion }) {
             path: rel,
             size: buffer.length,
             sha256: createHash("sha256").update(buffer).digest("hex"),
-            occurrences,
+            occurrences: countBufferOccurrences(buffer, sentinelBuffer),
             kind,
         });
     }
@@ -168,6 +250,17 @@ function parseArgs(argv) {
     return args;
 }
 
+async function readArtifactNextVersion(root) {
+    try {
+        const pkg = JSON.parse(
+            await readFile(path.join(root, "node_modules/next/package.json"), "utf8"),
+        );
+        return pkg.version;
+    } catch {
+        return undefined;
+    }
+}
+
 async function main() {
     const args = parseArgs(process.argv.slice(2));
     const { root, sentinel, output } = args;
@@ -177,6 +270,16 @@ async function main() {
             "usage: index-next-runtime.mjs --root DIR --sentinel PATH --next-version X.Y.Z --output FILE",
         );
         return 2;
+    }
+    // The CLI-claimed version must match the artifact's traced Next — the
+    // manifest version is part of the compatibility contract (B5).
+    const artifactVersion = await readArtifactNextVersion(root);
+    if (artifactVersion !== undefined && artifactVersion !== nextVersion) {
+        console.error(
+            `[kz-next-index] FATAL: --next-version ${nextVersion} does not match the ` +
+                `artifact's traced next@${artifactVersion}`,
+        );
+        return 1;
     }
     const manifest = await buildRelocationManifest({ root, sentinel, nextVersion });
     await writeFile(output, `${JSON.stringify(manifest, null, 2)}\n`);

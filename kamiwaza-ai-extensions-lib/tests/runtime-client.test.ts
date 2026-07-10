@@ -41,6 +41,28 @@ describe("getAppPath", () => {
     it("returns empty string when nothing is configured", () => {
         expect(getAppPath()).toBe("");
     });
+
+    it("fails closed on an inconsistent bootstrap global (N2)", () => {
+        (globalThis as Record<string, unknown>).__KAMIWAZA_RUNTIME__ = Object.freeze({
+            routingMode: "port",
+            appPath: "/runtime/apps/x",
+        });
+        expect(() => getAppPath()).toThrow(/bootstrap|inconsistent/i);
+
+        (globalThis as Record<string, unknown>).__KAMIWAZA_RUNTIME__ = Object.freeze({
+            routingMode: "path",
+            appPath: "",
+        });
+        expect(() => getAppPath()).toThrow(/bootstrap|inconsistent/i);
+    });
+
+    it("fails closed on an invalid bootstrap app path (N2)", () => {
+        (globalThis as Record<string, unknown>).__KAMIWAZA_RUNTIME__ = Object.freeze({
+            routingMode: "path",
+            appPath: "/runtime/../etc",
+        });
+        expect(() => getAppPath()).toThrow();
+    });
 });
 
 describe("appAsset", () => {
@@ -70,11 +92,28 @@ describe("appFetch", () => {
         const fetchSpy = vi
             .spyOn(globalThis, "fetch")
             .mockResolvedValue(new Response("{}"));
-        await appFetch(new URL("http://localhost/api/things?x=1"));
+        await appFetch(new URL(`${window.location.origin}/api/things?x=1`));
         const requested = fetchSpy.mock.calls[0][0] as URL;
         expect(requested).toBeInstanceOf(URL);
         expect(requested.pathname).toBe(`${APP}/api/things`);
         expect(requested.search).toBe("?x=1");
+    });
+
+    it("leaves cross-origin URL objects untouched (S1)", async () => {
+        setBootstrap("path", APP);
+        const fetchSpy = vi
+            .spyOn(globalThis, "fetch")
+            .mockResolvedValue(new Response("{}"));
+        const external = new URL("https://external.example/api?x=1");
+        await appFetch(external);
+        const requested = fetchSpy.mock.calls[0][0] as URL;
+        expect(requested.href).toBe("https://external.example/api?x=1");
+
+        // Same host, different port is a different origin.
+        const otherPort = new URL(`http://${window.location.hostname}:59999/api`);
+        await appFetch(otherPort);
+        const second = fetchSpy.mock.calls[1][0] as URL;
+        expect(second.pathname).toBe("/api");
     });
 
     it("leaves absolute external URLs and Request objects untouched", async () => {
