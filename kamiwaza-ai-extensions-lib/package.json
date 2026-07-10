@@ -1,6 +1,6 @@
 {
     "name": "@kamiwaza-ai/extensions-lib",
-    "version": "0.4.3",
+    "version": "0.5.0",
     "description": "TypeScript runtime library for Kamiwaza extensions — SessionProvider, AuthGuard, identity extraction, proxy utilities, local-dev auth bridge",
     "type": "module",
     "main": "./dist/index.js",
@@ -20,10 +20,31 @@
             "types": "./dist/local-dev-auth/index.d.ts",
             "import": "./dist/local-dev-auth/index.js",
             "require": "./dist/local-dev-auth/index.cjs"
+        },
+        "./next-config": {
+            "types": "./dist/next-config/index.d.ts",
+            "import": "./dist/next-config/index.js",
+            "require": "./dist/next-config/index.cjs"
+        },
+        "./runtime": {
+            "types": "./dist/runtime/index.d.ts",
+            "import": "./dist/runtime/index.js",
+            "require": "./dist/runtime/index.cjs"
+        },
+        "./runtime/server": {
+            "types": "./dist/runtime/server-index.d.ts",
+            "import": "./dist/runtime/server-index.js",
+            "require": "./dist/runtime/server-index.cjs"
         }
+    },
+    "bin": {
+        "kz-next-index": "./scripts/index-next-runtime.mjs",
+        "kz-next-start": "./scripts/start-next-runtime.mjs"
     },
     "files": [
         "dist/**/*",
+        "scripts/index-next-runtime.mjs",
+        "scripts/start-next-runtime.mjs",
         "LICENSE",
         "README.md"
     ],

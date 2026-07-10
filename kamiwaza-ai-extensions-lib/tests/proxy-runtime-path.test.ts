@@ -1,0 +1,129 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import { createProxyHandlers } from "../src/server/proxy";
+
+const APP = "/runtime/apps/550e8400";
+const TARGET = "http://backend:8000";
+
+function upstream(body = "{}", headers?: HeadersInit): Response {
+    return new Response(body, { status: 200, headers });
+}
+
+let fetchSpy: ReturnType<typeof vi.spyOn>;
+
+beforeEach(() => {
+    process.env.KAMIWAZA_ROUTING_MODE = "path";
+    process.env.KAMIWAZA_APP_PATH = APP;
+    fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(upstream());
+});
+
+afterEach(() => {
+    delete process.env.KAMIWAZA_ROUTING_MODE;
+    delete process.env.KAMIWAZA_APP_PATH;
+    vi.restoreAllMocks();
+});
+
+function requestedUrl(): string {
+    return fetchSpy.mock.calls.at(-1)?.[0] as string;
+}
+
+describe("createProxyHandlers runtime app path stripping", () => {
+    it("strips the deployment prefix from the raw request URL", async () => {
+        const { GET } = createProxyHandlers({ target: TARGET });
+        await GET(new Request(`http://localhost${APP}/api/things?x=1`));
+        expect(requestedUrl()).toBe(`${TARGET}/api/things?x=1`);
+    });
+
+    it("prefers a Next-normalized nextUrl pathname when present", async () => {
+        const { GET } = createProxyHandlers({ target: TARGET });
+        const request = new Request(`http://localhost${APP}/api/things`);
+        Object.defineProperty(request, "nextUrl", {
+            value: new URL("http://localhost/api/things"),
+        });
+        await GET(request);
+        expect(requestedUrl()).toBe(`${TARGET}/api/things`);
+    });
+
+    it("strips at most one occurrence of the prefix", async () => {
+        const { GET } = createProxyHandlers({ target: TARGET });
+        await GET(new Request(`http://localhost${APP}${APP}/api/things`));
+        expect(requestedUrl()).toBe(`${TARGET}${APP}/api/things`);
+    });
+
+    it("does not strip across segment boundaries", async () => {
+        const { GET } = createProxyHandlers({ target: TARGET });
+        await GET(new Request(`http://localhost${APP}beef/api/things`));
+        expect(requestedUrl()).toBe(`${TARGET}${APP}beef/api/things`);
+    });
+
+    it("can be disabled explicitly", async () => {
+        const { GET } = createProxyHandlers({ target: TARGET, stripRuntimeAppPath: false });
+        await GET(new Request(`http://localhost${APP}/api/things`));
+        expect(requestedUrl()).toBe(`${TARGET}${APP}/api/things`);
+    });
+
+    it("is a no-op in port mode", async () => {
+        process.env.KAMIWAZA_ROUTING_MODE = "port";
+        const { GET } = createProxyHandlers({ target: TARGET });
+        await GET(new Request("http://localhost/api/things"));
+        expect(requestedUrl()).toBe(`${TARGET}/api/things`);
+    });
+});
+
+describe("createProxyHandlers forwarded routing headers", () => {
+    it("forwards x-forwarded-* routing context to the backend", async () => {
+        const { GET } = createProxyHandlers({ target: TARGET });
+        await GET(
+            new Request(`http://localhost${APP}/api/things`, {
+                headers: {
+                    "x-forwarded-prefix": APP,
+                    "x-forwarded-host": "host.example",
+                    "x-forwarded-proto": "https",
+                    "x-forwarded-for": "10.0.0.1",
+                    "x-forwarded-uri": `${APP}/api/things`,
+                },
+            }),
+        );
+        const headers = fetchSpy.mock.calls.at(-1)?.[1]?.headers as Record<string, string>;
+        expect(headers["x-forwarded-prefix"]).toBe(APP);
+        expect(headers["x-forwarded-host"]).toBe("host.example");
+        expect(headers["x-forwarded-proto"]).toBe("https");
+        expect(headers["x-forwarded-for"]).toBe("10.0.0.1");
+        expect(headers["x-forwarded-uri"]).toBe(`${APP}/api/things`);
+    });
+});
+
+describe("createProxyHandlers Set-Cookie policy", () => {
+    const TWO_COOKIES = new Headers();
+    TWO_COOKIES.append("set-cookie", "session=abc; Path=/; HttpOnly");
+    TWO_COOKIES.append("set-cookie", "refresh=def; Path=/; HttpOnly");
+
+    it("passes multiple Set-Cookie values through for allowlisted session routes", async () => {
+        fetchSpy.mockResolvedValue(upstream("{}", TWO_COOKIES));
+        const { POST } = createProxyHandlers({ target: TARGET });
+        const response = await POST(new Request(`http://localhost${APP}/session`, { method: "POST" }));
+        expect(response.headers.getSetCookie()).toHaveLength(2);
+    });
+
+    it("keeps dropping Set-Cookie on non-allowlisted routes", async () => {
+        fetchSpy.mockResolvedValue(upstream("{}", TWO_COOKIES));
+        const { GET } = createProxyHandlers({ target: TARGET });
+        const response = await GET(new Request(`http://localhost${APP}/api/things`));
+        expect(response.headers.getSetCookie()).toHaveLength(0);
+    });
+
+    it("honors a custom allowlist", async () => {
+        fetchSpy.mockResolvedValue(upstream("{}", TWO_COOKIES));
+        const { POST } = createProxyHandlers({
+            target: TARGET,
+            setCookiePaths: ["/custom/login"],
+        });
+        const allowed = await POST(
+            new Request(`http://localhost${APP}/custom/login`, { method: "POST" }),
+        );
+        expect(allowed.headers.getSetCookie()).toHaveLength(2);
+
+        const denied = await POST(new Request(`http://localhost${APP}/session`, { method: "POST" }));
+        expect(denied.headers.getSetCookie()).toHaveLength(0);
+    });
+});

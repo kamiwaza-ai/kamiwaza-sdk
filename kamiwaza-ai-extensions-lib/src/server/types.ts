@@ -22,8 +22,25 @@ export interface Identity {
 export interface ProxyConfig {
     /** Backend URL, e.g., "http://backend:8000". */
     target: string;
-    /** Strip this prefix from the request path before forwarding. */
+    /**
+     * Strip this prefix from the request path before forwarding.
+     * @deprecated Explicit override; the runtime app path is stripped
+     * automatically (see {@link ProxyConfig.stripRuntimeAppPath}).
+     */
     pathPrefix?: string;
+    /**
+     * Remove at most one leading occurrence of the deployment's runtime app
+     * path (`KAMIWAZA_APP_PATH`) from the request path before forwarding,
+     * segment-boundary aware. Default true.
+     */
+    stripRuntimeAppPath?: boolean;
+    /**
+     * Upstream paths (after prefix stripping, exact match) for which
+     * `Set-Cookie` response headers pass through to the client. Everywhere
+     * else `Set-Cookie` is dropped. Defaults to the standard session routes:
+     * `/session`, `/session/extend`, `/auth/logout`.
+     */
+    setCookiePaths?: readonly string[];
 }
 
 /** Model metadata from the backend API. */
