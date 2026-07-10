@@ -275,7 +275,7 @@ class PayloadBuilder:
             resources = self._parse_resources(svc)
 
             is_primary = svc_name == primary_name
-            self._append_platform_env(env, is_primary, app_path, verify_ssl)
+            self._append_platform_env(env, app_path, verify_ssl)
             health_check = (
                 _metadata_service_field(metadata, svc_name, "healthCheck")
                 or _service_extension_field(svc, "healthCheck")
@@ -326,12 +326,16 @@ class PayloadBuilder:
     @staticmethod
     def _append_platform_env(
         env: List[Dict[str, str]],
-        is_primary: bool,
         app_path: str,
         verify_ssl: bool,
     ) -> None:
-        if is_primary and app_path:
-            env.append({"name": "KAMIWAZA_APP_PATH", "value": app_path})
+        if app_path:
+            env.extend(
+                [
+                    {"name": "KAMIWAZA_APP_PATH", "value": app_path},
+                    {"name": "KAMIWAZA_ROUTING_MODE", "value": "path"},
+                ]
+            )
         if verify_ssl:
             return
         # Explicit env wins over ConfigMap envFrom. Emit both Python and Node

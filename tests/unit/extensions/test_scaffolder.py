@@ -190,16 +190,24 @@ class TestScaffolder:
         assert "CLAUDE.md" in readme
 
     def test_app_template_uses_standalone_frontend_runtime(self, tmp_path, monkeypatch, scaffolder):
+        """The frontend ships the dual-artifact runtime contract: no
+        spawn-time `next build` (start.mjs is gone), a Dockerfile that
+        builds both variants and indexes the path artifact, and the
+        wrapper-owned next.config."""
         d = self._empty_dir(tmp_path)
         monkeypatch.chdir(d)
         with patch("subprocess.run"):
             scaffolder.create(type_="app", name="test-app")
 
-        start_mjs = (d / "frontend" / "start.mjs").read_text()
-        assert "const STANDALONE_SERVER = path.join(STANDALONE_DIR, \"server.js\");" in start_mjs
-        assert "await prepareStandaloneRuntime();" in start_mjs
-        assert "startExitCode = await runNodeArgs(" in start_mjs
-        assert 'HOSTNAME: "0.0.0.0"' in start_mjs
+        assert not (d / "frontend" / "start.mjs").exists()
+        dockerfile = (d / "frontend" / "Dockerfile").read_text()
+        assert "KZ_NEXT_BUILD_VARIANT=port" in dockerfile
+        assert "KZ_NEXT_BUILD_VARIANT=path" in dockerfile
+        assert "index-next-runtime.mjs" in dockerfile
+        assert "start-next-runtime.mjs" in dockerfile
+        assert "npm run build" not in dockerfile.split("FROM node:20-alpine AS runner")[1]
+        next_config = (d / "frontend" / "next.config.js").read_text()
+        assert "withKamiwazaAppGarden" in next_config
 
     def test_git_init_called(self, tmp_path, monkeypatch, scaffolder):
         d = self._empty_dir(tmp_path)

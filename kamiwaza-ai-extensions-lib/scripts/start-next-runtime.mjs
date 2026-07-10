@@ -22,6 +22,7 @@
  *   /app/runtime/kz-next-relocations.json
  */
 
+import { realpathSync } from "node:fs";
 import { createHash } from "node:crypto";
 import {
     cp,
@@ -168,8 +169,9 @@ export function transformRscBuffer(buffer, sentinel, replacement) {
         ) {
             cursor += 1;
         }
-        const idEnd = cursor;
-        if (idEnd === pos || buffer[cursor] !== 0x3a /* ':' */) {
+        // Hint rows (`:HL[...]`) have an EMPTY id — a bare ':' is a valid
+        // row start in real Next 15.5.19 output.
+        if (buffer[cursor] !== 0x3a /* ':' */) {
             // Not a parseable row start. Fail only if a sentinel remains.
             const rest = buffer.subarray(pos);
             if (rest.includes(sentinelBuffer)) {
@@ -227,7 +229,7 @@ export function transformRscBuffer(buffer, sentinel, replacement) {
                     replacementBuffer,
                 );
                 out.push(
-                    buffer.subarray(pos, idEnd + 1), // "id:"
+                    buffer.subarray(pos, cursor), // "id:" (cursor sits past ':')
                     Buffer.from(`T${newPayload.length.toString(16)},`, "latin1"),
                     newPayload,
                 );
@@ -677,7 +679,14 @@ async function main() {
     startStandalone(targetRoot);
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+const invokedHref = (() => {
+    try {
+        return process.argv[1] ? pathToFileURL(realpathSync(process.argv[1])).href : "";
+    } catch {
+        return "";
+    }
+})();
+if (invokedHref === import.meta.url) {
     main().catch((error) => {
         console.error(
             JSON.stringify({

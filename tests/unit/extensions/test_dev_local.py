@@ -1529,3 +1529,76 @@ class TestDockerComposePortV1Compat:
             "3000",
         ]
         assert captured["cwd"] == "/Users/dev/my-app"
+
+
+class TestDevTargetOverride:
+    """kz-ext dev local must select the Dockerfile `dev` stage for services
+    whose Dockerfile has one — the production default target is the slim
+    `runner` (no source, no dev server), which cannot hot-reload."""
+
+    def _write_dockerfile(self, tmp_path, rel, content):
+        df = tmp_path / rel
+        df.parent.mkdir(parents=True, exist_ok=True)
+        df.write_text(content)
+
+    def test_selects_dev_target_when_stage_exists(self, tmp_path):
+        from kamiwaza_extensions.dev_local import generate_dev_target_override
+
+        self._write_dockerfile(
+            tmp_path,
+            "frontend/Dockerfile",
+            "FROM node:20-alpine AS base\nFROM base AS dev\nFROM base AS runner\n",
+        )
+        self._write_dockerfile(tmp_path, "backend/Dockerfile", "FROM python:3.10-slim\n")
+        compose = {
+            "services": {
+                "frontend": {"build": {"context": "./frontend", "dockerfile": "Dockerfile"}},
+                "backend": {"build": {"context": "./backend", "dockerfile": "Dockerfile"}},
+            }
+        }
+        override = generate_dev_target_override(compose, tmp_path)
+        assert override == {
+            "services": {"frontend": {"build": {"target": "dev"}}}
+        }
+
+    def test_returns_none_without_dev_stages(self, tmp_path):
+        from kamiwaza_extensions.dev_local import generate_dev_target_override
+
+        self._write_dockerfile(tmp_path, "backend/Dockerfile", "FROM python:3.10-slim\n")
+        compose = {"services": {"backend": {"build": "./backend"}}}
+        assert generate_dev_target_override(compose, tmp_path) is None
+
+    def test_handles_string_build_and_missing_dockerfile(self, tmp_path):
+        from kamiwaza_extensions.dev_local import generate_dev_target_override
+
+        self._write_dockerfile(
+            tmp_path,
+            "frontend/Dockerfile",
+            "FROM node AS dev\nFROM node AS runner\n",
+        )
+        compose = {
+            "services": {
+                "frontend": {"build": "./frontend"},
+                "ghost": {"build": "./missing"},
+                "imageonly": {"image": "postgres:16"},
+            }
+        }
+        override = generate_dev_target_override(compose, tmp_path)
+        assert override == {
+            "services": {"frontend": {"build": {"target": "dev"}}}
+        }
+
+    def test_respects_explicit_author_target(self, tmp_path):
+        from kamiwaza_extensions.dev_local import generate_dev_target_override
+
+        self._write_dockerfile(
+            tmp_path, "frontend/Dockerfile", "FROM node AS dev\nFROM node AS custom\n"
+        )
+        compose = {
+            "services": {
+                "frontend": {
+                    "build": {"context": "./frontend", "target": "custom"},
+                }
+            }
+        }
+        assert generate_dev_target_override(compose, tmp_path) is None

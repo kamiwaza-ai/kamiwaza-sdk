@@ -162,7 +162,7 @@ describe("loadKamiwazaRuntime", () => {
         expect(second).toBe(first);
         expect(fetchSpy).toHaveBeenCalledTimes(1);
         expect(fetchSpy).toHaveBeenCalledWith(
-            `${APP}/__kamiwaza/runtime.json`,
+            `${APP}/kamiwaza/runtime.json`,
             expect.objectContaining({ cache: "no-store" }),
         );
     });

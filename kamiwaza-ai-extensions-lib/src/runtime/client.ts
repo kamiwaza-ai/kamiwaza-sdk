@@ -96,7 +96,7 @@ export function loadKamiwazaRuntime(): Promise<Readonly<KamiwazaRuntimeConfig>> 
     }
     pendingRuntime = (async () => {
         try {
-            const response = await appFetch("/__kamiwaza/runtime.json", {
+            const response = await appFetch("/kamiwaza/runtime.json", {
                 cache: "no-store",
             });
             if (!response.ok) {

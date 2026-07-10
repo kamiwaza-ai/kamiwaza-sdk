@@ -101,6 +101,16 @@ describe("transformRscBuffer (B1)", () => {
         const input = Buffer.from(`0:{"a":1}\n4:T3,abc5:2\n`);
         expect(transformRscBuffer(input, SENTINEL, REAL).equals(input)).toBe(true);
     });
+
+    it("handles empty-id hint rows (:HL) as emitted by real Next 15.5.19 output", () => {
+        const input = Buffer.from(
+            `:HL["${SENTINEL}/_next/static/css/x.css","style"]\n0:{"p":"${SENTINEL}/y"}\n`,
+        );
+        const output = transformRscBuffer(input, SENTINEL, REAL).toString("utf8");
+        expect(output).toBe(
+            `:HL["${REAL}/_next/static/css/x.css","style"]\n0:{"p":"${REAL}/y"}\n`,
+        );
+    });
 });
 
 describe("prepareRuntime edge fixes", () => {
