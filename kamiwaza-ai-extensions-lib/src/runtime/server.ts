@@ -76,7 +76,7 @@ export function getKamiwazaRuntimeServer(
 }
 
 /**
- * Response body for the scaffold's lazy `/__kamiwaza/runtime.json` route.
+ * Response body for the scaffold's lazy `/kamiwaza/runtime.json` route.
  * Contains only non-secret deployment routing fields.
  */
 export function createRuntimeConfigResponse(

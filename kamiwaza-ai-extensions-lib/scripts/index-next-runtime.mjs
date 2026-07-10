@@ -24,6 +24,7 @@
  *     --next-version 15.5.19 --output /out/kz-next-relocations.json
  */
 
+import { realpathSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { readdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -290,7 +291,14 @@ async function main() {
     return 0;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+const invokedHref = (() => {
+    try {
+        return process.argv[1] ? pathToFileURL(realpathSync(process.argv[1])).href : "";
+    } catch {
+        return "";
+    }
+})();
+if (invokedHref === import.meta.url) {
     main().then(
         (code) => process.exit(code),
         (error) => {
