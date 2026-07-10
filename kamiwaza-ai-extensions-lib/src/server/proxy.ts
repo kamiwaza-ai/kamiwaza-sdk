@@ -1,4 +1,5 @@
 import { ENVELOPE_AUTH_HEADERS } from "../_shared/envelopeHeaders";
+import { normalizeAppPath } from "../runtime/shared";
 import type { ProxyConfig } from "./types";
 
 /** Headers to forward from the incoming request to the backend.
@@ -40,6 +41,13 @@ const FORWARD_REQUEST_HEADERS = new Set<string>([
     // session-cookie consumers are inventoried.
     "cookie",
     "content-type",
+    // Forwarded routing context — lets the backend construct public URLs
+    // and log the external prefix without trusting it for identity.
+    "x-forwarded-prefix",
+    "x-forwarded-host",
+    "x-forwarded-proto",
+    "x-forwarded-for",
+    "x-forwarded-uri",
 ]);
 
 /** Response headers that must NOT be forwarded to the client. */
@@ -79,6 +87,37 @@ function filterResponseHeaders(headers: Headers): Record<string, string> {
         }
     });
     return out;
+}
+
+/** Session routes whose Set-Cookie responses pass through by default. */
+const DEFAULT_SET_COOKIE_PATHS: readonly string[] = [
+    "/session",
+    "/session/extend",
+    "/auth/logout",
+];
+
+/**
+ * Resolve the deployment's runtime app path from the environment, leniently:
+ * the boot entrypoint has already failed closed on truly invalid values, so
+ * the proxy treats anything unusable as "no prefix".
+ */
+function resolveRuntimeAppPath(): string {
+    if (process.env.KAMIWAZA_ROUTING_MODE === "port") {
+        return "";
+    }
+    try {
+        return normalizeAppPath(process.env.KAMIWAZA_APP_PATH);
+    } catch {
+        return "";
+    }
+}
+
+/** Remove at most one leading, segment-boundary occurrence of prefix. */
+function stripOnce(path: string, prefix: string): string {
+    if (prefix === "") return path;
+    if (path === prefix) return "/";
+    if (path.startsWith(`${prefix}/`)) return path.slice(prefix.length);
+    return path;
 }
 
 /**
@@ -131,7 +170,18 @@ function makeHandler(method: string, config: ProxyConfig): RouteHandler {
 
     return async (request: NextRequest) => {
         const url = new URL(request.url);
-        let path = url.pathname;
+        // Prefer Next's normalized URL (basePath already removed) when the
+        // handler runs inside Next; fall back to the raw request URL.
+        const nextUrl = (request as { nextUrl?: URL }).nextUrl;
+        let path = nextUrl?.pathname ?? url.pathname;
+        const search = nextUrl?.search ?? url.search;
+
+        // Strip the deployment's runtime app path (default on). Next's own
+        // basePath routing usually strips it first, making this a no-op; the
+        // raw-URL path covers everything else.
+        if (config.stripRuntimeAppPath !== false) {
+            path = stripOnce(path, resolveRuntimeAppPath());
+        }
 
         // Strip the configured prefix so the backend sees clean paths.
         if (config.pathPrefix && path.startsWith(config.pathPrefix)) {
@@ -140,7 +190,7 @@ function makeHandler(method: string, config: ProxyConfig): RouteHandler {
 
         let target: string;
         try {
-            target = resolveTarget(config.target, path, url.search);
+            target = resolveTarget(config.target, path, search);
         } catch {
             return new Response("Bad Request", { status: 400 });
         }
@@ -162,10 +212,23 @@ function makeHandler(method: string, config: ProxyConfig): RouteHandler {
         const upstream = await fetch(target, init);
 
         // Stream the response back, filtering sensitive headers.
+        const responseHeaders = new Headers(filterResponseHeaders(upstream.headers));
+
+        // Set-Cookie passes through only for the explicit session-route
+        // allowlist (matched on the backend-facing path), and only from the
+        // configured trusted backend.
+        const cookiePaths = config.setCookiePaths ?? DEFAULT_SET_COOKIE_PATHS;
+        const upstreamPath = new URL(target).pathname;
+        if (cookiePaths.includes(upstreamPath)) {
+            for (const cookie of upstream.headers.getSetCookie()) {
+                responseHeaders.append("set-cookie", cookie);
+            }
+        }
+
         return new Response(upstream.body, {
             status: upstream.status,
             statusText: upstream.statusText,
-            headers: filterResponseHeaders(upstream.headers),
+            headers: responseHeaders,
         });
     };
 }
