@@ -8,7 +8,7 @@ lightweight async library — not the full SDK with its sync HTTP client
 and 20+ service modules.
 """
 
-__version__ = "0.4.4"
+__version__ = "0.5.0"
 
 from .auth import (
     forward_auth_headers,
