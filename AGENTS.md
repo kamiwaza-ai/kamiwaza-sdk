@@ -128,3 +128,9 @@ Before implementing, review @.ai/knowledge/failures/common-pitfalls.md to avoid:
 2. Run full test suite: `make test`
 3. Build distribution: `make build` (or `uv build`)
 4. Use `release.sh` for automated release (uses `uv build` and `uv publish`)
+
+<!-- quality-gates:ai-context START — managed by /quality-gates:install; do not edit between markers (version=1, source=quality-gates) -->
+## Code Health
+When a CodeScene gate reports a degraded/declined verdict, or when weighing a
+Code-Health refactor, read `.ai/quality-gates.md` before deciding.
+<!-- quality-gates:ai-context END -->
