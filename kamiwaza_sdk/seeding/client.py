@@ -61,9 +61,10 @@ def scoped_client_for_workroom(
     already set) on purpose: ``enter`` is a POST, so it passes through the strict
     workroom-write gate, and a request that carries the scope header before any
     binding exists is rejected with 403 "Authenticated workroom context missing"
-    (the bind is what would create that context). The unscoped enter has no
-    scope header, binds the session, and only then is the header-scoped client
-    returned for the actual writes.
+    (the bind is what would create that context). The returned header-scoped
+    client is derived from that same unscoped view, so any session state the
+    bind establishes (e.g. should the platform ever bind via ``Set-Cookie`` on
+    the enter response) is carried onto the client that performs the writes.
 
     PAT / API-key credentials cannot session-bind — the platform rejects their
     ``enter`` with 409 ``binding_invalid`` — and authorize via the explicit
@@ -71,12 +72,13 @@ def scoped_client_for_workroom(
     header-scoped client is returned unchanged. Any other error (e.g. a 404 for
     an unknown workroom) propagates.
     """
+    bound = client.workroom_scope(None)
     try:
-        client.workroom_scope(None).workrooms.enter(workroom_id)
+        bound.workrooms.enter(workroom_id)
     except APIError as exc:
         if not _is_binding_unsupported(exc):
             raise
-    return client.workroom_scope(workroom_id)
+    return bound.workroom_scope(workroom_id)
 
 
 def build_client_from_env(

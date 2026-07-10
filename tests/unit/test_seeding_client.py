@@ -54,6 +54,21 @@ def test_enter_is_issued_without_the_workroom_scope_header():
     assert "X-Workroom-Id" not in enter_client._default_headers
 
 
+def test_returned_client_shares_session_state_with_the_bound_client():
+    # The returned (write) client is derived from the client that ran enter, so
+    # any session state the bind sets (e.g. a Set-Cookie binding) reaches the
+    # client that performs the writes — not a discarded throwaway.
+    client = _platform_client()
+
+    def _bind_sets_cookie(self, workroom_id):
+        self.client.session.cookies.set("kamiwaza_workroom_binding", "bound")
+
+    with patch(_ENTER, autospec=True, side_effect=_bind_sets_cookie):
+        scoped = scoped_client_for_workroom(client, _WID)
+
+    assert scoped.session.cookies.get("kamiwaza_workroom_binding") == "bound"
+
+
 @pytest.mark.parametrize(
     "response_data",
     [
