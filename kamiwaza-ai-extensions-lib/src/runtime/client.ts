@@ -12,6 +12,7 @@
 import {
     type KamiwazaClientRouting,
     type KamiwazaRuntimeConfig,
+    normalizeAppPath,
     withAppPath,
 } from "./shared";
 
@@ -22,8 +23,23 @@ declare global {
 
 export function getAppPath(): string {
     const bootstrap = globalThis.__KAMIWAZA_RUNTIME__;
-    if (bootstrap && typeof bootstrap.appPath === "string") {
-        return bootstrap.appPath;
+    if (bootstrap != null) {
+        // A present bootstrap must be internally consistent — fail closed on
+        // a malformed one rather than silently guessing (N2).
+        if (typeof bootstrap.appPath !== "string") {
+            return process.env.KZ_INTERNAL_BAKED_APP_PATH ?? "";
+        }
+        const appPath = normalizeAppPath(bootstrap.appPath);
+        if (
+            (bootstrap.routingMode === "port" && appPath !== "") ||
+            (bootstrap.routingMode === "path" && appPath === "")
+        ) {
+            throw new Error(
+                `inconsistent runtime bootstrap: mode ${String(bootstrap.routingMode)} ` +
+                    `with appPath ${JSON.stringify(bootstrap.appPath)}`,
+            );
+        }
+        return appPath;
     }
     // Inlined at build time by withKamiwazaAppGarden(); sentinel in the path
     // artifact (relocated at boot), empty in the port artifact and next dev.
@@ -48,6 +64,14 @@ export function appFetch(
         return fetch(withAppPath(input, getAppPath()), init);
     }
     if (input instanceof URL) {
+        // Prefix only same-origin URLs — an absolute URL to another origin
+        // (or any URL on the server, where there is no window) is external
+        // by definition (S1).
+        const windowOrigin =
+            typeof window !== "undefined" ? window.location.origin : undefined;
+        if (windowOrigin === undefined || input.origin !== windowOrigin) {
+            return fetch(input, init);
+        }
         const prefixed = new URL(input);
         prefixed.pathname = withAppPath(input.pathname, getAppPath());
         return fetch(prefixed, init);
