@@ -188,6 +188,56 @@ def raw_token_client(base_url: str, token: str, *, verify: bool) -> Any:
     return KamiwazaClient(base_url=base_url, api_key=token, verify=verify)
 
 
+def shared_realm_token(
+    issuer: str,
+    client_id: str,
+    username: str,
+    password: str,
+    *,
+    client_secret: Optional[str] = None,
+    verify: Any = True,
+) -> str:
+    """Mint an access token via ROPC (direct-access-grants) against a shared
+    realm's token endpoint.
+
+    A shared_idp mesh caller must present a token signed by the SHARED realm
+    (``issuer`` == the federation's shared_issuer_url): the mesh forwards the
+    caller's bearer verbatim, and the receiver validates it against the shared
+    realm's JWKS, so a local-realm token's kid is rejected (not in the shared
+    JWKS). The token also carries the realm's projected ``clearance`` claim,
+    which the initiator edge packs into X-User-Attributes for the gate.
+    """
+    import requests  # noqa: PLC0415 — only needed on the persona-auth path
+
+    data = {
+        "grant_type": "password",
+        "client_id": client_id,
+        "username": username,
+        "password": password,
+        "scope": "openid",
+    }
+    if client_secret:
+        data["client_secret"] = client_secret
+    resp = requests.post(
+        f"{issuer.rstrip('/')}/protocol/openid-connect/token",
+        data=data,
+        verify=verify,
+        timeout=30,
+    )
+    resp.raise_for_status()
+    return resp.json()["access_token"]
+
+
+def jwt_sub(token: str) -> str:
+    """The ``sub`` claim of a JWT (no signature verification — the server does
+    that). The receiver keys the brokered user on ``<sub>@<cluster-uuid>``."""
+    import base64  # noqa: PLC0415
+
+    payload = token.split(".")[1]
+    payload += "=" * ((4 - len(payload) % 4) % 4)
+    return str(json.loads(base64.urlsafe_b64decode(payload)).get("sub", ""))
+
+
 # ── file-backed gated dataset ───────────────────────────────────────────────
 
 def create_file_dataset(kz: Any, name: str, file_path: str) -> str:

@@ -20,6 +20,29 @@ served 1.1.0 wheel (M5_TEST_WHEEL_DIR/M5_TEST_INDEX_URL), the fixture file under
 RETRIEVAL_FILESYSTEM_ALLOWED_ROOTS (MINI_CLEARANCE_DATASET_PATH), and a shared
 realm that projects the ``clearance`` claim into brokered persona JWTs
 (SHARED_ISSUER_URL[/SHARED_JWKS_URL/SHARED_CA_PEM]); else the round-trip skips.
+
+Persona auth (SHARED_REALM_CLIENT_ID / FED_PERSONA_PASSWORD): each persona mints
+a token via ROPC against the shared realm's token endpoint (a direct-access-
+grants client), so the receiver's shared_idp peer-JWT validation accepts it
+(its kid is in the shared JWKS — an admin/local-realm token's kid is not) and
+the gate sees the realm-projected ``clearance`` claim. Shared-realm setup shape
+(on the shared realm, e.g. spark-1 ``federated``): a ROPC client (public,
+directAccessGrantsEnabled); persona users ``fed-clr-{u,s,ts}`` with a
+``clearance`` user-attribute (needs the realm user-profile's
+``unmanagedAttributePolicy=ENABLED``) + email/first/last so ROPC isn't blocked
+"Account is not fully set up"; and an ``oidc-usermodel-attribute-mapper``
+projecting ``clearance`` as a top-level access-token claim.
+
+LIVE STATUS (2026-07-11): the auth boundary is CROSSED — with the persona
+shared-realm token the receiver's peer-JWT validation PASSES (the historic
+``peer_jwt_validation_failed: kid not present`` is gone) and the mesh reaches
+the data plane. The 3 persona assertions still tier to SKIP on a downstream
+403 ``Forbidden``: the mesh retrieval's dataset-view authz
+(catalog.identity.resolve_requester_urn → a DataHub ``urn:li:corpuser`` URN) is
+NOT satisfied by the federation allowlist's ``initial_tuples`` viewer grant
+(a ``user:{{user_id}}`` namespaced ReBAC tuple). Reconciling those two subject
+namespaces for a brokered mesh caller is the remaining layer to flip the SKIPs
+to exact-count assertions.
 """
 
 from __future__ import annotations
@@ -78,6 +101,37 @@ def _shared_realm() -> dict[str, str]:
     return cfg
 
 
+def _persona_auth() -> dict:
+    """Shared-realm ROPC config for the personas (soft-skip when absent).
+
+    The mesh data-plane assertions need each persona to present a token minted
+    by the SHARED realm (a direct-access-grants client + the persona password),
+    so the receiver's shared_idp peer-JWT validation accepts it (kid is in the
+    shared JWKS) and the gate sees the realm-projected `clearance` claim.
+    """
+    client_id = os.getenv("SHARED_REALM_CLIENT_ID", "").strip()
+    password = os.getenv("FED_PERSONA_PASSWORD", "").strip()
+    if not client_id or not password:
+        pytest.skip(
+            "SHARED_REALM_CLIENT_ID / FED_PERSONA_PASSWORD not set — the personas "
+            "must present a shared-realm ROPC token for the mesh data-plane "
+            "assertions (a direct-access-grants client + persona password on the "
+            "shared realm that projects the `clearance` claim)"
+        )
+    verify = os.getenv("KAMIWAZA_VERIFY_SSL", "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+    return {
+        "client_id": client_id,
+        "client_secret": os.getenv("SHARED_REALM_CLIENT_SECRET", "").strip() or None,
+        "password": password,
+        "verify": verify,
+    }
+
+
 def _fed_name() -> str:
     return f"eng8325-sharedidp-{uuid.uuid4().hex[:8]}"
 
@@ -126,34 +180,55 @@ def shared_idp_gated_pair(
     mc.install_gate_package(receiver, wheel_dir, index_url)
     urn = mc.create_file_dataset(receiver, f"mini-clearance-{name}", dataset_path)
 
-    # 3. Brokered shared-realm identities (external_id keyed on the initiator
-    #    cluster uuid). Their shared-realm JWT projects the `clearance` claim,
-    #    which arrives as X-User-Attributes on mesh inbound; seed a viewer tuple
-    #    so the auto-provisioned user reaches the gate rather than 404-ing at the
-    #    retrieval seam. POST against the receiver-side federation id (name
-    #    lookup fails post-pair) with the canonical subject/relation/object shape.
+    # 3. Brokered shared-realm identities. Each persona authenticates to the
+    #    SHARED realm (ROPC) for a token whose `sub` is the federated user id and
+    #    whose `clearance` claim rides X-User-Attributes to the gate. The receiver
+    #    keys the brokered user on `<sub>@<initiator-cluster-uuid>` (the
+    #    X-KZ-Mesh-User-Id the initiator forwards), so seed the viewer tuple on the
+    #    token `sub`, not the username. POST against the receiver-side federation
+    #    id (name lookup fails post-pair) with the canonical tuple shape.
     src_uuid = mc.initiator_cluster_uuid(receiver, receiver_id) or "initiator"
-    externals = {}
+    auth = _persona_auth()
+    issuer = shared["shared_issuer_url"]
+    personas: dict = {}
     for clearance, base in _PERSONAS.items():
-        external_id = f"{base}@{src_uuid}"
+        token = mc.shared_realm_token(
+            issuer,
+            auth["client_id"],
+            base,
+            auth["password"],
+            client_secret=auth["client_secret"],
+            verify=auth["verify"],
+        )
+        sub = mc.jwt_sub(token) or base
+        external_id = f"{sub}@{src_uuid}"
         receiver._request(
             "POST",
             f"/cluster/federations/{receiver_id}/users",
             json={
                 "external_id": external_id,
                 "initial_tuples": [
+                    # {{user_id}} renders to the local provisioned user id at
+                    # ingress (brokering._render_placeholder), so the viewer grant
+                    # lands on the subject the retrieval authz actually evaluates.
                     {
-                        "subject": f"user:{external_id}",
+                        "subject": "user:{{user_id}}",
                         "relation": "viewer",
                         "object": f"dataset:{urn}",
                     }
                 ],
             },
         )
-        externals[clearance] = external_id
+        personas[clearance] = {"token": token, "external_id": external_id, "sub": sub}
 
     try:
-        yield {"name": name, "urn": urn, "externals": externals, "shared": shared}
+        yield {
+            "name": name,
+            "urn": urn,
+            "personas": personas,
+            "shared": shared,
+            "verify": auth["verify"],
+        }
     finally:
         for who in (initiator, receiver):
             try:
@@ -178,10 +253,14 @@ def test_federated_persona_sees_exact_post_gate_counts(
     wiring = shared_idp_gated_pair
     initiator = live_kamiwaza_session_client
     name, urn = wiring["name"], wiring["urn"]
+    # Present the persona's SHARED-realm token (carries `clearance`) on the mesh
+    # call — not the admin/local-realm client, whose kid isn't in the shared JWKS.
+    token = wiring["personas"][clearance]["token"]
+    persona = mc.raw_token_client(initiator.base_url, token, verify=wiring["verify"])
 
     def _retrieve():
         # Mesh retrieval-jobs on the receiver, routed through the federation.
-        return initiator._request(
+        return persona._request(
             "POST",
             f"/mesh/{name}/api/retrieval/jobs",
             json={"dataset_urn": urn},
