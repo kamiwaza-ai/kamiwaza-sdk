@@ -110,7 +110,13 @@ def shared_idp_gated_pair(
     psk = uuid.uuid4().hex
 
     # 1. shared_idp pairing (receiver-controlled; not gated by ALLOW_UNTRUSTED).
-    receiver.federations.pair(name=name, role="receiver", preshared_key=psk, **shared)
+    #    Capture the receiver-side federation id — brokered-user writes and the
+    #    initiator-cluster-uuid lookup both key on it, since /pair overwrites the
+    #    receiver's remote_cluster_name with the initiator's cluster name.
+    recv_fed = receiver.federations.pair(
+        name=name, role="receiver", preshared_key=psk, **shared
+    )
+    receiver_id = str(recv_fed.id)
     initiator.federations.pair(
         name=name, role="initiator", remote_url=live_peer_base_url, preshared_key=psk, **shared
     )
@@ -122,17 +128,27 @@ def shared_idp_gated_pair(
 
     # 3. Brokered shared-realm identities (external_id keyed on the initiator
     #    cluster uuid). Their shared-realm JWT projects the `clearance` claim,
-    #    which arrives as X-User-Attributes on mesh inbound; grant viewer so the
-    #    request reaches the gate rather than 404-ing at the retrieval seam.
-    src_uuid = str(initiator.cluster.diagnose().get("cluster_id") or "").strip() or "initiator"
+    #    which arrives as X-User-Attributes on mesh inbound; seed a viewer tuple
+    #    so the auto-provisioned user reaches the gate rather than 404-ing at the
+    #    retrieval seam. POST against the receiver-side federation id (name
+    #    lookup fails post-pair) with the canonical subject/relation/object shape.
+    src_uuid = mc.initiator_cluster_uuid(receiver, receiver_id) or "initiator"
     externals = {}
     for clearance, base in _PERSONAS.items():
         external_id = f"{base}@{src_uuid}"
-        receiver.federations[name].users.add(
-            external_id=external_id,
-            initial_tuples=[
-                {"object_namespace": "dataset", "object_id": urn, "relation": "viewer"}
-            ],
+        receiver._request(
+            "POST",
+            f"/cluster/federations/{receiver_id}/users",
+            json={
+                "external_id": external_id,
+                "initial_tuples": [
+                    {
+                        "subject": f"user:{external_id}",
+                        "relation": "viewer",
+                        "object": f"dataset:{urn}",
+                    }
+                ],
+            },
         )
         externals[clearance] = external_id
 

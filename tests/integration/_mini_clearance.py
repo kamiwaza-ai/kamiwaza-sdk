@@ -84,27 +84,47 @@ def _wheel_sha256(wheel_dir: str) -> str:
     return f"sha256:{digest}"
 
 
-def install_gate_package(kz: Any, wheel_dir: str, index_url: str) -> None:
-    """Install acme-gates==1.1.0 and confirm MiniClearanceGate's classpath is discoverable.
+def _already_installed(kz: Any) -> bool:
+    """True iff acme-gates is installed with MiniClearanceGate's classpath present.
 
-    The dataset gate-bind endpoint enforces the classpath allowlist against
-    ``cluster_gate_packages.classpaths`` (populated by this install's discover
-    step), so a successful install MUST precede ``set_gate`` — otherwise the
-    bind 403s ``classpath_not_allowed``. Uninstall-first so a stale install from
-    an interrupted prior run doesn't 409 ``package_exists``.
+    The desired end-state is idempotent: the gate package being present (with our
+    classpath) is what setup needs, regardless of how it got there. Checking this
+    first makes the fixture resilient to a package left behind by an interrupted
+    prior run — where an uninstall-first would 409 ``uninstall_blocked`` (an
+    orphaned dataset still binds the gate) and a bare install would 409
+    ``package_exists``.
     """
     try:
-        kz.gates.packages.uninstall("acme-gates")
-    except Exception:  # noqa: BLE001 — not-installed is fine
-        pass
-    result = kz.gates.packages.install(
-        PACKAGE_SPEC,
-        hash_digest=_wheel_sha256(wheel_dir),
-        index_url=index_url,
-    )
-    assert GATE_CLASSPATH in result.package.classpaths, (
-        f"{GATE_CLASSPATH} not recorded in installed classpaths: {result.package.classpaths}"
-    )
+        listing = kz.gates.packages.list()
+    except Exception:  # noqa: BLE001 — treat an unreadable listing as not-installed
+        return False
+    for pkg in getattr(listing, "items", listing) or []:
+        if getattr(pkg, "name", None) == "acme-gates" and GATE_CLASSPATH in (
+            getattr(pkg, "classpaths", None) or []
+        ):
+            return True
+    return False
+
+
+def install_gate_package(kz: Any, wheel_dir: str, index_url: str) -> None:
+    """Ensure acme-gates==1.1.0 is installed and MiniClearanceGate is discoverable.
+
+    The dataset gate-bind endpoint enforces the classpath allowlist against
+    ``cluster_gate_packages.classpaths`` (populated by the install's discover
+    step), so the package MUST be present before ``set_gate`` — otherwise the
+    bind 403s ``classpath_not_allowed``. Idempotent: if a prior run already
+    installed it (with our classpath) we keep it, since uninstalling it can be
+    refused while an orphaned dataset still binds the gate.
+    """
+    if not _already_installed(kz):
+        result = kz.gates.packages.install(
+            PACKAGE_SPEC,
+            hash_digest=_wheel_sha256(wheel_dir),
+            index_url=index_url,
+        )
+        assert GATE_CLASSPATH in result.package.classpaths, (
+            f"{GATE_CLASSPATH} not recorded in installed classpaths: {result.package.classpaths}"
+        )
     gate = kz.gates.discover(GATE_CLASSPATH)
     assert gate.name == GATE_NAME
 
@@ -210,6 +230,27 @@ def retrieve_through_gate(client: Any, dataset_urn: str) -> tuple[list[dict], di
         {"included": included, "redacted": redacted, "total": total} if saw_audit else {}
     )
     return rows, summary
+
+
+def initiator_cluster_uuid(receiver: Any, receiver_fed_id: str) -> Optional[str]:
+    """The initiator cluster's UUID, for building brokered ``external_id``s.
+
+    Sourced from the RECEIVER's federation record (``remote_cluster_id``, which
+    the /pair handshake populates), NOT ``initiator.cluster.diagnose()`` (that
+    returns a ClusterDiagnostics with no cluster-id field) nor
+    ``cluster.capabilities()`` (403 ``not_authorized_to_probe_cluster`` for a
+    plain admin). Matched by the receiver-side federation *id* — the /pair
+    handshake overwrites the receiver's ``remote_cluster_name`` with the
+    initiator's cluster name, so a lookup-by-name fails post-pair.
+    ``GET /cluster/federations`` is the widened any-authenticated surface.
+    Returns None if the record/field isn't present yet.
+    """
+    feds = receiver._request("GET", "/cluster/federations") or []
+    if isinstance(feds, dict):  # paginated {"items": [...]} shape
+        feds = feds.get("items") or []
+    record = next((f for f in feds if str(f.get("id")) == str(receiver_fed_id)), None)
+    cluster_uuid = (record or {}).get("remote_cluster_id")
+    return str(cluster_uuid) if cluster_uuid else None
 
 
 def parse_mesh_retrieval_result(result: Any, initiator: Any, fed_name: str) -> tuple[list[dict], dict]:
