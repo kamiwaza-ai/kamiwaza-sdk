@@ -116,6 +116,7 @@ def shared_idp_gated_pair(
     )
 
     # 2. Seed the receiver's gated dataset.
+    mc.declare_clearance_attribute(receiver)
     mc.install_gate_package(receiver, wheel_dir, index_url)
     urn = mc.create_file_dataset(receiver, f"mini-clearance-{name}", dataset_path)
 
@@ -190,7 +191,7 @@ def test_fabricated_non_shared_token_rejected_before_gate(
         "off",
     }
     forged = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJmb3JnZWQifQ.not-a-real-signature"
-    client = mc.persona_client(live_peer_base_url, forged, verify=verify)
+    client = mc.raw_token_client(live_peer_base_url, forged, verify=verify)
     with pytest.raises((AuthenticationError, APIError)) as exc:
         client._request("GET", "/cluster/diagnose")
     status = getattr(exc.value, "status_code", None)

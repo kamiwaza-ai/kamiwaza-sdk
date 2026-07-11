@@ -52,15 +52,41 @@ def _prereqs() -> tuple[str, str, str]:
     return wi[0], wi[1], dataset_path
 
 
+def _verify() -> bool:
+    return os.getenv("KAMIWAZA_VERIFY_SSL", "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+
+
 @pytest.fixture(scope="module")
-def gated_dataset(_prereqs, live_kamiwaza_client) -> Iterator[str]:
+def _admin(request) -> tuple:
+    """(base_url, module-scoped admin client, verify) from the --live-* options.
+
+    Built directly from config rather than the function-scoped
+    live_kamiwaza_client, so the one-time install/seed setup can be module-scoped.
+    """
+    base = str(request.config.getoption("live_base_url")).rstrip("/")
+    user = str(request.config.getoption("live_username"))
+    pw = str(request.config.getoption("live_password"))
+    if not base or not pw:
+        pytest.skip("live cluster base-url/password not provided")
+    verify = _verify()
+    return base, mc.authed_client(base, user, pw, verify=verify), verify
+
+
+@pytest.fixture(scope="module")
+def gated_dataset(_prereqs, _admin) -> Iterator[str]:
     """Install the gate, create the file dataset, bind the gate, seed personas.
 
     Yields the dataset URN; tears everything down at module exit.
     """
     wheel_dir, index_url, dataset_path = _prereqs
-    kz = live_kamiwaza_client
+    _base, kz, _v = _admin
 
+    mc.declare_clearance_attribute(kz)
     mc.install_gate_package(kz, wheel_dir, index_url)
     urn = mc.create_file_dataset(kz, _unique("mini-clearance"), dataset_path)
 
@@ -87,19 +113,11 @@ def gated_dataset(_prereqs, live_kamiwaza_client) -> Iterator[str]:
 
 
 @pytest.mark.parametrize("clearance", ["U", "S", "TS"])
-def test_persona_sees_exact_post_gate_counts(
-    clearance, gated_dataset, live_base_url
-) -> None:
+def test_persona_sees_exact_post_gate_counts(clearance, gated_dataset, _admin) -> None:
     """Each clearance persona retrieves exactly its allowed rows — known answer."""
-    verify = os.getenv("KAMIWAZA_VERIFY_SSL", "1").strip().lower() not in {
-        "0",
-        "false",
-        "no",
-        "off",
-    }
+    base_url, _admin_client, verify = _admin
     username = _unique(_PERSONAS[clearance])
-    token = mc.mint_token(live_base_url, username, username, verify=verify)
-    client = mc.persona_client(live_base_url, token, verify=verify)
+    client = mc.authed_client(base_url, username, username, verify=verify)
 
     rows, gate_audit = mc.retrieve_through_gate(client, gated_dataset)
     mc.assert_persona_result(clearance, rows, gate_audit)

@@ -22,7 +22,6 @@ import csv
 import hashlib
 import json
 import os
-import urllib.request
 from pathlib import Path
 from typing import Any, Optional
 
@@ -91,8 +90,13 @@ def install_gate_package(kz: Any, wheel_dir: str, index_url: str) -> None:
     The dataset gate-bind endpoint enforces the classpath allowlist against
     ``cluster_gate_packages.classpaths`` (populated by this install's discover
     step), so a successful install MUST precede ``set_gate`` — otherwise the
-    bind 403s ``classpath_not_allowed``.
+    bind 403s ``classpath_not_allowed``. Uninstall-first so a stale install from
+    an interrupted prior run doesn't 409 ``package_exists``.
     """
+    try:
+        kz.gates.packages.uninstall("acme-gates")
+    except Exception:  # noqa: BLE001 — not-installed is fine
+        pass
     result = kz.gates.packages.install(
         PACKAGE_SPEC,
         hash_digest=_wheel_sha256(wheel_dir),
@@ -107,6 +111,14 @@ def install_gate_package(kz: Any, wheel_dir: str, index_url: str) -> None:
 
 # ── clearance personas ──────────────────────────────────────────────────────
 
+def declare_clearance_attribute(kz: Any) -> None:
+    """Declare the ``clearance`` attribute in the realm vocabulary (idempotent).
+
+    Required BEFORE binding a gate whose required_attributes() references it, and
+    before seeding personas that carry it (ENG-4946)."""
+    kz.cluster.declare_attribute("clearance", type="string")
+
+
 def seed_local_persona(kz: Any, username: str, clearance: str) -> None:
     """Upsert a local subject carrying ``clearance`` (password == username)."""
     kz.subjects.upsert(username, attributes={"clearance": clearance}, password=username)
@@ -120,28 +132,37 @@ def grant_dataset_viewer(kz: Any, username: str, dataset_urn: str) -> None:
     )
 
 
-def mint_token(base_url: str, username: str, password: str, *, verify: bool) -> str:
-    """Password-grant token for a persona (POST /auth/token)."""
-    import ssl
+class _NoCacheTokenStore:
+    """No-op token store so each persona authenticates fresh (no on-disk bleed
+    between the U/S/TS clients). Duck-types the SDK TokenStore contract."""
 
-    body = json.dumps(
-        {"username": username, "password": password, "grant_type": "password"}
-    ).encode()
-    req = urllib.request.Request(
-        f"{base_url.rstrip('/')}/auth/token",
-        data=body,
-        headers={"Content-Type": "application/json"},
-        method="POST",
+    def load(self) -> None:
+        return None
+
+    def save(self, token: Any) -> None:  # noqa: ARG002
+        return None
+
+    def clear(self) -> None:
+        return None
+
+
+def authed_client(base_url: str, username: str, password: str, *, verify: bool) -> Any:
+    """A KamiwazaClient authenticated as (username/password) via the SDK's
+    password-grant authenticator — the canonical live-test auth path (mirrors
+    conftest's live_kamiwaza_client)."""
+    from kamiwaza_sdk import KamiwazaClient
+    from kamiwaza_sdk.authentication import UserPasswordAuthenticator
+
+    client = KamiwazaClient(base_url=base_url, verify=verify)
+    client.authenticator = UserPasswordAuthenticator(
+        username, password, client._auth_service, token_store=_NoCacheTokenStore()  # type: ignore[arg-type]
     )
-    ctx = None if verify else ssl._create_unverified_context()
-    with urllib.request.urlopen(req, context=ctx, timeout=30) as resp:  # noqa: S310
-        token = json.loads(resp.read()).get("access_token")
-    if not token:
-        raise RuntimeError(f"no access_token minted for {username}")
-    return str(token)
+    return client
 
 
-def persona_client(base_url: str, token: str, *, verify: bool) -> Any:
+def raw_token_client(base_url: str, token: str, *, verify: bool) -> Any:
+    """A KamiwazaClient presenting a raw bearer token verbatim (for the
+    fabrication-negative: a token NOT signed by the shared realm)."""
     from kamiwaza_sdk import KamiwazaClient
 
     return KamiwazaClient(base_url=base_url, api_key=token, verify=verify)
