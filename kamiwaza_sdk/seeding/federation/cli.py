@@ -177,6 +177,11 @@ def cmd_fed_allow_user(args: argparse.Namespace, *, client: Any) -> dict:
     }
 
 
+def cmd_fed_unpair(args: argparse.Namespace, *, client: Any) -> dict:
+    result = client.federations[args.name].disconnect(force=args.force)
+    return {"disconnected": args.name, "result": result}
+
+
 # --- dataset / gate / attr: gated-retrieval setup -------------------------
 
 
@@ -344,6 +349,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="repeatable '<namespace>:<id>:<relation>', e.g. dataset:<urn>:viewer",
     )
     p.set_defaults(func=cmd_fed_allow_user, needs_kc=False)
+    p = g.add_parser("unpair", help="disconnect (tear down) a federation")
+    p.add_argument("--name", required=True, help="federation name")
+    p.add_argument(
+        "--force",
+        action="store_true",
+        help="tear down without waiting for the peer's ack (peer already gone)",
+    )
+    p.set_defaults(func=cmd_fed_unpair, needs_kc=False)
 
     # dataset
     g = groups.add_parser("dataset", help="gated dataset setup").add_subparsers(

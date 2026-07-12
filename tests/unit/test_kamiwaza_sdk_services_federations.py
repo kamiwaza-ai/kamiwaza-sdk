@@ -694,3 +694,39 @@ def test_get_fetches_single_federation() -> None:
     fed = FederationsAPI(client).get(fid)
     assert fed.id == fid
     assert fed.remote_cluster_name == "VELA"
+
+
+def test_disconnect_resolves_id_and_posts() -> None:
+    from kamiwaza_sdk.services.federations import FederationsAPI
+
+    client = _MockClient()
+    fid = "44444444-4444-4444-4444-444444444444"
+    client.expect(
+        "GET",
+        "/cluster/federations",
+        [{"id": fid, "status": "PAIRED", "remote_cluster_name": "ORION"}],
+    )
+    client.expect(
+        "POST", f"/cluster/federations/{fid}/disconnect", {"message": "disconnected"}
+    )
+    result = FederationsAPI(client)["ORION"].disconnect()
+    assert result == {"message": "disconnected"}
+    assert ("POST", f"/cluster/federations/{fid}/disconnect") in [
+        (m, p) for m, p, _ in client.calls
+    ]
+
+
+def test_disconnect_force_passes_param() -> None:
+    from kamiwaza_sdk.services.federations import FederationsAPI
+
+    client = _MockClient()
+    fid = "55555555-5555-5555-5555-555555555555"
+    client.expect(
+        "GET",
+        "/cluster/federations",
+        [{"id": fid, "status": "PAIRED", "remote_cluster_name": "LYRA"}],
+    )
+    client.expect("POST", f"/cluster/federations/{fid}/disconnect", {"message": "ok"})
+    FederationsAPI(client)["LYRA"].disconnect(force=True)
+    post = [kw for m, p, kw in client.calls if m == "POST"][0]
+    assert post.get("params") == {"force": "true"}

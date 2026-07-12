@@ -308,6 +308,21 @@ class FederationProxy:
         )
         return ClusterCapabilities.model_validate(body)
 
+    def disconnect(self, *, force: bool = False) -> Any:
+        """Disconnect (unpair) this federation.
+
+        ``POST /cluster/federations/{id}/disconnect``. Resolves the federation
+        id from the name first. ``force=True`` tears down without waiting for the
+        peer's acknowledgement (use when the peer is already gone). Returns the
+        server's confirmation payload.
+        """
+        params = {"force": "true"} if force else None
+        return self._client._request(
+            "POST",
+            f"/cluster/federations/{self._id()}/disconnect",
+            params=params,
+        )
+
     def _id(self) -> str:
         cached = self._cached_id
         if cached is None:

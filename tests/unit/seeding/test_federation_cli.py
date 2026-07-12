@@ -237,3 +237,14 @@ def test_idp_token_raw(monkeypatch, capsys):
     )
     assert rc == 0
     assert capsys.readouterr().out.strip() == "TOK123"
+
+
+def test_fed_unpair_disconnects():
+    mc = MagicMock()
+    proxy = mc.federations.__getitem__.return_value
+    proxy.disconnect.return_value = {"message": "disconnected"}
+    rc, out = _run(["fed", "unpair", "--name", "ORION"], client=mc)
+    assert rc == 0
+    mc.federations.__getitem__.assert_called_once_with("ORION")
+    proxy.disconnect.assert_called_once_with(force=False)
+    assert out["disconnected"] == "ORION"
