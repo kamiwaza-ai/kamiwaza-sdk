@@ -15,7 +15,7 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 from urllib.parse import quote
 
-import requests
+import requests  # type: ignore[import-untyped]
 
 
 class KeycloakAdminError(RuntimeError):

@@ -215,6 +215,23 @@ class FederationsAPI(BaseService):
         )
         return Federation.model_validate(paired)
 
+    def _list_raw(self) -> List[Any]:
+        """GET the federation list and return the raw item dicts.
+
+        The server may return a bare list or ``{"items": [...]}``; both are
+        normalized to a list here. Shared by :meth:`list` (which validates each
+        item into a ``Federation``) and :meth:`_resolve_id` (which only needs
+        the ``id`` / ``remote_cluster_name`` identity fields and must not depend
+        on the full ``Federation`` schema being satisfied).
+        """
+        body = self.client._request("GET", "/cluster/federations")
+        if isinstance(body, dict):
+            raw = body.get("items")
+            return raw if isinstance(raw, list) else []
+        if isinstance(body, list):
+            return body
+        return []
+
     def list(self) -> List[Federation]:
         """List all federations on this cluster.
 
@@ -222,15 +239,7 @@ class FederationsAPI(BaseService):
         surface (mode, issuer, PAIRED state, brokering config). The server may
         return a bare list or ``{"items": [...]}``; both are handled.
         """
-        body = self.client._request("GET", "/cluster/federations")
-        if isinstance(body, dict):
-            raw = body.get("items")
-            items: List[Any] = raw if isinstance(raw, list) else []
-        elif isinstance(body, list):
-            items = body
-        else:
-            items = []
-        return [Federation.model_validate(item) for item in items]
+        return [Federation.model_validate(item) for item in self._list_raw()]
 
     def get(self, federation_id: Any) -> Federation:
         """Fetch a single federation by id (``GET /cluster/federations/{id}``)."""
@@ -246,14 +255,19 @@ class FederationsAPI(BaseService):
     def _resolve_id(self, name: str) -> str:
         """Resolve a federation by name to its UUID id.
 
-        Walks the federation list once; result is cached on the
-        ``FederationProxy`` after first resolution so ``users.add`` /
-        ``users.revoke`` don't refetch.
+        Walks the raw federation list once and matches on
+        ``remote_cluster_name``; result is cached on the ``FederationProxy``
+        after first resolution so ``users.add`` / ``users.revoke`` don't
+        refetch. Deliberately reads the raw list dicts rather than constructing
+        full ``Federation`` models: id-resolution only needs the ``id`` +
+        ``remote_cluster_name`` identity fields and must not fail if the list
+        endpoint omits an unrelated ``Federation`` field (e.g. ``status``).
         """
-        for fed in self.list():
-            data = fed.model_dump()
-            if data.get("remote_cluster_name") == name:
-                return str(data["id"])
+        for item in self._list_raw():
+            if isinstance(item, dict) and item.get("remote_cluster_name") == name:
+                fed_id = item.get("id")
+                if fed_id:
+                    return str(fed_id)
 
         from ..exceptions import KamiwazaError
 

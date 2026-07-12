@@ -467,6 +467,43 @@ def test_users_add_posts_initial_tuples() -> None:
     assert add_call["json"]["initial_tuples"] == initial_tuples
 
 
+def test_resolve_id_tolerates_list_item_missing_status() -> None:
+    """Regression: name→id resolution must not require the full Federation
+    schema. A list entry missing an unrelated field (``status``) must still
+    resolve — ``_resolve_id`` reads the raw ``id`` / ``remote_cluster_name``
+    identity fields, not a validated ``Federation`` (which would raise a
+    ValidationError on the missing ``status``)."""
+    from kamiwaza_sdk.services.federations import FederationsAPI
+
+    client = _MockClient()
+    # Note: NO "status" key — the posture-surface list may omit fields the
+    # full Federation schema requires; id-resolution must not care.
+    client.expect(
+        "GET",
+        "/cluster/federations",
+        {"items": [{"id": "fed-orion-id", "remote_cluster_name": "ORION"}]},
+    )
+    client.expect(
+        "POST",
+        "/cluster/federations/fed-orion-id/users",
+        {
+            "federation_id": "fed-orion-id",
+            "external_id": "cdr-baker@lyra-uuid",
+            "auto_provisioned": False,
+        },
+    )
+
+    api = FederationsAPI(client)
+    user = api["ORION"].users.add(external_id="cdr-baker@lyra-uuid")
+
+    assert user.federation_id == "fed-orion-id"
+    # Resolved the id from a status-less entry and POSTed to the right path.
+    assert any(
+        p == "/cluster/federations/fed-orion-id/users"
+        for _, p, _ in client.calls
+    )
+
+
 # ---------------------------------------------------------------------------
 # Three-mode PSK contract documented in docstring (operator-facing intent)
 # ---------------------------------------------------------------------------
