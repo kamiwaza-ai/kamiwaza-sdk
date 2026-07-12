@@ -99,6 +99,25 @@ def test_fed_pair_derives_jwks_from_issuer():
     assert out["shared_jwks_url"] == issuer + "/protocol/openid-connect/certs"
 
 
+def test_fed_pair_receiver_uses_shared_psk_and_omits_remote_url(monkeypatch):
+    mc = MagicMock()
+    mc.federations.pair.return_value.model_dump.return_value = {"id": "fed-1"}
+    monkeypatch.setenv("PSK", "shared-psk-123")
+    issuer = "https://kc.example/realms/federated"
+    rc, out = _run(
+        ["fed", "pair", "--name", "f1", "--role", "receiver",
+         "--shared-issuer", issuer, "--preshared-key-env", "PSK"],
+        client=mc,
+    )
+    assert rc == 0
+    kwargs = mc.federations.pair.call_args.kwargs
+    # H2: the shared PSK comes from env (same value both sides), not a random UUID
+    assert kwargs["preshared_key"] == "shared-psk-123"
+    assert out["preshared_key_source"] == "env"
+    # H4: receiver omits --remote-url (would derive a wrong remote_ips)
+    assert kwargs["remote_url"] is None
+
+
 def test_fed_allow_user_builds_initial_tuples():
     mc = MagicMock()
     urn = "dataset:urn:li:dataset:(urn:li:dataPlatform:file,mini,PROD)"
@@ -133,7 +152,7 @@ def test_fed_status_lists():
 # --- dataset / gate / attr ------------------------------------------------
 
 
-def test_dataset_gated_creates_file_dataset_with_gate():
+def test_dataset_gated_binds_gate_via_set_gate():
     mc = MagicMock()
     mc.datasets.create.return_value = "urn:li:dataset:(x)"
     rc, out = _run(
@@ -144,9 +163,11 @@ def test_dataset_gated_creates_file_dataset_with_gate():
     assert rc == 0
     kwargs = mc.datasets.create.call_args.kwargs
     assert kwargs["platform"] == "file"
-    assert kwargs["properties"]["path"] == "/data/x.csv"
-    gate = json.loads(kwargs["properties"]["gate"])
-    assert gate == {"type": "acme_gates.mini.MiniClearanceGate", "config": {}}
+    # the gate is NOT smuggled into properties — it is bound via set_gate
+    assert kwargs["properties"] == {"path": "/data/x.csv"}
+    mc.datasets.set_gate.assert_called_once_with(
+        "urn:li:dataset:(x)", type="acme_gates.mini.MiniClearanceGate", config={}
+    )
     assert out["dataset_urn"] == "urn:li:dataset:(x)"
 
 

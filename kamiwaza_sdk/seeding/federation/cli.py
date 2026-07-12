@@ -114,10 +114,16 @@ def cmd_fed_pair(args: argparse.Namespace, *, client: Any) -> dict:
     admin_token = _read_env_secret(
         args.remote_admin_token_env, what="remote admin token"
     )
+    # A two-sided shared_idp pairing needs the SAME preshared key on both
+    # clusters — supply it via env so running this CLI on each side matches.
+    # When omitted, pair() mints a fresh UUID4 (single-operator convenience;
+    # only viable when the same value reaches both sides some other way).
+    psk = _read_env_secret(args.preshared_key_env, what="preshared key")
     fed = client.federations.pair(
         name=args.name,
         role=args.role,
         remote_url=args.remote_url,
+        preshared_key=psk,
         shared_issuer_url=issuer,
         shared_jwks_url=jwks,
         shared_ca_pem=ca,
@@ -127,6 +133,7 @@ def cmd_fed_pair(args: argparse.Namespace, *, client: Any) -> dict:
         "paired": fed.model_dump() if hasattr(fed, "model_dump") else str(fed),
         "shared_issuer_url": issuer,
         "shared_jwks_url": jwks,
+        "preshared_key_source": "env" if psk else "minted-uuid4",
     }
 
 
@@ -174,17 +181,19 @@ def cmd_fed_allow_user(args: argparse.Namespace, *, client: Any) -> dict:
 
 
 def cmd_dataset_gated(args: argparse.Namespace, *, client: Any) -> dict:
-    gate_spec = {
-        "type": args.gate,
-        "config": json.loads(args.gate_config) if args.gate_config else {},
-    }
+    # Create the file dataset, THEN bind the gate via the dedicated endpoint
+    # (set_gate -> PUT /catalog/datasets/{urn}/gate). Stuffing a "gate" property
+    # into the catalog record does NOT enforce a gate; set_gate is what makes
+    # retrieval gated (matches _mini_clearance.create_file_dataset).
     urn = client.datasets.create(
         name=args.name,
         platform="file",
-        properties={"path": args.path, "gate": json.dumps(gate_spec)},
+        properties={"path": args.path},
         description=args.description,
     )
-    return {"dataset_urn": urn, "gate": gate_spec["type"], "path": args.path}
+    config = json.loads(args.gate_config) if args.gate_config else {}
+    client.datasets.set_gate(urn, type=args.gate, config=config)
+    return {"dataset_urn": urn, "gate": args.gate, "path": args.path}
 
 
 def cmd_gate_install(args: argparse.Namespace, *, client: Any) -> dict:
@@ -303,9 +312,20 @@ def build_parser() -> argparse.ArgumentParser:
     p = g.add_parser("pair", help="pair two clusters in shared_idp mode")
     p.add_argument("--name", required=True, help="local name for the federation")
     p.add_argument("--role", required=True, choices=["initiator", "receiver"])
-    p.add_argument("--remote-url", required=True, help="peer API root, e.g. https://peer/api")
+    p.add_argument(
+        "--remote-url",
+        default=None,
+        help="peer API root, e.g. https://peer/api (required for --role initiator; "
+        "omit for --role receiver — the receiver row is created without it)",
+    )
     p.add_argument("--shared-issuer", required=True, help="shared realm issuer URL")
     p.add_argument("--shared-ca-file", default=None, help="PEM CA for the shared issuer's TLS")
+    p.add_argument(
+        "--preshared-key-env",
+        default=None,
+        help="env var holding the shared PSK (never argv); MUST match on both "
+        "clusters. Omitted -> a fresh UUID4 is minted.",
+    )
     p.add_argument(
         "--remote-admin-token-env",
         default=None,
