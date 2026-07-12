@@ -119,12 +119,13 @@ def test_fed_allow_user_builds_initial_tuples():
 
 def test_fed_status_lists():
     mc = MagicMock()
-    f = MagicMock()
-    f.model_dump.return_value = {"id": "fed-1", "remote_cluster_name": "peer"}
-    mc.federations.list.return_value = [f]
+    mc._request.return_value = [
+        {"id": "fed-1", "remote_cluster_name": "peer", "identity_mode": "shared_idp"}
+    ]
     rc, out = _run(["fed", "status"], client=mc)
     assert rc == 0
-    assert out["federations"] == [{"id": "fed-1", "remote_cluster_name": "peer"}]
+    mc._request.assert_called_once_with("GET", "/cluster/federations")
+    assert out["federations"][0]["identity_mode"] == "shared_idp"
 
 
 # --- dataset / gate / attr ------------------------------------------------

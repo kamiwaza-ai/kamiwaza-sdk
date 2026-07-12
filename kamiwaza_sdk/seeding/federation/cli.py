@@ -131,8 +131,10 @@ def cmd_fed_pair(args: argparse.Namespace, *, client: Any) -> dict:
 
 
 def cmd_fed_status(args: argparse.Namespace, *, client: Any) -> dict:
-    feds = client.federations.list()
-    items = [f.model_dump() if hasattr(f, "model_dump") else f for f in feds]
+    # GET /cluster/federations is the widened any-authenticated listing surface;
+    # FederationsAPI has no typed list method, so use the request seam directly.
+    feds = client._request("GET", "/cluster/federations")
+    items = feds if isinstance(feds, list) else feds.get("federations", [])
     if args.name:
         items = [
             f
@@ -394,7 +396,13 @@ def main(
     if not getattr(args, "func", None):
         parser.error("a group + command is required (e.g. 'access grant')")
     # idp commands talk to Keycloak, not the platform API — skip the SDK client.
-    client = None if getattr(args, "needs_kc", False) else client_factory(base_url=args.base_url)
+    if getattr(args, "needs_kc", False):
+        client = None
+    else:
+        api_key = os.environ.get("KAMIWAZA_API_KEY") or os.environ.get(
+            "KAMIWAZA_API_TOKEN"
+        )
+        client = client_factory(base_url=args.base_url, api_key=api_key)
     result = args.func(args, client=client)
     if result is not None:
         print(json.dumps(result, default=str))
