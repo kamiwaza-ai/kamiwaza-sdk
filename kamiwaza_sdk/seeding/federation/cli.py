@@ -420,6 +420,19 @@ def main(
             "KAMIWAZA_API_TOKEN"
         )
         client = client_factory(base_url=args.base_url, api_key=api_key)
+        # Admin-scoped seeding ops (grants, attr, dataset gate) need a credential
+        # that carries the caller's ROLES. A PAT/api-key authenticates but is
+        # role-limited; a username/password login yields a Bearer token that
+        # carries the admin role. Prefer it when KAMIWAZA_USERNAME +
+        # KAMIWAZA_PASSWORD are in the env (both env, never argv).
+        username = os.environ.get("KAMIWAZA_USERNAME")
+        password = os.environ.get("KAMIWAZA_PASSWORD")
+        if username and password and hasattr(client, "_auth_service"):
+            from kamiwaza_sdk.authentication import UserPasswordAuthenticator
+
+            client.authenticator = UserPasswordAuthenticator(
+                username, password, client._auth_service
+            )
     result = args.func(args, client=client)
     if result is not None:
         print(json.dumps(result, default=str))

@@ -93,6 +93,21 @@ class KeycloakAdmin:
         loc = resp.headers.get("Location", "")
         return loc.rstrip("/").rsplit("/", 1)[-1] if loc else None
 
+    @staticmethod
+    def _ok_json(resp: requests.Response, what: str) -> Any:
+        """Parse a successful admin-API JSON body, else raise a clear error.
+
+        Guards against treating an error body (e.g. an ext-authz rejection dict
+        on a gated /admin path) as data — which otherwise surfaces as an opaque
+        KeyError/TypeError far from the real cause.
+        """
+        if resp.status_code >= 400:
+            raise KeycloakAdminError(f"{what} failed ({resp.status_code}): {resp.text[:200]}")
+        try:
+            return resp.json()
+        except ValueError:
+            return None
+
     # -- realm -------------------------------------------------------------
 
     def ensure_realm(self, realm: str) -> Dict[str, Any]:
@@ -131,9 +146,14 @@ class KeycloakAdmin:
 
     def ensure_ropc_client(self, realm: str, client_id: str) -> Dict[str, Any]:
         """Ensure a public, direct-access-grants (ROPC) client. Idempotent."""
-        existing = self._req(
-            "GET", f"/realms/{quote(realm)}/clients", params={"clientId": client_id}
-        ).json()
+        existing = self._ok_json(
+            self._req(
+                "GET",
+                f"/realms/{quote(realm)}/clients",
+                params={"clientId": client_id},
+            ),
+            "list clients",
+        )
         if existing:
             return {"client_id": client_id, "id": existing[0]["id"], "created": False}
         resp = self._req(
@@ -162,7 +182,7 @@ class KeycloakAdmin:
         persona's ``clearance`` (etc.) is projected as a top-level token claim.
         """
         base = f"/realms/{quote(realm)}/clients/{client_uuid}/protocol-mappers/models"
-        existing = self._req("GET", base).json()
+        existing = self._ok_json(self._req("GET", base), "list protocol mappers") or []
         name = f"{attribute}-attr-mapper"
         if any(m.get("name") == name for m in existing):
             return
@@ -204,9 +224,14 @@ class KeycloakAdmin:
         email / first / last are set so the direct-access-grant (ROPC) is not
         blocked by "Account is not fully set up".
         """
-        found = self._req(
-            "GET", f"/realms/{quote(realm)}/users", params={"username": username, "exact": "true"}
-        ).json()
+        found = self._ok_json(
+            self._req(
+                "GET",
+                f"/realms/{quote(realm)}/users",
+                params={"username": username, "exact": "true"},
+            ),
+            "search users",
+        )
         attrs = {k: (v if isinstance(v, list) else [str(v)]) for k, v in (attributes or {}).items()}
         rep = {
             "username": username,
