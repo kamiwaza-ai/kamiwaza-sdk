@@ -215,6 +215,30 @@ class FederationsAPI(BaseService):
         )
         return Federation.model_validate(paired)
 
+    def list(self) -> List[Federation]:
+        """List all federations on this cluster.
+
+        ``GET /cluster/federations`` — the widened any-authenticated posture
+        surface (mode, issuer, PAIRED state, brokering config). The server may
+        return a bare list or ``{"items": [...]}``; both are handled.
+        """
+        body = self.client._request("GET", "/cluster/federations")
+        if isinstance(body, dict):
+            raw = body.get("items")
+            items: List[Any] = raw if isinstance(raw, list) else []
+        elif isinstance(body, list):
+            items = body
+        else:
+            items = []
+        return [Federation.model_validate(item) for item in items]
+
+    def get(self, federation_id: Any) -> Federation:
+        """Fetch a single federation by id (``GET /cluster/federations/{id}``)."""
+        body = self.client._request(
+            "GET", f"/cluster/federations/{federation_id}"
+        )
+        return Federation.model_validate(body)
+
     def __getitem__(self, name: str) -> "FederationProxy":
         """``client.federations["ORION"]`` — proxy for sub-resource access."""
         return FederationProxy(client=self.client, federations_api=self, name=name)
@@ -226,23 +250,16 @@ class FederationsAPI(BaseService):
         ``FederationProxy`` after first resolution so ``users.add`` /
         ``users.revoke`` don't refetch.
         """
-        body = self.client._request("GET", "/cluster/federations")
-        items: List[Any] = []
-        if isinstance(body, dict):
-            raw = body.get("items")
-            if isinstance(raw, list):
-                items = raw
-        elif isinstance(body, list):
-            items = body
-        for item in items:
-            if isinstance(item, dict) and item.get("remote_cluster_name") == name:
-                return str(item["id"])
+        for fed in self.list():
+            data = fed.model_dump()
+            if data.get("remote_cluster_name") == name:
+                return str(data["id"])
 
         from ..exceptions import KamiwazaError
 
         raise KamiwazaError(
             f"No federation named {name!r} on this cluster. "
-            "List federations with client.federations.list() (T5.x in WS-M2)."
+            "List federations with client.federations.list()."
         )
 
 
@@ -276,9 +293,11 @@ class FederationProxy:
 
         Routes ``GET /api/cluster/cluster_capabilities`` through the local
         mesh proxy at ``/api/mesh/{name}/...``. The mesh proxy resolves
-        ``name`` to the federation, applies the federation:operator ReBAC
-        guard, signs the request with the local cluster's HMAC, and
-        forwards to the remote cluster.
+        ``name`` to the federation, signs the request with the local
+        cluster's HMAC, and forwards to the remote cluster. (Mesh egress is
+        authenticated-only; cross-cluster authorization is receiver-controlled
+        per F10 — the initiator ``federation:operator`` gate was dropped in
+        ENG-8571.)
 
         The federation selector is the cluster name itself — no separate
         federation-id resolution round-trip required.

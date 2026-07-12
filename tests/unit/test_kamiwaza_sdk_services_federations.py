@@ -632,3 +632,65 @@ def test_pair_forwards_partial_brokering_kwargs_to_server() -> None:
         "local_broker_client_secret",
     ):
         assert key not in body, f"unexpected {key!r} in partial-mode body"
+
+
+# --- list / get (ENG-8213 — typed listing surface) ------------------------
+
+
+def test_list_returns_federations() -> None:
+    from kamiwaza_sdk.services.federations import FederationsAPI
+
+    client = _MockClient()
+    client.expect(
+        "GET",
+        "/cluster/federations",
+        [
+            {
+                "id": "11111111-1111-1111-1111-111111111111",
+                "status": "PAIRED",
+                "remote_cluster_name": "ORION",
+                "identity_mode": "shared_idp",
+            }
+        ],
+    )
+    feds = FederationsAPI(client).list()
+    assert len(feds) == 1
+    assert feds[0].remote_cluster_name == "ORION"
+    # extra fields flow through via extra="allow"
+    assert feds[0].model_dump()["identity_mode"] == "shared_idp"
+
+
+def test_list_handles_items_envelope() -> None:
+    from kamiwaza_sdk.services.federations import FederationsAPI
+
+    client = _MockClient()
+    client.expect(
+        "GET",
+        "/cluster/federations",
+        {
+            "items": [
+                {
+                    "id": "22222222-2222-2222-2222-222222222222",
+                    "status": "PAIRED",
+                    "remote_cluster_name": "LYRA",
+                }
+            ]
+        },
+    )
+    feds = FederationsAPI(client).list()
+    assert [f.remote_cluster_name for f in feds] == ["LYRA"]
+
+
+def test_get_fetches_single_federation() -> None:
+    from kamiwaza_sdk.services.federations import FederationsAPI
+
+    client = _MockClient()
+    fid = "33333333-3333-3333-3333-333333333333"
+    client.expect(
+        "GET",
+        f"/cluster/federations/{fid}",
+        {"id": fid, "status": "PAIRED", "remote_cluster_name": "VELA"},
+    )
+    fed = FederationsAPI(client).get(fid)
+    assert fed.id == fid
+    assert fed.remote_cluster_name == "VELA"

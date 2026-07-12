@@ -119,12 +119,14 @@ def test_fed_allow_user_builds_initial_tuples():
 
 def test_fed_status_lists():
     mc = MagicMock()
-    mc._request.return_value = [
-        {"id": "fed-1", "remote_cluster_name": "peer", "identity_mode": "shared_idp"}
-    ]
+    f = MagicMock()
+    f.model_dump.return_value = {
+        "id": "fed-1", "remote_cluster_name": "peer", "identity_mode": "shared_idp"
+    }
+    mc.federations.list.return_value = [f]
     rc, out = _run(["fed", "status"], client=mc)
     assert rc == 0
-    mc._request.assert_called_once_with("GET", "/cluster/federations")
+    mc.federations.list.assert_called_once_with()
     assert out["federations"][0]["identity_mode"] == "shared_idp"
 
 

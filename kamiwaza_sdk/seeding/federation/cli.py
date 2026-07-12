@@ -131,10 +131,7 @@ def cmd_fed_pair(args: argparse.Namespace, *, client: Any) -> dict:
 
 
 def cmd_fed_status(args: argparse.Namespace, *, client: Any) -> dict:
-    # GET /cluster/federations is the widened any-authenticated listing surface;
-    # FederationsAPI has no typed list method, so use the request seam directly.
-    feds = client._request("GET", "/cluster/federations")
-    items = feds if isinstance(feds, list) else feds.get("federations", [])
+    items = [f.model_dump() for f in client.federations.list()]
     if args.name:
         items = [
             f
