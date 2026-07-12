@@ -274,7 +274,16 @@ def cmd_idp_token(args: argparse.Namespace, *, client: Any = None) -> Optional[d
 
 
 def _add_kc_args(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--kc-url", required=True, help="Keycloak base URL, e.g. https://host")
+    p.add_argument(
+        "--kc-url",
+        required=True,
+        help="Keycloak base URL. NOTE: this reaches the Keycloak ADMIN API "
+        "(/admin/*), which by design is NOT exposed on the public ingress (only "
+        "OIDC endpoints are). Reach Keycloak directly — e.g. `kubectl port-forward "
+        "svc/keycloak 8080:80 -n kamiwaza` then --kc-url http://localhost:8080. For "
+        "production, provision the shared realm via the auth chart's init-Job "
+        "pipeline instead of this dev command.",
+    )
     p.add_argument("--kc-admin-user", default="admin", help="master-realm admin user")
     p.add_argument(
         "--kc-admin-pw-env",
@@ -389,7 +398,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     # idp (Keycloak-admin)
     g = groups.add_parser(
-        "idp", help="(dev) Keycloak-side shared-realm seeding"
+        "idp",
+        help="(DEV/TEST ONLY) Keycloak-side shared-realm seeding — `bootstrap`/"
+        "`persona` need DIRECT Keycloak admin access (port-forward). For "
+        "production, provision the shared realm declaratively via the auth "
+        "chart (see ENG-8571 follow-up).",
     ).add_subparsers(dest="command")
     p = g.add_parser("bootstrap", help="ensure realm + ROPC client + attribute mapper")
     p.add_argument("--realm", required=True, help="shared realm, e.g. federated")
@@ -410,7 +423,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--user", required=True)
     p.add_argument("--pw-env", required=True)
     p.add_argument("--raw", action="store_true", help="print only the bare token")
-    p.add_argument("--kc-url", required=True, help="Keycloak base URL, e.g. https://host")
+    p.add_argument(
+        "--kc-url",
+        required=True,
+        help="Keycloak base URL. Unlike bootstrap/persona, this only does an "
+        "ROPC token grant against the PUBLIC OIDC endpoint (/realms/.../token), "
+        "so the normal ingress URL works — no admin access / port-forward needed.",
+    )
     p.set_defaults(func=cmd_idp_token, needs_kc=True)
 
     return parser
