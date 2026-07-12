@@ -282,6 +282,89 @@ def retrieve_through_gate(client: Any, dataset_urn: str) -> tuple[list[dict], di
     return rows, summary
 
 
+def mesh_retrieve_through_gate(
+    persona_client: Any,
+    base_url: str,
+    token: str,
+    fed_name: str,
+    dataset_urn: str,
+    *,
+    verify: Any,
+) -> tuple[list[dict], dict]:
+    """Create a retrieval job over the mesh, then drain its gated SSE stream over
+    the mesh — the L3 (two-cluster) analogue of ``retrieve_through_gate``.
+
+    ``POST /mesh/{fed}/api/retrieval/jobs`` returns an async job handle, so the
+    gated ``records`` + ``gate_audit`` footer only arrive on
+    ``GET /mesh/{fed}/api/retrieval/jobs/{id}/stream`` (SSE). The mesh proxy
+    forwards both verbatim (StreamingResponse over ``aiter_raw``). The create goes
+    through the SDK client so a 401/403/404 raises APIError for
+    ``_mesh_call_or_skip`` to classify; the stream is a raw SSE GET (the SDK only
+    streams local retrieval paths). Returns (rows, gate_audit summary) in the
+    shape ``assert_persona_result`` expects; ``gate_audit`` is absorbed as either
+    the inline single-dict footer or the federated list-of-dicts seam.
+    """
+    import requests
+
+    job = persona_client._request(
+        "POST", f"/mesh/{fed_name}/api/retrieval/jobs", json={"dataset_urn": dataset_urn}
+    )
+    if isinstance(job, dict):
+        job_id = job.get("job_id") or job.get("id")
+    else:
+        job_id = getattr(job, "job_id", None) or getattr(job, "id", None)
+    assert job_id, f"mesh create-job returned no job id: {job!r}"
+
+    included = redacted = total = 0
+    saw = False
+    rows: list[dict] = []
+
+    def _absorb(entry: Any) -> None:
+        nonlocal included, redacted, total, saw
+        if isinstance(entry, list):
+            for item in entry:
+                _absorb(item)
+        elif isinstance(entry, dict):
+            saw = True
+            included += int(entry.get("included", 0))
+            redacted += int(entry.get("redacted", 0))
+            total += int(entry.get("total", 0))
+
+    url = f"{base_url}/mesh/{fed_name}/api/retrieval/jobs/{job_id}/stream"
+    headers = {"Authorization": f"Bearer {token}", "Accept": "text/event-stream"}
+    with requests.get(
+        url, headers=headers, stream=True, verify=verify, timeout=120
+    ) as sr:
+        if sr.status_code in (403, 404):
+            from kamiwaza_sdk.exceptions import APIError
+
+            exc = APIError(f"mesh retrieval stream returned {sr.status_code}")
+            exc.status_code = sr.status_code  # let _mesh_call_or_skip classify it
+            raise exc
+        sr.raise_for_status()
+        event: Optional[str] = None
+        data_lines: list[str] = []
+        for raw in sr.iter_lines(decode_unicode=True):
+            if raw is None:
+                continue
+            if raw == "":  # SSE event terminator (blank line)
+                if data_lines and event == "chunk":
+                    payload = json.loads("\n".join(data_lines))
+                    rows.extend(payload.get("records") or payload.get("rows") or [])
+                    _absorb((payload.get("metadata") or {}).get("gate_audit"))
+                event, data_lines = None, []
+                continue
+            if raw.startswith(":"):  # SSE comment / heartbeat
+                continue
+            if raw.startswith("event:"):
+                event = raw[len("event:") :].strip()
+            elif raw.startswith("data:"):
+                data_lines.append(raw[len("data:") :].lstrip())
+
+    summary = {"included": included, "redacted": redacted, "total": total} if saw else {}
+    return rows, summary
+
+
 def initiator_cluster_uuid(receiver: Any, receiver_fed_id: str) -> Optional[str]:
     """The initiator cluster's UUID, for building brokered ``external_id``s.
 
@@ -301,40 +384,6 @@ def initiator_cluster_uuid(receiver: Any, receiver_fed_id: str) -> Optional[str]
     record = next((f for f in feds if str(f.get("id")) == str(receiver_fed_id)), None)
     cluster_uuid = (record or {}).get("remote_cluster_id")
     return str(cluster_uuid) if cluster_uuid else None
-
-
-def parse_mesh_retrieval_result(result: Any, initiator: Any, fed_name: str) -> tuple[list[dict], dict]:
-    """Parse a mesh retrieval-jobs response into (rows, gate_audit summary).
-
-    The federated job-result seam emits ``gate_audit`` as a LIST (one entry per
-    gated target dataset), unlike the inline single-dict retrieval footer — so
-    branch on the actual shape. Kept defensive: this is the live-iteration seam
-    that only exercises once the mesh data-plane returns records.
-    """
-    del initiator, fed_name  # reserved for a poll/stream variant if the mesh
-    # returns a job handle rather than an inline result
-
-    included = redacted = total = 0
-    saw = False
-
-    def _absorb(entry: Any) -> None:
-        nonlocal included, redacted, total, saw
-        if isinstance(entry, list):
-            for item in entry:
-                _absorb(item)
-        elif isinstance(entry, dict):
-            saw = True
-            included += int(entry.get("included", 0))
-            redacted += int(entry.get("redacted", 0))
-            total += int(entry.get("total", 0))
-
-    rows: list[dict] = []
-    if isinstance(result, dict):
-        rows = list(result.get("records") or result.get("rows") or [])
-        meta = result.get("metadata") or result
-        _absorb(meta.get("gate_audit"))
-    summary = {"included": included, "redacted": redacted, "total": total} if saw else {}
-    return rows, summary
 
 
 def assert_persona_result(clearance: str, rows: list[dict], gate_audit: dict) -> None:

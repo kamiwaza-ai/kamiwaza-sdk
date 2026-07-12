@@ -259,15 +259,14 @@ def test_federated_persona_sees_exact_post_gate_counts(
     persona = mc.raw_token_client(initiator.base_url, token, verify=wiring["verify"])
 
     def _retrieve():
-        # Mesh retrieval-jobs on the receiver, routed through the federation.
-        return persona._request(
-            "POST",
-            f"/mesh/{name}/api/retrieval/jobs",
-            json={"dataset_urn": urn},
+        # Create the retrieval job over the mesh AND drain its gated SSE stream
+        # over the mesh — the results + gate_audit footer arrive on the stream,
+        # not the async create response. A 403/404 on either leg soft-skips.
+        return mc.mesh_retrieve_through_gate(
+            persona, initiator.base_url, token, name, urn, verify=wiring["verify"]
         )
 
-    result = _mesh_call_or_skip(_retrieve)
-    rows, gate_audit = mc.parse_mesh_retrieval_result(result, initiator, name)
+    rows, gate_audit = _mesh_call_or_skip(_retrieve)
     mc.assert_persona_result(clearance, rows, gate_audit)
 
 
