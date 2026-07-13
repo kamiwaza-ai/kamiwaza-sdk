@@ -943,6 +943,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "httpx" },
     { name = "pydantic" },
+    { name = "starlette" },
 ]
 
 [package.metadata]
@@ -950,6 +951,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.136.3,<1.0.0" },
     { name = "httpx" },
     { name = "pydantic", specifier = ">=2.0" },
+    { name = "starlette", specifier = ">=1.3.1,<2.0.0" },
 ]
 
 [[package]]
@@ -967,6 +969,7 @@ dependencies = [
     { name = "pyyaml" },
     { name = "requests" },
     { name = "rich" },
+    { name = "starlette" },
     { name = "typer" },
     { name = "urllib3" },
 ]
@@ -979,6 +982,7 @@ all = [
 connector = [
     { name = "fastapi" },
     { name = "pydantic", extra = ["email"] },
+    { name = "starlette" },
 ]
 convert = [
     { name = "anthropic" },
@@ -1030,6 +1034,8 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "requests" },
     { name = "rich", specifier = ">=13.0" },
+    { name = "starlette", specifier = ">=1.3.1,<2.0.0" },
+    { name = "starlette", marker = "extra == 'connector'", specifier = ">=1.3.1,<2.0.0" },
     { name = "typer", specifier = ">=0.9.0" },
     { name = "urllib3", specifier = ">=2.7.0,<3.0.0" },
 ]

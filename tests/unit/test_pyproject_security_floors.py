@@ -46,7 +46,9 @@ def test_runtime_dependency_security_floors():
     connector_extra = pyproject["project"]["optional-dependencies"]["connector"]
 
     assert _minimum_version(_find_requirement(dependencies, "fastapi")) >= Version("0.136.3")
+    assert _minimum_version(_find_requirement(dependencies, "starlette")) >= Version("1.3.1")
     assert _minimum_version(_find_requirement(connector_extra, "fastapi")) >= Version("0.136.3")
+    assert _minimum_version(_find_requirement(connector_extra, "starlette")) >= Version("1.3.1")
     assert _minimum_version(_find_requirement(dependencies, "urllib3")) >= Version("2.7.0")
 
 
@@ -70,4 +72,5 @@ def test_extensions_lib_dependency_security_floors():
     build_dependencies = pyproject["build-system"]["requires"]
 
     assert _minimum_version(_find_requirement(dependencies, "fastapi")) >= Version("0.136.3")
+    assert _minimum_version(_find_requirement(dependencies, "starlette")) >= Version("1.3.1")
     assert _minimum_version(_find_requirement(build_dependencies, "wheel")) >= Version("0.46.2")
