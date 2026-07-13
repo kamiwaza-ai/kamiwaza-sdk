@@ -6,6 +6,18 @@ follow semver. The library is published to PyPI as a standalone package
 `kamiwaza-sdk` — extension authors pin against the `[lib]` minor range in
 `requirements.txt`.
 
+## [0.4.3] — 2026-07-13 (ENG-8614)
+
+### Fixed
+
+* **Published the patched runtime dependency floor for standalone
+  `kamiwaza-extensions-lib` consumers.** The library now advertises
+  `fastapi>=0.136.3,<1.0.0` and `starlette>=1.3.1,<2.0.0` for the 1.1.0
+  vulnerability burn-down. This patch bump is required because
+  the package is published independently from `kamiwaza-sdk`; PyPI
+  consumers pinned to `>=0.4,<0.5` cannot receive changed dependency
+  metadata from the already-published 0.4.2 wheel.
+
 ## [0.4.2] — 2026-06-15 (ENG-6911)
 
 ### Fixed
