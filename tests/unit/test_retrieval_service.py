@@ -6,7 +6,7 @@ import pytest
 
 from datetime import datetime
 
-from kamiwaza_sdk.exceptions import APIError, DatasetNotFoundError, TransportNotSupportedError
+from kamiwaza_sdk.exceptions import DatasetNotFoundError, NotFoundError, TransportNotSupportedError
 from kamiwaza_sdk.schemas.retrieval import RetrievalRequest
 from kamiwaza_sdk.services.retrieval import RetrievalResult, RetrievalService
 
@@ -161,7 +161,7 @@ def test_materialize_grpc_returns_handshake(dummy_client):
 def test_create_job_translates_not_found():
     class FailingClient:
         def post(self, *_args, **_kwargs):
-            raise APIError(
+            raise NotFoundError(
                 "not found",
                 status_code=404,
                 response_data={"detail": "Dataset missing"},

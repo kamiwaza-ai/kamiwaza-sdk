@@ -93,13 +93,14 @@ The Federation API + SDK MVP unified the SDK surface in WS-M3.2 and added federa
 - **Canonical import:** `from kamiwaza_sdk import KamiwazaClient` (the legacy top-level `kamiwaza` package has been retired; the `kamiwaza_sdk` namespace is the only supported one).
 - **Base URL convention:** `KamiwazaClient(base_url=".../api", verify=...)` — `base_url` must end with `/api`. `verify=` / `ca_bundle=` kwargs accept self-signed certs in dev (T7.13).
 - **Federation-aware services on the client:**
-  - `kz.federations` — pair / list / probe federations (T7.5)
+  - `kz.federations` — pair / list / get / probe / disconnect federations (list/get/disconnect added in ENG-8213; T7.5)
   - `kz.jobs` — submit, run(recoverable=True), cancel, list cluster jobs (T7.6)
   - `kz.cluster` — diagnose, capabilities, operations, set_execution_gate, clear_execution_gate (T7.7)
   - `kz.gates` — discover (M2/M3 introduced); `kz.gates.packages` — install/replace/uninstall hash-pinned gate packages (M5 / T7.10)
   - `kz.subjects` / `kz.datasets` — AuthzSubjects CRUD + dataset attribute-gate bindings (M3)
   - `kz.retrieval` — federated retrieval cancel + list (M2)
   - `kz.auth` — `UserPasswordAuthenticator` for live integration tests
+- **`kamiwaza-fed` CLI (ENG-8213):** an operator/test utility (`kamiwaza_sdk.seeding.federation`; console script `kamiwaza-fed`) that productizes shared_idp stand-up + ReBAC access seeding that previously lived only in the L3 test fixtures (`tests/integration/_mini_clearance.py`). Groups: `access` (ReBAC grants), `fed` (pair / status / allow-user / unpair), `dataset` / `gate` / `attr` (gated-retrieval setup), and `idp` (**DEV/TEST-only** Keycloak-admin realm / client / clearance-mapper / persona seeding — needs direct Keycloak admin access the ingress doesn't expose; production shared_idp provisioning belongs in the auth chart's init-Job pipeline, ENG-8573). Secrets from env vars, never argv.
 - **Pattern when a federation surface is missing:** the canonical PRD + Design at `../kamiwaza-docs-engineering-internal/docs/specifications/core/federation-api-and-sdk/` is the source of truth. The M5 smoke playbook at `../kamiwaza-docs-engineering-internal/docs/mesh-v1.0.0/demos/m5-gate-packages-smoke.md` shows the canonical install→discover→bind→replace→uninstall sequence.
 - **Service-doc sync:** kamiwaza-docs syncs `docs/services/<svc>/README.md` from this repo at build time (see kamiwaza-docs agent guidance). When you add federation-aware methods to a service, update that service's `docs/services/<svc>/README.md` here so customer docs catch up.
 

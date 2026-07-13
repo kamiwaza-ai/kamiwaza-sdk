@@ -129,6 +129,44 @@ class AvailableConnector(BaseModel):
     scopes: List[str] = []
 
 
+class ConnectorCatalogRegister(BaseModel):
+    """Register a connector *type* in the cluster's DB-backed catalog.
+
+    Parity with registering an app template: the connector's self-describing
+    manifest is stored so it surfaces in the admin catalog as a configurable
+    entry, without editing the remote ``connectors.json``. Identity fields
+    (``connector_type``/``provider_label``/``icon``) are derived from the manifest
+    server-side. No config is stored — an admin fills it in afterwards.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    manifest: Dict[str, Any] = Field(
+        ...,
+        description="The connector's self-describing manifest (ConnectorSpec.to_manifest()).",
+    )
+    version: Optional[str] = Field(
+        default=None, description="Optional catalog version tag (advisory)."
+    )
+
+
+class CatalogConnector(BaseModel):
+    """A connector available to subscribe from the catalog (remote or DB-backed).
+
+    ``manifest`` carries the connector's ``config_schema``/``config_fields`` so the
+    admin UI can render its config form. ``already_subscribed`` flags types this
+    deployment already has.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    connector_type: str
+    provider_label: str
+    icon: Optional[str] = None
+    already_subscribed: bool = False
+    manifest: Dict[str, Any]
+
+
 # Deprecated aliases: these schemas were renamed ExternalConnector* -> Connector*
 # (PR #193). The old names are kept so existing importers keep working; prefer the
 # Connector* names in new code.

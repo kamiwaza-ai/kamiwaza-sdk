@@ -491,6 +491,10 @@ class KamiwazaClient:
 
         typed = error_for_response(response.status_code, payload, message)
         if type(typed) is not KamiwazaError:
+            if isinstance(typed, APIError):
+                typed.response_text = response_text
+                typed.response_data = payload
+                typed.body = payload
             raise typed
 
         raise APIError(

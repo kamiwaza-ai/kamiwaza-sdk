@@ -47,7 +47,9 @@ pytestmark = [
 # GGUF tests skip-not-fail if the repo can't be made ready.
 LLAMACPP_REPO = "unsloth/Qwen3-4B-Instruct-2507-GGUF"
 LLAMACPP_QUANT = "q4_k"
-VLLM_REPO = "Qwen/Qwen3-4B-Instruct-2507"
+# Keep the vLLM lane intentionally small. This is a CUDA engine smoke, not a
+# model-size certification, and it must fit on a busy single-node release UAT.
+VLLM_REPO = "Qwen/Qwen3-0.6B"
 
 WAIT_TIMEOUT = 600
 FRACTIONAL_COPIES = 2
@@ -152,8 +154,18 @@ def _stop_quietly(client, deployment_id):
 def _assert_chat_completion(client, deployment_id):
     """Serve a chat prompt via the OpenAI-compatible client and assert a reply."""
     openai_client = client.openai.get_client(deployment_id=deployment_id)
+    model_name = "kamiwaza"
+    try:
+        served_models = openai_client.models.list()
+        for served_model in getattr(served_models, "data", []) or []:
+            served_model_id = str(getattr(served_model, "id", "") or "")
+            if served_model_id:
+                model_name = served_model_id
+                break
+    except Exception:  # noqa: BLE001 - older engines accept the fallback alias
+        pass
     response = openai_client.chat.completions.create(
-        model="kamiwaza",
+        model=model_name,
         messages=_CHAT_PROMPT,
         temperature=0.0,
     )

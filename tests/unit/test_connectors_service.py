@@ -3,9 +3,15 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from pydantic import ValidationError
 
 from kamiwaza_sdk.exceptions import APIError, NotFoundError
-from kamiwaza_sdk.schemas.connectors import ConnectorCreate, ConnectorUpdate
+from kamiwaza_sdk.schemas.connectors import (
+    CatalogConnector,
+    ConnectorCatalogRegister,
+    ConnectorCreate,
+    ConnectorUpdate,
+)
 from kamiwaza_sdk.services.connectors import ConnectorService
 
 pytestmark = pytest.mark.unit
@@ -306,3 +312,67 @@ def test_create_allows_empty_scopes():
     assert conn.connector_type == "m365"  # echoes the response connector_type
     body = client.calls[0][2]["json"]
     assert body["scopes"] == []
+
+
+# --- register_type: DB-backed connector catalog (ENG-8193) ---
+
+
+def _catalog_resp(ctype="hubspot"):
+    return {
+        "connector_type": ctype,
+        "provider_label": "HubSpot",
+        "icon": None,
+        "already_subscribed": False,
+        "manifest": {"connector_type": ctype, "config_fields": [{"name": "client_id"}]},
+    }
+
+
+def test_register_type_posts_manifest_to_catalog():
+    manifest = {
+        "connector_type": "hubspot",
+        "provider_id": "hubspot",
+        "provider_label": "HubSpot",
+    }
+    client = DummyClient({("POST", "/connectors/catalog"): _catalog_resp()})
+    service = ConnectorService(client)
+
+    result = service.register_type(
+        ConnectorCatalogRegister(manifest=manifest, version="1.0")
+    )
+
+    assert isinstance(result, CatalogConnector)
+    assert result.connector_type == "hubspot"
+    assert result.already_subscribed is False
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("POST", "/connectors/catalog")
+    body = kwargs["json"]
+    assert body["manifest"] == manifest
+    assert body["version"] == "1.0"
+
+
+def test_register_type_omits_none_version():
+    """`version` is optional/advisory; exclude_none keeps it out of the body."""
+    manifest = {
+        "connector_type": "linear",
+        "provider_id": "linear",
+        "provider_label": "Linear",
+    }
+    client = DummyClient({("POST", "/connectors/catalog"): _catalog_resp("linear")})
+    service = ConnectorService(client)
+
+    service.register_type(ConnectorCatalogRegister(manifest=manifest))
+
+    body = client.calls[0][2]["json"]
+    assert "version" not in body
+
+
+def test_connector_catalog_schemas_roundtrip():
+    req = ConnectorCatalogRegister(manifest={"connector_type": "x"})
+    assert req.version is None  # optional
+    with pytest.raises(ValidationError):
+        ConnectorCatalogRegister()  # manifest is required
+
+    resp = CatalogConnector(
+        connector_type="x", provider_label="X", manifest={"connector_type": "x"}
+    )
+    assert resp.already_subscribed is False and resp.icon is None
