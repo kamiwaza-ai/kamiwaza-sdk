@@ -67,6 +67,9 @@ class FederationsAPI(BaseService):
         local_kc_jwks_url: Optional[str] = None,
         local_broker_client_id: Optional[str] = None,
         local_broker_client_secret: Optional[str] = None,
+        shared_issuer_url: Optional[str] = None,
+        shared_jwks_url: Optional[str] = None,
+        shared_ca_pem: Optional[str] = None,
     ) -> Federation:
         """Initiate or accept a federation pairing.
 
@@ -174,6 +177,18 @@ class FederationsAPI(BaseService):
             create_body["local_broker_client_id"] = local_broker_client_id
         if local_broker_client_secret is not None:
             create_body["local_broker_client_secret"] = local_broker_client_secret
+        # ENG-8213 — shared_idp (Alt C). Supplying ``shared_issuer_url`` creates
+        # the federation in the receiver-controlled shared_idp mode (both
+        # clusters trust this shared realm) instead of the legacy source-trusted
+        # peer_kc mode, and it is NOT gated by ALLOW_UNTRUSTED_FEDERATION.
+        # ``shared_jwks_url`` is derived from the issuer server-side when omitted;
+        # ``shared_ca_pem`` pins the JWKS-fetch trust root for a self-signed realm.
+        if shared_issuer_url is not None:
+            create_body["shared_issuer_url"] = shared_issuer_url
+        if shared_jwks_url is not None:
+            create_body["shared_jwks_url"] = shared_jwks_url
+        if shared_ca_pem is not None:
+            create_body["shared_ca_pem"] = shared_ca_pem
 
         created = self.client._request(
             "POST",
@@ -200,6 +215,39 @@ class FederationsAPI(BaseService):
         )
         return Federation.model_validate(paired)
 
+    def _list_raw(self) -> List[Any]:
+        """GET the federation list and return the raw item dicts.
+
+        The server may return a bare list or ``{"items": [...]}``; both are
+        normalized to a list here. Shared by :meth:`list` (which validates each
+        item into a ``Federation``) and :meth:`_resolve_id` (which only needs
+        the ``id`` / ``remote_cluster_name`` identity fields and must not depend
+        on the full ``Federation`` schema being satisfied).
+        """
+        body = self.client._request("GET", "/cluster/federations")
+        if isinstance(body, dict):
+            raw = body.get("items")
+            return raw if isinstance(raw, list) else []
+        if isinstance(body, list):
+            return body
+        return []
+
+    def list(self) -> List[Federation]:
+        """List all federations on this cluster.
+
+        ``GET /cluster/federations`` — the widened any-authenticated posture
+        surface (mode, issuer, PAIRED state, brokering config). The server may
+        return a bare list or ``{"items": [...]}``; both are handled.
+        """
+        return [Federation.model_validate(item) for item in self._list_raw()]
+
+    def get(self, federation_id: Any) -> Federation:
+        """Fetch a single federation by id (``GET /cluster/federations/{id}``)."""
+        body = self.client._request(
+            "GET", f"/cluster/federations/{federation_id}"
+        )
+        return Federation.model_validate(body)
+
     def __getitem__(self, name: str) -> "FederationProxy":
         """``client.federations["ORION"]`` — proxy for sub-resource access."""
         return FederationProxy(client=self.client, federations_api=self, name=name)
@@ -207,27 +255,25 @@ class FederationsAPI(BaseService):
     def _resolve_id(self, name: str) -> str:
         """Resolve a federation by name to its UUID id.
 
-        Walks the federation list once; result is cached on the
-        ``FederationProxy`` after first resolution so ``users.add`` /
-        ``users.revoke`` don't refetch.
+        Walks the raw federation list once and matches on
+        ``remote_cluster_name``; result is cached on the ``FederationProxy``
+        after first resolution so ``users.add`` / ``users.revoke`` don't
+        refetch. Deliberately reads the raw list dicts rather than constructing
+        full ``Federation`` models: id-resolution only needs the ``id`` +
+        ``remote_cluster_name`` identity fields and must not fail if the list
+        endpoint omits an unrelated ``Federation`` field (e.g. ``status``).
         """
-        body = self.client._request("GET", "/cluster/federations")
-        items: List[Any] = []
-        if isinstance(body, dict):
-            raw = body.get("items")
-            if isinstance(raw, list):
-                items = raw
-        elif isinstance(body, list):
-            items = body
-        for item in items:
+        for item in self._list_raw():
             if isinstance(item, dict) and item.get("remote_cluster_name") == name:
-                return str(item["id"])
+                fed_id = item.get("id")
+                if fed_id:
+                    return str(fed_id)
 
         from ..exceptions import KamiwazaError
 
         raise KamiwazaError(
             f"No federation named {name!r} on this cluster. "
-            "List federations with client.federations.list() (T5.x in WS-M2)."
+            "List federations with client.federations.list()."
         )
 
 
@@ -261,9 +307,11 @@ class FederationProxy:
 
         Routes ``GET /api/cluster/cluster_capabilities`` through the local
         mesh proxy at ``/api/mesh/{name}/...``. The mesh proxy resolves
-        ``name`` to the federation, applies the federation:operator ReBAC
-        guard, signs the request with the local cluster's HMAC, and
-        forwards to the remote cluster.
+        ``name`` to the federation, signs the request with the local
+        cluster's HMAC, and forwards to the remote cluster. (Mesh egress is
+        authenticated-only; cross-cluster authorization is receiver-controlled
+        per F10 — the initiator ``federation:operator`` gate was dropped in
+        ENG-8571.)
 
         The federation selector is the cluster name itself — no separate
         federation-id resolution round-trip required.
@@ -273,6 +321,21 @@ class FederationProxy:
             f"/mesh/{self.name}/api/cluster/cluster_capabilities",
         )
         return ClusterCapabilities.model_validate(body)
+
+    def disconnect(self, *, force: bool = False) -> Any:
+        """Disconnect (unpair) this federation.
+
+        ``POST /cluster/federations/{id}/disconnect``. Resolves the federation
+        id from the name first. ``force=True`` tears down without waiting for the
+        peer's acknowledgement (use when the peer is already gone). Returns the
+        server's confirmation payload.
+        """
+        params = {"force": "true"} if force else None
+        return self._client._request(
+            "POST",
+            f"/cluster/federations/{self._id()}/disconnect",
+            params=params,
+        )
 
     def _id(self) -> str:
         cached = self._cached_id
