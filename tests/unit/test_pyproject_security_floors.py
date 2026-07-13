@@ -50,6 +50,10 @@ def test_runtime_dependency_security_floors():
     assert _minimum_version(_find_requirement(connector_extra, "fastapi")) >= Version("0.136.3")
     assert _minimum_version(_find_requirement(connector_extra, "starlette")) >= Version("1.3.1")
     assert _minimum_version(_find_requirement(dependencies, "urllib3")) >= Version("2.7.0")
+    assert _minimum_version(_find_requirement(dependencies, "requests")) >= Version("2.33.0")
+    assert _minimum_version(_find_requirement(dependencies, "idna")) >= Version("3.15")
+    assert _minimum_version(_find_requirement(dependencies, "click")) >= Version("8.3.3")
+    assert _minimum_version(_find_requirement(dependencies, "pygments")) >= Version("2.20.0")
 
 
 def test_dev_and_build_dependency_security_floors():
@@ -61,6 +65,7 @@ def test_dev_and_build_dependency_security_floors():
 
     assert _minimum_version(_find_requirement(dev_dependencies, "black")) >= Version("26.5.1")
     assert _minimum_version(_find_requirement(dev_dependencies, "cryptography")) >= Version("48.0.1")
+    assert _minimum_version(_find_requirement(dev_dependencies, "pytest")) >= Version("9.0.3")
     assert _minimum_version(_find_requirement(build_dependencies, "wheel")) >= Version("0.46.2")
 
 
