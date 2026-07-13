@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
-import tomllib
 from pathlib import Path
 
 from packaging.requirements import Requirement
 from packaging.version import Version
 
+try:
+    import tomllib
+except ImportError:  # pragma: no cover - Python 3.10 compatibility
+    import tomli as tomllib
 
-ROOT_PYPROJECT_PATH = Path("pyproject.toml")
-EXTENSIONS_LIB_PYPROJECT_PATH = Path("kamiwaza_extensions_lib/pyproject.toml")
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+ROOT_PYPROJECT_PATH = REPO_ROOT / "pyproject.toml"
+EXTENSIONS_LIB_PYPROJECT_PATH = REPO_ROOT / "kamiwaza_extensions_lib" / "pyproject.toml"
 
 
 def _minimum_version(requirement_text: str) -> Version:
@@ -52,7 +57,7 @@ def test_dev_and_build_dependency_security_floors():
     dev_dependencies = pyproject["dependency-groups"]["dev"]
     build_dependencies = pyproject["build-system"]["requires"]
 
-    assert _minimum_version(_find_requirement(dev_dependencies, "black")) >= Version("26.3.1")
+    assert _minimum_version(_find_requirement(dev_dependencies, "black")) >= Version("26.5.1")
     assert _minimum_version(_find_requirement(dev_dependencies, "cryptography")) >= Version("48.0.1")
     assert _minimum_version(_find_requirement(build_dependencies, "wheel")) >= Version("0.46.2")
 
