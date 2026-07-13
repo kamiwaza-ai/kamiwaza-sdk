@@ -36,7 +36,12 @@ def _manifest() -> dict:
     }
 
 
-def _info(manifest: dict | None = _manifest(), name: str = "m365") -> ExtensionInfo:
+_DEFAULT_MANIFEST = object()  # sentinel: distinguish "use default" from explicit None
+
+
+def _info(manifest=_DEFAULT_MANIFEST, name: str = "m365") -> ExtensionInfo:
+    if manifest is _DEFAULT_MANIFEST:
+        manifest = _manifest()  # build a fresh manifest each call
     metadata = {"name": name, "version": "1.0.0", "type": "connector"}
     if manifest is not None:
         metadata["manifest"] = manifest
@@ -70,9 +75,7 @@ def test_type_file_map_routes_connectors_to_connectors_json():
 
 
 def test_build_connector_entry_carries_manifest_name_version_and_digest():
-    entry = build_connector_entry(
-        _info(), _manifest(), pinned_digest="sha256:deadbeef"
-    )
+    entry = build_connector_entry(_info(), _manifest(), pinned_digest="sha256:deadbeef")
     assert entry["name"] == "m365"
     assert entry["version"] == "1.0.0"
     assert entry["connector_type"] == "m365"  # manifest field preserved
@@ -90,9 +93,7 @@ def test_build_connector_entry_without_digest_omits_it():
 
 
 def _patches(publisher_mock):
-    profile = SimpleNamespace(
-        registry="ghcr.io", catalog_bucket="kamiwaza-catalog"
-    )
+    profile = SimpleNamespace(registry="ghcr.io", catalog_bucket="kamiwaza-catalog")
     return (
         patch(
             "kamiwaza_extensions.profile_manager.ProfileManager.resolve_profile",
@@ -132,26 +133,119 @@ def test_publish_connector_publishes_manifest_to_connectors_catalog():
     assert entry["deployment"]["image_digest"] == "sha256:abc123"
 
 
-def test_publish_connector_skips_digest_resolution_on_no_push():
+def test_publish_connector_honors_revision_as_image_tag():
+    """--revision (the build's canonical tag) overrides the manifest's static
+    deployment.image_tag for BOTH digest resolution and the published entry, so
+    a stage/prod publish pins that stage's image instead of the authoring
+    default (ENG-8617; prevents the ENG-8350 develop-pin tag mismatch)."""
+    publisher = MagicMock()
+    publisher.publish.return_value = SimpleNamespace(
+        action="insert", catalog_file="garden/v3/connectors.json", version="1.0.0"
+    )
+    p_profile, p_buildx, p_digest, p_pub = _patches(publisher)
+    with p_profile, p_buildx, p_digest as digest_mock, p_pub:
+        publish_connector(_info(), stage="stage", revision="release-1.0.0")
+
+    # digest resolved from the REVISION-tagged ref, not the manifest's :1.0.0
+    assert (
+        digest_mock.call_args.args[0]
+        == "ghcr.io/kamiwaza-internal/connectors/m365:release-1.0.0"
+    )
+    entry = publisher.publish.call_args.kwargs["entry"]
+    assert entry["deployment"]["image_tag"] == "release-1.0.0"
+    assert entry["deployment"]["image_digest"] == "sha256:abc123"
+    # original manifest is not mutated by the revision override
+    assert _manifest()["deployment"]["image_tag"] == "1.0.0"
+
+
+def test_publish_connector_resolves_digest_on_no_push():
+    """--no-push means 'the image is already pushed, don't re-push' — resolution
+    is a read-only lookup, so it must still run and pin the digest (matching the
+    app catalog-only-republish path). Otherwise the entry is tag-only/mutable."""
     publisher = MagicMock()
     publisher.publish.return_value = SimpleNamespace(
         action="insert", catalog_file="garden/v3/connectors.json", version="1.0.0"
     )
     p_profile, p_buildx, p_digest, p_pub = _patches(publisher)
     with p_profile, p_buildx as buildx_mock, p_digest as digest_mock, p_pub:
-        publish_connector(_info(), stage="prod", no_push=True)
+        publish_connector(_info(), stage="prod", revision="release-1.0.0", no_push=True)
 
-    # --no-push does no registry round-trip at all: neither preflight nor resolve.
-    buildx_mock.assert_not_called()
+    buildx_mock.assert_called_once()  # preflight ran
+    digest_mock.assert_called_once()  # digest resolved despite --no-push
+    dep = publisher.publish.call_args.kwargs["entry"]["deployment"]
+    assert dep["image_tag"] == "release-1.0.0"
+    assert dep["image_digest"] == "sha256:abc123"  # pinned, not tag-only
+
+
+def test_publish_connector_trusts_supplied_digest_on_no_push():
+    """--no-push WITH an explicit --digest is the publish-only escape hatch: trust
+    the precomputed digest and do no registry round-trip (no buildx needed),
+    matching the app path."""
+    publisher = MagicMock()
+    publisher.publish.return_value = SimpleNamespace(
+        action="insert", catalog_file="garden/v3/connectors.json", version="1.0.0"
+    )
+    p_profile, p_buildx, p_digest, p_pub = _patches(publisher)
+    with p_profile, p_buildx as buildx_mock, p_digest as digest_mock, p_pub:
+        publish_connector(_info(), stage="prod", no_push=True, digest="sha256:supplied")
+
+    buildx_mock.assert_not_called()  # no registry round-trip
     digest_mock.assert_not_called()
-    entry = publisher.publish.call_args.kwargs["entry"]
-    assert "image_digest" not in entry["deployment"]
+    dep = publisher.publish.call_args.kwargs["entry"]["deployment"]
+    assert dep["image_digest"] == "sha256:supplied"  # trusted as-is
+
+
+def test_publish_connector_revision_drops_stale_digest_on_tag_change_dry_run():
+    """On a dry run (no resolution), a revision that changes the tag must drop the
+    manifest's now-stale authored digest rather than emit :<revision>@<old>."""
+    manifest = _manifest()
+    manifest["deployment"]["image_digest"] = "sha256:stale"
+    publisher = MagicMock()
+    publisher.publish.return_value = SimpleNamespace(
+        action="insert", catalog_file="garden/v3/connectors.json", version="1.0.0"
+    )
+    p_profile, p_buildx, p_digest, p_pub = _patches(publisher)
+    with p_profile, p_buildx, p_digest as digest_mock, p_pub:
+        publish_connector(
+            _info(manifest=manifest),
+            stage="stage",
+            revision="release-1.0.0",
+            dry_run=True,
+        )
+
+    digest_mock.assert_not_called()  # dry run resolves nothing
+    dep = publisher.publish.call_args.kwargs["entry"]["deployment"]
+    assert dep["image_tag"] == "release-1.0.0"
+    assert "image_digest" not in dep  # stale digest dropped on tag change
+
+
+def test_publish_connector_revision_keeps_matching_digest_when_tag_unchanged():
+    """A revision equal to the manifest's already-rendered tag must NOT strip its
+    matching authored digest (e.g. CI rendered the final tag+digest, then
+    republishes with --revision <same tag> --dry-run/--no-push)."""
+    manifest = _manifest()  # deployment.image_tag == "1.0.0"
+    manifest["deployment"]["image_digest"] = "sha256:pinned"
+    publisher = MagicMock()
+    publisher.publish.return_value = SimpleNamespace(
+        action="insert", catalog_file="garden/v3/connectors.json", version="1.0.0"
+    )
+    p_profile, p_buildx, p_digest, p_pub = _patches(publisher)
+    with p_profile, p_buildx, p_digest, p_pub:
+        publish_connector(
+            _info(manifest=manifest), stage="stage", revision="1.0.0", dry_run=True
+        )
+
+    dep = publisher.publish.call_args.kwargs["entry"]["deployment"]
+    assert dep["image_tag"] == "1.0.0"
+    assert dep["image_digest"] == "sha256:pinned"  # matching digest preserved
 
 
 def test_publish_connector_verifies_supplied_digest_against_registry():
     """A supplied --digest that disagrees with the registry aborts (not trusted blind)."""
     publisher = MagicMock()
-    p_profile, p_buildx, p_digest, p_pub = _patches(publisher)  # registry -> sha256:abc123
+    p_profile, p_buildx, p_digest, p_pub = _patches(
+        publisher
+    )  # registry -> sha256:abc123
     with p_profile, p_buildx, p_digest as digest_mock, p_pub, pytest.raises(typer.Exit):
         publish_connector(_info(), stage="prod", digest="sha256:wrongwrong")
 
@@ -165,7 +259,9 @@ def test_publish_connector_accepts_matching_supplied_digest():
     publisher.publish.return_value = SimpleNamespace(
         action="insert", catalog_file="garden/v3/connectors.json", version="1.0.0"
     )
-    p_profile, p_buildx, p_digest, p_pub = _patches(publisher)  # registry -> sha256:abc123
+    p_profile, p_buildx, p_digest, p_pub = _patches(
+        publisher
+    )  # registry -> sha256:abc123
     with p_profile, p_buildx, p_digest as digest_mock, p_pub:
         publish_connector(_info(), stage="prod", digest="sha256:abc123")
 
