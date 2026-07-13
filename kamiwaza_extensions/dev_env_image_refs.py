@@ -15,12 +15,12 @@ publish path:
 1. Dev rewrites to the **built ref** (where ``ImageBuilder`` actually
    pushed the image), not a digest-pin — the dev tag is unique per build.
 2. It must align the ``SANDBOX_ALLOWED_IMAGE_PREFIXES`` allowlist in
-   lockstep, because a profiled ``image-only`` agent is built at the
-   legacy ``{registry}/{ext}-agent:{tag}`` fallback path, outside the
-   source whitelist. The platform's ``image_rewrite.py`` encodes the
-   same env-name coupling (``IMAGE_ENV_NAMES`` / ``IMAGE_PREFIX_ENV_NAMES``)
-   for the offline-relocation install type; this is the dev-tooling
-   equivalent for normal (non-relocation) dev clusters.
+   lockstep, because the agent is built into the cluster dev registry
+   rather than the ``ghcr.io`` namespace the source whitelist names. The
+   platform's ``image_rewrite.py`` encodes the same env-name coupling
+   (``IMAGE_ENV_NAMES`` / ``IMAGE_PREFIX_ENV_NAMES``) for the
+   offline-relocation install type; this is the dev-tooling equivalent
+   for normal (non-relocation) dev clusters.
 """
 
 from __future__ import annotations
@@ -29,10 +29,7 @@ import copy
 import re
 from typing import Any, Dict, List, Optional
 
-from kamiwaza_extensions.compose_transformer import (
-    _fallback_image_basename,
-    _repo_part,
-)
+from kamiwaza_extensions.compose_transformer import _repo_part
 
 # Env vars whose value is a single container image reference (possibly
 # wrapped in a ``${NAME:-default}`` shell default). Mirrors the platform's
@@ -53,11 +50,6 @@ _DEFAULT_SUB_RE = re.compile(r"\A(\$\{[A-Za-z_][A-Za-z0-9_]*:?-)([^}]+)(\})\Z")
 def build_image_ref_map(
     source_services: Optional[Dict[str, Any]],
     canonical_refs: Dict[str, str],
-    *,
-    registry: str,
-    extension_name: str,
-    revision_tag: str,
-    image_basename: Optional[str] = None,
 ) -> Dict[str, str]:
     """Map each build-context service's declared image repo to its built ref.
 
@@ -66,17 +58,18 @@ def build_image_ref_map(
     ``AGENT_SERVER_IMAGE`` defaulting to the released ``:2.0.2`` while the
     service declares the same repo) still matches.
 
-    The built ref is selected exactly as ``ImageBuilder.build`` does
-    (``image_builder.py``): ``canonical_refs[name]`` when present, else the
-    legacy ``{registry}/{basename}-{name}:{tag}`` fallback. A profiled
-    ``image-only`` service (the agent) is absent from ``canonical_refs``,
-    so it resolves to the fallback path — which is where it actually lives
-    in the registry. Keeping this in step with the builder is the whole
-    point: the env ref must equal what was pushed.
+    The built ref is read straight from *canonical_refs*, which under
+    ``purpose="dev"`` covers every build-context service — profiled
+    ``image-only`` ones (the agent) included. This function used to
+    re-derive a legacy ``{registry}/{basename}-{name}:{tag}`` fallback for
+    exactly those profiled services, because they were absent from the map;
+    that made it a fourth site that had to stay in lockstep with
+    ``ImageBuilder``, and it is why the agent landed on a different
+    repository path than its siblings (ENG-8626). A build service missing
+    from the map is skipped rather than assigned an invented ref: the env
+    ref must equal what was actually built and pushed, and a ref nobody
+    built is worse than no rewrite at all.
     """
-    basename = _fallback_image_basename(
-        extension_name, fallback_image_basename=image_basename
-    )
     out: Dict[str, str] = {}
     for name, svc in (source_services or {}).items():
         if not isinstance(svc, dict) or "build" not in svc:
@@ -84,13 +77,9 @@ def build_image_ref_map(
         declared = svc.get("image")
         if not isinstance(declared, str) or not declared.strip():
             continue
-        # Presence, not truthiness — the exact mirror of ImageBuilder.build's
-        # ``svc_name in image_refs`` check.
-        built = (
-            canonical_refs[name]
-            if name in canonical_refs
-            else f"{registry}/{basename}-{name}:{revision_tag}"
-        )
+        built = canonical_refs.get(name)
+        if not built:
+            continue
         out[_repo_part(declared.strip())] = built
     return out
 
