@@ -173,6 +173,7 @@ def _prior_artifacts_in_registry(
     try:
         canonical_refs = compute_canonical_refs(
             (info.compose_data or {}).get("services") or {},
+            purpose="dev",
             registry=registry,
             extension_name=info.name,
             revision_tag=prior_revision,
@@ -644,6 +645,7 @@ def run_dev_remote(
         extension_name=info.name,
         revision_tag=rev_tag,
         registry=registry,
+        purpose="dev",
         image_basename=info.image_basename,
     )
     # The catalog overlay (step 12) is a template destination: the platform
@@ -654,14 +656,16 @@ def run_dev_remote(
     catalog_compose = transformed
     transformed = transformer.resolve_env_placeholders(transformed)
 
-    # Canonical image refs for every build-context service. Single
-    # source of truth shared with the transformed compose so the image
-    # we build and push matches the ref the K8s payload will pull. The
-    # transformer honors a service's declared image namespace; without
-    # this map ImageBuilder would synthesize the legacy {ext}-{svc}
-    # form and ship a pod referencing an image that was never pushed.
+    # Canonical image refs for every build-context service, profiled ones
+    # included. Single source of truth shared with the transformed compose
+    # so the image we build and push matches the ref the K8s payload will
+    # pull, computed under the same ``purpose="dev"`` policy the transform
+    # above used: an owned build image lands in *this cluster's* registry
+    # even when its compose declares a qualified publish namespace
+    # (ENG-8626).
     canonical_refs: Dict[str, str] = compute_canonical_refs(
         info.compose_data.get("services") or {},
+        purpose="dev",
         registry=registry,
         extension_name=info.name,
         revision_tag=rev_tag,
@@ -675,10 +679,10 @@ def run_dev_remote(
     # ImagePullBackOff, chat 500. Rewrite that ref (and the sandbox
     # ``SANDBOX_ALLOWED_IMAGE_PREFIXES`` allowlist, in lockstep) to the
     # dev-built agent ref — the dev analog of ENG-5260's publish-side fix.
-    # ``build_image_ref_map`` mirrors ImageBuilder's per-service ref choice,
-    # so the env ref equals exactly what was built and pushed (the profiled
-    # ``image-only`` agent resolves to the ``{registry}/{ext}-agent`` fallback
-    # path). Applied to both the K8s payload (bare refs, post-resolve) and
+    # ``build_image_ref_map`` reads the canonical map directly, so the env ref
+    # equals exactly what was built and pushed — the profiled ``image-only``
+    # agent included, since ``purpose="dev"`` puts it in the map alongside its
+    # siblings. Applied to both the K8s payload (bare refs, post-resolve) and
     # the catalog overlay compose (``${VAR:-default}`` form).
     #
     # Caveat: env_ref_map spans ALL build-context services, so under
@@ -692,10 +696,6 @@ def run_dev_remote(
     env_ref_map = build_image_ref_map(
         info.compose_data.get("services") or {},
         canonical_refs,
-        registry=registry,
-        extension_name=info.name,
-        revision_tag=rev_tag,
-        image_basename=info.image_basename,
     )
     transformed = rewrite_env_image_refs(transformed, env_ref_map)
     catalog_compose = rewrite_env_image_refs(catalog_compose, env_ref_map)
@@ -788,18 +788,33 @@ def run_dev_remote(
         # payload will reference.
         #
         # ENG-7110: profiled ``image-only`` services (the agent, referenced
-        # via AGENT_SERVER_IMAGE — see the env rewrite above) are excluded
-        # from canonical_refs and so are intentionally NOT in this push list.
-        # A full run builds+pushes them via ImageBuilder (which iterates all
-        # build-context services); under --no-build they rely on a prior
-        # run's registry push (resume adopts that revision tag, so the agent
-        # ref the env rewrite points at already exists). Re-pushing them here
-        # would tag from the local engine store, which a resumed run may no
-        # longer hold — regressing the path that works.
+        # via AGENT_SERVER_IMAGE — see the env rewrite above) must NOT be in
+        # this push list. A full run builds+pushes them via ImageBuilder
+        # (which iterates all build-context services); under --no-build they
+        # rely on a prior run's registry push (resume adopts that revision
+        # tag, so the agent ref the env rewrite points at already exists).
+        # Re-pushing them here would tag from the local engine store, which a
+        # resumed run may no longer hold — regressing the path that works.
+        #
+        # ENG-8626: this exclusion is now explicit. It used to fall out of
+        # canonical_refs simply omitting profiled services, but the dev
+        # canonical map has to include them (that omission is what sent the
+        # agent to a different repository path than its siblings). Pushing is
+        # a separate question from identity, so the filter lives here.
+        profiled_names = {
+            name
+            for name, svc in (info.compose_data.get("services") or {}).items()
+            if isinstance(svc, dict) and svc.get("profiles")
+        }
+        pushable = {
+            name: ref
+            for name, ref in canonical_refs.items()
+            if name not in profiled_names
+        }
         if service:
-            image_refs = [canonical_refs[service]] if service in canonical_refs else []
+            image_refs = [pushable[service]] if service in pushable else []
         else:
-            image_refs = list(canonical_refs.values())
+            image_refs = list(pushable.values())
         console.print()
 
     # 7. Push images
