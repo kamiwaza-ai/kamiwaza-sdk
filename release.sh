@@ -36,7 +36,7 @@ esac
 
 # Required tooling. Fail loudly up front rather than dying mid-build with
 # a cryptic "command not found".
-for tool in uv npm; do
+for tool in uv npm node; do
     if ! command -v "$tool" &> /dev/null; then
         echo "Error: '$tool' is required but not installed."
         echo "  Install: https://github.com/astral-sh/uv (uv) | https://nodejs.org (npm)"
@@ -53,15 +53,20 @@ done
 NPM_LIB_NAME="@kamiwaza-ai/extensions-lib"
 NPM_LIB_VERSION="$(node -p "require('./kamiwaza-ai-extensions-lib/package.json').version")"
 NPM_VERSION_EXISTS=0
-if NPM_VIEW_OUT=$(npm view "${NPM_LIB_NAME}@${NPM_LIB_VERSION}" version --registry=https://registry.npmjs.org/ 2>&1); then
+# Keep stdout and stderr separate: npm writes notices/warnings (update nags,
+# deprecated .npmrc keys) to stderr even on success, and folding them into
+# the captured output would falsely flag an unpublished version as existing.
+NPM_VIEW_ERR=$(mktemp)
+if NPM_VIEW_OUT=$(npm view "${NPM_LIB_NAME}@${NPM_LIB_VERSION}" version --registry=https://registry.npmjs.org/ 2>"$NPM_VIEW_ERR"); then
     [[ -n "$NPM_VIEW_OUT" ]] && NPM_VERSION_EXISTS=1
-elif [[ "$NPM_VIEW_OUT" != *E404* ]]; then
+elif ! grep -q E404 "$NPM_VIEW_ERR"; then
     # E404 is the healthy case (version not yet published). Anything else
     # means the registry couldn't be consulted — say so, but don't block a
     # release on a registry hiccup; the final publish step still fails hard.
     echo "Warning: could not check npm for ${NPM_LIB_NAME}@${NPM_LIB_VERSION}:"
-    echo "$NPM_VIEW_OUT" | head -3
+    head -3 "$NPM_VIEW_ERR"
 fi
+rm -f "$NPM_VIEW_ERR"
 if [[ $NPM_VERSION_EXISTS -eq 1 ]]; then
     if [[ $BUILD_ONLY -eq 1 ]]; then
         echo "Note: ${NPM_LIB_NAME}@${NPM_LIB_VERSION} is already on npm; a full release would skip the npm upload."
