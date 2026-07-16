@@ -44,6 +44,39 @@ for tool in uv npm; do
     fi
 done
 
+# --- npm preflight: catch a stale @kamiwaza-ai/extensions-lib version early ---
+# npm rejects publishing over an existing version, and by the time that
+# surfaces (last publish step) the PyPI uploads have already happened — the
+# 2026-07-13 release shipped PyPI artifacts while the npm fix for ENG-1734
+# silently never landed because the version was still 0.4.1 (ENG-8753).
+# Detect the collision before anything uploads.
+NPM_LIB_NAME="@kamiwaza-ai/extensions-lib"
+NPM_LIB_VERSION="$(node -p "require('./kamiwaza-ai-extensions-lib/package.json').version")"
+NPM_VERSION_EXISTS=0
+if NPM_VIEW_OUT=$(npm view "${NPM_LIB_NAME}@${NPM_LIB_VERSION}" version --registry=https://registry.npmjs.org/ 2>&1); then
+    [[ -n "$NPM_VIEW_OUT" ]] && NPM_VERSION_EXISTS=1
+elif [[ "$NPM_VIEW_OUT" != *E404* ]]; then
+    # E404 is the healthy case (version not yet published). Anything else
+    # means the registry couldn't be consulted — say so, but don't block a
+    # release on a registry hiccup; the final publish step still fails hard.
+    echo "Warning: could not check npm for ${NPM_LIB_NAME}@${NPM_LIB_VERSION}:"
+    echo "$NPM_VIEW_OUT" | head -3
+fi
+if [[ $NPM_VERSION_EXISTS -eq 1 ]]; then
+    if [[ $BUILD_ONLY -eq 1 ]]; then
+        echo "Note: ${NPM_LIB_NAME}@${NPM_LIB_VERSION} is already on npm; a full release would skip the npm upload."
+    else
+        echo "${NPM_LIB_NAME}@${NPM_LIB_VERSION} is ALREADY on npm — re-publishing an existing version is rejected."
+        echo "  If kamiwaza-ai-extensions-lib changed since that publish, bump its package.json version and re-run."
+        read -r -p "Continue with a release that SKIPS the npm upload? (y/n) " REPLY || REPLY=n
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            echo "Aborting before any uploads."
+            exit 1
+        fi
+    fi
+fi
+
 # Check for pipx (needed to clear notebook outputs)
 if ! command -v pipx &> /dev/null; then
     echo "Error: pipx is required but not installed."
@@ -155,6 +188,11 @@ if [[ $SDK_GATED -eq 0 ]]; then
     else
         echo "kamiwaza-sdk upload skipped"
     fi
+fi
+
+if [[ $NPM_VERSION_EXISTS -eq 1 ]]; then
+    echo "@kamiwaza-ai/extensions-lib upload skipped: ${NPM_LIB_VERSION} is already on npm (acknowledged at preflight)."
+    exit 0
 fi
 
 read -r -p "Upload @kamiwaza-ai/extensions-lib to npm? (y/n) " REPLY || REPLY=n
