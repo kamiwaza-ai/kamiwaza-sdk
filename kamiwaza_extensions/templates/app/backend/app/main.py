@@ -1,5 +1,6 @@
 """FastAPI backend for {{name}}."""
 
+import ipaddress
 import logging
 import os
 from urllib.parse import urlparse, urlunparse
@@ -15,6 +16,7 @@ from kamiwaza_extensions_lib import (
     forward_auth_headers,
     get_model_client,
     list_available_models,
+    public_base_url,
     require_auth,
 )
 from openai import APIStatusError, AsyncOpenAI
@@ -85,7 +87,27 @@ def _backend_chat_base():
 # verbatim (ENG-8766). ``host.docker.internal`` is deliberately NOT
 # here: it is the container-routable alias (the re-host *target* under
 # kz-ext dev local), never a browser-only host.
-_BROWSER_ONLY_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
+_BROWSER_ONLY_HOSTS = frozenset({"localhost", "0.0.0.0"})
+
+
+def _is_browser_only_host(host: str) -> bool:
+    """True when ``host`` only means something on the developer machine.
+
+    Loopback is matched as the full ``127.0.0.0/8`` range (plus IPv6
+    ``::1`` and IPv4-mapped forms), not just the ``127.0.0.1`` literal —
+    the supported dev-local loopback variants include e.g. ``127.0.0.2``
+    (ENG-8766 re-review High #2).
+    """
+    if host in _BROWSER_ONLY_HOSTS:
+        return True
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    if addr.is_loopback:
+        return True
+    mapped = getattr(addr, "ipv4_mapped", None)
+    return bool(mapped is not None and mapped.is_loopback)
 
 
 def _should_rehost(parsed, backend_parsed) -> bool:
@@ -99,9 +121,29 @@ def _should_rehost(parsed, backend_parsed) -> bool:
     if not (backend_parsed.scheme and backend_parsed.netloc):
         return False
     host = (parsed.hostname or "").lower()
-    if host in _BROWSER_ONLY_HOSTS:
+    if _is_browser_only_host(host):
         return True
     return parsed.netloc.lower() == backend_parsed.netloc.lower()
+
+
+def _model_route_base() -> str:
+    """Base URL on which relative model routes (``access_path``) live.
+
+    Mirrors the runtime lib's ``_model_route_base``: model routes
+    (``/runtime/models/{id}``) are served by the platform's gateway, not
+    necessarily by the ``KAMIWAZA_API_URL`` host (on k8s that is the Ray
+    Serve proxy, which has no such routes — ENG-8766 re-review Medium
+    #1). Prefer the public/gateway base when its host is meaningful
+    outside the developer's browser; fall back to the container-routable
+    base under ``kz-ext dev local`` where the public host is loopback.
+    """
+    config = AuthConfig.from_env()
+    public = public_base_url(config)
+    if public:
+        host = (urlparse(public).hostname or "").lower()
+        if not _is_browser_only_host(host):
+            return public
+    return backend_runtime_base(config)
 
 
 def _strip_api_runtime_prefix(parsed):
@@ -150,12 +192,19 @@ def _normalize_model_endpoint(endpoint: str, access_path: str):
             )
         return urlunparse(parsed).rstrip("/")
 
-    if access_path and backend_base:
-        normalized_path = access_path if access_path.startswith("/") else f"/{access_path}"
-        normalized_path = normalized_path.rstrip("/")
-        if normalized_path.endswith("/v1"):
-            return f"{backend_base}{normalized_path}"
-        return f"{backend_base}{normalized_path}/v1"
+    if access_path:
+        # Relative model routes live on the gateway, not necessarily on
+        # KAMIWAZA_API_URL — build them on _model_route_base (ENG-8766
+        # re-review Medium #1).
+        route_base = _model_route_base()
+        if route_base:
+            normalized_path = (
+                access_path if access_path.startswith("/") else f"/{access_path}"
+            )
+            normalized_path = normalized_path.rstrip("/")
+            if normalized_path.endswith("/v1"):
+                return f"{route_base}{normalized_path}"
+            return f"{route_base}{normalized_path}/v1"
 
     if parsed is not None:
         return urlunparse(parsed).rstrip("/")

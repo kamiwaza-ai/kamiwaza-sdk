@@ -571,6 +571,48 @@ class TestRuntimeBaseSplit:
             f"access_path built on the wrong base: {base!r}"
         )
 
+    @pytest.mark.asyncio
+    async def test_resolve_openai_base_loopback_range_public_uses_container_base(
+        self, monkeypatch
+    ):
+        """ENG-8766 re-review High #2 — a ``127.0.0.0/8`` range variant
+        (``127.0.0.2``) as the public URL is still browser-only:
+        ``_model_route_base`` must fall back to the container-routable
+        base rather than hand the backend its own loopback.
+        """
+        monkeypatch.setenv(
+            "KAMIWAZA_API_URL", "http://host.docker.internal:8000/api"
+        )
+        monkeypatch.setenv("KAMIWAZA_PUBLIC_API_URL", "http://127.0.0.2:8000")
+        monkeypatch.setenv("KZ_EXT_DEV_LOCAL_AUTH", "1")
+
+        from kamiwaza_extensions_lib.config import AuthConfig
+        from kamiwaza_extensions_lib.models import _resolve_openai_base
+
+        config = AuthConfig.from_env()
+
+        with patch(
+            "kamiwaza_extensions_lib.models.KamiwazaExtClient.from_env"
+        ) as mock_from_env:
+            mock_client = AsyncMock()
+            mock_client.get_models = AsyncMock(
+                return_value=[
+                    {
+                        "deployment_id": "dep-1",
+                        "phase": "Running",
+                        "type": "chat",
+                        "access_path": "/runtime/models/dep-1",
+                    }
+                ]
+            )
+            mock_from_env.return_value = mock_client
+
+            base = await _resolve_openai_base(config, {})
+
+        assert base == "http://host.docker.internal:8000/runtime/models/dep-1/v1", (
+            f"loopback-range public URL leaked into the model base: {base!r}"
+        )
+
 
 @pytest.mark.unit
 class TestRehostToContainer:
@@ -603,6 +645,20 @@ class TestRehostToContainer:
             "https://gateway.example.com/foo",
         )
         assert result == "https://gateway.example.com/foo/runtime/models/dep-1/v1"
+
+    def test_rehosts_loopback_range_variant(self):
+        """ENG-8766 re-review High #2 — dev-local supports the full
+        ``127.0.0.0/8`` loopback range (e.g. ``127.0.0.2``), not just the
+        ``127.0.0.1`` literal. A range variant must still be treated as
+        browser-only and re-hosted.
+        """
+        from kamiwaza_extensions_lib.models import _rehost_to_container
+
+        result = _rehost_to_container(
+            "http://127.0.0.2:8000/runtime/models/dep-1/v1",
+            "http://host.docker.internal:8000",
+        )
+        assert result == "http://host.docker.internal:8000/runtime/models/dep-1/v1"
 
     def test_keeps_gateway_endpoint_on_different_real_host(self):
         """ENG-8766 regression — on k8s the platform advertises model

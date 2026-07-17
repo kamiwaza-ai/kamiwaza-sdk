@@ -12,6 +12,7 @@ from fastapi import Request
 from .auth import forward_auth_headers
 from .client import KamiwazaExtClient
 from .config import AuthConfig
+from .local_dev import _is_loopback_ip
 # Round-9 review: ``_url`` was renamed to ``url`` (public) in 0.4.0 so
 # scaffolded extensions can import the helpers without coupling to a
 # private path. The underscored aliases below preserve in-tree
@@ -206,7 +207,20 @@ def _normalize_openai_endpoint(endpoint: str) -> str:
 # ``host.docker.internal`` is deliberately NOT here: it is the
 # container-routable alias (the re-host *target* under kz-ext dev
 # local), never a browser-only host.
-_BROWSER_ONLY_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
+_BROWSER_ONLY_HOSTS = frozenset({"localhost", "0.0.0.0"})
+
+
+def _is_browser_only_host(host: str) -> bool:
+    """True when ``host`` only means something on the developer machine.
+
+    Combines the name set with :func:`local_dev._is_loopback_ip` so the
+    full ``127.0.0.0/8`` range and IPv4-mapped IPv6 loopbacks match —
+    not just the ``127.0.0.1`` literal (ENG-8766 re-review High #2; the
+    supported dev-local loopback variants include e.g. ``127.0.0.2``).
+    """
+    if host in _BROWSER_ONLY_HOSTS:
+        return True
+    return bool(_is_loopback_ip(host))
 
 
 def _model_route_base(config: AuthConfig) -> str:
@@ -225,7 +239,7 @@ def _model_route_base(config: AuthConfig) -> str:
     public = _public_base_url(config)
     if public:
         host = (urlparse(public).hostname or "").lower()
-        if host not in _BROWSER_ONLY_HOSTS:
+        if not _is_browser_only_host(host):
             return public
     return _backend_runtime_base(config)
 
@@ -239,7 +253,7 @@ def _should_rehost(parsed, target_parsed) -> bool:
     canonical model URL and must be kept verbatim (ENG-8766).
     """
     host = (parsed.hostname or "").lower()
-    if host in _BROWSER_ONLY_HOSTS:
+    if _is_browser_only_host(host):
         return True
     return parsed.netloc.lower() == target_parsed.netloc.lower()
 

@@ -370,6 +370,17 @@ def test_template_chat_endpoint_keeps_gateway_url_in_cluster(tmp_path, monkeypat
         f"access_path branch shadowed the canonical endpoint: {both!r}"
     )
 
+    # ENG-8766 re-review Medium #1 — an access_path-only payload (no
+    # endpoint) must build on the gateway base, not KAMIWAZA_API_URL
+    # (the Ray Serve proxy).
+    path_only = module._normalize_model_endpoint(
+        endpoint="",
+        access_path="/runtime/models/dep-1",
+    )
+    assert path_only == "https://kamiwaza.test/runtime/models/dep-1/v1", (
+        f"access_path-only built on the wrong base: {path_only!r}"
+    )
+
     sys.modules.pop("scaffolded_in_cluster", None)
 
 
@@ -396,6 +407,15 @@ def test_template_chat_endpoint_both_fields_dev_local_unchanged(
         access_path="/runtime/models/dep-1",
     )
     assert endpoint == "http://host.docker.internal:8000/runtime/models/dep-1/v1"
+
+    # ENG-8766 re-review High #2 — 127.0.0.0/8 range variants (e.g.
+    # 127.0.0.2) are supported dev-local loopbacks and must re-host
+    # exactly like 127.0.0.1/localhost.
+    variant = module._normalize_model_endpoint(
+        endpoint="http://127.0.0.2:8000/runtime/models/dep-1/v1",
+        access_path="",
+    )
+    assert variant == "http://host.docker.internal:8000/runtime/models/dep-1/v1"
 
     sys.modules.pop("scaffolded_both_local", None)
 
