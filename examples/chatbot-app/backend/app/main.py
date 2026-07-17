@@ -82,7 +82,9 @@ def _backend_chat_base():
 # these get re-hosted onto the container base — any other fully-qualified
 # host is the platform's canonical URL for the model (on k8s, the ingress
 # gateway that owns the /runtime/models rewrite) and must be kept
-# verbatim (ENG-8766).
+# verbatim (ENG-8766). ``host.docker.internal`` is deliberately NOT
+# here: it is the container-routable alias (the re-host *target* under
+# kz-ext dev local), never a browser-only host.
 _BROWSER_ONLY_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
 
 
@@ -102,8 +104,51 @@ def _should_rehost(parsed, backend_parsed) -> bool:
     return parsed.netloc.lower() == backend_parsed.netloc.lower()
 
 
+def _strip_api_runtime_prefix(parsed):
+    """Rewrite ``/api/runtime/models/...`` paths to ``/runtime/models/...``."""
+    if parsed.path.startswith("/api/runtime/models/"):
+        return parsed._replace(
+            path=parsed.path.replace("/api/runtime/models/", "/runtime/models/", 1)
+        )
+    return parsed
+
+
 def _normalize_model_endpoint(endpoint: str, access_path: str):
     backend_base = _backend_chat_base()
+    parsed = _strip_api_runtime_prefix(urlparse(endpoint)) if endpoint else None
+
+    # A fully-qualified endpoint takes priority over ``access_path``:
+    # the platform emits BOTH (``endpoint`` is derived from
+    # ``access_path`` + the public base), and building ``access_path``
+    # onto KAMIWAZA_API_URL targets the k8s Ray Serve proxy, which has
+    # no ``/runtime/models/*`` routes — the access_path branch used to
+    # shadow the endpoint handling and 404 every in-cluster chat
+    # (ENG-8766 review Critical). The endpoint is re-hosted onto the
+    # container-routable base ONLY when its host is browser-only
+    # (`kz-ext dev local --auth`; round-8 review High #3) or already on
+    # the base's netloc (sub-path ingress prefix merge, round-9/11 —
+    # merge preserves the ``/foo`` prefix without double-prepending);
+    # any other real host is the platform's canonical model URL and is
+    # returned verbatim.
+    if parsed is not None and parsed.scheme and parsed.netloc:
+        backend_parsed = urlparse(backend_base) if backend_base else None
+        if backend_parsed is not None and _should_rehost(parsed, backend_parsed):
+            base_prefix = backend_parsed.path.rstrip("/")
+            already_prefixed = base_prefix and (
+                parsed.path == base_prefix
+                or parsed.path.startswith(base_prefix + "/")
+            )
+            merged_path = (
+                parsed.path
+                if (already_prefixed or not base_prefix)
+                else f"{base_prefix}{parsed.path}"
+            )
+            parsed = parsed._replace(
+                scheme=backend_parsed.scheme,
+                netloc=backend_parsed.netloc,
+                path=merged_path,
+            )
+        return urlunparse(parsed).rstrip("/")
 
     if access_path and backend_base:
         normalized_path = access_path if access_path.startswith("/") else f"/{access_path}"
@@ -112,49 +157,7 @@ def _normalize_model_endpoint(endpoint: str, access_path: str):
             return f"{backend_base}{normalized_path}"
         return f"{backend_base}{normalized_path}/v1"
 
-    if endpoint:
-        # A fully-qualified endpoint is re-hosted onto the
-        # container-routable base ONLY when its host is browser-only
-        # (localhost under `kz-ext dev local --auth`; round-8 review
-        # High #3) or already matches the base's netloc (sub-path
-        # ingress prefix merge, round-9/round-11). Any other real host
-        # is the platform's canonical model URL — on k8s that's the
-        # ingress gateway, and re-hosting it onto KAMIWAZA_API_URL (the
-        # Ray Serve proxy) made every in-cluster chat 404 (ENG-8766).
-        parsed = urlparse(endpoint)
-        if parsed.path.startswith("/api/runtime/models/"):
-            parsed = parsed._replace(
-                path=parsed.path.replace("/api/runtime/models/", "/runtime/models/", 1)
-            )
-        if backend_base and parsed.scheme and parsed.netloc:
-            backend_parsed = urlparse(backend_base)
-            if _should_rehost(parsed, backend_parsed):
-                # Preserve any path prefix carried by ``backend_base`` —
-                # e.g. an ingress sub-path like ``https://gateway/foo``
-                # whose ``/foo`` would otherwise be dropped during the
-                # re-host (round-9 review High: Comprehensive).
-                #
-                # Round-11 Critical (codex): only PREPEND the prefix if
-                # the endpoint's path doesn't already carry it. Some
-                # deployments emit fully-qualified ``endpoint`` values
-                # under the same ingress (``https://gateway/foo/runtime/...``);
-                # round-9's unconditional prepend produced a doubled
-                # ``/foo/foo/runtime/...`` for those.
-                base_prefix = backend_parsed.path.rstrip("/")
-                already_prefixed = base_prefix and (
-                    parsed.path == base_prefix
-                    or parsed.path.startswith(base_prefix + "/")
-                )
-                merged_path = (
-                    parsed.path
-                    if (already_prefixed or not base_prefix)
-                    else f"{base_prefix}{parsed.path}"
-                )
-                parsed = parsed._replace(
-                    scheme=backend_parsed.scheme,
-                    netloc=backend_parsed.netloc,
-                    path=merged_path,
-                )
+    if parsed is not None:
         return urlunparse(parsed).rstrip("/")
 
     return endpoint

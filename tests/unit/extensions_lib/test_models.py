@@ -524,6 +524,53 @@ class TestRuntimeBaseSplit:
             "proxy at KAMIWAZA_API_URL cannot serve /runtime/models/*."
         )
 
+    @pytest.mark.asyncio
+    async def test_resolve_openai_base_builds_access_path_on_gateway_in_cluster(
+        self, monkeypatch
+    ):
+        """ENG-8766 review Critical (codex, verified live) — the raw
+        ``/serving/deployments`` payload carries ONLY a relative
+        ``access_path`` (no ``endpoint``). Building it onto
+        ``KAMIWAZA_API_URL`` targets the k8s Ray Serve proxy, which has
+        no ``/runtime/models/*`` routes. Relative model routes must be
+        built on the public/gateway base whenever its host is not
+        browser-only.
+        """
+        monkeypatch.setenv(
+            "KAMIWAZA_API_URL",
+            "http://core-api.kamiwaza.svc.cluster.local:7777/api",
+        )
+        monkeypatch.setenv("KAMIWAZA_PUBLIC_API_URL", "https://kamiwaza.test/api")
+        monkeypatch.delenv("KZ_EXT_DEV_LOCAL_AUTH", raising=False)
+
+        from kamiwaza_extensions_lib.config import AuthConfig
+        from kamiwaza_extensions_lib.models import _resolve_openai_base
+
+        config = AuthConfig.from_env()
+
+        with patch(
+            "kamiwaza_extensions_lib.models.KamiwazaExtClient.from_env"
+        ) as mock_from_env:
+            mock_client = AsyncMock()
+            mock_client.get_models = AsyncMock(
+                return_value=[
+                    {
+                        "deployment_id": "dep-1",
+                        "phase": "Running",
+                        "type": "chat",
+                        # Observed live payload shape: access_path only.
+                        "access_path": "/runtime/models/dep-1",
+                    }
+                ]
+            )
+            mock_from_env.return_value = mock_client
+
+            base = await _resolve_openai_base(config, {})
+
+        assert base == "https://kamiwaza.test/runtime/models/dep-1/v1", (
+            f"access_path built on the wrong base: {base!r}"
+        )
+
 
 @pytest.mark.unit
 class TestRehostToContainer:

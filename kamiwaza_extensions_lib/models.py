@@ -156,13 +156,16 @@ async def _resolve_openai_base(
 ) -> str:
     # _resolve_openai_base is consumed by get_model_client() which
     # builds an AsyncOpenAI instance that runs INSIDE the backend
-    # container. Use the container-routable base, not the
-    # browser-facing public URL — under `kz-ext dev local --auth` the
-    # two can diverge (api_url=host.docker.internal, public_api_url=
-    # localhost) and the backend container cannot reach its own
-    # localhost. In production both URLs point at the same gateway so
-    # the priority is a no-op there. PR #87 round-7 review (codex P1).
-    container_base = _backend_runtime_base(config)
+    # container. Model routes are built on _model_route_base: the
+    # public/gateway base when it is container-reachable (in-cluster,
+    # sub-path ingress, docker-mode with a real origin), or the
+    # container-routable base under `kz-ext dev local --auth` where the
+    # public host is browser-only localhost (PR #87 round-7 review,
+    # codex P1; ENG-8766 review Critical — raw deployment payloads
+    # carry only a relative ``access_path``, and building it onto the
+    # k8s KAMIWAZA_API_URL targeted the Ray Serve proxy, which cannot
+    # serve /runtime/models/*).
+    route_base = _model_route_base(config)
     if config.api_url:
         client = KamiwazaExtClient.from_env()
         try:
@@ -175,7 +178,7 @@ async def _resolve_openai_base(
                 if not _is_openai_compatible(deployment):
                     continue
                 endpoint = _deployment_openai_base(
-                    deployment, container_base, rehost_endpoint=True,
+                    deployment, route_base, rehost_endpoint=True,
                 )
                 if endpoint:
                     return endpoint
@@ -200,7 +203,29 @@ def _normalize_openai_endpoint(endpoint: str) -> str:
 # these get re-hosted onto the container base — any other fully-qualified
 # host is the platform's canonical URL for the model (e.g. the ingress
 # gateway on k8s) and must be kept verbatim (ENG-8766).
+# ``host.docker.internal`` is deliberately NOT here: it is the
+# container-routable alias (the re-host *target* under kz-ext dev
+# local), never a browser-only host.
 _BROWSER_ONLY_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
+
+
+def _model_route_base(config: AuthConfig) -> str:
+    """Base URL on which relative model routes (``access_path``) live.
+
+    Model routes (``/runtime/models/{id}``) are served by the platform's
+    front proxy/gateway — NOT necessarily by the host in
+    ``KAMIWAZA_API_URL``: on k8s that points at the Ray Serve proxy,
+    which has no ``/runtime/models/*`` routes (the rewrite lives in
+    per-deployment ingress VirtualServices; ENG-8766 review Critical).
+    Prefer the public (gateway) base whenever its host means something
+    outside the developer's browser; fall back to the container-routable
+    base for ``kz-ext dev local`` where the public host is ``localhost``
+    (there the container base fronts the same host-install gateway).
+    """
+    public = _public_base_url(config)
+    if public and (urlparse(public).hostname or "").lower() not in _BROWSER_ONLY_HOSTS:
+        return public
+    return _backend_runtime_base(config)
 
 
 def _should_rehost(parsed, target_parsed) -> bool:
