@@ -78,6 +78,14 @@ def _backend_chat_base():
     return backend_runtime_base(AuthConfig.from_env())
 
 
+# Hosts that only make sense from the developer's browser/machine. Only
+# these get re-hosted onto the container base — any other fully-qualified
+# host is the platform's canonical URL for the model (on k8s, the ingress
+# gateway that owns the /runtime/models rewrite) and must be kept
+# verbatim (ENG-8766).
+_BROWSER_ONLY_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
+
+
 def _normalize_model_endpoint(endpoint: str, access_path: str):
     backend_base = _backend_chat_base()
 
@@ -89,18 +97,28 @@ def _normalize_model_endpoint(endpoint: str, access_path: str):
         return f"{backend_base}{normalized_path}/v1"
 
     if endpoint:
-        # Endpoint came from list_available_models's metadata, which
-        # builds browser-facing URLs. If it's a fully-qualified URL,
-        # re-host it onto the container-routable base so the backend
-        # container can actually reach it (round-8 review High #3).
+        # A fully-qualified endpoint is re-hosted onto the
+        # container-routable base ONLY when its host is browser-only
+        # (localhost under `kz-ext dev local --auth`; round-8 review
+        # High #3) or already matches the base's netloc (sub-path
+        # ingress prefix merge, round-9/round-11). Any other real host
+        # is the platform's canonical model URL — on k8s that's the
+        # ingress gateway, and re-hosting it onto KAMIWAZA_API_URL (the
+        # Ray Serve proxy) made every in-cluster chat 404 (ENG-8766).
         parsed = urlparse(endpoint)
         if parsed.path.startswith("/api/runtime/models/"):
             parsed = parsed._replace(
                 path=parsed.path.replace("/api/runtime/models/", "/runtime/models/", 1)
             )
+        endpoint_host = (parsed.hostname or "").lower()
         if backend_base and parsed.scheme and parsed.netloc:
             backend_parsed = urlparse(backend_base)
-            if backend_parsed.scheme and backend_parsed.netloc:
+            same_netloc = parsed.netloc.lower() == backend_parsed.netloc.lower()
+            if (
+                backend_parsed.scheme
+                and backend_parsed.netloc
+                and (endpoint_host in _BROWSER_ONLY_HOSTS or same_netloc)
+            ):
                 # Preserve any path prefix carried by ``backend_base`` —
                 # e.g. an ingress sub-path like ``https://gateway/foo``
                 # whose ``/foo`` would otherwise be dropped during the

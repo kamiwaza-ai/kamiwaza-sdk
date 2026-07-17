@@ -196,18 +196,32 @@ def _normalize_openai_endpoint(endpoint: str) -> str:
     return urlunparse(parsed).rstrip("/")
 
 
+# Hosts that only make sense from the developer's browser/machine. Only
+# these get re-hosted onto the container base — any other fully-qualified
+# host is the platform's canonical URL for the model (e.g. the ingress
+# gateway on k8s) and must be kept verbatim (ENG-8766).
+_BROWSER_ONLY_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
+
+
 def _rehost_to_container(endpoint: str, container_base: str) -> str:
-    """Re-host a (potentially browser-facing) endpoint onto the
-    container-routable base.
+    """Re-host a browser-only endpoint onto the container-routable base.
 
     Round-12 review (codex P2): the platform may emit deployment
-    ``endpoint`` fields with a browser-only host (``localhost``,
-    ``host.docker.internal`` from a different container, etc.). When
-    we're configuring the backend container's AsyncOpenAI client,
-    those URLs are unreachable; swap scheme+netloc onto
-    ``container_base`` while preserving any ingress sub-path
-    (``/foo/runtime/...``) and avoiding the double-prepend the
+    ``endpoint`` fields with a browser-only host (``localhost`` under
+    ``kz-ext dev local --auth``). When we're configuring the backend
+    container's AsyncOpenAI client, those URLs are unreachable; swap
+    scheme+netloc onto ``container_base`` while preserving any ingress
+    sub-path (``/foo/runtime/...``) and avoiding the double-prepend the
     round-9/round-11 template fix already covers.
+
+    ENG-8766: the swap applies ONLY when the endpoint's host is
+    browser-only (loopback) or already equals the container base's
+    netloc (the sub-path-ingress prefix-merge case). A fully-qualified
+    endpoint on a different real host is the platform's canonical model
+    URL — on k8s that's the ingress gateway, which owns the
+    ``/runtime/models/{id}`` rewrite; re-hosting it onto
+    ``KAMIWAZA_API_URL`` (the Ray Serve proxy) produced an unroutable
+    URL and broke every in-cluster chat call.
 
     Returns the endpoint unchanged if either side lacks a
     scheme/netloc (e.g. relative URLs, malformed input).
@@ -219,6 +233,10 @@ def _rehost_to_container(endpoint: str, container_base: str) -> str:
         return urlunparse(parsed).rstrip("/")
     target_parsed = urlparse(container_base)
     if not target_parsed.scheme or not target_parsed.netloc:
+        return urlunparse(parsed).rstrip("/")
+    endpoint_host = (parsed.hostname or "").lower()
+    same_netloc = parsed.netloc.lower() == target_parsed.netloc.lower()
+    if endpoint_host not in _BROWSER_ONLY_HOSTS and not same_netloc:
         return urlunparse(parsed).rstrip("/")
     base_prefix = target_parsed.path.rstrip("/")
     already_prefixed = base_prefix and (

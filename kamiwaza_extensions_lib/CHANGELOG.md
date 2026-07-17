@@ -6,6 +6,27 @@ follow semver. The library is published to PyPI as a standalone package
 `kamiwaza-sdk` — extension authors pin against the `[lib]` minor range in
 `requirements.txt`.
 
+## [0.4.3] — 2026-07-16 (ENG-8766)
+
+### Fixed
+
+* **In-cluster model calls no longer 404 for gateway-routed endpoints.**
+  `_rehost_to_container` re-hosted *every* fully-qualified deployment
+  `endpoint` onto the container base (`KAMIWAZA_API_URL`). On Kubernetes
+  installs the platform advertises model endpoints as ingress-gateway
+  URLs (`https://<origin>/runtime/models/{deployment_id}/v1`) — the
+  `/runtime/models` rewrite exists *only* on the gateway (per-deployment
+  VirtualServices), while `KAMIWAZA_API_URL` points at the Ray Serve
+  proxy, which has no such route. The re-host therefore converted a
+  working URL into an unroutable one and every in-cluster chat call
+  404'd. The re-host now applies only when the endpoint host is
+  browser-only (`localhost`, `127.0.0.1`, `::1`, `0.0.0.0` — the
+  `kz-ext dev local --auth` case it was built for) or already matches
+  the container base's netloc (the sub-path-ingress prefix-merge case);
+  any other host is treated as the platform's canonical model URL and
+  kept verbatim. The starter template's `_normalize_model_endpoint`
+  received the same fix.
+
 ## [0.4.2] — 2026-06-15 (ENG-6911)
 
 ### Fixed

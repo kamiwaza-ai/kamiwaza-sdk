@@ -476,6 +476,55 @@ class TestRuntimeBaseSplit:
         assert "/runtime/models/dep-1/v1" in base
 
 
+    @pytest.mark.asyncio
+    async def test_resolve_openai_base_keeps_gateway_endpoint_in_cluster(
+        self, monkeypatch
+    ):
+        """ENG-8766 regression — in-cluster (operator-injected env) the
+        platform emits gateway model endpoints. They are routable as-is
+        (given resolvable origin DNS) and MUST NOT be re-hosted onto
+        ``KAMIWAZA_API_URL`` — that's the Ray Serve proxy, which has no
+        ``/runtime/models/*`` route, and the re-host made every
+        in-cluster chat call 404.
+        """
+        monkeypatch.setenv(
+            "KAMIWAZA_API_URL",
+            "http://core-api.kamiwaza.svc.cluster.local:7777/api",
+        )
+        monkeypatch.setenv("KAMIWAZA_PUBLIC_API_URL", "https://kamiwaza.test/api")
+        monkeypatch.delenv("KZ_EXT_DEV_LOCAL_AUTH", raising=False)
+
+        from kamiwaza_extensions_lib.config import AuthConfig
+        from kamiwaza_extensions_lib.models import _resolve_openai_base
+
+        config = AuthConfig.from_env()
+
+        with patch(
+            "kamiwaza_extensions_lib.models.KamiwazaExtClient.from_env"
+        ) as mock_from_env:
+            mock_client = AsyncMock()
+            mock_client.get_models = AsyncMock(
+                return_value=[
+                    {
+                        "deployment_id": "dep-1",
+                        "phase": "Running",
+                        "type": "chat",
+                        "endpoint": (
+                            "https://kamiwaza.test/runtime/models/dep-1/v1"
+                        ),
+                    }
+                ]
+            )
+            mock_from_env.return_value = mock_client
+
+            base = await _resolve_openai_base(config, {})
+
+        assert base == "https://kamiwaza.test/runtime/models/dep-1/v1", (
+            f"gateway endpoint was re-hosted: {base!r} — the Ray Serve "
+            "proxy at KAMIWAZA_API_URL cannot serve /runtime/models/*."
+        )
+
+
 @pytest.mark.unit
 class TestRehostToContainer:
     """PR #87 round-12 review (Claude M2) — direct unit coverage for
@@ -496,10 +545,45 @@ class TestRehostToContainer:
         assert result == "http://host.docker.internal:8000/runtime/models/dep-1/v1"
 
     def test_preserves_ingress_subpath_when_endpoint_lacks_it(self):
+        # ENG-8766 note: the endpoint host must be browser-only for the
+        # re-host to fire at all — a real (non-loopback) host is kept
+        # verbatim now, so this prefix-merge case is exercised with
+        # ``localhost``.
         from kamiwaza_extensions_lib.models import _rehost_to_container
 
         result = _rehost_to_container(
-            "https://browser-host.example.com/runtime/models/dep-1/v1",
+            "http://localhost:8000/runtime/models/dep-1/v1",
+            "https://gateway.example.com/foo",
+        )
+        assert result == "https://gateway.example.com/foo/runtime/models/dep-1/v1"
+
+    def test_keeps_gateway_endpoint_on_different_real_host(self):
+        """ENG-8766 regression — on k8s the platform advertises model
+        endpoints as ingress-gateway URLs; ``KAMIWAZA_API_URL`` points at
+        the Ray Serve proxy which does NOT serve ``/runtime/models/*``
+        (the rewrite lives in per-deployment gateway VirtualServices).
+        Re-hosting the gateway URL onto the container base produced an
+        unroutable URL and every in-cluster chat call 404'd. A
+        fully-qualified endpoint on a different, non-loopback host must
+        be kept verbatim.
+        """
+        from kamiwaza_extensions_lib.models import _rehost_to_container
+
+        result = _rehost_to_container(
+            "https://kamiwaza.test/runtime/models/dep-1/v1",
+            "http://core-api.kamiwaza.svc.cluster.local:7777",
+        )
+        assert result == "https://kamiwaza.test/runtime/models/dep-1/v1"
+
+    def test_merges_prefix_when_endpoint_already_on_container_netloc(self):
+        # Same-netloc endpoints still get the sub-path prefix merge
+        # (round-9/round-11 behavior) even though the host is not
+        # browser-only — the netloc match is the signal that the
+        # endpoint is already container-routable.
+        from kamiwaza_extensions_lib.models import _rehost_to_container
+
+        result = _rehost_to_container(
+            "https://gateway.example.com/runtime/models/dep-1/v1",
             "https://gateway.example.com/foo",
         )
         assert result == "https://gateway.example.com/foo/runtime/models/dep-1/v1"
