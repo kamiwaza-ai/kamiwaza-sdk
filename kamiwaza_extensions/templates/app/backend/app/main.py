@@ -86,6 +86,22 @@ def _backend_chat_base():
 _BROWSER_ONLY_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
 
 
+def _should_rehost(parsed, backend_parsed) -> bool:
+    """True when ``parsed`` may be re-hosted onto ``backend_parsed``.
+
+    Browser-only hosts are unreachable from the container and need the
+    swap; a same-netloc endpoint is already container-routable and only
+    gets the sub-path prefix merge. Anything else is the platform's
+    canonical model URL and must be kept verbatim (ENG-8766).
+    """
+    if not (backend_parsed.scheme and backend_parsed.netloc):
+        return False
+    host = (parsed.hostname or "").lower()
+    if host in _BROWSER_ONLY_HOSTS:
+        return True
+    return parsed.netloc.lower() == backend_parsed.netloc.lower()
+
+
 def _normalize_model_endpoint(endpoint: str, access_path: str):
     backend_base = _backend_chat_base()
 
@@ -110,15 +126,9 @@ def _normalize_model_endpoint(endpoint: str, access_path: str):
             parsed = parsed._replace(
                 path=parsed.path.replace("/api/runtime/models/", "/runtime/models/", 1)
             )
-        endpoint_host = (parsed.hostname or "").lower()
         if backend_base and parsed.scheme and parsed.netloc:
             backend_parsed = urlparse(backend_base)
-            same_netloc = parsed.netloc.lower() == backend_parsed.netloc.lower()
-            if (
-                backend_parsed.scheme
-                and backend_parsed.netloc
-                and (endpoint_host in _BROWSER_ONLY_HOSTS or same_netloc)
-            ):
+            if _should_rehost(parsed, backend_parsed):
                 # Preserve any path prefix carried by ``backend_base`` —
                 # e.g. an ingress sub-path like ``https://gateway/foo``
                 # whose ``/foo`` would otherwise be dropped during the

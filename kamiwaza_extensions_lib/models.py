@@ -203,6 +203,20 @@ def _normalize_openai_endpoint(endpoint: str) -> str:
 _BROWSER_ONLY_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
 
 
+def _should_rehost(parsed, target_parsed) -> bool:
+    """True when ``parsed`` may be re-hosted onto ``target_parsed``.
+
+    Browser-only hosts are unreachable from the container and need the
+    swap; a same-netloc endpoint is already container-routable and only
+    gets the sub-path prefix merge. Anything else is the platform's
+    canonical model URL and must be kept verbatim (ENG-8766).
+    """
+    host = (parsed.hostname or "").lower()
+    if host in _BROWSER_ONLY_HOSTS:
+        return True
+    return parsed.netloc.lower() == target_parsed.netloc.lower()
+
+
 def _rehost_to_container(endpoint: str, container_base: str) -> str:
     """Re-host a browser-only endpoint onto the container-routable base.
 
@@ -234,9 +248,7 @@ def _rehost_to_container(endpoint: str, container_base: str) -> str:
     target_parsed = urlparse(container_base)
     if not target_parsed.scheme or not target_parsed.netloc:
         return urlunparse(parsed).rstrip("/")
-    endpoint_host = (parsed.hostname or "").lower()
-    same_netloc = parsed.netloc.lower() == target_parsed.netloc.lower()
-    if endpoint_host not in _BROWSER_ONLY_HOSTS and not same_netloc:
+    if not _should_rehost(parsed, target_parsed):
         return urlunparse(parsed).rstrip("/")
     base_prefix = target_parsed.path.rstrip("/")
     already_prefixed = base_prefix and (
