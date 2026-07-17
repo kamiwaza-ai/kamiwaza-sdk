@@ -223,8 +223,10 @@ def _model_route_base(config: AuthConfig) -> str:
     (there the container base fronts the same host-install gateway).
     """
     public = _public_base_url(config)
-    if public and (urlparse(public).hostname or "").lower() not in _BROWSER_ONLY_HOSTS:
-        return public
+    if public:
+        host = (urlparse(public).hostname or "").lower()
+        if host not in _BROWSER_ONLY_HOSTS:
+            return public
     return _backend_runtime_base(config)
 
 
