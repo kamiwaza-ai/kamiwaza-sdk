@@ -12,6 +12,7 @@ from fastapi import Request
 from .auth import forward_auth_headers
 from .client import KamiwazaExtClient
 from .config import AuthConfig
+from .local_dev import _is_loopback_ip
 # Round-9 review: ``_url`` was renamed to ``url`` (public) in 0.4.0 so
 # scaffolded extensions can import the helpers without coupling to a
 # private path. The underscored aliases below preserve in-tree
@@ -156,13 +157,16 @@ async def _resolve_openai_base(
 ) -> str:
     # _resolve_openai_base is consumed by get_model_client() which
     # builds an AsyncOpenAI instance that runs INSIDE the backend
-    # container. Use the container-routable base, not the
-    # browser-facing public URL — under `kz-ext dev local --auth` the
-    # two can diverge (api_url=host.docker.internal, public_api_url=
-    # localhost) and the backend container cannot reach its own
-    # localhost. In production both URLs point at the same gateway so
-    # the priority is a no-op there. PR #87 round-7 review (codex P1).
-    container_base = _backend_runtime_base(config)
+    # container. Model routes are built on _model_route_base: the
+    # public/gateway base when it is container-reachable (in-cluster,
+    # sub-path ingress, docker-mode with a real origin), or the
+    # container-routable base under `kz-ext dev local --auth` where the
+    # public host is browser-only localhost (PR #87 round-7 review,
+    # codex P1; ENG-8766 review Critical — raw deployment payloads
+    # carry only a relative ``access_path``, and building it onto the
+    # k8s KAMIWAZA_API_URL targeted the Ray Serve proxy, which cannot
+    # serve /runtime/models/*).
+    route_base = _model_route_base(config)
     if config.api_url:
         client = KamiwazaExtClient.from_env()
         try:
@@ -175,7 +179,7 @@ async def _resolve_openai_base(
                 if not _is_openai_compatible(deployment):
                     continue
                 endpoint = _deployment_openai_base(
-                    deployment, container_base, rehost_endpoint=True,
+                    deployment, route_base, rehost_endpoint=True,
                 )
                 if endpoint:
                     return endpoint
@@ -196,18 +200,83 @@ def _normalize_openai_endpoint(endpoint: str) -> str:
     return urlunparse(parsed).rstrip("/")
 
 
+# Hosts that only make sense from the developer's browser/machine. Only
+# these get re-hosted onto the container base — any other fully-qualified
+# host is the platform's canonical URL for the model (e.g. the ingress
+# gateway on k8s) and must be kept verbatim (ENG-8766).
+# ``host.docker.internal`` is deliberately NOT here: it is the
+# container-routable alias (the re-host *target* under kz-ext dev
+# local), never a browser-only host.
+_BROWSER_ONLY_HOSTS = frozenset({"localhost", "0.0.0.0"})
+
+
+def _is_browser_only_host(host: str) -> bool:
+    """True when ``host`` only means something on the developer machine.
+
+    Combines the name set with :func:`local_dev._is_loopback_ip` so the
+    full ``127.0.0.0/8`` range and IPv4-mapped IPv6 loopbacks match —
+    not just the ``127.0.0.1`` literal (ENG-8766 re-review High #2; the
+    supported dev-local loopback variants include e.g. ``127.0.0.2``).
+    """
+    if host in _BROWSER_ONLY_HOSTS:
+        return True
+    return bool(_is_loopback_ip(host))
+
+
+def _model_route_base(config: AuthConfig) -> str:
+    """Base URL on which relative model routes (``access_path``) live.
+
+    Model routes (``/runtime/models/{id}``) are served by the platform's
+    front proxy/gateway — NOT necessarily by the host in
+    ``KAMIWAZA_API_URL``: on k8s that points at the Ray Serve proxy,
+    which has no ``/runtime/models/*`` routes (the rewrite lives in
+    per-deployment ingress VirtualServices; ENG-8766 review Critical).
+    Prefer the public (gateway) base whenever its host means something
+    outside the developer's browser; fall back to the container-routable
+    base for ``kz-ext dev local`` where the public host is ``localhost``
+    (there the container base fronts the same host-install gateway).
+    """
+    public = _public_base_url(config)
+    if public:
+        host = (urlparse(public).hostname or "").lower()
+        if not _is_browser_only_host(host):
+            return public
+    return _backend_runtime_base(config)
+
+
+def _should_rehost(parsed, target_parsed) -> bool:
+    """True when ``parsed`` may be re-hosted onto ``target_parsed``.
+
+    Browser-only hosts are unreachable from the container and need the
+    swap; a same-netloc endpoint is already container-routable and only
+    gets the sub-path prefix merge. Anything else is the platform's
+    canonical model URL and must be kept verbatim (ENG-8766).
+    """
+    host = (parsed.hostname or "").lower()
+    if _is_browser_only_host(host):
+        return True
+    return parsed.netloc.lower() == target_parsed.netloc.lower()
+
+
 def _rehost_to_container(endpoint: str, container_base: str) -> str:
-    """Re-host a (potentially browser-facing) endpoint onto the
-    container-routable base.
+    """Re-host a browser-only endpoint onto the container-routable base.
 
     Round-12 review (codex P2): the platform may emit deployment
-    ``endpoint`` fields with a browser-only host (``localhost``,
-    ``host.docker.internal`` from a different container, etc.). When
-    we're configuring the backend container's AsyncOpenAI client,
-    those URLs are unreachable; swap scheme+netloc onto
-    ``container_base`` while preserving any ingress sub-path
-    (``/foo/runtime/...``) and avoiding the double-prepend the
+    ``endpoint`` fields with a browser-only host (``localhost`` under
+    ``kz-ext dev local --auth``). When we're configuring the backend
+    container's AsyncOpenAI client, those URLs are unreachable; swap
+    scheme+netloc onto ``container_base`` while preserving any ingress
+    sub-path (``/foo/runtime/...``) and avoiding the double-prepend the
     round-9/round-11 template fix already covers.
+
+    ENG-8766: the swap applies ONLY when the endpoint's host is
+    browser-only (loopback) or already equals the container base's
+    netloc (the sub-path-ingress prefix-merge case). A fully-qualified
+    endpoint on a different real host is the platform's canonical model
+    URL — on k8s that's the ingress gateway, which owns the
+    ``/runtime/models/{id}`` rewrite; re-hosting it onto
+    ``KAMIWAZA_API_URL`` (the Ray Serve proxy) produced an unroutable
+    URL and broke every in-cluster chat call.
 
     Returns the endpoint unchanged if either side lacks a
     scheme/netloc (e.g. relative URLs, malformed input).
@@ -219,6 +288,8 @@ def _rehost_to_container(endpoint: str, container_base: str) -> str:
         return urlunparse(parsed).rstrip("/")
     target_parsed = urlparse(container_base)
     if not target_parsed.scheme or not target_parsed.netloc:
+        return urlunparse(parsed).rstrip("/")
+    if not _should_rehost(parsed, target_parsed):
         return urlunparse(parsed).rstrip("/")
     base_prefix = target_parsed.path.rstrip("/")
     already_prefixed = base_prefix and (
