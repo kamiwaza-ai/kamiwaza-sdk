@@ -183,3 +183,8 @@ When an instruction must apply to ONE agent only, carve it out instead of editin
 When a CodeScene gate reports a degraded/declined verdict, or when weighing a
 Code-Health refactor, read `.ai/quality-gates.md` before deciding.
 <!-- quality-gates:ai-context END -->
+
+## Code Health authoring rules
+
+Read @.ai/rules/codescene-authoring.md before writing or editing code — CodeScene per-function caps (cyclomatic <= 9, nesting <= 3, <= 4 args, <= 1 boolean operator per condition, <= 70-line functions) that keep the Code Health CI check green on the first push.
+
