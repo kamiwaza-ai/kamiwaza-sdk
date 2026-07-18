@@ -4,9 +4,11 @@ The live UAT for the ``receiver_realm`` identity mode (design §15). The
 counterpart to the mocked backend unit tests, exercised end-to-end against a
 real peer cluster:
 
-    pair(realm_scope) → receiver provisions fed-<id> realm → enroll guest →
+    pair(realm_scope) → receiver provisions federation-<id> realm → enroll guest →
     mint offline credential (once) → inspect issuer (S6) → list/revoke →
-    F5 + not_receiver_realm + mtls fail-closed guards → unpair (realm torn down)
+    F5 + not_receiver_realm fail-closed guards → full cross-cluster admit
+    (S6+S7+S8: source resolves the per-target credential and the receiver admits
+    the guest over the mesh) → unpair (realm torn down)
 
 Topology: the **receiver** (peer cluster) owns the per-federation realm and mints
 guest credentials, so all receiver_realm operations run against ``receiver_client``.
@@ -22,12 +24,11 @@ Fleet rig: spark-1 (receiver) ↔ spark-2 (initiator/source). Serve on the
 per-host FQDN (spark-N.kale.wemodulate.com) so istio Host-header routing resolves
 (memory: reference_spark_fqdn_host_routing).
 
-NOTE (Tier 2 — full mesh admit): the source-cluster leg (a source user
-presenting the minted credential over the mesh as ``X-KZ-Fed-Credential`` and
-being admitted at the receiver's ingress) is intentionally NOT asserted here — it
-needs the source-side per-target credential resolution (design §7.5) that is not
-yet built. The mint's issuer/typ are validated directly instead, which proves the
-S6 ingress-validation contract end-to-end without the source plumbing.
+Tier 2 (full mesh admit) IS exercised now that §7.5 (source-side per-target
+credential resolution) is built: the source resolves the receiver-issued
+credential via ``KAMIWAZA_FEDERATION_CREDENTIAL_<name>`` and the source mesh proxy
+forwards it as ``X-KZ-Federation-Credential``; the test classifies a 401 as an
+S6/S7 regression, 403/404 as a downstream gate (skip), and 200 as admitted.
 """
 
 from __future__ import annotations
@@ -110,7 +111,7 @@ def _pair_receiver_realm(
         yield state
     finally:
         # disconnect on both sides (best-effort). On the receiver, disconnect
-        # also tears down the provisioned fed-<id> realm (teardown hook).
+        # also tears down the provisioned federation-<id> realm (teardown hook).
         for label, client, fed_id in (
             ("initiator", initiator_client, state["initiator_id"]),
             ("receiver", receiver_client, state["receiver_id"]),
@@ -152,15 +153,15 @@ class TestReceiverRealmWalkthrough:
         receiver_client: KamiwazaClient,
     ) -> None:
         """After pairing, the receiver's federation record is receiver_realm mode
-        with a provisioned fed-<id> realm (the provision hook ran)."""
+        with a provisioned federation-<id> realm (the provision hook ran)."""
         rec = receiver_client._request(
             "GET", f"/cluster/federations/{receiver_realm_federation['receiver_id']}"
         )
         assert isinstance(rec, dict)
         assert rec.get("identity_mode") == "receiver_realm"
-        fed_realm = rec.get("fed_realm_name")
+        fed_realm = rec.get("federation_realm_name")
         assert fed_realm, f"receiver realm not provisioned; record={rec!r}"
-        assert fed_realm == f"fed-{receiver_realm_federation['receiver_id']}"
+        assert fed_realm == f"federation-{receiver_realm_federation['receiver_id']}"
 
     def test_enroll_guest_mints_offline_credential_once(
         self,
@@ -168,14 +169,14 @@ class TestReceiverRealmWalkthrough:
         receiver_client: KamiwazaClient,
     ) -> None:
         """guests.enroll mints a durable offline credential whose issuer is the
-        receiver's fed-<id> realm (validates the S6 issuer-derivation: iss is the
+        receiver's federation-<id> realm (validates the S6 issuer-derivation: iss is the
         KC FRONTEND URL of the fed realm, not the internal admin URL)."""
         fed = receiver_client.federations[receiver_realm_federation["name"]]
         external_id = f"uatguest-{uuid.uuid4().hex[:8]}@src"
         guest = fed.guests.enroll(external_id)
 
         assert guest.offline_token, "offline_token must be returned (once)"
-        assert guest.realm == f"fed-{receiver_realm_federation['receiver_id']}"
+        assert guest.realm == f"federation-{receiver_realm_federation['receiver_id']}"
 
         claims = _decode_jwt_payload(guest.offline_token)
         iss = claims.get("iss", "")
@@ -194,7 +195,7 @@ class TestReceiverRealmWalkthrough:
         receiver_client: KamiwazaClient,
     ) -> None:
         """An enrolled guest surfaces on the federation users list (keyed on its
-        fed-realm sub) and revoke disables its allowlist row (FR-79)."""
+        federation-realm sub) and revoke disables its allowlist row (FR-79)."""
         fed_id = receiver_realm_federation["receiver_id"]
         fed = receiver_client.federations[receiver_realm_federation["name"]]
         external_id = f"uatrevoke-{uuid.uuid4().hex[:8]}@src"
@@ -233,16 +234,53 @@ class TestReceiverRealmWalkthrough:
             )
         assert getattr(exc.value, "status_code", None) == 400
 
-    @pytest.mark.skip(
-        reason="Tier 2: source user presenting the minted credential over the "
-        "mesh (X-KZ-Fed-Credential) needs the source-side per-target credential "
-        "resolution (design §7.5), not yet built. The mint issuer/typ assertions "
-        "in test_enroll_guest_mints_offline_credential_once cover the S6 contract."
-    )
     def test_guest_credential_admitted_at_receiver_ingress_via_mesh(
         self,
-    ) -> None:  # noqa: D401
-        """Placeholder for the full cross-cluster admit once §7.5 lands."""
+        receiver_realm_federation: dict[str, str],
+        receiver_client: KamiwazaClient,
+        initiator_client: KamiwazaClient,
+        monkeypatch,
+    ) -> None:
+        """Tier 2 — full cross-cluster admit (S6 + S7 + S8, design §7.5). The
+        receiver mints a guest credential; the source resolves it per-target
+        (KAMIWAZA_FEDERATION_CREDENTIAL_<name>) and the source mesh proxy forwards
+        it as X-KZ-Federation-Credential; the receiver validates it against its
+        own federation-<id> realm and admits the guest.
+
+        Outcome classification (mirrors the shared_idp two-cluster test):
+          * 401 → FAIL: the receiver rejected a validly-minted fed-realm
+            credential — an S6/S7 regression.
+          * 403/404 → SKIP: mesh identity was accepted but the guest hit a
+            downstream ReBAC gate / unseeded capability precondition.
+          * 200 → the guest was admitted; assert the capabilities schema.
+        """
+        from kamiwaza_sdk.exceptions import APIError, AuthenticationError
+
+        name = receiver_realm_federation["name"]
+        fed = receiver_client.federations[name]
+        guest = fed.guests.enroll(f"uatmesh-{uuid.uuid4().hex[:8]}@src")
+
+        # Source resolves the receiver-issued credential for THIS target; the
+        # source mesh proxy forwards it as X-KZ-Federation-Credential (§7.5).
+        monkeypatch.setenv(
+            f"KAMIWAZA_FEDERATION_CREDENTIAL_{name.upper().replace('-', '_')}",
+            guest.offline_token,
+        )
+        try:
+            caps = initiator_client.federations[name].probe()
+        except AuthenticationError as exc:
+            pytest.fail(
+                "receiver rejected a validly-minted federation-realm credential "
+                f"(401) — S6/S7 regression: {exc!r}"
+            )
+        except APIError as exc:
+            if getattr(exc, "status_code", None) in (403, 404):
+                pytest.skip(
+                    "guest credential validated at ingress (not a 401); hit a "
+                    f"downstream gate / precondition: {exc!r}"
+                )
+            raise
+        assert caps.system_type
 
 
 class TestReceiverRealmGuardsOnNonReceiverRealmFederation:

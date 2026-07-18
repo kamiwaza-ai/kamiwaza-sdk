@@ -27,7 +27,7 @@ Create a federation pairing. `role` is the side being set up (`initiator` or
   a **receiver-controlled `shared_idp`** federation;
 - supplying `realm_scope` (e.g. `"per_federation"`) creates a
   **receiver-owned `receiver_realm`** federation — the receiver provisions a
-  dedicated `fed-<id>` Keycloak realm at pairing and issues its own guest
+  dedicated `federation-<id>` Keycloak realm at pairing and issues its own guest
   credentials (design §15). Mutually exclusive with the `shared_*` inputs;
 - omitting both creates a legacy source-trusted **`peer_kc`** federation
   (subject to the cluster's `ALLOW_UNTRUSTED_FEDERATION` policy).
@@ -85,7 +85,7 @@ cluster.
 ### `FederationProxy.guests.enroll(external_id, *, initial_tuples=None) -> FederationGuest`
 
 **`receiver_realm` only** (ENG-8213 Alt D). Enroll a source user as a guest in
-the receiver's dedicated `fed-<id>` realm and mint a durable offline credential
+the receiver's dedicated `federation-<id>` realm and mint a durable offline credential
 (`POST /cluster/federations/{id}/guests`). The returned `FederationGuest` carries
 `offline_token` — **returned once**; it is never re-fetchable, so persist it and
 deliver it to the source cluster out-of-band. `initial_tuples` seeds the guest's
@@ -94,7 +94,7 @@ ReBAC grants at enrollment.
 ```python
 orion = client.federations["ORION"]                # a receiver_realm federation
 guest = orion.guests.enroll("carol@src-uuid")
-print(guest.realm, guest.offline_token)            # fed-<id>, <credential — save now>
+print(guest.realm, guest.offline_token)            # federation-<id>, <credential — save now>
 orion.guests.revoke("carol@src-uuid")              # disable the guest (FR-79)
 ```
 
@@ -103,6 +103,23 @@ orion.guests.revoke("carol@src-uuid")              # disable the guest (FR-79)
 Revoke an enrolled guest by disabling its allowlist row
 (`POST /cluster/federations/{id}/guests/{external_id}/revoke`). Subsequent mesh
 calls presenting that guest's credential are refused at the receiver's ingress.
+
+### Source-side credential resolution (`receiver_realm`)
+
+A source user targeting a `receiver_realm` federation calls the receiver over the
+mesh with the **receiver-issued** credential (obtained out of band from
+`guests.enroll`), not their local login. Configure it per target and the SDK
+attaches it automatically as `X-KZ-Federation-Credential` on mesh calls to that
+federation:
+
+- `KAMIWAZA_FEDERATION_CREDENTIAL_<NAME>` — env var, where `<NAME>` is the
+  federation name upper-cased with non-alphanumerics mapped to `_`
+  (`orion-prod` → `KAMIWAZA_FEDERATION_CREDENTIAL_ORION_PROD`).
+- `KAMIWAZA_FEDERATION_CREDENTIAL_FILE` — path to a JSON file mapping federation
+  name → credential (env var wins when both are set).
+
+The local `KAMIWAZA_PAT` continues to serve local calls unchanged; targets in
+other identity modes (`peer_kc` / `shared_idp`) are unaffected (no header added).
 
 ## The `kamiwaza-fed` CLI
 

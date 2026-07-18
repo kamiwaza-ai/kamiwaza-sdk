@@ -155,7 +155,7 @@ class FederationsAPI(BaseService):
             realm_scope: ENG-8213 receiver_realm (Alt D) — supplying it (e.g.
                 ``"per_federation"``) creates the federation in the
                 receiver-owned-realm mode: the receiver provisions a dedicated
-                ``fed-<id>`` Keycloak realm at pairing and mints its own guest
+                ``federation-<id>`` Keycloak realm at pairing and mints its own guest
                 credentials via ``kz.federations[name].guests.enroll(...)``.
                 Mutually exclusive with the shared_idp inputs.
 
@@ -208,7 +208,7 @@ class FederationsAPI(BaseService):
             create_body["shared_ca_pem"] = shared_ca_pem
         # ENG-8213 — receiver_realm (Alt D). Supplying ``realm_scope`` creates the
         # federation in the receiver-owned-realm mode: the receiver provisions a
-        # dedicated ``fed-<id>`` Keycloak realm at pairing and mints its own guest
+        # dedicated ``federation-<id>`` Keycloak realm at pairing and mints its own guest
         # credentials (design section 15). Distinct from shared_idp — no shared
         # realm is trusted; identity is minted by the receiver.
         if realm_scope is not None:
@@ -328,8 +328,18 @@ class FederationProxy:
     def guests(self) -> "FederationGuestsAPI":
         """Receiver_realm guest management (ENG-8213 Alt D). Only meaningful for
         federations created with ``realm_scope`` — the receiver mints guest
-        credentials in its dedicated ``fed-<id>`` realm."""
+        credentials in its dedicated ``federation-<id>`` realm."""
         return FederationGuestsAPI(proxy=self)
+
+    def _mesh_headers(self) -> dict[str, str]:
+        """S8 (design §7.5) — attach the per-target receiver-issued federation
+        credential (``X-KZ-Federation-Credential``) when one is configured for
+        this federation, so a mesh call to a ``receiver_realm`` target is
+        validated against the receiver's own ``federation-<id>`` realm. Empty for
+        peer_kc / shared_idp targets (unchanged local-identity mesh call)."""
+        from .federation_credentials import federation_credential_headers
+
+        return federation_credential_headers(self.name)
 
     def probe(self) -> ClusterCapabilities:
         """Probe this federation peer's capabilities via the mesh (T5.21).
@@ -342,12 +352,17 @@ class FederationProxy:
         per F10 — the initiator ``federation:operator`` gate was dropped in
         ENG-8571.)
 
+        For a ``receiver_realm`` target the per-target federation credential is
+        attached (§7.5); it is a no-op for other modes.
+
         The federation selector is the cluster name itself — no separate
         federation-id resolution round-trip required.
         """
+        headers = self._mesh_headers()
         body = self._client._request(
             "GET",
             f"/mesh/{self.name}/api/cluster/cluster_capabilities",
+            **({"headers": headers} if headers else {}),
         )
         return ClusterCapabilities.model_validate(body)
 
@@ -421,7 +436,7 @@ class FederationGuestsAPI:
 
     Unlike :class:`FederationUsersAPI` (the mode-agnostic allowlist), a
     receiver_realm receiver *issues* the credential: enrolling a guest
-    provisions it in the receiver-owned ``fed-<id>`` realm and mints a durable
+    provisions it in the receiver-owned ``federation-<id>`` realm and mints a durable
     offline token returned once (design section 15.2). Only meaningful for
     federations paired with ``realm_scope``.
     """
@@ -442,7 +457,7 @@ class FederationGuestsAPI:
         Args:
             external_id: The source user's identifier (``"<username>@<peer-
                 cluster-uuid>"`` format), enrolled into the receiver's
-                ``fed-<id>`` realm.
+                ``federation-<id>`` realm.
             initial_tuples: ReBAC tuples to seed for the guest at enrollment.
                 Each tuple is a dict with ``subject`` / ``relation`` /
                 ``object`` keys. Forwarded only when supplied.

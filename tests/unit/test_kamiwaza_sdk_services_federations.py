@@ -776,7 +776,7 @@ def test_disconnect_force_passes_param() -> None:
 def test_pair_forwards_realm_scope_when_supplied() -> None:
     """Supplying ``realm_scope`` creates the federation in the receiver-owned
     receiver_realm mode (Alt D / design section 15): the receiver provisions a
-    dedicated ``fed-<id>`` realm and mints its own guest credentials. The SDK
+    dedicated ``federation-<id>`` realm and mints its own guest credentials. The SDK
     forwards ``realm_scope`` on the create body."""
     from kamiwaza_sdk.services.federations import FederationsAPI
 
@@ -843,7 +843,7 @@ def test_guests_enroll_posts_and_returns_credential() -> None:
         f"/cluster/federations/{fid}/guests",
         {
             "external_id": "carol@src-uuid",
-            "realm": f"fed-{fid}",
+            "realm": f"federation-{fid}",
             "offline_token": "OFFLINE-CRED-XYZ",
         },
     )
@@ -851,7 +851,7 @@ def test_guests_enroll_posts_and_returns_credential() -> None:
     guest = FederationsAPI(client)["ORION"].guests.enroll("carol@src-uuid")
 
     assert guest.external_id == "carol@src-uuid"
-    assert guest.realm == f"fed-{fid}"
+    assert guest.realm == f"federation-{fid}"
     assert guest.offline_token == "OFFLINE-CRED-XYZ"
     post = [(p, kw) for m, p, kw in client.calls if m == "POST"][0]
     assert post[0] == f"/cluster/federations/{fid}/guests"
@@ -869,7 +869,7 @@ def test_guests_enroll_forwards_initial_tuples() -> None:
     client.expect(
         "POST",
         f"/cluster/federations/{fid}/guests",
-        {"external_id": "dave@src", "realm": f"fed-{fid}", "offline_token": "T"},
+        {"external_id": "dave@src", "realm": f"federation-{fid}", "offline_token": "T"},
     )
 
     tuples = [{"subject": "user:dave", "relation": "reader", "object": "dataset:x"}]
@@ -890,7 +890,7 @@ def test_guests_enroll_forwards_identity_proof() -> None:
     client.expect(
         "POST",
         f"/cluster/federations/{fid}/guests",
-        {"external_id": "eve@src", "realm": f"fed-{fid}", "offline_token": "T"},
+        {"external_id": "eve@src", "realm": f"federation-{fid}", "offline_token": "T"},
     )
 
     proof = {
@@ -911,7 +911,7 @@ def test_guests_enroll_omits_identity_proof_when_not_supplied() -> None:
     client.expect(
         "POST",
         f"/cluster/federations/{fid}/guests",
-        {"external_id": "frank@src", "realm": f"fed-{fid}", "offline_token": "T"},
+        {"external_id": "frank@src", "realm": f"federation-{fid}", "offline_token": "T"},
     )
 
     FederationsAPI(client)["ORION"].guests.enroll("frank@src")
@@ -939,3 +939,101 @@ def test_guests_revoke_posts_to_revoke_endpoint() -> None:
     assert ("POST", f"/cluster/federations/{fid}/guests/carol@src/revoke") in [
         (m, p) for m, p, _ in client.calls
     ]
+
+
+# ---------------------------------------------------------------------------
+# ENG-8213 S8 (design §7.5) — source-side per-target federation credential
+# resolution + attachment on mesh calls to receiver_realm targets
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_federation_credential_from_env() -> None:
+    from kamiwaza_sdk.services.federation_credentials import (
+        resolve_federation_credential,
+    )
+
+    env = {"KAMIWAZA_FEDERATION_CREDENTIAL_ORION": "offline-cred-xyz"}
+    assert resolve_federation_credential("ORION", env=env) == "offline-cred-xyz"
+
+
+def test_resolve_federation_credential_sanitizes_target_name() -> None:
+    from kamiwaza_sdk.services.federation_credentials import (
+        resolve_federation_credential,
+    )
+
+    # non-alnum chars in the federation name map to '_' in the env key.
+    env = {"KAMIWAZA_FEDERATION_CREDENTIAL_ORION_PROD": "cred"}
+    assert resolve_federation_credential("orion-prod", env=env) == "cred"
+
+
+def test_resolve_federation_credential_none_when_unset() -> None:
+    from kamiwaza_sdk.services.federation_credentials import (
+        resolve_federation_credential,
+    )
+
+    assert resolve_federation_credential("ORION", env={}) is None
+
+
+def test_resolve_federation_credential_file_fallback(tmp_path) -> None:
+    import json
+
+    from kamiwaza_sdk.services.federation_credentials import (
+        resolve_federation_credential,
+    )
+
+    cred_file = tmp_path / "creds.json"
+    cred_file.write_text(json.dumps({"ORION": "from-file"}))
+    env = {"KAMIWAZA_FEDERATION_CREDENTIAL_FILE": str(cred_file)}
+    assert resolve_federation_credential("ORION", env=env) == "from-file"
+
+
+def test_resolve_federation_credential_env_beats_file(tmp_path) -> None:
+    import json
+
+    from kamiwaza_sdk.services.federation_credentials import (
+        resolve_federation_credential,
+    )
+
+    cred_file = tmp_path / "creds.json"
+    cred_file.write_text(json.dumps({"ORION": "from-file"}))
+    env = {
+        "KAMIWAZA_FEDERATION_CREDENTIAL_ORION": "from-env",
+        "KAMIWAZA_FEDERATION_CREDENTIAL_FILE": str(cred_file),
+    }
+    assert resolve_federation_credential("ORION", env=env) == "from-env"
+
+
+def test_probe_attaches_federation_credential_header_when_resolved(monkeypatch) -> None:
+    """A mesh call to a receiver_realm target carries the resolved credential in
+    the X-KZ-Federation-Credential header so the receiver validates it against
+    its own federation-<id> realm (design §7.5)."""
+    from kamiwaza_sdk.services.federations import FederationsAPI
+
+    monkeypatch.setenv("KAMIWAZA_FEDERATION_CREDENTIAL_ORION", "offline-cred-xyz")
+    client = _MockClient()
+    client.expect(
+        "GET",
+        "/mesh/ORION/api/cluster/cluster_capabilities",
+        {"system_type": "linux", "os": "linux"},
+    )
+    FederationsAPI(client)["ORION"].probe()
+
+    call = [kw for m, p, kw in client.calls if p.endswith("/cluster_capabilities")][0]
+    assert call["headers"]["X-KZ-Federation-Credential"] == "offline-cred-xyz"
+
+
+def test_probe_omits_federation_credential_header_when_absent(monkeypatch) -> None:
+    from kamiwaza_sdk.services.federations import FederationsAPI
+
+    monkeypatch.delenv("KAMIWAZA_FEDERATION_CREDENTIAL_ORION", raising=False)
+    client = _MockClient()
+    client.expect(
+        "GET",
+        "/mesh/ORION/api/cluster/cluster_capabilities",
+        {"system_type": "linux", "os": "linux"},
+    )
+    FederationsAPI(client)["ORION"].probe()
+
+    call = [kw for m, p, kw in client.calls if p.endswith("/cluster_capabilities")][0]
+    headers = call.get("headers") or {}
+    assert "X-KZ-Federation-Credential" not in headers
