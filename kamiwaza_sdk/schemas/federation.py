@@ -57,6 +57,27 @@ class Federation(BaseModel):
     remote_cluster_name: Optional[str] = None
     remote_ips: Optional[List[Any]] = None
     callback_hostname: Optional[str] = None
+    # ENG-8213 Alt D (receiver_realm). ``realm_scope`` (e.g. "per_federation")
+    # marks a receiver-owned-realm federation; ``fed_realm_name`` is the
+    # receiver-provisioned ``fed-<id>`` realm once pairing completes.
+    realm_scope: Optional[str] = None
+    fed_realm_name: Optional[str] = None
+
+
+class FederationGuest(BaseModel):
+    """A receiver_realm guest credential (ENG-8213 Alt D, design section 15.2).
+
+    Returned by ``kz.federations["<name>"].guests.enroll(...)``. The receiver
+    provisions the guest in its dedicated ``fed-<id>`` realm and mints a durable
+    offline credential. ``offline_token`` is returned **once** at enrollment and
+    is never re-fetchable — the caller must persist it out-of-band.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    external_id: str
+    realm: str
+    offline_token: str
 
 
 class BrokeredUser(BaseModel):

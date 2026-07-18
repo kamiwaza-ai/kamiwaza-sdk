@@ -9,7 +9,12 @@ from .context import ContextService
 from .datasets import DatasetsAPI
 from .embedding import EmbeddingService
 from .enclaves import EnclavesService
-from .federations import FederationProxy, FederationsAPI, FederationUsersAPI
+from .federations import (
+    FederationGuestsAPI,
+    FederationProxy,
+    FederationsAPI,
+    FederationUsersAPI,
+)
 from .gates import GatesAPI
 from .ingestion import IngestionService
 from .jobs_federation import JobsAPI
@@ -42,6 +47,7 @@ __all__ = [
     "DatasetsAPI",
     "EmbeddingService",
     "EnclavesService",
+    "FederationGuestsAPI",
     "FederationProxy",
     "FederationUsersAPI",
     "FederationsAPI",

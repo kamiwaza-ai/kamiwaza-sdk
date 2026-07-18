@@ -46,7 +46,12 @@ import uuid
 from typing import Any, List, Optional
 from urllib.parse import urlparse
 
-from ..schemas.federation import BrokeredUser, ClusterCapabilities, Federation
+from ..schemas.federation import (
+    BrokeredUser,
+    ClusterCapabilities,
+    Federation,
+    FederationGuest,
+)
 from .base_service import BaseService
 
 
@@ -70,6 +75,7 @@ class FederationsAPI(BaseService):
         shared_issuer_url: Optional[str] = None,
         shared_jwks_url: Optional[str] = None,
         shared_ca_pem: Optional[str] = None,
+        realm_scope: Optional[str] = None,
     ) -> Federation:
         """Initiate or accept a federation pairing.
 
@@ -141,6 +147,17 @@ class FederationsAPI(BaseService):
                 store the raw secret in DataHub first (via the
                 secrets API) and supply the URN here. Mirrors the
                 PSK secret-handling path.
+            shared_issuer_url: ENG-8213 shared_idp (Alt C) — supplying it
+                creates the federation in the receiver-controlled shared_idp
+                mode (both clusters trust this shared realm). ``shared_jwks_url``
+                is derived server-side when omitted; ``shared_ca_pem`` pins the
+                JWKS-fetch trust root for a self-signed realm.
+            realm_scope: ENG-8213 receiver_realm (Alt D) — supplying it (e.g.
+                ``"per_federation"``) creates the federation in the
+                receiver-owned-realm mode: the receiver provisions a dedicated
+                ``fed-<id>`` Keycloak realm at pairing and mints its own guest
+                credentials via ``kz.federations[name].guests.enroll(...)``.
+                Mutually exclusive with the shared_idp inputs.
 
         Returns:
             Federation record reflecting the post-/pair state.
@@ -189,6 +206,13 @@ class FederationsAPI(BaseService):
             create_body["shared_jwks_url"] = shared_jwks_url
         if shared_ca_pem is not None:
             create_body["shared_ca_pem"] = shared_ca_pem
+        # ENG-8213 — receiver_realm (Alt D). Supplying ``realm_scope`` creates the
+        # federation in the receiver-owned-realm mode: the receiver provisions a
+        # dedicated ``fed-<id>`` Keycloak realm at pairing and mints its own guest
+        # credentials (design section 15). Distinct from shared_idp — no shared
+        # realm is trusted; identity is minted by the receiver.
+        if realm_scope is not None:
+            create_body["realm_scope"] = realm_scope
 
         created = self.client._request(
             "POST",
@@ -243,9 +267,7 @@ class FederationsAPI(BaseService):
 
     def get(self, federation_id: Any) -> Federation:
         """Fetch a single federation by id (``GET /cluster/federations/{id}``)."""
-        body = self.client._request(
-            "GET", f"/cluster/federations/{federation_id}"
-        )
+        body = self.client._request("GET", f"/cluster/federations/{federation_id}")
         return Federation.model_validate(body)
 
     def __getitem__(self, name: str) -> "FederationProxy":
@@ -301,6 +323,13 @@ class FederationProxy:
     @property
     def users(self) -> "FederationUsersAPI":
         return FederationUsersAPI(proxy=self)
+
+    @property
+    def guests(self) -> "FederationGuestsAPI":
+        """Receiver_realm guest management (ENG-8213 Alt D). Only meaningful for
+        federations created with ``realm_scope`` — the receiver mints guest
+        credentials in its dedicated ``fed-<id>`` realm."""
+        return FederationGuestsAPI(proxy=self)
 
     def probe(self) -> ClusterCapabilities:
         """Probe this federation peer's capabilities via the mesh (T5.21).
@@ -385,3 +414,60 @@ class FederationUsersAPI:
             json=body,
         )
         return BrokeredUser.model_validate(result)
+
+
+class FederationGuestsAPI:
+    """Receiver_realm guest management on a single federation (ENG-8213 Alt D).
+
+    Unlike :class:`FederationUsersAPI` (the mode-agnostic allowlist), a
+    receiver_realm receiver *issues* the credential: enrolling a guest
+    provisions it in the receiver-owned ``fed-<id>`` realm and mints a durable
+    offline token returned once (design section 15.2). Only meaningful for
+    federations paired with ``realm_scope``.
+    """
+
+    def __init__(self, *, proxy: FederationProxy) -> None:
+        self._proxy = proxy
+        self._client = proxy._client
+
+    def enroll(
+        self,
+        external_id: str,
+        *,
+        initial_tuples: Optional[List[Any]] = None,
+    ) -> FederationGuest:
+        """Enroll a source user as a guest and mint its offline credential.
+
+        Args:
+            external_id: The source user's identifier (``"<username>@<peer-
+                cluster-uuid>"`` format), enrolled into the receiver's
+                ``fed-<id>`` realm.
+            initial_tuples: ReBAC tuples to seed for the guest at enrollment.
+                Each tuple is a dict with ``subject`` / ``relation`` /
+                ``object`` keys. Forwarded only when supplied.
+
+        Returns:
+            :class:`FederationGuest` carrying the ``offline_token`` — **returned
+            once**; persist it out-of-band, it cannot be re-fetched.
+        """
+        body: dict[str, Any] = {"external_id": external_id}
+        if initial_tuples is not None:
+            body["initial_tuples"] = initial_tuples
+
+        result = self._client._request(
+            "POST",
+            f"/cluster/federations/{self._proxy._id()}/guests",
+            json=body,
+        )
+        return FederationGuest.model_validate(result)
+
+    def revoke(self, external_id: str) -> Any:
+        """Revoke an enrolled guest by disabling its allowlist row (FR-79).
+
+        Subsequent mesh calls presenting that guest's credential are refused at
+        the receiver's ingress. Returns the server's confirmation payload.
+        """
+        return self._client._request(
+            "POST",
+            f"/cluster/federations/{self._proxy._id()}/guests/{external_id}/revoke",
+        )

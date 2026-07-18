@@ -499,8 +499,7 @@ def test_resolve_id_tolerates_list_item_missing_status() -> None:
     assert user.federation_id == "fed-orion-id"
     # Resolved the id from a status-less entry and POSTed to the right path.
     assert any(
-        p == "/cluster/federations/fed-orion-id/users"
-        for _, p, _ in client.calls
+        p == "/cluster/federations/fed-orion-id/users" for _, p, _ in client.calls
     )
 
 
@@ -767,3 +766,135 @@ def test_disconnect_force_passes_param() -> None:
     FederationsAPI(client)["LYRA"].disconnect(force=True)
     post = [kw for m, p, kw in client.calls if m == "POST"][0]
     assert post.get("params") == {"force": "true"}
+
+
+# ---------------------------------------------------------------------------
+# ENG-8213 Alt D (receiver_realm) — realm_scope on pair() + guest sub-resource
+# ---------------------------------------------------------------------------
+
+
+def test_pair_forwards_realm_scope_when_supplied() -> None:
+    """Supplying ``realm_scope`` creates the federation in the receiver-owned
+    receiver_realm mode (Alt D / design section 15): the receiver provisions a
+    dedicated ``fed-<id>`` realm and mints its own guest credentials. The SDK
+    forwards ``realm_scope`` on the create body."""
+    from kamiwaza_sdk.services.federations import FederationsAPI
+
+    client = _MockClient()
+    _stage_pair_responses(client)
+
+    api = FederationsAPI(client)
+    api.pair(
+        name="ORION",
+        role="receiver",
+        remote_url="https://orion.example.com",
+        realm_scope="per_federation",
+    )
+
+    _, body = _create_call(client)
+    assert body["realm_scope"] == "per_federation"
+
+
+def test_pair_omits_realm_scope_when_not_supplied() -> None:
+    """Without ``realm_scope`` the create body carries no realm_scope key (the
+    federation stays peer_kc / shared_idp per the other inputs)."""
+    from kamiwaza_sdk.services.federations import FederationsAPI
+
+    client = _MockClient()
+    _stage_pair_responses(client)
+
+    api = FederationsAPI(client)
+    api.pair(name="ORION", role="initiator", remote_url="https://orion.example.com")
+
+    _, body = _create_call(client)
+    assert "realm_scope" not in body
+
+
+def _stage_guest_federation(client: _MockClient, *, fid: str) -> None:
+    """Stage the GET list used to resolve a federation name -> id for guest ops."""
+    client.expect(
+        "GET",
+        "/cluster/federations",
+        [{"id": fid, "status": "PAIRED", "remote_cluster_name": "ORION"}],
+    )
+
+
+def test_guests_property_returns_guests_api() -> None:
+    from kamiwaza_sdk.services.federations import (
+        FederationGuestsAPI,
+        FederationsAPI,
+    )
+
+    client = _MockClient()
+    guests = FederationsAPI(client)["ORION"].guests
+    assert isinstance(guests, FederationGuestsAPI)
+
+
+def test_guests_enroll_posts_and_returns_credential() -> None:
+    """``guests.enroll(external_id)`` POSTs to the receiver's /guests endpoint
+    and returns the minted offline credential (returned ONCE, design 15.2)."""
+    from kamiwaza_sdk.services.federations import FederationsAPI
+
+    client = _MockClient()
+    fid = "11111111-1111-1111-1111-111111111111"
+    _stage_guest_federation(client, fid=fid)
+    client.expect(
+        "POST",
+        f"/cluster/federations/{fid}/guests",
+        {
+            "external_id": "carol@src-uuid",
+            "realm": f"fed-{fid}",
+            "offline_token": "OFFLINE-CRED-XYZ",
+        },
+    )
+
+    guest = FederationsAPI(client)["ORION"].guests.enroll("carol@src-uuid")
+
+    assert guest.external_id == "carol@src-uuid"
+    assert guest.realm == f"fed-{fid}"
+    assert guest.offline_token == "OFFLINE-CRED-XYZ"
+    post = [(p, kw) for m, p, kw in client.calls if m == "POST"][0]
+    assert post[0] == f"/cluster/federations/{fid}/guests"
+    assert post[1].get("json") == {"external_id": "carol@src-uuid"}
+
+
+def test_guests_enroll_forwards_initial_tuples() -> None:
+    """initial_tuples seed the guest's ReBAC grants at enrollment; the SDK
+    forwards them on the body only when supplied."""
+    from kamiwaza_sdk.services.federations import FederationsAPI
+
+    client = _MockClient()
+    fid = "22222222-2222-2222-2222-222222222222"
+    _stage_guest_federation(client, fid=fid)
+    client.expect(
+        "POST",
+        f"/cluster/federations/{fid}/guests",
+        {"external_id": "dave@src", "realm": f"fed-{fid}", "offline_token": "T"},
+    )
+
+    tuples = [{"subject": "user:dave", "relation": "reader", "object": "dataset:x"}]
+    FederationsAPI(client)["ORION"].guests.enroll("dave@src", initial_tuples=tuples)
+
+    post = [kw for m, p, kw in client.calls if m == "POST"][0]
+    assert post["json"]["initial_tuples"] == tuples
+
+
+def test_guests_revoke_posts_to_revoke_endpoint() -> None:
+    """``guests.revoke(external_id)`` disables the guest's allowlist row via the
+    receiver's revoke endpoint (FR-79)."""
+    from kamiwaza_sdk.services.federations import FederationsAPI
+
+    client = _MockClient()
+    fid = "33333333-3333-3333-3333-333333333333"
+    _stage_guest_federation(client, fid=fid)
+    client.expect(
+        "POST",
+        f"/cluster/federations/{fid}/guests/carol@src/revoke",
+        {"success": True},
+    )
+
+    result = FederationsAPI(client)["ORION"].guests.revoke("carol@src")
+    assert result == {"success": True}
+    assert ("POST", f"/cluster/federations/{fid}/guests/carol@src/revoke") in [
+        (m, p) for m, p, _ in client.calls
+    ]

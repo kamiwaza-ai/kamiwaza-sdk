@@ -7,9 +7,11 @@ manages cluster-to-cluster federation pairings and cross-cluster access from the
 SDK. Access it as `client.federations`. It covers the federation lifecycle
 (pair, list, get, probe, disconnect), a per-federation proxy for sub-resources,
 and brokered-user allowlisting. Cross-cluster **identity trust** is governed by
-each federation's identity mode (`shared_idp` or `peer_kc`); see the platform
+each federation's identity mode (`peer_kc`, `shared_idp`, or `receiver_realm`);
+see the platform
 [Identity Trust Modes](https://docs.kamiwaza.ai/federation/identity-trust-modes)
-guide for the trust model.
+guide for the trust model. In `receiver_realm` mode the receiver provisions a
+dedicated realm and issues guest credentials (see `guests` below).
 
 ## Methods
 
@@ -19,10 +21,16 @@ Create a federation pairing. `role` is the side being set up (`initiator` or
 `receiver`). A pre-shared key is auto-generated (UUID4) when `preshared_key` is
 `None`; supply your own to share a key out-of-band.
 
-**Selecting the identity mode:** supplying `shared_issuer_url` (with
-`shared_jwks_url` / `shared_ca_pem`) creates a **receiver-controlled `shared_idp`**
-federation; omitting it creates a legacy source-trusted **`peer_kc`** federation
-(subject to the cluster's `ALLOW_UNTRUSTED_FEDERATION` policy).
+**Selecting the identity mode:**
+
+- supplying `shared_issuer_url` (with `shared_jwks_url` / `shared_ca_pem`) creates
+  a **receiver-controlled `shared_idp`** federation;
+- supplying `realm_scope` (e.g. `"per_federation"`) creates a
+  **receiver-owned `receiver_realm`** federation — the receiver provisions a
+  dedicated `fed-<id>` Keycloak realm at pairing and issues its own guest
+  credentials (design §15). Mutually exclusive with the `shared_*` inputs;
+- omitting both creates a legacy source-trusted **`peer_kc`** federation
+  (subject to the cluster's `ALLOW_UNTRUSTED_FEDERATION` policy).
 
 ```python
 # shared_idp (receiver-controlled)
@@ -73,6 +81,28 @@ Allowlist a brokered remote user on this (receiver) cluster
 (`POST /cluster/federations/{id}/users`). `external_id` identifies the remote
 subject; `initial_tuples` seeds the ReBAC grants the user should have on this
 cluster.
+
+### `FederationProxy.guests.enroll(external_id, *, initial_tuples=None) -> FederationGuest`
+
+**`receiver_realm` only** (ENG-8213 Alt D). Enroll a source user as a guest in
+the receiver's dedicated `fed-<id>` realm and mint a durable offline credential
+(`POST /cluster/federations/{id}/guests`). The returned `FederationGuest` carries
+`offline_token` — **returned once**; it is never re-fetchable, so persist it and
+deliver it to the source cluster out-of-band. `initial_tuples` seeds the guest's
+ReBAC grants at enrollment.
+
+```python
+orion = client.federations["ORION"]                # a receiver_realm federation
+guest = orion.guests.enroll("carol@src-uuid")
+print(guest.realm, guest.offline_token)            # fed-<id>, <credential — save now>
+orion.guests.revoke("carol@src-uuid")              # disable the guest (FR-79)
+```
+
+### `FederationProxy.guests.revoke(external_id) -> Any`
+
+Revoke an enrolled guest by disabling its allowlist row
+(`POST /cluster/federations/{id}/guests/{external_id}/revoke`). Subsequent mesh
+calls presenting that guest's credential are refused at the receiver's ingress.
 
 ## The `kamiwaza-fed` CLI
 
