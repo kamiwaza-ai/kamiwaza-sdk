@@ -879,6 +879,47 @@ def test_guests_enroll_forwards_initial_tuples() -> None:
     assert post["json"]["initial_tuples"] == tuples
 
 
+def test_guests_enroll_forwards_identity_proof() -> None:
+    """The out-of-band identity_proof (design §7.4) is forwarded on the body only
+    when supplied — the manual default needs nothing, mtls needs a cert."""
+    from kamiwaza_sdk.services.federations import FederationsAPI
+
+    client = _MockClient()
+    fid = "44444444-4444-4444-4444-444444444444"
+    _stage_guest_federation(client, fid=fid)
+    client.expect(
+        "POST",
+        f"/cluster/federations/{fid}/guests",
+        {"external_id": "eve@src", "realm": f"fed-{fid}", "offline_token": "T"},
+    )
+
+    proof = {
+        "client_cert_pem": "-----BEGIN CERTIFICATE-----\nX\n-----END CERTIFICATE-----"
+    }
+    FederationsAPI(client)["ORION"].guests.enroll("eve@src", identity_proof=proof)
+
+    post = [kw for m, p, kw in client.calls if m == "POST"][0]
+    assert post["json"]["identity_proof"] == proof
+
+
+def test_guests_enroll_omits_identity_proof_when_not_supplied() -> None:
+    from kamiwaza_sdk.services.federations import FederationsAPI
+
+    client = _MockClient()
+    fid = "55555555-5555-5555-5555-555555555555"
+    _stage_guest_federation(client, fid=fid)
+    client.expect(
+        "POST",
+        f"/cluster/federations/{fid}/guests",
+        {"external_id": "frank@src", "realm": f"fed-{fid}", "offline_token": "T"},
+    )
+
+    FederationsAPI(client)["ORION"].guests.enroll("frank@src")
+
+    post = [kw for m, p, kw in client.calls if m == "POST"][0]
+    assert "identity_proof" not in post["json"]
+
+
 def test_guests_revoke_posts_to_revoke_endpoint() -> None:
     """``guests.revoke(external_id)`` disables the guest's allowlist row via the
     receiver's revoke endpoint (FR-79)."""

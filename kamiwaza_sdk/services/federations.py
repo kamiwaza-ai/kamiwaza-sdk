@@ -435,6 +435,7 @@ class FederationGuestsAPI:
         external_id: str,
         *,
         initial_tuples: Optional[List[Any]] = None,
+        identity_proof: Optional[dict[str, Any]] = None,
     ) -> FederationGuest:
         """Enroll a source user as a guest and mint its offline credential.
 
@@ -445,6 +446,13 @@ class FederationGuestsAPI:
             initial_tuples: ReBAC tuples to seed for the guest at enrollment.
                 Each tuple is a dict with ``subject`` / ``relation`` /
                 ``object`` keys. Forwarded only when supplied.
+            identity_proof: Out-of-band identity proof validated by the
+                federation's ``verification`` seam (design §7.4) BEFORE the
+                credential is minted. Shape depends on the mode: ``manual``
+                accepts an optional ``{"attestation": "..."}``; ``mtls`` requires
+                ``{"client_cert_pem": "..."}`` chaining to the receiver's trust
+                CA. Forwarded only when supplied (the ``manual`` default needs
+                nothing); a proof the receiver rejects fails the call with 400.
 
         Returns:
             :class:`FederationGuest` carrying the ``offline_token`` — **returned
@@ -453,6 +461,8 @@ class FederationGuestsAPI:
         body: dict[str, Any] = {"external_id": external_id}
         if initial_tuples is not None:
             body["initial_tuples"] = initial_tuples
+        if identity_proof is not None:
+            body["identity_proof"] = identity_proof
 
         result = self._client._request(
             "POST",
