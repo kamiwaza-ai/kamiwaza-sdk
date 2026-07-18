@@ -24,11 +24,12 @@ Fleet rig: spark-1 (receiver) ↔ spark-2 (initiator/source). Serve on the
 per-host FQDN (spark-N.kale.wemodulate.com) so istio Host-header routing resolves
 (memory: reference_spark_fqdn_host_routing).
 
-Tier 2 (full mesh admit) IS exercised now that §7.5 (source-side per-target
-credential resolution) is built: the source resolves the receiver-issued
-credential via ``KAMIWAZA_FEDERATION_CREDENTIAL_<name>`` and the source mesh proxy
-forwards it as ``X-KZ-Federation-Credential``; the test classifies a 401 as an
-S6/S7 regression, 403/404 as a downstream gate (skip), and 200 as admitted.
+Tier 2 (full mesh admit) is exercised via §7.5 credential resolution. It is
+currently xfail per ENG-8819: the receiver's mesh HMAC-verify PSK is resolved by
+remote-cluster-id (ambiguous with >1 PAIRED federation per peer), so it can pick
+the wrong federation's PSK → intermittent 401. Root-caused live 2026-07-18: when
+the PSK resolves correctly the offline token is accepted and the admit works
+(downstream 403). See the marker on the Tier-2 test.
 """
 
 from __future__ import annotations
@@ -251,15 +252,17 @@ class TestReceiverRealmWalkthrough:
         assert getattr(exc.value, "status_code", None) == 400
 
     @pytest.mark.xfail(
-        reason="KNOWN GAP (surfaced by fleet UAT 2026-07-18): the receiver mints "
-        "the guest credential as a durable typ=Offline (refresh) token, which is "
-        "not directly usable as the on-wire mesh peer credential — the receiver "
-        "returns 401. The full cross-cluster admit needs a design decision: "
-        "receiver accepts the offline token in _verify_receiver_realm_jwt (bind by "
-        "sub, aligned with §13.3), OR a refresh→access exchange (source lacks the "
-        "confidential client secret), OR the mint returns an access-usable "
-        "credential. Tracked as a receiver_realm follow-up. Tiers 1 (provision / "
-        "enroll / mint / issuer / revoke / F5) are validated GREEN live.",
+        reason="ENG-8819 (root-caused live 2026-07-18): intermittent 401 is NOT an "
+        "offline-token issue — when the mesh PSK resolves correctly the receiver "
+        "ACCEPTS the offline token and the admit works (reaching an expected "
+        "downstream 403). The 401 is a GENERAL mesh bug: the receiver resolves the "
+        "HMAC-verify PSK via get_federation_psk_for_remote_cluster_id (most-recent "
+        "PAIRED, cached per cluster-id), which is ambiguous when >1 PAIRED "
+        "federation shares a remote cluster (here the pre-existing shared_idp seed "
+        "+ this receiver_realm federation) — so the wrong federation's PSK is used "
+        "and the signature fails. Fix = per-federation PSK resolution for mesh "
+        "verify (design decision; general mesh, not receiver_realm). xpasses once "
+        "fixed + one federation per peer. Tiers 1 validated GREEN live.",
         strict=False,
     )
     def test_guest_credential_admitted_at_receiver_ingress_via_mesh(
