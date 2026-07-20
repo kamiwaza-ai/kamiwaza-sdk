@@ -7,7 +7,6 @@ import os
 import time
 from collections.abc import Generator
 from datetime import datetime, timedelta, timezone
-from typing import Any
 from uuid import uuid4
 
 import pytest
@@ -28,34 +27,10 @@ DEFAULT_WORKROOM_ID = os.getenv(
     ContextService.DEFAULT_WORKROOM_ID,
 )
 TEST_VECTOR = [round(index * 0.01, 4) for index in range(1, 33)]
-CONTEXT_SEARCH_VECTOR_DIMENSION = 384
-CONTEXT_SEARCH_FIELD_LIST: list[list[Any]] = [
-    ["source_file", "str"],
-    ["source_urn", "str"],
-    ["file_id", "str"],
-    ["page_number", "int"],
-    ["chunk_index", "int"],
-    ["content", "str"],
-    ["created_at", "str"],
-    ["media_type", "str"],
-    ["media_section", "str"],
-    ["timestamp_seconds", "float"],
-    ["frame_id", "str"],
-    ["frame_uri", "str"],
-    ["omniparse_doc_id", "str"],
-    ["omniparse_chunk_id", "str"],
-]
 
 
 def _sample_vector() -> list[float]:
     return list(TEST_VECTOR)
-
-
-def _sample_context_search_vector() -> list[float]:
-    return [
-        round(((index % 19) + 1) * 0.001, 6)
-        for index in range(CONTEXT_SEARCH_VECTOR_DIMENSION)
-    ]
 
 
 def _sdk_collection_name() -> str:
@@ -246,49 +221,6 @@ def _safe_delete_collection(
         pass
 
 
-def _seed_searchable_context_collection(
-    service: ContextService,
-    *,
-    workroom_id: str,
-    vectordb_id: str,
-) -> str:
-    collection_name = _sdk_collection_name()
-    service.insert_vectors(
-        vectordb_id,
-        collection_name=collection_name,
-        vectors=[_sample_context_search_vector()],
-        metadata=[
-            {
-                "source_file": "sdk-context-live.txt",
-                "source_urn": f"urn:kamiwaza-sdk:context-live:{uuid4().hex[:8]}",
-                "file_id": "",
-                "page_number": 1,
-                "chunk_index": 0,
-                "content": "hello context from the SDK live smoke contract",
-                "created_at": datetime.now(timezone.utc).isoformat(),
-                "media_type": "",
-                "media_section": "",
-                "timestamp_seconds": 0.0,
-                "frame_id": "",
-                "frame_uri": "",
-                "omniparse_doc_id": "",
-                "omniparse_chunk_id": "",
-            }
-        ],
-        field_list=CONTEXT_SEARCH_FIELD_LIST,
-        workroom_id=workroom_id,
-    )
-    ready = service.query_vectors(
-        vectordb_id,
-        collection_name=collection_name,
-        vectors=[_sample_context_search_vector()],
-        limit=1,
-        workroom_id=workroom_id,
-    )
-    assert isinstance(ready["results"], list)
-    return collection_name
-
-
 def _safe_delete_group(
     service: ContextService,
     *,
@@ -394,9 +326,7 @@ def _cleanup_stale_sdk_vdbs(shared_context_service: ContextService) -> None:
             vdbs = []
         for vdb in vdbs:
             if _is_stale_sdk_resource(vdb, _STALE_THRESHOLD):
-                _safe_delete_vectordb(
-                    service, vdb["id"], workroom_id=workroom_id
-                )
+                _safe_delete_vectordb(service, vdb["id"], workroom_id=workroom_id)
         try:
             ontologies = service.list_ontologies(workroom_id=workroom_id)
         except APIError:
@@ -444,6 +374,33 @@ def shared_workroom_vectordb(
     vectordb_id = _create_temp_vectordb(
         service,
         prefix="sdk-shared-vdb-workroom",
+        workroom_id=session_workroom,
+    )
+    try:
+        yield vectordb_id
+    finally:
+        _safe_delete_vectordb(
+            service,
+            vectordb_id,
+            workroom_id=session_workroom,
+        )
+
+
+@pytest.fixture(scope="session")
+def search_contract_vectordb(
+    shared_context_service: ContextService,
+    session_workroom: str,
+) -> Generator[str, None, None]:
+    """Clean backend for search/retrieve response-shape contracts.
+
+    These live tests assert API contract shape, not ranking/indexing semantics.
+    Keep them off the shared backend so earlier vector insert/query tests cannot
+    leave collections that turn a shape check into a data-search assertion.
+    """
+    service = shared_context_service
+    vectordb_id = _create_temp_vectordb(
+        service,
+        prefix="sdk-search-contract-vdb-workroom",
         workroom_id=session_workroom,
     )
     try:
@@ -1073,72 +1030,43 @@ def test_context_workroom_collection_lifecycle(
 def test_context_search_contract(
     shared_context_service: ContextService,
     session_workroom: str,
+    search_contract_vectordb: str,
 ) -> None:
     service = shared_context_service
     workroom_id = session_workroom
-    vectordb_id = _create_temp_vectordb(
-        service,
-        prefix="sdk-search-vdb-workroom",
+    vectordb_id = search_contract_vectordb
+
+    search = service.search(
         workroom_id=workroom_id,
+        query="hello context",
+        vectordb_id=vectordb_id,
     )
-    try:
-        collection_name = _seed_searchable_context_collection(
-            service,
-            workroom_id=workroom_id,
-            vectordb_id=vectordb_id,
-        )
-        search = service.search(
-            workroom_id=workroom_id,
-            query="hello context",
-            collection_name=collection_name,
-            vectordb_id=vectordb_id,
-        )
-        assert isinstance(search.get("results"), list)
-    finally:
-        _safe_delete_vectordb(
-            service,
-            vectordb_id,
-            workroom_id=workroom_id,
-        )
+    assert isinstance(search.get("results"), list)
 
 
 @pytest.mark.requires_embedding_model
 def test_context_retrieve_contract(
     shared_context_service: ContextService,
     session_workroom: str,
+    search_contract_vectordb: str,
 ) -> None:
     service = shared_context_service
     workroom_id = session_workroom
-    vectordb_id = _create_temp_vectordb(
-        service,
-        prefix="sdk-retrieve-vdb-workroom",
+    vectordb_id = search_contract_vectordb
+
+    retrieve = service.retrieve(
         workroom_id=workroom_id,
+        query="hello context",
+        vectordb_id=vectordb_id,
     )
-    try:
-        collection_name = _seed_searchable_context_collection(
-            service,
-            workroom_id=workroom_id,
-            vectordb_id=vectordb_id,
-        )
-        retrieve = service.retrieve(
-            workroom_id=workroom_id,
-            query="hello context",
-            collection_names=[collection_name],
-            vectordb_id=vectordb_id,
-        )
-        assert isinstance(retrieve.get("sources"), list)
-    finally:
-        _safe_delete_vectordb(
-            service,
-            vectordb_id,
-            workroom_id=workroom_id,
-        )
+    assert isinstance(retrieve.get("sources"), list)
 
 
 @pytest.mark.requires_embedding_model
 def test_context_agentic_search_contract(
     shared_context_service: ContextService,
     session_workroom: str,
+    search_contract_vectordb: str,
     context_required_llm: str,
 ) -> None:
     # agentic_search always sends synthesize=True, so it needs a context LLM in
@@ -1147,36 +1075,20 @@ def test_context_agentic_search_contract(
     assert context_required_llm
     service = shared_context_service
     workroom_id = session_workroom
-    vectordb_id = _create_temp_vectordb(
-        service,
-        prefix="sdk-agentic-vdb-workroom",
+    vectordb_id = search_contract_vectordb
+
+    result = service.agentic_search(
         workroom_id=workroom_id,
+        query="hello context",
+        vectordb_id=vectordb_id,
     )
-    try:
-        collection_name = _seed_searchable_context_collection(
-            service,
-            workroom_id=workroom_id,
-            vectordb_id=vectordb_id,
-        )
-        result = service.agentic_search(
-            workroom_id=workroom_id,
-            query="hello context",
-            collection_name=collection_name,
-            vectordb_id=vectordb_id,
-        )
-        assert isinstance(result.get("results"), list)
-        assert isinstance(result.get("sources"), list)
-        # synthesize=True is always sent, so the unified response must carry the
-        # synthesis/citations fields (content depends on the LLM); assert presence
-        # so a server-side regression that silently drops synthesis is caught.
-        assert "synthesis" in result
-        assert "citations" in result
-    finally:
-        _safe_delete_vectordb(
-            service,
-            vectordb_id,
-            workroom_id=workroom_id,
-        )
+    assert isinstance(result.get("results"), list)
+    assert isinstance(result.get("sources"), list)
+    # synthesize=True is always sent, so the unified response must carry the
+    # synthesis/citations fields (content depends on the LLM); assert presence
+    # so a server-side regression that silently drops synthesis is caught.
+    assert "synthesis" in result
+    assert "citations" in result
 
 
 # --- Raw-file object storage CRUD ---
@@ -1368,9 +1280,7 @@ def test_context_global_settings_round_trips(
         )
 
     try:
-        assert (
-            bool(updated["omniparse"]["force_insecure_model_ssl"]) is not current
-        )
+        assert bool(updated["omniparse"]["force_insecure_model_ssl"]) is not current
     finally:
         # Restore the original value so we don't mutate shared platform state.
         service.update_global_settings(
