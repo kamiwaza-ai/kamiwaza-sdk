@@ -87,40 +87,26 @@ def test_mutating_vectordb_live_tests_use_isolated_backends() -> None:
         _assert_live_test_uses_isolated_vectordb(source, test_name)
 
 
-def test_search_contract_live_test_uses_seeded_isolated_collection() -> None:
+@pytest.mark.parametrize(
+    ("test_name", "contract_call_name", "collection_keyword_name"),
+    [
+        ("test_context_search_contract", "search", "collection_name"),
+        ("test_context_retrieve_contract", "retrieve", "collection_names"),
+        ("test_context_agentic_search_contract", "agentic_search", "collection_name"),
+    ],
+)
+def test_search_family_contracts_use_seeded_isolated_collections(
+    test_name: str,
+    contract_call_name: str,
+    collection_keyword_name: str,
+) -> None:
     source = _context_live_source()
     function = _assert_live_test_uses_isolated_vectordb(
         source,
-        "test_context_search_contract",
+        test_name,
     )
 
     call_names = _call_names(function)
-    search_keywords = _call_keyword_names(function, "search")
+    contract_keywords = _call_keyword_names(function, contract_call_name)
     assert "_seed_searchable_context_collection" in call_names
-    assert "collection_name" in search_keywords
-
-
-def test_retrieve_contract_live_test_uses_seeded_isolated_collection() -> None:
-    source = _context_live_source()
-    function = _assert_live_test_uses_isolated_vectordb(
-        source,
-        "test_context_retrieve_contract",
-    )
-
-    call_names = _call_names(function)
-    retrieve_keywords = _call_keyword_names(function, "retrieve")
-    assert "_seed_searchable_context_collection" in call_names
-    assert "collection_names" in retrieve_keywords
-
-
-def test_agentic_search_contract_live_test_uses_seeded_isolated_collection() -> None:
-    source = _context_live_source()
-    function = _assert_live_test_uses_isolated_vectordb(
-        source,
-        "test_context_agentic_search_contract",
-    )
-
-    call_names = _call_names(function)
-    agentic_keywords = _call_keyword_names(function, "agentic_search")
-    assert "_seed_searchable_context_collection" in call_names
-    assert "collection_name" in agentic_keywords
+    assert collection_keyword_name in contract_keywords
