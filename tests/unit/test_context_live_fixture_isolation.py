@@ -35,29 +35,6 @@ def _argument_names(function: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str
     }
 
 
-def _fixture_scope(function: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None:
-    for decorator in function.decorator_list:
-        if not isinstance(decorator, ast.Call):
-            continue
-        if isinstance(decorator.func, ast.Attribute):
-            decorator_name = decorator.func.attr
-        elif isinstance(decorator.func, ast.Name):
-            decorator_name = decorator.func.id
-        else:
-            continue
-        if decorator_name != "fixture":
-            continue
-        for keyword in decorator.keywords:
-            if (
-                keyword.arg == "scope"
-                and isinstance(keyword.value, ast.Constant)
-                and isinstance(keyword.value.value, str)
-            ):
-                return keyword.value.value
-        return None
-    raise AssertionError(f"{function.name} has no pytest.fixture decorator")
-
-
 def _call_names(node: ast.AST) -> set[str]:
     calls: set[str] = set()
     for child in ast.walk(node):
@@ -151,8 +128,22 @@ def test_search_contract_vectordb_fixture_provisions_clean_backend_once() -> Non
     fixture = _function_def(source, "search_contract_vectordb")
     argument_names = _argument_names(fixture)
     call_names = _call_names(fixture)
+    fixture_decorators = [
+        decorator
+        for decorator in fixture.decorator_list
+        if isinstance(decorator, ast.Call)
+        and isinstance(decorator.func, ast.Attribute)
+        and decorator.func.attr == "fixture"
+    ]
+    assert len(fixture_decorators) == 1
 
-    assert _fixture_scope(fixture) == "session"
+    fixture_kwargs = {
+        keyword.arg: keyword.value.value
+        for keyword in fixture_decorators[0].keywords
+        if keyword.arg is not None and isinstance(keyword.value, ast.Constant)
+    }
+
+    assert fixture_kwargs["scope"] == "session"
     assert "shared_context_service" in argument_names
     assert "session_workroom" in argument_names
     assert "_create_temp_vectordb" in call_names
