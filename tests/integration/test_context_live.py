@@ -168,21 +168,6 @@ def _vectordb_ids(resources: list[dict[str, object]]) -> set[str]:
     return {str(resource["id"]) for resource in resources if resource.get("id")}
 
 
-def _safe_scale_vectordb(
-    service: ContextService,
-    vectordb_id: str,
-    *,
-    replicas: int,
-    workroom_id: str | None = None,
-) -> None:
-    try:
-        service.scale_vectordb(
-            vectordb_id, replicas=replicas, workroom_id=workroom_id
-        )
-    except APIError:
-        pass
-
-
 def _create_temp_ontology(service: ContextService, *, prefix: str) -> str:
     created = service.create_ontology(
         name=f"{prefix}-{uuid4().hex[:8]}",
@@ -646,23 +631,29 @@ def test_context_vectordb_update_accepts_config_and_redacts_public_response(
 def test_context_vectordb_scale_reflects_requested_replicas(
     shared_context_service: ContextService,
     session_workroom: str,
-    shared_workroom_vectordb: str,
 ) -> None:
     """scale_vectordb is accepted and the response echoes the requested replicas.
 
     Assertion posture is API round-trip, not physical provisioning: a single-node
     local Milvus may clamp the effective replica count, so we assert the call
-    succeeds and the returned instance reflects the requested ``replicas``, then
-    scale back to the baseline (session teardown also deletes the VDB).
+    succeeds and the returned instance reflects the requested ``replicas``.
+
+    Use a dedicated backend because scale operations can restart or replace
+    Milvus pods; the search/retrieve contract tests below depend on the shared
+    VectorDB staying settled.
     """
     service = shared_context_service
-    vectordb_id = shared_workroom_vectordb
-
-    before = service.get_vectordb(vectordb_id, workroom_id=session_workroom)
-    baseline_replicas = _vectordb_replicas(before) or 1
-    target_replicas = baseline_replicas + 1
+    vectordb_id = _create_temp_vectordb(
+        service,
+        prefix="sdk-scale-vdb-workroom",
+        workroom_id=session_workroom,
+    )
 
     try:
+        before = service.get_vectordb(vectordb_id, workroom_id=session_workroom)
+        baseline_replicas = _vectordb_replicas(before) or 1
+        target_replicas = baseline_replicas + 1
+
         scaled = service.scale_vectordb(
             vectordb_id,
             replicas=target_replicas,
@@ -671,10 +662,9 @@ def test_context_vectordb_scale_reflects_requested_replicas(
         assert scaled["id"] == vectordb_id
         assert _vectordb_replicas(scaled) == target_replicas
     finally:
-        _safe_scale_vectordb(
+        _safe_delete_vectordb(
             service,
             vectordb_id,
-            replicas=baseline_replicas,
             workroom_id=session_workroom,
         )
 
