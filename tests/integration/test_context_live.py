@@ -678,8 +678,8 @@ def test_context_vectordb_scale_reflects_requested_replicas(
     succeeds and the returned instance reflects the requested ``replicas``.
 
     Use a dedicated backend because scale operations can restart or replace
-    Milvus pods; the search/retrieve contract tests below depend on the shared
-    VectorDB staying settled.
+    Milvus pods; this API round trip should not mutate backends reused by later
+    context contract tests.
     """
     service = shared_context_service
     vectordb_id = _create_temp_vectordb(
