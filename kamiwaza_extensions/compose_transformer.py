@@ -44,9 +44,13 @@ def _replace_image_tag(image_ref: str, new_tag: str) -> str:
     """
     ref = image_ref.split("@", 1)[0]
     last_slash = ref.rfind("/")
-    last_colon = ref.rfind(":")
-    if last_colon > last_slash:
-        ref = ref[:last_colon]
+    placeholder_tag = ref.find(":${", last_slash + 1)
+    if placeholder_tag >= 0:
+        ref = ref[:placeholder_tag]
+    else:
+        last_colon = ref.rfind(":")
+        if last_colon > last_slash:
+            ref = ref[:last_colon]
     return f"{ref}:{new_tag}"
 
 
