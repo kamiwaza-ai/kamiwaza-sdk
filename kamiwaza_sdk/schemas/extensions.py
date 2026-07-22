@@ -165,6 +165,7 @@ class ImagePatch(BaseModel):
     tag: str
     registry: Optional[str] = None
     repository: Optional[str] = None
+    digest: Optional[str] = None
 
 
 class PatchServiceSpec(BaseModel):

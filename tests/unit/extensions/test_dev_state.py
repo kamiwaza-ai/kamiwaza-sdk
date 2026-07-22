@@ -807,7 +807,7 @@ class TestBuildPatchKwargsCarriesAnnotations:
                 ),
                 ExtensionServiceSpec(
                     name="sandbox-controller",
-                    image="reg/sc:dev",
+                    image="reg/sc:dev@sha256:" + "a" * 64,
                     automountServiceAccountToken=True,
                     sidecarOf="frontend",
                 ),
@@ -829,7 +829,9 @@ class TestBuildPatchKwargsCarriesAnnotations:
         assert sc_extra["automountServiceAccountToken"] is True
         assert by_name["sandbox-controller"].sidecar_of == "frontend"
         assert by_name["sandbox-controller"].model_dump()["sidecarOf"] == "frontend"
+        assert by_name["sandbox-controller"].image.digest == "sha256:" + "a" * 64
         assert by_name["frontend"].model_dump()["sidecarOf"] == ""
+        assert by_name["frontend"].image.digest == ""
         assert "healthCheck" not in sc_extra
         assert "containerSecurityContext" not in sc_extra
 

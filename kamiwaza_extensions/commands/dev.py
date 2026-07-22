@@ -95,10 +95,17 @@ def _build_patch_service_specs(payload: Any) -> List[Any]:
     patch_services: List[Any] = []
     for svc in payload.services:
         registry, repository, tag = _split_image_ref(svc.image)
+        _, digest_separator, digest = svc.image.partition("@")
         image_patch = ImagePatch(
             tag=tag,
             registry=registry,
             repository=repository,
+            # The platform rejects an ambiguous update to an existing
+            # digest-pinned service. Preserve a declared pin (external
+            # services such as sandbox-controller) and explicitly clear a
+            # stale pin when dev replaces the service with a newly tagged
+            # build.
+            digest=digest if digest_separator else "",
         )
         spec = PatchServiceSpec(
             name=svc.name,
