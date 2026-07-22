@@ -809,6 +809,7 @@ class TestBuildPatchKwargsCarriesAnnotations:
                     name="sandbox-controller",
                     image="reg/sc:dev",
                     automountServiceAccountToken=True,
+                    sidecarOf="frontend",
                 ),
                 ExtensionServiceSpec(name="frontend", image="reg/fe:dev"),
             ]
@@ -826,6 +827,9 @@ class TestBuildPatchKwargsCarriesAnnotations:
 
         sc_extra = by_name["sandbox-controller"].model_extra or {}
         assert sc_extra["automountServiceAccountToken"] is True
+        assert by_name["sandbox-controller"].sidecar_of == "frontend"
+        assert by_name["sandbox-controller"].model_dump()["sidecarOf"] == "frontend"
+        assert by_name["frontend"].model_dump()["sidecarOf"] == ""
         assert "healthCheck" not in sc_extra
         assert "containerSecurityContext" not in sc_extra
 

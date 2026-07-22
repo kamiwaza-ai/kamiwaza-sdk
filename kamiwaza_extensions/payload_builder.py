@@ -353,18 +353,7 @@ class PayloadBuilder:
         service_volume_mounts = service_volume_mounts or {}
         specs: List[ExtensionServiceSpec] = []
 
-        # Determine primary service: prefer "frontend", fall back to first with ports
-        primary_name = None
-        for svc_name, svc in services_dict.items():
-            ports = self._parse_ports(svc.get("ports", []))
-            if svc_name == "frontend" and ports:
-                primary_name = svc_name
-                break
-        if primary_name is None:
-            for svc_name, svc in services_dict.items():
-                if self._parse_ports(svc.get("ports", [])):
-                    primary_name = svc_name
-                    break
+        primary_name = _primary_service_name(services_dict)
 
         for svc_name, svc in services_dict.items():
             ports = self._parse_ports(svc.get("ports", []))
@@ -429,17 +418,8 @@ class PayloadBuilder:
             )
             if health_check:
                 spec_kwargs["healthCheck"] = health_check
-            automount = _service_extension_field(svc, "automountServiceAccountToken")
-            if automount is not None:
-                spec_kwargs["automountServiceAccountToken"] = automount
-            container_security_context = _service_extension_field(
-                svc, "containerSecurityContext"
-            )
-            if container_security_context is not None:
-                spec_kwargs["containerSecurityContext"] = container_security_context
             volume_mounts = service_volume_mounts.get(svc_name)
-            if volume_mounts:
-                spec_kwargs["volumeMounts"] = volume_mounts
+            _apply_service_deployment_overrides(spec_kwargs, svc, volume_mounts)
 
             specs.append(ExtensionServiceSpec(**spec_kwargs))
 
@@ -793,6 +773,41 @@ def _service_extension_field(svc: Dict[str, Any], key: str) -> Optional[Any]:
     if isinstance(x_kamiwaza, dict) and key in x_kamiwaza:
         return x_kamiwaza[key]
     return None
+
+
+def _primary_service_name(services: Dict[str, Any]) -> Optional[str]:
+    """Prefer a port-bearing frontend, then the first non-sidecar service."""
+    if _service_can_be_primary(services.get("frontend")):
+        return "frontend"
+    for service_name, service in services.items():
+        if _service_can_be_primary(service):
+            return service_name
+    return None
+
+
+def _service_can_be_primary(service: Optional[Dict[str, Any]]) -> bool:
+    if not service:
+        return False
+    if _service_extension_field(service, "sidecarOf"):
+        return False
+    return bool(PayloadBuilder._parse_ports(service.get("ports", [])))
+
+
+def _apply_service_deployment_overrides(
+    spec: Dict[str, Any],
+    service: Dict[str, Any],
+    volume_mounts: Optional[List[Dict[str, Any]]],
+) -> None:
+    for field in (
+        "automountServiceAccountToken",
+        "sidecarOf",
+        "containerSecurityContext",
+    ):
+        value = _service_extension_field(service, field)
+        if value is not None:
+            spec[field] = value
+    if volume_mounts:
+        spec["volumeMounts"] = volume_mounts
 
 
 def _metadata_service_field(

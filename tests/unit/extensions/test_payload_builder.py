@@ -721,7 +721,10 @@ class TestServiceOverrides:
                 "sandbox-controller": {
                     "image": "reg/sandbox-controller:dev",
                     "ports": ["8085"],
-                    "x-kamiwaza": {"automountServiceAccountToken": True},
+                    "x-kamiwaza": {
+                        "automountServiceAccountToken": True,
+                        "sidecarOf": "postgres",
+                    },
                 },
             },
         }
@@ -736,6 +739,28 @@ class TestServiceOverrides:
         }
         assert services["postgres"]["healthCheck"] == {"tcpSocket": {"port": 5432}}
         assert services["sandbox-controller"]["automountServiceAccountToken"] is True
+        assert services["sandbox-controller"]["sidecarOf"] == "postgres"
+        assert services["sandbox-controller"]["primary"] is False
+
+    def test_sidecar_is_not_selected_as_fallback_primary(
+        self, builder, metadata, connection
+    ):
+        transformed = {
+            "services": {
+                "controller": {
+                    "image": "reg/controller:dev",
+                    "ports": ["8085"],
+                    "x-kamiwaza": {"sidecarOf": "guard"},
+                },
+                "guard": {"image": "reg/guard:dev", "ports": ["8000"]},
+            }
+        }
+
+        payload = builder.build(metadata, transformed, connection, "my-app-dev-abc")
+        services = {service.name: service for service in payload.services}
+
+        assert services["controller"].primary is False
+        assert services["guard"].primary is True
 
     def test_kubernetes_sandbox_controller_emits_sandbox_spec(
         self, builder, metadata, connection

@@ -108,23 +108,27 @@ def _build_patch_service_specs(payload: Any) -> List[Any]:
             spec.env = svc.env
         if svc.replicas is not None:
             spec.replicas = svc.replicas
-        svc_extra = svc.model_extra or {}
-        for field in (
-            "healthCheck",
-            "automountServiceAccountToken",
-            "containerSecurityContext",
-        ):
-            if field in svc_extra and svc_extra[field] is not None:
-                setattr(spec, field, svc_extra[field])
-        # Always forward ``volumeMounts`` (even when empty) so removing
-        # a volume from compose clears the stale per-service mount on
-        # the persisted CR; consistent with the top-level ``volumes``
-        # forwarding in ``_build_patch_kwargs``. The operator appends
-        # ``svc.VolumeMounts`` after its own ``tmp``/``data`` mounts, so
-        # an empty list clears only user-declared mounts.
-        spec.volumeMounts = svc_extra.get("volumeMounts") or []
+        _copy_patch_service_overrides(spec, svc)
         patch_services.append(spec)
     return patch_services
+
+
+def _copy_patch_service_overrides(spec: Any, service: Any) -> None:
+    """Carry typed and extra per-service deployment overrides into PATCH."""
+    # Always send the field so removing sidecarOf from Compose clears a stale
+    # co-location relationship on the persisted CR.
+    spec.sidecar_of = service.sidecar_of or ""
+    service_extra = service.model_extra or {}
+    for field in (
+        "healthCheck",
+        "automountServiceAccountToken",
+        "containerSecurityContext",
+    ):
+        if field in service_extra and service_extra[field] is not None:
+            setattr(spec, field, service_extra[field])
+    # Always forward an empty list so removing a compose volume mount clears
+    # the stale user-declared mount without touching operator-managed volumes.
+    spec.volumeMounts = service_extra.get("volumeMounts") or []
 
 
 def _resume_revision(prior_state: Any, rev_tag: str, resumable: bool) -> Optional[str]:
