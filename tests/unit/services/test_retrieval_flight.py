@@ -366,6 +366,62 @@ def test_consumed_token_auth_on_fallback_preserves_unavailable_error(monkeypatch
     ]
 
 
+def test_post_batch_auth_on_fallback_reports_interrupted_stream(monkeypatch):
+    calls: list[str] = []
+    unavailable = flight.FlightUnavailableError("first endpoint unavailable")
+    unauthenticated = flight.FlightUnauthenticatedError("token rejected mid-stream")
+
+    class Chunk:
+        data = "batch-0"
+
+    class Reader:
+        def __iter__(self):
+            yield Chunk()
+            raise unauthenticated
+
+        def cancel(self):
+            pass
+
+    class Client:
+        def do_get(self, ticket, options=None):
+            return Reader()
+
+        def close(self):
+            pass
+
+    def fake_connect(location, **kwargs):
+        calls.append(location)
+        if location == "grpc+tls://first:6130":
+            raise unavailable
+        return Client()
+
+    monkeypatch.setattr("pyarrow.flight.connect", fake_connect)
+    monkeypatch.setattr(
+        "kamiwaza_sdk.services.retrieval_flight.time.sleep", lambda _: None
+    )
+
+    stream = open_flight_stream(
+        _handshake(
+            "grpc+tls://first:6130",
+            "grpc+tls://second:6130",
+        ),
+        job_id="job",
+    )
+    assert next(stream) == "batch-0"
+
+    with pytest.raises(FlightUnavailableError) as exc_info:
+        next(stream)
+
+    assert exc_info.value.__cause__ is unauthenticated
+    assert "after delivering a batch" in str(exc_info.value)
+    assert calls == [
+        "grpc+tls://first:6130",
+        "grpc+tls://first:6130",
+        "grpc+tls://first:6130",
+        "grpc+tls://second:6130",
+    ]
+
+
 def test_deadline_is_shared_across_retries(monkeypatch):
     calls: list[str] = []
     observed_timeouts: list[float] = []

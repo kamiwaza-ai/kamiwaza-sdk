@@ -258,6 +258,11 @@ def _iter_endpoint(
             yield from _iter_flight_attempt(runtime, location, state, deadline)
             return None
         except runtime.flight.FlightUnauthenticatedError as exc:
+            if state.yielded:
+                raise FlightUnavailableError(
+                    f"Arrow Flight stream at {location} was rejected after "
+                    "delivering a batch; the transfer was not retried"
+                ) from exc
             if last_exc is not None:
                 raise FlightUnavailableError(
                     f"Arrow Flight became unavailable at {location} before "
