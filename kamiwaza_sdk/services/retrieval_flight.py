@@ -53,6 +53,7 @@ class _FlightRuntime:
     ticket: Any
     connect_kwargs: dict[str, Any]
     timeout_seconds: float
+    endpoints: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -60,6 +61,7 @@ class _FlightSettings:
     tls_root_certs: bytes | None
     override_hostname: str | None
     timeout_seconds: float
+    endpoints: tuple[str, ...]
 
 
 def _require_flight() -> Any:
@@ -110,6 +112,7 @@ def open_flight_stream(
         tls_root_certs=roots,
         override_hostname=override_hostname,
         timeout_seconds=timeout_seconds,
+        endpoints=tuple(endpoint.location for endpoint in handshake.endpoints),
     )
     runtime = _make_runtime(flight, job_id, handshake.token, settings)
     return _iter_flight_stream(runtime, handshake)
@@ -212,6 +215,7 @@ def _make_runtime(
         ticket,
         connect_kwargs,
         settings.timeout_seconds,
+        settings.endpoints,
     )
 
 
@@ -225,16 +229,16 @@ def _iter_flight_stream(
     deadline = time.monotonic() + runtime.timeout_seconds
     errors: list[str] = []
     final_exc: Exception | None = None
-    for endpoint in handshake.endpoints:
+    for location in runtime.endpoints:
         last_exc = yield from _iter_endpoint(
             runtime,
-            endpoint.location,
+            location,
             deadline,
             final_exc,
         )
         if last_exc is None:
             return
-        errors.append(f"{endpoint.location}: {last_exc}")
+        errors.append(f"{location}: {last_exc}")
         final_exc = last_exc
     raise FlightUnavailableError(
         "No Flight endpoint reachable: " + "; ".join(errors)
@@ -290,6 +294,8 @@ def _iter_flight_attempt(
     state: _StreamState,
     deadline: float,
 ) -> Iterator["pa.RecordBatch"]:
+    # Fail before opening a client when retry/fallback consumed the shared
+    # end-to-end deadline.
     _remaining_timeout(runtime, deadline)
     client = runtime.flight.connect(location, **runtime.connect_kwargs)
     reader: Any | None = None

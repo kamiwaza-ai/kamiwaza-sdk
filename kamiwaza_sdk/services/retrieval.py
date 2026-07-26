@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Iterator, Optional, Sequence
 
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError as PydanticValidationError
 
 from ..exceptions import (
     APIError,
@@ -198,7 +198,7 @@ class RetrievalService(BaseService):
         yield from batches
         try:
             status = self.get_job(job_id)
-        except KamiwazaError as exc:
+        except (KamiwazaError, PydanticValidationError) as exc:
             raise FlightIncompleteStreamError(
                 f"Flight stream ended, but completion for job {job_id!r} "
                 "could not be verified",

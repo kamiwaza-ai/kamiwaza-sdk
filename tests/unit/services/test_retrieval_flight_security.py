@@ -98,6 +98,28 @@ def test_handshake_expiring_after_stream_creation_is_rejected_before_connect():
     fake_flight.connect.assert_not_called()
 
 
+def test_endpoint_mutation_after_validation_cannot_downgrade_tls():
+    from kamiwaza_sdk.services.retrieval_flight import open_flight_stream
+
+    handshake = _flight_handshake()
+    fake_flight = MagicMock()
+    fake_client = MagicMock()
+    fake_client.do_get.return_value = iter(())
+    fake_flight.connect.return_value = fake_client
+
+    with patch(
+        "kamiwaza_sdk.services.retrieval_flight._require_flight",
+        return_value=fake_flight,
+    ):
+        stream = open_flight_stream(handshake, job_id="job")
+    handshake.endpoint = "grpc://plaintext-downgrade:6130"
+
+    list(stream)
+
+    fake_flight.connect.assert_called_once()
+    assert fake_flight.connect.call_args.args == ("grpc+tls://host:6130",)
+
+
 def test_plaintext_is_rejected_by_default_before_pyarrow():
     from kamiwaza_sdk.exceptions import InsecureFlightEndpointError
     from kamiwaza_sdk.services.retrieval_flight import open_flight_stream

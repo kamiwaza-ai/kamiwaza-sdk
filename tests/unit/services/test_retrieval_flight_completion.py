@@ -36,12 +36,29 @@ def _retrieval_job():
     )
 
 
+def _job_status(status: str):
+    from kamiwaza_sdk.schemas.retrieval import (
+        DatasetDescriptor,
+        RetrievalJobStatus,
+        TransportType,
+    )
+
+    return RetrievalJobStatus(
+        job_id="job-completion",
+        status=status,
+        transport=TransportType.GRPC,
+        dataset=DatasetDescriptor(urn="urn:test", platform="test"),
+        created_at="2026-01-01T00:00:00Z",
+        updated_at="2026-01-01T00:00:01Z",
+    )
+
+
 @pytest.mark.parametrize("status", ["COMPLETED", "completed", "complete"])
 def test_flight_batches_verifies_completed_after_clean_exhaustion(status):
     from kamiwaza_sdk.services.retrieval import RetrievalService
 
     service = RetrievalService(MagicMock(session=None))
-    service.get_job = MagicMock(return_value=MagicMock(status=status))
+    service.get_job = MagicMock(return_value=_job_status(status))
 
     with patch(
         "kamiwaza_sdk.services.retrieval_flight.open_flight_stream",
@@ -91,6 +108,27 @@ def test_flight_batches_wraps_completion_lookup_failure():
 
     assert exc_info.value.status is None
     assert exc_info.value.__cause__ is original_error
+
+
+def test_flight_batches_wraps_invalid_completion_payload():
+    from kamiwaza_sdk.exceptions import FlightIncompleteStreamError
+    from kamiwaza_sdk.services.retrieval import RetrievalService
+
+    client = MagicMock(session=None)
+    client.get.return_value = {}
+    service = RetrievalService(client)
+
+    with (
+        patch(
+            "kamiwaza_sdk.services.retrieval_flight.open_flight_stream",
+            return_value=iter(()),
+        ),
+        pytest.raises(FlightIncompleteStreamError) as exc_info,
+    ):
+        list(service.flight_batches(_retrieval_job()))
+
+    assert exc_info.value.status is None
+    assert type(exc_info.value.__cause__).__name__ == "ValidationError"
 
 
 def test_flight_batches_early_close_skips_completion_check():
