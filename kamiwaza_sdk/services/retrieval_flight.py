@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Generator, Iterator
 
 from ..exceptions import (
+    AuthenticationError,
+    AuthorizationError,
     FlightUnavailableError,
     KamiwazaError,
     TransportNotSupportedError,
@@ -193,6 +195,14 @@ def _iter_endpoint(
                 state,
             )
             return None
+        except flight.FlightUnauthenticatedError as exc:
+            raise AuthenticationError(
+                f"Arrow Flight authentication failed at {location}: {exc}"
+            ) from exc
+        except flight.FlightUnauthorizedError as exc:
+            raise AuthorizationError(
+                f"Arrow Flight authorization failed at {location}: {exc}"
+            ) from exc
         except Exception as exc:  # noqa: BLE001
             if state.yielded:
                 # Never retry or fall back after delivering data: doing so

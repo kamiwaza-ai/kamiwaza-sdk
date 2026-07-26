@@ -10,10 +10,14 @@ import pytest
 
 # Must be at the top of the file so the entire module is skipped (not just
 # individual tests) when pyarrow.flight is unavailable.
-pytest.importorskip("pyarrow.flight")
+flight = pytest.importorskip("pyarrow.flight")
 
 from datetime import datetime, timezone  # noqa: E402
 
+from kamiwaza_sdk.exceptions import (  # noqa: E402
+    AuthenticationError,
+    AuthorizationError,
+)
 from kamiwaza_sdk.schemas.retrieval import FlightEndpoint, GrpcHandshake  # noqa: E402
 from kamiwaza_sdk.services.retrieval_flight import (  # noqa: E402
     FlightUnavailableError,
@@ -189,6 +193,54 @@ def test_per_endpoint_retry_on_prestream_failure(monkeypatch):
     assert connect_calls.count("grpc://flaky:6130") == _ENDPOINT_RETRY_ATTEMPTS
     # Good endpoint should succeed on the first attempt.
     assert connect_calls.count("grpc://good:6130") == 1
+
+
+@pytest.mark.parametrize(
+    ("flight_error", "sdk_error"),
+    [
+        (flight.FlightUnauthenticatedError, AuthenticationError),
+        (flight.FlightUnauthorizedError, AuthorizationError),
+    ],
+)
+def test_permanent_auth_errors_fail_fast(
+    monkeypatch,
+    flight_error,
+    sdk_error,
+):
+    connect_calls: list[str] = []
+    original_error = flight_error("invalid Flight credentials")
+
+    class FakeClient:
+        def do_get(self, ticket, options=None):
+            raise original_error
+
+        def close(self):
+            pass
+
+    def fake_connect(location, **kwargs):
+        connect_calls.append(location)
+        return FakeClient()
+
+    monkeypatch.setattr("pyarrow.flight.connect", fake_connect)
+    hs = GrpcHandshake(
+        endpoints=[
+            FlightEndpoint(location="grpc://first:6130"),
+            FlightEndpoint(location="grpc://second:6130"),
+        ],
+        token="t",
+        expires_at=datetime.now(timezone.utc),
+    )
+
+    with pytest.raises(sdk_error, match="invalid Flight credentials") as exc_info:
+        list(
+            open_flight_stream(
+                hs,
+                job_id="00000000-0000-0000-0000-000000000007",
+            )
+        )
+
+    assert exc_info.value.__cause__ is original_error
+    assert connect_calls == ["grpc://first:6130"]
 
 
 def test_do_get_receives_call_timeout(monkeypatch):
