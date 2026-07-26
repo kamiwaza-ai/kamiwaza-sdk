@@ -329,6 +329,43 @@ def test_consumed_token_auth_rejection_preserves_unavailable_error(monkeypatch):
     assert calls == ["grpc+tls://host:6130", "grpc+tls://host:6130"]
 
 
+def test_consumed_token_auth_on_fallback_preserves_unavailable_error(monkeypatch):
+    calls: list[str] = []
+    unavailable = flight.FlightUnavailableError("first endpoint unavailable")
+    unauthenticated = flight.FlightUnauthenticatedError("token already consumed")
+
+    def fake_connect(location, **kwargs):
+        calls.append(location)
+        if location == "grpc+tls://first:6130":
+            raise unavailable
+        raise unauthenticated
+
+    monkeypatch.setattr("pyarrow.flight.connect", fake_connect)
+    monkeypatch.setattr(
+        "kamiwaza_sdk.services.retrieval_flight.time.sleep", lambda _: None
+    )
+
+    with pytest.raises(FlightUnavailableError) as exc_info:
+        list(
+            open_flight_stream(
+                _handshake(
+                    "grpc+tls://first:6130",
+                    "grpc+tls://second:6130",
+                ),
+                job_id="job",
+            )
+        )
+
+    assert exc_info.value.__cause__ is unavailable
+    assert "single-use token may have been consumed" in str(exc_info.value)
+    assert calls == [
+        "grpc+tls://first:6130",
+        "grpc+tls://first:6130",
+        "grpc+tls://first:6130",
+        "grpc+tls://second:6130",
+    ]
+
+
 def test_deadline_is_shared_across_retries(monkeypatch):
     calls: list[str] = []
     observed_timeouts: list[float] = []

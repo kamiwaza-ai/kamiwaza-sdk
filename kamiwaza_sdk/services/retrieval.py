@@ -205,7 +205,7 @@ class RetrievalService(BaseService):
                 job_id=job_id,
                 status=None,
             ) from exc
-        if status.status != "COMPLETED":
+        if status.status.upper() not in {"COMPLETE", "COMPLETED"}:
             raise FlightIncompleteStreamError(
                 f"Flight stream ended before job {job_id!r} reached COMPLETED "
                 f"(status={status.status!r})",

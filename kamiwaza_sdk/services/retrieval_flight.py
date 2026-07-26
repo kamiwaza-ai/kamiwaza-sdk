@@ -226,7 +226,12 @@ def _iter_flight_stream(
     errors: list[str] = []
     final_exc: Exception | None = None
     for endpoint in handshake.endpoints:
-        last_exc = yield from _iter_endpoint(runtime, endpoint.location, deadline)
+        last_exc = yield from _iter_endpoint(
+            runtime,
+            endpoint.location,
+            deadline,
+            final_exc,
+        )
         if last_exc is None:
             return
         errors.append(f"{endpoint.location}: {last_exc}")
@@ -240,9 +245,10 @@ def _iter_endpoint(
     runtime: _FlightRuntime,
     location: str,
     deadline: float,
+    prior_unavailable: Exception | None,
 ) -> Generator["pa.RecordBatch", None, Exception | None]:
     state = _StreamState()
-    last_exc: Exception | None = None
+    last_exc = prior_unavailable
     for attempt in range(_ENDPOINT_RETRY_ATTEMPTS):
         try:
             yield from _iter_flight_attempt(runtime, location, state, deadline)
