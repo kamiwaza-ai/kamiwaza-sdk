@@ -322,6 +322,105 @@ def test_template_chat_endpoint_preserves_backend_path_prefix(tmp_path, monkeypa
 
 
 @pytest.mark.unit
+def test_template_chat_endpoint_keeps_gateway_url_in_cluster(tmp_path, monkeypatch):
+    """ENG-8766 regression — when the extension runs IN-cluster the
+    operator injects ``KAMIWAZA_API_URL=http://core-api...:7777/api``
+    (the Ray Serve proxy). The platform advertises model endpoints as
+    ingress-gateway URLs (``https://<origin>/runtime/models/{id}/v1``);
+    the ``/runtime/models`` rewrite exists ONLY on the gateway
+    (per-deployment VirtualServices), never on the Ray proxy. Re-hosting
+    the gateway URL onto ``KAMIWAZA_API_URL`` therefore produced an
+    unroutable URL and every in-cluster chat call 404'd.
+
+    A fully-qualified endpoint on a different, non-loopback host must be
+    returned verbatim.
+    """
+    scaffolded = _scaffold_app(tmp_path, monkeypatch)
+
+    # The operator-injected in-cluster env (observed on a live cluster).
+    monkeypatch.setenv(
+        "KAMIWAZA_API_URL", "http://core-api.kamiwaza.svc.cluster.local:7777/api"
+    )
+    monkeypatch.setenv("KAMIWAZA_PUBLIC_API_URL", "https://kamiwaza.test/api")
+    monkeypatch.setenv("KAMIWAZA_USE_AUTH", "true")
+    monkeypatch.delenv("KZ_EXT_DEV_LOCAL_AUTH", raising=False)
+
+    module = _load_backend_module(scaffolded / "backend", "scaffolded_in_cluster")
+
+    endpoint = module._normalize_model_endpoint(
+        endpoint="https://kamiwaza.test/runtime/models/dep-1/v1",
+        access_path="",
+    )
+
+    assert endpoint == "https://kamiwaza.test/runtime/models/dep-1/v1", (
+        f"gateway endpoint was re-hosted: {endpoint!r} — the Ray Serve "
+        "proxy at KAMIWAZA_API_URL cannot serve /runtime/models/*."
+    )
+
+    # ENG-8766 review Critical (codex) — the platform emits BOTH fields
+    # (``endpoint`` is derived from ``access_path`` + public base by
+    # list_available_models). The access_path branch used to run first
+    # and rebuild the path onto the Ray Serve proxy, shadowing the
+    # endpoint guard entirely. The canonical endpoint must win.
+    both = module._normalize_model_endpoint(
+        endpoint="https://kamiwaza.test/runtime/models/dep-1/v1",
+        access_path="/runtime/models/dep-1",
+    )
+    assert both == "https://kamiwaza.test/runtime/models/dep-1/v1", (
+        f"access_path branch shadowed the canonical endpoint: {both!r}"
+    )
+
+    # ENG-8766 re-review Medium #1 — an access_path-only payload (no
+    # endpoint) must build on the gateway base, not KAMIWAZA_API_URL
+    # (the Ray Serve proxy).
+    path_only = module._normalize_model_endpoint(
+        endpoint="",
+        access_path="/runtime/models/dep-1",
+    )
+    assert path_only == "https://kamiwaza.test/runtime/models/dep-1/v1", (
+        f"access_path-only built on the wrong base: {path_only!r}"
+    )
+
+    sys.modules.pop("scaffolded_in_cluster", None)
+
+
+@pytest.mark.unit
+def test_template_chat_endpoint_both_fields_dev_local_unchanged(
+    tmp_path, monkeypatch
+):
+    """ENG-8766 review follow-up — reordering endpoint above access_path
+    must NOT change `kz-ext dev local --auth` behavior when both fields
+    are present: the browser-only endpoint re-hosts to the same URL the
+    access_path branch used to build.
+    """
+    scaffolded = _scaffold_app(tmp_path, monkeypatch)
+
+    monkeypatch.setenv("KAMIWAZA_API_URL", "http://host.docker.internal:8000/api")
+    monkeypatch.setenv("KAMIWAZA_PUBLIC_API_URL", "http://localhost:8000")
+    monkeypatch.setenv("KAMIWAZA_USE_AUTH", "true")
+    monkeypatch.setenv("KZ_EXT_DEV_LOCAL_AUTH", "1")
+
+    module = _load_backend_module(scaffolded / "backend", "scaffolded_both_local")
+
+    endpoint = module._normalize_model_endpoint(
+        endpoint="http://localhost:8000/runtime/models/dep-1/v1",
+        access_path="/runtime/models/dep-1",
+    )
+    assert endpoint == "http://host.docker.internal:8000/runtime/models/dep-1/v1"
+
+    # ENG-8766 re-review High #2 — 127.0.0.0/8 range variants (e.g.
+    # 127.0.0.2) are supported dev-local loopbacks and must re-host
+    # exactly like 127.0.0.1/localhost.
+    variant = module._normalize_model_endpoint(
+        endpoint="http://127.0.0.2:8000/runtime/models/dep-1/v1",
+        access_path="",
+    )
+    assert variant == "http://host.docker.internal:8000/runtime/models/dep-1/v1"
+
+    sys.modules.pop("scaffolded_both_local", None)
+
+
+@pytest.mark.unit
 def test_template_chat_endpoint_does_not_double_prefix_already_prefixed_endpoint(
     tmp_path, monkeypatch
 ):

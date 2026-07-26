@@ -4,6 +4,21 @@ Versions follow semver. Published to npm as a standalone package
 (`@kamiwaza-ai/extensions-lib`) and versioned independently from
 `kamiwaza-sdk`.
 
+## [0.4.2] — 2026-07-16 (ENG-8753)
+
+### Fixed
+
+* **Ships the Next.js 15 `RouteHandler` fix to npm.** The ENG-1734 migration
+  (PR #191, merged 2026-06-22) rewrote the proxy `RouteHandler` type so
+  `createProxyHandlers()` handlers type-check under Next 15's build-time
+  route validation (Next 15 made dynamic-route `params` a `Promise`; the
+  published type still declared the Next-14 sync `Record` shape). PR #191
+  landed on `main` without a version bump, so the 2026-07-13 release could
+  not publish it over the existing `0.4.1` — every fresh
+  `kz-ext create -t app` scaffold (which installs `next ^15` and this lib
+  from npm) failed `next build` at container startup and crash-looped.
+  This release publishes that fix; no code changes beyond ENG-1734's.
+
 ## [0.4.1] — 2026-06-14 (ENG-6911)
 
 ### Fixed

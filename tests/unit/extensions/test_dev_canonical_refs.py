@@ -1,12 +1,20 @@
-"""Tests that ``run_dev_remote`` passes dev image refs to the builder.
+"""Tests that ``run_dev_remote`` passes canonical image refs to the builder.
 
-The build/push refs in dev.py must match the transformed K8s payload.
-For dev deploys, registry-qualified source images are relocated into
-the resolved dev image registry while preserving their repository path.
-Without ``image_refs=`` plumbed through to ``ImageBuilder.build``, the
-builder defaults to the legacy ``{registry}/{ext}-{svc}:{tag}`` form
-while the payload references a different path, producing
-ImagePullBackOff.
+One ref, everywhere: whatever ``kz-ext dev`` builds, it must push, and the
+K8s payload must pull exactly that. ``ImageBuilder.build`` therefore takes
+``image_refs=`` from the same ``compute_canonical_refs`` map that feeds the
+transformed compose. Left to itself the builder would synthesize the legacy
+``{registry}/{ext}-{svc}:{tag}`` form while the payload named something else,
+and an extension with a non-conventional repository path (omniparse at
+``.../tool-omniparse/omniparse``) would ImagePullBackOff.
+
+ENG-8626: that map is now computed with ``purpose="dev"``, which relocates an
+owned build image into the *resolved cluster registry* while preserving its
+declared repository path. Dev previously honored the declared ``ghcr.io``
+host, so it built, pushed, and deployed owned dev images to the org registry —
+failing outright when the developer couldn't write dev tags there, and
+depending on an external private registry for local cluster development.
+Publish still preserves the declared namespace; see ``test_publish_cmd.py``.
 """
 
 from __future__ import annotations
@@ -58,10 +66,16 @@ def _active_connection() -> ConnectionInfo:
 
 
 class TestDevRemoteBuildsAtCanonicalRefs:
-    """``ImageBuilder.build`` must receive ``image_refs`` that match the
-    K8s payload's dev-local image refs."""
+    """``ImageBuilder.build`` must receive ``image_refs`` from the dev
+    canonical map — the same source of truth as the K8s payload's image
+    refs, so the ref we build is the ref the cluster pulls.
 
-    def test_divergent_image_namespace_relocates_to_dev_registry(
+    ENG-8626: dev relocates an owned build image into the resolved cluster
+    registry, preserving the declared repository path. It used to hand the
+    builder the declared ``ghcr.io`` namespace verbatim, so ``kz-ext dev``
+    built and pushed owned dev images to the org registry."""
+
+    def test_divergent_image_namespace_flows_through_to_builder(
         self, tmp_path, monkeypatch
     ):
         from kamiwaza_extensions.commands import dev as dev_cmd
@@ -134,15 +148,19 @@ class TestDevRemoteBuildsAtCanonicalRefs:
         builder.build.assert_called_once()
         assert "image_refs" in captured, (
             "ImageBuilder.build must receive image_refs= so the built ref "
-            "matches the transformed compose's declared namespace."
+            "matches the ref the transformed compose deploys."
         )
-        # Tag rewritten, source registry replaced with the dev image registry.
+        # Registry host relocated to the resolved dev registry; the declared
+        # repository path (tool-omniparse/omniparse — which does NOT follow
+        # the {ext}-{svc} convention) survives, so nothing collides and the
+        # rewrite is idempotent.
         assert captured["image_refs"] == {
             "omniparse": (
-                "registry.kamiwaza.test/example/tool-omniparse/omniparse:"
-                "0.1.0-dev-abc.123"
+                "registry.kamiwaza.test/example/tool-omniparse/omniparse"
+                ":0.1.0-dev-abc.123"
             ),
         }
+        assert not captured["image_refs"]["omniparse"].startswith("ghcr.io/")
 
     def test_display_name_fallback_image_refs_are_sanitized(self, tmp_path):
         from kamiwaza_extensions.commands import dev as dev_cmd
@@ -1366,13 +1384,23 @@ class TestInsecurePreflightSource:
         assert captured["kwargs"]["insecure"] is True
         assert captured["kwargs"]["engine"] == "docker"
 
-    def test_dev_relocated_external_refs_use_loopback_alias_preflight(
+    def test_qualified_build_ref_pushes_via_vm_alias_transport(
         self, tmp_path, monkeypatch
     ):
-        """Declared build refs relocate to the local dev registry.
+        """A split image/push registry changes only the transport alias.
 
-        The Docker insecure-registry preflight must run because the relocated
-        ref is pushed through the host.docker.internal split alias.
+        ENG-8626: this used to assert the opposite — that a declared
+        ``ghcr.io`` build ref stayed external, was pushed verbatim to GHCR,
+        and got an empty ``target_refs``. That was the bug: the image is one
+        ``kz-ext dev`` builds, so it belongs in the cluster registry.
+
+        Now the canonical (deploy) ref sits under ``image_registry``
+        (``127.0.0.1:30010``), and ``build_push_ref_map`` translates it to the
+        VM-reachable ``push_registry`` alias purely for transport. The ref the
+        CR deploys is the image_registry one; the alias never leaks into it.
+        Because the push ref really does target the alias now, the Docker
+        insecure-registry preflight correctly fires (it used to be skipped —
+        no push ref reached that registry).
         """
 
         from kamiwaza_extensions.commands import dev as dev_cmd
@@ -1462,25 +1490,28 @@ class TestInsecurePreflightSource:
         ):
             dev_cmd.run_dev_remote(no_build=True)
 
+        # The push ref now targets the alias, so the daemon preflight applies.
         mock_accepts.assert_called_once_with("host.docker.internal:30010")
         pusher.push.assert_called_once()
-        assert pusher.push.call_args.args[0] == [
-            "127.0.0.1:30010/example/custom-api:dev1"
-        ]
-        assert pusher.push.call_args.kwargs["registry"] == "host.docker.internal:30010"
-        assert pusher.push.call_args.kwargs["target_refs"] == {
-            "127.0.0.1:30010/example/custom-api:dev1": (
-                "host.docker.internal:30010/example/custom-api:dev1"
-            ),
-        }
 
-    def test_podman_dev_relocated_external_refs_retag_to_local_alias(
+        image_ref = "127.0.0.1:30010/example/custom-api:dev1"
+        push_ref = "host.docker.internal:30010/example/custom-api:dev1"
+        # Pushed under the image registry, never GHCR.
+        assert pusher.push.call_args.args[0] == [image_ref]
+        assert pusher.push.call_args.kwargs["registry"] == "host.docker.internal:30010"
+        # Transport-only: the alias lives in target_refs, not in the ref itself.
+        assert pusher.push.call_args.kwargs["target_refs"] == {image_ref: push_ref}
+
+    def test_podman_qualified_build_ref_pushes_via_vm_alias_transport(
         self, tmp_path, monkeypatch
     ):
-        """Declared build refs relocate on the Podman path too.
+        """Same alias-transport contract on the Podman path.
 
-        ``kz-ext dev`` builds the deployment ref under the dev registry, then
-        retags to the host-reachable Podman alias for the push.
+        ENG-8626: previously asserted that a declared ``ghcr.io`` build ref
+        stayed external with an empty retag map. Dev owns the image, so it is
+        built under ``image_registry`` and retagged to the Podman VM alias for
+        transport only. The Docker daemon preflight stays skipped here because
+        the push engine is Podman, not because no ref targets the alias.
         """
 
         from kamiwaza_extensions.commands import dev as dev_cmd
@@ -1563,19 +1594,18 @@ class TestInsecurePreflightSource:
         ):
             dev_cmd.run_dev_remote(no_build=True)
 
+        # Skipped because the push engine is Podman — the preflight is
+        # Docker-daemon-specific.
         mock_accepts.assert_not_called()
         pusher.push.assert_called_once()
-        assert pusher.push.call_args.args[0] == [
-            "127.0.0.1:30010/example/custom-api:dev1"
-        ]
+
+        image_ref = "127.0.0.1:30010/example/custom-api:dev1"
+        push_ref = "host.containers.internal:30010/example/custom-api:dev1"
+        assert pusher.push.call_args.args[0] == [image_ref]
         assert pusher.push.call_args.kwargs["registry"] == (
             "host.containers.internal:30010"
         )
-        assert pusher.push.call_args.kwargs["target_refs"] == {
-            "127.0.0.1:30010/example/custom-api:dev1": (
-                "host.containers.internal:30010/example/custom-api:dev1"
-            ),
-        }
+        assert pusher.push.call_args.kwargs["target_refs"] == {image_ref: push_ref}
         assert pusher.push.call_args.kwargs["engine"] == "podman"
 
     def test_fresh_build_forces_docker_push_engine_with_podman_installed(
@@ -1799,3 +1829,287 @@ class TestInsecurePreflightSource:
             dev_cmd.run_dev_remote()
 
         pusher.push.assert_not_called()
+
+
+_KZ_NS = "ghcr.io/kamiwaza-internal/kamiwaza-extensions-kaizen/images"
+_KZ_DEV_REGISTRY = "host.docker.internal:5001"
+_KZ_DEV_NS = f"{_KZ_DEV_REGISTRY}/kamiwaza-internal/kamiwaza-extensions-kaizen/images"
+
+
+def _kaizen_info(tmp_path: Path) -> ExtensionInfo:
+    """The exact shape from ENG-8626: four owned builds declaring a qualified
+    GHCR namespace (one profile-gated) plus an external postgres."""
+    compose_data = {
+        "services": {
+            "postgres": {
+                "image": "ghcr.io/kamiwaza-internal/containers/images/postgres:v18.4",
+            },
+            "sandbox-controller": {
+                "build": {"context": "."},
+                "image": f"{_KZ_NS}/kaizen-controller:2.0.2",
+                "environment": {
+                    "AGENT_SERVER_IMAGE": f"{_KZ_NS}/kaizen-agent:2.0.2",
+                    "SANDBOX_ALLOWED_IMAGE_PREFIXES": f"{_KZ_NS}/kaizen-agent",
+                },
+            },
+            "agent": {
+                "profiles": ["image-only"],
+                "build": {"context": "."},
+                "image": f"{_KZ_NS}/kaizen-agent:2.0.2",
+            },
+            "backend": {
+                "build": {"context": "."},
+                "image": f"{_KZ_NS}/kaizen-backend:2.0.2",
+                "environment": {
+                    "AGENT_SERVER_IMAGE": f"{_KZ_NS}/kaizen-agent:2.0.2",
+                },
+            },
+            "frontend": {
+                "build": {"context": "."},
+                "image": f"{_KZ_NS}/kaizen-frontend:2.0.2",
+            },
+        },
+    }
+    return ExtensionInfo(
+        path=tmp_path,
+        name="kaizen",
+        version="2.0.2",
+        metadata={"name": "kaizen", "type": "app"},
+        compose_path=tmp_path / "docker-compose.yml",
+        compose_data=compose_data,
+    )
+
+
+class TestKaizenDevRegistryEndToEnd:
+    """ENG-8626 acceptance: ``kz-ext dev`` performs no GHCR push, and the ref
+    it builds is the ref it pushes is the ref it deploys."""
+
+    @staticmethod
+    def _run(tmp_path, *, no_build=False):
+        """Drive run_dev_remote to the payload stage, capturing every image-ref
+        surface on the way: builder, pusher, and the transformed compose that
+        becomes the CR."""
+        from kamiwaza_extensions.commands import dev as dev_cmd
+
+        captured: dict = {}
+
+        def _capture_build(**kwargs):
+            captured["build"] = kwargs
+            # Mirror ImageBuilder: build every build: service, at image_refs[svc]
+            # when present, and return the refs actually tagged.
+            return list(kwargs["image_refs"].values())
+
+        builder = MagicMock()
+        builder.build.side_effect = _capture_build
+
+        pusher = MagicMock()
+
+        class _StopAtPayload:
+            """Capture the compose that actually becomes the CR.
+
+            It must be read here, not off ``ComposeTransformer.transform``:
+            dev.py resolves env placeholders and rewrites embedded image refs
+            (AGENT_SERVER_IMAGE, the sandbox allowlist) *after* the transform,
+            each producing a new dict. The last one is what the cluster gets.
+            """
+
+            def __init__(self, *a, **kw):
+                pass
+
+            @staticmethod
+            def make_dev_name(*a, **kw):
+                return "kaizen-dev"
+
+            def build(self, **kwargs):
+                captured["deployed"] = kwargs["transformed_compose"]
+                raise RuntimeError("reached-payload-stage")
+
+        conn_mgr = MagicMock()
+        conn_mgr.get_active_connection.return_value = _active_connection()
+        conn_mgr.get_token.return_value = MagicMock(access_token="tok-abc")
+        detector = MagicMock()
+        detector.detect.return_value = _kaizen_info(tmp_path)
+        tagger = MagicMock()
+        tagger.generate_tag.return_value = "2.0.2-dev-abc.123"
+        tagger.get_git_info.return_value = ("abc1234", False)
+
+        with (
+            patch(
+                "kamiwaza_extensions.extension_detector.ExtensionDetector",
+                return_value=detector,
+            ),
+            patch(
+                "kamiwaza_extensions.connections.ConnectionManager",
+                return_value=conn_mgr,
+            ),
+            patch(
+                "kamiwaza_extensions.revision_tagger.RevisionTagger",
+                return_value=tagger,
+            ),
+            patch(
+                "kamiwaza_extensions.image_builder.ImageBuilder",
+                return_value=builder,
+            ),
+            patch(
+                "kamiwaza_extensions.image_pusher.ImagePusher",
+                return_value=pusher,
+            ),
+            patch(
+                "kamiwaza_extensions.registry_resolution.detect_core_config_registry",
+                return_value=_KZ_DEV_REGISTRY,
+            ),
+            patch(
+                "kamiwaza_extensions.registry_resolution.docker_accepts_insecure_push_to",
+                return_value=True,
+            ),
+            patch("kamiwaza_extensions.dev_state.read_state", return_value=None),
+            patch("kamiwaza_extensions.dev_state.resume_message", return_value=None),
+            patch(
+                "kamiwaza_extensions.payload_builder.PayloadBuilder",
+                _StopAtPayload,
+            ),
+            pytest.raises(RuntimeError, match="reached-payload-stage"),
+        ):
+            dev_cmd.run_dev_remote(no_build=no_build)
+
+        captured["pushed"] = list(pusher.push.call_args.args[0])
+        return captured
+
+    def test_no_ghcr_push_and_all_owned_images_under_dev_registry(self, tmp_path):
+        cap = self._run(tmp_path)
+
+        pushed = cap["pushed"]
+        # The headline acceptance criterion: nothing goes to GHCR.
+        assert not any(ref.startswith("ghcr.io/") for ref in pushed), pushed
+        assert all(ref.startswith(f"{_KZ_DEV_REGISTRY}/") for ref in pushed), pushed
+        # All four owned images, one revision.
+        assert sorted(pushed) == sorted(
+            [
+                f"{_KZ_DEV_NS}/kaizen-controller:2.0.2-dev-abc.123",
+                f"{_KZ_DEV_NS}/kaizen-agent:2.0.2-dev-abc.123",
+                f"{_KZ_DEV_NS}/kaizen-backend:2.0.2-dev-abc.123",
+                f"{_KZ_DEV_NS}/kaizen-frontend:2.0.2-dev-abc.123",
+            ]
+        )
+
+    def test_same_ref_reaches_builder_pusher_and_deployed_compose(self, tmp_path):
+        cap = self._run(tmp_path)
+
+        built = cap["build"]["image_refs"]
+        deployed = {
+            name: svc["image"]
+            for name, svc in cap["deployed"]["services"].items()
+            if name != "postgres"
+        }
+        # Builder and pusher agree.
+        assert sorted(cap["pushed"]) == sorted(built.values())
+        # ...and every deployed service pulls exactly the ref that was pushed.
+        for name, ref in deployed.items():
+            assert ref == built[name], name
+            assert ref in cap["pushed"], name
+        # The profiled agent is built and pushed but never deployed as a
+        # service — the backend launches it dynamically.
+        assert "agent" in built
+        assert "agent" not in cap["deployed"]["services"]
+
+    def test_external_image_never_retagged_or_pushed(self, tmp_path):
+        cap = self._run(tmp_path)
+
+        postgres = cap["deployed"]["services"]["postgres"]["image"]
+        # No build: → not ours. Untouched, and never pushed anywhere.
+        assert postgres == "ghcr.io/kamiwaza-internal/containers/images/postgres:v18.4"
+        assert postgres not in cap["pushed"]
+
+    def test_agent_server_image_and_allowlist_match_the_pushed_agent_ref(
+        self, tmp_path
+    ):
+        cap = self._run(tmp_path)
+
+        agent_ref = cap["build"]["image_refs"]["agent"]
+        assert agent_ref in cap["pushed"]
+
+        controller_env = cap["deployed"]["services"]["sandbox-controller"][
+            "environment"
+        ]
+        # The sandbox pod is launched from this ref, and the controller gates
+        # it against the allowlist — both must name the image we actually
+        # pushed, or the sandbox ImagePullBackOffs / is rejected.
+        assert controller_env["AGENT_SERVER_IMAGE"] == agent_ref
+        prefixes = controller_env["SANDBOX_ALLOWED_IMAGE_PREFIXES"].split(",")
+        assert any(agent_ref.startswith(p) for p in prefixes), (
+            prefixes,
+            agent_ref,
+        )
+
+    def test_no_build_does_not_push_the_profiled_agent(self, tmp_path):
+        # ENG-7110 behavior that must survive ENG-8626: profiled services are
+        # in the dev canonical map now, but --no-build must still not push them
+        # — a resumed run may no longer hold the local image. They rely on a
+        # prior run's push.
+        cap = self._run(tmp_path, no_build=True)
+
+        pushed = cap["pushed"]
+        assert not any("kaizen-agent" in ref for ref in pushed), pushed
+        assert sorted(pushed) == sorted(
+            [
+                f"{_KZ_DEV_NS}/kaizen-controller:2.0.2-dev-abc.123",
+                f"{_KZ_DEV_NS}/kaizen-backend:2.0.2-dev-abc.123",
+                f"{_KZ_DEV_NS}/kaizen-frontend:2.0.2-dev-abc.123",
+            ]
+        )
+
+
+class TestResumeProbesDevRegistry:
+    """ENG-8626: the resume probe must look for artifacts where dev actually
+    pushes them.
+
+    ``_prior_artifacts_in_registry`` decides whether a prior run's images are
+    still in the registry (and so whether the build/push can be skipped). It
+    shares ``compute_canonical_refs``, so before the fix it probed **ghcr.io**
+    for a locally-built dev image. That both asked the wrong registry and made
+    resume validity depend on an external one."""
+
+    def test_probe_targets_dev_registry_not_declared_namespace(self, tmp_path):
+        from kamiwaza_extensions.commands import dev as dev_cmd
+
+        probed: list[str] = []
+
+        with patch(
+            "kamiwaza_extensions.image_pusher.ImagePusher.resolve_digest",
+            side_effect=lambda ref: probed.append(ref) or "sha256:" + "a" * 64,
+        ):
+            ok = dev_cmd._prior_artifacts_in_registry(
+                _kaizen_info(tmp_path),
+                "2.0.2-dev-old.1",
+                registry=_KZ_DEV_REGISTRY,
+                push_registry=_KZ_DEV_REGISTRY,
+            )
+
+        assert ok is True
+        assert probed, "probe must actually resolve the prior refs"
+        assert not any(ref.startswith("ghcr.io/") for ref in probed), probed
+        assert all(ref.startswith(f"{_KZ_DEV_REGISTRY}/") for ref in probed), probed
+        # Profiled agent included: a full prior run pushed it, so resume must
+        # confirm it is still there before skipping the rebuild that would
+        # otherwise re-create it.
+        assert f"{_KZ_DEV_NS}/kaizen-agent:2.0.2-dev-old.1" in probed
+
+    def test_probe_fails_when_prior_artifacts_are_absent(self, tmp_path):
+        """A dev-state written under the old GHCR policy names refs that were
+        never pushed to the dev registry, so the probe misses and the run
+        correctly falls back to a full rebuild rather than resuming onto
+        images the cluster can't pull."""
+        from kamiwaza_extensions.commands import dev as dev_cmd
+
+        with patch(
+            "kamiwaza_extensions.image_pusher.ImagePusher.resolve_digest",
+            side_effect=RuntimeError("manifest unknown"),
+        ):
+            ok = dev_cmd._prior_artifacts_in_registry(
+                _kaizen_info(tmp_path),
+                "2.0.2-dev-old.1",
+                registry=_KZ_DEV_REGISTRY,
+                push_registry=_KZ_DEV_REGISTRY,
+            )
+
+        assert ok is False

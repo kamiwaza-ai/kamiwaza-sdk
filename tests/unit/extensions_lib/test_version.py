@@ -19,7 +19,7 @@ CHANGELOG_PATH = LIB_DIR / "CHANGELOG.md"
 LIB_PYPROJECT_PATH = LIB_DIR / "pyproject.toml"
 
 
-def test_version_is_0_4_2():
+def test_version_is_0_4_3():
     # M3 / PR #87 round-9 promoted the round-8 ``_url`` helpers to a
     # public ``url`` module (and re-exported ``backend_runtime_base`` /
     # ``public_base_url`` from the package root). Scaffolded extensions
@@ -30,9 +30,11 @@ def test_version_is_0_4_2():
     # logout URL; 0.4.2 (ENG-6911) corrected that fix to build the
     # front-channel URL from the browser base directly, since the
     # server-side proxy POST is unreachable in-cluster under ``kz-ext
-    # dev`` — still within the ``>=0.4,<0.5`` compat range.
-    assert kamiwaza_extensions_lib.__version__ == "0.4.2", (
-        "Runtime lib is 0.4.2 (ENG-6911 logout front-channel fix). "
+    # dev``; 0.4.3 (ENG-8766) restricted the model-endpoint re-host to
+    # browser-only/same-netloc hosts so in-cluster chat keeps the
+    # platform's gateway URL — still within ``>=0.4,<0.5``.
+    assert kamiwaza_extensions_lib.__version__ == "0.4.3", (
+        "Runtime lib is 0.4.3 (ENG-8766 gateway-endpoint re-host fix). "
         "Update both __version__ and CHANGELOG.md if the version is "
         "intentionally changing."
     )

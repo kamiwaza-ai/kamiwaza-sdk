@@ -122,19 +122,25 @@ _TEXT_BODY_MARKERS = (
     "application/graphql",
     "text/",
 )
-CONTEXT_TEST_LLM_REPO = os.environ.get(
-    "KAMIWAZA_CONTEXT_LLM_REPO",
+_CONTEXT_TEST_LLM_REPO_OVERRIDE = os.environ.get("KAMIWAZA_CONTEXT_LLM_REPO", "").strip()
+_CONTEXT_TEST_LLM_ENGINE_OVERRIDE = os.environ.get("KAMIWAZA_CONTEXT_LLM_ENGINE", "").strip()
+CONTEXT_TEST_MLX_LLM_REPO = os.environ.get(
+    "KAMIWAZA_CONTEXT_MLX_LLM_REPO",
     "mlx-community/Qwen3-4B-4bit",
+)
+CONTEXT_TEST_VLLM_LLM_REPO = os.environ.get(
+    "KAMIWAZA_CONTEXT_VLLM_LLM_REPO",
+    "Qwen/Qwen3-0.6B",
 )
 CONTEXT_TEST_LLM_DEPLOY_TIMEOUT_SECONDS = float(
     os.environ.get("KAMIWAZA_CONTEXT_LLM_DEPLOY_TIMEOUT_SECONDS", "600")
 )
 # Must stay in sync with TEST_REPO_ID in test_serving_workflow.py and
-# test_cli_live.py: the capability probe deploys the SAME model the gated tests
-# deploy, so the gate's skip/run verdict matches what the tests will actually do.
-# Intentionally not env-overridable — an override here that the test modules
-# don't honor would let the probe pass while the tests deploy a different model
-# and fail instead of skip.
+# test_cli_live.py: the capability probe deploys the same model through the
+# same default-engine path the gated tests use, so the gate's skip/run verdict
+# matches what the tests will actually do. Intentionally not env-overridable —
+# an override here that the test modules don't honor would let the probe pass
+# while the tests deploy a different model and fail instead of skip.
 DEPLOYABLE_TEST_MODEL_REPO = "mlx-community/Qwen3-4B-4bit"
 DEPLOYABLE_TEST_DEPLOY_TIMEOUT_SECONDS = float(
     os.environ.get("KAMIWAZA_DEPLOYABLE_TEST_DEPLOY_TIMEOUT_SECONDS", "600")
@@ -164,6 +170,16 @@ EMBEDDING_TEST_PROBE_TEXT = os.environ.get(
 _EMBEDDING_NAME_PATTERNS = re.compile(
     r"(?i)(bge|e5[-_]|nomic[-_]?embed|gte[-_]|all[-_]minilm|"
     r"instructor|jina[-_]?embed|text[-_]?embedding|embed)"
+)
+_HARNESS_PROVISIONED_KEY = "_harness_provisioned"
+_HARNESS_EMBEDDING_STOPPED_NOTE = (
+    "harness-provisioned embedding deployment was stopped"
+)
+_HARNESS_EMBEDDING_STOP_ATTEMPTED_NOTE = (
+    "harness-provisioned embedding deployment stop was attempted"
+)
+_HARNESS_EMBEDDING_NO_DEPLOYMENT_ID_NOTE = (
+    "harness-provisioned embedding deployment had no deployment id to stop"
 )
 
 
@@ -385,7 +401,7 @@ def _runtime_endpoint(endpoint: str) -> str:
     if host not in {"localhost", "127.0.0.1", "::1"}:
         return endpoint
 
-    target_host = os.environ.get("KAMIWAZA_RUNTIME_HOST", RUNTIME_HOST_ALIAS).strip()
+    target_host = _runtime_host_for_cluster()
     if not target_host:
         return endpoint
 
@@ -396,10 +412,44 @@ def _runtime_endpoint(endpoint: str) -> str:
 
 def _runtime_host(host: str) -> str:
     if host in {"localhost", "127.0.0.1", "::1"}:
-        target = os.environ.get("KAMIWAZA_RUNTIME_HOST", RUNTIME_HOST_ALIAS).strip()
+        target = _runtime_host_for_cluster()
         if target:
             return target
     return host
+
+
+def _runtime_host_for_cluster() -> str:
+    explicit = os.environ.get("KAMIWAZA_RUNTIME_HOST", "").strip()
+    if explicit:
+        return explicit
+
+    if sys.platform.startswith("linux"):
+        for interface in ("kube-bridge", "cni0"):
+            address = _interface_ipv4(interface)
+            if address:
+                return address
+
+    return RUNTIME_HOST_ALIAS.strip()
+
+
+def _interface_ipv4(interface: str) -> str:
+    try:
+        result = subprocess.run(
+            ["ip", "-4", "-o", "addr", "show", "dev", interface],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return ""
+    if result.returncode != 0:
+        return ""
+    for line in result.stdout.splitlines():
+        fields = line.split()
+        for index, field in enumerate(fields):
+            if field == "inet" and index + 1 < len(fields):
+                return fields[index + 1].split("/", 1)[0]
+    return ""
 
 
 def _runtime_bootstrap(bootstrap: str) -> str:
@@ -515,14 +565,15 @@ def _platform_deployment_ready(deployment: object) -> bool:
 
 def _stop_deployment_quietly(
     client: KamiwazaClient, deployment_id: str | None
-) -> None:
+) -> bool:
     """Best-effort stop of a deployment (used for capability probes / cleanup)."""
     if not deployment_id:
-        return
+        return False
     try:
         client.serving.stop_deployment(deployment_id=deployment_id, force=True)
     except Exception:  # noqa: BLE001 — teardown is best-effort
-        pass
+        return False
+    return True
 
 
 def _active_model_deployments(
@@ -578,12 +629,38 @@ def _preferred_active_model_deployment(
     return deployments[0] if deployments else None
 
 
+def _context_llm_target(
+    snapshot: _cap.ClusterCapabilitySnapshot | None,
+) -> tuple[str, str | None]:
+    """Select a context-test LLM repo/engine for the live host.
+
+    MLX remains the default for non-NVIDIA hosts, but Linux/NVIDIA release UAT
+    must not send the MLX-quantized smoke model through vLLM by accident.
+    """
+    if _CONTEXT_TEST_LLM_REPO_OVERRIDE:
+        return (
+            _CONTEXT_TEST_LLM_REPO_OVERRIDE,
+            _CONTEXT_TEST_LLM_ENGINE_OVERRIDE or None,
+        )
+    if snapshot is not None and "nvidia" in snapshot.gpu_vendors:
+        return CONTEXT_TEST_VLLM_LLM_REPO, _CONTEXT_TEST_LLM_ENGINE_OVERRIDE or "vllm"
+    return CONTEXT_TEST_MLX_LLM_REPO, _CONTEXT_TEST_LLM_ENGINE_OVERRIDE or "mlx"
+
+
 def _active_embedding_deployment(client: KamiwazaClient) -> dict[str, str] | None:
     return _preferred_active_model_deployment(
         client,
         desired_type="embedding",
         preferred_repo_id=EMBEDDING_TEST_MODEL_REPO,
     )
+
+
+def _mark_embedding_deployment(
+    deployment: dict[str, str], *, harness_provisioned: bool
+) -> dict[str, str]:
+    marked = dict(deployment)
+    marked[_HARNESS_PROVISIONED_KEY] = "true" if harness_provisioned else "false"
+    return marked
 
 
 def _unique_nonempty_values(*values: str) -> list[str]:
@@ -1121,7 +1198,7 @@ def embedding_model_prerequisite(
 
     deployment = _active_embedding_deployment(client)
     if deployment is not None:
-        return deployment
+        return _mark_embedding_deployment(deployment, harness_provisioned=False)
 
     request_message = _maybe_request_embedding_download_and_deploy(
         client,
@@ -1137,7 +1214,11 @@ def embedding_model_prerequisite(
         nudge_after_seconds=EMBEDDING_TEST_DEPLOY_NUDGE_SECONDS,
     )
     if deployment is not None:
-        return deployment
+        return _mark_embedding_deployment(
+            deployment,
+            harness_provisioned=deployment.get("repo_model_id")
+            == EMBEDDING_TEST_MODEL_REPO,
+        )
 
     details = [f"repo={EMBEDDING_TEST_MODEL_REPO}"]
     if request_message:
@@ -1179,9 +1260,23 @@ def embedding_test_target(
                 }
             failures.append(f"{model}/{provider_type}: {probe_error}")
 
+    cleanup_notes: list[str] = []
+    if embedding_model_prerequisite.get(_HARNESS_PROVISIONED_KEY) == "true":
+        deployment_id = embedding_model_prerequisite.get("deployment_id")
+        stopped = _stop_deployment_quietly(
+            client,
+            deployment_id,
+        )
+        if stopped:
+            cleanup_notes.append(_HARNESS_EMBEDDING_STOPPED_NOTE)
+        elif deployment_id:
+            cleanup_notes.append(_HARNESS_EMBEDDING_STOP_ATTEMPTED_NOTE)
+        else:
+            cleanup_notes.append(_HARNESS_EMBEDDING_NO_DEPLOYMENT_ID_NOTE)
+
     pytest.skip(
         "Embedding deployment is present, but the embedding endpoint could not use "
-        f"any preferred test target ({'; '.join(failures)})."
+        f"any preferred test target ({'; '.join(failures + cleanup_notes)})."
     )
 
 
@@ -1189,6 +1284,7 @@ def embedding_test_target(
 def context_llm_prerequisite(
     live_kamiwaza_session_client: KamiwazaClient,
     ensure_repo_ready,
+    cluster_capability_snapshot: _cap.ClusterCapabilitySnapshot | None,
 ) -> Iterator[str]:
     """Ensure a usable LLM deployment exists for context ontology operations, or skip once.
 
@@ -1200,6 +1296,7 @@ def context_llm_prerequisite(
     instead of a cascade of fixture-setup ERRORs.
     """
     client = live_kamiwaza_session_client
+    context_repo_id, context_engine_name = _context_llm_target(cluster_capability_snapshot)
 
     def _stop_provisioned(deployment_id: str | None) -> None:
         """Best-effort teardown of a deployment THIS fixture provisioned."""
@@ -1213,7 +1310,7 @@ def context_llm_prerequisite(
     existing = _preferred_active_model_deployment(
         client,
         desired_type="llm",
-        preferred_repo_id=CONTEXT_TEST_LLM_REPO,
+        preferred_repo_id=context_repo_id,
     )
     if existing is not None:
         yield existing["deployment_id"]
@@ -1224,11 +1321,11 @@ def context_llm_prerequisite(
     # capacity-limited host) would be orphaned when we skip.
     provisioned_deployment_id: str | None = None
     try:
-        model = ensure_repo_ready(client, CONTEXT_TEST_LLM_REPO)
+        model = ensure_repo_ready(client, context_repo_id)
         configs = client.models.get_model_configs(model.id)
         if not configs:
             pytest.skip(
-                f"No model configs available for context LLM repo '{CONTEXT_TEST_LLM_REPO}'"
+                f"No model configs available for context LLM repo '{context_repo_id}'"
             )
         default_config = next(
             (config for config in configs if config.default), configs[0]
@@ -1237,21 +1334,25 @@ def context_llm_prerequisite(
         # deploy_model returns Union[UUID, bool] — False on failure (no raise).
         # Guard before str() so a refused deploy skips cleanly instead of turning
         # into the truthy id "False".
-        raw_deployment_id = client.serving.deploy_model(
-            model_id=str(model.id),
-            m_config_id=default_config.id,
-            lb_port=0,
-            autoscaling=False,
-            min_copies=1,
-            starting_copies=1,
+        deploy_kwargs: dict[str, Any] = {
+            "model_id": str(model.id),
+            "m_config_id": default_config.id,
+            "lb_port": 0,
+            "autoscaling": False,
+            "min_copies": 1,
+            "starting_copies": 1,
             # The fixture's wait_for_deployment below owns the timeout; the
             # SDK-internal wait would block up to its own 3600s default first.
-            wait=False,
-        )
+            "wait": False,
+        }
+        if context_engine_name:
+            deploy_kwargs["engine_name"] = context_engine_name
+        raw_deployment_id = client.serving.deploy_model(**deploy_kwargs)
         if not raw_deployment_id:
             pytest.skip(
                 "deploy_model did not return a deployment id for context LLM repo "
-                f"'{CONTEXT_TEST_LLM_REPO}' (deploy refused on this host)."
+                f"'{context_repo_id}' (engine={context_engine_name or 'default'}, "
+                "deploy refused on this host)."
             )
         provisioned_deployment_id = str(raw_deployment_id)
         deployment = client.serving.wait_for_deployment(
@@ -1263,7 +1364,8 @@ def context_llm_prerequisite(
         _stop_provisioned(provisioned_deployment_id)
         pytest.skip(
             "No active LLM deployment for context ontology tests and one could not "
-            f"be provisioned (repo={CONTEXT_TEST_LLM_REPO}): "
+            f"be provisioned (repo={context_repo_id}, "
+            f"engine={context_engine_name or 'default'}): "
             f"{type(exc).__name__}: {exc}"
         )
 
@@ -1376,8 +1478,9 @@ def deployable_model_prerequisite(
 
 @pytest.fixture(autouse=True)
 def _require_embedding_model_for_marked_tests(request: pytest.FixtureRequest) -> None:
+    """Require a functional embedding endpoint, not just a deployment row."""
     if "requires_embedding_model" in request.keywords:
-        request.getfixturevalue("embedding_model_prerequisite")
+        request.getfixturevalue("embedding_test_target")
 
 
 @pytest.fixture(autouse=True)
@@ -1539,12 +1642,17 @@ def live_kamiwaza_peer_client(
 def pytest_collection_modifyitems(
     config: pytest.Config, items: list[pytest.Item]
 ) -> None:
-    """Order: smoke first, embedding-dependent next, others last.
+    """Order: smoke first, embedding-dependent files next, others last.
 
     ENG-5784: also deselect @pytest.mark.requires_two_clusters when neither
     --live-peer-base-url nor KAMIWAZA_PEER_BASE_URL is set. Mirrors the
     requires_embedding_model deselection convention so contributor PRs
     without peer creds don't show false reds.
+
+    Keep modules intact when front-loading embedding work. Several live fixtures
+    are module/session scoped; splitting one module into embedding/non-embedding
+    halves makes those fixtures live across unrelated tests and can invalidate
+    workroom-scoped state before the later half resumes.
     """
     peer_url = str(config.getoption("live_peer_base_url")).strip()
     if not peer_url:
@@ -1565,8 +1673,13 @@ def pytest_collection_modifyitems(
     remaining_items = [
         item for item in items if not Path(str(item.fspath)).name.startswith("test_00_")
     ]
+    embedding_paths = {
+        Path(str(item.fspath))
+        for item in remaining_items
+        if "requires_embedding_model" in item.keywords
+    }
     embedding_items = [
-        item for item in remaining_items if "requires_embedding_model" in item.keywords
+        item for item in remaining_items if Path(str(item.fspath)) in embedding_paths
     ]
     if not smoke_items and not embedding_items:
         return
@@ -1574,7 +1687,7 @@ def pytest_collection_modifyitems(
     other_items = [
         item
         for item in remaining_items
-        if "requires_embedding_model" not in item.keywords
+        if Path(str(item.fspath)) not in embedding_paths
     ]
     items[:] = smoke_items + embedding_items + other_items
 

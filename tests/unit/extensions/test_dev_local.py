@@ -912,16 +912,22 @@ class TestParsePortMapping:
 @pytest.mark.unit
 class TestIsPortAvailable:
     def test_available_port(self):
-        # High ephemeral port should be available
-        assert is_port_available(59123) is True
+        import socket
+
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.bind(("0.0.0.0", 0))
+        port = sock.getsockname()[1]
+        sock.close()
+
+        assert is_port_available(port) is True
 
     def test_occupied_port_via_bind(self):
         import socket
 
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.bind(("0.0.0.0", 59124))
+        sock.bind(("0.0.0.0", 0))
         try:
-            assert is_port_available(59124) is False
+            assert is_port_available(sock.getsockname()[1]) is False
         finally:
             sock.close()
 
@@ -930,10 +936,10 @@ class TestIsPortAvailable:
 
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.bind(("0.0.0.0", 59125))
+        sock.bind(("0.0.0.0", 0))
         sock.listen(1)
         try:
-            assert is_port_available(59125) is False
+            assert is_port_available(sock.getsockname()[1]) is False
         finally:
             sock.close()
 
@@ -959,9 +965,12 @@ class TestIsPortAvailable:
         except (AttributeError, OSError):
             pass
         try:
-            sock.bind(("::1", 59126))
+            try:
+                sock.bind(("::1", 0))
+            except OSError as exc:
+                pytest.skip(f"IPv6 loopback bind unavailable: {exc}")
             sock.listen(1)
-            assert is_port_available(59126) is False
+            assert is_port_available(sock.getsockname()[1]) is False
         finally:
             sock.close()
 
@@ -988,9 +997,12 @@ class TestIsPortAvailable:
         except (AttributeError, OSError):
             pass
         try:
-            sock.bind(("::1", 59127))
+            try:
+                sock.bind(("::1", 0))
+            except OSError as exc:
+                pytest.skip(f"IPv6 loopback bind unavailable: {exc}")
             # No listen() — connect probe will get ECONNREFUSED.
-            assert is_port_available(59127) is False
+            assert is_port_available(sock.getsockname()[1]) is False
         finally:
             sock.close()
 
@@ -1069,18 +1081,19 @@ class TestResolvePortConflicts:
         import socket
 
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.bind(("0.0.0.0", 59302))
+        sock.bind(("0.0.0.0", 0))
         try:
+            occupied_port = sock.getsockname()[1]
             compose = {
                 "services": {
-                    "frontend": {"ports": ["59302:3000"]},
+                    "frontend": {"ports": [f"{occupied_port}:3000"]},
                 }
             }
             remaps = resolve_port_conflicts(compose)
             assert "frontend" in remaps
             orig, new = remaps["frontend"]
-            assert orig == 59302
-            assert new > 59302
+            assert orig == occupied_port
+            assert new > occupied_port
         finally:
             sock.close()
 

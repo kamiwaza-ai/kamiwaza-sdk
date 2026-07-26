@@ -47,9 +47,9 @@ class ClusterCapabilitySnapshot:
 # --------------------------------------------------------------------------- #
 # Defensive parsing of the untyped GPU dicts (Hardware.gpus: List[Dict])
 # --------------------------------------------------------------------------- #
-_VENDOR_KEYS = ("vendor", "gpu_vendor", "brand", "manufacturer")
+_VENDOR_KEYS = ("vendor", "gpu_vendor", "brand", "manufacturer", "type")
 _NAME_KEYS = ("name", "model", "product", "product_name", "gpu_name")
-_MEM_GB_KEYS = ("memory_gb", "mem_gb", "vram_gb")
+_MEM_GB_KEYS = ("memory_gb", "mem_gb", "vram_gb", "vram", "gpu_memory_gb")
 _MEM_MB_KEYS = ("memory_mb", "mem_mb", "vram_mb", "memory_total_mb")
 _MEM_BYTES_KEYS = ("memory_bytes", "memory_total", "mem_bytes", "total_memory")
 _MIG_KEYS = ("mig", "mig_enabled", "mig_capable", "mig_support", "mig_supported")
@@ -145,6 +145,13 @@ def _hardware_node_key(hardware: Any) -> str:
     return str(node_id) if node_id is not None else f"_anon_{id(hardware)}"
 
 
+def _hardware_active(hardware: Any) -> Optional[bool]:
+    active = getattr(hardware, "active", None)
+    if active is None and isinstance(hardware, dict):
+        active = hardware.get("active")
+    return active if isinstance(active, bool) else None
+
+
 def build_capability_snapshot(
     hardware_entries: Iterable[Any],
     node_count: Optional[int] = None,
@@ -156,8 +163,11 @@ def build_capability_snapshot(
     available; otherwise it is inferred from distinct hardware node ids.
     """
     entries = list(hardware_entries or [])
+    active_entries = [
+        hardware for hardware in entries if _hardware_active(hardware) is not False
+    ]
     gpu_dicts: list[dict] = []
-    for hardware in entries:
+    for hardware in active_entries:
         gpus = _hardware_gpus(hardware)
         if gpus:
             gpu_dicts.extend(gpu for gpu in gpus if isinstance(gpu, dict))
@@ -177,7 +187,7 @@ def build_capability_snapshot(
             mig_flags.append(mig)
 
     if node_count is None:
-        node_count = len({_hardware_node_key(hw) for hw in entries})
+        node_count = len({_hardware_node_key(hw) for hw in active_entries})
 
     return ClusterCapabilitySnapshot(
         gpu_count=len(gpu_dicts),

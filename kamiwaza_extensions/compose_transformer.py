@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import copy
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 # Reuse the validator's bind-mount detection so the "stripped at deploy"
 # info message ComposeValidator emits stays in sync with what the
@@ -12,6 +12,25 @@ from typing import Any, Dict, List, Optional, Tuple
 from kamiwaza_extensions.validators.compose import is_bind_mount
 
 _IMAGE_BASENAME_RE = re.compile(r"^[a-z0-9]([-a-z0-9._/]{0,126}[a-z0-9])?$")
+
+# Which command is asking for a build ref. The two have opposite
+# destination policies for a registry-qualified declared ``image:``, and
+# conflating them is what ENG-8626 fixed:
+#
+# - ``publish`` — the declared namespace IS the destination. An extension
+#   may publish beneath an unconventional namespace (Omniparse, ENG-4909);
+#   preserve it verbatim so catalog refs match the pushed images.
+# - ``dev`` — the declared namespace is the image's *published identity*,
+#   not where this cluster pulls from. A service with ``build:`` is one
+#   ``kz-ext dev`` is building right now, so it must land in the resolved
+#   cluster dev registry; honoring the declared ``ghcr.io`` host pushes an
+#   owned dev image to the org registry and deploys a ref the cluster
+#   can't pull.
+#
+# Required (no default) at every entry point: a call site that forgets it
+# should fail loudly rather than silently inherit publish semantics —
+# exactly the regression ENG-8626 was.
+Purpose = Literal["dev", "publish"]
 
 
 def _replace_image_tag(image_ref: str, new_tag: str) -> str:
@@ -103,6 +122,7 @@ def _repo_part(image_ref: str) -> str:
 def compute_canonical_refs(
     source_services: Optional[Dict[str, Any]],
     *,
+    purpose: Purpose,
     registry: str,
     extension_name: str,
     revision_tag: str,
@@ -113,7 +133,8 @@ def compute_canonical_refs(
 
     Single source of truth for the publish and dev pipelines: build,
     push, digest resolution, and the K8s/catalog image refs all read
-    from this map so they can't drift.
+    from this map so they can't drift. *purpose* selects the destination
+    policy — see :data:`Purpose` and ``_canonical_build_ref``.
 
     Service-image precedence (per service):
     1. ``appgarden_services[name]`` when the key is present (matches
@@ -122,9 +143,19 @@ def compute_canonical_refs(
        via ``_canonical_build_ref`` rather than reading from source).
     2. Source-compose entry otherwise.
 
-    Filters out profile-gated services (matches ``buildable_services``
-    in ``run_publish``) so profile-only helpers don't leak into the
-    push list under ``--no-build``.
+    Profile-gated services (ENG-8626):
+    - ``publish`` skips them (matches ``buildable_services`` in
+      ``run_publish``) so profile-only helpers don't leak into the push
+      list under ``--no-build``. They publish via ``extra_docker_images``.
+    - ``dev`` includes them. ``ImageBuilder`` builds every ``build:``
+      service regardless of profiles, so omitting them here left the
+      builder to synthesize its own legacy ref — which is how Kaizen's
+      profiled ``agent`` ended up in the dev registry while its
+      non-profiled siblings went to GHCR. Dev owns every image it
+      builds, so every image it builds belongs in this map. Callers that
+      must not *push* profiled services (``--no-build``) filter on
+      profiles themselves; that is a push-policy question, not an
+      identity one.
 
     ``image_basename`` (when present and non-empty) overrides
     ``extension_name`` for the legacy ``{registry}/{basename}-{svc}:{tag}``
@@ -134,7 +165,9 @@ def compute_canonical_refs(
     appgarden = appgarden_services or {}
     out: Dict[str, str] = {}
     for name, svc in (source_services or {}).items():
-        if "build" not in svc or svc.get("profiles"):
+        if "build" not in svc:
+            continue
+        if purpose == "publish" and svc.get("profiles"):
             continue
         # Presence-based: a service that is *declared* in the appgarden
         # compose, even as an empty mapping, is owned by the appgarden
@@ -146,7 +179,8 @@ def compute_canonical_refs(
         out[name] = _canonical_build_ref(
             lookup,
             name,
-            fallback_registry=registry,
+            purpose=purpose,
+            registry=registry,
             fallback_extension_name=extension_name,
             revision_tag=revision_tag,
             fallback_image_basename=image_basename,
@@ -158,21 +192,34 @@ def _canonical_build_ref(
     service: Optional[Dict[str, Any]],
     svc_name: str,
     *,
-    fallback_registry: str,
+    purpose: Purpose,
+    registry: str,
     fallback_extension_name: str,
     revision_tag: str,
     fallback_image_basename: Optional[str] = None,
 ) -> str:
     """Return the canonical registry image ref for a buildable service.
 
-    Reads ``image`` from *service*. When the declared ref names an
-    explicit registry host (``ghcr.io/...``, ``localhost:5000/...``),
-    the namespace is preserved and only the tag is rewritten to
-    *revision_tag*. Unqualified refs (``api:latest``,
-    ``my-org/api:1.0``) and missing/empty declarations fall back to the
-    legacy ``{fallback_registry}/{basename}-{svc_name}:{revision_tag}``
-    form — those would otherwise route ``docker push`` to Docker Hub
-    while the cluster registry expects the rewritten path.
+    Reads ``image`` from *service*. Behavior depends on *purpose* when
+    the declared ref names an explicit registry host (``ghcr.io/...``,
+    ``localhost:5000/...``):
+
+    - ``publish`` — namespace preserved verbatim, only the tag is
+      rewritten to *revision_tag*. The declared namespace is where this
+      image actually gets published (ENG-4909).
+    - ``dev`` — the registry host is replaced with *registry* (the
+      resolved cluster dev registry) and the declared **repository path
+      is preserved**, so ``ghcr.io/org/images/api:1.0`` builds and
+      pushes as ``{registry}/org/images/api:{revision_tag}``. Keeping the
+      repository path (rather than flattening to the legacy
+      ``{basename}-{svc}`` form) keeps two declared repos that share a
+      basename distinct, and makes the rewrite idempotent (ENG-8626).
+
+    Unqualified refs (``api:latest``, ``my-org/api:1.0``) and
+    missing/empty declarations fall back — under *both* purposes — to the
+    legacy ``{registry}/{basename}-{svc_name}:{revision_tag}`` form.
+    Those would otherwise route ``docker push`` to Docker Hub while the
+    cluster registry expects the rewritten path.
 
     ``fallback_image_basename`` (when truthy) overrides
     ``fallback_extension_name`` as the ``{basename}`` segment. This
@@ -180,7 +227,8 @@ def _canonical_build_ref(
     from its kamiwaza.json ``name`` (e.g. ``name=workroom-manager`` but
     images pushed as ``outcome-d563-workroom-manager-<svc>``) declare
     the override via ``image_basename`` in kamiwaza.json without
-    touching the manifest's primary identifier.
+    touching the manifest's primary identifier. It applies only to the
+    fallback form; a qualified declared ref already carries its identity.
 
     Shared by ``ComposeTransformer.transform_service``,
     ``_retag_appgarden_compose``, ``ImageBuilder.build``, and
@@ -191,7 +239,11 @@ def _canonical_build_ref(
     if isinstance(declared, str):
         stripped = declared.strip()
         if stripped and _looks_registry_qualified(stripped):
-            return _replace_image_tag(stripped, revision_tag)
+            if purpose == "publish":
+                return _replace_image_tag(stripped, revision_tag)
+            # dev: keep the repository identity, relocate the host.
+            _declared_registry, repository, _tag = _split_image_ref(stripped)
+            return f"{registry}/{repository}:{revision_tag}"
     # Strip whitespace so a malformed-but-truthy override (e.g. "   "
     # — caller forgot to normalize) doesn't synthesize a broken
     # `{registry}/   -svc:tag`. ExtensionDetector + MetadataValidator
@@ -202,7 +254,7 @@ def _canonical_build_ref(
         fallback_extension_name,
         fallback_image_basename=fallback_image_basename,
     )
-    return f"{fallback_registry}/{basename}-{svc_name}:{revision_tag}"
+    return f"{registry}/{basename}-{svc_name}:{revision_tag}"
 
 
 def _fallback_image_basename(
@@ -282,8 +334,9 @@ class ComposeTransformer:
         extension_name: str,
         revision_tag: str,
         registry: str,
+        *,
+        purpose: Purpose,
         image_basename: Optional[str] = None,
-        image_refs: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """Return a deployment-ready copy of *compose_data*.
 
@@ -295,14 +348,15 @@ class ComposeTransformer:
         5. Add resource limits if missing
         6. Remove ``extra_hosts``, ``container_name``, ``networks`` keys
 
+        *purpose* selects the image-destination policy for buildable
+        services — see :data:`Purpose`. It must match the purpose the
+        caller passed to ``compute_canonical_refs``, or the deployed
+        ``image:`` would name a ref the build/push side never produced.
+
         ``image_basename`` (when present) overrides ``extension_name`` as
         the prefix in the legacy ``{registry}/{basename}-{svc}:{tag}``
         fallback synthesis; see ``_canonical_build_ref`` for the
         precedence rules.
-
-        ``image_refs`` can override the computed image for buildable
-        services. The dev pipeline uses this when it needs to relocate a
-        declared publish registry ref into the cluster-local dev registry.
 
         Env-value ``${VAR}`` placeholders pass through unchanged. Callers
         shipping the result to a destination that does NOT perform its
@@ -311,7 +365,11 @@ class ComposeTransformer:
         """
         out = copy.deepcopy(compose_data)
 
-        # Drop services that have a profiles key (local-only services)
+        # Drop services that have a profiles key (local-only services).
+        # Note this is about what gets *deployed*: dev still builds and
+        # pushes profiled image-only services (Kaizen's agent, launched
+        # dynamically via AGENT_SERVER_IMAGE rather than by the operator),
+        # so they appear in the dev canonical-ref map but never here.
         services = out.get("services") or {}
         profiled = [name for name, svc in services.items() if svc.get("profiles")]
         for name in profiled:
@@ -324,8 +382,8 @@ class ComposeTransformer:
                 extension_name,
                 revision_tag,
                 registry,
+                purpose=purpose,
                 image_basename=image_basename,
-                image_ref=(image_refs or {}).get(svc_name),
             )
 
         # Remove top-level networks (platform manages networking)
@@ -340,8 +398,9 @@ class ComposeTransformer:
         extension_name: str,
         revision_tag: str,
         registry: str,
+        *,
+        purpose: Purpose,
         image_basename: Optional[str] = None,
-        image_ref: Optional[str] = None,
     ) -> Dict[str, Any]:
         svc = copy.deepcopy(service)
 
@@ -360,15 +419,18 @@ class ComposeTransformer:
         svc.pop("build", None)
 
         if had_build:
-            # The declared image's namespace is the canonical record of
-            # where this build's image lives in the registry; publish
-            # only owns the tag (stage suffix or --revision SHA). Fall
-            # back to the legacy {ext}-{svc} convention when no image
-            # is declared (auto-generated image fields).
-            svc["image"] = image_ref or _canonical_build_ref(
+            # Under publish, the declared image's namespace is the
+            # canonical record of where this build's image lives, and
+            # publish owns only the tag (stage suffix or --revision SHA).
+            # Under dev, the image is one we're building for this cluster,
+            # so it is relocated into the dev registry (ENG-8626). Either
+            # way, fall back to the legacy {ext}-{svc} convention when no
+            # image is declared (auto-generated image fields).
+            svc["image"] = _canonical_build_ref(
                 svc,
                 service_name,
-                fallback_registry=registry,
+                purpose=purpose,
+                registry=registry,
                 fallback_extension_name=extension_name,
                 revision_tag=revision_tag,
                 fallback_image_basename=image_basename,

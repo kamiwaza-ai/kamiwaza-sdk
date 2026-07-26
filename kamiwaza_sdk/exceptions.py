@@ -16,12 +16,12 @@ Hierarchy:
     KamiwazaError                       (base — status_code + body kwargs)
         APIError                        (legacy HTTP-bound error class)
             VectorDBUnavailableError
+            NotFoundError               (404 base)
+                DatasetNotFoundError
         AuthenticationError             (401)
         AuthorizationError              (403 base)
             NativeRealmRequiredError    (403 + endpoint_requires_native_realm)
             BrokeredUserNotAllowlistedError (403 + brokered_user_not_allowlisted)
-        NotFoundError                   (404 base)
-            DatasetNotFoundError
         ValidationError                 (400/422)
         TimeoutError
         NonAPIResponseError
@@ -106,8 +106,29 @@ class AuthorizationError(KamiwazaError):
     """
 
 
-class NotFoundError(KamiwazaError):
-    """Raised when a requested resource is not found (HTTP 404)."""
+class NotFoundError(APIError):
+    """Raised when a requested resource is not found (HTTP 404).
+
+    NotFoundError remains an APIError subclass so existing service-layer
+    ``except APIError`` fallback and translation paths continue to catch 404s.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        body: object | None = None,
+        response_text: str | None = None,
+        response_data: object | None = None,
+    ):
+        data = body if response_data is None else response_data
+        super().__init__(
+            message,
+            status_code=status_code,
+            response_text=response_text,
+            response_data=data,
+        )
 
 
 class DatasetNotFoundError(NotFoundError):
@@ -333,8 +354,8 @@ def error_for_response(status_code: int, body: Any, message: str) -> KamiwazaErr
             if isinstance(reason_value, str):
                 reason = reason_value
 
-    cls: type[KamiwazaError] = KamiwazaError
+    cls: type[KamiwazaError] = NotFoundError if status_code == 404 else KamiwazaError
     if reason is not None:
-        cls = _REASON_TO_EXCEPTION.get((status_code, reason), KamiwazaError)
+        cls = _REASON_TO_EXCEPTION.get((status_code, reason), cls)
 
     return cls(message, status_code=status_code, body=body)
