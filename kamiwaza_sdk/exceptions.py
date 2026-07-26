@@ -26,6 +26,11 @@ Hierarchy:
         TimeoutError
         NonAPIResponseError
         TransportNotSupportedError
+        FlightConfigurationError
+            InsecureFlightEndpointError
+        FlightTimeoutError
+        FlightUnavailableError
+        FlightIncompleteStreamError
         DeploymentFailedError              (also RuntimeError; terminal deploy failure)
         FederationPairTimeoutError      (503 + psk_propagation_timeout)
         MeshJobTimeoutError             (mesh job exceeded wall-clock)
@@ -153,6 +158,47 @@ class NonAPIResponseError(KamiwazaError):
 
 class TransportNotSupportedError(KamiwazaError):
     """Raised when a retrieval transport cannot satisfy the request."""
+
+
+class FlightConfigurationError(KamiwazaError):
+    """Raised when local Arrow Flight transport settings are unsafe or invalid."""
+
+
+class InsecureFlightEndpointError(FlightConfigurationError):
+    """Raised when plaintext Arrow Flight was not explicitly permitted."""
+
+
+class FlightTimeoutError(TimeoutError):
+    """An Arrow Flight transfer exceeded its configured end-to-end deadline."""
+
+    def __init__(self, message: str, *, timeout_seconds: float) -> None:
+        super().__init__(message)
+        self.timeout_seconds = timeout_seconds
+
+
+class FlightUnavailableError(KamiwazaError):
+    """An Arrow Flight endpoint could not be reached or stopped responding.
+
+    Raised by ``open_flight_stream`` when every endpoint in the
+    ``GrpcHandshake.endpoints`` list fails *before* streaming begins, or when
+    the selected endpoint becomes unavailable after delivery has begun.
+    Mid-stream failures are never retried or sent to another endpoint.
+    """
+
+
+class FlightIncompleteStreamError(KamiwazaError):
+    """A clean Flight EOF could not be confirmed as a completed retrieval job."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        job_id: str,
+        status: str | None,
+    ) -> None:
+        super().__init__(message)
+        self.job_id = job_id
+        self.status = status
 
 
 class DeploymentFailedError(KamiwazaError, RuntimeError):
