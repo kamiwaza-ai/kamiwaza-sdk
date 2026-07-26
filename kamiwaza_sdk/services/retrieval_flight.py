@@ -7,7 +7,8 @@ import json
 import math
 import os
 import time
-from typing import TYPE_CHECKING, Any, Iterator
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Generator, Iterator
 
 from ..exceptions import (
     FlightUnavailableError,
@@ -26,6 +27,11 @@ __all__ = ["FlightUnavailableError", "open_flight_stream"]
 _ENDPOINT_RETRY_ATTEMPTS = 3
 _ENDPOINT_RETRY_BACKOFFS = (0.5, 1.0)
 _DEFAULT_FLIGHT_TIMEOUT_SECONDS = 30.0
+
+
+@dataclass
+class _StreamState:
+    yielded: bool = False
 
 
 def _require_flight() -> Any:
@@ -151,38 +157,81 @@ def _iter_flight_stream(
     errors: list[str] = []
     final_exc: Exception | None = None
     for endpoint in handshake.endpoints:
-        yielded = False
-        last_exc: Exception | None = None
-        for attempt in range(_ENDPOINT_RETRY_ATTEMPTS):
-            client = None
-            try:
-                client = flight.connect(endpoint.location, **connect_kwargs)
-                call_options = flight.FlightCallOptions(timeout=timeout_seconds)
-                reader = client.do_get(ticket, options=call_options)
-                for chunk in reader:
-                    if chunk.data is None:
-                        continue
-                    yielded = True
-                    yield chunk.data
-                return
-            except Exception as exc:  # noqa: BLE001
-                if yielded:
-                    # Mid-stream failure: re-raise to avoid re-delivering data
-                    # from offset 0 on the next endpoint (silent duplication).
-                    raise
-                last_exc = exc
-                if attempt < _ENDPOINT_RETRY_ATTEMPTS - 1:
-                    time.sleep(
-                        _ENDPOINT_RETRY_BACKOFFS[
-                            min(attempt, len(_ENDPOINT_RETRY_BACKOFFS) - 1)
-                        ]
-                    )
-            finally:
-                if client is not None:
-                    with contextlib.suppress(Exception):
-                        client.close()
+        last_exc = yield from _iter_endpoint(
+            flight,
+            endpoint.location,
+            ticket,
+            connect_kwargs,
+            timeout_seconds,
+        )
+        if last_exc is None:
+            return
         errors.append(f"{endpoint.location}: {last_exc}")
         final_exc = last_exc
     raise FlightUnavailableError(
         "No Flight endpoint reachable: " + "; ".join(errors)
     ) from final_exc
+
+
+def _iter_endpoint(
+    flight: Any,
+    location: str,
+    ticket: Any,
+    connect_kwargs: dict[str, Any],
+    timeout_seconds: float,
+) -> Generator["pa.RecordBatch", None, Exception | None]:
+    state = _StreamState()
+    last_exc: Exception | None = None
+    for attempt in range(_ENDPOINT_RETRY_ATTEMPTS):
+        try:
+            yield from _iter_flight_attempt(
+                flight,
+                location,
+                ticket,
+                connect_kwargs,
+                timeout_seconds,
+                state,
+            )
+            return None
+        except Exception as exc:  # noqa: BLE001
+            if state.yielded:
+                # Never retry or fall back after delivering data: doing so
+                # would silently re-deliver the stream from offset zero.
+                raise
+            last_exc = exc
+            _sleep_before_retry(attempt)
+    return last_exc
+
+
+def _iter_flight_attempt(
+    flight: Any,
+    location: str,
+    ticket: Any,
+    connect_kwargs: dict[str, Any],
+    timeout_seconds: float,
+    state: _StreamState,
+) -> Iterator["pa.RecordBatch"]:
+    client = flight.connect(location, **connect_kwargs)
+    try:
+        call_options = flight.FlightCallOptions(timeout=timeout_seconds)
+        reader = client.do_get(ticket, options=call_options)
+        yield from _iter_record_batches(reader, state)
+    finally:
+        with contextlib.suppress(Exception):
+            client.close()
+
+
+def _iter_record_batches(
+    reader: Any, state: _StreamState
+) -> Iterator["pa.RecordBatch"]:
+    for chunk in reader:
+        if chunk.data is not None:
+            state.yielded = True
+            yield chunk.data
+
+
+def _sleep_before_retry(attempt: int) -> None:
+    if attempt >= _ENDPOINT_RETRY_ATTEMPTS - 1:
+        return
+    backoff_index = min(attempt, len(_ENDPOINT_RETRY_BACKOFFS) - 1)
+    time.sleep(_ENDPOINT_RETRY_BACKOFFS[backoff_index])
