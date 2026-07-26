@@ -1,26 +1,34 @@
 """Arrow Flight consumption for retrieval jobs (requires kamiwaza-sdk[flight])."""
+
 from __future__ import annotations
 
 import contextlib
 import json
+import math
+import os
 import time
-from typing import TYPE_CHECKING, Iterator, Optional
+from typing import TYPE_CHECKING, Any, Iterator
 
-from ..exceptions import FlightUnavailableError, KamiwazaError, TransportNotSupportedError
+from ..exceptions import (
+    FlightUnavailableError,
+    KamiwazaError,
+    TransportNotSupportedError,
+)
 from ..schemas.retrieval import GrpcHandshake
 
 if TYPE_CHECKING:
     import pyarrow as pa  # type: ignore[import-untyped]
 
-# Re-export so existing `from .retrieval_flight import FlightUnavailableError` keeps working.
+# Public re-export for callers that import transport errors from this module.
 __all__ = ["FlightUnavailableError", "open_flight_stream"]
 
 # Per-endpoint pre-stream retry settings.
 _ENDPOINT_RETRY_ATTEMPTS = 3
 _ENDPOINT_RETRY_BACKOFFS = (0.5, 1.0)
+_DEFAULT_FLIGHT_TIMEOUT_SECONDS = 30.0
 
 
-def _require_flight():
+def _require_flight() -> Any:
     try:
         import pyarrow.flight as flight  # type: ignore[import-untyped]
 
@@ -35,9 +43,10 @@ def open_flight_stream(
     handshake: GrpcHandshake,
     job_id: str,
     *,
-    ca_cert_path: Optional[str] = None,
-    tls_root_certs: Optional[bytes] = None,
-    override_hostname: Optional[str] = None,
+    ca_cert_path: str | os.PathLike[str] | None = None,
+    tls_root_certs: bytes | None = None,
+    override_hostname: str | None = None,
+    timeout_seconds: float = _DEFAULT_FLIGHT_TIMEOUT_SECONDS,
 ) -> Iterator["pa.RecordBatch"]:
     """Yield Arrow record batches for a retrieval job handshake.
 
@@ -62,6 +71,8 @@ def open_flight_stream(
         ca_cert_path: Path to a PEM CA bundle for TLS verification.
         tls_root_certs: Raw PEM bytes for TLS; takes precedence over ca_cert_path.
         override_hostname: Override the TLS SNI hostname (useful for dev/testing).
+        timeout_seconds: Per-attempt deadline for the Arrow Flight ``do_get``
+            call, including stream reads.
 
     Yields:
         Arrow RecordBatch objects streamed from the Flight server.
@@ -75,9 +86,32 @@ def open_flight_stream(
         Exception: The original exception when a failure occurs mid-stream
             (after at least one batch has been yielded).
         KamiwazaError: When pyarrow is not installed.
+        ValueError: When ``timeout_seconds`` is not finite and positive.
     """
-    # Early validation — performed before pyarrow import so callers without
-    # pyarrow still get clean errors for obviously-wrong handshakes.
+    _validate_handshake(handshake)
+    _validate_timeout(timeout_seconds)
+
+    flight = _require_flight()
+    tls_root_certs = _load_tls_root_certs(tls_root_certs, ca_cert_path)
+    ticket = flight.Ticket(
+        json.dumps({"job_id": job_id, "token": handshake.token}).encode()
+    )
+    connect_kwargs: dict[str, Any] = {}
+    if tls_root_certs is not None:
+        connect_kwargs["tls_root_certs"] = tls_root_certs
+    if override_hostname:
+        connect_kwargs["override_hostname"] = override_hostname
+
+    return _iter_flight_stream(
+        flight,
+        handshake,
+        ticket,
+        connect_kwargs,
+        timeout_seconds,
+    )
+
+
+def _validate_handshake(handshake: GrpcHandshake) -> None:
     if handshake.protocol and handshake.protocol != "arrow-flight":
         raise TransportNotSupportedError(
             f"Unsupported Flight protocol: {handshake.protocol!r}; "
@@ -88,32 +122,46 @@ def open_flight_stream(
             "Handshake advertised no Flight endpoints (server-side configuration issue)"
         )
 
-    flight = _require_flight()
 
-    if tls_root_certs is None and ca_cert_path:
+def _validate_timeout(timeout_seconds: float) -> None:
+    if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+        raise ValueError("timeout_seconds must be a finite positive number")
+
+
+def _load_tls_root_certs(
+    tls_root_certs: bytes | None,
+    ca_cert_path: str | os.PathLike[str] | None,
+) -> bytes | None:
+    if tls_root_certs is not None or ca_cert_path is None:
+        return tls_root_certs
+    try:
         with open(ca_cert_path, "rb") as fh:
-            tls_root_certs = fh.read()
+            return fh.read()
+    except OSError as exc:
+        raise KamiwazaError(f"Unable to read Flight CA bundle: {ca_cert_path}") from exc
 
-    ticket = flight.Ticket(
-        json.dumps({"job_id": job_id, "token": handshake.token}).encode()
-    )
 
-    connect_kwargs: dict = {}
-    if tls_root_certs is not None:
-        connect_kwargs["tls_root_certs"] = tls_root_certs
-    if override_hostname:
-        connect_kwargs["override_hostname"] = override_hostname
-
+def _iter_flight_stream(
+    flight: Any,
+    handshake: GrpcHandshake,
+    ticket: Any,
+    connect_kwargs: dict[str, Any],
+    timeout_seconds: float,
+) -> Iterator["pa.RecordBatch"]:
     errors: list[str] = []
+    final_exc: Exception | None = None
     for endpoint in handshake.endpoints:
         yielded = False
-        last_exc: Optional[Exception] = None
+        last_exc: Exception | None = None
         for attempt in range(_ENDPOINT_RETRY_ATTEMPTS):
             client = None
             try:
                 client = flight.connect(endpoint.location, **connect_kwargs)
-                reader = client.do_get(ticket)
+                call_options = flight.FlightCallOptions(timeout=timeout_seconds)
+                reader = client.do_get(ticket, options=call_options)
                 for chunk in reader:
+                    if chunk.data is None:
+                        continue
                     yielded = True
                     yield chunk.data
                 return
@@ -134,6 +182,7 @@ def open_flight_stream(
                     with contextlib.suppress(Exception):
                         client.close()
         errors.append(f"{endpoint.location}: {last_exc}")
+        final_exc = last_exc
     raise FlightUnavailableError(
         "No Flight endpoint reachable: " + "; ".join(errors)
-    )
+    ) from final_exc

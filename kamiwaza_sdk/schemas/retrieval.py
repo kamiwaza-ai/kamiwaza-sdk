@@ -65,6 +65,13 @@ class GrpcHandshake(BaseModel):
     expires_at: datetime
     protocol: str = "arrow-flight"
 
+    @property
+    def endpoint(self) -> Optional[str]:
+        """Return the first endpoint location for legacy SDK callers."""
+        if not self.endpoints:
+            return None
+        return self.endpoints[0].location
+
     @model_validator(mode="before")
     @classmethod
     def _lift_legacy_endpoint(cls, data: Any) -> Any:

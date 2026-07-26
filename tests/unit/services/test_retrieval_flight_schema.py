@@ -4,9 +4,11 @@ This module intentionally has NO ``pytest.importorskip("pyarrow.flight")`` so
 that schema, exception, and guard tests run regardless of whether pyarrow is
 installed.
 """
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -60,6 +62,7 @@ def test_grpchandshake_legacy_endpoint_lifted():
     )
     assert len(hs.endpoints) == 1
     assert hs.endpoints[0].location == "0.0.0.0:6130"
+    assert hs.endpoint == "0.0.0.0:6130"
 
 
 def test_grpchandshake_missing_both_yields_empty():
@@ -70,6 +73,7 @@ def test_grpchandshake_missing_both_yields_empty():
         {"token": "tok", "expires_at": "2099-01-01T00:00:00Z"}
     )
     assert hs.endpoints == []
+    assert hs.endpoint is None
 
 
 # ---------------------------------------------------------------------------
@@ -94,7 +98,7 @@ def test_flight_unavailable_error_importable_from_exceptions():
 def test_wrong_protocol_raises_transport_not_supported():
     """open_flight_stream must raise TransportNotSupportedError for non-arrow-flight protocol."""
     from kamiwaza_sdk.exceptions import TransportNotSupportedError
-    from kamiwaza_sdk.schemas.retrieval import FlightEndpoint, GrpcHandshake
+    from kamiwaza_sdk.schemas.retrieval import GrpcHandshake
     from kamiwaza_sdk.services.retrieval_flight import open_flight_stream
 
     hs = GrpcHandshake.model_validate(
@@ -106,7 +110,7 @@ def test_wrong_protocol_raises_transport_not_supported():
         }
     )
     with pytest.raises(TransportNotSupportedError, match="kamiwaza.retrieval.v1"):
-        list(open_flight_stream(hs, job_id="00000000-0000-0000-0000-000000000001"))
+        open_flight_stream(hs, job_id="00000000-0000-0000-0000-000000000001")
 
 
 # ---------------------------------------------------------------------------
@@ -125,7 +129,25 @@ def test_empty_endpoints_raises_flight_unavailable():
     )
     assert hs.endpoints == []
     with pytest.raises(FlightUnavailableError, match="no Flight endpoints"):
-        list(open_flight_stream(hs, job_id="00000000-0000-0000-0000-000000000002"))
+        open_flight_stream(hs, job_id="00000000-0000-0000-0000-000000000002")
+
+
+def test_invalid_timeout_raises_eagerly():
+    from kamiwaza_sdk.schemas.retrieval import FlightEndpoint, GrpcHandshake
+    from kamiwaza_sdk.services.retrieval_flight import open_flight_stream
+
+    hs = GrpcHandshake(
+        endpoints=[FlightEndpoint(location="grpc://host:6130")],
+        token="tok",
+        expires_at="2099-01-01T00:00:00Z",
+    )
+
+    with pytest.raises(ValueError, match="finite positive"):
+        open_flight_stream(
+            hs,
+            job_id="00000000-0000-0000-0000-000000000003",
+            timeout_seconds=0,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -223,9 +245,9 @@ def test_flight_batches_tls_no_bridge_when_verify_is_bool():
         ):
             list(svc.flight_batches(job))
 
-        assert "ca_cert_path" not in captured, (
-            f"ca_cert_path must not be injected when verify={verify_value!r}"
-        )
+        assert (
+            "ca_cert_path" not in captured
+        ), f"ca_cert_path must not be injected when verify={verify_value!r}"
 
 
 def test_flight_batches_tls_explicit_wins_over_session():
@@ -272,3 +294,81 @@ def test_flight_batches_tls_explicit_wins_over_session():
         list(svc.flight_batches(job, ca_cert_path="/explicit/ca.pem"))
 
     assert captured.get("ca_cert_path") == "/explicit/ca.pem"
+
+
+def test_flight_batches_tls_bridge_accepts_pathlike():
+    from kamiwaza_sdk.schemas.retrieval import (
+        DatasetDescriptor,
+        FlightEndpoint,
+        GrpcHandshake,
+        RetrievalJob,
+        TransportType,
+    )
+    from kamiwaza_sdk.services.retrieval import RetrievalService
+
+    fake_session = MagicMock()
+    fake_session.verify = Path("/etc/ssl/certs/ca-bundle.crt")
+    fake_client = MagicMock()
+    fake_client.session = fake_session
+    svc = RetrievalService(fake_client)
+    job = RetrievalJob(
+        job_id="00000000-0000-0000-0000-000000000014",
+        transport=TransportType.GRPC,
+        status="ready",
+        dataset=DatasetDescriptor(urn="urn:li:dataset:test", platform="test"),
+        grpc=GrpcHandshake(
+            endpoints=[FlightEndpoint(location="grpc://host:6130")],
+            token="tok",
+            expires_at=datetime.now(timezone.utc),
+        ),
+    )
+    captured: dict = {}
+
+    def fake_open_flight_stream(hs, job_id, **kwargs):
+        captured.update(kwargs)
+        return iter([])
+
+    with patch(
+        "kamiwaza_sdk.services.retrieval_flight.open_flight_stream",
+        fake_open_flight_stream,
+    ):
+        list(svc.flight_batches(job))
+
+    assert captured["ca_cert_path"] == "/etc/ssl/certs/ca-bundle.crt"
+
+
+def test_flight_batches_forwards_timeout():
+    from kamiwaza_sdk.schemas.retrieval import (
+        DatasetDescriptor,
+        FlightEndpoint,
+        GrpcHandshake,
+        RetrievalJob,
+        TransportType,
+    )
+    from kamiwaza_sdk.services.retrieval import RetrievalService
+
+    svc = RetrievalService(MagicMock(session=None))
+    job = RetrievalJob(
+        job_id="00000000-0000-0000-0000-000000000015",
+        transport=TransportType.GRPC,
+        status="ready",
+        dataset=DatasetDescriptor(urn="urn:li:dataset:test", platform="test"),
+        grpc=GrpcHandshake(
+            endpoints=[FlightEndpoint(location="grpc://host:6130")],
+            token="tok",
+            expires_at=datetime.now(timezone.utc),
+        ),
+    )
+    captured: dict = {}
+
+    def fake_open_flight_stream(hs, job_id, **kwargs):
+        captured.update(kwargs)
+        return iter([])
+
+    with patch(
+        "kamiwaza_sdk.services.retrieval_flight.open_flight_stream",
+        fake_open_flight_stream,
+    ):
+        list(svc.flight_batches(job, timeout_seconds=45))
+
+    assert captured["timeout_seconds"] == 45

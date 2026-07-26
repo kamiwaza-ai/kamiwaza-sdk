@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING, Iterator, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Iterator, Optional, Sequence
+
+from pydantic import SecretStr
 
 from ..exceptions import (
     APIError,
@@ -13,8 +16,6 @@ from ..exceptions import (
     DatasetNotFoundError,
     TransportNotSupportedError,
 )
-from .base_service import BaseService
-from pydantic import SecretStr
 from ..schemas.retrieval import (
     GrpcHandshake,
     InlineData,
@@ -25,9 +26,12 @@ from ..schemas.retrieval import (
     TransportType,
 )
 from ..utils import reveal_secrets
+from .base_service import BaseService
 
 if TYPE_CHECKING:
     import pyarrow as pa  # type: ignore[import-untyped]
+
+_DEFAULT_FLIGHT_TIMEOUT_SECONDS = 30.0
 
 
 @dataclass
@@ -92,7 +96,15 @@ class RetrievalService(BaseService):
         """Backward-compatible alias for :meth:`stream_events`."""
         return self.stream_events(job_id)
 
-    def flight_batches(self, job: RetrievalJob, **tls_kwargs) -> "Iterator[pa.RecordBatch]":
+    def flight_batches(
+        self,
+        job: RetrievalJob,
+        *,
+        ca_cert_path: str | os.PathLike[str] | None = None,
+        tls_root_certs: bytes | None = None,
+        override_hostname: str | None = None,
+        timeout_seconds: float = _DEFAULT_FLIGHT_TIMEOUT_SECONDS,
+    ) -> "Iterator[pa.RecordBatch]":
         """Stream Arrow record batches for a grpc-transport retrieval job.
 
         Thin wrapper around :func:`kamiwaza_sdk.services.retrieval_flight.open_flight_stream`
@@ -107,8 +119,11 @@ class RetrievalService(BaseService):
         Args:
             job: A ``RetrievalJob`` whose ``transport`` is ``grpc`` and which
                 carries a populated ``grpc`` handshake.
-            **tls_kwargs: Forwarded verbatim to ``open_flight_stream``
-                (``ca_cert_path``, ``tls_root_certs``, ``override_hostname``).
+            ca_cert_path: Path to a PEM CA bundle for TLS verification.
+            tls_root_certs: Raw PEM CA bytes; takes precedence over
+                ``ca_cert_path``.
+            override_hostname: Override the TLS SNI hostname.
+            timeout_seconds: Per-attempt Arrow Flight call deadline.
 
         Returns:
             An iterator of ``pyarrow.RecordBatch`` objects.
@@ -125,10 +140,22 @@ class RetrievalService(BaseService):
         session = getattr(self.client, "session", None)
         if session is not None:
             verify = getattr(session, "verify", None)
-            if isinstance(verify, str):
-                tls_kwargs.setdefault("ca_cert_path", verify)
+            if (
+                ca_cert_path is None
+                and tls_root_certs is None
+                and isinstance(verify, (str, os.PathLike))
+            ):
+                ca_cert_path = os.fspath(verify)
 
-        return open_flight_stream(job.grpc, job_id=job.job_id, **tls_kwargs)
+        flight_options: dict[str, Any] = {"timeout_seconds": timeout_seconds}
+        if ca_cert_path is not None:
+            flight_options["ca_cert_path"] = ca_cert_path
+        if tls_root_certs is not None:
+            flight_options["tls_root_certs"] = tls_root_certs
+        if override_hostname is not None:
+            flight_options["override_hostname"] = override_hostname
+
+        return open_flight_stream(job.grpc, job_id=job.job_id, **flight_options)
 
     def create_inline_job(
         self,
@@ -142,7 +169,11 @@ class RetrievalService(BaseService):
             dataset_urn=dataset_urn,
             transport="inline",
             format_hint=format_hint,
-            credential_override=credential_override,
+            credential_override=(
+                SecretStr(credential_override)
+                if credential_override is not None
+                else None
+            ),
             options=options or None,
         )
         return self.create_job(request)

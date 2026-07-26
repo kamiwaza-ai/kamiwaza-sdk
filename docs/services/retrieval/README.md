@@ -84,6 +84,15 @@ When the Kamiwaza client was constructed with `verify="/path/to/ca-bundle.pem"`
 (or `ca_bundle=...`), that path is automatically forwarded to the Flight
 transport so you don't have to pass it again.
 
+Each endpoint attempt has a 30-second Arrow Flight call deadline by default,
+including stream reads. Set `timeout_seconds` to a larger value for datasets
+that are expected to take longer:
+
+```python
+for batch in client.retrieval.flight_batches(job, timeout_seconds=300):
+    process(batch)
+```
+
 ### Mixed-version clusters
 
 Older Kamiwaza server versions (pre-0.8) advertise `"protocol":
@@ -106,7 +115,7 @@ except TransportNotSupportedError as exc:
 ### Mid-stream failure semantics
 
 Arrow Flight endpoints are *connection alternatives*, not resume points.  The
-SDK retries each endpoint up to three times (with short backoffs) for
+SDK attempts each endpoint up to three times (with short backoffs) for
 pre-stream failures such as connection refused or TLS handshake errors.  Once
 at least one batch has been delivered, any subsequent error propagates
 immediately — the SDK never falls back to another endpoint mid-stream, because

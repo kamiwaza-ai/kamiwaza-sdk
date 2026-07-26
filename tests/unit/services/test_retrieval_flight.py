@@ -3,6 +3,7 @@
 Pyarrow-free tests live in test_retrieval_flight_schema.py so they run even
 when pyarrow is absent.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -60,7 +61,9 @@ def test_open_flight_stream_tries_endpoints_in_order(monkeypatch):
         return FakeClient(ok=(location == "grpc://good:6130"))
 
     monkeypatch.setattr("pyarrow.flight.connect", fake_connect)
-    monkeypatch.setattr("kamiwaza_sdk.services.retrieval_flight.time.sleep", lambda _: None)
+    monkeypatch.setattr(
+        "kamiwaza_sdk.services.retrieval_flight.time.sleep", lambda _: None
+    )
     hs = GrpcHandshake(
         endpoints=[
             FlightEndpoint(location="grpc://bad:6130"),
@@ -82,14 +85,18 @@ def test_all_endpoints_fail_raises(monkeypatch):
         raise Exception(f"conn refused at {location}")
 
     monkeypatch.setattr("pyarrow.flight.connect", fake_connect)
-    monkeypatch.setattr("kamiwaza_sdk.services.retrieval_flight.time.sleep", lambda _: None)
+    monkeypatch.setattr(
+        "kamiwaza_sdk.services.retrieval_flight.time.sleep", lambda _: None
+    )
     hs = GrpcHandshake(
         endpoints=[FlightEndpoint(location="grpc://dead:6130")],
         token="t",
         expires_at=datetime.now(timezone.utc),
     )
-    with pytest.raises(FlightUnavailableError):
+    with pytest.raises(FlightUnavailableError) as exc_info:
         list(open_flight_stream(hs, job_id="00000000-0000-0000-0000-000000000002"))
+    assert isinstance(exc_info.value.__cause__, Exception)
+    assert "conn refused at grpc://dead:6130" in str(exc_info.value.__cause__)
 
 
 def test_midstream_failure_propagates_not_fallback(monkeypatch):
@@ -130,7 +137,9 @@ def test_midstream_failure_propagates_not_fallback(monkeypatch):
         list(open_flight_stream(hs, job_id="00000000-0000-0000-0000-000000000003"))
 
     # The second endpoint must NOT have been tried
-    assert second_connect_called == [], "fallback to second endpoint must not happen after mid-stream failure"
+    assert (
+        second_connect_called == []
+    ), "fallback to second endpoint must not happen after mid-stream failure"
 
 
 def test_per_endpoint_retry_on_prestream_failure(monkeypatch):
@@ -162,7 +171,9 @@ def test_per_endpoint_retry_on_prestream_failure(monkeypatch):
 
     monkeypatch.setattr("pyarrow.flight.connect", fake_connect)
     # Suppress sleeps to keep the test fast.
-    monkeypatch.setattr("kamiwaza_sdk.services.retrieval_flight.time.sleep", lambda _: None)
+    monkeypatch.setattr(
+        "kamiwaza_sdk.services.retrieval_flight.time.sleep", lambda _: None
+    )
 
     hs = GrpcHandshake(
         endpoints=[
@@ -178,3 +189,73 @@ def test_per_endpoint_retry_on_prestream_failure(monkeypatch):
     assert connect_calls.count("grpc://flaky:6130") == _ENDPOINT_RETRY_ATTEMPTS
     # Good endpoint should succeed on the first attempt.
     assert connect_calls.count("grpc://good:6130") == 1
+
+
+def test_do_get_receives_call_timeout(monkeypatch):
+    observed_timeouts: list[float] = []
+
+    class FakeReader:
+        def __iter__(self):
+            return iter([])
+
+    class FakeClient:
+        def do_get(self, ticket, options=None):
+            observed_timeouts.append(options.timeout)
+            return FakeReader()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        "pyarrow.flight.connect", lambda *_args, **_kwargs: FakeClient()
+    )
+    hs = GrpcHandshake(
+        endpoints=[FlightEndpoint(location="grpc://host:6130")],
+        token="t",
+        expires_at=datetime.now(timezone.utc),
+    )
+
+    list(
+        open_flight_stream(
+            hs,
+            job_id="00000000-0000-0000-0000-000000000005",
+            timeout_seconds=12.5,
+        )
+    )
+
+    assert observed_timeouts == [12.5]
+
+
+def test_metadata_only_chunks_are_not_yielded(monkeypatch):
+    class FakeChunk:
+        def __init__(self, data):
+            self.data = data
+
+    class FakeReader:
+        def __iter__(self):
+            return iter([FakeChunk(None), FakeChunk("batch-0")])
+
+    class FakeClient:
+        def do_get(self, ticket, options=None):
+            return FakeReader()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        "pyarrow.flight.connect", lambda *_args, **_kwargs: FakeClient()
+    )
+    hs = GrpcHandshake(
+        endpoints=[FlightEndpoint(location="grpc://host:6130")],
+        token="t",
+        expires_at=datetime.now(timezone.utc),
+    )
+
+    batches = list(
+        open_flight_stream(
+            hs,
+            job_id="00000000-0000-0000-0000-000000000006",
+        )
+    )
+
+    assert batches == ["batch-0"]

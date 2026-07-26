@@ -155,6 +155,16 @@ class TransportNotSupportedError(KamiwazaError):
     """Raised when a retrieval transport cannot satisfy the request."""
 
 
+class FlightUnavailableError(KamiwazaError):
+    """No advertised Arrow Flight endpoint could be reached.
+
+    Raised by ``open_flight_stream`` when every endpoint in the
+    ``GrpcHandshake.endpoints`` list fails *before* streaming begins.
+    Once at least one batch has been yielded, mid-stream failures propagate
+    as the original exception rather than falling back to the next endpoint.
+    """
+
+
 class DeploymentFailedError(KamiwazaError, RuntimeError):
     """A model deployment reached a terminal failure status (ENG-6530).
 
@@ -288,16 +298,6 @@ class GatePackageUninstallBlockedError(KamiwazaError):
     ``Dataset.gate``) reference a classpath from the package. Customer must
     unbind first. Body carries the blocking bindings."""
 
-
-
-class FlightUnavailableError(KamiwazaError):
-    """No advertised Arrow Flight endpoint could be reached.
-
-    Raised by ``open_flight_stream`` when every endpoint in the
-    ``GrpcHandshake.endpoints`` list fails *before* streaming begins.
-    Once at least one batch has been yielded, mid-stream failures propagate
-    as the original exception rather than falling back to the next endpoint.
-    """
 
 class GatePackageNotFoundError(NotFoundError):
     """404 with ``detail.reason == "gate_package_not_found"`` — GET/PUT/DELETE
