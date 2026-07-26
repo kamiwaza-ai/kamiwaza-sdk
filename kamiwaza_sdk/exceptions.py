@@ -177,12 +177,12 @@ class FlightTimeoutError(TimeoutError):
 
 
 class FlightUnavailableError(KamiwazaError):
-    """No advertised Arrow Flight endpoint could be reached.
+    """An Arrow Flight endpoint could not be reached or stopped responding.
 
     Raised by ``open_flight_stream`` when every endpoint in the
-    ``GrpcHandshake.endpoints`` list fails *before* streaming begins.
-    Once at least one batch has been yielded, mid-stream failures propagate
-    as the original exception rather than falling back to the next endpoint.
+    ``GrpcHandshake.endpoints`` list fails *before* streaming begins, or when
+    the selected endpoint becomes unavailable after delivery has begun.
+    Mid-stream failures are never retried or sent to another endpoint.
     """
 
 

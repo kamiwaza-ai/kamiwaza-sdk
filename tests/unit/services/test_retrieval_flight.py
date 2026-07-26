@@ -284,7 +284,7 @@ def test_unavailable_after_first_batch_does_not_retry(monkeypatch):
 
     monkeypatch.setattr("pyarrow.flight.connect", fake_connect)
 
-    with pytest.raises(flight.FlightUnavailableError) as exc_info:
+    with pytest.raises(FlightUnavailableError) as exc_info:
         list(
             open_flight_stream(
                 _handshake(
@@ -295,8 +295,86 @@ def test_unavailable_after_first_batch_does_not_retry(monkeypatch):
             )
         )
 
-    assert exc_info.value is original_error
+    assert exc_info.value.__cause__ is original_error
+    assert "after delivering a batch" in str(exc_info.value)
     assert calls == ["grpc+tls://first:6130"]
+
+
+def test_consumed_token_auth_rejection_preserves_unavailable_error(monkeypatch):
+    calls: list[str] = []
+    unavailable = flight.FlightUnavailableError("stream failed before first batch")
+    unauthenticated = flight.FlightUnauthenticatedError("token already consumed")
+
+    def fake_connect(location, **kwargs):
+        calls.append(location)
+        if len(calls) == 1:
+            raise unavailable
+        raise unauthenticated
+
+    monkeypatch.setattr("pyarrow.flight.connect", fake_connect)
+    monkeypatch.setattr(
+        "kamiwaza_sdk.services.retrieval_flight.time.sleep", lambda _: None
+    )
+
+    with pytest.raises(FlightUnavailableError) as exc_info:
+        list(
+            open_flight_stream(
+                _handshake("grpc+tls://host:6130"),
+                job_id="job",
+            )
+        )
+
+    assert exc_info.value.__cause__ is unavailable
+    assert "single-use token may have been consumed" in str(exc_info.value)
+    assert calls == ["grpc+tls://host:6130", "grpc+tls://host:6130"]
+
+
+def test_deadline_is_shared_across_retries(monkeypatch):
+    calls: list[str] = []
+    observed_timeouts: list[float] = []
+    now = [100.0]
+
+    class Client:
+        def do_get(self, ticket, options=None):
+            observed_timeouts.append(options.timeout)
+            now[0] += 3.0
+            raise flight.FlightUnavailableError("temporarily unavailable")
+
+        def close(self):
+            pass
+
+    def fake_connect(location, **kwargs):
+        calls.append(location)
+        return Client()
+
+    def fake_sleep(delay):
+        now[0] += delay
+
+    monkeypatch.setattr("pyarrow.flight.connect", fake_connect)
+    monkeypatch.setattr(
+        "kamiwaza_sdk.services.retrieval_flight.time.monotonic",
+        lambda: now[0],
+    )
+    monkeypatch.setattr(
+        "kamiwaza_sdk.services.retrieval_flight.time.sleep",
+        fake_sleep,
+    )
+
+    with pytest.raises(FlightTimeoutError) as exc_info:
+        list(
+            open_flight_stream(
+                _handshake(
+                    "grpc+tls://first:6130",
+                    "grpc+tls://second:6130",
+                ),
+                job_id="job",
+                timeout_seconds=5,
+            )
+        )
+
+    assert exc_info.value.timeout_seconds == 5
+    assert observed_timeouts == [5.0, 1.5]
+    assert calls == ["grpc+tls://first:6130", "grpc+tls://first:6130"]
 
 
 def test_do_get_receives_one_hour_default_and_connect_keepalives(monkeypatch):
@@ -319,7 +397,7 @@ def test_do_get_receives_one_hour_default_and_connect_keepalives(monkeypatch):
 
     list(open_flight_stream(_handshake("grpc+tls://host:6130"), job_id="job"))
 
-    assert observed_timeouts == [3600.0]
+    assert observed_timeouts == pytest.approx([3600.0], abs=0.01)
     assert observed_options == [
         [
             ("grpc.keepalive_time_ms", 30_000),
@@ -375,7 +453,7 @@ def test_custom_timeout_reaches_do_get(monkeypatch):
         )
     )
 
-    assert observed_timeouts == [12.5]
+    assert observed_timeouts == pytest.approx([12.5], abs=0.01)
 
 
 def test_metadata_only_chunks_are_not_yielded(monkeypatch):
@@ -407,3 +485,71 @@ def test_metadata_only_chunks_are_not_yielded(monkeypatch):
     )
 
     assert batches == ["batch-0"]
+
+
+def test_early_close_cancels_reader_then_closes_client(monkeypatch):
+    cleanup: list[str] = []
+
+    class Chunk:
+        data = "batch-0"
+
+    class Reader:
+        def __iter__(self):
+            yield Chunk()
+            yield Chunk()
+
+        def cancel(self):
+            cleanup.append("reader.cancel")
+
+    class Client:
+        def do_get(self, ticket, options=None):
+            return Reader()
+
+        def close(self):
+            cleanup.append("client.close")
+
+    monkeypatch.setattr(
+        "pyarrow.flight.connect",
+        lambda *_args, **_kwargs: Client(),
+    )
+    batches = open_flight_stream(
+        _handshake("grpc+tls://host:6130"),
+        job_id="job",
+    )
+
+    assert next(batches) == "batch-0"
+    batches.close()
+
+    assert cleanup == ["reader.cancel", "client.close"]
+
+
+def test_natural_exhaustion_closes_without_cancelling_reader(monkeypatch):
+    cleanup: list[str] = []
+
+    class Reader:
+        def __iter__(self):
+            return iter(())
+
+        def cancel(self):
+            cleanup.append("reader.cancel")
+
+    class Client:
+        def do_get(self, ticket, options=None):
+            return Reader()
+
+        def close(self):
+            cleanup.append("client.close")
+
+    monkeypatch.setattr(
+        "pyarrow.flight.connect",
+        lambda *_args, **_kwargs: Client(),
+    )
+
+    list(
+        open_flight_stream(
+            _handshake("grpc+tls://host:6130"),
+            job_id="job",
+        )
+    )
+
+    assert cleanup == ["client.close"]

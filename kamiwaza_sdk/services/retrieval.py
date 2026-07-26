@@ -68,18 +68,26 @@ class RetrievalService(BaseService):
         """Create a retrieval job and normalise the transport handling."""
         job = self.create_job(request)
         if job.transport == TransportType.INLINE:
-            if not job.inline:
-                raise TransportNotSupportedError("Inline transport returned no payload")
-            return RetrievalResult(job=job, inline=job.inline)
+            return self._inline_result(job)
         if job.transport == TransportType.SSE:
             return RetrievalResult(job=job, stream=self.stream_events(job.job_id))
         if job.transport == TransportType.GRPC:
-            if not job.grpc:
-                raise TransportNotSupportedError(
-                    "gRPC transport returned no Flight handshake"
-                )
-            return RetrievalResult(job=job, grpc=job.grpc)
+            return self._grpc_result(job)
         raise TransportNotSupportedError(f"Unsupported transport {job.transport}")
+
+    @staticmethod
+    def _inline_result(job: RetrievalJob) -> RetrievalResult:
+        if not job.inline:
+            raise TransportNotSupportedError("Inline transport returned no payload")
+        return RetrievalResult(job=job, inline=job.inline)
+
+    @staticmethod
+    def _grpc_result(job: RetrievalJob) -> RetrievalResult:
+        if not job.grpc:
+            raise TransportNotSupportedError(
+                "gRPC transport returned no Flight handshake"
+            )
+        return RetrievalResult(job=job, grpc=job.grpc)
 
     def get_job(self, job_id: str) -> RetrievalJobStatus:
         try:
@@ -131,7 +139,9 @@ class RetrievalService(BaseService):
             ca_cert_path: Path to a PEM CA bundle for TLS verification.
             tls_root_certs: Raw PEM CA bytes; takes precedence over
                 ``ca_cert_path``.
-            override_hostname: Override the TLS SNI hostname.
+            override_hostname: Override the TLS SNI and certificate-validation
+                hostname. Use only when the endpoint address and certificate
+                identity intentionally differ.
             timeout_seconds: End-to-end Arrow Flight transfer deadline.
             allow_insecure: Explicitly permit plaintext endpoints for trusted
                 local development. TLS is required by default.
@@ -147,7 +157,11 @@ class RetrievalService(BaseService):
         if not job.grpc:
             raise TransportNotSupportedError("Job has no Flight handshake")
 
-        ca_cert_path = self._flight_ca_path(ca_cert_path, tls_root_certs)
+        ca_cert_path = self._flight_ca_path(
+            ca_cert_path,
+            tls_root_certs,
+            allow_insecure=allow_insecure,
+        )
         batches = open_flight_stream(
             job.grpc,
             job_id=job.job_id,
@@ -163,9 +177,13 @@ class RetrievalService(BaseService):
         self,
         explicit_path: str | os.PathLike[str] | None,
         tls_root_certs: bytes | None,
+        *,
+        allow_insecure: bool,
     ) -> str | os.PathLike[str] | None:
         if explicit_path is not None or tls_root_certs is not None:
             return explicit_path
+        if allow_insecure:
+            return None
         session = getattr(self.client, "session", None)
         verify = getattr(session, "verify", None)
         if isinstance(verify, (str, os.PathLike)):
@@ -200,18 +218,17 @@ class RetrievalService(BaseService):
         dataset_urn: str,
         *,
         format_hint: Optional[str] = None,
-        credential_override: Optional[str] = None,
+        credential_override: str | SecretStr | None = None,
         **options,
     ) -> RetrievalJob:
+        credential = credential_override
+        if isinstance(credential, str):
+            credential = SecretStr(credential)
         request = RetrievalRequest(
             dataset_urn=dataset_urn,
             transport="inline",
             format_hint=format_hint,
-            credential_override=(
-                SecretStr(credential_override)
-                if credential_override is not None
-                else None
-            ),
+            credential_override=credential,
             options=options or None,
         )
         return self.create_job(request)

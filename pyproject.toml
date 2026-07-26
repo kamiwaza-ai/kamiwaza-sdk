@@ -128,6 +128,7 @@ dev = [
     "twine>=4.0",
     "radon>=5.1",
     "pdoc>=14.0",
+    "tomli>=2.0; python_version < '3.11'",
     # Used by tests/e2e/extension_contract/echo-check/backend/tests/test_helpers.py
     # to mint test JWTs; previously only declared in the nested backend's optional
     # `test` extra, which the root `uv sync --group dev` doesn't install.

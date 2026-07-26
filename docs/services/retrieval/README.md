@@ -45,10 +45,10 @@ for event in client.retrieval.stream_job(job.job_id):
 
 ## Flight transport (large datasets)
 
-For datasets that exceed roughly 512 MiB, or when you explicitly request
-`transport="grpc"` in your `RetrievalRequest`, the server returns a gRPC
-Arrow Flight handshake instead of inline or SSE data.  The Flight path
-requires the optional `flight` extra:
+When the server selects Flight, or when you explicitly request
+`transport="grpc"` in your `RetrievalRequest`, it returns a gRPC Arrow Flight
+handshake instead of inline or SSE data. The Flight path requires the optional
+`flight` extra:
 
 ```bash
 pip install "kamiwaza-sdk[flight]>=1.1.0"
@@ -95,7 +95,8 @@ for batch in client.retrieval.flight_batches(job, allow_insecure=True):
 ```
 
 `flight_batches` has a finite one-hour deadline for the complete `DoGet` and
-stream read, plus gRPC keepalives. Override the deadline when needed:
+stream read, including retry backoffs and endpoint fallback, plus gRPC
+keepalives. Override the deadline when needed:
 
 ```python
 for batch in client.retrieval.flight_batches(job, timeout_seconds=7200):
@@ -106,7 +107,7 @@ A deadline failure raises the typed `FlightTimeoutError` and is never retried.
 
 ### Mixed-version clusters
 
-Older Kamiwaza server versions (pre-0.8) advertise `"protocol":
+Legacy Kamiwaza servers can advertise `"protocol":
 "kamiwaza.retrieval.v1"` in the Flight handshake rather than `"arrow-flight"`.
 An omitted discriminator also defaults to that legacy protocol; Flight
 therefore requires an explicit server advertisement of `"arrow-flight"`.
@@ -134,6 +135,12 @@ The SDK retries an endpoint and falls back only after PyArrow reports a typed
 `FlightUnavailableError` before any batch has been delivered. It never retries
 timeouts, server errors, authentication or authorization failures, arbitrary
 exceptions, or any error after the first batch.
+
+Because the token is consumed when the server claims `DoGet`, retry can only
+succeed when unavailability occurs before that claim. If an unavailable
+attempt claimed the token and the next attempt rejects it, the SDK preserves
+the original typed `FlightUnavailableError` instead of misreporting the
+secondary rejection as an authentication failure.
 
 If a mid-stream error occurs, the safe recovery path is to restart from job
 creation:

@@ -219,10 +219,14 @@ def _iter_flight_stream(
     runtime: _FlightRuntime,
     handshake: GrpcHandshake,
 ) -> Iterator["pa.RecordBatch"]:
+    # Re-check at first iteration as callers can retain the eagerly validated
+    # iterator until after its single-use handshake has expired.
+    _validate_handshake(handshake)
+    deadline = time.monotonic() + runtime.timeout_seconds
     errors: list[str] = []
     final_exc: Exception | None = None
     for endpoint in handshake.endpoints:
-        last_exc = yield from _iter_endpoint(runtime, endpoint.location)
+        last_exc = yield from _iter_endpoint(runtime, endpoint.location, deadline)
         if last_exc is None:
             return
         errors.append(f"{endpoint.location}: {last_exc}")
@@ -235,14 +239,21 @@ def _iter_flight_stream(
 def _iter_endpoint(
     runtime: _FlightRuntime,
     location: str,
+    deadline: float,
 ) -> Generator["pa.RecordBatch", None, Exception | None]:
     state = _StreamState()
     last_exc: Exception | None = None
     for attempt in range(_ENDPOINT_RETRY_ATTEMPTS):
         try:
-            yield from _iter_flight_attempt(runtime, location, state)
+            yield from _iter_flight_attempt(runtime, location, state, deadline)
             return None
         except runtime.flight.FlightUnauthenticatedError as exc:
+            if last_exc is not None:
+                raise FlightUnavailableError(
+                    f"Arrow Flight became unavailable at {location} before "
+                    "delivering a batch; its single-use token may have been "
+                    "consumed by the failed DoGet"
+                ) from last_exc
             raise AuthenticationError(
                 f"Arrow Flight authentication failed at {location}: {exc}"
             ) from exc
@@ -258,9 +269,12 @@ def _iter_endpoint(
             ) from exc
         except runtime.flight.FlightUnavailableError as exc:
             if state.yielded:
-                raise
+                raise FlightUnavailableError(
+                    f"Arrow Flight stream at {location} became unavailable "
+                    "after delivering a batch; the transfer was not retried"
+                ) from exc
             last_exc = exc
-            _sleep_before_retry(attempt)
+            _sleep_before_retry(attempt, runtime, deadline)
     return last_exc
 
 
@@ -268,13 +282,24 @@ def _iter_flight_attempt(
     runtime: _FlightRuntime,
     location: str,
     state: _StreamState,
+    deadline: float,
 ) -> Iterator["pa.RecordBatch"]:
+    _remaining_timeout(runtime, deadline)
     client = runtime.flight.connect(location, **runtime.connect_kwargs)
+    reader: Any | None = None
+    completed = False
     try:
-        options = runtime.flight.FlightCallOptions(timeout=runtime.timeout_seconds)
+        options = runtime.flight.FlightCallOptions(
+            timeout=_remaining_timeout(runtime, deadline)
+        )
         reader = client.do_get(runtime.ticket, options=options)
         yield from _iter_record_batches(reader, state)
+        completed = True
     finally:
+        if reader is not None:
+            if not completed:
+                with contextlib.suppress(Exception):
+                    reader.cancel()
         with contextlib.suppress(Exception):
             client.close()
 
@@ -288,8 +313,24 @@ def _iter_record_batches(
             yield chunk.data
 
 
-def _sleep_before_retry(attempt: int) -> None:
+def _remaining_timeout(runtime: _FlightRuntime, deadline: float) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise FlightTimeoutError(
+            f"Arrow Flight transfer exceeded {runtime.timeout_seconds:g} seconds",
+            timeout_seconds=runtime.timeout_seconds,
+        )
+    return remaining
+
+
+def _sleep_before_retry(
+    attempt: int,
+    runtime: _FlightRuntime,
+    deadline: float,
+) -> None:
+    remaining = _remaining_timeout(runtime, deadline)
     if attempt >= _ENDPOINT_RETRY_ATTEMPTS - 1:
         return
     backoff_index = min(attempt, len(_ENDPOINT_RETRY_BACKOFFS) - 1)
-    time.sleep(_ENDPOINT_RETRY_BACKOFFS[backoff_index])
+    delay = min(_ENDPOINT_RETRY_BACKOFFS[backoff_index], remaining)
+    time.sleep(delay)

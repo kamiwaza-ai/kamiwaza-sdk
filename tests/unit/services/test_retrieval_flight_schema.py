@@ -64,6 +64,39 @@ def test_grpchandshake_legacy_endpoint_lifted():
     assert hs.endpoints[0].location == "0.0.0.0:6130"
     assert hs.endpoint == "0.0.0.0:6130"
     assert hs.protocol == "kamiwaza.retrieval.v1"
+    assert hs.model_dump()["endpoint"] == "0.0.0.0:6130"
+
+
+def test_grpchandshake_legacy_endpoint_remains_mutable():
+    from kamiwaza_sdk.schemas.retrieval import GrpcHandshake
+
+    handshake = GrpcHandshake.model_validate(
+        {
+            "endpoint": "grpc://first:6130",
+            "token": "tok",
+            "expires_at": "2099-01-01T00:00:00Z",
+        }
+    )
+
+    handshake.endpoint = "grpc://second:6130"
+
+    assert handshake.endpoint == "grpc://second:6130"
+    assert handshake.endpoints[0].location == "grpc://second:6130"
+    assert handshake.model_dump()["endpoint"] == "grpc://second:6130"
+
+
+def test_grpchandshake_repr_hides_single_use_token():
+    from kamiwaza_sdk.schemas.retrieval import GrpcHandshake
+
+    handshake = GrpcHandshake.model_validate(
+        {
+            "endpoint": "grpc://host:6130",
+            "token": "do-not-log-this-token",
+            "expires_at": "2099-01-01T00:00:00Z",
+        }
+    )
+
+    assert "do-not-log-this-token" not in repr(handshake)
 
 
 def test_grpchandshake_missing_both_yields_empty():
@@ -401,6 +434,30 @@ def test_flight_batches_forwards_timeout():
     assert captured["allow_insecure"] is True
 
 
+def test_flight_batches_insecure_opt_in_skips_implicit_http_ca_bridge():
+    from kamiwaza_sdk.services.retrieval import RetrievalService
+
+    fake_session = MagicMock()
+    fake_session.verify = "/etc/ssl/certs/ca-bundle.crt"
+    fake_client = MagicMock()
+    fake_client.session = fake_session
+    service = RetrievalService(fake_client)
+    service.get_job = MagicMock(return_value=MagicMock(status="COMPLETED"))
+    captured: dict = {}
+
+    def fake_open_flight_stream(handshake, job_id, **kwargs):
+        captured.update(kwargs)
+        return iter(())
+
+    with patch(
+        "kamiwaza_sdk.services.retrieval_flight.open_flight_stream",
+        fake_open_flight_stream,
+    ):
+        list(service.flight_batches(_retrieval_job(), allow_insecure=True))
+
+    assert captured["ca_cert_path"] is None
+
+
 # ---------------------------------------------------------------------------
 # Conservative protocol, expiry, and endpoint-security guards
 # ---------------------------------------------------------------------------
@@ -469,6 +526,25 @@ def test_expired_handshake_is_rejected_before_connect():
         pytest.raises(AuthenticationError, match="expired"),
     ):
         open_flight_stream(handshake, job_id="job")
+
+
+def test_handshake_expiring_after_stream_creation_is_rejected_before_connect():
+    from kamiwaza_sdk.exceptions import AuthenticationError
+    from kamiwaza_sdk.services.retrieval_flight import open_flight_stream
+
+    handshake = _flight_handshake()
+    fake_flight = MagicMock()
+    with patch(
+        "kamiwaza_sdk.services.retrieval_flight._require_flight",
+        return_value=fake_flight,
+    ):
+        stream = open_flight_stream(handshake, job_id="job")
+    handshake.expires_at = datetime(2000, 1, 1, tzinfo=timezone.utc)
+
+    with pytest.raises(AuthenticationError, match="expired"):
+        list(stream)
+
+    fake_flight.connect.assert_not_called()
 
 
 def test_plaintext_is_rejected_by_default_before_pyarrow():

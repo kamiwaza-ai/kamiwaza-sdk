@@ -7,6 +7,8 @@ import pytest
 from datetime import datetime
 
 from kamiwaza_sdk.exceptions import DatasetNotFoundError, NotFoundError, TransportNotSupportedError
+from pydantic import SecretStr
+
 from kamiwaza_sdk.schemas.retrieval import RetrievalRequest
 from kamiwaza_sdk.services.retrieval import RetrievalResult, RetrievalService
 
@@ -209,6 +211,25 @@ def test_create_job_unwraps_secret_fields(dummy_client):
     method, path, kwargs = client.calls[0]
     assert method == "post"
     assert path == "/retrieval/jobs"
+    assert kwargs["json"]["credential_override"] == '{"token":"secret"}'
+
+
+def test_create_inline_job_accepts_secretstr_without_double_wrapping(dummy_client):
+    job_payload = {
+        "job_id": "job-secret",
+        "transport": "inline",
+        "status": "queued",
+        "dataset": {"urn": "urn", "platform": "s3", "path": None, "format": None},
+    }
+    client = dummy_client({("post", "/retrieval/jobs"): job_payload})
+    service = RetrievalService(client)
+
+    service.create_inline_job(
+        "urn",
+        credential_override=SecretStr('{"token":"secret"}'),
+    )
+
+    _, _, kwargs = client.calls[0]
     assert kwargs["json"]["credential_override"] == '{"token":"secret"}'
 
 

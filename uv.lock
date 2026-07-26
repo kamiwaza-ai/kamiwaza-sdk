@@ -953,6 +953,7 @@ dev = [
     { name = "pytest-responses" },
     { name = "radon" },
     { name = "ruff" },
+    { name = "tomli", marker = "python_full_version < '3.11'" },
     { name = "twine" },
 ]
 
@@ -999,6 +1000,7 @@ dev = [
     { name = "pytest-responses", specifier = ">=0.5" },
     { name = "radon", specifier = ">=5.1" },
     { name = "ruff", specifier = ">=0.1" },
+    { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=2.0" },
     { name = "twine", specifier = ">=4.0" },
 ]
 
