@@ -63,7 +63,9 @@ class GrpcHandshake(BaseModel):
     endpoints: List[FlightEndpoint] = Field(default_factory=list)
     token: str
     expires_at: datetime
-    protocol: str = "arrow-flight"
+    # Omitted discriminators belong to the legacy retrieval protocol. Flight
+    # use must be explicitly advertised by the server as ``arrow-flight``.
+    protocol: str = "kamiwaza.retrieval.v1"
 
     @property
     def endpoint(self) -> Optional[str]:

@@ -7,13 +7,19 @@ import json
 import math
 import os
 import time
+import warnings
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Generator, Iterator
+from urllib.parse import urlsplit
 
 from ..exceptions import (
     AuthenticationError,
     AuthorizationError,
+    FlightConfigurationError,
+    FlightTimeoutError,
     FlightUnavailableError,
+    InsecureFlightEndpointError,
     KamiwazaError,
     TransportNotSupportedError,
 )
@@ -25,15 +31,35 @@ if TYPE_CHECKING:
 # Public re-export for callers that import transport errors from this module.
 __all__ = ["FlightUnavailableError", "open_flight_stream"]
 
-# Per-endpoint pre-stream retry settings.
 _ENDPOINT_RETRY_ATTEMPTS = 3
 _ENDPOINT_RETRY_BACKOFFS = (0.5, 1.0)
-_DEFAULT_FLIGHT_TIMEOUT_SECONDS = 30.0
+_DEFAULT_FLIGHT_TIMEOUT_SECONDS = 3600.0
+_GRPC_KEEPALIVE_OPTIONS = (
+    ("grpc.keepalive_time_ms", 30_000),
+    ("grpc.keepalive_timeout_ms", 10_000),
+    ("grpc.keepalive_permit_without_calls", 1),
+)
+_INSECURE_SCHEMES = frozenset({"grpc", "grpc+tcp", "grpc+unix"})
 
 
 @dataclass
 class _StreamState:
     yielded: bool = False
+
+
+@dataclass(frozen=True)
+class _FlightRuntime:
+    flight: Any
+    ticket: Any
+    connect_kwargs: dict[str, Any]
+    timeout_seconds: float
+
+
+@dataclass(frozen=True)
+class _FlightSettings:
+    tls_root_certs: bytes | None
+    override_hostname: str | None
+    timeout_seconds: float
 
 
 def _require_flight() -> Any:
@@ -55,80 +81,61 @@ def open_flight_stream(
     tls_root_certs: bytes | None = None,
     override_hostname: str | None = None,
     timeout_seconds: float = _DEFAULT_FLIGHT_TIMEOUT_SECONDS,
+    allow_insecure: bool = False,
 ) -> Iterator["pa.RecordBatch"]:
     """Yield Arrow record batches for a retrieval job handshake.
 
-    Tries each endpoint in ``handshake.endpoints`` in order, falling over to
-    the next on any *pre-stream* connection error.  Each endpoint is attempted
-    up to ``_ENDPOINT_RETRY_ATTEMPTS`` times with short sleeps between retries
-    before the endpoint is marked failed and the next one is tried.  Raises
-    ``FlightUnavailableError`` if all endpoints are exhausted before streaming
-    begins.
+    The server's token is single-use and is consumed atomically only when a
+    ``DoGet`` is claimed. There is no endpoint-level handshake refresh API.
+    The SDK therefore retries or falls back only for a typed Flight
+    unavailability before any batch is delivered. Timeouts, server errors,
+    authentication failures, authorization failures, and arbitrary exceptions
+    are never retried.
 
-    **Endpoint semantics**: endpoints are connection *alternatives*, not resume
-    points.  Fallback to the next endpoint happens only for failures that occur
-    before any batch has been yielded (connect / ``do_get`` / first-batch
-    errors).  If a failure occurs after at least one batch has already been
-    delivered to the caller, the error propagates immediately — attempting
-    another endpoint from the beginning would silently re-deliver all data from
-    offset 0, causing duplicate rows.
+    TLS is required for every advertised endpoint unless ``allow_insecure`` is
+    explicitly enabled. Plaintext remains incompatible with supplied CA
+    material because PyArrow ignores TLS roots on plaintext transports.
 
-    Args:
-        handshake: gRPC handshake returned by the server for a grpc-transport job.
-        job_id: ID of the retrieval job (encoded into the Flight ticket).
-        ca_cert_path: Path to a PEM CA bundle for TLS verification.
-        tls_root_certs: Raw PEM bytes for TLS; takes precedence over ca_cert_path.
-        override_hostname: Override the TLS SNI hostname (useful for dev/testing).
-        timeout_seconds: Per-attempt deadline for the Arrow Flight ``do_get``
-            call, including stream reads.
-
-    Yields:
-        Arrow RecordBatch objects streamed from the Flight server.
-
-    Raises:
-        FlightUnavailableError: When no endpoint in the handshake could be
-            reached *before* streaming began, or when the handshake advertises
-            no endpoints at all.
-        TransportNotSupportedError: When the handshake protocol is not
-            ``"arrow-flight"``.
-        Exception: The original exception when a failure occurs mid-stream
-            (after at least one batch has been yielded).
-        KamiwazaError: When pyarrow is not installed.
-        ValueError: When ``timeout_seconds`` is not finite and positive.
+    ``timeout_seconds`` is a finite deadline for the complete ``DoGet`` and
+    stream read. Its generous one-hour default is paired with gRPC keepalives
+    so idle-but-live transfers remain observable.
     """
     _validate_handshake(handshake)
     _validate_timeout(timeout_seconds)
+    roots = _load_tls_root_certs(tls_root_certs, ca_cert_path)
+    _validate_endpoint_security(handshake, allow_insecure, roots is not None)
 
     flight = _require_flight()
-    tls_root_certs = _load_tls_root_certs(tls_root_certs, ca_cert_path)
-    ticket = flight.Ticket(
-        json.dumps({"job_id": job_id, "token": handshake.token}).encode()
+    settings = _FlightSettings(
+        tls_root_certs=roots,
+        override_hostname=override_hostname,
+        timeout_seconds=timeout_seconds,
     )
-    connect_kwargs: dict[str, Any] = {}
-    if tls_root_certs is not None:
-        connect_kwargs["tls_root_certs"] = tls_root_certs
-    if override_hostname:
-        connect_kwargs["override_hostname"] = override_hostname
-
-    return _iter_flight_stream(
-        flight,
-        handshake,
-        ticket,
-        connect_kwargs,
-        timeout_seconds,
-    )
+    runtime = _make_runtime(flight, job_id, handshake.token, settings)
+    return _iter_flight_stream(runtime, handshake)
 
 
 def _validate_handshake(handshake: GrpcHandshake) -> None:
-    if handshake.protocol and handshake.protocol != "arrow-flight":
+    if handshake.protocol != "arrow-flight":
         raise TransportNotSupportedError(
             f"Unsupported Flight protocol: {handshake.protocol!r}; "
-            "this client only supports 'arrow-flight'"
+            "the server must explicitly advertise 'arrow-flight'"
         )
     if not handshake.endpoints:
         raise FlightUnavailableError(
             "Handshake advertised no Flight endpoints (server-side configuration issue)"
         )
+    expires_at = _as_utc(handshake.expires_at)
+    if expires_at <= datetime.now(timezone.utc):
+        raise AuthenticationError(
+            f"Arrow Flight handshake expired at {expires_at.isoformat()}"
+        )
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 def _validate_timeout(timeout_seconds: float) -> None:
@@ -140,32 +147,82 @@ def _load_tls_root_certs(
     tls_root_certs: bytes | None,
     ca_cert_path: str | os.PathLike[str] | None,
 ) -> bytes | None:
-    if tls_root_certs is not None or ca_cert_path is None:
+    if tls_root_certs is not None:
+        if not tls_root_certs:
+            raise FlightConfigurationError("Flight TLS root certificates are empty")
         return tls_root_certs
+    if ca_cert_path is None:
+        return None
     try:
         with open(ca_cert_path, "rb") as fh:
-            return fh.read()
+            roots = fh.read()
     except OSError as exc:
-        raise KamiwazaError(f"Unable to read Flight CA bundle: {ca_cert_path}") from exc
+        raise FlightConfigurationError(
+            f"Unable to read Flight CA bundle: {ca_cert_path}"
+        ) from exc
+    if not roots:
+        raise FlightConfigurationError(f"Flight CA bundle is empty: {ca_cert_path}")
+    return roots
+
+
+def _validate_endpoint_security(
+    handshake: GrpcHandshake,
+    allow_insecure: bool,
+    has_tls_roots: bool,
+) -> None:
+    for endpoint in handshake.endpoints:
+        scheme = urlsplit(endpoint.location).scheme.lower()
+        if scheme == "grpc+tls":
+            continue
+        if scheme not in _INSECURE_SCHEMES:
+            raise FlightConfigurationError(
+                f"Unsupported Flight endpoint URI: {endpoint.location!r}"
+            )
+        if has_tls_roots:
+            raise FlightConfigurationError(
+                "Flight CA material cannot be used with plaintext endpoint "
+                f"{endpoint.location!r}"
+            )
+        if not allow_insecure:
+            raise InsecureFlightEndpointError(
+                f"Plaintext Flight endpoint {endpoint.location!r} is disabled; "
+                "pass allow_insecure=True only for trusted local development"
+            )
+        warnings.warn(
+            f"Using insecure plaintext Arrow Flight endpoint {endpoint.location!r}",
+            UserWarning,
+            stacklevel=3,
+        )
+
+
+def _make_runtime(
+    flight: Any,
+    job_id: str,
+    token: str,
+    settings: _FlightSettings,
+) -> _FlightRuntime:
+    ticket = flight.Ticket(json.dumps({"job_id": job_id, "token": token}).encode())
+    connect_kwargs: dict[str, Any] = {"generic_options": list(_GRPC_KEEPALIVE_OPTIONS)}
+    if settings.tls_root_certs is not None:
+        connect_kwargs["tls_root_certs"] = settings.tls_root_certs
+    if settings.override_hostname:
+        connect_kwargs["override_hostname"] = settings.override_hostname
+    return _FlightRuntime(
+        flight,
+        ticket,
+        connect_kwargs,
+        settings.timeout_seconds,
+    )
 
 
 def _iter_flight_stream(
-    flight: Any,
+    runtime: _FlightRuntime,
     handshake: GrpcHandshake,
-    ticket: Any,
-    connect_kwargs: dict[str, Any],
-    timeout_seconds: float,
 ) -> Iterator["pa.RecordBatch"]:
     errors: list[str] = []
     final_exc: Exception | None = None
     for endpoint in handshake.endpoints:
-        last_exc = yield from _iter_endpoint(
-            flight,
-            endpoint.location,
-            ticket,
-            connect_kwargs,
-            timeout_seconds,
-        )
+        last_exc = yield from _iter_endpoint(runtime, endpoint.location)
         if last_exc is None:
             return
         errors.append(f"{endpoint.location}: {last_exc}")
@@ -176,37 +233,31 @@ def _iter_flight_stream(
 
 
 def _iter_endpoint(
-    flight: Any,
+    runtime: _FlightRuntime,
     location: str,
-    ticket: Any,
-    connect_kwargs: dict[str, Any],
-    timeout_seconds: float,
 ) -> Generator["pa.RecordBatch", None, Exception | None]:
     state = _StreamState()
     last_exc: Exception | None = None
     for attempt in range(_ENDPOINT_RETRY_ATTEMPTS):
         try:
-            yield from _iter_flight_attempt(
-                flight,
-                location,
-                ticket,
-                connect_kwargs,
-                timeout_seconds,
-                state,
-            )
+            yield from _iter_flight_attempt(runtime, location, state)
             return None
-        except flight.FlightUnauthenticatedError as exc:
+        except runtime.flight.FlightUnauthenticatedError as exc:
             raise AuthenticationError(
                 f"Arrow Flight authentication failed at {location}: {exc}"
             ) from exc
-        except flight.FlightUnauthorizedError as exc:
+        except runtime.flight.FlightUnauthorizedError as exc:
             raise AuthorizationError(
                 f"Arrow Flight authorization failed at {location}: {exc}"
             ) from exc
-        except Exception as exc:  # noqa: BLE001
+        except runtime.flight.FlightTimedOutError as exc:
+            raise FlightTimeoutError(
+                f"Arrow Flight transfer at {location} exceeded "
+                f"{runtime.timeout_seconds:g} seconds",
+                timeout_seconds=runtime.timeout_seconds,
+            ) from exc
+        except runtime.flight.FlightUnavailableError as exc:
             if state.yielded:
-                # Never retry or fall back after delivering data: doing so
-                # would silently re-deliver the stream from offset zero.
                 raise
             last_exc = exc
             _sleep_before_retry(attempt)
@@ -214,17 +265,14 @@ def _iter_endpoint(
 
 
 def _iter_flight_attempt(
-    flight: Any,
+    runtime: _FlightRuntime,
     location: str,
-    ticket: Any,
-    connect_kwargs: dict[str, Any],
-    timeout_seconds: float,
     state: _StreamState,
 ) -> Iterator["pa.RecordBatch"]:
-    client = flight.connect(location, **connect_kwargs)
+    client = runtime.flight.connect(location, **runtime.connect_kwargs)
     try:
-        call_options = flight.FlightCallOptions(timeout=timeout_seconds)
-        reader = client.do_get(ticket, options=call_options)
+        options = runtime.flight.FlightCallOptions(timeout=runtime.timeout_seconds)
+        reader = client.do_get(runtime.ticket, options=options)
         yield from _iter_record_batches(reader, state)
     finally:
         with contextlib.suppress(Exception):

@@ -1,15 +1,9 @@
-"""Unit tests for the Arrow Flight streaming client (pyarrow required).
-
-Pyarrow-free tests live in test_retrieval_flight_schema.py so they run even
-when pyarrow is absent.
-"""
+"""Unit tests for the Arrow Flight streaming client (pyarrow required)."""
 
 from __future__ import annotations
 
 import pytest
 
-# Must be at the top of the file so the entire module is skipped (not just
-# individual tests) when pyarrow.flight is unavailable.
 flight = pytest.importorskip("pyarrow.flight")
 
 from datetime import datetime, timezone  # noqa: E402
@@ -17,6 +11,7 @@ from datetime import datetime, timezone  # noqa: E402
 from kamiwaza_sdk.exceptions import (  # noqa: E402
     AuthenticationError,
     AuthorizationError,
+    FlightTimeoutError,
 )
 from kamiwaza_sdk.schemas.retrieval import FlightEndpoint, GrpcHandshake  # noqa: E402
 from kamiwaza_sdk.services.retrieval_flight import (  # noqa: E402
@@ -26,173 +21,122 @@ from kamiwaza_sdk.services.retrieval_flight import (  # noqa: E402
 
 pytestmark = pytest.mark.unit
 
+_FUTURE = datetime(2099, 1, 1, tzinfo=timezone.utc)
 
-def test_handshake_schema_parses_endpoints():
-    hs = GrpcHandshake(
-        endpoints=[{"location": "grpc://host:6130"}],
-        token="tok",
-        expires_at=datetime.now(timezone.utc),
+
+def _handshake(*locations: str) -> GrpcHandshake:
+    return GrpcHandshake(
+        endpoints=[FlightEndpoint(location=value) for value in locations],
+        token="single-use-token",
+        expires_at=_FUTURE,
+        protocol="arrow-flight",
     )
-    assert len(hs.endpoints) == 1
-    assert hs.endpoints[0].location == "grpc://host:6130"
-    assert hs.protocol == "arrow-flight"
 
 
-def test_open_flight_stream_tries_endpoints_in_order(monkeypatch):
-    calls = []
+class _EmptyReader:
+    def __iter__(self):
+        return iter(())
 
-    class FakeReader:
-        def __iter__(self):
-            return iter([])
 
-        def read_all(self):
-            return None
+class _EmptyClient:
+    def do_get(self, ticket, options=None):
+        return _EmptyReader()
 
-    class FakeClient:
-        def __init__(self, ok):
-            self.ok = ok
+    def close(self):
+        pass
 
-        def do_get(self, ticket, options=None):
-            if not self.ok:
-                raise Exception("unreachable")
-            return FakeReader()
 
-        def close(self):
-            pass
+def test_handshake_schema_parses_explicit_flight_protocol():
+    handshake = _handshake("grpc+tls://host:6130")
 
-    def fake_connect(location, **kw):
+    assert handshake.endpoints[0].location == "grpc+tls://host:6130"
+    assert handshake.protocol == "arrow-flight"
+
+
+def test_open_flight_stream_retries_unavailable_then_falls_back(monkeypatch):
+    calls: list[str] = []
+
+    def fake_connect(location, **kwargs):
         calls.append(location)
-        return FakeClient(ok=(location == "grpc://good:6130"))
+        if location == "grpc+tls://bad:6130":
+            raise flight.FlightUnavailableError("unreachable")
+        return _EmptyClient()
 
     monkeypatch.setattr("pyarrow.flight.connect", fake_connect)
     monkeypatch.setattr(
         "kamiwaza_sdk.services.retrieval_flight.time.sleep", lambda _: None
     )
-    hs = GrpcHandshake(
-        endpoints=[
-            FlightEndpoint(location="grpc://bad:6130"),
-            FlightEndpoint(location="grpc://good:6130"),
-        ],
-        token="t",
-        expires_at=datetime.now(timezone.utc),
+
+    list(
+        open_flight_stream(
+            _handshake(
+                "grpc+tls://bad:6130",
+                "grpc+tls://good:6130",
+            ),
+            job_id="job-order",
+        )
     )
-    list(open_flight_stream(hs, job_id="00000000-0000-0000-0000-000000000001"))
-    # The bad endpoint is retried _ENDPOINT_RETRY_ATTEMPTS times, then good succeeds once.
+
     from kamiwaza_sdk.services.retrieval_flight import _ENDPOINT_RETRY_ATTEMPTS
 
-    assert calls.count("grpc://bad:6130") == _ENDPOINT_RETRY_ATTEMPTS
-    assert calls.count("grpc://good:6130") == 1
+    assert calls.count("grpc+tls://bad:6130") == _ENDPOINT_RETRY_ATTEMPTS
+    assert calls.count("grpc+tls://good:6130") == 1
 
 
-def test_all_endpoints_fail_raises(monkeypatch):
-    def fake_connect(location, **kw):
-        raise Exception(f"conn refused at {location}")
+def test_all_unavailable_endpoints_raise_typed_error(monkeypatch):
+    original_error = flight.FlightUnavailableError("connection refused")
+
+    def fake_connect(location, **kwargs):
+        raise original_error
 
     monkeypatch.setattr("pyarrow.flight.connect", fake_connect)
     monkeypatch.setattr(
         "kamiwaza_sdk.services.retrieval_flight.time.sleep", lambda _: None
     )
-    hs = GrpcHandshake(
-        endpoints=[FlightEndpoint(location="grpc://dead:6130")],
-        token="t",
-        expires_at=datetime.now(timezone.utc),
-    )
+
     with pytest.raises(FlightUnavailableError) as exc_info:
-        list(open_flight_stream(hs, job_id="00000000-0000-0000-0000-000000000002"))
-    assert isinstance(exc_info.value.__cause__, Exception)
-    assert "conn refused at grpc://dead:6130" in str(exc_info.value.__cause__)
+        list(open_flight_stream(_handshake("grpc+tls://dead:6130"), job_id="job"))
+
+    assert exc_info.value.__cause__ is original_error
+    assert "grpc+tls://dead:6130" in str(exc_info.value)
 
 
-def test_midstream_failure_propagates_not_fallback(monkeypatch):
-    """After yielding ≥1 batch, an error must propagate — not fall through to the next endpoint."""
-    second_connect_called = []
+def test_midstream_failure_propagates_without_fallback(monkeypatch):
+    calls: list[str] = []
 
-    class FakeChunk:
-        def __init__(self, data):
-            self.data = data
+    class Chunk:
+        data = "batch-0"
 
-    class FailAfterOneReader:
+    class FailingReader:
         def __iter__(self):
-            yield FakeChunk("batch-0")
+            yield Chunk()
             raise RuntimeError("mid-stream boom")
 
-    class FakeClient:
+    class Client:
         def do_get(self, ticket, options=None):
-            return FailAfterOneReader()
+            return FailingReader()
 
         def close(self):
             pass
 
-    def fake_connect(location, **kw):
-        if location == "grpc://second:6130":
-            second_connect_called.append(location)
-        return FakeClient()
+    def fake_connect(location, **kwargs):
+        calls.append(location)
+        return Client()
 
     monkeypatch.setattr("pyarrow.flight.connect", fake_connect)
-    hs = GrpcHandshake(
-        endpoints=[
-            FlightEndpoint(location="grpc://first:6130"),
-            FlightEndpoint(location="grpc://second:6130"),
-        ],
-        token="t",
-        expires_at=datetime.now(timezone.utc),
-    )
+
     with pytest.raises(RuntimeError, match="mid-stream boom"):
-        list(open_flight_stream(hs, job_id="00000000-0000-0000-0000-000000000003"))
+        list(
+            open_flight_stream(
+                _handshake(
+                    "grpc+tls://first:6130",
+                    "grpc+tls://second:6130",
+                ),
+                job_id="job",
+            )
+        )
 
-    # The second endpoint must NOT have been tried
-    assert (
-        second_connect_called == []
-    ), "fallback to second endpoint must not happen after mid-stream failure"
-
-
-def test_per_endpoint_retry_on_prestream_failure(monkeypatch):
-    """Pre-stream failures are retried up to _ENDPOINT_RETRY_ATTEMPTS times per endpoint."""
-    from kamiwaza_sdk.services.retrieval_flight import _ENDPOINT_RETRY_ATTEMPTS
-
-    connect_calls: list[str] = []
-
-    class FakeReader:
-        def __iter__(self):
-            return iter([])
-
-    class FakeClient:
-        def __init__(self, fail: bool) -> None:
-            self._fail = fail
-
-        def do_get(self, ticket, options=None):
-            if self._fail:
-                raise ConnectionRefusedError("pre-stream fail")
-            return FakeReader()
-
-        def close(self):
-            pass
-
-    # First endpoint always fails (pre-stream); second always succeeds.
-    def fake_connect(location, **kw):
-        connect_calls.append(location)
-        return FakeClient(fail=(location == "grpc://flaky:6130"))
-
-    monkeypatch.setattr("pyarrow.flight.connect", fake_connect)
-    # Suppress sleeps to keep the test fast.
-    monkeypatch.setattr(
-        "kamiwaza_sdk.services.retrieval_flight.time.sleep", lambda _: None
-    )
-
-    hs = GrpcHandshake(
-        endpoints=[
-            FlightEndpoint(location="grpc://flaky:6130"),
-            FlightEndpoint(location="grpc://good:6130"),
-        ],
-        token="t",
-        expires_at=datetime.now(timezone.utc),
-    )
-    list(open_flight_stream(hs, job_id="00000000-0000-0000-0000-000000000004"))
-
-    # Flaky endpoint should be attempted exactly _ENDPOINT_RETRY_ATTEMPTS times.
-    assert connect_calls.count("grpc://flaky:6130") == _ENDPOINT_RETRY_ATTEMPTS
-    # Good endpoint should succeed on the first attempt.
-    assert connect_calls.count("grpc://good:6130") == 1
+    assert calls == ["grpc+tls://first:6130"]
 
 
 @pytest.mark.parametrize(
@@ -207,10 +151,10 @@ def test_permanent_auth_errors_fail_fast(
     flight_error,
     sdk_error,
 ):
-    connect_calls: list[str] = []
+    calls: list[str] = []
     original_error = flight_error("invalid Flight credentials")
 
-    class FakeClient:
+    class Client:
         def do_get(self, ticket, options=None):
             raise original_error
 
@@ -218,59 +162,215 @@ def test_permanent_auth_errors_fail_fast(
             pass
 
     def fake_connect(location, **kwargs):
-        connect_calls.append(location)
-        return FakeClient()
+        calls.append(location)
+        return Client()
 
     monkeypatch.setattr("pyarrow.flight.connect", fake_connect)
-    hs = GrpcHandshake(
-        endpoints=[
-            FlightEndpoint(location="grpc://first:6130"),
-            FlightEndpoint(location="grpc://second:6130"),
-        ],
-        token="t",
-        expires_at=datetime.now(timezone.utc),
-    )
 
     with pytest.raises(sdk_error, match="invalid Flight credentials") as exc_info:
         list(
             open_flight_stream(
-                hs,
-                job_id="00000000-0000-0000-0000-000000000007",
+                _handshake(
+                    "grpc+tls://first:6130",
+                    "grpc+tls://second:6130",
+                ),
+                job_id="job",
             )
         )
 
     assert exc_info.value.__cause__ is original_error
-    assert connect_calls == ["grpc://first:6130"]
+    assert calls == ["grpc+tls://first:6130"]
 
 
-def test_do_get_receives_call_timeout(monkeypatch):
-    observed_timeouts: list[float] = []
+def test_timeout_maps_to_typed_error_without_retry(monkeypatch):
+    calls: list[str] = []
+    original_error = flight.FlightTimedOutError("deadline exceeded")
 
-    class FakeReader:
+    def fake_connect(location, **kwargs):
+        calls.append(location)
+        raise original_error
+
+    monkeypatch.setattr("pyarrow.flight.connect", fake_connect)
+
+    with pytest.raises(FlightTimeoutError) as exc_info:
+        list(
+            open_flight_stream(
+                _handshake(
+                    "grpc+tls://first:6130",
+                    "grpc+tls://second:6130",
+                ),
+                job_id="job",
+                timeout_seconds=45,
+            )
+        )
+
+    assert exc_info.value.timeout_seconds == 45
+    assert exc_info.value.__cause__ is original_error
+    assert calls == ["grpc+tls://first:6130"]
+
+
+def test_server_error_propagates_without_retry(monkeypatch):
+    calls: list[str] = []
+    original_error = flight.FlightServerError("application failure")
+
+    def fake_connect(location, **kwargs):
+        calls.append(location)
+        raise original_error
+
+    monkeypatch.setattr("pyarrow.flight.connect", fake_connect)
+
+    with pytest.raises(flight.FlightServerError) as exc_info:
+        list(
+            open_flight_stream(
+                _handshake(
+                    "grpc+tls://first:6130",
+                    "grpc+tls://second:6130",
+                ),
+                job_id="job",
+            )
+        )
+
+    assert exc_info.value is original_error
+    assert calls == ["grpc+tls://first:6130"]
+
+
+def test_arbitrary_prestream_error_propagates_without_retry(monkeypatch):
+    calls: list[str] = []
+    original_error = RuntimeError("unexpected client failure")
+
+    def fake_connect(location, **kwargs):
+        calls.append(location)
+        raise original_error
+
+    monkeypatch.setattr("pyarrow.flight.connect", fake_connect)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        list(
+            open_flight_stream(
+                _handshake(
+                    "grpc+tls://first:6130",
+                    "grpc+tls://second:6130",
+                ),
+                job_id="job",
+            )
+        )
+
+    assert exc_info.value is original_error
+    assert calls == ["grpc+tls://first:6130"]
+
+
+def test_unavailable_after_first_batch_does_not_retry(monkeypatch):
+    calls: list[str] = []
+    original_error = flight.FlightUnavailableError("stream interrupted")
+
+    class Chunk:
+        data = "batch-0"
+
+    class Reader:
         def __iter__(self):
-            return iter([])
+            yield Chunk()
+            raise original_error
 
-    class FakeClient:
+    class Client:
+        def do_get(self, ticket, options=None):
+            return Reader()
+
+        def close(self):
+            pass
+
+    def fake_connect(location, **kwargs):
+        calls.append(location)
+        return Client()
+
+    monkeypatch.setattr("pyarrow.flight.connect", fake_connect)
+
+    with pytest.raises(flight.FlightUnavailableError) as exc_info:
+        list(
+            open_flight_stream(
+                _handshake(
+                    "grpc+tls://first:6130",
+                    "grpc+tls://second:6130",
+                ),
+                job_id="job",
+            )
+        )
+
+    assert exc_info.value is original_error
+    assert calls == ["grpc+tls://first:6130"]
+
+
+def test_do_get_receives_one_hour_default_and_connect_keepalives(monkeypatch):
+    observed_timeouts: list[float] = []
+    observed_options: list[list[tuple[str, int]]] = []
+
+    class Client:
         def do_get(self, ticket, options=None):
             observed_timeouts.append(options.timeout)
-            return FakeReader()
+            return _EmptyReader()
+
+        def close(self):
+            pass
+
+    def fake_connect(location, **kwargs):
+        observed_options.append(kwargs["generic_options"])
+        return Client()
+
+    monkeypatch.setattr("pyarrow.flight.connect", fake_connect)
+
+    list(open_flight_stream(_handshake("grpc+tls://host:6130"), job_id="job"))
+
+    assert observed_timeouts == [3600.0]
+    assert observed_options == [
+        [
+            ("grpc.keepalive_time_ms", 30_000),
+            ("grpc.keepalive_timeout_ms", 10_000),
+            ("grpc.keepalive_permit_without_calls", 1),
+        ]
+    ]
+
+
+def test_tls_settings_reach_connect(monkeypatch):
+    observed_kwargs: list[dict] = []
+
+    def fake_connect(location, **kwargs):
+        observed_kwargs.append(kwargs)
+        return _EmptyClient()
+
+    monkeypatch.setattr("pyarrow.flight.connect", fake_connect)
+
+    list(
+        open_flight_stream(
+            _handshake("grpc+tls://host:6130"),
+            job_id="job",
+            tls_root_certs=b"PRIVATE CA",
+            override_hostname="flight.internal",
+        )
+    )
+
+    assert observed_kwargs[0]["tls_root_certs"] == b"PRIVATE CA"
+    assert observed_kwargs[0]["override_hostname"] == "flight.internal"
+
+
+def test_custom_timeout_reaches_do_get(monkeypatch):
+    observed_timeouts: list[float] = []
+
+    class Client:
+        def do_get(self, ticket, options=None):
+            observed_timeouts.append(options.timeout)
+            return _EmptyReader()
 
         def close(self):
             pass
 
     monkeypatch.setattr(
-        "pyarrow.flight.connect", lambda *_args, **_kwargs: FakeClient()
-    )
-    hs = GrpcHandshake(
-        endpoints=[FlightEndpoint(location="grpc://host:6130")],
-        token="t",
-        expires_at=datetime.now(timezone.utc),
+        "pyarrow.flight.connect",
+        lambda *_args, **_kwargs: Client(),
     )
 
     list(
         open_flight_stream(
-            hs,
-            job_id="00000000-0000-0000-0000-000000000005",
+            _handshake("grpc+tls://host:6130"),
+            job_id="job",
             timeout_seconds=12.5,
         )
     )
@@ -279,34 +379,30 @@ def test_do_get_receives_call_timeout(monkeypatch):
 
 
 def test_metadata_only_chunks_are_not_yielded(monkeypatch):
-    class FakeChunk:
+    class Chunk:
         def __init__(self, data):
             self.data = data
 
-    class FakeReader:
+    class Reader:
         def __iter__(self):
-            return iter([FakeChunk(None), FakeChunk("batch-0")])
+            return iter([Chunk(None), Chunk("batch-0")])
 
-    class FakeClient:
+    class Client:
         def do_get(self, ticket, options=None):
-            return FakeReader()
+            return Reader()
 
         def close(self):
             pass
 
     monkeypatch.setattr(
-        "pyarrow.flight.connect", lambda *_args, **_kwargs: FakeClient()
-    )
-    hs = GrpcHandshake(
-        endpoints=[FlightEndpoint(location="grpc://host:6130")],
-        token="t",
-        expires_at=datetime.now(timezone.utc),
+        "pyarrow.flight.connect",
+        lambda *_args, **_kwargs: Client(),
     )
 
     batches = list(
         open_flight_stream(
-            hs,
-            job_id="00000000-0000-0000-0000-000000000006",
+            _handshake("grpc+tls://host:6130"),
+            job_id="job",
         )
     )
 

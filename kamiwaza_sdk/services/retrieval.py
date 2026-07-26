@@ -6,7 +6,7 @@ import json
 import os
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Iterator, Optional, Sequence
+from typing import TYPE_CHECKING, Iterator, Optional, Sequence
 
 from pydantic import SecretStr
 
@@ -14,6 +14,8 @@ from ..exceptions import (
     APIError,
     AuthorizationError,
     DatasetNotFoundError,
+    FlightIncompleteStreamError,
+    KamiwazaError,
     TransportNotSupportedError,
 )
 from ..schemas.retrieval import (
@@ -31,7 +33,7 @@ from .base_service import BaseService
 if TYPE_CHECKING:
     import pyarrow as pa  # type: ignore[import-untyped]
 
-_DEFAULT_FLIGHT_TIMEOUT_SECONDS = 30.0
+_DEFAULT_FLIGHT_TIMEOUT_SECONDS = 3600.0
 
 
 @dataclass
@@ -72,6 +74,10 @@ class RetrievalService(BaseService):
         if job.transport == TransportType.SSE:
             return RetrievalResult(job=job, stream=self.stream_events(job.job_id))
         if job.transport == TransportType.GRPC:
+            if not job.grpc:
+                raise TransportNotSupportedError(
+                    "gRPC transport returned no Flight handshake"
+                )
             return RetrievalResult(job=job, grpc=job.grpc)
         raise TransportNotSupportedError(f"Unsupported transport {job.transport}")
 
@@ -104,11 +110,14 @@ class RetrievalService(BaseService):
         tls_root_certs: bytes | None = None,
         override_hostname: str | None = None,
         timeout_seconds: float = _DEFAULT_FLIGHT_TIMEOUT_SECONDS,
+        allow_insecure: bool = False,
     ) -> "Iterator[pa.RecordBatch]":
         """Stream Arrow record batches for a grpc-transport retrieval job.
 
-        Thin wrapper around :func:`kamiwaza_sdk.services.retrieval_flight.open_flight_stream`
-        that extracts the handshake and job_id from *job*.
+        After the Flight iterator reaches a clean EOF, the retrieval job must
+        report ``COMPLETED`` or a ``FlightIncompleteStreamError`` is raised.
+        Closing or abandoning the iterator early intentionally skips this
+        completion check.
 
         When the caller does not supply ``ca_cert_path`` or ``tls_root_certs``,
         the method attempts to bridge TLS settings from the underlying HTTP
@@ -123,7 +132,9 @@ class RetrievalService(BaseService):
             tls_root_certs: Raw PEM CA bytes; takes precedence over
                 ``ca_cert_path``.
             override_hostname: Override the TLS SNI hostname.
-            timeout_seconds: Per-attempt Arrow Flight call deadline.
+            timeout_seconds: End-to-end Arrow Flight transfer deadline.
+            allow_insecure: Explicitly permit plaintext endpoints for trusted
+                local development. TLS is required by default.
 
         Returns:
             An iterator of ``pyarrow.RecordBatch`` objects.
@@ -136,26 +147,53 @@ class RetrievalService(BaseService):
         if not job.grpc:
             raise TransportNotSupportedError("Job has no Flight handshake")
 
-        # Bridge TLS from the HTTP session when the caller didn't pass certs.
+        ca_cert_path = self._flight_ca_path(ca_cert_path, tls_root_certs)
+        batches = open_flight_stream(
+            job.grpc,
+            job_id=job.job_id,
+            ca_cert_path=ca_cert_path,
+            tls_root_certs=tls_root_certs,
+            override_hostname=override_hostname,
+            timeout_seconds=timeout_seconds,
+            allow_insecure=allow_insecure,
+        )
+        return self._verify_flight_completion(job.job_id, batches)
+
+    def _flight_ca_path(
+        self,
+        explicit_path: str | os.PathLike[str] | None,
+        tls_root_certs: bytes | None,
+    ) -> str | os.PathLike[str] | None:
+        if explicit_path is not None or tls_root_certs is not None:
+            return explicit_path
         session = getattr(self.client, "session", None)
-        if session is not None:
-            verify = getattr(session, "verify", None)
-            if (
-                ca_cert_path is None
-                and tls_root_certs is None
-                and isinstance(verify, (str, os.PathLike))
-            ):
-                ca_cert_path = os.fspath(verify)
+        verify = getattr(session, "verify", None)
+        if isinstance(verify, (str, os.PathLike)):
+            return os.fspath(verify)
+        return None
 
-        flight_options: dict[str, Any] = {"timeout_seconds": timeout_seconds}
-        if ca_cert_path is not None:
-            flight_options["ca_cert_path"] = ca_cert_path
-        if tls_root_certs is not None:
-            flight_options["tls_root_certs"] = tls_root_certs
-        if override_hostname is not None:
-            flight_options["override_hostname"] = override_hostname
-
-        return open_flight_stream(job.grpc, job_id=job.job_id, **flight_options)
+    def _verify_flight_completion(
+        self,
+        job_id: str,
+        batches: "Iterator[pa.RecordBatch]",
+    ) -> "Iterator[pa.RecordBatch]":
+        yield from batches
+        try:
+            status = self.get_job(job_id)
+        except KamiwazaError as exc:
+            raise FlightIncompleteStreamError(
+                f"Flight stream ended, but completion for job {job_id!r} "
+                "could not be verified",
+                job_id=job_id,
+                status=None,
+            ) from exc
+        if status.status != "COMPLETED":
+            raise FlightIncompleteStreamError(
+                f"Flight stream ended before job {job_id!r} reached COMPLETED "
+                f"(status={status.status!r})",
+                job_id=job_id,
+                status=status.status,
+            )
 
     def create_inline_job(
         self,

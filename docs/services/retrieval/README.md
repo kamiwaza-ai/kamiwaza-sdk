@@ -51,7 +51,7 @@ Arrow Flight handshake instead of inline or SSE data.  The Flight path
 requires the optional `flight` extra:
 
 ```bash
-pip install "kamiwaza-sdk[flight]"
+pip install "kamiwaza-sdk[flight]>=1.1.0"
 ```
 
 ### Consuming Flight batches
@@ -80,23 +80,36 @@ table = pa.Table.from_batches(batches)
 print(table.to_pandas())
 ```
 
-When the Kamiwaza client was constructed with `verify="/path/to/ca-bundle.pem"`
-(or `ca_bundle=...`), that path is automatically forwarded to the Flight
-transport so you don't have to pass it again.
+Production and E2E servers advertise `grpc+tls://` endpoints. TLS is required
+by default. When the Kamiwaza client was constructed with
+`verify="/path/to/ca-bundle.pem"` (or `ca_bundle=...`), that path is
+automatically forwarded to Flight. Empty CA data is rejected. Supplying a CA
+for a plaintext URI is also rejected because gRPC ignores TLS roots on
+plaintext transports.
 
-Each endpoint attempt has a 30-second Arrow Flight call deadline by default,
-including stream reads. Set `timeout_seconds` to a larger value for datasets
-that are expected to take longer:
+Plaintext is available only as an explicit local-development escape hatch:
 
 ```python
-for batch in client.retrieval.flight_batches(job, timeout_seconds=300):
+for batch in client.retrieval.flight_batches(job, allow_insecure=True):
     process(batch)
 ```
+
+`flight_batches` has a finite one-hour deadline for the complete `DoGet` and
+stream read, plus gRPC keepalives. Override the deadline when needed:
+
+```python
+for batch in client.retrieval.flight_batches(job, timeout_seconds=7200):
+    process(batch)
+```
+
+A deadline failure raises the typed `FlightTimeoutError` and is never retried.
 
 ### Mixed-version clusters
 
 Older Kamiwaza server versions (pre-0.8) advertise `"protocol":
 "kamiwaza.retrieval.v1"` in the Flight handshake rather than `"arrow-flight"`.
+An omitted discriminator also defaults to that legacy protocol; Flight
+therefore requires an explicit server advertisement of `"arrow-flight"`.
 Calling `flight_batches` against such a server raises
 `TransportNotSupportedError` with a clear message naming the unsupported
 protocol, instead of producing a confusing connection error:
@@ -112,14 +125,15 @@ except TransportNotSupportedError as exc:
     # Fall back: recreate the job with transport="sse" or transport="inline"
 ```
 
-### Mid-stream failure semantics
+### Retry, token, and completion semantics
 
 Arrow Flight endpoints are *connection alternatives*, not resume points.  The
-SDK attempts each endpoint up to three times (with short backoffs) for
-pre-stream failures such as connection refused or TLS handshake errors.  Once
-at least one batch has been delivered, any subsequent error propagates
-immediately — the SDK never falls back to another endpoint mid-stream, because
-doing so would silently re-deliver data from offset 0.
+server atomically consumes the single-use handshake token when a `DoGet` is
+claimed, and does not offer an API for refreshing the handshake per endpoint.
+The SDK retries an endpoint and falls back only after PyArrow reports a typed
+`FlightUnavailableError` before any batch has been delivered. It never retries
+timeouts, server errors, authentication or authorization failures, arbitrary
+exceptions, or any error after the first batch.
 
 If a mid-stream error occurs, the safe recovery path is to restart from job
 creation:
@@ -130,3 +144,10 @@ job = client.retrieval.create_job(request)   # fresh job
 for batch in client.retrieval.flight_batches(job):
     process(batch)
 ```
+
+The server reports `total_records=-1`, so the SDK does not invent a row-count
+integrity check. Instead, after a natural clean stream exhaustion,
+`flight_batches` reads the job status and requires `COMPLETED`. A clean EOF
+with any other status—or an unavailable status check—raises
+`FlightIncompleteStreamError`. If a caller intentionally closes or abandons
+the iterator early, completion is intentionally not checked.

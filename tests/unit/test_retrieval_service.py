@@ -143,7 +143,7 @@ def test_materialize_grpc_returns_handshake(dummy_client):
         "status": "queued",
         "dataset": {"urn": "urn", "platform": "s3", "path": None, "format": None},
         "grpc": {
-            "endpoints": [{"location": "grpc://localhost:50051"}],
+            "endpoints": [{"location": "grpc+tls://localhost:50051"}],
             "token": "secret",
             "expires_at": "2025-01-01T00:00:00Z",
             "protocol": "arrow-flight",
@@ -155,7 +155,21 @@ def test_materialize_grpc_returns_handshake(dummy_client):
     result = service.materialize(RetrievalRequest(dataset_urn="urn", transport="grpc"))
 
     assert result.grpc is not None
-    assert result.grpc.endpoints[0].location == "grpc://localhost:50051"
+    assert result.grpc.endpoints[0].location == "grpc+tls://localhost:50051"
+
+
+def test_materialize_grpc_requires_handshake(dummy_client):
+    job_payload = {
+        "job_id": "job-missing-handshake",
+        "transport": "grpc",
+        "status": "queued",
+        "dataset": {"urn": "urn", "platform": "s3", "path": None, "format": None},
+    }
+    responses = {("post", "/retrieval/jobs"): job_payload}
+    service = RetrievalService(dummy_client(responses))
+
+    with pytest.raises(TransportNotSupportedError, match="no Flight handshake"):
+        service.materialize(RetrievalRequest(dataset_urn="urn", transport="grpc"))
 
 
 def test_create_job_translates_not_found():
