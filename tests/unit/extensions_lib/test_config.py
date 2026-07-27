@@ -1,9 +1,11 @@
 """Tests for kamiwaza_extensions_lib.config."""
 
+import ssl
 from unittest.mock import patch
 
 import pytest
 from kamiwaza_extensions_lib.config import AuthConfig
+from kamiwaza_extensions_lib.errors import UnexpectedContextError
 
 
 @pytest.mark.unit
@@ -112,6 +114,29 @@ class TestAuthConfig:
         )
 
         assert config.httpx_verify() is False
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            FileNotFoundError("missing bundle"),
+            PermissionError("unreadable bundle"),
+            ssl.SSLError("malformed bundle"),
+        ],
+    )
+    def test_httpx_verify_maps_invalid_ca_bundle_to_typed_context_error(self, error):
+        config = AuthConfig(ca_bundle="/etc/kamiwaza/private-ca.pem")
+
+        with (
+            patch(
+                "kamiwaza_extensions_lib.config.ssl.create_default_context",
+                side_effect=error,
+            ),
+            pytest.raises(
+                UnexpectedContextError,
+                match="KAMIWAZA_CA_BUNDLE",
+            ),
+        ):
+            config.httpx_verify()
 
     def test_openai_base_falls_back_to_model_url(self, monkeypatch):
         monkeypatch.delenv("KAMIWAZA_ENDPOINT", raising=False)

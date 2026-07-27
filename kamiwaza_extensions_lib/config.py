@@ -6,6 +6,8 @@ import os
 import ssl
 from dataclasses import dataclass
 
+from .errors import UnexpectedContextError
+
 
 def _read_verify_ssl() -> bool:
     """Read SSL verification setting from environment.
@@ -69,5 +71,10 @@ class AuthConfig:
         if not self.verify_ssl:
             return False
         if self.ca_bundle:
-            return ssl.create_default_context(cafile=self.ca_bundle)
+            try:
+                return ssl.create_default_context(cafile=self.ca_bundle)
+            except OSError as exc:
+                raise UnexpectedContextError(
+                    "KAMIWAZA_CA_BUNDLE is not a readable PEM trust bundle"
+                ) from exc
         return True

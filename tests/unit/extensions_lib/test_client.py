@@ -238,6 +238,44 @@ class TestKamiwazaExtClientMethods:
         assert forwarded_headers["x-user-name"] == "José"
         assert (b"x-user-name", "José".encode()) in forwarded_headers.raw
 
+    @pytest.mark.asyncio
+    async def test_get_models_filters_httpx_headers_and_joins_duplicate_cookies(self):
+        client = KamiwazaExtClient(
+            api_base="http://api:7777/api",
+            openai_base="",
+        )
+        incoming = httpx.Headers(
+            [
+                (b"host", b"internal-victim"),
+                (b"x-forwarded-for", b"198.51.100.10"),
+                (b"x-envoy-original-path", b"/admin"),
+                (b"x-original-uri", b"/admin"),
+                (b"x-user-id", b"usr-123"),
+                (b"cookie", b"session=opaque"),
+                (b"cookie", b"workroom=wrk-123"),
+            ]
+        )
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.return_value = []
+
+        with patch("kamiwaza_extensions_lib.client.httpx.AsyncClient") as MockClient:
+            mock_instance = AsyncMock()
+            mock_instance.get = AsyncMock(return_value=mock_response)
+            mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+            mock_instance.__aexit__ = AsyncMock(return_value=False)
+            MockClient.return_value = mock_instance
+
+            await client.get_models(headers=incoming)
+
+        forwarded_headers = MockClient.call_args.kwargs["headers"]
+        assert forwarded_headers["x-user-id"] == "usr-123"
+        assert forwarded_headers["cookie"] == "session=opaque; workroom=wrk-123"
+        assert "host" not in forwarded_headers
+        assert "x-forwarded-for" not in forwarded_headers
+        assert "x-envoy-original-path" not in forwarded_headers
+        assert "x-original-uri" not in forwarded_headers
+
     def test_platform_auth_headers_encode_manual_unicode_as_utf8(self):
         forwarded_headers = KamiwazaExtClient._platform_auth_headers(
             {

@@ -122,11 +122,7 @@ class KamiwazaExtClient:
         headers: Mapping[str, str] | None = None,
     ) -> httpx.Headers:
         """Keep the complete signed envelope for backend-to-platform calls."""
-        filtered = (
-            httpx.Headers(headers.raw)
-            if isinstance(headers, httpx.Headers)
-            else forward_auth_httpx_headers(headers or {})
-        )
+        filtered = forward_auth_httpx_headers(headers or {})
         if not filtered.get("authorization"):
             token = filtered.get("x-auth-token")
             if token:

@@ -41,6 +41,7 @@ _FORWARD_HEADERS = frozenset(
         "x-user-signature-ts",
     }
 )
+_FORWARD_HEADER_BYTES = frozenset(name.encode("ascii") for name in _FORWARD_HEADERS)
 
 
 def is_forwarded_auth_header(name: str) -> bool:
@@ -83,6 +84,28 @@ def forward_auth_httpx_headers(headers: Mapping[str, str]) -> httpx.Headers:
     without forcing identity fields through httpx's ASCII-only string path.
     """
     try:
+        if isinstance(headers, httpx.Headers):
+            forwarded_raw: list[tuple[bytes, bytes]] = []
+            cookie_values: list[bytes] = []
+            cookie_name = b"cookie"
+            cookie_position: int | None = None
+            for key, value in headers.raw:
+                normalized = key.lower()
+                if normalized not in _FORWARD_HEADER_BYTES:
+                    continue
+                if normalized == b"cookie":
+                    if cookie_position is None:
+                        cookie_position = len(forwarded_raw)
+                        cookie_name = key
+                    cookie_values.append(value)
+                    continue
+                forwarded_raw.append((key, value))
+            if cookie_position is not None:
+                forwarded_raw.insert(
+                    cookie_position,
+                    (cookie_name, b"; ".join(cookie_values)),
+                )
+            return httpx.Headers(forwarded_raw)
         return httpx.Headers(
             [
                 header_bytes(key, value)
