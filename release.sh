@@ -146,10 +146,11 @@ fi
 
 # --- Publish, one prompt per package ---
 #
-# Order matters: kamiwaza-sdk pins `kamiwaza-extensions-lib>=0.4,<0.5` as a
+# Order matters: kamiwaza-sdk pins `kamiwaza-extensions-lib>=0.4.4,<0.5` as a
 # runtime dep. Publishing the SDK first leaves users unable to
 # `pip install kamiwaza-sdk==X` if the lib upload step is skipped or fails.
-# So: lib → SDK → npm.
+# The generated SDK scaffold also requires the TypeScript runtime floor.
+# So: Python lib → npm lib → SDK.
 
 LIB_PUBLISHED=0
 
@@ -170,7 +171,7 @@ fi
 # *already* on PyPI.
 if [[ $LIB_PUBLISHED -eq 0 ]]; then
     echo
-    echo "Note: kamiwaza-sdk requires kamiwaza-extensions-lib (>=0.4,<0.5) at runtime."
+    echo "Note: kamiwaza-sdk requires kamiwaza-extensions-lib (>=0.4.4,<0.5) at runtime."
     echo "  Since the lib upload was skipped, only proceed if that version is"
     echo "  already on PyPI from a prior release."
     read -r -p "Is the required lib version already on PyPI? (y/n) " REPLY || REPLY=n
@@ -185,6 +186,40 @@ else
     SDK_GATED=0
 fi
 
+if [[ $NPM_VERSION_EXISTS -eq 1 ]]; then
+    echo "@kamiwaza-ai/extensions-lib upload skipped: ${NPM_LIB_VERSION} is already on npm (acknowledged at preflight)."
+    NPM_READY=1
+else
+    read -r -p "Upload @kamiwaza-ai/extensions-lib to npm? (y/n) " REPLY || REPLY=n
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        # Pre-flight: confirm we're authenticated against the public npm registry
+        # specifically. A stale .npmrc pointing at a private/internal registry
+        # would otherwise divert the upload silently.
+        NPM_REGISTRY="https://registry.npmjs.org/"
+        if ! NPM_USER=$(npm whoami --registry="$NPM_REGISTRY" 2>&1); then
+            echo "Error: not logged in to $NPM_REGISTRY"
+            echo "  npm whoami output: $NPM_USER"
+            echo "  Run \`npm login --registry=$NPM_REGISTRY\` and re-run this script."
+            exit 1
+        fi
+        echo "Publishing @kamiwaza-ai/extensions-lib as npm user: $NPM_USER"
+        ( cd kamiwaza-ai-extensions-lib && npm publish --access public --registry="$NPM_REGISTRY" )
+        NPM_READY=1
+    else
+        echo "@kamiwaza-ai/extensions-lib upload skipped"
+        NPM_READY=0
+    fi
+fi
+
+# Coupling guard: fresh SDK scaffolds require the TypeScript runtime version in
+# compatibility.json. Never publish the SDK first and leave npm resolution
+# broken if the operator skips or cannot complete the npm upload.
+if [[ $NPM_READY -eq 0 ]]; then
+    echo "Skipping kamiwaza-sdk upload because ${NPM_LIB_NAME}@${NPM_LIB_VERSION} is not published."
+    SDK_GATED=1
+fi
+
 if [[ $SDK_GATED -eq 0 ]]; then
     read -r -p "Upload kamiwaza-sdk to PyPI? (y/n) " REPLY || REPLY=n
     echo
@@ -193,28 +228,4 @@ if [[ $SDK_GATED -eq 0 ]]; then
     else
         echo "kamiwaza-sdk upload skipped"
     fi
-fi
-
-if [[ $NPM_VERSION_EXISTS -eq 1 ]]; then
-    echo "@kamiwaza-ai/extensions-lib upload skipped: ${NPM_LIB_VERSION} is already on npm (acknowledged at preflight)."
-    exit 0
-fi
-
-read -r -p "Upload @kamiwaza-ai/extensions-lib to npm? (y/n) " REPLY || REPLY=n
-echo
-if [[ $REPLY =~ ^[Yy]$ ]]; then
-    # Pre-flight: confirm we're authenticated against the public npm registry
-    # specifically. A stale .npmrc pointing at a private/internal registry
-    # would otherwise divert the upload silently.
-    NPM_REGISTRY="https://registry.npmjs.org/"
-    if ! NPM_USER=$(npm whoami --registry="$NPM_REGISTRY" 2>&1); then
-        echo "Error: not logged in to $NPM_REGISTRY"
-        echo "  npm whoami output: $NPM_USER"
-        echo "  Run \`npm login --registry=$NPM_REGISTRY\` and re-run this script."
-        exit 1
-    fi
-    echo "Publishing @kamiwaza-ai/extensions-lib as npm user: $NPM_USER"
-    ( cd kamiwaza-ai-extensions-lib && npm publish --access public --registry="$NPM_REGISTRY" )
-else
-    echo "@kamiwaza-ai/extensions-lib upload skipped"
 fi

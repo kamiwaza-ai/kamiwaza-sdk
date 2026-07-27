@@ -721,12 +721,9 @@ class TestDoctorExtensionChecks:
     def test_python_runtime_lib_found(self, tmp_path):
         req_file = tmp_path / "requirements.txt"
         # Use a range that fits the current compat bundle window
-        # (`>=0.4,<0.5` for Python at time of writing — round-9 raised
-        # the floor when ``_url`` was promoted to a public ``url``
-        # module that scaffolded extensions import). PR-86 H7/M6 made
-        # this check range-vs-range accurate — anything below 0.4 will
-        # now correctly warn as below the floor.
-        req_file.write_text("kamiwaza-extensions-lib>=0.4.0,<0.5\nfastapi\n")
+        # (`>=0.4.4,<0.5` for Python at time of writing) so generated apps
+        # can rely on the guarded platform request helper.
+        req_file.write_text("kamiwaza-extensions-lib>=0.4.4,<0.5\nfastapi\n")
         checker = DoctorChecker(config_dir=tmp_path / ".kamiwaza")
         result = checker._check_python_runtime_lib(req_file)
         assert result.status == "pass"
@@ -741,7 +738,7 @@ class TestDoctorExtensionChecks:
     def test_ts_runtime_lib_found(self, tmp_path):
         pkg_file = tmp_path / "package.json"
         pkg_file.write_text(
-            json.dumps({"dependencies": {"@kamiwaza-ai/extensions-lib": "^0.4.0"}})
+            json.dumps({"dependencies": {"@kamiwaza-ai/extensions-lib": "^0.4.3"}})
         )
         checker = DoctorChecker(config_dir=tmp_path / ".kamiwaza")
         result = checker._check_ts_runtime_lib(pkg_file)

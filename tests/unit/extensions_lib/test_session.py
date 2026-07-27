@@ -235,9 +235,10 @@ def _fake_core_client(calls, core_body):
     """Build a FakeAsyncClient class recording calls and returning core_body."""
 
     class FakeAsyncClient:
-        def __init__(self, *, verify, timeout):
+        def __init__(self, *, verify, timeout, trust_env):
             calls["verify"] = verify
             calls["timeout"] = timeout
+            calls["trust_env"] = trust_env
 
         async def __aenter__(self):
             return self
@@ -354,7 +355,7 @@ class TestLogoutEndpoint:
         """
 
         class FailingAsyncClient:
-            def __init__(self, *, verify, timeout):
+            def __init__(self, *, verify, timeout, trust_env):
                 pass
 
             async def __aenter__(self):
@@ -401,6 +402,7 @@ class TestLogoutEndpoint:
         assert resp.status_code == 200
         assert calls["verify"] is False
         assert calls["timeout"] == 5
+        assert calls["trust_env"] is False
         assert calls["url"] == "https://cluster.test/api/auth/logout"
         assert calls["headers"]["x-auth-token"] == "token-123"
 
@@ -428,7 +430,7 @@ class TestLogoutEndpoint:
         calls = {}
 
         class FakeAsyncClient:
-            def __init__(self, *, verify, timeout):
+            def __init__(self, *, verify, timeout, trust_env):
                 pass
 
             async def __aenter__(self):

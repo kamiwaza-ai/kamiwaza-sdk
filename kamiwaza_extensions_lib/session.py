@@ -209,6 +209,7 @@ def create_session_router(prefix: str = "") -> APIRouter:
             async with httpx.AsyncClient(
                 verify=config.verify_ssl,
                 timeout=5,
+                trust_env=False,
             ) as client:
                 await client.post(backend_logout_url, headers=headers, json=body)
         except Exception:

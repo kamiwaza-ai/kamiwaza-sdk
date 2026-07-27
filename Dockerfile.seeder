@@ -1,8 +1,10 @@
 # Seeder image for the nightly UAT-box seeding step.
 #
-# Self-contained delivery of the `kamiwaza-seed` CLI: `pip install .` installs
-# the SDK and its console scripts (kamiwaza-seed, including the `login`
-# subcommand) and resolves the kamiwaza-extensions-lib dependency from PyPI.
+# Self-contained delivery of the `kamiwaza-seed` CLI: install the in-tree
+# kamiwaza-extensions-lib release first, then `pip install .` installs the SDK
+# and its console scripts (kamiwaza-seed, including the `login` subcommand).
+# Keeping both workspace packages in the build context lets a PR raise the SDK
+# dependency floor before that runtime-lib release exists on PyPI.
 # The build VM pulls this from GHCR, bundles it, and it relocates into the
 # in-cluster local registry under the org's `<registry>/images/seeder:<tag>`
 # rule — no clone+pip/venv on the box.
@@ -30,8 +32,10 @@ COPY pyproject.toml README.md LICENSE MANIFEST.in ./
 COPY kamiwaza_sdk/ ./kamiwaza_sdk/
 COPY kamiwaza_client/ ./kamiwaza_client/
 COPY kamiwaza_extensions/ ./kamiwaza_extensions/
+COPY kamiwaza_extensions_lib/ ./kamiwaza_extensions_lib/
 
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir ./kamiwaza_extensions_lib \
+    && pip install --no-cache-dir .
 
 USER 1001
 

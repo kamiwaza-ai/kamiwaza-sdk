@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
+from starlette.datastructures import Headers
 
 from kamiwaza_extensions_lib.client import KamiwazaExtClient
 
@@ -69,6 +70,7 @@ class TestKamiwazaExtClientInit:
         client = KamiwazaExtClient(api_base="http://api:7777", timeout=15.0)
         async_client = client._client()
         assert async_client.timeout == httpx.Timeout(15.0)
+        assert async_client._trust_env is False
         # Clean up
         asyncio.run(async_client.aclose())
 
@@ -144,7 +146,7 @@ class TestKamiwazaExtClientMethods:
             assert result == [{"id": "d1", "model_name": "llama"}]
 
     @pytest.mark.asyncio
-    async def test_get_models_strips_forwarded_user_headers_and_promotes_auth_token(
+    async def test_get_models_preserves_complete_envelope_and_promotes_auth_token(
         self,
     ):
         client = KamiwazaExtClient(
@@ -167,8 +169,12 @@ class TestKamiwazaExtClientMethods:
                 headers={
                     "X-User-Id": "usr-123",
                     "X-User-Roles": "admin,user",
+                    "X-User-Groups": "engineering,search",
+                    "X-User-Attributes-Hash": "sha256:attributes",
                     "X-Auth-Token": "jwt-abc",
+                    "X-Auth-Azp": "chatbot-app",
                     "X-Workroom-Id": "wrk-123",
+                    "X-User-Signature-Stable": "stable-signature",
                 }
             )
 
@@ -176,8 +182,55 @@ class TestKamiwazaExtClientMethods:
             assert forwarded_headers["Authorization"] == "Bearer jwt-abc"
             assert forwarded_headers["X-Auth-Token"] == "jwt-abc"
             assert forwarded_headers["X-Workroom-Id"] == "wrk-123"
-            assert "X-User-Id" not in forwarded_headers
-            assert "X-User-Roles" not in forwarded_headers
+            assert forwarded_headers["X-User-Id"] == "usr-123"
+            assert forwarded_headers["X-User-Roles"] == "admin,user"
+            assert forwarded_headers["X-User-Groups"] == "engineering,search"
+            assert (
+                forwarded_headers["X-User-Attributes-Hash"] == "sha256:attributes"
+            )
+            assert forwarded_headers["X-Auth-Azp"] == "chatbot-app"
+            assert (
+                forwarded_headers["X-User-Signature-Stable"] == "stable-signature"
+            )
+
+    @pytest.mark.asyncio
+    async def test_get_models_preserves_non_ascii_envelope_bytes(self):
+        client = KamiwazaExtClient(
+            api_base="http://api:7777/api",
+            openai_base="",
+        )
+        incoming = Headers(
+            raw=[
+                (b"x-user-name", "José".encode()),
+                (b"x-user-id", b"usr-123"),
+            ]
+        )
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.return_value = []
+
+        with patch("kamiwaza_extensions_lib.client.httpx.AsyncClient") as MockClient:
+            mock_instance = AsyncMock()
+            mock_instance.get = AsyncMock(return_value=mock_response)
+            mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+            mock_instance.__aexit__ = AsyncMock(return_value=False)
+            MockClient.return_value = mock_instance
+
+            await client.get_models(headers=incoming)
+
+        forwarded_headers = MockClient.call_args.kwargs["headers"]
+        assert forwarded_headers["x-user-name"] == "José"
+        assert (b"x-user-name", "José".encode()) in forwarded_headers.raw
+
+    def test_platform_auth_headers_encode_manual_unicode_as_utf8(self):
+        forwarded_headers = KamiwazaExtClient._platform_auth_headers(
+            {
+                "X-User-Id": "usr-123",
+                "X-User-Name": "山田",
+            }
+        )
+
+        assert (b"X-User-Name", "山田".encode()) in forwarded_headers.raw
 
     @pytest.mark.asyncio
     async def test_get_models_filters_out_stopped_deployments(self):

@@ -8,15 +8,21 @@ lightweight async library — not the full SDK with its sync HTTP client
 and 20+ service modules.
 """
 
-__version__ = "0.4.3"
+__version__ = "0.4.4"
 
-from .auth import forward_auth_headers, require_auth, require_role
+from .auth import (
+    forward_auth_headers,
+    is_forwarded_auth_header,
+    require_auth,
+    require_role,
+)
 from .client import KamiwazaExtClient
 from .config import AuthConfig
 from .errors import (
     KamiwazaRuntimeError,
     MisboundAuthError,
     OutOfEnvelopeAccessError,
+    PlatformRedirectError,
     PlatformOutageError,
     StreamInterruptedError,
     UnexpectedContextError,
@@ -29,6 +35,7 @@ from .identity import (
     identity_from_headers,
 )
 from .models import AvailableModel, get_model_client, list_available_models
+from .platform import platform_request
 from .session import create_session_router
 from .url import backend_runtime_base, public_base_url
 
@@ -38,6 +45,7 @@ __all__ = [
     "require_auth",
     "require_role",
     "forward_auth_headers",
+    "is_forwarded_auth_header",
     "create_session_router",
     "KamiwazaExtClient",
     "Identity",
@@ -49,10 +57,12 @@ __all__ = [
     "MisboundAuthError",
     "UnexpectedContextError",
     "OutOfEnvelopeAccessError",
+    "PlatformRedirectError",
     "PlatformOutageError",
     "StreamInterruptedError",
     "get_model_client",
     "list_available_models",
     "backend_runtime_base",
     "public_base_url",
+    "platform_request",
 ]

@@ -106,7 +106,7 @@ async def get_model_client(request: Request):
         base_url=openai_base,
         api_key=api_key,
         default_headers=passthrough_headers,
-        http_client=httpx.AsyncClient(verify=config.verify_ssl),
+        http_client=httpx.AsyncClient(verify=config.verify_ssl, trust_env=False),
     )
 
 

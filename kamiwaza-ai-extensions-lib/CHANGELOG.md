@@ -4,6 +4,17 @@ Versions follow semver. Published to npm as a standalone package
 (`@kamiwaza-ai/extensions-lib`) and versioned independently from
 `kamiwaza-sdk`.
 
+## [0.4.3] — 2026-07-27 (ENG-9199)
+
+### Fixed
+
+* The Next.js proxy and local-development auth bridge now share the complete
+  signed ForwardAuth envelope introduced by the platform AuthZ rollout,
+  including groups, attributes hash, authorized party, and stable signature.
+  This prevents the default frontend-to-backend proxy from stripping fields
+  before Python's guarded `platform_request()` forwards the request to a
+  platform API.
+
 ## [0.4.2] — 2026-07-16 (ENG-8753)
 
 ### Fixed

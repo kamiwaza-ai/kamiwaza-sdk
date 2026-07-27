@@ -1,9 +1,10 @@
 """Tests for kamiwaza_extensions_lib.auth."""
 
-import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
+import pytest
 from fastapi import HTTPException
+from starlette.datastructures import Headers
 
 from kamiwaza_extensions_lib.auth import (
     forward_auth_headers,
@@ -24,10 +25,17 @@ class TestForwardAuthHeaders:
             "X-User-Email": "alice@example.com",
             "X-User-Name": "Alice",
             "X-User-Roles": "admin,user",
+            "X-User-Groups": "engineering,search",
+            "X-User-Attributes-Hash": "sha256:attributes",
             "X-User-System-High": "TS",
             "X-User-Workroom-Role": "editor",
             "X-Workroom-Id": "wrk-456",
+            "X-User-Workroom-Id": "wrk-456",
+            "X-Auth-Azp": "chat-with-docs",
             "X-Request-Id": "req-789",
+            "X-User-Signature": "legacy-signature",
+            "X-User-Signature-Stable": "stable-signature",
+            "X-User-Signature-Ts": "1784390400",
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
@@ -42,10 +50,17 @@ class TestForwardAuthHeaders:
             "X-User-Email": "alice@example.com",
             "X-User-Name": "Alice",
             "X-User-Roles": "admin,user",
+            "X-User-Groups": "engineering,search",
+            "X-User-Attributes-Hash": "sha256:attributes",
             "X-User-System-High": "TS",
             "X-User-Workroom-Role": "editor",
             "X-Workroom-Id": "wrk-456",
+            "X-User-Workroom-Id": "wrk-456",
+            "X-Auth-Azp": "chat-with-docs",
             "X-Request-Id": "req-789",
+            "X-User-Signature": "legacy-signature",
+            "X-User-Signature-Stable": "stable-signature",
+            "X-User-Signature-Ts": "1784390400",
         }
 
     def test_forwards_classification_and_workroom_role(self):
@@ -87,6 +102,20 @@ class TestForwardAuthHeaders:
         result = forward_auth_headers(headers)
         assert "x-user-id" in result
         assert "x-auth-token" in result
+
+    def test_combines_duplicate_cookie_fields(self):
+        headers = Headers(
+            raw=[
+                (b"cookie", b"session=opaque"),
+                (b"cookie", b"csrf=bound"),
+                (b"x-user-id", b"usr-123"),
+            ]
+        )
+
+        result = forward_auth_headers(headers)
+
+        assert result["cookie"] == "session=opaque; csrf=bound"
+        assert result["x-user-id"] == "usr-123"
 
 
 @pytest.mark.unit

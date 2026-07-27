@@ -13,26 +13,37 @@ from .identity import Identity, anonymous_identity, extract_identity, get_identi
 
 logger = logging.getLogger(__name__)
 
-# Headers to forward when calling other Kamiwaza services. The set must
-# stay aligned with the envelope ``Identity`` reads (kept in
-# kamiwaza_extensions_lib.identity) — silently dropping any platform-set
-# header here would prevent downstream services from re-establishing the
-# caller's workroom role or system-high classification.
+# Headers to forward when calling other Kamiwaza services. This is a superset
+# of the fields projected onto ``Identity``: signatures, groups, attributes,
+# and authorized-party metadata must also survive so downstream platform
+# services can validate and re-establish the complete caller envelope.
 _FORWARD_HEADERS = frozenset(
     {
         "authorization",
         "cookie",
         "x-auth-token",
+        "x-auth-azp",
         "x-user-id",
         "x-user-email",
         "x-user-name",
         "x-user-roles",
+        "x-user-groups",
+        "x-user-attributes-hash",
         "x-user-system-high",
         "x-user-workroom-role",
         "x-workroom-id",
+        "x-user-workroom-id",
         "x-request-id",
+        "x-user-signature",
+        "x-user-signature-stable",
+        "x-user-signature-ts",
     }
 )
+
+
+def is_forwarded_auth_header(name: str) -> bool:
+    """Return whether *name* belongs to the forwarded auth envelope."""
+    return name.lower() in _FORWARD_HEADERS
 
 
 def forward_auth_headers(headers: Mapping[str, str]) -> dict[str, str]:
@@ -41,7 +52,27 @@ def forward_auth_headers(headers: Mapping[str, str]) -> dict[str, str]:
     Returns a dict containing only the platform auth / identity headers.
     Safe to call with any mapping (returns empty dict when nothing matches).
     """
-    return {k: v for k, v in headers.items() if k.lower() in _FORWARD_HEADERS}
+    forwarded = {
+        key: value
+        for key, value in headers.items()
+        if is_forwarded_auth_header(key)
+    }
+
+    # Starlette preserves duplicate inbound fields in ``Headers.raw`` and
+    # exposes them through ``getlist``. RFC 9113 permits HTTP/2 Cookie fields
+    # to arrive split, so join them with the HTTP Cookie delimiter instead of
+    # silently retaining only the final field from ``items()``.
+    getlist = getattr(headers, "getlist", None)
+    if callable(getlist):
+        cookie_values = getlist("cookie")
+        if len(cookie_values) > 1:
+            cookie_key = next(
+                (key for key in forwarded if key.lower() == "cookie"),
+                "cookie",
+            )
+            forwarded[cookie_key] = "; ".join(cookie_values)
+
+    return forwarded
 
 
 async def require_auth(request: Request) -> Identity:

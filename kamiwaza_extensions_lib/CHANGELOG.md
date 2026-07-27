@@ -6,6 +6,47 @@ follow semver. The library is published to PyPI as a standalone package
 `kamiwaza-sdk` — extension authors pin against the `[lib]` minor range in
 `requirements.txt`.
 
+## [0.4.4] — 2026-07-27 (ENG-9199)
+
+### Added
+
+* **`platform_request()`** provides the supported request-bound path for an
+  extension backend to call Kamiwaza platform APIs. It resolves root-relative
+  paths against the container-routable platform base, forwards the incoming
+  signed authentication envelope, rejects caller attempts to override auth or
+  routing headers (including reserved future prefixes), message framing,
+  method overrides, and httpcore request-target extensions; rejects
+  query-bearing or ambiguous dot-segment paths; requires a valid private
+  `KAMIWAZA_API_URL`; and never follows redirects. Redirect responses raise the typed
+  `PlatformRedirectError` so non-canonical URLs fail at the call site instead
+  of silently losing cookies or authorization headers; non-redirect statuses
+  such as 304 remain available to callers. Network and timeout failures surface
+  through the existing typed `PlatformOutageError`. User-bound runtime clients
+  ignore environment proxy variables so the signed envelope cannot leave
+  through an inherited `HTTP_PROXY` / `HTTPS_PROXY`.
+* `PlatformRedirectError` now has its own `platform_redirect` doctor hint and
+  CLI exit-code mapping instead of inheriting the generic unexpected-context
+  guidance.
+
+### Changed
+
+* User-bound runtime clients now set `trust_env=False`. In addition to ignoring
+  proxy variables, this means they no longer inherit `SSL_CERT_FILE` or
+  `SSL_CERT_DIR`; private-CA deployments must install that CA in the container's
+  system trust store. `KAMIWAZA_VERIFY_SSL=false` remains available for local
+  development only and should not be used to bypass verification in production.
+* Full-envelope forwarding requires a platform containing the signed AuthZ
+  contract from kamiwaza#2258. Treat that platform boundary as a release gate
+  when publishing runtime versions 0.4.4 (Python) and 0.4.3 (TypeScript).
+
+### Fixed
+
+* `forward_auth_headers()` now preserves the complete current ForwardAuth
+  envelope, including user groups, attributes hash, authorized party,
+  workroom alias, legacy/stable signature headers, and split HTTP/2 Cookie
+  fields. `KamiwazaExtClient` model discovery now consumes this same helper
+  instead of maintaining a smaller third allowlist.
+
 ## [0.4.3] — 2026-07-16 (ENG-8766)
 
 ### Fixed
