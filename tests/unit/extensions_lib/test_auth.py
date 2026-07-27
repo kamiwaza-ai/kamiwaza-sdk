@@ -152,7 +152,20 @@ class TestForwardAuthHeaders:
             ]
         )
 
-        with pytest.raises(MisboundAuthError, match="invalid HTTP header"):
+        with pytest.raises(MisboundAuthError, match="duplicate HTTP header"):
+            forward_auth_httpx_headers(headers)
+
+    def test_starlette_headers_reject_ambiguous_duplicate_fields(self):
+        headers = Headers(
+            raw=[
+                (b"authorization", b"Bearer user"),
+                (b"authorization", b"Bearer attacker"),
+                (b"x-user-id", b"real-user"),
+                (b"x-user-id", b"attacker-user"),
+            ]
+        )
+
+        with pytest.raises(MisboundAuthError, match="duplicate HTTP header"):
             forward_auth_httpx_headers(headers)
 
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from itertools import filterfalse
 
 import httpx
@@ -120,14 +120,22 @@ def _join_raw_cookie_fields(
     return without_cookies
 
 
-def _forward_auth_raw_items(headers: httpx.Headers) -> list[tuple[bytes, bytes]]:
+def _forward_auth_raw_items(
+    raw_items: Iterable[tuple[bytes, bytes]],
+) -> list[tuple[bytes, bytes]]:
     forwarded = list(
         map(
             _validated_raw_field,
-            filter(_is_forwarded_raw_field, headers.raw),
+            filter(_is_forwarded_raw_field, raw_items),
         )
     )
     return _join_raw_cookie_fields(_reject_ambiguous_raw_fields(forwarded))
+
+
+def _misbound_header_message(exc: ValueError) -> str:
+    if str(exc).startswith("duplicate forwarded header"):
+        return "ForwardAuth envelope contains a duplicate HTTP header"
+    return "ForwardAuth envelope contains an invalid HTTP header"
 
 
 def forward_auth_httpx_headers(headers: Mapping[str, str]) -> httpx.Headers:
@@ -138,8 +146,9 @@ def forward_auth_httpx_headers(headers: Mapping[str, str]) -> httpx.Headers:
     without forcing identity fields through httpx's ASCII-only string path.
     """
     try:
-        if isinstance(headers, httpx.Headers):
-            return httpx.Headers(_forward_auth_raw_items(headers))
+        raw_items = getattr(headers, "raw", None)
+        if raw_items is not None:
+            return httpx.Headers(_forward_auth_raw_items(raw_items))
         return httpx.Headers(
             [
                 header_bytes(key, value)
@@ -147,9 +156,7 @@ def forward_auth_httpx_headers(headers: Mapping[str, str]) -> httpx.Headers:
             ]
         )
     except ValueError as exc:
-        raise MisboundAuthError(
-            "ForwardAuth envelope contains an invalid HTTP header"
-        ) from exc
+        raise MisboundAuthError(_misbound_header_message(exc)) from exc
 
 
 def platform_auth_httpx_headers(headers: Mapping[str, str]) -> httpx.Headers:

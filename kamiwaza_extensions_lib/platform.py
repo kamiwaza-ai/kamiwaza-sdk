@@ -181,6 +181,14 @@ async def platform_request(
 
     The response is returned without calling ``raise_for_status`` so an
     extension can preserve the platform's 4xx/5xx status and error contract.
+
+    Raises:
+        ValueError: If caller-controlled request input is invalid.
+        MisboundAuthError: If the forwarded platform envelope is malformed or
+            contains an ambiguous duplicate field.
+        UnexpectedContextError: If required runtime configuration is invalid.
+        PlatformRedirectError: If the canonical platform route redirects.
+        PlatformOutageError: If the platform transport fails.
     """
     forbidden = _FORBIDDEN_REQUEST_KWARGS.intersection(kwargs)
     if forbidden:

@@ -59,6 +59,8 @@ verification in production.
 The helper raises:
 
 - `ValueError` for invalid paths, methods, headers, or caller overrides
+- `MisboundAuthError` when the platform-provided ForwardAuth envelope is
+  malformed or contains an ambiguous duplicate field
 - `UnexpectedContextError` when `KAMIWAZA_API_URL` is missing or invalid
 - `PlatformRedirectError` (a specialized `UnexpectedContextError`) when the
   canonical route redirects
