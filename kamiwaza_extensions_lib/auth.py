@@ -50,6 +50,28 @@ def is_forwarded_auth_header(name: str) -> bool:
     return name.lower() in _FORWARD_HEADERS
 
 
+def _add_forwarded_auth_header(
+    forwarded: dict[str, str],
+    seen: set[str],
+    cookie_key: str,
+    key: str,
+    value: str,
+) -> str:
+    """Add one allowed mapping entry while rejecting ambiguous duplicates."""
+    normalized = key.lower()
+    if normalized == "cookie":
+        if cookie_key:
+            forwarded[cookie_key] += f"; {value}"
+            return cookie_key
+        forwarded[key] = value
+        return key
+    if normalized in seen:
+        raise MisboundAuthError("ForwardAuth envelope contains a duplicate HTTP header")
+    seen.add(normalized)
+    forwarded[key] = value
+    return cookie_key
+
+
 def forward_auth_headers(headers: Mapping[str, str]) -> dict[str, str]:
     """Extract auth-related headers for forwarding to other services.
 
@@ -60,22 +82,9 @@ def forward_auth_headers(headers: Mapping[str, str]) -> dict[str, str]:
     seen: set[str] = set()
     cookie_key = ""
     for key, value in headers.items():
-        normalized = key.lower()
-        if normalized not in _FORWARD_HEADERS:
+        if not is_forwarded_auth_header(key):
             continue
-        if normalized == "cookie":
-            if not cookie_key:
-                cookie_key = key
-                forwarded[cookie_key] = value
-            else:
-                forwarded[cookie_key] += f"; {value}"
-            continue
-        if normalized in seen:
-            raise MisboundAuthError(
-                "ForwardAuth envelope contains a duplicate HTTP header"
-            )
-        seen.add(normalized)
-        forwarded[key] = value
+        cookie_key = _add_forwarded_auth_header(forwarded, seen, cookie_key, key, value)
     return forwarded
 
 
