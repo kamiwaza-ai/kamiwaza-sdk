@@ -78,6 +78,10 @@ def forward_auth_headers(headers: Mapping[str, str]) -> dict[str, str]:
     Returns a dict containing only the platform auth / identity headers.
     Safe to call with any mapping (returns empty dict when nothing matches).
     """
+    raw_mapping = _forward_auth_raw_mapping(headers)
+    if raw_mapping is not None:
+        return raw_mapping
+
     forwarded: dict[str, str] = {}
     seen: set[str] = set()
     cookie_key = ""
@@ -147,6 +151,21 @@ def _misbound_header_message(exc: ValueError) -> str:
     if str(exc).startswith("duplicate forwarded header"):
         return "ForwardAuth envelope contains a duplicate HTTP header"
     return "ForwardAuth envelope contains an invalid HTTP header"
+
+
+def _forward_auth_raw_mapping(
+    headers: Mapping[str, str],
+) -> dict[str, str] | None:
+    raw_items = getattr(headers, "raw", None)
+    if raw_items is None:
+        return None
+    try:
+        return {
+            key.decode("ascii"): value.decode("latin-1")
+            for key, value in _forward_auth_raw_items(raw_items)
+        }
+    except ValueError as exc:
+        raise MisboundAuthError(_misbound_header_message(exc)) from exc
 
 
 def forward_auth_httpx_headers(headers: Mapping[str, str]) -> httpx.Headers:
