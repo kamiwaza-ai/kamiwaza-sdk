@@ -56,24 +56,26 @@ def forward_auth_headers(headers: Mapping[str, str]) -> dict[str, str]:
     Returns a dict containing only the platform auth / identity headers.
     Safe to call with any mapping (returns empty dict when nothing matches).
     """
-    forwarded = {
-        key: value for key, value in headers.items() if is_forwarded_auth_header(key)
-    }
-
-    # Starlette preserves duplicate inbound fields in ``Headers.raw`` and
-    # exposes them through ``getlist``. RFC 9113 permits HTTP/2 Cookie fields
-    # to arrive split, so join them with the HTTP Cookie delimiter instead of
-    # silently retaining only the final field from ``items()``.
-    getlist = getattr(headers, "getlist", None)
-    if callable(getlist):
-        cookie_values = getlist("cookie")
-        if len(cookie_values) > 1:
-            cookie_key = next(
-                (key for key in forwarded if key.lower() == "cookie"),
-                "cookie",
+    forwarded: dict[str, str] = {}
+    seen: set[str] = set()
+    cookie_key = ""
+    for key, value in headers.items():
+        normalized = key.lower()
+        if normalized not in _FORWARD_HEADERS:
+            continue
+        if normalized == "cookie":
+            if not cookie_key:
+                cookie_key = key
+                forwarded[cookie_key] = value
+            else:
+                forwarded[cookie_key] += f"; {value}"
+            continue
+        if normalized in seen:
+            raise MisboundAuthError(
+                "ForwardAuth envelope contains a duplicate HTTP header"
             )
-            forwarded[cookie_key] = "; ".join(cookie_values)
-
+        seen.add(normalized)
+        forwarded[key] = value
     return forwarded
 
 
@@ -150,10 +152,14 @@ def forward_auth_httpx_headers(headers: Mapping[str, str]) -> httpx.Headers:
         if raw_items is not None:
             return httpx.Headers(_forward_auth_raw_items(raw_items))
         return httpx.Headers(
-            [
-                header_bytes(key, value)
-                for key, value in forward_auth_headers(headers).items()
-            ]
+            _join_raw_cookie_fields(
+                _reject_ambiguous_raw_fields(
+                    [
+                        header_bytes(key, value)
+                        for key, value in forward_auth_headers(headers).items()
+                    ]
+                )
+            )
         )
     except ValueError as exc:
         raise MisboundAuthError(_misbound_header_message(exc)) from exc

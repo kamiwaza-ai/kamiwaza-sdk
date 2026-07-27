@@ -168,6 +168,17 @@ class TestForwardAuthHeaders:
         with pytest.raises(MisboundAuthError, match="duplicate HTTP header"):
             forward_auth_httpx_headers(headers)
 
+    def test_case_variant_mapping_rejects_ambiguous_duplicate_fields(self):
+        headers = {
+            "Authorization": "Bearer user",
+            "authorization": "Bearer attacker",
+            "X-User-Id": "real-user",
+            "x-user-id": "attacker-user",
+        }
+
+        with pytest.raises(MisboundAuthError, match="duplicate HTTP header"):
+            forward_auth_httpx_headers(headers)
+
 
 @pytest.mark.unit
 class TestRequireAuth:
