@@ -93,9 +93,18 @@ class KamiwazaExtClient:
             connection pooling to avoid port exhaustion under load.
             See: https://github.com/kamiwaza-ai/kamiwaza-sdk/issues/63
         """
-        headers = httpx.Headers(self._default_headers)
+        headers = httpx.Headers(
+            [header_bytes(key, value) for key, value in self._default_headers.items()]
+        )
         if extra_headers is not None:
-            headers.update(extra_headers)
+            encoded_extra_headers = (
+                httpx.Headers(extra_headers.raw)
+                if isinstance(extra_headers, httpx.Headers)
+                else httpx.Headers(
+                    [header_bytes(key, value) for key, value in extra_headers.items()]
+                )
+            )
+            headers.update(encoded_extra_headers)
             headers = httpx.Headers(headers.raw)
         return httpx.AsyncClient(
             headers=headers,
@@ -145,9 +154,7 @@ class KamiwazaExtClient:
             resp.raise_for_status()
             return resp
 
-    async def get_models(
-        self, headers: Mapping[str, str] | None = None
-    ) -> list[dict]:
+    async def get_models(self, headers: Mapping[str, str] | None = None) -> list[dict]:
         """List active model deployments from the platform API.
 
         Prefers the newer ``/serving/deployments`` endpoint and falls back

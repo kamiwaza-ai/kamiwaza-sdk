@@ -7,6 +7,7 @@ import httpx
 import pytest
 from starlette.datastructures import Headers
 
+from kamiwaza_extensions_lib.auth import forward_auth_headers
 from kamiwaza_extensions_lib.client import KamiwazaExtClient
 
 
@@ -72,6 +73,25 @@ class TestKamiwazaExtClientInit:
         assert async_client.timeout == httpx.Timeout(15.0)
         assert async_client._trust_env is False
         # Clean up
+        asyncio.run(async_client.aclose())
+
+    def test_client_preserves_non_ascii_header_wire_bytes(self):
+        incoming = Headers(
+            raw=[
+                (b"X-User-Name", "José".encode()),
+                (b"X-User-Groups", "Ingénierie".encode()),
+            ]
+        )
+        forwarded = forward_auth_headers(incoming)
+        client = KamiwazaExtClient(
+            api_base="http://api:7777",
+            headers={"X-User-Name": forwarded["X-User-Name"]},
+        )
+
+        async_client = client._client({"X-User-Groups": forwarded["X-User-Groups"]})
+
+        assert (b"X-User-Name", "José".encode()) in async_client.headers.raw
+        assert (b"X-User-Groups", "Ingénierie".encode()) in async_client.headers.raw
         asyncio.run(async_client.aclose())
 
 
@@ -185,13 +205,9 @@ class TestKamiwazaExtClientMethods:
             assert forwarded_headers["X-User-Id"] == "usr-123"
             assert forwarded_headers["X-User-Roles"] == "admin,user"
             assert forwarded_headers["X-User-Groups"] == "engineering,search"
-            assert (
-                forwarded_headers["X-User-Attributes-Hash"] == "sha256:attributes"
-            )
+            assert forwarded_headers["X-User-Attributes-Hash"] == "sha256:attributes"
             assert forwarded_headers["X-Auth-Azp"] == "chatbot-app"
-            assert (
-                forwarded_headers["X-User-Signature-Stable"] == "stable-signature"
-            )
+            assert forwarded_headers["X-User-Signature-Stable"] == "stable-signature"
 
     @pytest.mark.asyncio
     async def test_get_models_preserves_non_ascii_envelope_bytes(self):

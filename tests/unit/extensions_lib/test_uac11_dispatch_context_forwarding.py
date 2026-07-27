@@ -66,7 +66,7 @@ class TestUAC11DispatchContextForwarding:
     async def test_every_canonical_envelope_header_reaches_dispatch_client(
         self, monkeypatch
     ):
-        """The full identity envelope is threaded into the AsyncOpenAI client's
+        """The full identity envelope is threaded into the AsyncOpenAI transport's
         default headers, so any model call through this client carries the
         end-user attribution the platform dispatch boundary needs."""
         monkeypatch.setenv("KAMIWAZA_ENDPOINT", "https://kamiwaza.test/api/v1")
@@ -75,9 +75,7 @@ class TestUAC11DispatchContextForwarding:
         request.headers = dict(CANONICAL_ENVELOPE)
 
         client = await get_model_client(request)
-        forwarded = getattr(client, "default_headers", None) or getattr(
-            client, "_default_headers", {}
-        )
+        forwarded = client._client.headers
         forwarded_lower = {k.lower(): v for k, v in forwarded.items()}
         assert client._client._trust_env is False
 
@@ -154,9 +152,7 @@ class TestUAC11DispatchContextForwarding:
         # passthrough in place would mean two header entries differing only
         # by case, an httpx-level ambiguity nothing downstream is meant to
         # disambiguate.
-        forwarded = getattr(client, "default_headers", None) or getattr(
-            client, "_default_headers", {}
-        )
+        forwarded = client.default_headers
         assert "authorization" not in forwarded, (
             f"UAC-11 §5 R2: lowercase 'authorization' must be stripped from "
             f"default_headers when api_key carries the bearer; AsyncOpenAI "
@@ -187,9 +183,7 @@ class TestUAC11DispatchContextForwarding:
         }
 
         client = await get_model_client(request)
-        forwarded = getattr(client, "default_headers", None) or getattr(
-            client, "_default_headers", {}
-        )
+        forwarded = client._client.headers
         forwarded_lower = {k.lower(): v for k, v in forwarded.items()}
 
         # The two fields ENG-3822 verifies in the audit event:

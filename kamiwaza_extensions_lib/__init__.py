@@ -12,6 +12,7 @@ __version__ = "0.4.4"
 
 from .auth import (
     forward_auth_headers,
+    forward_auth_httpx_headers,
     is_forwarded_auth_header,
     require_auth,
     require_role,
@@ -45,6 +46,7 @@ __all__ = [
     "require_auth",
     "require_role",
     "forward_auth_headers",
+    "forward_auth_httpx_headers",
     "is_forwarded_auth_header",
     "create_session_router",
     "KamiwazaExtClient",

@@ -14,6 +14,7 @@ from kamiwaza_extensions_lib import (
     backend_runtime_base,
     create_session_router,
     forward_auth_headers,
+    forward_auth_httpx_headers,
     get_model_client,
     list_available_models,
     public_base_url,
@@ -177,8 +178,7 @@ def _normalize_model_endpoint(endpoint: str, access_path: str):
         if backend_parsed is not None and _should_rehost(parsed, backend_parsed):
             base_prefix = backend_parsed.path.rstrip("/")
             already_prefixed = base_prefix and (
-                parsed.path == base_prefix
-                or parsed.path.startswith(base_prefix + "/")
+                parsed.path == base_prefix or parsed.path.startswith(base_prefix + "/")
             )
             merged_path = (
                 parsed.path
@@ -234,14 +234,22 @@ async def _resolve_chat_target(request: Request, selected_model: str):
             _pick_string(extra.get("endpoint")),
             _pick_string(extra.get("access_path")),
         )
-        canonical_model = _pick_string(getattr(model, "name", "")) or selected_model.strip()
+        canonical_model = (
+            _pick_string(getattr(model, "name", "")) or selected_model.strip()
+        )
         return endpoint or None, canonical_model
 
     return None, selected_model.strip()
 
 
 def _candidate_models(requested_model: str, resolved_model: str, endpoint: str | None):
-    candidates = ["kamiwaza" if endpoint else requested_model, resolved_model, requested_model, "model", "auto"]
+    candidates = [
+        "kamiwaza" if endpoint else requested_model,
+        resolved_model,
+        requested_model,
+        "model",
+        "auto",
+    ]
     seen: set[str] = set()
     unique: list[str] = []
 
@@ -261,28 +269,29 @@ async def _build_chat_client(request: Request, endpoint: str | None):
 
     config = AuthConfig.from_env()
     forwarded_headers = forward_auth_headers(request.headers)
+    wire_headers = forward_auth_httpx_headers(request.headers)
 
     auth_header = None
-    passthrough_headers: dict[str, str] = {}
     for key, value in forwarded_headers.items():
         if key.lower() == "authorization":
             auth_header = value
-        else:
-            passthrough_headers[key] = value
 
     api_key = "not-needed-kamiwaza"
     if auth_header:
         prefix = "bearer "
         if auth_header.lower().startswith(prefix):
-            api_key = auth_header[len(prefix):]
+            api_key = auth_header[len(prefix) :]
         else:
             api_key = auth_header
 
     return AsyncOpenAI(
         base_url=endpoint,
         api_key=api_key,
-        default_headers=passthrough_headers,
-        http_client=httpx.AsyncClient(verify=config.verify_ssl),
+        http_client=httpx.AsyncClient(
+            headers=wire_headers,
+            verify=config.verify_ssl,
+            trust_env=False,
+        ),
     )
 
 

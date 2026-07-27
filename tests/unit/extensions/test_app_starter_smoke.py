@@ -13,6 +13,8 @@ from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
+from openai._models import FinalRequestOptions
+from starlette.datastructures import Headers
 
 from kamiwaza_extensions.scaffolder import Scaffolder
 
@@ -225,6 +227,45 @@ def test_chatbot_example_matches_scaffolded_app_core_files(tmp_path, monkeypatch
 
 
 @pytest.mark.unit
+@pytest.mark.asyncio
+async def test_template_chat_transport_is_proxy_safe_and_preserves_wire_bytes(
+    tmp_path, monkeypatch
+):
+    scaffolded = _scaffold_app(tmp_path, monkeypatch)
+    monkeypatch.setenv("KAMIWAZA_VERIFY_SSL", "true")
+    module_name = "scaffolded_chat_transport_headers"
+    module = _load_backend_module(scaffolded / "backend", module_name)
+    request = SimpleNamespace(
+        headers=Headers(
+            raw=[
+                (b"authorization", b"Bearer user-access-token"),
+                (b"x-user-id", b"usr-123"),
+                (b"x-user-name", "José".encode()),
+                (b"x-user-groups", "Ingénierie".encode()),
+            ]
+        )
+    )
+
+    client = await module._build_chat_client(
+        request,
+        "https://kamiwaza.test/runtime/models/dep-1/v1",
+    )
+    try:
+        assert client._client._trust_env is False
+        outbound = client._build_request(
+            FinalRequestOptions.construct(
+                method="post",
+                url="/chat/completions",
+            )
+        )
+        assert (b"x-user-name", "José".encode()) in outbound.headers.raw
+        assert (b"x-user-groups", "Ingénierie".encode()) in outbound.headers.raw
+    finally:
+        await client.close()
+        sys.modules.pop(module_name, None)
+
+
+@pytest.mark.unit
 def test_template_chat_endpoint_uses_container_routable_url_under_auth_split(
     tmp_path, monkeypatch
 ):
@@ -385,9 +426,7 @@ def test_template_chat_endpoint_keeps_gateway_url_in_cluster(tmp_path, monkeypat
 
 
 @pytest.mark.unit
-def test_template_chat_endpoint_both_fields_dev_local_unchanged(
-    tmp_path, monkeypatch
-):
+def test_template_chat_endpoint_both_fields_dev_local_unchanged(tmp_path, monkeypatch):
     """ENG-8766 review follow-up — reordering endpoint above access_path
     must NOT change `kz-ext dev local --auth` behavior when both fields
     are present: the browser-only endpoint re-hosts to the same URL the

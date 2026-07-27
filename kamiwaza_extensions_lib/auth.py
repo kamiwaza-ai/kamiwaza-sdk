@@ -5,8 +5,10 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Mapping
 
+import httpx
 from fastapi import Depends, HTTPException, Request
 
+from ._headers import header_bytes
 from .config import AuthConfig
 from .errors import MisboundAuthError
 from .identity import Identity, anonymous_identity, extract_identity, get_identity
@@ -53,9 +55,7 @@ def forward_auth_headers(headers: Mapping[str, str]) -> dict[str, str]:
     Safe to call with any mapping (returns empty dict when nothing matches).
     """
     forwarded = {
-        key: value
-        for key, value in headers.items()
-        if is_forwarded_auth_header(key)
+        key: value for key, value in headers.items() if is_forwarded_auth_header(key)
     }
 
     # Starlette preserves duplicate inbound fields in ``Headers.raw`` and
@@ -73,6 +73,21 @@ def forward_auth_headers(headers: Mapping[str, str]) -> dict[str, str]:
             forwarded[cookie_key] = "; ".join(cookie_values)
 
     return forwarded
+
+
+def forward_auth_httpx_headers(headers: Mapping[str, str]) -> httpx.Headers:
+    """Return the forwarded auth envelope with its original HTTP wire bytes.
+
+    Starlette exposes inbound header bytes as Latin-1-decoded strings. Building
+    an ``httpx.Headers`` object from byte pairs reverses that representation
+    without forcing identity fields through httpx's ASCII-only string path.
+    """
+    return httpx.Headers(
+        [
+            header_bytes(key, value)
+            for key, value in forward_auth_headers(headers).items()
+        ]
+    )
 
 
 async def require_auth(request: Request) -> Identity:

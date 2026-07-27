@@ -46,6 +46,9 @@ follow semver. The library is published to PyPI as a standalone package
   workroom alias, legacy/stable signature headers, and split HTTP/2 Cookie
   fields. `KamiwazaExtClient` model discovery now consumes this same helper
   instead of maintaining a smaller third allowlist.
+* Model and chat transports preserve non-ASCII identity values as original
+  HTTP wire bytes. Generated and example chat backends also disable inherited
+  proxy settings before attaching the signed request envelope.
 
 ## [0.4.3] — 2026-07-16 (ENG-8766)
 

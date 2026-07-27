@@ -9,10 +9,11 @@ from urllib.parse import urlparse, urlunparse
 import httpx
 from fastapi import Request
 
-from .auth import forward_auth_headers
+from .auth import forward_auth_headers, forward_auth_httpx_headers
 from .client import KamiwazaExtClient
 from .config import AuthConfig
 from .local_dev import _is_loopback_ip
+
 # Round-9 review: ``_url`` was renamed to ``url`` (public) in 0.4.0 so
 # scaffolded extensions can import the helpers without coupling to a
 # private path. The underscored aliases below preserve in-tree
@@ -76,6 +77,7 @@ async def get_model_client(request: Request):
 
     config = AuthConfig.from_env()
     fwd = forward_auth_headers(request.headers)
+    wire_headers = forward_auth_httpx_headers(request.headers)
     openai_base = await _resolve_openai_base(config, fwd)
     if not openai_base:
         raise RuntimeError(
@@ -84,12 +86,9 @@ async def get_model_client(request: Request):
         )
 
     auth_header = None
-    passthrough_headers: dict[str, str] = {}
     for key, value in fwd.items():
         if key.lower() == "authorization":
             auth_header = value
-        else:
-            passthrough_headers[key] = value
 
     # AsyncOpenAI always synthesizes its own Authorization header from api_key.
     # Reuse the forwarded bearer token there so the on-the-wire header matches
@@ -98,15 +97,18 @@ async def get_model_client(request: Request):
     if auth_header:
         prefix = "bearer "
         if auth_header.lower().startswith(prefix):
-            api_key = auth_header[len(prefix):]
+            api_key = auth_header[len(prefix) :]
         else:
             api_key = auth_header
 
     return AsyncOpenAI(
         base_url=openai_base,
         api_key=api_key,
-        default_headers=passthrough_headers,
-        http_client=httpx.AsyncClient(verify=config.verify_ssl, trust_env=False),
+        http_client=httpx.AsyncClient(
+            headers=wire_headers,
+            verify=config.verify_ssl,
+            trust_env=False,
+        ),
     )
 
 
@@ -179,7 +181,9 @@ async def _resolve_openai_base(
                 if not _is_openai_compatible(deployment):
                     continue
                 endpoint = _deployment_openai_base(
-                    deployment, route_base, rehost_endpoint=True,
+                    deployment,
+                    route_base,
+                    rehost_endpoint=True,
                 )
                 if endpoint:
                     return endpoint
@@ -293,8 +297,7 @@ def _rehost_to_container(endpoint: str, container_base: str) -> str:
         return urlunparse(parsed).rstrip("/")
     base_prefix = target_parsed.path.rstrip("/")
     already_prefixed = base_prefix and (
-        parsed.path == base_prefix
-        or parsed.path.startswith(base_prefix + "/")
+        parsed.path == base_prefix or parsed.path.startswith(base_prefix + "/")
     )
     merged_path = (
         parsed.path
@@ -336,7 +339,9 @@ def _infer_model_type(data: dict[str, Any]) -> Optional[str]:
     access_path = str(data.get("access_path") or "").lower()
     engine = str(data.get("engine_name") or data.get("engine") or "").lower()
     container = str(data.get("container") or "").lower()
-    name = str(data.get("m_name") or data.get("model_name") or data.get("name") or "").lower()
+    name = str(
+        data.get("m_name") or data.get("model_name") or data.get("name") or ""
+    ).lower()
 
     if "transcribe" in engine or "transcribe" in name:
         return "audio"
@@ -379,7 +384,8 @@ def _deployment_openai_base(
     if endpoint:
         if rehost_endpoint:
             return _rehost_to_container(
-                _normalize_openai_endpoint(endpoint), target_base,
+                _normalize_openai_endpoint(endpoint),
+                target_base,
             )
         return _normalize_openai_endpoint(endpoint)
 

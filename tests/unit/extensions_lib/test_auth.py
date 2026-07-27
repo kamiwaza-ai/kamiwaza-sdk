@@ -8,6 +8,7 @@ from starlette.datastructures import Headers
 
 from kamiwaza_extensions_lib.auth import (
     forward_auth_headers,
+    forward_auth_httpx_headers,
     require_auth,
     require_role,
 )
@@ -116,6 +117,19 @@ class TestForwardAuthHeaders:
 
         assert result["cookie"] == "session=opaque; csrf=bound"
         assert result["x-user-id"] == "usr-123"
+
+    def test_httpx_headers_preserve_non_ascii_wire_bytes(self):
+        headers = Headers(
+            raw=[
+                (b"x-user-name", "José".encode()),
+                (b"x-user-groups", "Ingénierie".encode()),
+            ]
+        )
+
+        result = forward_auth_httpx_headers(headers)
+
+        assert (b"x-user-name", "José".encode()) in result.raw
+        assert (b"x-user-groups", "Ingénierie".encode()) in result.raw
 
 
 @pytest.mark.unit
