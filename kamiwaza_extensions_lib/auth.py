@@ -81,6 +81,27 @@ def _is_raw_cookie_field(item: tuple[bytes, bytes]) -> bool:
     return item[0].lower() == b"cookie"
 
 
+def _is_forwarded_raw_field(item: tuple[bytes, bytes]) -> bool:
+    return item[0].lower() in _FORWARD_HEADER_BYTES
+
+
+def _validated_raw_field(item: tuple[bytes, bytes]) -> tuple[bytes, bytes]:
+    key, value = item
+    return header_bytes(key.decode("ascii"), value.decode("latin-1"))
+
+
+def _reject_ambiguous_raw_fields(
+    items: list[tuple[bytes, bytes]],
+) -> list[tuple[bytes, bytes]]:
+    seen: set[bytes] = set()
+    for key, _ in items:
+        normalized = key.lower()
+        if normalized != b"cookie" and normalized in seen:
+            raise ValueError(f"duplicate forwarded header {key.decode('ascii')!r}")
+        seen.add(normalized)
+    return items
+
+
 def _join_raw_cookie_fields(
     items: list[tuple[bytes, bytes]],
 ) -> list[tuple[bytes, bytes]]:
@@ -100,12 +121,13 @@ def _join_raw_cookie_fields(
 
 
 def _forward_auth_raw_items(headers: httpx.Headers) -> list[tuple[bytes, bytes]]:
-    forwarded = [
-        (key, value)
-        for key, value in headers.raw
-        if key.lower() in _FORWARD_HEADER_BYTES
-    ]
-    return _join_raw_cookie_fields(forwarded)
+    forwarded = list(
+        map(
+            _validated_raw_field,
+            filter(_is_forwarded_raw_field, headers.raw),
+        )
+    )
+    return _join_raw_cookie_fields(_reject_ambiguous_raw_fields(forwarded))
 
 
 def forward_auth_httpx_headers(headers: Mapping[str, str]) -> httpx.Headers:
@@ -128,6 +150,16 @@ def forward_auth_httpx_headers(headers: Mapping[str, str]) -> httpx.Headers:
         raise MisboundAuthError(
             "ForwardAuth envelope contains an invalid HTTP header"
         ) from exc
+
+
+def platform_auth_httpx_headers(headers: Mapping[str, str]) -> httpx.Headers:
+    """Return the validated platform envelope with bearer-token promotion."""
+    filtered = forward_auth_httpx_headers(headers)
+    if not filtered.get("authorization"):
+        token = filtered.get("x-auth-token")
+        if token:
+            filtered["Authorization"] = f"Bearer {token}"
+    return httpx.Headers(filtered.raw)
 
 
 async def require_auth(request: Request) -> Identity:

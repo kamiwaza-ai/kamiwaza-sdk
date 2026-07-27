@@ -9,7 +9,7 @@ from typing import Optional
 import httpx
 
 from ._headers import header_bytes
-from .auth import forward_auth_httpx_headers
+from .auth import platform_auth_httpx_headers
 from .config import AuthConfig
 
 _ACTIVE_DEPLOYMENT_STATUSES = {"deployed", "running", "ready", "active"}
@@ -48,6 +48,10 @@ class KamiwazaExtClient:
         Uses ``KAMIWAZA_API_URL`` for the platform API and
         ``KAMIWAZA_ENDPOINT`` (or ``KAMIWAZA_MODEL_URL``) for the
         model endpoint.
+
+        Raises:
+            UnexpectedContextError: If ``KAMIWAZA_CA_BUNDLE`` is not a
+                readable PEM trust bundle.
         """
         config = AuthConfig.from_env()
         return cls(
@@ -65,6 +69,8 @@ class KamiwazaExtClient:
 
         Raises:
             RuntimeError: If ``KAMIWAZA_API_KEY`` is not set.
+            UnexpectedContextError: If ``KAMIWAZA_CA_BUNDLE`` is not a
+                readable PEM trust bundle.
         """
         config = AuthConfig.from_env()
         if not config.api_key:
@@ -122,12 +128,7 @@ class KamiwazaExtClient:
         headers: Mapping[str, str] | None = None,
     ) -> httpx.Headers:
         """Keep the complete signed envelope for backend-to-platform calls."""
-        filtered = forward_auth_httpx_headers(headers or {})
-        if not filtered.get("authorization"):
-            token = filtered.get("x-auth-token")
-            if token:
-                filtered["Authorization"] = f"Bearer {token}"
-        return httpx.Headers(filtered.raw)
+        return platform_auth_httpx_headers(headers or {})
 
     async def chat_completions(
         self,

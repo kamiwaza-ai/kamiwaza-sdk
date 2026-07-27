@@ -8,7 +8,7 @@
     {
       "name": "unexpected_context",
       "exit_code": 11,
-      "doctor_hint": "Envelope headers missing or wrong shape; check you are running in the expected context (local dev vs. cluster)."
+      "doctor_hint": "Runtime configuration or envelope context is invalid. Check the named KAMIWAZA_* setting and verify the extension is running in the expected context (local dev vs. cluster)."
     },
     {
       "name": "out_of_envelope_access",

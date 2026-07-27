@@ -2,6 +2,7 @@
 
 from unittest.mock import MagicMock
 
+import httpx
 import pytest
 from fastapi import HTTPException
 from starlette.datastructures import Headers
@@ -12,6 +13,7 @@ from kamiwaza_extensions_lib.auth import (
     require_auth,
     require_role,
 )
+from kamiwaza_extensions_lib.errors import MisboundAuthError
 from kamiwaza_extensions_lib.identity import Identity
 
 
@@ -132,10 +134,26 @@ class TestForwardAuthHeaders:
         assert (b"x-user-groups", "Ingénierie".encode()) in result.raw
 
     def test_httpx_headers_map_invalid_envelope_to_typed_error(self):
-        from kamiwaza_extensions_lib.errors import MisboundAuthError
-
         with pytest.raises(MisboundAuthError, match="invalid HTTP header"):
             forward_auth_httpx_headers({"X-User-Name": "unsafe\r\nvalue"})
+
+    def test_raw_httpx_headers_map_invalid_envelope_to_typed_error(self):
+        headers = httpx.Headers([(b"x-user-name", b"eve\r\nx-user-roles: admin")])
+
+        with pytest.raises(MisboundAuthError, match="invalid HTTP header"):
+            forward_auth_httpx_headers(headers)
+
+    @pytest.mark.parametrize("name", [b"authorization", b"x-user-id"])
+    def test_raw_httpx_headers_reject_ambiguous_duplicate_fields(self, name):
+        headers = httpx.Headers(
+            [
+                (name, b"first"),
+                (name, b"second"),
+            ]
+        )
+
+        with pytest.raises(MisboundAuthError, match="invalid HTTP header"):
+            forward_auth_httpx_headers(headers)
 
 
 @pytest.mark.unit

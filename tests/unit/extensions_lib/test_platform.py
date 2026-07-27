@@ -61,6 +61,7 @@ class TestPlatformRequest:
         assert outbound is not None
         assert str(outbound.url) == expected_url
         assert outbound.headers["accept"] == "application/json"
+        assert outbound.headers["authorization"] == "Bearer runtime-token"
         for name, value in envelope.items():
             assert outbound.headers[name] == value
 

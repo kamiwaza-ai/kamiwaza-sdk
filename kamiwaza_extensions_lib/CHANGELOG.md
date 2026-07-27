@@ -35,8 +35,10 @@ follow semver. The library is published to PyPI as a standalone package
   proxy variables, this means they no longer inherit `SSL_CERT_FILE` or
   `SSL_CERT_DIR`. Private-CA deployments must set `KAMIWAZA_CA_BUNDLE` to an
   explicit PEM bundle path; the runtime builds an isolated TLS context from that
-  file. `KAMIWAZA_VERIFY_SSL=false` remains available for local development only
-  and should not be used to bypass verification in production.
+  file. A missing, unreadable, or malformed bundle raises the typed
+  `UnexpectedContextError`. `KAMIWAZA_VERIFY_SSL=false` remains available for
+  local development only and should not be used to bypass verification in
+  production.
 * Full-envelope forwarding requires a platform containing the signed AuthZ
   contract from kamiwaza#2258. Treat that platform boundary as a release gate
   when publishing runtime versions 0.4.4 (Python) and 0.4.3 (TypeScript).
