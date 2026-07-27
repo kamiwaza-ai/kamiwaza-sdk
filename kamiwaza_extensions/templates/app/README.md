@@ -97,10 +97,11 @@ response.raise_for_status()
 `platform_request()` requires the container-routable `KAMIWAZA_API_URL`; route
 paths must include the platform `/api` prefix. It forwards the
 platform-authenticated request envelope, rejects absolute destinations, and
-raises `PlatformRedirectError` rather than following a redirect. Set
-`timeout=` in seconds when the 30-second default is unsuitable. Invalid caller
-input raises `ValueError`, missing or invalid runtime configuration raises
-`UnexpectedContextError`, and transport failures raise `PlatformOutageError`.
+raises `PlatformRedirectError` (a specialized `UnexpectedContextError`) rather
+than following a redirect. Set `timeout=` in seconds when the 30-second default
+is unsuitable. Invalid caller input raises `ValueError`, missing or invalid
+runtime configuration raises `UnexpectedContextError`, and transport failures
+raise `PlatformOutageError`.
 This keeps auth attached to the original platform request and makes a missing
 canonical slash an immediate development error.
 

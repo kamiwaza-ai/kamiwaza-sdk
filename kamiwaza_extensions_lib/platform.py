@@ -13,7 +13,7 @@ from ._headers import has_http_control_character, header_bytes, is_http_token
 from .auth import forward_auth_headers, is_forwarded_auth_header
 from .config import AuthConfig
 from .errors import PlatformOutageError, PlatformRedirectError, UnexpectedContextError
-from .url import backend_runtime_base
+from .url import _strip_api_suffix
 
 _DEFAULT_TIMEOUT_SECONDS = 30.0
 _FORBIDDEN_REQUEST_KWARGS = frozenset(
@@ -67,6 +67,7 @@ def _platform_url(path: str, config: AuthConfig) -> str:
     has_dot_segment = any(
         segment in {".", ".."} for segment in decoded_path.split("/")
     )
+    has_api_prefix = decoded_path == "/api" or decoded_path.startswith("/api/")
     path_is_invalid = any(
         (
             not path.startswith("/"),
@@ -80,13 +81,14 @@ def _platform_url(path: str, config: AuthConfig) -> str:
             has_http_control_character(path),
             has_http_control_character(decoded_path),
             has_dot_segment,
+            not has_api_prefix,
         )
     )
     if path_is_invalid:
         raise ValueError(
-            "platform path must be a root-relative HTTP path without a query, "
-            "fragment, or dot segment (for example, '/api/catalog/datasets/'); "
-            "pass query parameters with params="
+            "platform path must be a root-relative HTTP path under '/api' without "
+            "a query, fragment, or dot segment (for example, "
+            "'/api/catalog/datasets/'); pass query parameters with params="
         )
 
     raw_base = config.api_url.strip()
@@ -120,7 +122,7 @@ def _platform_url(path: str, config: AuthConfig) -> str:
             "KAMIWAZA_API_URL is not a valid container-routable platform URL"
         )
 
-    base = backend_runtime_base(config).strip()
+    base = _strip_api_suffix(raw_base)
     return f"{base.rstrip('/')}{path}"
 
 

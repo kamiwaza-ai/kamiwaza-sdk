@@ -82,6 +82,27 @@ class TestPlatformRequest:
         assert str(outbound.url) == expected_url
 
     @pytest.mark.asyncio
+    async def test_strips_container_base_whitespace_before_api_suffix(
+        self, monkeypatch, httpx_mock
+    ):
+        monkeypatch.setenv(
+            "KAMIWAZA_API_URL",
+            "  http://core-api:7777/api\n",
+        )
+        expected_url = "http://core-api:7777/api/catalog/datasets/"
+        httpx_mock.add_response(method="GET", url=expected_url, json=[])
+
+        await platform_request(
+            _request(),
+            "GET",
+            "/api/catalog/datasets/",
+        )
+
+        outbound = httpx_mock.get_request()
+        assert outbound is not None
+        assert str(outbound.url) == expected_url
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("status_code", [301, 302, 303, 307, 308])
     async def test_raises_typed_error_on_redirect_without_following_it(
         self, monkeypatch, httpx_mock, status_code
@@ -154,6 +175,7 @@ class TestPlatformRequest:
             "//attacker.example/api/catalog/datasets/",
             "//[::1",
             "api/catalog/datasets/",
+            "/catalog/datasets/",
             "/api/catalog/datasets/#fragment",
             "/api\\catalog\\datasets",
             "/api/catalog/../admin/users",

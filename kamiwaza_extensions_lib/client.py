@@ -105,6 +105,8 @@ class KamiwazaExtClient:
                 )
             )
             headers.update(encoded_extra_headers)
+            # Rebuild from raw pairs so httpx infers the merged wire encoding;
+            # a string round-trip would restore its ASCII-only normalization.
             headers = httpx.Headers(headers.raw)
         return httpx.AsyncClient(
             headers=headers,

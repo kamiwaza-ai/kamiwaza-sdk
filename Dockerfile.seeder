@@ -25,9 +25,11 @@ RUN groupadd -r -g 1001 seeder \
 
 WORKDIR /app
 
-# Only the source needed to build the wheel. kamiwaza-extensions-lib is a
-# declared dependency resolved from PyPI (pip ignores the uv workspace source),
-# so the in-repo workspace member is not copied.
+# The in-tree runtime install is an intentional pre-publish validation path:
+# PRs that raise the SDK dependency floor can build before that runtime reaches
+# PyPI. It does not prove published-PyPI resolution; release validation must do
+# that in a clean environment. Remove the first install after this coupling is
+# replaced by a published-artifact smoke.
 COPY pyproject.toml README.md LICENSE MANIFEST.in ./
 COPY kamiwaza_sdk/ ./kamiwaza_sdk/
 COPY kamiwaza_client/ ./kamiwaza_client/
