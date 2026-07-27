@@ -16,8 +16,9 @@ follow semver. The library is published to PyPI as a standalone package
   signed authentication envelope, rejects caller attempts to override auth or
   routing headers (including reserved future prefixes), message framing,
   method overrides, and httpcore request-target extensions; rejects
-  query-bearing or ambiguous dot-segment paths; requires a valid private
-  `KAMIWAZA_API_URL`; and never follows redirects. Redirect responses raise the typed
+  query-bearing or ambiguous dot-segment paths; requires a valid
+  container-routable `KAMIWAZA_API_URL`; and never follows redirects.
+  Redirect responses raise the typed
   `PlatformRedirectError` so non-canonical URLs fail at the call site instead
   of silently losing cookies or authorization headers; non-redirect statuses
   such as 304 remain available to callers. Network and timeout failures surface
@@ -32,9 +33,10 @@ follow semver. The library is published to PyPI as a standalone package
 
 * User-bound runtime clients now set `trust_env=False`. In addition to ignoring
   proxy variables, this means they no longer inherit `SSL_CERT_FILE` or
-  `SSL_CERT_DIR`; private-CA deployments must install that CA in the container's
-  system trust store. `KAMIWAZA_VERIFY_SSL=false` remains available for local
-  development only and should not be used to bypass verification in production.
+  `SSL_CERT_DIR`. Private-CA deployments must set `KAMIWAZA_CA_BUNDLE` to an
+  explicit PEM bundle path; the runtime builds an isolated TLS context from that
+  file. `KAMIWAZA_VERIFY_SSL=false` remains available for local development only
+  and should not be used to bypass verification in production.
 * Full-envelope forwarding requires a platform containing the signed AuthZ
   contract from kamiwaza#2258. Treat that platform boundary as a release gate
   when publishing runtime versions 0.4.4 (Python) and 0.4.3 (TypeScript).

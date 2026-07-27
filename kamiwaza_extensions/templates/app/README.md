@@ -101,9 +101,14 @@ raises `PlatformRedirectError` (a specialized `UnexpectedContextError`) rather
 than following a redirect. Set `timeout=` in seconds when the 30-second default
 is unsuitable. Invalid caller input raises `ValueError`, missing or invalid
 runtime configuration raises `UnexpectedContextError`, and transport failures
-raise `PlatformOutageError`.
+raise `PlatformOutageError`. Caller headers cannot replace authentication,
+routing, framing, or `X-Request-Id` correlation fields from the envelope.
 This keeps auth attached to the original platform request and makes a missing
 canonical slash an immediate development error.
+
+User-bound clients ignore proxy and CA environment defaults. If the platform
+uses a private CA, mount its PEM bundle in the backend container and set
+`KAMIWAZA_CA_BUNDLE` to that path.
 
 ### Authentication
 

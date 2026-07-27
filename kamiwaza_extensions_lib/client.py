@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import ssl
 from collections.abc import Mapping
 from typing import Optional
 
 import httpx
 
 from ._headers import header_bytes
-from .auth import forward_auth_headers
+from .auth import forward_auth_httpx_headers
 from .config import AuthConfig
 
 _ACTIVE_DEPLOYMENT_STATUSES = {"deployed", "running", "ready", "active"}
@@ -31,7 +32,7 @@ class KamiwazaExtClient:
         api_base: str,
         openai_base: str = "",
         headers: Optional[dict[str, str]] = None,
-        verify_ssl: bool = True,
+        verify_ssl: bool | ssl.SSLContext = True,
         timeout: float = DEFAULT_TIMEOUT,
     ) -> None:
         self.api_base = api_base.rstrip("/")
@@ -52,7 +53,7 @@ class KamiwazaExtClient:
         return cls(
             api_base=config.api_url,
             openai_base=config.openai_base,
-            verify_ssl=config.verify_ssl,
+            verify_ssl=config.httpx_verify(),
         )
 
     @classmethod
@@ -75,7 +76,7 @@ class KamiwazaExtClient:
             api_base=config.api_url,
             openai_base=config.openai_base,
             headers={"Authorization": f"Bearer {config.api_key}"},
-            verify_ssl=config.verify_ssl,
+            verify_ssl=config.httpx_verify(),
         )
 
     def _client(
@@ -121,19 +122,16 @@ class KamiwazaExtClient:
         headers: Mapping[str, str] | None = None,
     ) -> httpx.Headers:
         """Keep the complete signed envelope for backend-to-platform calls."""
-        filtered = forward_auth_headers(headers or {})
-
-        has_authorization = any(
-            key.lower() == "authorization" and value for key, value in filtered.items()
+        filtered = (
+            httpx.Headers(headers.raw)
+            if isinstance(headers, httpx.Headers)
+            else forward_auth_httpx_headers(headers or {})
         )
-        if not has_authorization:
-            for key, value in filtered.items():
-                if key.lower() == "x-auth-token" and value:
-                    filtered["Authorization"] = f"Bearer {value}"
-                    break
-        return httpx.Headers(
-            [header_bytes(key, value) for key, value in filtered.items()]
-        )
+        if not filtered.get("authorization"):
+            token = filtered.get("x-auth-token")
+            if token:
+                filtered["Authorization"] = f"Bearer {token}"
+        return httpx.Headers(filtered.raw)
 
     async def chat_completions(
         self,

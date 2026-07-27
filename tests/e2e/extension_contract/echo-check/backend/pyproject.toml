@@ -25,6 +25,9 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["app"]
 
+[tool.uv.sources]
+kamiwaza-extensions-lib = { path = "../../../../../kamiwaza_extensions_lib" }
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 

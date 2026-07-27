@@ -13,7 +13,6 @@ from kamiwaza_extensions_lib import (
     Identity,
     backend_runtime_base,
     create_session_router,
-    forward_auth_headers,
     forward_auth_httpx_headers,
     get_model_client,
     list_available_models,
@@ -268,13 +267,8 @@ async def _build_chat_client(request: Request, endpoint: str | None):
         return await get_model_client(request)
 
     config = AuthConfig.from_env()
-    forwarded_headers = forward_auth_headers(request.headers)
     wire_headers = forward_auth_httpx_headers(request.headers)
-
-    auth_header = None
-    for key, value in forwarded_headers.items():
-        if key.lower() == "authorization":
-            auth_header = value
+    auth_header = wire_headers.get("authorization")
 
     api_key = "not-needed-kamiwaza"
     if auth_header:
@@ -289,7 +283,7 @@ async def _build_chat_client(request: Request, endpoint: str | None):
         api_key=api_key,
         http_client=httpx.AsyncClient(
             headers=wire_headers,
-            verify=config.verify_ssl,
+            verify=config.httpx_verify(),
             trust_env=False,
         ),
     )

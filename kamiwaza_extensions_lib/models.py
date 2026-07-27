@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Optional
 from urllib.parse import urlparse, urlunparse
@@ -9,7 +11,7 @@ from urllib.parse import urlparse, urlunparse
 import httpx
 from fastapi import Request
 
-from .auth import forward_auth_headers, forward_auth_httpx_headers
+from .auth import forward_auth_httpx_headers
 from .client import KamiwazaExtClient
 from .config import AuthConfig
 from .local_dev import _is_loopback_ip
@@ -24,6 +26,7 @@ from .url import (
 )
 
 _ACTIVE_DEPLOYMENT_STATUSES = {"deployed", "running", "ready", "active"}
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -76,19 +79,15 @@ async def get_model_client(request: Request):
         )
 
     config = AuthConfig.from_env()
-    fwd = forward_auth_headers(request.headers)
     wire_headers = forward_auth_httpx_headers(request.headers)
-    openai_base = await _resolve_openai_base(config, fwd)
+    openai_base = await _resolve_openai_base(config, wire_headers)
     if not openai_base:
         raise RuntimeError(
             "KAMIWAZA_ENDPOINT not configured. "
             "Are you running inside a Kamiwaza deployment?"
         )
 
-    auth_header = None
-    for key, value in fwd.items():
-        if key.lower() == "authorization":
-            auth_header = value
+    auth_header = wire_headers.get("authorization")
 
     # AsyncOpenAI always synthesizes its own Authorization header from api_key.
     # Reuse the forwarded bearer token there so the on-the-wire header matches
@@ -106,7 +105,7 @@ async def get_model_client(request: Request):
         api_key=api_key,
         http_client=httpx.AsyncClient(
             headers=wire_headers,
-            verify=config.verify_ssl,
+            verify=config.httpx_verify(),
             trust_env=False,
         ),
     )
@@ -125,11 +124,12 @@ async def list_available_models(request: Request) -> list[AvailableModel]:
     if not config.api_url:
         return []
 
-    fwd = forward_auth_headers(request.headers)
+    wire_headers = forward_auth_httpx_headers(request.headers)
     client = KamiwazaExtClient.from_env()
     try:
-        deployments = await client.get_models(headers=fwd)
-    except (httpx.HTTPError, OSError):
+        deployments = await client.get_models(headers=wire_headers)
+    except (httpx.HTTPError, OSError) as exc:
+        logger.warning("Platform model discovery failed: %s", exc)
         return []
 
     if isinstance(deployments, list):
@@ -155,7 +155,7 @@ async def list_available_models(request: Request) -> list[AvailableModel]:
 
 async def _resolve_openai_base(
     config: AuthConfig,
-    forwarded_headers: dict[str, str],
+    forwarded_headers: Mapping[str, str],
 ) -> str:
     # _resolve_openai_base is consumed by get_model_client() which
     # builds an AsyncOpenAI instance that runs INSIDE the backend
@@ -173,7 +173,8 @@ async def _resolve_openai_base(
         client = KamiwazaExtClient.from_env()
         try:
             deployments = await client.get_models(headers=forwarded_headers)
-        except (httpx.HTTPError, OSError):
+        except (httpx.HTTPError, OSError) as exc:
+            logger.warning("Platform model endpoint discovery failed: %s", exc)
             deployments = []
 
         if isinstance(deployments, list):

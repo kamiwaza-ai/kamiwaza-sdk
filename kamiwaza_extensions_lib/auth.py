@@ -82,12 +82,17 @@ def forward_auth_httpx_headers(headers: Mapping[str, str]) -> httpx.Headers:
     an ``httpx.Headers`` object from byte pairs reverses that representation
     without forcing identity fields through httpx's ASCII-only string path.
     """
-    return httpx.Headers(
-        [
-            header_bytes(key, value)
-            for key, value in forward_auth_headers(headers).items()
-        ]
-    )
+    try:
+        return httpx.Headers(
+            [
+                header_bytes(key, value)
+                for key, value in forward_auth_headers(headers).items()
+            ]
+        )
+    except ValueError as exc:
+        raise MisboundAuthError(
+            "ForwardAuth envelope contains an invalid HTTP header"
+        ) from exc
 
 
 async def require_auth(request: Request) -> Identity:

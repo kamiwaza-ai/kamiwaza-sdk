@@ -189,6 +189,35 @@ class TestGetModelClient:
         )
 
     @pytest.mark.asyncio
+    async def test_logs_discovery_failure_before_endpoint_fallback(
+        self, monkeypatch, caplog
+    ):
+        import httpx
+
+        monkeypatch.setenv("KAMIWAZA_API_URL", "https://kamiwaza.test/api")
+        monkeypatch.setenv("KAMIWAZA_ENDPOINT", "https://model.test/v1")
+        request = MagicMock()
+        request.headers = {"x-user-id": "usr-123"}
+
+        with patch.object(
+            __import__(
+                "kamiwaza_extensions_lib.client", fromlist=["KamiwazaExtClient"]
+            ).KamiwazaExtClient,
+            "from_env",
+        ) as mock_from_env:
+            mock_client = AsyncMock()
+            mock_client.get_models = AsyncMock(
+                side_effect=httpx.ConnectError("platform unavailable")
+            )
+            mock_from_env.return_value = mock_client
+
+            with caplog.at_level("WARNING"):
+                client = await get_model_client(request)
+
+        assert str(client.base_url).rstrip("/") == "https://model.test/v1"
+        assert "Platform model endpoint discovery failed" in caplog.text
+
+    @pytest.mark.asyncio
     async def test_raises_without_endpoint(self, monkeypatch):
         monkeypatch.delenv("KAMIWAZA_ENDPOINT", raising=False)
         monkeypatch.delenv("KAMIWAZA_MODEL_URL", raising=False)
@@ -297,7 +326,7 @@ class TestListAvailableModels:
         assert models == []
 
     @pytest.mark.asyncio
-    async def test_returns_empty_on_http_error(self, monkeypatch):
+    async def test_returns_empty_and_logs_on_http_error(self, monkeypatch, caplog):
         import httpx
 
         monkeypatch.setenv("KAMIWAZA_API_URL", "http://api:7777/api")
@@ -317,9 +346,11 @@ class TestListAvailableModels:
             )
             mock_from_env.return_value = mock_client
 
-            models = await list_available_models(request)
+            with caplog.at_level("WARNING"):
+                models = await list_available_models(request)
 
         assert models == []
+        assert "Platform model discovery failed" in caplog.text
 
     @pytest.mark.asyncio
     async def test_propagates_programming_errors(self, monkeypatch):

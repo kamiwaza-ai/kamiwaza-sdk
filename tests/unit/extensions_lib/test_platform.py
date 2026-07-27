@@ -317,6 +317,7 @@ class TestPlatformRequest:
             {"Upgrade": "websocket"},
             {"Expect": "100-continue"},
             {"X-HTTP-Method-Override": "DELETE"},
+            {"X-Original-URI": "/admin/users"},
             {"X-Forwarded-Host": "attacker.example"},
             {"X-Forwarded-Prefix": "/admin"},
             {"X-Original-URL": "/admin/users"},
@@ -325,6 +326,7 @@ class TestPlatformRequest:
             {"X-User-Future-Claim": "attacker-controlled"},
             {"X-Auth-Future-Claim": "attacker-controlled"},
             {"X-Workroom-Future-Claim": "attacker-controlled"},
+            {"X-Envoy-Original-Path": "/admin/users"},
         ],
     )
     async def test_rejects_manually_supplied_auth_or_routing_headers(
@@ -360,14 +362,10 @@ class TestPlatformRequest:
         monkeypatch.setenv("KAMIWAZA_API_URL", "http://core-api:7777/api")
         response = httpx.Response(
             200,
-            request=httpx.Request(
-                "GET", "http://core-api:7777/api/catalog/datasets/"
-            ),
+            request=httpx.Request("GET", "http://core-api:7777/api/catalog/datasets/"),
         )
 
-        with patch(
-            "kamiwaza_extensions_lib.platform.httpx.AsyncClient"
-        ) as client_cls:
+        with patch("kamiwaza_extensions_lib.platform.httpx.AsyncClient") as client_cls:
             client = AsyncMock()
             client.request = AsyncMock(return_value=response)
             client.__aenter__ = AsyncMock(return_value=client)
@@ -462,9 +460,7 @@ class TestPlatformRequest:
     async def test_maps_invalid_httpx_url_to_caller_error(self, monkeypatch):
         monkeypatch.setenv("KAMIWAZA_API_URL", "http://core-api:7777/api")
 
-        with patch(
-            "kamiwaza_extensions_lib.platform.httpx.AsyncClient"
-        ) as client_cls:
+        with patch("kamiwaza_extensions_lib.platform.httpx.AsyncClient") as client_cls:
             client = AsyncMock()
             client.request = AsyncMock(side_effect=httpx.InvalidURL("invalid URL"))
             client.__aenter__ = AsyncMock(return_value=client)
@@ -481,9 +477,7 @@ class TestPlatformRequest:
         assert isinstance(exc_info.value.__cause__, httpx.InvalidURL)
 
     @pytest.mark.asyncio
-    async def test_forwards_non_get_method_and_json_body(
-        self, monkeypatch, httpx_mock
-    ):
+    async def test_forwards_non_get_method_and_json_body(self, monkeypatch, httpx_mock):
         monkeypatch.setenv("KAMIWAZA_API_URL", "http://core-api:7777/api")
         url = "http://core-api:7777/api/catalog/datasets/"
         httpx_mock.add_response(method="POST", url=url, status_code=201)

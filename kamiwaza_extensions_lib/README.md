@@ -48,7 +48,13 @@ the optional `timeout=` in seconds when the 30-second default is unsuitable.
 Each call currently uses a short-lived client; connection pooling is tracked in
 [GitHub issue #63](https://github.com/kamiwaza-ai/kamiwaza-sdk/issues/63). Do not
 construct absolute platform URLs or use a raw `httpx.AsyncClient` for
-request-bound platform calls.
+request-bound platform calls. Caller headers cannot replace the envelope's
+authentication, routing, framing, or `X-Request-Id` correlation fields.
+
+User-bound clients ignore `HTTP_PROXY`, `HTTPS_PROXY`, `SSL_CERT_FILE`, and
+`SSL_CERT_DIR`. For a private CA, mount its PEM bundle in the backend container
+and set `KAMIWAZA_CA_BUNDLE` to that file path. Do not disable certificate
+verification in production.
 
 The helper raises:
 

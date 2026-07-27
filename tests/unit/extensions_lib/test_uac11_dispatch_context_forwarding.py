@@ -28,6 +28,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+from openai._models import FinalRequestOptions
 
 from kamiwaza_extensions_lib.auth import _FORWARD_HEADERS
 from kamiwaza_extensions_lib.models import get_model_client
@@ -146,24 +147,23 @@ class TestUAC11DispatchContextForwarding:
             f"(got {api_key!r})."
         )
 
-        # The runtime lib must strip the lowercase ``authorization`` it would
-        # otherwise pass through verbatim — AsyncOpenAI synthesizes its own
-        # ``Authorization`` (capital-A) from api_key. Leaving the lowercase
-        # passthrough in place would mean two header entries differing only
-        # by case, an httpx-level ambiguity nothing downstream is meant to
-        # disambiguate.
-        forwarded = client.default_headers
-        assert "authorization" not in forwarded, (
-            f"UAC-11 §5 R2: lowercase 'authorization' must be stripped from "
-            f"default_headers when api_key carries the bearer; AsyncOpenAI "
-            f"adds the capital-A 'Authorization' itself "
-            f"(got {forwarded.get('authorization')!r})."
+        outbound = client._build_request(
+            FinalRequestOptions.construct(
+                method="post",
+                url="/chat/completions",
+            )
         )
-        assert forwarded.get("Authorization") == "Bearer platform-attested-bearer", (
-            f"UAC-11 §5 R2: the on-the-wire Authorization (capital-A, "
-            f"synthesized by AsyncOpenAI from api_key) must match the "
-            f"incoming gateway-attested bearer "
-            f"(got {forwarded.get('Authorization')!r})."
+        authorization_fields = [
+            (key, value)
+            for key, value in outbound.headers.raw
+            if key.lower() == b"authorization"
+        ]
+        assert authorization_fields == [
+            (b"Authorization", b"Bearer platform-attested-bearer")
+        ], (
+            "UAC-11 §5 R2: the outbound request must carry exactly one "
+            "Authorization field matching the incoming platform bearer "
+            f"(got {authorization_fields!r})."
         )
 
     @pytest.mark.asyncio

@@ -22,6 +22,7 @@ _FORBIDDEN_REQUEST_KWARGS = frozenset(
 _REDIRECT_STATUS_CODES = frozenset({301, 302, 303, 307, 308})
 _FORBIDDEN_HEADER_PREFIXES = (
     "x-auth-",
+    "x-envoy-",
     "x-forwarded-",
     "x-user-",
     "x-workroom-",
@@ -41,6 +42,7 @@ _FORBIDDEN_ROUTING_HEADERS = frozenset(
         "transfer-encoding",
         "upgrade",
         "x-http-method-override",
+        "x-original-uri",
         "x-original-url",
         "x-real-ip",
         "x-rewrite-url",
@@ -64,9 +66,7 @@ def _platform_url(path: str, config: AuthConfig) -> str:
         if next_decoded_path == decoded_path:
             break
         decoded_path = next_decoded_path
-    has_dot_segment = any(
-        segment in {".", ".."} for segment in decoded_path.split("/")
-    )
+    has_dot_segment = any(segment in {".", ".."} for segment in decoded_path.split("/"))
     has_api_prefix = decoded_path == "/api" or decoded_path.startswith("/api/")
     path_is_invalid = any(
         (
@@ -199,7 +199,7 @@ async def platform_request(
 
     try:
         async with httpx.AsyncClient(
-            verify=config.verify_ssl,
+            verify=config.httpx_verify(),
             timeout=timeout,
             trust_env=False,
         ) as client:

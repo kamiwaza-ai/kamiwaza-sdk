@@ -131,6 +131,12 @@ class TestForwardAuthHeaders:
         assert (b"x-user-name", "José".encode()) in result.raw
         assert (b"x-user-groups", "Ingénierie".encode()) in result.raw
 
+    def test_httpx_headers_map_invalid_envelope_to_typed_error(self):
+        from kamiwaza_extensions_lib.errors import MisboundAuthError
+
+        with pytest.raises(MisboundAuthError, match="invalid HTTP header"):
+            forward_auth_httpx_headers({"X-User-Name": "unsafe\r\nvalue"})
+
 
 @pytest.mark.unit
 class TestRequireAuth:

@@ -207,7 +207,7 @@ def create_session_router(prefix: str = "") -> APIRouter:
                 else {}
             )
             async with httpx.AsyncClient(
-                verify=config.verify_ssl,
+                verify=config.httpx_verify(),
                 timeout=5,
                 trust_env=False,
             ) as client:
