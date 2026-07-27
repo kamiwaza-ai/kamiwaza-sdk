@@ -345,7 +345,7 @@ class TestLogoutEndpoint:
             "post_logout_redirect_uri": "https://cluster.test/login"
         }
 
-    def test_core_unreachable_still_returns_front_channel(self, monkeypatch):
+    def test_core_unreachable_still_returns_front_channel(self, monkeypatch, caplog):
         """ENG-6911 regression — the server-side POST to core is unreachable
         in-cluster under ``kz-ext dev`` (the API base is the public ingress
         host). The front-channel URL MUST still be returned, since it is built
@@ -386,6 +386,7 @@ class TestLogoutEndpoint:
         )
         assert data["post_logout_redirect_uri"] == "https://cluster.test/login"
         assert data["logout_url"] == "https://cluster.test/api/auth/logout"
+        assert "Best-effort platform logout request failed" in caplog.text
 
     def test_uses_configured_ssl_verification_for_logout_post(self, monkeypatch):
         import httpx
@@ -405,6 +406,26 @@ class TestLogoutEndpoint:
         assert calls["trust_env"] is False
         assert calls["url"] == "https://cluster.test/api/auth/logout"
         assert calls["headers"]["x-auth-token"] == "token-123"
+
+    def test_logout_preserves_non_ascii_forwarded_header_bytes(self, monkeypatch):
+        import httpx
+
+        calls = {}
+        monkeypatch.setattr(
+            httpx, "AsyncClient", _fake_core_client(calls, _CORE_LOGOUT_BODY)
+        )
+        client = _make_app(monkeypatch, use_auth="true")
+
+        resp = client.post(
+            "/auth/logout",
+            headers=[
+                (b"x-auth-token", b"token-123"),
+                (b"x-user-name", b"Jos\xe9"),
+            ],
+        )
+
+        assert resp.status_code == 200
+        assert (b"x-user-name", "José".encode()) in calls["headers"].raw
 
     def test_local_dev_returns_null(self, monkeypatch):
         client = _make_app(monkeypatch, use_auth="false")

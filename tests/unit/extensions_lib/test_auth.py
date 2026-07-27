@@ -236,6 +236,28 @@ class TestRequireAuth:
         assert exc_info.value.status_code == 401
 
     @pytest.mark.asyncio
+    async def test_duplicate_identity_header_rejected_under_strict_auth(
+        self, monkeypatch
+    ):
+        monkeypatch.setenv("KAMIWAZA_USE_AUTH", "true")
+        request = MagicMock()
+        request.method = "GET"
+        request.url.path = "/protected"
+        request.headers = Headers(
+            raw=[
+                (b"x-user-id", b"usr-123"),
+                (b"x-workroom-id", b"wrk-456"),
+                (b"x-user-roles", b"viewer"),
+                (b"x-user-roles", b"admin"),
+            ]
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            await require_auth(request)
+        assert exc_info.value.status_code == 401
+        assert exc_info.value.detail == "Authentication required"
+
+    @pytest.mark.asyncio
     async def test_401_detail_does_not_leak_envelope_internals(self, monkeypatch):
         """The 401 body should be scrubbed to the canonical "Authentication
         required" — the raw exception text naming the missing header is

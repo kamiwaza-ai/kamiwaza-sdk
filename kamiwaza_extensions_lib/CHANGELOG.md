@@ -53,6 +53,12 @@ follow semver. The library is published to PyPI as a standalone package
 * Model and chat transports preserve non-ASCII identity values as original
   HTTP wire bytes. Generated and example chat backends also disable inherited
   proxy settings before attaching the signed request envelope.
+* Strict identity extraction now rejects duplicate identity fields before
+  role-based dependencies evaluate them. Generated and example backends map
+  route-level malformed envelopes to a scrubbed 401 response.
+* Best-effort server-side logout now uses the wire-preserving envelope helper
+  and logs revocation transport failures instead of silently discarding them.
+  Redirect diagnostics also omit URL userinfo from the reported origin.
 
 ## [0.4.3] — 2026-07-16 (ENG-8766)
 

@@ -270,6 +270,37 @@ async def test_template_chat_transport_is_proxy_safe_and_preserves_wire_bytes(
 
 
 @pytest.mark.unit
+def test_template_maps_ambiguous_forward_auth_envelope_to_401(tmp_path, monkeypatch):
+    scaffolded = _scaffold_app(tmp_path, monkeypatch)
+    module_name = "scaffolded_ambiguous_forward_auth"
+    module = _load_backend_module(scaffolded / "backend", module_name)
+
+    async def fake_resolve_chat_target(_request, _requested_model):
+        return ("https://kamiwaza.test/runtime/models/dep-1/v1", "dep-1")
+
+    monkeypatch.setattr(module, "_resolve_chat_target", fake_resolve_chat_target)
+    module.app.dependency_overrides[module.require_auth] = lambda: object()
+
+    try:
+        client = TestClient(module.app)
+        response = client.post(
+            "/api/chat",
+            headers=[
+                ("x-request-id", "first"),
+                ("x-request-id", "second"),
+            ],
+            json={"model": "dep-1", "messages": []},
+        )
+    finally:
+        module.app.dependency_overrides.clear()
+        sys.modules.pop(module_name, None)
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "Authentication required"}
+    assert response.headers["www-authenticate"] == 'Bearer error="misbound_auth"'
+
+
+@pytest.mark.unit
 def test_template_chat_endpoint_uses_container_routable_url_under_auth_split(
     tmp_path, monkeypatch
 ):

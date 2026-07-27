@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from kamiwaza_extensions_lib import (
     AuthConfig,
     Identity,
+    MisboundAuthError,
     backend_runtime_base,
     create_session_router,
     forward_auth_httpx_headers,
@@ -19,6 +20,7 @@ from kamiwaza_extensions_lib import (
     public_base_url,
     require_auth,
 )
+from fastapi.responses import JSONResponse
 from openai import APIStatusError, AsyncOpenAI
 
 app = FastAPI(title="{{name}}")
@@ -35,6 +37,22 @@ app.add_middleware(
 
 # Session management endpoints (/session, /auth/login-url, /auth/logout)
 app.include_router(create_session_router())
+
+
+@app.exception_handler(MisboundAuthError)
+async def misbound_auth_error_handler(request: Request, exc: MisboundAuthError):
+    """Fail closed when a malformed envelope reaches route-level forwarding."""
+    logger.warning(
+        "MisboundAuthError on %s %s: %s",
+        request.method,
+        request.url.path,
+        exc,
+    )
+    return JSONResponse(
+        status_code=401,
+        content={"detail": "Authentication required"},
+        headers={"WWW-Authenticate": f'Bearer error="{exc.class_name}"'},
+    )
 
 
 @app.get("/health")

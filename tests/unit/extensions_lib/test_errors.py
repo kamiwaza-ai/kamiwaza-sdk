@@ -112,6 +112,20 @@ class TestRuntimeErrorHierarchy:
         assert "path is '/admin'" in str(err)
         assert "canonical location" not in str(err)
 
+    def test_platform_redirect_error_redacts_userinfo_from_origin(self):
+        from kamiwaza_extensions_lib.errors import PlatformRedirectError
+
+        err = PlatformRedirectError(
+            302,
+            "/api/catalog/datasets",
+            "https://user:secret@unexpected.example:8443/admin?token=also-secret",
+        )
+
+        assert err.location_origin == "https://unexpected.example:8443"
+        assert "user" not in str(err)
+        assert "secret" not in str(err)
+        assert "token" not in str(err)
+
 
 @pytest.mark.unit
 class TestExtractIdentity:

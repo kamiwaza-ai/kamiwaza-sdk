@@ -10,7 +10,29 @@ Design reference: §4.2.7 RuntimeLibExceptionHierarchy.
 
 from __future__ import annotations
 
-from urllib.parse import urlsplit
+from urllib.parse import SplitResult, urlsplit
+
+
+def _redirect_host(host: str) -> str:
+    if ":" in host and not host.startswith("["):
+        return f"[{host}]"
+    return host
+
+
+def _redirect_port(parsed: SplitResult) -> str:
+    try:
+        return f":{parsed.port}" if parsed.port is not None else ""
+    except ValueError:
+        return ""
+
+
+def _redirect_origin(parsed: SplitResult) -> str:
+    """Build a credential-free origin from a parsed redirect target."""
+    host = _redirect_host(parsed.hostname or "")
+    if not host:
+        return ""
+    scheme = f"{parsed.scheme}:" if parsed.scheme else ""
+    return f"{scheme}//{host}{_redirect_port(parsed)}"
 
 
 def _redirect_target(location: str | None) -> tuple[str, str]:
@@ -20,9 +42,7 @@ def _redirect_target(location: str | None) -> tuple[str, str]:
         parsed = urlsplit(location)
     except ValueError:
         return ("", "")
-    scheme = f"{parsed.scheme}:" if parsed.scheme else ""
-    origin = f"{scheme}//{parsed.netloc}" if parsed.netloc else ""
-    return (parsed.path, origin)
+    return (parsed.path, _redirect_origin(parsed))
 
 
 def _redirect_target_description(path: str, origin: str) -> str:

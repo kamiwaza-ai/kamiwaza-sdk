@@ -4,10 +4,13 @@ import asyncio
 from unittest.mock import MagicMock
 
 import pytest
+from starlette.datastructures import Headers
 
+from kamiwaza_extensions_lib.errors import MisboundAuthError
 from kamiwaza_extensions_lib.identity import (
     Identity,
     anonymous_identity,
+    extract_identity,
     get_identity,
     identity_from_headers,
 )
@@ -112,6 +115,44 @@ class TestIdentityFromHeaders:
 
         assert identity.user_id is None
         assert identity.is_authenticated is False
+
+    def test_permissive_extraction_retains_last_duplicate_value(self):
+        headers = Headers(
+            raw=[
+                (b"x-user-id", b"first"),
+                (b"x-user-id", b"second"),
+            ]
+        )
+
+        identity = identity_from_headers(headers)
+
+        assert identity.user_id == "second"
+
+
+class TestExtractIdentityDuplicates:
+    def test_rejects_case_variant_duplicate_roles(self):
+        with pytest.raises(MisboundAuthError, match="duplicate identity header"):
+            extract_identity(
+                {
+                    "x-user-id": "usr-123",
+                    "x-workroom-id": "wrk-456",
+                    "X-User-Roles": "viewer",
+                    "x-user-roles": "admin",
+                }
+            )
+
+    def test_rejects_duplicate_raw_identity_fields(self):
+        headers = Headers(
+            raw=[
+                (b"x-user-id", b"usr-123"),
+                (b"x-workroom-id", b"wrk-456"),
+                (b"x-user-roles", b"viewer"),
+                (b"x-user-roles", b"admin"),
+            ]
+        )
+
+        with pytest.raises(MisboundAuthError, match="duplicate identity header"):
+            extract_identity(headers)
 
     def test_workroom_id_without_user_id(self):
         headers = {"x-workroom-id": "wrk-456"}
