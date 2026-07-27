@@ -10,6 +10,7 @@ import pytest
 from starlette.datastructures import Headers
 
 from kamiwaza_extensions_lib.errors import (
+    MisboundAuthError,
     PlatformOutageError,
     PlatformRedirectError,
     UnexpectedContextError,
@@ -235,15 +236,9 @@ class TestPlatformRequest:
     async def test_rejects_control_characters_in_forwarded_headers(self, monkeypatch):
         monkeypatch.setenv("KAMIWAZA_API_URL", "http://core-api:7777/api")
 
-        with (
-            patch(
-                "kamiwaza_extensions_lib.platform.forward_auth_headers",
-                return_value={"X-User-Id": "usr-1\r\nX-Injected: true"},
-            ),
-            pytest.raises(ValueError, match="invalid header"),
-        ):
+        with pytest.raises(MisboundAuthError, match="invalid HTTP header"):
             await platform_request(
-                _request(),
+                _request({"X-User-Id": "usr-1\r\nX-Injected: true"}),
                 "GET",
                 "/api/catalog/datasets/",
             )
@@ -360,12 +355,19 @@ class TestPlatformRequest:
     @pytest.mark.asyncio
     async def test_disables_environment_proxy_inheritance(self, monkeypatch):
         monkeypatch.setenv("KAMIWAZA_API_URL", "http://core-api:7777/api")
+        verify_context = object()
         response = httpx.Response(
             200,
             request=httpx.Request("GET", "http://core-api:7777/api/catalog/datasets/"),
         )
 
-        with patch("kamiwaza_extensions_lib.platform.httpx.AsyncClient") as client_cls:
+        with (
+            patch(
+                "kamiwaza_extensions_lib.platform.AuthConfig.httpx_verify",
+                return_value=verify_context,
+            ),
+            patch("kamiwaza_extensions_lib.platform.httpx.AsyncClient") as client_cls,
+        ):
             client = AsyncMock()
             client.request = AsyncMock(return_value=response)
             client.__aenter__ = AsyncMock(return_value=client)
@@ -381,6 +383,7 @@ class TestPlatformRequest:
 
         assert client_cls.call_args.kwargs["trust_env"] is False
         assert client_cls.call_args.kwargs["timeout"] == 12.5
+        assert client_cls.call_args.kwargs["verify"] is verify_context
 
     @pytest.mark.asyncio
     async def test_missing_container_base_is_typed_context_error(self, monkeypatch):

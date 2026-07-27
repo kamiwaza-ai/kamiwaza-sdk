@@ -10,7 +10,7 @@ import httpx
 from fastapi import Request
 
 from ._headers import has_http_control_character, header_bytes, is_http_token
-from .auth import forward_auth_headers, is_forwarded_auth_header
+from .auth import forward_auth_httpx_headers, is_forwarded_auth_header
 from .config import AuthConfig
 from .errors import PlatformOutageError, PlatformRedirectError, UnexpectedContextError
 from .url import _strip_api_suffix
@@ -149,10 +149,7 @@ def _application_header_items(
 def _forwarded_header_items(
     incoming: Mapping[str, str],
 ) -> list[tuple[bytes, bytes]]:
-    return [
-        header_bytes(key, value)
-        for key, value in forward_auth_headers(incoming).items()
-    ]
+    return list(forward_auth_httpx_headers(incoming).raw)
 
 
 def _request_headers(

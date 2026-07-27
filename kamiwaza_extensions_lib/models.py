@@ -62,7 +62,8 @@ async def get_model_client(request: Request):
     """Return an ``openai.AsyncOpenAI`` client for the platform model endpoint.
 
     The client's ``base_url`` points to ``KAMIWAZA_ENDPOINT`` and the
-    user's auth headers are forwarded automatically.
+    user's auth headers are forwarded automatically. The caller owns the
+    returned client and must close it with ``await client.close()``.
 
     Requires the ``openai`` package (``pip install openai>=1.0``).
 

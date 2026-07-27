@@ -296,37 +296,40 @@ async def chat(request: Request, identity: Identity = Depends(require_auth)):
     requested_model = _pick_string(body.get("model")) or "auto"
     endpoint, resolved_model = await _resolve_chat_target(request, requested_model)
     client = await _build_chat_client(request, endpoint)
-    attempted_models = _candidate_models(requested_model, resolved_model, endpoint)
-    last_error: APIStatusError | None = None
+    try:
+        attempted_models = _candidate_models(requested_model, resolved_model, endpoint)
+        last_error: APIStatusError | None = None
 
-    for model_name in attempted_models:
-        try:
-            response = await client.chat.completions.create(
-                model=model_name,
-                messages=body.get("messages", []),
-            )
-            return response.model_dump()
-        except APIStatusError as exc:
-            last_error = exc
-            # Log the full upstream body server-side so operators can debug;
-            # never include `exc.body` in the response — it can carry
-            # internal hostnames, paths, or stack traces (ENG-3919).
-            logger.warning(
-                "Chat completion failed for requested_model=%s resolved_model=%s attempt_model=%s endpoint=%s status=%s body=%s",
-                requested_model,
-                resolved_model,
-                model_name,
-                endpoint or "<default>",
-                exc.status_code,
-                exc.body,
-            )
-            if exc.status_code != 404:
-                raise HTTPException(
-                    status_code=exc.status_code or 502,
-                    detail=f"Upstream model request failed with status {exc.status_code}.",
-                ) from exc
+        for model_name in attempted_models:
+            try:
+                response = await client.chat.completions.create(
+                    model=model_name,
+                    messages=body.get("messages", []),
+                )
+                return response.model_dump()
+            except APIStatusError as exc:
+                last_error = exc
+                # Log the full upstream body server-side so operators can debug;
+                # never include `exc.body` in the response — it can carry
+                # internal hostnames, paths, or stack traces (ENG-3919).
+                logger.warning(
+                    "Chat completion failed for requested_model=%s resolved_model=%s attempt_model=%s endpoint=%s status=%s body=%s",
+                    requested_model,
+                    resolved_model,
+                    model_name,
+                    endpoint or "<default>",
+                    exc.status_code,
+                    exc.body,
+                )
+                if exc.status_code != 404:
+                    raise HTTPException(
+                        status_code=exc.status_code or 502,
+                        detail=f"Upstream model request failed with status {exc.status_code}.",
+                    ) from exc
 
-    raise HTTPException(
-        status_code=last_error.status_code if last_error else 502,
-        detail=f"Unable to reach the selected model after trying: {', '.join(attempted_models)}.",
-    )
+        raise HTTPException(
+            status_code=last_error.status_code if last_error else 502,
+            detail=f"Unable to reach the selected model after trying: {', '.join(attempted_models)}.",
+        )
+    finally:
+        await client.close()

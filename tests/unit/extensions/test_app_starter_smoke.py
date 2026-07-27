@@ -186,6 +186,9 @@ def _exercise_backend_chat(
         def __init__(self):
             self.chat = type("ChatNamespace", (), {"completions": FakeCompletions()})()
 
+        async def close(self):
+            seen["closed"] = True
+
     async def fake_build_chat_client(_request, _endpoint):
         return FakeChatClient()
 
@@ -208,6 +211,7 @@ def _exercise_backend_chat(
             == "Hello from smoke test"
         )
         assert seen["model"] == "kamiwaza"
+        assert seen["closed"] is True
     finally:
         module.app.dependency_overrides.clear()
         sys.modules.pop(module_name, None)
@@ -524,6 +528,7 @@ def _exercise_backend_chat_error_path(
     from openai import APIStatusError
 
     module = _load_backend_module(extension_dir / "backend", module_name)
+    seen: dict[str, object] = {}
 
     async def fake_list_available_models(_request):
         return [
@@ -556,6 +561,9 @@ def _exercise_backend_chat_error_path(
         def __init__(self):
             self.chat = type("ChatNamespace", (), {"completions": FakeCompletions()})()
 
+        async def close(self):
+            seen["closed"] = True
+
     async def fake_build_chat_client(_request, _endpoint):
         return FakeChatClient()
 
@@ -583,6 +591,7 @@ def _exercise_backend_chat_error_path(
     assert "db-internal.svc" not in detail
     assert "Traceback" not in detail
     assert "/v1/chat/completions" not in detail
+    assert seen["closed"] is True
     assert "internal_module" not in detail
 
 

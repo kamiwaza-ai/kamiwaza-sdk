@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Mapping
+from itertools import filterfalse
 
 import httpx
 from fastapi import Depends, HTTPException, Request
@@ -76,6 +77,37 @@ def forward_auth_headers(headers: Mapping[str, str]) -> dict[str, str]:
     return forwarded
 
 
+def _is_raw_cookie_field(item: tuple[bytes, bytes]) -> bool:
+    return item[0].lower() == b"cookie"
+
+
+def _join_raw_cookie_fields(
+    items: list[tuple[bytes, bytes]],
+) -> list[tuple[bytes, bytes]]:
+    cookie_fields = list(filter(_is_raw_cookie_field, items))
+    if len(cookie_fields) <= 1:
+        return items
+
+    cookie_position = items.index(cookie_fields[0])
+    cookie_name = cookie_fields[0][0]
+    cookie_values = (value for _, value in cookie_fields)
+    without_cookies = list(filterfalse(_is_raw_cookie_field, items))
+    without_cookies.insert(
+        cookie_position,
+        (cookie_name, b"; ".join(cookie_values)),
+    )
+    return without_cookies
+
+
+def _forward_auth_raw_items(headers: httpx.Headers) -> list[tuple[bytes, bytes]]:
+    forwarded = [
+        (key, value)
+        for key, value in headers.raw
+        if key.lower() in _FORWARD_HEADER_BYTES
+    ]
+    return _join_raw_cookie_fields(forwarded)
+
+
 def forward_auth_httpx_headers(headers: Mapping[str, str]) -> httpx.Headers:
     """Return the forwarded auth envelope with its original HTTP wire bytes.
 
@@ -85,27 +117,7 @@ def forward_auth_httpx_headers(headers: Mapping[str, str]) -> httpx.Headers:
     """
     try:
         if isinstance(headers, httpx.Headers):
-            forwarded_raw: list[tuple[bytes, bytes]] = []
-            cookie_values: list[bytes] = []
-            cookie_name = b"cookie"
-            cookie_position: int | None = None
-            for key, value in headers.raw:
-                normalized = key.lower()
-                if normalized not in _FORWARD_HEADER_BYTES:
-                    continue
-                if normalized == b"cookie":
-                    if cookie_position is None:
-                        cookie_position = len(forwarded_raw)
-                        cookie_name = key
-                    cookie_values.append(value)
-                    continue
-                forwarded_raw.append((key, value))
-            if cookie_position is not None:
-                forwarded_raw.insert(
-                    cookie_position,
-                    (cookie_name, b"; ".join(cookie_values)),
-                )
-            return httpx.Headers(forwarded_raw)
+            return httpx.Headers(_forward_auth_raw_items(headers))
         return httpx.Headers(
             [
                 header_bytes(key, value)
