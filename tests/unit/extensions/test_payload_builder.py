@@ -759,6 +759,10 @@ class TestServiceOverrides:
         }
 
         payload = builder.build(metadata, transformed, connection, "my-app-dev-abc")
+        services = {svc.name: svc.model_dump() for svc in payload.services}
+        sandbox_env = {
+            entry["name"]: entry for entry in services["sandbox-controller"]["env"]
+        }
 
         assert (payload.model_extra or {})["sandbox"] == {
             "enabled": True,
@@ -770,6 +774,54 @@ class TestServiceOverrides:
                 "limits": {"cpu": "2", "memory": "4Gi"},
             },
         }
+        assert sandbox_env["SANDBOX_HOST_IP"] == {
+            "name": "SANDBOX_HOST_IP",
+            "valueFrom": {"fieldRef": {"fieldPath": "status.hostIP"}},
+        }
+
+    @pytest.mark.parametrize(
+        ("host_ip_value", "expected_host_ip_env"),
+        [
+            (
+                None,
+                {
+                    "name": "SANDBOX_HOST_IP",
+                    "valueFrom": {"fieldRef": {"fieldPath": "status.hostIP"}},
+                },
+            ),
+            (
+                "",
+                {
+                    "name": "SANDBOX_HOST_IP",
+                    "valueFrom": {"fieldRef": {"fieldPath": "status.hostIP"}},
+                },
+            ),
+            ("10.0.0.5", {"name": "SANDBOX_HOST_IP", "value": "10.0.0.5"}),
+        ],
+    )
+    def test_kubernetes_sandbox_controller_host_ip_env(
+        self, builder, metadata, connection, host_ip_value, expected_host_ip_env
+    ):
+        environment = {"SANDBOX_BACKEND": "kubernetes"}
+        if host_ip_value is not None:
+            environment["SANDBOX_HOST_IP"] = host_ip_value
+        transformed = {
+            "services": {
+                "sandbox-controller": {
+                    "image": "reg/sandbox-controller:dev",
+                    "ports": ["8085"],
+                    "environment": environment,
+                }
+            },
+        }
+
+        payload = builder.build(metadata, transformed, connection, "my-app-dev-abc")
+
+        services = {svc.name: svc.model_dump() for svc in payload.services}
+        sandbox_env = {
+            entry["name"]: entry for entry in services["sandbox-controller"]["env"]
+        }
+        assert sandbox_env["SANDBOX_HOST_IP"] == expected_host_ip_env
 
     def test_non_kubernetes_backend_emits_no_sandbox_spec(
         self, builder, metadata, connection

@@ -50,6 +50,7 @@ ANNOTATION_DEPLOYED_AT = "kamiwaza.io/deployed-at"
 # (different from the ``kamiwaza.io/*`` deploy-metadata namespace
 # above). The operator recognizes both.
 ANNOTATION_SERVICE_REF_REWRITES = "extensions.kamiwaza.io/service-ref-rewrites"
+SANDBOX_HOST_IP_ENV = "SANDBOX_HOST_IP"
 
 
 def _compose_resources_to_k8s(resources: Dict[str, str]) -> Dict[str, str]:
@@ -369,6 +370,8 @@ class PayloadBuilder:
         for svc_name, svc in services_dict.items():
             ports = self._parse_ports(svc.get("ports", []))
             env = self._parse_env(svc.get("environment", []))
+            if _env_entry_value(env, "SANDBOX_BACKEND") == "kubernetes":
+                _ensure_sandbox_host_ip_env(env)
             resources = self._parse_resources(svc)
 
             is_primary = svc_name == primary_name
@@ -839,6 +842,34 @@ def _service_env_map(svc: Dict[str, Any]) -> Dict[str, str]:
                     if value is not None:
                         env[str(key)] = str(value)
     return env
+
+
+def _env_entry_value(env: List[Dict[str, Any]], name: str) -> Optional[str]:
+    for entry in env:
+        if entry.get("name") != name or "value" not in entry:
+            continue
+        return str(entry["value"])
+    return None
+
+
+def _ensure_sandbox_host_ip_env(env: List[Dict[str, Any]]) -> None:
+    for index, entry in enumerate(env):
+        if entry.get("name") != SANDBOX_HOST_IP_ENV:
+            continue
+        if entry.get("valueFrom") is not None:
+            return
+        if str(entry.get("value", "")).strip():
+            return
+        env[index] = _sandbox_host_ip_env()
+        return
+    env.append(_sandbox_host_ip_env())
+
+
+def _sandbox_host_ip_env() -> Dict[str, Any]:
+    return {
+        "name": SANDBOX_HOST_IP_ENV,
+        "valueFrom": {"fieldRef": {"fieldPath": "status.hostIP"}},
+    }
 
 
 def _sandbox_resources_from_env(
