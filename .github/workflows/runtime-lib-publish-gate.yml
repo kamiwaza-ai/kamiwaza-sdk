@@ -1,0 +1,62 @@
+# Guards against declaring a runtime-lib floor that no consumer can resolve.
+#
+# Bumping `kamiwaza-extensions-lib` (or its npm counterpart) in-repo is not the
+# same as publishing it. A floor that runs ahead of the registry is invisible to
+# anyone developing with `uv` — the workspace source shadows the registry — but
+# it makes `pip install kamiwaza-sdk` unresolvable for external consumers, and
+# it makes every `kz-ext create` scaffold unbuildable, because the scaffolder
+# renders the compatibility bundle's pins straight into the generated
+# requirements.txt / package.json.
+#
+# Companion to extensions-lib-version-guard.yml: that one asks "is this version
+# free to publish?", this one asks "is the version we point consumers at
+# actually published yet?".
+#
+# Runs on PRs and as a push backstop on develop/main, matching the repo's other
+# quality workflows: a PR's passing result goes stale once the base advances,
+# and a squash merge must be re-validated on the commit that actually lands.
+name: Runtime Lib Publish Gate
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'pyproject.toml'
+      - 'kamiwaza_extensions/compatibility.json'
+      - 'scripts/check_runtime_lib_floors.py'
+      - '.github/workflows/runtime-lib-publish-gate.yml'
+  push:
+    branches: [develop, main]
+    paths:
+      - 'pyproject.toml'
+      - 'kamiwaza_extensions/compatibility.json'
+      - 'scripts/check_runtime_lib_floors.py'
+      - '.github/workflows/runtime-lib-publish-gate.yml'
+  # Floors go stale without anyone touching the repo: a version can be yanked,
+  # and a floor raised in anticipation of a release stays broken until that
+  # release ships. A daily run surfaces that without waiting for the next PR.
+  schedule:
+    - cron: '0 13 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish-gate:
+    name: Declared floors must be published
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          version: "0.7.5"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Check declared floors against PyPI and npm
+        run: uv run python scripts/check_runtime_lib_floors.py
