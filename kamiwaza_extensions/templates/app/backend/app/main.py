@@ -11,14 +11,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from kamiwaza_extensions_lib import (
     AuthConfig,
     Identity,
+    MisboundAuthError,
     backend_runtime_base,
     create_session_router,
-    forward_auth_headers,
+    forward_auth_httpx_headers,
     get_model_client,
     list_available_models,
     public_base_url,
     require_auth,
 )
+from fastapi.responses import JSONResponse
 from openai import APIStatusError, AsyncOpenAI
 
 app = FastAPI(title="{{name}}")
@@ -35,6 +37,22 @@ app.add_middleware(
 
 # Session management endpoints (/session, /auth/login-url, /auth/logout)
 app.include_router(create_session_router())
+
+
+@app.exception_handler(MisboundAuthError)
+async def misbound_auth_error_handler(request: Request, exc: MisboundAuthError):
+    """Fail closed when a malformed envelope reaches route-level forwarding."""
+    logger.warning(
+        "MisboundAuthError on %s %s: %s",
+        request.method,
+        request.url.path,
+        exc,
+    )
+    return JSONResponse(
+        status_code=401,
+        content={"detail": "Authentication required"},
+        headers={"WWW-Authenticate": f'Bearer error="{exc.class_name}"'},
+    )
 
 
 @app.get("/health")
@@ -177,8 +195,7 @@ def _normalize_model_endpoint(endpoint: str, access_path: str):
         if backend_parsed is not None and _should_rehost(parsed, backend_parsed):
             base_prefix = backend_parsed.path.rstrip("/")
             already_prefixed = base_prefix and (
-                parsed.path == base_prefix
-                or parsed.path.startswith(base_prefix + "/")
+                parsed.path == base_prefix or parsed.path.startswith(base_prefix + "/")
             )
             merged_path = (
                 parsed.path
@@ -234,14 +251,22 @@ async def _resolve_chat_target(request: Request, selected_model: str):
             _pick_string(extra.get("endpoint")),
             _pick_string(extra.get("access_path")),
         )
-        canonical_model = _pick_string(getattr(model, "name", "")) or selected_model.strip()
+        canonical_model = (
+            _pick_string(getattr(model, "name", "")) or selected_model.strip()
+        )
         return endpoint or None, canonical_model
 
     return None, selected_model.strip()
 
 
 def _candidate_models(requested_model: str, resolved_model: str, endpoint: str | None):
-    candidates = ["kamiwaza" if endpoint else requested_model, resolved_model, requested_model, "model", "auto"]
+    candidates = [
+        "kamiwaza" if endpoint else requested_model,
+        resolved_model,
+        requested_model,
+        "model",
+        "auto",
+    ]
     seen: set[str] = set()
     unique: list[str] = []
 
@@ -260,29 +285,25 @@ async def _build_chat_client(request: Request, endpoint: str | None):
         return await get_model_client(request)
 
     config = AuthConfig.from_env()
-    forwarded_headers = forward_auth_headers(request.headers)
-
-    auth_header = None
-    passthrough_headers: dict[str, str] = {}
-    for key, value in forwarded_headers.items():
-        if key.lower() == "authorization":
-            auth_header = value
-        else:
-            passthrough_headers[key] = value
+    wire_headers = forward_auth_httpx_headers(request.headers)
+    auth_header = wire_headers.get("authorization")
 
     api_key = "not-needed-kamiwaza"
     if auth_header:
         prefix = "bearer "
         if auth_header.lower().startswith(prefix):
-            api_key = auth_header[len(prefix):]
+            api_key = auth_header[len(prefix) :]
         else:
             api_key = auth_header
 
     return AsyncOpenAI(
         base_url=endpoint,
         api_key=api_key,
-        default_headers=passthrough_headers,
-        http_client=httpx.AsyncClient(verify=config.verify_ssl),
+        http_client=httpx.AsyncClient(
+            headers=wire_headers,
+            verify=config.httpx_verify(),
+            trust_env=False,
+        ),
     )
 
 
@@ -293,37 +314,40 @@ async def chat(request: Request, identity: Identity = Depends(require_auth)):
     requested_model = _pick_string(body.get("model")) or "auto"
     endpoint, resolved_model = await _resolve_chat_target(request, requested_model)
     client = await _build_chat_client(request, endpoint)
-    attempted_models = _candidate_models(requested_model, resolved_model, endpoint)
-    last_error: APIStatusError | None = None
+    try:
+        attempted_models = _candidate_models(requested_model, resolved_model, endpoint)
+        last_error: APIStatusError | None = None
 
-    for model_name in attempted_models:
-        try:
-            response = await client.chat.completions.create(
-                model=model_name,
-                messages=body.get("messages", []),
-            )
-            return response.model_dump()
-        except APIStatusError as exc:
-            last_error = exc
-            # Log the full upstream body server-side so operators can debug;
-            # never include `exc.body` in the response — it can carry
-            # internal hostnames, paths, or stack traces (ENG-3919).
-            logger.warning(
-                "Chat completion failed for requested_model=%s resolved_model=%s attempt_model=%s endpoint=%s status=%s body=%s",
-                requested_model,
-                resolved_model,
-                model_name,
-                endpoint or "<default>",
-                exc.status_code,
-                exc.body,
-            )
-            if exc.status_code != 404:
-                raise HTTPException(
-                    status_code=exc.status_code or 502,
-                    detail=f"Upstream model request failed with status {exc.status_code}.",
-                ) from exc
+        for model_name in attempted_models:
+            try:
+                response = await client.chat.completions.create(
+                    model=model_name,
+                    messages=body.get("messages", []),
+                )
+                return response.model_dump()
+            except APIStatusError as exc:
+                last_error = exc
+                # Log the full upstream body server-side so operators can debug;
+                # never include `exc.body` in the response — it can carry
+                # internal hostnames, paths, or stack traces (ENG-3919).
+                logger.warning(
+                    "Chat completion failed for requested_model=%s resolved_model=%s attempt_model=%s endpoint=%s status=%s body=%s",
+                    requested_model,
+                    resolved_model,
+                    model_name,
+                    endpoint or "<default>",
+                    exc.status_code,
+                    exc.body,
+                )
+                if exc.status_code != 404:
+                    raise HTTPException(
+                        status_code=exc.status_code or 502,
+                        detail=f"Upstream model request failed with status {exc.status_code}.",
+                    ) from exc
 
-    raise HTTPException(
-        status_code=last_error.status_code if last_error else 502,
-        detail=f"Unable to reach the selected model after trying: {', '.join(attempted_models)}.",
-    )
+        raise HTTPException(
+            status_code=last_error.status_code if last_error else 502,
+            detail=f"Unable to reach the selected model after trying: {', '.join(attempted_models)}.",
+        )
+    finally:
+        await client.close()

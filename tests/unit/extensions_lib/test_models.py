@@ -3,9 +3,15 @@
 import ssl
 
 import pytest
+from openai._models import FinalRequestOptions
+from starlette.datastructures import Headers
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from kamiwaza_extensions_lib.models import AvailableModel, get_model_client, list_available_models
+from kamiwaza_extensions_lib.models import (
+    AvailableModel,
+    get_model_client,
+    list_available_models,
+)
 
 
 @pytest.mark.unit
@@ -90,14 +96,37 @@ class TestGetModelClient:
         }
 
         client = await get_model_client(request)
-        headers = getattr(client, "default_headers", None) or getattr(
-            client, "_default_headers", {}
-        )
+        headers = client.default_headers
+        transport_headers = client._client.headers
 
         assert headers["Authorization"] == "Bearer user-access-token"
-        assert headers["x-user-id"] == "usr-123"
-        assert headers["x-auth-token"] == "jwt-abc"
+        assert transport_headers["x-user-id"] == "usr-123"
+        assert transport_headers["x-auth-token"] == "jwt-abc"
         assert "authorization" not in headers
+
+    @pytest.mark.asyncio
+    async def test_preserves_non_ascii_envelope_wire_bytes(self, monkeypatch):
+        monkeypatch.setenv("KAMIWAZA_ENDPOINT", "http://model:8080/v1")
+        request = MagicMock()
+        request.headers = Headers(
+            raw=[
+                (b"x-user-id", b"usr-123"),
+                (b"x-user-name", "José".encode()),
+                (b"x-user-groups", "Ingénierie".encode()),
+            ]
+        )
+
+        client = await get_model_client(request)
+
+        outbound = client._build_request(
+            FinalRequestOptions.construct(
+                method="post",
+                url="/chat/completions",
+            )
+        )
+        assert (b"x-user-name", "José".encode()) in outbound.headers.raw
+        assert (b"x-user-groups", "Ingénierie".encode()) in outbound.headers.raw
+        await client.close()
 
     @pytest.mark.asyncio
     async def test_honors_verify_ssl_setting(self, monkeypatch):
@@ -143,7 +172,9 @@ class TestGetModelClient:
         ]
 
         with patch.object(
-            __import__("kamiwaza_extensions_lib.client", fromlist=["KamiwazaExtClient"]).KamiwazaExtClient,
+            __import__(
+                "kamiwaza_extensions_lib.client", fromlist=["KamiwazaExtClient"]
+            ).KamiwazaExtClient,
             "from_env",
         ) as mock_from_env:
             mock_client = AsyncMock()
@@ -152,7 +183,39 @@ class TestGetModelClient:
 
             client = await get_model_client(request)
 
-        assert str(client.base_url).rstrip("/") == "https://kamiwaza.test/runtime/models/dep-chat/v1"
+        assert (
+            str(client.base_url).rstrip("/")
+            == "https://kamiwaza.test/runtime/models/dep-chat/v1"
+        )
+
+    @pytest.mark.asyncio
+    async def test_logs_discovery_failure_before_endpoint_fallback(
+        self, monkeypatch, caplog
+    ):
+        import httpx
+
+        monkeypatch.setenv("KAMIWAZA_API_URL", "https://kamiwaza.test/api")
+        monkeypatch.setenv("KAMIWAZA_ENDPOINT", "https://model.test/v1")
+        request = MagicMock()
+        request.headers = {"x-user-id": "usr-123"}
+
+        with patch.object(
+            __import__(
+                "kamiwaza_extensions_lib.client", fromlist=["KamiwazaExtClient"]
+            ).KamiwazaExtClient,
+            "from_env",
+        ) as mock_from_env:
+            mock_client = AsyncMock()
+            mock_client.get_models = AsyncMock(
+                side_effect=httpx.ConnectError("platform unavailable")
+            )
+            mock_from_env.return_value = mock_client
+
+            with caplog.at_level("WARNING"):
+                client = await get_model_client(request)
+
+        assert str(client.base_url).rstrip("/") == "https://model.test/v1"
+        assert "Platform model endpoint discovery failed" in caplog.text
 
     @pytest.mark.asyncio
     async def test_raises_without_endpoint(self, monkeypatch):
@@ -195,7 +258,9 @@ class TestListAvailableModels:
         ]
 
         with patch.object(
-            __import__("kamiwaza_extensions_lib.client", fromlist=["KamiwazaExtClient"]).KamiwazaExtClient,
+            __import__(
+                "kamiwaza_extensions_lib.client", fromlist=["KamiwazaExtClient"]
+            ).KamiwazaExtClient,
             "from_env",
         ) as mock_from_env:
             mock_client = AsyncMock()
@@ -209,7 +274,10 @@ class TestListAvailableModels:
         assert models[0].name == "llama-3"
         assert models[0].type == "chat"
         assert models[0].capabilities == ["chat.completions"]
-        assert models[0]._extra["endpoint"] == "https://kamiwaza.test/runtime/models/dep-1/v1"
+        assert (
+            models[0]._extra["endpoint"]
+            == "https://kamiwaza.test/runtime/models/dep-1/v1"
+        )
         assert models[1].type == "audio"
         assert models[1].capabilities == ["audio.transcriptions"]
 
@@ -231,7 +299,9 @@ class TestListAvailableModels:
         ]
 
         with patch.object(
-            __import__("kamiwaza_extensions_lib.client", fromlist=["KamiwazaExtClient"]).KamiwazaExtClient,
+            __import__(
+                "kamiwaza_extensions_lib.client", fromlist=["KamiwazaExtClient"]
+            ).KamiwazaExtClient,
             "from_env",
         ) as mock_from_env:
             mock_client = AsyncMock()
@@ -240,7 +310,10 @@ class TestListAvailableModels:
 
             models = await list_available_models(request)
 
-        assert models[0]._extra["endpoint"] == "https://kamiwaza.test/runtime/models/dep-1/v1"
+        assert (
+            models[0]._extra["endpoint"]
+            == "https://kamiwaza.test/runtime/models/dep-1/v1"
+        )
 
     @pytest.mark.asyncio
     async def test_returns_empty_when_no_api_url(self, monkeypatch):
@@ -253,15 +326,18 @@ class TestListAvailableModels:
         assert models == []
 
     @pytest.mark.asyncio
-    async def test_returns_empty_on_http_error(self, monkeypatch):
+    async def test_returns_empty_and_logs_on_http_error(self, monkeypatch, caplog):
         import httpx
+
         monkeypatch.setenv("KAMIWAZA_API_URL", "http://api:7777/api")
 
         request = MagicMock()
         request.headers = {}
 
         with patch.object(
-            __import__("kamiwaza_extensions_lib.client", fromlist=["KamiwazaExtClient"]).KamiwazaExtClient,
+            __import__(
+                "kamiwaza_extensions_lib.client", fromlist=["KamiwazaExtClient"]
+            ).KamiwazaExtClient,
             "from_env",
         ) as mock_from_env:
             mock_client = AsyncMock()
@@ -270,9 +346,11 @@ class TestListAvailableModels:
             )
             mock_from_env.return_value = mock_client
 
-            models = await list_available_models(request)
+            with caplog.at_level("WARNING"):
+                models = await list_available_models(request)
 
         assert models == []
+        assert "Platform model discovery failed" in caplog.text
 
     @pytest.mark.asyncio
     async def test_propagates_programming_errors(self, monkeypatch):
@@ -283,7 +361,9 @@ class TestListAvailableModels:
         request.headers = {}
 
         with patch.object(
-            __import__("kamiwaza_extensions_lib.client", fromlist=["KamiwazaExtClient"]).KamiwazaExtClient,
+            __import__(
+                "kamiwaza_extensions_lib.client", fromlist=["KamiwazaExtClient"]
+            ).KamiwazaExtClient,
             "from_env",
         ) as mock_from_env:
             mock_client = AsyncMock()
@@ -292,4 +372,3 @@ class TestListAvailableModels:
 
             with pytest.raises(TypeError):
                 await list_available_models(request)
-

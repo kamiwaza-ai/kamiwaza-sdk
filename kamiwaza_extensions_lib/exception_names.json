@@ -8,7 +8,7 @@
     {
       "name": "unexpected_context",
       "exit_code": 11,
-      "doctor_hint": "Envelope headers missing or wrong shape; check you are running in the expected context (local dev vs. cluster)."
+      "doctor_hint": "Runtime configuration or envelope context is invalid. Check the named KAMIWAZA_* setting and verify the extension is running in the expected context (local dev vs. cluster)."
     },
     {
       "name": "out_of_envelope_access",
@@ -24,6 +24,11 @@
       "name": "stream_interrupted",
       "exit_code": 14,
       "doctor_hint": "Upstream streaming response failed after bytes were committed downstream. Most often a network drop mid-stream; check upstream connectivity and the platform's request-timeout settings. Pre-commit 401s would have surfaced as platform_outage; if you see stream_interrupted alongside repeated 401s, refresh-loop your auth path."
+    },
+    {
+      "name": "platform_redirect",
+      "exit_code": 15,
+      "doctor_hint": "A request-bound platform call used a non-canonical route. Use the exact route, including its required trailing slash; authenticated redirects are disabled."
     }
   ]
 }

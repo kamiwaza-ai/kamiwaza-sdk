@@ -17,6 +17,17 @@ import { ENVELOPE_AUTH_HEADERS } from "../src/_shared/envelopeHeaders";
 import { _buildBridgedHeaders } from "../src/local-dev-auth";
 
 describe("envelope auth headers shared constant", () => {
+    it("contains the complete current signed ForwardAuth envelope", () => {
+        for (const h of [
+            "x-auth-azp",
+            "x-user-groups",
+            "x-user-attributes-hash",
+            "x-user-signature-stable",
+        ]) {
+            expect(ENVELOPE_AUTH_HEADERS as readonly string[]).toContain(h);
+        }
+    });
+
     it("contains only auth-bearing headers (no transport)", () => {
         for (const h of ENVELOPE_AUTH_HEADERS) {
             expect(h.startsWith("x-") || h === "authorization").toBe(true);

@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import os
+import ssl
 from dataclasses import dataclass
+
+from .errors import UnexpectedContextError
 
 
 def _read_verify_ssl() -> bool:
@@ -42,6 +45,7 @@ class AuthConfig:
     origin: str = ""
     api_key: str = ""
     verify_ssl: bool = True
+    ca_bundle: str = ""
 
     @classmethod
     def from_env(cls) -> AuthConfig:
@@ -59,4 +63,18 @@ class AuthConfig:
             origin=os.environ.get("KAMIWAZA_ORIGIN", ""),
             api_key=os.environ.get("KAMIWAZA_API_KEY", ""),
             verify_ssl=_read_verify_ssl(),
+            ca_bundle=os.environ.get("KAMIWAZA_CA_BUNDLE", "").strip(),
         )
+
+    def httpx_verify(self) -> bool | ssl.SSLContext:
+        """Return explicit TLS verification state for proxy-isolated clients."""
+        if not self.verify_ssl:
+            return False
+        if self.ca_bundle:
+            try:
+                return ssl.create_default_context(cafile=self.ca_bundle)
+            except OSError as exc:
+                raise UnexpectedContextError(
+                    "KAMIWAZA_CA_BUNDLE is not a readable PEM trust bundle"
+                ) from exc
+        return True

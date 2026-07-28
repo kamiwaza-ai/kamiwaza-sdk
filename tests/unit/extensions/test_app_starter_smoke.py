@@ -13,6 +13,8 @@ from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
+from openai._models import FinalRequestOptions
+from starlette.datastructures import Headers
 
 from kamiwaza_extensions.scaffolder import Scaffolder
 
@@ -184,6 +186,9 @@ def _exercise_backend_chat(
         def __init__(self):
             self.chat = type("ChatNamespace", (), {"completions": FakeCompletions()})()
 
+        async def close(self):
+            seen["closed"] = True
+
     async def fake_build_chat_client(_request, _endpoint):
         return FakeChatClient()
 
@@ -206,6 +211,7 @@ def _exercise_backend_chat(
             == "Hello from smoke test"
         )
         assert seen["model"] == "kamiwaza"
+        assert seen["closed"] is True
     finally:
         module.app.dependency_overrides.clear()
         sys.modules.pop(module_name, None)
@@ -222,6 +228,76 @@ def test_chatbot_example_matches_scaffolded_app_core_files(tmp_path, monkeypatch
             assert scaffolded_path.read_bytes() == example_path.read_bytes()
         else:
             assert scaffolded_path.read_text() == example_path.read_text()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_template_chat_transport_is_proxy_safe_and_preserves_wire_bytes(
+    tmp_path, monkeypatch
+):
+    scaffolded = _scaffold_app(tmp_path, monkeypatch)
+    monkeypatch.setenv("KAMIWAZA_VERIFY_SSL", "true")
+    module_name = "scaffolded_chat_transport_headers"
+    module = _load_backend_module(scaffolded / "backend", module_name)
+    request = SimpleNamespace(
+        headers=Headers(
+            raw=[
+                (b"authorization", b"Bearer user-access-token"),
+                (b"x-user-id", b"usr-123"),
+                (b"x-user-name", "José".encode()),
+                (b"x-user-groups", "Ingénierie".encode()),
+            ]
+        )
+    )
+
+    client = await module._build_chat_client(
+        request,
+        "https://kamiwaza.test/runtime/models/dep-1/v1",
+    )
+    try:
+        assert client._client._trust_env is False
+        outbound = client._build_request(
+            FinalRequestOptions.construct(
+                method="post",
+                url="/chat/completions",
+            )
+        )
+        assert (b"x-user-name", "José".encode()) in outbound.headers.raw
+        assert (b"x-user-groups", "Ingénierie".encode()) in outbound.headers.raw
+    finally:
+        await client.close()
+        sys.modules.pop(module_name, None)
+
+
+@pytest.mark.unit
+def test_template_maps_ambiguous_forward_auth_envelope_to_401(tmp_path, monkeypatch):
+    scaffolded = _scaffold_app(tmp_path, monkeypatch)
+    module_name = "scaffolded_ambiguous_forward_auth"
+    module = _load_backend_module(scaffolded / "backend", module_name)
+
+    async def fake_resolve_chat_target(_request, _requested_model):
+        return ("https://kamiwaza.test/runtime/models/dep-1/v1", "dep-1")
+
+    monkeypatch.setattr(module, "_resolve_chat_target", fake_resolve_chat_target)
+    module.app.dependency_overrides[module.require_auth] = lambda: object()
+
+    try:
+        client = TestClient(module.app)
+        response = client.post(
+            "/api/chat",
+            headers=[
+                ("x-request-id", "first"),
+                ("x-request-id", "second"),
+            ],
+            json={"model": "dep-1", "messages": []},
+        )
+    finally:
+        module.app.dependency_overrides.clear()
+        sys.modules.pop(module_name, None)
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "Authentication required"}
+    assert response.headers["www-authenticate"] == 'Bearer error="misbound_auth"'
 
 
 @pytest.mark.unit
@@ -385,9 +461,7 @@ def test_template_chat_endpoint_keeps_gateway_url_in_cluster(tmp_path, monkeypat
 
 
 @pytest.mark.unit
-def test_template_chat_endpoint_both_fields_dev_local_unchanged(
-    tmp_path, monkeypatch
-):
+def test_template_chat_endpoint_both_fields_dev_local_unchanged(tmp_path, monkeypatch):
     """ENG-8766 review follow-up — reordering endpoint above access_path
     must NOT change `kz-ext dev local --auth` behavior when both fields
     are present: the browser-only endpoint re-hosts to the same URL the
@@ -485,6 +559,7 @@ def _exercise_backend_chat_error_path(
     from openai import APIStatusError
 
     module = _load_backend_module(extension_dir / "backend", module_name)
+    seen: dict[str, object] = {}
 
     async def fake_list_available_models(_request):
         return [
@@ -517,6 +592,9 @@ def _exercise_backend_chat_error_path(
         def __init__(self):
             self.chat = type("ChatNamespace", (), {"completions": FakeCompletions()})()
 
+        async def close(self):
+            seen["closed"] = True
+
     async def fake_build_chat_client(_request, _endpoint):
         return FakeChatClient()
 
@@ -544,6 +622,7 @@ def _exercise_backend_chat_error_path(
     assert "db-internal.svc" not in detail
     assert "Traceback" not in detail
     assert "/v1/chat/completions" not in detail
+    assert seen["closed"] is True
     assert "internal_module" not in detail
 
 
