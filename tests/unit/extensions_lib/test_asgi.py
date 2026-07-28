@@ -30,7 +30,7 @@ def patched_uvicorn():
 
 
 @pytest.mark.unit
-def test_launches_uvicorn_with_root_path(monkeypatch):
+def test_path_mode_sets_external_root_path_for_stripped_ingress(monkeypatch):
     monkeypatch.setenv("KAMIWAZA_ROUTING_MODE", "path")
     monkeypatch.setenv("KAMIWAZA_APP_PATH", "/runtime/apps/550e8400")
     with patched_uvicorn() as run:

@@ -39,7 +39,8 @@ If `KAMIWAZA_ROUTING_MODE` is unset, a nonempty `KAMIWAZA_APP_PATH` implies path
 
 Key facts about path mode:
 
-- **The public app frontend receives the full, un-stripped prefix.**
+- **The SDK-generated app's public Next frontend receives the full,
+  un-stripped prefix.**
   `strip_path_prefix=false` remains the app default in `kamiwaza.json`, so
   Traefik forwards the deployment path to the relocated Next.js server. The
   shared Next route proxy then removes that prefix before forwarding `/api/*`
@@ -314,6 +315,13 @@ external mount context while the backend declares ordinary routes.
   prefix.** The supported scaffold topology enters through the frontend;
   forwarding an already-prefixed path to Uvicorn while also setting
   `root_path` can duplicate the prefix.
+- **Direct FastAPI apps use prefix stripping.** If App Garden exposes a
+  single FastAPI container rather than the generated Next frontend, set
+  `"strip_path_prefix": true`. Browser requests still include the public
+  deployment prefix; Traefik removes it before Uvicorn receives the request,
+  and the launcher supplies that same prefix as the ASGI `root_path`.
+  Browser-side fetch helpers must retain the public prefix when calling into
+  App Garden.
 - **Cookies** use `RuntimeRouting.cookie_path` — the app prefix in path mode, `/` in port mode — so two deployments on the same host can't shadow each other's cookies:
 
 ```python
@@ -526,7 +534,8 @@ There is no local "rebuild with a path" step anymore. If you need to eyeball pat
 3. **Backends declare unprefixed routes** and start via
    `python -m kamiwaza_extensions_lib.asgi`; the shared frontend proxy strips
    the deployment prefix before forwarding while `root_path` retains the
-   external mount context.
+   external mount context. A directly exposed FastAPI app instead sets
+   `strip_path_prefix=true` so ingress performs that strip.
 4. **Trust env, not headers**, for deployment identity (`KAMIWAZA_APP_PATH_URL` > `KAMIWAZA_APP_URL` in path mode).
 5. **Failures are loud**: a bad artifact or bad prefix stops the container at boot with a `kz_next_runtime` error event — check that JSON line first.
 6. **Next is pinned exactly**; version bumps go through `scripts/test-next-runtime-canary.sh`.

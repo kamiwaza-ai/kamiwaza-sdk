@@ -2,11 +2,11 @@
 
 Resolves the deployment's routing mode exactly like the frontend boot
 entrypoint, then starts Uvicorn with ``root_path`` set to the runtime app
-path. Apps keep declaring unprefixed routes (``/api``, ``/health``);
-Starlette strips the matching ``scope.root_path`` during routing while URL
-generation, OpenAPI servers, and cookie paths see the external prefix. The
-full un-stripped request from Traefik routes correctly with no app-level
-prefix routers or rewrite middleware.
+path. The upstream proxy must strip that public prefix before forwarding.
+Uvicorn adds ``root_path`` to the ASGI scope, so apps keep declaring
+unprefixed routes (``/api``, ``/health``) while URL generation and OpenAPI
+servers see the external mount. Forwarding an already-prefixed transport path
+while also setting ``root_path`` duplicates the prefix.
 
 Usage (scaffold backend Dockerfile)::
 
