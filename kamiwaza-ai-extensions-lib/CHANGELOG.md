@@ -4,6 +4,26 @@ Versions follow semver. Published to npm as a standalone package
 (`@kamiwaza-ai/extensions-lib`) and versioned independently from
 `kamiwaza-sdk`.
 
+## [0.5.0] — 2026-07-28
+
+### Added
+
+* Dual-artifact Next.js runtime support: `withKamiwazaAppGarden()` builds
+  native port and sentinel-path variants, while the packaged index and boot
+  scripts relocate the path artifact to `KAMIWAZA_APP_PATH` without running
+  `next build` at container start.
+* Fail-closed relocation validation for hashes, occurrence counts, JSON and
+  RSC payloads, symlinks, source maps, runtime paths, and residual sentinel
+  bytes.
+* Runtime bootstrap, same-app fetch, asset URL, runtime-config response, and
+  server-side path helpers under the new `runtime`, `runtime/server`, and
+  `next-config` exports.
+
+### Changed
+
+* Next.js production scaffolds must use exactly `15.5.19`, the version covered
+  by the relocation manifest and canary.
+
 ## [0.4.3] — 2026-07-27 (ENG-9199)
 
 ### Fixed

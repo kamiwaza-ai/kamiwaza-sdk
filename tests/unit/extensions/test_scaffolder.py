@@ -1,12 +1,13 @@
 """Tests for Scaffolder."""
 
 import json
+import re
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
-from kamiwaza_extensions.scaffolder import Scaffolder
+from kamiwaza_extensions.scaffolder import Scaffolder, _runtime_lib_pins
 
 
 @pytest.mark.unit
@@ -20,6 +21,60 @@ class TestScaffolder:
         d = tmp_path / name
         d.mkdir()
         return d
+
+    def test_runtime_pin_fallback_preserves_relocation_contract(self):
+        """A corrupt compatibility bundle must not regress a new scaffold
+        to the pre-relocation 0.4 runtime series."""
+
+        class MissingBundle:
+            def __truediv__(self, _name):
+                return self
+
+            def read_text(self, **_kwargs):
+                raise FileNotFoundError
+
+        with patch(
+            "kamiwaza_extensions.scaffolder.importlib_resources.files",
+            return_value=MissingBundle(),
+        ):
+            _runtime_lib_pins.cache_clear()
+            assert _runtime_lib_pins() == (">=0.5,<0.6", ">=0.5 <0.6")
+
+    def test_next_pin_matches_runtime_and_canary(self):
+        """The scaffold pin cannot move without moving the validated gate."""
+        repo_root = Path(__file__).resolve().parents[3]
+
+        def package(path: str) -> dict:
+            return json.loads((repo_root / path).read_text())
+
+        scaffold_next = package(
+            "kamiwaza_extensions/templates/app/frontend/package.json"
+        )["dependencies"]["next"]
+        runtime_next = package("kamiwaza-ai-extensions-lib/package.json")[
+            "devDependencies"
+        ]["next"]
+        canary_next = package(
+            "tests/next-runtime-canary/frontend/package.json"
+        )["dependencies"]["next"]
+        wrapper = (
+            repo_root
+            / "kamiwaza-ai-extensions-lib"
+            / "src"
+            / "next-config"
+            / "index.ts"
+        ).read_text()
+        supported = re.search(
+            r"SUPPORTED_NEXT_VERSIONS[^=]*=\s*\[\"([^\"]+)\"\]",
+            wrapper,
+        )
+
+        assert supported is not None
+        assert {
+            scaffold_next,
+            runtime_next,
+            canary_next,
+            supported.group(1),
+        } == {"15.5.19"}
 
     def test_create_app(self, tmp_path, monkeypatch, scaffolder):
         d = self._empty_dir(tmp_path)

@@ -378,9 +378,11 @@ def _splice_overlay_steps(content: str, overlay: BuildOverride) -> str:
 
     Insertion strategy (in priority order):
 
-    1. If ``overlay.insert_before_build`` is True, insert before the
-       first matching build line (TS overlays, where the SDK lib must
-       be installed before ``npm run build`` / ``next build``).
+    1. If ``overlay.insert_before_build`` is True, install immediately
+       after the first TypeScript dependency-install instruction when
+       available. This puts the local SDK package in a shared ``deps``
+       stage before sibling build variants fork. Otherwise, fall back
+       to the first matching build line.
     2. Otherwise, for multi-stage Dockerfiles, insert before the LAST
        ``FROM`` (i.e., at the end of the build stage). The runtime
        stage of a Chainguard distroless extension has no ``/bin/sh``,
@@ -395,6 +397,8 @@ def _splice_overlay_steps(content: str, overlay: BuildOverride) -> str:
     insert_idx: Optional[int] = None
 
     if overlay.insert_before_build:
+        insert_idx = _shared_typescript_install_index(lines, overlay)
+    if overlay.insert_before_build and insert_idx is None:
         for i, line in enumerate(lines):
             if _TS_BUILD_PATTERNS.match(line):
                 insert_idx = i
@@ -452,6 +456,31 @@ def _runtime_copies_python_environment(runtime_lines: List[str]) -> bool:
     return any(
         marker in line for line in copy_lines for marker in _PYTHON_ENV_COPY_MARKERS
     )
+
+
+def _shared_typescript_install_index(
+    lines: List[str], overlay: BuildOverride
+) -> Optional[int]:
+    """Return the line after the first npm install instruction.
+
+    Installing the local package in the dependency stage makes it available
+    to every later stage based on that stage, including the scaffold's
+    independent port and path builds.
+    """
+    if overlay.language != "typescript":
+        return None
+    for index, line in enumerate(lines):
+        if _TS_NPM_INSTALL_PATTERN.match(line):
+            return _line_after_instruction(lines, index)
+    return None
+
+
+def _line_after_instruction(lines: List[str], start: int) -> int:
+    """Return the first line after a possibly continued Docker instruction."""
+    index = start
+    while index < len(lines) and lines[index].rstrip().endswith("\\"):
+        index += 1
+    return min(index + 1, len(lines))
 
 
 def _insert_before_install_pattern(

@@ -6,6 +6,20 @@ follow semver. The library is published to PyPI as a standalone package
 `kamiwaza-sdk` — extension authors pin against the `[lib]` minor range in
 `requirements.txt`.
 
+## [0.5.0] — 2026-07-28
+
+### Added
+
+* `RuntimeRouting`, `normalize_app_path()`, and `with_app_path()` provide the
+  Python half of the shared port/path routing contract.
+* `python -m kamiwaza_extensions_lib.asgi` starts scaffolded FastAPI backends
+  with the correct `root_path` for unstripped App Garden prefixes.
+
+### Changed
+
+* Generated apps now require the 0.5 minor line so the frontend relocation
+  runtime and backend routing behavior are upgraded together.
+
 ## [0.4.4] — 2026-07-27 (ENG-9199)
 
 ### Added

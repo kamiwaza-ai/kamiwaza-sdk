@@ -21,23 +21,13 @@ SDK_PYPROJECT_PATH = REPO_ROOT / "pyproject.toml"
 RELEASE_SCRIPT_PATH = REPO_ROOT / "release.sh"
 
 
-def test_version_is_0_4_4():
-    # M3 / PR #87 round-9 promoted the round-8 ``_url`` helpers to a
-    # public ``url`` module (and re-exported ``backend_runtime_base`` /
-    # ``public_base_url`` from the package root). Scaffolded extensions
-    # now import the public path, which initially raised the compat floor to
-    # the 0.4 line. 0.4.1 (ENG-6911)
-    # fixed the session router's logout to proxy core's front-channel
-    # logout URL; 0.4.2 (ENG-6911) corrected that fix to build the
-    # front-channel URL from the browser base directly, since the
-    # server-side proxy POST is unreachable in-cluster under ``kz-ext
-    # dev``. 0.4.3 (ENG-8766) restricted model-endpoint re-hosting so
-    # in-cluster chat keeps the platform gateway URL. 0.4.4 (ENG-9199)
-    # adds canonical, no-redirect platform requests and forwards the
-    # complete signed ForwardAuth envelope; the compatibility floor moves
-    # with it so new scaffolds can rely on that helper.
-    assert kamiwaza_extensions_lib.__version__ == "0.4.4", (
-        "Runtime lib is 0.4.4 (ENG-9199 safe platform request helper). "
+def test_version_is_0_5_0():
+    # Runtime 0.5 adds the canonical path-routing helpers and ASGI launcher
+    # required by the dual-artifact Next.js scaffold. The compatibility
+    # floor moves with it so every freshly generated app has both sides of
+    # the runtime-relocation contract.
+    assert kamiwaza_extensions_lib.__version__ == "0.5.0", (
+        "Runtime lib is 0.5.0 (dual-artifact path relocation contract). "
         "Update both __version__ and CHANGELOG.md if the version is "
         "intentionally changing."
     )
@@ -76,11 +66,11 @@ def test_sdk_dependency_requires_current_runtime_release():
     with SDK_PYPROJECT_PATH.open("rb") as f:
         pyproject = tomllib.load(f)
 
-    assert "kamiwaza-extensions-lib>=0.4.4,<0.5" in pyproject["project"][
+    assert "kamiwaza-extensions-lib>=0.5,<0.6" in pyproject["project"][
         "dependencies"
     ], (
-        "kamiwaza-sdk must require runtime-lib 0.4.4 so a fresh install "
-        "cannot resolve a version without ENG-9199's guarded platform transport"
+        "kamiwaza-sdk must require runtime-lib 0.5 so a fresh install "
+        "cannot resolve a version without the path-relocation contract"
     )
 
 

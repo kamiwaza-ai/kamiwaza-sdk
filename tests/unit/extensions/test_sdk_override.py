@@ -684,6 +684,35 @@ class TestGenerateBuildOverrides:
 
 @pytest.mark.unit
 class TestApplyBuildOverlay:
+    def test_dual_artifact_scaffold_installs_sdk_in_shared_deps_stage(self):
+        """Both path and port builds must inherit the local runtime package."""
+        repo_root = Path(__file__).resolve().parents[3]
+        dockerfile = (
+            repo_root
+            / "kamiwaza_extensions"
+            / "templates"
+            / "app"
+            / "frontend"
+            / "Dockerfile"
+        ).read_text()
+        overlay = BuildOverride(
+            service_name="frontend",
+            overlay_steps="# SDK override\nRUN echo install-local-sdk\n",
+            additional_build_contexts={"sdk": str(repo_root)},
+            insert_before_build=True,
+            language="typescript",
+        )
+
+        result = apply_build_overlay(dockerfile, overlay)
+
+        install_index = result.index("RUN npm install --no-audit --no-fund")
+        overlay_index = result.index("RUN echo install-local-sdk")
+        fork_index = result.index("FROM deps AS dev")
+        assert install_index < overlay_index < fork_index
+        assert result.count("RUN echo install-local-sdk") == 1
+        assert "FROM deps AS build-port" in result
+        assert "FROM deps AS build-path" in result
+
     def test_appends_when_no_build_line(self):
         dockerfile = 'FROM node:20\nCOPY . .\nENTRYPOINT ["node", "start.mjs"]\n'
         overlay = BuildOverride(
