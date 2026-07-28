@@ -1,15 +1,19 @@
 """Tests for kamiwaza_extensions_lib.auth."""
 
-import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
+import httpx
+import pytest
 from fastapi import HTTPException
+from starlette.datastructures import Headers
 
 from kamiwaza_extensions_lib.auth import (
     forward_auth_headers,
+    forward_auth_httpx_headers,
     require_auth,
     require_role,
 )
+from kamiwaza_extensions_lib.errors import MisboundAuthError
 from kamiwaza_extensions_lib.identity import Identity
 
 
@@ -24,10 +28,17 @@ class TestForwardAuthHeaders:
             "X-User-Email": "alice@example.com",
             "X-User-Name": "Alice",
             "X-User-Roles": "admin,user",
+            "X-User-Groups": "engineering,search",
+            "X-User-Attributes-Hash": "sha256:attributes",
             "X-User-System-High": "TS",
             "X-User-Workroom-Role": "editor",
             "X-Workroom-Id": "wrk-456",
+            "X-User-Workroom-Id": "wrk-456",
+            "X-Auth-Azp": "chat-with-docs",
             "X-Request-Id": "req-789",
+            "X-User-Signature": "legacy-signature",
+            "X-User-Signature-Stable": "stable-signature",
+            "X-User-Signature-Ts": "1784390400",
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
@@ -42,10 +53,17 @@ class TestForwardAuthHeaders:
             "X-User-Email": "alice@example.com",
             "X-User-Name": "Alice",
             "X-User-Roles": "admin,user",
+            "X-User-Groups": "engineering,search",
+            "X-User-Attributes-Hash": "sha256:attributes",
             "X-User-System-High": "TS",
             "X-User-Workroom-Role": "editor",
             "X-Workroom-Id": "wrk-456",
+            "X-User-Workroom-Id": "wrk-456",
+            "X-Auth-Azp": "chat-with-docs",
             "X-Request-Id": "req-789",
+            "X-User-Signature": "legacy-signature",
+            "X-User-Signature-Stable": "stable-signature",
+            "X-User-Signature-Ts": "1784390400",
         }
 
     def test_forwards_classification_and_workroom_role(self):
@@ -87,6 +105,90 @@ class TestForwardAuthHeaders:
         result = forward_auth_headers(headers)
         assert "x-user-id" in result
         assert "x-auth-token" in result
+
+    def test_combines_duplicate_cookie_fields(self):
+        headers = Headers(
+            raw=[
+                (b"cookie", b"session=opaque"),
+                (b"cookie", b"csrf=bound"),
+                (b"x-user-id", b"usr-123"),
+            ]
+        )
+
+        result = forward_auth_headers(headers)
+
+        assert result["cookie"] == "session=opaque; csrf=bound"
+        assert result["x-user-id"] == "usr-123"
+
+    def test_httpx_headers_preserve_non_ascii_wire_bytes(self):
+        headers = Headers(
+            raw=[
+                (b"x-user-name", "José".encode()),
+                (b"x-user-groups", "Ingénierie".encode()),
+            ]
+        )
+
+        result = forward_auth_httpx_headers(headers)
+
+        assert (b"x-user-name", "José".encode()) in result.raw
+        assert (b"x-user-groups", "Ingénierie".encode()) in result.raw
+
+    def test_httpx_headers_map_invalid_envelope_to_typed_error(self):
+        with pytest.raises(MisboundAuthError, match="invalid HTTP header"):
+            forward_auth_httpx_headers({"X-User-Name": "unsafe\r\nvalue"})
+
+    def test_raw_httpx_headers_map_invalid_envelope_to_typed_error(self):
+        headers = httpx.Headers([(b"x-user-name", b"eve\r\nx-user-roles: admin")])
+
+        with pytest.raises(MisboundAuthError, match="invalid HTTP header"):
+            forward_auth_httpx_headers(headers)
+
+    @pytest.mark.parametrize("name", [b"authorization", b"x-user-id"])
+    def test_raw_httpx_headers_reject_ambiguous_duplicate_fields(self, name):
+        headers = httpx.Headers(
+            [
+                (name, b"first"),
+                (name, b"second"),
+            ]
+        )
+
+        with pytest.raises(MisboundAuthError, match="duplicate HTTP header"):
+            forward_auth_httpx_headers(headers)
+
+    def test_string_helper_rejects_duplicate_fields_from_httpx_headers(self):
+        headers = httpx.Headers(
+            [
+                (b"x-request-id", b"first"),
+                (b"x-request-id", b"second"),
+            ]
+        )
+
+        with pytest.raises(MisboundAuthError, match="duplicate HTTP header"):
+            forward_auth_headers(headers)
+
+    def test_starlette_headers_reject_ambiguous_duplicate_fields(self):
+        headers = Headers(
+            raw=[
+                (b"authorization", b"Bearer user"),
+                (b"authorization", b"Bearer attacker"),
+                (b"x-user-id", b"real-user"),
+                (b"x-user-id", b"attacker-user"),
+            ]
+        )
+
+        with pytest.raises(MisboundAuthError, match="duplicate HTTP header"):
+            forward_auth_httpx_headers(headers)
+
+    def test_case_variant_mapping_rejects_ambiguous_duplicate_fields(self):
+        headers = {
+            "Authorization": "Bearer user",
+            "authorization": "Bearer attacker",
+            "X-User-Id": "real-user",
+            "x-user-id": "attacker-user",
+        }
+
+        with pytest.raises(MisboundAuthError, match="duplicate HTTP header"):
+            forward_auth_httpx_headers(headers)
 
 
 @pytest.mark.unit
@@ -143,6 +245,28 @@ class TestRequireAuth:
         with pytest.raises(HTTPException) as exc_info:
             await require_auth(request)
         assert exc_info.value.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_duplicate_identity_header_rejected_under_strict_auth(
+        self, monkeypatch
+    ):
+        monkeypatch.setenv("KAMIWAZA_USE_AUTH", "true")
+        request = MagicMock()
+        request.method = "GET"
+        request.url.path = "/protected"
+        request.headers = Headers(
+            raw=[
+                (b"x-user-id", b"usr-123"),
+                (b"x-workroom-id", b"wrk-456"),
+                (b"x-user-roles", b"viewer"),
+                (b"x-user-roles", b"admin"),
+            ]
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            await require_auth(request)
+        assert exc_info.value.status_code == 401
+        assert exc_info.value.detail == "Authentication required"
 
     @pytest.mark.asyncio
     async def test_401_detail_does_not_leak_envelope_internals(self, monkeypatch):

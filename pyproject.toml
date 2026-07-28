@@ -1,6 +1,6 @@
 [project]
 name = "kamiwaza-sdk"
-version = "1.0.0"
+version = "1.1.0"
 description = "Python client library for the Kamiwaza AI Platform"
 readme = "README.md"
 license = "Apache-2.0"
@@ -31,7 +31,7 @@ dependencies = [
     "packaging>=23.0",
     "fastapi>=0.100.0",
     "rich>=13.0",
-    "kamiwaza-extensions-lib>=0.4,<0.5",
+    "kamiwaza-extensions-lib>=0.4.4,<0.5",
 ]
 
 [project.optional-dependencies]
@@ -46,9 +46,13 @@ connector = [
     "fastapi>=0.100.0",
     "pydantic[email]>=2.11",
 ]
+flight = [
+    "pyarrow>=17.0",
+]
 all = [
     "boto3>=1.28.0",
     "anthropic>=0.30.0",
+    "pyarrow>=17.0",
 ]
 
 [project.urls]
@@ -124,6 +128,7 @@ dev = [
     "twine>=4.0",
     "radon>=5.1",
     "pdoc>=14.0",
+    "tomli>=2.0; python_version < '3.11'",
     # Used by tests/e2e/extension_contract/echo-check/backend/tests/test_helpers.py
     # to mint test JWTs; previously only declared in the nested backend's optional
     # `test` extra, which the root `uv sync --group dev` doesn't install.

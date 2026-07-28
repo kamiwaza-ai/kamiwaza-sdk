@@ -39,6 +39,7 @@ services:
       - KAMIWAZA_APP_URL=${KAMIWAZA_APP_URL:-http://localhost:3000}
       - KAMIWAZA_API_KEY=${KAMIWAZA_API_KEY:-}
       - KAMIWAZA_VERIFY_SSL=${KAMIWAZA_VERIFY_SSL:-}
+      - KAMIWAZA_CA_BUNDLE=${KAMIWAZA_CA_BUNDLE:-}
       # Local-dev auth bridge (ENG-4318) — same passthrough as frontend
       # so the FastAPI side sees a consistent env when `--auth` is used.
       - KZ_EXT_DEV_LOCAL_AUTH=${KZ_EXT_DEV_LOCAL_AUTH:-}

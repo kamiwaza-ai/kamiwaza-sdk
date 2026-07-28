@@ -1,0 +1,124 @@
+# Guards against merging dist-affecting changes to the npm package
+# `@kamiwaza-ai/extensions-lib` without bumping its version. npm refuses to
+# publish over an existing version, so a merged-but-unbumped change is
+# unpublishable: ENG-8753 — the ENG-1734 Next-15 RouteHandler fix merged
+# without a bump and npm kept serving the stale 0.4.1 build, crash-looping
+# every fresh `kz-ext create -t app` scaffold.
+#
+# Runs on PRs and as a push backstop on develop/main: a PR's passing result
+# goes stale if the base advances (two concurrent PRs picking the same next
+# version both pass, then the second merges into a duplicate-version state) —
+# the push run re-validates the merged tree, diffing against
+# `github.event.before` like the repo's other push-triggered diff jobs.
+name: Extensions Lib Version Guard
+
+# The dist-affecting path list below is intentionally duplicated in the
+# in-job `git diff` pathspec (workflow filters aren't visible to the script;
+# the job must re-diff to neutralize workflow-file-only triggers). Keep both
+# lists in sync.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'kamiwaza-ai-extensions-lib/src/**'
+      - 'kamiwaza-ai-extensions-lib/package.json'
+      - 'kamiwaza-ai-extensions-lib/package-lock.json'
+      - 'kamiwaza-ai-extensions-lib/bun.lock'
+      - 'kamiwaza-ai-extensions-lib/tsconfig.json'
+      - 'kamiwaza-ai-extensions-lib/tsup.config.ts'
+      - '.github/workflows/extensions-lib-version-guard.yml'
+  push:
+    branches: [develop, main]
+    paths:
+      - 'kamiwaza-ai-extensions-lib/src/**'
+      - 'kamiwaza-ai-extensions-lib/package.json'
+      - 'kamiwaza-ai-extensions-lib/package-lock.json'
+      - 'kamiwaza-ai-extensions-lib/bun.lock'
+      - 'kamiwaza-ai-extensions-lib/tsconfig.json'
+      - 'kamiwaza-ai-extensions-lib/tsup.config.ts'
+      - '.github/workflows/extensions-lib-version-guard.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  version-guard:
+    name: Require version bump for dist-affecting changes
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Check package.json version against base and npm
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          LIB=kamiwaza-ai-extensions-lib
+
+          # Diff base: on PRs, the merge-base against the *current* base tip
+          # (the event's base.sha can lag it and misattribute base-branch
+          # changes to this PR); on push, the pre-push tip, matching the
+          # repo's other push-triggered diff jobs.
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            BASE_SHA=$(git merge-base "origin/$BASE_REF" HEAD)
+          else
+            BASE_SHA="$PUSH_BEFORE"
+            if [[ "$BASE_SHA" == 0000000000000000000000000000000000000000 ]] \
+              || ! git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
+              echo "No usable pre-push base (new branch or force-push); skipping diff-based check."
+              exit 0
+            fi
+          fi
+
+          # Only dist-affecting files demand a bump. Docs, CHANGELOG, and
+          # tests never trigger this workflow (paths filter); the workflow
+          # file itself does, so re-check the actual diff here. This pathspec
+          # mirrors the `paths:` filter above — keep both lists in sync.
+          CHANGED=$(git diff --name-only "$BASE_SHA"...HEAD -- \
+            "$LIB/src" "$LIB/package.json" "$LIB/package-lock.json" \
+            "$LIB/bun.lock" "$LIB/tsconfig.json" "$LIB/tsup.config.ts")
+          if [[ -z "$CHANGED" ]]; then
+            echo "No dist-affecting changes under $LIB — version bump not required."
+            exit 0
+          fi
+          echo "Dist-affecting changes:"
+          echo "$CHANGED"
+
+          HEAD_VERSION=$(node -p "require('./$LIB/package.json').version")
+          BASE_VERSION=$(git show "$BASE_SHA:$LIB/package.json" \
+            | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).version")
+          echo "package.json version: $BASE_VERSION (base) -> $HEAD_VERSION (this change)"
+
+          if [[ "$HEAD_VERSION" == "$BASE_VERSION" ]]; then
+            echo "::error::Dist-affecting files under $LIB changed but package.json is still $BASE_VERSION. Bump the version (package.json + package-lock.json) so the change can actually be published to npm."
+            exit 1
+          fi
+
+          # Require the bump to move forward, not just differ — a lowered
+          # version may be unpublished yet still wrong.
+          HIGHEST=$(printf '%s\n%s\n' "$BASE_VERSION" "$HEAD_VERSION" | sort -V | tail -1)
+          if [[ "$HIGHEST" != "$HEAD_VERSION" ]]; then
+            echo "::error::Version went backwards: $BASE_VERSION -> $HEAD_VERSION. Bump to a version greater than $BASE_VERSION."
+            exit 1
+          fi
+
+          # A bumped-but-already-published version is just as unpublishable.
+          # npm view exits non-zero (E404) when the version doesn't exist,
+          # which is the healthy case; a registry outage also passes here —
+          # release.sh's preflight still guards the actual publish.
+          if PUBLISHED=$(npm view "@kamiwaza-ai/extensions-lib@$HEAD_VERSION" version 2>/dev/null) \
+            && [[ -n "$PUBLISHED" ]]; then
+            echo "::error::Version $HEAD_VERSION already exists on npm and cannot be re-published. Bump to an unused version."
+            exit 1
+          fi
+
+          echo "OK: $BASE_VERSION -> $HEAD_VERSION, not yet on npm."

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from urllib.parse import quote, urlencode
 
 from fastapi import APIRouter, Request
@@ -15,6 +16,8 @@ from .identity import (
     get_identity,
     identity_from_headers,
 )
+
+logger = logging.getLogger(__name__)
 
 # Fields that are safe to expose in /session responses. Anything on
 # ``Identity`` not in this set — notably ``system_high`` (a classification
@@ -195,24 +198,29 @@ def create_session_router(prefix: str = "") -> APIRouter:
         # browser-side front-channel GET above is the authoritative SSO clear,
         # so a failure here (e.g. public-only API base under ``kz-ext dev``) is
         # swallowed and logout still works.
-        from .auth import forward_auth_headers
+        from .auth import forward_auth_httpx_headers
 
         try:
             import httpx
 
-            headers = forward_auth_headers(request.headers)
+            headers = forward_auth_httpx_headers(request.headers)
             body = (
                 {"post_logout_redirect_uri": requested_redirect}
                 if requested_redirect
                 else {}
             )
             async with httpx.AsyncClient(
-                verify=config.verify_ssl,
+                verify=config.httpx_verify(),
                 timeout=5,
+                trust_env=False,
             ) as client:
                 await client.post(backend_logout_url, headers=headers, json=body)
         except Exception:
-            pass  # Best-effort — the browser-side front-channel GET still runs
+            logger.warning(
+                "Best-effort platform logout request failed",
+                exc_info=True,
+            )
+            # The browser-side front-channel GET remains authoritative.
 
         return {
             "logout_url": browser_logout_url,
