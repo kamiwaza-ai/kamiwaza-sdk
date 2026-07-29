@@ -60,15 +60,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           # The daily sweep watches the staging branch, not the default branch.
+          # Note the split: the workflow definition comes from the default
+          # branch (that is where schedules fire from), the script from develop.
           ref: ${{ github.event_name == 'schedule' && 'develop' || github.ref }}
 
       - uses: astral-sh/setup-uv@v4
         with:
           version: "0.7.5"
           enable-cache: true
-
-      - name: Install dependencies
-        run: uv sync
 
       - name: Check declared floors against PyPI and npm
         env:
@@ -88,7 +87,7 @@ jobs:
           fi
           echo "Target ref '$TARGET_REF' (event: $EVENT_NAME) -> $MODE"
           if [ "$MODE" = blocking ]; then
-            uv run python scripts/check_runtime_lib_floors.py
+            uv run --no-project --with packaging python scripts/check_runtime_lib_floors.py
           else
-            uv run python scripts/check_runtime_lib_floors.py --warn-only
+            uv run --no-project --with packaging python scripts/check_runtime_lib_floors.py --warn-only
           fi
