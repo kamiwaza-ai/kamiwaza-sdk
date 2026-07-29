@@ -157,6 +157,42 @@ class TestMainSkipsOnRegistryOutage:
         assert "::error::" in capsys.readouterr().out
 
 
+class TestWarnOnlyMode:
+    """Advisory mode for the staging window between a bump and its release.
+
+    A floor ahead of the registry is a broken release on `main`/`release/**`,
+    but on the integration branch it is the normal state while a bumped runtime
+    lib waits to be published. Reporting it as a hard failure there would leave
+    a required check red for the length of that window.
+    """
+
+    def test_reports_but_does_not_fail(self, monkeypatch, capsys):
+        monkeypatch.setattr(gate, "latest_published", lambda e, p: "0.0.1")
+        assert gate.main(["--repo-root", str(REPO_ROOT), "--warn-only"]) == 0
+
+        out = capsys.readouterr().out
+        # A warning, not an error — a green check must not carry error
+        # annotations, or the run reads as failed in the Actions UI.
+        assert "::warning::" in out
+        assert "::error::" not in out
+
+    def test_still_names_every_violating_floor(self, monkeypatch, capsys):
+        monkeypatch.setattr(gate, "latest_published", lambda e, p: "0.0.1")
+        gate.main(["--repo-root", str(REPO_ROOT), "--warn-only"])
+
+        out = capsys.readouterr().out
+        expected = len(gate.collect_declarations(REPO_ROOT))
+        assert out.count("::warning::") == expected
+
+    def test_is_silent_about_violations_when_there_are_none(self, monkeypatch, capsys):
+        monkeypatch.setattr(gate, "latest_published", lambda e, p: "999.0.0")
+        assert gate.main(["--repo-root", str(REPO_ROOT), "--warn-only"]) == 0
+
+        out = capsys.readouterr().out
+        assert "::warning::" not in out
+        assert "OK:" in out
+
+
 class TestBundleAndDependencyStayCoherent:
     """The two Python-side floors must not drift apart.
 

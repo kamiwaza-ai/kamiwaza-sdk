@@ -8,13 +8,25 @@
 # renders the compatibility bundle's pins straight into the generated
 # requirements.txt / package.json.
 #
+# Severity depends on where the floor is, because the same state means two
+# different things:
+#
+#   * On `main` / `release/**` it means a broken release is about to ship, and
+#     nothing downstream will catch it — `release.sh` guards the SDK-vs-lib
+#     coupling at upload time, but not a floor that outran the registry. Error.
+#   * On `develop` and PRs into it, it is the ordinary staging window between
+#     bumping a runtime lib and the release that publishes it. Reporting it as a
+#     hard failure there would leave a required check red for the length of that
+#     window, which trains people to ignore it. Warning.
+#
+# The daily sweep exists so the staging window cannot be forgotten. It targets
+# `develop` explicitly: scheduled workflows only ever run on the default branch
+# (`main`), whose floors are by construction already published, so a default
+# checkout would report green and nag about nothing.
+#
 # Companion to extensions-lib-version-guard.yml: that one asks "is this version
 # free to publish?", this one asks "is the version we point consumers at
 # actually published yet?".
-#
-# Runs on PRs and as a push backstop on develop/main, matching the repo's other
-# quality workflows: a PR's passing result goes stale once the base advances,
-# and a squash merge must be re-validated on the commit that actually lands.
 name: Runtime Lib Publish Gate
 
 on:
@@ -26,15 +38,12 @@ on:
       - 'scripts/check_runtime_lib_floors.py'
       - '.github/workflows/runtime-lib-publish-gate.yml'
   push:
-    branches: [develop, main]
+    branches: [develop, main, 'release/**']
     paths:
       - 'pyproject.toml'
       - 'kamiwaza_extensions/compatibility.json'
       - 'scripts/check_runtime_lib_floors.py'
       - '.github/workflows/runtime-lib-publish-gate.yml'
-  # Floors go stale without anyone touching the repo: a version can be yanked,
-  # and a floor raised in anticipation of a release stays broken until that
-  # release ships. A daily run surfaces that without waiting for the next PR.
   schedule:
     - cron: '0 13 * * *'
   workflow_dispatch:
@@ -49,6 +58,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The daily sweep watches the staging branch, not the default branch.
+          ref: ${{ github.event_name == 'schedule' && 'develop' || github.ref }}
 
       - uses: astral-sh/setup-uv@v4
         with:
@@ -59,4 +71,24 @@ jobs:
         run: uv sync
 
       - name: Check declared floors against PyPI and npm
-        run: uv run python scripts/check_runtime_lib_floors.py
+        env:
+          # On a PR the branch that matters is the one being merged INTO.
+          TARGET_REF: ${{ github.event_name == 'pull_request' && github.base_ref || github.ref_name }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "schedule" ]; then
+            # The sweep is a reminder about the staging window, never a gate.
+            MODE=advisory
+          else
+            case "$TARGET_REF" in
+              main|release/*) MODE=blocking ;;
+              *)             MODE=advisory ;;
+            esac
+          fi
+          echo "Target ref '$TARGET_REF' (event: $EVENT_NAME) -> $MODE"
+          if [ "$MODE" = blocking ]; then
+            uv run python scripts/check_runtime_lib_floors.py
+          else
+            uv run python scripts/check_runtime_lib_floors.py --warn-only
+          fi

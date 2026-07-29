@@ -21,8 +21,14 @@ The in-repo *version* of a lib is deliberately allowed to run ahead of the
 registry — that is the normal state between a bump and its release. Only the
 declared *floors* are checked, because those are what consumers must resolve.
 
-Exit codes: ``0`` all floors resolvable, ``1`` at least one floor exceeds the
-newest published version.
+Two modes, because a floor ahead of the registry means different things in
+different places. On a release branch it means a broken release is about to
+ship, so it is an error. On the integration branch it is the ordinary staging
+state between bumping a runtime lib and the release that publishes it, so it is
+reported as a warning and left for the publish to clear.
+
+Exit codes: ``0`` all floors resolvable (or ``--warn-only``), ``1`` at least one
+floor exceeds the newest published version.
 """
 
 from __future__ import annotations
@@ -181,14 +187,19 @@ def _is_ahead(floor: str, published: str) -> bool:
         return False
 
 
-def _report(violations: list[Violation]) -> None:
+def _report(violations: list[Violation], warn_only: bool) -> None:
+    level = "warning" if warn_only else "error"
+    remedy = (
+        "Publish it, or lower the floor to a released version."
+        if warn_only
+        else "Publish it before merging, or lower the floor to a released version."
+    )
     for violation in violations:
         declaration = violation.declaration
         print(
-            f"::error::{declaration.package} floor {declaration.floor} "
+            f"::{level}::{declaration.package} floor {declaration.floor} "
             f"({declaration.source}) exceeds the newest published version "
-            f"{violation.published}. Publish {declaration.floor} before merging, "
-            f"or lower the floor to a released version."
+            f"{violation.published}. {remedy}"
         )
 
 
@@ -196,6 +207,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--repo-root", type=Path, default=Path(__file__).resolve().parent.parent
+    )
+    parser.add_argument(
+        "--warn-only",
+        action="store_true",
+        help="Report violations as warnings and exit 0 (integration branches).",
     )
     args = parser.parse_args(argv)
 
@@ -211,9 +227,9 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
-    _report(violations)
+    _report(violations, args.warn_only)
     if violations:
-        return 1
+        return 0 if args.warn_only else 1
 
     for declaration in declarations:
         print(
