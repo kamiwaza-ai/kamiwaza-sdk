@@ -100,11 +100,19 @@ def _pair_receiver_realm(
     )
     receiver_fed_id = str(receiver_fed.id)
     try:
+        # realm_scope is required on the INITIATOR side too. It reads like a
+        # receiver-only concern (only the receiver provisions a realm), but the
+        # create-time identity stamp is resolved per row: without it the
+        # initiator's row falls through to the legacy source-trusted peer_kc
+        # mode, which is refused with 400 untrusted_federation_disabled unless
+        # ALLOW_UNTRUSTED_FEDERATION is on
+        # (cluster/federation.py::_resolve_new_federation_identity_stamp).
         initiator_fed = initiator_client.federations.pair(
             name=name,
             role="initiator",
             remote_url=live_peer_base_url,
             preshared_key=pair_psk,
+            realm_scope="per_federation",
         )
     except Exception:
         try:
