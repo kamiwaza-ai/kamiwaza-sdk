@@ -30,10 +30,16 @@ Fleet rig: spark-1 (receiver) <-> spark-2 (initiator/source). Serve on the
 per-host FQDN (spark-N.kale.wemodulate.com) so istio Host-header routing
 resolves.
 
-Scope note: the request leg is recorded on the receiver directly. Carrying the
-request over the mesh from the initiator is deliberately deferred (design §6.3
-M1 -> M2), so this test drives request/approve/claim against the receiver and
-asserts the identity properties, not the transport.
+Two transports are covered, and they are different properties:
+
+``TestPerUserOnboarding`` drives request/approve/claim against the receiver
+directly, isolating the *identity* properties from the wire. If the mesh leg
+breaks, these still pin down what onboarding is supposed to produce.
+
+``TestOnboardingOverTheMesh`` makes the request on the INITIATOR and never
+touches the receiver to create it, so the only way the row can appear on the
+receiver's queue is the PSK-signed forward (T1.3, ENG-9465). That is the leg the
+product actually uses: a requester reaches their own cluster, not the peer's.
 """
 
 from __future__ import annotations
@@ -349,4 +355,127 @@ class TestPerUserOnboarding:
         claimed = _claim(receiver_client, fed_id, status["claim_token"])
         assert not claimed.get("credential"), (
             f"a denied request yielded a credential: {claimed!r}"
+        )
+
+
+@pytest.fixture(scope="module")
+def mesh_request(
+    onboarding_federation: dict[str, str], initiator_client: KamiwazaClient
+) -> dict[str, Any]:
+    """One self-service request made on the INITIATOR, forwarded over the mesh.
+
+    Deliberately omits ``external_id``: the mesh leg's whole claim is that the
+    initiator vouches for its OWN caller, so letting the test name the identity
+    would skip the part under test. The caller's identity comes back on the
+    response, which is what the receiver-side assertions match against.
+    """
+    fed_id = onboarding_federation["initiator_id"]
+    status = _obj(
+        initiator_client,
+        "POST",
+        _onboarding_path(fed_id, "/request"),
+        json={"justification": "Cross-cluster conjunction review (mesh leg)."},
+    )
+    assert status.get("status") == "REQUESTED", f"unexpected status: {status!r}"
+    external_id = status.get("external_id")
+    assert external_id, (
+        f"the initiator must stamp the caller's identity on the row: {status!r}"
+    )
+    return {
+        "initiator_id": fed_id,
+        "receiver_id": onboarding_federation["receiver_id"],
+        "external_id": external_id,
+        "status": status,
+    }
+
+
+class TestOnboardingOverTheMesh:
+    """ENG-9465 / M1 T1.3 — the request travels initiator -> receiver."""
+
+    def test_the_request_arrives_on_the_receiver_queue(
+        self, mesh_request: dict[str, Any], receiver_client: KamiwazaClient
+    ) -> None:
+        """The load-bearing assertion for the mesh leg.
+
+        Nothing in this module ever posts this identity to the receiver. If it
+        is on the receiver's queue, the signed forward carried it there.
+        """
+        rows = _rows(
+            receiver_client, _onboarding_path(mesh_request["receiver_id"])
+        )
+        arrived = [
+            r for r in rows if r.get("external_id") == mesh_request["external_id"]
+        ]
+        assert arrived, (
+            f"{mesh_request['external_id']} never reached the receiver queue; "
+            f"saw {[r.get('external_id') for r in rows]!r}"
+        )
+
+    def test_the_receiver_copy_carries_no_claim_token(
+        self, mesh_request: dict[str, Any], receiver_client: KamiwazaClient
+    ) -> None:
+        """The requester's bearer stays on the side that minted it.
+
+        The initiator already handed the token to its caller; a second copy in
+        the receiver's queue would let a receiver operator claim the credential
+        on that user's behalf.
+        """
+        rows = _rows(
+            receiver_client, _onboarding_path(mesh_request["receiver_id"])
+        )
+        arrived = next(
+            r for r in rows if r.get("external_id") == mesh_request["external_id"]
+        )
+        assert not arrived.get("claim_token"), (
+            f"receiver queue leaked a claim token: {arrived!r}"
+        )
+
+    def test_the_requester_polls_their_own_cluster(
+        self, mesh_request: dict[str, Any], initiator_client: KamiwazaClient
+    ) -> None:
+        """``/onboarding/me`` answers on the initiator, with no peer credentials.
+
+        This is the surface a non-admin actually has: they can reach their own
+        cluster and nothing else.
+        """
+        mine = _obj(
+            initiator_client, "GET", _onboarding_path(mesh_request["initiator_id"], "/me")
+        )
+        assert mine.get("external_id") == mesh_request["external_id"], (
+            f"/me returned somebody else's request: {mine!r}"
+        )
+
+    def test_the_receivers_decision_reaches_the_requester(
+        self,
+        mesh_request: dict[str, Any],
+        initiator_client: KamiwazaClient,
+        receiver_client: KamiwazaClient,
+    ) -> None:
+        """Approve on the receiver; the initiator's ``/me`` reflects it.
+
+        The return leg is a pull, not a push: receiver -> initiator is the
+        direction that cannot be relied on (the receiver may have no route back),
+        so ``/me`` refreshes from the receiver when asked.
+        """
+        rows = _rows(
+            receiver_client, _onboarding_path(mesh_request["receiver_id"])
+        )
+        arrived = next(
+            r for r in rows if r.get("external_id") == mesh_request["external_id"]
+        )
+        approved = _obj(
+            receiver_client,
+            "POST",
+            _onboarding_path(
+                mesh_request["receiver_id"], f"/{arrived['id']}/approve"
+            ),
+            json={"attributes": {"clearance": "high"}, "relations": []},
+        )
+        assert approved.get("status") == "APPROVED", f"approve failed: {approved!r}"
+
+        mine = _obj(
+            initiator_client, "GET", _onboarding_path(mesh_request["initiator_id"], "/me")
+        )
+        assert mine.get("status") == "APPROVED", (
+            f"the initiator never learned of the approval: {mine!r}"
         )
