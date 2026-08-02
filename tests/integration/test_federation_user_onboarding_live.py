@@ -80,6 +80,31 @@ def _onboarding_path(federation_id: str, suffix: str = "") -> str:
     return f"/cluster/federations/{federation_id}/onboarding{suffix}"
 
 
+# The relation each approval grants. ``viewer`` on a ``dataset`` is the shape the
+# approve schema documents by example and the one an operator reaches for first;
+# it is also well clear of the F5 forbidden set (admin/publisher/owner), so a
+# rejection here means the grant path is broken rather than the guard working.
+GRANT_RELATION = "viewer"
+GRANT_NAMESPACE = "dataset"
+
+
+def _grant_subject_ids(
+    client: KamiwazaClient, namespace: str, object_id: str
+) -> set[str]:
+    """Subject ids holding a grant on one object, read from the ReBAC store.
+
+    Deliberately NOT ``GET /cluster/federations/{id}/users`` -> ``initial_tuples``:
+    that field echoes what the approver ASKED for, recorded on the allowlist row
+    before seeding runs and left in place when seeding fails. Asserting on it
+    passes whether or not a single relation ever landed. This endpoint reads the
+    relationship store itself, so it can tell the difference.
+    """
+    rows = _rows(
+        client, f"/authz/resources/{namespace}/grants?object_id={object_id}"
+    )
+    return {str((row.get("subject") or {}).get("id") or "") for row in rows}
+
+
 def _obj(client: KamiwazaClient, method: str, path: str, **kwargs) -> dict[str, Any]:
     """One request that must answer with an object.
 
@@ -216,6 +241,13 @@ def onboarded_pair(
     two outcomes and re-minting per test would be slow and would obscure which
     property failed. Attribute values differ per requester so a collapsed
     implementation cannot satisfy both.
+
+    Each approval also carries a real ``relation``, on a per-person object, in
+    the shape the shipped review dialog sends (``buildApprovalBody`` in
+    ``OnboardingReviewDialog.js`` emits ``{relation, object}`` and no subject).
+    Approving with ``relations: []`` — which this fixture used to do — exercises
+    none of the grant path, which is how three independent silent failures in it
+    survived a passing live suite.
     """
     fed_id = onboarding_federation["receiver_id"]
     suffix = uuid.uuid4().hex[:8]
@@ -224,11 +256,13 @@ def onboarded_pair(
             "external_id": f"alice-{suffix}@src",
             "justification": "Conjunction review for the Q3 collision window.",
             "attributes": {"clearance": "high", "country": "US"},
+            "grant_object_id": f"live-onboarding-{suffix}-conjunctions",
         },
         {
             "external_id": f"bob-{suffix}@src",
             "justification": "Sensor tasking follow-up.",
             "attributes": {"clearance": "low", "country": "UK"},
+            "grant_object_id": f"live-onboarding-{suffix}-tasking",
         },
     ]
 
@@ -246,7 +280,15 @@ def onboarded_pair(
             receiver_client,
             "POST",
             _onboarding_path(fed_id, f"/{request_id}/approve"),
-            json={"attributes": person["attributes"], "relations": []},
+            json={
+                "attributes": person["attributes"],
+                "relations": [
+                    {
+                        "relation": GRANT_RELATION,
+                        "object": f"{GRANT_NAMESPACE}:{person['grant_object_id']}",
+                    }
+                ],
+            },
         )
         assert approved.get("status") == "APPROVED", f"approve failed: {approved!r}"
 
@@ -287,6 +329,49 @@ class TestPerUserOnboarding:
         to both, so assert the credential strings differ too."""
         creds = [p["credential"] for p in onboarded_pair["people"]]
         assert len(set(creds)) == len(creds), "requesters were handed the same bearer"
+
+    def test_the_approved_relation_reaches_the_rebac_store(
+        self, onboarded_pair: dict[str, Any], receiver_client: KamiwazaClient
+    ) -> None:
+        """A relation assigned at approval must actually grant the guest.
+
+        Distinct identities are only half of M1: the point of a per-person guest
+        is that the receiver can authorize that person, and authorization is a
+        relation in the ReBAC store. Onboarding that mints a subject and grants
+        it nothing produces an identity that can prove who it is and do nothing
+        — which reads as success everywhere except here.
+        """
+        for person in onboarded_pair["people"]:
+            sub = _decode_jwt_payload(person["credential"]).get("sub")
+            holders = _grant_subject_ids(
+                receiver_client, GRANT_NAMESPACE, person["grant_object_id"]
+            )
+            assert sub in holders, (
+                f"approval granted {GRANT_RELATION} on "
+                f"{GRANT_NAMESPACE}:{person['grant_object_id']} to "
+                f"{person['external_id']}, but the store holds {holders or 'no'} "
+                f"grants for it — guest {sub} got an identity with no access"
+            )
+
+    def test_one_guests_grant_does_not_reach_the_other(
+        self, onboarded_pair: dict[str, Any], receiver_client: KamiwazaClient
+    ) -> None:
+        """Per-person grants must not leak across guests on one federation.
+
+        The pre-M1 shared guest made every grant federation-wide by construction.
+        A seeder that rendered the subject placeholder against the wrong user, or
+        seeded once per federation rather than once per approval, would still
+        satisfy the assertion above while re-collapsing authority here.
+        """
+        alice, bob = onboarded_pair["people"]
+        bob_sub = _decode_jwt_payload(bob["credential"]).get("sub")
+        holders = _grant_subject_ids(
+            receiver_client, GRANT_NAMESPACE, alice["grant_object_id"]
+        )
+        assert bob_sub not in holders, (
+            f"{bob['external_id']} holds a grant on "
+            f"{alice['external_id']}'s object — per-person authority collapsed"
+        )
 
     def test_allowlist_records_the_initiator_user_behind_each_guest(
         self, onboarded_pair: dict[str, Any], receiver_client: KamiwazaClient
