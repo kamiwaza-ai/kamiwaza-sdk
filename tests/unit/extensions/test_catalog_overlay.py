@@ -180,6 +180,7 @@ class TestBuildOverlayEntry:
                 "required_env_vars": ["API_KEY"],
                 "capabilities": ["graph"],
                 "tags": ["dev"],
+                "preview_image": "images/kaizen.svg",
                 "strip_path_prefix": False,
                 "kamiwaza_version": ">=0.7.0",
                 "env_metadata": {"API_KEY": {"type": "secret"}},
@@ -189,6 +190,7 @@ class TestBuildOverlayEntry:
         assert entry["required_env_vars"] == ["API_KEY"]
         assert entry["capabilities"] == ["graph"]
         assert entry["tags"] == ["dev"]
+        assert entry["preview_image"] == "images/kaizen.svg"
         assert entry["strip_path_prefix"] is False
         assert entry["kamiwaza_version"] == ">=0.7.0"
         assert entry["env_metadata"] == {"API_KEY": {"type": "secret"}}

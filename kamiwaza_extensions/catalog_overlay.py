@@ -160,6 +160,7 @@ def build_overlay_entry(
         ("license", str),
         ("homepage", str),
         ("image", str),
+        ("preview_image", str),
         ("kamiwaza_version", str),
         ("preferred_model_type", str),
         ("preferred_model_name", str),

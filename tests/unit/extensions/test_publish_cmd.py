@@ -2893,6 +2893,13 @@ class TestReplaceImageTag:
             "localhost:5000/foo:1.0.0", "2.0.0-dev"
         ) == "localhost:5000/foo:2.0.0-dev"
 
+    def test_replaces_compose_default_tag_placeholder(self):
+        from kamiwaza_extensions.compose_transformer import _replace_image_tag
+
+        assert _replace_image_tag(
+            "ghcr.io/my-org/foo:${IMAGE_TAG:-local}", "2.0.0-dev"
+        ) == "ghcr.io/my-org/foo:2.0.0-dev"
+
     def test_strips_digest_before_retagging(self):
         from kamiwaza_extensions.compose_transformer import _replace_image_tag
 
