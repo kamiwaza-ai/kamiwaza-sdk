@@ -393,11 +393,55 @@ class TestCredentialResolution:
 
         mock_session_cls.assert_called_once_with()
 
-    def test_sso_credentials_not_implemented(self):
+    @patch("kamiwaza_extensions.client.get_client")
+    def test_sso_credentials_use_bucket_scoped_client(self, mock_get_client):
         from kamiwaza_extensions.catalog_publisher import CatalogPublisher
 
         profile = _make_profile(catalog_credentials="sso")
-        with pytest.raises(NotImplementedError, match="SSO"):
+        CatalogPublisher(profile)
+
+        mock_get_client.assert_called_once_with(
+            endpoint_url="https://s3.example.com",
+            bucket="my-catalog",
+            auth_mode="sso",
+        )
+
+    @pytest.mark.parametrize(
+        ("credential_spec", "auth_mode"),
+        [
+            ("client:auto", "auto"),
+            ("client:static", "static"),
+            ("client:sso", "sso"),
+        ],
+    )
+    @patch("kamiwaza_extensions.client.get_client")
+    def test_client_credential_modes(
+        self, mock_get_client, credential_spec, auth_mode
+    ):
+        from kamiwaza_extensions.catalog_publisher import CatalogPublisher
+
+        profile = _make_profile(catalog_credentials=credential_spec)
+        CatalogPublisher(profile)
+
+        mock_get_client.assert_called_once_with(
+            endpoint_url="https://s3.example.com",
+            bucket="my-catalog",
+            auth_mode=auth_mode,
+        )
+
+    @patch(
+        "kamiwaza_extensions.client.get_client",
+        side_effect=RuntimeError("broker unavailable"),
+    )
+    def test_client_initialization_error_is_normalized(self, _mock_get_client):
+        from kamiwaza_extensions.catalog_publisher import (
+            CatalogPublishError,
+            CatalogPublisher,
+        )
+
+        profile = _make_profile(catalog_credentials="sso")
+
+        with pytest.raises(CatalogPublishError, match="broker unavailable"):
             CatalogPublisher(profile)
 
     def test_unknown_credentials_raises(self):

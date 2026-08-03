@@ -564,6 +564,14 @@ When your extension is ready for release:
 
 Publish profiles support multiple environments (dev/staging/prod) and CI via env var overrides (`KZ_PUBLISH_REGISTRY`, `KZ_PUBLISH_CATALOG_ENDPOINT`, etc.).
 
+Catalog credentials are selected explicitly. Existing `env` and
+`aws-profile:<name>` profiles retain boto3's standard behavior. Use `sso` (or
+`client:sso`) for bucket-scoped Cloudflare broker credentials, `client:static`
+for the canonical client's AWS/R2 static credential chain, or `client:auto` for
+automatic static-then-SSO resolution. See the
+[object-storage client guide](docs/extensions/object-storage-client.md) for the
+public client/resource API, multi-bucket mode, and authentication controls.
+
 ### Converting Existing Apps
 
 ```bash

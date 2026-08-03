@@ -181,8 +181,8 @@ class CatalogPublisher:
                 f"Supported values: {sorted(SUPPORTED_CATALOG_SCHEMAS)}."
             )
         try:
-            import boto3
-            from botocore.exceptions import ClientError
+            import boto3  # type: ignore[import-untyped]
+            from botocore.exceptions import ClientError  # type: ignore[import-untyped]
         except ImportError:
             raise ImportError(
                 "boto3 is required for catalog publishing. "
@@ -679,16 +679,31 @@ class CatalogPublisher:
             session = self._boto3.Session(profile_name=profile_name)
         elif creds == "env":
             session = self._boto3.Session()
-        elif creds == "sso":
-            raise NotImplementedError(
-                "SSO credential flow is not yet supported. "
-                "Use 'aws-profile:<name>' with an SSO-configured profile, "
-                "or 'env' with exported credentials instead."
-            )
+        elif creds in {"sso", "client:sso", "client:auto", "client:static"}:
+            from kamiwaza_extensions.client import get_client
+            from kamiwaza_extensions.client.auth.chain import AuthMode
+
+            auth_modes: Dict[str, AuthMode] = {
+                "sso": "sso",
+                "client:sso": "sso",
+                "client:auto": "auto",
+                "client:static": "static",
+            }
+            try:
+                return get_client(
+                    endpoint_url=profile.catalog_endpoint,
+                    bucket=profile.catalog_bucket,
+                    auth_mode=auth_modes[creds],
+                )
+            except Exception as exc:
+                raise CatalogPublishError(
+                    f"Failed to initialize catalog storage client: {exc}"
+                ) from exc
         else:
             raise ValueError(
                 f"Unknown credential spec '{creds}'. "
-                "Expected 'aws-profile:<name>', 'env', or 'sso'."
+                "Expected 'aws-profile:<name>', 'env', 'sso', "
+                "'client:auto', 'client:static', or 'client:sso'."
             )
 
         return session.client("s3", endpoint_url=profile.catalog_endpoint)

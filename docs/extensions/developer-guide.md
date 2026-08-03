@@ -157,6 +157,8 @@ kz-ext publish --profile internal-develop --revision $(git rev-parse --short HEA
 Publishing does not deploy. After `kz-ext publish` succeeds, anyone in
 your tenant with App Garden access can install your extension from the
 catalog — that install is what creates the runtime CR on their cluster.
+For static, profile, and broker-backed SSO credential modes, see the
+[object-storage client guide](object-storage-client.md).
 
 ## `kz-ext doctor` — pre-flight checks
 
