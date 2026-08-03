@@ -108,7 +108,12 @@ def _build_patch_service_spec(service: Any) -> Any:
         ),
         env=service.env or None,
         replicas=service.replicas,
-        persistence=service.persistence,
+        # Removing an ``x-kamiwaza.persistence`` block must clear the PVC
+        # config on the CR. ``patch_extension`` dumps with
+        # ``exclude_none=True``, so sending None would omit the field and
+        # leave the old mount in place — able to collide with a Compose
+        # volume reintroduced at the same path. Send an explicit disable.
+        persistence=service.persistence or {"enabled": False},
         # Volumes are service-scoped: every service owns a pod template.
         # Empty lists deliberately clear stale Compose volumes on PATCH.
         volumes=service.volumes or [],

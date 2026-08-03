@@ -46,7 +46,7 @@ def _build_service_volume_spec(service: Dict[str, Any]) -> ServiceVolumeSpec:
         if parsed is None:
             continue
         source, target, read_only = parsed
-        if target.rstrip("/") == persistence_mount:
+        if _covered_by_persistence(target, persistence_mount):
             continue
 
         volume_name = source_to_name.get(source)
@@ -59,14 +59,44 @@ def _build_service_volume_spec(service: Dict[str, Any]) -> ServiceVolumeSpec:
     return ServiceVolumeSpec(volumes=volumes, mounts=mounts)
 
 
+def _covered_by_persistence(target: str, persistence_mount: str) -> bool:
+    """Is this Compose target already served by the service's PVC mount?
+
+    Exact equality is not enough: the stock Postgres layout declares
+    ``pgdata:/var/lib/postgresql/data`` under a ``/var/lib/postgresql``
+    persistence mount, and an emptyDir at the nested path would shadow the
+    PVC subtree the volume exists to persist.
+    """
+    if not persistence_mount:
+        return False
+    normalized = target.rstrip("/") or "/"
+    return normalized == persistence_mount or normalized.startswith(
+        persistence_mount + "/"
+    )
+
+
 def _persistence_mount_path(service: Dict[str, Any]) -> str:
+    """Return the service's declared persistence mountPath, if it has one.
+
+    Raises:
+        ValueError: When persistence is enabled without a mountPath. The
+            operator provisions the PVC but mounts it nowhere, so translating
+            the Compose volumes would emit an emptyDir at the path the author
+            meant to persist — silently, and with the PVC left dangling.
+    """
     extension = service.get("x-kamiwaza")
     if not isinstance(extension, dict):
         return ""
     persistence = extension.get("persistence")
     if not isinstance(persistence, dict) or persistence.get("enabled") is not True:
         return ""
-    return str(persistence.get("mountPath", "")).rstrip("/")
+    mount_path = str(persistence.get("mountPath", "")).strip().rstrip("/")
+    if not mount_path:
+        raise ValueError(
+            "x-kamiwaza.persistence.enabled is true but mountPath is missing. "
+            "Set mountPath to the directory the PVC should back."
+        )
+    return mount_path
 
 
 def _volume_mount(name: str, target: str, read_only: bool) -> Dict[str, Any]:

@@ -186,9 +186,6 @@ class PatchServiceSpec(BaseModel):
         default=None,
         alias="volumeMounts",
     )
-    allow_empty_persistence_initialization: bool = Field(
-        default=False, alias="allowEmptyPersistenceInitialization"
-    )
 
 
 class PatchExtension(BaseModel):
