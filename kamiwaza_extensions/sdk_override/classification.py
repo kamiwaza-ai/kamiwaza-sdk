@@ -20,6 +20,8 @@ import re
 from pathlib import Path
 from typing import Any, List, Literal, Optional
 
+from kamiwaza_extensions.compose_ports import extract_container_port
+
 ServiceRuntime = Literal["frontend", "backend", "static", "other"]
 
 _PYTHON_IMAGE_TOKENS = ("python",)
@@ -28,15 +30,47 @@ _STATIC_IMAGE_TOKENS = ("nginx", "caddy", "httpd", "apache")
 _PYTHONPATH_ENV_RE = re.compile(
     r"""^\s*ENV\s+
         (?:.*?\s+)?              # allow other ENV pairs before ours
-        PYTHONPATH\s*=\s*
+        PYTHONPATH
+        (?:\s*=\s*|\s+)          # = or space (legacy ``ENV PYTHONPATH /val``)
         ("?)([^"\s]+)\1          # quoted-or-bare value
     """,
     re.IGNORECASE | re.VERBOSE,
 )
 
 
+def detect_service_type(
+    svc_name: str,
+    svc_config: dict,
+) -> ServiceRuntime:
+    """Heuristic: classify a compose service as 'frontend' or 'backend'.
+
+    Uses service name, port, and Dockerfile path as signals. This is the
+    fallback whenever no Dockerfile base image is readable, so a service
+    that only declares ``build: ./backend`` still classifies.
+    """
+    name_lower = svc_name.lower()
+    if any(token in name_lower for token in ("frontend", "ui", "web")):
+        return "frontend"
+
+    build = svc_config.get("build", {})
+    if isinstance(build, dict):
+        dockerfile = str(build.get("dockerfile", "")).lower()
+        context = str(build.get("context", "")).lower()
+        if "frontend" in dockerfile or "frontend" in context:
+            return "frontend"
+
+    # Uses the shared compose-port parser so all three spec shapes (bare,
+    # host:container, long-form dict) classify the same way. Mirrors
+    # ``_should_use_node_frontend_probe``.
+    for port_spec in svc_config.get("ports", []):
+        if extract_container_port(port_spec) in (3000, 3001):
+            return "frontend"
+
+    return "backend"
+
+
 def detect_service_runtime(
-    _svc_name: str,
+    svc_name: str,
     svc_config: dict,
     *,
     extension_dir: Optional[Path] = None,
@@ -47,18 +81,23 @@ def detect_service_runtime(
     - ``frontend`` for likely Node/Next-style services
     - ``backend`` for likely Python/backend services
     - ``static`` for generic web servers such as nginx/caddy/httpd
-    - ``other`` for a readable Dockerfile with a non-SDK runtime
 
     When the Dockerfile is available, prefer its final base image over naming
-    heuristics so converted static apps do not get a Python SDK overlay.
+    heuristics so converted static apps do not get a Python SDK overlay. An
+    unreadable Dockerfile, or a base image matching no known runtime token,
+    falls back to ``detect_service_type``.
     """
     dockerfile = _service_dockerfile(svc_config, extension_dir)
     base_image = _read_final_base_image(dockerfile)
-    return _classify_runtime_image(base_image) if base_image else "other"
+    if base_image:
+        runtime = _classify_runtime_image(base_image)
+        if runtime != "other":
+            return runtime
+    return detect_service_type(svc_name, svc_config)
 
 
 def _detect_build_service_runtime(
-    _svc_name: str,
+    svc_name: str,
     svc_config: dict,
     *,
     extension_dir: Optional[Path] = None,
@@ -73,7 +112,9 @@ def _detect_build_service_runtime(
     dockerfile = _service_dockerfile(svc_config, extension_dir)
     stage_bases = _read_dockerfile_stage_bases(dockerfile)
     if not stage_bases:
-        return "other"
+        return detect_service_runtime(
+            svc_name, svc_config, extension_dir=extension_dir
+        )
 
     final_runtime = _classify_runtime_image(stage_bases[-1])
     if final_runtime == "static":
@@ -82,6 +123,10 @@ def _detect_build_service_runtime(
         ):
             return "frontend"
         return "static"
+    if final_runtime == "other":
+        return detect_service_runtime(
+            svc_name, svc_config, extension_dir=extension_dir
+        )
 
     return final_runtime
 
