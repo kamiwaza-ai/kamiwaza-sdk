@@ -60,25 +60,20 @@ def _build_patch_kwargs(
     sandbox = extra.get("sandbox")
     if sandbox:
         kwargs["sandbox"] = sandbox
-    # Always forward ``volumes`` (even when empty) so removing a named
-    # volume from compose actually clears the stale top-level volume on
-    # the persisted CR. Same iterative-dev contract that drives the
-    # ``kamiwaza``/annotations forwarding above.
-    #
-    # Safe against operator-managed mounts: the kamiwaza-extension-
-    # operator rebuilds each Deployment's volume list every reconcile as
-    # ``[tmp emptyDir] + (data PVC if persistence) + svc.Volumes``. The
-    # ``tmp``/``data`` volumes are injected at reconcile time and are
-    # never stored in ``svc.Volumes``, so PATCHing ``volumes: []`` clears
-    # only user-declared volumes and cannot wipe operator-managed ones.
-    kwargs["volumes"] = extra.get("volumes") or []
     return kwargs
 
 
-def _build_patch_service_specs(payload: Any) -> List[Any]:
+def _build_patch_service_specs(
+    payload: Any, service_filter: Optional[str] = None
+) -> List[Any]:
     """Build the per-service ``PatchServiceSpec`` list from a
     ``CreateExtension`` payload, forwarding the new ``x-kamiwaza``
     per-service overrides via ``extra="allow"``.
+
+    When ``--service`` is active, only that service is included. The
+    transformer assigns the new revision to every build-context service, but
+    only the selected image is built and pushed; PATCHing the siblings would
+    roll them to nonexistent tags and produce ``ImagePullBackOff``.
 
     The PATCH carries the full ``(registry, repository, tag)`` triple
     from the canonical image ref. The operator reconstructs the CR's
@@ -89,42 +84,45 @@ def _build_patch_service_specs(payload: Any) -> List[Any]:
     leave the CR's image field at the original repository and produce
     ``ImagePullBackOff`` on the next pull.
     """
+    return [
+        _build_patch_service_spec(service)
+        for service in payload.services
+        if service_filter is None or service.name == service_filter
+    ]
+
+
+def _build_patch_service_spec(service: Any) -> Any:
+    """Translate one create service into its complete PATCH contract."""
     from kamiwaza_extensions.compose_transformer import _split_image_ref
     from kamiwaza_sdk.schemas.extensions import ImagePatch, PatchServiceSpec
 
-    patch_services: List[Any] = []
-    for svc in payload.services:
-        registry, repository, tag = _split_image_ref(svc.image)
-        image_patch = ImagePatch(
+    registry, repository, tag = _split_image_ref(service.image)
+    _image_without_digest, separator, digest = service.image.partition("@")
+    spec = PatchServiceSpec(
+        name=service.name,
+        image=ImagePatch(
             tag=tag,
             registry=registry,
             repository=repository,
-        )
-        spec = PatchServiceSpec(
-            name=svc.name,
-            image=image_patch,
-        )
-        if svc.env:
-            spec.env = svc.env
-        if svc.replicas is not None:
-            spec.replicas = svc.replicas
-        svc_extra = svc.model_extra or {}
-        for field in (
-            "healthCheck",
-            "automountServiceAccountToken",
-            "containerSecurityContext",
-        ):
-            if field in svc_extra and svc_extra[field] is not None:
-                setattr(spec, field, svc_extra[field])
-        # Always forward ``volumeMounts`` (even when empty) so removing
-        # a volume from compose clears the stale per-service mount on
-        # the persisted CR; consistent with the top-level ``volumes``
-        # forwarding in ``_build_patch_kwargs``. The operator appends
-        # ``svc.VolumeMounts`` after its own ``tmp``/``data`` mounts, so
-        # an empty list clears only user-declared mounts.
-        spec.volumeMounts = svc_extra.get("volumeMounts") or []
-        patch_services.append(spec)
-    return patch_services
+            digest=digest if separator else None,
+        ),
+        env=service.env or None,
+        replicas=service.replicas,
+        persistence=service.persistence,
+        # Volumes are service-scoped: every service owns a pod template.
+        # Empty lists deliberately clear stale Compose volumes on PATCH.
+        volumes=service.volumes or [],
+        volumeMounts=service.volume_mounts or [],
+    )
+    for field in (
+        "healthCheck",
+        "automountServiceAccountToken",
+        "containerSecurityContext",
+    ):
+        value = (service.model_extra or {}).get(field)
+        if value is not None:
+            setattr(spec, field, value)
+    return spec
 
 
 def _resume_revision(prior_state: Any, rev_tag: str, resumable: bool) -> Optional[str]:
@@ -981,7 +979,7 @@ def run_dev_remote(
             # Build patch from payload — extract image, env, replicas
             # plus the x-kamiwaza per-service overrides forwarded via
             # ``extra="allow"`` (jxstanford PR #97 review H2).
-            patch_services = _build_patch_service_specs(payload)
+            patch_services = _build_patch_service_specs(payload, service_filter=service)
             # Carries the deployer/revision/deployed-at annotations on
             # every PATCH so `kz-ext status` reflects the current
             # redeploy (review re-review PR #84 H1).
@@ -1299,7 +1297,9 @@ def run_dev_unload() -> None:
             "(the template had no upstream catalog entry)."
         )
     else:
-        console.print(f"  [green]✓[/green] Removed overlay for [bold]{info.name}[/bold].")
+        console.print(
+            f"  [green]✓[/green] Removed overlay for [bold]{info.name}[/bold]."
+        )
     console.print(
         "  [dim]The running dev extension instance is unaffected — only new "
         "workroom launches change.[/dim]"

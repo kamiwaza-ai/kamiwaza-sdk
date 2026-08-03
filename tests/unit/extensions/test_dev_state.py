@@ -752,9 +752,8 @@ class TestBuildPatchKwargsCarriesAnnotations:
         )
         assert "sandbox" not in kwargs
 
-    def test_carries_volumes_so_patch_refreshes_mount_contract(self):
-        """ENG-4834: existing dev CRs are updated by PATCH after first
-        create, so top-level volume declarations must ride PATCH too."""
+    def test_drops_invalid_top_level_volumes(self):
+        """CRD volumes belong to services, never the extension root."""
         from kamiwaza_extensions.commands.dev import _build_patch_kwargs
 
         volumes = [{"name": "omniparse-data", "emptyDir": {}}]
@@ -764,27 +763,22 @@ class TestBuildPatchKwargsCarriesAnnotations:
             kamiwaza = None
 
         kwargs = _build_patch_kwargs(patch_services=["svc"], payload=_FakePayload())
-        assert kwargs["volumes"] == volumes
+        assert "volumes" not in kwargs
 
-    def test_patchextension_accepts_volumes_via_extra_allow(self):
-        """Sanity: PatchExtension must accept top-level volumes via
-        ``extra="allow"``."""
-        from kamiwaza_extensions.commands.dev import _build_patch_kwargs
-        from kamiwaza_sdk.schemas.extensions import PatchExtension, PatchServiceSpec
+    def test_patch_service_serializes_volume_aliases(self):
+        from kamiwaza_sdk.schemas.extensions import PatchServiceSpec
 
+        volume_mounts = [{"name": "data", "mountPath": "/data"}]
         volumes = [{"name": "data", "emptyDir": {}}]
-
-        class _FakePayload:
-            model_extra = {"volumes": volumes}
-            kamiwaza = None
-
-        kwargs = _build_patch_kwargs(
-            patch_services=[PatchServiceSpec(name="x")],
-            payload=_FakePayload(),
+        patch_service = PatchServiceSpec(
+            name="x",
+            volumes=volumes,
+            volumeMounts=volume_mounts,
         )
-        patch = PatchExtension(**kwargs)
-        assert (patch.model_extra or {}).get("volumes") == volumes
-        assert patch.model_dump()["volumes"] == volumes
+
+        serialized = patch_service.model_dump()
+        assert serialized["volumes"] == volumes
+        assert serialized["volumeMounts"] == volume_mounts
 
     def test_patch_service_specs_forwards_x_kamiwaza_overrides(self):
         """jxstanford PR #97 review H2: per-service overrides
@@ -853,43 +847,32 @@ class TestBuildPatchKwargsCarriesAnnotations:
         specs = _build_patch_service_specs(_FakePayload())
         assert (specs[0].model_extra or {})["automountServiceAccountToken"] is False
 
-    def test_patch_service_specs_forwards_volume_mounts(self):
-        """ENG-4834: service-level mounts must also refresh on PATCH."""
+    def test_patch_service_specs_forwards_volumes_and_mounts(self):
+        """ENG-4834: service pod-volume contract must refresh on PATCH."""
         from kamiwaza_extensions.commands.dev import _build_patch_service_specs
         from kamiwaza_sdk.schemas.extensions import ExtensionServiceSpec
 
         volume_mounts = [{"name": "data", "mountPath": "/data"}]
+        volumes = [{"name": "data", "emptyDir": {}}]
 
         class _FakePayload:
             services = [
                 ExtensionServiceSpec(
                     name="tool",
                     image="reg/tool:dev",
+                    volumes=volumes,
                     volumeMounts=volume_mounts,
                 ),
             ]
 
         specs = _build_patch_service_specs(_FakePayload())
-        assert (specs[0].model_extra or {})["volumeMounts"] == volume_mounts
+        assert specs[0].volumes == volumes
+        assert specs[0].volume_mounts == volume_mounts
+        assert specs[0].model_dump()["volumes"] == volumes
         assert specs[0].model_dump()["volumeMounts"] == volume_mounts
 
-    def test_volumes_cleared_when_payload_has_none(self):
-        """ENG-4834 follow-up: removing a named volume from compose
-        must clear the stale top-level volume on the persisted CR.
-        Omitting the field on PATCH leaves the operator with no signal
-        to clear, so always send an explicit (possibly empty) list."""
-        from kamiwaza_extensions.commands.dev import _build_patch_kwargs
-
-        kwargs = _build_patch_kwargs(
-            patch_services=["svc"],
-            payload=self._payload_with_annotations(None),
-        )
-        assert kwargs["volumes"] == []
-
-    def test_volume_mounts_cleared_when_svc_has_none(self):
-        """ENG-4834 follow-up: per-service mounts must also clear on
-        PATCH when removed from compose. Mirrors the top-level clear
-        behavior in ``_build_patch_kwargs``."""
+    def test_service_volumes_and_mounts_clear_when_removed(self):
+        """Removing compose volumes sends empty service-scoped lists."""
         from kamiwaza_extensions.commands.dev import _build_patch_service_specs
         from kamiwaza_sdk.schemas.extensions import ExtensionServiceSpec
 
@@ -899,7 +882,8 @@ class TestBuildPatchKwargsCarriesAnnotations:
             ]
 
         specs = _build_patch_service_specs(_FakePayload())
-        assert (specs[0].model_extra or {}).get("volumeMounts") == []
+        assert specs[0].volumes == []
+        assert specs[0].volume_mounts == []
 
     def test_patchextension_accepts_sandbox_via_extra_allow(self):
         """Sanity: PatchExtension must accept the sandbox kwarg via

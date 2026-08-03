@@ -83,10 +83,12 @@ class TestDeployPatchLogic:
             for svc in payload.services:
                 parts = svc.image.rsplit(":", 1)
                 tag = parts[1] if len(parts) > 1 else "latest"
-                patch_services.append(PatchServiceSpec(
-                    name=svc.name,
-                    image=ImagePatch(tag=tag),
-                ))
+                patch_services.append(
+                    PatchServiceSpec(
+                        name=svc.name,
+                        image=ImagePatch(tag=tag),
+                    )
+                )
             patch = PatchExtension(services=patch_services)
             ext = client.extensions.patch_extension("myapp-dev-abc123", patch)
         except NotFoundError:
@@ -134,12 +136,14 @@ class TestDeployPatchLogic:
         ]
         for image, expected_tag in test_cases:
             slash_pos = image.rfind("/")
-            after_slash = image[slash_pos + 1:] if slash_pos >= 0 else image
+            after_slash = image[slash_pos + 1 :] if slash_pos >= 0 else image
             if ":" in after_slash:
                 tag = after_slash.rsplit(":", 1)[1]
             else:
                 tag = "latest"
-            assert tag == expected_tag, f"For image '{image}' expected '{expected_tag}' got '{tag}'"
+            assert tag == expected_tag, (
+                f"For image '{image}' expected '{expected_tag}' got '{tag}'"
+            )
 
 
 class TestBuildPatchServiceSpecs:
@@ -157,7 +161,9 @@ class TestBuildPatchServiceSpecs:
             type="app",
             version="1.0.0",
             services=[
-                ExtensionServiceSpec(name="backend", image=image, primary=True, ports=[]),
+                ExtensionServiceSpec(
+                    name="backend", image=image, primary=True, ports=[]
+                ),
             ],
         )
 
@@ -205,12 +211,49 @@ class TestBuildPatchServiceSpecs:
         # which was never pushed.
         from kamiwaza_extensions.commands.dev import _build_patch_service_specs
 
-        payload = self._payload(
-            "ghcr.io/kamiwaza-internal/foo/images/omniparse:v2"
-        )
+        payload = self._payload("ghcr.io/kamiwaza-internal/foo/images/omniparse:v2")
         img = _build_patch_service_specs(payload)[0].image
         # The patch carries the new repository, not just a new tag —
         # the operator will rewrite the CR's image field accordingly.
         assert img.registry == "ghcr.io"
         assert img.repository == "kamiwaza-internal/foo/images/omniparse"
         assert img.tag == "v2"
+
+    def test_digest_pinned_ref_preserves_pin_on_patch(self):
+        from kamiwaza_extensions.commands.dev import _build_patch_service_specs
+
+        digest = "sha256:" + "a" * 64
+        payload = self._payload(f"ghcr.io/org/controller:develop@{digest}")
+
+        img = _build_patch_service_specs(payload)[0].image
+
+        assert img.registry == "ghcr.io"
+        assert img.repository == "org/controller"
+        assert img.tag == "develop"
+        assert img.digest == digest
+
+    def test_persistence_override_flows_through_patch(self):
+        from kamiwaza_extensions.commands.dev import _build_patch_service_specs
+
+        payload = self._payload("registry.test/postgres:17")
+        payload.services[0].persistence = {
+            "enabled": True,
+            "size": "10Gi",
+            "mountPath": "/var/lib/postgresql",
+        }
+
+        spec = _build_patch_service_specs(payload)[0]
+        assert spec.persistence == {
+            "enabled": True,
+            "size": "10Gi",
+            "mountPath": "/var/lib/postgresql",
+        }
+
+    def test_service_filter_excludes_unbuilt_sibling_images(self):
+        from kamiwaza_extensions.commands.dev import _build_patch_service_specs
+
+        payload = _make_payload()
+        specs = _build_patch_service_specs(payload, service_filter="frontend")
+
+        assert [spec.name for spec in specs] == ["frontend"]
+        assert specs[0].image.repository == "myapp-frontend"

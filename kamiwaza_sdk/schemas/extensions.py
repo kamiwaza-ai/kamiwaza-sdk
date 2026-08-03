@@ -48,7 +48,9 @@ class ResourceSpec(BaseModel):
 class ExtensionServiceSpec(BaseModel):
     """Specification for a single service within an extension."""
 
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(
+        extra="allow", populate_by_name=True, serialize_by_alias=True
+    )
 
     name: str = Field(..., description="Service name")
     image: str = Field(..., description="Container image (registry/repo:tag)")
@@ -59,6 +61,12 @@ class ExtensionServiceSpec(BaseModel):
     resources: Optional[ResourceSpec] = None
     command: Optional[List[str]] = None
     args: Optional[List[str]] = None
+    persistence: Optional[Dict[str, Any]] = None
+    volumes: Optional[List[Dict[str, Any]]] = None
+    volume_mounts: Optional[List[Dict[str, Any]]] = Field(
+        default=None,
+        alias="volumeMounts",
+    )
 
 
 class KamiwazaIntegrationSpec(BaseModel):
@@ -158,17 +166,29 @@ class ImagePatch(BaseModel):
     tag: str
     registry: Optional[str] = None
     repository: Optional[str] = None
+    digest: Optional[str] = None
 
 
 class PatchServiceSpec(BaseModel):
     """Partial service update — only name is required (for matching)."""
 
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(
+        extra="allow", populate_by_name=True, serialize_by_alias=True
+    )
 
     name: str
     image: Optional[ImagePatch] = None
     env: Optional[List[Dict[str, Any]]] = None
     replicas: Optional[int] = Field(None, ge=0)
+    persistence: Optional[Dict[str, Any]] = None
+    volumes: Optional[List[Dict[str, Any]]] = None
+    volume_mounts: Optional[List[Dict[str, Any]]] = Field(
+        default=None,
+        alias="volumeMounts",
+    )
+    allow_empty_persistence_initialization: bool = Field(
+        default=False, alias="allowEmptyPersistenceInitialization"
+    )
 
 
 class PatchExtension(BaseModel):
