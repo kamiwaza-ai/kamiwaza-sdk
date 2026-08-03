@@ -14,6 +14,7 @@ from kamiwaza_extensions.client.config import (
     DefaultsConfig,
     R2Config,
 )
+from kamiwaza_extensions.client.options import ExplicitCredentials
 
 
 @pytest.fixture
@@ -33,8 +34,9 @@ def test_credential_provider_static_returns_credentials(minimal_config: Config) 
     """CredentialProvider returns Credentials for static creds."""
     provider = CredentialProvider(
         config=minimal_config,
-        access_key_id="key",
-        secret_access_key="secret",
+        explicit=ExplicitCredentials(
+            access_key_id="key", secret_access_key="secret"
+        ),
     )
     creds = provider.get_credentials()
     assert isinstance(creds, Credentials)
@@ -62,8 +64,7 @@ def test_boto3_adapter_get_credentials(minimal_config: Config) -> None:
 
     adapter = Boto3Adapter(
         config=minimal_config,
-        access_key_id="k",
-        secret_access_key="s",
+        explicit=ExplicitCredentials(access_key_id="k", secret_access_key="s"),
     )
     creds = adapter.get_credentials()
     assert isinstance(creds, Credentials)
@@ -128,8 +129,9 @@ def test_refreshable_credentials_return_botocore_metadata(
 def test_static_credentials_are_not_refreshable(minimal_config: Config) -> None:
     provider = CredentialProvider(
         config=minimal_config,
-        access_key_id="key",
-        secret_access_key="secret",
+        explicit=ExplicitCredentials(
+            access_key_id="key", secret_access_key="secret"
+        ),
         auth_mode="static",
     )
 

@@ -64,15 +64,12 @@ def _load_aws_credentials_file(profile: str) -> StaticCredentials | None:
         return None
 
 
-def get_static_credentials(
-    access_key_id: str | None = None,
-    secret_access_key: str | None = None,
-    session_token: str | None = None,
-) -> StaticCredentials | None:
-    """Resolve static credentials from explicit args, environment, or ~/.aws/credentials.
-
-    Returns None if no static credentials are available.
-    """
+def _validate_explicit(
+    access_key_id: str | None,
+    secret_access_key: str | None,
+    session_token: str | None,
+) -> None:
+    """Reject a partially supplied explicit credential triple."""
     if bool(access_key_id) != bool(secret_access_key):
         raise ValueError(
             "access_key_id and secret_access_key must be provided together"
@@ -80,7 +77,35 @@ def get_static_credentials(
     if session_token and not access_key_id:
         raise ValueError("session_token requires explicit access and secret keys")
 
-    # Priority 1: Explicit credentials
+
+def _from_env_pair(
+    access_var: str, secret_var: str, token_var: str
+) -> StaticCredentials | None:
+    """Build credentials from a matched environment variable pair."""
+    access = os.environ.get(access_var)
+    secret = os.environ.get(secret_var)
+    if not access or not secret:
+        return None
+    return StaticCredentials(
+        access_key_id=access,
+        secret_access_key=secret,
+        session_token=os.environ.get(token_var),
+    )
+
+
+def get_static_credentials(
+    access_key_id: str | None = None,
+    secret_access_key: str | None = None,
+    session_token: str | None = None,
+) -> StaticCredentials | None:
+    """Resolve static credentials from explicit args, environment, or ~/.aws/credentials.
+
+    Sources are tried in the documented priority order and the first that
+    yields a complete pair wins. Returns None if no static credentials are
+    available.
+    """
+    _validate_explicit(access_key_id, secret_access_key, session_token)
+
     if access_key_id and secret_access_key:
         return StaticCredentials(
             access_key_id=access_key_id,
@@ -88,32 +113,21 @@ def get_static_credentials(
             session_token=session_token,
         )
 
-    # Priority 2: ~/.aws/credentials (use existing service/user tokens)
-    profile = os.environ.get(ENV_AWS_PROFILE, "default")
-    file_creds = _load_aws_credentials_file(profile)
-    if file_creds is not None:
-        return file_creds
-
-    # Priority 3: AWS environment variables
-    aws_access = os.environ.get(ENV_AWS_ACCESS_KEY_ID)
-    aws_secret = os.environ.get(ENV_AWS_SECRET_ACCESS_KEY)
-    if aws_access and aws_secret:
-        return StaticCredentials(
-            access_key_id=aws_access,
-            secret_access_key=aws_secret,
-            session_token=os.environ.get(ENV_AWS_SESSION_TOKEN),
-        )
-
-    # Priority 4: R2 environment variables
-    env_access = os.environ.get(ENV_ACCESS_KEY_ID)
-    env_secret = os.environ.get(ENV_SECRET_ACCESS_KEY)
-    if env_access and env_secret:
-        return StaticCredentials(
-            access_key_id=env_access,
-            secret_access_key=env_secret,
-            session_token=os.environ.get("R2_SESSION_TOKEN"),
-        )
-
+    sources = (
+        lambda: _load_aws_credentials_file(
+            os.environ.get(ENV_AWS_PROFILE, "default")
+        ),
+        lambda: _from_env_pair(
+            ENV_AWS_ACCESS_KEY_ID, ENV_AWS_SECRET_ACCESS_KEY, ENV_AWS_SESSION_TOKEN
+        ),
+        lambda: _from_env_pair(
+            ENV_ACCESS_KEY_ID, ENV_SECRET_ACCESS_KEY, "R2_SESSION_TOKEN"
+        ),
+    )
+    for source in sources:
+        creds = source()
+        if creds is not None:
+            return creds
     return None
 
 

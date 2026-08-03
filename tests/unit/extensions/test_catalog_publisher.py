@@ -393,40 +393,32 @@ class TestCredentialResolution:
 
         mock_session_cls.assert_called_once_with()
 
-    @patch("kamiwaza_extensions.client.get_client")
-    def test_sso_credentials_use_bucket_scoped_client(self, mock_get_client):
-        from kamiwaza_extensions.catalog_publisher import CatalogPublisher
-
-        profile = _make_profile(catalog_credentials="sso")
-        CatalogPublisher(profile)
-
-        mock_get_client.assert_called_once_with(
-            endpoint_url="https://s3.example.com",
-            bucket="my-catalog",
-            auth_mode="sso",
-        )
-
     @pytest.mark.parametrize(
         ("credential_spec", "auth_mode"),
         [
+            ("sso", "sso"),
             ("client:auto", "auto"),
             ("client:static", "static"),
             ("client:sso", "sso"),
         ],
     )
     @patch("kamiwaza_extensions.client.get_client")
-    def test_client_credential_modes(
+    def test_client_credential_modes_are_bucket_scoped(
         self, mock_get_client, credential_spec, auth_mode
     ):
+        """Every client-backed spec resolves to a bucket-scoped client."""
         from kamiwaza_extensions.catalog_publisher import CatalogPublisher
+        from kamiwaza_extensions.client.options import ClientOptions
 
         profile = _make_profile(catalog_credentials=credential_spec)
         CatalogPublisher(profile)
 
         mock_get_client.assert_called_once_with(
-            endpoint_url="https://s3.example.com",
-            bucket="my-catalog",
-            auth_mode=auth_mode,
+            options=ClientOptions(
+                endpoint_url="https://s3.example.com",
+                bucket="my-catalog",
+                auth_mode=auth_mode,
+            )
         )
 
     @patch(

@@ -94,83 +94,89 @@ def test_get_static_credentials_aws_env(monkeypatch: pytest.MonkeyPatch) -> None
     assert creds.secret_access_key == "aws-env-secret"
 
 
-def test_get_static_credentials_aws_file(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.fixture
+def aws_credentials_file(monkeypatch: pytest.MonkeyPatch):
+    """Write an AWS credentials file and clear every competing env source."""
+    created: list[str] = []
+
+    def _write(contents: str) -> str:
+        for var in (
+            ENV_ACCESS_KEY_ID,
+            ENV_SECRET_ACCESS_KEY,
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".ini", delete=False
+        ) as handle:
+            handle.write(contents)
+            created.append(handle.name)
+        monkeypatch.setenv(ENV_AWS_SHARED_CREDENTIALS_FILE, created[-1])
+        return created[-1]
+
+    yield _write
+
+    for name in created:
+        Path(name).unlink(missing_ok=True)
+
+
+_DEFAULT_PROFILE = (
+    "[default]\n"
+    "aws_access_key_id = file-key\n"
+    "aws_secret_access_key = file-secret\n"
+)
+
+
+def test_get_static_credentials_aws_file(aws_credentials_file) -> None:
     """Credentials loaded from ~/.aws/credentials when R2 and AWS env not set."""
-    monkeypatch.delenv(ENV_ACCESS_KEY_ID, raising=False)
-    monkeypatch.delenv(ENV_SECRET_ACCESS_KEY, raising=False)
-    monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
-    monkeypatch.delenv("AWS_SECRET_ACCESS_KEY", raising=False)
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".ini", delete=False) as f:
-        f.write(
-            "[default]\n"
-            "aws_access_key_id = file-key\n"
-            "aws_secret_access_key = file-secret\n"
-        )
-        creds_path = f.name
-    try:
-        monkeypatch.setenv(ENV_AWS_SHARED_CREDENTIALS_FILE, creds_path)
-        creds = get_static_credentials()
-        assert creds is not None
-        assert creds.access_key_id == "file-key"
-        assert creds.secret_access_key == "file-secret"
-    finally:
-        Path(creds_path).unlink(missing_ok=True)
+    aws_credentials_file(_DEFAULT_PROFILE)
+
+    creds = get_static_credentials()
+
+    assert creds is not None
+    assert (creds.access_key_id, creds.secret_access_key) == (
+        "file-key",
+        "file-secret",
+    )
 
 
 def test_get_static_credentials_aws_file_overrides_r2_env(
-    monkeypatch: pytest.MonkeyPatch,
+    aws_credentials_file, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """~/.aws/credentials takes precedence over R2_* env vars."""
-    monkeypatch.delenv(ENV_ACCESS_KEY_ID, raising=False)
-    monkeypatch.delenv(ENV_SECRET_ACCESS_KEY, raising=False)
-    monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
-    monkeypatch.delenv("AWS_SECRET_ACCESS_KEY", raising=False)
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".ini", delete=False) as f:
-        f.write(
-            "[default]\n"
-            "aws_access_key_id = file-key\n"
-            "aws_secret_access_key = file-secret\n"
-        )
-        creds_path = f.name
-    try:
-        monkeypatch.setenv(ENV_AWS_SHARED_CREDENTIALS_FILE, creds_path)
-        monkeypatch.setenv(ENV_ACCESS_KEY_ID, "r2-env-key")
-        monkeypatch.setenv(ENV_SECRET_ACCESS_KEY, "r2-env-secret")
-        creds = get_static_credentials()
-        assert creds is not None
-        assert creds.access_key_id == "file-key"
-        assert creds.secret_access_key == "file-secret"
-    finally:
-        Path(creds_path).unlink(missing_ok=True)
+    aws_credentials_file(_DEFAULT_PROFILE)
+    monkeypatch.setenv(ENV_ACCESS_KEY_ID, "r2-env-key")
+    monkeypatch.setenv(ENV_SECRET_ACCESS_KEY, "r2-env-secret")
+
+    creds = get_static_credentials()
+
+    assert creds is not None
+    assert (creds.access_key_id, creds.secret_access_key) == (
+        "file-key",
+        "file-secret",
+    )
 
 
 def test_get_static_credentials_aws_file_profile(
-    monkeypatch: pytest.MonkeyPatch,
+    aws_credentials_file, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """AWS_PROFILE selects which profile to use from credentials file."""
-    monkeypatch.delenv(ENV_ACCESS_KEY_ID, raising=False)
-    monkeypatch.delenv(ENV_SECRET_ACCESS_KEY, raising=False)
-    monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
-    monkeypatch.delenv("AWS_SECRET_ACCESS_KEY", raising=False)
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".ini", delete=False) as f:
-        f.write(
-            "[default]\n"
-            "aws_access_key_id = default-key\n"
-            "aws_secret_access_key = default-secret\n"
-            "[r2-dev]\n"
-            "aws_access_key_id = dev-key\n"
-            "aws_secret_access_key = dev-secret\n"
-        )
-        creds_path = f.name
-    try:
-        monkeypatch.setenv(ENV_AWS_SHARED_CREDENTIALS_FILE, creds_path)
-        monkeypatch.setenv(ENV_AWS_PROFILE, "r2-dev")
-        creds = get_static_credentials()
-        assert creds is not None
-        assert creds.access_key_id == "dev-key"
-        assert creds.secret_access_key == "dev-secret"
-    finally:
-        Path(creds_path).unlink(missing_ok=True)
+    aws_credentials_file(
+        _DEFAULT_PROFILE
+        + "[r2-dev]\n"
+        "aws_access_key_id = dev-key\n"
+        "aws_secret_access_key = dev-secret\n"
+    )
+    monkeypatch.setenv(ENV_AWS_PROFILE, "r2-dev")
+
+    creds = get_static_credentials()
+
+    assert creds is not None
+    assert (creds.access_key_id, creds.secret_access_key) == (
+        "dev-key",
+        "dev-secret",
+    )
 
 
 def test_load_aws_credentials_file_missing(monkeypatch: pytest.MonkeyPatch) -> None:

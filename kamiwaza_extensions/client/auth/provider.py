@@ -15,6 +15,7 @@ from kamiwaza_extensions.client.auth.sso import (
 )
 from kamiwaza_extensions.client.auth.static import StaticCredentials
 from kamiwaza_extensions.client.config import Config
+from kamiwaza_extensions.client.options import ExplicitCredentials
 
 # Refresh R2 creds when they have less than this many seconds left
 _REFRESH_BUFFER_SECONDS = 60
@@ -35,28 +36,28 @@ class CredentialProvider:
         self,
         config: Config | None = None,
         *,
-        access_key_id: str | None = None,
-        secret_access_key: str | None = None,
-        session_token: str | None = None,
+        explicit: ExplicitCredentials | None = None,
         bucket: str | None = None,
         auth_mode: AuthMode = "auto",
     ) -> None:
         self._config = config or Config.load()
-        self._access_key_id = access_key_id
-        self._secret_access_key = secret_access_key
-        self._session_token = session_token
+        self._explicit = explicit or ExplicitCredentials()
         self._bucket = bucket
         self._auth_mode = auth_mode
         self._sso_cache: dict[str, Credentials] = {}  # keyed by bucket or "default"
 
-    def get_credentials(self) -> Credentials:
-        """Return credentials (static or SSO). Handles refresh for SSO."""
-        static, method = resolve_credentials(
-            access_key_id=self._access_key_id,
-            secret_access_key=self._secret_access_key,
-            session_token=self._session_token,
+    def resolve_static(self) -> tuple[StaticCredentials | None, str]:
+        """Resolve the caller-supplied credentials against the auth mode."""
+        return resolve_credentials(
+            access_key_id=self._explicit.access_key_id,
+            secret_access_key=self._explicit.secret_access_key,
+            session_token=self._explicit.session_token,
             auth_mode=self._auth_mode,
         )
+
+    def get_credentials(self) -> Credentials:
+        """Return credentials (static or SSO). Handles refresh for SSO."""
+        static, method = self.resolve_static()
 
         if method == "static" and static is not None:
             return self._static_to_credentials(static)
@@ -73,12 +74,7 @@ class CredentialProvider:
         Raises:
             RuntimeError: When using static credentials (bucket-specific not supported).
         """
-        static, method = resolve_credentials(
-            access_key_id=self._access_key_id,
-            secret_access_key=self._secret_access_key,
-            session_token=self._session_token,
-            auth_mode=self._auth_mode,
-        )
+        static, method = self.resolve_static()
         if method == "static" and static is not None:
             raise RuntimeError(
                 "get_credentials_for_bucket is only for SSO flow. "
@@ -104,12 +100,8 @@ class CredentialProvider:
         """Get SSO credentials for a bucket (cached or fresh from broker)."""
         cache_key = bucket_or_default
         now = datetime.now(timezone.utc)
-        cached = self._sso_cache.get(cache_key)
-        if (
-            cached
-            and cached.expiry
-            and cached.expiry > now + timedelta(seconds=_REFRESH_BUFFER_SECONDS)
-        ):
+        cached = self._cached_if_fresh(cache_key, now)
+        if cached is not None:
             return cached
 
         broker_url = self._config.r2.broker_url
@@ -121,7 +113,25 @@ class CredentialProvider:
         bucket_param = None if cache_key == "default" else cache_key
         token = get_cloudflare_token(self._config, bucket=bucket_param)
         result = exchange_token_for_credentials(token, broker_url, bucket=bucket_param)
-        expiration = result.get("expiration")
+        creds = Credentials(
+            access_key_id=result["access_key_id"],
+            secret_access_key=result["secret_access_key"],
+            session_token=result.get("session_token"),
+            expiry=self._resolve_expiry(result.get("expiration"), now),
+        )
+        self._sso_cache[cache_key] = creds
+        return creds
+
+    def _cached_if_fresh(self, cache_key: str, now: datetime) -> Credentials | None:
+        """Return the cached credentials while they remain outside the buffer."""
+        cached = self._sso_cache.get(cache_key)
+        if not cached or not cached.expiry:
+            return None
+        buffer = timedelta(seconds=_REFRESH_BUFFER_SECONDS)
+        return cached if cached.expiry > now + buffer else None
+
+    def _resolve_expiry(self, expiration: Any, now: datetime) -> datetime:
+        """Validate the broker expiry, falling back to the configured TTL."""
         expiry = _parse_expiry(expiration)
         if expiration is not None and expiry is None:
             raise RuntimeError("Credential broker returned an invalid expiration")
@@ -131,14 +141,7 @@ class CredentialProvider:
             )
         if expiry <= now:
             raise RuntimeError("Credential broker returned expired credentials")
-        creds = Credentials(
-            access_key_id=result["access_key_id"],
-            secret_access_key=result["secret_access_key"],
-            session_token=result.get("session_token"),
-            expiry=expiry,
-        )
-        self._sso_cache[cache_key] = creds
-        return creds
+        return expiry
 
     def to_refreshable_credentials(
         self, bucket: str | None = None

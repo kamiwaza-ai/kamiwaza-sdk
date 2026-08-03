@@ -13,13 +13,19 @@ from kamiwaza_extensions.client.config import (
     DefaultsConfig,
     R2Config,
 )
+from kamiwaza_extensions.client.options import ClientOptions, ExplicitCredentials
+
+_TEST_ENDPOINT = "https://test.r2.cloudflarestorage.com"
+_STATIC = ExplicitCredentials(
+    access_key_id="test-key", secret_access_key="test-secret"
+)
 
 
 @pytest.fixture
 def mock_config() -> Config:
     """Config with static credentials for testing."""
     return Config(
-        r2=R2Config(endpoint_url="https://test.r2.cloudflarestorage.com"),
+        r2=R2Config(endpoint_url=_TEST_ENDPOINT),
         auth=AuthConfig(token_cache_path="/tmp/test-token.json"),
         defaults=DefaultsConfig(region="auto"),
     )
@@ -27,11 +33,7 @@ def mock_config() -> Config:
 
 def test_get_client_with_static_creds(mock_config: Config) -> None:
     """get_client returns boto3 client with static credentials."""
-    client = get_client(
-        access_key_id="test-key",
-        secret_access_key="test-secret",
-        config=mock_config,
-    )
+    client = get_client(explicit=_STATIC, config=mock_config)
     assert client is not None
     assert hasattr(client, "list_objects_v2")
     assert hasattr(client, "get_object")
@@ -54,11 +56,7 @@ def test_get_client_with_env_creds(
 
 def test_get_resource_with_static_creds(mock_config: Config) -> None:
     """get_resource returns boto3 resource with static credentials."""
-    resource = get_resource(
-        access_key_id="test-key",
-        secret_access_key="test-secret",
-        config=mock_config,
-    )
+    resource = get_resource(explicit=_STATIC, config=mock_config)
     assert resource is not None
     assert hasattr(resource, "Bucket")
     assert resource.meta.service_name == "s3"
@@ -66,11 +64,7 @@ def test_get_resource_with_static_creds(mock_config: Config) -> None:
 
 def test_get_client_passes_endpoint(mock_config: Config) -> None:
     """Endpoint URL is passed to boto3 client."""
-    client = get_client(
-        access_key_id="k",
-        secret_access_key="s",
-        config=mock_config,
-    )
+    client = get_client(explicit=_STATIC, config=mock_config)
     assert client.meta.endpoint_url is not None
     assert "r2.cloudflarestorage.com" in str(client.meta.endpoint_url)
 
@@ -78,64 +72,41 @@ def test_get_client_passes_endpoint(mock_config: Config) -> None:
 @patch("kamiwaza_extensions.client.client.Boto3Adapter")
 def test_public_api_forwards_explicit_auth_mode(mock_adapter) -> None:
     """The public facade exposes deterministic auth selection."""
-    get_client(bucket="catalog", auth_mode="sso")
+    options = ClientOptions(bucket="catalog", auth_mode="sso")
+
+    get_client(options=options)
 
     mock_adapter.assert_called_once_with(
-        config=None,
-        endpoint_url=None,
-        region_name=None,
-        access_key_id=None,
-        secret_access_key=None,
-        session_token=None,
-        bucket="catalog",
-        auth_mode="sso",
+        config=None, options=options, explicit=None
     )
 
 
 def test_sso_without_bucket_uses_multi_bucket_mode(mock_config: Config) -> None:
     """The canonical client supports lazy per-bucket routing."""
-    client = get_client(config=mock_config, auth_mode="sso")
+    client = get_client(config=mock_config, options=ClientOptions(auth_mode="sso"))
 
     assert client.__class__.__name__ == "_MultiBucketClient"
 
 
+@pytest.mark.parametrize("kind", ["client", "resource"])
 @patch("kamiwaza_extensions.client.adapters.boto3._refreshable_session")
-def test_sso_with_bucket_returns_refreshable_boto3_client(
-    mock_refreshable_session, mock_config: Config
+def test_sso_with_bucket_uses_refreshable_session(
+    mock_refreshable_session, kind: str, mock_config: Config
 ) -> None:
-    expected = mock_refreshable_session.return_value.client.return_value
+    """Both entry points build from the same refreshable broker session."""
+    factory = getattr(mock_refreshable_session.return_value, kind)
+    entry_point = get_client if kind == "client" else get_resource
 
-    actual = get_client(
+    actual = entry_point(
         config=mock_config,
-        bucket="catalog-dev",
-        auth_mode="sso",
+        options=ClientOptions(bucket="catalog-dev", auth_mode="sso"),
     )
 
-    assert actual is expected
-    mock_refreshable_session.return_value.client.assert_called_once_with(
+    assert actual is factory.return_value
+    factory.assert_called_once_with(
         service_name="s3",
         region_name="auto",
-        endpoint_url="https://test.r2.cloudflarestorage.com",
-    )
-
-
-@patch("kamiwaza_extensions.client.adapters.boto3._refreshable_session")
-def test_sso_resource_uses_refreshable_session(
-    mock_refreshable_session, mock_config: Config
-) -> None:
-    expected = mock_refreshable_session.return_value.resource.return_value
-
-    actual = get_resource(
-        config=mock_config,
-        bucket="catalog-dev",
-        auth_mode="sso",
-    )
-
-    assert actual is expected
-    mock_refreshable_session.return_value.resource.assert_called_once_with(
-        service_name="s3",
-        region_name="auto",
-        endpoint_url="https://test.r2.cloudflarestorage.com",
+        endpoint_url=_TEST_ENDPOINT,
     )
 
 

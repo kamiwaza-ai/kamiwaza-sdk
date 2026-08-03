@@ -7,5 +7,13 @@ bucket-scoped broker authentication, and lazy multi-bucket access.
 from kamiwaza_extensions.client.auth.credentials import Credentials
 from kamiwaza_extensions.client.auth.provider import CredentialProvider
 from kamiwaza_extensions.client.client import get_client, get_resource
+from kamiwaza_extensions.client.options import ClientOptions, ExplicitCredentials
 
-__all__ = ["Credentials", "CredentialProvider", "get_client", "get_resource"]
+__all__ = [
+    "ClientOptions",
+    "Credentials",
+    "CredentialProvider",
+    "ExplicitCredentials",
+    "get_client",
+    "get_resource",
+]

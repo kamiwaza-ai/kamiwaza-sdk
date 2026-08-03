@@ -53,26 +53,40 @@ def test_config_load_env_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
     assert config.r2.broker_url == "https://env-broker.com/creds"
 
 
-def test_config_load_kamiwaza_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
-    """KAMIWAZA_REGISTRY_ENDPOINT is used when R2_ENDPOINT_URL not set."""
-    monkeypatch.delenv(ENV_ENDPOINT_URL, raising=False)
-    monkeypatch.delenv(ENV_ACCOUNT_ID, raising=False)
-    monkeypatch.delenv(ENV_KAMIWAZA_REGISTRY_ACCOUNT_ID, raising=False)
-    monkeypatch.setenv(
-        ENV_KAMIWAZA_REGISTRY_ENDPOINT, "https://kamiwaza.r2.cloudflarestorage.com"
-    )
-    config = Config.load()
-    assert config.r2.endpoint_url == "https://kamiwaza.r2.cloudflarestorage.com"
+@pytest.mark.parametrize(
+    ("set_var", "value", "expected_endpoint"),
+    [
+        (
+            ENV_KAMIWAZA_REGISTRY_ENDPOINT,
+            "https://kamiwaza.r2.cloudflarestorage.com",
+            "https://kamiwaza.r2.cloudflarestorage.com",
+        ),
+        (
+            ENV_KAMIWAZA_REGISTRY_ACCOUNT_ID,
+            "deadbeef123",
+            "https://deadbeef123.r2.cloudflarestorage.com",
+        ),
+    ],
+)
+def test_config_load_kamiwaza_registry_aliases(
+    monkeypatch: pytest.MonkeyPatch,
+    set_var: str,
+    value: str,
+    expected_endpoint: str,
+) -> None:
+    """Either registry alias resolves an endpoint when the R2 vars are absent."""
+    for var in (
+        ENV_ENDPOINT_URL,
+        ENV_ACCOUNT_ID,
+        ENV_KAMIWAZA_REGISTRY_ENDPOINT,
+        ENV_KAMIWAZA_REGISTRY_ACCOUNT_ID,
+    ):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv(set_var, value)
 
-
-def test_config_load_kamiwaza_account_id(monkeypatch: pytest.MonkeyPatch) -> None:
-    """KAMIWAZA_REGISTRY_ACCOUNT_ID constructs endpoint when others not set."""
-    monkeypatch.delenv(ENV_ENDPOINT_URL, raising=False)
-    monkeypatch.delenv(ENV_ACCOUNT_ID, raising=False)
-    monkeypatch.delenv(ENV_KAMIWAZA_REGISTRY_ENDPOINT, raising=False)
-    monkeypatch.setenv(ENV_KAMIWAZA_REGISTRY_ACCOUNT_ID, "deadbeef123")
     config = Config.load()
-    assert config.r2.endpoint_url == "https://deadbeef123.r2.cloudflarestorage.com"
+
+    assert config.r2.endpoint_url == expected_endpoint
 
 
 def test_config_load_auth_controls(monkeypatch: pytest.MonkeyPatch) -> None:

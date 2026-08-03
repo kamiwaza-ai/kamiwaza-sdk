@@ -682,6 +682,7 @@ class CatalogPublisher:
         elif creds in {"sso", "client:sso", "client:auto", "client:static"}:
             from kamiwaza_extensions.client import get_client
             from kamiwaza_extensions.client.auth.chain import AuthMode
+            from kamiwaza_extensions.client.options import ClientOptions
 
             auth_modes: Dict[str, AuthMode] = {
                 "sso": "sso",
@@ -691,9 +692,11 @@ class CatalogPublisher:
             }
             try:
                 return get_client(
-                    endpoint_url=profile.catalog_endpoint,
-                    bucket=profile.catalog_bucket,
-                    auth_mode=auth_modes[creds],
+                    options=ClientOptions(
+                        endpoint_url=profile.catalog_endpoint,
+                        bucket=profile.catalog_bucket,
+                        auth_mode=auth_modes[creds],
+                    )
                 )
             except Exception as exc:
                 raise CatalogPublishError(

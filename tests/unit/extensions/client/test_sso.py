@@ -174,33 +174,11 @@ def test_login_callback_times_out(
         sso._run_cloudflare_login(config, tmp_path / "token.json")
 
 
-def test_credential_exchange_requires_key_pair(monkeypatch: pytest.MonkeyPatch) -> None:
-    response = MagicMock()
-    response.json.return_value = {"access_key_id": "only-one"}
-    monkeypatch.setattr(sso.requests, "post", MagicMock(return_value=response))
-
-    with pytest.raises(RuntimeError, match="secret_access_key"):
-        sso.exchange_token_for_credentials(
-            "opaque-token", "https://broker.example.com", bucket="catalog"
-        )
-
-
-def test_credential_exchange_requires_json_object(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    response = MagicMock()
-    response.json.return_value = []
-    monkeypatch.setattr(sso.requests, "post", MagicMock(return_value=response))
-
-    with pytest.raises(RuntimeError, match="JSON object"):
-        sso.exchange_token_for_credentials(
-            "opaque-token", "https://broker.example.com", bucket="catalog"
-        )
-
-
 @pytest.mark.parametrize(
     ("payload", "message"),
     [
+        ({"access_key_id": "only-one"}, "secret_access_key"),
+        ([], "JSON object"),
         (
             {"access_key_id": "key", "secret_access_key": "secret", "session_token": 1},
             "session_token",
@@ -211,9 +189,10 @@ def test_credential_exchange_requires_json_object(
         ),
     ],
 )
-def test_credential_exchange_rejects_invalid_optional_fields(
-    monkeypatch: pytest.MonkeyPatch, payload: dict[str, object], message: str
+def test_credential_exchange_rejects_malformed_payloads(
+    monkeypatch: pytest.MonkeyPatch, payload: object, message: str
 ) -> None:
+    """Any payload that is not a complete, well-typed credential set is refused."""
     response = MagicMock()
     response.json.return_value = payload
     monkeypatch.setattr(sso.requests, "post", MagicMock(return_value=response))

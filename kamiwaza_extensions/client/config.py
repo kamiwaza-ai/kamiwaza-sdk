@@ -28,6 +28,19 @@ ENV_AUTH_CALLBACK_TIMEOUT = "R2_AUTH_CALLBACK_TIMEOUT_SECONDS"
 ENV_KAMIWAZA_REGISTRY_ENDPOINT = "KAMIWAZA_REGISTRY_ENDPOINT"
 ENV_KAMIWAZA_REGISTRY_ACCOUNT_ID = "KAMIWAZA_REGISTRY_ACCOUNT_ID"
 
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def _positive_float(raw: str, var_name: str) -> float:
+    """Parse a strictly positive float from an environment variable."""
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ValueError(f"{var_name} must be a number") from exc
+    if value <= 0:
+        raise ValueError(f"{var_name} must be greater than zero")
+    return value
+
 
 @dataclass
 class R2Config:
@@ -77,6 +90,11 @@ class Config:
 
     def _apply_env(self) -> None:
         """Apply environment variable configuration."""
+        self._apply_r2_env()
+        self._apply_auth_env()
+
+    def _apply_r2_env(self) -> None:
+        """Resolve account, endpoint, and broker from the environment."""
         if account_id := os.environ.get(ENV_ACCOUNT_ID):
             self.r2.account_id = account_id
 
@@ -85,33 +103,24 @@ class Config:
         )
         if endpoint:
             self.r2.endpoint_url = endpoint
-        elif account_id := os.environ.get(ENV_KAMIWAZA_REGISTRY_ACCOUNT_ID):
-            self.r2.endpoint_url = f"https://{account_id}.r2.cloudflarestorage.com"
-            self.r2.account_id = account_id
+        elif registry_account := os.environ.get(ENV_KAMIWAZA_REGISTRY_ACCOUNT_ID):
+            self.r2.endpoint_url = (
+                f"https://{registry_account}.r2.cloudflarestorage.com"
+            )
+            self.r2.account_id = registry_account
 
         if broker_url := os.environ.get(ENV_BROKER_URL):
             self.r2.broker_url = broker_url.rstrip("/")
 
+    def _apply_auth_env(self) -> None:
+        """Resolve interactive-login behavior from the environment."""
         if non_interactive := os.environ.get(ENV_AUTH_NON_INTERACTIVE):
-            self.auth.non_interactive = non_interactive.lower() in {
-                "1",
-                "true",
-                "yes",
-                "on",
-            }
+            self.auth.non_interactive = non_interactive.lower() in _TRUTHY
 
         if callback_timeout := os.environ.get(ENV_AUTH_CALLBACK_TIMEOUT):
-            try:
-                parsed_timeout = float(callback_timeout)
-            except ValueError as exc:
-                raise ValueError(
-                    f"{ENV_AUTH_CALLBACK_TIMEOUT} must be a number"
-                ) from exc
-            if parsed_timeout <= 0:
-                raise ValueError(
-                    f"{ENV_AUTH_CALLBACK_TIMEOUT} must be greater than zero"
-                )
-            self.auth.callback_timeout_seconds = parsed_timeout
+            self.auth.callback_timeout_seconds = _positive_float(
+                callback_timeout, ENV_AUTH_CALLBACK_TIMEOUT
+            )
 
     def get_endpoint_url(self, override: str | None = None) -> str | None:
         """Get R2 endpoint URL with optional override."""

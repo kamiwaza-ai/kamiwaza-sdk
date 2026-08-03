@@ -7,11 +7,19 @@ from typing import Any, cast
 import boto3  # type: ignore[import-untyped]
 import botocore.session  # type: ignore[import-untyped]
 
-from kamiwaza_extensions.client.auth.chain import AuthMode, resolve_credentials
 from kamiwaza_extensions.client.auth.credentials import Credentials
 from kamiwaza_extensions.client.auth.provider import CredentialProvider
 from kamiwaza_extensions.client.auth.static import StaticCredentials
 from kamiwaza_extensions.client.config import Config
+from kamiwaza_extensions.client.options import ClientOptions, ExplicitCredentials
+
+
+def _s3_kwargs(endpoint: str | None, region: str) -> dict[str, Any]:
+    """Base kwargs shared by every boto3 S3 client and resource we build."""
+    kwargs: dict[str, Any] = {"service_name": "s3", "region_name": region}
+    if endpoint:
+        kwargs["endpoint_url"] = endpoint
+    return kwargs
 
 
 def _refreshable_session(
@@ -62,14 +70,10 @@ class _MultiBucketClient:
 
     def _get_client_for_bucket(self, bucket: str) -> Any:
         if bucket not in self._clients:
-            client_kwargs: dict[str, Any] = {
-                "service_name": "s3",
-                "region_name": self._region,
-            }
-            if self._endpoint:
-                client_kwargs["endpoint_url"] = self._endpoint
             session = _refreshable_session(self._provider, bucket)
-            self._clients[bucket] = session.client(**client_kwargs)
+            self._clients[bucket] = session.client(
+                **_s3_kwargs(self._endpoint, self._region)
+            )
         return self._clients[bucket]
 
     def _delegate(self, operation: str, kwargs: dict[str, Any]) -> Any:
@@ -106,34 +110,27 @@ class Boto3Adapter:
         self,
         config: Config | None = None,
         *,
-        endpoint_url: str | None = None,
-        region_name: str | None = None,
-        access_key_id: str | None = None,
-        secret_access_key: str | None = None,
-        session_token: str | None = None,
-        bucket: str | None = None,
-        auth_mode: AuthMode = "auto",
+        options: ClientOptions | None = None,
+        explicit: ExplicitCredentials | None = None,
     ) -> None:
         self._config = config or Config.load()
-        self._access_key_id = access_key_id
-        self._secret_access_key = secret_access_key
-        self._session_token = session_token
-        self._bucket = bucket
+        self._options = options or ClientOptions()
         self._credential_provider = CredentialProvider(
             config=self._config,
-            access_key_id=access_key_id,
-            secret_access_key=secret_access_key,
-            session_token=session_token,
-            bucket=bucket,
-            auth_mode=auth_mode,
+            explicit=explicit,
+            bucket=self._options.bucket,
+            auth_mode=self._options.auth_mode,
         )
-        self._endpoint_url = endpoint_url
-        self._region_name = region_name
-        self._auth_mode = auth_mode
 
     def get_credentials(self) -> Credentials:
         """Return raw credentials (for other adapters or direct use)."""
         return self._credential_provider.get_credentials()
+
+    def _connection(self) -> tuple[str | None, str]:
+        """Resolve the endpoint and region this adapter will connect with."""
+        endpoint = self._config.get_endpoint_url(self._options.endpoint_url)
+        region = self._options.region_name or self._config.defaults.region
+        return endpoint, region
 
     def get_client(self) -> Any:
         """Return boto3 S3 client or multi-bucket proxy.
@@ -142,100 +139,44 @@ class Boto3Adapter:
         With SSO and no bucket: returns MultiBucketClient (lazily fetches creds per bucket).
         With SSO and bucket set: returns a single-bucket boto3 client.
         """
-        static, method = resolve_credentials(
-            access_key_id=self._access_key_id,
-            secret_access_key=self._secret_access_key,
-            session_token=self._session_token,
-            auth_mode=self._auth_mode,
-        )
-
-        endpoint = self._config.get_endpoint_url(self._endpoint_url)
-        region = self._region_name or self._config.defaults.region
+        static, method = self._credential_provider.resolve_static()
+        endpoint, region = self._connection()
 
         if method == "static" and static is not None:
-            return self._create_static_client(static, endpoint, region)
-        if method == "sso" and self._bucket is None:
+            return self._static_factory("client", static, endpoint, region)
+        if method == "sso" and self._options.bucket is None:
             return _MultiBucketClient(
                 credential_provider=self._credential_provider,
                 endpoint=endpoint,
                 region=region,
             )
-        return self._create_sso_client(endpoint, region)
-
-    def _create_static_client(
-        self,
-        creds: StaticCredentials,
-        endpoint: str | None,
-        region: str,
-    ) -> Any:
-        """Create boto3 client with static credentials."""
-        client_kwargs: dict[str, Any] = {
-            "service_name": "s3",
-            "region_name": region,
-            "aws_access_key_id": creds.access_key_id,
-            "aws_secret_access_key": creds.secret_access_key,
-        }
-        if creds.session_token:
-            client_kwargs["aws_session_token"] = creds.session_token
-        if endpoint:
-            client_kwargs["endpoint_url"] = endpoint
-
-        return boto3.client(**client_kwargs)
-
-    def _create_sso_client(self, endpoint: str | None, region: str) -> Any:
-        """Create boto3 client with broker temp credentials (R2 direct)."""
-        client_kwargs: dict[str, Any] = {
-            "service_name": "s3",
-            "region_name": region,
-        }
-        if endpoint:
-            client_kwargs["endpoint_url"] = endpoint
-        session = _refreshable_session(self._credential_provider)
-        return session.client(**client_kwargs)
+        return self._sso_factory("client", endpoint, region)
 
     def get_resource(self) -> Any:
         """Return a boto3 S3 resource (not a wrapper)."""
-        static, method = resolve_credentials(
-            access_key_id=self._access_key_id,
-            secret_access_key=self._secret_access_key,
-            session_token=self._session_token,
-            auth_mode=self._auth_mode,
-        )
-
-        endpoint = self._config.get_endpoint_url(self._endpoint_url)
-        region = self._region_name or self._config.defaults.region
+        static, method = self._credential_provider.resolve_static()
+        endpoint, region = self._connection()
 
         if method == "static" and static is not None:
-            return self._create_static_resource(static, endpoint, region)
-        return self._create_sso_resource(endpoint, region)
+            return self._static_factory("resource", static, endpoint, region)
+        return self._sso_factory("resource", endpoint, region)
 
-    def _create_static_resource(
-        self,
+    @staticmethod
+    def _static_factory(
+        kind: str,
         creds: StaticCredentials,
         endpoint: str | None,
         region: str,
     ) -> Any:
-        """Create boto3 resource with static credentials."""
-        resource_kwargs: dict[str, Any] = {
-            "service_name": "s3",
-            "region_name": region,
-            "aws_access_key_id": creds.access_key_id,
-            "aws_secret_access_key": creds.secret_access_key,
-        }
+        """Build a boto3 client or resource from static credentials."""
+        kwargs = _s3_kwargs(endpoint, region)
+        kwargs["aws_access_key_id"] = creds.access_key_id
+        kwargs["aws_secret_access_key"] = creds.secret_access_key
         if creds.session_token:
-            resource_kwargs["aws_session_token"] = creds.session_token
-        if endpoint:
-            resource_kwargs["endpoint_url"] = endpoint
+            kwargs["aws_session_token"] = creds.session_token
+        return getattr(boto3, kind)(**kwargs)
 
-        return boto3.resource(**resource_kwargs)
-
-    def _create_sso_resource(self, endpoint: str | None, region: str) -> Any:
-        """Create boto3 resource with broker temp credentials (R2 direct)."""
-        resource_kwargs: dict[str, Any] = {
-            "service_name": "s3",
-            "region_name": region,
-        }
-        if endpoint:
-            resource_kwargs["endpoint_url"] = endpoint
+    def _sso_factory(self, kind: str, endpoint: str | None, region: str) -> Any:
+        """Build a boto3 client or resource from broker temp credentials."""
         session = _refreshable_session(self._credential_provider)
-        return session.resource(**resource_kwargs)
+        return getattr(session, kind)(**_s3_kwargs(endpoint, region))
