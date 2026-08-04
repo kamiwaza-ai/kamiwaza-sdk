@@ -7,11 +7,22 @@ from kamiwaza_sdk.services.context import ContextService
 import tests.integration.test_context_live as context_live
 from tests.integration.test_context_live import (
     _assert_global_scope_if_exposed,
+    _next_stopped_since,
     _wait_for_vectordb_ready,
     session_workroom,
 )
 
 pytestmark = pytest.mark.unit
+
+
+def test_stopped_grace_window_resets_after_transient_recovery() -> None:
+    stopped_since = _next_stopped_since("vdb-1", "stopped", None, 1.0)
+
+    assert _next_stopped_since("vdb-1", "provisioning", stopped_since, 2.0) is None
+
+
+def test_stopped_grace_window_preserves_first_stopped_timestamp() -> None:
+    assert _next_stopped_since("vdb-1", "stopped", 1.0, 2.0) == 1.0
 
 
 def test_global_scope_assertion_uses_fixed_global_sentinel(

@@ -85,6 +85,7 @@ def test_build_snapshot_empty_inventory_is_cpu_only():
     assert snap.gpu_count == 0
     assert snap.gpu_mem_gb == ()
     assert snap.node_count == 1
+    assert snap.is_apple_silicon is False
 
 
 def test_build_snapshot_ignores_explicitly_inactive_hardware_entries():
@@ -124,6 +125,21 @@ def test_build_snapshot_detects_apple_silicon_from_real_inventory():
 
     assert snap.os_platforms == frozenset({("darwin", "macos-15.4-arm64-arm-64bit")})
     assert snap.is_apple_silicon is True
+
+
+def test_build_snapshot_does_not_treat_intel_mac_as_apple_silicon():
+    snap = cap.build_capability_snapshot(
+        [
+            _hw(
+                [],
+                processors=["Intel i9"],
+                os="Darwin",
+                platform="macOS-15.4-x86_64-i386-64bit",
+            )
+        ]
+    )
+
+    assert snap.is_apple_silicon is False
 
 
 def test_build_snapshot_ignores_platform_from_synthetic_inventory_rows():

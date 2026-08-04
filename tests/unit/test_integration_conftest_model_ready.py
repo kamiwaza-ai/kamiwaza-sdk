@@ -239,17 +239,64 @@ def test_deployable_model_probe_uses_shared_repo_and_engine(
     assert deploy_calls[0]["m_file_id"] == str(model_file_id)
 
 
+@pytest.mark.parametrize(
+    ("snapshot_kwargs", "target_name"),
+    [
+        (
+            {"gpu_count": 1, "gpu_vendors": frozenset({"nvidia"})},
+            "VLLM_LLM_TARGET",
+        ),
+        (
+            {
+                "os_platforms": frozenset(
+                    {("darwin", "macos-15.4-arm64-arm-64bit")}
+                )
+            },
+            "MLX_LLM_TARGET",
+        ),
+        (
+            {
+                "os_platforms": frozenset(
+                    {("linux", "linux-5.14.0-el9.x86_64")}
+                )
+            },
+            "GGUF_LLM_TARGET",
+        ),
+    ],
+)
 def test_deployable_model_target_follows_cluster_inventory(
     integration_conftest,
+    snapshot_kwargs: dict[str, object],
+    target_name: str,
 ) -> None:
     snapshot = integration_conftest._cap.ClusterCapabilitySnapshot(
-        gpu_count=1,
-        gpu_vendors=frozenset({"nvidia"}),
+        **snapshot_kwargs
     )
 
     target = integration_conftest.deployable_model_target.__wrapped__(snapshot)
 
-    assert target is integration_conftest._model_targets.VLLM_LLM_TARGET
+    assert target is getattr(integration_conftest._model_targets, target_name)
+
+
+def test_ensure_deployable_model_ready_forwards_selected_target(
+    integration_conftest,
+) -> None:
+    selected_target = integration_conftest._model_targets.VLLM_LLM_TARGET
+    calls: list[tuple[object, str, str]] = []
+
+    ensure = integration_conftest.ensure_deployable_model_ready.__wrapped__(
+        lambda client, repo_id, *, quantization: calls.append(
+            (client, repo_id, quantization)
+        )
+        or "ready-model",
+        selected_target,
+    )
+    client = object()
+
+    assert ensure(client) == "ready-model"
+    assert calls == [
+        (client, selected_target.repo_id, selected_target.quantization)
+    ]
 
 
 def test_ensure_deployable_target_ready_pins_target_quantization(
@@ -316,6 +363,24 @@ def test_ensure_deployable_target_ready_skips_missing_quantization(
         )
 
 
+def test_ensure_deployable_target_ready_skips_runtime_failure(
+    integration_conftest,
+) -> None:
+    target = integration_conftest._model_targets.InferenceTarget(
+        repo_id="org/model.gguf",
+        engine_name="llamacpp",
+        quantization="q4_k",
+    )
+
+    def fail_runtime(*_args: object, **_kwargs: object) -> object:
+        raise RuntimeError("deployment failed")
+
+    with pytest.raises(pytest.skip.Exception, match="deployment failed"):
+        integration_conftest._ensure_deployable_target_ready(
+            object(), fail_runtime, target
+        )
+
+
 def test_ensure_deployable_target_ready_reraises_client_error(
     integration_conftest,
 ) -> None:
@@ -329,14 +394,18 @@ def test_ensure_deployable_target_ready_reraises_client_error(
     def reject(*_args: object, **_kwargs: object) -> object:
         raise error
 
-    with pytest.raises(integration_conftest.APIError) as exc_info:
+    try:
         integration_conftest._ensure_deployable_target_ready(
             object(),
             reject,
             target,
         )
-
-    assert exc_info.value is error
+    except pytest.skip.Exception as skipped:
+        pytest.fail(f"a 4xx must not be masked as a skip: {skipped}")
+    except integration_conftest.APIError as raised:
+        assert raised is error
+    else:
+        pytest.fail("expected the 4xx to propagate")
 
 
 def test_ensure_deployable_target_ready_skips_server_error(
@@ -357,6 +426,25 @@ def test_ensure_deployable_target_ready_skips_server_error(
             object(),
             reject,
             target,
+        )
+
+
+def test_ensure_deployable_target_ready_skips_transport_api_error(
+    integration_conftest,
+) -> None:
+    target = integration_conftest._model_targets.InferenceTarget(
+        repo_id="org/model.gguf",
+        engine_name="llamacpp",
+        quantization="q4_k",
+    )
+    error = integration_conftest.APIError("connection reset", status_code=None)
+
+    def reject(*_args: object, **_kwargs: object) -> object:
+        raise error
+
+    with pytest.raises(pytest.skip.Exception, match="connection reset"):
+        integration_conftest._ensure_deployable_target_ready(
+            object(), reject, target
         )
 
 
@@ -384,9 +472,18 @@ def test_deployable_model_probe_reuses_exact_active_target(
     )
 
 
-def test_deployable_model_probe_does_not_reuse_wrong_engine(
+@pytest.mark.parametrize(
+    ("active_repo", "active_engine"),
+    [
+        ("org/model.gguf", "mlx"),
+        ("someone-else/other", "llamacpp"),
+    ],
+)
+def test_deployable_model_probe_does_not_reuse_mismatched_target(
     integration_conftest,
     monkeypatch: pytest.MonkeyPatch,
+    active_repo: str,
+    active_engine: str,
 ) -> None:
     target = integration_conftest._model_targets.InferenceTarget(
         repo_id="org/model.gguf",
@@ -396,8 +493,8 @@ def test_deployable_model_probe_does_not_reuse_wrong_engine(
         integration_conftest,
         "_preferred_active_model_deployment",
         lambda *_args, **_kwargs: {
-            "repo_model_id": target.repo_id,
-            "engine_name": "mlx",
+            "repo_model_id": active_repo,
+            "engine_name": active_engine,
         },
     )
     monkeypatch.setattr(
@@ -522,6 +619,116 @@ def test_context_prerequisite_prepares_and_deploys_exact_target_file(
     assert deploy_calls[0]["m_file_id"] == str(model_file_id)
 
 
+def test_context_prerequisite_does_not_mask_programming_errors(
+    integration_conftest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = integration_conftest._model_targets.GGUF_LLM_TARGET
+    monkeypatch.setattr(
+        integration_conftest,
+        "_context_llm_target",
+        lambda _snapshot: target,
+    )
+    monkeypatch.setattr(
+        integration_conftest,
+        "_preferred_active_model_deployment",
+        lambda *_args, **_kwargs: None,
+    )
+
+    def programming_error(*_args: object, **_kwargs: object) -> object:
+        raise TypeError("fixture wiring defect")
+
+    prerequisite = integration_conftest.context_llm_prerequisite.__wrapped__(
+        object(),
+        programming_error,
+        None,
+    )
+    try:
+        next(prerequisite)
+    except pytest.skip.Exception as skipped:
+        pytest.fail(f"a programming error must not be masked as a skip: {skipped}")
+    except TypeError as raised:
+        assert str(raised) == "fixture wiring defect"
+    else:
+        pytest.fail("expected the programming error to propagate")
+
+
+@pytest.mark.parametrize(
+    ("status_code", "should_skip"),
+    [(400, False), (500, True), (None, True)],
+)
+def test_context_prerequisite_preserves_api_error_taxonomy(
+    integration_conftest,
+    monkeypatch: pytest.MonkeyPatch,
+    status_code: int | None,
+    should_skip: bool,
+) -> None:
+    target = integration_conftest._model_targets.GGUF_LLM_TARGET
+    error = integration_conftest.APIError(
+        "context readiness failed", status_code=status_code
+    )
+    monkeypatch.setattr(
+        integration_conftest,
+        "_context_llm_target",
+        lambda _snapshot: target,
+    )
+    monkeypatch.setattr(
+        integration_conftest,
+        "_preferred_active_model_deployment",
+        lambda *_args, **_kwargs: None,
+    )
+
+    def fail_readiness(*_args: object, **_kwargs: object) -> object:
+        raise error
+
+    prerequisite = integration_conftest.context_llm_prerequisite.__wrapped__(
+        object(), fail_readiness, None
+    )
+    if should_skip:
+        with pytest.raises(pytest.skip.Exception, match="context readiness failed"):
+            next(prerequisite)
+        return
+
+    try:
+        next(prerequisite)
+    except pytest.skip.Exception as skipped:
+        pytest.fail(f"a 4xx must not be masked as a skip: {skipped}")
+    except integration_conftest.APIError as raised:
+        assert raised is error
+    else:
+        pytest.fail("expected the 4xx to propagate")
+
+
+def test_deployable_probe_skips_transport_api_error(
+    integration_conftest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = integration_conftest._model_targets.GGUF_LLM_TARGET
+    error = integration_conftest.APIError("connection reset", status_code=None)
+    monkeypatch.setattr(
+        integration_conftest,
+        "_preferred_active_model_deployment",
+        lambda *_args, **_kwargs: None,
+    )
+
+    def fail_readiness(*_args: object, **_kwargs: object) -> object:
+        raise error
+
+    monkeypatch.setattr(
+        integration_conftest,
+        "_ensure_deployable_target_ready",
+        fail_readiness,
+    )
+    client = SimpleNamespace(
+        serving=SimpleNamespace(stop_deployment=lambda **_kwargs: None)
+    )
+
+    with pytest.raises(pytest.skip.Exception, match="APIError transport"):
+        integration_conftest.deployable_model_prerequisite.__wrapped__(
+            client, object(), target
+        )
+
+
 def test_target_model_file_id_pins_ready_gguf_quantization(
     integration_conftest,
 ) -> None:
@@ -548,6 +755,61 @@ def test_target_model_file_id_pins_ready_gguf_quantization(
     assert integration_conftest._target_model_file_id(model, "q4_k") == str(
         selected_id
     )
+
+
+def test_target_model_file_id_ignores_unready_files(integration_conftest) -> None:
+    ready_id = uuid4()
+    model = SimpleNamespace(
+        m_files=[
+            SimpleNamespace(
+                id=uuid4(),
+                name="a-Q4_K_M.gguf",
+                storage_location=None,
+                is_downloading=True,
+                dl_requested_at=None,
+            ),
+            SimpleNamespace(
+                id=ready_id,
+                name="z-Q4_K_M.gguf",
+                storage_location="oci://z-Q4_K_M.gguf",
+                is_downloading=False,
+                dl_requested_at=None,
+            ),
+        ]
+    )
+
+    assert integration_conftest._target_model_file_id(model, "q4_k") == str(
+        ready_id
+    )
+
+
+def test_target_model_file_id_is_deterministic_across_input_order(
+    integration_conftest,
+) -> None:
+    first_id = uuid4()
+    files = [
+        SimpleNamespace(
+            id=first_id,
+            name="a-Q4_K_M.gguf",
+            storage_location="oci://a-Q4_K_M.gguf",
+            is_downloading=False,
+            dl_requested_at=None,
+        ),
+        SimpleNamespace(
+            id=uuid4(),
+            name="z-Q4_K_M.gguf",
+            storage_location="oci://z-Q4_K_M.gguf",
+            is_downloading=False,
+            dl_requested_at=None,
+        ),
+    ]
+
+    assert integration_conftest._target_model_file_id(
+        SimpleNamespace(m_files=files), "q4_k"
+    ) == str(first_id)
+    assert integration_conftest._target_model_file_id(
+        SimpleNamespace(m_files=list(reversed(files))), "q4_k"
+    ) == str(first_id)
 
 
 def test_embedding_model_prerequisite_marks_harness_provisioned_deployment(

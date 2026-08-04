@@ -18,18 +18,18 @@ from .base_service import BaseService
 
 _UNSET = object()
 _EXPORT_CHUNK_SIZE = 64 * 1024
-# Must match the backend's deleted-workroom scope denial contract in
-# kamiwaza/services/auth/api.py (forward-auth/workroom scope checks). Other
-# 403s remain fail-closed and are never retried. Unit tests pin the payload.
-_DELETED_SCOPE_DENIAL_DETAIL = "Workroom access denied"
+# Must match the backend's generic workroom-scope denial contract in
+# kamiwaza/services/auth/api.py (forward-auth/workroom scope checks). Recovery
+# is limited to the bodyless leave request; other 403s remain fail-closed.
+_WORKROOM_SCOPE_DENIAL_DETAIL = "Workroom access denied"
 
 
-def _is_deleted_scope_denial(error: APIError) -> bool:
+def _is_workroom_scope_denial(error: APIError) -> bool:
     if error.status_code != 403:
         return False
     payload = error.response_data
     detail = payload.get("detail") if isinstance(payload, dict) else None
-    return detail == _DELETED_SCOPE_DENIAL_DETAIL
+    return detail == _WORKROOM_SCOPE_DENIAL_DETAIL
 
 
 class WorkroomService(BaseService):
@@ -45,11 +45,11 @@ class WorkroomService(BaseService):
         self.logger = logging.getLogger(__name__)
 
     def _request_with_scope_recovery(self, request: Callable[[], Any]) -> Any:
-        """Retry once with fresh password credentials after a deleted-room 403."""
+        """Retry a bodyless leave once after a stale workroom-scope 403."""
         try:
             return request()
         except APIError as error:
-            if not _is_deleted_scope_denial(error):
+            if not _is_workroom_scope_denial(error):
                 raise
             authenticator = getattr(self.client, "authenticator", None)
             invalidate = getattr(authenticator, "invalidate_session", None)

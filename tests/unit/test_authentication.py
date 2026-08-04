@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 import requests
 
-from kamiwaza_sdk.authentication import UserPasswordAuthenticator
+from kamiwaza_sdk.authentication import ApiKeyAuthenticator, UserPasswordAuthenticator
 from kamiwaza_sdk.exceptions import AuthenticationError
 from kamiwaza_sdk.schemas.auth import TokenResponse
 from kamiwaza_sdk.token_store import StoredToken, TokenStore
@@ -59,6 +59,15 @@ class DummyAuthService:
         if not self.refresh_response:
             raise RuntimeError("refresh response not configured")
         return self.refresh_response
+
+
+def test_api_key_authenticator_invalidation_is_fail_closed() -> None:
+    authenticator = ApiKeyAuthenticator("fixed-token")
+    session = requests.Session()
+    authenticator.authenticate(session)
+
+    assert authenticator.invalidate_session(session) is False
+    assert session.headers["Authorization"] == "Bearer fixed-token"
 
 
 def test_user_password_authenticator_performs_password_grant():

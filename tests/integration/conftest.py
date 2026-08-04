@@ -1376,13 +1376,24 @@ def context_llm_prerequisite(
             poll_interval=5,
             timeout=CONTEXT_TEST_LLM_DEPLOY_TIMEOUT_SECONDS,
         )
-    except Exception as exc:  # noqa: BLE001 — any provisioning failure → skip, not error
+    except (TimeoutError, RuntimeError, ValueError) as exc:
         _stop_provisioned(provisioned_deployment_id)
         pytest.skip(
             "No active LLM deployment for context ontology tests and one could not "
             f"be provisioned (repo={context_repo_id}, "
             f"engine={context_engine_name or 'default'}): "
             f"{type(exc).__name__}: {exc}"
+        )
+    except APIError as exc:
+        _stop_provisioned(provisioned_deployment_id)
+        status_code = getattr(exc, "status_code", None)
+        if status_code is not None and status_code < 500:
+            raise
+        pytest.skip(
+            "No active LLM deployment for context ontology tests and one could not "
+            f"be provisioned (repo={context_repo_id}, "
+            f"engine={context_engine_name or 'default'}): "
+            f"APIError {status_code or 'transport'}: {exc}"
         )
 
     if not _platform_deployment_ready(deployment):
@@ -1411,7 +1422,7 @@ def _ensure_deployable_target_ready(
     client: KamiwazaClient,
     ensure_repo_ready: Callable[..., object],
     target: _model_targets.InferenceTarget,
-) -> object:
+) -> Any:
     """Make the selected target artifact ready, or skip capability failures."""
     try:
         return ensure_repo_ready(
@@ -1426,7 +1437,7 @@ def _ensure_deployable_target_ready(
         )
     except APIError as exc:
         status_code = getattr(exc, "status_code", None)
-        if status_code is None or status_code < 500:
+        if status_code is not None and status_code < 500:
             raise
         pytest.skip(
             f"Host cannot make deployable target '{target.repo_id}' ready "
@@ -1438,7 +1449,7 @@ def _ensure_deployable_target_ready(
 def ensure_deployable_model_ready(
     ensure_repo_ready: Callable[..., object],
     deployable_model_target: _model_targets.InferenceTarget,
-) -> Callable[[KamiwazaClient], object]:
+) -> Callable[[KamiwazaClient], Any]:
     """Return a target-aware, skip-not-fail live model readiness helper."""
 
     def _ensure(client: KamiwazaClient) -> object:
@@ -1539,11 +1550,12 @@ def deployable_model_prerequisite(
         # skip, so it is re-raised.
         status_code = getattr(exc, "status_code", None)
         _stop_deployment_quietly(client, probe_deployment_id)
-        if status_code is None or status_code < 500:
+        if status_code is not None and status_code < 500:
             raise
         pytest.skip(
             "Host cannot provision integration test model (download/deploy) "
-            f"'{repo_id}' (engine={engine_name}): APIError {status_code}: {exc}"
+            f"'{repo_id}' (engine={engine_name}): "
+            f"APIError {status_code or 'transport'}: {exc}"
         )
 
     ready = _platform_deployment_ready(deployment)
