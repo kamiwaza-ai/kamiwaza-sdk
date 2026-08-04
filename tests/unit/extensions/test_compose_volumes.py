@@ -148,3 +148,34 @@ class TestPersistenceInteraction:
 
         with pytest.raises(ValueError, match="mountPath is missing"):
             _spec(service)
+
+
+class TestPersistenceMountPathValidation:
+    """A mountPath that can never match a Compose target is worse than an
+    error: the guard passes and an emptyDir lands on top of the PVC."""
+
+    @staticmethod
+    def _service(mount_path) -> dict:
+        return {
+            "volumes": ["pg:/var/lib/postgresql/data"],
+            "x-kamiwaza": {
+                "persistence": {"enabled": True, "mountPath": mount_path}
+            },
+        }
+
+    @pytest.mark.parametrize(
+        "mount_path", ["var/lib/postgresql", "data", "./data", "postgresql/data"]
+    )
+    def test_relative_mount_path_is_rejected(self, mount_path: str) -> None:
+        with pytest.raises(ValueError, match="absolute path"):
+            _spec(self._service(mount_path))
+
+    @pytest.mark.parametrize("mount_path", [None, 42, {"path": "/data"}, ["/data"]])
+    def test_non_string_mount_path_is_rejected(self, mount_path) -> None:
+        """``mountPath:`` with no value parses to None; stringifying it would
+        yield a truthy "None" that sails past every check."""
+        with pytest.raises(ValueError, match="mountPath is missing"):
+            _spec(self._service(mount_path))
+
+    def test_absolute_mount_path_is_accepted(self) -> None:
+        assert _spec(self._service("/var/lib/postgresql")) is None

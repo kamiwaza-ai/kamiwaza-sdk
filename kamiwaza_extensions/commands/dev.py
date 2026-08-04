@@ -64,7 +64,9 @@ def _build_patch_kwargs(
 
 
 def _build_patch_service_specs(
-    payload: Any, service_filter: Optional[str] = None
+    payload: Any,
+    service_filter: Optional[str] = None,
+    clear_persistence_for: Optional[frozenset] = None,
 ) -> List[Any]:
     """Build the per-service ``PatchServiceSpec`` list from a
     ``CreateExtension`` payload, forwarding the new ``x-kamiwaza``
@@ -84,14 +86,73 @@ def _build_patch_service_specs(
     leave the CR's image field at the original repository and produce
     ``ImagePullBackOff`` on the next pull.
     """
+    clear = clear_persistence_for or frozenset()
     return [
-        _build_patch_service_spec(service)
+        _build_patch_service_spec(service, clear_persistence=service.name in clear)
         for service in payload.services
         if service_filter is None or service.name == service_filter
     ]
 
 
-def _build_patch_service_spec(service: Any) -> Any:
+def persistent_service_names(extension: Any) -> frozenset:
+    """Names of services whose *current* CR has persistence enabled.
+
+    Used to decide where a removed compose persistence block must be
+    explicitly cleared. Sending a blanket disable to every service instead
+    would aim a PVC-affecting write at services that never asked for one.
+    """
+    services = getattr(getattr(extension, "spec", None), "services", None)
+    if services is None:
+        services = getattr(extension, "services", None) or []
+    return frozenset(
+        name
+        for service in services
+        if _persistence_is_enabled(service)
+        for name in [getattr(service, "name", None)]
+        if name
+    )
+
+
+def _persistence_is_enabled(service: Any) -> bool:
+    """True when a CR service carries persistence, dict- or model-shaped."""
+    persistence = getattr(service, "persistence", None)
+    if isinstance(persistence, dict):
+        return persistence.get("enabled") is True
+    return getattr(persistence, "enabled", False) is True
+
+
+def _validate_service_filter(
+    service: Optional[str], compose_data: Dict[str, Any]
+) -> None:
+    """Reject a ``--service`` name that no compose service answers to.
+
+    Without this the filter yields an empty service list, and the failure
+    surfaces at the very end of the run as a raw pydantic ``min_length``
+    error that never mentions ``--service`` — after the whole build phase
+    has already run.
+    """
+    if service is None:
+        return
+    known = sorted((compose_data.get("services") or {}).keys())
+    if service in known:
+        return
+    console.print(
+        f"[red]Error:[/red] --service '{service}' is not a service in "
+        f"docker-compose.yml."
+    )
+    if known:
+        console.print(f"  [dim]Available: {', '.join(known)}[/dim]")
+    raise typer.Exit(code=1)
+
+
+def _patch_persistence(service: Any, clear: bool) -> Optional[dict]:
+    """Persistence value for one PATCH: declared, cleared, or untouched."""
+    if service.persistence:
+        return service.persistence
+    return {"enabled": False} if clear else None
+
+
+def _build_patch_service_spec(service: Any, *, clear_persistence: bool = False) -> Any:
     """Translate one create service into its complete PATCH contract."""
     from kamiwaza_extensions.compose_transformer import _split_image_ref
     from kamiwaza_sdk.schemas.extensions import ImagePatch, PatchServiceSpec
@@ -109,11 +170,13 @@ def _build_patch_service_spec(service: Any) -> Any:
         env=service.env or None,
         replicas=service.replicas,
         # Removing an ``x-kamiwaza.persistence`` block must clear the PVC
-        # config on the CR. ``patch_extension`` dumps with
-        # ``exclude_none=True``, so sending None would omit the field and
-        # leave the old mount in place — able to collide with a Compose
-        # volume reintroduced at the same path. Send an explicit disable.
-        persistence=service.persistence or {"enabled": False},
+        # config on the CR: ``patch_extension`` dumps with
+        # ``exclude_none=True``, so None omits the field and leaves the old
+        # mount able to collide with a Compose volume reintroduced at the
+        # same path. The explicit disable goes *only* to services whose
+        # current CR actually has persistence on — a blanket disable would
+        # aim a PVC-affecting write at services that never requested one.
+        persistence=_patch_persistence(service, clear_persistence),
         # Volumes are service-scoped: every service owns a pod template.
         # Empty lists deliberately clear stale Compose volumes on PATCH.
         volumes=service.volumes or [],
@@ -411,6 +474,8 @@ def run_dev_remote(
     if info.compose_data is None:
         console.print("[red]Error:[/red] No docker-compose.yml found.")
         raise typer.Exit(code=1)
+
+    _validate_service_filter(service, info.compose_data)
 
     # 2. Resolve connection + auth
     conn_mgr = ConnectionManager()
@@ -978,13 +1043,19 @@ def run_dev_remote(
         from kamiwaza_sdk.schemas.extensions import PatchExtension
 
         try:
-            # Check if extension already exists
-            client.extensions.get_extension(dev_name)
+            # Check if extension already exists. The response is also the
+            # only view of which services currently hold a PVC, which is
+            # what decides where a removed persistence block gets cleared.
+            existing = client.extensions.get_extension(dev_name)
 
             # Build patch from payload — extract image, env, replicas
             # plus the x-kamiwaza per-service overrides forwarded via
             # ``extra="allow"`` (jxstanford PR #97 review H2).
-            patch_services = _build_patch_service_specs(payload, service_filter=service)
+            patch_services = _build_patch_service_specs(
+                payload,
+                service_filter=service,
+                clear_persistence_for=persistent_service_names(existing),
+            )
             # Carries the deployer/revision/deployed-at annotations on
             # every PATCH so `kz-ext status` reflects the current
             # redeploy (review re-review PR #84 H1).

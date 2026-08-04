@@ -90,11 +90,24 @@ def _persistence_mount_path(service: Dict[str, Any]) -> str:
     persistence = extension.get("persistence")
     if not isinstance(persistence, dict) or persistence.get("enabled") is not True:
         return ""
-    mount_path = str(persistence.get("mountPath", "")).strip().rstrip("/")
+
+    raw = persistence.get("mountPath")
+    # ``mountPath:`` with no value parses to None. Stringifying first would
+    # yield the truthy "None" and sail past every check below, so reject it
+    # before it can become a string.
+    mount_path = raw.strip().rstrip("/") if isinstance(raw, str) else ""
     if not mount_path:
         raise ValueError(
             "x-kamiwaza.persistence.enabled is true but mountPath is missing. "
-            "Set mountPath to the directory the PVC should back."
+            "Set mountPath to the absolute directory the PVC should back."
+        )
+    # Compose targets are absolute, so a relative mountPath can never match
+    # one — the guard would silently pass and an emptyDir would land on top
+    # of the PVC. That is the failure this module exists to prevent.
+    if not mount_path.startswith("/"):
+        raise ValueError(
+            "x-kamiwaza.persistence.mountPath must be an absolute path, "
+            f"got {mount_path!r}."
         )
     return mount_path
 

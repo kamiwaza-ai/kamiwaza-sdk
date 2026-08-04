@@ -257,3 +257,112 @@ class TestBuildPatchServiceSpecs:
 
         assert [spec.name for spec in specs] == ["frontend"]
         assert specs[0].image.repository == "myapp-frontend"
+
+
+class TestPersistenceClearingIsTargeted:
+    """A blanket disable would aim a PVC-affecting write at services that
+    never requested one; the clear must follow the CR's actual state."""
+
+    @staticmethod
+    def _payload(*names):
+        from kamiwaza_sdk.schemas.extensions import CreateExtension, ExtensionServiceSpec
+
+        return CreateExtension(
+            name="ext",
+            type="app",
+            version="1.0.0",
+            services=[
+                ExtensionServiceSpec(name=n, image=f"ghcr.io/o/{n}:1") for n in names
+            ],
+        )
+
+    def test_service_without_persistence_is_left_untouched(self):
+        from kamiwaza_extensions.commands.dev import _build_patch_service_specs
+
+        specs = _build_patch_service_specs(self._payload("backend", "frontend"))
+
+        for spec in specs:
+            assert spec.model_dump(exclude_none=True).get("persistence") is None
+
+    def test_service_losing_persistence_is_explicitly_disabled(self):
+        from kamiwaza_extensions.commands.dev import _build_patch_service_specs
+
+        specs = _build_patch_service_specs(
+            self._payload("postgres", "backend"),
+            clear_persistence_for=frozenset({"postgres"}),
+        )
+        by_name = {s.name: s for s in specs}
+
+        assert by_name["postgres"].persistence == {"enabled": False}
+        assert by_name["backend"].persistence is None
+
+    def test_declared_persistence_wins_over_clearing(self):
+        from kamiwaza_extensions.commands.dev import _build_patch_service_specs
+        from kamiwaza_sdk.schemas.extensions import CreateExtension, ExtensionServiceSpec
+
+        payload = CreateExtension(
+            name="ext",
+            type="app",
+            version="1.0.0",
+            services=[
+                ExtensionServiceSpec(
+                    name="postgres",
+                    image="ghcr.io/o/pg:1",
+                    persistence={"enabled": True, "mountPath": "/data"},
+                )
+            ],
+        )
+
+        specs = _build_patch_service_specs(
+            payload, clear_persistence_for=frozenset({"postgres"})
+        )
+
+        assert specs[0].persistence == {"enabled": True, "mountPath": "/data"}
+
+
+class TestPersistentServiceNames:
+    def test_reads_enabled_services_from_the_current_cr(self):
+        from types import SimpleNamespace
+
+        from kamiwaza_extensions.commands.dev import persistent_service_names
+
+        extension = SimpleNamespace(
+            spec=SimpleNamespace(
+                services=[
+                    SimpleNamespace(name="postgres", persistence={"enabled": True}),
+                    SimpleNamespace(name="cache", persistence={"enabled": False}),
+                    SimpleNamespace(name="backend", persistence=None),
+                ]
+            )
+        )
+
+        assert persistent_service_names(extension) == frozenset({"postgres"})
+
+    def test_missing_services_yields_empty_set(self):
+        from types import SimpleNamespace
+
+        from kamiwaza_extensions.commands.dev import persistent_service_names
+
+        assert persistent_service_names(SimpleNamespace()) == frozenset()
+
+
+class TestServiceFilterValidation:
+    def test_unknown_service_exits_with_a_message_naming_the_flag(self, capsys):
+        import typer
+
+        from kamiwaza_extensions.commands.dev import _validate_service_filter
+
+        with pytest.raises(typer.Exit):
+            _validate_service_filter(
+                "backnd", {"services": {"backend": {}, "frontend": {}}}
+            )
+
+    def test_known_service_passes(self):
+        from kamiwaza_extensions.commands.dev import _validate_service_filter
+
+        _validate_service_filter("backend", {"services": {"backend": {}}})
+
+    def test_none_filter_passes(self):
+        from kamiwaza_extensions.commands.dev import _validate_service_filter
+
+        _validate_service_filter(None, {"services": {}})

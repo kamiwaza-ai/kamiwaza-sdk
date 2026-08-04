@@ -288,6 +288,7 @@ class PayloadBuilder:
                 spec_kwargs,
                 svc,
                 service_volume_specs.get(svc_name),
+                _resolve_persistence(metadata, svc_name, svc),
             )
 
             specs.append(ExtensionServiceSpec(**spec_kwargs))
@@ -679,22 +680,41 @@ def _add_service_overrides(
     spec: Dict[str, Any],
     service: Dict[str, Any],
     volume_spec: Optional[ServiceVolumeSpec],
+    persistence: Optional[Any] = None,
 ) -> None:
     """Add operator-owned per-service fields to one service payload."""
     for field in (
         "automountServiceAccountToken",
         "containerSecurityContext",
-        "persistence",
     ):
         value = _service_extension_field(service, field)
         if value is not None:
             spec[field] = value
+    if persistence is not None:
+        spec["persistence"] = persistence
     if volume_spec is None:
         return
     if volume_spec.volumes:
         spec["volumes"] = volume_spec.volumes
     if volume_spec.mounts:
         spec["volumeMounts"] = volume_spec.mounts
+
+
+def _resolve_persistence(
+    metadata: Optional[Dict[str, Any]],
+    svc_name: str,
+    service: Dict[str, Any],
+) -> Optional[Any]:
+    """Persistence for one service, kamiwaza.json ahead of compose.
+
+    Mirrors the healthCheck precedence (ENG-4832) so an extension can declare
+    its PVC in the file that is already the source of catalog truth, without
+    the compose-only path overriding it on every redeploy.
+    """
+    from_metadata = _metadata_service_field(metadata, svc_name, "persistence")
+    if from_metadata is not None:
+        return from_metadata
+    return _service_extension_field(service, "persistence")
 
 
 def _metadata_service_field(
