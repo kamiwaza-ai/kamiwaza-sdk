@@ -227,6 +227,19 @@ def test_deployable_model_probe_uses_shared_repo_and_engine(
     assert deploy_calls[0]["engine_name"] == "llamacpp"
 
 
+def test_deployable_model_target_follows_cluster_inventory(
+    integration_conftest,
+) -> None:
+    snapshot = integration_conftest._cap.ClusterCapabilitySnapshot(
+        gpu_count=1,
+        gpu_vendors=frozenset({"nvidia"}),
+    )
+
+    target = integration_conftest.deployable_model_target.__wrapped__(snapshot)
+
+    assert target is integration_conftest._model_targets.VLLM_LLM_TARGET
+
+
 def test_deployable_model_probe_reuses_exact_active_target(
     integration_conftest,
     monkeypatch: pytest.MonkeyPatch,

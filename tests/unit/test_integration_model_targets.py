@@ -72,6 +72,21 @@ def test_unknown_inventory_uses_portable_cpu_target() -> None:
     assert targets.select_inference_target(None) == targets.GGUF_LLM_TARGET
 
 
+@pytest.mark.parametrize(
+    ("target", "engine_name"),
+    [
+        (targets.MLX_LLM_TARGET, "mlx"),
+        (targets.VLLM_LLM_TARGET, "vllm"),
+        (targets.GGUF_LLM_TARGET, "llamacpp"),
+    ],
+)
+def test_target_engine_names(
+    target: targets.InferenceTarget,
+    engine_name: str,
+) -> None:
+    assert target.engine_name == engine_name
+
+
 def test_mixed_apple_and_linux_cluster_uses_portable_cpu_target() -> None:
     snapshot = cap.ClusterCapabilitySnapshot(
         os_platforms=frozenset(
