@@ -54,11 +54,11 @@ grant if the refresh is rejected.
 If a selected workroom is deleted while a password-authenticated session is still
 scoped to it, `client.workrooms.leave()` clears the stale in-memory credentials and
 session access-token state, then retries once with a fresh password grant. The shared
-on-disk token remains available until the successful grant replaces it. PAT and
-API-key credentials are fixed: the SDK never clears or retries them as refreshable
-sessions. Custom authenticators may opt into the same bounded recovery by returning
-`True` from `invalidate_session(session) -> bool` after invalidating their session
-credentials.
+on-disk token remains available during that attempt; a successful grant replaces it,
+while an exhausted grant clears the stale scoped token. PAT and API-key credentials
+are fixed: the SDK never clears or retries them as refreshable sessions. Custom
+authenticators may opt into the same bounded recovery by returning `True` from
+`invalidate_session(session) -> bool` after invalidating their session credentials.
 
 ## Personal Access Tokens
 

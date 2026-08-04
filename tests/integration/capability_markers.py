@@ -184,6 +184,8 @@ def _platform_inventory(
         gpus = _hardware_gpus(hardware)
         processors = _hardware_field(hardware, "processors")
         if gpus is None and processors is None:
+            if _hardware_active(hardware) is True:
+                complete = False
             continue
         os_name = _hardware_field(hardware, "os")
         platform = _hardware_field(hardware, "platform")

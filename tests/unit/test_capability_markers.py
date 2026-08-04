@@ -210,6 +210,31 @@ def test_build_snapshot_rejects_apple_only_inference_when_platform_rows_are_inco
     assert snap.is_apple_silicon is False
 
 
+def test_build_snapshot_rejects_explicitly_active_device_empty_platform_row():
+    snap = cap.build_capability_snapshot(
+        [
+            _hw(
+                [],
+                node_id="apple",
+                processors=["Apple M4"],
+                os="Darwin",
+                platform="macOS-15.4-arm64-arm-64bit",
+            ),
+            {
+                "active": True,
+                "node_id": "inventory-pending",
+                "gpus": None,
+                "processors": None,
+                "os": None,
+                "platform": None,
+            },
+        ]
+    )
+
+    assert snap.platform_inventory_complete is False
+    assert snap.is_apple_silicon is False
+
+
 # --------------------------------------------------------------------------- #
 # collect_capability_requirements
 # --------------------------------------------------------------------------- #

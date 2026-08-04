@@ -1990,7 +1990,11 @@ def _model_has_ready_target_files(model: Any, quantization: str) -> bool:
 
 
 def _target_model_file_id(model: Any, quantization: str) -> str | None:
-    """Return a deterministic ready GGUF file matching the prepared quantization."""
+    """Return a deterministic ready GGUF file matching the prepared quantization.
+
+    The nightly default is a single-file GGUF. Split GGUF repositories rely on
+    the serving backend to discover sibling shards from this selected file.
+    """
     target_files = _target_files_for_quantization(model, quantization)
     ready_gguf_files = [
         model_file

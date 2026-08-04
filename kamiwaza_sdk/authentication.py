@@ -133,6 +133,7 @@ class UserPasswordAuthenticator(Authenticator):
                 errors.append(str(exc))
                 if self._session_invalidated and self.token_store:
                     self.token_store.clear()
+                    self._session_invalidated = False
                 raise AuthenticationError(
                     f"Failed to obtain access token ({'; '.join(errors)})"
                 ) from exc

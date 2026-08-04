@@ -180,3 +180,14 @@ def test_invalidated_session_clears_stale_cache_after_password_grant_fails() -> 
         authenticator.authenticate(session)
 
     assert store.value is None
+
+    replacement = StoredToken(
+        access_token="unrelated-process-token",
+        refresh_token=None,
+        expires_at=time.time() + 60,
+    )
+    store.save(replacement)
+    with pytest.raises(AuthenticationError, match="bad credentials"):
+        authenticator.authenticate(session)
+
+    assert store.value is replacement
