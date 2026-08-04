@@ -18,6 +18,9 @@ from .base_service import BaseService
 
 _UNSET = object()
 _EXPORT_CHUNK_SIZE = 64 * 1024
+# Must match the backend's deleted-workroom scope denial contract. Other 403s
+# remain fail-closed and are never retried.
+_DELETED_SCOPE_DENIAL_DETAIL = "Workroom access denied"
 
 
 def _is_deleted_scope_denial(error: APIError) -> bool:
@@ -25,7 +28,7 @@ def _is_deleted_scope_denial(error: APIError) -> bool:
         return False
     payload = error.response_data
     detail = payload.get("detail") if isinstance(payload, dict) else None
-    return detail == "Workroom access denied"
+    return detail == _DELETED_SCOPE_DENIAL_DETAIL
 
 
 class WorkroomService(BaseService):

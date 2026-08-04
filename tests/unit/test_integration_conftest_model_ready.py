@@ -189,6 +189,9 @@ def test_deployable_model_probe_uses_shared_repo_and_engine(
     deploy_calls: list[dict[str, object]] = []
 
     class Serving:
+        def list_active_deployments(self) -> list[object]:
+            return []
+
         def deploy_model(self, **kwargs: object) -> str:
             deploy_calls.append(kwargs)
             return "dep-1"
@@ -222,6 +225,27 @@ def test_deployable_model_probe_uses_shared_repo_and_engine(
 
     assert deploy_calls[0]["model_id"] == "model-for-org/model.gguf"
     assert deploy_calls[0]["engine_name"] == "llamacpp"
+
+
+def test_deployable_model_probe_reuses_exact_active_target(
+    integration_conftest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = integration_conftest._model_targets.InferenceTarget(
+        repo_id="org/model.gguf",
+        engine_name="llamacpp",
+    )
+    monkeypatch.setattr(
+        integration_conftest,
+        "_preferred_active_model_deployment",
+        lambda *_args, **_kwargs: {"repo_model_id": target.repo_id},
+    )
+
+    integration_conftest.deployable_model_prerequisite.__wrapped__(
+        object(),
+        lambda *_args: pytest.fail("an active exact target must skip the probe deploy"),
+        target,
+    )
 
 
 def test_embedding_model_prerequisite_marks_harness_provisioned_deployment(

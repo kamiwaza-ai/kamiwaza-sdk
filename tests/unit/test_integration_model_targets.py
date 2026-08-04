@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import sys
 from pathlib import Path
 
@@ -41,8 +42,7 @@ def test_suite_repo_override_wins_and_rejects_blank_values(
 
 def test_cpu_linux_selects_gguf_for_llamacpp() -> None:
     snapshot = cap.ClusterCapabilitySnapshot(
-        os_names=frozenset({"linux"}),
-        platforms=frozenset({"linux-5.14.0-el9.x86_64"}),
+        os_platforms=frozenset({("linux", "linux-5.14.0-el9.x86_64")}),
     )
 
     selected = targets.select_inference_target(snapshot)
@@ -53,8 +53,6 @@ def test_cpu_linux_selects_gguf_for_llamacpp() -> None:
 
 def test_apple_silicon_selects_mlx() -> None:
     snapshot = cap.ClusterCapabilitySnapshot(
-        os_names=frozenset({"darwin"}),
-        platforms=frozenset({"macos-15.4-arm64-arm-64bit"}),
         os_platforms=frozenset({("darwin", "macos-15.4-arm64-arm-64bit")}),
     )
 
@@ -65,8 +63,7 @@ def test_nvidia_selects_vllm_before_host_platform() -> None:
     snapshot = cap.ClusterCapabilitySnapshot(
         gpu_count=1,
         gpu_vendors=frozenset({"nvidia"}),
-        os_names=frozenset({"linux"}),
-        platforms=frozenset({"linux-x86_64"}),
+        os_platforms=frozenset({("darwin", "macos-15.4-arm64-arm-64bit")}),
     )
 
     assert targets.select_inference_target(snapshot) == targets.VLLM_LLM_TARGET
@@ -74,3 +71,52 @@ def test_nvidia_selects_vllm_before_host_platform() -> None:
 
 def test_unknown_inventory_uses_portable_cpu_target() -> None:
     assert targets.select_inference_target(None) == targets.GGUF_LLM_TARGET
+
+
+def test_mixed_apple_and_linux_cluster_uses_portable_cpu_target() -> None:
+    snapshot = cap.ClusterCapabilitySnapshot(
+        os_platforms=frozenset(
+            {
+                ("darwin", "macos-15.4-arm64-arm-64bit"),
+                ("linux", "linux-5.14.0-el9.x86_64"),
+            }
+        ),
+    )
+
+    assert targets.select_inference_target(snapshot) == targets.GGUF_LLM_TARGET
+
+
+@pytest.mark.parametrize(
+    ("env_name", "target_name"),
+    [
+        ("KAMIWAZA_TEST_MLX_LLM_REPO", "MLX_LLM_TARGET"),
+        ("KAMIWAZA_CONTEXT_MLX_LLM_REPO", "MLX_LLM_TARGET"),
+        ("KAMIWAZA_TEST_VLLM_LLM_REPO", "VLLM_LLM_TARGET"),
+        ("KAMIWAZA_CONTEXT_VLLM_LLM_REPO", "VLLM_LLM_TARGET"),
+        ("KAMIWAZA_TEST_GGUF_LLM_REPO", "GGUF_LLM_TARGET"),
+        ("KAMIWAZA_CONTEXT_GGUF_LLM_REPO", "GGUF_LLM_TARGET"),
+    ],
+)
+def test_real_repo_override_names_are_honored(
+    monkeypatch: pytest.MonkeyPatch,
+    env_name: str,
+    target_name: str,
+) -> None:
+    override_names = {
+        "KAMIWAZA_TEST_MLX_LLM_REPO",
+        "KAMIWAZA_CONTEXT_MLX_LLM_REPO",
+        "KAMIWAZA_TEST_VLLM_LLM_REPO",
+        "KAMIWAZA_CONTEXT_VLLM_LLM_REPO",
+        "KAMIWAZA_TEST_GGUF_LLM_REPO",
+        "KAMIWAZA_CONTEXT_GGUF_LLM_REPO",
+    }
+    for name in override_names:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(env_name, "org/override")
+
+    reloaded = importlib.reload(targets)
+    try:
+        assert getattr(reloaded, target_name).repo_id == "org/override"
+    finally:
+        monkeypatch.delenv(env_name)
+        importlib.reload(targets)

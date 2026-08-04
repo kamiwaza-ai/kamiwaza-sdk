@@ -1399,6 +1399,14 @@ def deployable_model_prerequisite(
     client = live_kamiwaza_session_client
     repo_id = deployable_model_target.repo_id
     engine_name = deployable_model_target.engine_name
+    existing = _preferred_active_model_deployment(
+        client,
+        desired_type="llm",
+        preferred_repo_id=repo_id,
+    )
+    if existing is not None and existing.get("repo_model_id") == repo_id:
+        return
+
     probe_deployment_id: str | None = None
     try:
         model = ensure_repo_ready(client, repo_id)

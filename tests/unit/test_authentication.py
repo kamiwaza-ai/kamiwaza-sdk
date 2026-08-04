@@ -1,14 +1,15 @@
 from __future__ import annotations
 
+import time
+from datetime import datetime, timedelta, timezone
+
 import pytest
 import requests
-from datetime import datetime, timedelta, timezone
-import time
 
 from kamiwaza_sdk.authentication import UserPasswordAuthenticator
-from kamiwaza_sdk.token_store import StoredToken, TokenStore
 from kamiwaza_sdk.exceptions import AuthenticationError
 from kamiwaza_sdk.schemas.auth import TokenResponse
+from kamiwaza_sdk.token_store import StoredToken, TokenStore
 
 pytestmark = pytest.mark.unit
 
@@ -135,12 +136,16 @@ def test_user_password_authenticator_invalidates_cached_session() -> None:
     session = requests.Session()
     session.headers["Authorization"] = "Bearer scoped"
     session.cookies.set("access_token", "scoped")
+    session.cookies.set("access_token", "other-scope", domain="other.example")
+    session.cookies.set("load_balancer_affinity", "sticky")
 
     assert authenticator.invalidate_session(session) is True
 
     assert authenticator.token is None
     assert authenticator.refresh_token_value is None
     assert authenticator.token_expiry is None
-    assert store.value is None
+    assert store.value is not None
+    assert store.value.access_token == "scoped"
     assert "Authorization" not in session.headers
-    assert not session.cookies
+    assert all(cookie.name != "access_token" for cookie in session.cookies)
+    assert session.cookies.get("load_balancer_affinity") == "sticky"

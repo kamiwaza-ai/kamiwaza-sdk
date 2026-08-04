@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import logging
+import time
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta, timezone
-import time
 from typing import Optional
 
 import requests  # type: ignore[import-untyped]
@@ -152,10 +152,14 @@ class UserPasswordAuthenticator(Authenticator):
         self.token = None
         self.token_expiry = None
         self.refresh_token_value = None
-        if self.token_store:
-            self.token_store.clear()
         session.headers.pop("Authorization", None)
-        session.cookies.clear()
+        for cookie in list(session.cookies):
+            if cookie.name == "access_token":
+                session.cookies.clear(
+                    domain=cookie.domain,
+                    path=cookie.path,
+                    name=cookie.name,
+                )
         return True
 
     def _store_token_response(self, token_response: TokenResponse) -> None:
