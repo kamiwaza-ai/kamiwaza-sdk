@@ -99,7 +99,7 @@ def test_cli_serve_deploy(
     live_username: str,
     live_password: str,
     client_factory,
-    ensure_repo_ready,
+    ensure_deployable_model_ready,
     deployable_model_target: InferenceTarget,
     tmp_path: Path,
 ) -> None:
@@ -119,7 +119,7 @@ def test_cli_serve_deploy(
         base_args, env, live_username, live_password, token_path, pat_prefix="cli-deploy"
     )
     pat_client = client_factory(base_url=live_server_available, api_key=pat_token)
-    ensure_repo_ready(pat_client, deployable_model_target.repo_id)
+    ensure_deployable_model_ready(pat_client)
 
     serve_result = run_cli(
         [

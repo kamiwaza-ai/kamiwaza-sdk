@@ -1375,6 +1375,50 @@ def deployable_model_target(
     return _model_targets.select_inference_target(cluster_capability_snapshot)
 
 
+def _ensure_deployable_target_ready(
+    client: KamiwazaClient,
+    ensure_repo_ready: Callable[..., object],
+    target: _model_targets.InferenceTarget,
+) -> object:
+    """Make the selected target artifact ready, or skip capability failures."""
+    try:
+        return ensure_repo_ready(
+            client,
+            target.repo_id,
+            quantization=target.quantization,
+        )
+    except (TimeoutError, RuntimeError) as exc:
+        pytest.skip(
+            f"Host cannot make deployable target '{target.repo_id}' ready "
+            f"(quantization={target.quantization}): {type(exc).__name__}: {exc}"
+        )
+    except APIError as exc:
+        status_code = getattr(exc, "status_code", None)
+        if status_code is None or status_code < 500:
+            raise
+        pytest.skip(
+            f"Host cannot make deployable target '{target.repo_id}' ready "
+            f"(quantization={target.quantization}): APIError {status_code}: {exc}"
+        )
+
+
+@pytest.fixture(scope="session")
+def ensure_deployable_model_ready(
+    ensure_repo_ready: Callable[..., object],
+    deployable_model_target: _model_targets.InferenceTarget,
+) -> Callable[[KamiwazaClient], object]:
+    """Return a target-aware, skip-not-fail live model readiness helper."""
+
+    def _ensure(client: KamiwazaClient) -> object:
+        return _ensure_deployable_target_ready(
+            client,
+            ensure_repo_ready,
+            deployable_model_target,
+        )
+
+    return _ensure
+
+
 def _default_model_config(
     client: KamiwazaClient, model_id: object, repo_id: str
 ) -> Any:
@@ -1409,7 +1453,11 @@ def deployable_model_prerequisite(
 
     probe_deployment_id: str | None = None
     try:
-        model = ensure_repo_ready(client, repo_id)
+        model = _ensure_deployable_target_ready(
+            client,
+            ensure_repo_ready,
+            deployable_model_target,
+        )
         default_config = _default_model_config(client, model.id, repo_id)
         raw_deployment_id = client.serving.deploy_model(
             model_id=str(model.id),

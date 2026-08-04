@@ -73,18 +73,20 @@ def test_unknown_inventory_uses_portable_cpu_target() -> None:
 
 
 @pytest.mark.parametrize(
-    ("target", "engine_name"),
+    ("target", "engine_name", "quantization"),
     [
-        (targets.MLX_LLM_TARGET, "mlx"),
-        (targets.VLLM_LLM_TARGET, "vllm"),
-        (targets.GGUF_LLM_TARGET, "llamacpp"),
+        (targets.MLX_LLM_TARGET, "mlx", "q6_k"),
+        (targets.VLLM_LLM_TARGET, "vllm", "q6_k"),
+        (targets.GGUF_LLM_TARGET, "llamacpp", "q4_k"),
     ],
 )
-def test_target_engine_names(
+def test_target_engine_names_and_quantization(
     target: targets.InferenceTarget,
     engine_name: str,
+    quantization: str,
 ) -> None:
     assert target.engine_name == engine_name
+    assert target.quantization == quantization
 
 
 def test_mixed_apple_and_linux_cluster_uses_portable_cpu_target() -> None:

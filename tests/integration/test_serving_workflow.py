@@ -44,11 +44,11 @@ def _ensure_model_cached(client, model):
 @pytest.mark.requires_deployable_model
 def test_deploy_qwen_and_infer_with_strip_thinking(
     live_kamiwaza_client,
-    ensure_repo_ready,
+    ensure_deployable_model_ready,
     deployable_model_target: InferenceTarget,
 ):
     client = live_kamiwaza_client
-    model = ensure_repo_ready(client, deployable_model_target.repo_id)
+    model = ensure_deployable_model_ready(client)
 
     _ensure_model_cached(client, model)
 

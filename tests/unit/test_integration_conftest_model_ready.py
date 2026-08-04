@@ -213,7 +213,7 @@ def test_deployable_model_probe_uses_shared_repo_and_engine(
             ]
         ),
     )
-    ensure_repo_ready = lambda _client, repo_id: SimpleNamespace(  # noqa: E731
+    ensure_repo_ready = lambda _client, repo_id, **_kwargs: SimpleNamespace(  # noqa: E731
         id=f"model-for-{repo_id}"
     )
 
@@ -238,6 +238,94 @@ def test_deployable_model_target_follows_cluster_inventory(
     target = integration_conftest.deployable_model_target.__wrapped__(snapshot)
 
     assert target is integration_conftest._model_targets.VLLM_LLM_TARGET
+
+
+def test_ensure_deployable_target_ready_pins_target_quantization(
+    integration_conftest,
+) -> None:
+    target = integration_conftest._model_targets.InferenceTarget(
+        repo_id="org/model.gguf",
+        engine_name="llamacpp",
+        quantization="q4_k",
+    )
+    calls: list[tuple[object, str, str]] = []
+    client = object()
+
+    result = integration_conftest._ensure_deployable_target_ready(
+        client,
+        lambda actual_client, repo_id, *, quantization: calls.append(
+            (actual_client, repo_id, quantization)
+        )
+        or "ready-model",
+        target,
+    )
+
+    assert result == "ready-model"
+    assert calls == [(client, "org/model.gguf", "q4_k")]
+
+
+def test_ensure_deployable_target_ready_skips_download_timeout(
+    integration_conftest,
+) -> None:
+    target = integration_conftest._model_targets.InferenceTarget(
+        repo_id="org/model.gguf",
+        engine_name="llamacpp",
+        quantization="q4_k",
+    )
+
+    def time_out(*_args: object, **_kwargs: object) -> object:
+        raise TimeoutError("download stalled")
+
+    with pytest.raises(pytest.skip.Exception, match="download stalled"):
+        integration_conftest._ensure_deployable_target_ready(
+            object(),
+            time_out,
+            target,
+        )
+
+
+def test_ensure_deployable_target_ready_reraises_client_error(
+    integration_conftest,
+) -> None:
+    target = integration_conftest._model_targets.InferenceTarget(
+        repo_id="org/model.gguf",
+        engine_name="llamacpp",
+        quantization="q4_k",
+    )
+    error = integration_conftest.APIError("invalid request", status_code=400)
+
+    def reject(*_args: object, **_kwargs: object) -> object:
+        raise error
+
+    with pytest.raises(integration_conftest.APIError) as exc_info:
+        integration_conftest._ensure_deployable_target_ready(
+            object(),
+            reject,
+            target,
+        )
+
+    assert exc_info.value is error
+
+
+def test_ensure_deployable_target_ready_skips_server_error(
+    integration_conftest,
+) -> None:
+    target = integration_conftest._model_targets.InferenceTarget(
+        repo_id="org/model.gguf",
+        engine_name="llamacpp",
+        quantization="q4_k",
+    )
+    error = integration_conftest.APIError("runtime unavailable", status_code=500)
+
+    def reject(*_args: object, **_kwargs: object) -> object:
+        raise error
+
+    with pytest.raises(pytest.skip.Exception, match="APIError 500"):
+        integration_conftest._ensure_deployable_target_ready(
+            object(),
+            reject,
+            target,
+        )
 
 
 def test_deployable_model_probe_reuses_exact_active_target(

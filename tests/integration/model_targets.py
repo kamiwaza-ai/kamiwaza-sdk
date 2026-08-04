@@ -15,6 +15,7 @@ class InferenceTarget:
 
     repo_id: str
     engine_name: str
+    quantization: str = "q6_k"
 
 
 def _configured_repo(generic_name: str, legacy_name: str, default: str) -> str:
@@ -57,6 +58,7 @@ def _load_inference_targets() -> tuple[InferenceTarget, InferenceTarget, Inferen
                 _DEFAULT_GGUF_LLM_REPO,
             ),
             engine_name="llamacpp",
+            quantization="q4_k",
         ),
     )
 
