@@ -284,6 +284,26 @@ def test_ensure_deployable_target_ready_skips_download_timeout(
         )
 
 
+def test_ensure_deployable_target_ready_skips_missing_quantization(
+    integration_conftest,
+) -> None:
+    target = integration_conftest._model_targets.InferenceTarget(
+        repo_id="org/model.gguf",
+        engine_name="llamacpp",
+        quantization="q4_k",
+    )
+
+    def reject_quantization(*_args: object, **_kwargs: object) -> object:
+        raise ValueError("q4_k is unavailable")
+
+    with pytest.raises(pytest.skip.Exception, match="q4_k is unavailable"):
+        integration_conftest._ensure_deployable_target_ready(
+            object(),
+            reject_quantization,
+            target,
+        )
+
+
 def test_ensure_deployable_target_ready_reraises_client_error(
     integration_conftest,
 ) -> None:

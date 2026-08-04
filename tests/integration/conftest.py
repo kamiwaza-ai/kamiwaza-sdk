@@ -1387,7 +1387,7 @@ def _ensure_deployable_target_ready(
             target.repo_id,
             quantization=target.quantization,
         )
-    except (TimeoutError, RuntimeError) as exc:
+    except (TimeoutError, RuntimeError, ValueError) as exc:
         pytest.skip(
             f"Host cannot make deployable target '{target.repo_id}' ready "
             f"(quantization={target.quantization}): {type(exc).__name__}: {exc}"
