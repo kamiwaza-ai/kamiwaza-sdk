@@ -1,5 +1,7 @@
 """Tests for SDK override config, validation, and compose generation."""
 
+from pathlib import Path
+
 import pytest
 import yaml
 
@@ -7,12 +9,32 @@ from kamiwaza_extensions.sdk_override import (
     BuildOverride,
     SdkOverrideSpec,
     apply_build_overlay,
-    detect_service_type,
     generate_build_overrides,
     generate_compose_override,
     resolve_sdk_override,
     validate_sdk_override,
 )
+
+
+def _write_runtime_dockerfiles(tmp_path: Path, compose: dict) -> Path:
+    """Create explicit runtime evidence for SDK override tests."""
+    extension_dir = tmp_path / "extension"
+    for service_name, service in compose.get("services", {}).items():
+        build = service.get("build")
+        if not build:
+            continue
+        context = build if isinstance(build, str) else build.get("context", ".")
+        dockerfile = (
+            "Dockerfile"
+            if isinstance(build, str)
+            else build.get("dockerfile", "Dockerfile")
+        )
+        dockerfile_path = extension_dir / context / dockerfile
+        dockerfile_path.parent.mkdir(parents=True, exist_ok=True)
+        base_image = "node:20" if service_name == "frontend" else "python:3.11"
+        dockerfile_path.write_text(f"FROM {base_image}\n")
+    return extension_dir
+
 
 # ------------------------------------------------------------------
 # SdkOverrideSpec
@@ -214,57 +236,6 @@ class TestValidateSdkOverride:
 
 
 # ------------------------------------------------------------------
-# detect_service_type
-# ------------------------------------------------------------------
-
-
-@pytest.mark.unit
-class TestDetectServiceType:
-    def test_name_frontend(self):
-        assert detect_service_type("frontend", {}) == "frontend"
-
-    def test_name_ui(self):
-        assert detect_service_type("ui", {}) == "frontend"
-
-    def test_name_web(self):
-        assert detect_service_type("web-app", {}) == "frontend"
-
-    def test_name_backend(self):
-        assert detect_service_type("backend", {}) == "backend"
-
-    def test_name_api(self):
-        assert detect_service_type("api", {}) == "backend"
-
-    def test_dockerfile_path(self):
-        config = {"build": {"dockerfile": "frontend/Dockerfile"}}
-        assert detect_service_type("svc", config) == "frontend"
-
-    def test_context_path(self):
-        config = {"build": {"context": "./frontend"}}
-        assert detect_service_type("svc", config) == "frontend"
-
-    def test_port_3000(self):
-        config = {"ports": ["3000:3000"]}
-        assert detect_service_type("svc", config) == "frontend"
-
-    def test_port_8000(self):
-        config = {"ports": ["8000:8000"]}
-        assert detect_service_type("svc", config) == "backend"
-
-    def test_long_form_port_3000(self):
-        """ENG-5954: dict-form ports classify same as short-form."""
-        config = {"ports": [{"target": 3000, "name": "http"}]}
-        assert detect_service_type("svc", config) == "frontend"
-
-    def test_long_form_port_8000(self):
-        config = {"ports": [{"target": 8000}]}
-        assert detect_service_type("svc", config) == "backend"
-
-    def test_default_backend(self):
-        assert detect_service_type("worker", {}) == "backend"
-
-
-# ------------------------------------------------------------------
 # generate_compose_override
 # ------------------------------------------------------------------
 
@@ -302,7 +273,11 @@ class TestGenerateComposeOverride:
                 "backend": {"build": {"context": "./backend"}, "ports": ["8000:8000"]},
             }
         }
-        override = generate_compose_override(spec, compose)
+        override = generate_compose_override(
+            spec,
+            compose,
+            extension_dir=_write_runtime_dockerfiles(tmp_path, compose),
+        )
         services = override["services"]
 
         # Backend: PYTHONPATH=/sdk via env, /sdk bind, no shell.
@@ -332,7 +307,11 @@ class TestGenerateComposeOverride:
                 "backend": {"build": "./backend", "ports": ["8000:8000"]},
             }
         }
-        override = generate_compose_override(spec, compose)
+        override = generate_compose_override(
+            spec,
+            compose,
+            extension_dir=_write_runtime_dockerfiles(tmp_path, compose),
+        )
         services = override["services"]
 
         assert services["backend"]["environment"] == {"PYTHONPATH": "/sdk"}
@@ -348,11 +327,17 @@ class TestGenerateComposeOverride:
             }
         }
 
-        override = generate_compose_override(spec, compose)
+        override = generate_compose_override(
+            spec,
+            compose,
+            extension_dir=_write_runtime_dockerfiles(tmp_path, compose),
+        )
         services = override["services"]
 
         ts_target = "/app/node_modules/@kamiwaza-ai/extensions-lib"
-        assert any(v.get("target") == ts_target for v in services["frontend"]["volumes"])
+        assert any(
+            v.get("target") == ts_target for v in services["frontend"]["volumes"]
+        )
         self._assert_no_shell(services["frontend"])
         assert "backend" not in services
 
@@ -365,7 +350,11 @@ class TestGenerateComposeOverride:
                 "backend": {"build": "./backend"},
             }
         }
-        override = generate_compose_override(spec, compose)
+        override = generate_compose_override(
+            spec,
+            compose,
+            extension_dir=_write_runtime_dockerfiles(tmp_path, compose),
+        )
         assert "postgres" not in override["services"]
         assert "backend" in override["services"]
 
@@ -413,11 +402,15 @@ class TestGenerateComposeOverride:
     def test_volume_mount_is_readonly(self, tmp_path):
         spec = self._make_spec(tmp_path)
         compose = {"services": {"backend": {"build": ".", "ports": ["8000:8000"]}}}
-        override = generate_compose_override(spec, compose)
+        override = generate_compose_override(
+            spec,
+            compose,
+            extension_dir=_write_runtime_dockerfiles(tmp_path, compose),
+        )
         volumes = override["services"]["backend"]["volumes"]
         assert any(isinstance(v, dict) and v.get("read_only") for v in volumes)
 
-    def test_skips_services_without_build(self, tmp_path):
+    def test_skips_prebuilt_redis_service(self, tmp_path):
         spec = self._make_spec(tmp_path)
         compose = {
             "services": {
@@ -425,7 +418,11 @@ class TestGenerateComposeOverride:
                 "redis": {"image": "redis:7"},
             }
         }
-        override = generate_compose_override(spec, compose)
+        override = generate_compose_override(
+            spec,
+            compose,
+            extension_dir=_write_runtime_dockerfiles(tmp_path, compose),
+        )
         assert "redis" not in override["services"]
         assert "backend" in override["services"]
 
@@ -472,7 +469,11 @@ class TestGenerateBuildOverrides:
                 "backend": {"build": "./backend", "ports": ["8000:8000"]},
             }
         }
-        overrides = generate_build_overrides(spec, compose)
+        overrides = generate_build_overrides(
+            spec,
+            compose,
+            extension_dir=_write_runtime_dockerfiles(tmp_path, compose),
+        )
         assert len(overrides) == 2
         names = {o.service_name for o in overrides}
         assert names == {"frontend", "backend"}
@@ -492,7 +493,11 @@ class TestGenerateBuildOverrides:
                 "backend": {"build": "./backend", "ports": ["8000:8000"]},
             }
         }
-        overrides = generate_build_overrides(spec, compose)
+        overrides = generate_build_overrides(
+            spec,
+            compose,
+            extension_dir=_write_runtime_dockerfiles(tmp_path, compose),
+        )
         assert len(overrides) == 1
         assert overrides[0].service_name == "backend"
 
@@ -504,14 +509,22 @@ class TestGenerateBuildOverrides:
                 "redis": {"image": "redis:7"},
             }
         }
-        overrides = generate_build_overrides(spec, compose)
+        overrides = generate_build_overrides(
+            spec,
+            compose,
+            extension_dir=_write_runtime_dockerfiles(tmp_path, compose),
+        )
         assert len(overrides) == 1
         assert overrides[0].service_name == "backend"
 
     def test_overlay_uses_copy_from_sdk(self, tmp_path):
         spec = self._make_spec(tmp_path)
         compose = {"services": {"backend": {"build": ".", "ports": ["8000:8000"]}}}
-        overrides = generate_build_overrides(spec, compose)
+        overrides = generate_build_overrides(
+            spec,
+            compose,
+            extension_dir=_write_runtime_dockerfiles(tmp_path, compose),
+        )
         assert "COPY --from=sdk" in overrides[0].overlay_steps
         assert "USER root" in overrides[0].overlay_steps
 
@@ -526,7 +539,11 @@ class TestGenerateBuildOverrides:
         regardless of what's installed."""
         spec = self._make_spec(tmp_path)
         compose = {"services": {"backend": {"build": ".", "ports": ["8000:8000"]}}}
-        overlay = generate_build_overrides(spec, compose)[0].overlay_steps
+        overlay = generate_build_overrides(
+            spec,
+            compose,
+            extension_dir=_write_runtime_dockerfiles(tmp_path, compose),
+        )[0].overlay_steps
         # Must NOT import the lib (would fail post-strip).
         assert "import kamiwaza_extensions_lib" not in overlay, (
             f"overlay still resolves site-packages by importing the lib — "
@@ -544,13 +561,21 @@ class TestGenerateBuildOverrides:
     def test_frontend_has_insert_before_build(self, tmp_path):
         spec = self._make_spec(tmp_path)
         compose = {"services": {"frontend": {"build": ".", "ports": ["3000:3000"]}}}
-        overrides = generate_build_overrides(spec, compose)
+        overrides = generate_build_overrides(
+            spec,
+            compose,
+            extension_dir=_write_runtime_dockerfiles(tmp_path, compose),
+        )
         assert overrides[0].insert_before_build is True
 
     def test_backend_does_not_insert_before_build(self, tmp_path):
         spec = self._make_spec(tmp_path)
         compose = {"services": {"backend": {"build": ".", "ports": ["8000:8000"]}}}
-        overrides = generate_build_overrides(spec, compose)
+        overrides = generate_build_overrides(
+            spec,
+            compose,
+            extension_dir=_write_runtime_dockerfiles(tmp_path, compose),
+        )
         assert overrides[0].insert_before_build is False
 
     def test_static_nginx_service_skips_sdk_override(self, tmp_path):
@@ -837,13 +862,17 @@ class TestPreInstallStripOverlay:
         """``generate_build_overrides`` must wire the strip step onto every
         Python backend override so ``--sdk-repo`` works against a scaffold
         whose runtime-lib pin isn't installable from PyPI."""
-        from kamiwaza_extensions.sdk_override import _PYTHON_PRE_INSTALL_STRIP
+        from kamiwaza_extensions.sdk_override.build import _PYTHON_PRE_INSTALL_STRIP
 
         spec = SdkOverrideSpec(sdk_repo=tmp_path)
         compose = {
             "services": {"backend": {"build": "./backend", "ports": ["8000:8000"]}}
         }
-        overrides = generate_build_overrides(spec, compose)
+        overrides = generate_build_overrides(
+            spec,
+            compose,
+            extension_dir=_write_runtime_dockerfiles(tmp_path, compose),
+        )
         assert len(overrides) == 1
         assert overrides[0].pre_install_steps == _PYTHON_PRE_INSTALL_STRIP
 
@@ -854,13 +883,17 @@ class TestPreInstallStripOverlay:
         when ``@kamiwaza-ai/extensions-lib`` isn't published, but the dev
         local fix only landed in ``generate_local_build_dockerfile_patches``
         — leaving ``kz-ext dev`` broken."""
-        from kamiwaza_extensions.sdk_override import _TS_PRE_INSTALL_STRIP
+        from kamiwaza_extensions.sdk_override.build import _TS_PRE_INSTALL_STRIP
 
         spec = SdkOverrideSpec(sdk_repo=tmp_path)
         compose = {
             "services": {"frontend": {"build": "./frontend", "ports": ["3000:3000"]}}
         }
-        overrides = generate_build_overrides(spec, compose)
+        overrides = generate_build_overrides(
+            spec,
+            compose,
+            extension_dir=_write_runtime_dockerfiles(tmp_path, compose),
+        )
         assert len(overrides) == 1
         assert overrides[0].pre_install_steps == _TS_PRE_INSTALL_STRIP
 
@@ -1233,7 +1266,6 @@ class TestPreInstallStripOverlay:
         --sdk-repo`` against a multi-stage frontend would hard-fail at
         ``npm ci`` against the unpublished pin."""
         from kamiwaza_extensions.sdk_override import (
-            _TS_PRE_INSTALL_STRIP,
             generate_local_build_dockerfile_patches,
         )
 
@@ -1252,9 +1284,7 @@ class TestPreInstallStripOverlay:
             "COPY --from=build /app/dist /usr/share/nginx/html\n"
         )
 
-        spec = SdkOverrideSpec(
-            sdk_repo=tmp_path, python=False, typescript=True
-        )
+        spec = SdkOverrideSpec(sdk_repo=tmp_path, python=False, typescript=True)
         compose = {
             "services": {
                 "frontend": {"build": {"context": "./web"}, "ports": ["8080:80"]}
@@ -1265,8 +1295,9 @@ class TestPreInstallStripOverlay:
             "multi-stage Node→nginx frontend was not patched — final-stage "
             "classifier misclassified it as 'static'"
         )
-        assert "# --- SDK override: strip @kamiwaza-ai/extensions-lib" in (
-            patches["frontend"]
+        assert (
+            "# --- SDK override: strip @kamiwaza-ai/extensions-lib"
+            in (patches["frontend"])
         )
         # ``RUN npm ci`` was rewritten to ``RUN npm install`` so the
         # package.json/lockfile divergence the strip creates doesn't abort
@@ -1302,9 +1333,9 @@ class TestPreInstallStripOverlay:
         )
         kept = [line for line in requirements.splitlines() if not pattern.match(line)]
         assert "fastapi>=0.100.0" in kept
-        assert (
-            "kamiwaza-extensions-lib-extras>=0.1" in kept
-        ), "prefix-alias must NOT be stripped"
+        assert "kamiwaza-extensions-lib-extras>=0.1" in kept, (
+            "prefix-alias must NOT be stripped"
+        )
         assert "# kamiwaza-extensions-lib>=0.4 (commented)" in kept
         # Every form of the actual runtime-lib pin is gone.
         assert not any("kamiwaza-extensions-lib>=0.4,<0.5" in k for k in kept)
@@ -1343,7 +1374,7 @@ class TestPreInstallStripExecution:
         import shutil
         import subprocess
 
-        from kamiwaza_extensions.sdk_override import _PYTHON_PRE_INSTALL_STRIP
+        from kamiwaza_extensions.sdk_override.build import _PYTHON_PRE_INSTALL_STRIP
 
         if not shutil.which("bash"):
             pytest.skip("bash not available")
@@ -1364,7 +1395,7 @@ class TestPreInstallStripExecution:
         import shutil
         import subprocess
 
-        from kamiwaza_extensions.sdk_override import _PYTHON_PRE_INSTALL_STRIP
+        from kamiwaza_extensions.sdk_override.build import _PYTHON_PRE_INSTALL_STRIP
 
         if not shutil.which("bash"):
             pytest.skip("bash not available")
@@ -1405,7 +1436,7 @@ class TestPreInstallStripExecution:
         import shutil
         import subprocess
 
-        from kamiwaza_extensions.sdk_override import _TS_PRE_INSTALL_STRIP
+        from kamiwaza_extensions.sdk_override.build import _TS_PRE_INSTALL_STRIP
 
         if not shutil.which("bash") or not shutil.which("node"):
             pytest.skip("bash + node required")
@@ -1430,7 +1461,7 @@ class TestPreInstallStripExecution:
         import shutil
         import subprocess
 
-        from kamiwaza_extensions.sdk_override import _TS_PRE_INSTALL_STRIP
+        from kamiwaza_extensions.sdk_override.build import _TS_PRE_INSTALL_STRIP
 
         if not shutil.which("bash") or not shutil.which("node"):
             pytest.skip("bash + node required")

@@ -33,20 +33,39 @@ _IMAGE_BASENAME_RE = re.compile(r"^[a-z0-9]([-a-z0-9._/]{0,126}[a-z0-9])?$")
 Purpose = Literal["dev", "publish"]
 
 
+def _tag_separator_index(ref: str) -> int:
+    """Return the index of *ref*'s tag-separating colon, or -1 if untagged.
+
+    Two colons can appear before the tag: a registry port
+    (``localhost:5000/foo``) and a Compose default-value placeholder
+    (``foo:${IMAGE_TAG:-local}``). The port is disambiguated by the last
+    ``/``; the placeholder has to win over ``rfind`` because the ``:`` in
+    ``:-`` sits *after* the real tag separator.
+
+    Single source of truth for ``_replace_image_tag`` and
+    ``_split_image_ref`` — they disagreed once, and the malformed ref that
+    produced (``foo:${IMAGE_TAG:2.0.0``) reached the K8s PATCH path.
+    """
+    last_slash = ref.rfind("/")
+    placeholder = ref.find(":${", last_slash + 1)
+    if placeholder >= 0:
+        return placeholder
+    last_colon = ref.rfind(":")
+    return last_colon if last_colon > last_slash else -1
+
+
 def _replace_image_tag(image_ref: str, new_tag: str) -> str:
     """Return *image_ref* with its tag (and any digest) replaced by *new_tag*.
 
     The namespace (registry + repo path) is preserved verbatim. Handles
-    refs that include a registry port (``localhost:5000/foo:tag``) by
-    using the position of the last ``/`` to disambiguate the port colon
-    from the tag colon, and strips any ``@sha256:...`` suffix before
-    re-tagging.
+    refs that include a registry port (``localhost:5000/foo:tag``) or a
+    Compose default-value placeholder (``foo:${IMAGE_TAG:-local}``), and
+    strips any ``@sha256:...`` suffix before re-tagging.
     """
     ref = image_ref.split("@", 1)[0]
-    last_slash = ref.rfind("/")
-    last_colon = ref.rfind(":")
-    if last_colon > last_slash:
-        ref = ref[:last_colon]
+    separator = _tag_separator_index(ref)
+    if separator >= 0:
+        ref = ref[:separator]
     return f"{ref}:{new_tag}"
 
 
@@ -87,11 +106,10 @@ def _split_image_ref(image_ref: str) -> Tuple[Optional[str], str, str]:
     repository, that mismatch would produce ImagePullBackOff.
     """
     ref = image_ref.split("@", 1)[0]
-    last_slash = ref.rfind("/")
-    last_colon = ref.rfind(":")
-    if last_colon > last_slash:
-        namespace = ref[:last_colon]
-        tag = ref[last_colon + 1 :]
+    separator = _tag_separator_index(ref)
+    if separator >= 0:
+        namespace = ref[:separator]
+        tag = ref[separator + 1 :]
     else:
         namespace = ref
         tag = "latest"
