@@ -249,7 +249,17 @@ class PayloadBuilder:
         metadata: Optional[Dict[str, Any]] = None,
     ) -> List[ExtensionServiceSpec]:
         services_dict = transformed.get("services") or {}
-        service_volume_specs = build_service_volume_specs(transformed)
+        # Resolve persistence once, before volumes: it is what decides whether
+        # a Compose volume is left to the PVC, and resolving it twice let the
+        # kamiwaza.json path arm no guard.
+        persistence_by_service = {
+            svc_name: _resolve_persistence(metadata, svc_name, svc)
+            for svc_name, svc in services_dict.items()
+            if isinstance(svc, dict)
+        }
+        service_volume_specs = build_service_volume_specs(
+            transformed, persistence_by_service
+        )
         specs: List[ExtensionServiceSpec] = []
 
         primary_name = self._find_primary_service(services_dict)
@@ -288,7 +298,7 @@ class PayloadBuilder:
                 spec_kwargs,
                 svc,
                 service_volume_specs.get(svc_name),
-                _resolve_persistence(metadata, svc_name, svc),
+                persistence_by_service.get(svc_name),
             )
 
             specs.append(ExtensionServiceSpec(**spec_kwargs))

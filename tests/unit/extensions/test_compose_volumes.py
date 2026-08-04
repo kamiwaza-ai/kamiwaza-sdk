@@ -12,8 +12,17 @@ import pytest
 from kamiwaza_extensions.compose_volumes import build_service_volume_specs
 
 
-def _spec(service: dict) -> object:
-    return build_service_volume_specs({"services": {"svc": service}}).get("svc")
+def _spec(service: dict, persistence: object = None) -> object:
+    """Build the spec for one service.
+
+    ``persistence`` defaults to whatever the service declares under
+    ``x-kamiwaza``, matching how the payload builder resolves it.
+    """
+    if persistence is None:
+        persistence = (service.get("x-kamiwaza") or {}).get("persistence")
+    return build_service_volume_specs(
+        {"services": {"svc": service}}, {"svc": persistence}
+    ).get("svc")
 
 
 def test_named_volume_becomes_emptydir_with_mount() -> None:
@@ -179,3 +188,30 @@ class TestPersistenceMountPathValidation:
 
     def test_absolute_mount_path_is_accepted(self) -> None:
         assert _spec(self._service("/var/lib/postgresql")) is None
+
+
+def test_persistence_from_metadata_arms_the_guard() -> None:
+    """The caller resolves persistence (kamiwaza.json ahead of compose) and
+    passes it in. Re-reading compose here would leave a metadata-declared PVC
+    unguarded — a PVC and an emptyDir over the same path."""
+    service = {"volumes": ["pg:/var/lib/postgresql/data"]}
+
+    specs = build_service_volume_specs(
+        {"services": {"postgres": service}},
+        {"postgres": {"enabled": True, "mountPath": "/var/lib/postgresql"}},
+    )
+
+    assert specs.get("postgres") is None
+
+
+def test_no_resolved_persistence_translates_every_volume() -> None:
+    service = {
+        "volumes": ["pg:/var/lib/postgresql/data"],
+        "x-kamiwaza": {"persistence": {"enabled": True, "mountPath": "/ignored"}},
+    }
+
+    specs = build_service_volume_specs({"services": {"postgres": service}}, {})
+
+    assert specs["postgres"].mounts == [
+        {"name": "pg", "mountPath": "/var/lib/postgresql/data"}
+    ]

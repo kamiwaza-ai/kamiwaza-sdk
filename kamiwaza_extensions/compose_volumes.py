@@ -22,24 +22,35 @@ class ServiceVolumeSpec:
 
 def build_service_volume_specs(
     transformed: Dict[str, Any],
+    persistence_by_service: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, ServiceVolumeSpec]:
-    """Build service-scoped K8s volume specs from transformed Compose."""
+    """Build service-scoped K8s volume specs from transformed Compose.
+
+    ``persistence_by_service`` carries the persistence block already resolved
+    by the caller, which is what decides whether a Compose volume is left to
+    the PVC. Resolving it here instead would read Compose only, and a
+    persistence block declared in ``kamiwaza.json`` would arm no guard — the
+    service would ship a PVC and an emptyDir over the same path.
+    """
+    resolved = persistence_by_service or {}
     specs: Dict[str, ServiceVolumeSpec] = {}
     for service_name, service in (transformed.get("services") or {}).items():
         if not isinstance(service, dict):
             continue
-        spec = _build_service_volume_spec(service)
+        spec = _build_service_volume_spec(service, resolved.get(service_name))
         if spec.volumes or spec.mounts:
             specs[service_name] = spec
     return specs
 
 
-def _build_service_volume_spec(service: Dict[str, Any]) -> ServiceVolumeSpec:
+def _build_service_volume_spec(
+    service: Dict[str, Any], persistence: Any = None
+) -> ServiceVolumeSpec:
     volumes: List[Dict[str, Any]] = []
     mounts: List[Dict[str, Any]] = []
     source_to_name: Dict[str, str] = {}
     used_names = set(_OPERATOR_VOLUME_NAMES)
-    persistence_mount = _persistence_mount_path(service)
+    persistence_mount = persistence_mount_path(persistence)
 
     for raw_volume in service.get("volumes", []) or []:
         parsed = _parse_named_volume_mount(raw_volume)
@@ -75,19 +86,15 @@ def _covered_by_persistence(target: str, persistence_mount: str) -> bool:
     )
 
 
-def _persistence_mount_path(service: Dict[str, Any]) -> str:
-    """Return the service's declared persistence mountPath, if it has one.
+def persistence_mount_path(persistence: Any) -> str:
+    """Return the mountPath an already-resolved persistence block requests.
 
     Raises:
-        ValueError: When persistence is enabled without a mountPath. The
-            operator provisions the PVC but mounts it nowhere, so translating
-            the Compose volumes would emit an emptyDir at the path the author
-            meant to persist — silently, and with the PVC left dangling.
+        ValueError: When persistence is enabled but the mountPath is missing
+            or not absolute. Either way it can never match a Compose target,
+            so the guard would pass silently and an emptyDir would land on the
+            path the PVC is meant to back.
     """
-    extension = service.get("x-kamiwaza")
-    if not isinstance(extension, dict):
-        return ""
-    persistence = extension.get("persistence")
     if not isinstance(persistence, dict) or persistence.get("enabled") is not True:
         return ""
 
@@ -98,15 +105,12 @@ def _persistence_mount_path(service: Dict[str, Any]) -> str:
     mount_path = raw.strip().rstrip("/") if isinstance(raw, str) else ""
     if not mount_path:
         raise ValueError(
-            "x-kamiwaza.persistence.enabled is true but mountPath is missing. "
+            "persistence.enabled is true but mountPath is missing. "
             "Set mountPath to the absolute directory the PVC should back."
         )
-    # Compose targets are absolute, so a relative mountPath can never match
-    # one — the guard would silently pass and an emptyDir would land on top
-    # of the PVC. That is the failure this module exists to prevent.
     if not mount_path.startswith("/"):
         raise ValueError(
-            "x-kamiwaza.persistence.mountPath must be an absolute path, "
+            "persistence.mountPath must be an absolute path, "
             f"got {mount_path!r}."
         )
     return mount_path
