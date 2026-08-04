@@ -51,6 +51,15 @@ print(logout.front_channel_logout_url)
 token is close to expiring, keeps the refresh token, and falls back to a password
 grant if the refresh is rejected.
 
+If a selected workroom is deleted while a password-authenticated session is still
+scoped to it, `client.workrooms.leave()` clears the stale in-memory credentials and
+session access-token state, then retries once with a fresh password grant. The shared
+on-disk token remains available during that attempt; a successful grant replaces it,
+while an exhausted grant clears the stale scoped token. PAT and API-key credentials
+are fixed: the SDK never clears or retries them as refreshable sessions. Custom
+authenticators may opt into the same bounded recovery by returning `True` from
+`invalidate_session(session) -> bool` after invalidating their session credentials.
+
 ## Personal Access Tokens
 
 ```python

@@ -188,6 +188,8 @@ class ServingService(BaseService):
                     m_id=deployment.m_id,
                     m_name=deployment.m_name or "",
                     status=deployment.status,
+                    engine_name=deployment.engine_name,
+                    m_file_id=deployment.m_file_id,
                     instances=[i for i in deployment.instances if i.status == 'DEPLOYED'],
                     lb_port=deployment.lb_port,
                     endpoint=endpoint

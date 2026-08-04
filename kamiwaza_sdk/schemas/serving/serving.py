@@ -127,6 +127,12 @@ class ActiveModelDeployment(BaseModel):
     m_id: UUID = Field(description="The UUID of the model")
     m_name: str = Field(description="Name of the model")
     status: str = Field(description="Status of the deployment")
+    engine_name: Optional[str] = Field(
+        default=None, description="Inference engine used by the deployment"
+    )
+    m_file_id: Optional[UUID] = Field(
+        default=None, description="Selected model weights file"
+    )
     instances: List[ModelInstance] = Field(description="List of active instances")
     lb_port: int = Field(description="Load balancer port for the deployment")
     endpoint: Optional[str] = Field(

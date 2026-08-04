@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-TEST_REPO_ID = "mlx-community/Qwen3-4B-4bit"
+from model_targets import InferenceTarget
 
 pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
 
@@ -99,14 +99,16 @@ def test_cli_serve_deploy(
     live_username: str,
     live_password: str,
     client_factory,
-    ensure_repo_ready,
+    ensure_deployable_model_ready,
+    deployable_model_target: InferenceTarget,
+    target_model_file_id,
     tmp_path: Path,
 ) -> None:
     """CLI ``serve deploy`` round-trip.
 
     Requires a host that can actually deploy the test model; gated by
     ``requires_deployable_model`` so it skips (rather than fails) on hosts
-    without compatible inference capacity (e.g. the x86 CPU smoke vs an MLX model).
+    without compatible inference capacity for the platform-selected target.
     """
     token_path = tmp_path / "token.json"
     base_args = ["--base-url", live_server_available, "--token-path", str(token_path)]
@@ -118,7 +120,10 @@ def test_cli_serve_deploy(
         base_args, env, live_username, live_password, token_path, pat_prefix="cli-deploy"
     )
     pat_client = client_factory(base_url=live_server_available, api_key=pat_token)
-    ensure_repo_ready(pat_client, TEST_REPO_ID)
+    model = ensure_deployable_model_ready(pat_client)
+    model_file_id = target_model_file_id(
+        model, deployable_model_target.quantization
+    )
 
     serve_result = run_cli(
         [
@@ -126,7 +131,10 @@ def test_cli_serve_deploy(
             "serve",
             "deploy",
             "--repo-id",
-            TEST_REPO_ID,
+            deployable_model_target.repo_id,
+            "--engine-name",
+            deployable_model_target.engine_name,
+            *(["--file-id", model_file_id] if model_file_id else []),
             "--wait",
             "--poll-interval",
             "5",

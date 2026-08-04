@@ -34,10 +34,21 @@ pytest -m "integration and live" --live-base-url https://localhost/api --live-us
 
 Some live integration tests exercise admin-only mutation paths. For those tests, prefer supplying an admin-scoped PAT via `KAMIWAZA_API_KEY` instead of relying on the default session PAT minted from username/password bootstrap.
 
+The inference tests choose one model/engine/quantization target from the live
+cluster inventory. NVIDIA selects vLLM, complete Apple Silicon inventory selects
+MLX, and CPU-only, mixed, or incomplete inventory selects llamacpp/GGUF. Override
+the shared repositories with `KAMIWAZA_TEST_MLX_LLM_REPO`,
+`KAMIWAZA_TEST_VLLM_LLM_REPO`, or `KAMIWAZA_TEST_GGUF_LLM_REPO`. Context tests
+also accept `KAMIWAZA_CONTEXT_LLM_REPO`, `KAMIWAZA_CONTEXT_LLM_ENGINE`, and
+`KAMIWAZA_CONTEXT_LLM_QUANTIZATION`; the latter defaults to `q6_k` for an
+explicit context repository and otherwise inherits the shared target.
+
 ## Shared Fixtures
 - `dummy_client` – lightweight HTTP stub for unit tests (records calls, replays canned responses).
 - `client_factory` – builds real `KamiwazaClient` instances with consistent defaults.
-- `qwen_model_id` – canonical `mlx-community/Qwen3-4B-4bit` identifier for download/deploy tests; keep plumbing ready for a GGUF mirror.
+- `deployable_model_target` – platform-compatible, overrideable model repository,
+  engine, and quantization used by the deployability probe, serving workflow,
+  and CLI deployment test.
 - `ingestion_environment` – spins up the MinIO docker stack and seeds sample parquet data for ingest/retrieval tests.
 - `live_kamiwaza_client` – asserts a live server is reachable (`/ping`), then authenticates using either `KAMIWAZA_API_KEY` or username/password credentials.
 
