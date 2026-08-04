@@ -7,8 +7,8 @@ import logging
 import os
 import time
 from collections.abc import Generator
-from typing import Final
 from datetime import datetime, timedelta, timezone
+from typing import Final
 from uuid import uuid4
 
 import pytest

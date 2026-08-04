@@ -52,9 +52,7 @@ def test_apple_silicon_selects_mlx() -> None:
     snapshot = cap.ClusterCapabilitySnapshot(
         os_names=frozenset({"darwin"}),
         platforms=frozenset({"macos-15.4-arm64-arm-64bit"}),
-        os_platforms=frozenset(
-            {("darwin", "macos-15.4-arm64-arm-64bit")}
-        ),
+        os_platforms=frozenset({("darwin", "macos-15.4-arm64-arm-64bit")}),
     )
 
     assert targets.select_inference_target(snapshot) == targets.MLX_LLM_TARGET
