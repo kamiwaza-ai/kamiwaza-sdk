@@ -904,3 +904,55 @@ class TestBuildPatchKwargsCarriesAnnotations:
             "enabled": True,
             "service_name": "sc",
         }
+
+
+class TestPersistenceMountRecording:
+    """Recorded state must describe what the CR has, not what a run intended:
+    written only on apply, sticky, and scoped to the services actually sent."""
+
+    @staticmethod
+    def _apply(tmp_path, mounts, step="apply"):
+        from kamiwaza_extensions.dev_state import mark_step
+
+        return mark_step(
+            tmp_path,
+            step,
+            revision="r1",
+            dev_name="ext-dev",
+            cluster="https://c",
+            extension_name="ext",
+            deployer="d",
+            persistence_mounts=mounts,
+        )
+
+    def test_recorded_on_apply(self, tmp_path):
+        state = self._apply(tmp_path, {"pg": "/data"})
+
+        assert state.last_persistence_mounts == {"pg": "/data"}
+
+    @pytest.mark.parametrize("step", ["build", "push", "poll"])
+    def test_not_recorded_before_the_cr_moves(self, tmp_path, step: str):
+        """A run that stops after build would otherwise record a layout that
+        was never applied."""
+        state = self._apply(tmp_path, {"pg": "/data"}, step=step)
+
+        assert state.last_persistence_mounts == {}
+
+    def test_entry_survives_a_later_run_that_drops_persistence(self, tmp_path):
+        """The PATCH cannot clear the CR's block, so the warning has to keep
+        firing — erasing the memory made it one-shot."""
+        self._apply(tmp_path, {"pg": "/data"})
+
+        state = self._apply(tmp_path, {})
+
+        assert state.last_persistence_mounts == {"pg": "/data"}
+
+    def test_service_scoped_run_leaves_siblings_alone(self, tmp_path):
+        self._apply(tmp_path, {"pg": "/data", "cache": "/var/cache"})
+
+        state = self._apply(tmp_path, {"pg": "/data2"})
+
+        assert state.last_persistence_mounts == {
+            "pg": "/data2",
+            "cache": "/var/cache",
+        }

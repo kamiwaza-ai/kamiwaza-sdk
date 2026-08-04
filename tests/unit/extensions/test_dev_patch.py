@@ -438,3 +438,42 @@ class TestOrphanedPersistenceWarning:
         from kamiwaza_extensions.commands.dev import _deployed_persistence_mounts
 
         assert _deployed_persistence_mounts(self._payload({"enabled": False})) == {}
+
+
+class TestDeployedPersistenceIsScopedToTheFilter:
+    @staticmethod
+    def _payload():
+        from kamiwaza_sdk.schemas.extensions import CreateExtension, ExtensionServiceSpec
+
+        return CreateExtension(
+            name="ext",
+            type="app",
+            version="1.0.0",
+            services=[
+                ExtensionServiceSpec(
+                    name="postgres",
+                    image="ghcr.io/o/pg:1",
+                    persistence={"enabled": True, "mountPath": "/data"},
+                ),
+                ExtensionServiceSpec(
+                    name="seaweedfs",
+                    image="ghcr.io/o/sw:1",
+                    persistence={"enabled": True, "mountPath": "/store"},
+                ),
+            ],
+        )
+
+    def test_unfiltered_run_records_every_service(self):
+        from kamiwaza_extensions.commands.dev import _deployed_persistence_mounts
+
+        assert _deployed_persistence_mounts(self._payload()) == {
+            "postgres": "/data",
+            "seaweedfs": "/store",
+        }
+
+    def test_service_filtered_run_records_only_what_it_patched(self):
+        from kamiwaza_extensions.commands.dev import _deployed_persistence_mounts
+
+        assert _deployed_persistence_mounts(self._payload(), "postgres") == {
+            "postgres": "/data"
+        }

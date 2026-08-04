@@ -167,10 +167,19 @@ def warn_orphaned_persistence(
     return warnings
 
 
-def _deployed_persistence_mounts(payload: Any) -> Dict[str, str]:
-    """Per-service persistence mountPath this run is deploying."""
+def _deployed_persistence_mounts(
+    payload: Any, service_filter: Optional[str] = None
+) -> Dict[str, str]:
+    """Per-service persistence mountPath this run applied to the CR.
+
+    Only services this run actually PATCHed are reported: under ``--service``
+    the siblings were never sent, so recording their layout as deployed would
+    claim something this run did not do.
+    """
     mounts: Dict[str, str] = {}
     for service in payload.services:
+        if service_filter is not None and service.name != service_filter:
+            continue
         persistence = service.persistence
         if isinstance(persistence, dict) and persistence.get("enabled") is True:
             mount_path = persistence.get("mountPath")
@@ -1077,7 +1086,7 @@ def run_dev_remote(
                 registry=registry,
                 push_registry=push_registry,
                 image_basename=info.image_basename,
-                persistence_mounts=_deployed_persistence_mounts(payload),
+                persistence_mounts=_deployed_persistence_mounts(payload, service),
                 build_engine=build_engine if step == "build" else "",
             )
         except OSError as state_exc:

@@ -203,8 +203,15 @@ def mark_step(
     state.last_registry = registry
     state.last_push_registry = push_registry or registry
     state.last_image_basename = image_basename
-    if persistence_mounts is not None:
-        state.last_persistence_mounts = persistence_mounts
+    # Only the apply step knows the CR moved, and the record is sticky: a
+    # service that stopped declaring persistence keeps its entry, because the
+    # PATCH cannot clear the CR's block and the warning must keep firing. A
+    # ``--service`` run touches only the service it patched.
+    if persistence_mounts is not None and step == "apply":
+        state.last_persistence_mounts = {
+            **state.last_persistence_mounts,
+            **persistence_mounts,
+        }
     # Only overwrite ``last_build_engine`` on the build step; later steps
     # leave the recorded engine alone so a resume sees the engine that
     # actually built the image, not whichever one happened to push.
