@@ -95,7 +95,7 @@ def persistence_mount_path(persistence: Any) -> str:
             so the guard would pass silently and an emptyDir would land on the
             path the PVC is meant to back.
     """
-    if not isinstance(persistence, dict) or persistence.get("enabled") is not True:
+    if not isinstance(persistence, dict) or not _persistence_enabled(persistence):
         return ""
 
     raw = persistence.get("mountPath")
@@ -114,6 +114,26 @@ def persistence_mount_path(persistence: Any) -> str:
             f"got {mount_path!r}."
         )
     return mount_path
+
+
+def _persistence_enabled(persistence: Dict[str, Any]) -> bool:
+    """Is persistence switched on? Absent means no; non-bool is an error.
+
+    A truthy string would disarm the volume guard here while the platform
+    coerces it and provisions the PVC anyway, putting an emptyDir over the
+    claim. The sibling SANDBOX_PERSISTENCE flag does accept "true"/"1"/"yes",
+    so this is a shape an author can reach honestly — say so rather than
+    silently ignore it.
+    """
+    enabled = persistence.get("enabled")
+    if enabled is None:
+        return False
+    if not isinstance(enabled, bool):
+        raise ValueError(
+            "persistence.enabled must be a boolean (true/false, unquoted), "
+            f"got {enabled!r}."
+        )
+    return enabled
 
 
 def _volume_mount(name: str, target: str, read_only: bool) -> Dict[str, Any]:

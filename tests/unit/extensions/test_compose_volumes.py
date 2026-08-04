@@ -215,3 +215,46 @@ def test_no_resolved_persistence_translates_every_volume() -> None:
     assert specs["postgres"].mounts == [
         {"name": "pg", "mountPath": "/var/lib/postgresql/data"}
     ]
+
+
+class TestPersistenceEnabledMustBeBoolean:
+    """A truthy string disarms the guard here while the platform coerces it and
+    provisions the PVC anyway — an emptyDir lands on top of the claim."""
+
+    @staticmethod
+    def _persistence(enabled) -> dict:
+        return {"enabled": enabled, "mountPath": "/var/lib/postgresql"}
+
+    @pytest.mark.parametrize("enabled", ["true", "True", "1", "yes", "on", 1])
+    def test_truthy_non_bool_is_rejected(self, enabled) -> None:
+        service = {"volumes": ["pg:/var/lib/postgresql/data"]}
+
+        with pytest.raises(ValueError, match="must be a boolean"):
+            build_service_volume_specs(
+                {"services": {"pg": service}}, {"pg": self._persistence(enabled)}
+            )
+
+    @pytest.mark.parametrize("enabled", ["false", "no", 0])
+    def test_falsy_non_bool_is_also_rejected(self, enabled) -> None:
+        with pytest.raises(ValueError, match="must be a boolean"):
+            build_service_volume_specs(
+                {"services": {"pg": {"volumes": ["pg:/data"]}}},
+                {"pg": self._persistence(enabled)},
+            )
+
+    def test_real_booleans_are_accepted(self) -> None:
+        service = {"volumes": ["pg:/var/lib/postgresql/data"]}
+
+        specs = build_service_volume_specs(
+            {"services": {"pg": service}}, {"pg": self._persistence(True)}
+        )
+
+        assert specs.get("pg") is None
+
+    def test_absent_enabled_declares_no_persistence(self) -> None:
+        specs = build_service_volume_specs(
+            {"services": {"pg": {"volumes": ["pg:/data"]}}},
+            {"pg": {"mountPath": "/data"}},
+        )
+
+        assert specs["pg"].mounts == [{"name": "pg", "mountPath": "/data"}]

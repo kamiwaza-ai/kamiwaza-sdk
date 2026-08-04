@@ -96,24 +96,114 @@ def _build_patch_service_specs(
 def _validate_service_filter(
     service: Optional[str], compose_data: Dict[str, Any]
 ) -> None:
-    """Reject a ``--service`` name that no compose service answers to.
+    """Reject a ``--service`` name this run could not actually deploy.
 
-    Without this the filter yields an empty service list, and the failure
-    surfaces at the very end of the run as a raw pydantic ``min_length``
-    error that never mentions ``--service`` — after the whole build phase
-    has already run.
+    Raw Compose keys are the wrong set to check against. A profile-gated
+    service is stripped by the transformer, so the filter yields an empty
+    service list and ``PatchExtension`` raises a bare pydantic ``min_length``
+    error — after the whole build and push phase, naming neither the flag nor
+    the service. A service with no build context is not one ``--service`` can
+    build either: it would warn "No images to build" and PATCH the image the
+    author already declared, a silent no-op deploy.
     """
     if service is None:
         return
-    known = sorted((compose_data.get("services") or {}).keys())
-    if service in known:
-        return
-    console.print(
-        f"[red]Error:[/red] --service '{service}' is not a service in "
-        f"docker-compose.yml."
+    services = compose_data.get("services") or {}
+    if service not in services:
+        _fail_service_filter(
+            service, "is not a service in docker-compose.yml", services
+        )
+    config = services.get(service) or {}
+    if config.get("profiles"):
+        _fail_service_filter(
+            service,
+            "is profile-gated, so it is not part of a cluster deploy",
+            services,
+        )
+    if "build" not in config:
+        _fail_service_filter(
+            service,
+            "has no build context, so there is nothing to build or push for it",
+            services,
+        )
+
+
+def warn_orphaned_persistence(
+    prior_mounts: Dict[str, str], payload: Any
+) -> List[str]:
+    """Warn where a removed persistence block leaves the CR's PVC in place.
+
+    ``get_extension`` returns only ``ExtensionServiceStatus``, so the CR's own
+    spec cannot be read back to clear a block the extension has dropped. The
+    PVC therefore stays mounted while this PATCH sends a Compose emptyDir at
+    the same path: an identical target is a duplicate ``volumeMounts`` entry
+    the K8s API rejects, and a nested one shadows a claim still holding the
+    data the author believes they stopped writing.
+
+    Returns the messages emitted, so callers can assert on them.
+    """
+    warnings: List[str] = []
+    for service in payload.services:
+        prior = prior_mounts.get(service.name)
+        if not prior or service.persistence:
+            continue
+        collisions = [
+            mount["mountPath"]
+            for mount in (service.volume_mounts or [])
+            if _under_mount_path(mount.get("mountPath", ""), prior)
+        ]
+        if not collisions:
+            continue
+        message = (
+            f"Service '{service.name}' no longer declares persistence, but the "
+            f"deployed extension has a volume at '{prior}' that this deploy "
+            f"cannot clear. Compose still mounts {', '.join(collisions)} there, "
+            "which will either be rejected as a duplicate mount or silently "
+            "shadow the existing volume. Remove the Compose volume too, or "
+            "restore the persistence block."
+        )
+        warnings.append(message)
+        console.print(f"  [yellow]Warning:[/yellow] {message}")
+    return warnings
+
+
+def _deployed_persistence_mounts(payload: Any) -> Dict[str, str]:
+    """Per-service persistence mountPath this run is deploying."""
+    mounts: Dict[str, str] = {}
+    for service in payload.services:
+        persistence = service.persistence
+        if isinstance(persistence, dict) and persistence.get("enabled") is True:
+            mount_path = persistence.get("mountPath")
+            if isinstance(mount_path, str) and mount_path:
+                mounts[service.name] = mount_path
+    return mounts
+
+
+def _under_mount_path(target: str, mount_path: str) -> bool:
+    """Is *target* the persistence mountPath, or nested inside it?"""
+    if not target or not mount_path:
+        return False
+    normalized = target.rstrip("/") or "/"
+    base = mount_path.rstrip("/") or "/"
+    return normalized == base or normalized.startswith(base + "/")
+
+
+def _deployable_service_names(services: Dict[str, Any]) -> List[str]:
+    """Services ``--service`` can name: buildable and not profile-gated."""
+    return sorted(
+        name
+        for name, config in services.items()
+        if isinstance(config, dict) and "build" in config and not config.get("profiles")
     )
-    if known:
-        console.print(f"  [dim]Available: {', '.join(known)}[/dim]")
+
+
+def _fail_service_filter(
+    service: str, reason: str, services: Dict[str, Any]
+) -> None:
+    console.print(f"[red]Error:[/red] --service '{service}' {reason}.")
+    deployable = _deployable_service_names(services)
+    if deployable:
+        console.print(f"  [dim]Available: {', '.join(deployable)}[/dim]")
     raise typer.Exit(code=1)
 
 
@@ -964,6 +1054,10 @@ def run_dev_remote(
         console.print(f"[red]Error:[/red] invalid extension definition: {exc}")
         raise typer.Exit(code=1) from exc
 
+    warn_orphaned_persistence(
+        getattr(prior_state, "last_persistence_mounts", None) or {}, payload
+    )
+
     def _record(step: str) -> None:
         try:
             mark_step(
@@ -983,6 +1077,7 @@ def run_dev_remote(
                 registry=registry,
                 push_registry=push_registry,
                 image_basename=info.image_basename,
+                persistence_mounts=_deployed_persistence_mounts(payload),
                 build_engine=build_engine if step == "build" else "",
             )
         except OSError as state_exc:

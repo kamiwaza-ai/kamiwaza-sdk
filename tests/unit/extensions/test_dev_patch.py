@@ -260,20 +260,56 @@ class TestBuildPatchServiceSpecs:
 
 
 class TestServiceFilterValidation:
-    def test_unknown_service_exits_with_a_message_naming_the_flag(self, capsys):
+    """Raw Compose keys are the wrong set: a profile-gated or image-only
+    service passes that check and then fails late, after build and push."""
+
+    COMPOSE = {
+        "services": {
+            "backend": {"build": "./backend"},
+            "frontend": {"build": "./frontend"},
+            "agent": {"build": "./agent", "profiles": ["local"]},
+            "redis": {"image": "redis:7"},
+        }
+    }
+
+    def _reject(self, name: str, match: str, capsys) -> None:
         import typer
 
         from kamiwaza_extensions.commands.dev import _validate_service_filter
 
         with pytest.raises(typer.Exit):
-            _validate_service_filter(
-                "backnd", {"services": {"backend": {}, "frontend": {}}}
-            )
+            _validate_service_filter(name, self.COMPOSE)
+        err = capsys.readouterr().err
+        assert "--service" in err
+        assert match in err
 
-    def test_known_service_passes(self):
+    def test_unknown_service_is_rejected(self, capsys):
+        self._reject("backnd", "not a service", capsys)
+
+    def test_profile_gated_service_is_rejected(self, capsys):
+        """The transformer strips it, so the PATCH list would come back empty."""
+        self._reject("agent", "profile-gated", capsys)
+
+    def test_image_only_service_is_rejected(self, capsys):
+        """Nothing to build or push — the deploy would be a silent no-op."""
+        self._reject("redis", "no build context", capsys)
+
+    def test_rejection_lists_only_deployable_services(self, capsys):
+        import typer
+
         from kamiwaza_extensions.commands.dev import _validate_service_filter
 
-        _validate_service_filter("backend", {"services": {"backend": {}}})
+        with pytest.raises(typer.Exit):
+            _validate_service_filter("nope", self.COMPOSE)
+
+        err = capsys.readouterr().err
+        assert "backend" in err and "frontend" in err
+        assert "agent" not in err and "redis" not in err
+
+    def test_deployable_service_passes(self):
+        from kamiwaza_extensions.commands.dev import _validate_service_filter
+
+        _validate_service_filter("backend", self.COMPOSE)
 
     def test_none_filter_passes(self):
         from kamiwaza_extensions.commands.dev import _validate_service_filter
@@ -316,3 +352,89 @@ class TestPatchPersistenceIsDeclarationOnly:
         specs = _build_patch_service_specs(self._payload())
 
         assert specs[0].model_dump(exclude_none=True).get("persistence") is None
+
+
+class TestOrphanedPersistenceWarning:
+    """The CR keeps a persistence block the extension has dropped —
+    ``get_extension`` returns only status, so it cannot be cleared from here."""
+
+    @staticmethod
+    def _payload(persistence=None, mounts=None):
+        from kamiwaza_sdk.schemas.extensions import CreateExtension, ExtensionServiceSpec
+
+        kwargs = {}
+        if persistence is not None:
+            kwargs["persistence"] = persistence
+        if mounts is not None:
+            kwargs["volumeMounts"] = mounts
+        return CreateExtension(
+            name="ext",
+            type="app",
+            version="1.0.0",
+            services=[
+                ExtensionServiceSpec(name="postgres", image="ghcr.io/o/pg:1", **kwargs)
+            ],
+        )
+
+    def test_warns_when_a_volume_reclaims_the_old_mount_path(self):
+        from kamiwaza_extensions.commands.dev import warn_orphaned_persistence
+
+        payload = self._payload(
+            mounts=[{"name": "pg", "mountPath": "/var/lib/postgresql/data"}]
+        )
+
+        warnings = warn_orphaned_persistence(
+            {"postgres": "/var/lib/postgresql/data"}, payload
+        )
+
+        assert len(warnings) == 1
+        assert "/var/lib/postgresql/data" in warnings[0]
+
+    def test_warns_on_a_nested_target_that_would_shadow_the_claim(self):
+        from kamiwaza_extensions.commands.dev import warn_orphaned_persistence
+
+        payload = self._payload(
+            mounts=[{"name": "pg", "mountPath": "/var/lib/postgresql/data"}]
+        )
+
+        assert warn_orphaned_persistence({"postgres": "/var/lib/postgresql"}, payload)
+
+    def test_silent_when_persistence_is_still_declared(self):
+        from kamiwaza_extensions.commands.dev import warn_orphaned_persistence
+
+        payload = self._payload(
+            persistence={"enabled": True, "mountPath": "/var/lib/postgresql/data"},
+            mounts=[{"name": "other", "mountPath": "/tmp/x"}],
+        )
+
+        assert warn_orphaned_persistence({"postgres": "/var/lib/postgresql"}, payload) == []
+
+    def test_silent_when_the_volume_is_elsewhere(self):
+        from kamiwaza_extensions.commands.dev import warn_orphaned_persistence
+
+        payload = self._payload(mounts=[{"name": "cache", "mountPath": "/var/cache"}])
+
+        assert warn_orphaned_persistence({"postgres": "/var/lib/postgresql"}, payload) == []
+
+    def test_silent_with_no_prior_state(self):
+        from kamiwaza_extensions.commands.dev import warn_orphaned_persistence
+
+        payload = self._payload(mounts=[{"name": "pg", "mountPath": "/data"}])
+
+        assert warn_orphaned_persistence({}, payload) == []
+
+    def test_records_what_this_run_deploys(self):
+        from kamiwaza_extensions.commands.dev import _deployed_persistence_mounts
+
+        payload = self._payload(
+            persistence={"enabled": True, "mountPath": "/var/lib/postgresql/data"}
+        )
+
+        assert _deployed_persistence_mounts(payload) == {
+            "postgres": "/var/lib/postgresql/data"
+        }
+
+    def test_disabled_persistence_is_not_recorded(self):
+        from kamiwaza_extensions.commands.dev import _deployed_persistence_mounts
+
+        assert _deployed_persistence_mounts(self._payload({"enabled": False})) == {}

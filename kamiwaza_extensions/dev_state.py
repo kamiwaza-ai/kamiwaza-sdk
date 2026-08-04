@@ -15,10 +15,10 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional
 
 DEV_STATE_DIR = ".kz-ext"
 DEV_STATE_FILE = "dev-state.json"
@@ -53,6 +53,12 @@ class DevState:
     # `--revision` must invalidate resume — otherwise we'd skip
     # build/push and deploy an image ref that was never built or pushed.
     last_image_basename: Optional[str] = None
+    # Per-service persistence mountPath deployed on the last run. The CR keeps
+    # a persistence block the extension has since removed — ``get_extension``
+    # returns only status, so the CR's own spec is unreadable from here — and
+    # the next PATCH would send a Compose emptyDir at the same path. This
+    # records enough to warn about that collision.
+    last_persistence_mounts: Dict[str, str] = field(default_factory=dict)
     # Engine ("docker" / "podman") used by the prior build. Docker and
     # Podman keep separate image stores, so a ``--no-build`` resume that
     # would push with a different engine would call `podman tag <image>`
@@ -164,6 +170,7 @@ def mark_step(
     push_registry: str = "",
     image_basename: Optional[str] = None,
     build_engine: str = "",
+    persistence_mounts: Optional[Dict[str, str]] = None,
 ) -> DevState:
     """Update the dev-state to record completion of ``step``.
 
@@ -196,6 +203,8 @@ def mark_step(
     state.last_registry = registry
     state.last_push_registry = push_registry or registry
     state.last_image_basename = image_basename
+    if persistence_mounts is not None:
+        state.last_persistence_mounts = persistence_mounts
     # Only overwrite ``last_build_engine`` on the build step; later steps
     # leave the recorded engine alone so a resume sees the engine that
     # actually built the image, not whichever one happened to push.
