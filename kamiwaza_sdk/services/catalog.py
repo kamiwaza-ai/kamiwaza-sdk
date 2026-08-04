@@ -81,12 +81,20 @@ class DatasetClient(BaseService):
 
     @staticmethod
     def _unwrap_dataset_urn(response: Any) -> str:
-        """Return the dataset URN from a register-from-spec response."""
+        """Return the dataset URN from a register-from-spec response.
+
+        A dict carrying no recognizable URN key is a contract violation — raise
+        rather than silently stringify the dict as if it were a URN.
+        """
         if isinstance(response, dict):
             for key in ("dataset_urn", "urn"):
                 value = response.get(key)
                 if value:
                     return str(value)
+            raise APIError(
+                "register-from-spec returned a dict without a dataset URN "
+                f"(keys={sorted(response)})"
+            )
         return str(response)
 
     def list(self, query: Optional[str] = None) -> List[Dataset]:
