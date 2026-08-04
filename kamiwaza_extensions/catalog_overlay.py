@@ -26,6 +26,10 @@ from urllib.parse import quote
 
 import yaml
 
+# Safe for the dev path: registry_builder imports only stdlib, yaml and
+# packaging — none of the forbidden publishing machinery (see TestImportInvariant).
+from kamiwaza_extensions.registry_builder import _normalize_preview_image
+
 OVERLAY_PATH = "/apps/app_templates/catalog/overlay"
 
 # Matches the platform's app_templates.version column (String(40)).
@@ -160,6 +164,7 @@ def build_overlay_entry(
         ("license", str),
         ("homepage", str),
         ("image", str),
+        ("preview_image", str),
         ("kamiwaza_version", str),
         ("preferred_model_type", str),
         ("preferred_model_name", str),
@@ -173,6 +178,12 @@ def build_overlay_entry(
         value = metadata.get(key)
         if isinstance(value, expected_type):
             entry[key] = value
+    if isinstance(entry.get("preview_image"), str):
+        # The publish path stores this normalized, so the shorthand
+        # ``preview_image: "screenshot.png"`` becomes ``images/screenshot.png``
+        # in the catalog. Writing the raw value here would overwrite that row
+        # with a key the asset was never uploaded under.
+        entry["preview_image"] = _normalize_preview_image(entry["preview_image"])
     ext_type = metadata.get("type") or metadata.get("template_type")
     if isinstance(ext_type, str) and ext_type in ("app", "tool", "service"):
         entry["template_type"] = ext_type
