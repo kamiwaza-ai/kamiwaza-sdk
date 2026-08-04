@@ -34,6 +34,9 @@ from typing import Iterator
 
 import pytest
 
+from tests.integration import mesh_outcome
+from tests.integration.mesh_outcome import MeshPolicy
+
 from kamiwaza_sdk import KamiwazaClient
 
 logger = logging.getLogger(__name__)
@@ -44,6 +47,13 @@ pytestmark = [
     pytest.mark.withoutresponses,
     pytest.mark.requires_two_clusters,
 ]
+
+
+_WALKTHROUGH_POLICY = MeshPolicy(
+    identity_arranged=False,
+    admission_is_the_assertion=False,
+    context="ENG-5784 two-cluster walkthrough (pairs, enrolls no guest)",
+)
 
 
 def _mesh_call_or_skip(call):
@@ -70,34 +80,16 @@ def _mesh_call_or_skip(call):
     diagnosis is worse than a stated gap. Mesh transport under receiver_realm is
     covered by ``test_federation_receiver_realm_live.py``.
 
+    ENG-9664: the classification itself now lives in ``mesh_outcome`` so all
+    three live suites share one decision point and one set of unit-pinned rules.
+    Outcomes here are unchanged: 401 -> skip, non-auth 403/404 -> skip, anything
+    else reds. What changes is that an auth-layer-marked 403 (the receiver
+    refusing the credential, e.g. peer_jwt_validation_failed) now reds instead of
+    hiding among the downstream-gate skips.
+
     Returns the call result on success.
     """
-    from kamiwaza_sdk.exceptions import APIError, AuthenticationError
-
-    try:
-        return call()
-    except AuthenticationError as exc:
-        pytest.skip(
-            "mesh returned 401: no receiver-minted guest credential is resolved "
-            "on the initiator for this pair, which is expected — this "
-            "walkthrough pairs but enrolls no guest. Cannot be distinguished "
-            "client-side from an x-kz-mesh-* HMAC strip (ENG-7203); that path is "
-            f"covered by test_federation_receiver_realm_live.py: {exc!r}"
-        )
-    except APIError as exc:
-        # 403 = downstream gate (allowlist / execution gate); 404 = reached the
-        # receiver but the resource/dataset isn't seeded. Both prove the mesh
-        # path is alive, so they skip. Trade-off: a 404 from a genuinely
-        # broken/renamed mesh route is also downgraded to a skip — the
-        # 401/ENG-7203 hard-fail signal is preserved, but 404 is a broad bucket
-        # and weakens route-regression detection here.
-        if getattr(exc, "status_code", None) in (403, 404):
-            pytest.skip(
-                "mesh auth verified (not the ENG-7203 401); caller reached the "
-                "receiver but hit a downstream gate / missing precondition "
-                f"(allowlist, execution gate, or unseeded dataset): {exc!r}"
-            )
-        raise
+    return mesh_outcome.mesh_call(call, _WALKTHROUGH_POLICY)
 
 
 @pytest.fixture(scope="module")

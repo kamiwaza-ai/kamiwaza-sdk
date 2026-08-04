@@ -24,12 +24,16 @@ Fleet rig: spark-1 (receiver) ↔ spark-2 (initiator/source). Serve on the
 per-host FQDN (spark-N.kale.wemodulate.com) so istio Host-header routing resolves
 (memory: reference_spark_fqdn_host_routing).
 
-Tier 2 (full mesh admit) is exercised via §7.5 credential resolution. It is
-currently xfail per ENG-8819: the receiver's mesh HMAC-verify PSK is resolved by
-remote-cluster-id (ambiguous with >1 PAIRED federation per peer), so it can pick
-the wrong federation's PSK → intermittent 401. Root-caused live 2026-07-18: when
-the PSK resolves correctly the offline token is accepted and the admit works
-(downstream 403). See the marker on the Tier-2 test.
+Tier 2 (full mesh admit) is exercised via §7.5 credential resolution, and that
+gate is ARMED: a 401 reds the suite. There is deliberately no xfail marker. The
+one that existed until 62b1499 (2026-07-18) was ``strict=False``, which reports
+XFAIL and can never red — re-adding it would reproduce ENG-9664 under a new
+label. The prose that described it outlived the marker by weeks and is removed
+here; doc/behaviour divergence of exactly that kind is what let a total mesh
+outage read as expected.
+
+Outcome policy lives in ``mesh_outcome.py`` and is unit-pinned by
+``test_mesh_outcome_policy.py``, which runs on every PR without a cluster.
 """
 
 from __future__ import annotations
@@ -44,6 +48,9 @@ import pytest
 
 from kamiwaza_sdk import KamiwazaClient
 
+from tests.integration import mesh_outcome
+from tests.integration.mesh_outcome import MeshPolicy
+
 logger = logging.getLogger(__name__)
 
 pytestmark = [
@@ -52,6 +59,12 @@ pytestmark = [
     pytest.mark.withoutresponses,
     pytest.mark.requires_two_clusters,
 ]
+
+_TIER2_POLICY = MeshPolicy(
+    identity_arranged=True,
+    admission_is_the_assertion=True,
+    context="ENG-8213 Tier-2 receiver_realm mesh admit",
+)
 
 
 def _decode_jwt_payload(token: str) -> dict[str, Any]:
@@ -293,30 +306,20 @@ class TestReceiverRealmWalkthrough:
             f"KAMIWAZA_FEDERATION_CREDENTIAL_{name.upper().replace('-', '_')}",
             guest.offline_token,
         )
-        try:
-            caps = initiator_client.federations[name].probe()
-        except Exception as exc:  # noqa: BLE001 - inspect status across SDK error types
-            code = getattr(exc, "status_code", None)
-            blob = repr(exc).lower()
-            if code in (403, 404) and not any(
-                m in blob for m in ("peer_jwt", "signature")
-            ):
-                # Credential ADMITTED at ingress; hit the F10 per-resource authz
-                # gate (a bare guest has no cluster:viewer to probe capabilities).
-                # This is the positive Tier-2 signal: ENG-8822 + ENG-8819 validated
-                # the credential end-to-end.
-                return
-            # Residual, intermittent mesh-TRANSPORT 401 (originates upstream of the
-            # receiver's core mesh-auth — nothing logged there; source-side signing
-            # / istio ext-authz). The receiver_realm credential validation itself is
-            # fixed (ENG-8819) and proven live in-cluster; tolerate the transport
-            # flake rather than red the suite until it is root-caused separately.
-            pytest.skip(
-                f"mesh-transport did not admit this attempt (status={code}); "
-                f"receiver_realm credential validation is fixed (ENG-8819) — "
-                f"residual transport intermittency: {exc!r}"
-            )
-        else:
+        # ENG-9664: this gate is ARMED. A 401 here means the credential this
+        # test arranged was refused, and that reds the suite. The previous
+        # handler classified on getattr(exc, "status_code", None), which a 401
+        # never carries (AuthenticationError is a sibling of APIError), so it
+        # fell through to a terminal skip and reported green through the total
+        # mesh outage of ENG-9663. mesh_outcome keys off the exception TYPE.
+        #
+        # None means admitted-then-declined downstream: the F10 per-resource
+        # authz gate, since a bare guest holds no cluster:viewer grant to probe
+        # capabilities. That is the positive Tier-2 signal.
+        caps = mesh_outcome.mesh_call(
+            lambda: initiator_client.federations[name].probe(), _TIER2_POLICY
+        )
+        if caps is not None:
             assert caps.system_type  # 200: admitted AND authorized for the resource
 
 

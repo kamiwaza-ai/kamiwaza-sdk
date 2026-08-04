@@ -53,6 +53,9 @@ from typing import Iterator
 
 import pytest
 
+from tests.integration import mesh_outcome
+from tests.integration.mesh_outcome import MeshPolicy
+
 from . import _mini_clearance as mc
 
 pytestmark = [
@@ -65,25 +68,23 @@ pytestmark = [
 _PERSONAS = {"U": "fed-clr-u", "S": "fed-clr-s", "TS": "fed-clr-ts"}
 
 
+_SHARED_IDP_POLICY = MeshPolicy(
+    identity_arranged=True,
+    admission_is_the_assertion=False,
+    context="ENG-8325 shared_idp gated retrieval",
+)
+
+
 def _mesh_call_or_skip(call):
     """401 -> hard fail (ENG-7203 HMAC-strip regression); 403/404 -> soft skip
-    (mesh auth verified, downstream precondition unmet); else propagate."""
-    from kamiwaza_sdk.exceptions import APIError, AuthenticationError
+    (mesh auth verified, downstream precondition unmet); else propagate.
 
-    try:
-        return call()
-    except AuthenticationError as exc:
-        pytest.fail(
-            "ENG-7203 regression: authentic mesh call returned 401 'Not "
-            f"authenticated' — x-kz-mesh-* HMAC stripped before ext-authz: {exc!r}"
-        )
-    except APIError as exc:
-        if getattr(exc, "status_code", None) in (403, 404):
-            pytest.skip(
-                "mesh auth verified (not ENG-7203); reached the receiver but hit a "
-                f"downstream precondition (gate PVC / fs-root / unseeded): {exc!r}"
-            )
-        raise
+    ENG-9664: delegates to the shared ``mesh_outcome`` classifier. This file
+    already failed on 401 and that is preserved exactly. The one change is that
+    an auth-layer-marked 403 — the receiver refusing the credential rather than
+    a downstream precondition — now fails instead of skipping.
+    """
+    return mesh_outcome.mesh_call(call, _SHARED_IDP_POLICY)
 
 
 def _shared_realm() -> dict[str, str]:
