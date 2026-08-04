@@ -4008,3 +4008,40 @@ class TestPublishRejectsUncoveredEnvImageRef:
         )
         assert exit_code == int(ExitCode.VALIDATION)
         mock_publisher.publish.assert_not_called()
+
+
+class TestTagSeparatorSharedByBothHelpers:
+    """``_replace_image_tag`` and ``_split_image_ref`` must agree on where the
+    tag starts; when they disagreed, a malformed ref reached the K8s PATCH."""
+
+    def test_split_image_ref_handles_default_value_placeholder(self):
+        from kamiwaza_extensions.compose_transformer import _split_image_ref
+
+        registry, repository, tag = _split_image_ref(
+            "ghcr.io/my-org/foo:${IMAGE_TAG:-local}"
+        )
+
+        assert (registry, repository) == ("ghcr.io", "my-org/foo")
+        assert tag == "${IMAGE_TAG:-local}"
+
+    def test_split_image_ref_still_handles_registry_port(self):
+        from kamiwaza_extensions.compose_transformer import _split_image_ref
+
+        assert _split_image_ref("localhost:5000/foo:1.2.3") == (
+            "localhost:5000",
+            "foo",
+            "1.2.3",
+        )
+
+    def test_both_helpers_agree_on_the_namespace(self):
+        from kamiwaza_extensions.compose_transformer import (
+            _replace_image_tag,
+            _split_image_ref,
+        )
+
+        ref = "ghcr.io/my-org/foo:${IMAGE_TAG:-local}"
+        registry, repository, _ = _split_image_ref(ref)
+
+        assert _replace_image_tag(ref, "2.0.0-dev") == (
+            f"{registry}/{repository}:2.0.0-dev"
+        )

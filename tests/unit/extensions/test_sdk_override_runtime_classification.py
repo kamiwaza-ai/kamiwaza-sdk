@@ -70,3 +70,11 @@ def test_service_heuristics_classify_by_name_then_port():
         detect_service_type("worker", {"build": {"context": "./frontend"}})
         == "frontend"
     )
+
+
+def test_detect_service_type_stays_publicly_exported():
+    """It is a documented public symbol; dropping it would break importers."""
+    import kamiwaza_extensions.sdk_override as sdk_override
+
+    assert "detect_service_type" in sdk_override.__all__
+    assert sdk_override.detect_service_type("frontend", {}) == "frontend"

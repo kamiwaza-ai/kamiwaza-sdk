@@ -25,7 +25,10 @@ from kamiwaza_extensions.sdk_override.build import (
     generate_build_overrides,
     generate_local_build_dockerfile_patches,
 )
-from kamiwaza_extensions.sdk_override.classification import detect_service_runtime
+from kamiwaza_extensions.sdk_override.classification import (
+    detect_service_runtime,
+    detect_service_type,
+)
 from kamiwaza_extensions.sdk_override.compose import (
     generate_compose_override,
 )
@@ -52,6 +55,7 @@ __all__ = [
     "validate_sdk_override",
     # classification
     "detect_service_runtime",
+    "detect_service_type",
     # compose
     "generate_compose_override",
     # build
