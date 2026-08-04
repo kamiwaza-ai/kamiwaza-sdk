@@ -32,25 +32,19 @@ def _sample_logs(client, deployment_id):
         return []
 
 
-def _ensure_model_cached(client, model):
-    hub = getattr(model, "hub", None) or "hf"
-    payload = {"model": model.repo_modelId, "hub": hub}
-    try:
-        client.post("/models/download/", json=payload)
-    except APIError as exc:
-        pytest.skip(f"Model download API unavailable: {exc}")
-
-
 @pytest.mark.requires_deployable_model
 def test_deploy_qwen_and_infer_with_strip_thinking(
     live_kamiwaza_client,
     ensure_deployable_model_ready,
     deployable_model_target: InferenceTarget,
+    target_model_file_id,
 ):
     client = live_kamiwaza_client
     model = ensure_deployable_model_ready(client)
 
-    _ensure_model_cached(client, model)
+    model_file_id = target_model_file_id(
+        model, deployable_model_target.quantization
+    )
 
     configs = client.models.get_model_configs(model.id)
     if not configs:
@@ -81,6 +75,7 @@ def test_deploy_qwen_and_infer_with_strip_thinking(
             min_copies=1,
             starting_copies=1,
             engine_name=deployable_model_target.engine_name,
+            m_file_id=model_file_id,
             wait=False,
         )
         deployments.append(default_deployment)
@@ -93,6 +88,7 @@ def test_deploy_qwen_and_infer_with_strip_thinking(
             min_copies=1,
             starting_copies=1,
             engine_name=deployable_model_target.engine_name,
+            m_file_id=model_file_id,
             wait=False,
         )
         deployments.append(strip_deployment)

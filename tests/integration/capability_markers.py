@@ -43,12 +43,13 @@ class ClusterCapabilitySnapshot:
     mig_supported: Optional[bool] = None  # None => undeterminable
     node_count: int = 0
     os_platforms: frozenset[tuple[str, str]] = frozenset()
+    platform_inventory_complete: bool = True
 
     @property
     def is_apple_silicon(self) -> bool:
         """Whether all trusted platform inventory identifies Apple Silicon."""
         arm_hints = ("arm64", "aarch64", "arm-64")
-        return bool(self.os_platforms) and all(
+        return self.platform_inventory_complete and bool(self.os_platforms) and all(
             os_name == "darwin" and any(hint in platform for hint in arm_hints)
             for os_name, platform in self.os_platforms
         )
@@ -175,9 +176,10 @@ def _normalized_text(value: Any) -> str:
 
 def _platform_inventory(
     hardware_entries: Iterable[Any],
-) -> frozenset[tuple[str, str]]:
+) -> tuple[frozenset[tuple[str, str]], bool]:
     """Read OS/platform only from rows backed by real device inventory."""
     os_platforms: set[tuple[str, str]] = set()
+    complete = True
     for hardware in hardware_entries:
         gpus = _hardware_gpus(hardware)
         processors = _hardware_field(hardware, "processors")
@@ -189,7 +191,9 @@ def _platform_inventory(
         normalized_platform = _normalized_text(platform)
         if normalized_os and normalized_platform:
             os_platforms.add((normalized_os, normalized_platform))
-    return frozenset(os_platforms)
+        else:
+            complete = False
+    return frozenset(os_platforms), complete
 
 
 def build_capability_snapshot(
@@ -229,7 +233,7 @@ def build_capability_snapshot(
     if node_count is None:
         node_count = len({_hardware_node_key(hw) for hw in active_entries})
 
-    os_platforms = _platform_inventory(active_entries)
+    os_platforms, platform_inventory_complete = _platform_inventory(active_entries)
 
     return ClusterCapabilitySnapshot(
         gpu_count=len(gpu_dicts),
@@ -238,6 +242,7 @@ def build_capability_snapshot(
         mig_supported=(any(mig_flags) if mig_flags else None),
         node_count=node_count or 0,
         os_platforms=os_platforms,
+        platform_inventory_complete=platform_inventory_complete,
     )
 
 

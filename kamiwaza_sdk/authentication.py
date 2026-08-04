@@ -92,6 +92,7 @@ class UserPasswordAuthenticator(Authenticator):
         self.token_expiry: Optional[datetime] = None
         self.refresh_token_value: Optional[str] = None
         self.token_store = token_store or FileTokenStore()
+        self._session_invalidated = False
         self._load_cached_token()
 
     def authenticate(self, session: requests.Session) -> None:
@@ -130,6 +131,8 @@ class UserPasswordAuthenticator(Authenticator):
                 LOGGER.debug("Performed password grant for new access token")
             except Exception as exc:  # pylint: disable=broad-except
                 errors.append(str(exc))
+                if self._session_invalidated and self.token_store:
+                    self.token_store.clear()
                 raise AuthenticationError(
                     f"Failed to obtain access token ({'; '.join(errors)})"
                 ) from exc
@@ -152,6 +155,7 @@ class UserPasswordAuthenticator(Authenticator):
         self.token = None
         self.token_expiry = None
         self.refresh_token_value = None
+        self._session_invalidated = True
         session.headers.pop("Authorization", None)
         for cookie in list(session.cookies):
             if cookie.name == "access_token":
@@ -175,6 +179,7 @@ class UserPasswordAuthenticator(Authenticator):
         )
         if self.token_store:
             self.token_store.save(stored)
+        self._session_invalidated = False
 
     def _load_cached_token(self) -> None:
         if not self.token_store:

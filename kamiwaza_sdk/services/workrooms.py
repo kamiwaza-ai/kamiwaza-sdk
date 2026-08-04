@@ -18,8 +18,9 @@ from .base_service import BaseService
 
 _UNSET = object()
 _EXPORT_CHUNK_SIZE = 64 * 1024
-# Must match the backend's deleted-workroom scope denial contract. Other 403s
-# remain fail-closed and are never retried.
+# Must match the backend's deleted-workroom scope denial contract in
+# kamiwaza/services/auth/api.py (forward-auth/workroom scope checks). Other
+# 403s remain fail-closed and are never retried. Unit tests pin the payload.
 _DELETED_SCOPE_DENIAL_DETAIL = "Workroom access denied"
 
 

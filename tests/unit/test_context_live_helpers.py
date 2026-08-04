@@ -97,8 +97,16 @@ def test_vectordb_wait_fails_after_stopped_grace_period(
             "endpoint": None,
         }
     )
-    timestamps = iter([0.0, 0.0, 31.0])
-    monkeypatch.setattr(context_live.time, "monotonic", lambda: next(timestamps))
+    timestamps = [0.0, 0.0, 31.0]
+    monotonic_calls = 0
+
+    def monotonic() -> float:
+        nonlocal monotonic_calls
+        value = timestamps[min(monotonic_calls, len(timestamps) - 1)]
+        monotonic_calls += 1
+        return value
+
+    monkeypatch.setattr(context_live.time, "monotonic", monotonic)
     monkeypatch.setattr(context_live.time, "sleep", lambda _seconds: None)
 
     with pytest.raises(RuntimeError, match="remained stopped"):

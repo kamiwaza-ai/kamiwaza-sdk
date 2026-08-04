@@ -125,6 +125,9 @@ _TEXT_BODY_MARKERS = (
 )
 _CONTEXT_TEST_LLM_REPO_OVERRIDE = os.environ.get("KAMIWAZA_CONTEXT_LLM_REPO", "").strip()
 _CONTEXT_TEST_LLM_ENGINE_OVERRIDE = os.environ.get("KAMIWAZA_CONTEXT_LLM_ENGINE", "").strip()
+_CONTEXT_TEST_LLM_QUANTIZATION_OVERRIDE = os.environ.get(
+    "KAMIWAZA_CONTEXT_LLM_QUANTIZATION", ""
+).strip()
 CONTEXT_TEST_LLM_DEPLOY_TIMEOUT_SECONDS = float(
     os.environ.get("KAMIWAZA_CONTEXT_LLM_DEPLOY_TIMEOUT_SECONDS", "600")
 )
@@ -594,6 +597,8 @@ def _active_model_deployments(
                 "model_id": str(deployment.m_id),
                 "model_name": model_name,
                 "repo_model_id": repo_model_id,
+                "engine_name": str(getattr(deployment, "engine_name", "") or ""),
+                "m_file_id": str(getattr(deployment, "m_file_id", "") or ""),
             }
         )
 
@@ -605,30 +610,43 @@ def _preferred_active_model_deployment(
     *,
     desired_type: str,
     preferred_repo_id: str = "",
+    preferred_engine_name: str = "",
 ) -> dict[str, str] | None:
     deployments = _active_model_deployments(client, desired_type=desired_type)
     preferred_repo_id = preferred_repo_id.strip()
+    preferred_engine_name = preferred_engine_name.strip()
     if preferred_repo_id:
         for deployment in deployments:
-            if deployment["repo_model_id"] == preferred_repo_id:
-                return deployment
+            if deployment["repo_model_id"] != preferred_repo_id:
+                continue
+            if (
+                preferred_engine_name
+                and deployment["engine_name"] != preferred_engine_name
+            ):
+                continue
+            return deployment
     return deployments[0] if deployments else None
 
 
 def _context_llm_target(
     snapshot: _cap.ClusterCapabilitySnapshot | None,
-) -> tuple[str, str | None]:
+) -> _model_targets.InferenceTarget:
     """Select a context-test LLM repo/engine for the live host.
 
     Explicit context overrides win; otherwise use the shared platform target.
     """
     if _CONTEXT_TEST_LLM_REPO_OVERRIDE:
-        return (
-            _CONTEXT_TEST_LLM_REPO_OVERRIDE,
-            _CONTEXT_TEST_LLM_ENGINE_OVERRIDE or None,
+        return _model_targets.InferenceTarget(
+            repo_id=_CONTEXT_TEST_LLM_REPO_OVERRIDE,
+            engine_name=_CONTEXT_TEST_LLM_ENGINE_OVERRIDE,
+            quantization=_CONTEXT_TEST_LLM_QUANTIZATION_OVERRIDE or "q6_k",
         )
     target = _model_targets.select_inference_target(snapshot)
-    return target.repo_id, _CONTEXT_TEST_LLM_ENGINE_OVERRIDE or target.engine_name
+    return _model_targets.InferenceTarget(
+        repo_id=target.repo_id,
+        engine_name=_CONTEXT_TEST_LLM_ENGINE_OVERRIDE or target.engine_name,
+        quantization=_CONTEXT_TEST_LLM_QUANTIZATION_OVERRIDE or target.quantization,
+    )
 
 
 def _active_embedding_deployment(client: KamiwazaClient) -> dict[str, str] | None:
@@ -1280,7 +1298,9 @@ def context_llm_prerequisite(
     instead of a cascade of fixture-setup ERRORs.
     """
     client = live_kamiwaza_session_client
-    context_repo_id, context_engine_name = _context_llm_target(cluster_capability_snapshot)
+    context_target = _context_llm_target(cluster_capability_snapshot)
+    context_repo_id = context_target.repo_id
+    context_engine_name = context_target.engine_name
 
     def _stop_provisioned(deployment_id: str | None) -> None:
         """Best-effort teardown of a deployment THIS fixture provisioned."""
@@ -1295,8 +1315,13 @@ def context_llm_prerequisite(
         client,
         desired_type="llm",
         preferred_repo_id=context_repo_id,
+        preferred_engine_name=context_engine_name,
     )
-    if existing is not None:
+    if (
+        existing is not None
+        and existing.get("repo_model_id") == context_repo_id
+        and existing.get("engine_name") == context_engine_name
+    ):
         yield existing["deployment_id"]
         return
 
@@ -1305,7 +1330,11 @@ def context_llm_prerequisite(
     # capacity-limited host) would be orphaned when we skip.
     provisioned_deployment_id: str | None = None
     try:
-        model = ensure_repo_ready(client, context_repo_id)
+        model = ensure_repo_ready(
+            client,
+            context_repo_id,
+            quantization=context_target.quantization,
+        )
         configs = client.models.get_model_configs(model.id)
         if not configs:
             pytest.skip(
@@ -1331,6 +1360,9 @@ def context_llm_prerequisite(
         }
         if context_engine_name:
             deploy_kwargs["engine_name"] = context_engine_name
+        model_file_id = _target_model_file_id(model, context_target.quantization)
+        if model_file_id:
+            deploy_kwargs["m_file_id"] = model_file_id
         raw_deployment_id = client.serving.deploy_model(**deploy_kwargs)
         if not raw_deployment_id:
             pytest.skip(
@@ -1447,8 +1479,13 @@ def deployable_model_prerequisite(
         client,
         desired_type="llm",
         preferred_repo_id=repo_id,
+        preferred_engine_name=engine_name,
     )
-    if existing is not None and existing.get("repo_model_id") == repo_id:
+    if (
+        existing is not None
+        and existing.get("repo_model_id") == repo_id
+        and existing.get("engine_name") == engine_name
+    ):
         return
 
     probe_deployment_id: str | None = None
@@ -1467,6 +1504,9 @@ def deployable_model_prerequisite(
             min_copies=1,
             starting_copies=1,
             engine_name=engine_name,
+            m_file_id=_target_model_file_id(
+                model, deployable_model_target.quantization
+            ),
             # The probe's wait_for_deployment below owns the timeout
             # (DEPLOYABLE_TEST_DEPLOY_TIMEOUT_SECONDS), not the SDK default.
             wait=False,
@@ -1935,6 +1975,31 @@ def _model_has_ready_target_files(model: Any, quantization: str) -> bool:
     if not target_files:
         return False
     return all(model_file_download_satisfied(f) for f in target_files)
+
+
+def _target_model_file_id(model: Any, quantization: str) -> str | None:
+    """Return a deterministic ready GGUF file matching the prepared quantization."""
+    target_files = _target_files_for_quantization(model, quantization)
+    ready_gguf_files = [
+        model_file
+        for model_file in target_files
+        if str(getattr(model_file, "name", "") or "").lower().endswith(".gguf")
+        and getattr(model_file, "id", None)
+        and model_file_download_satisfied(model_file)
+    ]
+    if not ready_gguf_files:
+        return None
+    selected = min(
+        ready_gguf_files,
+        key=lambda model_file: str(getattr(model_file, "name", "") or "").lower(),
+    )
+    return str(selected.id)
+
+
+@pytest.fixture(scope="session")
+def target_model_file_id() -> Callable[[Any, str], str | None]:
+    """Resolve the exact prepared weights file for a quantized target."""
+    return _target_model_file_id
 
 
 def _get_model_by_repo_id_with_files(

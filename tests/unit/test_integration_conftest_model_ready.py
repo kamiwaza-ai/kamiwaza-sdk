@@ -4,6 +4,7 @@ import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from uuid import uuid4
 
 import pytest
 
@@ -213,8 +214,18 @@ def test_deployable_model_probe_uses_shared_repo_and_engine(
             ]
         ),
     )
+    model_file_id = uuid4()
     ensure_repo_ready = lambda _client, repo_id, **_kwargs: SimpleNamespace(  # noqa: E731
-        id=f"model-for-{repo_id}"
+        id=f"model-for-{repo_id}",
+        m_files=[
+            SimpleNamespace(
+                id=model_file_id,
+                name="model-Q4_K_M.gguf",
+                storage_location="oci://model-Q4_K_M.gguf",
+                is_downloading=False,
+                dl_requested_at=None,
+            )
+        ],
     )
 
     integration_conftest.deployable_model_prerequisite.__wrapped__(
@@ -225,6 +236,7 @@ def test_deployable_model_probe_uses_shared_repo_and_engine(
 
     assert deploy_calls[0]["model_id"] == "model-for-org/model.gguf"
     assert deploy_calls[0]["engine_name"] == "llamacpp"
+    assert deploy_calls[0]["m_file_id"] == str(model_file_id)
 
 
 def test_deployable_model_target_follows_cluster_inventory(
@@ -359,13 +371,182 @@ def test_deployable_model_probe_reuses_exact_active_target(
     monkeypatch.setattr(
         integration_conftest,
         "_preferred_active_model_deployment",
-        lambda *_args, **_kwargs: {"repo_model_id": target.repo_id},
+        lambda *_args, **_kwargs: {
+            "repo_model_id": target.repo_id,
+            "engine_name": target.engine_name,
+        },
     )
 
     integration_conftest.deployable_model_prerequisite.__wrapped__(
         object(),
         lambda *_args: pytest.fail("an active exact target must skip the probe deploy"),
         target,
+    )
+
+
+def test_deployable_model_probe_does_not_reuse_wrong_engine(
+    integration_conftest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = integration_conftest._model_targets.InferenceTarget(
+        repo_id="org/model.gguf",
+        engine_name="llamacpp",
+    )
+    monkeypatch.setattr(
+        integration_conftest,
+        "_preferred_active_model_deployment",
+        lambda *_args, **_kwargs: {
+            "repo_model_id": target.repo_id,
+            "engine_name": "mlx",
+        },
+    )
+    monkeypatch.setattr(
+        integration_conftest,
+        "_ensure_deployable_target_ready",
+        lambda *_args, **_kwargs: SimpleNamespace(id="model-1", m_files=[]),
+    )
+    deploy_calls: list[dict[str, object]] = []
+    client = SimpleNamespace(
+        models=SimpleNamespace(
+            get_model_configs=lambda _model_id: [
+                SimpleNamespace(id="cfg-1", default=True)
+            ]
+        ),
+        serving=SimpleNamespace(
+            deploy_model=lambda **kwargs: deploy_calls.append(kwargs) or "dep-1",
+            wait_for_deployment=lambda *_args, **_kwargs: SimpleNamespace(
+                status="DEPLOYED",
+                instances=[SimpleNamespace(status="DEPLOYED")],
+            ),
+            stop_deployment=lambda **_kwargs: None,
+        ),
+    )
+
+    integration_conftest.deployable_model_prerequisite.__wrapped__(
+        client,
+        lambda *_args, **_kwargs: pytest.fail("patched readiness should be used"),
+        target,
+    )
+
+    assert deploy_calls[0]["engine_name"] == "llamacpp"
+
+
+def test_context_target_carries_shared_quantization(
+    integration_conftest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = integration_conftest._model_targets.InferenceTarget(
+        repo_id="org/model.gguf",
+        engine_name="llamacpp",
+        quantization="q4_k",
+    )
+    monkeypatch.setattr(integration_conftest, "_CONTEXT_TEST_LLM_REPO_OVERRIDE", "")
+    monkeypatch.setattr(integration_conftest, "_CONTEXT_TEST_LLM_ENGINE_OVERRIDE", "")
+    monkeypatch.setattr(
+        integration_conftest._model_targets,
+        "select_inference_target",
+        lambda _snapshot: target,
+    )
+
+    assert integration_conftest._context_llm_target(None) == target
+
+
+def test_context_prerequisite_prepares_and_deploys_exact_target_file(
+    integration_conftest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = integration_conftest._model_targets.InferenceTarget(
+        repo_id="org/context.gguf",
+        engine_name="llamacpp",
+        quantization="q4_k",
+    )
+    model_file_id = uuid4()
+    readiness_calls: list[tuple[str, str]] = []
+    deploy_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        integration_conftest,
+        "_context_llm_target",
+        lambda _snapshot: target,
+    )
+    monkeypatch.setattr(
+        integration_conftest,
+        "_preferred_active_model_deployment",
+        lambda *_args, **_kwargs: None,
+    )
+
+    def ensure_repo_ready(
+        _client: object, repo_id: str, *, quantization: str
+    ) -> object:
+        readiness_calls.append((repo_id, quantization))
+        return SimpleNamespace(
+            id="model-1",
+            m_files=[
+                SimpleNamespace(
+                    id=model_file_id,
+                    name="context-Q4_K_M.gguf",
+                    storage_location="oci://context-Q4_K_M.gguf",
+                    is_downloading=False,
+                    dl_requested_at=None,
+                )
+            ],
+        )
+
+    client = SimpleNamespace(
+        models=SimpleNamespace(
+            get_model_configs=lambda _model_id: [
+                SimpleNamespace(id="cfg-1", default=True)
+            ]
+        ),
+        serving=SimpleNamespace(
+            deploy_model=lambda **kwargs: deploy_calls.append(kwargs) or "dep-1",
+            wait_for_deployment=lambda *_args, **_kwargs: SimpleNamespace(
+                id="dep-1",
+                status="DEPLOYED",
+                instances=[SimpleNamespace(status="DEPLOYED")],
+            ),
+            stop_deployment=lambda **_kwargs: None,
+        ),
+    )
+
+    prerequisite = integration_conftest.context_llm_prerequisite.__wrapped__(
+        client,
+        ensure_repo_ready,
+        None,
+    )
+    assert next(prerequisite) == "dep-1"
+    with pytest.raises(StopIteration):
+        next(prerequisite)
+
+    assert readiness_calls == [(target.repo_id, target.quantization)]
+    assert deploy_calls[0]["engine_name"] == target.engine_name
+    assert deploy_calls[0]["m_file_id"] == str(model_file_id)
+
+
+def test_target_model_file_id_pins_ready_gguf_quantization(
+    integration_conftest,
+) -> None:
+    selected_id = uuid4()
+    model = SimpleNamespace(
+        m_files=[
+            SimpleNamespace(
+                id=uuid4(),
+                name="model-Q6_K.gguf",
+                storage_location="oci://model-Q6_K.gguf",
+                is_downloading=False,
+                dl_requested_at=None,
+            ),
+            SimpleNamespace(
+                id=selected_id,
+                name="model-Q4_K_M.gguf",
+                storage_location="oci://model-Q4_K_M.gguf",
+                is_downloading=False,
+                dl_requested_at=None,
+            ),
+        ]
+    )
+
+    assert integration_conftest._target_model_file_id(model, "q4_k") == str(
+        selected_id
     )
 
 

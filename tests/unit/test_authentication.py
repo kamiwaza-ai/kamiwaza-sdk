@@ -149,3 +149,25 @@ def test_user_password_authenticator_invalidates_cached_session() -> None:
     assert "Authorization" not in session.headers
     assert all(cookie.name != "access_token" for cookie in session.cookies)
     assert session.cookies.get("load_balancer_affinity") == "sticky"
+
+
+def test_invalidated_session_clears_stale_cache_after_password_grant_fails() -> None:
+    store = MemoryTokenStore()
+    store.value = StoredToken(
+        access_token="scoped",
+        refresh_token="scoped-refresh",
+        expires_at=time.time() + 60,
+    )
+    authenticator = UserPasswordAuthenticator(
+        "admin",
+        "wrong",
+        DummyAuthService(login_error=RuntimeError("bad credentials")),
+        token_store=store,
+    )
+    session = requests.Session()
+
+    authenticator.invalidate_session(session)
+    with pytest.raises(AuthenticationError, match="bad credentials"):
+        authenticator.authenticate(session)
+
+    assert store.value is None

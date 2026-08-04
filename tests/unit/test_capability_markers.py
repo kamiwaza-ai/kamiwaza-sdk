@@ -172,6 +172,28 @@ def test_build_snapshot_preserves_os_platform_correlation_for_mixed_nodes():
     assert snap.is_apple_silicon is False
 
 
+def test_build_snapshot_rejects_apple_only_inference_when_platform_rows_are_incomplete():
+    snap = cap.build_capability_snapshot(
+        [
+            _hw(
+                [],
+                node_id="apple",
+                processors=["Apple M4"],
+                os="Darwin",
+                platform="macOS-15.4-arm64-arm-64bit",
+            ),
+            _hw(
+                [],
+                node_id="unknown-platform",
+                processors=["AMD EPYC"],
+            ),
+        ]
+    )
+
+    assert snap.platform_inventory_complete is False
+    assert snap.is_apple_silicon is False
+
+
 # --------------------------------------------------------------------------- #
 # collect_capability_requirements
 # --------------------------------------------------------------------------- #

@@ -101,6 +101,7 @@ def test_cli_serve_deploy(
     client_factory,
     ensure_deployable_model_ready,
     deployable_model_target: InferenceTarget,
+    target_model_file_id,
     tmp_path: Path,
 ) -> None:
     """CLI ``serve deploy`` round-trip.
@@ -119,7 +120,10 @@ def test_cli_serve_deploy(
         base_args, env, live_username, live_password, token_path, pat_prefix="cli-deploy"
     )
     pat_client = client_factory(base_url=live_server_available, api_key=pat_token)
-    ensure_deployable_model_ready(pat_client)
+    model = ensure_deployable_model_ready(pat_client)
+    model_file_id = target_model_file_id(
+        model, deployable_model_target.quantization
+    )
 
     serve_result = run_cli(
         [
@@ -130,6 +134,7 @@ def test_cli_serve_deploy(
             deployable_model_target.repo_id,
             "--engine-name",
             deployable_model_target.engine_name,
+            *(["--file-id", model_file_id] if model_file_id else []),
             "--wait",
             "--poll-interval",
             "5",
