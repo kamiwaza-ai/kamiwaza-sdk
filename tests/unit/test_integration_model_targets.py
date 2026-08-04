@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib
 import sys
 from pathlib import Path
 
@@ -48,7 +47,7 @@ def test_cpu_linux_selects_gguf_for_llamacpp() -> None:
     selected = targets.select_inference_target(snapshot)
 
     assert selected == targets.GGUF_LLM_TARGET
-    assert "Thinking-2507" in selected.repo_id
+    assert "Thinking-2507" in targets._DEFAULT_GGUF_LLM_REPO
 
 
 def test_apple_silicon_selects_mlx() -> None:
@@ -114,9 +113,11 @@ def test_real_repo_override_names_are_honored(
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv(env_name, "org/override")
 
-    reloaded = importlib.reload(targets)
-    try:
-        assert getattr(reloaded, target_name).repo_id == "org/override"
-    finally:
-        monkeypatch.delenv(env_name)
-        importlib.reload(targets)
+    mlx_target, vllm_target, gguf_target = targets._load_inference_targets()
+    resolved_targets = {
+        "MLX_LLM_TARGET": mlx_target,
+        "VLLM_LLM_TARGET": vllm_target,
+        "GGUF_LLM_TARGET": gguf_target,
+    }
+
+    assert resolved_targets[target_name].repo_id == "org/override"

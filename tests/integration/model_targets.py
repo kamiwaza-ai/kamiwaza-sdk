@@ -26,30 +26,42 @@ def _configured_repo(generic_name: str, legacy_name: str, default: str) -> str:
     )
 
 
-MLX_LLM_TARGET: Final[InferenceTarget] = InferenceTarget(
-    repo_id=_configured_repo(
-        "KAMIWAZA_TEST_MLX_LLM_REPO",
-        "KAMIWAZA_CONTEXT_MLX_LLM_REPO",
-        "mlx-community/Qwen3-4B-4bit",
-    ),
-    engine_name="mlx",
-)
-VLLM_LLM_TARGET: Final[InferenceTarget] = InferenceTarget(
-    repo_id=_configured_repo(
-        "KAMIWAZA_TEST_VLLM_LLM_REPO",
-        "KAMIWAZA_CONTEXT_VLLM_LLM_REPO",
-        "Qwen/Qwen3-0.6B",
-    ),
-    engine_name="vllm",
-)
-GGUF_LLM_TARGET: Final[InferenceTarget] = InferenceTarget(
-    repo_id=_configured_repo(
-        "KAMIWAZA_TEST_GGUF_LLM_REPO",
-        "KAMIWAZA_CONTEXT_GGUF_LLM_REPO",
-        "unsloth/Qwen3-4B-Thinking-2507-GGUF",
-    ),
-    engine_name="llamacpp",
-)
+_DEFAULT_MLX_LLM_REPO: Final = "mlx-community/Qwen3-4B-4bit"
+_DEFAULT_VLLM_LLM_REPO: Final = "Qwen/Qwen3-0.6B"
+_DEFAULT_GGUF_LLM_REPO: Final = "unsloth/Qwen3-4B-Thinking-2507-GGUF"
+
+
+def _load_inference_targets() -> tuple[InferenceTarget, InferenceTarget, InferenceTarget]:
+    """Resolve all target overrides without mutating module state."""
+    return (
+        InferenceTarget(
+            repo_id=_configured_repo(
+                "KAMIWAZA_TEST_MLX_LLM_REPO",
+                "KAMIWAZA_CONTEXT_MLX_LLM_REPO",
+                _DEFAULT_MLX_LLM_REPO,
+            ),
+            engine_name="mlx",
+        ),
+        InferenceTarget(
+            repo_id=_configured_repo(
+                "KAMIWAZA_TEST_VLLM_LLM_REPO",
+                "KAMIWAZA_CONTEXT_VLLM_LLM_REPO",
+                _DEFAULT_VLLM_LLM_REPO,
+            ),
+            engine_name="vllm",
+        ),
+        InferenceTarget(
+            repo_id=_configured_repo(
+                "KAMIWAZA_TEST_GGUF_LLM_REPO",
+                "KAMIWAZA_CONTEXT_GGUF_LLM_REPO",
+                _DEFAULT_GGUF_LLM_REPO,
+            ),
+            engine_name="llamacpp",
+        ),
+    )
+
+
+MLX_LLM_TARGET, VLLM_LLM_TARGET, GGUF_LLM_TARGET = _load_inference_targets()
 
 
 def select_inference_target(

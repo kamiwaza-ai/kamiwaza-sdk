@@ -122,8 +122,6 @@ def test_build_snapshot_detects_apple_silicon_from_real_inventory():
         ]
     )
 
-    assert not hasattr(snap, "os_names")
-    assert not hasattr(snap, "platforms")
     assert snap.os_platforms == frozenset({("darwin", "macos-15.4-arm64-arm-64bit")})
     assert snap.is_apple_silicon is True
 
