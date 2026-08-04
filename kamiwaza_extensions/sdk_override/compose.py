@@ -17,7 +17,7 @@ from kamiwaza_extensions.sdk_override.classification import (
     detect_service_runtime,
     read_runtime_pythonpath,
 )
-from kamiwaza_extensions.sdk_override.spec import SdkOverrideSpec, console
+from kamiwaza_extensions.sdk_override.spec import SdkOverrideSpec
 
 # In-container path the SDK repo is bind-mounted at. Adding this to
 # PYTHONPATH lets ``import kamiwaza_extensions_lib`` resolve to the
@@ -89,28 +89,8 @@ def generate_compose_override(
         )
         if svc_override:
             override_services[svc_name] = svc_override
-        else:
-            _warn_no_overlay(svc_name, svc_type)
 
     return {"services": override_services}
-
-
-def _warn_no_overlay(svc_name: str, svc_type: str) -> None:
-    """Say so when a buildable service gets no SDK overlay.
-
-    Silence here is indistinguishable from "the overlay worked", which is
-    the wrong default under ``--sdk-repo``: the developer asked for their
-    local SDK and would otherwise debug a container still running the
-    published one.
-    """
-    if svc_type in ("backend", "frontend"):
-        # A recognized runtime with its lib disabled by the spec — the
-        # user turned it off, so this is expected and stays quiet.
-        return
-    console.print(
-        f"  [yellow]No SDK overlay for [bold]{svc_name}[/bold][/yellow] "
-        f"[dim](runtime classified as '{svc_type}', not Python or Node)[/dim]"
-    )
 
 
 def _read_compose_pythonpath(svc_config: dict) -> Optional[str]:
