@@ -1,6 +1,6 @@
 import logging
 from pathlib import Path
-from typing import Any, BinaryIO, List, Optional, Union
+from typing import Any, BinaryIO, Callable, List, Optional, Union
 from uuid import UUID
 
 from ..exceptions import APIError, NotFoundError
@@ -20,6 +20,14 @@ _UNSET = object()
 _EXPORT_CHUNK_SIZE = 64 * 1024
 
 
+def _is_deleted_scope_denial(error: APIError) -> bool:
+    if error.status_code != 403:
+        return False
+    payload = error.response_data
+    detail = payload.get("detail") if isinstance(payload, dict) else None
+    return detail == "Workroom access denied"
+
+
 class WorkroomService(BaseService):
     """Service for managing workrooms in the Kamiwaza platform.
 
@@ -31,6 +39,19 @@ class WorkroomService(BaseService):
     def __init__(self, client):
         super().__init__(client)
         self.logger = logging.getLogger(__name__)
+
+    def _request_with_scope_recovery(self, request: Callable[[], Any]) -> Any:
+        """Retry once with fresh password credentials after a deleted-room 403."""
+        try:
+            return request()
+        except APIError as error:
+            if not _is_deleted_scope_denial(error):
+                raise
+            authenticator = getattr(self.client, "authenticator", None)
+            invalidate = getattr(authenticator, "invalidate_session", None)
+            if not callable(invalidate) or not invalidate(self.client.session):
+                raise
+            return request()
 
     # -------------------------------------------------------------------------
     # User CRUD
@@ -247,9 +268,12 @@ class WorkroomService(BaseService):
         """Call the backend workroom-leave endpoint and return its response.
 
         Returned token fields are exposed for callers that manage tokens
-        themselves; this method does not mutate the SDK authenticator.
+        themselves. If a password-authenticated session is still scoped to a
+        deleted workroom, clear its cached credentials and retry once.
         """
-        response = self.client.post("/workrooms/leave")
+        response = self._request_with_scope_recovery(
+            lambda: self.client.post("/workrooms/leave")
+        )
         return LeaveWorkroomResponse.model_validate(response)
 
     # -------------------------------------------------------------------------

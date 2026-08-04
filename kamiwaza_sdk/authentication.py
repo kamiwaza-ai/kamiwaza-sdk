@@ -45,6 +45,14 @@ class Authenticator(ABC):
         """
         return True
 
+    def invalidate_session(self, session: requests.Session) -> bool:
+        """Invalidate cached session credentials when fresh login can recover.
+
+        Returns ``False`` by default so fixed credentials such as PATs are
+        never cleared or retried as though they were refreshable sessions.
+        """
+        return False
+
 
 class ApiKeyAuthenticator(Authenticator):
     """Simple bearer token authenticator backed by a PAT/API key."""
@@ -138,6 +146,17 @@ class UserPasswordAuthenticator(Authenticator):
         ):
             self.refresh_token(session)
         return self.token
+
+    def invalidate_session(self, session: requests.Session) -> bool:
+        """Discard a stale scoped session so the next request logs in afresh."""
+        self.token = None
+        self.token_expiry = None
+        self.refresh_token_value = None
+        if self.token_store:
+            self.token_store.clear()
+        session.headers.pop("Authorization", None)
+        session.cookies.clear()
+        return True
 
     def _store_token_response(self, token_response: TokenResponse) -> None:
         self.token = token_response.access_token

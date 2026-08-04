@@ -42,6 +42,18 @@ class ClusterCapabilitySnapshot:
     gpu_vendors: frozenset[str] = frozenset()
     mig_supported: Optional[bool] = None  # None => undeterminable
     node_count: int = 0
+    os_names: frozenset[str] = frozenset()
+    platforms: frozenset[str] = frozenset()
+
+    @property
+    def is_apple_silicon(self) -> bool:
+        """Whether trusted hardware inventory identifies Apple Silicon."""
+        if "darwin" not in self.os_names:
+            return False
+        arm_hints = ("arm64", "aarch64", "arm-64")
+        return any(
+            hint in platform for platform in self.platforms for hint in arm_hints
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -152,6 +164,33 @@ def _hardware_active(hardware: Any) -> Optional[bool]:
     return active if isinstance(active, bool) else None
 
 
+def _hardware_field(hardware: Any, field: str) -> Any:
+    value = getattr(hardware, field, None)
+    if value is None and isinstance(hardware, dict):
+        return hardware.get(field)
+    return value
+
+
+def _platform_inventory(
+    hardware_entries: Iterable[Any],
+) -> tuple[frozenset[str], frozenset[str]]:
+    """Read OS/platform only from rows backed by real device inventory."""
+    os_names: set[str] = set()
+    platforms: set[str] = set()
+    for hardware in hardware_entries:
+        gpus = _hardware_gpus(hardware)
+        processors = _hardware_field(hardware, "processors")
+        if gpus is None and processors is None:
+            continue
+        os_name = _hardware_field(hardware, "os")
+        platform = _hardware_field(hardware, "platform")
+        if isinstance(os_name, str) and os_name.strip():
+            os_names.add(os_name.strip().lower())
+        if isinstance(platform, str) and platform.strip():
+            platforms.add(platform.strip().lower())
+    return frozenset(os_names), frozenset(platforms)
+
+
 def build_capability_snapshot(
     hardware_entries: Iterable[Any],
     node_count: Optional[int] = None,
@@ -189,12 +228,16 @@ def build_capability_snapshot(
     if node_count is None:
         node_count = len({_hardware_node_key(hw) for hw in active_entries})
 
+    os_names, platforms = _platform_inventory(active_entries)
+
     return ClusterCapabilitySnapshot(
         gpu_count=len(gpu_dicts),
         gpu_mem_gb=tuple(mem_gb),
         gpu_vendors=frozenset(vendors),
         mig_supported=(any(mig_flags) if mig_flags else None),
         node_count=node_count or 0,
+        os_names=os_names,
+        platforms=platforms,
     )
 
 

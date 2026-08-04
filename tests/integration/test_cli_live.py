@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-TEST_REPO_ID = "mlx-community/Qwen3-4B-4bit"
+from model_targets import InferenceTarget
 
 pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
 
@@ -100,6 +100,7 @@ def test_cli_serve_deploy(
     live_password: str,
     client_factory,
     ensure_repo_ready,
+    deployable_model_target: InferenceTarget,
     tmp_path: Path,
 ) -> None:
     """CLI ``serve deploy`` round-trip.
@@ -118,7 +119,7 @@ def test_cli_serve_deploy(
         base_args, env, live_username, live_password, token_path, pat_prefix="cli-deploy"
     )
     pat_client = client_factory(base_url=live_server_available, api_key=pat_token)
-    ensure_repo_ready(pat_client, TEST_REPO_ID)
+    ensure_repo_ready(pat_client, deployable_model_target.repo_id)
 
     serve_result = run_cli(
         [
@@ -126,7 +127,9 @@ def test_cli_serve_deploy(
             "serve",
             "deploy",
             "--repo-id",
-            TEST_REPO_ID,
+            deployable_model_target.repo_id,
+            "--engine-name",
+            deployable_model_target.engine_name,
             "--wait",
             "--poll-interval",
             "5",

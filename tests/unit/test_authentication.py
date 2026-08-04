@@ -119,3 +119,28 @@ def test_user_password_authenticator_uses_cached_token():
 
     assert auth_service.login_calls == []
     assert session.headers["Authorization"] == "Bearer cached"
+
+
+def test_user_password_authenticator_invalidates_cached_session() -> None:
+    store = MemoryTokenStore()
+    store.value = StoredToken(
+        access_token="scoped",
+        refresh_token="scoped-refresh",
+        expires_at=time.time() + 60,
+    )
+    auth_service = DummyAuthService(login_error=RuntimeError("not used"))
+    authenticator = UserPasswordAuthenticator(
+        "admin", "secret", auth_service, token_store=store
+    )
+    session = requests.Session()
+    session.headers["Authorization"] = "Bearer scoped"
+    session.cookies.set("access_token", "scoped")
+
+    assert authenticator.invalidate_session(session) is True
+
+    assert authenticator.token is None
+    assert authenticator.refresh_token_value is None
+    assert authenticator.token_expiry is None
+    assert store.value is None
+    assert "Authorization" not in session.headers
+    assert not session.cookies

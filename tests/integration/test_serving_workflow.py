@@ -6,10 +6,10 @@ import pytest
 
 from kamiwaza_sdk.exceptions import APIError
 from kamiwaza_sdk.schemas.models.model import CreateModelConfig
+from model_targets import InferenceTarget
 
 pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
 
-TEST_REPO_ID = "mlx-community/Qwen3-4B-4bit"
 CONFIG_PREFIX = "sdk-m2"
 WAIT_TIMEOUT = 600
 
@@ -42,9 +42,13 @@ def _ensure_model_cached(client, model):
 
 
 @pytest.mark.requires_deployable_model
-def test_deploy_qwen_and_infer_with_strip_thinking(live_kamiwaza_client, ensure_repo_ready):
+def test_deploy_qwen_and_infer_with_strip_thinking(
+    live_kamiwaza_client,
+    ensure_repo_ready,
+    deployable_model_target: InferenceTarget,
+):
     client = live_kamiwaza_client
-    model = ensure_repo_ready(client, TEST_REPO_ID)
+    model = ensure_repo_ready(client, deployable_model_target.repo_id)
 
     _ensure_model_cached(client, model)
 
@@ -76,6 +80,7 @@ def test_deploy_qwen_and_infer_with_strip_thinking(live_kamiwaza_client, ensure_
             autoscaling=False,
             min_copies=1,
             starting_copies=1,
+            engine_name=deployable_model_target.engine_name,
             wait=False,
         )
         deployments.append(default_deployment)
@@ -87,6 +92,7 @@ def test_deploy_qwen_and_infer_with_strip_thinking(live_kamiwaza_client, ensure_
             autoscaling=False,
             min_copies=1,
             starting_copies=1,
+            engine_name=deployable_model_target.engine_name,
             wait=False,
         )
         deployments.append(strip_deployment)

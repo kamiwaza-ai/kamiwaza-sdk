@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import logging
 import os
 import time
 from collections.abc import Generator
@@ -15,6 +16,9 @@ from kamiwaza_sdk import KamiwazaClient
 from kamiwaza_sdk.authentication import UserPasswordAuthenticator
 from kamiwaza_sdk.exceptions import APIError, NotFoundError
 from kamiwaza_sdk.services.context import ContextService
+
+logger = logging.getLogger(__name__)
+_VECTORDB_STOPPED_GRACE_SECONDS = 30.0
 
 pytestmark = [
     pytest.mark.integration,
@@ -52,6 +56,28 @@ def _assert_global_scope_if_exposed(resource: dict[str, object]) -> None:
     assert str(workroom_id) == ContextService.DEFAULT_WORKROOM_ID
 
 
+def _next_stopped_since(
+    vectordb_id: str,
+    status: str,
+    stopped_since: float | None,
+    now: float,
+) -> float | None:
+    """Return updated stopped timing or raise for a terminal provisioning state."""
+    if status == "failed":
+        raise RuntimeError(
+            f"VectorDB {vectordb_id} entered non-recoverable status {status}"
+        )
+    if status != "stopped":
+        return None
+    if stopped_since is None:
+        return now
+    if now - stopped_since >= _VECTORDB_STOPPED_GRACE_SECONDS:
+        raise RuntimeError(
+            f"VectorDB {vectordb_id} remained stopped during provisioning"
+        )
+    return stopped_since
+
+
 def _wait_for_vectordb_ready(
     service: ContextService,
     vectordb_id: str,
@@ -62,6 +88,8 @@ def _wait_for_vectordb_ready(
 ) -> None:
     deadline = time.monotonic() + timeout_seconds
     last_status = "unknown"
+    reported_status: str | None = None
+    stopped_since: float | None = None
 
     while True:
         try:
@@ -74,13 +102,24 @@ def _wait_for_vectordb_ready(
 
         last_status = str(instance.get("status", "unknown")).lower()
         endpoint = instance.get("endpoint")
+        if last_status != reported_status:
+            logger.info(
+                "VectorDB %s provisioning status=%s endpoint=%s",
+                vectordb_id,
+                last_status,
+                endpoint,
+            )
+            reported_status = last_status
         if last_status == "running" and endpoint:
             return
-        if last_status in {"failed", "stopped"}:
-            raise RuntimeError(
-                f"VectorDB {vectordb_id} entered non-recoverable status {last_status}"
-            )
-        if time.monotonic() >= deadline:
+        now = time.monotonic()
+        stopped_since = _next_stopped_since(
+            vectordb_id,
+            last_status,
+            stopped_since,
+            now,
+        )
+        if now >= deadline:
             raise TimeoutError(
                 f"Timed out waiting for VectorDB {vectordb_id} to be ready "
                 f"(last_status={last_status}, endpoint={endpoint})"

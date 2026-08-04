@@ -35,6 +35,7 @@ from kamiwaza_sdk.utils.model_file_readiness import model_file_download_satisfie
 # is loaded by name, not as part of the ``integration`` package).
 sys.path.insert(0, str(Path(__file__).parent))
 import capability_markers as _cap  # noqa: E402
+import model_targets as _model_targets  # noqa: E402
 import peer_auth as _peer_auth  # noqa: E402
 
 DOCKER_COMPOSE_FILE = Path(__file__).parent / "docker" / "docker-compose.yml"
@@ -124,24 +125,9 @@ _TEXT_BODY_MARKERS = (
 )
 _CONTEXT_TEST_LLM_REPO_OVERRIDE = os.environ.get("KAMIWAZA_CONTEXT_LLM_REPO", "").strip()
 _CONTEXT_TEST_LLM_ENGINE_OVERRIDE = os.environ.get("KAMIWAZA_CONTEXT_LLM_ENGINE", "").strip()
-CONTEXT_TEST_MLX_LLM_REPO = os.environ.get(
-    "KAMIWAZA_CONTEXT_MLX_LLM_REPO",
-    "mlx-community/Qwen3-4B-4bit",
-)
-CONTEXT_TEST_VLLM_LLM_REPO = os.environ.get(
-    "KAMIWAZA_CONTEXT_VLLM_LLM_REPO",
-    "Qwen/Qwen3-0.6B",
-)
 CONTEXT_TEST_LLM_DEPLOY_TIMEOUT_SECONDS = float(
     os.environ.get("KAMIWAZA_CONTEXT_LLM_DEPLOY_TIMEOUT_SECONDS", "600")
 )
-# Must stay in sync with TEST_REPO_ID in test_serving_workflow.py and
-# test_cli_live.py: the capability probe deploys the same model through the
-# same default-engine path the gated tests use, so the gate's skip/run verdict
-# matches what the tests will actually do. Intentionally not env-overridable —
-# an override here that the test modules don't honor would let the probe pass
-# while the tests deploy a different model and fail instead of skip.
-DEPLOYABLE_TEST_MODEL_REPO = "mlx-community/Qwen3-4B-4bit"
 DEPLOYABLE_TEST_DEPLOY_TIMEOUT_SECONDS = float(
     os.environ.get("KAMIWAZA_DEPLOYABLE_TEST_DEPLOY_TIMEOUT_SECONDS", "600")
 )
@@ -634,17 +620,15 @@ def _context_llm_target(
 ) -> tuple[str, str | None]:
     """Select a context-test LLM repo/engine for the live host.
 
-    MLX remains the default for non-NVIDIA hosts, but Linux/NVIDIA release UAT
-    must not send the MLX-quantized smoke model through vLLM by accident.
+    Explicit context overrides win; otherwise use the shared platform target.
     """
     if _CONTEXT_TEST_LLM_REPO_OVERRIDE:
         return (
             _CONTEXT_TEST_LLM_REPO_OVERRIDE,
             _CONTEXT_TEST_LLM_ENGINE_OVERRIDE or None,
         )
-    if snapshot is not None and "nvidia" in snapshot.gpu_vendors:
-        return CONTEXT_TEST_VLLM_LLM_REPO, _CONTEXT_TEST_LLM_ENGINE_OVERRIDE or "vllm"
-    return CONTEXT_TEST_MLX_LLM_REPO, _CONTEXT_TEST_LLM_ENGINE_OVERRIDE or "mlx"
+    target = _model_targets.select_inference_target(snapshot)
+    return target.repo_id, _CONTEXT_TEST_LLM_ENGINE_OVERRIDE or target.engine_name
 
 
 def _active_embedding_deployment(client: KamiwazaClient) -> dict[str, str] | None:
@@ -1384,39 +1368,36 @@ def context_llm_prerequisite(
 
 
 @pytest.fixture(scope="session")
+def deployable_model_target(
+    cluster_capability_snapshot: _cap.ClusterCapabilitySnapshot | None,
+) -> _model_targets.InferenceTarget:
+    """The shared model/engine pair used by probe, serving, and CLI tests."""
+    return _model_targets.select_inference_target(cluster_capability_snapshot)
+
+
+@pytest.fixture(scope="session")
 def deployable_model_prerequisite(
     live_kamiwaza_session_client: KamiwazaClient,
     ensure_repo_ready,
+    deployable_model_target: _model_targets.InferenceTarget,
 ) -> None:
     """Skip once if this host cannot deploy the integration test model.
 
-    Serving/CLI tests that deploy ``DEPLOYABLE_TEST_MODEL_REPO`` (an MLX model)
-    fail with a 5xx on hosts without compatible inference capacity — e.g. the
-    x86 CPU Azure smoke. Probe deployability once per session and skip the
-    marked tests instead of failing them. Mirrors ``embedding_model_prerequisite``
-    / ``context_llm_prerequisite``; the probe tears down its own deployment so
-    dependent tests perform their own deploys.
+    Probe deployability once per session and skip the marked tests instead of
+    failing them. The shared target fixture keeps the probe and tests on the
+    exact same platform-compatible model and engine.
     """
     client = live_kamiwaza_session_client
-    # Short-circuit ONLY when the exact test model is already deployed — a
-    # different active LLM does not prove this host can deploy DEPLOYABLE_TEST_MODEL_REPO
-    # (e.g. MLX on x86), so in that case we must still probe.
-    existing = _preferred_active_model_deployment(
-        client,
-        desired_type="llm",
-        preferred_repo_id=DEPLOYABLE_TEST_MODEL_REPO,
-    )
-    if existing is not None and existing.get("repo_model_id") == DEPLOYABLE_TEST_MODEL_REPO:
-        return  # the test model itself is already deployed → host is capable
-
+    repo_id = deployable_model_target.repo_id
+    engine_name = deployable_model_target.engine_name
     probe_deployment_id: str | None = None
     try:
-        model = ensure_repo_ready(client, DEPLOYABLE_TEST_MODEL_REPO)
+        model = ensure_repo_ready(client, repo_id)
         configs = client.models.get_model_configs(model.id)
         if not configs:
             pytest.skip(
                 "No model configs available for deployable test model "
-                f"'{DEPLOYABLE_TEST_MODEL_REPO}'"
+                f"'{repo_id}'"
             )
         default_config = next(
             (config for config in configs if config.default), configs[0]
@@ -1428,13 +1409,14 @@ def deployable_model_prerequisite(
             autoscaling=False,
             min_copies=1,
             starting_copies=1,
+            engine_name=engine_name,
             # The probe's wait_for_deployment below owns the timeout
             # (DEPLOYABLE_TEST_DEPLOY_TIMEOUT_SECONDS), not the SDK default.
             wait=False,
         )
         if not raw_deployment_id:
             pytest.skip(
-                f"deploy_model returned no id for '{DEPLOYABLE_TEST_MODEL_REPO}' "
+                f"deploy_model returned no id for '{repo_id}' "
                 "(deploy refused on this host)."
             )
         probe_deployment_id = str(raw_deployment_id)
@@ -1451,7 +1433,7 @@ def deployable_model_prerequisite(
         _stop_deployment_quietly(client, probe_deployment_id)
         pytest.skip(
             "Host cannot provision integration test model (download/deploy) "
-            f"'{DEPLOYABLE_TEST_MODEL_REPO}': {type(exc).__name__}: {exc}"
+            f"'{repo_id}' (engine={engine_name}): {type(exc).__name__}: {exc}"
         )
     except APIError as exc:
         # Only a 5xx (server cannot bring the model up on this host) is a
@@ -1464,14 +1446,14 @@ def deployable_model_prerequisite(
             raise
         pytest.skip(
             "Host cannot provision integration test model (download/deploy) "
-            f"'{DEPLOYABLE_TEST_MODEL_REPO}': APIError {status_code}: {exc}"
+            f"'{repo_id}' (engine={engine_name}): APIError {status_code}: {exc}"
         )
 
     ready = _platform_deployment_ready(deployment)
     _stop_deployment_quietly(client, probe_deployment_id)
     if not ready:
         pytest.skip(
-            f"Integration test model '{DEPLOYABLE_TEST_MODEL_REPO}' did not become "
+            f"Integration test model '{repo_id}' (engine={engine_name}) did not become "
             "ready on this host."
         )
 

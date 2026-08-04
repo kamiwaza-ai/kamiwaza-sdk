@@ -178,6 +178,52 @@ def test_requires_embedding_model_marker_leaves_unmarked_tests_alone(
     assert request.requested == []
 
 
+def test_deployable_model_probe_uses_shared_repo_and_engine(
+    integration_conftest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = integration_conftest._model_targets.InferenceTarget(
+        repo_id="org/model.gguf",
+        engine_name="llamacpp",
+    )
+    deploy_calls: list[dict[str, object]] = []
+
+    class Serving:
+        def deploy_model(self, **kwargs: object) -> str:
+            deploy_calls.append(kwargs)
+            return "dep-1"
+
+        def wait_for_deployment(self, *_args: object, **_kwargs: object) -> object:
+            return SimpleNamespace(
+                status="DEPLOYED",
+                instances=[SimpleNamespace(status="DEPLOYED")],
+            )
+
+        def stop_deployment(self, **_kwargs: object) -> None:
+            return None
+
+    client = SimpleNamespace(
+        serving=Serving(),
+        models=SimpleNamespace(
+            get_model_configs=lambda _model_id: [
+                SimpleNamespace(id="cfg-1", default=True)
+            ]
+        ),
+    )
+    ensure_repo_ready = lambda _client, repo_id: SimpleNamespace(  # noqa: E731
+        id=f"model-for-{repo_id}"
+    )
+
+    integration_conftest.deployable_model_prerequisite.__wrapped__(
+        client,
+        ensure_repo_ready,
+        target,
+    )
+
+    assert deploy_calls[0]["model_id"] == "model-for-org/model.gguf"
+    assert deploy_calls[0]["engine_name"] == "llamacpp"
+
+
 def test_embedding_model_prerequisite_marks_harness_provisioned_deployment(
     integration_conftest,
     monkeypatch: pytest.MonkeyPatch,
