@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import io
+import time
 import uuid
 from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
 
+from kamiwaza_sdk.authentication import UserPasswordAuthenticator
+from kamiwaza_sdk.client import KamiwazaClient
 from kamiwaza_sdk.exceptions import APIError, NotFoundError
+from kamiwaza_sdk.schemas.auth import TokenResponse
 from kamiwaza_sdk.schemas.workrooms import (
     CreateWorkroom,
     DeleteWorkroomResponse,
@@ -19,11 +23,69 @@ from kamiwaza_sdk.schemas.workrooms import (
     WorkroomType,
 )
 from kamiwaza_sdk.services.workrooms import WorkroomService
+from kamiwaza_sdk.token_store import InMemoryTokenStore, StoredToken
 
 pytestmark = pytest.mark.unit
 
 WORKROOM_ID = "12345678-1234-5678-9012-123456789012"
 WORKROOM_UUID = uuid.UUID(WORKROOM_ID)
+
+
+def _deleted_scope_denial(
+    detail: str = "Workroom access denied", *, message: str = "denied"
+) -> APIError:
+    return APIError(
+        message,
+        status_code=403,
+        response_data={"detail": detail},
+    )
+
+
+def _leave_response() -> dict[str, object]:
+    return {
+        "workroom_id": "ffffffff-ffff-ffff-ffff-ffffffffffff",
+        "access_token": "global-token",
+        "expires_in": 3600,
+        "message": "Returned to no-workroom scope",
+    }
+
+
+class _RecoveryAuthenticator:
+    def __init__(self, *, recoverable: bool, fail_if_called: bool = False) -> None:
+        self.recoverable = recoverable
+        self.fail_if_called = fail_if_called
+        self.invalidations = 0
+
+    def invalidate_session(self, _session: object) -> bool:
+        if self.fail_if_called:
+            pytest.fail("credentials must not be invalidated")
+        self.invalidations += 1
+        return self.recoverable
+
+
+class _RecoveryClient:
+    def __init__(
+        self,
+        responses: list[dict[str, object] | Exception],
+        *,
+        recoverable: bool = True,
+        fail_on_invalidation: bool = False,
+    ) -> None:
+        self.authenticator = _RecoveryAuthenticator(
+            recoverable=recoverable,
+            fail_if_called=fail_on_invalidation,
+        )
+        self.session = SimpleNamespace()
+        self.responses = iter(responses)
+        self.calls = 0
+
+    def post(self, path: str) -> dict[str, object]:
+        assert path == "/workrooms/leave"
+        self.calls += 1
+        response = next(self.responses)
+        if isinstance(response, Exception):
+            raise response
+        return response
 
 
 def _workroom_response(**overrides):
@@ -510,37 +572,7 @@ def test_leave_posts_to_leave_endpoint(dummy_client):
 
 
 def test_leave_recovers_once_from_deleted_workroom_scope() -> None:
-    class RecoverableAuthenticator:
-        def __init__(self) -> None:
-            self.invalidations = 0
-
-        def invalidate_session(self, _session) -> bool:
-            self.invalidations += 1
-            return True
-
-    class RecoverableClient:
-        def __init__(self) -> None:
-            self.authenticator = RecoverableAuthenticator()
-            self.session = SimpleNamespace()
-            self.calls = 0
-
-        def post(self, path: str):
-            assert path == "/workrooms/leave"
-            self.calls += 1
-            if self.calls == 1:
-                raise APIError(
-                    "denied",
-                    status_code=403,
-                    response_data={"detail": "Workroom access denied"},
-                )
-            return {
-                "workroom_id": "ffffffff-ffff-ffff-ffff-ffffffffffff",
-                "access_token": "global-token",
-                "expires_in": 3600,
-                "message": "Returned to no-workroom scope",
-            }
-
-    client = RecoverableClient()
+    client = _RecoveryClient([_deleted_scope_denial(), _leave_response()])
 
     result = WorkroomService(client).leave()
 
@@ -549,26 +581,83 @@ def test_leave_recovers_once_from_deleted_workroom_scope() -> None:
     assert client.authenticator.invalidations == 1
 
 
-def test_leave_does_not_mask_retry_failure() -> None:
-    class RecoverableAuthenticator:
-        def invalidate_session(self, _session) -> bool:
-            return True
-
-    class FailingClient:
+def test_leave_reauthenticates_real_client_after_deleted_workroom_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class AuthService:
         def __init__(self) -> None:
-            self.authenticator = RecoverableAuthenticator()
-            self.session = SimpleNamespace()
-            self.calls = 0
+            self.login_calls: list[tuple[str, str]] = []
 
-        def post(self, _path: str):
-            self.calls += 1
-            raise APIError(
-                "denied",
-                status_code=403,
-                response_data={"detail": "Workroom access denied"},
+        def login_with_password(self, username: str, password: str) -> TokenResponse:
+            self.login_calls.append((username, password))
+            return TokenResponse(
+                access_token="global-token",
+                refresh_token="global-refresh",
+                expires_in=3600,
             )
 
-    client = FailingClient()
+    class Response:
+        def __init__(self, status_code: int, payload: dict[str, object]) -> None:
+            self.status_code = status_code
+            self._payload = payload
+            self.text = str(payload)
+            self.headers = {"content-type": "application/json"}
+
+        def json(self) -> dict[str, object]:
+            return self._payload
+
+    store = InMemoryTokenStore()
+    store.save(
+        StoredToken(
+            access_token="scoped-token",
+            refresh_token="scoped-refresh",
+            expires_at=time.time() + 3600,
+        )
+    )
+    auth_service = AuthService()
+    authenticator = UserPasswordAuthenticator(
+        "admin",
+        "secret",
+        auth_service,
+        token_store=store,
+    )
+    client = KamiwazaClient(
+        base_url="https://example.test/api",
+        authenticator=authenticator,
+    )
+    responses = iter(
+        [
+            Response(403, {"detail": "Workroom access denied"}),
+            Response(
+                200,
+                {
+                    "workroom_id": "ffffffff-ffff-ffff-ffff-ffffffffffff",
+                    "access_token": "global-token",
+                    "expires_in": 3600,
+                    "message": "Returned to no-workroom scope",
+                },
+            ),
+        ]
+    )
+    observed_authorization: list[str | None] = []
+
+    def request(*_args: object, **_kwargs: object) -> Response:
+        observed_authorization.append(client.session.headers.get("Authorization"))
+        return next(responses)
+
+    monkeypatch.setattr(client.session, "request", request)
+
+    result = client.workrooms.leave()
+
+    assert result.access_token == "global-token"
+    assert auth_service.login_calls == [("admin", "secret")]
+    assert observed_authorization == ["Bearer scoped-token", "Bearer global-token"]
+    assert store.load() is not None
+    assert store.load().access_token == "global-token"
+
+
+def test_leave_does_not_mask_retry_failure() -> None:
+    client = _RecoveryClient([_deleted_scope_denial(), _deleted_scope_denial()])
 
     with pytest.raises(APIError, match="denied"):
         WorkroomService(client).leave()
@@ -577,25 +666,10 @@ def test_leave_does_not_mask_retry_failure() -> None:
 
 
 def test_leave_does_not_retry_unrelated_forbidden_response() -> None:
-    class UnexpectedClient:
-        def __init__(self) -> None:
-            self.authenticator = SimpleNamespace(
-                invalidate_session=lambda _session: pytest.fail(
-                    "unrelated 403 must not invalidate credentials"
-                )
-            )
-            self.session = SimpleNamespace()
-            self.calls = 0
-
-        def post(self, _path: str):
-            self.calls += 1
-            raise APIError(
-                "forbidden",
-                status_code=403,
-                response_data={"detail": "Insufficient permissions"},
-            )
-
-    client = UnexpectedClient()
+    client = _RecoveryClient(
+        [_deleted_scope_denial("Insufficient permissions", message="forbidden")],
+        fail_on_invalidation=True,
+    )
 
     with pytest.raises(APIError, match="forbidden"):
         WorkroomService(client).leave()
@@ -604,25 +678,7 @@ def test_leave_does_not_retry_unrelated_forbidden_response() -> None:
 
 
 def test_leave_does_not_retry_deleted_scope_denial_for_fixed_credentials() -> None:
-    class FixedAuthenticator:
-        def invalidate_session(self, _session) -> bool:
-            return False
-
-    class FixedCredentialClient:
-        def __init__(self) -> None:
-            self.authenticator = FixedAuthenticator()
-            self.session = SimpleNamespace()
-            self.calls = 0
-
-        def post(self, _path: str):
-            self.calls += 1
-            raise APIError(
-                "denied",
-                status_code=403,
-                response_data={"detail": "Workroom access denied"},
-            )
-
-    client = FixedCredentialClient()
+    client = _RecoveryClient([_deleted_scope_denial()], recoverable=False)
 
     with pytest.raises(APIError, match="denied"):
         WorkroomService(client).leave()

@@ -7,6 +7,7 @@ import logging
 import os
 import time
 from collections.abc import Generator
+from typing import Final
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
@@ -18,7 +19,7 @@ from kamiwaza_sdk.exceptions import APIError, NotFoundError
 from kamiwaza_sdk.services.context import ContextService
 
 logger = logging.getLogger(__name__)
-_VECTORDB_STOPPED_GRACE_SECONDS = 30.0
+_VECTORDB_STOPPED_GRACE_SECONDS: Final[float] = 30.0
 
 pytestmark = [
     pytest.mark.integration,

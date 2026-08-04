@@ -44,15 +44,15 @@ class ClusterCapabilitySnapshot:
     node_count: int = 0
     os_names: frozenset[str] = frozenset()
     platforms: frozenset[str] = frozenset()
+    os_platforms: frozenset[tuple[str, str]] = frozenset()
 
     @property
     def is_apple_silicon(self) -> bool:
         """Whether trusted hardware inventory identifies Apple Silicon."""
-        if "darwin" not in self.os_names:
-            return False
         arm_hints = ("arm64", "aarch64", "arm-64")
         return any(
-            hint in platform for platform in self.platforms for hint in arm_hints
+            os_name == "darwin" and any(hint in platform for hint in arm_hints)
+            for os_name, platform in self.os_platforms
         )
 
 
@@ -171,12 +171,21 @@ def _hardware_field(hardware: Any, field: str) -> Any:
     return value
 
 
+def _normalized_text(value: Any) -> str:
+    return value.strip().lower() if isinstance(value, str) else ""
+
+
 def _platform_inventory(
     hardware_entries: Iterable[Any],
-) -> tuple[frozenset[str], frozenset[str]]:
+) -> tuple[
+    frozenset[str],
+    frozenset[str],
+    frozenset[tuple[str, str]],
+]:
     """Read OS/platform only from rows backed by real device inventory."""
     os_names: set[str] = set()
     platforms: set[str] = set()
+    os_platforms: set[tuple[str, str]] = set()
     for hardware in hardware_entries:
         gpus = _hardware_gpus(hardware)
         processors = _hardware_field(hardware, "processors")
@@ -184,11 +193,15 @@ def _platform_inventory(
             continue
         os_name = _hardware_field(hardware, "os")
         platform = _hardware_field(hardware, "platform")
-        if isinstance(os_name, str) and os_name.strip():
-            os_names.add(os_name.strip().lower())
-        if isinstance(platform, str) and platform.strip():
-            platforms.add(platform.strip().lower())
-    return frozenset(os_names), frozenset(platforms)
+        normalized_os = _normalized_text(os_name)
+        normalized_platform = _normalized_text(platform)
+        if normalized_os:
+            os_names.add(normalized_os)
+        if normalized_platform:
+            platforms.add(normalized_platform)
+        if normalized_os and normalized_platform:
+            os_platforms.add((normalized_os, normalized_platform))
+    return frozenset(os_names), frozenset(platforms), frozenset(os_platforms)
 
 
 def build_capability_snapshot(
@@ -228,7 +241,7 @@ def build_capability_snapshot(
     if node_count is None:
         node_count = len({_hardware_node_key(hw) for hw in active_entries})
 
-    os_names, platforms = _platform_inventory(active_entries)
+    os_names, platforms, os_platforms = _platform_inventory(active_entries)
 
     return ClusterCapabilitySnapshot(
         gpu_count=len(gpu_dicts),
@@ -238,6 +251,7 @@ def build_capability_snapshot(
         node_count=node_count or 0,
         os_names=os_names,
         platforms=platforms,
+        os_platforms=os_platforms,
     )
 
 

@@ -13,6 +13,32 @@ import model_targets as targets  # noqa: E402
 pytestmark = pytest.mark.unit
 
 
+def test_suite_repo_override_wins_and_rejects_blank_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KAMIWAZA_TEST_TARGET_REPO", "  org/suite-target  ")
+    monkeypatch.setenv("KAMIWAZA_CONTEXT_TARGET_REPO", "org/legacy-target")
+
+    assert (
+        targets._configured_repo(
+            "KAMIWAZA_TEST_TARGET_REPO",
+            "KAMIWAZA_CONTEXT_TARGET_REPO",
+            "org/default-target",
+        )
+        == "org/suite-target"
+    )
+
+    monkeypatch.setenv("KAMIWAZA_TEST_TARGET_REPO", "  ")
+    assert (
+        targets._configured_repo(
+            "KAMIWAZA_TEST_TARGET_REPO",
+            "KAMIWAZA_CONTEXT_TARGET_REPO",
+            "org/default-target",
+        )
+        == "org/legacy-target"
+    )
+
+
 def test_cpu_linux_selects_gguf_for_llamacpp() -> None:
     snapshot = cap.ClusterCapabilitySnapshot(
         os_names=frozenset({"linux"}),
@@ -26,6 +52,9 @@ def test_apple_silicon_selects_mlx() -> None:
     snapshot = cap.ClusterCapabilitySnapshot(
         os_names=frozenset({"darwin"}),
         platforms=frozenset({"macos-15.4-arm64-arm-64bit"}),
+        os_platforms=frozenset(
+            {("darwin", "macos-15.4-arm64-arm-64bit")}
+        ),
     )
 
     assert targets.select_inference_target(snapshot) == targets.MLX_LLM_TARGET

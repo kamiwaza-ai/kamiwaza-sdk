@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from typing import Final
 
 from capability_markers import ClusterCapabilitySnapshot
 
@@ -16,22 +17,34 @@ class InferenceTarget:
     engine_name: str
 
 
-MLX_LLM_TARGET = InferenceTarget(
-    repo_id=os.environ.get(
+def _configured_repo(generic_name: str, legacy_name: str, default: str) -> str:
+    """Resolve a non-blank suite override, retaining context-test compatibility."""
+    return (
+        os.environ.get(generic_name, "").strip()
+        or os.environ.get(legacy_name, "").strip()
+        or default
+    )
+
+
+MLX_LLM_TARGET: Final[InferenceTarget] = InferenceTarget(
+    repo_id=_configured_repo(
+        "KAMIWAZA_TEST_MLX_LLM_REPO",
         "KAMIWAZA_CONTEXT_MLX_LLM_REPO",
         "mlx-community/Qwen3-4B-4bit",
     ),
     engine_name="mlx",
 )
-VLLM_LLM_TARGET = InferenceTarget(
-    repo_id=os.environ.get(
+VLLM_LLM_TARGET: Final[InferenceTarget] = InferenceTarget(
+    repo_id=_configured_repo(
+        "KAMIWAZA_TEST_VLLM_LLM_REPO",
         "KAMIWAZA_CONTEXT_VLLM_LLM_REPO",
         "Qwen/Qwen3-0.6B",
     ),
     engine_name="vllm",
 )
-GGUF_LLM_TARGET = InferenceTarget(
-    repo_id=os.environ.get(
+GGUF_LLM_TARGET: Final[InferenceTarget] = InferenceTarget(
+    repo_id=_configured_repo(
+        "KAMIWAZA_TEST_GGUF_LLM_REPO",
         "KAMIWAZA_CONTEXT_GGUF_LLM_REPO",
         "unsloth/Qwen3-4B-Instruct-2507-GGUF",
     ),

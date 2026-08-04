@@ -150,6 +150,29 @@ def test_build_snapshot_ignores_platform_from_synthetic_inventory_rows():
     assert snap.is_apple_silicon is False
 
 
+def test_build_snapshot_preserves_os_platform_correlation_for_mixed_nodes():
+    snap = cap.build_capability_snapshot(
+        [
+            _hw(
+                [],
+                node_id="darwin-x86",
+                processors=["Intel"],
+                os="Darwin",
+                platform="macOS-15.4-x86_64-i386-64bit",
+            ),
+            _hw(
+                [],
+                node_id="linux-arm",
+                processors=["Ampere"],
+                os="Linux",
+                platform="Linux-6.8-aarch64-with-glibc2.39",
+            ),
+        ]
+    )
+
+    assert snap.is_apple_silicon is False
+
+
 # --------------------------------------------------------------------------- #
 # collect_capability_requirements
 # --------------------------------------------------------------------------- #

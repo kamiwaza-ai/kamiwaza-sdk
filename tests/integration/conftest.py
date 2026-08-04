@@ -1375,6 +1375,15 @@ def deployable_model_target(
     return _model_targets.select_inference_target(cluster_capability_snapshot)
 
 
+def _default_model_config(
+    client: KamiwazaClient, model_id: object, repo_id: str
+) -> Any:
+    configs = client.models.get_model_configs(model_id)
+    if not configs:
+        pytest.skip(f"No model configs available for deployable test model '{repo_id}'")
+    return next((config for config in configs if config.default), configs[0])
+
+
 @pytest.fixture(scope="session")
 def deployable_model_prerequisite(
     live_kamiwaza_session_client: KamiwazaClient,
@@ -1393,15 +1402,7 @@ def deployable_model_prerequisite(
     probe_deployment_id: str | None = None
     try:
         model = ensure_repo_ready(client, repo_id)
-        configs = client.models.get_model_configs(model.id)
-        if not configs:
-            pytest.skip(
-                "No model configs available for deployable test model "
-                f"'{repo_id}'"
-            )
-        default_config = next(
-            (config for config in configs if config.default), configs[0]
-        )
+        default_config = _default_model_config(client, model.id, repo_id)
         raw_deployment_id = client.serving.deploy_model(
             model_id=str(model.id),
             m_config_id=default_config.id,

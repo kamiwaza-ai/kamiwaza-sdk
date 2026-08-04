@@ -107,7 +107,7 @@ def test_cli_serve_deploy(
 
     Requires a host that can actually deploy the test model; gated by
     ``requires_deployable_model`` so it skips (rather than fails) on hosts
-    without compatible inference capacity (e.g. the x86 CPU smoke vs an MLX model).
+    without compatible inference capacity for the platform-selected target.
     """
     token_path = tmp_path / "token.json"
     base_args = ["--base-url", live_server_available, "--token-path", str(token_path)]
