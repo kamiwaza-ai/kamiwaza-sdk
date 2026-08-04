@@ -45,7 +45,10 @@ def test_cpu_linux_selects_gguf_for_llamacpp() -> None:
         platforms=frozenset({"linux-5.14.0-el9.x86_64"}),
     )
 
-    assert targets.select_inference_target(snapshot) == targets.GGUF_LLM_TARGET
+    selected = targets.select_inference_target(snapshot)
+
+    assert selected == targets.GGUF_LLM_TARGET
+    assert "Thinking-2507" in selected.repo_id
 
 
 def test_apple_silicon_selects_mlx() -> None:

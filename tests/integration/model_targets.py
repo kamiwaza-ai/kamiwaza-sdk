@@ -46,7 +46,7 @@ GGUF_LLM_TARGET: Final[InferenceTarget] = InferenceTarget(
     repo_id=_configured_repo(
         "KAMIWAZA_TEST_GGUF_LLM_REPO",
         "KAMIWAZA_CONTEXT_GGUF_LLM_REPO",
-        "unsloth/Qwen3-4B-Instruct-2507-GGUF",
+        "unsloth/Qwen3-4B-Thinking-2507-GGUF",
     ),
     engine_name="llamacpp",
 )
