@@ -69,7 +69,7 @@ build-backend = "setuptools.build_meta"
 [project.scripts]
 kz-ext = "kamiwaza_extensions.cli:app"
 kamiwaza-seed = "kamiwaza_sdk.seeding.cli:main"
-kamiwaza-fed = "kamiwaza_sdk.seeding.federation.cli:main"
+kamiwaza-federation = "kamiwaza_sdk.seeding.federation.cli:main"
 
 # `kamiwaza-extensions-lib` is published as its own PyPI distribution
 # from `kamiwaza_extensions_lib/pyproject.toml`. For local dev / tests we

@@ -121,9 +121,9 @@ federation:
 The local `KAMIWAZA_PAT` continues to serve local calls unchanged; targets in
 other identity modes (`peer_kc` / `shared_idp`) are unaffected (no header added).
 
-## The `kamiwaza-fed` CLI
+## The `kamiwaza-federation` CLI
 
-The SDK ships an operator/test utility, `kamiwaza-fed`
+The SDK ships an operator/test utility, `kamiwaza-federation`
 (`kamiwaza_sdk.seeding.federation`), that scripts shared_idp stand-up and ReBAC
 access seeding. Groups: `access` (ReBAC grants), `fed` (pair / status /
 allow-user / unpair), `dataset` / `gate` / `attr` (gated-retrieval setup), and
