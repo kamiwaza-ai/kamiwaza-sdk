@@ -16,35 +16,52 @@ Two passes:
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, List, Literal, Optional
 
 from kamiwaza_extensions.compose_ports import extract_container_port
+
+ServiceRuntime = Literal["frontend", "backend", "static", "other"]
+
+_PYTHON_IMAGE_TOKENS = ("python",)
+_NODE_IMAGE_TOKENS = ("node", "bun")
+_STATIC_IMAGE_TOKENS = ("nginx", "caddy", "httpd", "apache")
+_PYTHONPATH_ENV_RE = re.compile(
+    r"""^\s*ENV\s+
+        (?:.*?\s+)?              # allow other ENV pairs before ours
+        PYTHONPATH
+        (?:\s*=\s*|\s+)          # = or space (legacy ``ENV PYTHONPATH /val``)
+        ("?)([^"\s]+)\1          # quoted-or-bare value
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
 
 
 def detect_service_type(
     svc_name: str,
     svc_config: dict,
-) -> str:
+) -> ServiceRuntime:
     """Heuristic: classify a compose service as 'frontend' or 'backend'.
 
-    Uses service name, port, and Dockerfile path as signals.
+    Uses service name, port, and Dockerfile path as signals. This is the
+    fallback whenever no Dockerfile base image is readable, so a service
+    that only declares ``build: ./backend`` still classifies.
     """
     name_lower = svc_name.lower()
-    if "frontend" in name_lower or "ui" in name_lower or "web" in name_lower:
+    if any(token in name_lower for token in ("frontend", "ui", "web")):
         return "frontend"
 
-    # Check Dockerfile path
     build = svc_config.get("build", {})
     if isinstance(build, dict):
-        dockerfile = build.get("dockerfile", "")
-        context = build.get("context", "")
-        if "frontend" in dockerfile.lower() or "frontend" in context.lower():
+        dockerfile = str(build.get("dockerfile", "")).lower()
+        context = str(build.get("context", "")).lower()
+        if "frontend" in dockerfile or "frontend" in context:
             return "frontend"
 
-    # Check ports — uses the shared compose-port parser so all three
-    # spec shapes (bare, host:container, long-form dict) classify the
-    # same way. Mirrors ``_should_use_node_frontend_probe``.
+    # Uses the shared compose-port parser so all three spec shapes (bare,
+    # host:container, long-form dict) classify the same way. Mirrors
+    # ``_should_use_node_frontend_probe``.
     for port_spec in svc_config.get("ports", []):
         if extract_container_port(port_spec) in (3000, 3001):
             return "frontend"
@@ -57,7 +74,7 @@ def detect_service_runtime(
     svc_config: dict,
     *,
     extension_dir: Optional[Path] = None,
-) -> str:
+) -> ServiceRuntime:
     """Classify a service runtime for SDK override purposes.
 
     Returns one of:
@@ -66,22 +83,16 @@ def detect_service_runtime(
     - ``static`` for generic web servers such as nginx/caddy/httpd
 
     When the Dockerfile is available, prefer its final base image over naming
-    heuristics so converted static apps do not get a Python SDK overlay.
+    heuristics so converted static apps do not get a Python SDK overlay. An
+    unreadable Dockerfile, or a base image matching no known runtime token,
+    falls back to ``detect_service_type``.
     """
-    dockerfile = None
-    if extension_dir is not None and "build" in svc_config:
-        dockerfile = _resolve_dockerfile(svc_config["build"], extension_dir)
-
-    base_image = _read_final_base_image(dockerfile) if dockerfile else None
+    dockerfile = _service_dockerfile(svc_config, extension_dir)
+    base_image = _read_final_base_image(dockerfile)
     if base_image:
-        base = base_image.split(":")[0].rsplit("/", 1)[-1]
-        if "python" in base:
-            return "backend"
-        if "node" in base or "bun" in base:
-            return "frontend"
-        if any(token in base for token in ("nginx", "caddy", "httpd", "apache")):
-            return "static"
-
+        runtime = _classify_runtime_image(base_image)
+        if runtime != "other":
+            return runtime
     return detect_service_type(svc_name, svc_config)
 
 
@@ -90,7 +101,7 @@ def _detect_build_service_runtime(
     svc_config: dict,
     *,
     extension_dir: Optional[Path] = None,
-) -> str:
+) -> ServiceRuntime:
     """Classify a service for build-time SDK overlay insertion.
 
     Multi-stage frontends often compile in a Node/Bun stage and ship from a
@@ -98,36 +109,51 @@ def _detect_build_service_runtime(
     TypeScript overlay during ``kz-ext dev --sdk-repo`` because the local SDK
     must be installed before the frontend bundle is built.
     """
-    dockerfile = None
-    if extension_dir is not None and "build" in svc_config:
-        dockerfile = _resolve_dockerfile(svc_config["build"], extension_dir)
-
+    dockerfile = _service_dockerfile(svc_config, extension_dir)
     stage_bases = _read_dockerfile_stage_bases(dockerfile)
     if not stage_bases:
         return detect_service_runtime(
-            svc_name,
-            svc_config,
-            extension_dir=extension_dir,
+            svc_name, svc_config, extension_dir=extension_dir
         )
 
-    final_base = _image_basename(stage_bases[-1])
-    if "python" in final_base:
-        return "backend"
-    if "node" in final_base or "bun" in final_base:
-        return "frontend"
-    if any(token in final_base for token in ("nginx", "caddy", "httpd", "apache")):
+    final_runtime = _classify_runtime_image(stage_bases[-1])
+    if final_runtime == "static":
         if any(
-            "node" in _image_basename(base) or "bun" in _image_basename(base)
-            for base in stage_bases[:-1]
+            _classify_runtime_image(base) == "frontend" for base in stage_bases[:-1]
         ):
             return "frontend"
         return "static"
+    if final_runtime == "other":
+        return detect_service_runtime(
+            svc_name, svc_config, extension_dir=extension_dir
+        )
 
-    return detect_service_runtime(
-        svc_name,
-        svc_config,
-        extension_dir=extension_dir,
-    )
+    return final_runtime
+
+
+def _contains_token(value: str, tokens: tuple[str, ...]) -> bool:
+    value_lower = value.lower()
+    return any(token in value_lower for token in tokens)
+
+
+def _service_dockerfile(
+    svc_config: dict,
+    extension_dir: Optional[Path],
+) -> Optional[Path]:
+    if extension_dir is None or "build" not in svc_config:
+        return None
+    return _resolve_dockerfile(svc_config["build"], extension_dir)
+
+
+def _classify_runtime_image(image_ref: str) -> ServiceRuntime:
+    image_name = _image_basename(image_ref)
+    if _contains_token(image_name, _PYTHON_IMAGE_TOKENS):
+        return "backend"
+    if _contains_token(image_name, _NODE_IMAGE_TOKENS):
+        return "frontend"
+    if _contains_token(image_name, _STATIC_IMAGE_TOKENS):
+        return "static"
+    return "other"
 
 
 def _resolve_dockerfile(build_spec: Any, extension_dir: Path) -> Optional[Path]:
@@ -152,41 +178,53 @@ def _read_final_base_image(dockerfile: Optional[Path]) -> Optional[str]:
 
 def _read_dockerfile_stage_bases(dockerfile: Optional[Path]) -> List[str]:
     """Return effective base images for each Dockerfile stage."""
-    from kamiwaza_extensions.validators.platform_runtime import parse_from_instruction
+    content = _read_dockerfile(dockerfile)
+    if content is None:
+        return []
 
+    stages = _parse_dockerfile_stages(content)
+    alias_map = {alias: index for index, (_base, alias) in enumerate(stages) if alias}
+    return [
+        _resolve_stage_base(stages, alias_map, index) for index in range(len(stages))
+    ]
+
+
+def _read_dockerfile(dockerfile: Optional[Path]) -> Optional[str]:
     if not dockerfile or not dockerfile.is_file():
-        return []
-
+        return None
     try:
-        content = dockerfile.read_text()
+        return dockerfile.read_text()
     except OSError:
-        return []
+        return None
+
+
+def _parse_dockerfile_stages(content: str) -> List[tuple[str, Optional[str]]]:
+    from kamiwaza_extensions.validators.platform_runtime import parse_from_instruction
 
     stages: List[tuple[str, Optional[str]]] = []
     for line in content.splitlines():
         stripped = line.strip()
-        if stripped.upper().startswith("FROM "):
-            base_ref, alias = parse_from_instruction(stripped)
-            if base_ref:
-                base = base_ref.lower()
-                stages.append((base, alias.lower() if alias else None))
+        if not stripped.upper().startswith("FROM "):
+            continue
+        base_ref, alias = parse_from_instruction(stripped)
+        if base_ref:
+            stages.append((base_ref.lower(), alias.lower() if alias else None))
+    return stages
 
-    if not stages:
-        return []
 
-    alias_map = {alias: index for index, (_base, alias) in enumerate(stages) if alias}
-
-    def resolve_stage_base(index: int, seen: Optional[set[str]] = None) -> str:
-        base_ref = stages[index][0]
-        key = base_ref.lower()
-        alias_idx = alias_map.get(key)
-        seen = seen or set()
-        if alias_idx is None or key in seen:
-            return base_ref
-        seen.add(key)
-        return resolve_stage_base(alias_idx, seen)
-
-    return [resolve_stage_base(index) for index in range(len(stages))]
+def _resolve_stage_base(
+    stages: List[tuple[str, Optional[str]]],
+    alias_map: dict[str, int],
+    index: int,
+    seen: Optional[set[str]] = None,
+) -> str:
+    base_ref = stages[index][0]
+    alias_index = alias_map.get(base_ref)
+    seen = seen or set()
+    if alias_index is None or base_ref in seen:
+        return base_ref
+    seen.add(base_ref)
+    return _resolve_stage_base(stages, alias_map, alias_index, seen)
 
 
 def read_runtime_pythonpath(dockerfile: Optional[Path]) -> Optional[str]:
@@ -205,39 +243,29 @@ def read_runtime_pythonpath(dockerfile: Optional[Path]) -> Optional[str]:
     ``import kamiwaza_extensions_lib`` wins over any same-name in the
     image's PYTHONPATH.
     """
-    import re
-
-    if not dockerfile or not dockerfile.is_file():
-        return None
-    try:
-        content = dockerfile.read_text()
-    except OSError:
+    content = _read_dockerfile(dockerfile)
+    if content is None:
         return None
 
     lines = content.splitlines()
-    # Locate the start of the final stage by finding the last FROM.
-    runtime_start = 0
-    for i, line in enumerate(lines):
-        if line.strip().upper().startswith("FROM "):
-            runtime_start = i + 1
+    runtime_start = _final_stage_body_start(lines)
+    return _last_runtime_pythonpath(lines[runtime_start:])
 
-    # Match ENV PYTHONPATH=value or ENV PYTHONPATH=value [other=...].
-    # Handle quoted and unquoted values, and the legacy
-    # ``ENV PYTHONPATH /val`` (space-separated) form.
-    env_kv = re.compile(
-        r"""^\s*ENV\s+
-            (?:.*?\s+)?              # allow other ENV pairs before ours
-            PYTHONPATH
-            (?:\s*=\s*|\s+)          # = or space (legacy)
-            ("?)([^"\s]+)\1          # quoted-or-bare value
-        """,
-        re.IGNORECASE | re.VERBOSE,
-    )
+
+def _final_stage_body_start(lines: List[str]) -> int:
+    runtime_start = 0
+    for index, line in enumerate(lines):
+        if line.strip().upper().startswith("FROM "):
+            runtime_start = index + 1
+    return runtime_start
+
+
+def _last_runtime_pythonpath(lines: List[str]) -> Optional[str]:
     last_value: Optional[str] = None
-    for line in lines[runtime_start:]:
-        m = env_kv.match(line)
-        if m:
-            last_value = m.group(2)
+    for line in lines:
+        match = _PYTHONPATH_ENV_RE.match(line)
+        if match:
+            last_value = match.group(2)
     return last_value
 
 

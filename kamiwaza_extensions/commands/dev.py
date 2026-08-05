@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 import typer
+from pydantic import ValidationError as PydanticValidationError
 from rich.console import Console
 
 console = Console(stderr=True)
@@ -60,25 +61,21 @@ def _build_patch_kwargs(
     sandbox = extra.get("sandbox")
     if sandbox:
         kwargs["sandbox"] = sandbox
-    # Always forward ``volumes`` (even when empty) so removing a named
-    # volume from compose actually clears the stale top-level volume on
-    # the persisted CR. Same iterative-dev contract that drives the
-    # ``kamiwaza``/annotations forwarding above.
-    #
-    # Safe against operator-managed mounts: the kamiwaza-extension-
-    # operator rebuilds each Deployment's volume list every reconcile as
-    # ``[tmp emptyDir] + (data PVC if persistence) + svc.Volumes``. The
-    # ``tmp``/``data`` volumes are injected at reconcile time and are
-    # never stored in ``svc.Volumes``, so PATCHing ``volumes: []`` clears
-    # only user-declared volumes and cannot wipe operator-managed ones.
-    kwargs["volumes"] = extra.get("volumes") or []
     return kwargs
 
 
-def _build_patch_service_specs(payload: Any) -> List[Any]:
+def _build_patch_service_specs(
+    payload: Any,
+    service_filter: Optional[str] = None,
+) -> List[Any]:
     """Build the per-service ``PatchServiceSpec`` list from a
     ``CreateExtension`` payload, forwarding the new ``x-kamiwaza``
     per-service overrides via ``extra="allow"``.
+
+    When ``--service`` is active, only that service is included. The
+    transformer assigns the new revision to every build-context service, but
+    only the selected image is built and pushed; PATCHing the siblings would
+    roll them to nonexistent tags and produce ``ImagePullBackOff``.
 
     The PATCH carries the full ``(registry, repository, tag)`` triple
     from the canonical image ref. The operator reconstructs the CR's
@@ -89,42 +86,173 @@ def _build_patch_service_specs(payload: Any) -> List[Any]:
     leave the CR's image field at the original repository and produce
     ``ImagePullBackOff`` on the next pull.
     """
+    return [
+        _build_patch_service_spec(service)
+        for service in payload.services
+        if service_filter is None or service.name == service_filter
+    ]
+
+
+def _validate_service_filter(
+    service: Optional[str], compose_data: Dict[str, Any]
+) -> None:
+    """Reject a ``--service`` name this run could not actually deploy.
+
+    Raw Compose keys are the wrong set to check against. A profile-gated
+    service is stripped by the transformer, so the filter yields an empty
+    service list and ``PatchExtension`` raises a bare pydantic ``min_length``
+    error — after the whole build and push phase, naming neither the flag nor
+    the service. A service with no build context is not one ``--service`` can
+    build either: it would warn "No images to build" and PATCH the image the
+    author already declared, a silent no-op deploy.
+    """
+    if service is None:
+        return
+    services = compose_data.get("services") or {}
+    if service not in services:
+        _fail_service_filter(
+            service, "is not a service in docker-compose.yml", services
+        )
+    config = services.get(service) or {}
+    if config.get("profiles"):
+        _fail_service_filter(
+            service,
+            "is profile-gated, so it is not part of a cluster deploy",
+            services,
+        )
+    if "build" not in config:
+        _fail_service_filter(
+            service,
+            "has no build context, so there is nothing to build or push for it",
+            services,
+        )
+
+
+def warn_orphaned_persistence(
+    prior_mounts: Dict[str, str], payload: Any
+) -> List[str]:
+    """Warn where a removed persistence block leaves the CR's PVC in place.
+
+    ``get_extension`` returns only ``ExtensionServiceStatus``, so the CR's own
+    spec cannot be read back to clear a block the extension has dropped. The
+    PVC therefore stays mounted while this PATCH sends a Compose emptyDir at
+    the same path: an identical target is a duplicate ``volumeMounts`` entry
+    the K8s API rejects, and a nested one shadows a claim still holding the
+    data the author believes they stopped writing.
+
+    Returns the messages emitted, so callers can assert on them.
+    """
+    warnings: List[str] = []
+    for service in payload.services:
+        prior = prior_mounts.get(service.name)
+        if not prior or service.persistence:
+            continue
+        collisions = [
+            mount["mountPath"]
+            for mount in (service.volume_mounts or [])
+            if _under_mount_path(mount.get("mountPath", ""), prior)
+        ]
+        if not collisions:
+            continue
+        message = (
+            f"Service '{service.name}' no longer declares persistence, but the "
+            f"deployed extension has a volume at '{prior}' that this deploy "
+            f"cannot clear. Compose still mounts {', '.join(collisions)} there, "
+            "which will either be rejected as a duplicate mount or silently "
+            "shadow the existing volume. Remove the Compose volume too, or "
+            "restore the persistence block."
+        )
+        warnings.append(message)
+        console.print(f"  [yellow]Warning:[/yellow] {message}")
+    return warnings
+
+
+def _deployed_persistence_mounts(
+    payload: Any, service_filter: Optional[str] = None
+) -> Dict[str, str]:
+    """Per-service persistence mountPath this run applied to the CR.
+
+    Only services this run actually PATCHed are reported: under ``--service``
+    the siblings were never sent, so recording their layout as deployed would
+    claim something this run did not do.
+    """
+    mounts: Dict[str, str] = {}
+    for service in payload.services:
+        if service_filter is not None and service.name != service_filter:
+            continue
+        persistence = service.persistence
+        if isinstance(persistence, dict) and persistence.get("enabled") is True:
+            mount_path = persistence.get("mountPath")
+            if isinstance(mount_path, str) and mount_path:
+                mounts[service.name] = mount_path
+    return mounts
+
+
+def _under_mount_path(target: str, mount_path: str) -> bool:
+    """Is *target* the persistence mountPath, or nested inside it?"""
+    if not target or not mount_path:
+        return False
+    normalized = target.rstrip("/") or "/"
+    base = mount_path.rstrip("/") or "/"
+    return normalized == base or normalized.startswith(base + "/")
+
+
+def _deployable_service_names(services: Dict[str, Any]) -> List[str]:
+    """Services ``--service`` can name: buildable and not profile-gated."""
+    return sorted(
+        name
+        for name, config in services.items()
+        if isinstance(config, dict) and "build" in config and not config.get("profiles")
+    )
+
+
+def _fail_service_filter(
+    service: str, reason: str, services: Dict[str, Any]
+) -> None:
+    console.print(f"[red]Error:[/red] --service '{service}' {reason}.")
+    deployable = _deployable_service_names(services)
+    if deployable:
+        console.print(f"  [dim]Available: {', '.join(deployable)}[/dim]")
+    raise typer.Exit(code=1)
+
+
+def _build_patch_service_spec(service: Any) -> Any:
+    """Translate one create service into its complete PATCH contract."""
     from kamiwaza_extensions.compose_transformer import _split_image_ref
     from kamiwaza_sdk.schemas.extensions import ImagePatch, PatchServiceSpec
 
-    patch_services: List[Any] = []
-    for svc in payload.services:
-        registry, repository, tag = _split_image_ref(svc.image)
-        image_patch = ImagePatch(
+    registry, repository, tag = _split_image_ref(service.image)
+    _image_without_digest, separator, digest = service.image.partition("@")
+    spec = PatchServiceSpec(
+        name=service.name,
+        image=ImagePatch(
             tag=tag,
             registry=registry,
             repository=repository,
-        )
-        spec = PatchServiceSpec(
-            name=svc.name,
-            image=image_patch,
-        )
-        if svc.env:
-            spec.env = svc.env
-        if svc.replicas is not None:
-            spec.replicas = svc.replicas
-        svc_extra = svc.model_extra or {}
-        for field in (
-            "healthCheck",
-            "automountServiceAccountToken",
-            "containerSecurityContext",
-        ):
-            if field in svc_extra and svc_extra[field] is not None:
-                setattr(spec, field, svc_extra[field])
-        # Always forward ``volumeMounts`` (even when empty) so removing
-        # a volume from compose clears the stale per-service mount on
-        # the persisted CR; consistent with the top-level ``volumes``
-        # forwarding in ``_build_patch_kwargs``. The operator appends
-        # ``svc.VolumeMounts`` after its own ``tmp``/``data`` mounts, so
-        # an empty list clears only user-declared mounts.
-        spec.volumeMounts = svc_extra.get("volumeMounts") or []
-        patch_services.append(spec)
-    return patch_services
+            digest=digest if separator else None,
+        ),
+        env=service.env or None,
+        replicas=service.replicas,
+        # Sent only when the extension declares it. Clearing a block the
+        # extension removed would need the CR's current spec, and
+        # ``get_extension`` returns a status projection
+        # (``ExtensionServiceStatus``) carrying no persistence — so a removed
+        # block stays on the CR rather than being silently mis-cleared.
+        persistence=service.persistence,
+        # Volumes are service-scoped: every service owns a pod template.
+        # Empty lists deliberately clear stale Compose volumes on PATCH.
+        volumes=service.volumes or [],
+        volumeMounts=service.volume_mounts or [],
+    )
+    for field in (
+        "healthCheck",
+        "automountServiceAccountToken",
+        "containerSecurityContext",
+    ):
+        value = (service.model_extra or {}).get(field)
+        if value is not None:
+            setattr(spec, field, value)
+    return spec
 
 
 def _resume_revision(prior_state: Any, rev_tag: str, resumable: bool) -> Optional[str]:
@@ -408,6 +536,8 @@ def run_dev_remote(
     if info.compose_data is None:
         console.print("[red]Error:[/red] No docker-compose.yml found.")
         raise typer.Exit(code=1)
+
+    _validate_service_filter(service, info.compose_data)
 
     # 2. Resolve connection + auth
     conn_mgr = ConnectionManager()
@@ -917,13 +1047,24 @@ def run_dev_remote(
         info.name, user_id=extract_user_id(token.access_token)
     )
     deployer_email = _decode_email(token.access_token)
-    payload = payload_builder.build(
-        metadata=info.metadata,
-        transformed_compose=transformed,
-        connection=connection,
-        dev_name=dev_name,
-        deployer=deployer_email,
-        revision=rev_tag,
+    try:
+        payload = payload_builder.build(
+            metadata=info.metadata,
+            transformed_compose=transformed,
+            connection=connection,
+            dev_name=dev_name,
+            deployer=deployer_email,
+            revision=rev_tag,
+        )
+    except (ValueError, PydanticValidationError) as exc:
+        # A malformed persistence or volume declaration would otherwise raise
+        # a raw traceback here — after the whole build and push phase has
+        # already run, with nothing naming the field at fault.
+        console.print(f"[red]Error:[/red] invalid extension definition: {exc}")
+        raise typer.Exit(code=1) from exc
+
+    warn_orphaned_persistence(
+        getattr(prior_state, "last_persistence_mounts", None) or {}, payload
     )
 
     def _record(step: str) -> None:
@@ -945,6 +1086,7 @@ def run_dev_remote(
                 registry=registry,
                 push_registry=push_registry,
                 image_basename=info.image_basename,
+                persistence_mounts=_deployed_persistence_mounts(payload, service),
                 build_engine=build_engine if step == "build" else "",
             )
         except OSError as state_exc:
@@ -981,7 +1123,9 @@ def run_dev_remote(
             # Build patch from payload — extract image, env, replicas
             # plus the x-kamiwaza per-service overrides forwarded via
             # ``extra="allow"`` (jxstanford PR #97 review H2).
-            patch_services = _build_patch_service_specs(payload)
+            patch_services = _build_patch_service_specs(
+                payload, service_filter=service
+            )
             # Carries the deployer/revision/deployed-at annotations on
             # every PATCH so `kz-ext status` reflects the current
             # redeploy (review re-review PR #84 H1).
@@ -1299,7 +1443,9 @@ def run_dev_unload() -> None:
             "(the template had no upstream catalog entry)."
         )
     else:
-        console.print(f"  [green]✓[/green] Removed overlay for [bold]{info.name}[/bold].")
+        console.print(
+            f"  [green]✓[/green] Removed overlay for [bold]{info.name}[/bold]."
+        )
     console.print(
         "  [dim]The running dev extension instance is unaffected — only new "
         "workroom launches change.[/dim]"

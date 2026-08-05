@@ -752,9 +752,8 @@ class TestBuildPatchKwargsCarriesAnnotations:
         )
         assert "sandbox" not in kwargs
 
-    def test_carries_volumes_so_patch_refreshes_mount_contract(self):
-        """ENG-4834: existing dev CRs are updated by PATCH after first
-        create, so top-level volume declarations must ride PATCH too."""
+    def test_drops_invalid_top_level_volumes(self):
+        """CRD volumes belong to services, never the extension root."""
         from kamiwaza_extensions.commands.dev import _build_patch_kwargs
 
         volumes = [{"name": "omniparse-data", "emptyDir": {}}]
@@ -764,27 +763,22 @@ class TestBuildPatchKwargsCarriesAnnotations:
             kamiwaza = None
 
         kwargs = _build_patch_kwargs(patch_services=["svc"], payload=_FakePayload())
-        assert kwargs["volumes"] == volumes
+        assert "volumes" not in kwargs
 
-    def test_patchextension_accepts_volumes_via_extra_allow(self):
-        """Sanity: PatchExtension must accept top-level volumes via
-        ``extra="allow"``."""
-        from kamiwaza_extensions.commands.dev import _build_patch_kwargs
-        from kamiwaza_sdk.schemas.extensions import PatchExtension, PatchServiceSpec
+    def test_patch_service_serializes_volume_aliases(self):
+        from kamiwaza_sdk.schemas.extensions import PatchServiceSpec
 
+        volume_mounts = [{"name": "data", "mountPath": "/data"}]
         volumes = [{"name": "data", "emptyDir": {}}]
-
-        class _FakePayload:
-            model_extra = {"volumes": volumes}
-            kamiwaza = None
-
-        kwargs = _build_patch_kwargs(
-            patch_services=[PatchServiceSpec(name="x")],
-            payload=_FakePayload(),
+        patch_service = PatchServiceSpec(
+            name="x",
+            volumes=volumes,
+            volumeMounts=volume_mounts,
         )
-        patch = PatchExtension(**kwargs)
-        assert (patch.model_extra or {}).get("volumes") == volumes
-        assert patch.model_dump()["volumes"] == volumes
+
+        serialized = patch_service.model_dump()
+        assert serialized["volumes"] == volumes
+        assert serialized["volumeMounts"] == volume_mounts
 
     def test_patch_service_specs_forwards_x_kamiwaza_overrides(self):
         """jxstanford PR #97 review H2: per-service overrides
@@ -853,43 +847,32 @@ class TestBuildPatchKwargsCarriesAnnotations:
         specs = _build_patch_service_specs(_FakePayload())
         assert (specs[0].model_extra or {})["automountServiceAccountToken"] is False
 
-    def test_patch_service_specs_forwards_volume_mounts(self):
-        """ENG-4834: service-level mounts must also refresh on PATCH."""
+    def test_patch_service_specs_forwards_volumes_and_mounts(self):
+        """ENG-4834: service pod-volume contract must refresh on PATCH."""
         from kamiwaza_extensions.commands.dev import _build_patch_service_specs
         from kamiwaza_sdk.schemas.extensions import ExtensionServiceSpec
 
         volume_mounts = [{"name": "data", "mountPath": "/data"}]
+        volumes = [{"name": "data", "emptyDir": {}}]
 
         class _FakePayload:
             services = [
                 ExtensionServiceSpec(
                     name="tool",
                     image="reg/tool:dev",
+                    volumes=volumes,
                     volumeMounts=volume_mounts,
                 ),
             ]
 
         specs = _build_patch_service_specs(_FakePayload())
-        assert (specs[0].model_extra or {})["volumeMounts"] == volume_mounts
+        assert specs[0].volumes == volumes
+        assert specs[0].volume_mounts == volume_mounts
+        assert specs[0].model_dump()["volumes"] == volumes
         assert specs[0].model_dump()["volumeMounts"] == volume_mounts
 
-    def test_volumes_cleared_when_payload_has_none(self):
-        """ENG-4834 follow-up: removing a named volume from compose
-        must clear the stale top-level volume on the persisted CR.
-        Omitting the field on PATCH leaves the operator with no signal
-        to clear, so always send an explicit (possibly empty) list."""
-        from kamiwaza_extensions.commands.dev import _build_patch_kwargs
-
-        kwargs = _build_patch_kwargs(
-            patch_services=["svc"],
-            payload=self._payload_with_annotations(None),
-        )
-        assert kwargs["volumes"] == []
-
-    def test_volume_mounts_cleared_when_svc_has_none(self):
-        """ENG-4834 follow-up: per-service mounts must also clear on
-        PATCH when removed from compose. Mirrors the top-level clear
-        behavior in ``_build_patch_kwargs``."""
+    def test_service_volumes_and_mounts_clear_when_removed(self):
+        """Removing compose volumes sends empty service-scoped lists."""
         from kamiwaza_extensions.commands.dev import _build_patch_service_specs
         from kamiwaza_sdk.schemas.extensions import ExtensionServiceSpec
 
@@ -899,7 +882,8 @@ class TestBuildPatchKwargsCarriesAnnotations:
             ]
 
         specs = _build_patch_service_specs(_FakePayload())
-        assert (specs[0].model_extra or {}).get("volumeMounts") == []
+        assert specs[0].volumes == []
+        assert specs[0].volume_mounts == []
 
     def test_patchextension_accepts_sandbox_via_extra_allow(self):
         """Sanity: PatchExtension must accept the sandbox kwarg via
@@ -919,4 +903,56 @@ class TestBuildPatchKwargsCarriesAnnotations:
         assert (patch.model_extra or {}).get("sandbox") == {
             "enabled": True,
             "service_name": "sc",
+        }
+
+
+class TestPersistenceMountRecording:
+    """Recorded state must describe what the CR has, not what a run intended:
+    written only on apply, sticky, and scoped to the services actually sent."""
+
+    @staticmethod
+    def _apply(tmp_path, mounts, step="apply"):
+        from kamiwaza_extensions.dev_state import mark_step
+
+        return mark_step(
+            tmp_path,
+            step,
+            revision="r1",
+            dev_name="ext-dev",
+            cluster="https://c",
+            extension_name="ext",
+            deployer="d",
+            persistence_mounts=mounts,
+        )
+
+    def test_recorded_on_apply(self, tmp_path):
+        state = self._apply(tmp_path, {"pg": "/data"})
+
+        assert state.last_persistence_mounts == {"pg": "/data"}
+
+    @pytest.mark.parametrize("step", ["build", "push", "poll"])
+    def test_not_recorded_before_the_cr_moves(self, tmp_path, step: str):
+        """A run that stops after build would otherwise record a layout that
+        was never applied."""
+        state = self._apply(tmp_path, {"pg": "/data"}, step=step)
+
+        assert state.last_persistence_mounts == {}
+
+    def test_entry_survives_a_later_run_that_drops_persistence(self, tmp_path):
+        """The PATCH cannot clear the CR's block, so the warning has to keep
+        firing — erasing the memory made it one-shot."""
+        self._apply(tmp_path, {"pg": "/data"})
+
+        state = self._apply(tmp_path, {})
+
+        assert state.last_persistence_mounts == {"pg": "/data"}
+
+    def test_service_scoped_run_leaves_siblings_alone(self, tmp_path):
+        self._apply(tmp_path, {"pg": "/data", "cache": "/var/cache"})
+
+        state = self._apply(tmp_path, {"pg": "/data2"})
+
+        assert state.last_persistence_mounts == {
+            "pg": "/data2",
+            "cache": "/var/cache",
         }

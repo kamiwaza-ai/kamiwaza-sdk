@@ -24,9 +24,12 @@ from kamiwaza_sdk.schemas.extensions import (
 )
 
 from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
+from kamiwaza_extensions.compose_volumes import (
+    ServiceVolumeSpec,
+    build_service_volume_specs,
+)
 from kamiwaza_extensions.connections import ConnectionInfo
 from kamiwaza_extensions.validators.compose import INVALID_DEPLOY_REQUESTS_TEXT
-from kamiwaza_extensions.volume_utils import looks_like_host_path
 
 # CRD annotation keys — namespace is ``kamiwaza.io/*`` (NOT ``kamiwaza.ai/*``).
 # The platform's annotation persister filters incoming Extension CR annotations
@@ -72,104 +75,6 @@ def _compose_resources_to_k8s(resources: Dict[str, str]) -> Dict[str, str]:
     return out
 
 
-_DNS_LABEL_RE = re.compile(r"[^a-z0-9-]+")
-
-
-def _build_volume_specs(
-    transformed: Dict[str, Any],
-) -> tuple[List[Dict[str, Any]], Dict[str, List[Dict[str, Any]]]]:
-    """Translate named compose volumes to K8s emptyDir volumes and mounts."""
-    volumes: List[Dict[str, Any]] = []
-    mounts_by_service: Dict[str, List[Dict[str, Any]]] = {}
-    source_to_name: Dict[str, str] = {}
-    # Pre-reserve the operator-injected volume names. The kamiwaza-
-    # extension-operator rebuilds each Deployment's volume list as
-    # ``[tmp emptyDir] + (data PVC if persistence) + svc.Volumes``; if a
-    # user's compose volume normalizes to ``tmp`` or ``data``, the
-    # reconciled pod would carry duplicate volume names and the K8s API
-    # would reject the spec. Seeding the set forces such a volume to a
-    # collision-suffixed name (``tmp-2``/``data-2``).
-    used_names: set[str] = {"tmp", "data"}
-
-    for svc_name, svc in (transformed.get("services") or {}).items():
-        if not isinstance(svc, dict):
-            continue
-        mounts: List[Dict[str, Any]] = []
-        for raw_volume in svc.get("volumes", []) or []:
-            parsed = _parse_named_volume_mount(raw_volume)
-            if not parsed:
-                continue
-            source, target, read_only = parsed
-            if source not in source_to_name:
-                name = _unique_k8s_volume_name(source, used_names)
-                source_to_name[source] = name
-                volumes.append({"name": name, "emptyDir": {}})
-
-            mount: Dict[str, Any] = {
-                "name": source_to_name[source],
-                "mountPath": target,
-            }
-            if read_only:
-                mount["readOnly"] = True
-            mounts.append(mount)
-        if mounts:
-            mounts_by_service[svc_name] = mounts
-
-    return volumes, mounts_by_service
-
-
-def _parse_named_volume_mount(raw_volume: Any) -> Optional[tuple[str, str, bool]]:
-    """Return ``(source, target, read_only)`` for named compose volumes."""
-    if isinstance(raw_volume, dict):
-        volume_type = raw_volume.get("type", "volume")
-        source = raw_volume.get("source") or raw_volume.get("src")
-        target = (
-            raw_volume.get("target")
-            or raw_volume.get("destination")
-            or raw_volume.get("dst")
-        )
-        if volume_type != "volume" or not source or not target:
-            return None
-        source_str = str(source)
-        target_str = str(target)
-        if looks_like_host_path(source_str) or not target_str.startswith("/"):
-            return None
-        read_only = bool(raw_volume.get("read_only") or raw_volume.get("readOnly"))
-        return source_str, target_str, read_only
-
-    if not isinstance(raw_volume, str):
-        return None
-
-    parts = raw_volume.split(":")
-    if len(parts) < 2:
-        return None
-    source, target = parts[0], parts[1]
-    if not source or not target or not target.startswith("/"):
-        return None
-    if looks_like_host_path(source):
-        return None
-
-    modes = ",".join(parts[2:]).split(",") if len(parts) > 2 else []
-    read_only = any(mode.strip().lower() == "ro" for mode in modes)
-    return source, target, read_only
-
-
-def _unique_k8s_volume_name(source: str, used_names: set[str]) -> str:
-    base = _DNS_LABEL_RE.sub("-", source.lower()).strip("-")
-    if not base:
-        base = "volume"
-    base = base[:63].strip("-") or "volume"
-    name = base
-    counter = 2
-    while name in used_names:
-        suffix = f"-{counter}"
-        prefix_len = 63 - len(suffix)
-        name = f"{base[:prefix_len].rstrip('-')}{suffix}"
-        counter += 1
-    used_names.add(name)
-    return name
-
-
 class PayloadBuilder:
     """Build a ``CreateExtension`` request from extension metadata and
     a transformed compose dict."""
@@ -197,15 +102,12 @@ class PayloadBuilder:
         # ``tlsRejectUnauthorized`` spec field so the deployed
         # extension's in-cluster callbacks match the developer's intent.
         verify_ssl = connection.effective_verify_ssl()
-        volumes, service_volume_mounts = _build_volume_specs(transformed_compose)
-
         services = self._build_services(
             transformed_compose,
             app_path=app_path,
             verify_ssl=verify_ssl,
             extension_type=ext_type,
             metadata=metadata,
-            service_volume_mounts=service_volume_mounts,
         )
         origin = connection.url.removesuffix("/api")
         tls_reject = "0" if not verify_ssl else "1"
@@ -232,8 +134,6 @@ class PayloadBuilder:
         sandbox = self._build_sandbox_spec(metadata, transformed_compose)
         if sandbox:
             kwargs["sandbox"] = sandbox
-        if volumes:
-            kwargs["volumes"] = volumes
 
         annotations = self.build_annotations(deployer=deployer, revision=revision)
 
@@ -347,24 +247,22 @@ class PayloadBuilder:
         verify_ssl: bool = True,
         extension_type: str = "app",
         metadata: Optional[Dict[str, Any]] = None,
-        service_volume_mounts: Optional[Dict[str, List[Dict[str, Any]]]] = None,
     ) -> List[ExtensionServiceSpec]:
         services_dict = transformed.get("services") or {}
-        service_volume_mounts = service_volume_mounts or {}
+        # Resolve persistence once, before volumes: it is what decides whether
+        # a Compose volume is left to the PVC, and resolving it twice let the
+        # kamiwaza.json path arm no guard.
+        persistence_by_service = {
+            svc_name: _resolve_persistence(metadata, svc_name, svc)
+            for svc_name, svc in services_dict.items()
+            if isinstance(svc, dict)
+        }
+        service_volume_specs = build_service_volume_specs(
+            transformed, persistence_by_service
+        )
         specs: List[ExtensionServiceSpec] = []
 
-        # Determine primary service: prefer "frontend", fall back to first with ports
-        primary_name = None
-        for svc_name, svc in services_dict.items():
-            ports = self._parse_ports(svc.get("ports", []))
-            if svc_name == "frontend" and ports:
-                primary_name = svc_name
-                break
-        if primary_name is None:
-            for svc_name, svc in services_dict.items():
-                if self._parse_ports(svc.get("ports", [])):
-                    primary_name = svc_name
-                    break
+        primary_name = self._find_primary_service(services_dict)
 
         for svc_name, svc in services_dict.items():
             ports = self._parse_ports(svc.get("ports", []))
@@ -372,51 +270,18 @@ class PayloadBuilder:
             resources = self._parse_resources(svc)
 
             is_primary = svc_name == primary_name
-
-            # Inject platform env vars
-            if is_primary and app_path:
-                env.append({"name": "KAMIWAZA_APP_PATH", "value": app_path})
-            if not verify_ssl:
-                # K8s rule: explicit ``env`` wins over ``envFrom``
-                # (ConfigMap injection). Inject BOTH conventional
-                # variables explicitly so the deployed pod sees the
-                # relaxed setting regardless of what the operator
-                # writes into ``KAMIWAZA_TLS_REJECT_UNAUTHORIZED`` in
-                # the configmap. Mirrors what the legacy ``make
-                # kamiwaza-push`` flow did — that CR was the empirical
-                # proof point that explicit env beats configmap-via-spec
-                # round-trip and is the reliable mechanism.
-                #
-                # - ``KAMIWAZA_VERIFY_SSL=false`` for the Python SDK
-                #   client (``_verify_ssl_disabled_from_env``).
-                # - ``KAMIWAZA_TLS_REJECT_UNAUTHORIZED=0`` for code that
-                #   reads the Node.js convention (frontend proxy + many
-                #   backend HTTP clients that prefer this var).
-                env.append({"name": "KAMIWAZA_VERIFY_SSL", "value": "false"})
-                env.append({"name": "KAMIWAZA_TLS_REJECT_UNAUTHORIZED", "value": "0"})
-
-            # Health-check precedence (ENG-4832):
-            # 1. ``kamiwaza.json`` → ``services.<svc_name>.healthCheck`` —
-            #    the user-facing escape hatch for any tool/service extension
-            #    whose primary doesn't serve ``/sse`` (FastMCP feature-flagged
-            #    off, REST-only, gRPC-only). Lives in the metadata file
-            #    rather than compose so kamiwaza.json stays the single
-            #    source of catalog truth.
-            # 2. Compose ``x-kamiwaza.healthCheck`` — pre-existing override
-            #    path for compose-authored extensions.
-            # 3. ``_default_health_check`` heuristics — back-compat default
-            #    when neither override is set.
-            health_check = _metadata_service_field(metadata, svc_name, "healthCheck")
-            if not health_check:
-                health_check = _service_extension_field(svc, "healthCheck")
-            if not health_check:
-                health_check = self._default_health_check(
+            self._append_platform_env(env, is_primary, app_path, verify_ssl)
+            health_check = (
+                _metadata_service_field(metadata, svc_name, "healthCheck")
+                or _service_extension_field(svc, "healthCheck")
+                or self._default_health_check(
                     svc_name,
                     svc,
                     ports,
                     extension_type=extension_type,
                     is_primary=is_primary,
                 )
+            )
 
             spec_kwargs: Dict[str, Any] = dict(
                 name=svc_name,
@@ -429,21 +294,49 @@ class PayloadBuilder:
             )
             if health_check:
                 spec_kwargs["healthCheck"] = health_check
-            automount = _service_extension_field(svc, "automountServiceAccountToken")
-            if automount is not None:
-                spec_kwargs["automountServiceAccountToken"] = automount
-            container_security_context = _service_extension_field(
-                svc, "containerSecurityContext"
+            _add_service_overrides(
+                spec_kwargs,
+                svc,
+                service_volume_specs.get(svc_name),
+                persistence_by_service.get(svc_name),
             )
-            if container_security_context is not None:
-                spec_kwargs["containerSecurityContext"] = container_security_context
-            volume_mounts = service_volume_mounts.get(svc_name)
-            if volume_mounts:
-                spec_kwargs["volumeMounts"] = volume_mounts
 
             specs.append(ExtensionServiceSpec(**spec_kwargs))
 
         return specs
+
+    def _find_primary_service(self, services: Dict[str, Any]) -> Optional[str]:
+        frontend = services.get("frontend")
+        if isinstance(frontend, dict) and self._parse_ports(frontend.get("ports", [])):
+            return "frontend"
+        return next(
+            (
+                service_name
+                for service_name, service in services.items()
+                if self._parse_ports(service.get("ports", []))
+            ),
+            None,
+        )
+
+    @staticmethod
+    def _append_platform_env(
+        env: List[Dict[str, str]],
+        is_primary: bool,
+        app_path: str,
+        verify_ssl: bool,
+    ) -> None:
+        if is_primary and app_path:
+            env.append({"name": "KAMIWAZA_APP_PATH", "value": app_path})
+        if verify_ssl:
+            return
+        # Explicit env wins over ConfigMap envFrom. Emit both Python and Node
+        # conventions so every extension runtime receives one TLS policy.
+        env.extend(
+            [
+                {"name": "KAMIWAZA_VERIFY_SSL", "value": "false"},
+                {"name": "KAMIWAZA_TLS_REJECT_UNAUTHORIZED", "value": "0"},
+            ]
+        )
 
     @staticmethod
     def _parse_ports(ports: List[Any]) -> List[ExtensionPort]:
@@ -517,9 +410,7 @@ class PayloadBuilder:
         # protocol-aware default as short-form, so a non-HTTP backend that
         # adopts long-form syntax for unrelated reasons (e.g. adding
         # ``protocol: tcp``) isn't mislabeled ``http`` and broken on istio.
-        name = port.get("name") or default_service_port_name(
-            container_port, is_primary
-        )
+        name = port.get("name") or default_service_port_name(container_port, is_primary)
 
         # Prefer the compose-spec ``app_protocol`` key; fall back to the
         # k8s-shaped ``appProtocol`` only when the spec key is absent.
@@ -793,6 +684,47 @@ def _service_extension_field(svc: Dict[str, Any], key: str) -> Optional[Any]:
     if isinstance(x_kamiwaza, dict) and key in x_kamiwaza:
         return x_kamiwaza[key]
     return None
+
+
+def _add_service_overrides(
+    spec: Dict[str, Any],
+    service: Dict[str, Any],
+    volume_spec: Optional[ServiceVolumeSpec],
+    persistence: Optional[Any] = None,
+) -> None:
+    """Add operator-owned per-service fields to one service payload."""
+    for field in (
+        "automountServiceAccountToken",
+        "containerSecurityContext",
+    ):
+        value = _service_extension_field(service, field)
+        if value is not None:
+            spec[field] = value
+    if persistence is not None:
+        spec["persistence"] = persistence
+    if volume_spec is None:
+        return
+    if volume_spec.volumes:
+        spec["volumes"] = volume_spec.volumes
+    if volume_spec.mounts:
+        spec["volumeMounts"] = volume_spec.mounts
+
+
+def _resolve_persistence(
+    metadata: Optional[Dict[str, Any]],
+    svc_name: str,
+    service: Dict[str, Any],
+) -> Optional[Any]:
+    """Persistence for one service, kamiwaza.json ahead of compose.
+
+    Mirrors the healthCheck precedence (ENG-4832) so an extension can declare
+    its PVC in the file that is already the source of catalog truth, without
+    the compose-only path overriding it on every redeploy.
+    """
+    from_metadata = _metadata_service_field(metadata, svc_name, "persistence")
+    if from_metadata is not None:
+        return from_metadata
+    return _service_extension_field(service, "persistence")
 
 
 def _metadata_service_field(

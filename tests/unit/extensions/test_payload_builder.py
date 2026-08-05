@@ -543,17 +543,15 @@ class TestComposeVolumes:
         payload = builder.build(metadata, transformed, connection, "tool-dev-abc")
         tool = payload.services[0].model_dump()
 
-        assert (payload.model_extra or {})["volumes"] == [
-            {"name": "omniparse-data", "emptyDir": {}}
-        ]
-        assert payload.model_dump()["volumes"] == [
-            {"name": "omniparse-data", "emptyDir": {}}
-        ]
+        assert "volumes" not in (payload.model_extra or {})
+        assert tool["volumes"] == [{"name": "omniparse-data", "emptyDir": {}}]
         assert tool["volumeMounts"] == [
             {"name": "omniparse-data", "mountPath": "/data"}
         ]
 
-    def test_shared_named_volume_is_declared_once(self, builder, metadata, connection):
+    def test_shared_named_volume_is_declared_in_each_service(
+        self, builder, metadata, connection
+    ):
         transformed = {
             "services": {
                 "api": {
@@ -571,15 +569,77 @@ class TestComposeVolumes:
         payload = builder.build(metadata, transformed, connection, "app-dev-abc")
         services = {svc.name: svc.model_dump() for svc in payload.services}
 
-        assert (payload.model_extra or {})["volumes"] == [
-            {"name": "shared-data", "emptyDir": {}}
-        ]
+        expected_volume = [{"name": "shared-data", "emptyDir": {}}]
+        assert services["api"]["volumes"] == expected_volume
+        assert services["worker"]["volumes"] == expected_volume
         assert services["api"]["volumeMounts"] == [
             {"name": "shared-data", "mountPath": "/cache"}
         ]
         assert services["worker"]["volumeMounts"] == [
             {"name": "shared-data", "mountPath": "/cache"}
         ]
+
+    def test_explicit_persistence_replaces_matching_empty_dir(
+        self, builder, metadata, connection
+    ):
+        transformed = {
+            "services": {
+                "postgres": {
+                    "image": "postgres:17",
+                    "ports": ["5432"],
+                    "volumes": ["postgres-data:/var/lib/postgresql"],
+                    "x-kamiwaza": {
+                        "persistence": {
+                            "enabled": True,
+                            "size": "10Gi",
+                            "mountPath": "/var/lib/postgresql",
+                        }
+                    },
+                }
+            },
+            "volumes": {"postgres-data": None},
+        }
+
+        payload = builder.build(metadata, transformed, connection, "app-dev-abc")
+        postgres = payload.services[0].model_dump(exclude_none=True)
+
+        assert "volumes" not in postgres
+        assert "volumeMounts" not in postgres
+        assert postgres["persistence"] == {
+            "enabled": True,
+            "size": "10Gi",
+            "mountPath": "/var/lib/postgresql",
+        }
+
+    def test_disabled_persistence_keeps_matching_empty_dir(
+        self, builder, metadata, connection
+    ):
+        transformed = {
+            "services": {
+                "postgres": {
+                    "image": "postgres:17",
+                    "ports": ["5432"],
+                    "volumes": ["postgres-data:/var/lib/postgresql"],
+                    "x-kamiwaza": {
+                        "persistence": {
+                            "enabled": False,
+                            "size": "10Gi",
+                            "mountPath": "/var/lib/postgresql",
+                        }
+                    },
+                }
+            },
+            "volumes": {"postgres-data": None},
+        }
+
+        payload = builder.build(metadata, transformed, connection, "app-dev-abc")
+        postgres = payload.services[0].model_dump()
+
+        assert postgres["volumes"] == [{"name": "postgres-data", "emptyDir": {}}]
+        assert postgres["volumeMounts"] == [
+            {"name": "postgres-data", "mountPath": "/var/lib/postgresql"}
+        ]
+        assert postgres["persistence"]["enabled"] is False
 
     def test_long_form_volume_is_supported_and_read_only(
         self, builder, metadata, connection
@@ -604,9 +664,7 @@ class TestComposeVolumes:
         payload = builder.build(metadata, transformed, connection, "app-dev-abc")
         backend = payload.services[0].model_dump()
 
-        assert (payload.model_extra or {})["volumes"] == [
-            {"name": "backend-data", "emptyDir": {}}
-        ]
+        assert backend["volumes"] == [{"name": "backend-data", "emptyDir": {}}]
         assert backend["volumeMounts"] == [
             {
                 "name": "backend-data",
@@ -622,9 +680,9 @@ class TestComposeVolumes:
             metadata, transformed_compose, connection, "app-dev-abc"
         )
 
-        assert "volumes" not in (payload.model_extra or {})
         assert all(
-            "volumeMounts" not in (svc.model_extra or {}) for svc in payload.services
+            svc.volumes is None and svc.volume_mounts is None
+            for svc in payload.services
         )
 
     def test_interpolated_host_path_is_not_emitted_as_empty_dir(
@@ -649,9 +707,9 @@ class TestComposeVolumes:
         }
 
         payload = builder.build(metadata, transformed, connection, "tool-dev-abc")
-        tool = payload.services[0].model_dump()
+        tool = payload.services[0].model_dump(exclude_none=True)
 
-        assert "volumes" not in (payload.model_extra or {})
+        assert "volumes" not in tool
         assert "volumeMounts" not in tool
 
     def test_user_volume_named_tmp_avoids_operator_collision(
@@ -674,7 +732,7 @@ class TestComposeVolumes:
         payload = builder.build(metadata, transformed, connection, "tool-dev-abc")
         tool = payload.services[0].model_dump()
 
-        emitted = {v["name"] for v in (payload.model_extra or {})["volumes"]}
+        emitted = {v["name"] for v in tool["volumes"]}
         assert emitted.isdisjoint({"tmp", "data"})
         mount_names = {m["name"] for m in tool["volumeMounts"]}
         # Mounts must reference the renamed volumes, not the reserved ones.
