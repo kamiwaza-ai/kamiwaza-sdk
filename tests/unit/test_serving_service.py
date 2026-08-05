@@ -74,7 +74,24 @@ def _active_deployment_payload(
             }
         ],
         "m_name": "test-model",
+        "engine_name": "llamacpp",
+        "m_file_id": str(uuid4()),
     }
+
+
+def test_list_active_deployments_preserves_engine_and_model_file(
+    mock_client, monkeypatch
+):
+    _clear_runtime_url_env(monkeypatch)
+    deployment_id = uuid4()
+    payload = _active_deployment_payload(deployment_id)
+    mock_client.base_url = "https://kamiwaza.test/api"
+    mock_client.expect("GET", "/serving/deployments", [payload])
+
+    deployments = ServingService(mock_client).list_active_deployments()
+
+    assert deployments[0].engine_name == "llamacpp"
+    assert str(deployments[0].m_file_id) == payload["m_file_id"]
 
 
 def _clear_runtime_url_env(monkeypatch: pytest.MonkeyPatch) -> None:

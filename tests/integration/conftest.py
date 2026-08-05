@@ -35,6 +35,7 @@ from kamiwaza_sdk.utils.model_file_readiness import model_file_download_satisfie
 # is loaded by name, not as part of the ``integration`` package).
 sys.path.insert(0, str(Path(__file__).parent))
 import capability_markers as _cap  # noqa: E402
+import model_targets as _model_targets  # noqa: E402
 import peer_auth as _peer_auth  # noqa: E402
 
 DOCKER_COMPOSE_FILE = Path(__file__).parent / "docker" / "docker-compose.yml"
@@ -124,24 +125,12 @@ _TEXT_BODY_MARKERS = (
 )
 _CONTEXT_TEST_LLM_REPO_OVERRIDE = os.environ.get("KAMIWAZA_CONTEXT_LLM_REPO", "").strip()
 _CONTEXT_TEST_LLM_ENGINE_OVERRIDE = os.environ.get("KAMIWAZA_CONTEXT_LLM_ENGINE", "").strip()
-CONTEXT_TEST_MLX_LLM_REPO = os.environ.get(
-    "KAMIWAZA_CONTEXT_MLX_LLM_REPO",
-    "mlx-community/Qwen3-4B-4bit",
-)
-CONTEXT_TEST_VLLM_LLM_REPO = os.environ.get(
-    "KAMIWAZA_CONTEXT_VLLM_LLM_REPO",
-    "Qwen/Qwen3-0.6B",
-)
+_CONTEXT_TEST_LLM_QUANTIZATION_OVERRIDE = os.environ.get(
+    "KAMIWAZA_CONTEXT_LLM_QUANTIZATION", ""
+).strip()
 CONTEXT_TEST_LLM_DEPLOY_TIMEOUT_SECONDS = float(
     os.environ.get("KAMIWAZA_CONTEXT_LLM_DEPLOY_TIMEOUT_SECONDS", "600")
 )
-# Must stay in sync with TEST_REPO_ID in test_serving_workflow.py and
-# test_cli_live.py: the capability probe deploys the same model through the
-# same default-engine path the gated tests use, so the gate's skip/run verdict
-# matches what the tests will actually do. Intentionally not env-overridable —
-# an override here that the test modules don't honor would let the probe pass
-# while the tests deploy a different model and fail instead of skip.
-DEPLOYABLE_TEST_MODEL_REPO = "mlx-community/Qwen3-4B-4bit"
 DEPLOYABLE_TEST_DEPLOY_TIMEOUT_SECONDS = float(
     os.environ.get("KAMIWAZA_DEPLOYABLE_TEST_DEPLOY_TIMEOUT_SECONDS", "600")
 )
@@ -608,6 +597,8 @@ def _active_model_deployments(
                 "model_id": str(deployment.m_id),
                 "model_name": model_name,
                 "repo_model_id": repo_model_id,
+                "engine_name": str(getattr(deployment, "engine_name", "") or ""),
+                "m_file_id": str(getattr(deployment, "m_file_id", "") or ""),
             }
         )
 
@@ -619,32 +610,43 @@ def _preferred_active_model_deployment(
     *,
     desired_type: str,
     preferred_repo_id: str = "",
+    preferred_engine_name: str = "",
 ) -> dict[str, str] | None:
     deployments = _active_model_deployments(client, desired_type=desired_type)
     preferred_repo_id = preferred_repo_id.strip()
+    preferred_engine_name = preferred_engine_name.strip()
     if preferred_repo_id:
         for deployment in deployments:
-            if deployment["repo_model_id"] == preferred_repo_id:
-                return deployment
+            if deployment["repo_model_id"] != preferred_repo_id:
+                continue
+            if (
+                preferred_engine_name
+                and deployment["engine_name"] != preferred_engine_name
+            ):
+                continue
+            return deployment
     return deployments[0] if deployments else None
 
 
 def _context_llm_target(
     snapshot: _cap.ClusterCapabilitySnapshot | None,
-) -> tuple[str, str | None]:
+) -> _model_targets.InferenceTarget:
     """Select a context-test LLM repo/engine for the live host.
 
-    MLX remains the default for non-NVIDIA hosts, but Linux/NVIDIA release UAT
-    must not send the MLX-quantized smoke model through vLLM by accident.
+    Explicit context overrides win; otherwise use the shared platform target.
     """
     if _CONTEXT_TEST_LLM_REPO_OVERRIDE:
-        return (
-            _CONTEXT_TEST_LLM_REPO_OVERRIDE,
-            _CONTEXT_TEST_LLM_ENGINE_OVERRIDE or None,
+        return _model_targets.InferenceTarget(
+            repo_id=_CONTEXT_TEST_LLM_REPO_OVERRIDE,
+            engine_name=_CONTEXT_TEST_LLM_ENGINE_OVERRIDE,
+            quantization=_CONTEXT_TEST_LLM_QUANTIZATION_OVERRIDE or "q6_k",
         )
-    if snapshot is not None and "nvidia" in snapshot.gpu_vendors:
-        return CONTEXT_TEST_VLLM_LLM_REPO, _CONTEXT_TEST_LLM_ENGINE_OVERRIDE or "vllm"
-    return CONTEXT_TEST_MLX_LLM_REPO, _CONTEXT_TEST_LLM_ENGINE_OVERRIDE or "mlx"
+    target = _model_targets.select_inference_target(snapshot)
+    return _model_targets.InferenceTarget(
+        repo_id=target.repo_id,
+        engine_name=_CONTEXT_TEST_LLM_ENGINE_OVERRIDE or target.engine_name,
+        quantization=_CONTEXT_TEST_LLM_QUANTIZATION_OVERRIDE or target.quantization,
+    )
 
 
 def _active_embedding_deployment(client: KamiwazaClient) -> dict[str, str] | None:
@@ -1296,7 +1298,9 @@ def context_llm_prerequisite(
     instead of a cascade of fixture-setup ERRORs.
     """
     client = live_kamiwaza_session_client
-    context_repo_id, context_engine_name = _context_llm_target(cluster_capability_snapshot)
+    context_target = _context_llm_target(cluster_capability_snapshot)
+    context_repo_id = context_target.repo_id
+    context_engine_name = context_target.engine_name
 
     def _stop_provisioned(deployment_id: str | None) -> None:
         """Best-effort teardown of a deployment THIS fixture provisioned."""
@@ -1311,8 +1315,13 @@ def context_llm_prerequisite(
         client,
         desired_type="llm",
         preferred_repo_id=context_repo_id,
+        preferred_engine_name=context_engine_name,
     )
-    if existing is not None:
+    if (
+        existing is not None
+        and existing.get("repo_model_id") == context_repo_id
+        and existing.get("engine_name") == context_engine_name
+    ):
         yield existing["deployment_id"]
         return
 
@@ -1321,7 +1330,11 @@ def context_llm_prerequisite(
     # capacity-limited host) would be orphaned when we skip.
     provisioned_deployment_id: str | None = None
     try:
-        model = ensure_repo_ready(client, context_repo_id)
+        model = ensure_repo_ready(
+            client,
+            context_repo_id,
+            quantization=context_target.quantization,
+        )
         configs = client.models.get_model_configs(model.id)
         if not configs:
             pytest.skip(
@@ -1347,6 +1360,9 @@ def context_llm_prerequisite(
         }
         if context_engine_name:
             deploy_kwargs["engine_name"] = context_engine_name
+        model_file_id = _target_model_file_id(model, context_target.quantization)
+        if model_file_id:
+            deploy_kwargs["m_file_id"] = model_file_id
         raw_deployment_id = client.serving.deploy_model(**deploy_kwargs)
         if not raw_deployment_id:
             pytest.skip(
@@ -1360,13 +1376,24 @@ def context_llm_prerequisite(
             poll_interval=5,
             timeout=CONTEXT_TEST_LLM_DEPLOY_TIMEOUT_SECONDS,
         )
-    except Exception as exc:  # noqa: BLE001 — any provisioning failure → skip, not error
+    except (TimeoutError, RuntimeError, ValueError) as exc:
         _stop_provisioned(provisioned_deployment_id)
         pytest.skip(
             "No active LLM deployment for context ontology tests and one could not "
             f"be provisioned (repo={context_repo_id}, "
             f"engine={context_engine_name or 'default'}): "
             f"{type(exc).__name__}: {exc}"
+        )
+    except APIError as exc:
+        _stop_provisioned(provisioned_deployment_id)
+        status_code = getattr(exc, "status_code", None)
+        if status_code is not None and status_code < 500:
+            raise
+        pytest.skip(
+            "No active LLM deployment for context ontology tests and one could not "
+            f"be provisioned (repo={context_repo_id}, "
+            f"engine={context_engine_name or 'default'}): "
+            f"APIError {status_code or 'transport'}: {exc}"
         )
 
     if not _platform_deployment_ready(deployment):
@@ -1384,43 +1411,102 @@ def context_llm_prerequisite(
 
 
 @pytest.fixture(scope="session")
+def deployable_model_target(
+    cluster_capability_snapshot: _cap.ClusterCapabilitySnapshot | None,
+) -> _model_targets.InferenceTarget:
+    """The shared model/engine pair used by probe, serving, and CLI tests."""
+    return _model_targets.select_inference_target(cluster_capability_snapshot)
+
+
+def _ensure_deployable_target_ready(
+    client: KamiwazaClient,
+    ensure_repo_ready: Callable[..., object],
+    target: _model_targets.InferenceTarget,
+) -> Any:
+    """Make the selected target artifact ready, or skip capability failures."""
+    try:
+        return ensure_repo_ready(
+            client,
+            target.repo_id,
+            quantization=target.quantization,
+        )
+    except (TimeoutError, RuntimeError, ValueError) as exc:
+        pytest.skip(
+            f"Host cannot make deployable target '{target.repo_id}' ready "
+            f"(quantization={target.quantization}): {type(exc).__name__}: {exc}"
+        )
+    except APIError as exc:
+        status_code = getattr(exc, "status_code", None)
+        if status_code is not None and status_code < 500:
+            raise
+        pytest.skip(
+            f"Host cannot make deployable target '{target.repo_id}' ready "
+            f"(quantization={target.quantization}): APIError {status_code}: {exc}"
+        )
+
+
+@pytest.fixture(scope="session")
+def ensure_deployable_model_ready(
+    ensure_repo_ready: Callable[..., object],
+    deployable_model_target: _model_targets.InferenceTarget,
+) -> Callable[[KamiwazaClient], Any]:
+    """Return a target-aware, skip-not-fail live model readiness helper."""
+
+    def _ensure(client: KamiwazaClient) -> object:
+        return _ensure_deployable_target_ready(
+            client,
+            ensure_repo_ready,
+            deployable_model_target,
+        )
+
+    return _ensure
+
+
+def _default_model_config(
+    client: KamiwazaClient, model_id: object, repo_id: str
+) -> Any:
+    configs = client.models.get_model_configs(model_id)
+    if not configs:
+        pytest.skip(f"No model configs available for deployable test model '{repo_id}'")
+    return next((config for config in configs if config.default), configs[0])
+
+
+@pytest.fixture(scope="session")
 def deployable_model_prerequisite(
     live_kamiwaza_session_client: KamiwazaClient,
     ensure_repo_ready,
+    deployable_model_target: _model_targets.InferenceTarget,
 ) -> None:
     """Skip once if this host cannot deploy the integration test model.
 
-    Serving/CLI tests that deploy ``DEPLOYABLE_TEST_MODEL_REPO`` (an MLX model)
-    fail with a 5xx on hosts without compatible inference capacity — e.g. the
-    x86 CPU Azure smoke. Probe deployability once per session and skip the
-    marked tests instead of failing them. Mirrors ``embedding_model_prerequisite``
-    / ``context_llm_prerequisite``; the probe tears down its own deployment so
-    dependent tests perform their own deploys.
+    Probe deployability once per session and skip the marked tests instead of
+    failing them. The shared target fixture keeps the probe and tests on the
+    exact same platform-compatible model and engine.
     """
     client = live_kamiwaza_session_client
-    # Short-circuit ONLY when the exact test model is already deployed — a
-    # different active LLM does not prove this host can deploy DEPLOYABLE_TEST_MODEL_REPO
-    # (e.g. MLX on x86), so in that case we must still probe.
+    repo_id = deployable_model_target.repo_id
+    engine_name = deployable_model_target.engine_name
     existing = _preferred_active_model_deployment(
         client,
         desired_type="llm",
-        preferred_repo_id=DEPLOYABLE_TEST_MODEL_REPO,
+        preferred_repo_id=repo_id,
+        preferred_engine_name=engine_name,
     )
-    if existing is not None and existing.get("repo_model_id") == DEPLOYABLE_TEST_MODEL_REPO:
-        return  # the test model itself is already deployed → host is capable
+    if (
+        existing is not None
+        and existing.get("repo_model_id") == repo_id
+        and existing.get("engine_name") == engine_name
+    ):
+        return
 
     probe_deployment_id: str | None = None
     try:
-        model = ensure_repo_ready(client, DEPLOYABLE_TEST_MODEL_REPO)
-        configs = client.models.get_model_configs(model.id)
-        if not configs:
-            pytest.skip(
-                "No model configs available for deployable test model "
-                f"'{DEPLOYABLE_TEST_MODEL_REPO}'"
-            )
-        default_config = next(
-            (config for config in configs if config.default), configs[0]
+        model = _ensure_deployable_target_ready(
+            client,
+            ensure_repo_ready,
+            deployable_model_target,
         )
+        default_config = _default_model_config(client, model.id, repo_id)
         raw_deployment_id = client.serving.deploy_model(
             model_id=str(model.id),
             m_config_id=default_config.id,
@@ -1428,13 +1514,17 @@ def deployable_model_prerequisite(
             autoscaling=False,
             min_copies=1,
             starting_copies=1,
+            engine_name=engine_name,
+            m_file_id=_target_model_file_id(
+                model, deployable_model_target.quantization
+            ),
             # The probe's wait_for_deployment below owns the timeout
             # (DEPLOYABLE_TEST_DEPLOY_TIMEOUT_SECONDS), not the SDK default.
             wait=False,
         )
         if not raw_deployment_id:
             pytest.skip(
-                f"deploy_model returned no id for '{DEPLOYABLE_TEST_MODEL_REPO}' "
+                f"deploy_model returned no id for '{repo_id}' "
                 "(deploy refused on this host)."
             )
         probe_deployment_id = str(raw_deployment_id)
@@ -1451,7 +1541,7 @@ def deployable_model_prerequisite(
         _stop_deployment_quietly(client, probe_deployment_id)
         pytest.skip(
             "Host cannot provision integration test model (download/deploy) "
-            f"'{DEPLOYABLE_TEST_MODEL_REPO}': {type(exc).__name__}: {exc}"
+            f"'{repo_id}' (engine={engine_name}): {type(exc).__name__}: {exc}"
         )
     except APIError as exc:
         # Only a 5xx (server cannot bring the model up on this host) is a
@@ -1460,18 +1550,19 @@ def deployable_model_prerequisite(
         # skip, so it is re-raised.
         status_code = getattr(exc, "status_code", None)
         _stop_deployment_quietly(client, probe_deployment_id)
-        if status_code is None or status_code < 500:
+        if status_code is not None and status_code < 500:
             raise
         pytest.skip(
             "Host cannot provision integration test model (download/deploy) "
-            f"'{DEPLOYABLE_TEST_MODEL_REPO}': APIError {status_code}: {exc}"
+            f"'{repo_id}' (engine={engine_name}): "
+            f"APIError {status_code or 'transport'}: {exc}"
         )
 
     ready = _platform_deployment_ready(deployment)
     _stop_deployment_quietly(client, probe_deployment_id)
     if not ready:
         pytest.skip(
-            f"Integration test model '{DEPLOYABLE_TEST_MODEL_REPO}' did not become "
+            f"Integration test model '{repo_id}' (engine={engine_name}) did not become "
             "ready on this host."
         )
 
@@ -1896,6 +1987,35 @@ def _model_has_ready_target_files(model: Any, quantization: str) -> bool:
     if not target_files:
         return False
     return all(model_file_download_satisfied(f) for f in target_files)
+
+
+def _target_model_file_id(model: Any, quantization: str) -> str | None:
+    """Return a deterministic ready GGUF file matching the prepared quantization.
+
+    The nightly default is a single-file GGUF. Split GGUF repositories rely on
+    the serving backend to discover sibling shards from this selected file.
+    """
+    target_files = _target_files_for_quantization(model, quantization)
+    ready_gguf_files = [
+        model_file
+        for model_file in target_files
+        if str(getattr(model_file, "name", "") or "").lower().endswith(".gguf")
+        and getattr(model_file, "id", None)
+        and model_file_download_satisfied(model_file)
+    ]
+    if not ready_gguf_files:
+        return None
+    selected = min(
+        ready_gguf_files,
+        key=lambda model_file: str(getattr(model_file, "name", "") or "").lower(),
+    )
+    return str(selected.id)
+
+
+@pytest.fixture(scope="session")
+def target_model_file_id() -> Callable[[Any, str], str | None]:
+    """Resolve the exact prepared weights file for a quantized target."""
+    return _target_model_file_id
 
 
 def _get_model_by_repo_id_with_files(

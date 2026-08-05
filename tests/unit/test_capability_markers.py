@@ -25,9 +25,9 @@ pytestmark = pytest.mark.unit
 _Mark = namedtuple("_Mark", ["name", "args"])
 
 
-def _hw(gpus):
+def _hw(gpus, **overrides):
     """A hardware-entry dict shaped like the SDK ``Hardware`` model."""
-    return {"gpus": gpus, "node_id": "node-1"}
+    return {"gpus": gpus, "node_id": "node-1", **overrides}
 
 
 # --------------------------------------------------------------------------- #
@@ -85,6 +85,7 @@ def test_build_snapshot_empty_inventory_is_cpu_only():
     assert snap.gpu_count == 0
     assert snap.gpu_mem_gb == ()
     assert snap.node_count == 1
+    assert snap.is_apple_silicon is False
 
 
 def test_build_snapshot_ignores_explicitly_inactive_hardware_entries():
@@ -108,6 +109,130 @@ def test_build_snapshot_ignores_inactive_hardware_for_fallback_node_count():
     )
 
     assert snap.node_count == 1
+
+
+def test_build_snapshot_detects_apple_silicon_from_real_inventory():
+    snap = cap.build_capability_snapshot(
+        [
+            _hw(
+                [],
+                processors=["Apple M4"],
+                os="Darwin",
+                platform="macOS-15.4-arm64-arm-64bit",
+            )
+        ]
+    )
+
+    assert snap.os_platforms == frozenset({("darwin", "macos-15.4-arm64-arm-64bit")})
+    assert snap.is_apple_silicon is True
+
+
+def test_build_snapshot_does_not_treat_intel_mac_as_apple_silicon():
+    snap = cap.build_capability_snapshot(
+        [
+            _hw(
+                [],
+                processors=["Intel i9"],
+                os="Darwin",
+                platform="macOS-15.4-x86_64-i386-64bit",
+            )
+        ]
+    )
+
+    assert snap.is_apple_silicon is False
+
+
+def test_build_snapshot_ignores_platform_from_synthetic_inventory_rows():
+    snap = cap.build_capability_snapshot(
+        [
+            {
+                "active": None,
+                "gpus": None,
+                "processors": None,
+                "os": "Darwin",
+                "platform": "arm64",
+            },
+            _hw(
+                [],
+                processors=["AMD EPYC"],
+                os="Linux",
+                platform="Linux-5.14.0-el9.x86_64",
+            ),
+        ]
+    )
+
+    assert snap.os_platforms == frozenset({("linux", "linux-5.14.0-el9.x86_64")})
+    assert snap.is_apple_silicon is False
+
+
+def test_build_snapshot_preserves_os_platform_correlation_for_mixed_nodes():
+    snap = cap.build_capability_snapshot(
+        [
+            _hw(
+                [],
+                node_id="darwin-x86",
+                processors=["Intel"],
+                os="Darwin",
+                platform="macOS-15.4-x86_64-i386-64bit",
+            ),
+            _hw(
+                [],
+                node_id="linux-arm",
+                processors=["Ampere"],
+                os="Linux",
+                platform="Linux-6.8-aarch64-with-glibc2.39",
+            ),
+        ]
+    )
+
+    assert snap.is_apple_silicon is False
+
+
+def test_build_snapshot_rejects_apple_only_inference_when_platform_rows_are_incomplete():
+    snap = cap.build_capability_snapshot(
+        [
+            _hw(
+                [],
+                node_id="apple",
+                processors=["Apple M4"],
+                os="Darwin",
+                platform="macOS-15.4-arm64-arm-64bit",
+            ),
+            _hw(
+                [],
+                node_id="unknown-platform",
+                processors=["AMD EPYC"],
+            ),
+        ]
+    )
+
+    assert snap.platform_inventory_complete is False
+    assert snap.is_apple_silicon is False
+
+
+def test_build_snapshot_rejects_explicitly_active_device_empty_platform_row():
+    snap = cap.build_capability_snapshot(
+        [
+            _hw(
+                [],
+                node_id="apple",
+                processors=["Apple M4"],
+                os="Darwin",
+                platform="macOS-15.4-arm64-arm-64bit",
+            ),
+            {
+                "active": True,
+                "node_id": "inventory-pending",
+                "gpus": None,
+                "processors": None,
+                "os": None,
+                "platform": None,
+            },
+        ]
+    )
+
+    assert snap.platform_inventory_complete is False
+    assert snap.is_apple_silicon is False
 
 
 # --------------------------------------------------------------------------- #
