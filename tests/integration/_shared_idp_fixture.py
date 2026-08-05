@@ -44,6 +44,9 @@ from typing import Iterator
 NAMESPACE = "kamiwaza"
 REALM = os.getenv("SHARED_REALM_NAME", "federated")
 ROPC_CLIENT = "kamiwaza-shared-cli"
+# Verified against the live chart: svc/keycloak exposes 80 (http) and 9000
+# (management), NOT 8080. Overridable for a chart that differs.
+KEYCLOAK_SVC_PORT = os.getenv("KEYCLOAK_SVC_PORT", "80")
 # Matches _mini_clearance.KNOWN: U sees 3 rows, S sees 4, TS sees all 5.
 PERSONAS = {"U": "clearance-u", "S": "clearance-s", "TS": "clearance-ts"}
 
@@ -77,7 +80,7 @@ def keycloak_admin_channel(kubectl: str) -> Iterator[str]:
         )
     port = _free_port()
     proc = subprocess.Popen(
-        argv + ["-n", NAMESPACE, "port-forward", "svc/keycloak", f"{port}:8080"],
+        argv + ["-n", NAMESPACE, "port-forward", "svc/keycloak", f"{port}:{KEYCLOAK_SVC_PORT}"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )

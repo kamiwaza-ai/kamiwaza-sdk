@@ -166,3 +166,5 @@ tests/integration/catalog_stack/data/
 .env.local
 
 handroll/
+# Gate-packages test rig staging (built artifacts, not source)
+.gate-fixture/
