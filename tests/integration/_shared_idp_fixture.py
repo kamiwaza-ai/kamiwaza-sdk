@@ -47,8 +47,13 @@ ROPC_CLIENT = "kamiwaza-shared-cli"
 # Verified against the live chart: svc/keycloak exposes 80 (http) and 9000
 # (management), NOT 8080. Overridable for a chart that differs.
 KEYCLOAK_SVC_PORT = os.getenv("KEYCLOAK_SVC_PORT", "80")
-# Matches _mini_clearance.KNOWN: U sees 3 rows, S sees 4, TS sees all 5.
-PERSONAS = {"U": "clearance-u", "S": "clearance-s", "TS": "clearance-ts"}
+# These names are a CONTRACT with the consumer, not a local choice: the test's
+# ``_PERSONAS`` (test_federation_shared_idp_gated_retrieval_live.py) passes each
+# value straight to ROPC as the username, and ``_mini_clearance.shared_realm_token``
+# calls ``raise_for_status()``, so a name that does not exist in the realm is a 401
+# -> module-fixture ERROR, not a skip. Keep these two dicts identical.
+# Clearance values match _mini_clearance.KNOWN: U sees 3 rows, S sees 4, TS sees all 5.
+PERSONAS = {"U": "fed-clr-u", "S": "fed-clr-s", "TS": "fed-clr-ts"}
 
 
 def run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
@@ -185,6 +190,21 @@ def main() -> int:
     print(json.dumps(exports, indent=2))
     for key, value in exports.items():
         print(f"export {key}={shlex.quote(value)}")
+
+    # Standing the realm up is necessary but NOT sufficient. The receiver's
+    # shared-realm allowlist is fail-closed by design (ENG-8376:
+    # `scheduler.trustedSharedIssuers` defaults to []), so until the issuer is
+    # enrolled there the receiver answers 403 `shared_idp_issuer_untrusted`. That
+    # reason is in the suite's AUTH_LAYER_REASONS, which makes it a hard RED
+    # rather than a skip — a confusing result to debug from the test output alone.
+    print(
+        "\n  NEXT (required, or the suite goes red with 403 "
+        "shared_idp_issuer_untrusted):\n"
+        "  enroll this issuer on the RECEIVER, then resync:\n"
+        "    scheduler:\n"
+        "      trustedSharedIssuers:\n"
+        f"        - {exports['SHARED_ISSUER_URL']}"
+    )
     return 0
 
 
