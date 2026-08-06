@@ -47,7 +47,9 @@ def test_cpu_linux_selects_gguf_for_llamacpp() -> None:
     selected = targets.select_inference_target(snapshot)
 
     assert selected == targets.GGUF_LLM_TARGET
-    assert "Thinking-2507" in targets._DEFAULT_GGUF_LLM_REPO
+    # The CPU fallback must not be a reasoning build; see _DEFAULT_GGUF_LLM_REPO.
+    assert "Instruct-2507" in targets._DEFAULT_GGUF_LLM_REPO
+    assert "Thinking" not in targets._DEFAULT_GGUF_LLM_REPO
 
 
 def test_apple_silicon_selects_mlx() -> None:
