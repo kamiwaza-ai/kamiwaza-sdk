@@ -728,6 +728,8 @@ class TestEvidenceValidation:
         ("mutation", "expected_msg"),
         [
             ({"build": ""}, "build"),
+            ({"started_at": "unknown"}, "started_at"),
+            ({"finished_at": "unknown"}, "finished_at"),
             ({"schema": "scenario-evidence.v1"}, "schema"),
             ({"method": "auto"}, "method"),
             ({"status": "green"}, "status"),
@@ -774,17 +776,31 @@ class TestEvidenceValidation:
             runs_dir.iterdir()
         ), "an invalid record must not be persisted"
 
-    def test_committed_v1_artifacts_are_untouched_and_not_v2(self):
-        """The four pre-existing runs/*.json are v1 history: readable,
-        unmigrated (no ``schema`` field), and intentionally NOT valid v2."""
-        v1_paths = sorted(harness.RUNS_DIR.glob("s*-2026050*.json"))
-        assert len(v1_paths) == 4, v1_paths
-        for path in v1_paths:
-            record = json.loads(path.read_text())
-            assert "schema" not in record, f"{path.name} must stay a v1 artifact"
-            assert "build" not in record
-            with pytest.raises(ValueError, match="missing required field"):
-                validate_evidence_record(record)
+    def test_v1_artifact_is_untouched_and_not_v2(self):
+        """A pre-existing v1 run record — no ``schema`` field — is readable,
+        unmigrated, and intentionally rejected as v2.
+
+        Built inline rather than read from ``runs/`` on disk: that directory
+        is gitignored (per-run JSON artifacts, not committed — see
+        ``tests/e2e/scenarios/.gitignore``), so a real v1 artifact is never
+        present in a clean checkout or CI.
+        """
+        v1_record = {
+            "scenario_id": "S1",
+            "scenario_name": "User-facing app with forced login",
+            "started_at": "2026-05-01T12:00:00+00:00",
+            "finished_at": "2026-05-01T12:00:05+00:00",
+            "duration_s": 5.0,
+            "sign_off_actor": "Preston McGowan",
+            "ci_job_url": None,
+            "steps": [
+                {"name": "x", "status": "passed", "duration_s": 0.1, "detail": "ok"}
+            ],
+        }
+        assert "schema" not in v1_record
+        assert "build" not in v1_record
+        with pytest.raises(ValueError, match="missing required field"):
+            validate_evidence_record(v1_record)
 
 
 @pytest.mark.unit
@@ -826,14 +842,23 @@ class TestSchemaFileSync:
         ["workrooms.create", "workroom-app-launch", "a", "a2.b-c.d", "s3.multi-part"],
     )
     def test_capability_id_pattern_accepts(self, capability_id):
-        assert CAPABILITY_ID_RE.match(capability_id)
+        assert CAPABILITY_ID_RE.fullmatch(capability_id)
 
     @pytest.mark.parametrize(
         "capability_id",
-        ["Workrooms.Create", "workrooms..create", "-lead", "trail-", "a_b", "", "a."],
+        [
+            "Workrooms.Create",
+            "workrooms..create",
+            "-lead",
+            "trail-",
+            "a_b",
+            "",
+            "a.",
+            "workrooms.create\n",
+        ],
     )
     def test_capability_id_pattern_rejects(self, capability_id):
-        assert not CAPABILITY_ID_RE.match(capability_id)
+        assert not CAPABILITY_ID_RE.fullmatch(capability_id)
 
 
 @pytest.mark.unit

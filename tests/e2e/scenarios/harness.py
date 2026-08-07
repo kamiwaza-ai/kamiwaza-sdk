@@ -190,7 +190,7 @@ def _validate_capability_ids(runbook: dict, *, source: Path) -> None:
     non_strings = [c for c in cap_ids if not isinstance(c, str)]
     if non_strings:
         raise ValueError(f"{source.name}: capability_ids must be a list of strings")
-    malformed = [c for c in cap_ids if not CAPABILITY_ID_RE.match(c)]
+    malformed = [c for c in cap_ids if not CAPABILITY_ID_RE.fullmatch(c)]
     if malformed:
         raise ValueError(
             f"{source.name}: capability_ids entries must be kebab-case, "
@@ -449,14 +449,24 @@ def _is_non_negative_num(v: object) -> bool:
     return v >= 0
 
 
+def _is_iso8601_datetime(v: object) -> bool:
+    if not isinstance(v, str) or v.strip() == "":
+        return False
+    try:
+        datetime.fromisoformat(v)
+    except ValueError:
+        return False
+    return True
+
+
 # (field, predicate, requirement description) — mirrors the schema's
 # scenario-level ``required`` + ``properties`` constraints.
 _SCALAR_FIELD_CHECKS: tuple[tuple[str, Callable[[object], bool], str], ...] = (
     ("schema", lambda v: v == EVIDENCE_SCHEMA_ID, f"must be {EVIDENCE_SCHEMA_ID!r}"),
     ("scenario_id", _is_non_empty_str, "must be a non-empty string"),
     ("scenario_name", _is_non_empty_str, "must be a non-empty string"),
-    ("started_at", _is_non_empty_str, "must be a non-empty ISO-8601 string"),
-    ("finished_at", _is_non_empty_str, "must be a non-empty ISO-8601 string"),
+    ("started_at", _is_iso8601_datetime, "must be a non-empty ISO-8601 string"),
+    ("finished_at", _is_iso8601_datetime, "must be a non-empty ISO-8601 string"),
     ("duration_s", _is_non_negative_num, "must be a non-negative number"),
     ("sign_off_actor", _is_non_empty_str, "must be a non-empty string"),
     ("ci_job_url", lambda v: v is None or isinstance(v, str), "must be str or null"),
@@ -510,7 +520,7 @@ def _check_capability_ids(record: dict) -> list[str]:
         return ["capability_ids must be a list (may be empty)"]
     problems = []
     for c in cap_ids:
-        if not isinstance(c, str) or not CAPABILITY_ID_RE.match(c):
+        if not isinstance(c, str) or not CAPABILITY_ID_RE.fullmatch(c):
             problems.append(
                 f"capability_ids entry {c!r} must be kebab-case, optionally "
                 "dot-namespaced (e.g. 'workrooms.create')"
