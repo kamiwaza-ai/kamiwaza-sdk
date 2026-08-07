@@ -125,13 +125,38 @@ def _rows(client: KamiwazaClient, path: str) -> list[dict[str, Any]]:
     return rows
 
 
+def _self_request_onboarding(
+    client: KamiwazaClient, federation_id: str, justification: str
+) -> dict[str, Any]:
+    """Record a SELF-SERVICE onboarding request as whoever ``client`` is.
+
+    ``external_id`` is deliberately omitted so the subject is the caller. That
+    is the only shape that returns a claim token: ENG-9731 withholds it from a
+    DELEGATED request, because handing an admin the token minted for someone
+    else would let the admin claim that person's credential.
+
+    This fixture used to drive both requesters from one admin session with an
+    explicit ``external_id``, which is exactly the impersonation ENG-9731
+    closed — so the shortcut stopped working and had to become two real
+    sessions. The receiver's queue withholds the token too, so there is no
+    admin-side way to recover it; a per-requester session is the honest fix,
+    not a workaround.
+    """
+    return _obj(
+        client,
+        "POST",
+        _onboarding_path(federation_id, "/request"),
+        json={"justification": justification},
+    )
+
+
 def _request_onboarding(
     client: KamiwazaClient, federation_id: str, external_id: str, justification: str
 ) -> dict[str, Any]:
-    """Record one onboarding request and return its status (with claim token).
+    """Record one DELEGATED onboarding request (admin acting for ``external_id``).
 
-    ``external_id`` is set explicitly because the test drives both requesters
-    from one admin session; the self-service path omits it and uses the caller.
+    Returns the status WITHOUT a claim token — see ``_self_request_onboarding``.
+    Used where the test only needs the row to exist (e.g. the deny path).
     """
     return _obj(
         client,
@@ -233,7 +258,9 @@ def onboarding_federation(
 
 @pytest.fixture(scope="module")
 def onboarded_pair(
-    onboarding_federation: dict[str, str], receiver_client: KamiwazaClient
+    onboarding_federation: dict[str, str],
+    receiver_client: KamiwazaClient,
+    live_peer_base_url: str,
 ) -> dict[str, Any]:
     """Two requesters carried all the way through request -> approve -> claim.
 
@@ -253,28 +280,51 @@ def onboarded_pair(
     suffix = uuid.uuid4().hex[:8]
     people = [
         {
-            "external_id": f"alice-{suffix}@src",
+            # A REAL local user, not a synthetic label: each persona
+            # authenticates and requests for themselves (see the loop below).
+            "username": f"alice-{suffix}",
             "justification": "Conjunction review for the Q3 collision window.",
             "attributes": {"clearance": "high", "country": "US"},
             "grant_object_id": f"live-onboarding-{suffix}-conjunctions",
         },
         {
-            "external_id": f"bob-{suffix}@src",
+            "username": f"bob-{suffix}",
             "justification": "Sensor tasking follow-up.",
             "attributes": {"clearance": "low", "country": "UK"},
             "grant_object_id": f"live-onboarding-{suffix}-tasking",
         },
     ]
 
+    from ._mini_clearance import authed_client
+
     for person in people:
-        status = _request_onboarding(
-            receiver_client, fed_id, person["external_id"], person["justification"]
+        # Each requester drives their OWN session. ENG-9731 returns the claim
+        # token only when the requester IS the subject, so one admin session
+        # standing in for both people cannot obtain either token — and the
+        # distinctness this fixture exists to prove is only meaningful when the
+        # two requests genuinely come from two identities.
+        username = person["username"]
+        receiver_client.subjects.upsert(
+            username, attributes={}, password=username
+        )
+        person["client"] = authed_client(
+            live_peer_base_url, username, username, verify=False
+        )
+
+        status = _self_request_onboarding(
+            person["client"], fed_id, person["justification"]
         )
         assert status.get("status") == "REQUESTED", f"unexpected status: {status!r}"
         request_id = status.get("id")
         claim_token = status.get("claim_token")
         assert request_id, f"request response must carry an id: {status!r}"
-        assert claim_token, f"requester must receive a claim token: {status!r}"
+        assert claim_token, (
+            "a self-service requester must receive their own claim token "
+            f"(ENG-9731 withholds it only from delegated requests): {status!r}"
+        )
+        # The subject is now the caller, so take the id the API assigned rather
+        # than the synthetic one this fixture used to inject.
+        person["external_id"] = status.get("external_id") or username
 
         approved = _obj(
             receiver_client,
@@ -292,7 +342,10 @@ def onboarded_pair(
         )
         assert approved.get("status") == "APPROVED", f"approve failed: {approved!r}"
 
-        claimed = _claim(receiver_client, fed_id, claim_token)
+        # Claim from the REQUESTER's session, not the admin's. Claiming as
+        # admin would be the impersonation ENG-9731 exists to prevent, so a
+        # test that did it could pass while the property was broken.
+        claimed = _claim(person["client"], fed_id, claim_token)
         credential = claimed.get("credential")
         assert credential, f"first claim must return the credential: {claimed!r}"
 
