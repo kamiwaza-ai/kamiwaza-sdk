@@ -503,15 +503,21 @@ class TestPerUserOnboarding:
         no token at all. Replaying at the receiver would prove nothing — there
         is nothing there to spend.
         """
+        from kamiwaza_sdk.exceptions import NotFoundError
+
         person = onboarded_pair["people"][0]
-        replay = _claim(
-            person["client"],
-            onboarded_pair["initiator_federation_id"],
-            person["claim_token"],
-        )
-        assert not replay.get("credential"), (
-            f"a spent claim token returned the credential again: {replay!r}"
-        )
+        # A spent token is GONE, not merely unproductive: claim_onboarding
+        # clears it (`row.claim_token = None`) before its mesh call, so
+        # `_require_request_by_token` no longer resolves it and the API answers
+        # 404. This asserted a soft 200-with-no-credential, which the endpoint
+        # never returns for a spent token — 404 is the stronger guarantee, and
+        # the one that actually ships.
+        with pytest.raises(NotFoundError):
+            _claim(
+                person["client"],
+                onboarded_pair["initiator_federation_id"],
+                person["claim_token"],
+            )
 
     def test_queue_lists_requests_without_leaking_claim_tokens(
         self, onboarded_pair: dict[str, Any], receiver_client: KamiwazaClient
