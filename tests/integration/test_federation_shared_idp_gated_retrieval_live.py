@@ -43,6 +43,25 @@ NOT satisfied by the federation allowlist's ``initial_tuples`` viewer grant
 (a ``user:{{user_id}}`` namespaced ReBAC tuple). Reconciling those two subject
 namespaces for a brokered mesh caller is the remaining layer to flip the SKIPs
 to exact-count assertions.
+
+LIVE STATUS (2026-08-07) — supersedes the 403 prediction above (ENG-9813). The
+observed failure is a **401 one layer EARLIER**, at the receiver's
+identity-header verification, so the run never reached the dataset-view authz
+the note above describes. Root cause: the mesh identity producer emitted
+``X-User-Attributes`` without its companion ``X-User-Attributes-Hash``. That
+header travels unsigned and only the digest is a ForwardAuth HMAC payload
+field, so the origin read the absent digest as "there must be no attributes
+either" and rejected before any gate ran (kamiwaza ``49b03ecd7``).
+
+These personas are precisely what exposed it: their realm-projected
+``clearance`` claim is what makes the attribute header non-empty. Modes
+carrying no attributes — ``receiver_realm``, whose F10 role-stripped guests
+have none — passed throughout, which is why the defect read as
+shared_idp-specific when it was not.
+
+The 403 analysis above is NOT withdrawn; it is simply downstream and was never
+reached. Expect it to become the live symptom again once the fix is deployed,
+at which point the subject-namespace reconciliation remains the real work.
 """
 
 from __future__ import annotations
