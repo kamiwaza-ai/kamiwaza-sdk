@@ -449,24 +449,44 @@ def _is_non_negative_num(v: object) -> bool:
     return v >= 0
 
 
+def _normalize_iso8601_z_suffix(v: str) -> str:
+    """Normalize a trailing ``Z`` UTC suffix to ``+00:00``.
+
+    ``datetime.fromisoformat`` only accepts a bare ``Z`` suffix on Python
+    >=3.11, but this project's minimum is 3.10 (``pyproject.toml``). Every
+    ``fromisoformat`` call site in this module must apply this first so a
+    spec-valid ``Z``-suffixed timestamp that passes validation doesn't then
+    fail elsewhere (e.g. filename generation) on 3.10.
+    """
+    return v[:-1] + "+00:00" if v.endswith("Z") else v
+
+
 def _is_iso8601_datetime(v: object) -> bool:
     """True iff ``v`` is an RFC 3339 date-time with a UTC/offset timezone.
 
-    Normalizes a trailing ``Z`` to ``+00:00`` before parsing: ``fromisoformat``
-    only accepts a bare ``Z`` suffix on Python >=3.11, but this project's
-    minimum is 3.10 (``pyproject.toml``). Requires ``tzinfo`` to be present so
-    date-only (``2026-08-06``) and timezone-less (``2026-08-06T12:00:00``)
-    strings — both accepted by ``fromisoformat`` but neither a valid
-    ``date-time`` per the schema's RFC 3339 + UTC contract — are rejected.
+    Requires ``tzinfo`` to be present so date-only (``2026-08-06``) and
+    timezone-less (``2026-08-06T12:00:00``) strings — both accepted by
+    ``fromisoformat`` but neither a valid ``date-time`` per the schema's
+    RFC 3339 + UTC contract — are rejected.
     """
     if not isinstance(v, str) or v.strip() == "":
         return False
-    normalized = v[:-1] + "+00:00" if v.endswith("Z") else v
     try:
-        parsed = datetime.fromisoformat(normalized)
+        parsed = datetime.fromisoformat(_normalize_iso8601_z_suffix(v))
     except ValueError:
         return False
     return parsed.tzinfo is not None
+
+
+def _is_one_of(choices: frozenset[str]) -> Callable[[object], bool]:
+    """Build a membership predicate that rejects unhashable values safely.
+
+    Plain ``v in choices`` raises ``TypeError`` for an unhashable ``v``
+    (e.g. a list or dict from a malformed external record), which would
+    escape as an unhandled exception instead of the aggregated
+    ``ValueError`` this module promises to raise for every invalid field.
+    """
+    return lambda v: isinstance(v, str) and v in choices
 
 
 # (field, predicate, requirement description) — mirrors the schema's
@@ -483,17 +503,17 @@ _SCALAR_FIELD_CHECKS: tuple[tuple[str, Callable[[object], bool], str], ...] = (
     ("build", _is_non_empty_str, "must be a non-empty string (G1: build identity)"),
     (
         "method",
-        lambda v: v in EVIDENCE_METHODS,
+        _is_one_of(EVIDENCE_METHODS),
         f"must be one of {sorted(EVIDENCE_METHODS)}",
     ),
     (
         "evidence_provenance",
-        lambda v: v in EVIDENCE_PROVENANCES,
+        _is_one_of(EVIDENCE_PROVENANCES),
         f"must be one of {sorted(EVIDENCE_PROVENANCES)}",
     ),
     (
         "status",
-        lambda v: v in SCENARIO_STATUSES,
+        _is_one_of(SCENARIO_STATUSES),
         f"must be one of {sorted(SCENARIO_STATUSES)}",
     ),
 )
@@ -555,7 +575,7 @@ def _check_one_step(step: dict, i: int) -> list[str]:
     problems = []
     if not _is_non_empty_str(step.get("name")):
         problems.append(f"steps[{i}].name must be a non-empty string")
-    if step.get("status") not in STEP_STATUSES:
+    if not _is_one_of(STEP_STATUSES)(step.get("status")):
         problems.append(f"steps[{i}].status must be one of {sorted(STEP_STATUSES)}")
     if not _is_non_negative_num(step.get("duration_s")):
         problems.append(f"steps[{i}].duration_s must be a non-negative number")
@@ -568,9 +588,12 @@ def _timestamp_suffix(iso: str) -> str:
     """Convert an ISO-8601 timestamp to a filesystem-safe, sortable stamp.
 
     Uses ``datetime.fromisoformat`` rather than string mangling, so timezone
-    offsets containing ``:`` no longer corrupt the suffix.
+    offsets containing ``:`` no longer corrupt the suffix. Applies the same
+    ``Z``-suffix normalization as ``_is_iso8601_datetime`` — a record that
+    validates (and therefore may have a bare-``Z`` ``finished_at``) must not
+    then crash here on Python 3.10.
     """
-    dt = datetime.fromisoformat(iso)
+    dt = datetime.fromisoformat(_normalize_iso8601_z_suffix(iso))
     return dt.strftime("%Y%m%dT%H%M%S%f")
 
 

@@ -761,6 +761,43 @@ class TestEvidenceValidation:
         )
         validate_evidence_record(record)
 
+    def test_record_run_persists_a_z_suffixed_result(self, monkeypatch, tmp_path):
+        """Regression: a validated record with a bare-``Z`` ``finished_at``
+        must not crash filename generation (``_timestamp_suffix`` used to
+        call ``fromisoformat`` without the ``Z``-normalization applied by
+        the validator)."""
+        monkeypatch.setattr(harness, "RUNS_DIR", tmp_path / "runs")
+        result = ScenarioResult(
+            scenario_id="S1",
+            scenario_name="t",
+            started_at="2026-08-06T17:00:00Z",
+            finished_at="2026-08-06T17:00:05Z",
+            duration_s=5.0,
+            sign_off_actor="SDK team",
+            ci_job_url=None,
+            build=TEST_BUILD,
+            status="passed",
+            steps=[StepResult(name="x", status="passed", duration_s=0.1)],
+        )
+        path = record_run(result)
+        assert path.exists()
+
+    @pytest.mark.parametrize("field", ["method", "evidence_provenance", "status"])
+    def test_malformed_enum_field_raises_value_error_not_type_error(self, field):
+        """Regression: set-membership on an unhashable value (e.g. a list)
+        raised TypeError, escaping the ``ValueError`` this module documents
+        as its sole error type for invalid records."""
+        record = _synthetic_v2_record(**{field: ["not", "a", "string"]})
+        with pytest.raises(ValueError, match=field):
+            validate_evidence_record(record)
+
+    def test_malformed_step_status_raises_value_error_not_type_error(self):
+        record = _synthetic_v2_record(
+            steps=[{"name": "a", "status": ["bad"], "duration_s": 0.1}]
+        )
+        with pytest.raises(ValueError, match=r"steps\[0\].status"):
+            validate_evidence_record(record)
+
     def test_missing_required_field_is_rejected(self):
         record = _synthetic_v2_record()
         del record["build"]
