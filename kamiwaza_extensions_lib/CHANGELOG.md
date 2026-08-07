@@ -6,17 +6,86 @@ follow semver. The library is published to PyPI as a standalone package
 `kamiwaza-sdk` — extension authors pin against the `[lib]` minor range in
 `requirements.txt`.
 
-## [0.4.3] — 2026-07-13 (ENG-8614)
+## [0.4.4] — 2026-07-27 (ENG-9199)
+
+### Added
+
+* **`platform_request()`** provides the supported request-bound path for an
+  extension backend to call Kamiwaza platform APIs. It resolves root-relative
+  paths against the container-routable platform base, forwards the incoming
+  signed authentication envelope, rejects caller attempts to override auth or
+  routing headers (including reserved future prefixes), message framing,
+  method overrides, and httpcore request-target extensions; rejects
+  query-bearing or ambiguous dot-segment paths; requires a valid
+  container-routable `KAMIWAZA_API_URL`; and never follows redirects.
+  Redirect responses raise the typed
+  `PlatformRedirectError` so non-canonical URLs fail at the call site instead
+  of silently losing cookies or authorization headers; non-redirect statuses
+  such as 304 remain available to callers. Network and timeout failures surface
+  through the existing typed `PlatformOutageError`. User-bound runtime clients
+  ignore environment proxy variables so the signed envelope cannot leave
+  through an inherited `HTTP_PROXY` / `HTTPS_PROXY`.
+* `PlatformRedirectError` now has its own `platform_redirect` doctor hint and
+  CLI exit-code mapping instead of inheriting the generic unexpected-context
+  guidance.
+
+### Changed
+
+* User-bound runtime clients now set `trust_env=False`. In addition to ignoring
+  proxy variables, this means they no longer inherit `SSL_CERT_FILE` or
+  `SSL_CERT_DIR`. Private-CA deployments must set `KAMIWAZA_CA_BUNDLE` to an
+  explicit PEM bundle path; the runtime builds an isolated TLS context from that
+  file. A missing, unreadable, or malformed bundle raises the typed
+  `UnexpectedContextError`. `KAMIWAZA_VERIFY_SSL=false` remains available for
+  local development only and should not be used to bypass verification in
+  production.
+* Full-envelope forwarding requires a platform containing the signed AuthZ
+  contract from kamiwaza#2258. Treat that platform boundary as a release gate
+  when publishing runtime versions 0.4.4 (Python) and 0.4.3 (TypeScript).
 
 ### Fixed
 
+* `forward_auth_headers()` now preserves the complete current ForwardAuth
+  envelope, including user groups, attributes hash, authorized party,
+  workroom alias, legacy/stable signature headers, and split HTTP/2 Cookie
+  fields. `KamiwazaExtClient` model discovery now consumes this same helper
+  instead of maintaining a smaller third allowlist.
+* Model and chat transports preserve non-ASCII identity values as original
+  HTTP wire bytes. Generated and example chat backends also disable inherited
+  proxy settings before attaching the signed request envelope.
+* Strict identity extraction now rejects duplicate identity fields before
+  role-based dependencies evaluate them. Generated and example backends map
+  route-level malformed envelopes to a scrubbed 401 response.
+* Best-effort server-side logout now uses the wire-preserving envelope helper
+  and logs revocation transport failures instead of silently discarding them.
+  Redirect diagnostics also omit URL userinfo from the reported origin.
+
+## [0.4.3] — 2026-07-16 (ENG-8766)
+
+### Fixed
+
+* **In-cluster model calls no longer 404 for gateway-routed endpoints.**
+  `_rehost_to_container` re-hosted *every* fully-qualified deployment
+  `endpoint` onto the container base (`KAMIWAZA_API_URL`). On Kubernetes
+  installs the platform advertises model endpoints as ingress-gateway
+  URLs (`https://<origin>/runtime/models/{deployment_id}/v1`) — the
+  `/runtime/models` rewrite exists *only* on the gateway (per-deployment
+  VirtualServices), while `KAMIWAZA_API_URL` points at the Ray Serve
+  proxy, which has no such route. The re-host therefore converted a
+  working URL into an unroutable one and every in-cluster chat call
+  404'd. The re-host now applies only when the endpoint host is
+  browser-only (`localhost`, `127.0.0.1`, `::1`, `0.0.0.0` — the
+  `kz-ext dev local --auth` case it was built for) or already matches
+  the container base's netloc (the sub-path-ingress prefix-merge case);
+  any other host is treated as the platform's canonical model URL and
+  kept verbatim. The starter template's `_normalize_model_endpoint`
+  received the same fix.
 * **Published the patched runtime dependency floor for standalone
-  `kamiwaza-extensions-lib` consumers.** The library now advertises
+  `kamiwaza-extensions-lib` consumers.** The library advertises
   `fastapi>=0.136.3,<1.0.0` and `starlette>=1.3.1,<2.0.0` for the 1.1.0
-  vulnerability burn-down. This patch bump is required because
-  the package is published independently from `kamiwaza-sdk`; PyPI
-  consumers pinned to `>=0.4,<0.5` cannot receive changed dependency
-  metadata from the already-published 0.4.2 wheel.
+  vulnerability burn-down. Because the package is published independently
+  from `kamiwaza-sdk`, PyPI consumers need this runtime release to receive the
+  corrected dependency metadata.
 
 ## [0.4.2] — 2026-06-15 (ENG-6911)
 

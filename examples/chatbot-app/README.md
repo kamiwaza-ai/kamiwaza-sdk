@@ -33,5 +33,17 @@ The frontend runs on http://localhost:3000 and the backend on http://localhost:8
 - The chat transcript is in-memory only and resets on refresh.
 - The frontend intentionally routes chat requests through the backend so model
   auth, endpoint selection, and error handling stay in one place.
+- Request-bound platform API calls should use `platform_request()` from
+  `kamiwaza_extensions_lib`, with the exact canonical route:
+
+  ```python
+  from kamiwaza_extensions_lib import platform_request
+
+  response = await platform_request(request, "GET", "/api/catalog/datasets/")
+  response.raise_for_status()
+  ```
+
+  The helper uses the container-routable base, preserves the complete signed
+  envelope, and rejects redirects before auth can be lost.
 - This example is kept intentionally close to the default app starter so
   changes to one should be reflected in the other.

@@ -56,17 +56,17 @@ def multi_service_compose():
 class TestStripHostPorts:
     def test_strips_host_port(self, transformer):
         compose = {"services": {"web": {"ports": ["3000:3000"]}}}
-        result = transformer.transform(compose, "test", "v1", "reg")
+        result = transformer.transform(compose, "test", "v1", "reg", purpose="publish")
         assert result["services"]["web"]["ports"] == ["3000"]
 
     def test_strips_with_protocol(self, transformer):
         compose = {"services": {"web": {"ports": ["8080:3000/tcp"]}}}
-        result = transformer.transform(compose, "test", "v1", "reg")
+        result = transformer.transform(compose, "test", "v1", "reg", purpose="publish")
         assert result["services"]["web"]["ports"] == ["3000/tcp"]
 
     def test_container_only_port_unchanged(self, transformer):
         compose = {"services": {"web": {"ports": ["8000"]}}}
-        result = transformer.transform(compose, "test", "v1", "reg")
+        result = transformer.transform(compose, "test", "v1", "reg", purpose="publish")
         assert result["services"]["web"]["ports"] == ["8000"]
 
     def test_long_form_port_preserved_with_l7_hints(self, transformer):
@@ -86,7 +86,7 @@ class TestStripHostPorts:
                 }
             }
         }
-        result = transformer.transform(compose, "test", "v1", "reg")
+        result = transformer.transform(compose, "test", "v1", "reg", purpose="publish")
         assert result["services"]["web"]["ports"] == [
             {
                 "target": 19530,
@@ -113,7 +113,7 @@ class TestStripHostPorts:
                 }
             }
         }
-        result = transformer.transform(compose, "test", "v1", "reg")
+        result = transformer.transform(compose, "test", "v1", "reg", purpose="publish")
         assert result["services"]["web"]["ports"] == [{"target": 8080, "name": "http"}]
 
 
@@ -122,17 +122,17 @@ class TestStripBindMounts:
         compose = {
             "services": {"web": {"volumes": ["./data:/app/data", "named:/app/persist"]}}
         }
-        result = transformer.transform(compose, "test", "v1", "reg")
+        result = transformer.transform(compose, "test", "v1", "reg", purpose="publish")
         assert result["services"]["web"]["volumes"] == ["named:/app/persist"]
 
     def test_strips_absolute_bind_mount(self, transformer):
         compose = {"services": {"web": {"volumes": ["/host/path:/container"]}}}
-        result = transformer.transform(compose, "test", "v1", "reg")
+        result = transformer.transform(compose, "test", "v1", "reg", purpose="publish")
         assert "volumes" not in result["services"]["web"]
 
     def test_keeps_named_volumes(self, transformer):
         compose = {"services": {"web": {"volumes": ["data:/app/data"]}}}
-        result = transformer.transform(compose, "test", "v1", "reg")
+        result = transformer.transform(compose, "test", "v1", "reg", purpose="publish")
         assert result["services"]["web"]["volumes"] == ["data:/app/data"]
 
     def test_strips_home_dir_bind_mount(self, transformer):
@@ -140,26 +140,26 @@ class TestStripBindMounts:
         compose = {
             "services": {"web": {"volumes": ["~/data:/app/data", "named:/app/persist"]}}
         }
-        result = transformer.transform(compose, "test", "v1", "reg")
+        result = transformer.transform(compose, "test", "v1", "reg", purpose="publish")
         assert result["services"]["web"]["volumes"] == ["named:/app/persist"]
 
     def test_strips_windows_drive_bind_mount(self, transformer):
         """ENG-4956: Windows drive-letter paths are flagged by the validator."""
         compose = {"services": {"web": {"volumes": [r"C:\host\data:/app/data"]}}}
-        result = transformer.transform(compose, "test", "v1", "reg")
+        result = transformer.transform(compose, "test", "v1", "reg", purpose="publish")
         assert "volumes" not in result["services"]["web"]
 
     def test_strips_cwd_bind_mount(self, transformer):
         """ENG-4956: a bare '.' source is flagged by the validator."""
         compose = {"services": {"web": {"volumes": [".:/app"]}}}
-        result = transformer.transform(compose, "test", "v1", "reg")
+        result = transformer.transform(compose, "test", "v1", "reg", purpose="publish")
         assert "volumes" not in result["services"]["web"]
 
 
 class TestBuildContextRemoval:
     def test_removes_build_adds_image(self, transformer):
         compose = {"services": {"api": {"build": "./backend"}}}
-        result = transformer.transform(compose, "my-app", "1.0.0-dev", "registry.test")
+        result = transformer.transform(compose, "my-app", "1.0.0-dev", "registry.test", purpose="publish")
         svc = result["services"]["api"]
         assert "build" not in svc
         assert svc["image"] == "registry.test/my-app-api:1.0.0-dev"
@@ -179,7 +179,7 @@ class TestBuildContextRemoval:
                 }
             }
         }
-        result = transformer.transform(compose, "my-app", "1.0.0-dev", "registry.test")
+        result = transformer.transform(compose, "my-app", "1.0.0-dev", "registry.test", purpose="publish")
         assert result["services"]["api"]["image"] == (
             "ghcr.io/kamiwazaai/my-app-api:1.0.0-dev"
         )
@@ -206,6 +206,7 @@ class TestBuildContextRemoval:
             "my-app",
             "1.0.0-dev",
             "registry.test",
+            purpose="publish",
         )
         assert result["services"]["api"]["image"] == (
             "registry.test/my-app-api:1.0.0-dev"
@@ -228,9 +229,50 @@ class TestBuildContextRemoval:
             "tool-omniparse",
             "2.0.14-dev",
             "ghcr.io/kamiwaza-internal/foo/images",
+            purpose="publish",
         )
         assert result["services"]["omniparse-server"]["image"] == (
             "ghcr.io/kamiwaza-internal/foo/images/omniparse:2.0.14-dev"
+        )
+
+    def test_dev_transform_relocates_divergent_namespace_to_dev_registry(
+        self, transformer
+    ):
+        # ENG-8626: the same compose, transformed for dev, must name an image
+        # the cluster can actually pull. The transform feeds the CR payload,
+        # so if it disagreed with the canonical-ref map the pod would
+        # reference an image nobody pushed.
+        compose = {
+            "services": {
+                "omniparse-server": {
+                    "build": "./tool-omniparse",
+                    "image": "ghcr.io/kamiwaza-internal/foo/images/omniparse:2.0.14",
+                }
+            }
+        }
+        result = transformer.transform(
+            compose,
+            "tool-omniparse",
+            "2.0.14-dev",
+            "host.docker.internal:5001",
+            purpose="dev",
+        )
+        assert result["services"]["omniparse-server"]["image"] == (
+            "host.docker.internal:5001/kamiwaza-internal/foo/images/omniparse:2.0.14-dev"
+        )
+
+    def test_dev_transform_leaves_external_images_untouched(self, transformer):
+        # No build: → not ours. Dev must not retag or relocate it.
+        compose = {
+            "services": {
+                "postgres": {"image": "ghcr.io/upstream/images/postgres:v18.4"},
+            }
+        }
+        result = transformer.transform(
+            compose, "my-app", "1.0.0-dev", "host.docker.internal:5001", purpose="dev"
+        )
+        assert result["services"]["postgres"]["image"] == (
+            "ghcr.io/upstream/images/postgres:v18.4"
         )
 
     def test_dict_build_config(self, transformer):
@@ -239,7 +281,7 @@ class TestBuildContextRemoval:
                 "web": {"build": {"context": ".", "dockerfile": "frontend/Dockerfile"}}
             }
         }
-        result = transformer.transform(compose, "my-app", "v1", "reg")
+        result = transformer.transform(compose, "my-app", "v1", "reg", purpose="publish")
         assert "build" not in result["services"]["web"]
         assert result["services"]["web"]["image"] == "reg/my-app-web:v1"
 
@@ -247,12 +289,12 @@ class TestBuildContextRemoval:
 class TestExternalImages:
     def test_postgres_preserved(self, transformer):
         compose = {"services": {"db": {"image": "postgres:15"}}}
-        result = transformer.transform(compose, "my-app", "v1", "reg")
+        result = transformer.transform(compose, "my-app", "v1", "reg", purpose="publish")
         assert result["services"]["db"]["image"] == "postgres:15"
 
     def test_redis_preserved(self, transformer):
         compose = {"services": {"cache": {"image": "redis:7-alpine"}}}
-        result = transformer.transform(compose, "my-app", "v1", "reg")
+        result = transformer.transform(compose, "my-app", "v1", "reg", purpose="publish")
         assert result["services"]["cache"]["image"] == "redis:7-alpine"
 
 
@@ -275,6 +317,7 @@ class TestNonBuildableInternalImages:
             "my-app",
             "1.0.0-dev-abc1234",
             "kamiwazaai",
+            purpose="publish",
         )
         # Tag preserved verbatim despite the SHA-pinned revision_tag.
         assert result["services"]["helper"]["image"] == "kamiwazaai/my-app-helper:0.5.0"
@@ -292,6 +335,7 @@ class TestNonBuildableInternalImages:
             "my-app",
             "1.0.0-dev-abc1234",
             "kamiwazaai",
+            purpose="publish",
         )
         # Buildable: rewritten with the revision tag.
         assert (
@@ -307,7 +351,7 @@ class TestNonBuildableInternalImages:
 class TestResourceLimits:
     def test_adds_default_limits(self, transformer):
         compose = {"services": {"api": {"image": "my-app/api:1"}}}
-        result = transformer.transform(compose, "my-app", "v1", "reg")
+        result = transformer.transform(compose, "my-app", "v1", "reg", purpose="publish")
         limits = result["services"]["api"]["deploy"]["resources"]["limits"]
         assert limits["cpus"] == "1.0"
         assert limits["memory"] == "1G"
@@ -323,13 +367,13 @@ class TestResourceLimits:
                 }
             }
         }
-        result = transformer.transform(compose, "my-app", "v1", "reg")
+        result = transformer.transform(compose, "my-app", "v1", "reg", purpose="publish")
         limits = result["services"]["api"]["deploy"]["resources"]["limits"]
         assert limits["cpus"] == "2.0"
 
     def test_postgres_gets_smaller_limits(self, transformer):
         compose = {"services": {"db": {"image": "postgres:15"}}}
-        result = transformer.transform(compose, "my-app", "v1", "reg")
+        result = transformer.transform(compose, "my-app", "v1", "reg", purpose="publish")
         limits = result["services"]["db"]["deploy"]["resources"]["limits"]
         assert limits["cpus"] == "0.5"
         assert limits["memory"] == "512M"
@@ -340,12 +384,12 @@ class TestCleanup:
         compose = {
             "services": {"api": {"extra_hosts": ["host.docker.internal:host-gateway"]}}
         }
-        result = transformer.transform(compose, "test", "v1", "reg")
+        result = transformer.transform(compose, "test", "v1", "reg", purpose="publish")
         assert "extra_hosts" not in result["services"]["api"]
 
     def test_removes_container_name(self, transformer):
         compose = {"services": {"api": {"container_name": "my-api"}}}
-        result = transformer.transform(compose, "test", "v1", "reg")
+        result = transformer.transform(compose, "test", "v1", "reg", purpose="publish")
         assert "container_name" not in result["services"]["api"]
 
     def test_removes_networks(self, transformer):
@@ -353,7 +397,7 @@ class TestCleanup:
             "services": {"api": {"networks": ["default"]}},
             "networks": {"default": None},
         }
-        result = transformer.transform(compose, "test", "v1", "reg")
+        result = transformer.transform(compose, "test", "v1", "reg", purpose="publish")
         assert "networks" not in result["services"]["api"]
         assert "networks" not in result
 
@@ -369,7 +413,7 @@ class TestCleanup:
                 }
             }
         }
-        result = transformer.transform(compose, "test", "v1", "reg")
+        result = transformer.transform(compose, "test", "v1", "reg", purpose="publish")
         assert result["services"]["postgres"]["x-kamiwaza"] == {
             "containerSecurityContext": {"runAsNonRoot": False},
             "healthCheck": {"tcpSocket": {"port": 5432}},
@@ -379,7 +423,11 @@ class TestCleanup:
 class TestFullTransform:
     def test_multi_service(self, transformer, multi_service_compose):
         result = transformer.transform(
-            multi_service_compose, "my-app", "1.0.0-dev-abc.123", "registry.test"
+            multi_service_compose,
+            "my-app",
+            "1.0.0-dev-abc.123",
+            "registry.test",
+            purpose="publish",
         )
         # Frontend
         fe = result["services"]["frontend"]
@@ -406,7 +454,7 @@ class TestFullTransform:
     def test_does_not_mutate_input(self, transformer):
         compose = {"services": {"api": {"build": ".", "ports": ["8000:8000"]}}}
         original_ports = list(compose["services"]["api"]["ports"])
-        transformer.transform(compose, "test", "v1", "reg")
+        transformer.transform(compose, "test", "v1", "reg", purpose="publish")
         assert compose["services"]["api"]["ports"] == original_ports
         assert "build" in compose["services"]["api"]
 
@@ -551,7 +599,7 @@ class TestTransformPreservesEnvPlaceholders:
                 },
             },
         }
-        result = transformer.transform(compose, "test", "v1", "reg")
+        result = transformer.transform(compose, "test", "v1", "reg", purpose="publish")
         assert result["services"]["neo4j"]["environment"] == {
             "NEO4J_AUTH": "neo4j/${NEO4J_PASSWORD:?NEO4J_PASSWORD must be set}",
             "KZ_NEO4J_PASSWORD": "${NEO4J_PASSWORD:?NEO4J_PASSWORD must be set}",
@@ -572,7 +620,7 @@ class TestTransformPreservesEnvPlaceholders:
                 },
             },
         }
-        result = transformer.transform(compose, "test", "v1", "reg")
+        result = transformer.transform(compose, "test", "v1", "reg", purpose="publish")
         assert result["services"]["graphiti"]["environment"] == {
             "KAMIWAZA_ENDPOINT": "${KAMIWAZA_ENDPOINT:-http://host.docker.internal:8080}",
             "OPENAI_API_KEY": "${OPENAI_API_KEY:-not-needed-kamiwaza}",
@@ -590,7 +638,7 @@ class TestTransformPreservesEnvPlaceholders:
                 },
             },
         }
-        result = transformer.transform(compose, "test", "v1", "reg")
+        result = transformer.transform(compose, "test", "v1", "reg", purpose="publish")
         assert result["services"]["backend"]["environment"] == {
             "OPENAI_BASE_URL": "${OPENAI_BASE_URL}",
         }
@@ -611,7 +659,7 @@ class TestTransformPreservesEnvPlaceholders:
                 },
             },
         }
-        result = transformer.transform(compose, "test", "v1", "reg")
+        result = transformer.transform(compose, "test", "v1", "reg", purpose="publish")
         assert result["services"]["backend"]["environment"] == [
             "NEO4J_PASSWORD=${NEO4J_PASSWORD:?required}",
             "BACKEND_URL=${BACKEND_URL:-http://backend:8000}",
@@ -802,7 +850,7 @@ class TestCanonicalBuildRef:
     falling back to the legacy form for everything else."""
 
     @staticmethod
-    def _call(image=None, *, has_build=True, declared_only=False):
+    def _call(image=None, *, has_build=True, declared_only=False, purpose="publish"):
         from kamiwaza_extensions.compose_transformer import _canonical_build_ref
 
         svc: Dict[str, Any] = {}
@@ -815,7 +863,8 @@ class TestCanonicalBuildRef:
         return _canonical_build_ref(
             svc,
             "api",
-            fallback_registry="registry.test",
+            purpose=purpose,
+            registry="registry.test",
             fallback_extension_name="my-ext",
             revision_tag="2.0.0-dev",
         )
@@ -876,6 +925,76 @@ class TestCanonicalBuildRef:
             )
             == "ghcr.io/my-org/api:2.0.0-dev"
         )
+
+
+class TestCanonicalBuildRefDevPurpose:
+    """ENG-8626: under ``purpose="dev"`` a qualified declared ``image:`` on a
+    service with ``build:`` is an image *identity*, not a destination.
+
+    ``kz-ext dev`` is building that image for this cluster right now, so it
+    must land in the resolved cluster dev registry. Honoring the declared
+    ``ghcr.io`` host pushed owned dev images to the org registry (failing the
+    whole command when the developer can't write dev tags there) and deployed
+    a CR the cluster couldn't pull. Publish keeps the declared namespace —
+    see ``TestCanonicalBuildRef`` — because there the namespace IS where the
+    image gets published (ENG-4909).
+    """
+
+    _call = staticmethod(TestCanonicalBuildRef._call)
+
+    def _dev(self, image=None, **kw):
+        return self._call(image=image, purpose="dev", **kw)
+
+    def test_qualified_ref_relocated_to_dev_registry(self):
+        assert self._dev("ghcr.io/my-org/api:1.0") == "registry.test/my-org/api:2.0.0-dev"
+
+    def test_declared_repository_path_preserved(self):
+        # The full repo path survives the host swap. Flattening to the legacy
+        # {ext}-{svc} form would discard the declared identity and collide —
+        # see test_same_basename_different_repos_do_not_collide.
+        assert self._dev(
+            "ghcr.io/kamiwaza-internal/kamiwaza-extensions-kaizen/images/kaizen-controller:2.0.2"
+        ) == (
+            "registry.test/kamiwaza-internal/kamiwaza-extensions-kaizen/images"
+            "/kaizen-controller:2.0.0-dev"
+        )
+
+    def test_same_basename_different_repos_do_not_collide(self):
+        a = self._dev("ghcr.io/a/images/svc:1")
+        b = self._dev("ghcr.io/b/images/svc:1")
+        assert a == "registry.test/a/images/svc:2.0.0-dev"
+        assert b == "registry.test/b/images/svc:2.0.0-dev"
+        assert a != b
+
+    def test_relocation_is_idempotent(self):
+        # A ref already under the dev registry (a resumed run re-deriving from
+        # its own prior output) must not accrete another registry prefix.
+        once = self._dev("ghcr.io/my-org/api:1.0")
+        assert self._dev(once) == once
+
+    def test_digest_pinned_ref_relocated_and_retagged(self):
+        assert (
+            self._dev("ghcr.io/my-org/api@sha256:" + "a" * 64)
+            == "registry.test/my-org/api:2.0.0-dev"
+        )
+
+    def test_registry_with_port_relocated(self):
+        # Qualified-by-port refs are relocated too: a declared localhost:5000
+        # is some other machine's registry, not this cluster's.
+        assert self._dev("localhost:5000/api:1.0") == "registry.test/api:2.0.0-dev"
+
+    def test_unqualified_bare_repo_still_falls_back_to_legacy(self):
+        # Unchanged from publish: `api:latest` would push to Docker Hub.
+        assert self._dev("api:latest") == "registry.test/my-ext-api:2.0.0-dev"
+
+    def test_unqualified_short_form_still_falls_back_to_legacy(self):
+        assert self._dev("my-org/api:1.0") == "registry.test/my-ext-api:2.0.0-dev"
+
+    def test_no_declared_image_still_falls_back_to_legacy(self):
+        assert self._dev() == "registry.test/my-ext-api:2.0.0-dev"
+
+    def test_blank_declared_image_still_falls_back_to_legacy(self):
+        assert self._dev("   ") == "registry.test/my-ext-api:2.0.0-dev"
 
 
 class TestSplitImageRef:
@@ -1015,11 +1134,13 @@ class TestComputeCanonicalRefs:
         registry="registry.test",
         extension_name="my-ext",
         revision_tag="2.0.0-dev",
+        purpose="publish",
     ):
         from kamiwaza_extensions.compose_transformer import compute_canonical_refs
 
         return compute_canonical_refs(
             source,
+            purpose=purpose,
             registry=registry,
             extension_name=extension_name,
             revision_tag=revision_tag,
@@ -1039,9 +1160,11 @@ class TestComputeCanonicalRefs:
         assert "neo4j" not in result
 
     def test_profile_gated_services_excluded(self):
-        # Mirrors the buildable_services filter in run_publish. A
-        # service with a profiles: key is local-only; pushing it under
-        # --no-build would leak a dev helper into the registry.
+        # Publish only. Mirrors the buildable_services filter in run_publish.
+        # A service with a profiles: key is local-only; pushing it under
+        # --no-build would leak a dev helper into the registry. Profiled
+        # images that DO get published go via extra_docker_images.
+        # Dev includes them — see TestComputeCanonicalRefsDevPurpose.
         source = {
             "backend": {"build": ".", "image": "ghcr.io/my-org/backend:1.0"},
             "dev-helper": {
@@ -1050,7 +1173,7 @@ class TestComputeCanonicalRefs:
                 "profiles": ["dev"],
             },
         }
-        result = self._call(source)
+        result = self._call(source, purpose="publish")
         assert list(result.keys()) == ["backend"]
 
     def test_appgarden_entry_overrides_source(self):
@@ -1111,6 +1234,79 @@ class TestComputeCanonicalRefs:
         }
 
 
+class TestComputeCanonicalRefsDevPurpose:
+    """ENG-8626: the dev map covers every image ``kz-ext dev`` builds, and
+    every one of them lands in the cluster dev registry."""
+
+    _call = staticmethod(TestComputeCanonicalRefs._call)
+
+    def _dev(self, source, **kw):
+        return self._call(source, purpose="dev", **kw)
+
+    def test_profile_gated_build_services_included(self):
+        # The inverse of TestComputeCanonicalRefs.test_profile_gated_services_
+        # excluded. ImageBuilder builds every build: service regardless of
+        # profiles, so omitting profiled ones here left the builder to
+        # synthesize its own legacy ref — which is exactly how Kaizen's
+        # profiled agent ended up on a different repository path than its
+        # siblings while they went to GHCR.
+        source = {
+            "backend": {"build": ".", "image": "ghcr.io/my-org/backend:1.0"},
+            "agent": {
+                "build": "./agent",
+                "image": "ghcr.io/my-org/agent:1.0",
+                "profiles": ["image-only"],
+            },
+        }
+        assert self._dev(source) == {
+            "backend": "registry.test/my-org/backend:2.0.0-dev",
+            "agent": "registry.test/my-org/agent:2.0.0-dev",
+        }
+
+    def test_external_services_without_build_still_excluded(self):
+        # postgres/redis are not ours; dev must never retag or push them.
+        source = {
+            "backend": {"build": ".", "image": "ghcr.io/my-org/backend:1.0"},
+            "postgres": {"image": "ghcr.io/upstream/containers/images/postgres:v18.4"},
+        }
+        assert self._dev(source) == {
+            "backend": "registry.test/my-org/backend:2.0.0-dev",
+        }
+
+    def test_kaizen_shaped_compose_all_owned_images_under_dev_registry(self):
+        # The exact shape from ENG-8626: four owned builds declaring a
+        # qualified GHCR namespace (one of them profile-gated) plus an
+        # external postgres. Before the fix this produced a mixed batch —
+        # controller/backend/frontend at ghcr.io, agent at the dev registry.
+        ns = "ghcr.io/kamiwaza-internal/kamiwaza-extensions-kaizen/images"
+        source = {
+            "postgres": {"image": "ghcr.io/kamiwaza-internal/containers/images/postgres:v18.4"},
+            "sandbox-controller": {"build": ".", "image": f"{ns}/kaizen-controller:2.0.2"},
+            "agent": {
+                "build": ".",
+                "image": f"{ns}/kaizen-agent:2.0.2",
+                "profiles": ["image-only"],
+            },
+            "backend": {"build": ".", "image": f"{ns}/kaizen-backend:2.0.2"},
+            "frontend": {"build": ".", "image": f"{ns}/kaizen-frontend:2.0.2"},
+        }
+        refs = self._dev(
+            source, registry="host.docker.internal:5001", extension_name="kaizen"
+        )
+
+        assert set(refs) == {"sandbox-controller", "agent", "backend", "frontend"}
+        # Every owned image, one revision, all beneath the dev registry.
+        assert all(
+            ref.startswith("host.docker.internal:5001/") for ref in refs.values()
+        ), refs
+        assert all(ref.endswith(":2.0.0-dev") for ref in refs.values()), refs
+        assert not any("ghcr.io" in ref for ref in refs.values()), refs
+        assert refs["sandbox-controller"] == (
+            "host.docker.internal:5001/kamiwaza-internal/kamiwaza-extensions-kaizen"
+            "/images/kaizen-controller:2.0.0-dev"
+        )
+
+
 class TestCanonicalBuildRefImageBasename:
     """``image_basename`` override on the legacy fallback path.
 
@@ -1123,7 +1319,13 @@ class TestCanonicalBuildRefImageBasename:
     """
 
     @staticmethod
-    def _call(*, image=None, fallback_image_basename=None, has_build=True):
+    def _call(
+        *,
+        image=None,
+        fallback_image_basename=None,
+        has_build=True,
+        purpose="publish",
+    ):
         from kamiwaza_extensions.compose_transformer import _canonical_build_ref
 
         svc: Dict[str, Any] = {}
@@ -1134,7 +1336,8 @@ class TestCanonicalBuildRefImageBasename:
         return _canonical_build_ref(
             svc,
             "api",
-            fallback_registry="registry.test",
+            purpose=purpose,
+            registry="registry.test",
             fallback_extension_name="my-ext",
             revision_tag="2.0.0-dev",
             fallback_image_basename=fallback_image_basename,
@@ -1152,7 +1355,8 @@ class TestCanonicalBuildRefImageBasename:
             _canonical_build_ref(
                 {"build": "."},
                 "api",
-                fallback_registry="registry.test",
+                purpose="publish",
+                registry="registry.test",
                 fallback_extension_name="Hello Web",
                 revision_tag="2.0.0-dev",
             )
@@ -1226,6 +1430,7 @@ class TestComposeTransformerImageBasenameRegression:
             revision_tag="0.13.0-dev",
             registry="ghcr.io/kamiwaza-internal",
             image_basename="outcome-d563-workroom-manager",
+            purpose="publish",
         )
         assert out["services"]["backend"]["image"] == (
             "ghcr.io/kamiwaza-internal/outcome-d563-workroom-manager-backend:0.13.0-dev"
@@ -1244,6 +1449,7 @@ class TestComposeTransformerImageBasenameRegression:
         }
         refs = compute_canonical_refs(
             source,
+            purpose="publish",
             registry="ghcr.io/kamiwaza-internal",
             extension_name="workroom-manager",
             revision_tag="0.13.0-dev",
@@ -1265,6 +1471,7 @@ class TestComposeTransformerImageBasenameRegression:
 
         refs = compute_canonical_refs(
             {"api": {"build": "."}},
+            purpose="publish",
             registry="registry.test",
             extension_name="Hello Web",
             revision_tag="dev1",
@@ -1282,6 +1489,7 @@ class TestComposeTransformerImageBasenameRegression:
         source = {"backend": {"build": "./backend"}}
         refs = compute_canonical_refs(
             source,
+            purpose="publish",
             registry="ghcr.io/kamiwaza-internal",
             extension_name="workroom-manager",
             revision_tag="0.13.0-dev",

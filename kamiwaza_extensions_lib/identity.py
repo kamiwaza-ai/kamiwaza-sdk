@@ -36,6 +36,18 @@ _HEADER_USER_SYSTEM_HIGH = "x-user-system-high"
 _HEADER_WORKROOM_ID = "x-workroom-id"
 _HEADER_USER_WORKROOM_ROLE = "x-user-workroom-role"
 _HEADER_REQUEST_ID = "x-request-id"
+_IDENTITY_HEADER_NAMES = frozenset(
+    {
+        _HEADER_USER_ID,
+        _HEADER_USER_EMAIL,
+        _HEADER_USER_NAME,
+        _HEADER_USER_ROLES,
+        _HEADER_USER_SYSTEM_HIGH,
+        _HEADER_WORKROOM_ID,
+        _HEADER_USER_WORKROOM_ROLE,
+        _HEADER_REQUEST_ID,
+    }
+)
 
 
 class Identity(BaseModel):
@@ -90,8 +102,22 @@ def _parse_roles(raw: str) -> list[str]:
     return [r.strip() for r in raw.split(",") if r.strip()]
 
 
-def _lower(headers: Mapping[str, str]) -> dict[str, str]:
-    return {k.lower(): v for k, v in headers.items()}
+def _lower(
+    headers: Mapping[str, str], *, reject_identity_duplicates: bool = False
+) -> dict[str, str]:
+    lowered: dict[str, str] = {}
+    for key, value in headers.items():
+        normalized = key.lower()
+        if (
+            reject_identity_duplicates
+            and normalized in _IDENTITY_HEADER_NAMES
+            and normalized in lowered
+        ):
+            raise MisboundAuthError(
+                "ForwardAuth envelope contains a duplicate identity header"
+            )
+        lowered[normalized] = value
+    return lowered
 
 
 def _stripped(headers: dict[str, str], key: str) -> Optional[str]:
@@ -139,7 +165,7 @@ def extract_identity(headers: Mapping[str, str]) -> Identity:
     did not reach the extension via Traefik, or the platform did not
     populate the envelope).
     """
-    lower = _lower(headers)
+    lower = _lower(headers, reject_identity_duplicates=True)
     user_id = _stripped(lower, _HEADER_USER_ID)
     workroom_id = _stripped(lower, _HEADER_WORKROOM_ID)
     if not user_id:

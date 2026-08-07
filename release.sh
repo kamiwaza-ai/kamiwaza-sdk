@@ -36,13 +36,51 @@ esac
 
 # Required tooling. Fail loudly up front rather than dying mid-build with
 # a cryptic "command not found".
-for tool in uv npm; do
+for tool in uv npm node; do
     if ! command -v "$tool" &> /dev/null; then
         echo "Error: '$tool' is required but not installed."
         echo "  Install: https://github.com/astral-sh/uv (uv) | https://nodejs.org (npm)"
         exit 1
     fi
 done
+
+# --- npm preflight: catch a stale @kamiwaza-ai/extensions-lib version early ---
+# npm rejects publishing over an existing version, and by the time that
+# surfaces (last publish step) the PyPI uploads have already happened — the
+# 2026-07-13 release shipped PyPI artifacts while the npm fix for ENG-1734
+# silently never landed because the version was still 0.4.1 (ENG-8753).
+# Detect the collision before anything uploads.
+NPM_LIB_NAME="@kamiwaza-ai/extensions-lib"
+NPM_LIB_VERSION="$(node -p "require('./kamiwaza-ai-extensions-lib/package.json').version")"
+NPM_VERSION_EXISTS=0
+# Keep stdout and stderr separate: npm writes notices/warnings (update nags,
+# deprecated .npmrc keys) to stderr even on success, and folding them into
+# the captured output would falsely flag an unpublished version as existing.
+NPM_VIEW_ERR=$(mktemp)
+if NPM_VIEW_OUT=$(npm view "${NPM_LIB_NAME}@${NPM_LIB_VERSION}" version --registry=https://registry.npmjs.org/ 2>"$NPM_VIEW_ERR"); then
+    [[ -n "$NPM_VIEW_OUT" ]] && NPM_VERSION_EXISTS=1
+elif ! grep -q E404 "$NPM_VIEW_ERR"; then
+    # E404 is the healthy case (version not yet published). Anything else
+    # means the registry couldn't be consulted — say so, but don't block a
+    # release on a registry hiccup; the final publish step still fails hard.
+    echo "Warning: could not check npm for ${NPM_LIB_NAME}@${NPM_LIB_VERSION}:"
+    head -3 "$NPM_VIEW_ERR"
+fi
+rm -f "$NPM_VIEW_ERR"
+if [[ $NPM_VERSION_EXISTS -eq 1 ]]; then
+    if [[ $BUILD_ONLY -eq 1 ]]; then
+        echo "Note: ${NPM_LIB_NAME}@${NPM_LIB_VERSION} is already on npm; a full release would skip the npm upload."
+    else
+        echo "${NPM_LIB_NAME}@${NPM_LIB_VERSION} is ALREADY on npm — re-publishing an existing version is rejected."
+        echo "  If kamiwaza-ai-extensions-lib changed since that publish, bump its package.json version and re-run."
+        read -r -p "Continue with a release that SKIPS the npm upload? (y/n) " REPLY || REPLY=n
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            echo "Aborting before any uploads."
+            exit 1
+        fi
+    fi
+fi
 
 # Check for pipx (needed to clear notebook outputs)
 if ! command -v pipx &> /dev/null; then
@@ -108,10 +146,11 @@ fi
 
 # --- Publish, one prompt per package ---
 #
-# Order matters: kamiwaza-sdk pins `kamiwaza-extensions-lib>=0.4,<0.5` as a
+# Order matters: kamiwaza-sdk pins `kamiwaza-extensions-lib>=0.4.4,<0.5` as a
 # runtime dep. Publishing the SDK first leaves users unable to
 # `pip install kamiwaza-sdk==X` if the lib upload step is skipped or fails.
-# So: lib → SDK → npm.
+# The generated SDK scaffold also requires the TypeScript runtime floor.
+# So: Python lib → npm lib → SDK.
 
 LIB_PUBLISHED=0
 
@@ -132,7 +171,7 @@ fi
 # *already* on PyPI.
 if [[ $LIB_PUBLISHED -eq 0 ]]; then
     echo
-    echo "Note: kamiwaza-sdk requires kamiwaza-extensions-lib (>=0.4,<0.5) at runtime."
+    echo "Note: kamiwaza-sdk requires kamiwaza-extensions-lib (>=0.4.4,<0.5) at runtime."
     echo "  Since the lib upload was skipped, only proceed if that version is"
     echo "  already on PyPI from a prior release."
     read -r -p "Is the required lib version already on PyPI? (y/n) " REPLY || REPLY=n
@@ -147,6 +186,40 @@ else
     SDK_GATED=0
 fi
 
+if [[ $NPM_VERSION_EXISTS -eq 1 ]]; then
+    echo "@kamiwaza-ai/extensions-lib upload skipped: ${NPM_LIB_VERSION} is already on npm (acknowledged at preflight)."
+    NPM_READY=1
+else
+    read -r -p "Upload @kamiwaza-ai/extensions-lib to npm? (y/n) " REPLY || REPLY=n
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        # Pre-flight: confirm we're authenticated against the public npm registry
+        # specifically. A stale .npmrc pointing at a private/internal registry
+        # would otherwise divert the upload silently.
+        NPM_REGISTRY="https://registry.npmjs.org/"
+        if ! NPM_USER=$(npm whoami --registry="$NPM_REGISTRY" 2>&1); then
+            echo "Error: not logged in to $NPM_REGISTRY"
+            echo "  npm whoami output: $NPM_USER"
+            echo "  Run \`npm login --registry=$NPM_REGISTRY\` and re-run this script."
+            exit 1
+        fi
+        echo "Publishing @kamiwaza-ai/extensions-lib as npm user: $NPM_USER"
+        ( cd kamiwaza-ai-extensions-lib && npm publish --access public --registry="$NPM_REGISTRY" )
+        NPM_READY=1
+    else
+        echo "@kamiwaza-ai/extensions-lib upload skipped"
+        NPM_READY=0
+    fi
+fi
+
+# Coupling guard: fresh SDK scaffolds require the TypeScript runtime version in
+# compatibility.json. Never publish the SDK first and leave npm resolution
+# broken if the operator skips or cannot complete the npm upload.
+if [[ $NPM_READY -eq 0 ]]; then
+    echo "Skipping kamiwaza-sdk upload because ${NPM_LIB_NAME}@${NPM_LIB_VERSION} is not published."
+    SDK_GATED=1
+fi
+
 if [[ $SDK_GATED -eq 0 ]]; then
     read -r -p "Upload kamiwaza-sdk to PyPI? (y/n) " REPLY || REPLY=n
     echo
@@ -155,23 +228,4 @@ if [[ $SDK_GATED -eq 0 ]]; then
     else
         echo "kamiwaza-sdk upload skipped"
     fi
-fi
-
-read -r -p "Upload @kamiwaza-ai/extensions-lib to npm? (y/n) " REPLY || REPLY=n
-echo
-if [[ $REPLY =~ ^[Yy]$ ]]; then
-    # Pre-flight: confirm we're authenticated against the public npm registry
-    # specifically. A stale .npmrc pointing at a private/internal registry
-    # would otherwise divert the upload silently.
-    NPM_REGISTRY="https://registry.npmjs.org/"
-    if ! NPM_USER=$(npm whoami --registry="$NPM_REGISTRY" 2>&1); then
-        echo "Error: not logged in to $NPM_REGISTRY"
-        echo "  npm whoami output: $NPM_USER"
-        echo "  Run \`npm login --registry=$NPM_REGISTRY\` and re-run this script."
-        exit 1
-    fi
-    echo "Publishing @kamiwaza-ai/extensions-lib as npm user: $NPM_USER"
-    ( cd kamiwaza-ai-extensions-lib && npm publish --access public --registry="$NPM_REGISTRY" )
-else
-    echo "@kamiwaza-ai/extensions-lib upload skipped"
 fi

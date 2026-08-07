@@ -23,9 +23,12 @@ Refs:
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+from openai._models import FinalRequestOptions
 
 from kamiwaza_extensions_lib.auth import _FORWARD_HEADERS
 from kamiwaza_extensions_lib.models import get_model_client
@@ -40,11 +43,18 @@ CANONICAL_ENVELOPE = {
     "x-user-email": "alice@example.test",
     "x-user-name": "Alice Example",
     "x-user-roles": "member,reader",
+    "x-user-groups": "engineering,search",
+    "x-user-attributes-hash": "sha256:attributes",
     "x-user-system-high": "false",
     "x-user-workroom-role": "member",
     "x-workroom-id": "wr-9a3d",
+    "x-user-workroom-id": "wr-9a3d",
     "x-auth-token": "jwt-platform-attested",
+    "x-auth-azp": "chatbot-app",
     "x-request-id": "req-deadbeef",
+    "x-user-signature": "legacy-signature",
+    "x-user-signature-stable": "stable-signature",
+    "x-user-signature-ts": "1784390400",
     "cookie": "session=opaque-session-id",
 }
 
@@ -57,7 +67,7 @@ class TestUAC11DispatchContextForwarding:
     async def test_every_canonical_envelope_header_reaches_dispatch_client(
         self, monkeypatch
     ):
-        """The full identity envelope is threaded into the AsyncOpenAI client's
+        """The full identity envelope is threaded into the AsyncOpenAI transport's
         default headers, so any model call through this client carries the
         end-user attribution the platform dispatch boundary needs."""
         monkeypatch.setenv("KAMIWAZA_ENDPOINT", "https://kamiwaza.test/api/v1")
@@ -66,10 +76,9 @@ class TestUAC11DispatchContextForwarding:
         request.headers = dict(CANONICAL_ENVELOPE)
 
         client = await get_model_client(request)
-        forwarded = getattr(client, "default_headers", None) or getattr(
-            client, "_default_headers", {}
-        )
+        forwarded = client._client.headers
         forwarded_lower = {k.lower(): v for k, v in forwarded.items()}
+        assert client._client._trust_env is False
 
         for key, value in CANONICAL_ENVELOPE.items():
             assert key in forwarded_lower, (
@@ -138,26 +147,23 @@ class TestUAC11DispatchContextForwarding:
             f"(got {api_key!r})."
         )
 
-        # The runtime lib must strip the lowercase ``authorization`` it would
-        # otherwise pass through verbatim — AsyncOpenAI synthesizes its own
-        # ``Authorization`` (capital-A) from api_key. Leaving the lowercase
-        # passthrough in place would mean two header entries differing only
-        # by case, an httpx-level ambiguity nothing downstream is meant to
-        # disambiguate.
-        forwarded = getattr(client, "default_headers", None) or getattr(
-            client, "_default_headers", {}
+        outbound = client._build_request(
+            FinalRequestOptions.construct(
+                method="post",
+                url="/chat/completions",
+            )
         )
-        assert "authorization" not in forwarded, (
-            f"UAC-11 §5 R2: lowercase 'authorization' must be stripped from "
-            f"default_headers when api_key carries the bearer; AsyncOpenAI "
-            f"adds the capital-A 'Authorization' itself "
-            f"(got {forwarded.get('authorization')!r})."
-        )
-        assert forwarded.get("Authorization") == "Bearer platform-attested-bearer", (
-            f"UAC-11 §5 R2: the on-the-wire Authorization (capital-A, "
-            f"synthesized by AsyncOpenAI from api_key) must match the "
-            f"incoming gateway-attested bearer "
-            f"(got {forwarded.get('Authorization')!r})."
+        authorization_fields = [
+            (key, value)
+            for key, value in outbound.headers.raw
+            if key.lower() == b"authorization"
+        ]
+        assert authorization_fields == [
+            (b"Authorization", b"Bearer platform-attested-bearer")
+        ], (
+            "UAC-11 §5 R2: the outbound request must carry exactly one "
+            "Authorization field matching the incoming platform bearer "
+            f"(got {authorization_fields!r})."
         )
 
     @pytest.mark.asyncio
@@ -177,9 +183,7 @@ class TestUAC11DispatchContextForwarding:
         }
 
         client = await get_model_client(request)
-        forwarded = getattr(client, "default_headers", None) or getattr(
-            client, "_default_headers", {}
-        )
+        forwarded = client._client.headers
         forwarded_lower = {k.lower(): v for k, v in forwarded.items()}
 
         # The two fields ENG-3822 verifies in the audit event:
@@ -201,3 +205,28 @@ class TestUAC11DispatchContextForwarding:
                 f"kamiwaza_extensions_lib.auth._FORWARD_HEADERS. The runtime "
                 f"lib will drop it before the dispatch boundary sees it."
             )
+
+    def test_python_and_typescript_signed_envelope_sets_match(self):
+        """The two runtime packages must not drift on auth-bearing fields."""
+        repo_root = Path(__file__).resolve().parents[3]
+        source = (
+            repo_root
+            / "kamiwaza-ai-extensions-lib"
+            / "src"
+            / "_shared"
+            / "envelopeHeaders.ts"
+        )
+        if not source.exists():
+            pytest.skip("TypeScript runtime source is absent from this installation")
+        source_text = source.read_text()
+        marker = "export const ENVELOPE_AUTH_HEADERS = ["
+        assert marker in source_text
+        header_block = source_text.split(marker, 1)[1].split("] as const", 1)[0]
+        typescript_headers = set(re.findall(r'"([a-z0-9-]+)"', header_block))
+        python_headers = _FORWARD_HEADERS - {"cookie", "x-request-id"}
+
+        assert typescript_headers == python_headers, (
+            "Python and TypeScript disagree on the signed ForwardAuth envelope: "
+            f"only_python={sorted(python_headers - typescript_headers)}, "
+            f"only_typescript={sorted(typescript_headers - python_headers)}"
+        )

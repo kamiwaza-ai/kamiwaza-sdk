@@ -91,6 +91,17 @@ def add_live_options(parser: pytest.Parser) -> None:
             "(defaults to env KAMIWAZA_PASSWORD, else integration fixture resolves via kz-login)."
         ),
     )
+    # ENG-9748 - build identity recorded in scenario-evidence.v2 run records.
+    group.addoption(
+        "--build",
+        action="store",
+        default=os.environ.get("KAMIWAZA_BUILD", ""),
+        help=(
+            "Build identity the e2e scenario run executed against, recorded in "
+            "scenario-evidence.v2 artifacts (defaults to env KAMIWAZA_BUILD). "
+            "The scenario harness refuses to run without one."
+        ),
+    )
     # ENG-5784 - federation peer cluster for two-cluster live tests.
     group.addoption(
         "--live-peer-base-url",

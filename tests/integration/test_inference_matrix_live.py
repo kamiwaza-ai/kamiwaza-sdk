@@ -25,9 +25,8 @@ fail. GPU/MIG gating uses the M5 capability markers (autouse-enforced via
 engine-specific deployability is handled by each test's download/deploy wrapper,
 with 5xx/timeout outcomes converted to skips.
 
-CAVEAT: ``ensure_repo_ready`` selects a GGUF quant but cannot pin one exact
-filename the way the smoke's ``files_to_download`` does, so the GGUF tests
-register the repo best-effort and skip-not-fail if it cannot be made ready.
+The engine lanes consume the same overrideable target definitions as the
+deployability probe, and GGUF deployments pin the exact prepared file id.
 """
 
 from __future__ import annotations
@@ -35,21 +34,13 @@ from __future__ import annotations
 import pytest
 
 from kamiwaza_sdk.exceptions import APIError
+from model_targets import GGUF_LLM_TARGET, VLLM_LLM_TARGET, InferenceTarget
 
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.live,
     pytest.mark.withoutresponses,
 ]
-
-# Engine repos mirror cmd_full's defaults. GGUF is file-pinned in the smoke via
-# files_to_download; the SDK download surface cannot reproduce that pin, so the
-# GGUF tests skip-not-fail if the repo can't be made ready.
-LLAMACPP_REPO = "unsloth/Qwen3-4B-Instruct-2507-GGUF"
-LLAMACPP_QUANT = "q4_k"
-# Keep the vLLM lane intentionally small. This is a CUDA engine smoke, not a
-# model-size certification, and it must fit on a busy single-node release UAT.
-VLLM_REPO = "Qwen/Qwen3-0.6B"
 
 WAIT_TIMEOUT = 600
 FRACTIONAL_COPIES = 2
@@ -62,7 +53,7 @@ def _ensure_repo_or_skip(ensure_repo_ready, client, repo_id, **kwargs):
 
     A 5xx (host cannot fetch / register the model) or a download timeout is a
     capability/infra failure -> skip. A 4xx is a real regression and is
-    re-raised. Mirrors ``deployable_model_prerequisite`` + ``_ensure_model_cached``.
+    re-raised. Mirrors ``deployable_model_prerequisite``.
     """
     try:
         return ensure_repo_ready(client, repo_id, **kwargs)
@@ -81,7 +72,13 @@ def _ensure_repo_or_skip(ensure_repo_ready, client, repo_id, **kwargs):
         )
 
 
-def _deploy_or_skip(client, model, *, engine_name):
+def _deploy_or_skip(
+    client,
+    model,
+    *,
+    target: InferenceTarget,
+    target_model_file_id,
+):
     """Deploy one copy with an explicit engine_name; skip-not-fail on 5xx refusal.
 
     Returns the deployment id (str). A falsy deploy_model return (False) or a 5xx
@@ -90,14 +87,17 @@ def _deploy_or_skip(client, model, *, engine_name):
     """
     configs = client.models.get_model_configs(model.id)
     if not configs:
-        pytest.skip(f"No model configs available for '{engine_name}' test model")
+        pytest.skip(
+            f"No model configs available for '{target.engine_name}' test model"
+        )
     default_config = next((c for c in configs if c.default), configs[0])
 
     try:
         raw_deployment_id = client.serving.deploy_model(
             model_id=str(model.id),
             m_config_id=default_config.id,
-            engine_name=engine_name,
+            m_file_id=target_model_file_id(model, target.quantization),
+            engine_name=target.engine_name,
             lb_port=0,
             autoscaling=False,
             min_copies=1,
@@ -111,13 +111,13 @@ def _deploy_or_skip(client, model, *, engine_name):
         if status_code is None or status_code < 500:
             raise
         pytest.skip(
-            f"Host refused to deploy engine '{engine_name}': "
+            f"Host refused to deploy engine '{target.engine_name}': "
             f"APIError {status_code}: {exc}"
         )
 
     if not raw_deployment_id:
         pytest.skip(
-            f"deploy_model returned no id for engine '{engine_name}' "
+            f"deploy_model returned no id for engine '{target.engine_name}' "
             "(deploy refused on this host)."
         )
     return str(raw_deployment_id)
@@ -171,21 +171,31 @@ def _assert_chat_completion(client, deployment_id):
 # --------------------------------------------------------------------------- #
 # Engine matrix tests
 # --------------------------------------------------------------------------- #
-def test_deploy_and_infer_llamacpp_gguf(live_kamiwaza_client, ensure_repo_ready):
+def test_deploy_and_infer_llamacpp_gguf(
+    live_kamiwaza_client, ensure_repo_ready, target_model_file_id
+):
     """llamacpp arm of cmd_full: download GGUF, deploy engine_name='llamacpp', infer.
 
     Covers the CPU-capable GGUF inference path the SDK suite does not yet cover
-    (test_serving_workflow only covers MLX). No GPU marker — gate on
-    requires_deployable_model where it actually deploys.
+    (test_serving_workflow follows the host-selected target). No GPU marker;
+    its own readiness wrapper provides the capability gate.
     """
     client = live_kamiwaza_client
     model = _ensure_repo_or_skip(
-        ensure_repo_ready, client, LLAMACPP_REPO, quantization=LLAMACPP_QUANT
+        ensure_repo_ready,
+        client,
+        GGUF_LLM_TARGET.repo_id,
+        quantization=GGUF_LLM_TARGET.quantization,
     )
 
     deployment_id = None
     try:
-        deployment_id = _deploy_or_skip(client, model, engine_name="llamacpp")
+        deployment_id = _deploy_or_skip(
+            client,
+            model,
+            target=GGUF_LLM_TARGET,
+            target_model_file_id=target_model_file_id,
+        )
         details = _wait_or_skip(client, deployment_id, engine_name="llamacpp")
         assert details.instances, "llamacpp deployment should report instances"
         _assert_chat_completion(client, deployment_id)
@@ -196,7 +206,9 @@ def test_deploy_and_infer_llamacpp_gguf(live_kamiwaza_client, ensure_repo_ready)
 @pytest.mark.gpu_vendor("nvidia")
 @pytest.mark.min_gpu_count(1)
 @pytest.mark.min_gpu_mem(16)
-def test_deploy_and_infer_vllm_nvidia(live_kamiwaza_client, ensure_repo_ready):
+def test_deploy_and_infer_vllm_nvidia(
+    live_kamiwaza_client, ensure_repo_ready, target_model_file_id
+):
     """vllm arm of cmd_full: download safetensors, deploy engine_name='vllm', infer.
 
     The only engine arm that genuinely needs a discrete NVIDIA GPU; the SDK suite
@@ -204,11 +216,21 @@ def test_deploy_and_infer_vllm_nvidia(live_kamiwaza_client, ensure_repo_ready):
     fails) on CPU / Apple / AMD hosts.
     """
     client = live_kamiwaza_client
-    model = _ensure_repo_or_skip(ensure_repo_ready, client, VLLM_REPO)
+    model = _ensure_repo_or_skip(
+        ensure_repo_ready,
+        client,
+        VLLM_LLM_TARGET.repo_id,
+        quantization=VLLM_LLM_TARGET.quantization,
+    )
 
     deployment_id = None
     try:
-        deployment_id = _deploy_or_skip(client, model, engine_name="vllm")
+        deployment_id = _deploy_or_skip(
+            client,
+            model,
+            target=VLLM_LLM_TARGET,
+            target_model_file_id=target_model_file_id,
+        )
         details = _wait_or_skip(client, deployment_id, engine_name="vllm")
         assert details.instances, "vllm deployment should report instances"
         _assert_chat_completion(client, deployment_id)
@@ -219,7 +241,7 @@ def test_deploy_and_infer_vllm_nvidia(live_kamiwaza_client, ensure_repo_ready):
 # --------------------------------------------------------------------------- #
 # Fractional / MIG co-location tests
 # --------------------------------------------------------------------------- #
-def _certify_fractional_colocation(client, model):
+def _certify_fractional_colocation(client, model, target_model_file_id):
     """Deploy FRACTIONAL_COPIES of one model and assert co-location + serve.
 
     Lifts the API-observable subset of _run_fractional_cert: deploy N copies,
@@ -231,7 +253,12 @@ def _certify_fractional_colocation(client, model):
     deployment_ids: list[str] = []
     try:
         for _ in range(FRACTIONAL_COPIES):
-            deployment_id = _deploy_or_skip(client, model, engine_name="llamacpp")
+            deployment_id = _deploy_or_skip(
+                client,
+                model,
+                target=GGUF_LLM_TARGET,
+                target_model_file_id=target_model_file_id,
+            )
             deployment_ids.append(deployment_id)
 
         # ALL must reach DEPLOYED — on a single 1-GPU node this is only possible
@@ -250,11 +277,10 @@ def _certify_fractional_colocation(client, model):
             _stop_quietly(client, deployment_id)
 
 
-@pytest.mark.requires_deployable_model
 @pytest.mark.min_gpu_count(1)
 @pytest.mark.min_gpu_mem(8)
 def test_fractional_colocation_two_models_one_gpu(
-    live_kamiwaza_client, ensure_repo_ready
+    live_kamiwaza_client, ensure_repo_ready, target_model_file_id
 ):
     """Fractional cert: 2 copies of one model co-located on a single GPU, each serving.
 
@@ -264,16 +290,18 @@ def test_fractional_colocation_two_models_one_gpu(
     """
     client = live_kamiwaza_client
     model = _ensure_repo_or_skip(
-        ensure_repo_ready, client, LLAMACPP_REPO, quantization=LLAMACPP_QUANT
+        ensure_repo_ready,
+        client,
+        GGUF_LLM_TARGET.repo_id,
+        quantization=GGUF_LLM_TARGET.quantization,
     )
-    _certify_fractional_colocation(client, model)
+    _certify_fractional_colocation(client, model, target_model_file_id)
 
 
-@pytest.mark.requires_deployable_model
 @pytest.mark.gpu_mig_support
 @pytest.mark.min_gpu_count(1)
 def test_fractional_colocation_mig_partitioned_gpu(
-    live_kamiwaza_client, ensure_repo_ready
+    live_kamiwaza_client, ensure_repo_ready, target_model_file_id
 ):
     """MIG variant of the fractional cert: 2 co-located copies, each serving.
 
@@ -283,6 +311,9 @@ def test_fractional_colocation_mig_partitioned_gpu(
     """
     client = live_kamiwaza_client
     model = _ensure_repo_or_skip(
-        ensure_repo_ready, client, LLAMACPP_REPO, quantization=LLAMACPP_QUANT
+        ensure_repo_ready,
+        client,
+        GGUF_LLM_TARGET.repo_id,
+        quantization=GGUF_LLM_TARGET.quantization,
     )
-    _certify_fractional_colocation(client, model)
+    _certify_fractional_colocation(client, model, target_model_file_id)
