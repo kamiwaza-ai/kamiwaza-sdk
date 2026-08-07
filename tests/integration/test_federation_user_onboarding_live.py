@@ -18,10 +18,22 @@ The assertions that carry the milestone are the *distinctness* ones: two
 requesters must produce two guest subjects and two credentials. A test that only
 checked "a credential came back" would have passed on the pre-M1 code.
 
-Topology mirrors test_federation_receiver_realm_live.py: the **receiver** (peer
-cluster) owns the per-federation realm, mints guests, and serves the onboarding
-queue, so onboarding calls run against ``receiver_client``. The initiator only
-drives the pairing handshake that provisions the receiver's realm.
+Topology: the **receiver** (peer cluster) owns the per-federation realm, mints
+guests, and serves the approve/deny queue. The **initiator** owns the requester
+— ``request`` and ``claim`` are initiator operations, and ``claim`` makes a
+PSK-signed mesh call OUT to the receiver to fetch the credential it minted.
+
+Which side a call goes to is therefore a correctness property, not a style
+choice. This file previously drove request/approve/claim entirely at the
+receiver, which worked only while the claim was a process-local read; ENG-9730
+made it a real cross-cluster leg (a local dict "returned ``200 {"credential":
+null}`` on every real two-cluster deployment while passing single-process
+tests"), so a receiver-side claim now dials a peer address the receiver's own
+row does not hold.
+
+The two clusters keep SEPARATE rows for one logical request, with separate ids
+linked by ``external_id`` — the id handed to the requester is meaningless at the
+receiver, which is what ``_receiver_request_id`` resolves.
 
 Gated by ``requires_two_clusters`` + ``KAMIWAZA_PEER_BASE_URL`` /
 ``KAMIWAZA_PEER_API_KEY``, so it auto-deselects on PRs without a peer rig.
@@ -150,26 +162,6 @@ def _self_request_onboarding(
     )
 
 
-def _request_onboarding(
-    client: KamiwazaClient, federation_id: str, external_id: str, justification: str
-) -> dict[str, Any]:
-    """Record one DELEGATED onboarding request (admin acting for ``external_id``).
-
-    Returns the status WITHOUT a claim token — see ``_self_request_onboarding``.
-    Used where the test only needs the row to exist (e.g. the deny path).
-    """
-    return _obj(
-        client,
-        "POST",
-        _onboarding_path(federation_id, "/request"),
-        json={
-            "justification": justification,
-            "external_id": external_id,
-            "email": f"{external_id.split('@')[0]}@example.test",
-        },
-    )
-
-
 def _claim(client: KamiwazaClient, federation_id: str, token: str) -> dict[str, Any]:
     return _obj(
         client,
@@ -256,11 +248,33 @@ def onboarding_federation(
                 logger.warning("failed to disconnect %s %s: %s", label, fed_id, exc)
 
 
+def _receiver_request_id(
+    receiver_client: KamiwazaClient, receiver_fed_id: str, external_id: str
+) -> str:
+    """The receiver-side row matching ``external_id``, for the approve/deny leg.
+
+    The initiator and receiver hold SEPARATE rows with separate ids for one
+    logical request, so the id returned to the requester cannot be used against
+    the receiver. Matching on ``external_id`` is what links them.
+    """
+    rows = _rows(receiver_client, _onboarding_path(receiver_fed_id))
+    for row in rows:
+        if row.get("external_id") == external_id:
+            request_id = row.get("id")
+            assert request_id, f"receiver row carries no id: {row!r}"
+            return str(request_id)
+    raise AssertionError(
+        f"no receiver-side row for {external_id!r}; the mesh forward did not "
+        f"arrive. queue={rows!r}"
+    )
+
+
 @pytest.fixture(scope="module")
 def onboarded_pair(
     onboarding_federation: dict[str, str],
+    initiator_client: KamiwazaClient,
     receiver_client: KamiwazaClient,
-    live_peer_base_url: str,
+    live_base_url: str,
 ) -> dict[str, Any]:
     """Two requesters carried all the way through request -> approve -> claim.
 
@@ -276,7 +290,15 @@ def onboarded_pair(
     none of the grant path, which is how three independent silent failures in it
     survived a passing live suite.
     """
-    fed_id = onboarding_federation["receiver_id"]
+    # Two ids for one logical federation. Which side a call goes to is not a
+    # style choice: `request` and `claim` are INITIATOR operations (claim makes
+    # a PSK-signed mesh call OUT to the receiver), while approve/deny are the
+    # receiver's. This fixture used to drive everything at the receiver, which
+    # worked only while the claim was a local read — ENG-9730 made it a real
+    # cross-cluster leg, so a receiver-side claim now dials a peer address the
+    # receiver's own row does not have and dies on DNS.
+    receiver_fed_id = onboarding_federation["receiver_id"]
+    initiator_fed_id = onboarding_federation["initiator_id"]
     suffix = uuid.uuid4().hex[:8]
     people = [
         {
@@ -304,15 +326,16 @@ def onboarded_pair(
         # distinctness this fixture exists to prove is only meaningful when the
         # two requests genuinely come from two identities.
         username = person["username"]
-        receiver_client.subjects.upsert(
-            username, attributes={}, password=username
-        )
+        # The persona is an INITIATOR-local user: the product's claim is that a
+        # requester reaches their OWN cluster, and the receiver never sees a
+        # local account for them at all — only the guest it mints.
+        initiator_client.subjects.upsert(username, attributes={}, password=username)
         person["client"] = authed_client(
-            live_peer_base_url, username, username, verify=False
+            live_base_url, username, username, verify=False
         )
 
         status = _self_request_onboarding(
-            person["client"], fed_id, person["justification"]
+            person["client"], initiator_fed_id, person["justification"]
         )
         assert status.get("status") == "REQUESTED", f"unexpected status: {status!r}"
         request_id = status.get("id")
@@ -326,10 +349,16 @@ def onboarded_pair(
         # than the synthetic one this fixture used to inject.
         person["external_id"] = status.get("external_id") or username
 
+        # Approve on the RECEIVER, against the RECEIVER's row id. The id the
+        # requester was handed belongs to the initiator's copy and means
+        # nothing here — the two rows are linked by external_id.
+        receiver_request_id = _receiver_request_id(
+            receiver_client, receiver_fed_id, person["external_id"]
+        )
         approved = _obj(
             receiver_client,
             "POST",
-            _onboarding_path(fed_id, f"/{request_id}/approve"),
+            _onboarding_path(receiver_fed_id, f"/{receiver_request_id}/approve"),
             json={
                 "attributes": person["attributes"],
                 "relations": [
@@ -345,15 +374,23 @@ def onboarded_pair(
         # Claim from the REQUESTER's session, not the admin's. Claiming as
         # admin would be the impersonation ENG-9731 exists to prevent, so a
         # test that did it could pass while the property was broken.
-        claimed = _claim(person["client"], fed_id, claim_token)
+        claimed = _claim(person["client"], initiator_fed_id, claim_token)
         credential = claimed.get("credential")
         assert credential, f"first claim must return the credential: {claimed!r}"
 
         person["request_id"] = request_id
+        person["receiver_request_id"] = receiver_request_id
         person["claim_token"] = claim_token
         person["credential"] = credential
 
-    return {"federation_id": fed_id, "people": people}
+    # ``federation_id`` stays the RECEIVER's: every downstream assertion reads
+    # receiver-side state (minted guests, the allowlist, the ReBAC store), which
+    # is where the per-user properties are observable.
+    return {
+        "federation_id": receiver_fed_id,
+        "initiator_federation_id": initiator_fed_id,
+        "people": people,
+    }
 
 
 class TestPerUserOnboarding:
@@ -444,14 +481,21 @@ class TestPerUserOnboarding:
                 f"{person['external_id']} not linked to a guest; allowlist={rows!r}"
             )
 
-    def test_claim_token_is_single_use(
-        self, onboarded_pair: dict[str, Any], receiver_client: KamiwazaClient
-    ) -> None:
+    def test_claim_token_is_single_use(self, onboarded_pair: dict[str, Any]) -> None:
         """The token is spent on first success, so a leaked token cannot re-fetch
-        a durable credential."""
+        a durable credential.
+
+        Replayed on the INITIATOR by the token's own owner, because that is
+        where single-use is enforced: ``claim_onboarding`` spends the token
+        before making its mesh call, and the receiver's queue deliberately holds
+        no token at all. Replaying at the receiver would prove nothing — there
+        is nothing there to spend.
+        """
         person = onboarded_pair["people"][0]
         replay = _claim(
-            receiver_client, onboarded_pair["federation_id"], person["claim_token"]
+            person["client"],
+            onboarded_pair["initiator_federation_id"],
+            person["claim_token"],
         )
         assert not replay.get("credential"), (
             f"a spent claim token returned the credential again: {replay!r}"
@@ -471,26 +515,50 @@ class TestPerUserOnboarding:
         )
 
     def test_denied_request_records_its_reason(
-        self, onboarding_federation: dict[str, str], receiver_client: KamiwazaClient
+        self,
+        onboarding_federation: dict[str, str],
+        initiator_client: KamiwazaClient,
+        receiver_client: KamiwazaClient,
+        live_base_url: str,
     ) -> None:
         """A denial has to say why — the requester's UI shows the reason, and a
-        silent DENIED is indistinguishable from a stuck request."""
-        fed_id = onboarding_federation["receiver_id"]
-        external_id = f"carol-{uuid.uuid4().hex[:8]}@src"
-        status = _request_onboarding(
-            receiver_client, fed_id, external_id, "Ad-hoc access for a one-off review."
+        silent DENIED is indistinguishable from a stuck request.
+
+        Carol requests for herself so she holds her own claim token: a delegated
+        request returns none (ENG-9731), and this test's last assertion needs a
+        real token to prove a DENIED request yields no credential. Passing the
+        `None` from a delegated response made the claim 404 on a token that had
+        never existed — which looks like the denial working, and is not.
+        """
+        from ._mini_clearance import authed_client
+
+        receiver_fed_id = onboarding_federation["receiver_id"]
+        initiator_fed_id = onboarding_federation["initiator_id"]
+        username = f"carol-{uuid.uuid4().hex[:8]}"
+        initiator_client.subjects.upsert(username, attributes={}, password=username)
+        carol = authed_client(live_base_url, username, username, verify=False)
+
+        status = _self_request_onboarding(
+            carol, initiator_fed_id, "Ad-hoc access for a one-off review."
         )
+        claim_token = status.get("claim_token")
+        assert claim_token, f"carol must hold her own claim token: {status!r}"
+        external_id = status.get("external_id") or username
+
         reason = "clearance not verified"
+        receiver_request_id = _receiver_request_id(
+            receiver_client, receiver_fed_id, external_id
+        )
         denied = _obj(
             receiver_client,
             "POST",
-            _onboarding_path(fed_id, f"/{status['id']}/deny"),
+            _onboarding_path(receiver_fed_id, f"/{receiver_request_id}/deny"),
             json={"reason": reason},
         )
         assert denied.get("status") == "DENIED", f"deny failed: {denied!r}"
         assert denied.get("denied_reason") == reason
 
-        claimed = _claim(receiver_client, fed_id, status["claim_token"])
+        claimed = _claim(carol, initiator_fed_id, claim_token)
         assert not claimed.get("credential"), (
             f"a denied request yielded a credential: {claimed!r}"
         )
