@@ -9,21 +9,43 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import asdict
 
 import pytest
 
 from tests.e2e.scenarios import harness
 from tests.e2e.scenarios.harness import (
+    CAPABILITY_ID_RE,
+    EVIDENCE_METHODS,
+    EVIDENCE_PROVENANCES,
+    EVIDENCE_SCHEMA_ID,
+    EVIDENCE_SCHEMA_PATH,
+    SCENARIO_STATUSES,
+    STEP_STATUSES,
     ScenarioResult,
     StepResult,
     _validate_runbook,
+    derive_status,
     record_run,
     render_sign_off,
+    resolve_build_identity,
     run_scenario,
+    validate_evidence_record,
 )
 
+TEST_BUILD = "kamiwaza-0.99.0+test.abc1234"
 
-def _runbook(steps, *, scenario_id="S1"):
+
+@pytest.fixture(autouse=True)
+def _build_identity_env(monkeypatch):
+    """Every harness run needs a build identity (scenario-evidence.v2, G1).
+
+    Tests exercising the refusal path delete this env var explicitly.
+    """
+    monkeypatch.setenv("KAMIWAZA_BUILD", TEST_BUILD)
+
+
+def _runbook(steps, *, scenario_id="S1", **extra):
     return {
         "id": scenario_id,
         "name": f"Test scenario {scenario_id}",
@@ -31,6 +53,7 @@ def _runbook(steps, *, scenario_id="S1"):
         "uacs": ["UAC-16"],
         "expected_outcomes": ["something demonstrable"],
         "steps": steps,
+        **extra,
     }
 
 
@@ -290,6 +313,8 @@ class TestRecordRun:
             duration_s=5.0,
             sign_off_actor="SDK team",
             ci_job_url=None,
+            build=TEST_BUILD,
+            status="passed",
             steps=[
                 StepResult(name="x", status="passed", duration_s=0.1, detail="first")
             ],
@@ -302,6 +327,8 @@ class TestRecordRun:
             duration_s=7.0,
             sign_off_actor="SDK team",
             ci_job_url=None,
+            build=TEST_BUILD,
+            status="passed",
             steps=[
                 StepResult(name="x", status="passed", duration_s=0.1, detail="second")
             ],
@@ -506,4 +533,334 @@ class TestValidateRunbook:
     def test_step_missing_required_field_raises(self, tmp_path):
         rb = _runbook([{"name": "x"}])  # missing description
         with pytest.raises(ValueError, match="missing required fields"):
+            _validate_runbook(rb, source=tmp_path / "s1-x.yaml")
+
+
+# ---------------------------------------------------------------------------
+# scenario-evidence.v2 — build identity, method, capability_ids, status
+# (ENG-9748; sales-developer-release-kit design §3.6/§4.6)
+# ---------------------------------------------------------------------------
+
+
+def _one_step_runbook(**extra):
+    return _runbook([{"name": "x", "description": "..."}], **extra)
+
+
+def _synthetic_v2_record(**overrides):
+    """A conforming v2 record built by hand, with no harness involvement.
+
+    Shaped the way a non-harness producer (e.g. the UI journey runner,
+    T3.1) would emit it — ``method: manual``-style variance, a step with
+    no ``detail``, dot-namespaced and kebab-case capability ids — to pin
+    that the schema stays free of SDK-harness-specific assumptions.
+    """
+    record = {
+        "schema": "scenario-evidence.v2",
+        "scenario_id": "S2",
+        "scenario_name": "App launched from Workroom Manager",
+        "started_at": "2026-08-06T12:00:00+00:00",
+        "finished_at": "2026-08-06T12:00:42+00:00",
+        "duration_s": 42.0,
+        "sign_off_actor": "SDK team",
+        "ci_job_url": None,
+        "build": "kamiwaza-1.2.3+build.777",
+        "method": "manual",
+        "capability_ids": ["workrooms.create", "workroom-app-launch"],
+        "evidence_provenance": "pre-existing",
+        "status": "passed_with_notes",
+        "steps": [
+            {"name": "a", "status": "passed", "duration_s": 1.5, "detail": "ok"},
+            {"name": "b", "status": "skipped", "duration_s": 0.1},
+        ],
+    }
+    record.update(overrides)
+    return record
+
+
+@pytest.mark.unit
+class TestBuildIdentity:
+    """G1: evidence without build identity is refused, not silently emitted."""
+
+    def test_refuses_to_run_without_build_identity(self, monkeypatch):
+        monkeypatch.delenv("KAMIWAZA_BUILD", raising=False)
+        calls: list[int] = []
+
+        def handler():
+            calls.append(1)
+            return "ran"
+
+        with pytest.raises(ValueError, match="build identity"):
+            run_scenario(_one_step_runbook(), {"x": handler})
+        assert calls == [], "harness must refuse BEFORE executing any step"
+
+    def test_whitespace_only_build_is_refused(self, monkeypatch):
+        monkeypatch.setenv("KAMIWAZA_BUILD", "   ")
+        with pytest.raises(ValueError, match="build identity"):
+            run_scenario(_one_step_runbook(), {"x": lambda: "ok"})
+
+    def test_env_var_supplies_build(self):
+        result = run_scenario(_one_step_runbook(), {"x": lambda: "ok"})
+        assert result.build == TEST_BUILD
+
+    def test_explicit_build_arg_overrides_env(self):
+        result = run_scenario(
+            _one_step_runbook(), {"x": lambda: "ok"}, build="explicit-0.1.0"
+        )
+        assert result.build == "explicit-0.1.0"
+
+    def test_resolve_build_identity_strips_whitespace(self):
+        assert resolve_build_identity("  v1.2.3  ") == "v1.2.3"
+
+
+@pytest.mark.unit
+class TestEvidenceV2Fields:
+    def test_harness_emits_v2_envelope_defaults(self):
+        result = run_scenario(_one_step_runbook(), {"x": lambda: "ok"})
+        assert result.schema == EVIDENCE_SCHEMA_ID
+        assert result.method == "automated"
+        assert result.evidence_provenance == "cycle-authored"
+        assert result.capability_ids == []
+        assert result.status == "passed"
+
+    def test_capability_ids_copied_from_runbook(self):
+        runbook = _one_step_runbook(
+            capability_ids=["workrooms.create", "workroom-app-launch"]
+        )
+        result = run_scenario(runbook, {"x": lambda: "ok"})
+        assert result.capability_ids == ["workrooms.create", "workroom-app-launch"]
+
+    def test_evidence_provenance_overridable_via_arg(self):
+        result = run_scenario(
+            _one_step_runbook(),
+            {"x": lambda: "ok"},
+            evidence_provenance="pre-existing",
+        )
+        assert result.evidence_provenance == "pre-existing"
+
+    def test_evidence_provenance_overridable_via_env(self, monkeypatch):
+        monkeypatch.setenv("KAMIWAZA_EVIDENCE_PROVENANCE", "pre-existing")
+        result = run_scenario(_one_step_runbook(), {"x": lambda: "ok"})
+        assert result.evidence_provenance == "pre-existing"
+
+    def test_invalid_evidence_provenance_raises(self):
+        with pytest.raises(ValueError, match="evidence_provenance"):
+            run_scenario(
+                _one_step_runbook(),
+                {"x": lambda: "ok"},
+                evidence_provenance="from-the-future",
+            )
+
+
+@pytest.mark.unit
+class TestStatusDerivation:
+    """Three-valued status maps to the sign-off template's PASS /
+    PASS WITH NOTES / FAIL decision."""
+
+    def _two_step_runbook(self):
+        return _runbook(
+            [
+                {"name": "a", "description": "..."},
+                {"name": "b", "description": "..."},
+            ]
+        )
+
+    def test_all_passed_is_passed(self):
+        result = run_scenario(
+            self._two_step_runbook(), {"a": lambda: "ok", "b": lambda: "ok"}
+        )
+        assert result.status == "passed"
+
+    def test_any_failed_is_failed(self):
+        def boom():
+            raise RuntimeError("kaboom")
+
+        result = run_scenario(self._two_step_runbook(), {"a": boom, "b": lambda: "ok"})
+        # Includes a not_reached step — still "failed", not "with notes".
+        assert [s.status for s in result.steps] == ["failed", "not_reached"]
+        assert result.status == "failed"
+
+    def test_skipped_step_is_passed_with_notes(self):
+        def skip_b():
+            pytest.skip("does not apply")
+
+        result = run_scenario(
+            self._two_step_runbook(), {"a": lambda: "ok", "b": skip_b}
+        )
+        assert result.status == "passed_with_notes"
+
+    def test_pending_step_is_passed_with_notes(self):
+        result = run_scenario(self._two_step_runbook(), {"a": lambda: "ok"})
+        assert result.status == "passed_with_notes"
+
+    def test_derive_status_empty_steps_is_failed(self):
+        assert derive_status([]) == "failed"
+
+    def test_derive_status_direct_vocabulary(self):
+        step = lambda st: StepResult(name="x", status=st, duration_s=0.0)  # noqa: E731
+        assert derive_status([step("passed")]) == "passed"
+        assert derive_status([step("passed"), step("failed")]) == "failed"
+        assert derive_status([step("passed"), step("skipped")]) == "passed_with_notes"
+        assert derive_status([step("pending")]) == "passed_with_notes"
+
+
+@pytest.mark.unit
+class TestEvidenceValidation:
+    def test_synthetic_v2_record_is_valid(self):
+        validate_evidence_record(_synthetic_v2_record())
+
+    def test_record_run_emits_a_valid_v2_record(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(harness, "RUNS_DIR", tmp_path / "runs")
+        result = run_scenario(
+            _one_step_runbook(capability_ids=["workrooms.create"]),
+            {"x": lambda: "ok"},
+        )
+        path = record_run(result)
+        record = json.loads(path.read_text())
+        assert record["schema"] == EVIDENCE_SCHEMA_ID
+        assert record["build"] == TEST_BUILD
+        assert record["method"] == "automated"
+        assert record["capability_ids"] == ["workrooms.create"]
+        assert record["evidence_provenance"] == "cycle-authored"
+        assert record["status"] == "passed"
+        validate_evidence_record(record)
+
+    @pytest.mark.parametrize(
+        ("mutation", "expected_msg"),
+        [
+            ({"build": ""}, "build"),
+            ({"schema": "scenario-evidence.v1"}, "schema"),
+            ({"method": "auto"}, "method"),
+            ({"status": "green"}, "status"),
+            ({"evidence_provenance": "unknown"}, "evidence_provenance"),
+            ({"capability_ids": ["Not_Kebab"]}, "capability_ids"),
+            ({"capability_ids": "workrooms.create"}, "capability_ids"),
+            ({"steps": []}, "steps"),
+            ({"duration_s": -1}, "duration_s"),
+            (
+                {"steps": [{"name": "a", "status": "purple", "duration_s": 0.1}]},
+                r"steps\[0\].status",
+            ),
+        ],
+    )
+    def test_invalid_records_are_rejected(self, mutation, expected_msg):
+        record = _synthetic_v2_record(**mutation)
+        with pytest.raises(ValueError, match=expected_msg):
+            validate_evidence_record(record)
+
+    def test_missing_required_field_is_rejected(self):
+        record = _synthetic_v2_record()
+        del record["build"]
+        with pytest.raises(ValueError, match="missing required field 'build'"):
+            validate_evidence_record(record)
+
+    def test_record_run_refuses_to_persist_invalid_record(self, monkeypatch, tmp_path):
+        runs_dir = tmp_path / "runs"
+        monkeypatch.setattr(harness, "RUNS_DIR", runs_dir)
+        result = ScenarioResult(
+            scenario_id="S1",
+            scenario_name="t",
+            started_at="2026-08-06T17:00:00+00:00",
+            finished_at="2026-08-06T17:00:05+00:00",
+            duration_s=5.0,
+            sign_off_actor="SDK team",
+            ci_job_url=None,
+            build="",  # the G1 violation
+            status="passed",
+            steps=[StepResult(name="x", status="passed", duration_s=0.1)],
+        )
+        with pytest.raises(ValueError, match="build"):
+            record_run(result)
+        assert not runs_dir.exists() or not list(
+            runs_dir.iterdir()
+        ), "an invalid record must not be persisted"
+
+    def test_committed_v1_artifacts_are_untouched_and_not_v2(self):
+        """The four pre-existing runs/*.json are v1 history: readable,
+        unmigrated (no ``schema`` field), and intentionally NOT valid v2."""
+        v1_paths = sorted(harness.RUNS_DIR.glob("s*-2026050*.json"))
+        assert len(v1_paths) == 4, v1_paths
+        for path in v1_paths:
+            record = json.loads(path.read_text())
+            assert "schema" not in record, f"{path.name} must stay a v1 artifact"
+            assert "build" not in record
+            with pytest.raises(ValueError, match="missing required field"):
+                validate_evidence_record(record)
+
+
+@pytest.mark.unit
+class TestSchemaFileSync:
+    """Pins schemas/scenario-evidence.v2.schema.json against the harness
+    constants so the JSON Schema and the structural validator cannot drift."""
+
+    @pytest.fixture()
+    def schema(self):
+        return json.loads(EVIDENCE_SCHEMA_PATH.read_text())
+
+    def test_schema_vocabulary_matches_harness(self, schema):
+        props = schema["properties"]
+        assert props["schema"]["const"] == EVIDENCE_SCHEMA_ID
+        assert set(props["status"]["enum"]) == SCENARIO_STATUSES
+        assert set(props["method"]["enum"]) == EVIDENCE_METHODS
+        assert set(props["evidence_provenance"]["enum"]) == EVIDENCE_PROVENANCES
+        assert props["capability_ids"]["items"]["pattern"] == CAPABILITY_ID_RE.pattern
+        step_props = schema["$defs"]["step"]["properties"]
+        assert set(step_props["status"]["enum"]) == STEP_STATUSES
+
+    def test_schema_required_matches_emitted_record_shape(self, schema):
+        result = run_scenario(_one_step_runbook(), {"x": lambda: "ok"})
+        emitted_keys = set(asdict(result))
+        assert set(schema["required"]) == emitted_keys
+        assert set(schema["properties"]) == emitted_keys
+
+    def test_v2_record_validates_against_schema_file(self, schema):
+        """Full JSON Schema validation — runs only where jsonschema happens
+        to be importable (it is not a declared dependency; the structural
+        validator in harness.py is the always-on check)."""
+        jsonschema = pytest.importorskip("jsonschema")
+        validator = jsonschema.Draft202012Validator(schema)
+        validator.validate(_synthetic_v2_record())
+        assert list(validator.iter_errors(_synthetic_v2_record(build="")))
+
+    @pytest.mark.parametrize(
+        "capability_id",
+        ["workrooms.create", "workroom-app-launch", "a", "a2.b-c.d", "s3.multi-part"],
+    )
+    def test_capability_id_pattern_accepts(self, capability_id):
+        assert CAPABILITY_ID_RE.match(capability_id)
+
+    @pytest.mark.parametrize(
+        "capability_id",
+        ["Workrooms.Create", "workrooms..create", "-lead", "trail-", "a_b", "", "a."],
+    )
+    def test_capability_id_pattern_rejects(self, capability_id):
+        assert not CAPABILITY_ID_RE.match(capability_id)
+
+
+@pytest.mark.unit
+class TestValidateRunbookCapabilityIds:
+    """The OPTIONAL capability_ids runbook field (mapping runbooks to
+    capability documents is T1.4; the field is accepted but not required)."""
+
+    def test_absent_capability_ids_is_accepted(self, tmp_path):
+        _validate_runbook(_one_step_runbook(), source=tmp_path / "s1-x.yaml")
+
+    def test_valid_capability_ids_accepted(self, tmp_path):
+        rb = _one_step_runbook(
+            capability_ids=["workrooms.create", "workroom-app-launch"]
+        )
+        _validate_runbook(rb, source=tmp_path / "s1-x.yaml")
+
+    def test_non_list_capability_ids_raises(self, tmp_path):
+        rb = _one_step_runbook(capability_ids="workrooms.create")
+        with pytest.raises(ValueError, match="capability_ids must be a list"):
+            _validate_runbook(rb, source=tmp_path / "s1-x.yaml")
+
+    def test_non_string_entry_raises(self, tmp_path):
+        rb = _one_step_runbook(capability_ids=["workrooms.create", 7])
+        with pytest.raises(ValueError, match="capability_ids must be a list"):
+            _validate_runbook(rb, source=tmp_path / "s1-x.yaml")
+
+    def test_malformed_entry_raises(self, tmp_path):
+        rb = _one_step_runbook(capability_ids=["Workrooms.Create"])
+        with pytest.raises(ValueError, match="kebab-case"):
             _validate_runbook(rb, source=tmp_path / "s1-x.yaml")
