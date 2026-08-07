@@ -131,8 +131,13 @@ def test_deploy_qwen_and_infer_with_strip_thinking(
 
         default_contains = "<think>" in default_text
         strip_contains = "<think>" in strip_text
-        if default_contains:
-            assert not strip_contains, "Strip-thinking deployment should remove <think> blocks"
+        if not default_contains:
+            pytest.skip(
+                "target emits no <think>; strip_thinking unverifiable on this host"
+            )
+        assert not strip_contains, (
+            "Strip-thinking deployment should remove <think> blocks"
+        )
     finally:
         for dep in deployments:
             try:
