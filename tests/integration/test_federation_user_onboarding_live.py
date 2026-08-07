@@ -371,6 +371,18 @@ def onboarded_pair(
         )
         assert approved.get("status") == "APPROVED", f"approve failed: {approved!r}"
 
+        # Poll before claiming. ENG-8977 is poll-not-push: the receiver does not
+        # notify, so the initiator's row stays REQUESTED until `/me` refreshes it
+        # from the receiver. Claiming first returns `{"status": "REQUESTED",
+        # "credential": null}` — a legitimate answer to a question asked too
+        # early, and easy to misread as a broken mint.
+        mine = _obj(
+            person["client"], "GET", _onboarding_path(initiator_fed_id, "/me")
+        )
+        assert mine.get("status") == "APPROVED", (
+            f"the approval did not reach the requester's own cluster: {mine!r}"
+        )
+
         # Claim from the REQUESTER's session, not the admin's. Claiming as
         # admin would be the impersonation ENG-9731 exists to prevent, so a
         # test that did it could pass while the property was broken.
