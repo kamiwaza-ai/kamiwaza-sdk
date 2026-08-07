@@ -450,13 +450,23 @@ def _is_non_negative_num(v: object) -> bool:
 
 
 def _is_iso8601_datetime(v: object) -> bool:
+    """True iff ``v`` is an RFC 3339 date-time with a UTC/offset timezone.
+
+    Normalizes a trailing ``Z`` to ``+00:00`` before parsing: ``fromisoformat``
+    only accepts a bare ``Z`` suffix on Python >=3.11, but this project's
+    minimum is 3.10 (``pyproject.toml``). Requires ``tzinfo`` to be present so
+    date-only (``2026-08-06``) and timezone-less (``2026-08-06T12:00:00``)
+    strings — both accepted by ``fromisoformat`` but neither a valid
+    ``date-time`` per the schema's RFC 3339 + UTC contract — are rejected.
+    """
     if not isinstance(v, str) or v.strip() == "":
         return False
+    normalized = v[:-1] + "+00:00" if v.endswith("Z") else v
     try:
-        datetime.fromisoformat(v)
+        parsed = datetime.fromisoformat(normalized)
     except ValueError:
         return False
-    return True
+    return parsed.tzinfo is not None
 
 
 # (field, predicate, requirement description) — mirrors the schema's

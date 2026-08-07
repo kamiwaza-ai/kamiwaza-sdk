@@ -730,6 +730,8 @@ class TestEvidenceValidation:
             ({"build": ""}, "build"),
             ({"started_at": "unknown"}, "started_at"),
             ({"finished_at": "unknown"}, "finished_at"),
+            ({"started_at": "2026-08-06"}, "started_at"),
+            ({"started_at": "2026-08-06T12:00:00"}, "started_at"),
             ({"schema": "scenario-evidence.v1"}, "schema"),
             ({"method": "auto"}, "method"),
             ({"status": "green"}, "status"),
@@ -748,6 +750,16 @@ class TestEvidenceValidation:
         record = _synthetic_v2_record(**mutation)
         with pytest.raises(ValueError, match=expected_msg):
             validate_evidence_record(record)
+
+    def test_z_suffix_timestamp_is_accepted(self):
+        """RFC 3339 permits a bare ``Z`` UTC suffix; the schema/harness are
+        documented as evidence-surface-neutral, so an external producer
+        (e.g. the UI journey runner) emitting ``Z`` must validate cleanly
+        regardless of the Python version the validator runs on."""
+        record = _synthetic_v2_record(
+            started_at="2026-08-06T12:00:00Z", finished_at="2026-08-06T12:00:42Z"
+        )
+        validate_evidence_record(record)
 
     def test_missing_required_field_is_rejected(self):
         record = _synthetic_v2_record()
