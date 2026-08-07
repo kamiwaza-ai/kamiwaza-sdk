@@ -29,6 +29,7 @@ def _configured_repo(generic_name: str, legacy_name: str, default: str) -> str:
 
 _DEFAULT_MLX_LLM_REPO: Final = "mlx-community/Qwen3-4B-4bit"
 _DEFAULT_VLLM_LLM_REPO: Final = "Qwen/Qwen3-0.6B"
+_REASONING_REPO_MARKERS: Final = ("thinking", "reasoning", "-r1-", "qwq")
 # Instruct, not Thinking. The GGUF target is the CPU fallback, and it backs
 # Graphiti entity extraction in the context ontology tests. A reasoning model
 # emits its thinking trace before the answer, which on a GPU-less host pushes a
