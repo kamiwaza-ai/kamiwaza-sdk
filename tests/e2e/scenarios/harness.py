@@ -60,7 +60,7 @@ EVIDENCE_SCHEMA_PATH = SCHEMAS_DIR / "scenario-evidence.v2.schema.json"
 
 # scenario-evidence.v2 vocabulary. Must stay in lockstep with
 # schemas/scenario-evidence.v2.schema.json (pinned by a sync test in
-# test_harness.py).
+# test_evidence_v2.py).
 EVIDENCE_SCHEMA_ID = "scenario-evidence.v2"
 SCENARIO_STATUSES = frozenset({"passed", "passed_with_notes", "failed"})
 EVIDENCE_METHODS = frozenset({"automated", "manual"})
@@ -435,7 +435,7 @@ def record_run(result: ScenarioResult) -> Path:
 # ``jsonschema`` is not a dependency of this project's test extras, and per
 # core-principles we do not add one for this. The checks below mirror
 # schemas/scenario-evidence.v2.schema.json field for field; a sync test in
-# test_harness.py pins the two against each other so they cannot drift.
+# test_evidence_v2.py pins the two against each other so they cannot drift.
 # ---------------------------------------------------------------------------
 
 
