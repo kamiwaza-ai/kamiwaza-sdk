@@ -80,7 +80,7 @@
         "type": "string",
         "pattern": "^[a-z0-9]+(-[a-z0-9]+)*(\\.[a-z0-9]+(-[a-z0-9]+)*)*$"
       },
-      "description": "Capability documents this evidence supports (closes gap G2). Items are kebab-case segments, optionally dot-namespaced as area.capability (e.g. \"workroom-app-launch\", \"workrooms.create\"). May be empty when the mapping has not yet been authored."
+      "description": "Capability documents this evidence supports (closes gap G2). Items are kebab-case segments, optionally dot-namespaced as area.capability (e.g. \"single-sign-on\", \"workrooms.create\"). Each item must match the `id` of a capability document exactly; a near-miss such as \"workroom-app-launch\" for \"workrooms.app-launch\" is a different id and silently joins to nothing. May be empty when the mapping has not yet been authored."
     },
     "evidence_provenance": {
       "enum": [
