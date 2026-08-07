@@ -104,6 +104,61 @@ Revoke an enrolled guest by disabling its allowlist row
 (`POST /cluster/federations/{id}/guests/{external_id}/revoke`). Subsequent mesh
 calls presenting that guest's credential are refused at the receiver's ingress.
 
+## Trust lifecycle (`client.cluster`)
+
+Rotating the pre-shared key, replacing a rotated peer CA, and undoing a
+disconnect are per-federation-id operations and hang off `client.cluster`
+(`ClusterAPI`), not the name-keyed `FederationProxy`. All four are admin +
+native-realm.
+
+### `client.cluster.rotate_preshared_key(federation_id) -> dict`
+
+Open a rotation window (`POST /cluster/federations/{id}/rotate-preshared-key`).
+**Additive** — the outgoing key keeps verifying until the window is closed, so
+this cannot sever the mesh and takes no acknowledgement. The plaintext key comes
+back on `preshared_key` and is **not retrievable afterwards**; carry it to the
+peer's operator out of band. Refuses `rotation_already_in_flight` (409) while a
+window is open — opening twice would overwrite the outgoing key and strand a
+peer still signing with the original.
+
+### `client.cluster.complete_key_rotation(federation_id, *, acknowledged) -> dict`
+
+Close the window, retiring the outgoing key
+(`POST /cluster/federations/{id}/complete-key-rotation`). **Subtractive** — a
+peer still signing with the old key stops working the moment this returns.
+`acknowledged` must be `True` and is not a check: the cluster cannot observe
+whether the peer adopted the new key, which is exactly why the operator has to
+assert it. Refuses `rotation_acknowledgement_required` (400) and
+`no_rotation_in_flight` (409).
+
+```python
+fed_id = client.federations.get(...).id
+opened = client.cluster.rotate_preshared_key(fed_id)
+print(opened["preshared_key"])                 # save now — shown once
+# ... deliver it to the peer's operator, and only then:
+client.cluster.complete_key_rotation(fed_id, acknowledged=True)
+```
+
+### `client.cluster.refresh_peer_ca(federation_id, *, ca_pem, acknowledged_fingerprint) -> dict`
+
+Replace the stored peer CA after the peer rotated its own
+(`POST /cluster/federations/{id}/refresh-peer-ca`). `acknowledged_fingerprint`
+must match the SHA-256 of the whitespace-normalised `ca_pem`. That is not a
+security check — you supply both halves — it forces the out-of-band comparison
+with the peer's operator. Refuses `peer_ca_required` /
+`fingerprint_acknowledgement_required` (400) and
+`fingerprint_acknowledgement_mismatch` (409); the refusal carries the supplied
+CA's real `fingerprint` so it can be verified out of band.
+
+### `client.cluster.reconnect_federation(federation_id) -> dict`
+
+Undo a disconnect this cluster performed, re-admitting the peer's guests
+(`POST /cluster/federations/{id}/reconnect`). Accepts a `DISCONNECTED`
+federation and nothing else (409 `federation_not_disconnected`) — it reverses a
+local disconnect, where the realm, key and truststore entry were all preserved;
+re-pairing is the general flow. Returns the count of guests `restored` plus the
+best-effort Keycloak outcomes.
+
 ### Source-side credential resolution (`receiver_realm`)
 
 A source user targeting a `receiver_realm` federation calls the receiver over the
