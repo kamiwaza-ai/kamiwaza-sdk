@@ -29,8 +29,10 @@
           }
         },
         "required_capabilities": {
+          "description": "The complete mandatory delegated-workload v1 family set. An extension may not select a subset.",
           "type": "array",
-          "minItems": 1,
+          "minItems": 20,
+          "maxItems": 20,
           "uniqueItems": true,
           "items": {
             "type": "string",
@@ -56,7 +58,29 @@
               "platform_consent",
               "protected_resource_guard"
             ]
-          }
+          },
+          "allOf": [
+            {"contains": {"const": "automation_grants"}, "minContains": 1},
+            {"contains": {"const": "immutable_workload_revisions"}, "minContains": 1},
+            {"contains": {"const": "resource_registration"}, "minContains": 1},
+            {"contains": {"const": "atomic_queue_claims"}, "minContains": 1},
+            {"contains": {"const": "run_capabilities"}, "minContains": 1},
+            {"contains": {"const": "run_lifecycle"}, "minContains": 1},
+            {"contains": {"const": "effect_capabilities"}, "minContains": 1},
+            {"contains": {"const": "effect_lifecycle"}, "minContains": 1},
+            {"contains": {"const": "dpop"}, "minContains": 1},
+            {"contains": {"const": "durable_revocation"}, "minContains": 1},
+            {"contains": {"const": "durable_audit"}, "minContains": 1},
+            {"contains": {"const": "dual_principal_rebac"}, "minContains": 1},
+            {"contains": {"const": "model_attribution"}, "minContains": 1},
+            {"contains": {"const": "member_workload_quota"}, "minContains": 1},
+            {"contains": {"const": "brokered_credentials"}, "minContains": 1},
+            {"contains": {"const": "exact_effect_approval"}, "minContains": 1},
+            {"contains": {"const": "registrar_registration"}, "minContains": 1},
+            {"contains": {"const": "workload_attestation"}, "minContains": 1},
+            {"contains": {"const": "platform_consent"}, "minContains": 1},
+            {"contains": {"const": "protected_resource_guard"}, "minContains": 1}
+          ]
         },
         "required_resource_contracts": {
           "description": "Compatibility requirements only. This does not authorize the extension to register or alter a resource contract.",
@@ -94,9 +118,9 @@
         "type": {
           "type": "string",
           "enum": [
-            "control-plane",
+            "control_plane",
             "executor",
-            "resource-server"
+            "resource_server"
           ]
         },
         "service": {

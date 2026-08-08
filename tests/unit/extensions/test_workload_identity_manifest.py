@@ -12,7 +12,29 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 
 
-_CONTRACT_SHA256 = "dc16181edefdbca44d7e5a49637282925a181c8171bb9a566dde15e411cf2f45"
+_CONTRACT_SHA256 = "8ee5f726e3fa8a35c5fb91a6733efea08309b685ebfe4e11c22871104fae604f"
+_V1_CAPABILITY_FAMILIES = (
+    "automation_grants",
+    "immutable_workload_revisions",
+    "resource_registration",
+    "atomic_queue_claims",
+    "run_capabilities",
+    "run_lifecycle",
+    "effect_capabilities",
+    "effect_lifecycle",
+    "dpop",
+    "durable_revocation",
+    "durable_audit",
+    "dual_principal_rebac",
+    "model_attribution",
+    "member_workload_quota",
+    "brokered_credentials",
+    "exact_effect_approval",
+    "registrar_registration",
+    "workload_attestation",
+    "platform_consent",
+    "protected_resource_guard",
+)
 
 
 def _schema_bytes() -> bytes:
@@ -32,28 +54,7 @@ def _valid_declaration() -> dict[str, Any]:
     return {
         "workload_identity": {
             "contract_versions": ["v1"],
-            "required_capabilities": [
-                "automation_grants",
-                "immutable_workload_revisions",
-                "resource_registration",
-                "atomic_queue_claims",
-                "run_capabilities",
-                "run_lifecycle",
-                "effect_capabilities",
-                "effect_lifecycle",
-                "dpop",
-                "durable_revocation",
-                "durable_audit",
-                "dual_principal_rebac",
-                "model_attribution",
-                "member_workload_quota",
-                "brokered_credentials",
-                "exact_effect_approval",
-                "registrar_registration",
-                "workload_attestation",
-                "platform_consent",
-                "protected_resource_guard",
-            ],
+            "required_capabilities": list(_V1_CAPABILITY_FAMILIES),
             "required_resource_contracts": [
                 {
                     "resource_type": "example.document",
@@ -94,6 +95,30 @@ def test_declaration_is_optional_and_complete_v1_is_valid() -> None:
     validator = _validator()
     validator.validate({"name": "legacy-extension"})
     validator.validate(_valid_declaration())
+
+
+def test_schema_publishes_one_exact_v1_capability_family_set() -> None:
+    schema = json.loads(_schema_bytes())
+    contract = schema["$defs"]["workload_identity"]["properties"][
+        "required_capabilities"
+    ]
+
+    assert contract["minItems"] == contract["maxItems"] == len(
+        _V1_CAPABILITY_FAMILIES
+    )
+    assert tuple(contract["items"]["enum"]) == _V1_CAPABILITY_FAMILIES
+    assert {rule["contains"]["const"] for rule in contract["allOf"]} == set(
+        _V1_CAPABILITY_FAMILIES
+    )
+
+
+@pytest.mark.parametrize("missing_family", _V1_CAPABILITY_FAMILIES)
+def test_each_incomplete_v1_capability_subset_is_rejected(missing_family: str) -> None:
+    declaration = _valid_declaration()
+    declaration["workload_identity"]["required_capabilities"].remove(missing_family)
+
+    with pytest.raises(ValidationError):
+        _validator().validate(declaration)
 
 
 @pytest.mark.parametrize(
