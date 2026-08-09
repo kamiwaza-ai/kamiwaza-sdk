@@ -330,3 +330,7 @@ transport.close()
 After closure, proof creation fails locally with `ProofKeyUnavailable`. Rotate
 or replace the proof lifecycle before new work; never fall back to bearer-only
 requests.
+
+See [Delegated credential broker](credentials.md) for member-safe binding
+discovery and exact provider operations that never release provider secrets to
+the workload.
