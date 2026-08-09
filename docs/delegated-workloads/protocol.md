@@ -10,6 +10,8 @@ The current protocol version is `v1`. Core serves it under
 `/api/v1/delegated-workloads`. The normative OpenAPI contract is OpenAPI 3.1;
 the request/response examples and machine-readable compatibility metadata in
 [`conformance-v1.json`](conformance-v1.json) are portable conformance inputs.
+See the [quickstart](quickstart.md) for the complete application flow and the
+[resource guide](resources.md) for guard and adapter authoring.
 
 ## Security boundary
 

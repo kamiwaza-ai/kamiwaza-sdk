@@ -5,6 +5,10 @@ workloads and protected resources. A workload acts on behalf of a member; it
 does not become a member session. Core derives the member subject from durable
 consent and keeps the registered workload or agent as a distinct actor.
 
+Start with the [quickstart](quickstart.md). Installation components must also
+follow the separate [registrar trust boundary](registrars.md), and protected
+services follow the [resource integration guide](resources.md).
+
 > This surface is gated by delegated-workload discovery and the complete v1
 > readiness contract. A successful internal read or run reservation does not
 > by itself make a consuming application production-ready.
