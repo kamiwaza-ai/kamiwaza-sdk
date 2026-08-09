@@ -110,7 +110,8 @@ def test_repeated_nonce_challenge_stops_after_one_safe_retry() -> None:
     with pytest.raises(DPoPNonceRequired) as caught:
         transport.send(_request(ProtocolRetrySafety.IDEMPOTENT_PROTOCOL))
 
-    assert caught.value.nonce == "second-core-nonce-012345"
+    assert caught.value.nonce.get_secret_value() == "second-core-nonce-012345"
+    assert "second-core-nonce-012345" not in repr(caught.value.nonce)
     assert len(session.calls) == 2
 
 

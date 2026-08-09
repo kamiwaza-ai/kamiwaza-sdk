@@ -42,6 +42,15 @@ from kamiwaza_sdk.delegated_workloads.errors import (
     DPoPNonceRequired as DPoPNonceRequired,
 )
 from kamiwaza_sdk.delegated_workloads.errors import (
+    ProofKeyUnavailable as ProofKeyUnavailable,
+)
+from kamiwaza_sdk.delegated_workloads.errors import (
+    UnsupportedAttestationProfile as UnsupportedAttestationProfile,
+)
+from kamiwaza_sdk.delegated_workloads.errors import (
+    WorkloadAssertionUnavailable as WorkloadAssertionUnavailable,
+)
+from kamiwaza_sdk.delegated_workloads.errors import (
     EffectDigestConflict as EffectDigestConflict,
 )
 from kamiwaza_sdk.delegated_workloads.errors import FencedClaim as FencedClaim
@@ -158,6 +167,30 @@ from kamiwaza_sdk.delegated_workloads.models import (
 from kamiwaza_sdk.delegated_workloads.models import (
     WorkloadReadAuthority as WorkloadReadAuthority,
 )
+from kamiwaza_sdk.delegated_workloads.proof import (
+    AttestationProfile as AttestationProfile,
+)
+from kamiwaza_sdk.delegated_workloads.proof import BrokerHandle as BrokerHandle
+from kamiwaza_sdk.delegated_workloads.proof import CsrfToken as CsrfToken
+from kamiwaza_sdk.delegated_workloads.proof import (
+    DelegatedCapability as DelegatedCapability,
+)
+from kamiwaza_sdk.delegated_workloads.proof import DPoPNonce as DPoPNonce
+from kamiwaza_sdk.delegated_workloads.proof import (
+    DPoPKeyLifecycle as DPoPKeyLifecycle,
+)
+from kamiwaza_sdk.delegated_workloads.proof import DPoPProof as DPoPProof
+from kamiwaza_sdk.delegated_workloads.proof import (
+    DPoPProofRequest as DPoPProofRequest,
+)
+from kamiwaza_sdk.delegated_workloads.proof import OneUseToken as OneUseToken
+from kamiwaza_sdk.delegated_workloads.proof import (
+    SensitiveValue as SensitiveValue,
+)
+from kamiwaza_sdk.delegated_workloads.proof import (
+    WorkloadAssertion as WorkloadAssertion,
+)
+from kamiwaza_sdk.delegated_workloads.proof import WorkloadProof as WorkloadProof
 from kamiwaza_sdk.delegated_workloads.transport import (
     DelegatedProtocolRequest as DelegatedProtocolRequest,
 )
@@ -173,16 +206,24 @@ __all__ = (
     "ApprovalDecision",
     "ApprovalDecisionRequest",
     "ApprovalRequired",
+    "AttestationProfile",
     "AttestationRejected",
+    "BrokerHandle",
     "CapabilityExpired",
     "ClaimConflict",
     "ClaimedRun",
     "CredentialBindingUnavailable",
     "CurrentAuthorityDenied",
+    "CsrfToken",
+    "DPoPKeyLifecycle",
+    "DPoPNonce",
     "DPoPNonceRequired",
+    "DPoPProof",
+    "DPoPProofRequest",
     "DecisionReasonCode",
     "DelegatedApprovalAPI",
     "DelegatedControlPlaneClient",
+    "DelegatedCapability",
     "DelegatedErrorCode",
     "DelegatedGuardAuthority",
     "DelegatedRunAuthority",
@@ -211,8 +252,10 @@ __all__ = (
     "IncompatibleContract",
     "InvalidRequest",
     "OccurrenceDigestConflict",
+    "OneUseToken",
     "OpaqueRunQueuePayload",
     "ProofMismatch",
+    "ProofKeyUnavailable",
     "ProtectedResourceRejected",
     "ProtocolRetrySafety",
     "ProviderTransientFailure",
@@ -232,8 +275,13 @@ __all__ = (
     "RunTransition",
     "RunTransitionRequest",
     "RunTransitionResult",
+    "SensitiveValue",
     "DestinationRef",
     "UnknownResourceContract",
+    "UnsupportedAttestationProfile",
+    "WorkloadAssertion",
+    "WorkloadAssertionUnavailable",
+    "WorkloadProof",
     "WorkloadReadAuthority",
     "delegated_error_from_response",
 )

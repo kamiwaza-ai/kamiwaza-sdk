@@ -22,6 +22,7 @@ from kamiwaza_sdk.delegated_workloads.models import (
     RunDetail,
     WorkloadReadAuthority,
 )
+from kamiwaza_sdk.delegated_workloads.proof import SensitiveValue, _secret_value
 from kamiwaza_sdk.delegated_workloads.transport import (
     DelegatedProtocolRequest,
     DelegatedWorkloadTransport,
@@ -41,12 +42,14 @@ class DelegatedWorkloadAPI:
         self._base_url = normalized_base_url(base_url)
         self._transport = transport
 
-    def get_run(self, run_id: UUID, authority: WorkloadReadAuthority) -> RunDetail:
+    def get_run(
+        self, run_id: UUID, authority: WorkloadReadAuthority | None = None
+    ) -> RunDetail:
         payload = self._read(f"/runs/{run_id}", authority)
         return validated(RunDetail, payload)
 
     def get_effect(
-        self, effect_id: UUID, authority: WorkloadReadAuthority
+        self, effect_id: UUID, authority: WorkloadReadAuthority | None = None
     ) -> EffectDetail:
         payload = self._read(f"/effects/{effect_id}", authority)
         return validated(EffectDetail, payload)
@@ -78,12 +81,22 @@ class DelegatedWorkloadAPI:
         )
         return validated(EffectConsumption, payload)
 
-    def _read(self, path: str, authority: WorkloadReadAuthority) -> object:
+    def _read(
+        self, path: str, authority: WorkloadReadAuthority | None
+    ) -> object:
+        resolved = authority or WorkloadReadAuthority(
+            self._transport.workload_assertion()
+        )
         request = DelegatedProtocolRequest(
             method="GET",
             url=self._base_url + path,
             body=b"",
-            extra_headers=((_WORKLOAD_ASSERTION_HEADER, authority.workload_assertion),),
+            extra_headers=(
+                (
+                    _WORKLOAD_ASSERTION_HEADER,
+                    resolved.workload_assertion,
+                ),
+            ),
             retry_safety=ProtocolRetrySafety.IDEMPOTENT_PROTOCOL,
         )
         return self._transport.send_json(request)
@@ -147,14 +160,18 @@ class DelegatedApprovalAPI:
             data=json_bytes(body),
             headers={
                 "Content-Type": "application/json",
-                "X-CSRF-Token": request.csrf_token,
+                "X-CSRF-Token": _secret_value(request.csrf_token),
             },
         )
         return validated(EffectDetail, checked_json_response(response))
 
 
-def _guard_headers(authority: DelegatedGuardAuthority) -> tuple[tuple[str, str], ...]:
-    headers = [(_WORKLOAD_ASSERTION_HEADER, authority.workload_assertion)]
+def _guard_headers(
+    authority: DelegatedGuardAuthority,
+) -> tuple[tuple[str, SensitiveValue | str], ...]:
+    headers: list[tuple[str, SensitiveValue | str]] = [
+        (_WORKLOAD_ASSERTION_HEADER, authority.workload_assertion)
+    ]
     if authority.consumption_token is not None:
         headers.append((_CONSUMPTION_HEADER, authority.consumption_token))
     return tuple(headers)

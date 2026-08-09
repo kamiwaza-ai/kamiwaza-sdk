@@ -30,15 +30,21 @@ class DelegatedControlPlaneClient:
     def reserve_run(
         self,
         request: RunReservationRequest,
-        authority: WorkloadReadAuthority,
+        authority: WorkloadReadAuthority | None = None,
     ) -> RunReservation:
         """Reserve one occurrence and return its opaque queue handoff."""
+        resolved = authority or WorkloadReadAuthority(
+            self._transport.workload_assertion()
+        )
         protocol_request = DelegatedProtocolRequest(
             method="POST",
             url=self._base_url + "/runs",
             body=json_bytes(request.model_dump(mode="json")),
             extra_headers=(
-                (_WORKLOAD_ASSERTION_HEADER, authority.workload_assertion),
+                (
+                    _WORKLOAD_ASSERTION_HEADER,
+                    resolved.workload_assertion,
+                ),
             ),
             retry_safety=ProtocolRetrySafety.IDEMPOTENT_PROTOCOL,
         )

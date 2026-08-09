@@ -18,6 +18,11 @@ from kamiwaza_sdk.delegated_workloads.models import (
     RunTransitionResult,
     WorkloadReadAuthority,
 )
+from kamiwaza_sdk.delegated_workloads.proof import (
+    DelegatedCapability,
+    SensitiveValue,
+    WorkloadAssertion,
+)
 from kamiwaza_sdk.delegated_workloads.transport import (
     DelegatedProtocolRequest,
     DelegatedWorkloadTransport,
@@ -37,9 +42,12 @@ class DelegatedExecutorClient:
     def claim_run(
         self,
         queue_payload: OpaqueRunQueuePayload,
-        authority: WorkloadReadAuthority,
+        authority: WorkloadReadAuthority | None = None,
     ) -> ClaimedRun:
         """Atomically claim an opaque queue reference with this proof key."""
+        resolved = authority or WorkloadReadAuthority(
+            self._transport.workload_assertion()
+        )
         body: dict[str, object] = {
             **queue_payload.model_dump(mode="json"),
             "executor_proof_jwk": self._transport.proof_public_jwk(),
@@ -47,9 +55,13 @@ class DelegatedExecutorClient:
         payload = self._request(
             "/run-claims",
             body,
-            extra_headers=_assertion_header(authority.workload_assertion),
+            extra_headers=_assertion_header(resolved.workload_assertion),
         )
         return validated(ClaimedRun, payload)
+
+    def authority(self, claim: ClaimedRun) -> DelegatedRunAuthority:
+        """Bind a claim to fresh selected-profile assertion material."""
+        return claim.authority(self._transport.workload_assertion())
 
     def transition(
         self,
@@ -85,8 +97,8 @@ class DelegatedExecutorClient:
         path: str,
         body: Mapping[str, object],
         *,
-        capability: str | None = None,
-        extra_headers: tuple[tuple[str, str], ...] = (),
+        capability: DelegatedCapability | str | None = None,
+        extra_headers: tuple[tuple[str, SensitiveValue | str], ...] = (),
     ) -> object:
         protocol_request = DelegatedProtocolRequest(
             method="POST",
@@ -99,5 +111,7 @@ class DelegatedExecutorClient:
         return self._transport.send_json(protocol_request)
 
 
-def _assertion_header(assertion: str) -> tuple[tuple[str, str]]:
+def _assertion_header(
+    assertion: WorkloadAssertion | str,
+) -> tuple[tuple[str, SensitiveValue | str]]:
     return ((_WORKLOAD_ASSERTION_HEADER, assertion),)

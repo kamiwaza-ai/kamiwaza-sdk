@@ -8,9 +8,15 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Protocol
 
-from kamiwaza_sdk.delegated_workloads.dpop import (
+from kamiwaza_sdk.delegated_workloads.proof import (
+    DelegatedCapability,
+    DPoPNonce,
     DPoPProofKey,
     DPoPProofRequest,
+    SensitiveValue,
+    WorkloadAssertion,
+    WorkloadProof,
+    _secret_value,
     body_digest,
 )
 from kamiwaza_sdk.delegated_workloads.errors import (
@@ -34,13 +40,19 @@ class DelegatedProtocolRequest:
     method: str
     url: str
     body: bytes = field(repr=False)
-    capability: str | None = field(default=None, repr=False)
-    extra_headers: tuple[tuple[str, str], ...] = field(default=(), repr=False)
+    capability: DelegatedCapability | str | None = field(default=None, repr=False)
+    extra_headers: tuple[tuple[str, SensitiveValue | str], ...] = field(
+        default=(), repr=False
+    )
     retry_safety: ProtocolRetrySafety = ProtocolRetrySafety.NEVER
 
     def __post_init__(self) -> None:
         if not self.method or not self.url:
             raise ValueError("delegated protocol request is incomplete")
+        if isinstance(self.capability, str):
+            object.__setattr__(
+                self, "capability", DelegatedCapability(self.capability)
+            )
         _validate_extra_headers(self.extra_headers)
 
 
@@ -62,11 +74,14 @@ class DelegatedWorkloadTransport:
         self,
         session: SessionPort,
         *,
+        proof: WorkloadProof | None = None,
         proof_key: DPoPProofKey | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ) -> None:
+        if proof is not None and proof_key is not None:
+            raise ValueError("delegated transport received two proof lifecycles")
         self._session = session
-        self._proof_key = proof_key or DPoPProofKey.generate()
+        self._proof = proof or WorkloadProof.proof_only(proof_key)
         self._clock = clock
 
     def send(self, request: DelegatedProtocolRequest) -> ResponsePort:
@@ -87,12 +102,29 @@ class DelegatedWorkloadTransport:
 
     def proof_public_jwk(self) -> dict[str, str]:
         """Expose only the public key used by this transport's DPoP proofs."""
-        return self._proof_key.public_jwk()
+        return self._proof.public_jwk()
+
+    def proof_key_thumbprint(self) -> str:
+        return self._proof.key_thumbprint()
+
+    def workload_assertion(self) -> WorkloadAssertion:
+        """Read fresh assertion material through the selected trusted adapter."""
+        return self._proof.assertion()
+
+    def select_attestation_profile(self, profile: str) -> None:
+        """Select a current profile and rotate proof authority when it changes."""
+        self._proof.select_profile(profile)
+
+    def rotate_proof_key(self) -> None:
+        self._proof.rotate_key()
+
+    def close(self) -> None:
+        self._proof.close()
 
     def _send(
-        self, request: DelegatedProtocolRequest, *, nonce: str | None
+        self, request: DelegatedProtocolRequest, *, nonce: DPoPNonce | str | None
     ) -> ResponsePort:
-        proof = self._proof_key.create(
+        proof = self._proof.create(
             DPoPProofRequest(
                 method=request.method,
                 target_uri=request.url,
@@ -102,7 +134,7 @@ class DelegatedWorkloadTransport:
                 nonce=nonce,
             )
         )
-        headers = _request_headers(request, proof)
+        headers = _request_headers(request, _secret_value(proof))
         return self._session.request(
             request.method, request.url, data=request.body, headers=headers
         )
@@ -128,15 +160,19 @@ def _nonce_challenge(response: ResponsePort) -> DPoPNonceRequired | None:
 
 
 def _request_headers(request: DelegatedProtocolRequest, proof: str) -> dict[str, str]:
-    headers = dict(request.extra_headers)
+    headers = {
+        name: _secret_value(value) for name, value in request.extra_headers
+    }
     headers["Content-Type"] = "application/json"
     headers["DPoP"] = proof
     if request.capability is not None:
-        headers["Authorization"] = f"DPoP {request.capability}"
+        headers["Authorization"] = f"DPoP {_secret_value(request.capability)}"
     return headers
 
 
-def _validate_extra_headers(headers: tuple[tuple[str, str], ...]) -> None:
+def _validate_extra_headers(
+    headers: tuple[tuple[str, SensitiveValue | str], ...],
+) -> None:
     reserved = {"authorization", "content-type", "dpop"}
     names = [name.casefold() for name, _ in headers]
     if any(name in reserved for name in names):

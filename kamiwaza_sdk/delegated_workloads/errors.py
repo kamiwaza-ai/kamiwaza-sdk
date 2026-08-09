@@ -8,7 +8,33 @@ from enum import Enum
 from typing import ClassVar, Protocol
 from uuid import UUID
 
+from kamiwaza_sdk.delegated_workloads.proof import DPoPNonce
 from kamiwaza_sdk.exceptions import KamiwazaError
+
+
+class DelegatedIdentityError(KamiwazaError):
+    """Base for safe local workload-identity failures."""
+
+
+class WorkloadAssertionUnavailable(DelegatedIdentityError):
+    """The selected adapter could not obtain safe assertion material."""
+
+    def __init__(self) -> None:
+        super().__init__("workload assertion is unavailable")
+
+
+class UnsupportedAttestationProfile(DelegatedIdentityError):
+    """The selected profile has no trusted SDK adapter."""
+
+    def __init__(self) -> None:
+        super().__init__("attestation profile is unsupported")
+
+
+class ProofKeyUnavailable(DelegatedIdentityError):
+    """The ephemeral proof-key lifecycle is already closed."""
+
+    def __init__(self) -> None:
+        super().__init__("workload proof key is unavailable")
 
 
 class DelegatedErrorCode(str, Enum):
@@ -137,7 +163,7 @@ class DPoPNonceRequired(DelegatedWorkloadError):
 
     def __init__(
         self,
-        nonce: str,
+        nonce: DPoPNonce | str,
         *,
         context: ErrorContext | None = None,
         message: str = "a fresh DPoP nonce is required",
@@ -149,7 +175,7 @@ class DPoPNonceRequired(DelegatedWorkloadError):
             {},
         )
         super().__init__(message, resolved)
-        self.nonce = nonce
+        self.nonce = nonce if isinstance(nonce, DPoPNonce) else DPoPNonce(nonce)
 
 
 class ReplayRejected(DelegatedWorkloadError):

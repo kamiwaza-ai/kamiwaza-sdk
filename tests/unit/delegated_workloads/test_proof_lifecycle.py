@@ -112,7 +112,10 @@ def test_projected_assertion_rejects_empty_and_oversized_material(
     with pytest.raises(WorkloadAssertionUnavailable):
         workload_proof.assertion()
 
-    token_path.write_text("x" * (proof_module.MAX_ASSERTION_BYTES + 1), encoding="utf-8")
+    token_path.chmod(0o600)
+    token_path.write_text(
+        "x" * (proof_module.MAX_ASSERTION_BYTES + 1), encoding="utf-8"
+    )
     token_path.chmod(0o400)
     with pytest.raises(WorkloadAssertionUnavailable):
         workload_proof.assertion()

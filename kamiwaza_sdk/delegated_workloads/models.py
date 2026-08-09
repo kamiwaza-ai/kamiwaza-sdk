@@ -7,12 +7,23 @@ from dataclasses import field as dataclass_field
 from dataclasses import replace
 from datetime import datetime
 from enum import Enum
-from typing import Annotated, Literal
+from typing import Annotated, Literal, TypeVar
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from kamiwaza_sdk.delegated_workloads.proof import (
+    BrokerHandle,
+    CsrfToken,
+    DelegatedCapability,
+    OneUseToken,
+    SensitiveValue,
+    WorkloadAssertion,
+    _secret_value,
+)
+
 Digest = Annotated[str, Field(pattern=r"^sha256:[0-9a-f]{64}$")]
+_SensitiveT = TypeVar("_SensitiveT", bound=SensitiveValue)
 
 
 class RunLifecycleStatus(str, Enum):
@@ -176,12 +187,14 @@ class ClaimedRun(DelegatedResponse):
     status: Literal["claimed"]
     fencing_token: int = Field(ge=1)
     lease_expires_at: datetime
-    run_capability: str = Field(min_length=1, repr=False)
+    run_capability: DelegatedCapability = Field(min_length=1, repr=False)
     expires_at: datetime
     authority_deadline: datetime
     correlation_id: UUID
 
-    def authority(self, workload_assertion: str) -> DelegatedRunAuthority:
+    def authority(
+        self, workload_assertion: WorkloadAssertion | str
+    ) -> DelegatedRunAuthority:
         """Bind the claim's fence and capability to its workload assertion."""
         return DelegatedRunAuthority(
             run_id=self.run_id,
@@ -235,8 +248,8 @@ class EffectReservation(ReasonedResponse):
     decision: EffectDecision
     status: EffectReservationStatus
     policy_version: str
-    effect_capability: str | None = Field(default=None, repr=False)
-    broker_handle: str | None = Field(default=None, repr=False)
+    effect_capability: DelegatedCapability | None = Field(default=None, repr=False)
+    broker_handle: BrokerHandle | None = Field(default=None, repr=False)
     valid_until: datetime | None
     correlation_id: UUID
 
@@ -281,7 +294,7 @@ class EffectAuthorization(ReasonedResponse):
     effect_id: UUID
     decision: EffectAuthorizationDecision
     requester_context: DelegatedRequesterContext | None = None
-    consumption_token: str | None = Field(default=None, repr=False)
+    consumption_token: OneUseToken | None = Field(default=None, repr=False)
     correlation_id: UUID
 
     @model_validator(mode="after")
@@ -320,16 +333,18 @@ class ApprovalDecisionRequest(DelegatedRequest):
     effect_digest: Digest
     policy_version: str
     decision: ApprovalDecision
-    csrf_token: str = Field(repr=False, min_length=1)
+    csrf_token: CsrfToken = Field(repr=False, min_length=1)
 
 
 @dataclass(frozen=True, slots=True)
 class WorkloadReadAuthority:
-    workload_assertion: str = dataclass_field(repr=False)
+    workload_assertion: WorkloadAssertion | str = dataclass_field(repr=False)
 
     def __post_init__(self) -> None:
-        if not self.workload_assertion:
+        assertion = _sensitive(self.workload_assertion, WorkloadAssertion)
+        if not _secret_value(assertion):
             raise ValueError("workload assertion is missing")
+        object.__setattr__(self, "workload_assertion", assertion)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -337,27 +352,49 @@ class DelegatedRunAuthority:
     run_id: UUID
     claim_id: UUID
     fencing_token: int
-    capability: str = dataclass_field(repr=False)
-    workload_assertion: str = dataclass_field(repr=False)
+    capability: DelegatedCapability | str = dataclass_field(repr=False)
+    workload_assertion: WorkloadAssertion | str = dataclass_field(repr=False)
 
     def __post_init__(self) -> None:
         if self.fencing_token < 1:
             raise ValueError("delegated run fencing token must be positive")
-        if not self.capability or not self.workload_assertion:
+        capability = _sensitive(self.capability, DelegatedCapability)
+        assertion = _sensitive(self.workload_assertion, WorkloadAssertion)
+        if not _secret_value(capability) or not _secret_value(assertion):
             raise ValueError("delegated run authority is incomplete")
+        object.__setattr__(self, "capability", capability)
+        object.__setattr__(self, "workload_assertion", assertion)
 
 
 @dataclass(frozen=True, slots=True)
 class DelegatedGuardAuthority:
-    capability: str = dataclass_field(repr=False)
-    workload_assertion: str = dataclass_field(repr=False)
-    consumption_token: str | None = dataclass_field(default=None, repr=False)
+    capability: DelegatedCapability | str = dataclass_field(repr=False)
+    workload_assertion: WorkloadAssertion | str = dataclass_field(repr=False)
+    consumption_token: OneUseToken | str | None = dataclass_field(
+        default=None, repr=False
+    )
 
     def __post_init__(self) -> None:
-        if not self.capability or not self.workload_assertion:
+        capability = _sensitive(self.capability, DelegatedCapability)
+        assertion = _sensitive(self.workload_assertion, WorkloadAssertion)
+        if not _secret_value(capability) or not _secret_value(assertion):
             raise ValueError("delegated guard authority is incomplete")
+        object.__setattr__(self, "capability", capability)
+        object.__setattr__(self, "workload_assertion", assertion)
+        if self.consumption_token is not None:
+            token = _sensitive(self.consumption_token, OneUseToken)
+            object.__setattr__(self, "consumption_token", token)
 
-    def with_consumption(self, token: str) -> DelegatedGuardAuthority:
-        if not token:
+    def with_consumption(
+        self, token: OneUseToken | str
+    ) -> DelegatedGuardAuthority:
+        if not _secret_value(token):
             raise ValueError("effect consumption token is missing")
         return replace(self, consumption_token=token)
+
+
+def _sensitive(
+    value: _SensitiveT | str,
+    expected: type[_SensitiveT],
+) -> _SensitiveT:
+    return value if isinstance(value, expected) else expected(value)
