@@ -54,6 +54,10 @@ class DPoPProofKey:
             headers={"typ": "dpop+jwt", "jwk": jwk},
         )
 
+    def public_jwk(self) -> dict[str, str]:
+        """Return a fresh public-only representation of this proof key."""
+        return _public_jwk(self._private_key.public_key())
+
 
 def body_digest(body: bytes) -> str:
     return "sha256:" + hashlib.sha256(body).hexdigest()

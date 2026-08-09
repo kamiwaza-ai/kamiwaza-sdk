@@ -9,6 +9,9 @@ from kamiwaza_sdk.delegated_workloads.api import (
 from kamiwaza_sdk.delegated_workloads.client import (
     DelegatedControlPlaneClient as DelegatedControlPlaneClient,
 )
+from kamiwaza_sdk.delegated_workloads.executor import (
+    DelegatedExecutorClient as DelegatedExecutorClient,
+)
 from kamiwaza_sdk.delegated_workloads.errors import (
     AmbiguousEffectOutcome as AmbiguousEffectOutcome,
 )
@@ -88,6 +91,9 @@ from kamiwaza_sdk.delegated_workloads.models import (
     DelegatedGuardAuthority as DelegatedGuardAuthority,
 )
 from kamiwaza_sdk.delegated_workloads.models import (
+    DelegatedRunAuthority as DelegatedRunAuthority,
+)
+from kamiwaza_sdk.delegated_workloads.models import (
     DelegatedRequesterContext as DelegatedRequesterContext,
 )
 from kamiwaza_sdk.delegated_workloads.models import (
@@ -114,8 +120,16 @@ from kamiwaza_sdk.delegated_workloads.models import (
     EffectReservation as EffectReservation,
 )
 from kamiwaza_sdk.delegated_workloads.models import (
+    EffectReservationRequest as EffectReservationRequest,
+)
+from kamiwaza_sdk.delegated_workloads.models import (
     EffectReservationStatus as EffectReservationStatus,
 )
+from kamiwaza_sdk.delegated_workloads.models import (
+    EffectResourceRef as EffectResourceRef,
+)
+from kamiwaza_sdk.delegated_workloads.models import DestinationRef as DestinationRef
+from kamiwaza_sdk.delegated_workloads.models import ClaimedRun as ClaimedRun
 from kamiwaza_sdk.delegated_workloads.models import ResourceRef as ResourceRef
 from kamiwaza_sdk.delegated_workloads.models import (
     OpaqueRunQueuePayload as OpaqueRunQueuePayload,
@@ -127,6 +141,15 @@ from kamiwaza_sdk.delegated_workloads.models import (
     RunReservationRequest as RunReservationRequest,
 )
 from kamiwaza_sdk.delegated_workloads.models import RunTrigger as RunTrigger
+from kamiwaza_sdk.delegated_workloads.models import (
+    RunTransition as RunTransition,
+)
+from kamiwaza_sdk.delegated_workloads.models import (
+    RunTransitionRequest as RunTransitionRequest,
+)
+from kamiwaza_sdk.delegated_workloads.models import (
+    RunTransitionResult as RunTransitionResult,
+)
 from kamiwaza_sdk.delegated_workloads.models import RunClaimStatus as RunClaimStatus
 from kamiwaza_sdk.delegated_workloads.models import RunDetail as RunDetail
 from kamiwaza_sdk.delegated_workloads.models import (
@@ -153,6 +176,7 @@ __all__ = (
     "AttestationRejected",
     "CapabilityExpired",
     "ClaimConflict",
+    "ClaimedRun",
     "CredentialBindingUnavailable",
     "CurrentAuthorityDenied",
     "DPoPNonceRequired",
@@ -161,6 +185,8 @@ __all__ = (
     "DelegatedControlPlaneClient",
     "DelegatedErrorCode",
     "DelegatedGuardAuthority",
+    "DelegatedRunAuthority",
+    "DelegatedExecutorClient",
     "DelegatedProtocolError",
     "DelegatedProtocolRequest",
     "DelegatedRequesterContext",
@@ -177,7 +203,9 @@ __all__ = (
     "EffectDigestConflict",
     "EffectLifecycleStatus",
     "EffectReservation",
+    "EffectReservationRequest",
     "EffectReservationStatus",
+    "EffectResourceRef",
     "FencedClaim",
     "GrantInactive",
     "IncompatibleContract",
@@ -201,6 +229,10 @@ __all__ = (
     "RunReservation",
     "RunReservationRequest",
     "RunTrigger",
+    "RunTransition",
+    "RunTransitionRequest",
+    "RunTransitionResult",
+    "DestinationRef",
     "UnknownResourceContract",
     "WorkloadReadAuthority",
     "delegated_error_from_response",

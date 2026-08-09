@@ -42,6 +42,16 @@ class RunTrigger(str, Enum):
     RECOVERY = "recovery"
 
 
+class RunTransition(str, Enum):
+    START = "start"
+    HEARTBEAT = "heartbeat"
+    ACKNOWLEDGE_CANCEL = "acknowledge_cancel"
+    SUCCEED = "succeed"
+    FAIL = "fail"
+    CANCEL = "cancel"
+    AMBIGUOUS = "ambiguous"
+
+
 class EffectDecision(str, Enum):
     ALLOW = "allow"
     DENY = "deny"
@@ -160,6 +170,66 @@ class RunReservation(DelegatedResponse):
         return OpaqueRunQueuePayload(run_reference=self.run_reference)
 
 
+class ClaimedRun(DelegatedResponse):
+    run_id: UUID
+    claim_id: UUID
+    status: Literal["claimed"]
+    fencing_token: int = Field(ge=1)
+    lease_expires_at: datetime
+    run_capability: str = Field(min_length=1, repr=False)
+    expires_at: datetime
+    authority_deadline: datetime
+    correlation_id: UUID
+
+    def authority(self, workload_assertion: str) -> DelegatedRunAuthority:
+        """Bind the claim's fence and capability to its workload assertion."""
+        return DelegatedRunAuthority(
+            run_id=self.run_id,
+            claim_id=self.claim_id,
+            fencing_token=self.fencing_token,
+            capability=self.run_capability,
+            workload_assertion=workload_assertion,
+        )
+
+
+class RunTransitionRequest(DelegatedRequest):
+    transition: RunTransition
+    outcome_category: str | None = Field(default=None, max_length=128)
+
+
+class RunTransitionResult(DelegatedResponse):
+    run_id: UUID
+    claim_id: UUID | None
+    run_status: RunLifecycleStatus
+    claim_status: RunClaimStatus | None
+    lease_expires_at: datetime | None
+    authority_deadline: datetime
+    correlation_id: UUID
+
+
+class EffectResourceRef(DelegatedRequest):
+    type: str = Field(min_length=1)
+    descriptor_version: str = Field(pattern=r"^v[1-9][0-9]*$")
+    id: str = Field(min_length=1)
+
+
+class DestinationRef(DelegatedRequest):
+    scheme: Literal["https"] = "https"
+    host: str = Field(min_length=1)
+    port: int = Field(ge=1, le=65535)
+    route_template: str | None = None
+
+
+class EffectReservationRequest(DelegatedRequest):
+    effect_key: str = Field(min_length=1, max_length=256)
+    effect_digest: Digest
+    action: str = Field(min_length=1)
+    resource: EffectResourceRef
+    audience: str = Field(min_length=1)
+    destination: DestinationRef | None = None
+    credential_binding_id: UUID | None = None
+
+
 class EffectReservation(ReasonedResponse):
     effect_id: UUID
     decision: EffectDecision
@@ -260,6 +330,21 @@ class WorkloadReadAuthority:
     def __post_init__(self) -> None:
         if not self.workload_assertion:
             raise ValueError("workload assertion is missing")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class DelegatedRunAuthority:
+    run_id: UUID
+    claim_id: UUID
+    fencing_token: int
+    capability: str = dataclass_field(repr=False)
+    workload_assertion: str = dataclass_field(repr=False)
+
+    def __post_init__(self) -> None:
+        if self.fencing_token < 1:
+            raise ValueError("delegated run fencing token must be positive")
+        if not self.capability or not self.workload_assertion:
+            raise ValueError("delegated run authority is incomplete")
 
 
 @dataclass(frozen=True, slots=True)

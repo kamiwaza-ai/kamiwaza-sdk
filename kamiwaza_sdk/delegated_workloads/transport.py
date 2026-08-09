@@ -85,6 +85,10 @@ class DelegatedWorkloadTransport:
     def send_json(self, request: DelegatedProtocolRequest) -> object:
         return checked_json_response(self.send(request))
 
+    def proof_public_jwk(self) -> dict[str, str]:
+        """Expose only the public key used by this transport's DPoP proofs."""
+        return self._proof_key.public_jwk()
+
     def _send(
         self, request: DelegatedProtocolRequest, *, nonce: str | None
     ) -> ResponsePort:

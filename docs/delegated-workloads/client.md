@@ -75,6 +75,77 @@ capability, credential, subject ID, role, scope, or policy decision. An
 executor that receives the reference must independently attest and atomically
 claim the run through Core before it receives any run authority.
 
+## Claim and execute a run
+
+`DelegatedExecutorClient` binds the transport's public DPoP key while claiming
+the opaque reference. Core returns a short-lived run capability and fencing
+token only after workload attestation and the atomic claim succeed.
+
+```python
+from kamiwaza_sdk.delegated_workloads import (
+    DelegatedExecutorClient,
+    RunTransition,
+    RunTransitionRequest,
+)
+
+executor = DelegatedExecutorClient(
+    "https://kamiwaza.example/api/v1/delegated-workloads",
+    transport,
+)
+claim = executor.claim_run(
+    reservation.queue_payload(),
+    WorkloadReadAuthority(workload_assertion=projected_workload_assertion),
+)
+authority = claim.authority(projected_workload_assertion)
+
+executor.transition(
+    RunTransitionRequest(transition=RunTransition.START),
+    authority,
+)
+executor.transition(
+    RunTransitionRequest(transition=RunTransition.HEARTBEAT),
+    authority,
+)
+```
+
+The client supplies the claim's fencing token; application code cannot replace
+it with an unrelated value. Use `ACKNOWLEDGE_CANCEL` after observing a durable
+cancellation request, and use `SUCCEED`, `FAIL`, `CANCEL`, or `AMBIGUOUS` for
+the terminal outcome. A stale claim raises `FencedClaim` and must stop acting.
+
+## Reserve an exact effect
+
+Reserve every protected operation before application code performs it. The
+request binds a stable effect key to the digest, action, resource, audience,
+and optional destination or credential binding.
+
+```python
+from kamiwaza_sdk.delegated_workloads import (
+    EffectReservationRequest,
+    EffectResourceRef,
+)
+
+effect = executor.reserve_effect(
+    EffectReservationRequest(
+        effect_key="document:read",
+        effect_digest="sha256:" + "e" * 64,
+        action="read",
+        resource=EffectResourceRef(
+            type="example.document",
+            descriptor_version="v1",
+            id="doc-7",
+        ),
+        audience="https://documents.example",
+    ),
+    authority,
+)
+```
+
+The effect call carries the DPoP-bound run capability but does not forward the
+workload assertion to the protected resource. Reusing an effect key with a
+different digest raises `EffectDigestConflict`. An allowed reservation is not
+permission to bypass the guarded consumption step for the protected action.
+
 ## Authority lifetime
 
 The reservation's `authority_deadline` bounds one execution epoch. Individual
