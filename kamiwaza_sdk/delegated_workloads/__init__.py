@@ -238,7 +238,25 @@ from kamiwaza_sdk.delegated_workloads.proof import (
 )
 from kamiwaza_sdk.delegated_workloads.proof import WorkloadProof as WorkloadProof
 from kamiwaza_sdk.delegated_workloads.resource_server import (
+    CoreResourceGuardHTTPClient as CoreResourceGuardHTTPClient,
+)
+from kamiwaza_sdk.delegated_workloads.resource_server import (
     DelegatedResourceServer as DelegatedResourceServer,
+)
+from kamiwaza_sdk.delegated_workloads.resource_server import (
+    ProtectedResourceGuard as ProtectedResourceGuard,
+)
+from kamiwaza_sdk.delegated_workloads.resource_server import (
+    ProtectedResourceRequest as ProtectedResourceRequest,
+)
+from kamiwaza_sdk.delegated_workloads.resource_server import (
+    ResourceGuardRegistration as ResourceGuardRegistration,
+)
+from kamiwaza_sdk.delegated_workloads.resource_server import (
+    ResourceGuardRejected as ResourceGuardRejected,
+)
+from kamiwaza_sdk.delegated_workloads.resource_server import (
+    SealedDelegatedContext as SealedDelegatedContext,
 )
 from kamiwaza_sdk.delegated_workloads.transport import (
     DelegatedProtocolRequest as DelegatedProtocolRequest,
@@ -271,6 +289,7 @@ __all__ = (
     "CredentialUseRequest",
     "CredentialUseResponse",
     "CredentialUseStatus",
+    "CoreResourceGuardHTTPClient",
     "CurrentAuthorityDenied",
     "CsrfToken",
     "DPoPKeyLifecycle",
@@ -316,7 +335,9 @@ __all__ = (
     "OpaqueRunQueuePayload",
     "ProofMismatch",
     "ProofKeyUnavailable",
+    "ProtectedResourceGuard",
     "ProtectedResourceRejected",
+    "ProtectedResourceRequest",
     "ProtocolRetrySafety",
     "ProviderTransientFailure",
     "QuotaAdapter",
@@ -326,6 +347,8 @@ __all__ = (
     "ResourceRef",
     "ResourceCanonicalizer",
     "ResourceEntitlementAdapter",
+    "ResourceGuardRegistration",
+    "ResourceGuardRejected",
     "ResourceRegistrationAdapter",
     "ResourceRegistrationRejected",
     "RetryClassification",
@@ -341,6 +364,7 @@ __all__ = (
     "RunTransitionResult",
     "SensitiveValue",
     "SafeResultNormalizer",
+    "SealedDelegatedContext",
     "DestinationRef",
     "UnknownResourceContract",
     "UnsupportedAttestationProfile",
