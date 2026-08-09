@@ -1,4 +1,4 @@
-"""Nonce-aware transport for idempotent delegated protocol requests."""
+"""Nonce-aware transport for exact delegated protocol requests."""
 
 from __future__ import annotations
 
@@ -13,11 +13,15 @@ from kamiwaza_sdk.delegated_workloads.dpop import (
     DPoPProofRequest,
     body_digest,
 )
-from kamiwaza_sdk.delegated_workloads.errors import DPoPNonceRequired
+from kamiwaza_sdk.delegated_workloads.errors import (
+    DelegatedProtocolError,
+    DPoPNonceRequired,
+    delegated_error_from_response,
+)
 
 
 class ProtocolRetrySafety(str, Enum):
-    """Whether the SDK may repeat the protocol request after a nonce challenge."""
+    """Whether the SDK may repeat a request after a nonce challenge."""
 
     NEVER = "never"
     IDEMPOTENT_PROTOCOL = "idempotent_protocol"
@@ -29,13 +33,15 @@ class DelegatedProtocolRequest:
 
     method: str
     url: str
-    capability: str = field(repr=False)
     body: bytes = field(repr=False)
+    capability: str | None = field(default=None, repr=False)
+    extra_headers: tuple[tuple[str, str], ...] = field(default=(), repr=False)
     retry_safety: ProtocolRetrySafety = ProtocolRetrySafety.NEVER
 
     def __post_init__(self) -> None:
-        if not all((self.method, self.url, self.capability)):
+        if not self.method or not self.url:
             raise ValueError("delegated protocol request is incomplete")
+        _validate_extra_headers(self.extra_headers)
 
 
 class ResponsePort(Protocol):
@@ -76,6 +82,9 @@ class DelegatedWorkloadTransport:
             raise repeated
         return response
 
+    def send_json(self, request: DelegatedProtocolRequest) -> object:
+        return checked_json_response(self.send(request))
+
     def _send(
         self, request: DelegatedProtocolRequest, *, nonce: str | None
     ) -> ResponsePort:
@@ -89,53 +98,44 @@ class DelegatedWorkloadTransport:
                 nonce=nonce,
             )
         )
-        headers = {
-            "Authorization": f"DPoP {request.capability}",
-            "Content-Type": "application/json",
-            "DPoP": proof,
-        }
+        headers = _request_headers(request, proof)
         return self._session.request(
             request.method, request.url, data=request.body, headers=headers
         )
 
 
+def checked_json_response(response: ResponsePort) -> object:
+    if response.status_code < 200 or response.status_code >= 300:
+        raise delegated_error_from_response(response)
+    try:
+        payload = response.json()
+    except (TypeError, ValueError) as exc:
+        raise DelegatedProtocolError(response.status_code) from exc
+    if not isinstance(payload, (Mapping, list)):
+        raise DelegatedProtocolError(response.status_code)
+    return payload
+
+
 def _nonce_challenge(response: ResponsePort) -> DPoPNonceRequired | None:
     if response.status_code != 401:
         return None
-    error = _error_body(response)
-    if error is None:
-        return None
-    if error.get("code") != "dpop_nonce_required":
-        return None
-    if error.get("retry_classification") != "nonce_required":
-        return None
-    nonce = _header(response.headers, "DPoP-Nonce")
-    if not _valid_nonce_header(nonce):
-        return None
-    assert nonce is not None
-    return DPoPNonceRequired(nonce)
+    error = delegated_error_from_response(response)
+    return error if isinstance(error, DPoPNonceRequired) else None
 
 
-def _error_body(response: ResponsePort) -> Mapping[str, object] | None:
-    try:
-        body = response.json()
-    except (TypeError, ValueError):
-        return None
-    if not isinstance(body, Mapping):
-        return None
-    error = body.get("error")
-    return error if isinstance(error, Mapping) else None
+def _request_headers(request: DelegatedProtocolRequest, proof: str) -> dict[str, str]:
+    headers = dict(request.extra_headers)
+    headers["Content-Type"] = "application/json"
+    headers["DPoP"] = proof
+    if request.capability is not None:
+        headers["Authorization"] = f"DPoP {request.capability}"
+    return headers
 
 
-def _header(headers: Mapping[str, str], name: str) -> str | None:
-    expected = name.casefold()
-    for key, value in headers.items():
-        if key.casefold() == expected:
-            return value
-    return None
-
-
-def _valid_nonce_header(nonce: str | None) -> bool:
-    if nonce is None:
-        return False
-    return 16 <= len(nonce) <= 1024
+def _validate_extra_headers(headers: tuple[tuple[str, str], ...]) -> None:
+    reserved = {"authorization", "content-type", "dpop"}
+    names = [name.casefold() for name, _ in headers]
+    if any(name in reserved for name in names):
+        raise ValueError("delegated protocol header overrides a trust header")
+    if len(names) != len(set(names)):
+        raise ValueError("delegated protocol headers contain a duplicate")

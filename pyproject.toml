@@ -105,13 +105,7 @@ exclude = ["tests*", "examples*", "kamiwaza_extensions_lib*"]
 
 [tool.setuptools.package-data]
 kamiwaza_sdk = ["py.typed"]
-kamiwaza_extensions = [
-    "templates/**/*",
-    "templates/**/.*",
-    "validators/*.json",
-    "compatibility.json",
-    "agent_guidance.md",
-]
+kamiwaza_extensions = ["templates/**/*", "templates/**/.*", "validators/*.json", "compatibility.json", "agent_guidance.md"]
 
 [tool.mypy]
 python_version = "3.10"

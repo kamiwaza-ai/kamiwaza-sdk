@@ -18,7 +18,7 @@ class DPoPProofRequest:
 
     method: str
     target_uri: str
-    access_token: str = field(repr=False)
+    access_token: str | None = field(default=None, repr=False)
     body_digest: str
     issued_at: datetime
     nonce: str | None = None
@@ -40,9 +40,10 @@ class DPoPProofKey:
             "htm": request.method.upper(),
             "iat": int(request.issued_at.timestamp()),
             "jti": str(uuid4()),
-            "ath": _access_token_hash(request.access_token),
             "body_sha256": request.body_digest,
         }
+        if request.access_token is not None:
+            claims["ath"] = _access_token_hash(request.access_token)
         if request.nonce is not None:
             claims["nonce"] = request.nonce
         jwk = _public_jwk(self._private_key.public_key())

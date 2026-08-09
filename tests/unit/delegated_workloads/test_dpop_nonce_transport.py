@@ -8,16 +8,16 @@ import jwt
 import pytest
 
 from kamiwaza_sdk.delegated_workloads import (
-    DPoPNonceRequired,
     DelegatedProtocolRequest,
     DelegatedWorkloadTransport,
+    DPoPNonceRequired,
     ProtocolRetrySafety,
 )
-
 
 pytestmark = pytest.mark.unit
 NOW = datetime(2026, 8, 9, 12, tzinfo=UTC)
 NONCE = "core-issued-nonce-0123456789"
+CORRELATION_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 
 
 class StubResponse:
@@ -46,7 +46,9 @@ def _challenge(nonce: str = NONCE) -> StubResponse:
         {
             "error": {
                 "code": "dpop_nonce_required",
+                "message": "a fresh DPoP nonce is required",
                 "retry_classification": "nonce_required",
+                "correlation_id": CORRELATION_ID,
             }
         },
         {"DPoP-Nonce": nonce},
