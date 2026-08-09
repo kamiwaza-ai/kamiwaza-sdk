@@ -1,0 +1,259 @@
+{
+  "fixture_version": "delegated-workloads-conformance-v1",
+  "runtime_dependencies": [
+    "HTTP client",
+    "JSON parser",
+    "ES256 JWS implementation",
+    "SHA-256 implementation"
+  ],
+  "protocol": {
+    "version": "v1",
+    "openapi_version": "3.1.0",
+    "base_path": "/api/v1/delegated-workloads",
+    "capability_issuer": "urn:kamiwaza:delegated-workloads:v1",
+    "effect_capability_type": "kz-effect-cap+jwt",
+    "dpop_type": "dpop+jwt",
+    "jws_algorithm": "ES256",
+    "digest_format": "sha256:<lowercase-hex>",
+    "sensitive_placeholders": [
+      "<workload-assertion>",
+      "<effect-capability>",
+      "<dpop-proof>",
+      "<one-use-consumption-token>"
+    ]
+  },
+  "compatibility": {
+    "current_protocol": "v1",
+    "supported_protocols": [
+      "v1"
+    ],
+    "resource_descriptor_contracts": [
+      "v1"
+    ],
+    "resource_guard_contracts": [
+      "direct:v1",
+      "asgi:v1"
+    ],
+    "resource_adapter_interfaces": [
+      "ResourceCanonicalizer:v1",
+      "ResourceEntitlementAdapter:v1",
+      "QuotaAdapter:v1",
+      "BrokerOperationAdapter:v1",
+      "SafeResultNormalizer:v1"
+    ],
+    "within_v1_changes": {
+      "add_optional_response_field": "compatible",
+      "change_claim_meaning": "requires_new_version",
+      "relax_guard_check": "requires_new_version",
+      "add_required_field": "requires_new_version",
+      "widen_default_authority": "requires_new_version"
+    },
+    "unknown_version_behavior": "reject_before_execution"
+  },
+  "proof_vector": {
+    "capability_ascii": "<effect-capability>",
+    "protected_request": {
+      "method": "POST",
+      "target_uri": "https://resource.example.test/documents/doc-7",
+      "body_utf8": "{\"document\":\"hello\"}"
+    },
+    "expected_claims": {
+      "htm": "POST",
+      "htu": "https://resource.example.test/documents/doc-7",
+      "body_sha256": "sha256:4bd285fb587cc51a7fbd4b15e3856fecb8aff282d44e82af1d1fc48d1b9228c2",
+      "ath": "US1mkiQrUETn9UBUiZ-PRpQxwa3PkuKOBGQtnMoNbew"
+    },
+    "additional_required_claims": [
+      "iat",
+      "jti"
+    ],
+    "nonce_retry": "On a 401 dpop_nonce_required response, repeat the same idempotent protocol request once with a fresh proof containing the DPoP-Nonce value."
+  },
+  "http_exchanges": [
+    {
+      "id": "authorize-protected-effect",
+      "request": {
+        "method": "POST",
+        "path": "/effect-authorizations",
+        "headers": {
+          "Content-Type": "application/json",
+          "Authorization": "DPoP <effect-capability>",
+          "DPoP": "<dpop-proof>",
+          "X-Kamiwaza-Workload-Assertion": "<workload-assertion>"
+        },
+        "body": {
+          "effect_id": "33333333-3333-4333-8333-333333333333",
+          "request_digest": "sha256:4bd285fb587cc51a7fbd4b15e3856fecb8aff282d44e82af1d1fc48d1b9228c2",
+          "method": "POST",
+          "target_uri": "https://resource.example.test/documents/doc-7"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "effect_id": "33333333-3333-4333-8333-333333333333",
+          "decision": "allow",
+          "reason_codes": [
+            "allowed"
+          ],
+          "requester_context": {
+            "tenant_id": "55555555-5555-4555-8555-555555555555",
+            "subject_id": "66666666-6666-4666-8666-666666666666",
+            "client_id": "77777777-7777-4777-8777-777777777777",
+            "workload_role_id": "88888888-8888-4888-8888-888888888888",
+            "workload_instance_id": "99999999-9999-4999-8999-999999999999",
+            "workload_revision_id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "resource_registration_revision_id": "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff",
+            "run_claim_id": "22222222-2222-4222-8222-222222222222",
+            "activation_epoch": 7,
+            "quota_reservation_id": "dddddddd-eeee-4fff-8000-111111111111",
+            "member_charge_owner_id": "66666666-6666-4666-8666-666666666666",
+            "workload_budget_subject_id": "77777777-7777-4777-8777-777777777777",
+            "grant_id": "44444444-4444-4444-8444-444444444444",
+            "run_id": "11111111-1111-4111-8111-111111111111",
+            "effect_id": "33333333-3333-4333-8333-333333333333",
+            "action": "mutate",
+            "resource": {
+              "type": "example.document",
+              "descriptor_version": "v1",
+              "id": "doc-7"
+            },
+            "audience": "https://resource.example.test",
+            "policy_version": "policy-v1",
+            "fencing_token": 3,
+            "authority_envelope_id": "cccccccc-dddd-4eee-8fff-000000000000",
+            "correlation_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+          },
+          "consumption_token": "<one-use-consumption-token>",
+          "correlation_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        }
+      }
+    },
+    {
+      "id": "consume-protected-effect",
+      "request": {
+        "method": "POST",
+        "path": "/effects/33333333-3333-4333-8333-333333333333/consumption",
+        "headers": {
+          "Content-Type": "application/json",
+          "Authorization": "DPoP <effect-capability>",
+          "DPoP": "<dpop-proof>",
+          "X-Kamiwaza-Workload-Assertion": "<workload-assertion>",
+          "X-Kamiwaza-Effect-Consumption": "<one-use-consumption-token>"
+        },
+        "body": {
+          "request_digest": "sha256:4bd285fb587cc51a7fbd4b15e3856fecb8aff282d44e82af1d1fc48d1b9228c2",
+          "fencing_token": 3
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "effect_id": "33333333-3333-4333-8333-333333333333",
+          "status": "executing",
+          "requester_context": {
+            "tenant_id": "55555555-5555-4555-8555-555555555555",
+            "subject_id": "66666666-6666-4666-8666-666666666666",
+            "client_id": "77777777-7777-4777-8777-777777777777",
+            "workload_role_id": "88888888-8888-4888-8888-888888888888",
+            "workload_instance_id": "99999999-9999-4999-8999-999999999999",
+            "workload_revision_id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "resource_registration_revision_id": "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff",
+            "run_claim_id": "22222222-2222-4222-8222-222222222222",
+            "activation_epoch": 7,
+            "quota_reservation_id": "dddddddd-eeee-4fff-8000-111111111111",
+            "member_charge_owner_id": "66666666-6666-4666-8666-666666666666",
+            "workload_budget_subject_id": "77777777-7777-4777-8777-777777777777",
+            "grant_id": "44444444-4444-4444-8444-444444444444",
+            "run_id": "11111111-1111-4111-8111-111111111111",
+            "effect_id": "33333333-3333-4333-8333-333333333333",
+            "action": "mutate",
+            "resource": {
+              "type": "example.document",
+              "descriptor_version": "v1",
+              "id": "doc-7"
+            },
+            "audience": "https://resource.example.test",
+            "policy_version": "policy-v1",
+            "fencing_token": 3,
+            "authority_envelope_id": "cccccccc-dddd-4eee-8fff-000000000000",
+            "correlation_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+          },
+          "correlation_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        }
+      }
+    }
+  ],
+  "negative_guard_cases": [
+    {
+      "id": "wrong-token-class",
+      "change": "Replace the dedicated effect capability with a member or run token.",
+      "expected": {"status": 403, "error_code": "protected_resource_rejected", "handler_invoked": false}
+    },
+    {
+      "id": "untrusted-issuer-or-key",
+      "change": "Change iss, kid, signature, or use a private/untrusted JWKS member.",
+      "expected": {"status": 403, "error_code": "protected_resource_rejected", "handler_invoked": false}
+    },
+    {
+      "id": "wrong-audience-or-expired",
+      "change": "Change aud or move exp/authority_deadline outside the valid window.",
+      "expected": {"status": 403, "error_code": "protected_resource_rejected", "handler_invoked": false}
+    },
+    {
+      "id": "invalid-dpop-or-request-digest",
+      "change": "Change proof key, htm, htu, ath, body_sha256, iat, jti, or request bytes.",
+      "expected": {"status": 403, "error_code": "protected_resource_rejected", "handler_invoked": false}
+    },
+    {
+      "id": "descriptor-revision-drift",
+      "change": "Change resource type, descriptor version, audience, action, or active registration revision.",
+      "expected": {"status": 403, "error_code": "protected_resource_rejected", "handler_invoked": false}
+    },
+    {
+      "id": "stale-claim-or-fence",
+      "change": "Return a different run claim, fencing token, workload revision, or actor identity.",
+      "expected": {"status": 403, "error_code": "protected_resource_rejected", "handler_invoked": false}
+    },
+    {
+      "id": "current-decision-deny",
+      "change": "Return deny, no requester context, or no one-use token from authorization.",
+      "expected": {"status": 403, "error_code": "protected_resource_rejected", "handler_invoked": false}
+    },
+    {
+      "id": "one-use-replay",
+      "change": "Reuse the consumption token or return a state other than executing.",
+      "expected": {"status": 403, "error_code": "protected_resource_rejected", "handler_invoked": false}
+    },
+    {
+      "id": "spoofed-delegated-context",
+      "change": "Add any inbound X-Kamiwaza-Delegated-* header or construct an unsealed context.",
+      "expected": {"status": 403, "error_code": "protected_resource_rejected", "handler_invoked": false}
+    }
+  ],
+  "error_mapping": [
+    {"code": "invalid_request", "status": 422, "retry": "never"},
+    {"code": "readiness_unavailable", "status": 503, "retry": "bounded_backoff"},
+    {"code": "incompatible_contract", "status": 409, "retry": "never"},
+    {"code": "registration_rejected", "status": 403, "retry": "never"},
+    {"code": "resource_registration_rejected", "status": 409, "retry": "never"},
+    {"code": "attestation_rejected", "status": 401, "retry": "after_reauthentication"},
+    {"code": "grant_inactive", "status": 403, "retry": "never"},
+    {"code": "revision_mismatch", "status": 403, "retry": "never"},
+    {"code": "current_authority_denied", "status": 403, "retry": "never"},
+    {"code": "capability_expired", "status": 401, "retry": "after_reauthentication"},
+    {"code": "proof_mismatch", "status": 401, "retry": "never"},
+    {"code": "dpop_nonce_required", "status": 401, "retry": "nonce_required"},
+    {"code": "replay_rejected", "status": 409, "retry": "never"},
+    {"code": "claim_conflict", "status": 409, "retry": "idempotent_read_only"},
+    {"code": "fenced_claim", "status": 409, "retry": "never"},
+    {"code": "occurrence_digest_conflict", "status": 409, "retry": "never"},
+    {"code": "effect_digest_conflict", "status": 409, "retry": "never"},
+    {"code": "unknown_resource_contract", "status": 422, "retry": "never"},
+    {"code": "protected_resource_rejected", "status": 403, "retry": "never"},
+    {"code": "approval_required", "status": 409, "retry": "idempotent_read_only"},
+    {"code": "credential_binding_unavailable", "status": 503, "retry": "never"},
+    {"code": "provider_transient_failure", "status": 503, "retry": "idempotent_read_only"},
+    {"code": "ambiguous_effect_outcome", "status": 409, "retry": "never"}
+  ]
+}
