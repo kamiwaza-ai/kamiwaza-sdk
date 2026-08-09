@@ -6,6 +6,9 @@ from kamiwaza_sdk.delegated_workloads.api import (
 from kamiwaza_sdk.delegated_workloads.api import (
     DelegatedWorkloadAPI as DelegatedWorkloadAPI,
 )
+from kamiwaza_sdk.delegated_workloads.client import (
+    DelegatedControlPlaneClient as DelegatedControlPlaneClient,
+)
 from kamiwaza_sdk.delegated_workloads.errors import (
     AmbiguousEffectOutcome as AmbiguousEffectOutcome,
 )
@@ -114,6 +117,16 @@ from kamiwaza_sdk.delegated_workloads.models import (
     EffectReservationStatus as EffectReservationStatus,
 )
 from kamiwaza_sdk.delegated_workloads.models import ResourceRef as ResourceRef
+from kamiwaza_sdk.delegated_workloads.models import (
+    OpaqueRunQueuePayload as OpaqueRunQueuePayload,
+)
+from kamiwaza_sdk.delegated_workloads.models import (
+    RunReservation as RunReservation,
+)
+from kamiwaza_sdk.delegated_workloads.models import (
+    RunReservationRequest as RunReservationRequest,
+)
+from kamiwaza_sdk.delegated_workloads.models import RunTrigger as RunTrigger
 from kamiwaza_sdk.delegated_workloads.models import RunClaimStatus as RunClaimStatus
 from kamiwaza_sdk.delegated_workloads.models import RunDetail as RunDetail
 from kamiwaza_sdk.delegated_workloads.models import (
@@ -145,6 +158,7 @@ __all__ = (
     "DPoPNonceRequired",
     "DecisionReasonCode",
     "DelegatedApprovalAPI",
+    "DelegatedControlPlaneClient",
     "DelegatedErrorCode",
     "DelegatedGuardAuthority",
     "DelegatedProtocolError",
@@ -169,6 +183,7 @@ __all__ = (
     "IncompatibleContract",
     "InvalidRequest",
     "OccurrenceDigestConflict",
+    "OpaqueRunQueuePayload",
     "ProofMismatch",
     "ProtectedResourceRejected",
     "ProtocolRetrySafety",
@@ -183,6 +198,9 @@ __all__ = (
     "RunClaimStatus",
     "RunDetail",
     "RunLifecycleStatus",
+    "RunReservation",
+    "RunReservationRequest",
+    "RunTrigger",
     "UnknownResourceContract",
     "WorkloadReadAuthority",
     "delegated_error_from_response",

@@ -7,7 +7,7 @@ from dataclasses import field as dataclass_field
 from dataclasses import replace
 from datetime import datetime
 from enum import Enum
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -32,6 +32,14 @@ class RunClaimStatus(str, Enum):
     EXPIRED = "expired"
     FENCED = "fenced"
     TERMINAL = "terminal"
+
+
+class RunTrigger(str, Enum):
+    TEST = "test"
+    MANUAL = "manual"
+    SCHEDULED = "scheduled"
+    RETRY = "retry"
+    RECOVERY = "recovery"
 
 
 class EffectDecision(str, Enum):
@@ -125,6 +133,31 @@ class RunDetail(DelegatedResponse):
     occurrence_key: str
     revision_digest: Digest
     updated_at: datetime
+
+
+class RunReservationRequest(DelegatedRequest):
+    grant_id: UUID
+    revision_digest: Digest
+    occurrence_key: str = Field(min_length=1, max_length=256)
+    trigger: RunTrigger
+
+
+class OpaqueRunQueuePayload(DelegatedRequest):
+    """Transport-only queue handoff with no delegated authority."""
+
+    run_reference: str = Field(min_length=32, repr=False)
+
+
+class RunReservation(DelegatedResponse):
+    run_id: UUID
+    status: Literal["queued"]
+    run_reference: str = Field(min_length=32, repr=False)
+    correlation_id: UUID
+    authority_deadline: datetime
+
+    def queue_payload(self) -> OpaqueRunQueuePayload:
+        """Return the only value an untrusted queue may transport."""
+        return OpaqueRunQueuePayload(run_reference=self.run_reference)
 
 
 class EffectReservation(ReasonedResponse):
