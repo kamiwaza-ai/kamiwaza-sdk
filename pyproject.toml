@@ -32,6 +32,7 @@ dependencies = [
     "fastapi>=0.100.0",
     "rich>=13.0",
     "kamiwaza-extensions-lib>=0.4.4,<0.5",
+    "PyJWT[crypto]>=2.8",
 ]
 
 [project.optional-dependencies]
