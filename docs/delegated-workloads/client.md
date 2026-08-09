@@ -9,6 +9,60 @@ consent and keeps the registered workload or agent as a distinct actor.
 > readiness contract. A successful internal read or run reservation does not
 > by itself make a consuming application production-ready.
 
+## Configure workload proof
+
+Use one `DelegatedWorkloadTransport` for the selected workload revision and
+attestation profile. In Kubernetes, the SDK reads the assertion only from the
+fixed Kamiwaza projection path and keeps the P-256 proof key in process memory:
+
+```python
+from kamiwaza_sdk.delegated_workloads import (
+    AttestationProfile,
+    DelegatedControlPlaneClient,
+    DelegatedExecutorClient,
+    DelegatedWorkloadAPI,
+    DelegatedWorkloadTransport,
+    WorkloadProof,
+)
+
+proof = WorkloadProof.kubernetes(
+    AttestationProfile.KUBERNETES_OFFLINE_V1,
+)
+transport = DelegatedWorkloadTransport(session, proof=proof)
+
+base_url = "https://kamiwaza.example/api/v1/delegated-workloads"
+control_plane = DelegatedControlPlaneClient(base_url, transport)
+executor = DelegatedExecutorClient(base_url, transport)
+workloads = DelegatedWorkloadAPI(base_url, transport)
+```
+
+The profile must be the current Core-selected profile for this registered
+workload revision. Calling `transport.select_attestation_profile(...)` rotates
+the proof key whenever the selection changes. Both Kubernetes v1 profiles read
+the same projected assertion; the SDK never calls TokenReview or gains
+Kubernetes API permission. Core alone decides whether the selected profile uses
+offline verification or its platform-operated TokenReview adapter.
+
+Do not read an arbitrary token path, persist the proof key, serialize the
+assertion, or reuse transport authority after `transport.close()`. Assertions,
+capabilities, DPoP proofs and nonces, broker handles, consumption tokens, and
+CSRF material are redacted and reject pickling. This is a non-persistence and
+non-exposure boundary; Python does not promise deterministic zeroization of
+every prior heap copy.
+
+## Member delegation stays in Core
+
+Before reserving a run, the member must have consented on the Core-owned
+surface to one immutable automation revision and its complete ceiling. The app
+retains the returned grant ID and safe status only. It must not collect, proxy,
+or store the member's consent decision, browser session, personal access token,
+or refresh token.
+
+The member remains the delegated subject and model-charge owner. The registered
+client, workload role, revision, and attested instance remain the distinct
+actor and safety-budget subjects. Supplying a grant ID never lets the workload
+replace either principal or bypass Core's current-state checks.
+
 ## Reserve a run occurrence
 
 `DelegatedControlPlaneClient.reserve_run` creates or recovers one idempotent
@@ -20,17 +74,8 @@ payload.
 from uuid import UUID
 
 from kamiwaza_sdk.delegated_workloads import (
-    DelegatedControlPlaneClient,
-    DelegatedWorkloadTransport,
     RunReservationRequest,
     RunTrigger,
-    WorkloadReadAuthority,
-)
-
-transport = DelegatedWorkloadTransport(session)
-control_plane = DelegatedControlPlaneClient(
-    "https://kamiwaza.example/api/v1/delegated-workloads",
-    transport,
 )
 
 reservation = control_plane.reserve_run(
@@ -39,12 +84,15 @@ reservation = control_plane.reserve_run(
         revision_digest="sha256:" + "d" * 64,
         occurrence_key="scheduled:2026-08-09T12:00:00Z",
         trigger=RunTrigger.SCHEDULED,
-    ),
-    WorkloadReadAuthority(
-        workload_assertion=projected_workload_assertion,
-    ),
+    )
 )
 ```
+
+Omitting the authority argument is the normal path: the transport obtains fresh
+assertion material through its selected adapter and creates an exact-request
+DPoP proof. `WorkloadReadAuthority` remains a typed compatibility seam for
+trusted custom adapters and tests; do not use it to make application code own
+the projected token file.
 
 The `occurrence_key` is the caller's stable idempotency key. Repeating the same
 grant, revision digest, key, and trigger returns the existing run. Reusing the
@@ -94,9 +142,8 @@ executor = DelegatedExecutorClient(
 )
 claim = executor.claim_run(
     reservation.queue_payload(),
-    WorkloadReadAuthority(workload_assertion=projected_workload_assertion),
 )
-authority = claim.authority(projected_workload_assertion)
+authority = executor.authority(claim)
 
 executor.transition(
     RunTransitionRequest(transition=RunTransition.START),
@@ -112,6 +159,12 @@ The client supplies the claim's fencing token; application code cannot replace
 it with an unrelated value. Use `ACKNOWLEDGE_CANCEL` after observing a durable
 cancellation request, and use `SUCCEED`, `FAIL`, `CANCEL`, or `AMBIGUOUS` for
 the terminal outcome. A stale claim raises `FencedClaim` and must stop acting.
+
+The durable lifecycle is `queued`, `claimed`, `running`,
+`cancel_requested`, then exactly one of `succeeded`, `failed`, `cancelled`, or
+`ambiguous`. Heartbeats extend the live claim lease only. They do not move the
+run's immutable authority deadline, and a newer claimant's fence makes the old
+executor unable to heartbeat, reserve effects, or report an outcome.
 
 ## Reserve an exact effect
 
@@ -146,6 +199,61 @@ workload assertion to the protected resource. Reusing an effect key with a
 different digest raises `EffectDigestConflict`. An allowed reservation is not
 permission to bypass the guarded consumption step for the protected action.
 
+Check the typed decision before dispatch. A `deny` is a normal fail-closed
+decision, and `pending_approval` means the run must park without performing the
+operation. An approval may later expose an opaque `resume_run_reference`; the
+next executor must re-attest, claim that reference under a fresh fence, and
+present the same effect key and digest. Approval never revives an expired run
+capability.
+
+## Resource enforcement and mesh parity
+
+Workload code does not choose an Istio path or a direct path. It reserves the
+same exact effect and calls the configured protected-resource endpoint. The
+resource integration then uses the same Core decision and one-use consumption
+contract in either topology:
+
+1. `DelegatedWorkloadAPI.authorize_effect` obtains a side-effect-free typed
+   allow or deny and, on allow, sealed dual-principal context plus a one-use
+   consumption token.
+2. `DelegatedWorkloadAPI.consume_effect` atomically consumes that token and
+   starts the exact effect before protected application code runs.
+
+With Istio, external authorization validates raw authority, strips spoofable
+delegated headers, and installs only the contract's sealed headers. It does not
+consume the effect, and its allow result is not final resource authorization.
+Without Istio, the in-process guard performs the same decision and consumption
+sequence without trusting forwarded identity. Application clients and resource
+handlers must not parse capabilities, construct requester context, or add a
+weaker local fallback.
+
+The `DelegatedWorkloadAPI` authorization and consumption calls are
+resource-integration primitives, not a way for an ordinary workload to
+authorize itself. A protected handler runs only after the configured guard has
+returned the consumed typed context.
+
+## ReBAC and model quota behavior
+
+Core evaluates the member's current ReBAC entitlement and the workload actor's
+registration, role, revision, grant, run, claim, fence, and exact-effect ceiling
+as one intersection. A valid member alone and a valid workload alone both
+deny. The SDK does not accept member IDs, workload IDs, roles, ledger keys,
+quota units, or an authority envelope from application input.
+
+For delegated model calls, reserve an effect for the registered model resource
+and let the protected model route derive the canonical request digest, model
+target, and usage estimate. Before any provider or engine I/O, Core atomically
+consumes the effect and reserves both ledgers:
+
+- member and tenant charge; and
+- client, workload revision, and run safety limits.
+
+Either both reservations succeed or the model request is denied. Exact usage
+settles both; positive evidence that work never started releases both; an
+unknown stream, provider, or process outcome remains `ambiguous` for
+reconciliation. Do not resubmit with caller-chosen quota values, a different
+effect key, or a member-only model path after denial.
+
 ## Authority lifetime
 
 The reservation's `authority_deadline` bounds one execution epoch. Individual
@@ -157,6 +265,29 @@ the deadline.
 Task definitions, checkpoints, history, approvals, and audit may remain
 long-lived. Work that continues after the deadline resumes through a fresh run
 and current consent rather than extending stale authority.
+
+## Observe cancellation and preserve ambiguity
+
+Read durable state with `workloads.get_run(claim.run_id)`, especially around
+heartbeats and before starting another effect. When it reports
+`RunLifecycleStatus.CANCEL_REQUESTED`, stop creating effects. Use
+`RunTransition.ACKNOWLEDGE_CANCEL` only after you can prove the current work
+stopped safely.
+
+Cancellation does not turn an unknown external result into success or safe
+non-execution. Report:
+
+- `CANCEL` or `ACKNOWLEDGE_CANCEL` only when no protected operation may still
+  have taken effect;
+- `FAIL` for a deterministic terminal failure; and
+- `AMBIGUOUS` when a provider call, mutation, stream, or lost response may have
+  executed but its outcome cannot be proved.
+
+`AMBIGUOUS` is terminal for automatic execution. Do not repeat the effect with
+a new key, schedule a replacement run to redo it, or infer that an expired
+lease means the operation did not happen. Use `workloads.get_effect(effect_id)`
+and the correlation ID for authorized reconciliation; if evidence remains
+insufficient, keep the ambiguous state explicit.
 
 ## Errors and safe retries
 
@@ -176,5 +307,26 @@ Treat these cases as terminal for the unchanged request:
 - `ReadinessUnavailable` or `IncompatibleContract`: do not dispatch until the
   complete required contract becomes ready.
 
+`ClaimConflict` and `ApprovalRequired` are classified only for idempotent
+read/state recovery. They are not permission to replay protected work.
+`AmbiguousEffectOutcome` is never retryable. When the exact effect ID is known,
+read its durable state instead of guessing from a lost response.
+
+The transport may repeat the exact bytes of an explicitly idempotent protocol
+request once after a valid DPoP nonce challenge. It creates a fresh proof and
+`jti` for that retry. It never replays a model invocation, protected handler,
+provider call, or mutation to satisfy the challenge.
+
 No exception contains the workload assertion, opaque run reference, DPoP
 private key, capability, or provider credential.
+
+Close `transport` when the workload revision stops, the process shuts down, or
+the proof lifecycle must be retired:
+
+```python
+transport.close()
+```
+
+After closure, proof creation fails locally with `ProofKeyUnavailable`. Rotate
+or replace the proof lifecycle before new work; never fall back to bearer-only
+requests.
