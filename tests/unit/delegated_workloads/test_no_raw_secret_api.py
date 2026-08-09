@@ -11,6 +11,7 @@ from kamiwaza_sdk.delegated_workloads._credential_modes import (
     resolve_credential_mode,
 )
 from kamiwaza_sdk.delegated_workloads.api import DelegatedWorkloadAPI
+from kamiwaza_sdk.delegated_workloads.broker import CredentialBroker
 from kamiwaza_sdk.delegated_workloads.client import DelegatedControlPlaneClient
 from kamiwaza_sdk.delegated_workloads.executor import DelegatedExecutorClient
 from kamiwaza_sdk.delegated_workloads.models import EffectReservationRequest
@@ -25,6 +26,7 @@ def test_public_sdk_methods_have_no_raw_release_entry_point() -> None:
             DelegatedControlPlaneClient,
             DelegatedExecutorClient,
             DelegatedWorkloadAPI,
+            CredentialBroker,
         )
         for name, value in inspect.getmembers(service, predicate=callable)
         if not name.startswith("_")

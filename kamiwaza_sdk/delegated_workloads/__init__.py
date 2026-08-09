@@ -6,6 +6,29 @@ from kamiwaza_sdk.delegated_workloads.api import (
 from kamiwaza_sdk.delegated_workloads.api import (
     DelegatedWorkloadAPI as DelegatedWorkloadAPI,
 )
+from kamiwaza_sdk.delegated_workloads.broker import (
+    CredentialBindingStatus as CredentialBindingStatus,
+)
+from kamiwaza_sdk.delegated_workloads.broker import (
+    CredentialBindingSummary as CredentialBindingSummary,
+)
+from kamiwaza_sdk.delegated_workloads.broker import CredentialBroker as CredentialBroker
+from kamiwaza_sdk.delegated_workloads.broker import CredentialMode as CredentialMode
+from kamiwaza_sdk.delegated_workloads.broker import (
+    CredentialOperationParameters as CredentialOperationParameters,
+)
+from kamiwaza_sdk.delegated_workloads.broker import (
+    CredentialUseRequest as CredentialUseRequest,
+)
+from kamiwaza_sdk.delegated_workloads.broker import (
+    CredentialUseResponse as CredentialUseResponse,
+)
+from kamiwaza_sdk.delegated_workloads.broker import (
+    CredentialUseStatus as CredentialUseStatus,
+)
+from kamiwaza_sdk.delegated_workloads.broker import (
+    TrustedAdapterLease as TrustedAdapterLease,
+)
 from kamiwaza_sdk.delegated_workloads.client import (
     DelegatedControlPlaneClient as DelegatedControlPlaneClient,
 )
@@ -213,6 +236,14 @@ __all__ = (
     "ClaimConflict",
     "ClaimedRun",
     "CredentialBindingUnavailable",
+    "CredentialBindingStatus",
+    "CredentialBindingSummary",
+    "CredentialBroker",
+    "CredentialMode",
+    "CredentialOperationParameters",
+    "CredentialUseRequest",
+    "CredentialUseResponse",
+    "CredentialUseStatus",
     "CurrentAuthorityDenied",
     "CsrfToken",
     "DPoPKeyLifecycle",
@@ -283,5 +314,6 @@ __all__ = (
     "WorkloadAssertionUnavailable",
     "WorkloadProof",
     "WorkloadReadAuthority",
+    "TrustedAdapterLease",
     "delegated_error_from_response",
 )
