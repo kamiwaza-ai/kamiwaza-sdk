@@ -202,11 +202,12 @@ class ClosedBrokerResource:
         return cls(provider, provider._issue(issued_at, expires_at))
 
     def execute(self, call: BrokerResourceCall) -> dict[str, object]:
-        operation = _OPERATIONS.get(call.operation_id)
-        if operation is None:
-            raise ClosedOperationRejected
-        _validate_call(call, operation)
+        operation = _operation_for(call)
         return self._provider._execute(self._lease, call, operation)
+
+    def request_digest(self, call: BrokerResourceCall) -> str:
+        """Return the safe canonical digest used by the fake provider record."""
+        return _request_digest(call, _operation_for(call))
 
     def document(self, resource_id: str) -> dict[str, str]:
         return self._provider.document(resource_id)
@@ -241,6 +242,14 @@ def _validate_call(
         raise ClosedOperationRejected
     validator = _CALL_VALIDATORS[operation.mutation]
     validator(call)
+
+
+def _operation_for(call: BrokerResourceCall) -> _OperationDefinition:
+    operation = _OPERATIONS.get(call.operation_id)
+    if operation is None:
+        raise ClosedOperationRejected
+    _validate_call(call, operation)
+    return operation
 
 
 def _validate_read(call: BrokerResourceCall) -> None:
