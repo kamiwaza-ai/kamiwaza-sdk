@@ -46,6 +46,8 @@ RUN_CAPABILITY = "header.run-capability.signature"
 EFFECT_CAPABILITY = "header.effect-capability.signature"
 BROKER_HANDLE = "opaque.broker-handle.signature"
 ASSERTION = "projected-executor-assertion"
+PROVIDER_ACCESS_CANARY = "provider-access-canary-never-emit"
+PROVIDER_REVOCATION_CANARY = "provider-revocation-canary-never-emit"
 NOW = datetime(2026, 8, 9, 12, tzinfo=timezone.utc)
 _EFFECT_URL = f"{BASE_URL}/runs/{RUN_ID}/effects"
 _USE_URL = f"{BASE_URL}/credential-uses"
@@ -157,8 +159,8 @@ class BrokerJourneyHarness:
     @classmethod
     def create(cls) -> BrokerJourneyHarness:
         provider = FakeOAuthProvider.seeded(
-            access_credential="provider-access-canary-never-emit",
-            revocation_handle="provider-revocation-canary-never-emit",
+            access_credential=PROVIDER_ACCESS_CANARY,
+            revocation_handle=PROVIDER_REVOCATION_CANARY,
             clock=lambda: NOW,
         )
         resource = ClosedBrokerResource.connect(
@@ -409,6 +411,8 @@ def _token_hash(value: str) -> str:
 __all__ = (
     "BINDING_ID",
     "EFFECT_ID",
+    "PROVIDER_ACCESS_CANARY",
+    "PROVIDER_REVOCATION_CANARY",
     "BrokerJourneyHarness",
     "SafeBrokerEvent",
 )
