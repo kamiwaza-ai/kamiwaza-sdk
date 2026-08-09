@@ -6,6 +6,7 @@ from kamiwaza_sdk.delegated_workloads._protocol import (
     base_url as normalized_base_url,
 )
 from kamiwaza_sdk.delegated_workloads._protocol import json_bytes, validated
+from kamiwaza_sdk.delegated_workloads.executor import DelegatedExecutorClient
 from kamiwaza_sdk.delegated_workloads.models import (
     RunReservation,
     RunReservationRequest,
@@ -18,6 +19,22 @@ from kamiwaza_sdk.delegated_workloads.transport import (
 )
 
 _WORKLOAD_ASSERTION_HEADER = "X-Kamiwaza-Workload-Assertion"
+
+
+class DelegatedWorkloadClient:
+    """Create role-specific clients without exposing registrar authority."""
+
+    def __init__(self, base_url: str, transport: DelegatedWorkloadTransport) -> None:
+        self._base_url = normalized_base_url(base_url)
+        self._transport = transport
+
+    def control_plane(self) -> DelegatedControlPlaneClient:
+        """Return the registered control-plane role client."""
+        return DelegatedControlPlaneClient(self._base_url, self._transport)
+
+    def executor(self) -> DelegatedExecutorClient:
+        """Return the registered executor role client."""
+        return DelegatedExecutorClient(self._base_url, self._transport)
 
 
 class DelegatedControlPlaneClient:
@@ -49,3 +66,6 @@ class DelegatedControlPlaneClient:
             retry_safety=ProtocolRetrySafety.IDEMPOTENT_PROTOCOL,
         )
         return validated(RunReservation, self._transport.send_json(protocol_request))
+
+
+__all__ = ("DelegatedControlPlaneClient", "DelegatedWorkloadClient")

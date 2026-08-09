@@ -1,5 +1,25 @@
 """Portable client primitives for delegated workload authority."""
 
+from kamiwaza_sdk.delegated_workloads.adapters import (
+    BrokerOperationAdapter as BrokerOperationAdapter,
+)
+from kamiwaza_sdk.delegated_workloads.adapters import QuotaAdapter as QuotaAdapter
+from kamiwaza_sdk.delegated_workloads.adapters import (
+    ResourceCanonicalizer as ResourceCanonicalizer,
+)
+from kamiwaza_sdk.delegated_workloads.adapters import (
+    ResourceEntitlementAdapter as ResourceEntitlementAdapter,
+)
+from kamiwaza_sdk.delegated_workloads.adapters import (
+    ResourceRegistrationAdapter as ResourceRegistrationAdapter,
+)
+from kamiwaza_sdk.delegated_workloads.adapters import (
+    SafeResultNormalizer as SafeResultNormalizer,
+)
+from kamiwaza_sdk.delegated_workloads.adapters import (
+    WorkloadRegistrationAdapter as WorkloadRegistrationAdapter,
+)
+
 from kamiwaza_sdk.delegated_workloads.api import (
     DelegatedApprovalAPI as DelegatedApprovalAPI,
 )
@@ -31,6 +51,9 @@ from kamiwaza_sdk.delegated_workloads.broker import (
 )
 from kamiwaza_sdk.delegated_workloads.client import (
     DelegatedControlPlaneClient as DelegatedControlPlaneClient,
+)
+from kamiwaza_sdk.delegated_workloads.client import (
+    DelegatedWorkloadClient as DelegatedWorkloadClient,
 )
 from kamiwaza_sdk.delegated_workloads.executor import (
     DelegatedExecutorClient as DelegatedExecutorClient,
@@ -214,6 +237,9 @@ from kamiwaza_sdk.delegated_workloads.proof import (
     WorkloadAssertion as WorkloadAssertion,
 )
 from kamiwaza_sdk.delegated_workloads.proof import WorkloadProof as WorkloadProof
+from kamiwaza_sdk.delegated_workloads.resource_server import (
+    DelegatedResourceServer as DelegatedResourceServer,
+)
 from kamiwaza_sdk.delegated_workloads.transport import (
     DelegatedProtocolRequest as DelegatedProtocolRequest,
 )
@@ -232,6 +258,7 @@ __all__ = (
     "AttestationProfile",
     "AttestationRejected",
     "BrokerHandle",
+    "BrokerOperationAdapter",
     "CapabilityExpired",
     "ClaimConflict",
     "ClaimedRun",
@@ -262,6 +289,8 @@ __all__ = (
     "DelegatedProtocolError",
     "DelegatedProtocolRequest",
     "DelegatedRequesterContext",
+    "DelegatedResourceServer",
+    "DelegatedWorkloadClient",
     "DelegatedWorkloadAPI",
     "DelegatedWorkloadError",
     "DelegatedWorkloadTransport",
@@ -290,10 +319,14 @@ __all__ = (
     "ProtectedResourceRejected",
     "ProtocolRetrySafety",
     "ProviderTransientFailure",
+    "QuotaAdapter",
     "ReadinessUnavailable",
     "RegistrationRejected",
     "ReplayRejected",
     "ResourceRef",
+    "ResourceCanonicalizer",
+    "ResourceEntitlementAdapter",
+    "ResourceRegistrationAdapter",
     "ResourceRegistrationRejected",
     "RetryClassification",
     "RevisionMismatch",
@@ -307,6 +340,7 @@ __all__ = (
     "RunTransitionRequest",
     "RunTransitionResult",
     "SensitiveValue",
+    "SafeResultNormalizer",
     "DestinationRef",
     "UnknownResourceContract",
     "UnsupportedAttestationProfile",
@@ -314,6 +348,7 @@ __all__ = (
     "WorkloadAssertionUnavailable",
     "WorkloadProof",
     "WorkloadReadAuthority",
+    "WorkloadRegistrationAdapter",
     "TrustedAdapterLease",
     "delegated_error_from_response",
 )
