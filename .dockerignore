@@ -1,8 +1,9 @@
-# ENG-5957: The only docker build using this directory as context is
-# tests/e2e/extension_contract/echo-check/backend/Dockerfile, which only
-# needs:
+# ENG-5957: Docker builds using this directory as context are explicitly
+# allowlisted below. The echo-check backend needs:
 #   - kamiwaza_extensions_lib/   (workspace member)
 #   - tests/e2e/extension_contract/echo-check/backend/  (app + requirements)
+# The neutral delegated-resource example additionally needs the SDK package
+# sources and its own bounded example directory.
 #
 # Everything else inflates the build context unnecessarily or risks
 # pulling sensitive files (.env, venvs, build caches) into image layers.
@@ -21,6 +22,21 @@
 !kamiwaza-ai-extensions-lib/**
 # ...but never ship its installed deps into the build context.
 kamiwaza-ai-extensions-lib/node_modules/
+
+# Neutral delegated-resource image build metadata and Python sources.
+!pyproject.toml
+!README.md
+!LICENSE
+!MANIFEST.in
+!kamiwaza_sdk/
+!kamiwaza_sdk/**
+!kamiwaza_client/
+!kamiwaza_client/**
+!kamiwaza_extensions/
+!kamiwaza_extensions/**
+!examples/
+!examples/delegated_resource_server/
+!examples/delegated_resource_server/**
 
 # Backend app + its requirements.txt.
 !tests/

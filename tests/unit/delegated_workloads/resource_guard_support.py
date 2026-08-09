@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
 import jwt
@@ -30,7 +30,7 @@ from kamiwaza_sdk.delegated_workloads.resource_server import (
 )
 
 
-NOW = datetime(2026, 8, 9, 12, tzinfo=UTC)
+NOW = datetime(2026, 8, 9, 12, tzinfo=timezone.utc)
 ISSUER = "urn:kamiwaza:delegated-workloads:v1"
 EFFECT_TYPE = "kz-effect-cap+jwt"
 RUN_TYPE = "kz-run-cap+jwt"
@@ -71,6 +71,8 @@ class RequestOverrides:
     signing_key: ec.EllipticCurvePrivateKey | None = None
     proof_payload: dict[str, object] | None = None
     proof_key: ec.EllipticCurvePrivateKey | None = None
+    method: str = "POST"
+    target_uri: str | None = None
     body: bytes = b'{"value":7}'
     extra_headers: dict[str, str] | None = None
 
@@ -79,6 +81,7 @@ class RequestOverrides:
 class _ProofMaterial:
     capability: str
     key: ec.EllipticCurvePrivateKey
+    method: str
     target: str
     body: bytes
     overrides: dict[str, object]
@@ -98,7 +101,7 @@ class GuardCase:
         self,
         overrides: RequestOverrides = RequestOverrides(),
     ) -> ProtectedResourceRequest:
-        target = self.registration.audience + "/tickets/TKT-7"
+        target = overrides.target_uri or (self.registration.audience + "/tickets/TKT-7")
         capability = _capability(
             self,
             overrides.payload or {},
@@ -109,6 +112,7 @@ class GuardCase:
             _ProofMaterial(
                 capability,
                 overrides.proof_key or self.proof_key,
+                overrides.method,
                 target,
                 overrides.body,
                 overrides.proof_payload or {},
@@ -121,7 +125,7 @@ class GuardCase:
             **(overrides.extra_headers or {}),
         }
         return ProtectedResourceRequest(
-            method="POST",
+            method=overrides.method,
             target_uri=target,
             body=overrides.body,
             headers=headers,
@@ -229,7 +233,7 @@ def _proof(
 ) -> str:
     payload: dict[str, object] = {
         "htu": material.target,
-        "htm": "POST",
+        "htm": material.method,
         "iat": int(NOW.timestamp()),
         "jti": "proof-jti",
         "ath": _encoded_digest(material.capability.encode("ascii")),

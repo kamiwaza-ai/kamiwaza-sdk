@@ -1,0 +1,53 @@
+{
+  "resource_type": "conformance.document",
+  "descriptor_version": "v1",
+  "audiences": [
+    "https://documents.example.test"
+  ],
+  "resource_id_schema": {
+    "type": "string",
+    "pattern": "^document:[a-z0-9][a-z0-9-]{0,63}$",
+    "maxLength": 73
+  },
+  "actions": {
+    "read": {
+      "effect_class": "read",
+      "approval_class": "none",
+      "methods": [
+        "GET"
+      ],
+      "quota_dimensions": [
+        "document_operations"
+      ]
+    },
+    "mutate": {
+      "effect_class": "mutation",
+      "approval_class": "exact_it_approval",
+      "methods": [
+        "PUT"
+      ],
+      "quota_dimensions": [
+        "document_operations",
+        "mutation_bytes"
+      ]
+    }
+  },
+  "request_digest_profile": "conformance-document-canonicalizer:v1",
+  "policy_adapter_id": "conformance-document-entitlement:v1",
+  "quota_adapter_id": "conformance-document-quota:v1",
+  "broker_operation_types": [
+    "document.export"
+  ],
+  "broker_adapter_id": "conformance-document-broker:v1",
+  "safe_result_adapter_id": "conformance-document-result:v1",
+  "guard_contract_version": "guard:v1",
+  "compatibility": {
+    "descriptor_versions": [
+      "v1"
+    ],
+    "guard_contract_versions": [
+      "guard:v1"
+    ]
+  },
+  "status": "staged"
+}

@@ -153,10 +153,10 @@ resource descriptor, guard, and adapter versions during discovery. Reject an
 unknown or incompatible combination before intent creation, run reservation,
 effect execution, or handler dispatch; there is no warning-only fallback.
 
-The fixture publishes the current protocol, descriptor, direct/ASGI guard, and
-resource-adapter interface versions. Its `negative_guard_cases` are mandatory:
-every mutation returns the stable resource denial and leaves
-`handler_invoked=false`.
+The fixture publishes the current protocol, descriptor and `guard:v1`
+contracts, the direct/ASGI guard adapters, and the resource-adapter interface
+versions. Its `negative_guard_cases` are mandatory: every mutation returns the
+stable resource denial and leaves `handler_invoked=false`.
 
 ## Run the portable fixture checks
 

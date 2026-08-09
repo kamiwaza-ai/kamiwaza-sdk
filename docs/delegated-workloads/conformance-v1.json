@@ -31,6 +31,9 @@
       "v1"
     ],
     "resource_guard_contracts": [
+      "guard:v1"
+    ],
+    "resource_guard_adapters": [
       "direct:v1",
       "asgi:v1"
     ],

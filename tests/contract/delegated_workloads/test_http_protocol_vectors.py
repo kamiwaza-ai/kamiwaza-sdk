@@ -154,6 +154,8 @@ def test_compatibility_metadata_forbids_silent_authority_changes() -> None:
 
     assert compatibility["current_protocol"] == "v1"
     assert compatibility["supported_protocols"] == ["v1"]
+    assert compatibility["resource_guard_contracts"] == ["guard:v1"]
+    assert compatibility["resource_guard_adapters"] == ["direct:v1", "asgi:v1"]
     assert changes["add_optional_response_field"] == "compatible"
     for rule in (
         "change_claim_meaning",
