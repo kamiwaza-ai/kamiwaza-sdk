@@ -216,6 +216,30 @@ from kamiwaza_sdk.delegated_workloads.models import (
 from kamiwaza_sdk.delegated_workloads.proof import (
     AttestationProfile as AttestationProfile,
 )
+from kamiwaza_sdk.delegated_workloads.readiness import (
+    CapabilityDiscoveryDocument as CapabilityDiscoveryDocument,
+)
+from kamiwaza_sdk.delegated_workloads.readiness import (
+    ComponentReadiness as ComponentReadiness,
+)
+from kamiwaza_sdk.delegated_workloads.readiness import (
+    ComponentStatus as ComponentStatus,
+)
+from kamiwaza_sdk.delegated_workloads.readiness import (
+    ReadinessClient as ReadinessClient,
+)
+from kamiwaza_sdk.delegated_workloads.readiness import (
+    ReadinessDiagnosticCode as ReadinessDiagnosticCode,
+)
+from kamiwaza_sdk.delegated_workloads.readiness import (
+    ReadinessRequirements as ReadinessRequirements,
+)
+from kamiwaza_sdk.delegated_workloads.readiness import (
+    ReadinessResult as ReadinessResult,
+)
+from kamiwaza_sdk.delegated_workloads.readiness import (
+    ResourceReadinessRequirement as ResourceReadinessRequirement,
+)
 from kamiwaza_sdk.delegated_workloads.proof import BrokerHandle as BrokerHandle
 from kamiwaza_sdk.delegated_workloads.proof import CsrfToken as CsrfToken
 from kamiwaza_sdk.delegated_workloads.proof import (
@@ -278,8 +302,11 @@ __all__ = (
     "BrokerHandle",
     "BrokerOperationAdapter",
     "CapabilityExpired",
+    "CapabilityDiscoveryDocument",
     "ClaimConflict",
     "ClaimedRun",
+    "ComponentReadiness",
+    "ComponentStatus",
     "CredentialBindingUnavailable",
     "CredentialBindingStatus",
     "CredentialBindingSummary",
@@ -342,6 +369,10 @@ __all__ = (
     "ProviderTransientFailure",
     "QuotaAdapter",
     "ReadinessUnavailable",
+    "ReadinessClient",
+    "ReadinessDiagnosticCode",
+    "ReadinessRequirements",
+    "ReadinessResult",
     "RegistrationRejected",
     "ReplayRejected",
     "ResourceRef",
@@ -351,6 +382,7 @@ __all__ = (
     "ResourceGuardRejected",
     "ResourceRegistrationAdapter",
     "ResourceRegistrationRejected",
+    "ResourceReadinessRequirement",
     "RetryClassification",
     "RevisionMismatch",
     "RunClaimStatus",
