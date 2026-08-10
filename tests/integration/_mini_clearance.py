@@ -256,14 +256,22 @@ def retrieve_through_gate(client: Any, dataset_urn: str) -> tuple[list[dict], di
     """Retrieve the dataset through the gate; return (rows, gate_audit summary).
 
     Drains the SSE stream: ``chunk`` events carry ``records`` and a ``metadata``
-    dict whose ``gate_audit`` is the runner footer {gate, included, redacted,
-    total}. Summed across chunks (one chunk for the 5-row fixture).
+    dict whose ``gate_audit`` is the runner footer.
+
+    ENG-8859 reduced that footer to a single ``filtered`` boolean. The counts it
+    used to carry (``included`` / ``redacted`` / ``total``) are now always
+    ``null`` — in a classified setting the *volume* of withheld material is
+    itself a disclosure to the caller who was denied it — so summing them here
+    raised ``TypeError: int() argument must be ... not 'NoneType'``.
+
+    Counting from ``rows`` instead is the stronger assertion anyway: it checks
+    what actually arrived rather than what the footer claimed about it.
     """
     from kamiwaza_sdk.schemas.retrieval import RetrievalRequest
 
     job = client.retrieval.create_job(RetrievalRequest(dataset_urn=dataset_urn))
     rows: list[dict] = []
-    included = redacted = total = 0
+    filtered = False
     saw_audit = False
     for event in client.retrieval.stream_events(job.job_id):
         if event.event != "chunk":
@@ -273,13 +281,8 @@ def retrieve_through_gate(client: Any, dataset_urn: str) -> tuple[list[dict], di
         gate_audit = (data.get("metadata") or {}).get("gate_audit")
         if gate_audit:
             saw_audit = True
-            included += int(gate_audit.get("included", 0))
-            redacted += int(gate_audit.get("redacted", 0))
-            total += int(gate_audit.get("total", 0))
-    summary = (
-        {"included": included, "redacted": redacted, "total": total} if saw_audit else {}
-    )
-    return rows, summary
+            filtered = filtered or bool(gate_audit.get("filtered"))
+    return rows, ({"filtered": filtered} if saw_audit else {})
 
 
 def mesh_retrieve_through_gate(
@@ -315,20 +318,21 @@ def mesh_retrieve_through_gate(
         job_id = getattr(job, "job_id", None) or getattr(job, "id", None)
     assert job_id, f"mesh create-job returned no job id: {job!r}"
 
-    included = redacted = total = 0
+    filtered = False
     saw = False
     rows: list[dict] = []
 
     def _absorb(entry: Any) -> None:
-        nonlocal included, redacted, total, saw
+        # The job-result seam emits a LIST of per-gate footers, the inline/SSE
+        # seams a single dict; both reduce to "was this view filtered at all",
+        # so the list case ORs across gates.
+        nonlocal filtered, saw
         if isinstance(entry, list):
             for item in entry:
                 _absorb(item)
         elif isinstance(entry, dict):
             saw = True
-            included += int(entry.get("included", 0))
-            redacted += int(entry.get("redacted", 0))
-            total += int(entry.get("total", 0))
+            filtered = filtered or bool(entry.get("filtered"))
 
     url = f"{base_url}/mesh/{fed_name}/api/retrieval/jobs/{job_id}/stream"
     headers = {"Authorization": f"Bearer {token}", "Accept": "text/event-stream"}
@@ -361,8 +365,7 @@ def mesh_retrieve_through_gate(
             elif raw.startswith("data:"):
                 data_lines.append(raw[len("data:") :].lstrip())
 
-    summary = {"included": included, "redacted": redacted, "total": total} if saw else {}
-    return rows, summary
+    return rows, ({"filtered": filtered} if saw else {})
 
 
 def initiator_cluster_uuid(receiver: Any, receiver_fed_id: str) -> Optional[str]:
@@ -387,12 +390,22 @@ def initiator_cluster_uuid(receiver: Any, receiver_fed_id: str) -> Optional[str]
 
 
 def assert_persona_result(clearance: str, rows: list[dict], gate_audit: dict) -> None:
-    """Assert the known post-gate counts + zero leakage for a persona."""
+    """Assert the known post-gate counts + zero leakage for a persona.
+
+    Counts are asserted against the rows that ARRIVED, not against the footer's
+    claim about them — the footer no longer carries counts (ENG-8859), and
+    checking the data directly is what the test was really for. The footer
+    contributes one bit, ``filtered``, which must agree with whether this
+    persona has anything withheld.
+    """
     included, redacted, allowed = KNOWN[clearance]
     assert gate_audit, "no gate_audit footer in retrieval stream — gate not invoked?"
-    assert gate_audit["included"] == included, gate_audit
-    assert gate_audit["redacted"] == redacted, gate_audit
-    assert gate_audit["total"] == included + redacted
+    assert len(rows) == included, f"expected {included} rows for {clearance}, got {len(rows)}"
+    assert gate_audit.get("filtered") is (redacted > 0), gate_audit
+    # The deprecated count keys must be present-and-null, not resurrected.
+    assert all(gate_audit.get(k) is None for k in ("included", "redacted", "total", "gate")), (
+        gate_audit
+    )
     # zero leakage: nothing above the caller's clearance survives
     leaked = [r for r in rows if str(r.get("classification", "")).upper() not in allowed]
     assert not leaked, f"{clearance} caller leaked rows above clearance: {leaked}"
