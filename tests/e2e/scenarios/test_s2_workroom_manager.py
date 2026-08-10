@@ -33,6 +33,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
+from typing import NoReturn
 
 import pytest
 
@@ -55,8 +56,6 @@ _VECTORS_PATH = (
     _REPO_ROOT / "docs" / "extensions" / "non-sdk-flow" / "test-vectors.json"
 )
 
-_UNBOUND_ENVELOPE_CASES = ("missing-workroom", "missing-user-id")
-
 
 class _Missing:
     def __repr__(self) -> str:
@@ -78,6 +77,19 @@ def _vector(case: str) -> dict:
     raise AssertionError(f"test vector {case!r} not found in {_VECTORS_PATH}")
 
 
+def _unbound_envelope_cases() -> list[str]:
+    """Cases the vectors file tags as misbound-auth rejections.
+
+    Derived from ``should_fail_class`` so a newly added misbound vector is
+    covered automatically instead of silently ignored.
+    """
+    return [
+        entry["case"]
+        for entry in _load_vectors()
+        if entry.get("should_fail_class") == "misbound_auth"
+    ]
+
+
 def _assert_identity_matches(identity: Identity, expected: dict) -> list[str]:
     """Compare an extracted Identity against a vector's expected_identity."""
     mismatches = [
@@ -90,7 +102,7 @@ def _assert_identity_matches(identity: Identity, expected: dict) -> list[str]:
     return sorted(expected)
 
 
-def _scaffold_app() -> str:
+def _scaffold_app() -> NoReturn:
     if shutil.which("kz-ext") is None:
         pytest.skip(
             "kz-ext CLI not on PATH — provisioning gap in this environment, "
@@ -109,17 +121,24 @@ def _scaffold_app() -> str:
             raise AssertionError(
                 f"kz-ext create failed (rc={proc.returncode}): {proc.stderr[-500:]}"
             )
-        # Scaffolder.create targets cwd itself only when cwd is empty (true
-        # for a fresh TemporaryDirectory); with visible files present it
-        # would scaffold into cwd/{name} instead.
+        # Scaffolder.create targets cwd itself when cwd is empty (true for a
+        # fresh TemporaryDirectory) and cwd/{name} otherwise; accept either
+        # so a scaffolder behavior change surfaces as a wrong-shape failure,
+        # not a false negative here.
         created = Path(workdir)
-        manifest = created / "kamiwaza.json"
-        if not manifest.is_file():
+        candidates = (
+            created / "kamiwaza.json",
+            created / "s2-evidence-app" / "kamiwaza.json",
+        )
+        manifest = next((m for m in candidates if m.is_file()), None)
+        if manifest is None:
             raise AssertionError(
-                f"kz-ext create reported success but {manifest} is missing"
+                "kz-ext create reported success but kamiwaza.json is missing "
+                f"(looked in {', '.join(str(c) for c in candidates)})"
             )
+        scaffold_root = manifest.parent
         n_files = sum(
-            1 for p in created.rglob("*") if p.is_file() and ".git" not in p.parts
+            1 for p in scaffold_root.rglob("*") if p.is_file() and ".git" not in p.parts
         )
     pytest.skip(
         f"kz-ext create OK — app scaffold with {n_files} files; deploy via "
@@ -151,8 +170,14 @@ def _assert_global_workroom_sentinel_handling() -> str:
 
 def _check_unbound_envelope_rejection() -> list[str]:
     """Assert extract_identity rejects unbound envelopes; return the cases."""
+    cases = _unbound_envelope_cases()
+    if not cases:
+        raise AssertionError(
+            f"no misbound_auth-tagged vectors in {_VECTORS_PATH} — the "
+            "unbound-envelope check would be vacuous"
+        )
     rejected = []
-    for case in _UNBOUND_ENVELOPE_CASES:
+    for case in cases:
         vec = _vector(case)
         try:
             extract_identity(vec["headers"])
@@ -166,7 +191,7 @@ def _check_unbound_envelope_rejection() -> list[str]:
     return rejected
 
 
-def _assert_workroom_boundary_enforcement() -> str:
+def _assert_workroom_boundary_enforcement() -> NoReturn:
     # Requests arriving without a bound workroom identity must be rejected
     # at extraction (MisboundAuthError) rather than defaulting open — that
     # half is asserted for real. The step's headline contract ("the runtime
@@ -251,7 +276,10 @@ def test_global_workroom_sentinel_handler():
 
 @pytest.mark.unit
 def test_unbound_envelopes_rejected():
-    assert _check_unbound_envelope_rejection() == list(_UNBOUND_ENVELOPE_CASES)
+    assert sorted(_check_unbound_envelope_rejection()) == [
+        "missing-user-id",
+        "missing-workroom",
+    ]
 
 
 @pytest.mark.unit
@@ -259,6 +287,55 @@ def test_boundary_step_skips_pending_enforcement_path():
     """The boundary step must not record coverage it cannot exercise."""
     with pytest.raises(pytest.skip.Exception, match="OutOfEnvelopeAccessError"):
         _assert_workroom_boundary_enforcement()
+
+
+class _FakeProc:
+    def __init__(self, returncode: int, stderr: str = ""):
+        self.returncode = returncode
+        self.stderr = stderr
+
+
+@pytest.mark.unit
+def test_scaffold_app_missing_cli_skips(monkeypatch):
+    """A missing kz-ext CLI is a provisioning gap, not a capability failure."""
+    monkeypatch.setattr(shutil, "which", lambda _: None)
+    with pytest.raises(pytest.skip.Exception, match="provisioning gap"):
+        _scaffold_app()
+
+
+@pytest.mark.unit
+def test_scaffold_app_nonzero_rc_fails(monkeypatch):
+    monkeypatch.setattr(shutil, "which", lambda _: "/usr/bin/kz-ext")
+    monkeypatch.setattr(
+        subprocess, "run", lambda *a, **k: _FakeProc(2, "registry unreachable")
+    )
+    with pytest.raises(AssertionError, match=r"rc=2.*registry unreachable"):
+        _scaffold_app()
+
+
+@pytest.mark.unit
+def test_scaffold_app_missing_manifest_fails(monkeypatch):
+    monkeypatch.setattr(shutil, "which", lambda _: "/usr/bin/kz-ext")
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _FakeProc(0))
+    with pytest.raises(AssertionError, match="kamiwaza.json is missing"):
+        _scaffold_app()
+
+
+@pytest.mark.unit
+def test_scaffold_app_success_skips_deploy(monkeypatch):
+    """The success path always ends in the deliberate deploy skip."""
+
+    def fake_create(cmd, cwd=None, **kwargs):
+        Path(cwd, "kamiwaza.json").write_text("{}")
+        Path(cwd, "app.py").write_text("")
+        return _FakeProc(0)
+
+    monkeypatch.setattr(shutil, "which", lambda _: "/usr/bin/kz-ext")
+    monkeypatch.setattr(subprocess, "run", fake_create)
+    with pytest.raises(
+        pytest.skip.Exception, match=r"2 files.*deliberately not exercised"
+    ):
+        _scaffold_app()
 
 
 @pytest.mark.unit
