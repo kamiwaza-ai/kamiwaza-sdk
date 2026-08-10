@@ -55,6 +55,13 @@ sealed resource ID. Responses expose the document plus safe member-subject and
 workload-actor attribution; they never echo capability, proof, assertion,
 consumption token, credential, or caller-provided identity.
 
+The deterministic mutation fixture executes each consumed effect ID at most
+once and records only identifiers, digests, policy version, and outcome. Its
+lost-response mode commits the document change and then reports an unknown
+outcome so conformance journeys can prove that the run becomes `ambiguous` and
+the mutation is never automatically replayed. This mode is test-only and does
+not turn the in-memory document store into production persistence.
+
 The JWKS provider caches only public keys for 30 seconds and fails closed on an
 invalid or unavailable refresh. Any invalid capability, proof, descriptor,
 claim/fence, decision, replay, spoofed delegated header, malformed mutation, or

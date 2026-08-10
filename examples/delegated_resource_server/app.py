@@ -14,6 +14,11 @@ from examples.delegated_resource_server.adapters import (
     DocumentCanonicalizer,
     DocumentResultNormalizer,
 )
+from examples.delegated_resource_server.mutations import (
+    ExactApprovedMutationFixture,
+    MutationRejected,
+    MutationRequest,
+)
 from examples.delegated_resource_server.runtime import (
     BoundedJwksProvider,
     ResourceRuntimeConfig,
@@ -26,6 +31,7 @@ from kamiwaza_sdk.delegated_workloads import (
     SealedDelegatedContext,
 )
 from kamiwaza_sdk.delegated_workloads.integrations.asgi import DelegatedResourceASGI
+from kamiwaza_sdk.delegated_workloads.proof import body_digest
 from kamiwaza_sdk.delegated_workloads.transport import SessionPort
 
 
@@ -79,8 +85,13 @@ class DocumentStore:
 
 
 class DocumentApplication:
-    def __init__(self, store: DocumentStore) -> None:
+    def __init__(
+        self,
+        store: DocumentStore,
+        mutations: ExactApprovedMutationFixture,
+    ) -> None:
         self._store = store
+        self._mutations = mutations
         self._canonicalizer = DocumentCanonicalizer()
         self._normalizer = DocumentResultNormalizer()
 
@@ -92,8 +103,12 @@ class DocumentApplication:
         if scope.get("method") == "GET":
             await self._read(resource_id, context, send)
             return
-        title = await _mutation_title(receive)
-        result = self._normalizer.normalize(self._store.put(resource_id, title))
+        mutation = await _mutation_request(receive, resource_id)
+        try:
+            applied = self._mutations.mutate(mutation, context)
+        except MutationRejected:
+            raise ResourceGuardRejected() from None
+        result = self._normalizer.normalize(applied)
         await _json_response(send, 200, _attributed(result, context))
 
     async def _read(
@@ -116,8 +131,9 @@ class NeutralResourceApplication:
         guard: ProtectedResourceGuard,
         config: ResourceApplicationConfig,
         store: DocumentStore,
+        mutations: ExactApprovedMutationFixture,
     ) -> None:
-        application = DocumentApplication(store)
+        application = DocumentApplication(store, mutations)
         self._read = DelegatedResourceASGI(
             application,
             guard,
@@ -151,8 +167,16 @@ def build_application(
     guard: ProtectedResourceGuard,
     config: ResourceApplicationConfig,
     store: DocumentStore | None = None,
+    mutations: ExactApprovedMutationFixture | None = None,
 ) -> NeutralResourceApplication:
-    return NeutralResourceApplication(guard, config, store or DocumentStore())
+    resolved_store = store or DocumentStore()
+    resolved_mutations = mutations or ExactApprovedMutationFixture(resolved_store)
+    return NeutralResourceApplication(
+        guard,
+        config,
+        resolved_store,
+        resolved_mutations,
+    )
 
 
 def create_app() -> NeutralResourceApplication:
@@ -196,13 +220,21 @@ def _document_path(path: object) -> bool:
     )
 
 
-async def _mutation_title(receive: Receive) -> str:
+async def _mutation_request(
+    receive: Receive,
+    resource_id: str,
+) -> MutationRequest:
     message = await receive()
-    payload = _mutation_payload(message.get("body"))
+    body = message.get("body")
+    payload = _mutation_payload(body)
     title = payload.get("title")
     if not _valid_title(title):
         raise ResourceGuardRejected()
-    return cast(str, title)
+    return MutationRequest(
+        resource_id,
+        cast(str, title),
+        body_digest(cast(bytes, body)),
+    )
 
 
 def _mutation_payload(body: object) -> dict[str, object]:
