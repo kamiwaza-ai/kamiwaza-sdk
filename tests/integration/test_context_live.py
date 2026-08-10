@@ -194,6 +194,10 @@ def _create_temp_vectordb(
     return vectordb_id
 
 
+def _is_ambiguous_vectordb_create_failure(status_code: int | None) -> bool:
+    return status_code is None or 500 <= status_code < 600
+
+
 def _create_vectordb_with_retry(
     service: ContextService,
     *,
@@ -210,11 +214,16 @@ def _create_vectordb_with_retry(
             )
         except APIError as exc:
             status_code = exc.status_code
-            is_server_error = isinstance(status_code, int) and 500 <= status_code < 600
+            is_ambiguous_create_failure = _is_ambiguous_vectordb_create_failure(
+                status_code
+            )
             is_duplicate_after_ambiguous_failure = (
                 status_code == 409 and had_ambiguous_create_failure
             )
-            if not is_server_error and not is_duplicate_after_ambiguous_failure:
+            if (
+                not is_ambiguous_create_failure
+                and not is_duplicate_after_ambiguous_failure
+            ):
                 raise
             had_ambiguous_create_failure = True
             vectordb_id = _reconcile_vectordb_after_create_failure(
@@ -225,7 +234,7 @@ def _create_vectordb_with_retry(
             )
             if vectordb_id:
                 return vectordb_id
-            if not is_server_error or attempt == _VECTORDB_CREATE_ATTEMPTS:
+            if not is_ambiguous_create_failure or attempt == _VECTORDB_CREATE_ATTEMPTS:
                 raise
             logger.warning(
                 "VectorDB create failed with HTTP %s for %s; retrying " "attempt %s/%s",
@@ -245,7 +254,7 @@ def _reconcile_vectordb_after_create_failure(
     *,
     name: str,
     workroom_id: str | None,
-    status_code: int,
+    status_code: int | None,
 ) -> str | None:
     try:
         resources = service.list_vectordbs(workroom_id=workroom_id)

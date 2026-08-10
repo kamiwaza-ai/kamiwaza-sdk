@@ -197,6 +197,37 @@ def test_create_temp_vectordb_reconciles_ambiguous_create_500(
     assert wait_calls == [("vdb-reconciled", "workroom-1")]
 
 
+def test_create_temp_vectordb_reconciles_statusless_create_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected_name = "sdk-transport-abcdef12"
+    service = SimpleNamespace(
+        create_vectordb=lambda **_kwargs: (_ for _ in ()).throw(
+            APIError("connection reset")
+        ),
+        list_vectordbs=lambda **_kwargs: [
+            {"id": "vdb-reconciled", "name": expected_name}
+        ],
+    )
+    monkeypatch.setattr(
+        context_live,
+        "uuid4",
+        lambda: SimpleNamespace(hex="abcdef1234567890"),
+    )
+    monkeypatch.setattr(
+        context_live, "_wait_for_vectordb_ready", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(
+        context_live.time,
+        "sleep",
+        lambda _seconds: pytest.fail("reconciled creates should not sleep or retry"),
+    )
+
+    vectordb_id = _create_temp_vectordb(service, prefix="sdk-transport")
+
+    assert vectordb_id == "vdb-reconciled"
+
+
 def test_create_temp_vectordb_retries_when_reconciliation_lookup_fails(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
