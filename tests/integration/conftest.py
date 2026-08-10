@@ -1507,6 +1507,13 @@ def deployable_model_prerequisite(
             deployable_model_target,
         )
         default_config = _default_model_config(client, model.id, repo_id)
+        # Deliberately omit engine_name: the platform auto-selects the engine
+        # from the model's weight format (GGUF->llamacpp, safetensors->vLLM/MLX;
+        # kamiwaza.serving.engine_selector), which is exactly the target's
+        # engine_name by construction. Forcing it here is redundant with the
+        # model choice; letting the server pick exercises the same auto-selection
+        # real deploys use. engine_name stays the EXPECTED value for the
+        # existing-deployment match above. (ENG-9872)
         raw_deployment_id = client.serving.deploy_model(
             model_id=str(model.id),
             m_config_id=default_config.id,
@@ -1514,7 +1521,6 @@ def deployable_model_prerequisite(
             autoscaling=False,
             min_copies=1,
             starting_copies=1,
-            engine_name=engine_name,
             m_file_id=_target_model_file_id(
                 model, deployable_model_target.quantization
             ),
