@@ -32,6 +32,14 @@ def _sample_logs(client, deployment_id):
         return []
 
 
+# Deploys TWO concurrent models (a default + a strip-thinking config). On a
+# single DISCRETE GPU each model claims a whole nvidia.com/gpu:1, so the 2nd is
+# unschedulable (Pending: Insufficient nvidia.com/gpu) -- discrete GPUs have no
+# fractional co-scheduling yet (by design v0.5.2 §3.7.10; the vram-plugin-v2
+# discrete rollout is ENG-9930 / ENG-6163). min_gpu_count is skip-not-fail, so a
+# single-GPU host reports honest under-provisioning instead of a spurious deploy
+# timeout, while a multi-GPU (or a future fractional-capable) host still runs it.
+@pytest.mark.min_gpu_count(2)
 @pytest.mark.requires_deployable_model
 def test_deploy_qwen_and_infer_with_strip_thinking(
     live_kamiwaza_client,
