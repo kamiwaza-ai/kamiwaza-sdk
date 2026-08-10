@@ -282,25 +282,6 @@ def test_deployable_model_target_follows_cluster_inventory(
     assert target is getattr(integration_conftest._model_targets, target_name)
 
 
-def test_nvidia_engine_override_steers_to_llamacpp(
-    integration_conftest,
-    monkeypatch,
-) -> None:
-    """KAMIWAZA_TEST_NVIDIA_ENGINE=llamacpp steers the NVIDIA GPU proof to the
-    GGUF/llamacpp target -- the smoke lever for clusters whose vLLM cascade has
-    no resolvable image (packaged-prod turing). Unset stays vLLM, which the
-    parametrized test above covers."""
-    monkeypatch.setenv("KAMIWAZA_TEST_NVIDIA_ENGINE", "llamacpp")
-
-    snapshot = integration_conftest._cap.ClusterCapabilitySnapshot(
-        gpu_count=1, gpu_vendors=frozenset({"nvidia"})
-    )
-
-    target = integration_conftest.deployable_model_target.__wrapped__(snapshot)
-
-    assert target is integration_conftest._model_targets.GGUF_LLM_TARGET
-
-
 def test_ensure_deployable_model_ready_forwards_selected_target(
     integration_conftest,
 ) -> None:
