@@ -49,21 +49,21 @@ def _redact_cli_args(args: list[str]) -> list[str]:
     return redacted
 
 
+def _secret_cli_value_at(args: list[str], index: int) -> str | None:
+    option, separator, value = args[index].partition("=")
+    if not _secret_option(option):
+        return None
+    if separator:
+        return value
+    return args[index + 1] if index + 1 < len(args) else None
+
+
 def _secret_cli_values(args: list[str]) -> list[str]:
-    values: list[str] = []
-    hide_next = False
-    for arg in args:
-        if hide_next:
-            values.append(arg)
-            hide_next = False
-            continue
-        option, separator, value = arg.partition("=")
-        if _secret_option(option):
-            if separator:
-                values.append(value)
-            else:
-                hide_next = True
-    return values
+    return [
+        value
+        for index in range(len(args))
+        if (value := _secret_cli_value_at(args, index)) is not None
+    ]
 
 
 def _scrub_output(value: str, secret_values: tuple[str, ...]) -> str:
