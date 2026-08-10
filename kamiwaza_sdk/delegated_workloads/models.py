@@ -7,10 +7,17 @@ from dataclasses import field as dataclass_field
 from dataclasses import replace
 from datetime import datetime
 from enum import Enum
-from typing import Annotated, Literal, TypeVar
+from typing import Annotated, Literal, TypeVar, cast
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    AnyUrl,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 from kamiwaza_sdk.delegated_workloads.proof import (
     BrokerHandle,
@@ -90,6 +97,18 @@ class EffectLifecycleStatus(str, Enum):
 
 
 class ApprovalDecision(str, Enum):
+    APPROVE = "approve"
+    DENY = "deny"
+
+
+class IntentLifecycleStatus(str, Enum):
+    PENDING = "pending"
+    CONSUMED = "consumed"
+    EXPIRED = "expired"
+    CANCELLED = "cancelled"
+
+
+class ConsentDecision(str, Enum):
     APPROVE = "approve"
     DENY = "deny"
 
@@ -231,6 +250,69 @@ class DestinationRef(DelegatedRequest):
     host: str = Field(min_length=1)
     port: int = Field(ge=1, le=65535)
     route_template: str | None = None
+
+
+class AutomationLimits(DelegatedRequest):
+    max_runs: int = Field(ge=1)
+    max_concurrency: int = Field(ge=1)
+    max_runtime_seconds: int = Field(ge=1, le=86400)
+    max_cost_microunits: int | None = Field(default=None, ge=0)
+
+
+class AutomationApprovalPolicy(DelegatedRequest):
+    mutations_require_it_approval: Literal[True] = True
+
+
+class AutomationDescriptor(DelegatedRequest):
+    actions: tuple[str, ...] = Field(min_length=1)
+    resources: tuple[EffectResourceRef, ...]
+    destinations: tuple[DestinationRef, ...]
+    credential_binding_ids: tuple[UUID, ...]
+    limits: AutomationLimits
+    approval_policy: AutomationApprovalPolicy
+
+    @field_validator("actions", "credential_binding_ids")
+    @classmethod
+    def validate_unique_values(
+        cls, values: tuple[str | UUID, ...]
+    ) -> tuple[str | UUID, ...]:
+        if len(values) != len(set(values)):
+            raise ValueError("automation descriptor contains a duplicate")
+        return values
+
+
+class AutomationRevision(DelegatedRequest):
+    automation_external_id: str = Field(min_length=1, max_length=256)
+    revision_id: str = Field(min_length=1, max_length=256)
+    revision_digest: Digest
+    descriptor: AutomationDescriptor
+    return_uri: AnyUrl
+
+
+class ConsentRequest(DelegatedResponse):
+    intent_id: UUID
+    consent_url: AnyUrl = Field(repr=False)
+    expires_at: datetime
+    status: Literal["pending"]
+    correlation_id: UUID
+
+
+class IntentStatus(DelegatedResponse):
+    intent_id: UUID
+    status: IntentLifecycleStatus
+    decision: ConsentDecision | None
+    grant_id: UUID | None = None
+    correlation_id: UUID
+
+    @model_validator(mode="after")
+    def validate_state(self) -> IntentStatus:
+        if not _intent_state_is_consistent(
+            self.status,
+            self.decision,
+            self.grant_id,
+        ):
+            raise ValueError("intent has inconsistent decision or grant state")
+        return self
 
 
 class EffectReservationRequest(DelegatedRequest):
@@ -397,4 +479,16 @@ def _sensitive(
     value: _SensitiveT | str,
     expected: type[_SensitiveT],
 ) -> _SensitiveT:
-    return value if isinstance(value, expected) else expected(value)
+    return value if isinstance(value, expected) else expected(cast(str, value))
+
+
+def _intent_state_is_consistent(
+    status: IntentLifecycleStatus,
+    decision: ConsentDecision | None,
+    grant_id: UUID | None,
+) -> bool:
+    if status is not IntentLifecycleStatus.CONSUMED:
+        return decision is None and grant_id is None
+    return (
+        decision is ConsentDecision.APPROVE and grant_id is not None
+    ) or (decision is ConsentDecision.DENY and grant_id is None)

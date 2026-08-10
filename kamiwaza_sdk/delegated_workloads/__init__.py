@@ -137,10 +137,30 @@ from kamiwaza_sdk.delegated_workloads.errors import (
 )
 from kamiwaza_sdk.delegated_workloads.models import ApprovalDecision as ApprovalDecision
 from kamiwaza_sdk.delegated_workloads.models import (
+    AutomationApprovalPolicy as AutomationApprovalPolicy,
+)
+from kamiwaza_sdk.delegated_workloads.models import (
+    AutomationDescriptor as AutomationDescriptor,
+)
+from kamiwaza_sdk.delegated_workloads.models import (
+    AutomationLimits as AutomationLimits,
+)
+from kamiwaza_sdk.delegated_workloads.models import (
+    AutomationRevision as AutomationRevision,
+)
+from kamiwaza_sdk.delegated_workloads.models import (
+    ConsentDecision as ConsentDecision,
+)
+from kamiwaza_sdk.delegated_workloads.models import ConsentRequest as ConsentRequest
+from kamiwaza_sdk.delegated_workloads.models import (
     ApprovalDecisionRequest as ApprovalDecisionRequest,
 )
 from kamiwaza_sdk.delegated_workloads.models import (
     DecisionReasonCode as DecisionReasonCode,
+)
+from kamiwaza_sdk.delegated_workloads.models import IntentStatus as IntentStatus
+from kamiwaza_sdk.delegated_workloads.models import (
+    IntentLifecycleStatus as IntentLifecycleStatus,
 )
 from kamiwaza_sdk.delegated_workloads.models import (
     DelegatedGuardAuthority as DelegatedGuardAuthority,
@@ -297,6 +317,10 @@ __all__ = (
     "ApprovalDecision",
     "ApprovalDecisionRequest",
     "ApprovalRequired",
+    "AutomationApprovalPolicy",
+    "AutomationDescriptor",
+    "AutomationLimits",
+    "AutomationRevision",
     "AttestationProfile",
     "AttestationRejected",
     "BrokerHandle",
@@ -307,6 +331,8 @@ __all__ = (
     "ClaimedRun",
     "ComponentReadiness",
     "ComponentStatus",
+    "ConsentDecision",
+    "ConsentRequest",
     "CredentialBindingUnavailable",
     "CredentialBindingStatus",
     "CredentialBindingSummary",
@@ -357,6 +383,8 @@ __all__ = (
     "GrantInactive",
     "IncompatibleContract",
     "InvalidRequest",
+    "IntentLifecycleStatus",
+    "IntentStatus",
     "OccurrenceDigestConflict",
     "OneUseToken",
     "OpaqueRunQueuePayload",
