@@ -197,6 +197,14 @@ def _cli_login_and_create_pat(
         raise AssertionError("CLI login cache did not contain an access token")
 
     pat_name = f"{pat_prefix}-{int(time.time())}"
+    # Mint the PAT with scope=admin. The server derives a PAT's roles from its
+    # resolved SCOPE, not the caller's Keycloak roles, and caps an omitted/openid
+    # scope at "write" (roles user/editor/viewer) to prevent accidental admin-PAT
+    # minting. `serve deploy` is admin-gated (/serving/deploy_model -> require_admin),
+    # so an openid PAT 403s with "Role 'admin' is required" even for an admin caller
+    # -- the provisioned-smoke CLI deploy failure. An admin caller's scope ceiling is
+    # admin, so admin scope yields an admin PAT; the auth-only flow test does not
+    # assert the role, so this is safe for both callers. (ENG-9932)
     result = run_cli(
         [
             *base_args,
@@ -207,7 +215,7 @@ def _cli_login_and_create_pat(
             "--ttl",
             "900",
             "--scope",
-            "openid",
+            "admin",
             "--aud",
             "kamiwaza-platform",
             "--cache-token",
