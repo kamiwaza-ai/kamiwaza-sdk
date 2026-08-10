@@ -27,7 +27,7 @@ def test_run_cli_reports_output_and_redacts_secret_options(
 
     with pytest.raises(AssertionError) as exc_info:
         cli_live.run_cli(
-            ["login", "--username", "admin", "--password", "super-secret"],
+            ["serve", "deploy", "--password", "super-secret"],
             {"PATH": "/bin"},
         )
 
@@ -37,6 +37,27 @@ def test_run_cli_reports_output_and_redacts_secret_options(
     assert "model file was not found" in message
     assert "--password '***'" in message
     assert "super-secret" not in message
+
+
+@pytest.mark.parametrize("command", [["login"], ["pat", "create"]])
+def test_run_cli_suppresses_output_for_credential_bearing_commands(
+    monkeypatch: pytest.MonkeyPatch,
+    command: list[str],
+) -> None:
+    result = subprocess.CompletedProcess(
+        args=[],
+        returncode=2,
+        stdout='{"access_token": "server-issued-secret"}\n',
+        stderr="validation input token='server-issued-secret'\n",
+    )
+    monkeypatch.setattr(cli_live.subprocess, "run", lambda *_args, **_kwargs: result)
+
+    with pytest.raises(AssertionError) as exc_info:
+        cli_live.run_cli(command, {"PATH": "/bin"})
+
+    message = str(exc_info.value)
+    assert message.count("<suppressed for credential-bearing command>") == 2
+    assert "server-issued-secret" not in message
 
 
 def test_run_cli_returns_successful_result(

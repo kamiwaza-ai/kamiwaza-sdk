@@ -9,7 +9,6 @@ import time
 from pathlib import Path
 
 import pytest
-
 from model_targets import InferenceTarget
 
 pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
@@ -17,6 +16,8 @@ pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresp
 _SECRET_CLI_OPTIONS = frozenset(
     {"--access-token", "--api-key", "--password", "--token"}
 )
+_CREDENTIAL_BEARING_COMMANDS = frozenset({"login", "pat"})
+_SUPPRESSED_OUTPUT = "<suppressed for credential-bearing command>"
 _OUTPUT_LIMIT = 8_000
 
 
@@ -44,14 +45,20 @@ def _captured_output(value: str) -> str:
     return output[-_OUTPUT_LIMIT:]
 
 
+def _failure_output(cmd: list[str], value: str) -> str:
+    if not _CREDENTIAL_BEARING_COMMANDS.isdisjoint(cmd):
+        return _SUPPRESSED_OUTPUT
+    return _captured_output(value)
+
+
 def _cli_failure_message(
     cmd: list[str], result: subprocess.CompletedProcess[str]
 ) -> str:
     command = shlex.join(_redact_cli_args(cmd))
     return (
         f"CLI command failed with exit code {result.returncode}: {command}\n"
-        f"stdout:\n{_captured_output(result.stdout)}\n"
-        f"stderr:\n{_captured_output(result.stderr)}"
+        f"stdout:\n{_failure_output(cmd, result.stdout)}\n"
+        f"stderr:\n{_failure_output(cmd, result.stderr)}"
     )
 
 
