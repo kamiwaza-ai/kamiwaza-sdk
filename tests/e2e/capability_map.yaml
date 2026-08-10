@@ -155,17 +155,17 @@
   scenario_name: "Multi-source catalog ingestion"
 
 # Justification: the subset that actually submits a retrieval job over the
-# ingested data — the two *_inline_retrieval tests, inline_small_object
-# (asserts row_count > 0), large_object_sse_retrieval, and
-# postgres_ingestion_metadata (POSTs /retrieval/jobs and asserts rows).
-# Excluded: the metadata-only ingestions and container_link never submit a
-# job, and inline_large_object_hits_threshold asserts a 422 rejection rather
-# than a successful retrieval.
+# ingested data and asserts the result — the two *_inline_retrieval tests,
+# inline_small_object and file_ingestion_metadata (both POST /retrieval/jobs
+# and assert row_count), large_object_sse_retrieval, and
+# postgres_ingestion_metadata.
+# Excluded: kafka (xfails before any retrieval), slack, and container_link
+# never submit a job at all, and inline_large_object_hits_threshold asserts a
+# 422 rejection rather than a successful retrieval.
 - pattern: "tests/integration/test_catalog_multi_source.py::*"
   capability_ids: [retrieval.async-retrieval-jobs]
   scenario_name: "Multi-source inline and SSE retrieval"
   exclude:
-    - "*::test_catalog_file_ingestion_metadata"
     - "*::test_catalog_kafka_ingestion_metadata"
     - "*::test_catalog_slack_ingestion_metadata"
     - "*::test_catalog_container_link_sets_dataset_container_urn"
@@ -219,9 +219,14 @@
 # not affect another), and the ?workroom_id=all bypass (TestSentinelAllBypass).
 # The CRUD class overlaps intentionally, but only for its two own-vs-other
 # visibility assertions (create/get own, list returns own).
-# Excluded: the rest of the CRUD class — the Global guardrails plus
-# update/archive of one's own workroom — performs a single-session operation
-# and asserts nothing about isolation between sessions.
+# Excluded across every class, by one rule applied consistently: a test that
+# issues a single unscoped operation and asserts nothing about what another
+# session can or cannot see is not evidence of session scoping. That covers
+# the Global guardrails and update/archive of one's own workroom; the plain
+# read of the Global workroom in TestWorkspaceCanSeeGlobal (an exact twin of
+# the excluded CRUD-class read); archive-visibility-with-flag, which lists
+# only its own workroom; and the ?workroom_id=all deployments test, whose
+# only assertion is isinstance(result, list).
 - pattern: "tests/integration/test_workroom_isolation_live.py::*"
   capability_ids: [workrooms.session-scoping]
   scenario_name: "Workroom session-scoping access matrix"
@@ -230,6 +235,9 @@
     - "*::test_cannot_delete_global_workroom"
     - "*::TestWorkroomCrudIsolation::test_update_own_workroom"
     - "*::TestWorkroomCrudIsolation::test_archive_own_workroom"
+    - "*::test_workspace_user_can_read_global_workroom"
+    - "*::test_archive_workroom_still_visible_with_flag"
+    - "*::test_deployments_all_returns_across_workrooms"
 
 # Justification: ENG-6952 control plane — test_register_from_spec_returns_dataset_urn
 # registers a managed data source from a connector spec and asserts the

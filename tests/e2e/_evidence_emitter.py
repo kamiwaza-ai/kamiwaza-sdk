@@ -128,19 +128,35 @@ def load_capability_map(path: Path) -> list[MapEntry]:
     """Parse and validate the explicit capability map. Raises ``ValueError``."""
     if not path.is_file():
         raise ValueError(f"capability map not found: {path}")
-    try:
-        raw = yaml.safe_load(path.read_text()) or []
-    except OSError as exc:
-        raise ValueError(f"{path.name}: cannot read capability map: {exc}") from None
-    except yaml.YAMLError as exc:
-        # Surfaces as the same UsageError refusal as any other bad map,
-        # instead of a raw pytest_configure traceback.
-        raise ValueError(f"{path.name}: invalid YAML: {exc}") from None
+    raw = _read_map_yaml(path)
     if not isinstance(raw, list):
         raise ValueError(f"{path.name}: top level must be a list of entries")
+    if not raw:
+        raise ValueError(
+            f"{path.name}: contains no entries — an opted-in run with an "
+            "empty map can never produce evidence"
+        )
     entries = [_parse_entry(item, i, source=path.name) for i, item in enumerate(raw)]
     _reject_duplicate_scenario_ids(entries, source=path.name)
     return entries
+
+
+def _read_map_yaml(path: Path) -> object:
+    """Read and parse the map, funneling every failure into ``ValueError``.
+
+    Both branches surface as the same ``UsageError`` refusal as any other bad
+    map, instead of a raw ``pytest_configure`` traceback.
+    """
+    try:
+        raw = yaml.safe_load(path.read_text())
+    except OSError as exc:
+        raise ValueError(f"{path.name}: cannot read capability map: {exc}") from None
+    except yaml.YAMLError as exc:
+        raise ValueError(f"{path.name}: invalid YAML: {exc}") from None
+    # Only an empty file means "no document". A falsey scalar or mapping
+    # (``{}``, ``0``, ``false``) is a malformed map and must reach the
+    # is-a-list check rather than being coerced into an empty entry list.
+    return [] if raw is None else raw
 
 
 def _parse_entry(item: object, i: int, *, source: str) -> MapEntry:
@@ -243,7 +259,12 @@ def add_evidence_options(parser: pytest.Parser) -> None:
         "--evidence-map",
         action="store",
         default=str(DEFAULT_MAP_PATH),
-        help="Path to the capability map YAML (default: tests/e2e/capability_map.yaml).",
+        help=(
+            "Path to the capability map YAML (default: "
+            "tests/e2e/capability_map.yaml). Keep it inside the repo: pytest "
+            "treats an existing path in argv as a rootdir candidate, so an "
+            "outside path can shift rootdir and break collection."
+        ),
     )
     group.addoption(
         "--evidence-out",

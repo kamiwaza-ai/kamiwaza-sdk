@@ -391,10 +391,23 @@ def test_loader_missing_file_raises(tmp_path):
         emitter.load_capability_map(tmp_path / "nope.yaml")
 
 
-def test_loader_rejects_non_list(tmp_path):
+@pytest.mark.parametrize(
+    "body", ["pattern: oops\n", "{}\n", "0\n", "false\n"], ids=lambda b: b.strip()
+)
+def test_loader_rejects_non_list(tmp_path, body):
+    """Falsey scalars/mappings are malformed maps, not 'no entries'."""
     path = tmp_path / "map.yaml"
-    path.write_text("pattern: oops\n")
+    path.write_text(body)
     with pytest.raises(ValueError, match="must be a list"):
+        emitter.load_capability_map(path)
+
+
+@pytest.mark.parametrize("body", ["", "[]\n"], ids=["empty-file", "empty-list"])
+def test_loader_rejects_empty_map(tmp_path, body):
+    """An opted-in run against an empty map can never produce evidence."""
+    path = tmp_path / "map.yaml"
+    path.write_text(body)
+    with pytest.raises(ValueError, match="contains no entries"):
         emitter.load_capability_map(path)
 
 
@@ -547,6 +560,15 @@ def _collect_repo_nodeids() -> list[str]:
         capture_output=True,
         text=True,
     )
+    # A collection error must fail loudly: silently losing a module's nodeids
+    # would make every glob in its entries vacuously "unverifiable" below.
+    # Marker deselection still exits 0, so this does not fire on a host that
+    # merely lacks a second cluster.
+    assert proc.returncode == 0, (
+        f"pytest --collect-only failed (rc={proc.returncode}); cannot validate "
+        f"the map.\nstdout tail:\n{proc.stdout[-2000:]}\n"
+        f"stderr tail:\n{proc.stderr[-2000:]}"
+    )
     return [
         line.strip()
         for line in proc.stdout.splitlines()
@@ -554,27 +576,41 @@ def _collect_repo_nodeids() -> list[str]:
     ]
 
 
-def test_shipped_exclude_globs_still_match_real_nodeids():
-    """Every carve-out must still bite.
+def _stale_globs(entry: emitter.MapEntry, nodeids: list[str]) -> list[str]:
+    """Globs in one entry that no longer match anything they should."""
+    matched = [n for n in nodeids if fnmatchcase(n, entry.pattern)]
+    if not matched:
+        # A pattern matching nothing is stale only if its file still collected
+        # tests; a wholly marker-deselected file (the two-cluster suite on a
+        # single-cluster host) legitimately contributes none.
+        file_part = entry.pattern.split("::", 1)[0]
+        if any(n.startswith(f"{file_part}::") for n in nodeids):
+            return [
+                f"{entry.scenario_name!r}: pattern {entry.pattern!r} matches nothing"
+            ]
+        return []
+    return [
+        f"{entry.scenario_name!r}: exclude {glob!r} matches nothing"
+        for glob in entry.exclude
+        if not any(fnmatchcase(n, glob) for n in matched)
+    ]
+
+
+def test_shipped_map_globs_still_match_real_nodeids():
+    """Every pattern and carve-out in the shipped map must still bite.
 
     The ``exclude`` globs are the whole defense against a targeted run
-    claiming a capability it never exercised. A class rename would silently
-    void one and leave every other test green, so pin them against a real
-    collection. Entries whose pattern matches nothing are skipped: marker
-    deselection (e.g. ``requires_two_clusters``) legitimately empties a file.
+    claiming a capability it never exercised, and a live ``pattern`` is what
+    makes an entry produce evidence at all. Either can be voided by a rename
+    with every other test still green, so pin both against a real collection.
     """
     nodeids = _collect_repo_nodeids()
     assert nodeids, "collection produced no nodeids; cannot validate the map"
 
     stale: list[str] = []
     for entry in emitter.load_capability_map(emitter.DEFAULT_MAP_PATH):
-        matched = [n for n in nodeids if fnmatchcase(n, entry.pattern)]
-        if not matched:
-            continue  # whole file deselected on this host
-        for glob in entry.exclude:
-            if not any(fnmatchcase(n, glob) for n in matched):
-                stale.append(f"{entry.scenario_name!r}: {glob!r} matches nothing")
-    assert not stale, "stale exclude globs in capability_map.yaml: " + "; ".join(stale)
+        stale.extend(_stale_globs(entry, nodeids))
+    assert not stale, "stale globs in capability_map.yaml: " + "; ".join(stale)
 
 
 def test_repo_capability_map_is_valid_and_references_real_files():
