@@ -13,6 +13,7 @@ import jwt
 import pytest
 from model_targets import InferenceTarget
 
+from kamiwaza_sdk.exceptions import APIError, AuthenticationError
 from kamiwaza_sdk.token_store import FileTokenStore
 
 pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
@@ -237,7 +238,10 @@ def _cleanup_cli_pat(pat_client, pat_jti: str | None, token_path: Path) -> None:
     """Revoke the test PAT and always remove its local cache."""
     try:
         if pat_jti:
-            pat_client.auth.revoke_pat(pat_jti)
+            try:
+                pat_client.auth.revoke_pat(pat_jti)
+            except (AuthenticationError, APIError):
+                pass
     finally:
         FileTokenStore(token_path).clear()
 

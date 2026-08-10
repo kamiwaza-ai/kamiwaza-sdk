@@ -10,6 +10,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from kamiwaza_sdk.exceptions import APIError, AuthenticationError
+
 INTEGRATION_TESTS = str(Path(__file__).parents[1] / "integration")
 if INTEGRATION_TESTS not in sys.path:
     sys.path.insert(0, INTEGRATION_TESTS)
@@ -66,7 +68,7 @@ def test_cli_login_and_create_pat_forwards_requested_scope_and_ttl(
     assert pat_args[ttl_index + 1] == str(pat_ttl_seconds)
 
 
-def test_cli_serve_deploy_requests_and_cleans_up_full_budget_admin_pat() -> None:
+def test_cli_serve_deploy_requests_full_budget_admin_pat() -> None:
     tree = ast.parse(textwrap.dedent(inspect.getsource(cli_live.test_cli_serve_deploy)))
     pat_calls = [
         node
@@ -84,28 +86,82 @@ def test_cli_serve_deploy_requests_and_cleans_up_full_budget_admin_pat() -> None
     assert ttl_argument.id == "_DEPLOYMENT_PAT_TTL_SECONDS"
     assert cli_live._DEPLOYMENT_PAT_TTL_SECONDS == 60 * 60
 
-    cleanup_calls = [
-        node
-        for try_node in ast.walk(tree)
-        if isinstance(try_node, ast.Try)
-        for statement in try_node.finalbody
-        for node in ast.walk(statement)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "_cleanup_cli_pat"
-    ]
-    assert len(cleanup_calls) == 1
 
-
-def test_cleanup_cli_pat_revokes_remote_pat_and_clears_cache(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("revoke_error", "deploy_status"),
+    [
+        (None, "DEPLOYED"),
+        (APIError("gateway unavailable", status_code=503), "DEPLOYED"),
+        (AuthenticationError("PAT expired", status_code=401), "DEPLOYED"),
+        (APIError("gateway unavailable", status_code=503), "FAILED"),
+    ],
+    ids=["success", "api-error", "authentication-error", "deploy-and-revoke-fail"],
+)
+def test_cli_serve_deploy_attempts_revocation_and_clears_cache(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    revoke_error: Exception | None,
+    deploy_status: str,
+) -> None:
     token_path = tmp_path / "token.json"
-    token_path.write_text('{"access_token": "admin-pat"}')
-    revoked: list[str] = []
-    pat_client = SimpleNamespace(
-        auth=SimpleNamespace(revoke_pat=lambda jti: revoked.append(jti))
+    pat_token = cli_live.jwt.encode(
+        {"jti": "pat-jti"}, "test-key-with-at-least-32-bytes!!", algorithm="HS256"
     )
+    revoked: list[str] = []
+    events: list[str] = []
 
-    cli_live._cleanup_cli_pat(pat_client, "pat-jti", token_path)
+    def fake_login_and_create_pat(*_args: object, **_kwargs: object) -> str:
+        token_path.write_text('{"access_token": "admin-pat"}')
+        return pat_token
+
+    def fake_revoke(jti: str) -> None:
+        events.append("revoke")
+        revoked.append(jti)
+        if revoke_error:
+            raise revoke_error
+
+    def fake_stop_deployment(**_kwargs: object) -> None:
+        events.append("stop")
+
+    def fake_run_cli(*_args: object, **_kwargs: object):
+        events.append("deploy")
+        return subprocess.CompletedProcess(
+            [],
+            0,
+            f'{{"deployment_id": "dep-1", "status": "{deploy_status}"}}',
+            "",
+        )
+
+    pat_client = SimpleNamespace(
+        auth=SimpleNamespace(revoke_pat=fake_revoke),
+        serving=SimpleNamespace(stop_deployment=fake_stop_deployment),
+    )
+    monkeypatch.setattr(
+        cli_live, "_cli_login_and_create_pat", fake_login_and_create_pat
+    )
+    monkeypatch.setattr(cli_live, "run_cli", fake_run_cli)
+
+    def invoke_deploy_test() -> None:
+        cli_live.test_cli_serve_deploy(
+            "https://localhost/api",
+            "admin",
+            "password",
+            lambda **_kwargs: pat_client,
+            lambda _client: object(),
+            SimpleNamespace(
+                repo_id="repo/model", engine_name="llamacpp", quantization="q6_k"
+            ),
+            lambda _model, _quantization: None,
+            tmp_path,
+        )
+
+    if deploy_status == "DEPLOYED":
+        invoke_deploy_test()
+        assert events == ["deploy", "stop", "revoke"]
+    else:
+        with pytest.raises(AssertionError, match="FAILED"):
+            invoke_deploy_test()
+        assert events == ["deploy", "revoke"]
 
     assert revoked == ["pat-jti"]
     assert not token_path.exists()
@@ -126,23 +182,6 @@ def test_pat_jti_rejects_token_without_cleanup_identifier() -> None:
 
     with pytest.raises(AssertionError, match="did not contain a JTI"):
         cli_live._pat_jti(token)
-
-
-def test_cleanup_cli_pat_propagates_revoke_failure_after_clearing_cache(
-    tmp_path: Path,
-) -> None:
-    token_path = tmp_path / "token.json"
-    token_path.write_text('{"access_token": "admin-pat"}')
-
-    def fail_revoke(_jti: str) -> None:
-        raise RuntimeError("revoke failed")
-
-    pat_client = SimpleNamespace(auth=SimpleNamespace(revoke_pat=fail_revoke))
-
-    with pytest.raises(RuntimeError, match="revoke failed"):
-        cli_live._cleanup_cli_pat(pat_client, "pat-jti", token_path)
-
-    assert not token_path.exists()
 
 
 def test_run_cli_reports_output_and_redacts_secret_options() -> None:
