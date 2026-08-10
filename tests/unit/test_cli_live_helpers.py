@@ -1,8 +1,12 @@
+import ast
 import importlib
+import inspect
 import shlex
 import subprocess
 import sys
+import textwrap
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -15,9 +19,15 @@ cli_live = importlib.import_module("test_cli_live")
 pytestmark = pytest.mark.unit
 
 
-def test_cli_login_and_create_pat_uses_requested_scope_and_ttl(
+@pytest.mark.parametrize(
+    ("pat_scope", "pat_ttl_seconds"),
+    [("openid", 900), ("admin", 3600)],
+)
+def test_cli_login_and_create_pat_forwards_requested_scope_and_ttl(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    pat_scope: str,
+    pat_ttl_seconds: int,
 ) -> None:
     token_path = tmp_path / "token.json"
     calls: list[list[str]] = []
@@ -44,16 +54,95 @@ def test_cli_login_and_create_pat_uses_requested_scope_and_ttl(
         "password",
         token_path,
         pat_prefix="cli-deploy",
-        pat_scope="admin",
-        pat_ttl_seconds=3600,
+        pat_scope=pat_scope,
+        pat_ttl_seconds=pat_ttl_seconds,
     )
 
     assert pat_token == "admin-pat"
     pat_args = calls[1]
     scope_index = pat_args.index("--scope")
-    assert pat_args[scope_index + 1] == "admin"
+    assert pat_args[scope_index + 1] == pat_scope
     ttl_index = pat_args.index("--ttl")
-    assert pat_args[ttl_index + 1] == "3600"
+    assert pat_args[ttl_index + 1] == str(pat_ttl_seconds)
+
+
+def test_cli_serve_deploy_requests_and_cleans_up_full_budget_admin_pat() -> None:
+    tree = ast.parse(textwrap.dedent(inspect.getsource(cli_live.test_cli_serve_deploy)))
+    pat_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_cli_login_and_create_pat"
+    ]
+
+    assert len(pat_calls) == 1
+    keywords = {keyword.arg: keyword.value for keyword in pat_calls[0].keywords}
+    assert ast.literal_eval(keywords["pat_scope"]) == "admin"
+    ttl_argument = keywords["pat_ttl_seconds"]
+    assert isinstance(ttl_argument, ast.Name)
+    assert ttl_argument.id == "_DEPLOYMENT_PAT_TTL_SECONDS"
+    assert cli_live._DEPLOYMENT_PAT_TTL_SECONDS == 60 * 60
+
+    cleanup_calls = [
+        node
+        for try_node in ast.walk(tree)
+        if isinstance(try_node, ast.Try)
+        for statement in try_node.finalbody
+        for node in ast.walk(statement)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_cleanup_cli_pat"
+    ]
+    assert len(cleanup_calls) == 1
+
+
+def test_cleanup_cli_pat_revokes_remote_pat_and_clears_cache(tmp_path: Path) -> None:
+    token_path = tmp_path / "token.json"
+    token_path.write_text('{"access_token": "admin-pat"}')
+    revoked: list[str] = []
+    pat_client = SimpleNamespace(
+        auth=SimpleNamespace(revoke_pat=lambda jti: revoked.append(jti))
+    )
+
+    cli_live._cleanup_cli_pat(pat_client, "pat-jti", token_path)
+
+    assert revoked == ["pat-jti"]
+    assert not token_path.exists()
+
+
+def test_pat_jti_reads_server_issued_cleanup_identifier() -> None:
+    token = cli_live.jwt.encode(
+        {"jti": "pat-jti"}, "test-key-with-at-least-32-bytes!!", algorithm="HS256"
+    )
+
+    assert cli_live._pat_jti(token) == "pat-jti"
+
+
+def test_pat_jti_rejects_token_without_cleanup_identifier() -> None:
+    token = cli_live.jwt.encode(
+        {"sub": "user-id"}, "test-key-with-at-least-32-bytes!!", algorithm="HS256"
+    )
+
+    with pytest.raises(AssertionError, match="did not contain a JTI"):
+        cli_live._pat_jti(token)
+
+
+def test_cleanup_cli_pat_propagates_revoke_failure_after_clearing_cache(
+    tmp_path: Path,
+) -> None:
+    token_path = tmp_path / "token.json"
+    token_path.write_text('{"access_token": "admin-pat"}')
+
+    def fail_revoke(_jti: str) -> None:
+        raise RuntimeError("revoke failed")
+
+    pat_client = SimpleNamespace(auth=SimpleNamespace(revoke_pat=fail_revoke))
+
+    with pytest.raises(RuntimeError, match="revoke failed"):
+        cli_live._cleanup_cli_pat(pat_client, "pat-jti", token_path)
+
+    assert not token_path.exists()
 
 
 def test_run_cli_reports_output_and_redacts_secret_options() -> None:

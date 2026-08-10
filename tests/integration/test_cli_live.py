@@ -9,8 +9,11 @@ import sys
 import time
 from pathlib import Path
 
+import jwt
 import pytest
 from model_targets import InferenceTarget
+
+from kamiwaza_sdk.token_store import FileTokenStore
 
 pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
 
@@ -230,6 +233,34 @@ def _cli_login_and_create_pat(
     return pat_token
 
 
+def _cleanup_cli_pat(pat_client, pat_jti: str | None, token_path: Path) -> None:
+    """Revoke the test PAT and always remove its local cache."""
+    try:
+        if pat_jti:
+            pat_client.auth.revoke_pat(pat_jti)
+    finally:
+        FileTokenStore(token_path).clear()
+
+
+def _pat_jti(pat_token: str) -> str:
+    """Read the server-issued PAT's cleanup identifier without trusting claims."""
+    # The platform validates this same token on every API request. Decode only
+    # the cleanup identifier here; no authorization decision relies on these
+    # unverified claims.
+    claims = jwt.decode(
+        pat_token,
+        options={
+            "verify_signature": False,
+            "verify_exp": False,
+            "verify_aud": False,
+        },
+    )
+    pat_jti = claims.get("jti")
+    if not isinstance(pat_jti, str) or not pat_jti:
+        raise AssertionError("CLI-created PAT did not contain a JTI for cleanup")
+    return pat_jti
+
+
 def test_cli_login_and_pat_flow(
     live_server_available: str,
     live_username: str,
@@ -290,34 +321,43 @@ def test_cli_serve_deploy(
         pat_ttl_seconds=_DEPLOYMENT_PAT_TTL_SECONDS,
     )
     pat_client = client_factory(base_url=live_server_available, api_key=pat_token)
-    model = ensure_deployable_model_ready(pat_client)
-    model_file_id = target_model_file_id(model, deployable_model_target.quantization)
-
-    serve_result = run_cli(
-        [
-            *base_args,
-            "serve",
-            "deploy",
-            "--repo-id",
-            deployable_model_target.repo_id,
-            "--engine-name",
-            deployable_model_target.engine_name,
-            *(["--file-id", model_file_id] if model_file_id else []),
-            "--wait",
-            "--poll-interval",
-            "5",
-            "--timeout",
-            "600",
-        ],
-        env,
-    )
-
-    summary = json.loads(serve_result.stdout.strip())
-    deployment_id = summary.get("deployment_id")
-    assert deployment_id, "CLI serve deploy did not return a deployment_id"
-    assert summary.get("status") == "DEPLOYED"
+    pat_jti: str | None = None
 
     try:
-        pat_client.serving.stop_deployment(deployment_id=deployment_id, force=True)
-    except Exception:
-        pass
+        pat_jti = _pat_jti(pat_token)
+
+        model = ensure_deployable_model_ready(pat_client)
+        model_file_id = target_model_file_id(
+            model, deployable_model_target.quantization
+        )
+
+        serve_result = run_cli(
+            [
+                *base_args,
+                "serve",
+                "deploy",
+                "--repo-id",
+                deployable_model_target.repo_id,
+                "--engine-name",
+                deployable_model_target.engine_name,
+                *(["--file-id", model_file_id] if model_file_id else []),
+                "--wait",
+                "--poll-interval",
+                "5",
+                "--timeout",
+                "600",
+            ],
+            env,
+        )
+
+        summary = json.loads(serve_result.stdout.strip())
+        deployment_id = summary.get("deployment_id")
+        assert deployment_id, "CLI serve deploy did not return a deployment_id"
+        assert summary.get("status") == "DEPLOYED"
+
+        try:
+            pat_client.serving.stop_deployment(deployment_id=deployment_id, force=True)
+        except Exception:
+            pass
+    finally:
+        _cleanup_cli_pat(pat_client, pat_jti, token_path)
