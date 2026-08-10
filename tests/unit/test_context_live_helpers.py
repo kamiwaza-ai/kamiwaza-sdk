@@ -236,6 +236,76 @@ def test_create_temp_vectordb_retries_when_reconciliation_lookup_fails(
     assert "Unable to reconcile VectorDB" in caplog.text
 
 
+def test_create_temp_vectordb_reconciles_duplicate_after_ambiguous_500(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected_name = "sdk-duplicate-abcdef12"
+    create_errors = iter(
+        [
+            APIError("ambiguous create failure", status_code=500),
+            APIError("duplicate name", status_code=409),
+        ]
+    )
+    create_calls = 0
+    list_calls = 0
+    sleeps: list[float] = []
+
+    def create_vectordb(**_kwargs: object) -> dict[str, str]:
+        nonlocal create_calls
+        create_calls += 1
+        raise next(create_errors)
+
+    def list_vectordbs(**_kwargs: object) -> list[dict[str, str]]:
+        nonlocal list_calls
+        list_calls += 1
+        if list_calls == 1:
+            return []
+        return [{"id": "vdb-reconciled", "name": expected_name}]
+
+    service = SimpleNamespace(
+        create_vectordb=create_vectordb,
+        list_vectordbs=list_vectordbs,
+    )
+    monkeypatch.setattr(
+        context_live,
+        "uuid4",
+        lambda: SimpleNamespace(hex="abcdef1234567890"),
+    )
+    monkeypatch.setattr(context_live.time, "sleep", sleeps.append)
+    monkeypatch.setattr(
+        context_live, "_wait_for_vectordb_ready", lambda *_a, **_k: None
+    )
+
+    vectordb_id = _create_temp_vectordb(service, prefix="sdk-duplicate")
+
+    assert vectordb_id == "vdb-reconciled"
+    assert create_calls == 2
+    assert list_calls == 2
+    assert sleeps == [2.0]
+
+
+def test_create_temp_vectordb_propagates_initial_duplicate_conflict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    error = APIError("duplicate name", status_code=409)
+    service = SimpleNamespace(
+        create_vectordb=lambda **_kwargs: (_ for _ in ()).throw(error),
+        list_vectordbs=lambda **_kwargs: pytest.fail(
+            "an initial conflict should not trigger reconciliation"
+        ),
+    )
+    monkeypatch.setattr(
+        context_live.time,
+        "sleep",
+        lambda _seconds: pytest.fail("an initial conflict should not be retried"),
+    )
+
+    with pytest.raises(APIError) as exc_info:
+        _create_temp_vectordb(service, prefix="sdk-duplicate")
+
+    assert exc_info.value is error
+
+
 def test_create_temp_vectordb_does_not_retry_client_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
