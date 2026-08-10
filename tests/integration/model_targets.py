@@ -73,12 +73,32 @@ def _load_inference_targets() -> tuple[InferenceTarget, InferenceTarget, Inferen
 MLX_LLM_TARGET, VLLM_LLM_TARGET, GGUF_LLM_TARGET = _load_inference_targets()
 
 
+def _nvidia_target_override() -> InferenceTarget | None:
+    """Resolve an explicit NVIDIA-host engine override, or None for the default.
+
+    The default NVIDIA target is vLLM, which needs a resolvable vllm-cuda image
+    in the cluster's inference cascade. Where that image is unavailable (e.g. the
+    packaged-prod turing cascade has no published/keyed vllm-cuda-turing image),
+    a smoke/CI runner can set KAMIWAZA_TEST_NVIDIA_ENGINE=llamacpp to prove
+    GPU-placed inference with the GGUF/llamacpp target instead. Unset preserves
+    the vLLM selection, so non-smoke live suites are unchanged.
+    """
+    engine = os.environ.get("KAMIWAZA_TEST_NVIDIA_ENGINE", "").strip().lower()
+    if engine == "llamacpp":
+        return GGUF_LLM_TARGET
+    if engine == "mlx":
+        return MLX_LLM_TARGET
+    if engine == "vllm":
+        return VLLM_LLM_TARGET
+    return None
+
+
 def select_inference_target(
     snapshot: ClusterCapabilitySnapshot | None,
 ) -> InferenceTarget:
     """Choose weights and engine that match the live cluster hardware."""
     if snapshot is not None and "nvidia" in snapshot.gpu_vendors:
-        return VLLM_LLM_TARGET
+        return _nvidia_target_override() or VLLM_LLM_TARGET
     if snapshot is not None and snapshot.is_apple_silicon:
         return MLX_LLM_TARGET
     return GGUF_LLM_TARGET
