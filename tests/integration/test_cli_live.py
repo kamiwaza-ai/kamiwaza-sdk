@@ -19,6 +19,9 @@ _SECRET_CLI_OPTIONS = frozenset(
 )
 _OUTPUT_LIMIT = 32_000
 _CLI_TIMEOUT_SECONDS = 4 * 60 * 60
+# Covers two 15-minute model-readiness phases plus the 10-minute deploy wait,
+# with enough margin for API calls and polling between phases.
+_DEPLOYMENT_PAT_TTL_SECONDS = 60 * 60
 _JWT_PATTERN = re.compile(
     r"\b(?:PAT-)?eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"
 )
@@ -181,13 +184,14 @@ def _cli_login_and_create_pat(
     *,
     pat_prefix: str,
     pat_scope: str,
+    pat_ttl_seconds: int,
 ) -> str:
     """Login + create a cached PAT via the CLI; return the PAT token.
 
     Asserts the session token and PAT cache are persisted along the way, so this
     doubles as the shared CLI-auth coverage for both the auth-only and the
-    deploy tests below. Callers must choose the least-privileged scope that
-    supports the operation under test.
+    deploy tests below. Callers must choose the least-privileged scope and
+    shortest lifetime that support the operation under test.
     """
     run_cli(
         [*base_args, "login", "--username", live_username, "--password", live_password],
@@ -207,7 +211,7 @@ def _cli_login_and_create_pat(
             "--name",
             pat_name,
             "--ttl",
-            "900",
+            str(pat_ttl_seconds),
             "--scope",
             pat_scope,
             "--aud",
@@ -248,6 +252,7 @@ def test_cli_login_and_pat_flow(
         token_path,
         pat_prefix="cli-m1",
         pat_scope="openid",
+        pat_ttl_seconds=900,
     )
 
 
@@ -282,6 +287,7 @@ def test_cli_serve_deploy(
         token_path,
         pat_prefix="cli-deploy",
         pat_scope="admin",
+        pat_ttl_seconds=_DEPLOYMENT_PAT_TTL_SECONDS,
     )
     pat_client = client_factory(base_url=live_server_available, api_key=pat_token)
     model = ensure_deployable_model_ready(pat_client)

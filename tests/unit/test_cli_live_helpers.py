@@ -15,7 +15,7 @@ cli_live = importlib.import_module("test_cli_live")
 pytestmark = pytest.mark.unit
 
 
-def test_cli_login_and_create_pat_uses_requested_scope(
+def test_cli_login_and_create_pat_uses_requested_scope_and_ttl(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -45,12 +45,15 @@ def test_cli_login_and_create_pat_uses_requested_scope(
         token_path,
         pat_prefix="cli-deploy",
         pat_scope="admin",
+        pat_ttl_seconds=3600,
     )
 
     assert pat_token == "admin-pat"
     pat_args = calls[1]
     scope_index = pat_args.index("--scope")
     assert pat_args[scope_index + 1] == "admin"
+    ttl_index = pat_args.index("--ttl")
+    assert pat_args[ttl_index + 1] == "3600"
 
 
 def test_run_cli_reports_output_and_redacts_secret_options() -> None:
