@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -16,9 +17,19 @@ pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresp
 _SECRET_CLI_OPTIONS = frozenset(
     {"--access-token", "--api-key", "--password", "--token"}
 )
-_CREDENTIAL_BEARING_COMMANDS = frozenset({"login", "pat"})
-_SUPPRESSED_OUTPUT = "<suppressed for credential-bearing command>"
-_OUTPUT_LIMIT = 8_000
+_OUTPUT_LIMIT = 32_000
+_CLI_TIMEOUT_SECONDS = 4 * 60 * 60
+_JWT_PATTERN = re.compile(
+    r"\b(?:PAT-)?eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"
+)
+_TOKEN_FIELD_PATTERN = re.compile(
+    r"(?i)((?:access_token|refresh_token|id_token|token|pat)['\"]?\s*[:=]\s*['\"])([^'\"\s,}]+)"
+)
+
+
+def _secret_option(option: str) -> bool:
+    """Match exact secret flags and argparse's accepted abbreviations."""
+    return any(secret.startswith(option) for secret in _SECRET_CLI_OPTIONS)
 
 
 def _redact_cli_args(args: list[str]) -> list[str]:
@@ -30,7 +41,7 @@ def _redact_cli_args(args: list[str]) -> list[str]:
             hide_next = False
             continue
         option = arg.partition("=")[0]
-        if option in _SECRET_CLI_OPTIONS:
+        if _secret_option(option):
             redacted.append(option if "=" not in arg else f"{option}=***")
             hide_next = "=" not in arg
             continue
@@ -38,41 +49,77 @@ def _redact_cli_args(args: list[str]) -> list[str]:
     return redacted
 
 
-def _captured_output(value: str) -> str:
-    output = value.strip()
+def _secret_cli_values(args: list[str]) -> list[str]:
+    values: list[str] = []
+    hide_next = False
+    for arg in args:
+        if hide_next:
+            values.append(arg)
+            hide_next = False
+            continue
+        option, separator, value = arg.partition("=")
+        if _secret_option(option):
+            if separator:
+                values.append(value)
+            else:
+                hide_next = True
+    return values
+
+
+def _scrub_output(value: str, secret_values: tuple[str, ...]) -> str:
+    scrubbed = value
+    for secret in secret_values:
+        if secret:
+            scrubbed = scrubbed.replace(secret, "***")
+    scrubbed = _JWT_PATTERN.sub("***", scrubbed)
+    return _TOKEN_FIELD_PATTERN.sub(r"\1***", scrubbed)
+
+
+def _captured_output(value: str, secret_values: tuple[str, ...] = ()) -> str:
+    output = _scrub_output(value, secret_values).strip()
     if not output:
         return "<empty>"
-    return output[-_OUTPUT_LIMIT:]
-
-
-def _failure_output(cmd: list[str], value: str) -> str:
-    if not _CREDENTIAL_BEARING_COMMANDS.isdisjoint(cmd):
-        return _SUPPRESSED_OUTPUT
-    return _captured_output(value)
+    if len(output) <= _OUTPUT_LIMIT:
+        return output
+    half = _OUTPUT_LIMIT // 2
+    omitted = len(output) - (half * 2)
+    return (
+        f"{output[:half]}\n" f"... <{omitted} chars omitted> ...\n" f"{output[-half:]}"
+    )
 
 
 def _cli_failure_message(
-    cmd: list[str], result: subprocess.CompletedProcess[str]
+    cmd: list[str],
+    result: subprocess.CompletedProcess[str],
+    secret_values: tuple[str, ...] = (),
 ) -> str:
     command = shlex.join(_redact_cli_args(cmd))
     return (
         f"CLI command failed with exit code {result.returncode}: {command}\n"
-        f"stdout:\n{_failure_output(cmd, result.stdout)}\n"
-        f"stderr:\n{_failure_output(cmd, result.stderr)}"
+        f"stdout:\n{_captured_output(result.stdout, secret_values)}\n"
+        f"stderr:\n{_captured_output(result.stderr, secret_values)}"
     )
 
 
-def run_cli(args: list[str], env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+def run_cli(
+    args: list[str],
+    env: dict[str, str],
+    *,
+    secret_values: tuple[str, ...] = (),
+    runner=subprocess.run,
+) -> subprocess.CompletedProcess[str]:
     cmd = [sys.executable, "-m", "kamiwaza_sdk.cli", *args]
-    result = subprocess.run(
+    result = runner(
         cmd,
         capture_output=True,
         text=True,
         check=False,
         env=env,
+        timeout=_CLI_TIMEOUT_SECONDS,
     )
     if result.returncode != 0:
-        raise AssertionError(_cli_failure_message(cmd, result))
+        secrets = (*_secret_cli_values(args), *secret_values)
+        raise AssertionError(_cli_failure_message(cmd, result, secrets))
     return result
 
 
@@ -97,7 +144,8 @@ def _cli_login_and_create_pat(
     )
     assert token_path.exists()
     session_token = json.loads(token_path.read_text())
-    assert "access_token" in session_token
+    if not isinstance(session_token, dict) or not session_token.get("access_token"):
+        raise AssertionError("CLI login cache did not contain an access token")
 
     pat_name = f"{pat_prefix}-{int(time.time())}"
     result = run_cli(
@@ -116,12 +164,14 @@ def _cli_login_and_create_pat(
             "--cache-token",
         ],
         env,
+        secret_values=(live_password, str(session_token["access_token"])),
     )
     pat_token = result.stdout.strip()
     assert pat_token
 
     cached = json.loads(token_path.read_text())
-    assert cached["access_token"] == pat_token
+    if cached.get("access_token") != pat_token:
+        raise AssertionError("Cached PAT did not match the CLI-created PAT")
     return pat_token
 
 
