@@ -180,12 +180,14 @@ def _cli_login_and_create_pat(
     token_path: Path,
     *,
     pat_prefix: str,
+    pat_scope: str,
 ) -> str:
     """Login + create a cached PAT via the CLI; return the PAT token.
 
     Asserts the session token and PAT cache are persisted along the way, so this
     doubles as the shared CLI-auth coverage for both the auth-only and the
-    deploy tests below.
+    deploy tests below. Callers must choose the least-privileged scope that
+    supports the operation under test.
     """
     run_cli(
         [*base_args, "login", "--username", live_username, "--password", live_password],
@@ -207,7 +209,7 @@ def _cli_login_and_create_pat(
             "--ttl",
             "900",
             "--scope",
-            "openid",
+            pat_scope,
             "--aud",
             "kamiwaza-platform",
             "--cache-token",
@@ -239,7 +241,13 @@ def test_cli_login_and_pat_flow(
 
     # _cli_login_and_create_pat asserts the session token, PAT, and cache match.
     _cli_login_and_create_pat(
-        base_args, env, live_username, live_password, token_path, pat_prefix="cli-m1"
+        base_args,
+        env,
+        live_username,
+        live_password,
+        token_path,
+        pat_prefix="cli-m1",
+        pat_scope="openid",
     )
 
 
@@ -273,6 +281,7 @@ def test_cli_serve_deploy(
         live_password,
         token_path,
         pat_prefix="cli-deploy",
+        pat_scope="admin",
     )
     pat_client = client_factory(base_url=live_server_available, api_key=pat_token)
     model = ensure_deployable_model_ready(pat_client)

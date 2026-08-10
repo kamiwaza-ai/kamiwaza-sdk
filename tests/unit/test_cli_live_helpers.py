@@ -15,6 +15,44 @@ cli_live = importlib.import_module("test_cli_live")
 pytestmark = pytest.mark.unit
 
 
+def test_cli_login_and_create_pat_uses_requested_scope(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    token_path = tmp_path / "token.json"
+    calls: list[list[str]] = []
+
+    def fake_run_cli(
+        args: list[str],
+        _env: dict[str, str],
+        **_kwargs: object,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(args)
+        if len(calls) == 1:
+            token_path.write_text('{"access_token": "session-token"}')
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        token_path.write_text('{"access_token": "admin-pat"}')
+        return subprocess.CompletedProcess(args, 0, "admin-pat\n", "")
+
+    monkeypatch.setattr(cli_live, "run_cli", fake_run_cli)
+
+    pat_token = cli_live._cli_login_and_create_pat(
+        ["--base-url", "https://localhost/api", "--token-path", str(token_path)],
+        {"PATH": "/bin"},
+        "admin",
+        "password",
+        token_path,
+        pat_prefix="cli-deploy",
+        pat_scope="admin",
+    )
+
+    assert pat_token == "admin-pat"
+    pat_args = calls[1]
+    scope_index = pat_args.index("--scope")
+    assert pat_args[scope_index + 1] == "admin"
+
+
 def test_run_cli_reports_output_and_redacts_secret_options() -> None:
     result = subprocess.CompletedProcess(
         args=[],
