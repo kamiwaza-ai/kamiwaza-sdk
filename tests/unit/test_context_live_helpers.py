@@ -160,14 +160,25 @@ def test_create_temp_vectordb_reconciles_ambiguous_create_500(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     expected_name = "sdk-reconcile-abcdef12"
+    create_calls: list[dict[str, object]] = []
+    list_calls: list[dict[str, object]] = []
     wait_calls: list[tuple[str, str | None]] = []
+
+    def create_vectordb(**kwargs: object) -> dict[str, str]:
+        create_calls.append(kwargs)
+        raise APIError("ambiguous create failure", status_code=500)
+
+    def list_vectordbs(**kwargs: object) -> list[dict[str, object]]:
+        list_calls.append(kwargs)
+        return [
+            {"id": "vdb-decoy", "name": "sdk-reconcile-abcdef99"},
+            {"id": None, "name": expected_name},
+            {"id": "vdb-reconciled", "name": expected_name},
+        ]
+
     service = SimpleNamespace(
-        create_vectordb=lambda **_kwargs: (_ for _ in ()).throw(
-            APIError("ambiguous create failure", status_code=500)
-        ),
-        list_vectordbs=lambda **_kwargs: [
-            {"id": "vdb-reconciled", "name": expected_name}
-        ],
+        create_vectordb=create_vectordb,
+        list_vectordbs=list_vectordbs,
     )
     monkeypatch.setattr(
         context_live,
@@ -194,6 +205,14 @@ def test_create_temp_vectordb_reconciles_ambiguous_create_500(
     )
 
     assert vectordb_id == "vdb-reconciled"
+    assert create_calls == [
+        {
+            "name": expected_name,
+            "engine": "milvus",
+            "workroom_id": "workroom-1",
+        }
+    ]
+    assert list_calls == [{"workroom_id": "workroom-1"}]
     assert wait_calls == [("vdb-reconciled", "workroom-1")]
 
 
@@ -226,6 +245,41 @@ def test_create_temp_vectordb_reconciles_statusless_create_failure(
     vectordb_id = _create_temp_vectordb(service, prefix="sdk-transport")
 
     assert vectordb_id == "vdb-reconciled"
+
+
+@pytest.mark.parametrize("status_code", ["500", 500.0])
+def test_create_temp_vectordb_propagates_non_integer_status(
+    monkeypatch: pytest.MonkeyPatch,
+    status_code: object,
+) -> None:
+    error = APIError(
+        "invalid status type",
+        status_code=status_code,  # type: ignore[arg-type]
+    )
+    create_calls = 0
+
+    def create_vectordb(**_kwargs: object) -> dict[str, str]:
+        nonlocal create_calls
+        create_calls += 1
+        raise error
+
+    service = SimpleNamespace(
+        create_vectordb=create_vectordb,
+        list_vectordbs=lambda **_kwargs: pytest.fail(
+            "non-integer statuses should not trigger reconciliation"
+        ),
+    )
+    monkeypatch.setattr(
+        context_live.time,
+        "sleep",
+        lambda _seconds: pytest.fail("non-integer statuses should not be retried"),
+    )
+
+    with pytest.raises(APIError) as exc_info:
+        _create_temp_vectordb(service, prefix="sdk-invalid-status")
+
+    assert exc_info.value is error
+    assert create_calls == 1
 
 
 def test_create_temp_vectordb_retries_when_reconciliation_lookup_fails(
@@ -313,6 +367,42 @@ def test_create_temp_vectordb_reconciles_duplicate_after_ambiguous_500(
     assert create_calls == 2
     assert list_calls == 2
     assert sleeps == [2.0]
+
+
+def test_create_temp_vectordb_retries_duplicate_reconciliation_before_raising(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ambiguous_error = APIError("ambiguous create failure", status_code=500)
+    duplicate_error = APIError("duplicate name", status_code=409)
+    create_errors = iter([ambiguous_error, duplicate_error])
+    create_calls = 0
+    list_calls = 0
+    sleeps: list[float] = []
+
+    def create_vectordb(**_kwargs: object) -> dict[str, str]:
+        nonlocal create_calls
+        create_calls += 1
+        raise next(create_errors)
+
+    def list_vectordbs(**_kwargs: object) -> list[dict[str, str]]:
+        nonlocal list_calls
+        list_calls += 1
+        return []
+
+    service = SimpleNamespace(
+        create_vectordb=create_vectordb,
+        list_vectordbs=list_vectordbs,
+    )
+    monkeypatch.setattr(context_live.time, "sleep", sleeps.append)
+
+    with pytest.raises(APIError) as exc_info:
+        _create_temp_vectordb(service, prefix="sdk-duplicate-miss")
+
+    assert exc_info.value is duplicate_error
+    assert exc_info.value.__cause__ is ambiguous_error
+    assert create_calls == 2
+    assert list_calls == 3
+    assert sleeps == [2.0, 2.0]
 
 
 def test_create_temp_vectordb_propagates_initial_duplicate_conflict(
