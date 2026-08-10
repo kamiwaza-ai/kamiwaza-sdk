@@ -369,6 +369,67 @@ def test_create_temp_vectordb_reconciles_duplicate_after_ambiguous_500(
     assert sleeps == [2.0]
 
 
+def test_create_temp_vectordb_reconciles_late_duplicate_in_workroom(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected_name = "sdk-late-abcdef12"
+    create_errors = iter(
+        [
+            APIError("ambiguous create failure", status_code=500),
+            APIError("duplicate name", status_code=409),
+        ]
+    )
+    create_calls: list[dict[str, object]] = []
+    list_calls: list[dict[str, object]] = []
+    wait_calls: list[tuple[str, str | None]] = []
+    sleeps: list[float] = []
+
+    def create_vectordb(**kwargs: object) -> dict[str, str]:
+        create_calls.append(kwargs)
+        raise next(create_errors)
+
+    def list_vectordbs(**kwargs: object) -> list[dict[str, str]]:
+        list_calls.append(kwargs)
+        if len(list_calls) < 3:
+            return []
+        return [{"id": "vdb-late-reconciled", "name": expected_name}]
+
+    service = SimpleNamespace(
+        create_vectordb=create_vectordb,
+        list_vectordbs=list_vectordbs,
+    )
+    monkeypatch.setattr(
+        context_live,
+        "uuid4",
+        lambda: SimpleNamespace(hex="abcdef1234567890"),
+    )
+    monkeypatch.setattr(context_live.time, "sleep", sleeps.append)
+    monkeypatch.setattr(
+        context_live,
+        "_wait_for_vectordb_ready",
+        lambda _service, vectordb_id, *, workroom_id=None: wait_calls.append(
+            (vectordb_id, workroom_id)
+        ),
+    )
+
+    vectordb_id = _create_temp_vectordb(
+        service,
+        prefix="sdk-late",
+        workroom_id="workroom-1",
+    )
+
+    expected_create = {
+        "name": expected_name,
+        "engine": "milvus",
+        "workroom_id": "workroom-1",
+    }
+    assert vectordb_id == "vdb-late-reconciled"
+    assert create_calls == [expected_create, expected_create]
+    assert list_calls == [{"workroom_id": "workroom-1"}] * 3
+    assert sleeps == [2.0, 2.0]
+    assert wait_calls == [("vdb-late-reconciled", "workroom-1")]
+
+
 def test_create_temp_vectordb_retries_duplicate_reconciliation_before_raising(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
