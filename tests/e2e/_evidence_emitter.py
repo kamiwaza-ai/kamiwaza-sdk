@@ -38,6 +38,11 @@ actually ran, three rules keep "nothing failed" from masquerading as
   are the normal outcome on an under-provisioned host, and
   ``passed_with_notes`` over an all-skipped set would claim evidence the
   run never produced.
+
+Records are written one-per-file with a UTC timestamp in the name and
+*accumulate* across runs; the output directory is a spool, not a snapshot.
+Each record names its own ``build``, so a collector reading the directory
+should group by ``build`` rather than assume every file came from one run.
 """
 
 from __future__ import annotations
@@ -125,6 +130,8 @@ def load_capability_map(path: Path) -> list[MapEntry]:
         raise ValueError(f"capability map not found: {path}")
     try:
         raw = yaml.safe_load(path.read_text()) or []
+    except OSError as exc:
+        raise ValueError(f"{path.name}: cannot read capability map: {exc}") from None
     except yaml.YAMLError as exc:
         # Surfaces as the same UsageError refusal as any other bad map,
         # instead of a raw pytest_configure traceback.
@@ -145,12 +152,20 @@ def _parse_entry(item: object, i: int, *, source: str) -> MapEntry:
         item["scenario_name"], f"entry[{i}].scenario_name", source=source
     )
     cap_ids = _parse_capability_ids(item["capability_ids"], i, source=source)
-    return MapEntry(
+    entry = MapEntry(
         pattern=item["pattern"],
         scenario_name=item["scenario_name"],
         capability_ids=cap_ids,
         exclude=_parse_exclude(item.get("exclude", []), i, source=source),
     )
+    if not entry.scenario_id:
+        # Caught here rather than at session finish, where the whole run would
+        # already have executed before schema validation rejected the record.
+        raise ValueError(
+            f"{source}: entry[{i}].scenario_name {entry.scenario_name!r} slugs "
+            "to an empty scenario_id; use a name containing ASCII letters or digits"
+        )
+    return entry
 
 
 def _require_entry_keys(item: dict, i: int, *, source: str) -> None:

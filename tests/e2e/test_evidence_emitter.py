@@ -20,6 +20,9 @@ semantics are pinned by direct unit tests.
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
+from fnmatch import fnmatchcase
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -395,13 +398,35 @@ def test_loader_rejects_non_list(tmp_path):
         emitter.load_capability_map(path)
 
 
-def test_loader_rejects_unknown_or_missing_keys(tmp_path):
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param(
+            "- pattern: 'x::*'\n  capability_ids: [workrooms.create]\n"
+            "  scenario_name: 'A'\n  extra: nope\n",
+            id="unknown-key",
+        ),
+        pytest.param(
+            "- pattern: 'x::*'\n  capability_ids: [workrooms.create]\n",
+            id="missing-required-key",
+        ),
+    ],
+)
+def test_loader_rejects_unknown_or_missing_keys(tmp_path, body):
+    path = tmp_path / "map.yaml"
+    path.write_text(body)
+    with pytest.raises(ValueError, match="exactly the keys"):
+        emitter.load_capability_map(path)
+
+
+def test_loader_rejects_scenario_name_slugging_to_empty(tmp_path):
+    """A non-empty name of only non-ASCII characters yields no scenario_id."""
     path = tmp_path / "map.yaml"
     path.write_text(
         "- pattern: 'x::*'\n  capability_ids: [workrooms.create]\n"
-        "  scenario_name: 'A'\n  extra: nope\n"
+        "  scenario_name: '日本語'\n"
     )
-    with pytest.raises(ValueError, match="exactly the keys"):
+    with pytest.raises(ValueError, match="empty scenario_id"):
         emitter.load_capability_map(path)
 
 
@@ -494,6 +519,62 @@ def test_slugify_is_stable_kebab_case():
         "model-discovery-metadata-and-hub-download"
     )
     assert emitter.slugify("  Weird -- Name!  ") == "weird-name"
+
+
+def _collect_repo_nodeids() -> list[str]:
+    """Nodeids pytest actually collects for the files the shipped map names."""
+    entries = emitter.load_capability_map(emitter.DEFAULT_MAP_PATH)
+    files = sorted(
+        {
+            e.pattern.split("::", 1)[0]
+            for e in entries
+            if not e.pattern.startswith(emitter.MARKER_PREFIX)
+        }
+    )
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "--collect-only",
+            "-q",
+            "--no-header",
+            "-p",
+            "no:cacheprovider",
+            *files,
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    return [
+        line.strip()
+        for line in proc.stdout.splitlines()
+        if line.startswith("tests/") and "::" in line
+    ]
+
+
+def test_shipped_exclude_globs_still_match_real_nodeids():
+    """Every carve-out must still bite.
+
+    The ``exclude`` globs are the whole defense against a targeted run
+    claiming a capability it never exercised. A class rename would silently
+    void one and leave every other test green, so pin them against a real
+    collection. Entries whose pattern matches nothing are skipped: marker
+    deselection (e.g. ``requires_two_clusters``) legitimately empties a file.
+    """
+    nodeids = _collect_repo_nodeids()
+    assert nodeids, "collection produced no nodeids; cannot validate the map"
+
+    stale: list[str] = []
+    for entry in emitter.load_capability_map(emitter.DEFAULT_MAP_PATH):
+        matched = [n for n in nodeids if fnmatchcase(n, entry.pattern)]
+        if not matched:
+            continue  # whole file deselected on this host
+        for glob in entry.exclude:
+            if not any(fnmatchcase(n, glob) for n in matched):
+                stale.append(f"{entry.scenario_name!r}: {glob!r} matches nothing")
+    assert not stale, "stale exclude globs in capability_map.yaml: " + "; ".join(stale)
 
 
 def test_repo_capability_map_is_valid_and_references_real_files():

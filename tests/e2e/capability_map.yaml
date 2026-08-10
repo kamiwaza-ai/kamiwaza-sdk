@@ -56,18 +56,21 @@
   scenario_name: "Model discovery, metadata, and hub download"
 
 # Justification: TS11 surface — TestModelFileSearch (hub model-file search),
-# TestModelFileDownloadStatus / TestModelFileDownloadOperations (download
-# status, cancel-all, cancel-specific), TestModelFileCreateAndDelete and
-# read operations against downloaded files.
+# TestModelFileReadOperations and TestModelFileMemoryUsage (reads against the
+# repo ensure_repo_ready downloaded), TestModelFileDownloadStatus, and
+# test_delete_existing_model_file. (TestModelFileDownloadOperations carries
+# unconditional @pytest.mark.skip, so it can never contribute a step.)
 # Excluded: TestModelFileValidation and test_delete_nonexistent_model_file
-# assert error handling for a fabricated UUID — no model is discovered or
-# downloaded, so they cannot stand as evidence for this capability.
+# assert error handling for a fabricated UUID, and test_create_model_file
+# only registers a SCRATCH metadata row — none of them discovers or
+# downloads a model, so none can stand as evidence for this capability.
 - pattern: "tests/integration/test_model_files_live.py::*"
   capability_ids: [models.discover-and-download]
   scenario_name: "Model file search and download management"
   exclude:
     - "*::TestModelFileValidation::*"
     - "*::test_delete_nonexistent_model_file"
+    - "*::test_create_model_file"
 
 # Justification: TS12 surface — TestModelListOperations, TestModelSearchOperations
 # (search_models_by_repo_id / exact match / get_model_by_repo_id),
@@ -129,23 +132,44 @@
 # endpoints, and secret endpoints — the catalog registry API surface
 # (test_catalog_dataset_schema_endpoints, test_catalog_dataset_variant_endpoints,
 # test_catalog_container_by_urn_and_path_endpoints, ...).
-# Excluded: test_catalog_metadata_and_health reads service health, and
+# Excluded: test_catalog_metadata_and_health reads service health,
 # test_catalog_container_endpoints_require_admin_user asserts an authz
-# rejection; neither registers or reads a dataset.
+# rejection, and the two secret tests manipulate only catalog secrets —
+# none of them registers or reads a dataset or container.
 - pattern: "tests/integration/test_catalog_endpoints.py::*"
   capability_ids: [catalog.dataset-registry]
-  scenario_name: "Catalog dataset, container, and secret endpoint surface"
+  scenario_name: "Catalog dataset and container endpoint surface"
   exclude:
     - "*::test_catalog_metadata_and_health"
     - "*::test_catalog_container_endpoints_require_admin_user"
+    - "*::test_catalog_secret_list"
+    - "*::test_catalog_secret_endpoints"
 
-# Justification: file/object/parquet/postgres/kafka/slack ingestion registers
-# datasets with metadata in the catalog (test_catalog_*_ingestion_metadata,
-# test_catalog_container_link_sets_dataset_container_urn) and the inline /
-# SSE retrieval tests run retrieval jobs over the ingested data.
+# Justification: every test in the module ingests from some source
+# (file/object/parquet/postgres/kafka/slack) and asserts the resulting
+# dataset's catalog metadata, so the whole module evidences the registry.
+# Split from the retrieval entry below: `exclude` is per-entry, so a single
+# entry claiming two capabilities cannot satisfy the per-test rule for both.
 - pattern: "tests/integration/test_catalog_multi_source.py::*"
-  capability_ids: [catalog.dataset-registry, retrieval.async-retrieval-jobs]
-  scenario_name: "Multi-source catalog ingestion with inline retrieval"
+  capability_ids: [catalog.dataset-registry]
+  scenario_name: "Multi-source catalog ingestion"
+
+# Justification: the subset that actually submits a retrieval job over the
+# ingested data — the two *_inline_retrieval tests, inline_small_object
+# (asserts row_count > 0), large_object_sse_retrieval, and
+# postgres_ingestion_metadata (POSTs /retrieval/jobs and asserts rows).
+# Excluded: the metadata-only ingestions and container_link never submit a
+# job, and inline_large_object_hits_threshold asserts a 422 rejection rather
+# than a successful retrieval.
+- pattern: "tests/integration/test_catalog_multi_source.py::*"
+  capability_ids: [retrieval.async-retrieval-jobs]
+  scenario_name: "Multi-source inline and SSE retrieval"
+  exclude:
+    - "*::test_catalog_file_ingestion_metadata"
+    - "*::test_catalog_kafka_ingestion_metadata"
+    - "*::test_catalog_slack_ingestion_metadata"
+    - "*::test_catalog_container_link_sets_dataset_container_urn"
+    - "*::test_catalog_inline_large_object_hits_threshold"
 
 # Justification: test_context_search_contract and
 # test_context_agentic_search_contract search over documents ingested into a
@@ -174,33 +198,51 @@
   scenario_name: "Workroom-scoped clients isolate vectordb views"
 
 # Justification: TestWorkroomCrudIsolation — create/get/list/update/archive
-# workrooms plus the Global-workroom guardrails (exists, cannot delete).
+# workrooms. Every retained test creates one, either through the workroom_a /
+# workroom_b fixtures or inline (test_archive_own_workroom).
+# Excluded: the two Global-workroom guardrails read (test_global_workroom_exists)
+# or assert a 403 (test_cannot_delete_global_workroom) against the pre-existing
+# Global workroom — neither creates anything.
 - pattern: "tests/integration/test_workroom_isolation_live.py::TestWorkroomCrudIsolation::*"
   capability_ids: [workrooms.create]
   scenario_name: "Workroom creation and CRUD lifecycle"
+  exclude:
+    - "*::test_global_workroom_exists"
+    - "*::test_cannot_delete_global_workroom"
 
-# Justification: the whole module validates the workroom access matrix with
+# Justification: the module validates the workroom access matrix with
 # workroom-scoped sessions (X-Workroom-Id): self-access allowed
 # (TestSelfAccess), cross-workroom NEVER (TestCrossWorkspaceBlocked),
 # Global cannot see workspaces (TestGlobalCannotSeeWorkspaces), workspaces
-# can read Global (TestWorkspaceCanSeeGlobal), lifecycle isolation. The
-# CRUD class is included by the glob; its create/list visibility checks are
-# themselves per-session scoping assertions, so the overlap is intentional.
+# can read Global (TestWorkspaceCanSeeGlobal), lifecycle isolation
+# (TestLifecycleIsolation — both tests assert one workroom's operation does
+# not affect another), and the ?workroom_id=all bypass (TestSentinelAllBypass).
+# The CRUD class overlaps intentionally, but only for its two own-vs-other
+# visibility assertions (create/get own, list returns own).
+# Excluded: the rest of the CRUD class — the Global guardrails plus
+# update/archive of one's own workroom — performs a single-session operation
+# and asserts nothing about isolation between sessions.
 - pattern: "tests/integration/test_workroom_isolation_live.py::*"
   capability_ids: [workrooms.session-scoping]
   scenario_name: "Workroom session-scoping access matrix"
+  exclude:
+    - "*::test_global_workroom_exists"
+    - "*::test_cannot_delete_global_workroom"
+    - "*::TestWorkroomCrudIsolation::test_update_own_workroom"
+    - "*::TestWorkroomCrudIsolation::test_archive_own_workroom"
 
 # Justification: ENG-6952 control plane — test_register_from_spec_returns_dataset_urn
-# registers a managed data source from a connector spec (returning its
-# dataset URN) and test_publisher_grant_then_revoke covers publisher access
-# management. Excluded: the test_register_rejects_* trio asserts spec
-# validation refusals — nothing is registered, so on their own they are not
-# evidence that managed data sources work.
+# registers a managed data source from a connector spec and asserts the
+# returned dataset URN. It is the only test here that registers one.
+# Excluded: the test_register_rejects_* trio asserts spec validation refusals
+# (nothing is registered), and test_publisher_grant_then_revoke only calls the
+# catalog publisher grant/revoke APIs without configuring a connector at all.
 - pattern: "tests/integration/test_connector_spec_live.py::*"
   capability_ids: [connectors.managed-data-sources]
   scenario_name: "Managed data source registration from connector spec"
   exclude:
     - "*::test_register_rejects_*"
+    - "*::test_publisher_grant_then_revoke"
 
 # Justification: TestFederationTwoClusterWalkthrough::test_federated_job_run_via_mesh
 # runs a job on the peer cluster through the mesh and
