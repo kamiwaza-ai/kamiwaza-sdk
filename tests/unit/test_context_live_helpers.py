@@ -44,6 +44,43 @@ def test_global_scope_assertion_rejects_non_global_scope() -> None:
         _assert_global_scope_if_exposed({"workroom_id": str(uuid4())})
 
 
+def test_global_scope_integration_uses_retry_helper(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[object, ...]] = []
+    service = SimpleNamespace(
+        get_vectordb=lambda vectordb_id: {
+            "id": vectordb_id,
+            "workroom_id": ContextService.DEFAULT_WORKROOM_ID,
+        }
+    )
+
+    monkeypatch.setattr(context_live, "_context_service", lambda _client: service)
+    monkeypatch.setattr(
+        context_live,
+        "_create_temp_vectordb",
+        lambda received_service, *, prefix: (
+            calls.append(("create", received_service, prefix)) or "vdb-global"
+        ),
+    )
+    monkeypatch.setattr(
+        context_live,
+        "_safe_delete_vectordb",
+        lambda received_service, vectordb_id: calls.append(
+            ("delete", received_service, vectordb_id)
+        ),
+    )
+
+    context_live.test_context_vectordb_create_without_workroom_uses_global_scope(
+        object()
+    )
+
+    assert calls == [
+        ("create", service, "sdk-context-vdb-global"),
+        ("delete", service, "vdb-global"),
+    ]
+
+
 def test_session_workroom_uses_explicit_scope_without_entering() -> None:
     workroom_id = str(uuid4())
     calls: list[str] = []

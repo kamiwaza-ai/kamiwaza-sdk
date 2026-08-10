@@ -630,14 +630,10 @@ def test_context_vectordb_create_without_workroom_uses_global_scope(
     vectordb_id: str | None = None
 
     try:
-        created = service.create_vectordb(
-            name=f"sdk-context-vdb-global-{uuid4().hex[:8]}",
-            engine="milvus",
+        vectordb_id = _create_temp_vectordb(
+            service,
+            prefix="sdk-context-vdb-global",
         )
-        vectordb_id = created["id"]
-        assert vectordb_id
-        _assert_global_scope_if_exposed(created)
-        _wait_for_vectordb_ready(service, vectordb_id)
         ready = service.get_vectordb(vectordb_id)
         _assert_global_scope_if_exposed(ready)
     finally:
