@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -13,16 +14,59 @@ from model_targets import InferenceTarget
 
 pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
 
+_SECRET_CLI_OPTIONS = frozenset(
+    {"--access-token", "--api-key", "--password", "--token"}
+)
+_OUTPUT_LIMIT = 8_000
+
+
+def _redact_cli_args(args: list[str]) -> list[str]:
+    redacted: list[str] = []
+    hide_next = False
+    for arg in args:
+        if hide_next:
+            redacted.append("***")
+            hide_next = False
+            continue
+        option = arg.partition("=")[0]
+        if option in _SECRET_CLI_OPTIONS:
+            redacted.append(option if "=" not in arg else f"{option}=***")
+            hide_next = "=" not in arg
+            continue
+        redacted.append(arg)
+    return redacted
+
+
+def _captured_output(value: str) -> str:
+    output = value.strip()
+    if not output:
+        return "<empty>"
+    return output[-_OUTPUT_LIMIT:]
+
+
+def _cli_failure_message(
+    cmd: list[str], result: subprocess.CompletedProcess[str]
+) -> str:
+    command = shlex.join(_redact_cli_args(cmd))
+    return (
+        f"CLI command failed with exit code {result.returncode}: {command}\n"
+        f"stdout:\n{_captured_output(result.stdout)}\n"
+        f"stderr:\n{_captured_output(result.stderr)}"
+    )
+
 
 def run_cli(args: list[str], env: dict[str, str]) -> subprocess.CompletedProcess[str]:
     cmd = [sys.executable, "-m", "kamiwaza_sdk.cli", *args]
-    return subprocess.run(
+    result = subprocess.run(
         cmd,
         capture_output=True,
         text=True,
-        check=True,
+        check=False,
         env=env,
     )
+    if result.returncode != 0:
+        raise AssertionError(_cli_failure_message(cmd, result))
+    return result
 
 
 def _cli_login_and_create_pat(
@@ -117,13 +161,16 @@ def test_cli_serve_deploy(
     env.setdefault("PYTHONWARNINGS", "ignore")
 
     pat_token = _cli_login_and_create_pat(
-        base_args, env, live_username, live_password, token_path, pat_prefix="cli-deploy"
+        base_args,
+        env,
+        live_username,
+        live_password,
+        token_path,
+        pat_prefix="cli-deploy",
     )
     pat_client = client_factory(base_url=live_server_available, api_key=pat_token)
     model = ensure_deployable_model_ready(pat_client)
-    model_file_id = target_model_file_id(
-        model, deployable_model_target.quantization
-    )
+    model_file_id = target_model_file_id(model, deployable_model_target.quantization)
 
     serve_result = run_cli(
         [
