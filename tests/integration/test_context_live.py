@@ -20,6 +20,8 @@ from kamiwaza_sdk.services.context import ContextService
 
 logger = logging.getLogger(__name__)
 _VECTORDB_STOPPED_GRACE_SECONDS: Final[float] = 30.0
+_VECTORDB_CREATE_ATTEMPTS: Final[int] = 3
+_VECTORDB_CREATE_RETRY_SECONDS: Final[float] = 2.0
 
 pytestmark = [
     pytest.mark.integration,
@@ -173,12 +175,12 @@ def _create_temp_vectordb(
     prefix: str,
     workroom_id: str | None = None,
 ) -> str:
-    created = service.create_vectordb(
-        name=f"{prefix}-{uuid4().hex[:8]}",
-        engine="milvus",
+    name = f"{prefix}-{uuid4().hex[:8]}"
+    vectordb_id = _create_vectordb_with_retry(
+        service,
+        name=name,
         workroom_id=workroom_id,
     )
-    vectordb_id = created["id"]
     assert vectordb_id
     try:
         _wait_for_vectordb_ready(
@@ -190,6 +192,145 @@ def _create_temp_vectordb(
         _safe_delete_vectordb(service, vectordb_id, workroom_id=workroom_id)
         raise
     return vectordb_id
+
+
+def _is_ambiguous_vectordb_create_failure(status_code: int | None) -> bool:
+    return status_code is None or (
+        isinstance(status_code, int) and 500 <= status_code < 600
+    )
+
+
+def _is_duplicate_after_ambiguous_create_failure(
+    status_code: int | None,
+    ambiguous_error: APIError | None,
+) -> bool:
+    return status_code == 409 and ambiguous_error is not None
+
+
+def _create_vectordb_with_retry(
+    service: ContextService,
+    *,
+    name: str,
+    workroom_id: str | None,
+) -> str:
+    first_ambiguous_create_error: APIError | None = None
+    for attempt in range(1, _VECTORDB_CREATE_ATTEMPTS + 1):
+        try:
+            created = service.create_vectordb(
+                name=name,
+                engine="milvus",
+                workroom_id=workroom_id,
+            )
+        except APIError as exc:
+            status_code = exc.status_code
+            is_ambiguous_create_failure = _is_ambiguous_vectordb_create_failure(
+                status_code
+            )
+            is_duplicate_after_ambiguous_failure = (
+                _is_duplicate_after_ambiguous_create_failure(
+                    status_code,
+                    first_ambiguous_create_error,
+                )
+            )
+            if is_ambiguous_create_failure:
+                first_ambiguous_create_error = first_ambiguous_create_error or exc
+            elif not is_duplicate_after_ambiguous_failure:
+                raise
+            vectordb_id = _reconcile_vectordb_after_create_failure(
+                service,
+                name=name,
+                workroom_id=workroom_id,
+                status_code=status_code,
+            )
+            if vectordb_id:
+                return vectordb_id
+            if is_duplicate_after_ambiguous_failure:
+                return _retry_vectordb_reconciliation_after_duplicate(
+                    service,
+                    name=name,
+                    workroom_id=workroom_id,
+                    attempt=attempt,
+                    duplicate_error=exc,
+                    ambiguous_error=first_ambiguous_create_error,
+                )
+            if attempt == _VECTORDB_CREATE_ATTEMPTS:
+                raise
+            logger.warning(
+                "VectorDB create failed with HTTP %s for %s; retrying " "attempt %s/%s",
+                status_code,
+                name,
+                attempt + 1,
+                _VECTORDB_CREATE_ATTEMPTS,
+            )
+            time.sleep(_VECTORDB_CREATE_RETRY_SECONDS)
+        else:
+            return str(created["id"])
+    raise AssertionError("unreachable")
+
+
+def _reconcile_vectordb_after_create_failure(
+    service: ContextService,
+    *,
+    name: str,
+    workroom_id: str | None,
+    status_code: int | None,
+) -> str | None:
+    try:
+        resources = service.list_vectordbs(workroom_id=workroom_id)
+    except APIError as exc:
+        logger.warning(
+            "Unable to reconcile VectorDB %s after HTTP %s create failure: %s",
+            name,
+            status_code,
+            exc,
+        )
+        return None
+
+    vectordb_id = next(
+        (
+            str(resource["id"])
+            for resource in resources
+            if resource.get("name") == name and resource.get("id")
+        ),
+        None,
+    )
+    if vectordb_id:
+        logger.warning(
+            "Reconciled VectorDB %s as %s after HTTP %s create failure",
+            name,
+            vectordb_id,
+            status_code,
+        )
+    return vectordb_id
+
+
+def _retry_vectordb_reconciliation_after_duplicate(
+    service: ContextService,
+    *,
+    name: str,
+    workroom_id: str | None,
+    attempt: int,
+    duplicate_error: APIError,
+    ambiguous_error: APIError | None,
+) -> str:
+    if attempt < _VECTORDB_CREATE_ATTEMPTS:
+        logger.warning(
+            "VectorDB create returned a duplicate for %s after an ambiguous "
+            "failure; retrying reconciliation attempt %s/%s",
+            name,
+            attempt + 1,
+            _VECTORDB_CREATE_ATTEMPTS,
+        )
+        time.sleep(_VECTORDB_CREATE_RETRY_SECONDS)
+        vectordb_id = _reconcile_vectordb_after_create_failure(
+            service,
+            name=name,
+            workroom_id=workroom_id,
+            status_code=duplicate_error.status_code,
+        )
+        if vectordb_id:
+            return vectordb_id
+    raise duplicate_error from ambiguous_error
 
 
 def _safe_delete_vectordb(
@@ -489,14 +630,10 @@ def test_context_vectordb_create_without_workroom_uses_global_scope(
     vectordb_id: str | None = None
 
     try:
-        created = service.create_vectordb(
-            name=f"sdk-context-vdb-global-{uuid4().hex[:8]}",
-            engine="milvus",
+        vectordb_id = _create_temp_vectordb(
+            service,
+            prefix="sdk-context-vdb-global",
         )
-        vectordb_id = created["id"]
-        assert vectordb_id
-        _assert_global_scope_if_exposed(created)
-        _wait_for_vectordb_ready(service, vectordb_id)
         ready = service.get_vectordb(vectordb_id)
         _assert_global_scope_if_exposed(ready)
     finally:
