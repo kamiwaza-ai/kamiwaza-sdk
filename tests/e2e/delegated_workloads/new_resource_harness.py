@@ -20,6 +20,9 @@ from examples.delegated_resource_server.app import (
     ResourceApplicationConfig,
     build_application,
 )
+from examples.delegated_resource_server.mutations import (
+    ExactApprovedMutationFixture,
+)
 from kamiwaza_sdk.delegated_workloads import (
     CoreResourceGuardHTTPClient,
     ProtectedResourceGuard,
@@ -84,7 +87,7 @@ class RequestView:
 class StubResponse:
     def __init__(self, status: int, body: object) -> None:
         self.status_code = status
-        self.headers: dict[str, str] = {}
+        self.headers: Mapping[str, str] = {}
         self._body = body
 
     def json(self) -> object:
@@ -111,7 +114,9 @@ class NeutralResourcePlatform:
             audience=RESOURCE_AUDIENCE,
             registration_revision_id=RESOURCE_REVISION_ID,
         )
-        self._app = build_application(guard, config, DocumentStore())
+        store = DocumentStore()
+        self.mutations = ExactApprovedMutationFixture(store)
+        self._app = build_application(guard, config, store, self.mutations)
 
     def request(self, method: str, url: str, **kwargs: object) -> StubResponse:
         view = _request_view(method, url, kwargs)
