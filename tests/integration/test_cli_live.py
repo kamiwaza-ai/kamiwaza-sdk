@@ -23,7 +23,11 @@ _JWT_PATTERN = re.compile(
     r"\b(?:PAT-)?eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"
 )
 _TOKEN_FIELD_PATTERN = re.compile(
-    r"(?i)((?:access_token|refresh_token|id_token|token|pat)['\"]?\s*[:=]\s*['\"])([^'\"\s,}]+)"
+    r"(?i)((?:access_token|refresh_token|id_token|token|pat|password|passwd"
+    r"|secret|api[-_]?key|client_secret)['\"]?\s*[:=]\s*['\"]?)([^'\"\s,}&]+)"
+)
+_AUTH_HEADER_PATTERN = re.compile(
+    r"(?i)\b(authorization\s*:\s*(?:bearer|basic)\s+)(\S+)"
 )
 
 
@@ -74,7 +78,8 @@ def _scrub_output(value: str, secret_values: tuple[str, ...]) -> str:
         if secret:
             scrubbed = scrubbed.replace(secret, "***")
     scrubbed = _JWT_PATTERN.sub("***", scrubbed)
-    return _TOKEN_FIELD_PATTERN.sub(r"\1***", scrubbed)
+    scrubbed = _TOKEN_FIELD_PATTERN.sub(r"\1***", scrubbed)
+    return _AUTH_HEADER_PATTERN.sub(r"\1***", scrubbed)
 
 
 def _captured_output(value: str, secret_values: tuple[str, ...] = ()) -> str:
@@ -109,6 +114,35 @@ def _cli_failure_message(
     )
 
 
+def _cli_timeout_message(
+    cmd: list[str],
+    exc: subprocess.TimeoutExpired,
+    secret_values: tuple[str, ...],
+) -> str:
+    command = shlex.join(_redact_cli_args(cmd))
+    return (
+        f"CLI command timed out after {_CLI_TIMEOUT_SECONDS}s: {command}\n"
+        f"stdout:\n{_captured_output(_timeout_output(exc.stdout), secret_values)}\n"
+        f"stderr:\n{_captured_output(_timeout_output(exc.stderr), secret_values)}"
+    )
+
+
+def _safe_cli_timeout_message(
+    cmd: list[str],
+    exc: subprocess.TimeoutExpired,
+    secret_values: tuple[str, ...],
+) -> str:
+    """Build a timeout diagnostic without ever re-exposing the original error."""
+    try:
+        return _cli_timeout_message(cmd, exc, secret_values)
+    except Exception as diagnostic_error:
+        return (
+            f"CLI command timed out after {_CLI_TIMEOUT_SECONDS}s; "
+            "diagnostic rendering failed safely "
+            f"({type(diagnostic_error).__name__})"
+        )
+
+
 def run_cli(
     args: list[str],
     env: dict[str, str],
@@ -117,6 +151,7 @@ def run_cli(
     runner=subprocess.run,
 ) -> subprocess.CompletedProcess[str]:
     cmd = [sys.executable, "-m", "kamiwaza_sdk.cli", *args]
+    timeout_message: str | None = None
     try:
         result = runner(
             cmd,
@@ -128,12 +163,9 @@ def run_cli(
         )
     except subprocess.TimeoutExpired as exc:
         secrets = (*_secret_cli_values(args), *secret_values)
-        command = shlex.join(_redact_cli_args(cmd))
-        raise AssertionError(
-            f"CLI command timed out after {_CLI_TIMEOUT_SECONDS}s: {command}\n"
-            f"stdout:\n{_captured_output(_timeout_output(exc.stdout), secrets)}\n"
-            f"stderr:\n{_captured_output(_timeout_output(exc.stderr), secrets)}"
-        ) from None
+        timeout_message = _safe_cli_timeout_message(cmd, exc, secrets)
+    if timeout_message is not None:
+        raise AssertionError(timeout_message) from None
     if result.returncode != 0:
         secrets = (*_secret_cli_values(args), *secret_values)
         raise AssertionError(_cli_failure_message(cmd, result, secrets))

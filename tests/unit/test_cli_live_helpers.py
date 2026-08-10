@@ -179,9 +179,82 @@ def test_run_cli_timeout_redacts_command_and_reports_partial_output() -> None:
 
     message = str(exc_info.value)
     assert "timed out" in message
+    assert str(cli_live._CLI_TIMEOUT_SECONDS) in message
     assert "deployment was still waiting" in message
+    assert "password=***" in message
     assert "--password '***'" in message
     assert secret not in message
+    assert exc_info.value.__context__ is None
+
+
+def test_run_cli_timeout_fails_closed_if_diagnostic_rendering_breaks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "REALPASSWORD-CANARY-777"
+
+    def timeout(*_args: object, **_kwargs: object) -> None:
+        raise subprocess.TimeoutExpired(
+            cmd=["login", "--password", secret],
+            timeout=cli_live._CLI_TIMEOUT_SECONDS,
+        )
+
+    def broken_capture(*_args: object, **_kwargs: object) -> str:
+        raise UnicodeError("diagnostic renderer failed")
+
+    monkeypatch.setattr(cli_live, "_captured_output", broken_capture)
+    with pytest.raises(AssertionError) as exc_info:
+        cli_live.run_cli(
+            ["login", "--password", secret],
+            {"PATH": "/bin"},
+            runner=timeout,
+        )
+
+    assert "diagnostic rendering failed safely" in str(exc_info.value)
+    assert secret not in str(exc_info.value)
+    assert exc_info.value.__context__ is None
+
+
+def test_run_cli_timeout_scrubs_caller_secrets_from_both_streams() -> None:
+    secret = "opaque-session-secret"
+
+    def timeout(*_args: object, **_kwargs: object) -> None:
+        raise subprocess.TimeoutExpired(
+            cmd=["pat", "create"],
+            timeout=cli_live._CLI_TIMEOUT_SECONDS,
+            output=f"stdout retained marker {secret}".encode(),
+            stderr=f"stderr retained marker {secret}".encode(),
+        )
+
+    with pytest.raises(AssertionError) as exc_info:
+        cli_live.run_cli(
+            ["pat", "create", "--name", "nightly"],
+            {"PATH": "/bin"},
+            secret_values=(secret,),
+            runner=timeout,
+        )
+
+    message = str(exc_info.value)
+    assert "stdout retained marker ***" in message
+    assert "stderr retained marker ***" in message
+    assert secret not in message
+
+
+def test_run_cli_timeout_handles_empty_and_invalid_byte_streams() -> None:
+    def timeout(*_args: object, **_kwargs: object) -> None:
+        raise subprocess.TimeoutExpired(
+            cmd=["serve", "deploy"],
+            timeout=cli_live._CLI_TIMEOUT_SECONDS,
+            output=None,
+            stderr=b"invalid byte: \xff",
+        )
+
+    with pytest.raises(AssertionError) as exc_info:
+        cli_live.run_cli(["serve", "deploy"], {"PATH": "/bin"}, runner=timeout)
+
+    message = str(exc_info.value)
+    assert "stdout:\n<empty>" in message
+    assert "stderr:\ninvalid byte:" in message
+    assert exc_info.value.__context__ is None
 
 
 def test_jwt_and_token_fields_are_scrubbed_without_blanket_suppression() -> None:
@@ -192,3 +265,21 @@ def test_jwt_and_token_fields_are_scrubbed_without_blanket_suppression() -> None
     assert "request failed" in output
     assert "opaque-secret" not in output
     assert jwt not in output
+
+
+@pytest.mark.parametrize(
+    ("value", "secret"),
+    [
+        ("access_token: abc123XYZ", "abc123XYZ"),
+        ("access_token=abc123XYZ", "abc123XYZ"),
+        ("Authorization: Bearer opaque-abc123XYZ", "opaque-abc123XYZ"),
+        ("X-API-Key: abc123XYZ", "abc123XYZ"),
+        ("grant_type=password&username=u&password=hunter2", "hunter2"),
+    ],
+)
+def test_unquoted_token_fields_and_auth_headers_are_scrubbed(
+    value: str, secret: str
+) -> None:
+    output = cli_live._captured_output(value)
+    assert secret not in output
+    assert "***" in output
