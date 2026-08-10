@@ -6,7 +6,9 @@ from _kamiwaza_pytest_options import add_live_options
 from tests.e2e import _evidence_emitter
 
 # pytester powers the in-process pytest runs in
-# tests/e2e/test_evidence_emitter.py (ENG-10026).
+# tests/e2e/test_evidence_emitter.py (ENG-10026). It has to live here, not
+# beside those tests: pytest only honors `pytest_plugins` in the rootdir
+# conftest, so repo-wide registration is a requirement, not a preference.
 pytest_plugins = ["pytester"]
 
 

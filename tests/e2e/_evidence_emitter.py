@@ -4,8 +4,8 @@ ENG-10026 (T3.7): with ``--emit-evidence`` AND a build identity
 (``--build`` / ``KAMIWAZA_BUILD``), this pytest plugin groups the run's
 test outcomes by the reviewed entries in ``tests/e2e/capability_map.yaml``
 and, after the session, writes one ``scenario-evidence.v2`` record per
-entry that saw at least one matched test actually run, into
-``tests/e2e/evidence-out/`` (gitignored). Records carry
+entry that saw at least one matched test run to a non-skipped outcome,
+into ``tests/e2e/evidence-out/`` (gitignored). Records carry
 ``evidence_provenance: "pre-existing"`` — they harvest what the existing
 suite already demonstrates; they do not author new coverage.
 
@@ -17,12 +17,27 @@ Guarantees:
   (``pytest.UsageError``), mirroring the scenario harness's G1 stance:
   evidence that does not name its build is not evidence.
 * Mapping is explicit, never inferred: a test matched by no map entry
-  emits nothing, and a map entry none of whose tests ran emits nothing.
+  emits nothing, and a map entry none of whose tests ran — or whose
+  tests all skipped — emits nothing.
 * Status derivation reuses :func:`harness.derive_status` — every matched
   test becomes one step; all passed → ``passed``, any failure →
   ``failed``, green-with-skips → ``passed_with_notes``.
 * Every record is validated with :func:`harness.validate_evidence_record`
   (the vendored-schema mirror) before it is written.
+
+Because a partial run emits from whatever subset of an entry's tests
+actually ran, three rules keep "nothing failed" from masquerading as
+"the capability is evidenced":
+
+* Only tests that reached a *terminal* report contribute a step. A test
+  whose setup passed but whose call never reported (the session died
+  mid-test) is dropped rather than counted as ``passed``.
+* An aborted session — Ctrl-C, ``-x``, internal error — writes **no**
+  records at all: its coverage is unknowable, so no claim is honest.
+* An entry whose matched tests all *skipped* emits nothing. Runtime skips
+  are the normal outcome on an under-provisioned host, and
+  ``passed_with_notes`` over an all-skipped set would claim evidence the
+  run never produced.
 """
 
 from __future__ import annotations
@@ -50,8 +65,22 @@ MARKER_PREFIX = "marker:"
 # itself; human sign-off happens downstream on the kit side.
 SIGN_OFF_ACTOR = "automated e2e suite (pre-existing evidence)"
 
-_ENTRY_KEYS = frozenset({"pattern", "capability_ids", "scenario_name"})
+_REQUIRED_ENTRY_KEYS = frozenset({"pattern", "capability_ids", "scenario_name"})
+_OPTIONAL_ENTRY_KEYS = frozenset({"exclude"})
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
+
+# Exit codes that mean the run did not finish the work it was asked to do.
+_ABORTED_EXIT_CODES = frozenset(
+    {
+        int(pytest.ExitCode.INTERRUPTED),
+        int(pytest.ExitCode.INTERNAL_ERROR),
+        int(pytest.ExitCode.USAGE_ERROR),
+    }
+)
+ABORTED_RUN_MESSAGE = (
+    "evidence emitter: run was interrupted or stopped early — no "
+    "scenario-evidence records written (an aborted run's coverage is unknown)."
+)
 
 
 def slugify(name: str) -> str:
@@ -61,17 +90,29 @@ def slugify(name: str) -> str:
 
 @dataclass(frozen=True)
 class MapEntry:
-    """One reviewed mapping: a nodeid glob / marker → capability ids."""
+    """One reviewed mapping: a nodeid glob / marker → capability ids.
+
+    ``exclude`` carves nodeid globs back out of a broad ``pattern`` so that
+    every test the entry still matches is one that, on its own, exercises
+    the capability — negative-path and availability-only tests must not be
+    able to stand in as evidence for it.
+    """
 
     pattern: str
     scenario_name: str
     capability_ids: tuple[str, ...]
+    exclude: tuple[str, ...] = ()
 
     @property
     def scenario_id(self) -> str:
         return slugify(self.scenario_name)
 
     def matches(self, item: pytest.Item) -> bool:
+        if not self._matches_pattern(item):
+            return False
+        return not any(fnmatchcase(item.nodeid, glob) for glob in self.exclude)
+
+    def _matches_pattern(self, item: pytest.Item) -> bool:
         if self.pattern.startswith(MARKER_PREFIX):
             marker = self.pattern[len(MARKER_PREFIX) :]
             return item.get_closest_marker(marker) is not None
@@ -82,7 +123,12 @@ def load_capability_map(path: Path) -> list[MapEntry]:
     """Parse and validate the explicit capability map. Raises ``ValueError``."""
     if not path.is_file():
         raise ValueError(f"capability map not found: {path}")
-    raw = yaml.safe_load(path.read_text()) or []
+    try:
+        raw = yaml.safe_load(path.read_text()) or []
+    except yaml.YAMLError as exc:
+        # Surfaces as the same UsageError refusal as any other bad map,
+        # instead of a raw pytest_configure traceback.
+        raise ValueError(f"{path.name}: invalid YAML: {exc}") from None
     if not isinstance(raw, list):
         raise ValueError(f"{path.name}: top level must be a list of entries")
     entries = [_parse_entry(item, i, source=path.name) for i, item in enumerate(raw)]
@@ -93,11 +139,7 @@ def load_capability_map(path: Path) -> list[MapEntry]:
 def _parse_entry(item: object, i: int, *, source: str) -> MapEntry:
     if not isinstance(item, dict):
         raise ValueError(f"{source}: entry[{i}] must be a mapping")
-    if set(item) != _ENTRY_KEYS:
-        raise ValueError(
-            f"{source}: entry[{i}] must have exactly the keys "
-            f"{sorted(_ENTRY_KEYS)}; got {sorted(item)}"
-        )
+    _require_entry_keys(item, i, source=source)
     _require_non_empty_str(item["pattern"], f"entry[{i}].pattern", source=source)
     _require_non_empty_str(
         item["scenario_name"], f"entry[{i}].scenario_name", source=source
@@ -107,7 +149,30 @@ def _parse_entry(item: object, i: int, *, source: str) -> MapEntry:
         pattern=item["pattern"],
         scenario_name=item["scenario_name"],
         capability_ids=cap_ids,
+        exclude=_parse_exclude(item.get("exclude", []), i, source=source),
     )
+
+
+def _require_entry_keys(item: dict, i: int, *, source: str) -> None:
+    keys = set(item)
+    unexpected = sorted(
+        (keys - _REQUIRED_ENTRY_KEYS - _OPTIONAL_ENTRY_KEYS)
+        | (_REQUIRED_ENTRY_KEYS - keys)
+    )
+    if unexpected:
+        raise ValueError(
+            f"{source}: entry[{i}] must have exactly the keys "
+            f"{sorted(_REQUIRED_ENTRY_KEYS)} (optionally "
+            f"{sorted(_OPTIONAL_ENTRY_KEYS)}); got {sorted(keys)}"
+        )
+
+
+def _parse_exclude(value: object, i: int, *, source: str) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        raise ValueError(f"{source}: entry[{i}].exclude must be a list of nodeid globs")
+    for j, glob in enumerate(value):
+        _require_non_empty_str(glob, f"entry[{i}].exclude[{j}]", source=source)
+    return tuple(value)
 
 
 def _require_non_empty_str(value: object, label: str, *, source: str) -> None:
@@ -203,6 +268,7 @@ class _TestOutcome:
 
     status: str = "passed"
     duration_s: float = 0.0
+    complete: bool = False
 
     def fold(self, report: pytest.TestReport) -> None:
         self.duration_s += report.duration
@@ -210,6 +276,23 @@ class _TestOutcome:
             self.status = "failed"
         elif report.skipped and self.status != "failed":
             self.status = "skipped"
+        if _is_terminal(report):
+            self.complete = True
+
+
+def _is_terminal(report: pytest.TestReport) -> bool:
+    """True once this report settles the test's outcome.
+
+    A ``call`` report always settles it. A ``setup`` report settles it only
+    when it failed or skipped, because the call phase never runs in that
+    case. A *passing* setup with no call report means the session died
+    mid-test — ``status`` still reads ``"passed"`` there, so such a test must
+    not be counted as evidence.
+    """
+    when = getattr(report, "when", "call")
+    if when == "call":
+        return True
+    return when == "setup" and not report.passed
 
 
 class EvidenceEmitterPlugin:
@@ -236,20 +319,25 @@ class EvidenceEmitterPlugin:
             return
         self._outcomes.setdefault(report.nodeid, _TestOutcome()).fold(report)
 
-    def pytest_sessionfinish(self, session: pytest.Session) -> None:
+    def pytest_sessionfinish(self, session: pytest.Session, exitstatus: int) -> None:
+        if _run_was_aborted(session, exitstatus):
+            _warn_aborted(session)
+            return
         finished_at = _utc_now_iso()
         for entry in self._entries:
             steps = self._steps_for(entry)
-            if steps:
+            if _is_evidence(steps):
                 self._write_record(entry, steps, finished_at)
 
     def _steps_for(self, entry: MapEntry) -> list[harness.StepResult]:
-        """One step per matched test that ran, in stable nodeid order."""
+        """One step per matched test that ran to a terminal report."""
         steps = []
         for nodeid in sorted(self._outcomes):
             if entry not in self._matched[nodeid]:
                 continue
             outcome = self._outcomes[nodeid]
+            if not outcome.complete:
+                continue
             steps.append(
                 harness.StepResult(
                     name=nodeid,
@@ -278,6 +366,9 @@ class EvidenceEmitterPlugin:
             "schema": harness.EVIDENCE_SCHEMA_ID,
             "scenario_id": entry.scenario_id,
             "scenario_name": entry.scenario_name,
+            # started_at/finished_at bracket the whole pytest session, while
+            # duration_s is the summed cost of *this entry's* steps — they are
+            # deliberately different quantities and will not agree.
             "started_at": self._started_at,
             "finished_at": finished_at,
             "duration_s": round(sum(s.duration_s for s in steps), 6),
@@ -292,6 +383,34 @@ class EvidenceEmitterPlugin:
             # Traceability extra (schema allows additionalProperties).
             "map_pattern": entry.pattern,
         }
+
+
+def _is_evidence(steps: list[harness.StepResult]) -> bool:
+    """True when these steps actually say something about the capability.
+
+    An empty or all-skipped step list emits nothing: runtime skips
+    (``requires_two_clusters``, ``requires_deployable_model``, GPU-count
+    gates) are the normal outcome on an under-provisioned host, and
+    ``derive_status`` would score that green-with-notes — an affirmative
+    claim over a capability the run never exercised.
+    """
+    return any(s.status != "skipped" for s in steps)
+
+
+def _run_was_aborted(session: pytest.Session, exitstatus: int) -> bool:
+    """True when the session stopped short of the work it was asked to do."""
+    if getattr(session, "shouldstop", False):
+        return True
+    if getattr(session, "shouldfail", False):
+        return True
+    return int(exitstatus) in _ABORTED_EXIT_CODES
+
+
+def _warn_aborted(session: pytest.Session) -> None:
+    """Make the suppression visible rather than silent."""
+    reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+    if reporter is not None:
+        reporter.write_line(ABORTED_RUN_MESSAGE, yellow=True)
 
 
 def _utc_now_iso() -> str:

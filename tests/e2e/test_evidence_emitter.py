@@ -1,12 +1,16 @@
 """Tests for the opt-in scenario-evidence.v2 emitter (ENG-10026, T3.7).
 
 Pins the plugin contract: no behavior without ``--emit-evidence``; refusal
-without a build identity; explicit-map-only matching (unmapped tests emit
-nothing, unrun entries emit nothing); one conforming, schema-validated
-``scenario-evidence.v2`` record per map entry whose tests ran, with
-``evidence_provenance: "pre-existing"`` and harness ``derive_status``
-composition (all passed → passed, skips → passed_with_notes, any failure
-→ failed).
+without a build identity (and without a parseable map); explicit-map-only
+matching with ``exclude`` carve-outs (unmapped, excluded, and unrun tests
+emit nothing); one conforming, schema-validated ``scenario-evidence.v2``
+record per map entry whose tests ran, with ``evidence_provenance:
+"pre-existing"`` and harness ``derive_status`` composition (all passed →
+passed, skips → passed_with_notes, any failure → failed).
+
+Also pins the three rules that stop a partial run from claiming evidence:
+an incomplete test contributes no step, an aborted session writes nothing,
+and an all-skipped entry emits nothing.
 
 End-to-end cases run pytest in-process via ``pytester`` with a fixture
 capability map and simulated test results; loader and outcome-folding
@@ -67,12 +71,22 @@ def evidence_out(pytester: pytest.Pytester) -> Path:
     return pytester.path / "evidence-out"
 
 
-def _run_emitting(pytester, evidence_out, *extra_args, map_yaml=MAP_ONE_ENTRY):
-    """Run the inner suite with evidence emission wired up."""
+def _run_emitting(
+    pytester, evidence_out, *extra_args, map_yaml=MAP_ONE_ENTRY, subprocess=False
+):
+    """Run the inner suite with evidence emission wired up.
+
+    ``subprocess=True`` is needed for the interrupted-run case: an inner
+    ``KeyboardInterrupt`` propagates straight out of ``runpytest_inprocess``
+    and would tear down the outer session too.
+    """
     pytester.makeconftest(INNER_CONFTEST)
     map_path = pytester.path / "capability_map.yaml"
     map_path.write_text(map_yaml)
-    return pytester.runpytest_inprocess(
+    runner = (
+        pytester.runpytest_subprocess if subprocess else pytester.runpytest_inprocess
+    )
+    return runner(
         "--evidence-map",
         str(map_path),
         "--evidence-out",
@@ -214,6 +228,147 @@ def test_record_conforms_to_vendored_schema(pytester, evidence_out):
     harness.validate_evidence_record(record)
 
 
+def test_all_skipped_entry_emits_nothing(pytester, evidence_out):
+    """The under-provisioned-host shape: every mapped test skips at runtime.
+
+    ``derive_status`` would score this ``passed_with_notes``; emitting that
+    would claim non-failing evidence for a capability nothing exercised.
+    """
+    pytester.makepyfile(
+        test_mapped=(
+            "import pytest\n"
+            "def test_needs_gpu():\n    pytest.skip('no gpu')\n"
+            "def test_needs_peer():\n    pytest.skip('single cluster')\n"
+        )
+    )
+    result = _run_emitting(
+        pytester, evidence_out, "--emit-evidence", "--build", TEST_BUILD
+    )
+    result.assert_outcomes(skipped=2)
+    assert not evidence_out.exists()
+
+
+def test_skip_at_collection_gate_emits_nothing(pytester, evidence_out):
+    """Module-level skip (the marker/fixture gate shape) is also not evidence."""
+    pytester.makepyfile(
+        test_mapped=(
+            "import pytest\n"
+            "pytestmark = pytest.mark.skip('requires two clusters')\n"
+            "def test_a():\n    assert True\n"
+        )
+    )
+    result = _run_emitting(
+        pytester, evidence_out, "--emit-evidence", "--build", TEST_BUILD
+    )
+    result.assert_outcomes(skipped=1)
+    assert not evidence_out.exists()
+
+
+def test_failure_among_skips_still_emits_failed(pytester, evidence_out):
+    """The all-skipped gate must not swallow genuine failure evidence."""
+    pytester.makepyfile(
+        test_mapped=(
+            "import pytest\n"
+            "def test_skipped():\n    pytest.skip('n/a')\n"
+            "def test_broken():\n    assert False\n"
+        )
+    )
+    _run_emitting(pytester, evidence_out, "--emit-evidence", "--build", TEST_BUILD)
+    (record,) = _records(evidence_out)
+    assert record["status"] == "failed"
+
+
+def test_interrupted_session_emits_nothing(pytester, evidence_out):
+    """Ctrl-C mid-suite: coverage is unknowable, so no record is honest."""
+    pytester.makepyfile(
+        test_mapped=(
+            "def test_a():\n    assert True\n"
+            "def test_b_interrupts():\n    raise KeyboardInterrupt\n"
+            "def test_c():\n    assert True\n"
+        )
+    )
+    result = _run_emitting(
+        pytester,
+        evidence_out,
+        "--emit-evidence",
+        "--build",
+        TEST_BUILD,
+        subprocess=True,
+    )
+    assert result.ret == pytest.ExitCode.INTERRUPTED
+    assert not evidence_out.exists()
+    result.stdout.fnmatch_lines(["*no scenario-evidence records written*"])
+
+
+def test_stop_early_on_maxfail_emits_nothing(pytester, evidence_out):
+    """``-x`` leaves later mapped tests unrun — the same partial-coverage risk."""
+    pytester.makepyfile(
+        test_mapped=(
+            "def test_a_broken():\n    assert False\n"
+            "def test_b():\n    assert True\n"
+        )
+    )
+    _run_emitting(
+        pytester, evidence_out, "--emit-evidence", "--build", TEST_BUILD, "-x"
+    )
+    assert not evidence_out.exists()
+
+
+def test_exclude_narrows_a_broad_pattern(pytester, evidence_out):
+    """A negative-path test carved out of a module glob emits no evidence."""
+    map_yaml = """
+- pattern: "test_mapped.py::*"
+  capability_ids: [workrooms.create]
+  scenario_name: "Mapped scenario"
+  exclude:
+    - "*::test_get_nonexistent*"
+"""
+    pytester.makepyfile(
+        test_mapped=(
+            "def test_real_work():\n    assert True\n"
+            "def test_get_nonexistent_thing():\n    assert True\n"
+        )
+    )
+    _run_emitting(
+        pytester,
+        evidence_out,
+        "--emit-evidence",
+        "--build",
+        TEST_BUILD,
+        map_yaml=map_yaml,
+    )
+    (record,) = _records(evidence_out)
+    assert [s["name"] for s in record["steps"]] == ["test_mapped.py::test_real_work"]
+
+
+def test_excluded_test_alone_emits_nothing(pytester, evidence_out):
+    """Codex's targeted-run case: running only the excluded test claims nothing."""
+    map_yaml = """
+- pattern: "test_mapped.py::*"
+  capability_ids: [workrooms.create]
+  scenario_name: "Mapped scenario"
+  exclude:
+    - "*::test_get_nonexistent*"
+"""
+    pytester.makepyfile(
+        test_mapped=(
+            "def test_real_work():\n    assert True\n"
+            "def test_get_nonexistent_thing():\n    assert True\n"
+        )
+    )
+    _run_emitting(
+        pytester,
+        evidence_out,
+        "--emit-evidence",
+        "--build",
+        TEST_BUILD,
+        "-k",
+        "nonexistent",
+        map_yaml=map_yaml,
+    )
+    assert not evidence_out.exists()
+
+
 def test_refusal_without_build_identity(pytester, evidence_out, monkeypatch):
     monkeypatch.delenv("KAMIWAZA_BUILD", raising=False)
     pytester.makepyfile(test_mapped="def test_ok():\n    assert True\n")
@@ -247,6 +402,62 @@ def test_loader_rejects_unknown_or_missing_keys(tmp_path):
         "  scenario_name: 'A'\n  extra: nope\n"
     )
     with pytest.raises(ValueError, match="exactly the keys"):
+        emitter.load_capability_map(path)
+
+
+def test_loader_rejects_malformed_yaml_as_value_error(tmp_path):
+    """A YAML syntax error must reach callers as the documented ValueError."""
+    path = tmp_path / "map.yaml"
+    path.write_text("- pattern: 'x::*'\n   bad: [unclosed\n")
+    with pytest.raises(ValueError, match="invalid YAML"):
+        emitter.load_capability_map(path)
+
+
+def test_malformed_yaml_map_refuses_with_usage_error(pytester, evidence_out):
+    """End to end: a broken map is a clean refusal, not a configure traceback."""
+    pytester.makepyfile(test_mapped="def test_ok():\n    assert True\n")
+    result = _run_emitting(
+        pytester,
+        evidence_out,
+        "--emit-evidence",
+        "--build",
+        TEST_BUILD,
+        map_yaml="- pattern: 'x::*'\n   bad: [unclosed\n",
+    )
+    assert result.ret == pytest.ExitCode.USAGE_ERROR
+    result.stderr.fnmatch_lines(["*invalid YAML*"])
+    assert not evidence_out.exists()
+
+
+def test_loader_accepts_and_applies_exclude(tmp_path):
+    path = tmp_path / "map.yaml"
+    path.write_text(
+        "- pattern: 'tests/x.py::*'\n  capability_ids: [workrooms.create]\n"
+        "  scenario_name: 'A'\n  exclude: ['*::test_nope']\n"
+    )
+    (entry,) = emitter.load_capability_map(path)
+    assert entry.exclude == ("*::test_nope",)
+    assert entry.matches(SimpleNamespace(nodeid="tests/x.py::test_yes"))
+    assert not entry.matches(SimpleNamespace(nodeid="tests/x.py::test_nope"))
+
+
+def test_loader_rejects_non_list_exclude(tmp_path):
+    path = tmp_path / "map.yaml"
+    path.write_text(
+        "- pattern: 'x::*'\n  capability_ids: [workrooms.create]\n"
+        "  scenario_name: 'A'\n  exclude: 'oops'\n"
+    )
+    with pytest.raises(ValueError, match="exclude must be a list"):
+        emitter.load_capability_map(path)
+
+
+def test_loader_rejects_empty_exclude_glob(tmp_path):
+    path = tmp_path / "map.yaml"
+    path.write_text(
+        "- pattern: 'x::*'\n  capability_ids: [workrooms.create]\n"
+        "  scenario_name: 'A'\n  exclude: ['']\n"
+    )
+    with pytest.raises(ValueError, match=r"exclude\[0\]"):
         emitter.load_capability_map(path)
 
 
@@ -304,15 +515,21 @@ def test_repo_capability_map_is_valid_and_references_real_files():
 # ---------------------------------------------------------------------------
 
 
-def _report(*, failed=False, skipped=False, duration=0.1):
-    return SimpleNamespace(failed=failed, skipped=skipped, duration=duration)
+def _report(*, failed=False, skipped=False, duration=0.1, when="call"):
+    return SimpleNamespace(
+        failed=failed,
+        skipped=skipped,
+        duration=duration,
+        when=when,
+        passed=not (failed or skipped),
+    )
 
 
 def test_outcome_fold_failure_wins_over_later_phases():
     outcome = emitter._TestOutcome()
-    outcome.fold(_report())  # setup passed
+    outcome.fold(_report(when="setup"))  # setup passed
     outcome.fold(_report(failed=True))  # call failed
-    outcome.fold(_report())  # teardown passed
+    outcome.fold(_report(when="teardown"))  # teardown passed
     assert outcome.status == "failed"
     assert outcome.duration_s == pytest.approx(0.3)
 
@@ -326,6 +543,51 @@ def test_outcome_fold_skip_does_not_mask_failure():
 
 def test_outcome_fold_setup_skip_marks_skipped():
     outcome = emitter._TestOutcome()
-    outcome.fold(_report(skipped=True))
-    outcome.fold(_report())
+    outcome.fold(_report(skipped=True, when="setup"))
+    outcome.fold(_report(when="teardown"))
     assert outcome.status == "skipped"
+
+
+# ---------------------------------------------------------------------------
+# Completion tracking: only terminal reports make a test count as evidence
+# ---------------------------------------------------------------------------
+
+
+def test_outcome_passing_setup_alone_is_incomplete():
+    """The mid-test-death shape: setup passed, call never reported."""
+    outcome = emitter._TestOutcome()
+    outcome.fold(_report(when="setup"))
+    assert outcome.status == "passed"  # default status is still affirmative...
+    assert outcome.complete is False  # ...so completion is what gates emission
+
+
+def test_outcome_call_report_completes():
+    outcome = emitter._TestOutcome()
+    outcome.fold(_report(when="setup"))
+    outcome.fold(_report(when="call"))
+    assert outcome.complete is True
+
+
+@pytest.mark.parametrize("kwargs", [{"failed": True}, {"skipped": True}])
+def test_outcome_terminal_setup_completes(kwargs):
+    """A failed or skipped setup settles the test — no call phase follows."""
+    outcome = emitter._TestOutcome()
+    outcome.fold(_report(when="setup", **kwargs))
+    assert outcome.complete is True
+
+
+def test_incomplete_outcome_contributes_no_step():
+    entry = emitter.MapEntry(
+        pattern="test_x.py::*",
+        scenario_name="X",
+        capability_ids=("workrooms.create",),
+    )
+    plugin = emitter.EvidenceEmitterPlugin(
+        entries=[entry], build=TEST_BUILD, out_dir=Path("unused")
+    )
+    plugin._matched = {"test_x.py::test_a": [entry], "test_x.py::test_b": [entry]}
+    plugin._outcomes = {
+        "test_x.py::test_a": emitter._TestOutcome(status="passed", complete=True),
+        "test_x.py::test_b": emitter._TestOutcome(status="passed", complete=False),
+    }
+    assert [s.name for s in plugin._steps_for(entry)] == ["test_x.py::test_a"]

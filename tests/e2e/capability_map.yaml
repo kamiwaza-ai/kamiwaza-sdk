@@ -6,7 +6,8 @@
 # emit NO evidence. Adding an entry is a reviewed change, not something
 # tooling derives from test names.
 #
-# Each entry is {pattern, capability_ids, scenario_name}:
+# Each entry is {pattern, capability_ids, scenario_name} plus optional
+# {exclude}:
 #   * pattern — a pytest nodeid glob (fnmatch, rooted at the repo root,
 #     e.g. "tests/integration/test_x.py::*"), or "marker:<name>" to match
 #     every test carrying that pytest marker.
@@ -14,6 +15,14 @@
 #     the matched tests evidence.
 #   * scenario_name — human-readable scenario title; its slug becomes the
 #     emitted record's scenario_id.
+#   * exclude — nodeid globs carved back out of a broad pattern.
+#
+# THE PER-TEST RULE: a record is composed from whichever matched tests
+# actually ran, so *every* test an entry matches must, on its own, exercise
+# the capability. A module-wide "::*" pattern therefore needs `exclude` for
+# the module's negative-path tests (get/delete-nonexistent, rejection
+# assertions) and availability-only tests: running just one of those must
+# never be able to emit a passing record for the capability.
 #
 # With `--emit-evidence` (and a --build/KAMIWAZA_BUILD identity) the
 # emitter in tests/e2e/_evidence_emitter.py writes one scenario-evidence.v2
@@ -50,17 +59,30 @@
 # TestModelFileDownloadStatus / TestModelFileDownloadOperations (download
 # status, cancel-all, cancel-specific), TestModelFileCreateAndDelete and
 # read operations against downloaded files.
+# Excluded: TestModelFileValidation and test_delete_nonexistent_model_file
+# assert error handling for a fabricated UUID — no model is discovered or
+# downloaded, so they cannot stand as evidence for this capability.
 - pattern: "tests/integration/test_model_files_live.py::*"
   capability_ids: [models.discover-and-download]
   scenario_name: "Model file search and download management"
+  exclude:
+    - "*::TestModelFileValidation::*"
+    - "*::test_delete_nonexistent_model_file"
 
 # Justification: TS12 surface — TestModelListOperations, TestModelSearchOperations
 # (search_models_by_repo_id / exact match / get_model_by_repo_id),
 # TestModelDownloadHelpers (initiate_model_download on an already-downloaded
 # repo), plus model metadata/memory-usage reads.
+# Excluded: TestModelValidation (nonexistent model/search error paths) and
+# TestModelCleanupOperations / test_get_pending_deployments, which act on
+# deployments rather than on model discovery or download.
 - pattern: "tests/integration/test_models_extended_live.py::*"
   capability_ids: [models.discover-and-download]
   scenario_name: "Model registry search and metadata (extended)"
+  exclude:
+    - "*::TestModelValidation::*"
+    - "*::TestModelCleanupOperations::*"
+    - "*::test_get_pending_deployments"
 
 # Justification: test_deploy_qwen_and_infer_with_strip_thinking deploys two
 # configs of the target model locally (serving.deploy_model + wait), then
@@ -80,9 +102,12 @@
   scenario_name: "Engine matrix deploy and infer with fractional co-location"
 
 # Justification: TS17 — TestRetrievalJobOperations::test_create_and_get_job
-# creates an async retrieval job and polls its status by job_id;
-# TestRetrievalJobStatus covers the job-status API including error paths.
-- pattern: "tests/integration/test_retrieval_live.py::*"
+# creates an async retrieval job and polls its status by job_id. That class
+# is the only part of the module that runs a job; TestRetrievalServiceAvailability
+# merely asserts the SDK service object exists (no platform call at all) and
+# TestRetrievalJobStatus queries a fabricated job id expecting a 404, so both
+# are excluded rather than allowed to evidence the capability.
+- pattern: "tests/integration/test_retrieval_live.py::TestRetrievalJobOperations::*"
   capability_ids: [retrieval.async-retrieval-jobs]
   scenario_name: "Async retrieval job lifecycle"
 
@@ -104,9 +129,15 @@
 # endpoints, and secret endpoints — the catalog registry API surface
 # (test_catalog_dataset_schema_endpoints, test_catalog_dataset_variant_endpoints,
 # test_catalog_container_by_urn_and_path_endpoints, ...).
+# Excluded: test_catalog_metadata_and_health reads service health, and
+# test_catalog_container_endpoints_require_admin_user asserts an authz
+# rejection; neither registers or reads a dataset.
 - pattern: "tests/integration/test_catalog_endpoints.py::*"
   capability_ids: [catalog.dataset-registry]
   scenario_name: "Catalog dataset, container, and secret endpoint surface"
+  exclude:
+    - "*::test_catalog_metadata_and_health"
+    - "*::test_catalog_container_endpoints_require_admin_user"
 
 # Justification: file/object/parquet/postgres/kafka/slack ingestion registers
 # datasets with metadata in the catalog (test_catalog_*_ingestion_metadata,
@@ -161,12 +192,15 @@
 
 # Justification: ENG-6952 control plane — test_register_from_spec_returns_dataset_urn
 # registers a managed data source from a connector spec (returning its
-# dataset URN), the rejection tests pin spec validation (inline secret,
-# missing platform, unknown field), and test_publisher_grant_then_revoke
-# covers publisher access management.
+# dataset URN) and test_publisher_grant_then_revoke covers publisher access
+# management. Excluded: the test_register_rejects_* trio asserts spec
+# validation refusals — nothing is registered, so on their own they are not
+# evidence that managed data sources work.
 - pattern: "tests/integration/test_connector_spec_live.py::*"
   capability_ids: [connectors.managed-data-sources]
   scenario_name: "Managed data source registration from connector spec"
+  exclude:
+    - "*::test_register_rejects_*"
 
 # Justification: TestFederationTwoClusterWalkthrough::test_federated_job_run_via_mesh
 # runs a job on the peer cluster through the mesh and
