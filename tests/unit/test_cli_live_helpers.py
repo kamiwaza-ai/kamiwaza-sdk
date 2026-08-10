@@ -139,6 +139,51 @@ def test_token_path_is_not_redacted() -> None:
     assert cli_live._redact_cli_args(args) == args
 
 
+def test_redaction_does_not_treat_empty_or_separator_args_as_secret_options() -> None:
+    assert all(not cli_live._secret_option(value) for value in ("", "-", "--"))
+
+    args = [
+        "serve",
+        "deploy",
+        "--engine-name",
+        "",
+        "--repo-id",
+        "meta/llama-3",
+    ]
+    assert cli_live._redact_cli_args(args) == args
+    assert cli_live._redact_cli_args(["serve", "deploy", "--", "meta/llama-3"]) == [
+        "serve",
+        "deploy",
+        "--",
+        "meta/llama-3",
+    ]
+
+
+def test_run_cli_timeout_redacts_command_and_reports_partial_output() -> None:
+    secret = "REALPASSWORD-CANARY-777"
+
+    def timeout(*_args: object, **_kwargs: object) -> None:
+        raise subprocess.TimeoutExpired(
+            cmd=["ignored"],
+            timeout=cli_live._CLI_TIMEOUT_SECONDS,
+            output=b"deployment was still waiting\n",
+            stderr=f"password={secret}\n".encode(),
+        )
+
+    with pytest.raises(AssertionError) as exc_info:
+        cli_live.run_cli(
+            ["login", "--username", "admin", "--password", secret],
+            {"PATH": "/bin"},
+            runner=timeout,
+        )
+
+    message = str(exc_info.value)
+    assert "timed out" in message
+    assert "deployment was still waiting" in message
+    assert "--password '***'" in message
+    assert secret not in message
+
+
 def test_jwt_and_token_fields_are_scrubbed_without_blanket_suppression() -> None:
     jwt = "PAT-eyJabcdefgh.abcdefghijk.abcdefghijk"
     output = cli_live._captured_output(

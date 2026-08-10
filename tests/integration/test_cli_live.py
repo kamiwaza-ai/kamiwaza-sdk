@@ -29,6 +29,8 @@ _TOKEN_FIELD_PATTERN = re.compile(
 
 def _secret_option(option: str) -> bool:
     """Match exact secret flags and argparse's accepted abbreviations."""
+    if len(option) <= 2 or not option.startswith("--"):
+        return False
     return any(secret.startswith(option) for secret in _SECRET_CLI_OPTIONS)
 
 
@@ -88,6 +90,12 @@ def _captured_output(value: str, secret_values: tuple[str, ...] = ()) -> str:
     )
 
 
+def _timeout_output(value: str | bytes | None) -> str:
+    if isinstance(value, bytes):
+        return value.decode(errors="replace")
+    return value or ""
+
+
 def _cli_failure_message(
     cmd: list[str],
     result: subprocess.CompletedProcess[str],
@@ -109,14 +117,23 @@ def run_cli(
     runner=subprocess.run,
 ) -> subprocess.CompletedProcess[str]:
     cmd = [sys.executable, "-m", "kamiwaza_sdk.cli", *args]
-    result = runner(
-        cmd,
-        capture_output=True,
-        text=True,
-        check=False,
-        env=env,
-        timeout=_CLI_TIMEOUT_SECONDS,
-    )
+    try:
+        result = runner(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+            timeout=_CLI_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        secrets = (*_secret_cli_values(args), *secret_values)
+        command = shlex.join(_redact_cli_args(cmd))
+        raise AssertionError(
+            f"CLI command timed out after {_CLI_TIMEOUT_SECONDS}s: {command}\n"
+            f"stdout:\n{_captured_output(_timeout_output(exc.stdout), secrets)}\n"
+            f"stderr:\n{_captured_output(_timeout_output(exc.stderr), secrets)}"
+        ) from None
     if result.returncode != 0:
         secrets = (*_secret_cli_values(args), *secret_values)
         raise AssertionError(_cli_failure_message(cmd, result, secrets))
