@@ -1,0 +1,186 @@
+# Capability map for pre-existing e2e/live evidence (ENG-10026, T3.7).
+#
+# RULE: this mapping is EXPLICIT, REVIEWED, and NEVER INFERRED. An entry
+# exists only where the named tests genuinely exercise the capability
+# end-to-end against a running platform; tests not matched by any entry
+# emit NO evidence. Adding an entry is a reviewed change, not something
+# tooling derives from test names.
+#
+# Each entry is {pattern, capability_ids, scenario_name}:
+#   * pattern — a pytest nodeid glob (fnmatch, rooted at the repo root,
+#     e.g. "tests/integration/test_x.py::*"), or "marker:<name>" to match
+#     every test carrying that pytest marker.
+#   * capability_ids — capability-document ids (kit inventory, dot-namespaced)
+#     the matched tests evidence.
+#   * scenario_name — human-readable scenario title; its slug becomes the
+#     emitted record's scenario_id.
+#
+# With `--emit-evidence` (and a --build/KAMIWAZA_BUILD identity) the
+# emitter in tests/e2e/_evidence_emitter.py writes one scenario-evidence.v2
+# record per entry that had at least one matched test actually run, with
+# evidence_provenance "pre-existing".
+#
+# DELIBERATELY UNMAPPED (reviewed 2026-08-10; empty mapping is the honest
+# answer — do not "fix" without new tests):
+#   * models.external-endpoints — no existing e2e/live test registers or
+#     exercises an external/BYO OpenAI-compatible endpoint.
+#   * auth.enterprise-sso — test_auth_live.py covers password + PAT auth
+#     and test_auth_endpoints_live.py the auth endpoint surface; neither
+#     is an enterprise SSO/IdP login. The federation shared-IdP suites
+#     (test_federation_idp_lifecycle_live.py, ..._shared_idp_gated_...)
+#     provision Keycloak trust for FEDERATION, not enterprise SSO sign-in.
+#   * tests/e2e/scenarios/test_s1..s5 drivers — they already emit native
+#     scenario-evidence.v2 records through the harness (cycle-authored);
+#     mapping them here would double-count the same runs.
+#   * test_jobs_recoverable_drop_recovery.py — NOT evidence for
+#     federation.remote-jobs: its own docstring says it is a unit-style
+#     test mocked at the _request boundary, no remote execution happens.
+#   * test_serving_endpoints_live.py — reads serving status/health/logs of
+#     whatever is already deployed; it observes but does not demonstrate
+#     models.local-deployment, so it stays unmapped.
+
+# Justification: test_live_model_metadata_and_download searches the hub for
+# the canonical repo (mlx-community/Qwen3-4B-4bit), ensures it is downloaded
+# via ensure_repo_ready, and verifies model metadata + files on the platform.
+- pattern: "tests/integration/test_models_live.py::test_live_model_metadata_and_download"
+  capability_ids: [models.discover-and-download]
+  scenario_name: "Model discovery, metadata, and hub download"
+
+# Justification: TS11 surface — TestModelFileSearch (hub model-file search),
+# TestModelFileDownloadStatus / TestModelFileDownloadOperations (download
+# status, cancel-all, cancel-specific), TestModelFileCreateAndDelete and
+# read operations against downloaded files.
+- pattern: "tests/integration/test_model_files_live.py::*"
+  capability_ids: [models.discover-and-download]
+  scenario_name: "Model file search and download management"
+
+# Justification: TS12 surface — TestModelListOperations, TestModelSearchOperations
+# (search_models_by_repo_id / exact match / get_model_by_repo_id),
+# TestModelDownloadHelpers (initiate_model_download on an already-downloaded
+# repo), plus model metadata/memory-usage reads.
+- pattern: "tests/integration/test_models_extended_live.py::*"
+  capability_ids: [models.discover-and-download]
+  scenario_name: "Model registry search and metadata (extended)"
+
+# Justification: test_deploy_qwen_and_infer_with_strip_thinking deploys two
+# configs of the target model locally (serving.deploy_model + wait), then
+# infers through client.openai.get_client(...) chat completions — the
+# OpenAI-compatible inference path — before cleanup.
+- pattern: "tests/integration/test_serving_workflow.py::test_deploy_qwen_and_infer_with_strip_thinking"
+  capability_ids: [models.local-deployment, models.openai-compatible-inference]
+  scenario_name: "Deploy model locally and infer via OpenAI-compatible client"
+
+# Justification: ENG-6948 engine matrix — test_deploy_and_infer_llamacpp_gguf /
+# test_deploy_and_infer_vllm_nvidia deploy with explicit engine_name and
+# assert a chat completion via the OpenAI-compatible client
+# (_assert_chat_completion); the fractional co-location tests deploy two
+# copies on one GPU and serve prompts from both.
+- pattern: "tests/integration/test_inference_matrix_live.py::*"
+  capability_ids: [models.local-deployment, models.openai-compatible-inference]
+  scenario_name: "Engine matrix deploy and infer with fractional co-location"
+
+# Justification: TS17 — TestRetrievalJobOperations::test_create_and_get_job
+# creates an async retrieval job and polls its status by job_id;
+# TestRetrievalJobStatus covers the job-status API including error paths.
+- pattern: "tests/integration/test_retrieval_live.py::*"
+  capability_ids: [retrieval.async-retrieval-jobs]
+  scenario_name: "Async retrieval job lifecycle"
+
+# Justification: test_s3_ingest_and_retrieve_inline / _grpc ingest a sample
+# dataset into the catalog and then run retrieval jobs streaming results
+# inline and over gRPC (per test_retrieval_live.py's docstring these carry
+# TS17.001/TS17.003 coverage).
+- pattern: "tests/integration/test_catalog_ingest_retrieval.py::*"
+  capability_ids: [catalog.dataset-registry, retrieval.async-retrieval-jobs]
+  scenario_name: "Catalog ingest to retrieval round-trip (inline and gRPC)"
+
+# Justification: test_catalog_dataset_and_secret_lifecycle registers a
+# dataset and secret in the catalog and walks their full lifecycle.
+- pattern: "tests/integration/test_catalog_live.py::test_catalog_dataset_and_secret_lifecycle"
+  capability_ids: [catalog.dataset-registry]
+  scenario_name: "Catalog dataset and secret lifecycle"
+
+# Justification: dataset schema/variant endpoints, container list/URN/path/v2
+# endpoints, and secret endpoints — the catalog registry API surface
+# (test_catalog_dataset_schema_endpoints, test_catalog_dataset_variant_endpoints,
+# test_catalog_container_by_urn_and_path_endpoints, ...).
+- pattern: "tests/integration/test_catalog_endpoints.py::*"
+  capability_ids: [catalog.dataset-registry]
+  scenario_name: "Catalog dataset, container, and secret endpoint surface"
+
+# Justification: file/object/parquet/postgres/kafka/slack ingestion registers
+# datasets with metadata in the catalog (test_catalog_*_ingestion_metadata,
+# test_catalog_container_link_sets_dataset_container_urn) and the inline /
+# SSE retrieval tests run retrieval jobs over the ingested data.
+- pattern: "tests/integration/test_catalog_multi_source.py::*"
+  capability_ids: [catalog.dataset-registry, retrieval.async-retrieval-jobs]
+  scenario_name: "Multi-source catalog ingestion with inline retrieval"
+
+# Justification: test_context_search_contract and
+# test_context_agentic_search_contract search over documents ingested into a
+# workroom-scoped vectordb (session_workroom + search_contract_vectordb
+# fixtures). NOTE the deliberately tight glob: a plain "test_context_*_contract"
+# would also catch test_context_list_raw_files_empty_contract /
+# test_context_list_omniparses_contract, which are listing-endpoint contracts,
+# not document search.
+- pattern: "tests/integration/test_context_live.py::test_context_*search_contract"
+  capability_ids: [context.workroom-document-search]
+  scenario_name: "Workroom-scoped document search contracts"
+
+# Justification: test_context_retrieve_contract retrieves sources for a query
+# from the same workroom-scoped vectordb as the search contracts above
+# (separate entry because no single glob covers exactly the three
+# search/retrieve contract tests).
+- pattern: "tests/integration/test_context_live.py::test_context_retrieve_contract"
+  capability_ids: [context.workroom-document-search]
+  scenario_name: "Workroom-scoped document retrieve contract"
+
+# Justification: test_context_workroom_scope_clients_isolate_vectordb_views
+# proves two workroom-scoped clients see isolated vectordb views — the
+# session-scoping contract applied to context resources.
+- pattern: "tests/integration/test_context_live.py::test_context_workroom_scope_clients_isolate_vectordb_views"
+  capability_ids: [workrooms.session-scoping]
+  scenario_name: "Workroom-scoped clients isolate vectordb views"
+
+# Justification: TestWorkroomCrudIsolation — create/get/list/update/archive
+# workrooms plus the Global-workroom guardrails (exists, cannot delete).
+- pattern: "tests/integration/test_workroom_isolation_live.py::TestWorkroomCrudIsolation::*"
+  capability_ids: [workrooms.create]
+  scenario_name: "Workroom creation and CRUD lifecycle"
+
+# Justification: the whole module validates the workroom access matrix with
+# workroom-scoped sessions (X-Workroom-Id): self-access allowed
+# (TestSelfAccess), cross-workroom NEVER (TestCrossWorkspaceBlocked),
+# Global cannot see workspaces (TestGlobalCannotSeeWorkspaces), workspaces
+# can read Global (TestWorkspaceCanSeeGlobal), lifecycle isolation. The
+# CRUD class is included by the glob; its create/list visibility checks are
+# themselves per-session scoping assertions, so the overlap is intentional.
+- pattern: "tests/integration/test_workroom_isolation_live.py::*"
+  capability_ids: [workrooms.session-scoping]
+  scenario_name: "Workroom session-scoping access matrix"
+
+# Justification: ENG-6952 control plane — test_register_from_spec_returns_dataset_urn
+# registers a managed data source from a connector spec (returning its
+# dataset URN), the rejection tests pin spec validation (inline secret,
+# missing platform, unknown field), and test_publisher_grant_then_revoke
+# covers publisher access management.
+- pattern: "tests/integration/test_connector_spec_live.py::*"
+  capability_ids: [connectors.managed-data-sources]
+  scenario_name: "Managed data source registration from connector spec"
+
+# Justification: TestFederationTwoClusterWalkthrough::test_federated_job_run_via_mesh
+# runs a job on the peer cluster through the mesh and
+# ::test_federated_job_audit_actor_round_trip proves the audit actor
+# round-trip for that remote execution (ENG-5784 two-cluster rig).
+- pattern: "tests/integration/test_federation_two_cluster_live.py::*test_federated_job_*"
+  capability_ids: [federation.remote-jobs]
+  scenario_name: "Federated job execution via mesh"
+
+# Justification: the M3 ship-gate walkthrough's step 7 submits a federated
+# job via kz.jobs.run against the paired LYRA/ORION fleet and step 8
+# asserts the audit_actor round-trip. (Its gate/dataset steps exercise
+# federation surfaces outside this kit's capability inventory, so only
+# remote-jobs is claimed.)
+- pattern: "tests/integration/test_m3_walkthrough_live.py::test_m3_full_walkthrough_against_live_fleet"
+  capability_ids: [federation.remote-jobs]
+  scenario_name: "M3 fleet walkthrough federated job submission"
