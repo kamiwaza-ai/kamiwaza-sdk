@@ -59,10 +59,12 @@
 #     models.local-deployment, so it stays unmapped.
 #   * test_retrieval_live.py — TestRetrievalJobOperations::test_create_and_get_job
 #     does create a real job and poll it, but its status assertion is
-#     `isinstance(status, str)`, so a job that ran and FAILED passes. The two
-#     retained retrieval entries below assert row_count >= 1 on a real result,
-#     which is strictly stronger; mapping this one too would only weaken the
-#     claim, so retrieval.async-retrieval-jobs rests on those instead.
+#     `isinstance(status, str)`, so a job that ran and FAILED passes. Every
+#     test under the two retained retrieval entries below asserts a real
+#     retrieval *artifact* instead — rows returned (row_count > 0), SSE events
+#     emitted, or a gRPC transport handshake — which is strictly stronger;
+#     mapping this one alongside them would only weaken the claim, so
+#     retrieval.async-retrieval-jobs rests on those instead.
 #   * test_context_workroom_scope_clients_isolate_vectordb_views — NOT
 #     evidence for workrooms.session-scoping despite its name. Its own
 #     docstring is the accurate one ("Derived SDK clients can carry workroom
