@@ -57,6 +57,13 @@
 #   * test_serving_endpoints_live.py — reads serving status/health/logs of
 #     whatever is already deployed; it observes but does not demonstrate
 #     models.local-deployment, so it stays unmapped.
+#   * test_context_workroom_scope_clients_isolate_vectordb_views — NOT
+#     evidence for workrooms.session-scoping despite its name. Its own
+#     docstring is the accurate one ("Derived SDK clients can carry workroom
+#     scope as a context manager"): it creates ONE workroom and ONE scoped
+#     client, then asserts the vectordb it made is listed and carries that
+#     workroom_id. No second scope, no absence assertion — it fails the
+#     retention test applied to the access-matrix entry below.
 
 # Justification: test_live_model_metadata_and_download searches the hub for
 # the canonical repo (mlx-community/Qwen3-4B-4bit), ensures it is downloaded
@@ -183,13 +190,6 @@
     - "*::test_catalog_slack_ingestion_metadata"
     - "*::test_catalog_container_link_sets_dataset_container_urn"
     - "*::test_catalog_inline_large_object_hits_threshold"
-
-# Justification: test_context_workroom_scope_clients_isolate_vectordb_views
-# proves two workroom-scoped clients see isolated vectordb views — the
-# session-scoping contract applied to context resources.
-- pattern: "tests/integration/test_context_live.py::test_context_workroom_scope_clients_isolate_vectordb_views"
-  capability_ids: [workrooms.session-scoping]
-  scenario_name: "Workroom-scoped clients isolate vectordb views"
 
 # Justification: TestWorkroomCrudIsolation — create/get/list/update/archive
 # workrooms. Every retained test creates one, either through the workroom_a /
