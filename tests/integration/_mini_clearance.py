@@ -23,7 +23,9 @@ import hashlib
 import json
 import os
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, NoReturn, Optional
+
+from kamiwaza_sdk.exceptions import APIError
 
 GATE_CLASSPATH = "acme_gates.mini_clearance_gate.MiniClearanceGate"
 GATE_NAME = "mini_clearance_gate"
@@ -31,6 +33,22 @@ WHEEL_NAME = "acme_gates-1.1.0-py3-none-any.whl"
 PACKAGE_SPEC = "acme-gates==1.1.0"
 
 _FIXTURE = Path(__file__).parent / "fixtures" / "mini_clearance_records.json"
+
+# FastAPI auth denials are normally a few hundred bytes. Keep enough room for
+# structured detail while preventing a peer from making this live-test helper
+# retain or print an unbounded streaming response.
+_MESH_STREAM_ERROR_BODY_LIMIT_BYTES = 8 * 1024
+_MESH_STREAM_ERROR_CHUNK_BYTES = 1024
+_MESH_STREAM_ERROR_TRUNCATION_MARKER = (
+    f"...[truncated after {_MESH_STREAM_ERROR_BODY_LIMIT_BYTES} bytes]"
+)
+
+
+class _MeshStreamAPIError(APIError):
+    """Raw mesh stream failure with an explicit diagnostic truncation signal."""
+
+    response_truncated: bool
+
 
 # persona clearance -> (included, redacted, allowed classifications)
 KNOWN: dict[str, tuple[int, int, set[str]]] = {
@@ -285,6 +303,45 @@ def retrieve_through_gate(
     return rows, gate_audits
 
 
+def _read_bounded_stream_error_body(response: Any) -> tuple[bytes, bool]:
+    retained = bytearray()
+    truncated = False
+    for chunk in response.iter_content(chunk_size=_MESH_STREAM_ERROR_CHUNK_BYTES):
+        if not chunk:
+            continue
+        remaining = _MESH_STREAM_ERROR_BODY_LIMIT_BYTES - len(retained)
+        if len(chunk) <= remaining:
+            retained.extend(chunk)
+            continue
+        retained.extend(chunk[:remaining])
+        truncated = True
+        break
+    return bytes(retained), truncated
+
+
+def _decode_stream_error_body(response: Any) -> tuple[str, Any, bool]:
+    body, truncated = _read_bounded_stream_error_body(response)
+    text = body.decode("utf-8", errors="replace")
+    if truncated:
+        return f"{text}{_MESH_STREAM_ERROR_TRUNCATION_MARKER}", None, True
+    try:
+        return text, json.loads(text), False
+    except json.JSONDecodeError:
+        return text, None, False
+
+
+def _raise_mesh_stream_error(response: Any) -> NoReturn:
+    diagnostic, response_data, response_truncated = _decode_stream_error_body(response)
+    error = _MeshStreamAPIError(
+        f"mesh retrieval stream returned {response.status_code}: {diagnostic}",
+        status_code=response.status_code,
+        response_text=diagnostic,
+        response_data=response_data,
+    )
+    error.response_truncated = response_truncated
+    raise error
+
+
 def mesh_retrieve_through_gate(
     persona_client: Any,
     base_url: str,
@@ -336,11 +393,7 @@ def mesh_retrieve_through_gate(
         url, headers=headers, stream=True, verify=verify, timeout=120
     ) as sr:
         if sr.status_code in (403, 404):
-            from kamiwaza_sdk.exceptions import APIError
-
-            exc = APIError(f"mesh retrieval stream returned {sr.status_code}")
-            exc.status_code = sr.status_code  # let _mesh_call_or_skip classify it
-            raise exc
+            _raise_mesh_stream_error(sr)
         sr.raise_for_status()
         event: Optional[str] = None
         data_lines: list[str] = []

@@ -29,6 +29,9 @@ error:
 
 An auth-layer 403 is never PASS: those reasons are the receiver refusing the
 credential itself, which is the same failure a 401 is, wearing a different code.
+Likewise, a truncated 403/404 is never a SKIP: once its body is incomplete the
+classifier cannot prove that an auth-layer reason was absent, so it fails closed
+without fabricating a reason the receiver did not provide.
 """
 
 from __future__ import annotations
@@ -89,6 +92,7 @@ class MeshFailure:
     status: Optional[int]
     reason: Optional[str]
     blob: str
+    response_truncated: bool = False
 
 
 def reason_of(exc: BaseException) -> Optional[str]:
@@ -115,6 +119,11 @@ def is_auth_layer(failure: MeshFailure) -> bool:
     return any(marker in failure.blob for marker in ("peer_jwt", "signature"))
 
 
+def _must_fail_denial(failure: MeshFailure) -> bool:
+    """A truncated denial cannot prove it was an ordinary downstream refusal."""
+    return failure.response_truncated or is_auth_layer(failure)
+
+
 def classify(failure: MeshFailure, policy: MeshPolicy) -> str:
     """PASS / SKIP / FAIL for one failed mesh call under one suite's policy."""
     if failure.is_401:
@@ -122,7 +131,7 @@ def classify(failure: MeshFailure, policy: MeshPolicy) -> str:
         # status-based classifier cannot see it at all.
         return FAIL if policy.identity_arranged else SKIP
     if failure.status in (403, 404):
-        if is_auth_layer(failure):
+        if _must_fail_denial(failure):
             return FAIL
         return PASS if policy.admission_is_the_assertion else SKIP
     # 5xx, transport errors, anything unrecognised: never silently tolerated.
@@ -138,13 +147,15 @@ def _failure_from(exc: KamiwazaError) -> MeshFailure:
         status=getattr(exc, "status_code", None),
         reason=reason_of(exc),
         blob=repr(exc).lower(),
+        response_truncated=bool(getattr(exc, "response_truncated", False)),
     )
 
 
 def _message(failure: MeshFailure, policy: MeshPolicy, verdict: str) -> str:
     shape = "401" if failure.is_401 else f"status={failure.status}"
     reason = f" reason={failure.reason}" if failure.reason else ""
-    return f"[{policy.context}] mesh call {verdict}: {shape}{reason}"
+    truncated = " response_truncated=true" if failure.response_truncated else ""
+    return f"[{policy.context}] mesh call {verdict}: {shape}{reason}{truncated}"
 
 
 def mesh_call(call: Callable[[], Any], policy: MeshPolicy) -> Optional[Any]:

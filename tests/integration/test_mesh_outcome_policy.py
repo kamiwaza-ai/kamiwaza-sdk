@@ -104,6 +104,18 @@ class TestAuthLayer403IsNeverThePositiveSignal:
 
 class TestAdmissionAssertionDecidesAPlain403:
     @pytest.mark.parametrize("status", [403, 404])
+    def test_truncated_denial_is_never_a_skip(self, status):
+        failure = MeshFailure(
+            is_401=False,
+            status=status,
+            reason=None,
+            blob="",
+            response_truncated=True,
+        )
+        assert classify(failure, TIER2) == FAIL
+        assert classify(failure, WALKTHROUGH) == FAIL
+
+    @pytest.mark.parametrize("status", [403, 404])
     def test_plain_denial_is_the_positive_signal_for_tier2(self, status):
         """Admitted at ingress, then declined on the merits -- exactly what a
         bare guest with no cluster:viewer grant should get."""
