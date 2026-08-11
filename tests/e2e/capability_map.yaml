@@ -57,6 +57,12 @@
 #   * test_serving_endpoints_live.py — reads serving status/health/logs of
 #     whatever is already deployed; it observes but does not demonstrate
 #     models.local-deployment, so it stays unmapped.
+#   * test_retrieval_live.py — TestRetrievalJobOperations::test_create_and_get_job
+#     does create a real job and poll it, but its status assertion is
+#     `isinstance(status, str)`, so a job that ran and FAILED passes. The two
+#     retained retrieval entries below assert row_count >= 1 on a real result,
+#     which is strictly stronger; mapping this one too would only weaken the
+#     claim, so retrieval.async-retrieval-jobs rests on those instead.
 #   * test_context_workroom_scope_clients_isolate_vectordb_views — NOT
 #     evidence for workrooms.session-scoping despite its name. Its own
 #     docstring is the accurate one ("Derived SDK clients can carry workroom
@@ -64,6 +70,16 @@
 #     client, then asserts the vectordb it made is listed and carries that
 #     workroom_id. No second scope, no absence assertion — it fails the
 #     retention test applied to the access-matrix entry below.
+
+# KNOWN LIMIT of every models.discover-and-download entry below (reviewed,
+# accepted): the download leg runs only on a COLD cluster. `ensure_repo_ready`
+# (tests/integration/conftest.py) returns early when the repo already has ready
+# target files, so on a warm cluster these tests evidence discovery, metadata,
+# and file readiness without re-fetching anything. That is the honest reading of
+# these records. Forcing a fresh multi-GB download on every run belongs in the
+# integration tests as a deliberate choice, not in this mapping; until then,
+# read a warm-cluster record as "the model is discoverable, present, and
+# readable", and a cold-cluster one as the full acquisition path.
 
 # Justification: test_live_model_metadata_and_download searches the hub for
 # the canonical repo (mlx-community/Qwen3-4B-4bit), ensures it is downloaded
@@ -123,16 +139,6 @@
 - pattern: "tests/integration/test_inference_matrix_live.py::*"
   capability_ids: [models.local-deployment, models.openai-compatible-inference]
   scenario_name: "Engine matrix deploy and infer with fractional co-location"
-
-# Justification: TS17 — TestRetrievalJobOperations::test_create_and_get_job
-# creates an async retrieval job and polls its status by job_id. That class
-# is the only part of the module that runs a job; TestRetrievalServiceAvailability
-# merely asserts the SDK service object exists (no platform call at all) and
-# TestRetrievalJobStatus queries a fabricated job id expecting a 404, so both
-# are excluded rather than allowed to evidence the capability.
-- pattern: "tests/integration/test_retrieval_live.py::TestRetrievalJobOperations::*"
-  capability_ids: [retrieval.async-retrieval-jobs]
-  scenario_name: "Async retrieval job lifecycle"
 
 # Justification: test_s3_ingest_and_retrieve_inline / _grpc ingest a sample
 # dataset into the catalog and then run retrieval jobs streaming results
