@@ -140,3 +140,45 @@ def test_real_repo_override_names_are_honored(
     }
 
     assert resolved_targets[target_name].repo_id == "org/override"
+
+
+def test_pinned_repo_derives_llamacpp_from_gguf_weights(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A GGUF pin loads on llama.cpp even on an NVIDIA host."""
+    monkeypatch.setenv("KAMIWAZA_TEST_LLM_REPO", "  Qwen/Qwen3-0.6B-GGUF  ")
+    monkeypatch.setenv("KAMIWAZA_TEST_LLM_QUANT", "q8_0")
+    snapshot = cap.ClusterCapabilitySnapshot(gpu_vendors=frozenset({"nvidia"}))
+
+    selected = targets.select_inference_target(snapshot)
+
+    assert selected.repo_id == "Qwen/Qwen3-0.6B-GGUF"
+    assert selected.engine_name == "llamacpp"
+    assert selected.quantization == "q8_0"
+
+
+def test_pinned_safetensors_follows_host_os_not_the_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Safetensors -> mlx on Apple Silicon, vllm everywhere else."""
+    monkeypatch.setenv("KAMIWAZA_TEST_LLM_REPO", "Qwen/Qwen3-0.6B")
+    monkeypatch.delenv("KAMIWAZA_TEST_LLM_QUANT", raising=False)
+
+    nvidia = cap.ClusterCapabilitySnapshot(gpu_vendors=frozenset({"nvidia"}))
+    apple = cap.ClusterCapabilitySnapshot(
+        os_platforms=frozenset({("darwin", "macos-15.4-arm64-arm-64bit")}),
+    )
+
+    assert targets.select_inference_target(nvidia).engine_name == "vllm"
+    assert targets.select_inference_target(apple).engine_name == "mlx"
+
+
+def test_unpinned_selection_is_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unset pin leaves the hardware defaults exactly as they were."""
+    monkeypatch.delenv("KAMIWAZA_TEST_LLM_REPO", raising=False)
+    monkeypatch.setenv("KAMIWAZA_TEST_LLM_REPO", "   ")
+    snapshot = cap.ClusterCapabilitySnapshot(gpu_vendors=frozenset({"nvidia"}))
+
+    assert targets.select_inference_target(snapshot) == targets.VLLM_LLM_TARGET
