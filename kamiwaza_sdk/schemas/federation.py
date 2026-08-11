@@ -38,7 +38,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class Federation(BaseModel):
@@ -77,7 +77,7 @@ class FederationGuest(BaseModel):
 
     external_id: str
     realm: str
-    offline_token: str
+    offline_token: str = Field(repr=False)
 
 
 class BrokeredUser(BaseModel):

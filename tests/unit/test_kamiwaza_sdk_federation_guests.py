@@ -93,6 +93,22 @@ def test_guests_enroll_posts_and_returns_credential() -> None:
     assert post[1].get("json") == {"external_id": "carol@src-uuid"}
 
 
+def test_federation_guest_repr_hides_offline_token() -> None:
+    """The one-time durable credential must not leak through model reprs."""
+    from kamiwaza_sdk.schemas.federation import FederationGuest
+
+    token = "DURABLE-OFFLINE-TOKEN-SENTINEL"
+    guest = FederationGuest(
+        external_id="carol@src-uuid",
+        realm="federation-test",
+        offline_token=token,
+    )
+
+    assert guest.offline_token == token
+    assert guest.model_dump()["offline_token"] == token
+    assert token not in repr(guest)
+
+
 def test_guests_enroll_forwards_initial_tuples() -> None:
     """Enrollment forwards optional ReBAC seed tuples."""
     from kamiwaza_sdk.services.federations import FederationsAPI
