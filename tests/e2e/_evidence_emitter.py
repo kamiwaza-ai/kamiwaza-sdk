@@ -186,6 +186,14 @@ def _parse_entry(item: object, i: int, *, source: str) -> MapEntry:
 
 def _require_entry_keys(item: dict, i: int, *, source: str) -> None:
     keys = set(item)
+    # YAML happily yields non-string keys (`1:`, `true:`). Reject them before
+    # the sorted() calls below, which would raise TypeError comparing them
+    # against the required string keys and escape the UsageError contract.
+    if not all(isinstance(k, str) for k in keys):
+        raise ValueError(
+            f"{source}: entry[{i}] keys must all be strings; "
+            f"got {sorted(map(repr, keys))}"
+        )
     unexpected = sorted(
         (keys - _REQUIRED_ENTRY_KEYS - _OPTIONAL_ENTRY_KEYS)
         | (_REQUIRED_ENTRY_KEYS - keys)

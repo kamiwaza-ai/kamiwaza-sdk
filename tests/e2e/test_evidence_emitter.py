@@ -432,6 +432,22 @@ def test_loader_rejects_unknown_or_missing_keys(tmp_path, body):
         emitter.load_capability_map(path)
 
 
+@pytest.mark.parametrize("key", ["1", "true"], ids=["int-key", "bool-key"])
+def test_loader_rejects_non_string_keys(tmp_path, key):
+    """YAML yields real ints/bools for bare `1:` / `true:` keys.
+
+    Left unchecked they reach ``sorted()`` alongside the required string keys
+    and raise TypeError, escaping the UsageError refusal contract.
+    """
+    path = tmp_path / "map.yaml"
+    path.write_text(
+        "- pattern: 'x::*'\n  capability_ids: [workrooms.create]\n"
+        f"  scenario_name: 'A'\n  {key}: nope\n"
+    )
+    with pytest.raises(ValueError, match="keys must all be strings"):
+        emitter.load_capability_map(path)
+
+
 def test_loader_rejects_scenario_name_slugging_to_empty(tmp_path):
     """A non-empty name of only non-ASCII characters yields no scenario_id."""
     path = tmp_path / "map.yaml"
@@ -603,6 +619,11 @@ def test_shipped_map_globs_still_match_real_nodeids():
     claiming a capability it never exercised, and a live ``pattern`` is what
     makes an entry produce evidence at all. Either can be voided by a rename
     with every other test still green, so pin both against a real collection.
+
+    Two known gaps, both in the safe direction (missing evidence, never false
+    evidence): ``marker:`` patterns are not checked at all, and a rename
+    inside a wholly marker-deselected file (the two-cluster suite on a
+    single-cluster host) cannot be seen from here.
     """
     nodeids = _collect_repo_nodeids()
     assert nodeids, "collection produced no nodeids; cannot validate the map"

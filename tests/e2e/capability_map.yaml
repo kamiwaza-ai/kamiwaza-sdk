@@ -55,20 +55,23 @@
   capability_ids: [models.discover-and-download]
   scenario_name: "Model discovery, metadata, and hub download"
 
-# Justification: TS11 surface — TestModelFileSearch (hub model-file search),
-# TestModelFileReadOperations and TestModelFileMemoryUsage (reads against the
-# repo ensure_repo_ready downloaded), TestModelFileDownloadStatus, and
-# test_delete_existing_model_file. (TestModelFileDownloadOperations carries
-# unconditional @pytest.mark.skip, so it can never contribute a step.)
+# Justification: TS11 surface — TestModelFileReadOperations and
+# TestModelFileMemoryUsage (reads against the repo ensure_repo_ready actually
+# downloaded), TestModelFileDownloadStatus, and test_delete_existing_model_file.
+# (TestModelFileDownloadOperations carries unconditional @pytest.mark.skip, so
+# it can never contribute a step.)
 # Excluded: TestModelFileValidation and test_delete_nonexistent_model_file
-# assert error handling for a fabricated UUID, and test_create_model_file
-# only registers a SCRATCH metadata row — none of them discovers or
-# downloads a model, so none can stand as evidence for this capability.
+# assert error handling for a fabricated UUID; test_create_model_file only
+# registers a SCRATCH metadata row; and TestModelFileSearch asserts nothing
+# beyond isinstance(results, list) — its own comment notes the hub result may
+# legitimately be empty, so it passes without discovering anything. None of
+# them discovers or downloads a model.
 - pattern: "tests/integration/test_model_files_live.py::*"
   capability_ids: [models.discover-and-download]
-  scenario_name: "Model file search and download management"
+  scenario_name: "Model file read and download management"
   exclude:
     - "*::TestModelFileValidation::*"
+    - "*::TestModelFileSearch::*"
     - "*::test_delete_nonexistent_model_file"
     - "*::test_create_model_file"
 
@@ -210,23 +213,35 @@
     - "*::test_global_workroom_exists"
     - "*::test_cannot_delete_global_workroom"
 
-# Justification: the module validates the workroom access matrix with
-# workroom-scoped sessions (X-Workroom-Id): self-access allowed
-# (TestSelfAccess), cross-workroom NEVER (TestCrossWorkspaceBlocked),
-# Global cannot see workspaces (TestGlobalCannotSeeWorkspaces), workspaces
-# can read Global (TestWorkspaceCanSeeGlobal), lifecycle isolation
-# (TestLifecycleIsolation — both tests assert one workroom's operation does
-# not affect another), and the ?workroom_id=all bypass (TestSentinelAllBypass).
-# The CRUD class overlaps intentionally, but only for its two own-vs-other
-# visibility assertions (create/get own, list returns own).
-# Excluded across every class, by one rule applied consistently: a test that
-# issues a single unscoped operation and asserts nothing about what another
-# session can or cannot see is not evidence of session scoping. That covers
-# the Global guardrails and update/archive of one's own workroom; the plain
-# read of the Global workroom in TestWorkspaceCanSeeGlobal (an exact twin of
-# the excluded CRUD-class read); archive-visibility-with-flag, which lists
-# only its own workroom; and the ?workroom_id=all deployments test, whose
-# only assertion is isinstance(result, list).
+# THE RETENTION TEST, applied per test rather than per class: the test must
+# assert something about what one session can or cannot see *relative to
+# another* (or relative to the no-header default). Asserting only that a
+# fetched object reports its own id, or that a list is a list, does not
+# demonstrate scoping no matter which class it sits in.
+#
+# Retained (11 of 23): TestSelfAccess (connectors/extensions scoped to own
+# workroom); TestCrossWorkspaceBlocked's three A-cannot-see-B / B-cannot-see-A
+# assertions; TestGlobalCannotSeeWorkspaces' two "Global excludes workspace
+# resources" assertions; TestLifecycleIsolation::test_delete_workroom_does_not
+# _affect_other; TestSentinelAllBypass::test_connectors_without_header_defaults
+# _to_global; and, from the CRUD class, its two own-vs-other visibility checks
+# (create/get own, list returns own) — that overlap is intentional.
+#
+# Excluded, each failing the retention test above:
+#   * the Global guardrails and update/archive of one's own workroom — single
+#     unscoped operations by one session;
+#   * TestWorkspaceCanSeeGlobal in full — all four tests read a Global resource
+#     and assert only that the object returned reports GLOBAL as its id; that
+#     shows access is permitted, not that scoping is enforced;
+#   * test_global_export_excludes_workspace_resources — despite its name it
+#     takes no workroom fixture, so no workspace exists during the test, and it
+#     asserts only manifest.workroom_id == GLOBAL;
+#   * test_workroom_export_only_shows_own_resources — workroom_b is never
+#     requested; it asserts A's manifest is A's and non-empty;
+#   * test_archive_workroom_still_visible_with_flag — lists only its own
+#     workroom;
+#   * test_deployments_all_returns_across_workrooms — its only assertion is
+#     isinstance(result, list); it never checks the result spans workrooms.
 - pattern: "tests/integration/test_workroom_isolation_live.py::*"
   capability_ids: [workrooms.session-scoping]
   scenario_name: "Workroom session-scoping access matrix"
@@ -235,7 +250,9 @@
     - "*::test_cannot_delete_global_workroom"
     - "*::TestWorkroomCrudIsolation::test_update_own_workroom"
     - "*::TestWorkroomCrudIsolation::test_archive_own_workroom"
-    - "*::test_workspace_user_can_read_global_workroom"
+    - "*::TestWorkspaceCanSeeGlobal::*"
+    - "*::test_global_export_excludes_workspace_resources"
+    - "*::test_workroom_export_only_shows_own_resources"
     - "*::test_archive_workroom_still_visible_with_flag"
     - "*::test_deployments_all_returns_across_workrooms"
 
