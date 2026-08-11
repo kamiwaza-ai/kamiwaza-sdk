@@ -117,6 +117,7 @@ def _retag_appgarden_compose(
     # published_refs and the dev pipeline.
     canonical_by_name = compute_canonical_refs(
         source_services,
+        purpose="publish",
         registry=registry,
         extension_name=extension_name,
         revision_tag=image_tag,
@@ -146,7 +147,8 @@ def _retag_appgarden_compose(
             # Preserve declared namespace; we only rewrite the tag.
             svc["image"] = _canonical_build_ref(
                 svc, svc_name,
-                fallback_registry=registry,
+                purpose="publish",
+                registry=registry,
                 fallback_extension_name=extension_name,
                 revision_tag=image_tag,
                 fallback_image_basename=image_basename,
@@ -477,6 +479,7 @@ def _publish_one(
             extension_name=info.name,
             revision_tag=image_tag,
             registry=registry,
+            purpose="publish",
             image_basename=info.image_basename,
         )
 
@@ -493,6 +496,7 @@ def _publish_one(
     )
     canonical_refs: Dict[str, str] = compute_canonical_refs(
         info.compose_data.get("services") or {},
+        purpose="publish",
         registry=registry,
         extension_name=info.name,
         revision_tag=image_tag,

@@ -10,11 +10,14 @@ sandbox pod ImagePullBackOffs on a ref that doesn't exist and chat 500s.
 
 This is the dev analog of ENG-5260 (publish-side env-image rewriting in
 ``registry_builder._apply_env_image_rewrites``). It additionally aligns
-``SANDBOX_ALLOWED_IMAGE_PREFIXES`` in lockstep — the agent (a profiled
-``image-only`` build-context service) is built at the legacy fallback
-``{registry}/{ext}-agent:{tag}`` path, which is *outside* the original
-whitelist, so the sandbox controller would reject the very image the
-backend asks it to run.
+``SANDBOX_ALLOWED_IMAGE_PREFIXES`` in lockstep — the agent is built into the
+cluster dev registry, which is *outside* the original whitelist (that names
+the ghcr.io publish namespace), so the sandbox controller would otherwise
+reject the very image the backend asks it to run.
+
+ENG-8626: the agent used to be built at the legacy ``{registry}/{ext}-agent``
+fallback purely because profiled services were omitted from the canonical-ref
+map. It now shares the same relocation rule as every other owned build image.
 """
 
 from __future__ import annotations
@@ -52,10 +55,23 @@ _BACKEND_GHCR = (
 _CONTROLLER_GHCR = (
     "ghcr.io/kamiwaza-internal/kamiwaza-extensions-kaizen/images/kaizen-controller"
 )
-# What ImageBuilder.build actually tags the agent at: the profiled service
-# is excluded from canonical_refs, so the builder falls back to
-# ``{registry}/{ext}-{svc}:{tag}``.
-_AGENT_BUILT = f"{_REGISTRY}/{_EXT}-agent:{_REV}"
+def _dev_repo(ghcr_repo: str) -> str:
+    """The dev-registry repo for a declared GHCR repo (ENG-8626).
+
+    ``purpose="dev"`` swaps the registry host and keeps the repository path,
+    so every owned Kaizen image lands beneath the cluster dev registry at a
+    distinct, deterministic path.
+    """
+    return ghcr_repo.replace("ghcr.io", _REGISTRY, 1)
+
+
+# What ImageBuilder.build actually tags each owned image at. Pre-ENG-8626 the
+# agent (profiled → absent from canonical_refs) fell back to
+# ``{registry}/{ext}-agent:{tag}`` while its non-profiled siblings kept their
+# declared ghcr.io namespace — the mixed batch this ticket removes.
+_AGENT_BUILT = f"{_dev_repo(_AGENT_GHCR)}:{_REV}"
+_BACKEND_BUILT = f"{_dev_repo(_BACKEND_GHCR)}:{_REV}"
+_CONTROLLER_BUILT = f"{_dev_repo(_CONTROLLER_GHCR)}:{_REV}"
 
 
 def _kaizen_compose() -> dict:
@@ -96,34 +112,41 @@ def _kaizen_compose() -> dict:
 def _ref_map(source_services: dict) -> dict:
     canonical = compute_canonical_refs(
         source_services,
+        purpose="dev",
         registry=_REGISTRY,
         extension_name=_EXT,
         revision_tag=_REV,
     )
-    return build_image_ref_map(
-        source_services,
-        canonical,
-        registry=_REGISTRY,
-        extension_name=_EXT,
-        revision_tag=_REV,
-    )
+    return build_image_ref_map(source_services, canonical)
 
 
 class TestBuildImageRefMap:
-    """``build_image_ref_map`` mirrors ImageBuilder.build's per-service ref
-    selection so the env rewrite targets the exact ref the agent is built and
-    pushed at."""
+    """``build_image_ref_map`` reads the dev canonical map, so the env rewrite
+    targets the exact ref each image is built and pushed at."""
 
-    def test_profiled_agent_maps_to_legacy_fallback_ref(self):
+    def test_profiled_agent_maps_to_dev_registry_ref(self):
         ref_map = _ref_map(_kaizen_compose()["services"])
-        # The profiled agent is excluded from canonical_refs, so ImageBuilder
-        # tags it at {registry}/{ext}-agent:{tag} — that's where it lives.
+        # ENG-8626: the profiled agent is in the dev canonical map now, so it
+        # is built at the same relocated path as its siblings rather than the
+        # legacy {registry}/{ext}-agent fallback it used to get by omission.
         assert ref_map[_AGENT_GHCR] == _AGENT_BUILT
 
-    def test_normal_service_keeps_declared_namespace(self):
+    def test_normal_service_relocated_to_dev_registry(self):
         ref_map = _ref_map(_kaizen_compose()["services"])
-        # Non-profiled services keep their declared namespace (canonical).
-        assert ref_map[_BACKEND_GHCR] == f"{_BACKEND_GHCR}:{_REV}"
+        # ENG-8626: this used to assert the declared ghcr.io namespace was
+        # kept — i.e. that kz-ext dev built and pushed an owned image to the
+        # org registry. It builds into the cluster dev registry instead.
+        assert ref_map[_BACKEND_GHCR] == _BACKEND_BUILT
+        assert not ref_map[_BACKEND_GHCR].startswith("ghcr.io/")
+
+    def test_every_owned_image_lands_under_the_dev_registry(self):
+        ref_map = _ref_map(_kaizen_compose()["services"])
+        # The whole point: one registry for the whole batch, no mixed refs.
+        assert set(ref_map) == {_AGENT_GHCR, _BACKEND_GHCR, _CONTROLLER_GHCR}
+        assert all(
+            built.startswith(f"{_REGISTRY}/") for built in ref_map.values()
+        ), ref_map
+        assert ref_map[_CONTROLLER_GHCR] == _CONTROLLER_BUILT
 
     def test_external_image_excluded(self):
         ref_map = _ref_map(_kaizen_compose()["services"])
@@ -139,7 +162,11 @@ class TestRewriteEnvImageRefs:
         compose = _kaizen_compose()
         transformer = ComposeTransformer()
         transformed = transformer.transform(
-            compose, extension_name=_EXT, revision_tag=_REV, registry=_REGISTRY
+            compose,
+            extension_name=_EXT,
+            revision_tag=_REV,
+            registry=_REGISTRY,
+            purpose="dev",
         )
         return transformer.resolve_env_placeholders(transformed)
 
@@ -163,8 +190,12 @@ class TestRewriteEnvImageRefs:
         env = result["services"]["sandbox-controller"]["environment"]
         prefixes = env["SANDBOX_ALLOWED_IMAGE_PREFIXES"].split(",")
         # The built agent prefix is appended; the originals are preserved
-        # (some flows may still reference the ghcr path).
-        assert f"{_REGISTRY}/{_EXT}-agent" in prefixes
+        # (some flows may still reference the ghcr path). The appended prefix
+        # must be the *relocated* repo — the controller gates the sandbox on
+        # this list, so it has to admit exactly the ref AGENT_SERVER_IMAGE
+        # names, which is now under the dev registry (ENG-8626).
+        assert _dev_repo(_AGENT_GHCR) in prefixes
+        assert _AGENT_BUILT.startswith(_dev_repo(_AGENT_GHCR) + ":")
         assert "ghcr.io/openhands/" in prefixes
         assert _AGENT_GHCR in prefixes
 
@@ -199,7 +230,11 @@ class TestRewriteEnvImageRefsCatalogSurface:
         ref_map = _ref_map(compose["services"])
         # catalog_compose is transformed but NOT resolve_env_placeholders'd.
         catalog = ComposeTransformer().transform(
-            compose, extension_name=_EXT, revision_tag=_REV, registry=_REGISTRY
+            compose,
+            extension_name=_EXT,
+            revision_tag=_REV,
+            registry=_REGISTRY,
+            purpose="dev",
         )
 
         result = rewrite_env_image_refs(catalog, ref_map)
@@ -240,7 +275,7 @@ class TestRewriteEnvImageRefsCatalogSurface:
         # Substitution form preserved, built prefix appended inside it.
         assert wl == (
             f"${{SANDBOX_ALLOWED_IMAGE_PREFIXES:-ghcr.io/openhands/,"
-            f"{_AGENT_GHCR},{_REGISTRY}/{_EXT}-agent}}"
+            f"{_AGENT_GHCR},{_dev_repo(_AGENT_GHCR)}}}"
         )
 
 

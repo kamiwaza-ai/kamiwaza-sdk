@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import base64
+import logging
 import os
 import time
 from collections.abc import Generator
 from datetime import datetime, timedelta, timezone
+from typing import Final
 from uuid import uuid4
 
 import pytest
@@ -15,6 +17,9 @@ from kamiwaza_sdk import KamiwazaClient
 from kamiwaza_sdk.authentication import UserPasswordAuthenticator
 from kamiwaza_sdk.exceptions import APIError, NotFoundError
 from kamiwaza_sdk.services.context import ContextService
+
+logger = logging.getLogger(__name__)
+_VECTORDB_STOPPED_GRACE_SECONDS: Final[float] = 30.0
 
 pytestmark = [
     pytest.mark.integration,
@@ -52,6 +57,28 @@ def _assert_global_scope_if_exposed(resource: dict[str, object]) -> None:
     assert str(workroom_id) == ContextService.DEFAULT_WORKROOM_ID
 
 
+def _next_stopped_since(
+    vectordb_id: str,
+    status: str,
+    stopped_since: float | None,
+    now: float,
+) -> float | None:
+    """Return updated stopped timing or raise for a terminal provisioning state."""
+    if status == "failed":
+        raise RuntimeError(
+            f"VectorDB {vectordb_id} entered non-recoverable status {status}"
+        )
+    if status != "stopped":
+        return None
+    if stopped_since is None:
+        return now
+    if now - stopped_since >= _VECTORDB_STOPPED_GRACE_SECONDS:
+        raise RuntimeError(
+            f"VectorDB {vectordb_id} remained stopped during provisioning"
+        )
+    return stopped_since
+
+
 def _wait_for_vectordb_ready(
     service: ContextService,
     vectordb_id: str,
@@ -62,6 +89,8 @@ def _wait_for_vectordb_ready(
 ) -> None:
     deadline = time.monotonic() + timeout_seconds
     last_status = "unknown"
+    reported_status: str | None = None
+    stopped_since: float | None = None
 
     while True:
         try:
@@ -74,13 +103,24 @@ def _wait_for_vectordb_ready(
 
         last_status = str(instance.get("status", "unknown")).lower()
         endpoint = instance.get("endpoint")
+        if last_status != reported_status:
+            logger.info(
+                "VectorDB %s provisioning status=%s endpoint=%s",
+                vectordb_id,
+                last_status,
+                endpoint,
+            )
+            reported_status = last_status
         if last_status == "running" and endpoint:
             return
-        if last_status in {"failed", "stopped"}:
-            raise RuntimeError(
-                f"VectorDB {vectordb_id} entered non-recoverable status {last_status}"
-            )
-        if time.monotonic() >= deadline:
+        now = time.monotonic()
+        stopped_since = _next_stopped_since(
+            vectordb_id,
+            last_status,
+            stopped_since,
+            now,
+        )
+        if now >= deadline:
             raise TimeoutError(
                 f"Timed out waiting for VectorDB {vectordb_id} to be ready "
                 f"(last_status={last_status}, endpoint={endpoint})"
@@ -158,29 +198,20 @@ def _safe_delete_vectordb(
     *,
     workroom_id: str | None = None,
 ) -> None:
-    try:
-        service.delete_vectordb(vectordb_id, workroom_id=workroom_id)
-    except APIError:
-        pass
+    for attempt in range(3):
+        try:
+            service.delete_vectordb(vectordb_id, workroom_id=workroom_id)
+            return
+        except NotFoundError:
+            return
+        except APIError:
+            if attempt == 2:
+                return
+            time.sleep(2.0)
 
 
 def _vectordb_ids(resources: list[dict[str, object]]) -> set[str]:
     return {str(resource["id"]) for resource in resources if resource.get("id")}
-
-
-def _safe_scale_vectordb(
-    service: ContextService,
-    vectordb_id: str,
-    *,
-    replicas: int,
-    workroom_id: str | None = None,
-) -> None:
-    try:
-        service.scale_vectordb(
-            vectordb_id, replicas=replicas, workroom_id=workroom_id
-        )
-    except APIError:
-        pass
 
 
 def _create_temp_ontology(service: ContextService, *, prefix: str) -> str:
@@ -335,9 +366,7 @@ def _cleanup_stale_sdk_vdbs(shared_context_service: ContextService) -> None:
             vdbs = []
         for vdb in vdbs:
             if _is_stale_sdk_resource(vdb, _STALE_THRESHOLD):
-                _safe_delete_vectordb(
-                    service, vdb["id"], workroom_id=workroom_id
-                )
+                _safe_delete_vectordb(service, vdb["id"], workroom_id=workroom_id)
         try:
             ontologies = service.list_ontologies(workroom_id=workroom_id)
         except APIError:
@@ -367,9 +396,8 @@ def session_workroom(
     try:
         yield workroom_id
     finally:
-        # delete() raises NotFoundError (a sibling of APIError, not a subclass)
-        # when the workroom is already gone, so catch both to keep teardown
-        # best-effort -- matching the sibling test_workroom_isolation_live.py.
+        # Workroom teardown is best-effort because earlier cleanup or backend
+        # races can report the room as already gone.
         try:
             workrooms.delete(workroom_id)
         except (APIError, NotFoundError):
@@ -386,6 +414,33 @@ def shared_workroom_vectordb(
     vectordb_id = _create_temp_vectordb(
         service,
         prefix="sdk-shared-vdb-workroom",
+        workroom_id=session_workroom,
+    )
+    try:
+        yield vectordb_id
+    finally:
+        _safe_delete_vectordb(
+            service,
+            vectordb_id,
+            workroom_id=session_workroom,
+        )
+
+
+@pytest.fixture(scope="session")
+def search_contract_vectordb(
+    shared_context_service: ContextService,
+    session_workroom: str,
+) -> Generator[str, None, None]:
+    """Clean backend for search/retrieve response-shape contracts.
+
+    These live tests assert API contract shape, not ranking/indexing semantics.
+    Keep them off the shared backend so earlier vector insert/query tests cannot
+    leave collections that turn a shape check into a data-search assertion.
+    """
+    service = shared_context_service
+    vectordb_id = _create_temp_vectordb(
+        service,
+        prefix="sdk-search-contract-vdb-workroom",
         workroom_id=session_workroom,
     )
     try:
@@ -613,7 +668,6 @@ def _vectordb_replicas(instance: dict) -> int | None:
 def test_context_vectordb_update_accepts_config_and_redacts_public_response(
     shared_context_service: ContextService,
     session_workroom: str,
-    shared_workroom_vectordb: str,
 ) -> None:
     """update_vectordb accepts config while public reads redact that config.
 
@@ -622,47 +676,63 @@ def test_context_vectordb_update_accepts_config_and_redacts_public_response(
     redacts config so credentials do not leak through lifecycle responses.
     """
     service = shared_context_service
-    vectordb_id = shared_workroom_vectordb
-
-    before = service.get_vectordb(vectordb_id, workroom_id=session_workroom)
-    baseline_replicas = _vectordb_replicas(before) or 1
-    config_marker = f"sdk-live-update-{uuid4().hex[:8]}"
-
-    updated = service.update_vectordb(
-        vectordb_id,
-        config={"sdk_test_marker": config_marker},
-        replicas=baseline_replicas,
+    vectordb_id = _create_temp_vectordb(
+        service,
+        prefix="sdk-update-vdb-workroom",
         workroom_id=session_workroom,
     )
-    assert updated["id"] == vectordb_id
-    assert _vectordb_replicas(updated) == baseline_replicas
+    try:
+        before = service.get_vectordb(vectordb_id, workroom_id=session_workroom)
+        baseline_replicas = _vectordb_replicas(before) or 1
+        config_marker = f"sdk-live-update-{uuid4().hex[:8]}"
 
-    refetched = service.get_vectordb(vectordb_id, workroom_id=session_workroom)
-    assert refetched["id"] == vectordb_id
-    assert "config" not in refetched
-    assert _vectordb_replicas(refetched) == baseline_replicas
+        updated = service.update_vectordb(
+            vectordb_id,
+            config={"sdk_test_marker": config_marker},
+            replicas=baseline_replicas,
+            workroom_id=session_workroom,
+        )
+        assert updated["id"] == vectordb_id
+        assert _vectordb_replicas(updated) == baseline_replicas
+
+        refetched = service.get_vectordb(vectordb_id, workroom_id=session_workroom)
+        assert refetched["id"] == vectordb_id
+        assert "config" not in refetched
+        assert _vectordb_replicas(refetched) == baseline_replicas
+    finally:
+        _safe_delete_vectordb(
+            service,
+            vectordb_id,
+            workroom_id=session_workroom,
+        )
 
 
 def test_context_vectordb_scale_reflects_requested_replicas(
     shared_context_service: ContextService,
     session_workroom: str,
-    shared_workroom_vectordb: str,
 ) -> None:
     """scale_vectordb is accepted and the response echoes the requested replicas.
 
     Assertion posture is API round-trip, not physical provisioning: a single-node
     local Milvus may clamp the effective replica count, so we assert the call
-    succeeds and the returned instance reflects the requested ``replicas``, then
-    scale back to the baseline (session teardown also deletes the VDB).
+    succeeds and the returned instance reflects the requested ``replicas``.
+
+    Use a dedicated backend because scale operations can restart or replace
+    Milvus pods; this API round trip should not mutate backends reused by later
+    context contract tests.
     """
     service = shared_context_service
-    vectordb_id = shared_workroom_vectordb
-
-    before = service.get_vectordb(vectordb_id, workroom_id=session_workroom)
-    baseline_replicas = _vectordb_replicas(before) or 1
-    target_replicas = baseline_replicas + 1
+    vectordb_id = _create_temp_vectordb(
+        service,
+        prefix="sdk-scale-vdb-workroom",
+        workroom_id=session_workroom,
+    )
 
     try:
+        before = service.get_vectordb(vectordb_id, workroom_id=session_workroom)
+        baseline_replicas = _vectordb_replicas(before) or 1
+        target_replicas = baseline_replicas + 1
+
         scaled = service.scale_vectordb(
             vectordb_id,
             replicas=target_replicas,
@@ -671,10 +741,9 @@ def test_context_vectordb_scale_reflects_requested_replicas(
         assert scaled["id"] == vectordb_id
         assert _vectordb_replicas(scaled) == target_replicas
     finally:
-        _safe_scale_vectordb(
+        _safe_delete_vectordb(
             service,
             vectordb_id,
-            replicas=baseline_replicas,
             workroom_id=session_workroom,
         )
 
@@ -1001,16 +1070,16 @@ def test_context_workroom_collection_lifecycle(
 def test_context_search_contract(
     shared_context_service: ContextService,
     session_workroom: str,
-    shared_workroom_vectordb: str,
+    search_contract_vectordb: str,
 ) -> None:
     service = shared_context_service
     workroom_id = session_workroom
-    assert shared_workroom_vectordb
+    vectordb_id = search_contract_vectordb
 
     search = service.search(
         workroom_id=workroom_id,
         query="hello context",
-        vectordb_id=shared_workroom_vectordb,
+        vectordb_id=vectordb_id,
     )
     assert isinstance(search.get("results"), list)
 
@@ -1019,16 +1088,16 @@ def test_context_search_contract(
 def test_context_retrieve_contract(
     shared_context_service: ContextService,
     session_workroom: str,
-    shared_workroom_vectordb: str,
+    search_contract_vectordb: str,
 ) -> None:
     service = shared_context_service
     workroom_id = session_workroom
-    assert shared_workroom_vectordb
+    vectordb_id = search_contract_vectordb
 
     retrieve = service.retrieve(
         workroom_id=workroom_id,
         query="hello context",
-        vectordb_id=shared_workroom_vectordb,
+        vectordb_id=vectordb_id,
     )
     assert isinstance(retrieve.get("sources"), list)
 
@@ -1037,7 +1106,7 @@ def test_context_retrieve_contract(
 def test_context_agentic_search_contract(
     shared_context_service: ContextService,
     session_workroom: str,
-    shared_workroom_vectordb: str,
+    search_contract_vectordb: str,
     context_required_llm: str,
 ) -> None:
     # agentic_search always sends synthesize=True, so it needs a context LLM in
@@ -1046,12 +1115,12 @@ def test_context_agentic_search_contract(
     assert context_required_llm
     service = shared_context_service
     workroom_id = session_workroom
-    assert shared_workroom_vectordb
+    vectordb_id = search_contract_vectordb
 
     result = service.agentic_search(
         workroom_id=workroom_id,
         query="hello context",
-        vectordb_id=shared_workroom_vectordb,
+        vectordb_id=vectordb_id,
     )
     assert isinstance(result.get("results"), list)
     assert isinstance(result.get("sources"), list)
@@ -1251,9 +1320,7 @@ def test_context_global_settings_round_trips(
         )
 
     try:
-        assert (
-            bool(updated["omniparse"]["force_insecure_model_ssl"]) is not current
-        )
+        assert bool(updated["omniparse"]["force_insecure_model_ssl"]) is not current
     finally:
         # Restore the original value so we don't mutate shared platform state.
         service.update_global_settings(

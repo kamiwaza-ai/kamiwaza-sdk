@@ -55,9 +55,22 @@ class ServiceToken(AuthModel):
     kind: ClassVar[str] = "service_token"
 
 
+@dataclass(frozen=True)
+class NoAuth(AuthModel):
+    """No credential at all — the connector talks to public endpoints.
+
+    The model behind read-only public-content connectors (e.g. a public
+    website): nothing to configure, nothing to connect, and core's proxy
+    forwards requests without injecting an Authorization header.
+    """
+
+    kind: ClassVar[str] = "none"
+
+
 _AUTH_MODELS: dict[str, type[AuthModel]] = {
     PerUserOAuth.kind: PerUserOAuth,
     ServiceToken.kind: ServiceToken,
+    NoAuth.kind: NoAuth,
 }
 
 

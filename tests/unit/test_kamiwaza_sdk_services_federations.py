@@ -185,6 +185,49 @@ def test_pair_uses_caller_supplied_preshared_key_verbatim() -> None:
     assert body["preshared_key"] == "custom-psk-from-vault-12345"
 
 
+def test_pair_forwards_shared_idp_fields_when_supplied() -> None:
+    """ENG-8213 — supplying shared_issuer_url (+ optional jwks/ca) creates the
+    federation in shared_idp mode; the SDK forwards them on the create body."""
+    from kamiwaza_sdk.services.federations import FederationsAPI
+
+    client = _MockClient()
+    _stage_pair_responses(client)
+
+    api = FederationsAPI(client)
+    api.pair(
+        name="ORION",
+        role="initiator",
+        remote_url="https://orion.example.com",
+        shared_issuer_url="https://idp.example.com/realms/federated",
+        shared_jwks_url=(
+            "https://idp.example.com/realms/federated/protocol/openid-connect/certs"
+        ),
+        shared_ca_pem="-----BEGIN CERTIFICATE-----\nX\n-----END CERTIFICATE-----",
+    )
+
+    _, body = _create_call(client)
+    assert body["shared_issuer_url"] == "https://idp.example.com/realms/federated"
+    assert body["shared_jwks_url"].endswith("/certs")
+    assert "BEGIN CERTIFICATE" in body["shared_ca_pem"]
+
+
+def test_pair_omits_shared_idp_fields_when_not_supplied() -> None:
+    """Without shared_issuer_url the create body carries no shared_* keys
+    (the federation stays peer_kc)."""
+    from kamiwaza_sdk.services.federations import FederationsAPI
+
+    client = _MockClient()
+    _stage_pair_responses(client)
+
+    api = FederationsAPI(client)
+    api.pair(name="ORION", role="initiator", remote_url="https://orion.example.com")
+
+    _, body = _create_call(client)
+    assert "shared_issuer_url" not in body
+    assert "shared_jwks_url" not in body
+    assert "shared_ca_pem" not in body
+
+
 def test_pair_minted_psk_is_unique_per_call() -> None:
     """Two consecutive pair() calls without caller PSK must mint distinct
     values — otherwise two adjacent demos would share a PSK accidentally."""
@@ -424,6 +467,43 @@ def test_users_add_posts_initial_tuples() -> None:
     assert add_call["json"]["initial_tuples"] == initial_tuples
 
 
+def test_resolve_id_tolerates_list_item_missing_status() -> None:
+    """Regression: name→id resolution must not require the full Federation
+    schema. A list entry missing an unrelated field (``status``) must still
+    resolve — ``_resolve_id`` reads the raw ``id`` / ``remote_cluster_name``
+    identity fields, not a validated ``Federation`` (which would raise a
+    ValidationError on the missing ``status``)."""
+    from kamiwaza_sdk.services.federations import FederationsAPI
+
+    client = _MockClient()
+    # Note: NO "status" key — the posture-surface list may omit fields the
+    # full Federation schema requires; id-resolution must not care.
+    client.expect(
+        "GET",
+        "/cluster/federations",
+        {"items": [{"id": "fed-orion-id", "remote_cluster_name": "ORION"}]},
+    )
+    client.expect(
+        "POST",
+        "/cluster/federations/fed-orion-id/users",
+        {
+            "federation_id": "fed-orion-id",
+            "external_id": "cdr-baker@lyra-uuid",
+            "auto_provisioned": False,
+        },
+    )
+
+    api = FederationsAPI(client)
+    user = api["ORION"].users.add(external_id="cdr-baker@lyra-uuid")
+
+    assert user.federation_id == "fed-orion-id"
+    # Resolved the id from a status-less entry and POSTed to the right path.
+    assert any(
+        p == "/cluster/federations/fed-orion-id/users"
+        for _, p, _ in client.calls
+    )
+
+
 # ---------------------------------------------------------------------------
 # Three-mode PSK contract documented in docstring (operator-facing intent)
 # ---------------------------------------------------------------------------
@@ -589,3 +669,101 @@ def test_pair_forwards_partial_brokering_kwargs_to_server() -> None:
         "local_broker_client_secret",
     ):
         assert key not in body, f"unexpected {key!r} in partial-mode body"
+
+
+# --- list / get (ENG-8213 — typed listing surface) ------------------------
+
+
+def test_list_returns_federations() -> None:
+    from kamiwaza_sdk.services.federations import FederationsAPI
+
+    client = _MockClient()
+    client.expect(
+        "GET",
+        "/cluster/federations",
+        [
+            {
+                "id": "11111111-1111-1111-1111-111111111111",
+                "status": "PAIRED",
+                "remote_cluster_name": "ORION",
+                "identity_mode": "shared_idp",
+            }
+        ],
+    )
+    feds = FederationsAPI(client).list()
+    assert len(feds) == 1
+    assert feds[0].remote_cluster_name == "ORION"
+    # extra fields flow through via extra="allow"
+    assert feds[0].model_dump()["identity_mode"] == "shared_idp"
+
+
+def test_list_handles_items_envelope() -> None:
+    from kamiwaza_sdk.services.federations import FederationsAPI
+
+    client = _MockClient()
+    client.expect(
+        "GET",
+        "/cluster/federations",
+        {
+            "items": [
+                {
+                    "id": "22222222-2222-2222-2222-222222222222",
+                    "status": "PAIRED",
+                    "remote_cluster_name": "LYRA",
+                }
+            ]
+        },
+    )
+    feds = FederationsAPI(client).list()
+    assert [f.remote_cluster_name for f in feds] == ["LYRA"]
+
+
+def test_get_fetches_single_federation() -> None:
+    from kamiwaza_sdk.services.federations import FederationsAPI
+
+    client = _MockClient()
+    fid = "33333333-3333-3333-3333-333333333333"
+    client.expect(
+        "GET",
+        f"/cluster/federations/{fid}",
+        {"id": fid, "status": "PAIRED", "remote_cluster_name": "VELA"},
+    )
+    fed = FederationsAPI(client).get(fid)
+    assert fed.id == fid
+    assert fed.remote_cluster_name == "VELA"
+
+
+def test_disconnect_resolves_id_and_posts() -> None:
+    from kamiwaza_sdk.services.federations import FederationsAPI
+
+    client = _MockClient()
+    fid = "44444444-4444-4444-4444-444444444444"
+    client.expect(
+        "GET",
+        "/cluster/federations",
+        [{"id": fid, "status": "PAIRED", "remote_cluster_name": "ORION"}],
+    )
+    client.expect(
+        "POST", f"/cluster/federations/{fid}/disconnect", {"message": "disconnected"}
+    )
+    result = FederationsAPI(client)["ORION"].disconnect()
+    assert result == {"message": "disconnected"}
+    assert ("POST", f"/cluster/federations/{fid}/disconnect") in [
+        (m, p) for m, p, _ in client.calls
+    ]
+
+
+def test_disconnect_force_passes_param() -> None:
+    from kamiwaza_sdk.services.federations import FederationsAPI
+
+    client = _MockClient()
+    fid = "55555555-5555-5555-5555-555555555555"
+    client.expect(
+        "GET",
+        "/cluster/federations",
+        [{"id": fid, "status": "PAIRED", "remote_cluster_name": "LYRA"}],
+    )
+    client.expect("POST", f"/cluster/federations/{fid}/disconnect", {"message": "ok"})
+    FederationsAPI(client)["LYRA"].disconnect(force=True)
+    post = [kw for m, p, kw in client.calls if m == "POST"][0]
+    assert post.get("params") == {"force": "true"}

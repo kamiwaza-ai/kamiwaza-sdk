@@ -1238,6 +1238,7 @@ class TestPublishPathOrdering:
             extension_name="service-graphiti",
             revision_tag="1.0.0",
             registry="kamiwazaai",
+            purpose="publish",
         )
         meta = {
             "name": "service-graphiti",
@@ -1262,6 +1263,7 @@ class TestPublishPathOrdering:
             extension_name="service-graphiti",
             revision_tag="1.0.0",
             registry="kamiwazaai",
+            purpose="publish",
         )
         assert list(transformed["services"].keys()) == ["neo4j", "graphiti"]
 

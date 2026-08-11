@@ -267,7 +267,7 @@ export function _buildBridgedHeaders(
     //
     // Earlier default of ``claims.sub`` (the JWT user_id) silently broke
     // every backend → platform call: runtime-lib forwards X-Workroom-Id
-    // on its ``_PLATFORM_AUTH_HEADER_KEYS`` whitelist, and the platform's
+    // through ``forward_auth_headers()``, and the platform's
     // workroom-membership check rejects an X-Workroom-Id that isn't a
     // workroom the user actually belongs to (403). The user_id is
     // guaranteed to NOT match any real workroom (different UUID space).

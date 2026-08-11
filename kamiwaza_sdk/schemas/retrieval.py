@@ -6,7 +6,14 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    computed_field,
+    model_validator,
+)
 
 
 class TransportType(str, Enum):
@@ -51,11 +58,59 @@ class JobProgress(BaseModel):
     chunks_emitted: Optional[int] = None
 
 
+class FlightEndpoint(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    location: str
+
+
 class GrpcHandshake(BaseModel):
-    endpoint: str
-    token: str
+    model_config = ConfigDict(extra="allow")
+
+    endpoints: List[FlightEndpoint] = Field(default_factory=list)
+    token: str = Field(repr=False)
     expires_at: datetime
+    # Omitted discriminators belong to the legacy retrieval protocol. Flight
+    # use must be explicitly advertised by the server as ``arrow-flight``.
     protocol: str = "kamiwaza.retrieval.v1"
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def endpoint(self) -> Optional[str]:
+        """Return the first endpoint location for legacy SDK callers."""
+        if not self.endpoints:
+            return None
+        return self.endpoints[0].location
+
+    @endpoint.setter
+    def endpoint(self, value: Optional[str]) -> None:
+        """Preserve mutation compatibility with the former singular field."""
+        if value is None:
+            self.endpoints = []
+            return
+        self.endpoints = [FlightEndpoint(location=value)]
+
+    @model_validator(mode="before")
+    @classmethod
+    def _lift_legacy_endpoint(cls, data: Any) -> Any:
+        """Tolerate legacy server payloads that send a single string ``endpoint``.
+
+        Old servers return ``{"endpoint": "host:port", "token": ..., "expires_at": ...}``
+        without the ``endpoints`` list.  When ``endpoints`` is absent or empty and a
+        bare string ``endpoint`` key is present, lift it into the expected list shape.
+        """
+        if not isinstance(data, dict):
+            return data
+        endpoints = data.get("endpoints")
+        if not endpoints:
+            legacy = data.get("endpoint")
+            if isinstance(legacy, str):
+                data = dict(data)
+                data["endpoints"] = [{"location": legacy}]
+        if "endpoint" in data:
+            data = dict(data)
+            data.pop("endpoint")
+        return data
 
 
 class RetrievalJob(BaseModel):

@@ -17,12 +17,16 @@ describe("buildForwardHeaders envelope coverage", () => {
             "X-User-Email": "alice@example.com",
             "X-User-Name": "Alice",
             "X-User-Roles": "member,editor",
+            "X-User-Groups": "engineering,search",
+            "X-User-Attributes-Hash": "sha256:attributes",
             "X-User-System-High": "U",
             "X-Workroom-Id": "w1",
             "X-User-Workroom-Id": "w1",
             "X-User-Workroom-Role": "editor",
             "X-Auth-Token": "ey.fake.jwt",
+            "X-Auth-Azp": "chatbot-app",
             "X-Request-Id": "req-abc",
+            "X-User-Signature-Stable": "stable-signature",
         });
         const out = _buildForwardHeaders(incoming);
         // Every envelope field that the canonical test-vectors.json
@@ -36,12 +40,16 @@ describe("buildForwardHeaders envelope coverage", () => {
             "x-user-email",
             "x-user-name",
             "x-user-roles",
+            "x-user-groups",
+            "x-user-attributes-hash",
             "x-user-system-high",
             "x-workroom-id",
             "x-user-workroom-id",
             "x-user-workroom-role",
             "x-auth-token",
+            "x-auth-azp",
             "x-request-id",
+            "x-user-signature-stable",
         ]) {
             expect(lowercased).toHaveProperty(required);
         }

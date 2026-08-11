@@ -1,7 +1,11 @@
 """Tests for kamiwaza_extensions_lib.config."""
 
+import ssl
+from unittest.mock import patch
+
 import pytest
 from kamiwaza_extensions_lib.config import AuthConfig
+from kamiwaza_extensions_lib.errors import UnexpectedContextError
 
 
 @pytest.mark.unit
@@ -10,13 +14,19 @@ class TestAuthConfig:
         monkeypatch.setenv("KAMIWAZA_API_URL", "http://api:7777/api")
         monkeypatch.setenv("KAMIWAZA_PUBLIC_API_URL", "https://cluster.test/api")
         monkeypatch.setenv("KAMIWAZA_ENDPOINT", "http://model:8080/v1")
-        monkeypatch.setenv("KAMIWAZA_APP_URL", "https://cluster.test/runtime/apps/my-app")
+        monkeypatch.setenv(
+            "KAMIWAZA_APP_URL", "https://cluster.test/runtime/apps/my-app"
+        )
         monkeypatch.setenv("KAMIWAZA_APP_PATH", "/runtime/apps/my-app")
         monkeypatch.setenv("KAMIWAZA_APP_NAME", "my-app")
         monkeypatch.setenv("KAMIWAZA_USE_AUTH", "true")
         monkeypatch.setenv("KAMIWAZA_ORIGIN", "https://cluster.test")
         monkeypatch.setenv("KAMIWAZA_API_KEY", "pat-abc123")
         monkeypatch.setenv("KAMIWAZA_VERIFY_SSL", "true")
+        monkeypatch.setenv(
+            "KAMIWAZA_CA_BUNDLE",
+            " /etc/kamiwaza/private-ca.pem\n",
+        )
 
         config = AuthConfig.from_env()
 
@@ -30,10 +40,13 @@ class TestAuthConfig:
         assert config.origin == "https://cluster.test"
         assert config.api_key == "pat-abc123"
         assert config.verify_ssl is True
+        assert config.ca_bundle == "/etc/kamiwaza/private-ca.pem"
 
     def test_from_env_defaults(self, monkeypatch):
         # Clear any KAMIWAZA_ vars that might be set
-        for key in list(monkeypatch._env_patches if hasattr(monkeypatch, '_env_patches') else []):
+        for key in list(
+            monkeypatch._env_patches if hasattr(monkeypatch, "_env_patches") else []
+        ):
             pass
         monkeypatch.delenv("KAMIWAZA_API_URL", raising=False)
         monkeypatch.delenv("KAMIWAZA_PUBLIC_API_URL", raising=False)
@@ -46,6 +59,7 @@ class TestAuthConfig:
         monkeypatch.delenv("KAMIWAZA_ORIGIN", raising=False)
         monkeypatch.delenv("KAMIWAZA_API_KEY", raising=False)
         monkeypatch.delenv("KAMIWAZA_VERIFY_SSL", raising=False)
+        monkeypatch.delenv("KAMIWAZA_CA_BUNDLE", raising=False)
 
         config = AuthConfig.from_env()
 
@@ -54,6 +68,7 @@ class TestAuthConfig:
         assert config.use_auth is True  # secure default
         assert config.api_key == ""
         assert config.verify_ssl is True
+        assert config.ca_bundle == ""
 
     def test_use_auth_false(self, monkeypatch):
         monkeypatch.setenv("KAMIWAZA_USE_AUTH", "false")
@@ -79,6 +94,49 @@ class TestAuthConfig:
         monkeypatch.setenv("KAMIWAZA_VERIFY_SSL", "false")
         config = AuthConfig.from_env()
         assert config.verify_ssl is False
+
+    def test_httpx_verify_uses_explicit_ca_bundle(self):
+        config = AuthConfig(ca_bundle="/etc/kamiwaza/private-ca.pem")
+        context = object()
+
+        with patch(
+            "kamiwaza_extensions_lib.config.ssl.create_default_context",
+            return_value=context,
+        ) as create_context:
+            assert config.httpx_verify() is context
+
+        create_context.assert_called_once_with(cafile="/etc/kamiwaza/private-ca.pem")
+
+    def test_httpx_verify_false_overrides_ca_bundle(self):
+        config = AuthConfig(
+            verify_ssl=False,
+            ca_bundle="/etc/kamiwaza/private-ca.pem",
+        )
+
+        assert config.httpx_verify() is False
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            FileNotFoundError("missing bundle"),
+            PermissionError("unreadable bundle"),
+            ssl.SSLError("malformed bundle"),
+        ],
+    )
+    def test_httpx_verify_maps_invalid_ca_bundle_to_typed_context_error(self, error):
+        config = AuthConfig(ca_bundle="/etc/kamiwaza/private-ca.pem")
+
+        with (
+            patch(
+                "kamiwaza_extensions_lib.config.ssl.create_default_context",
+                side_effect=error,
+            ),
+            pytest.raises(
+                UnexpectedContextError,
+                match="KAMIWAZA_CA_BUNDLE",
+            ),
+        ):
+            config.httpx_verify()
 
     def test_openai_base_falls_back_to_model_url(self, monkeypatch):
         monkeypatch.delenv("KAMIWAZA_ENDPOINT", raising=False)
