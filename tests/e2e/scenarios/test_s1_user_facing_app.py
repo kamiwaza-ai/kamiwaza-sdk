@@ -23,7 +23,7 @@ SCENARIO_ID = "S1"
 
 
 @pytest.mark.e2e
-def test_s1_full_loop(staging_url):
+def test_s1_full_loop(staging_url, build_id):
     runbook = load_runbook(SCENARIO_ID)
 
     handlers = {
@@ -34,7 +34,7 @@ def test_s1_full_loop(staging_url):
         # ...
     }
 
-    result = run_scenario(runbook, handlers)
+    result = run_scenario(runbook, handlers, build=build_id)
     artifact = record_run(result)
     sign_off = render_sign_off(result)
 

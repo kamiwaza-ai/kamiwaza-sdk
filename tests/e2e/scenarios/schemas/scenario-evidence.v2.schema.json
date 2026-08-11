@@ -1,0 +1,147 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kamiwaza.ai/schemas/scenario-evidence.v2.schema.json",
+  "title": "scenario-evidence.v2",
+  "description": "Versioned successor to the v1 scenario harness run record (sales-developer-release-kit design \u00a73.6/\u00a74.6). Adds build identity (G1), explicit method (G3), capability linkage (G2), evidence provenance, and a formalized three-valued scenario status mapping to the sign-off template's PASS / PASS WITH NOTES / FAIL. Existing v1 run artifacts (records without a `schema` field) remain readable and are not governed by this schema. This schema is evidence-surface-neutral: any producer (SDK scenario harness, UI journey runner, manual capture) may emit conforming records. Canonical home: kamiwaza-internal/capability-kit/schemas/scenario-evidence.v2.schema.json; the copy in kamiwaza-sdk/tests/e2e/scenarios/schemas/ is a vendored mirror kept byte-identical, drift-checked from this repo's CI.",
+  "type": "object",
+  "required": [
+    "schema",
+    "scenario_id",
+    "scenario_name",
+    "started_at",
+    "finished_at",
+    "duration_s",
+    "sign_off_actor",
+    "ci_job_url",
+    "build",
+    "method",
+    "capability_ids",
+    "evidence_provenance",
+    "status",
+    "steps"
+  ],
+  "properties": {
+    "schema": {
+      "const": "scenario-evidence.v2",
+      "description": "Record-format discriminator. v1 records carry no such field."
+    },
+    "scenario_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Stable scenario identifier (e.g. \"S2\")."
+    },
+    "scenario_name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Human-readable scenario name."
+    },
+    "started_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 UTC timestamp when the run started."
+    },
+    "finished_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 UTC timestamp when the run finished."
+    },
+    "duration_s": {
+      "type": "number",
+      "minimum": 0,
+      "description": "End-to-end run duration in seconds."
+    },
+    "sign_off_actor": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Named actor accountable for signing off this scenario."
+    },
+    "ci_job_url": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "CI job URL that produced the record, or null for a local run."
+    },
+    "build": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Build identity the run executed against (closes gap G1). Evidence without a build identity cannot support a staleness query or a validation stamp; producers must refuse to emit a record without one."
+    },
+    "method": {
+      "enum": [
+        "automated",
+        "manual"
+      ],
+      "description": "How the evidence was produced (closes gap G3; the automated-coverage ratio is a count over this field)."
+    },
+    "capability_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z0-9]+(-[a-z0-9]+)*(\\.[a-z0-9]+(-[a-z0-9]+)*)*$"
+      },
+      "description": "Capability documents this evidence supports (closes gap G2). Items are kebab-case segments, optionally dot-namespaced as area.capability (e.g. \"single-sign-on\", \"workrooms.create\"). Each item must match the `id` of a capability document exactly; a near-miss such as \"workroom-app-launch\" for \"workrooms.app-launch\" is a different id and silently joins to nothing. May be empty when the mapping has not yet been authored."
+    },
+    "evidence_provenance": {
+      "enum": [
+        "pre-existing",
+        "cycle-authored"
+      ],
+      "description": "Whether the evidence pre-dates the current kit cycle or was authored within it."
+    },
+    "status": {
+      "enum": [
+        "passed",
+        "passed_with_notes",
+        "failed"
+      ],
+      "description": "Scenario-level outcome, three-valued to match the sign-off template's PASS / PASS WITH NOTES / FAIL."
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/step"
+      },
+      "description": "Ordered per-step results."
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "step": {
+      "type": "object",
+      "required": [
+        "name",
+        "status",
+        "duration_s"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Step name as declared by the producing runbook/journey."
+        },
+        "status": {
+          "enum": [
+            "passed",
+            "failed",
+            "skipped",
+            "pending",
+            "not_reached"
+          ],
+          "description": "Step-level outcome; keeps the richer harness vocabulary (passed/failed/skipped/pending/not_reached)."
+        },
+        "duration_s": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Step duration in seconds."
+        },
+        "detail": {
+          "type": "string",
+          "description": "Free-form detail: success summary, skip reason, or failure message."
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}

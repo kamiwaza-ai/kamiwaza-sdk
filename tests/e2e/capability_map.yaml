@@ -1,0 +1,305 @@
+# Capability map for pre-existing e2e/live evidence (ENG-10026, T3.7).
+#
+# RULE: this mapping is EXPLICIT, REVIEWED, and NEVER INFERRED. An entry
+# exists only where the named tests genuinely exercise the capability
+# end-to-end against a running platform; tests not matched by any entry
+# emit NO evidence. Adding an entry is a reviewed change, not something
+# tooling derives from test names.
+#
+# Each entry is {pattern, capability_ids, scenario_name} plus optional
+# {exclude}:
+#   * pattern — a pytest nodeid glob (fnmatch, rooted at the repo root,
+#     e.g. "tests/integration/test_x.py::*"), or "marker:<name>" to match
+#     every test carrying that pytest marker.
+#   * capability_ids — capability-document ids (kit inventory, dot-namespaced)
+#     the matched tests evidence.
+#   * scenario_name — human-readable scenario title; its slug becomes the
+#     emitted record's scenario_id.
+#   * exclude — nodeid globs carved back out of a broad pattern.
+#
+# THE PER-TEST RULE: a record is composed from whichever matched tests
+# actually ran, so *every* test an entry matches must, on its own, exercise
+# the capability. A module-wide "::*" pattern therefore needs `exclude` for
+# the module's negative-path tests (get/delete-nonexistent, rejection
+# assertions) and availability-only tests: running just one of those must
+# never be able to emit a passing record for the capability.
+#
+# With `--emit-evidence` (and a --build/KAMIWAZA_BUILD identity) the
+# emitter in tests/e2e/_evidence_emitter.py writes one scenario-evidence.v2
+# record per entry that had at least one matched test actually run, with
+# evidence_provenance "pre-existing".
+#
+# DELIBERATELY UNMAPPED (reviewed 2026-08-10; empty mapping is the honest
+# answer — do not "fix" without new tests):
+#   * models.external-endpoints — no existing e2e/live test registers or
+#     exercises an external/BYO OpenAI-compatible endpoint.
+#   * context.workroom-document-search — the search/retrieve/agentic-search
+#     contract tests run against `search_contract_vectordb`, whose own
+#     docstring says it exists to give them a CLEAN backend so that "earlier
+#     vector insert/query tests cannot leave collections that turn a shape
+#     check into a data-search assertion". They search a deliberately empty
+#     vectordb and assert only isinstance(results, list), so they pass without
+#     finding anything; the vectordb insert/query tests likewise assert only
+#     that the result is a list. No existing test searches indexed content and
+#     asserts what came back, so this capability has no honest mapping until
+#     one is written.
+#   * auth.enterprise-sso — test_auth_live.py covers password + PAT auth
+#     and test_auth_endpoints_live.py the auth endpoint surface; neither
+#     is an enterprise SSO/IdP login. The federation shared-IdP suites
+#     (test_federation_idp_lifecycle_live.py, ..._shared_idp_gated_...)
+#     provision Keycloak trust for FEDERATION, not enterprise SSO sign-in.
+#   * tests/e2e/scenarios/test_s1..s5 drivers — they already emit native
+#     scenario-evidence.v2 records through the harness (cycle-authored);
+#     mapping them here would double-count the same runs.
+#   * test_jobs_recoverable_drop_recovery.py — NOT evidence for
+#     federation.remote-jobs: its own docstring says it is a unit-style
+#     test mocked at the _request boundary, no remote execution happens.
+#   * test_serving_endpoints_live.py — reads serving status/health/logs of
+#     whatever is already deployed; it observes but does not demonstrate
+#     models.local-deployment, so it stays unmapped.
+#   * test_retrieval_live.py — TestRetrievalJobOperations::test_create_and_get_job
+#     does create a real job and poll it, but its status assertion is
+#     `isinstance(status, str)`, so a job that ran and FAILED passes. Every
+#     test under the two retained retrieval entries below asserts a real
+#     retrieval *artifact* instead — rows returned (row_count > 0), SSE events
+#     emitted, or a gRPC transport handshake — which is strictly stronger;
+#     mapping this one alongside them would only weaken the claim, so
+#     retrieval.async-retrieval-jobs rests on those instead.
+#   * test_context_workroom_scope_clients_isolate_vectordb_views — NOT
+#     evidence for workrooms.session-scoping despite its name. Its own
+#     docstring is the accurate one ("Derived SDK clients can carry workroom
+#     scope as a context manager"): it creates ONE workroom and ONE scoped
+#     client, then asserts the vectordb it made is listed and carries that
+#     workroom_id. No second scope, no absence assertion — it fails the
+#     retention test applied to the access-matrix entry below.
+
+# KNOWN LIMIT of every models.discover-and-download entry below (reviewed,
+# accepted): the download leg runs only on a COLD cluster. `ensure_repo_ready`
+# (tests/integration/conftest.py) returns early when the repo already has ready
+# target files, so on a warm cluster these tests evidence discovery, metadata,
+# and file readiness without re-fetching anything. That is the honest reading of
+# these records. Forcing a fresh multi-GB download on every run belongs in the
+# integration tests as a deliberate choice, not in this mapping; until then,
+# read a warm-cluster record as "the model is discoverable, present, and
+# readable", and a cold-cluster one as the full acquisition path.
+
+# Justification: test_live_model_metadata_and_download searches the hub for
+# the canonical repo (mlx-community/Qwen3-4B-4bit), ensures it is downloaded
+# via ensure_repo_ready, and verifies model metadata + files on the platform.
+- pattern: "tests/integration/test_models_live.py::test_live_model_metadata_and_download"
+  capability_ids: [models.discover-and-download]
+  scenario_name: "Model discovery, metadata, and hub download"
+
+# Justification: TS11 surface — TestModelFileReadOperations and
+# TestModelFileMemoryUsage (reads against the repo ensure_repo_ready actually
+# downloaded), TestModelFileDownloadStatus, and test_delete_existing_model_file.
+# (TestModelFileDownloadOperations carries unconditional @pytest.mark.skip, so
+# it can never contribute a step.)
+# Excluded: TestModelFileValidation and test_delete_nonexistent_model_file
+# assert error handling for a fabricated UUID; test_create_model_file only
+# registers a SCRATCH metadata row; and TestModelFileSearch asserts nothing
+# beyond isinstance(results, list) — its own comment notes the hub result may
+# legitimately be empty, so it passes without discovering anything. None of
+# them discovers or downloads a model.
+- pattern: "tests/integration/test_model_files_live.py::*"
+  capability_ids: [models.discover-and-download]
+  scenario_name: "Model file read and download management"
+  exclude:
+    - "*::TestModelFileValidation::*"
+    - "*::TestModelFileSearch::*"
+    - "*::test_delete_nonexistent_model_file"
+    - "*::test_create_model_file"
+
+# Justification: TS12 surface — TestModelListOperations, TestModelSearchOperations
+# (search_models_by_repo_id / exact match / get_model_by_repo_id),
+# TestModelDownloadHelpers (initiate_model_download on an already-downloaded
+# repo), plus model metadata/memory-usage reads.
+# Excluded: TestModelValidation (nonexistent model/search error paths) and
+# TestModelCleanupOperations / test_get_pending_deployments, which act on
+# deployments rather than on model discovery or download.
+- pattern: "tests/integration/test_models_extended_live.py::*"
+  capability_ids: [models.discover-and-download]
+  scenario_name: "Model registry search and metadata (extended)"
+  exclude:
+    - "*::TestModelValidation::*"
+    - "*::TestModelCleanupOperations::*"
+    - "*::test_get_pending_deployments"
+
+# Justification: test_deploy_qwen_and_infer_with_strip_thinking deploys two
+# configs of the target model locally (serving.deploy_model + wait), then
+# infers through client.openai.get_client(...) chat completions — the
+# OpenAI-compatible inference path — before cleanup.
+- pattern: "tests/integration/test_serving_workflow.py::test_deploy_qwen_and_infer_with_strip_thinking"
+  capability_ids: [models.local-deployment, models.openai-compatible-inference]
+  scenario_name: "Deploy model locally and infer via OpenAI-compatible client"
+
+# Justification: ENG-6948 engine matrix — test_deploy_and_infer_llamacpp_gguf /
+# test_deploy_and_infer_vllm_nvidia deploy with explicit engine_name and
+# assert a chat completion via the OpenAI-compatible client
+# (_assert_chat_completion); the fractional co-location tests deploy two
+# copies on one GPU and serve prompts from both.
+- pattern: "tests/integration/test_inference_matrix_live.py::*"
+  capability_ids: [models.local-deployment, models.openai-compatible-inference]
+  scenario_name: "Engine matrix deploy and infer with fractional co-location"
+
+# Justification: test_s3_ingest_and_retrieve_inline / _grpc ingest a sample
+# dataset into the catalog and then run retrieval jobs streaming results
+# inline and over gRPC (per test_retrieval_live.py's docstring these carry
+# TS17.001/TS17.003 coverage).
+- pattern: "tests/integration/test_catalog_ingest_retrieval.py::*"
+  capability_ids: [catalog.dataset-registry, retrieval.async-retrieval-jobs]
+  scenario_name: "Catalog ingest to retrieval round-trip (inline and gRPC)"
+
+# Justification: test_catalog_dataset_and_secret_lifecycle registers a
+# dataset and secret in the catalog and walks their full lifecycle.
+- pattern: "tests/integration/test_catalog_live.py::test_catalog_dataset_and_secret_lifecycle"
+  capability_ids: [catalog.dataset-registry]
+  scenario_name: "Catalog dataset and secret lifecycle"
+
+# Justification: dataset schema/variant endpoints, container list/URN/path/v2
+# endpoints, and secret endpoints — the catalog registry API surface
+# (test_catalog_dataset_schema_endpoints, test_catalog_dataset_variant_endpoints,
+# test_catalog_container_by_urn_and_path_endpoints, ...).
+# Excluded: test_catalog_metadata_and_health reads service health,
+# test_catalog_container_endpoints_require_admin_user asserts an authz
+# rejection, and the two secret tests manipulate only catalog secrets —
+# none of them registers or reads a dataset or container.
+- pattern: "tests/integration/test_catalog_endpoints.py::*"
+  capability_ids: [catalog.dataset-registry]
+  scenario_name: "Catalog dataset and container endpoint surface"
+  exclude:
+    - "*::test_catalog_metadata_and_health"
+    - "*::test_catalog_container_endpoints_require_admin_user"
+    - "*::test_catalog_secret_list"
+    - "*::test_catalog_secret_endpoints"
+
+# Justification: every test in the module ingests from some source
+# (file/object/parquet/postgres/kafka/slack) and asserts the resulting
+# dataset's catalog metadata, so the whole module evidences the registry.
+# Split from the retrieval entry below: `exclude` is per-entry, so a single
+# entry claiming two capabilities cannot satisfy the per-test rule for both.
+- pattern: "tests/integration/test_catalog_multi_source.py::*"
+  capability_ids: [catalog.dataset-registry]
+  scenario_name: "Multi-source catalog ingestion"
+
+# Justification: the subset that actually submits a retrieval job over the
+# ingested data and asserts the result — the two *_inline_retrieval tests,
+# inline_small_object and file_ingestion_metadata (both POST /retrieval/jobs
+# and assert row_count), large_object_sse_retrieval, and
+# postgres_ingestion_metadata.
+# Excluded: kafka (xfails before any retrieval), slack, and container_link
+# never submit a job at all, and inline_large_object_hits_threshold asserts a
+# 422 rejection rather than a successful retrieval.
+- pattern: "tests/integration/test_catalog_multi_source.py::*"
+  capability_ids: [retrieval.async-retrieval-jobs]
+  scenario_name: "Multi-source inline and SSE retrieval"
+  exclude:
+    - "*::test_catalog_kafka_ingestion_metadata"
+    - "*::test_catalog_slack_ingestion_metadata"
+    - "*::test_catalog_container_link_sets_dataset_container_urn"
+    - "*::test_catalog_inline_large_object_hits_threshold"
+
+# Justification: TestWorkroomCrudIsolation — create/get/list/update/archive
+# workrooms. Every retained test creates one, either through the workroom_a /
+# workroom_b fixtures or inline (test_archive_own_workroom).
+# Excluded: the two Global-workroom guardrails read (test_global_workroom_exists)
+# or assert a 403 (test_cannot_delete_global_workroom) against the pre-existing
+# Global workroom — neither creates anything.
+- pattern: "tests/integration/test_workroom_isolation_live.py::TestWorkroomCrudIsolation::*"
+  capability_ids: [workrooms.create]
+  scenario_name: "Workroom creation and CRUD lifecycle"
+  exclude:
+    - "*::test_global_workroom_exists"
+    - "*::test_cannot_delete_global_workroom"
+
+# THE RETENTION TEST, applied per test rather than per class: the test must
+# assert that something is ABSENT from a session's view — a resource another
+# session owns, or a workspace resource missing from Global, or a non-Global
+# connector missing from a header-less request. A test that only reads a
+# resource and asserts the object it got back reports its own id proves
+# access is permitted, not that scoping is enforced; so does a test that
+# asserts only that a list is a list.
+#
+# Retained (9 of 23), each with an absence assertion:
+#   * TestSelfAccess (2) — _assert_only_own_or_global on both A's and B's
+#     connector/extension lists;
+#   * TestCrossWorkspaceBlocked (3) — B cannot see A's connectors, A cannot
+#     see B's, B cannot see A's extensions;
+#   * TestGlobalCannotSeeWorkspaces (2) — Global's connector and extension
+#     lists exclude the workspace's;
+#   * TestLifecycleIsolation::test_delete_workroom_does_not_affect_other —
+#     deleting A leaves B active and A gone;
+#   * TestSentinelAllBypass::test_connectors_without_header_defaults_to_global
+#     — a header-less request returns no non-Global connector.
+#
+# Excluded, each failing the retention test above:
+#   * TestWorkroomCrudIsolation in full — every test is a single-session
+#     operation on its own (or the Global) workroom: get/list own, update,
+#     archive, read Global, 403 on deleting Global. Even create-and-get-own
+#     has no "other" in it; it asserts the workroom it fetched is the one it
+#     created. Its create/list coverage is claimed by the workrooms.create
+#     entry above, which is where it belongs.
+#   * TestWorkspaceCanSeeGlobal in full — all four read a Global resource and
+#     assert only that the object returned reports GLOBAL as its id.
+#   * test_global_export_excludes_workspace_resources — despite its name it
+#     takes no workroom fixture, so no workspace exists during the test, and
+#     it asserts only manifest.workroom_id == GLOBAL.
+#   * test_workroom_export_only_shows_own_resources — workroom_b is never
+#     requested; it asserts A's manifest is A's and non-empty.
+#   * test_archive_workroom_still_visible_with_flag — lists only its own
+#     workroom.
+#   * test_deployments_all_returns_across_workrooms — its only assertion is
+#     isinstance(result, list); it never checks the result spans workrooms.
+#
+# KNOWN LIMIT of the retained set (reviewed, accepted): the absence assertions
+# are vacuously satisfiable. The fixtures create workrooms but seed no
+# connectors or extensions, so on a bare cluster "B cannot see A's connectors"
+# passes over an empty list. They are retained because they do drive the
+# scoped request path (X-Workroom-Id) and assert the right property, and
+# because the fix belongs in the tests — seeding sentinel resources in both
+# scopes — not in this mapping. Strengthening them would strengthen this
+# evidence; until then read these records as "isolation not violated", which
+# is what the tests actually check.
+- pattern: "tests/integration/test_workroom_isolation_live.py::*"
+  capability_ids: [workrooms.session-scoping]
+  scenario_name: "Workroom session-scoping access matrix"
+  exclude:
+    - "*::TestWorkroomCrudIsolation::*"
+    - "*::TestWorkspaceCanSeeGlobal::*"
+    - "*::test_global_export_excludes_workspace_resources"
+    - "*::test_workroom_export_only_shows_own_resources"
+    - "*::test_archive_workroom_still_visible_with_flag"
+    - "*::test_deployments_all_returns_across_workrooms"
+
+# Justification: ENG-6952 control plane — test_register_from_spec_returns_dataset_urn
+# registers a managed data source from a connector spec and asserts the
+# returned dataset URN. It is the only test here that registers one.
+# Excluded: the test_register_rejects_* trio asserts spec validation refusals
+# (nothing is registered), and test_publisher_grant_then_revoke only calls the
+# catalog publisher grant/revoke APIs without configuring a connector at all.
+- pattern: "tests/integration/test_connector_spec_live.py::*"
+  capability_ids: [connectors.managed-data-sources]
+  scenario_name: "Managed data source registration from connector spec"
+  exclude:
+    - "*::test_register_rejects_*"
+    - "*::test_publisher_grant_then_revoke"
+
+# Justification: test_federated_job_audit_actor_round_trip runs a job on the
+# peer cluster through the mesh and proves the originating identity survives
+# the round-trip (ENG-5784 two-cluster rig). Its own docstring pins the strict
+# gate this mapping relies on: "status MUST be SUCCEEDED — accepting FAILED
+# would mask the very failure modes this test exists to catch".
+#
+# The pattern names that one test rather than excluding its siblings, because
+# this file is marker-gated (requires_two_clusters) and deselects wholesale on
+# a single-cluster host — where an `exclude` glob could rot unverified. Two
+# siblings are deliberately outside it:
+#   * ::test_federated_job_run_via_mesh — asserts only isinstance(resp, dict),
+#     so a job that ran and failed would still emit a passing record;
+#   * test_m3_walkthrough_live.py's walkthrough — its step-8 assertion is
+#     `result.status in {"SUCCEEDED", "FAILED"}`, explicitly accepting a
+#     failed remote job. It is a strong audit-actor test but, by its own
+#     assertion, not evidence that remote job execution succeeds.
+- pattern: "tests/integration/test_federation_two_cluster_live.py::TestFederationTwoClusterWalkthrough::test_federated_job_audit_actor_round_trip"
+  capability_ids: [federation.remote-jobs]
+  scenario_name: "Federated job execution via mesh"
