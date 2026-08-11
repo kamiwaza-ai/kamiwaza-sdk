@@ -62,16 +62,29 @@ WHEEL_DIR = STAGE / "wheels"
 STAGE_DIR = STAGE / "index"
 
 
+def _quote_remote_command(cmd: list[str]) -> list[str]:
+    """Collapse an SSH remote command into the single argument its shell expects."""
+    if len(cmd) <= 2:
+        return cmd
+    if cmd[0] != "ssh":
+        return cmd
+    return cmd[:2] + [shlex.join(cmd[2:])]
+
+
 def run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
-    """Run ``cmd``, shell-quoting the remote half when it goes over ssh.
+    """Run ``cmd``, shell-quoting the remote half when it goes over SSH.
 
     ``ssh host kubectl ... 'jsonpath={.items[0]...}'`` is re-parsed by the
     REMOTE shell, which globs the brackets and fails with "no matches found".
     Collapsing everything after the host into one quoted string stops that.
     """
-    if cmd and cmd[0] == "ssh" and len(cmd) > 2:
-        cmd = cmd[:2] + [shlex.join(cmd[2:])]
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=180, **kw)
+    return subprocess.run(
+        _quote_remote_command(cmd),
+        capture_output=True,
+        text=True,
+        timeout=180,
+        **kw,
+    )
 
 
 def kubectl_argv(kubectl: str) -> list[str]:
@@ -90,6 +103,31 @@ def locate_source() -> Path:
     return candidate
 
 
+def _build_error(cmd: list[str], staged: Path) -> str | None:
+    """Run one wheel-build command and return its diagnostic on failure."""
+    if shutil.which(cmd[0]) is None and cmd[0] != sys.executable:
+        return f"{cmd[0]}: not on PATH"
+    proc = run(cmd, cwd=staged)
+    if proc.returncode == 0:
+        return None
+    return f"{cmd[0]}: {proc.stderr.strip()[:200]}"
+
+
+def _build_first_available(staged: Path) -> None:
+    """Try the uv and pip wheel builders in order."""
+    attempts = [
+        ["uv", "build", "--wheel", "--out-dir", str(WHEEL_DIR)],
+        [sys.executable, "-m", "pip", "wheel", ".", "--no-deps", "-w", str(WHEEL_DIR)],
+    ]
+    errors = []
+    for cmd in attempts:
+        error = _build_error(cmd, staged)
+        if error is None:
+            return
+        errors.append(error)
+    raise SystemExit("wheel build failed:\n  " + "\n  ".join(errors))
+
+
 def build_wheel(src: Path) -> tuple[Path, str]:
     """Build out-of-tree and return (wheel_path, 'sha256:<hex>').
 
@@ -102,7 +140,9 @@ def build_wheel(src: Path) -> tuple[Path, str]:
     if staged.exists():
         shutil.rmtree(staged)
     shutil.copytree(
-        src, staged, ignore=shutil.ignore_patterns("__pycache__", "build", "dist", "*.egg-info")
+        src,
+        staged,
+        ignore=shutil.ignore_patterns("__pycache__", "build", "dist", "*.egg-info"),
     )
     for existing in WHEEL_DIR.glob("*.whl"):
         existing.unlink()
@@ -110,21 +150,7 @@ def build_wheel(src: Path) -> tuple[Path, str]:
     # uv first: the SDK venv is uv-managed and ships without pip, so
     # `python -m pip` is not available there. Fall back for environments that
     # have pip but not uv.
-    attempts = [
-        ["uv", "build", "--wheel", "--out-dir", str(WHEEL_DIR)],
-        [sys.executable, "-m", "pip", "wheel", ".", "--no-deps", "-w", str(WHEEL_DIR)],
-    ]
-    errors = []
-    for cmd in attempts:
-        if shutil.which(cmd[0]) is None and cmd[0] != sys.executable:
-            errors.append(f"{cmd[0]}: not on PATH")
-            continue
-        proc = run(cmd, cwd=staged)
-        if proc.returncode == 0:
-            break
-        errors.append(f"{cmd[0]}: {proc.stderr.strip()[:200]}")
-    else:
-        raise SystemExit("wheel build failed:\n  " + "\n  ".join(errors))
+    _build_first_available(staged)
 
     wheel = WHEEL_DIR / WHEEL_NAME
     if not wheel.exists():
@@ -162,8 +188,14 @@ def preflight(argv: list[str]) -> None:
     probe = run(
         argv
         + [
-            "-n", NAMESPACE, "get", "pod", "-l", "ray.io/node-type=head",
-            "-o", 'jsonpath={.items[0].spec.containers[0].env[?(@.name=="KAMIWAZA_GATE_PACKAGES_VENV")].value}',
+            "-n",
+            NAMESPACE,
+            "get",
+            "pod",
+            "-l",
+            "ray.io/node-type=head",
+            "-o",
+            'jsonpath={.items[0].spec.containers[0].env[?(@.name=="KAMIWAZA_GATE_PACKAGES_VENV")].value}',
         ]
     )
     if probe.returncode != 0:
@@ -177,6 +209,55 @@ def preflight(argv: list[str]) -> None:
         )
 
 
+def _ray_head_pod(argv: list[str]) -> str:
+    """Return the active ray-head pod name or stop with a useful error."""
+    pod = run(
+        argv
+        + [
+            "-n",
+            NAMESPACE,
+            "get",
+            "pod",
+            "-l",
+            "ray.io/node-type=head",
+            "-o",
+            "jsonpath={.items[0].metadata.name}",
+        ]
+    )
+    name = pod.stdout.strip()
+    if not name:
+        raise SystemExit("no ray head pod found")
+    return name
+
+
+def _publish_item(argv: list[str], pod: str, item: Path, leaf: str) -> None:
+    """Stream one staged file into its destination inside the ray head."""
+    dest_dir = MOUNT if item.name == "mini_clearance.csv" else leaf
+    payload = base64.b64encode(item.read_bytes())
+    cmd = argv + [
+        "-n",
+        NAMESPACE,
+        "exec",
+        "-i",
+        pod,
+        "-c",
+        "ray-head",
+        "--",
+        "sh",
+        "-c",
+        f"base64 -d > {dest_dir}/{item.name}",
+    ]
+    wrote = subprocess.run(
+        _quote_remote_command(cmd),
+        input=payload,
+        capture_output=True,
+        timeout=180,
+    )
+    if wrote.returncode != 0:
+        detail = wrote.stderr.decode(errors="replace").strip()
+        raise SystemExit(f"writing {item.name} failed: {detail}")
+
+
 def publish(argv: list[str], directory: Path) -> None:
     """Copy the staged index into the PVC path the ray head already mounts.
 
@@ -184,15 +265,24 @@ def publish(argv: list[str], directory: Path) -> None:
     no pod restart, and no risk of an extraVolumes overlay replacing the
     hot-reload source mounts.
     """
-    pod = run(argv + ["-n", NAMESPACE, "get", "pod", "-l", "ray.io/node-type=head",
-                      "-o", "jsonpath={.items[0].metadata.name}"])
-    name = pod.stdout.strip()
-    if not name:
-        raise SystemExit("no ray head pod found")
+    name = _ray_head_pod(argv)
 
     leaf = f"{MOUNT}/simple/acme-gates"
-    mk = run(argv + ["-n", NAMESPACE, "exec", name, "-c", "ray-head", "--",
-                     "mkdir", "-p", leaf])
+    mk = run(
+        argv
+        + [
+            "-n",
+            NAMESPACE,
+            "exec",
+            name,
+            "-c",
+            "ray-head",
+            "--",
+            "mkdir",
+            "-p",
+            leaf,
+        ]
+    )
     if mk.returncode != 0:
         raise SystemExit(f"could not create {leaf}: {mk.stderr.strip()}")
 
@@ -200,31 +290,28 @@ def publish(argv: list[str], directory: Path) -> None:
     # reached over ssh, cp's "local" side is the REMOTE host, so it looks for
     # the file there. stdin comes from this process either way. base64 so the
     # binary wheel survives the ssh channel intact.
-    for item in sorted(directory.iterdir()):
-        dest_dir = MOUNT if item.name == "mini_clearance.csv" else leaf
-        payload = base64.b64encode(item.read_bytes())
-        cmd = argv + ["-n", NAMESPACE, "exec", "-i", name, "-c", "ray-head", "--",
-                      "sh", "-c", f"base64 -d > {dest_dir}/{item.name}"]
-        if cmd[0] == "ssh" and len(cmd) > 2:
-            cmd = cmd[:2] + [shlex.join(cmd[2:])]
-        wrote = subprocess.run(cmd, input=payload, capture_output=True, timeout=180)
-        if wrote.returncode != 0:
-            raise SystemExit(
-                f"writing {item.name} failed: {wrote.stderr.decode(errors='replace').strip()}"
-            )
-    print(f"  published {len(list(directory.iterdir()))} files into {MOUNT}")
+    items = sorted(directory.iterdir())
+    for item in items:
+        _publish_item(argv, name, item, leaf)
+    print(f"  published {len(items)} files into {MOUNT}")
 
 
 def verify(argv: list[str], digest: str) -> None:
     """The gate: the pod must serve the SAME bytes we hashed locally."""
-    pod = run(argv + ["-n", NAMESPACE, "get", "pod", "-l", "ray.io/node-type=head",
-                      "-o", "jsonpath={.items[0].metadata.name}"])
-    name = pod.stdout.strip()
-    if not name:
-        raise SystemExit("no ray head pod found")
+    name = _ray_head_pod(argv)
     remote = run(
-        argv + ["-n", NAMESPACE, "exec", name, "-c", "ray-head", "--",
-                "sha256sum", f"{MOUNT}/simple/acme-gates/{WHEEL_NAME}"]
+        argv
+        + [
+            "-n",
+            NAMESPACE,
+            "exec",
+            name,
+            "-c",
+            "ray-head",
+            "--",
+            "sha256sum",
+            f"{MOUNT}/simple/acme-gates/{WHEEL_NAME}",
+        ]
     )
     got = (remote.stdout.split() or [""])[0]
     want = digest.split(":", 1)[1]
@@ -244,11 +331,35 @@ def main() -> int:
     argv = kubectl_argv(args.kubectl)
 
     if args.action == "teardown":
-        pod = run(argv + ["-n", NAMESPACE, "get", "pod", "-l", "ray.io/node-type=head",
-                          "-o", "jsonpath={.items[0].metadata.name}"]).stdout.strip()
+        pod = run(
+            argv
+            + [
+                "-n",
+                NAMESPACE,
+                "get",
+                "pod",
+                "-l",
+                "ray.io/node-type=head",
+                "-o",
+                "jsonpath={.items[0].metadata.name}",
+            ]
+        ).stdout.strip()
         if pod:
-            run(argv + ["-n", NAMESPACE, "exec", pod, "-c", "ray-head", "--",
-                        "rm", "-rf", MOUNT])
+            run(
+                argv
+                + [
+                    "-n",
+                    NAMESPACE,
+                    "exec",
+                    pod,
+                    "-c",
+                    "ray-head",
+                    "--",
+                    "rm",
+                    "-rf",
+                    MOUNT,
+                ]
+            )
         print(f"  removed {MOUNT}")
         return 0
 
