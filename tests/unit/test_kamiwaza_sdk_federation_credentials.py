@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import pytest
 
@@ -60,6 +61,68 @@ def test_resolve_federation_credential_env_beats_file(tmp_path) -> None:
         "KAMIWAZA_FEDERATION_CREDENTIAL_FILE": str(cred_file),
     }
     assert resolve_federation_credential("ORION", env=env) == "from-env"
+
+
+def test_resolve_federation_credential_env_short_circuits_file(monkeypatch) -> None:
+    from kamiwaza_sdk.services.federation_credentials import (
+        resolve_federation_credential,
+    )
+
+    def fail_if_opened(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError("credential file must not be read when env wins")
+
+    monkeypatch.setattr("builtins.open", fail_if_opened)
+    env = {
+        "KAMIWAZA_FEDERATION_CREDENTIAL_ORION": "from-env",
+        "KAMIWAZA_FEDERATION_CREDENTIAL_FILE": "/must-not-open.json",
+    }
+    assert resolve_federation_credential("ORION", env=env) == "from-env"
+
+
+def test_empty_env_credential_falls_back_to_exact_file_key(tmp_path) -> None:
+    from kamiwaza_sdk.services.federation_credentials import (
+        resolve_federation_credential,
+    )
+
+    cred_file = tmp_path / "creds.json"
+    cred_file.write_text(
+        json.dumps({"orion-prod": "exact-key", "ORION_PROD": "normalized-key"})
+    )
+    env = {
+        "KAMIWAZA_FEDERATION_CREDENTIAL_ORION_PROD": "",
+        "KAMIWAZA_FEDERATION_CREDENTIAL_FILE": str(cred_file),
+    }
+    assert resolve_federation_credential("orion-prod", env=env) == "exact-key"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "{",
+        "[]",
+        json.dumps({"LYRA": "other-target"}),
+        json.dumps({"ORION": None}),
+        json.dumps({"ORION": ""}),
+    ],
+)
+def test_invalid_file_credentials_fail_closed(tmp_path, payload: str) -> None:
+    from kamiwaza_sdk.services.federation_credentials import (
+        resolve_federation_credential,
+    )
+
+    cred_file = tmp_path / "creds.json"
+    cred_file.write_text(payload)
+    env = {"KAMIWAZA_FEDERATION_CREDENTIAL_FILE": str(cred_file)}
+    assert resolve_federation_credential("ORION", env=env) is None
+
+
+def test_unreadable_credential_file_fails_closed(tmp_path) -> None:
+    from kamiwaza_sdk.services.federation_credentials import (
+        resolve_federation_credential,
+    )
+
+    env = {"KAMIWAZA_FEDERATION_CREDENTIAL_FILE": str(tmp_path / "missing.json")}
+    assert resolve_federation_credential("ORION", env=env) is None
 
 
 def test_probe_attaches_federation_credential_header_when_resolved(monkeypatch) -> None:
