@@ -596,20 +596,32 @@ def _stale_globs(entry: emitter.MapEntry, nodeids: list[str]) -> list[str]:
     """Globs in one entry that no longer match anything they should."""
     matched = [n for n in nodeids if fnmatchcase(n, entry.pattern)]
     if not matched:
-        # A pattern matching nothing is stale only if its file still collected
-        # tests; a wholly marker-deselected file (the two-cluster suite on a
-        # single-cluster host) legitimately contributes none.
-        file_part = entry.pattern.split("::", 1)[0]
-        if any(n.startswith(f"{file_part}::") for n in nodeids):
-            return [
-                f"{entry.scenario_name!r}: pattern {entry.pattern!r} matches nothing"
-            ]
-        return []
+        return _unmatched_pattern_problems(entry, nodeids)
     return [
         f"{entry.scenario_name!r}: exclude {glob!r} matches nothing"
         for glob in entry.exclude
         if not any(fnmatchcase(n, glob) for n in matched)
     ]
+
+
+def _unmatched_pattern_problems(
+    entry: emitter.MapEntry, nodeids: list[str]
+) -> list[str]:
+    """Diagnose an entry whose pattern matched no collected nodeid."""
+    file_part = entry.pattern.split("::", 1)[0]
+    if any(n.startswith(f"{file_part}::") for n in nodeids):
+        # The file collected tests, so the pattern itself has gone stale.
+        return [f"{entry.scenario_name!r}: pattern {entry.pattern!r} matches nothing"]
+    if entry.exclude:
+        # Nothing collected, so this entry's carve-outs cannot be checked here.
+        # That is only safe while it has none: an unverifiable `exclude` could
+        # rot in the false-evidence direction, unseen by this guard.
+        return [
+            f"{entry.scenario_name!r}: file {file_part!r} collected no tests, "
+            f"so its {len(entry.exclude)} exclude glob(s) cannot be verified "
+            "here — run on a host where this file collects, or drop them"
+        ]
+    return []
 
 
 def test_shipped_map_globs_still_match_real_nodeids():
@@ -620,10 +632,11 @@ def test_shipped_map_globs_still_match_real_nodeids():
     makes an entry produce evidence at all. Either can be voided by a rename
     with every other test still green, so pin both against a real collection.
 
-    Two known gaps, both in the safe direction (missing evidence, never false
-    evidence): ``marker:`` patterns are not checked at all, and a rename
-    inside a wholly marker-deselected file (the two-cluster suite on a
-    single-cluster host) cannot be seen from here.
+    One known gap remains, in the safe direction (missing evidence, never
+    false evidence): ``marker:`` patterns are not checked at all, since a
+    marker match cannot be resolved from nodeids alone. A wholly deselected
+    file is handled explicitly — its pattern cannot be checked, so the entry
+    is required to carry no ``exclude`` that would go unverified.
     """
     nodeids = _collect_repo_nodeids()
     assert nodeids, "collection produced no nodeids; cannot validate the map"

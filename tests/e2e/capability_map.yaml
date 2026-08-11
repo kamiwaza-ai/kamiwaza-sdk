@@ -33,6 +33,16 @@
 # answer — do not "fix" without new tests):
 #   * models.external-endpoints — no existing e2e/live test registers or
 #     exercises an external/BYO OpenAI-compatible endpoint.
+#   * context.workroom-document-search — the search/retrieve/agentic-search
+#     contract tests run against `search_contract_vectordb`, whose own
+#     docstring says it exists to give them a CLEAN backend so that "earlier
+#     vector insert/query tests cannot leave collections that turn a shape
+#     check into a data-search assertion". They search a deliberately empty
+#     vectordb and assert only isinstance(results, list), so they pass without
+#     finding anything; the vectordb insert/query tests likewise assert only
+#     that the result is a list. No existing test searches indexed content and
+#     asserts what came back, so this capability has no honest mapping until
+#     one is written.
 #   * auth.enterprise-sso — test_auth_live.py covers password + PAT auth
 #     and test_auth_endpoints_live.py the auth endpoint surface; neither
 #     is an enterprise SSO/IdP login. The federation shared-IdP suites
@@ -174,25 +184,6 @@
     - "*::test_catalog_container_link_sets_dataset_container_urn"
     - "*::test_catalog_inline_large_object_hits_threshold"
 
-# Justification: test_context_search_contract and
-# test_context_agentic_search_contract search over documents ingested into a
-# workroom-scoped vectordb (session_workroom + search_contract_vectordb
-# fixtures). NOTE the deliberately tight glob: a plain "test_context_*_contract"
-# would also catch test_context_list_raw_files_empty_contract /
-# test_context_list_omniparses_contract, which are listing-endpoint contracts,
-# not document search.
-- pattern: "tests/integration/test_context_live.py::test_context_*search_contract"
-  capability_ids: [context.workroom-document-search]
-  scenario_name: "Workroom-scoped document search contracts"
-
-# Justification: test_context_retrieve_contract retrieves sources for a query
-# from the same workroom-scoped vectordb as the search contracts above
-# (separate entry because no single glob covers exactly the three
-# search/retrieve contract tests).
-- pattern: "tests/integration/test_context_live.py::test_context_retrieve_contract"
-  capability_ids: [context.workroom-document-search]
-  scenario_name: "Workroom-scoped document retrieve contract"
-
 # Justification: test_context_workroom_scope_clients_isolate_vectordb_views
 # proves two workroom-scoped clients see isolated vectordb views — the
 # session-scoping contract applied to context resources.
@@ -214,42 +205,58 @@
     - "*::test_cannot_delete_global_workroom"
 
 # THE RETENTION TEST, applied per test rather than per class: the test must
-# assert something about what one session can or cannot see *relative to
-# another* (or relative to the no-header default). Asserting only that a
-# fetched object reports its own id, or that a list is a list, does not
-# demonstrate scoping no matter which class it sits in.
+# assert that something is ABSENT from a session's view — a resource another
+# session owns, or a workspace resource missing from Global, or a non-Global
+# connector missing from a header-less request. A test that only reads a
+# resource and asserts the object it got back reports its own id proves
+# access is permitted, not that scoping is enforced; so does a test that
+# asserts only that a list is a list.
 #
-# Retained (11 of 23): TestSelfAccess (connectors/extensions scoped to own
-# workroom); TestCrossWorkspaceBlocked's three A-cannot-see-B / B-cannot-see-A
-# assertions; TestGlobalCannotSeeWorkspaces' two "Global excludes workspace
-# resources" assertions; TestLifecycleIsolation::test_delete_workroom_does_not
-# _affect_other; TestSentinelAllBypass::test_connectors_without_header_defaults
-# _to_global; and, from the CRUD class, its two own-vs-other visibility checks
-# (create/get own, list returns own) — that overlap is intentional.
+# Retained (9 of 23), each with an absence assertion:
+#   * TestSelfAccess (2) — _assert_only_own_or_global on both A's and B's
+#     connector/extension lists;
+#   * TestCrossWorkspaceBlocked (3) — B cannot see A's connectors, A cannot
+#     see B's, B cannot see A's extensions;
+#   * TestGlobalCannotSeeWorkspaces (2) — Global's connector and extension
+#     lists exclude the workspace's;
+#   * TestLifecycleIsolation::test_delete_workroom_does_not_affect_other —
+#     deleting A leaves B active and A gone;
+#   * TestSentinelAllBypass::test_connectors_without_header_defaults_to_global
+#     — a header-less request returns no non-Global connector.
 #
 # Excluded, each failing the retention test above:
-#   * the Global guardrails and update/archive of one's own workroom — single
-#     unscoped operations by one session;
-#   * TestWorkspaceCanSeeGlobal in full — all four tests read a Global resource
-#     and assert only that the object returned reports GLOBAL as its id; that
-#     shows access is permitted, not that scoping is enforced;
+#   * TestWorkroomCrudIsolation in full — every test is a single-session
+#     operation on its own (or the Global) workroom: get/list own, update,
+#     archive, read Global, 403 on deleting Global. Even create-and-get-own
+#     has no "other" in it; it asserts the workroom it fetched is the one it
+#     created. Its create/list coverage is claimed by the workrooms.create
+#     entry above, which is where it belongs.
+#   * TestWorkspaceCanSeeGlobal in full — all four read a Global resource and
+#     assert only that the object returned reports GLOBAL as its id.
 #   * test_global_export_excludes_workspace_resources — despite its name it
-#     takes no workroom fixture, so no workspace exists during the test, and it
-#     asserts only manifest.workroom_id == GLOBAL;
+#     takes no workroom fixture, so no workspace exists during the test, and
+#     it asserts only manifest.workroom_id == GLOBAL.
 #   * test_workroom_export_only_shows_own_resources — workroom_b is never
-#     requested; it asserts A's manifest is A's and non-empty;
+#     requested; it asserts A's manifest is A's and non-empty.
 #   * test_archive_workroom_still_visible_with_flag — lists only its own
-#     workroom;
+#     workroom.
 #   * test_deployments_all_returns_across_workrooms — its only assertion is
 #     isinstance(result, list); it never checks the result spans workrooms.
+#
+# KNOWN LIMIT of the retained set (reviewed, accepted): the absence assertions
+# are vacuously satisfiable. The fixtures create workrooms but seed no
+# connectors or extensions, so on a bare cluster "B cannot see A's connectors"
+# passes over an empty list. They are retained because they do drive the
+# scoped request path (X-Workroom-Id) and assert the right property, and
+# because the fix belongs in the tests — seeding sentinel resources in both
+# scopes — not in this mapping. Strengthening them would strengthen this
+# evidence; until then read these records as "isolation not violated", which
+# is what the tests actually check.
 - pattern: "tests/integration/test_workroom_isolation_live.py::*"
   capability_ids: [workrooms.session-scoping]
   scenario_name: "Workroom session-scoping access matrix"
   exclude:
-    - "*::test_global_workroom_exists"
-    - "*::test_cannot_delete_global_workroom"
-    - "*::TestWorkroomCrudIsolation::test_update_own_workroom"
-    - "*::TestWorkroomCrudIsolation::test_archive_own_workroom"
+    - "*::TestWorkroomCrudIsolation::*"
     - "*::TestWorkspaceCanSeeGlobal::*"
     - "*::test_global_export_excludes_workspace_resources"
     - "*::test_workroom_export_only_shows_own_resources"
@@ -269,19 +276,22 @@
     - "*::test_register_rejects_*"
     - "*::test_publisher_grant_then_revoke"
 
-# Justification: TestFederationTwoClusterWalkthrough::test_federated_job_run_via_mesh
-# runs a job on the peer cluster through the mesh and
-# ::test_federated_job_audit_actor_round_trip proves the audit actor
-# round-trip for that remote execution (ENG-5784 two-cluster rig).
-- pattern: "tests/integration/test_federation_two_cluster_live.py::*test_federated_job_*"
+# Justification: test_federated_job_audit_actor_round_trip runs a job on the
+# peer cluster through the mesh and proves the originating identity survives
+# the round-trip (ENG-5784 two-cluster rig). Its own docstring pins the strict
+# gate this mapping relies on: "status MUST be SUCCEEDED — accepting FAILED
+# would mask the very failure modes this test exists to catch".
+#
+# The pattern names that one test rather than excluding its siblings, because
+# this file is marker-gated (requires_two_clusters) and deselects wholesale on
+# a single-cluster host — where an `exclude` glob could rot unverified. Two
+# siblings are deliberately outside it:
+#   * ::test_federated_job_run_via_mesh — asserts only isinstance(resp, dict),
+#     so a job that ran and failed would still emit a passing record;
+#   * test_m3_walkthrough_live.py's walkthrough — its step-8 assertion is
+#     `result.status in {"SUCCEEDED", "FAILED"}`, explicitly accepting a
+#     failed remote job. It is a strong audit-actor test but, by its own
+#     assertion, not evidence that remote job execution succeeds.
+- pattern: "tests/integration/test_federation_two_cluster_live.py::TestFederationTwoClusterWalkthrough::test_federated_job_audit_actor_round_trip"
   capability_ids: [federation.remote-jobs]
   scenario_name: "Federated job execution via mesh"
-
-# Justification: the M3 ship-gate walkthrough's step 7 submits a federated
-# job via kz.jobs.run against the paired LYRA/ORION fleet and step 8
-# asserts the audit_actor round-trip. (Its gate/dataset steps exercise
-# federation surfaces outside this kit's capability inventory, so only
-# remote-jobs is claimed.)
-- pattern: "tests/integration/test_m3_walkthrough_live.py::test_m3_full_walkthrough_against_live_fleet"
-  capability_ids: [federation.remote-jobs]
-  scenario_name: "M3 fleet walkthrough federated job submission"
