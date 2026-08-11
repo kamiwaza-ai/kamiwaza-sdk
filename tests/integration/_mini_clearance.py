@@ -252,8 +252,10 @@ def create_file_dataset(kz: Any, name: str, file_path: str) -> str:
     return urn
 
 
-def retrieve_through_gate(client: Any, dataset_urn: str) -> tuple[list[dict], dict]:
-    """Retrieve the dataset through the gate; return (rows, gate_audit summary).
+def retrieve_through_gate(
+    client: Any, dataset_urn: str
+) -> tuple[list[dict], list[dict]]:
+    """Retrieve the dataset through the gate; return rows and actual audit footers.
 
     Drains the SSE stream: ``chunk`` events carry ``records`` and a ``metadata``
     dict whose ``gate_audit`` is the runner footer.
@@ -271,18 +273,16 @@ def retrieve_through_gate(client: Any, dataset_urn: str) -> tuple[list[dict], di
 
     job = client.retrieval.create_job(RetrievalRequest(dataset_urn=dataset_urn))
     rows: list[dict] = []
-    filtered = False
-    saw_audit = False
+    gate_audits: list[dict] = []
     for event in client.retrieval.stream_events(job.job_id):
         if event.event != "chunk":
             continue
         data = event.data or {}
-        rows.extend(data.get("records") or data.get("rows") or [])
+        rows.extend(data.get("data") or data.get("records") or data.get("rows") or [])
         gate_audit = (data.get("metadata") or {}).get("gate_audit")
-        if gate_audit:
-            saw_audit = True
-            filtered = filtered or bool(gate_audit.get("filtered"))
-    return rows, ({"filtered": filtered} if saw_audit else {})
+        if isinstance(gate_audit, dict):
+            gate_audits.append(gate_audit)
+    return rows, gate_audits
 
 
 def mesh_retrieve_through_gate(
@@ -293,7 +293,7 @@ def mesh_retrieve_through_gate(
     dataset_urn: str,
     *,
     verify: Any,
-) -> tuple[list[dict], dict]:
+) -> tuple[list[dict], list[dict]]:
     """Create a retrieval job over the mesh, then drain its gated SSE stream over
     the mesh — the L3 (two-cluster) analogue of ``retrieve_through_gate``.
 
@@ -303,9 +303,9 @@ def mesh_retrieve_through_gate(
     forwards both verbatim (StreamingResponse over ``aiter_raw``). The create goes
     through the SDK client so a 401/403/404 raises APIError for
     ``_mesh_call_or_skip`` to classify; the stream is a raw SSE GET (the SDK only
-    streams local retrieval paths). Returns (rows, gate_audit summary) in the
-    shape ``assert_persona_result`` expects; ``gate_audit`` is absorbed as either
-    the inline single-dict footer or the federated list-of-dicts seam.
+    streams local retrieval paths). Returns every actual footer in stream order;
+    ``gate_audit`` is absorbed as either the inline single-dict footer or the
+    federated list-of-dicts seam.
     """
     import requests
 
@@ -318,21 +318,17 @@ def mesh_retrieve_through_gate(
         job_id = getattr(job, "job_id", None) or getattr(job, "id", None)
     assert job_id, f"mesh create-job returned no job id: {job!r}"
 
-    filtered = False
-    saw = False
     rows: list[dict] = []
+    gate_audits: list[dict] = []
 
     def _absorb(entry: Any) -> None:
-        # The job-result seam emits a LIST of per-gate footers, the inline/SSE
-        # seams a single dict; both reduce to "was this view filtered at all",
-        # so the list case ORs across gates.
-        nonlocal filtered, saw
+        # The job-result seam emits a LIST of per-gate footers, while inline/SSE
+        # emits a single dict. Preserve each footer instead of reconstructing it.
         if isinstance(entry, list):
             for item in entry:
                 _absorb(item)
         elif isinstance(entry, dict):
-            saw = True
-            filtered = filtered or bool(entry.get("filtered"))
+            gate_audits.append(entry)
 
     url = f"{base_url}/mesh/{fed_name}/api/retrieval/jobs/{job_id}/stream"
     headers = {"Authorization": f"Bearer {token}", "Accept": "text/event-stream"}
@@ -354,7 +350,12 @@ def mesh_retrieve_through_gate(
             if raw == "":  # SSE event terminator (blank line)
                 if data_lines and event == "chunk":
                     payload = json.loads("\n".join(data_lines))
-                    rows.extend(payload.get("records") or payload.get("rows") or [])
+                    rows.extend(
+                        payload.get("data")
+                        or payload.get("records")
+                        or payload.get("rows")
+                        or []
+                    )
                     _absorb((payload.get("metadata") or {}).get("gate_audit"))
                 event, data_lines = None, []
                 continue
@@ -365,7 +366,7 @@ def mesh_retrieve_through_gate(
             elif raw.startswith("data:"):
                 data_lines.append(raw[len("data:") :].lstrip())
 
-    return rows, ({"filtered": filtered} if saw else {})
+    return rows, gate_audits
 
 
 def initiator_cluster_uuid(receiver: Any, receiver_fed_id: str) -> Optional[str]:
@@ -389,7 +390,9 @@ def initiator_cluster_uuid(receiver: Any, receiver_fed_id: str) -> Optional[str]
     return str(cluster_uuid) if cluster_uuid else None
 
 
-def assert_persona_result(clearance: str, rows: list[dict], gate_audit: dict) -> None:
+def assert_persona_result(
+    clearance: str, rows: list[dict], gate_audits: list[dict]
+) -> None:
     """Assert the known post-gate counts + zero leakage for a persona.
 
     Counts are asserted against the rows that ARRIVED, not against the footer's
@@ -399,13 +402,17 @@ def assert_persona_result(clearance: str, rows: list[dict], gate_audit: dict) ->
     persona has anything withheld.
     """
     included, redacted, allowed = KNOWN[clearance]
-    assert gate_audit, "no gate_audit footer in retrieval stream — gate not invoked?"
+    assert gate_audits, "no gate_audit footer in retrieval stream — gate not invoked?"
     assert len(rows) == included, f"expected {included} rows for {clearance}, got {len(rows)}"
-    assert gate_audit.get("filtered") is (redacted > 0), gate_audit
-    # The deprecated count keys must be present-and-null, not resurrected.
-    assert all(gate_audit.get(k) is None for k in ("included", "redacted", "total", "gate")), (
-        gate_audit
-    )
+    assert any(bool(audit.get("filtered")) for audit in gate_audits) is (
+        redacted > 0
+    ), gate_audits
+    for gate_audit in gate_audits:
+        # The deprecated count keys must be present-and-null, not resurrected.
+        assert all(
+            key in gate_audit and gate_audit[key] is None
+            for key in ("included", "redacted", "total", "gate")
+        ), f"deprecated gate_audit keys must be present and null: {gate_audit}"
     # zero leakage: nothing above the caller's clearance survives
     leaked = [r for r in rows if str(r.get("classification", "")).upper() not in allowed]
     assert not leaked, f"{clearance} caller leaked rows above clearance: {leaked}"
