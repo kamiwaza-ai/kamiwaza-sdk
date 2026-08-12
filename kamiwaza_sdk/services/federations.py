@@ -270,6 +270,30 @@ class FederationsAPI(BaseService):
         body = self.client._request("GET", f"/cluster/federations/{federation_id}")
         return Federation.model_validate(body)
 
+    def by_id(
+        self,
+        federation_id: Any,
+        *,
+        remote_name: Optional[str] = None,
+    ) -> "FederationProxy":
+        """Return a proxy bound to one authoritative federation id.
+
+        No federation read is performed. Invalid UUIDs raise ``ValueError``.
+        ``remote_name`` is optional and only selects the mesh route and
+        credential key used by :meth:`probe`; ID-addressed control-plane
+        operations always use ``federation_id``.
+        """
+        try:
+            bound_id = str(uuid.UUID(str(federation_id).strip()))
+        except (AttributeError, TypeError, ValueError):
+            raise ValueError("federation_id must be a valid UUID") from None
+        return FederationProxy(
+            client=self.client,
+            federations_api=self,
+            name=remote_name or bound_id,
+            federation_id=bound_id,
+        )
+
     def __getitem__(self, name: str) -> "FederationProxy":
         """``client.federations["ORION"]`` — proxy for sub-resource access."""
         return FederationProxy(client=self.client, federations_api=self, name=name)
@@ -300,12 +324,12 @@ class FederationsAPI(BaseService):
 
 
 class FederationProxy:
-    """Sub-resource accessor for a single named federation.
+    """Sub-resource accessor for a single federation.
 
-    Lazily resolves the federation's id on first sub-resource use so that
-    indexed access (``client.federations["ORION"]``) doesn't cost a
-    round-trip by itself. The id is cached on the proxy after first
-    resolution.
+    Name-indexed access lazily resolves the federation's id on first
+    sub-resource use. ``FederationsAPI.by_id`` seeds the authoritative id
+    directly, without a federation read. The id is cached on the proxy after
+    first resolution.
     """
 
     def __init__(
@@ -314,11 +338,12 @@ class FederationProxy:
         client: Any,
         federations_api: FederationsAPI,
         name: str,
+        federation_id: Optional[str] = None,
     ) -> None:
         self._client = client
         self._federations_api = federations_api
         self.name = name
-        self._cached_id: Optional[str] = None
+        self._cached_id = federation_id
 
     @property
     def users(self) -> "FederationUsersAPI":
@@ -355,8 +380,10 @@ class FederationProxy:
         For a ``receiver_realm`` target the per-target federation credential is
         attached (§7.5); it is a no-op for other modes.
 
-        The federation selector is the cluster name itself — no separate
-        federation-id resolution round-trip required.
+        The federation selector is the proxy's configured name. An ID-bound
+        proxy without ``remote_name`` uses the federation UUID instead; core
+        accepts either selector and no separate resolution round trip is
+        required.
         """
         headers = self._mesh_headers()
         body = self._client._request(
@@ -369,8 +396,9 @@ class FederationProxy:
     def disconnect(self, *, force: bool = False) -> Any:
         """Disconnect (unpair) this federation.
 
-        ``POST /cluster/federations/{id}/disconnect``. Resolves the federation
-        id from the name first. ``force=True`` tears down without waiting for the
+        ``POST /cluster/federations/{id}/disconnect``. A name-bound proxy
+        resolves the federation id on first use; an ID-bound proxy uses its
+        supplied id directly. ``force=True`` tears down without waiting for the
         peer's acknowledgement (use when the peer is already gone). Returns the
         server's confirmation payload.
         """

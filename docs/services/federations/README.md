@@ -53,6 +53,28 @@ bare list and an `{"items": [...]}` response shape.
 
 Fetch a single federation by id (`GET /cluster/federations/{id}`).
 
+### `by_id(federation_id, *, remote_name=None) -> FederationProxy`
+
+Return a proxy bound directly to an authoritative federation id, without a
+federation read or list lookup. Use this for receiver-side guest, user, and
+disconnect operations when pairing has replaced an operator-entered label with
+the peer's advertised cluster name. IDs may be UUID strings or `uuid.UUID`
+objects; invalid IDs raise `ValueError` before any request is made.
+
+```python
+receiver = client.federations.by_id(receiver_federation_id)
+guest = receiver.guests.enroll("carol@src-uuid")
+receiver.guests.revoke(guest.external_id)
+```
+
+For a mesh probe, prefer the name-keyed proxy below. If the caller already has
+both values, `by_id(id, remote_name="ORION")` uses the exact id for control-plane
+operations and `ORION` as the mesh selector and name-keyed federation-credential
+lookup. Without `remote_name`, probing uses the id as both the mesh selector and
+credential key; core accepts a federation UUID selector, and the matching
+environment-variable suffix is the upper-cased UUID with hyphens replaced by
+underscores.
+
 ### `client.federations[name] -> FederationProxy`
 
 Index by name to get a proxy for one federation's sub-resources. The proxy
@@ -92,10 +114,10 @@ deliver it to the source cluster out-of-band. `initial_tuples` seeds the guest's
 ReBAC grants at enrollment.
 
 ```python
-orion = client.federations["ORION"]                # a receiver_realm federation
-guest = orion.guests.enroll("carol@src-uuid")
+receiver = client.federations.by_id(receiver_federation_id)
+guest = receiver.guests.enroll("carol@src-uuid")
 print(guest.realm, guest.offline_token)            # federation-<id>, <credential — save now>
-orion.guests.revoke("carol@src-uuid")              # disable the guest (FR-79)
+receiver.guests.revoke(guest.external_id)           # disable the guest (FR-79)
 ```
 
 ### `FederationProxy.guests.revoke(external_id) -> Any`
