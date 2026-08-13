@@ -29,6 +29,9 @@ import yaml
 # Safe for the dev path: registry_builder imports only stdlib, yaml and
 # packaging — none of the forbidden publishing machinery (see TestImportInvariant).
 from kamiwaza_extensions.registry_builder import _normalize_preview_image
+from kamiwaza_extensions.validators.workload_identity import (
+    require_valid_declaration,
+)
 
 OVERLAY_PATH = "/apps/app_templates/catalog/overlay"
 
@@ -184,6 +187,13 @@ def build_overlay_entry(
         # in the catalog. Writing the raw value here would overwrite that row
         # with a key the asset was never uploaded under.
         entry["preview_image"] = _normalize_preview_image(entry["preview_image"])
+    # Delegated workload identity governs which authority the deployed workload
+    # may be granted, so a malformed declaration fails the publish instead of
+    # being dropped: an extension that silently loses its declaration deploys
+    # looking healthy and is simply never registered.
+    declaration = metadata.get("workload_identity")
+    if declaration is not None:
+        entry["workload_identity"] = require_valid_declaration(declaration)
     ext_type = metadata.get("type") or metadata.get("template_type")
     if isinstance(ext_type, str) and ext_type in ("app", "tool", "service"):
         entry["template_type"] = ext_type
