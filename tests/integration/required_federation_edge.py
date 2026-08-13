@@ -11,7 +11,7 @@ REQUIRED_EDGE_CASES = frozenset(
         "test_required_mesh_retrieval_returns_exact_post_gate_rows[S]",
         "test_required_mesh_retrieval_returns_exact_post_gate_rows[TS]",
         "test_required_mesh_job_reaches_receiver_and_returns_marker",
-        "test_unonboarded_primary_realm_user_rejected_by_receiver_allowlist",
+        "test_native_realm_token_rejected_at_receiver_shared_idp_boundary",
     }
 )
 
@@ -21,7 +21,11 @@ def required_edge_enabled(config: pytest.Config) -> bool:
 
 
 def is_required_edge_item(item: pytest.Item) -> bool:
-    required_markers = {"requires_two_clusters", "requires_shared_idp"}
+    required_markers = {
+        "requires_two_clusters",
+        "requires_shared_idp",
+        "requires_owned_shared_realm",
+    }
     return (
         required_edge_enabled(item.config)
         and Path(str(item.fspath)).name == REQUIRED_EDGE_FILE

@@ -9,7 +9,6 @@ import pytest
 from _kamiwaza_pytest_options import PROJECT_ROOT
 from kamiwaza_sdk.exceptions import APIError, AuthenticationError
 from tests.integration import test_federation_shared_idp_gated_retrieval_live as edge
-from tests.integration import required_federation_edge_personas as edge_personas
 
 try:
     from tests.integration import required_federation_edge as required_edge
@@ -26,15 +25,23 @@ def _required_item(nodeid: str) -> SimpleNamespace:
     return SimpleNamespace(
         config=config,
         fspath=Path(required_edge.REQUIRED_EDGE_FILE),
-        keywords={"requires_two_clusters": True, "requires_shared_idp": True},
+        keywords={
+            "requires_two_clusters": True,
+            "requires_shared_idp": True,
+            "requires_owned_shared_realm": True,
+        },
         nodeid=nodeid,
     )
 
 
-def test_required_edge_carries_both_topology_markers() -> None:
+def test_required_edge_carries_owned_shared_realm_capability_markers() -> None:
     marker_names = {marker.name for marker in edge.pytestmark}
 
-    assert {"requires_two_clusters", "requires_shared_idp"} <= marker_names
+    assert {
+        "requires_two_clusters",
+        "requires_shared_idp",
+        "requires_owned_shared_realm",
+    } <= marker_names
 
 
 def test_required_edge_plugin_is_registered_only_at_pytest_root() -> None:
@@ -46,13 +53,6 @@ def test_required_edge_plugin_is_registered_only_at_pytest_root() -> None:
 
 
 def test_required_edge_collection_guard_requires_all_five_cases() -> None:
-    assert (
-        "test_unonboarded_primary_realm_user_rejected_by_receiver_allowlist"
-        in required_edge.REQUIRED_EDGE_CASES
-    )
-    assert not any(
-        "native_realm_token" in case for case in required_edge.REQUIRED_EDGE_CASES
-    )
     items = [
         _required_item(f"tests/integration/{required_edge.REQUIRED_EDGE_FILE}::{case}")
         for case in required_edge.REQUIRED_EDGE_CASES
@@ -136,16 +136,14 @@ def test_required_mesh_call_propagates_downstream_denial() -> None:
     assert caught.value is denial
 
 
-def test_unonboarded_primary_user_uses_mesh_and_requires_allowlist_reason() -> None:
+def test_native_token_negative_uses_mesh_and_rejects_authorization_denial() -> None:
     client = Mock()
     client._request.side_effect = APIError("forbidden", status_code=403)
 
-    with pytest.raises(AssertionError, match="unauthorized_brokered_user"):
-        edge.test_unonboarded_primary_realm_user_rejected_by_receiver_allowlist(
-            {
-                "name": "receiver-cluster",
-                "personas": {"unonboarded": {"client": client}},
-            }
+    with pytest.raises(AssertionError, match="peer_jwt_validation_failed"):
+        edge.test_native_realm_token_rejected_at_receiver_shared_idp_boundary(
+            {"name": "receiver-cluster"},
+            client,
         )
 
     client._request.assert_called_once_with(
@@ -154,16 +152,16 @@ def test_unonboarded_primary_user_uses_mesh_and_requires_allowlist_reason() -> N
     )
 
 
-def test_unonboarded_primary_user_accepts_exact_receiver_allowlist_rejection() -> None:
+def test_native_token_negative_accepts_receiver_peer_jwt_rejection() -> None:
     denial = APIError(
-        "not onboarded",
+        "peer rejected",
         status_code=403,
         response_data={
-            "detail": {"reason": "unauthorized_brokered_user"},
+            "detail": {"reason": "peer_jwt_validation_failed"},
         },
     )
 
-    edge._assert_receiver_onboarding_rejection(Mock(side_effect=denial))
+    edge._assert_receiver_auth_rejection(Mock(side_effect=denial))
 
 
 @pytest.mark.parametrize(
@@ -179,79 +177,9 @@ def test_unonboarded_primary_user_accepts_exact_receiver_allowlist_rejection() -
         ),
     ],
 )
-def test_unonboarded_primary_user_rejects_unrelated_auth_failure(denial) -> None:
-    with pytest.raises(AssertionError, match="unauthorized_brokered_user"):
-        edge._assert_receiver_onboarding_rejection(Mock(side_effect=denial))
-
-
-def test_required_personas_use_primary_realm_login_and_receiver_onboarding(
-    monkeypatch,
-) -> None:
-    from kamiwaza_sdk.exceptions import APIError
-
-    initiator = SimpleNamespace(
-        subjects=Mock(),
-        cluster=Mock(),
-        base_url="https://fed-a.test/api",
-    )
-    receiver = SimpleNamespace(_request=Mock())
-    initiator.subjects.get.side_effect = APIError("missing", status_code=404)
-    clients = edge._EdgeClients(initiator=initiator, receiver=receiver)
-    cleanup = Mock()
-    persona_clients = {}
-
-    def normal_login(base_url, username, password, *, verify):
-        assert base_url == "https://fed-a.test/api"
-        assert password == "persona-secret"
-        assert verify is True
-        client = Mock()
-        client.auth.get_current_user.return_value = SimpleNamespace(
-            username=username,
-            sub=f"sub-{username}",
-        )
-        client.get_bearer_token.return_value = f"token-{username}"
-        persona_clients[username] = client
-        return client
-
-    monkeypatch.setattr(edge.mc, "authed_client", normal_login)
-    monkeypatch.setattr(
-        edge.mc,
-        "jwt_sub",
-        lambda token: f"sub-{token.removeprefix('token-')}",
-    )
-    direct_shared_login = Mock(
-        side_effect=AssertionError("direct shared-realm ROPC is forbidden")
-    )
-    monkeypatch.setattr(
-        edge.mc,
-        "shared_realm_token",
-        direct_shared_login,
-    )
-    prerequisites = SimpleNamespace(
-        persona_auth={"password": "persona-secret", "verify": True},
-        shared={"shared_issuer_url": "https://fed-a.test/realms/kamiwaza"},
-    )
-
-    personas = edge_personas.provision_primary_personas(
-        cleanup,
-        clients,
-        ("receiver-fed", "fed-a-cluster", "urn:dataset:known"),
-        prerequisites,
-    )
-
-    assert set(personas) == {"U", "S", "TS", "unonboarded"}
-    assert initiator.subjects.upsert.call_count == 4
-    assert set(persona_clients) == {
-        "fed-clr-u",
-        "fed-clr-s",
-        "fed-clr-ts",
-        "fed-clr-unonboarded",
-    }
-    assert receiver._request.call_count == 3
-    direct_shared_login.assert_not_called()
-    for clearance in ("U", "S", "TS"):
-        username = f"fed-clr-{clearance.lower()}"
-        assert personas[clearance]["client"] is persona_clients[username]
+def test_native_token_negative_rejects_unrelated_auth_failure(denial) -> None:
+    with pytest.raises(AssertionError, match="peer_jwt_validation_failed"):
+        edge._assert_receiver_auth_rejection(Mock(side_effect=denial))
 
 
 def test_brokered_personas_get_only_required_fixture_authority() -> None:
@@ -260,11 +188,11 @@ def test_brokered_personas_get_only_required_fixture_authority() -> None:
         "relation": "viewer",
         "object": "dataset:urn:kamiwaza:dataset:known",
     }
-    assert edge_personas.required_initial_tuples(
+    assert edge._required_initial_tuples(
         "urn:kamiwaza:dataset:known",
         job_executor=False,
     ) == [dataset_tuple]
-    assert edge_personas.required_initial_tuples(
+    assert edge._required_initial_tuples(
         "urn:kamiwaza:dataset:known",
         job_executor=True,
     ) == [
@@ -275,6 +203,55 @@ def test_brokered_personas_get_only_required_fixture_authority() -> None:
             "object": "cluster_jobs:__all__",
         },
     ]
+
+
+def test_persona_session_performs_password_grant_then_real_refresh(monkeypatch) -> None:
+    calls: list[str] = []
+
+    class _Authenticator:
+        def __init__(self, config, *, token_store) -> None:
+            self.config = config
+            self.token_store = token_store
+
+        def authenticate(self, session) -> None:
+            calls.append("password")
+            session.headers["Authorization"] = "Bearer initial"
+            self.token_store.save(SimpleNamespace(refresh_token="refresh-1"))
+
+        def refresh_token(self, session) -> None:
+            calls.append("refresh")
+            session.headers["Authorization"] = "Bearer refreshed"
+            self.token_store.save(SimpleNamespace(refresh_token="refresh-2"))
+
+        def get_access_token(self, session) -> str:
+            calls.append("read")
+            return session.headers["Authorization"].removeprefix("Bearer ")
+
+    class _Client:
+        def __init__(self, *, base_url, authenticator, verify) -> None:
+            self.base_url = base_url
+            self.authenticator = authenticator
+            self.verify = verify
+            self.session = SimpleNamespace(headers={})
+
+    monkeypatch.setattr(edge, "SharedIdpAuthenticator", _Authenticator, raising=False)
+    monkeypatch.setattr(edge, "KamiwazaClient", _Client, raising=False)
+
+    persona = edge._programmatic_persona_session(
+        "https://initiator.example/api",
+        {
+            "issuer": "https://idp.example/realms/shared",
+            "client_id": "federation-client",
+            "client_secret": None,
+            "password": "secret",
+            "verify": True,
+        },
+        "fed-clr-u",
+    )
+
+    assert calls == ["password", "refresh", "read"]
+    assert persona["token"] == "refreshed"
+    assert persona["client"].authenticator is persona["authenticator"]
 
 
 @pytest.mark.parametrize(
@@ -345,12 +322,14 @@ def test_required_job_case_runs_recoverably_on_named_peer(monkeypatch) -> None:
             "source_cluster_id": "initiator-uuid",
         }
     )
-    persona = SimpleNamespace(jobs=jobs, _request=request)
+    persona = SimpleNamespace(jobs=jobs, _request=request, session=object())
+    authenticator = Mock()
+    authenticator.get_access_token.return_value = "opaque-test-token"
     monkeypatch.setattr(edge.uuid, "uuid4", lambda: SimpleNamespace(hex="fixed"))
     wiring = {
         "name": "receiver-cluster",
         "personas": {
-            "U": {"token": "opaque-test-token", "client": persona},
+            "U": {"client": persona, "authenticator": authenticator},
         },
         "verify": True,
         "source_cluster_id": "initiator-uuid",
@@ -516,7 +495,9 @@ def test_pairing_requires_two_distinct_cluster_identities() -> None:
 
 
 def test_required_retrieval_case_asserts_streamed_known_answer(monkeypatch) -> None:
-    persona = object()
+    persona = SimpleNamespace(session=object())
+    authenticator = Mock()
+    authenticator.get_access_token.return_value = "opaque-test-token"
     rows = edge.mc.records()[:3]
     footers = [
         {
@@ -533,7 +514,7 @@ def test_required_retrieval_case_asserts_streamed_known_answer(monkeypatch) -> N
         "name": "receiver-cluster",
         "urn": "urn:kamiwaza:dataset:known",
         "personas": {
-            "U": {"token": "opaque-test-token", "client": persona},
+            "U": {"client": persona, "authenticator": authenticator},
         },
         "verify": True,
     }
@@ -571,7 +552,7 @@ def test_persona_cleanup_revokes_exact_allowlist_row() -> None:
     request = Mock(return_value={"message": "revoked"})
     receiver = SimpleNamespace(_request=request)
 
-    edge_personas.cleanup_brokered_persona(
+    edge._cleanup_brokered_persona(
         receiver,
         "federation-id",
         "alice@example.com@source-cluster",
