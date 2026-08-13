@@ -496,7 +496,12 @@ class ComposeTransformer:
           envFrom; an explicit resolved entry would shadow the cluster-internal
           value.
         - Unset ``${VAR}`` and unsatisfied required forms are dropped.
+        - Unbraced ``$VAR`` references stay literal; this resolver intentionally
+          handles only braced Compose substitutions.
         - Plain values pass through unchanged.
+
+        ``$$`` escapes collapse to a literal dollar. A resulting ``$(VAR)``
+        token can still be expanded later by Kubernetes container-env handling.
 
         Skip this step when the destination DOES perform install-time
         substitution (e.g. a catalog template consumed by the platform
@@ -536,7 +541,8 @@ def _resolve_shell_refs(env: Any) -> Any:
 
     3. Unset bare substitutions and unsatisfied required forms are dropped.
 
-    Values without supported substitutions or ``$$`` escapes pass unchanged.
+    Values without supported substitutions or ``$$`` escapes pass unchanged;
+    unbraced ``$VAR`` references are outside this resolver's scope.
     """
     if isinstance(env, dict):
         out: Dict[str, Any] = {}
@@ -663,7 +669,9 @@ def _resolve_list_entry(entry: Any) -> Optional[Any]:
 
 
 def _resolve_dict_list_entry(entry: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Resolve a Kubernetes-style ``name``/``value`` environment entry."""
+    """Resolve a tolerated environment-list mapping."""
+    if "name" not in entry:
+        return _resolve_mapping_list_entry(entry)
     name = entry.get("name")
     value = entry.get("value")
     if name is None or not isinstance(value, str):
@@ -676,13 +684,28 @@ def _resolve_dict_list_entry(entry: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return out
 
 
+def _resolve_mapping_list_entry(entry: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Resolve a mapping-fragment list entry one environment key at a time."""
+    out: Dict[str, Any] = {}
+    for key, value in entry.items():
+        if not isinstance(value, str) or "$" not in value:
+            out[key] = value
+            continue
+        resolved = _resolve_env_value(str(key), value)
+        if resolved is not None:
+            out[key] = resolved
+    return out or None
+
+
 def _entry_has_shell_ref(entry: Any) -> bool:
     if isinstance(entry, str) and "=" in entry:
         return "$" in entry.split("=", 1)[1]
-    if isinstance(entry, dict) and "name" in entry:
+    if not isinstance(entry, dict):
+        return False
+    if "name" in entry:
         value = entry.get("value")
         return isinstance(value, str) and "$" in value
-    return False
+    return any(isinstance(value, str) and "$" in value for value in entry.values())
 
 
 # ------------------------------------------------------------------

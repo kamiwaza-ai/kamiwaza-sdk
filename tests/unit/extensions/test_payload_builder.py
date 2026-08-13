@@ -813,11 +813,23 @@ class TestEnvParsing:
             [
                 {"name": "KEY", "value": "value"},
                 {"name": "NULL_KEY", "value": None},
+                {
+                    "name": "SECRET_KEY",
+                    "valueFrom": {
+                        "secretKeyRef": {"name": "secret", "key": "token"},
+                    },
+                },
             ]
         )
         assert result == [
             {"name": "KEY", "value": "value"},
             {"name": "NULL_KEY"},
+            {
+                "name": "SECRET_KEY",
+                "valueFrom": {
+                    "secretKeyRef": {"name": "secret", "key": "token"},
+                },
+            },
         ]
 
     def test_empty(self, builder):

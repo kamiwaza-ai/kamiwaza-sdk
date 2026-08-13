@@ -299,6 +299,39 @@ class TestRewriteEnvImageRefsListForm:
         assert f"AGENT_SERVER_IMAGE={_AGENT_BUILT}" in env
         assert "FOO=bar" in env
 
+    def test_name_value_dict_form_agent_server_image(self):
+        ref_map = _ref_map(_kaizen_compose()["services"])
+        value_from = {"secretKeyRef": {"name": "agent", "key": "image"}}
+        compose = {
+            "services": {
+                "backend": {
+                    "environment": [
+                        {
+                            "name": "AGENT_SERVER_IMAGE",
+                            "value": f"${{AGENT_SERVER_IMAGE:-{_AGENT_GHCR}:2.0.2}}",
+                        },
+                        {
+                            "name": "AGENT_SERVER_IMAGE_FROM_SECRET",
+                            "valueFrom": value_from,
+                        },
+                    ],
+                },
+            },
+        }
+
+        result = rewrite_env_image_refs(compose, ref_map)
+
+        assert result["services"]["backend"]["environment"] == [
+            {
+                "name": "AGENT_SERVER_IMAGE",
+                "value": f"${{AGENT_SERVER_IMAGE:-{_AGENT_BUILT}}}",
+            },
+            {
+                "name": "AGENT_SERVER_IMAGE_FROM_SECRET",
+                "valueFrom": value_from,
+            },
+        ]
+
 
 class TestDevRemoteWiresEnvRewrite:
     """``run_dev_remote`` must actually apply the env rewrite — guards against

@@ -688,6 +688,7 @@ class TestResolveEnvPlaceholders:
                     "environment": {
                         "LITERAL": "$${KZ_TEST_ESCAPED:-fallback}",
                         "PLAIN_ESCAPE": "cost$$value",
+                        "RAW_MIXED": "cost$raw ${KZ_TEST_SUFFIX:-resolved}",
                         "MIXED": (
                             "$${KZ_TEST_ESCAPED:-literal} "
                             "${KZ_TEST_SUFFIX:-resolved}"
@@ -703,6 +704,7 @@ class TestResolveEnvPlaceholders:
         assert result["services"]["backend"]["environment"] == {
             "LITERAL": "${KZ_TEST_ESCAPED:-fallback}",
             "PLAIN_ESCAPE": "cost$value",
+            "RAW_MIXED": "cost$raw resolved",
             "MIXED": "${KZ_TEST_ESCAPED:-literal} resolved",
         }
 
@@ -806,6 +808,30 @@ class TestResolveEnvPlaceholders:
             {"name": "PLAIN", "value": "kept"},
         ]
 
+    def test_resolves_mapping_fragment_list_entries(self, transformer, monkeypatch):
+        monkeypatch.delenv("KZ_TEST_PRICE", raising=False)
+        compose = {
+            "services": {
+                "backend": {
+                    "environment": [
+                        {
+                            "PRICE": "cost$$value",
+                            "RESOLVED": "${KZ_TEST_PRICE:-cost$$value}",
+                            "KAMIWAZA_API_URL": (
+                                "${KAMIWAZA_API_URL:-http://localhost}"
+                            ),
+                        },
+                    ],
+                },
+            },
+        }
+
+        result = transformer.resolve_env_placeholders(compose)
+
+        assert result["services"]["backend"]["environment"] == [
+            {"PRICE": "cost$value", "RESOLVED": "cost$value"},
+        ]
+
     def test_deeply_nested_substitution_fails_closed(self, transformer, monkeypatch):
         monkeypatch.delenv("KZ_TEST_DEEP", raising=False)
         value = "fallback"
@@ -862,6 +888,7 @@ class TestResolveEnvPlaceholders:
                 "backend": {
                     "environment": {
                         "KAMIWAZA_LITERAL": "$${KZ_TEST_ESCAPED_PLATFORM:-fallback}",
+                        "KAMIWAZA_PRICE": "cost$5",
                     },
                 },
             },
@@ -871,6 +898,7 @@ class TestResolveEnvPlaceholders:
 
         assert result["services"]["backend"]["environment"] == {
             "KAMIWAZA_LITERAL": "${KZ_TEST_ESCAPED_PLATFORM:-fallback}",
+            "KAMIWAZA_PRICE": "cost$5",
         }
 
     def test_plain_values_pass_through(self, transformer):

@@ -13,6 +13,13 @@ from kamiwaza_extensions.compose_ports import (
     default_service_port_name,
     extract_container_port,
 )
+from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
+from kamiwaza_extensions.compose_volumes import (
+    ServiceVolumeSpec,
+    build_service_volume_specs,
+)
+from kamiwaza_extensions.connections import ConnectionInfo
+from kamiwaza_extensions.validators.compose import INVALID_DEPLOY_REQUESTS_TEXT
 from kamiwaza_sdk.schemas.extensions import (
     CreateExtension,
     ExtensionPort,
@@ -22,14 +29,6 @@ from kamiwaza_sdk.schemas.extensions import (
     ResourceSpec,
     SecuritySpec,
 )
-
-from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
-from kamiwaza_extensions.compose_volumes import (
-    ServiceVolumeSpec,
-    build_service_volume_specs,
-)
-from kamiwaza_extensions.connections import ConnectionInfo
-from kamiwaza_extensions.validators.compose import INVALID_DEPLOY_REQUESTS_TEXT
 
 # CRD annotation keys — namespace is ``kamiwaza.io/*`` (NOT ``kamiwaza.ai/*``).
 # The platform's annotation persister filters incoming Extension CR annotations
@@ -461,8 +460,11 @@ class PayloadBuilder:
             return [
                 {"name": str(key), "value": str(value)} for key, value in item.items()
             ]
-        entry: Dict[str, Any] = {"name": str(item["name"])}
-        if item.get("value") is not None:
+        entry = dict(item)
+        entry["name"] = str(item["name"])
+        if item.get("value") is None:
+            entry.pop("value", None)
+        else:
             entry["value"] = str(item["value"])
         return [entry]
 
