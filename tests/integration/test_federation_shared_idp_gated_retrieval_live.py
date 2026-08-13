@@ -165,8 +165,8 @@ def _restore_execution_gate(receiver: Any, previous: Any) -> None:
 def _temporary_execution_gate(receiver: Any) -> Iterator[None]:
     """Bind the live-test gate and always restore the receiver's prior state."""
     previous = _current_execution_gate(receiver)
-    receiver.cluster.set_execution_gate(type=_ALLOW_ALL_EXECUTION_GATE, config={})
     try:
+        receiver.cluster.set_execution_gate(type=_ALLOW_ALL_EXECUTION_GATE, config={})
         yield
     finally:
         _restore_execution_gate(receiver, previous)

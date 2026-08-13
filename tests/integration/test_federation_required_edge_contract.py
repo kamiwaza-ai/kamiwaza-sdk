@@ -302,6 +302,26 @@ def test_temporary_execution_gate_restores_receiver_binding(previous) -> None:
         }
 
 
+def test_temporary_execution_gate_restores_after_ambiguous_set_failure() -> None:
+    previous = SimpleNamespace(type="old.Gate", config={"mode": "strict"})
+    cluster = Mock()
+    cluster.set_execution_gate.side_effect = [RuntimeError("response lost"), None]
+    receiver = SimpleNamespace(cluster=cluster)
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(
+            edge, "_current_execution_gate", Mock(return_value=previous)
+        )
+        with pytest.raises(RuntimeError, match="response lost"):
+            with edge._temporary_execution_gate(receiver):
+                pytest.fail("ambiguous setup must not yield")
+
+    assert [call.kwargs for call in cluster.set_execution_gate.call_args_list] == [
+        {"type": edge._ALLOW_ALL_EXECUTION_GATE, "config": {}},
+        {"type": "old.Gate", "config": {"mode": "strict"}},
+    ]
+
+
 def test_terminal_job_oracle_accepts_exact_receiver_marker() -> None:
     result = SimpleNamespace(
         status="SUCCEEDED",
