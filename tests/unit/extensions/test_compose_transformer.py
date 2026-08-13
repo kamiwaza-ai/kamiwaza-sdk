@@ -496,7 +496,9 @@ class TestResolveEnvPlaceholders:
             "PLAIN_VAR=plain-value",
         ]
 
-    def test_resolves_default_substitution_embedded_in_value(self, transformer, monkeypatch):
+    def test_resolves_default_substitution_embedded_in_value(
+        self, transformer, monkeypatch
+    ):
         monkeypatch.delenv("KZ_TEST_NEO4J_PASSWORD", raising=False)
         compose = {
             "services": {
@@ -514,7 +516,9 @@ class TestResolveEnvPlaceholders:
             "NEO4J_AUTH": "neo4j/changeme",
         }
 
-    def test_drops_embedded_substitution_without_safe_default(self, transformer, monkeypatch):
+    def test_drops_embedded_substitution_without_safe_default(
+        self, transformer, monkeypatch
+    ):
         monkeypatch.delenv("KZ_TEST_NEO4J_PASSWORD", raising=False)
         compose = {
             "services": {
@@ -530,10 +534,11 @@ class TestResolveEnvPlaceholders:
 
         assert result["services"]["neo4j"]["environment"] == {}
 
-    def test_drops_kamiwaza_platform_vars(self, transformer):
+    def test_drops_kamiwaza_platform_vars(self, transformer, monkeypatch):
         """``KAMIWAZA_*`` vars are platform-injected via ConfigMap
         envFrom; an explicit env entry would shadow the cluster-internal
         value with the laptop-only default."""
+        monkeypatch.delenv("BACKEND_URL", raising=False)
         compose = {
             "services": {
                 "backend": {
@@ -632,6 +637,109 @@ class TestResolveEnvPlaceholders:
         assert result["services"]["backend"]["environment"] == {
             "DATABASE_URL": "postgresql://postgres:dev@postgres/db",
         }
+
+    @pytest.mark.parametrize("host_value", [None, "host-secret"])
+    def test_preserves_escaped_substitution_literal(
+        self, transformer, monkeypatch, host_value
+    ):
+        if host_value is None:
+            monkeypatch.delenv("KZ_TEST_ESCAPED", raising=False)
+        else:
+            monkeypatch.setenv("KZ_TEST_ESCAPED", host_value)
+        compose = {
+            "services": {
+                "backend": {
+                    "environment": {
+                        "LITERAL": "$${KZ_TEST_ESCAPED:-fallback}",
+                        "MIXED": (
+                            "$${KZ_TEST_ESCAPED:-literal} "
+                            "${KZ_TEST_SUFFIX:-resolved}"
+                        ),
+                    },
+                },
+            },
+        }
+        monkeypatch.delenv("KZ_TEST_SUFFIX", raising=False)
+
+        result = transformer.resolve_env_placeholders(compose)
+
+        assert result["services"]["backend"]["environment"] == {
+            "LITERAL": "${KZ_TEST_ESCAPED:-fallback}",
+            "MIXED": "${KZ_TEST_ESCAPED:-literal} resolved",
+        }
+
+    @pytest.mark.parametrize(
+        ("host_value", "expected"),
+        [
+            (None, '{"a":1,"nested":{"enabled":true}}'),
+            ("from-host", "from-host"),
+        ],
+    )
+    def test_preserves_literal_braces_in_default(
+        self, transformer, monkeypatch, host_value, expected
+    ):
+        if host_value is None:
+            monkeypatch.delenv("KZ_TEST_JSON", raising=False)
+        else:
+            monkeypatch.setenv("KZ_TEST_JSON", host_value)
+        compose = {
+            "services": {
+                "backend": {
+                    "environment": {
+                        "JSON_CONFIG": (
+                            '${KZ_TEST_JSON:-{"a":1,"nested":{"enabled":true}}}'
+                        ),
+                    },
+                },
+            },
+        }
+
+        result = transformer.resolve_env_placeholders(compose)
+
+        assert result["services"]["backend"]["environment"] == {
+            "JSON_CONFIG": expected,
+        }
+
+    def test_preserves_unmatched_literal_open_brace_in_default(
+        self, transformer, monkeypatch
+    ):
+        monkeypatch.delenv("KZ_TEST_TEMPLATE", raising=False)
+        compose = {
+            "services": {
+                "backend": {
+                    "environment": {
+                        "TEMPLATE": '${KZ_TEST_TEMPLATE:-{"template":"{"}}',
+                    },
+                },
+            },
+        }
+
+        result = transformer.resolve_env_placeholders(compose)
+
+        assert result["services"]["backend"]["environment"] == {
+            "TEMPLATE": '{"template":"{"}',
+        }
+
+    def test_resolves_embedded_list_and_multiple_substitutions(
+        self, transformer, monkeypatch
+    ):
+        monkeypatch.delenv("KZ_TEST_USER", raising=False)
+        monkeypatch.delenv("KZ_TEST_PASSWORD", raising=False)
+        compose = {
+            "services": {
+                "backend": {
+                    "environment": [
+                        "AUTH=${KZ_TEST_USER:-neo4j}/${KZ_TEST_PASSWORD:-changeme}",
+                    ],
+                },
+            },
+        }
+
+        result = transformer.resolve_env_placeholders(compose)
+
+        assert result["services"]["backend"]["environment"] == [
+            "AUTH=neo4j/changeme",
+        ]
 
     def test_plain_values_pass_through(self, transformer):
         compose = {

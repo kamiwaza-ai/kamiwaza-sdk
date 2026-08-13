@@ -300,7 +300,7 @@ _COMPOSE_SUB_RE = re.compile(
     r"^\$\{([A-Za-z_][A-Za-z0-9_]*)(?:(:?[-?])(.*))?\}$",
     re.DOTALL,
 )
-_COMPOSE_SUB_TOKEN_RE = re.compile(r"\$\{|}")
+_COMPOSE_BRACE_RE = re.compile(r"[{}]")
 
 # Env var names that should be left to the platform's ConfigMap envFrom
 # injection (operator writes the cluster-internal value; an explicit
@@ -483,12 +483,14 @@ class ComposeTransformer:
         the pod verbatim.
 
         Rules (per env var):
-        - Host environment values are used with normal Compose semantics.
+        - Host environment values are used with Compose's supported braced
+          substitution semantics.
         - ``${VAR:-default}`` / ``${VAR-default}`` for non-platform
           keys → recursively collapsed to a host value or literal default.
-        - ``${KAMIWAZA_*:-default}`` → dropped. The kamiwaza-extension
-          operator injects these via ConfigMap envFrom; an explicit
-          env entry would shadow the cluster-internal value.
+        - Placeholder-bearing entries whose key starts with ``KAMIWAZA_`` →
+          dropped. The kamiwaza-extension operator injects these via ConfigMap
+          envFrom; an explicit resolved entry would shadow the cluster-internal
+          value.
         - Unset ``${VAR}`` and unsatisfied required forms are dropped.
         - Plain values pass through unchanged.
 
@@ -514,18 +516,18 @@ def _resolve_shell_refs(env: Any) -> Any:
     Two rules:
 
     1. Non-platform placeholders use the current process environment and
-       normal Compose unset/empty semantics. Embedded substitutions and nested
-       defaults are resolved recursively. The cluster deployment carries the
-       resolved value through to the pod
+       Compose unset/empty semantics for ``:-``, ``-``, ``:?``, and ``?``.
+       Embedded substitutions and nested defaults are resolved recursively.
+       The cluster deployment carries the resolved value through to the pod
        — and ``detect_service_url_rewrites`` (called by
        ``PayloadBuilder``) emits a ``service-ref-rewrites`` annotation
        so the operator can swap cross-service hostnames at deploy time.
 
-    2. ``${KAMIWAZA_*:-default}`` → drop. The kamiwaza-extension
-       operator injects these via ConfigMap envFrom; an explicit env
-       entry would shadow the cluster-internal value. Compose defaults
-       point to laptop-only addresses (``host.docker.internal:7777``)
-       that don't resolve in-cluster anyway.
+    2. Placeholder-bearing entries whose key starts with ``KAMIWAZA_`` → drop.
+       The kamiwaza-extension operator injects these via ConfigMap envFrom; an
+       explicit resolved entry would shadow the cluster-internal value.
+       Compose defaults point to laptop-only addresses
+       (``host.docker.internal:7777``) that don't resolve in-cluster anyway.
 
     3. Unset bare substitutions and unsatisfied required forms are dropped.
 
@@ -562,31 +564,45 @@ def _resolve_default_substitution(key: str, value: str) -> Optional[str]:
 
 
 def _resolve_compose_value(value: str) -> Optional[str]:
-    """Resolve every balanced ``${...}`` expression embedded in *value*."""
+    """Resolve braced expressions while honoring Compose's ``$$`` escape."""
     resolved: List[str] = []
     cursor = 0
-    while (start := value.find("${", cursor)) >= 0:
-        end = _compose_substitution_end(value, start)
+    while cursor < len(value):
+        dollar = value.find("$", cursor)
+        if dollar < 0:
+            resolved.append(value[cursor:])
+            break
+        resolved.append(value[cursor:dollar])
+        if value.startswith("$$", dollar):
+            resolved.append("$")
+            cursor = dollar + 2
+            continue
+        if not value.startswith("${", dollar):
+            resolved.append("$")
+            cursor = dollar + 1
+            continue
+        end = _compose_substitution_end(value, dollar)
         if end is None:
             return None
-        resolved.append(value[cursor:start])
-        substitution = _resolve_compose_substitution(value[start : end + 1])
+        substitution = _resolve_compose_substitution(value[dollar : end + 1])
         if substitution is None:
             return None
         resolved.append(substitution)
         cursor = end + 1
-    resolved.append(value[cursor:])
     return "".join(resolved)
 
 
 def _compose_substitution_end(value: str, start: int) -> Optional[int]:
     """Find the closing brace paired with the ``${`` at *start*."""
     depth = 1
-    for token in _COMPOSE_SUB_TOKEN_RE.finditer(value, start + 2):
-        depth += 1 if token.group() == "${" else -1
+    for brace in _COMPOSE_BRACE_RE.finditer(value, start + 2):
+        depth += 1 if brace.group() == "{" else -1
         if depth == 0:
-            return token.start()
-    return None
+            return brace.start()
+    # Compose's greedy fallback accepts an unmatched literal ``{`` inside a
+    # default. In that case its final ``}`` still closes the substitution.
+    final_brace = value.rfind("}", start + 2)
+    return final_brace if final_brace >= 0 else None
 
 
 def _resolve_compose_substitution(value: str) -> Optional[str]:
