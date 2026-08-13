@@ -574,9 +574,10 @@ class TestResolveEnvPlaceholders:
         result = transformer.resolve_env_placeholders(compose)
         assert result["services"]["backend"]["environment"] == {"PLAIN": "kept"}
 
-    def test_alternate_default_form_dash_only(self, transformer, monkeypatch):
-        """Compose accepts both ``${VAR:-default}`` (unset OR empty)
-        and ``${VAR-default}`` (unset only). Both collapse to default."""
+    def test_default_form_dash_only_uses_fallback_when_unset(
+        self, transformer, monkeypatch
+    ):
+        """``${VAR-default}`` uses its fallback when the variable is unset."""
         monkeypatch.delenv("KZ_TEST_UNSET_VALUE", raising=False)
         compose = {
             "services": {
@@ -638,6 +639,25 @@ class TestResolveEnvPlaceholders:
         result = transformer.resolve_env_placeholders(compose)
 
         assert result["services"]["backend"]["environment"] == {"VALUE": ""}
+
+    def test_resolves_nested_alternate_substitution(self, transformer, monkeypatch):
+        monkeypatch.setenv("KZ_TEST_VALUE", "selected")
+        monkeypatch.setenv("KZ_TEST_ALTERNATE", "nested-value")
+        compose = {
+            "services": {
+                "backend": {
+                    "environment": {
+                        "VALUE": "${KZ_TEST_VALUE:+${KZ_TEST_ALTERNATE}}",
+                    },
+                },
+            },
+        }
+
+        result = transformer.resolve_env_placeholders(compose)
+
+        assert result["services"]["backend"]["environment"] == {
+            "VALUE": "nested-value",
+        }
 
     def test_resolves_nested_default_substitution(self, transformer, monkeypatch):
         monkeypatch.delenv("KZ_TEST_DATABASE_URL", raising=False)
@@ -760,6 +780,98 @@ class TestResolveEnvPlaceholders:
             "AUTH=neo4j/changeme",
             "LITERAL=cost$value",
         ]
+
+    def test_resolves_name_value_dict_list_entries(self, transformer, monkeypatch):
+        monkeypatch.delenv("KZ_TEST_PRICE", raising=False)
+        compose = {
+            "services": {
+                "backend": {
+                    "environment": [
+                        {"name": "PRICE", "value": "cost$$value"},
+                        {
+                            "name": "RESOLVED",
+                            "value": "${KZ_TEST_PRICE:-cost$$value}",
+                        },
+                        {"name": "PLAIN", "value": "kept"},
+                    ],
+                },
+            },
+        }
+
+        result = transformer.resolve_env_placeholders(compose)
+
+        assert result["services"]["backend"]["environment"] == [
+            {"name": "PRICE", "value": "cost$value"},
+            {"name": "RESOLVED", "value": "cost$value"},
+            {"name": "PLAIN", "value": "kept"},
+        ]
+
+    def test_deeply_nested_substitution_fails_closed(self, transformer, monkeypatch):
+        monkeypatch.delenv("KZ_TEST_DEEP", raising=False)
+        value = "fallback"
+        for _ in range(200):
+            value = f"${{KZ_TEST_DEEP:-{value}}}"
+        compose = {"services": {"backend": {"environment": {"VALUE": value}}}}
+
+        result = transformer.resolve_env_placeholders(compose)
+
+        assert result["services"]["backend"]["environment"] == {}
+
+    def test_unbraced_reference_remains_literal(self, transformer, monkeypatch):
+        monkeypatch.setenv("KZ_TEST_UNBRACED", "host-value")
+        compose = {
+            "services": {
+                "backend": {
+                    "environment": {"VALUE": "$KZ_TEST_UNBRACED/data"},
+                },
+            },
+        }
+
+        result = transformer.resolve_env_placeholders(compose)
+
+        assert result["services"]["backend"]["environment"] == {
+            "VALUE": "$KZ_TEST_UNBRACED/data",
+        }
+
+    def test_malformed_and_empty_required_substitutions_fail_closed(
+        self, transformer, monkeypatch
+    ):
+        monkeypatch.delenv("KZ_TEST_MALFORMED", raising=False)
+        monkeypatch.setenv("KZ_TEST_EMPTY_REQUIRED", "")
+        compose = {
+            "services": {
+                "backend": {
+                    "environment": {
+                        "MALFORMED": "${KZ_TEST_MALFORMED:-no-close",
+                        "REQUIRED": "${KZ_TEST_EMPTY_REQUIRED:?required}",
+                    },
+                },
+            },
+        }
+
+        result = transformer.resolve_env_placeholders(compose)
+
+        assert result["services"]["backend"]["environment"] == {}
+
+    def test_platform_key_with_escaped_placeholder_stays_literal(
+        self, transformer, monkeypatch
+    ):
+        monkeypatch.setenv("KZ_TEST_ESCAPED_PLATFORM", "host-value")
+        compose = {
+            "services": {
+                "backend": {
+                    "environment": {
+                        "KAMIWAZA_LITERAL": "$${KZ_TEST_ESCAPED_PLATFORM:-fallback}",
+                    },
+                },
+            },
+        }
+
+        result = transformer.resolve_env_placeholders(compose)
+
+        assert result["services"]["backend"]["environment"] == {
+            "KAMIWAZA_LITERAL": "${KZ_TEST_ESCAPED_PLATFORM:-fallback}",
+        }
 
     def test_plain_values_pass_through(self, transformer):
         compose = {

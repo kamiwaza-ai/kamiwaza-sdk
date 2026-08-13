@@ -445,8 +445,7 @@ class PayloadBuilder:
                     else:
                         result.append({"name": item})
                 elif isinstance(item, dict):
-                    for k, v in item.items():
-                        result.append({"name": str(k), "value": str(v)})
+                    result.extend(PayloadBuilder._parse_env_dict_item(item))
         elif isinstance(env, dict):
             for k, v in env.items():
                 entry: Dict[str, Any] = {"name": str(k)}
@@ -454,6 +453,18 @@ class PayloadBuilder:
                     entry["value"] = str(v)
                 result.append(entry)
         return result
+
+    @staticmethod
+    def _parse_env_dict_item(item: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Convert one mapping or Kubernetes-style name/value list item."""
+        if "name" not in item:
+            return [
+                {"name": str(key), "value": str(value)} for key, value in item.items()
+            ]
+        entry: Dict[str, Any] = {"name": str(item["name"])}
+        if item.get("value") is not None:
+            entry["value"] = str(item["value"])
+        return [entry]
 
     @staticmethod
     def _default_health_check(

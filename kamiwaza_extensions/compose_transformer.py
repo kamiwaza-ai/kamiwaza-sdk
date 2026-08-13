@@ -301,6 +301,7 @@ _COMPOSE_SUB_RE = re.compile(
     re.DOTALL,
 )
 _COMPOSE_BRACE_RE = re.compile(r"[{}]")
+_MAX_COMPOSE_SUBSTITUTION_DEPTH = 100
 
 # Env var names that should be left to the platform's ConfigMap envFrom
 # injection (operator writes the cluster-internal value; an explicit
@@ -543,7 +544,7 @@ def _resolve_shell_refs(env: Any) -> Any:
             if not isinstance(v, str) or "$" not in v:
                 out[k] = v
                 continue
-            resolved = _resolve_default_substitution(k, v)
+            resolved = _resolve_env_value(k, v)
             if resolved is not None:
                 out[k] = resolved
         return out
@@ -560,7 +561,7 @@ def _resolve_shell_refs(env: Any) -> Any:
     return env
 
 
-def _resolve_default_substitution(key: str, value: str) -> Optional[str]:
+def _resolve_env_value(key: str, value: str) -> Optional[str]:
     """Resolve Compose substitutions in one environment value."""
     is_platform_key = key.startswith(_PLATFORM_INJECTED_PREFIX)
     if is_platform_key and _has_braced_substitution(value):
@@ -581,8 +582,10 @@ def _has_braced_substitution(value: str) -> bool:
     return False
 
 
-def _resolve_compose_value(value: str) -> Optional[str]:
+def _resolve_compose_value(value: str, depth: int = 0) -> Optional[str]:
     """Resolve braced expressions while honoring Compose's ``$$`` escape."""
+    if depth >= _MAX_COMPOSE_SUBSTITUTION_DEPTH:
+        return None
     resolved: List[str] = []
     cursor = 0
     while cursor < len(value):
@@ -602,7 +605,7 @@ def _resolve_compose_value(value: str) -> Optional[str]:
         end = _compose_substitution_end(value, dollar)
         if end is None:
             return None
-        substitution = _resolve_compose_substitution(value[dollar : end + 1])
+        substitution = _resolve_compose_substitution(value[dollar : end + 1], depth)
         if substitution is None:
             return None
         resolved.append(substitution)
@@ -623,7 +626,7 @@ def _compose_substitution_end(value: str, start: int) -> Optional[int]:
     return final_brace if final_brace >= 0 else None
 
 
-def _resolve_compose_substitution(value: str) -> Optional[str]:
+def _resolve_compose_substitution(value: str, depth: int = 0) -> Optional[str]:
     """Resolve one full substitution using Compose environment semantics."""
     match = _COMPOSE_SUB_RE.match(value)
     if match is None:
@@ -638,30 +641,47 @@ def _resolve_compose_substitution(value: str) -> Optional[str]:
     if operator in ("-", "?") and is_set:
         return host_value
     if operator == ":+":
-        return _resolve_compose_value(fallback) if host_value else ""
+        return _resolve_compose_value(fallback, depth + 1) if host_value else ""
     if operator == "+":
-        return _resolve_compose_value(fallback) if is_set else ""
+        return _resolve_compose_value(fallback, depth + 1) if is_set else ""
     if operator in (":?", "?"):
         return None
-    return _resolve_compose_value(fallback)
+    return _resolve_compose_value(fallback, depth + 1)
 
 
-def _resolve_list_entry(entry: Any) -> Optional[str]:
-    """Apply ``_resolve_default_substitution`` to ``KEY=value`` list entries."""
+def _resolve_list_entry(entry: Any) -> Optional[Any]:
+    """Resolve one string or name/value dict environment-list entry."""
+    if isinstance(entry, dict):
+        return _resolve_dict_list_entry(entry)
     if not isinstance(entry, str) or "=" not in entry:
         return None
     key, value = entry.split("=", 1)
-    resolved = _resolve_default_substitution(key, value)
+    resolved = _resolve_env_value(key, value)
     if resolved is None:
         return None
     return f"{key}={resolved}"
 
 
+def _resolve_dict_list_entry(entry: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Resolve a Kubernetes-style ``name``/``value`` environment entry."""
+    name = entry.get("name")
+    value = entry.get("value")
+    if name is None or not isinstance(value, str):
+        return None
+    resolved = _resolve_env_value(str(name), value)
+    if resolved is None:
+        return None
+    out = dict(entry)
+    out["value"] = resolved
+    return out
+
+
 def _entry_has_shell_ref(entry: Any) -> bool:
     if isinstance(entry, str) and "=" in entry:
         return "$" in entry.split("=", 1)[1]
-    if isinstance(entry, dict):
-        return "$" in str(entry.get("value", ""))
+    if isinstance(entry, dict) and "name" in entry:
+        value = entry.get("value")
+        return isinstance(value, str) and "$" in value
     return False
 
 

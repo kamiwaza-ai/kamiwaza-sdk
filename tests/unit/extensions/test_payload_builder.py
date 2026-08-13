@@ -4,6 +4,7 @@ import hashlib
 
 import pytest
 
+from kamiwaza_extensions.compose_transformer import ComposeTransformer
 from kamiwaza_extensions.connections import ConnectionInfo
 from kamiwaza_extensions.payload_builder import (
     ANNOTATION_BUILD_HOST,
@@ -522,6 +523,60 @@ class TestServiceRefRewritesAnnotation:
         annotations = (payload.model_extra or {}).get("annotations") or {}
         assert ANNOTATION_SERVICE_REF_REWRITES not in annotations
 
+    def test_name_value_dict_survives_resolution_and_payload_build(
+        self,
+        builder,
+        metadata,
+        connection,
+        monkeypatch,
+    ):
+        import json
+
+        monkeypatch.delenv("KZ_TEST_BACKEND_URL", raising=False)
+        compose = {
+            "services": {
+                "frontend": {
+                    "image": "reg/my-app-frontend:dev",
+                    "ports": ["3000"],
+                    "environment": [
+                        {
+                            "name": "BACKEND_URL",
+                            "value": (
+                                "${KZ_TEST_BACKEND_URL:-http://backend:8000}"
+                                "/cost$$value"
+                            ),
+                        },
+                    ],
+                },
+                "backend": {
+                    "image": "reg/my-app-backend:dev",
+                    "ports": ["8000"],
+                },
+            },
+        }
+        transformed = ComposeTransformer().resolve_env_placeholders(compose)
+
+        payload = builder.build(metadata, transformed, connection, "my-app-dev-abc")
+
+        frontend = next(service for service in payload.services if service.primary)
+        backend_url = next(
+            entry for entry in (frontend.env or []) if entry["name"] == "BACKEND_URL"
+        )
+        assert backend_url == {
+            "name": "BACKEND_URL",
+            "value": "http://backend:8000/cost$value",
+        }
+        annotations = (payload.model_extra or {}).get("annotations") or {}
+        rewrites = json.loads(annotations[ANNOTATION_SERVICE_REF_REWRITES])
+        assert rewrites == {
+            "frontend": {
+                "BACKEND_URL": {
+                    "from": "http://backend:8000/cost$value",
+                    "to": "http://my-app-dev-abc-backend:8000/cost$value",
+                },
+            },
+        }
+
 
 class TestComposeVolumes:
     """ENG-4834: named compose volumes must reach the kext payload."""
@@ -752,6 +807,18 @@ class TestEnvParsing:
         result = builder._parse_env({"KEY": "value", "NULL_KEY": None})
         assert {"name": "KEY", "value": "value"} in result
         assert {"name": "NULL_KEY"} in result
+
+    def test_name_value_dict_list_format(self, builder):
+        result = builder._parse_env(
+            [
+                {"name": "KEY", "value": "value"},
+                {"name": "NULL_KEY", "value": None},
+            ]
+        )
+        assert result == [
+            {"name": "KEY", "value": "value"},
+            {"name": "NULL_KEY"},
+        ]
 
     def test_empty(self, builder):
         assert builder._parse_env([]) == []
