@@ -114,13 +114,33 @@ def rewrite_env_image_refs(
                     env[key] = _rewrite_env_value(key, val, ref_map)
         elif isinstance(env, list):
             for i, entry in enumerate(env):
-                if not isinstance(entry, str) or "=" not in entry:
-                    continue
-                key, val = entry.split("=", 1)
-                new_val = _rewrite_env_value(key.strip(), val, ref_map)
-                if new_val != val:
-                    env[i] = f"{key}={new_val}"
+                env[i] = _rewrite_env_list_entry(entry, ref_map)
     return out
+
+
+def _rewrite_env_list_entry(entry: Any, ref_map: Dict[str, str]) -> Any:
+    """Rewrite one string or tolerated mapping environment-list entry."""
+    if isinstance(entry, str) and "=" in entry:
+        key, value = entry.split("=", 1)
+        rewritten = _rewrite_env_value(key.strip(), value, ref_map)
+        return f"{key}={rewritten}" if rewritten != value else entry
+    if isinstance(entry, dict):
+        if "name" in entry:
+            dict_value = entry.get("value")
+            if isinstance(dict_value, str):
+                out = dict(entry)
+                out["value"] = _rewrite_env_value(
+                    str(entry["name"]), dict_value, ref_map
+                )
+                return out
+            return entry
+        return {
+            key: _rewrite_env_value(str(key), value, ref_map)
+            if isinstance(value, str)
+            else value
+            for key, value in entry.items()
+        }
+    return entry
 
 
 def _rewrite_env_value(name: str, value: str, ref_map: Dict[str, str]) -> str:
