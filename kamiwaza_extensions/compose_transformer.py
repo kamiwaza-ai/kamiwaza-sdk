@@ -778,25 +778,37 @@ def detect_service_url_rewrites(
 
 def _iter_env_entries(env: Any) -> List[Tuple[str, str]]:
     """Yield ``(key, value)`` pairs from supported env shapes."""
-    out: List[Tuple[str, str]] = []
     if isinstance(env, dict):
-        for k, v in env.items():
-            if isinstance(v, (str, int, float, bool)):
-                out.append((str(k), str(v)))
-    elif isinstance(env, list):
-        for entry in env:
-            if isinstance(entry, str) and "=" in entry:
-                k, v = entry.split("=", 1)
-                out.append((k, v))
-            elif isinstance(entry, dict):
-                if "name" in entry and "value" in entry:
-                    out.append((str(entry["name"]), str(entry["value"])))
-                    continue
-                if "name" not in entry:
-                    for k, v in entry.items():
-                        if isinstance(v, (str, int, float, bool)):
-                            out.append((str(k), str(v)))
+        return _iter_env_mapping(env)
+    if not isinstance(env, list):
+        return []
+    out: List[Tuple[str, str]] = []
+    for entry in env:
+        out.extend(_iter_env_list_entry(entry))
     return out
+
+
+def _iter_env_mapping(env: Dict[Any, Any]) -> List[Tuple[str, str]]:
+    """Return scalar key/value pairs from an environment mapping."""
+    return [
+        (str(key), str(value))
+        for key, value in env.items()
+        if isinstance(value, (str, int, float, bool))
+    ]
+
+
+def _iter_env_list_entry(entry: Any) -> List[Tuple[str, str]]:
+    """Return key/value pairs from one supported environment-list entry."""
+    if isinstance(entry, str) and "=" in entry:
+        key, value = entry.split("=", 1)
+        return [(key, value)]
+    if not isinstance(entry, dict):
+        return []
+    if "name" in entry:
+        if "value" in entry:
+            return [(str(entry["name"]), str(entry["value"]))]
+        return []
+    return _iter_env_mapping(entry)
 
 
 def _rewrite_url_hosts(
