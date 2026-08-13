@@ -23,13 +23,12 @@ Serving the index over ``file://`` from inside the pod keeps the whole thing
 independent of cluster topology: no Service, no node IP, no egress path, and
 nothing for a future NetworkPolicy to break.
 
-It writes into the gate-packages PVC, which is already mounted and already
-writable (``KAMIWAZA_GATE_PACKAGES_VENV``) whenever gate-packages are enabled at
-all — the exact prerequisite this rig needs anyway. That deliberately avoids a
-chart change: mounting a ConfigMap would mean setting ``scheduler.extraVolumes``,
-and helm REPLACES list values rather than merging them, so an overlay composed
-after ``kamiwaza-hotreload-k0s.yaml`` would silently clobber the source mounts
-and break hot-reload. No new volume, no pod restart, no hazard.
+It writes the wheel/index into the gate-packages PVC and the dataset into the
+Ray adapter's existing ``/app/models`` allowed root. Both volumes are already
+mounted and writable, so the fixture deliberately avoids a chart change:
+mounting a ConfigMap would mean setting ``scheduler.extraVolumes``, and helm
+REPLACES list values rather than merging them. No new volume or pod restart is
+needed.
 
 Usage::
 
@@ -55,6 +54,8 @@ NAMESPACE = "kamiwaza"
 # the prerequisite for gate-package install.
 MOUNT = "/opt/kamiwaza/gate-packages-venv/_fixture"
 INDEX_URL = f"file://{MOUNT}/simple"
+DATASET_DIR = "/app/models"
+DATASET_PATH = f"{DATASET_DIR}/eng10050-mini-clearance.csv"
 
 REPO = Path(__file__).resolve().parents[2]
 STAGE = REPO / ".gate-fixture"
@@ -232,7 +233,9 @@ def _ray_head_pod(argv: list[str]) -> str:
 
 def _publish_item(argv: list[str], pod: str, item: Path, leaf: str) -> None:
     """Stream one staged file into its destination inside the ray head."""
-    dest_dir = MOUNT if item.name == "mini_clearance.csv" else leaf
+    destination = (
+        DATASET_PATH if item.name == "mini_clearance.csv" else f"{leaf}/{item.name}"
+    )
     payload = base64.b64encode(item.read_bytes())
     cmd = argv + [
         "-n",
@@ -245,7 +248,7 @@ def _publish_item(argv: list[str], pod: str, item: Path, leaf: str) -> None:
         "--",
         "sh",
         "-c",
-        f"base64 -d > {dest_dir}/{item.name}",
+        f"base64 -d > {destination}",
     ]
     wrote = subprocess.run(
         _quote_remote_command(cmd),
@@ -259,7 +262,7 @@ def _publish_item(argv: list[str], pod: str, item: Path, leaf: str) -> None:
 
 
 def publish(argv: list[str], directory: Path) -> None:
-    """Copy the staged index into the PVC path the ray head already mounts.
+    """Copy the staged wheel/index and dataset into existing Ray-head mounts.
 
     ``kubectl cp`` rather than a ConfigMap: no new volume means no chart change,
     no pod restart, and no risk of an extraVolumes overlay replacing the
@@ -281,6 +284,7 @@ def publish(argv: list[str], directory: Path) -> None:
             "mkdir",
             "-p",
             leaf,
+            DATASET_DIR,
         ]
     )
     if mk.returncode != 0:
@@ -358,15 +362,17 @@ def main() -> int:
                     "rm",
                     "-rf",
                     MOUNT,
+                    DATASET_PATH,
                 ]
             )
-        print(f"  removed {MOUNT}")
+        print(f"  removed {MOUNT} and {DATASET_PATH}")
         return 0
 
     wheel, digest = build_wheel(locate_source())
     if args.action == "env":
         print(f"export M5_TEST_WHEEL_DIR={WHEEL_DIR}")
         print(f"export M5_TEST_INDEX_URL={INDEX_URL}")
+        print(f"export MINI_CLEARANCE_DATASET_PATH={DATASET_PATH}")
         return 0
 
     print(f"  built {wheel.name}  {digest}")
@@ -375,6 +381,7 @@ def main() -> int:
     verify(argv, digest)
     print(f"\nexport M5_TEST_WHEEL_DIR={WHEEL_DIR}")
     print(f"export M5_TEST_INDEX_URL={INDEX_URL}")
+    print(f"export MINI_CLEARANCE_DATASET_PATH={DATASET_PATH}")
     return 0
 
 

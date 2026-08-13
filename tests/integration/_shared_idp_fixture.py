@@ -24,8 +24,17 @@ init-Job pipeline (ENG-8573).
 
 Usage::
 
-    python -m tests.integration._shared_idp_fixture provision --kubectl "ssh spark-2 kubectl"
+    export SHARED_REALM_NAME=kajiya-edge-<unique-run-id>
+    export SHARED_REALM_OWNER_NONCE=<random-per-run-nonce>
+    export FED_PERSONA_PASSWORD=<random-per-run-password>
+    python -m tests.integration._shared_idp_fixture provision --kubectl kubectl
+    python -m tests.integration._shared_idp_fixture teardown --kubectl kubectl
     python -m tests.integration._shared_idp_fixture env
+
+``provision`` refuses an existing realm before changing its profile, clients,
+mappers, or users. ``teardown`` deletes the full realm only when its ownership
+marker exactly matches ``SHARED_REALM_OWNER_NONCE``; an absent realm is an
+idempotent success so callers can retry an ambiguous remote outcome safely.
 """
 
 from __future__ import annotations
@@ -42,7 +51,6 @@ import time
 from typing import Iterator
 
 NAMESPACE = "kamiwaza"
-REALM = os.getenv("SHARED_REALM_NAME", "federated")
 ROPC_CLIENT = "kamiwaza-shared-cli"
 # Verified against the live chart: svc/keycloak exposes 80 (http) and 9000
 # (management), NOT 8080. Overridable for a chart that differs.
@@ -85,7 +93,14 @@ def keycloak_admin_channel(kubectl: str) -> Iterator[str]:
         )
     port = _free_port()
     proc = subprocess.Popen(
-        argv + ["-n", NAMESPACE, "port-forward", "svc/keycloak", f"{port}:{KEYCLOAK_SVC_PORT}"],
+        argv
+        + [
+            "-n",
+            NAMESPACE,
+            "port-forward",
+            "svc/keycloak",
+            f"{port}:{KEYCLOAK_SVC_PORT}",
+        ],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
@@ -108,8 +123,15 @@ def admin_password(kubectl: str) -> str:
     argv = shlex.split(kubectl)
     got = run(
         argv
-        + ["-n", NAMESPACE, "get", "secret", "keycloak-admin",
-           "-o", "jsonpath={.data.password}"]
+        + [
+            "-n",
+            NAMESPACE,
+            "get",
+            "secret",
+            "keycloak-admin",
+            "-o",
+            "jsonpath={.data.password}",
+        ]
     )
     if got.returncode != 0 or not got.stdout.strip():
         raise SystemExit(
@@ -121,7 +143,14 @@ def admin_password(kubectl: str) -> str:
     return base64.b64decode(got.stdout.strip()).decode()
 
 
-def provision(kc_url: str, admin_pw: str, persona_pw: str) -> dict:
+def provision(
+    kc_url: str,
+    admin_pw: str,
+    persona_pw: str,
+    *,
+    realm: str,
+    owner_nonce: str,
+) -> dict:
     """Realm + ROPC client + clearance mapper + the three personas."""
     from kamiwaza_sdk.seeding.federation.cli import _verify_ssl
     from kamiwaza_sdk.seeding.federation.keycloak import KeycloakAdmin
@@ -133,17 +162,31 @@ def provision(kc_url: str, admin_pw: str, persona_pw: str) -> dict:
     kc = KeycloakAdmin(
         kc_url, admin_user="admin", admin_password=admin_pw, verify=_verify_ssl()
     )
-    kc.ensure_realm(REALM)
-    # Keycloak >=24 drops unrecognised user attributes unless the realm opts in,
-    # which silently strips `clearance` and leaves the gate with nothing to read.
-    kc.set_unmanaged_attributes(REALM)
-    client = kc.ensure_ropc_client(REALM, ROPC_CLIENT)
-    kc.ensure_attribute_mapper(REALM, client["id"], attribute="clearance")
+    kc.create_owned_realm(realm, owner_nonce)
+    try:
+        # Keycloak >=24 drops unrecognised user attributes unless the realm opts
+        # in, which silently strips `clearance` and leaves the gate with nothing.
+        kc.set_unmanaged_attributes(realm)
+        client = kc.ensure_ropc_client(realm, ROPC_CLIENT)
+        kc.ensure_attribute_mapper(realm, client["id"], attribute="clearance")
 
-    for clearance, username in PERSONAS.items():
-        kc.ensure_user(REALM, username, password=persona_pw, attributes={"clearance": clearance})
+        for clearance, username in PERSONAS.items():
+            kc.ensure_user(
+                realm,
+                username,
+                password=persona_pw,
+                attributes={"clearance": clearance},
+            )
+    except BaseException:
+        try:
+            kc.delete_owned_realm(realm, owner_nonce)
+        except Exception as cleanup_error:
+            raise RuntimeError(
+                "shared realm provision failed and owned-realm rollback also failed"
+            ) from cleanup_error
+        raise
 
-    issuer = kc.issuer_url(REALM)
+    issuer = kc.issuer_url(realm)
     return {
         "SHARED_ISSUER_URL": issuer,
         "SHARED_JWKS_URL": f"{issuer}/protocol/openid-connect/certs",
@@ -152,9 +195,20 @@ def provision(kc_url: str, admin_pw: str, persona_pw: str) -> dict:
     }
 
 
+def teardown(kc_url: str, admin_pw: str, *, realm: str, owner_nonce: str) -> bool:
+    """Delete the whole realm only when this run's ownership marker matches."""
+    from kamiwaza_sdk.seeding.federation.cli import _verify_ssl
+    from kamiwaza_sdk.seeding.federation.keycloak import KeycloakAdmin
+
+    kc = KeycloakAdmin(
+        kc_url, admin_user="admin", admin_password=admin_pw, verify=_verify_ssl()
+    )
+    return kc.delete_owned_realm(realm, owner_nonce)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("action", choices=["provision", "env"])
+    ap.add_argument("action", choices=["provision", "teardown", "env"])
     ap.add_argument("--kubectl", default="kubectl")
     ap.add_argument(
         "--persona-password-env",
@@ -167,17 +221,38 @@ def main() -> int:
         print("# provision first; it prints the exports")
         return 0
 
-    persona_pw = os.getenv(args.persona_password_env, "").strip() or secrets.token_urlsafe(24)
+    realm = os.getenv("SHARED_REALM_NAME", "").strip()
+    owner_nonce = os.getenv("SHARED_REALM_OWNER_NONCE", "").strip()
+    if not realm or not owner_nonce:
+        raise SystemExit(
+            "SHARED_REALM_NAME and SHARED_REALM_OWNER_NONCE are required; "
+            "the fixture refuses fixed or unowned realms"
+        )
     admin_pw = admin_password(args.kubectl)
+    if args.action == "teardown":
+        with keycloak_admin_channel(args.kubectl) as kc_url:
+            deleted = teardown(kc_url, admin_pw, realm=realm, owner_nonce=owner_nonce)
+        print(f"  realm={realm} cleanup={'deleted' if deleted else 'already-absent'}")
+        return 0
+
+    persona_pw = os.getenv(
+        args.persona_password_env, ""
+    ).strip() or secrets.token_urlsafe(24)
     with keycloak_admin_channel(args.kubectl) as kc_url:
-        exports = provision(kc_url, admin_pw, persona_pw)
+        exports = provision(
+            kc_url,
+            admin_pw,
+            persona_pw,
+            realm=realm,
+            owner_nonce=owner_nonce,
+        )
 
     # The issuer must be the address the CLUSTERS resolve, not the port-forward.
     public = os.getenv("KEYCLOAK_PUBLIC_URL", "").strip()
     if public:
-        exports["SHARED_ISSUER_URL"] = f"{public}/realms/{REALM}"
+        exports["SHARED_ISSUER_URL"] = f"{public}/realms/{realm}"
         exports["SHARED_JWKS_URL"] = (
-            f"{public}/realms/{REALM}/protocol/openid-connect/certs"
+            f"{public}/realms/{realm}/protocol/openid-connect/certs"
         )
     else:
         print(
@@ -186,7 +261,7 @@ def main() -> int:
             "  the shared JWKS and every persona token is rejected."
         )
 
-    print(f"  realm={REALM} client={ROPC_CLIENT} personas={sorted(PERSONAS.values())}")
+    print(f"  realm={realm} client={ROPC_CLIENT} personas={sorted(PERSONAS.values())}")
     print(json.dumps(exports, indent=2))
     for key, value in exports.items():
         print(f"export {key}={shlex.quote(value)}")

@@ -123,3 +123,13 @@ def add_live_options(parser: pytest.Parser) -> None:
             "KAMIWAZA_PEER_API_KEY). Required when --live-peer-base-url is set."
         ),
     )
+    group.addoption(
+        "--require-federation-edge",
+        action="store_true",
+        default=os.environ.get("KAMIWAZA_REQUIRE_FEDERATION_EDGE", "").lower()
+        in {"1", "true", "yes", "on"},
+        help=(
+            "Run the required shared-IDP two-cluster edge fail-closed: all five "
+            "contract cases must collect and any skip is promoted to failure."
+        ),
+    )

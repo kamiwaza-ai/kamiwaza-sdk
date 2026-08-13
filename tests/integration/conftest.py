@@ -90,6 +90,20 @@ _PROBE_ERROR_TRUNCATE = 200
 _logger = logging.getLogger(__name__)
 
 
+def _fail_or_skip_required_edge(request: pytest.FixtureRequest, message: str) -> None:
+    from tests.integration.required_federation_edge import fail_or_skip
+
+    fail_or_skip(request, message)
+
+
+def _enforce_required_edge_collection(
+    config: pytest.Config, items: list[pytest.Item]
+) -> None:
+    from tests.integration.required_federation_edge import enforce_collection
+
+    enforce_collection(config, items)
+
+
 class _TimeoutHTTPAdapter(HTTPAdapter):
     """HTTPAdapter that applies a default timeout to every request."""
 
@@ -1598,16 +1612,18 @@ def _require_two_clusters_for_marked_tests(request: pytest.FixtureRequest) -> No
     # credential satisfies the gate the same way the peer fixture consumes it.
     peer_password = str(request.getfixturevalue("live_password")).strip()
     if not peer_url:
-        pytest.skip(
+        _fail_or_skip_required_edge(
+            request,
             "requires_two_clusters: set --live-peer-base-url or "
-            "KAMIWAZA_PEER_BASE_URL to run."
+            "KAMIWAZA_PEER_BASE_URL to run.",
         )
     if not peer_key and not peer_password:
-        pytest.skip(
+        _fail_or_skip_required_edge(
+            request,
             "requires_two_clusters: --live-peer-base-url is set but no peer "
             "admin credential — provide --live-username/--live-password "
             "(preferred) or an admin access-token via --live-peer-api-key "
-            "(a PAT is non-admin)."
+            "(a PAT is non-admin).",
         )
 
 
@@ -1686,7 +1702,9 @@ def live_kamiwaza_peer_client(
     SSL verification is opted out per-client (dev self-signed certs).
     """
     if not live_peer_base_url:
-        pytest.skip("requires_two_clusters: KAMIWAZA_PEER_BASE_URL not set")
+        raise RuntimeError(
+            "requires_two_clusters fixture ran without KAMIWAZA_PEER_BASE_URL"
+        )
 
     peer_key = live_peer_api_key.strip()
     has_password = bool(live_password)
@@ -1723,11 +1741,12 @@ def live_kamiwaza_peer_client(
         return password_client  # type: ignore[return-value]
     if choice == _peer_auth.PEER_KEY:
         return KamiwazaClient(live_peer_base_url, api_key=peer_key, verify=False)
-    pytest.skip(
+    message = (
         "requires_two_clusters: peer needs admin password "
         "(--live-username/--live-password) or an admin access-token "
         "(--live-peer-api-key; a PAT is non-admin)."
     )
+    pytest.skip(message)
 
 
 def pytest_collection_modifyitems(
@@ -1745,6 +1764,7 @@ def pytest_collection_modifyitems(
     halves makes those fixtures live across unrelated tests and can invalidate
     workroom-scoped state before the later half resumes.
     """
+    _enforce_required_edge_collection(config, items)
     peer_url = str(config.getoption("live_peer_base_url")).strip()
     if not peer_url:
         kept: list[pytest.Item] = []

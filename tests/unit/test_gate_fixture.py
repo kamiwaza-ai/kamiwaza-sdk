@@ -16,6 +16,10 @@ from tests.integration import _gate_fixture as fixture
 pytestmark = pytest.mark.unit
 
 
+def test_dataset_uses_the_ray_adapters_existing_allowed_root() -> None:
+    assert fixture.DATASET_PATH == "/app/models/eng10050-mini-clearance.csv"
+
+
 def _completed(
     cmd: list[str],
     returncode: int = 0,
@@ -165,7 +169,7 @@ def test_publish_routes_sorted_binary_files_over_ssh(
     destinations = [cmd[2] for cmd, _ in writes]
     assert f"{fixture.MOUNT}/simple/acme-gates/{fixture.WHEEL_NAME}" in destinations[0]
     assert f"{fixture.MOUNT}/simple/acme-gates/index.html" in destinations[1]
-    assert f"{fixture.MOUNT}/mini_clearance.csv" in destinations[2]
+    assert fixture.DATASET_PATH in destinations[2]
     assert all(cmd[:2] == ["ssh", "spark-2"] for cmd, _ in writes)
 
 
@@ -218,4 +222,27 @@ def test_verify_hashes_the_published_wheel_in_the_ray_head(
     assert calls[1][-2:] == [
         "sha256sum",
         f"{fixture.MOUNT}/simple/acme-gates/{fixture.WHEEL_NAME}",
+    ]
+
+
+def test_teardown_removes_only_the_owned_fixture_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        stdout = "ray-head-0" if "jsonpath={.items[0].metadata.name}" in cmd else ""
+        return _completed(cmd, stdout=stdout)
+
+    monkeypatch.setattr(fixture, "run", fake_run)
+    monkeypatch.setattr(sys, "argv", ["_gate_fixture", "teardown"])
+
+    assert fixture.main() == 0
+    assert calls[-1][-5:] == [
+        "--",
+        "rm",
+        "-rf",
+        fixture.MOUNT,
+        fixture.DATASET_PATH,
     ]
