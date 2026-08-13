@@ -63,7 +63,7 @@
     "expected_claims": {
       "htm": "POST",
       "htu": "https://resource.example.test/documents/doc-7",
-      "body_sha256": "sha256:4bd285fb587cc51a7fbd4b15e3856fecb8aff282d44e82af1d1fc48d1b9228c2",
+      "https://schemas.kamiwaza.ai/dpop/body-sha256": "sha256:4bd285fb587cc51a7fbd4b15e3856fecb8aff282d44e82af1d1fc48d1b9228c2",
       "ath": "US1mkiQrUETn9UBUiZ-PRpQxwa3PkuKOBGQtnMoNbew"
     },
     "additional_required_claims": [
@@ -205,7 +205,7 @@
     },
     {
       "id": "invalid-dpop-or-request-digest",
-      "change": "Change proof key, htm, htu, ath, body_sha256, iat, jti, or request bytes.",
+      "change": "Change proof key, htm, htu, ath, the body-digest claim, iat, jti, or request bytes.",
       "expected": {"status": 403, "error_code": "protected_resource_rejected", "handler_invoked": false}
     },
     {

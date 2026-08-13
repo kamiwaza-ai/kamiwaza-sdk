@@ -35,6 +35,7 @@ from .new_resource_crypto import (
     CapabilitySigner,
     proof_thumbprint,
 )
+from kamiwaza_sdk.delegated_workloads.proof import BODY_DIGEST_CLAIM
 
 NOW = datetime(2026, 8, 9, 12, tzinfo=timezone.utc)
 BASE_URL = "https://core.example.test/api/v1/delegated-workloads"
@@ -251,7 +252,7 @@ def _assert_sdk_proof(view: RequestView, assertion: str) -> None:
     claims = jwt.decode(view.headers["DPoP"], options={"verify_signature": False})
     assert claims["htm"] == view.method
     assert claims["htu"] == view.url
-    assert claims["body_sha256"] == body_digest(view.body)
+    assert claims[BODY_DIGEST_CLAIM] == body_digest(view.body)
     authorization = view.headers.get("Authorization")
     if authorization is not None:
         assert claims["ath"] == _token_hash(authorization.removeprefix("DPoP "))

@@ -27,6 +27,7 @@ from kamiwaza_sdk.delegated_workloads import (
     WorkloadProof,
 )
 from kamiwaza_sdk.delegated_workloads import proof as proof_module
+from kamiwaza_sdk.delegated_workloads.proof import BODY_DIGEST_CLAIM
 
 pytestmark = pytest.mark.unit
 NOW = datetime(2026, 8, 9, 12, tzinfo=UTC)
@@ -155,7 +156,7 @@ def test_dpop_key_lifecycle_rotates_closes_and_never_serializes() -> None:
     assert proof.get_secret_value() not in repr(proof)
     assert jwt.decode(
         proof.get_secret_value(), options={"verify_signature": False}
-    )["body_sha256"] == DIGEST
+    )[BODY_DIGEST_CLAIM] == DIGEST
     with pytest.raises(TypeError):
         pickle.dumps(lifecycle)
     with pytest.raises(TypeError):

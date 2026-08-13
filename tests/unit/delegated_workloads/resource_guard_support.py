@@ -28,6 +28,7 @@ from kamiwaza_sdk.delegated_workloads.resource_server import (
     ResourceGuardDecisionPort,
     ResourceGuardRegistration,
 )
+from kamiwaza_sdk.delegated_workloads.proof import BODY_DIGEST_CLAIM
 
 
 NOW = datetime(2026, 8, 9, 12, tzinfo=timezone.utc)
@@ -237,7 +238,7 @@ def _proof(
         "iat": int(NOW.timestamp()),
         "jti": "proof-jti",
         "ath": _encoded_digest(material.capability.encode("ascii")),
-        "body_sha256": body_digest(material.body),
+        BODY_DIGEST_CLAIM: body_digest(material.body),
     }
     payload.update(material.overrides)
     return jwt.encode(

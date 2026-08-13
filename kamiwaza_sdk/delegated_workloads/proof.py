@@ -282,13 +282,20 @@ def body_digest(body: bytes) -> str:
     return "sha256:" + hashlib.sha256(body).hexdigest()
 
 
+#: Request-body binding claim. RFC 9449 defines no body binding, so this is a
+#: Kamiwaza extension. RFC 7519 §4.3 warns that unregistered private claim
+#: names collide, so the name lives in a namespace this project controls and
+#: cannot be taken by a future registered claim. Core verifies the same name.
+BODY_DIGEST_CLAIM = "https://schemas.kamiwaza.ai/dpop/body-sha256"
+
+
 def _proof_claims(request: DPoPProofRequest) -> dict[str, object]:
     claims: dict[str, object] = {
         "htu": request.target_uri,
         "htm": request.method.upper(),
         "iat": int(request.issued_at.timestamp()),
         "jti": str(uuid4()),
-        "body_sha256": request.body_digest,
+        BODY_DIGEST_CLAIM: request.body_digest,
     }
     if request.access_token is not None:
         claims["ath"] = _access_token_hash(_secret_value(request.access_token))

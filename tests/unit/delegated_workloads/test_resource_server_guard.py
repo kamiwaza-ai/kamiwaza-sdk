@@ -27,6 +27,7 @@ from tests.unit.delegated_workloads.resource_guard_support import (
     denied_authorization,
     guard_case,
 )
+from kamiwaza_sdk.delegated_workloads.proof import BODY_DIGEST_CLAIM
 
 
 RequestChange = Callable[[GuardCase], ProtectedResourceRequest]
@@ -97,7 +98,7 @@ def test_invalid_capability_never_invokes_handler(change: RequestChange) -> None
             RequestOverrides(proof_payload={"htu": "https://other.test/"})
         ),
         lambda case: case.request(
-            RequestOverrides(proof_payload={"body_sha256": "sha256:" + "0" * 64})
+            RequestOverrides(proof_payload={BODY_DIGEST_CLAIM: "sha256:" + "0" * 64})
         ),
         lambda case: case.request(
             RequestOverrides(proof_payload={"ath": "wrong-token-hash"})

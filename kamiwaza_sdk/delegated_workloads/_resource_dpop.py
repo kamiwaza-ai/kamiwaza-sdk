@@ -13,6 +13,7 @@ from typing import Any, cast
 
 import jwt
 from jwt import PyJWTError
+from kamiwaza_sdk.delegated_workloads.proof import BODY_DIGEST_CLAIM
 
 
 _ALGORITHM = "ES256"
@@ -54,7 +55,7 @@ def verify_resource_dpop(
         (payload.get("htm"), request.method.upper()),
         (payload.get("htu"), request.target_uri),
         (payload.get("ath"), _digest(request.capability.encode("ascii"))),
-        (payload.get("body_sha256"), request.request_digest),
+        (payload.get(BODY_DIGEST_CLAIM), request.request_digest),
     )
     valid_bindings = all(
         _safe_equal(candidate, expected) for candidate, expected in bindings

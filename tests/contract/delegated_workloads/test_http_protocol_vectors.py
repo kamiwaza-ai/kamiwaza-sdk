@@ -90,7 +90,7 @@ def test_proof_recipe_has_reproducible_exact_request_bindings() -> None:
 
     assert proof["expected_claims"] == {
         "ath": _base64url_digest(capability),
-        "body_sha256": "sha256:" + hashlib.sha256(body).hexdigest(),
+        "https://schemas.kamiwaza.ai/dpop/body-sha256": "sha256:" + hashlib.sha256(body).hexdigest(),
         "htm": protected["method"],
         "htu": protected["target_uri"],
     }
