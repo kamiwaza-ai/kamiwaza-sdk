@@ -21,6 +21,12 @@ from urllib.parse import quote
 
 import pytest
 
+from kamiwaza_sdk import (
+    KamiwazaClient,
+    SharedIdpAuthConfig,
+    SharedIdpAuthenticator,
+)
+from kamiwaza_sdk.token_store import InMemoryTokenStore
 from tests.integration import mesh_outcome
 
 from . import _mini_clearance as mc
@@ -68,7 +74,7 @@ class _PairRequest:
 class _EdgeWiring:
     name: str
     urn: str
-    personas: dict[str, dict[str, str]]
+    personas: dict[str, dict[str, Any]]
     shared: dict[str, str]
     verify: bool
     source_cluster_id: str
@@ -281,25 +287,65 @@ def _cleanup_brokered_persona(
     )
 
 
+def _programmatic_persona_session(
+    base_url: str,
+    auth: dict[str, Any],
+    username: str,
+) -> dict[str, Any]:
+    """Create a direct shared-realm session and prove one real refresh grant."""
+    config = SharedIdpAuthConfig(
+        issuer=auth["issuer"],
+        client_id=auth["client_id"],
+        client_secret=auth["client_secret"],
+        username=username,
+        password=auth["password"],
+        verify=auth["verify"],
+    )
+    token_store = InMemoryTokenStore()
+    authenticator = SharedIdpAuthenticator(config, token_store=token_store)
+    client = KamiwazaClient(
+        base_url=base_url,
+        authenticator=authenticator,
+        verify=auth["verify"],
+    )
+    authenticator.authenticate(client.session)
+    authenticator.refresh_token(client.session)
+    token = authenticator.get_access_token(client.session)
+    assert token, "shared-IDP refresh produced no access token"
+    assert token_store.load() is not None
+    assert token_store.load().refresh_token  # type: ignore[union-attr]
+    return {
+        "client": client,
+        "authenticator": authenticator,
+        "token": token,
+    }
+
+
+def _active_persona_session(persona: dict[str, Any]) -> tuple[Any, str]:
+    client = persona["client"]
+    token = persona["authenticator"].get_access_token(client.session)
+    assert token, "shared-IDP persona has no current access token"
+    return client, token
+
+
 def _provision_personas(
     cleanup: ExitStack,
+    initiator_base_url: str,
     receiver: Any,
     identifiers: tuple[str, str, str],
     prerequisites: _EdgePrerequisites,
-) -> dict[str, dict[str, str]]:
+) -> dict[str, dict[str, Any]]:
     federation_id, source_cluster_id, dataset_urn = identifiers
     auth = prerequisites.persona_auth
     issuer = prerequisites.shared["shared_issuer_url"]
-    personas: dict[str, dict[str, str]] = {}
+    personas: dict[str, dict[str, Any]] = {}
     for clearance, base in _PERSONAS.items():
-        token = mc.shared_realm_token(
-            issuer,
-            auth["client_id"],
+        persona = _programmatic_persona_session(
+            initiator_base_url,
+            {**auth, "issuer": issuer},
             base,
-            auth["password"],
-            client_secret=auth["client_secret"],
-            verify=auth["verify"],
         )
+        token = persona["token"]
         sub = mc.jwt_sub(token) or base
         external_id = f"{sub}@{source_cluster_id}"
         receiver._request(
@@ -320,7 +366,7 @@ def _provision_personas(
             external_id,
         )
         personas[clearance] = {
-            "token": token,
+            **persona,
             "external_id": external_id,
             "sub": sub,
         }
@@ -346,6 +392,7 @@ def _wire_required_edge(
     )
     personas = _provision_personas(
         cleanup,
+        clients.initiator.base_url,
         clients.receiver,
         (identities.receiver_federation_id, identities.initiator_cluster_id, urn),
         prerequisites,
@@ -399,8 +446,7 @@ def test_required_mesh_retrieval_returns_exact_post_gate_rows(
     wiring = shared_idp_gated_pair
     initiator = live_kamiwaza_session_client
     name, urn = wiring["name"], wiring["urn"]
-    token = wiring["personas"][clearance]["token"]
-    persona = mc.raw_token_client(initiator.base_url, token, verify=wiring["verify"])
+    persona, token = _active_persona_session(wiring["personas"][clearance])
 
     def _retrieve():
         # Create the retrieval job over the mesh AND drain its gated SSE stream
@@ -415,13 +461,11 @@ def test_required_mesh_retrieval_returns_exact_post_gate_rows(
 
 
 def test_required_mesh_job_reaches_receiver_and_returns_marker(
-    shared_idp_gated_pair, live_kamiwaza_session_client
+    shared_idp_gated_pair,
 ) -> None:
     """Run a recoverable job on the receiver and assert its exact payload."""
     wiring = shared_idp_gated_pair
-    initiator = live_kamiwaza_session_client
-    token = wiring["personas"]["U"]["token"]
-    persona = mc.raw_token_client(initiator.base_url, token, verify=wiring["verify"])
+    persona, _token = _active_persona_session(wiring["personas"]["U"])
     marker = f"eng10050-{uuid.uuid4().hex}"
     script = (
         "import json\n"

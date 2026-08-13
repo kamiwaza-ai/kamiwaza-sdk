@@ -197,6 +197,55 @@ def test_brokered_personas_get_only_required_fixture_authority() -> None:
     ]
 
 
+def test_persona_session_performs_password_grant_then_real_refresh(monkeypatch) -> None:
+    calls: list[str] = []
+
+    class _Authenticator:
+        def __init__(self, config, *, token_store) -> None:
+            self.config = config
+            self.token_store = token_store
+
+        def authenticate(self, session) -> None:
+            calls.append("password")
+            session.headers["Authorization"] = "Bearer initial"
+            self.token_store.save(SimpleNamespace(refresh_token="refresh-1"))
+
+        def refresh_token(self, session) -> None:
+            calls.append("refresh")
+            session.headers["Authorization"] = "Bearer refreshed"
+            self.token_store.save(SimpleNamespace(refresh_token="refresh-2"))
+
+        def get_access_token(self, session) -> str:
+            calls.append("read")
+            return session.headers["Authorization"].removeprefix("Bearer ")
+
+    class _Client:
+        def __init__(self, *, base_url, authenticator, verify) -> None:
+            self.base_url = base_url
+            self.authenticator = authenticator
+            self.verify = verify
+            self.session = SimpleNamespace(headers={})
+
+    monkeypatch.setattr(edge, "SharedIdpAuthenticator", _Authenticator, raising=False)
+    monkeypatch.setattr(edge, "KamiwazaClient", _Client, raising=False)
+
+    persona = edge._programmatic_persona_session(
+        "https://initiator.example/api",
+        {
+            "issuer": "https://idp.example/realms/shared",
+            "client_id": "federation-client",
+            "client_secret": None,
+            "password": "secret",
+            "verify": True,
+        },
+        "fed-clr-u",
+    )
+
+    assert calls == ["password", "refresh", "read"]
+    assert persona["token"] == "refreshed"
+    assert persona["client"].authenticator is persona["authenticator"]
+
+
 @pytest.mark.parametrize(
     "previous", [None, SimpleNamespace(type="old.Gate", config={})]
 )
@@ -245,12 +294,15 @@ def test_required_job_case_runs_recoverably_on_named_peer(monkeypatch) -> None:
             "source_cluster_id": "initiator-uuid",
         }
     )
-    persona = SimpleNamespace(jobs=jobs, _request=request)
-    monkeypatch.setattr(edge.mc, "raw_token_client", lambda *args, **kwargs: persona)
+    persona = SimpleNamespace(jobs=jobs, _request=request, session=object())
+    authenticator = Mock()
+    authenticator.get_access_token.return_value = "opaque-test-token"
     monkeypatch.setattr(edge.uuid, "uuid4", lambda: SimpleNamespace(hex="fixed"))
     wiring = {
         "name": "receiver-cluster",
-        "personas": {"U": {"token": "opaque-test-token"}},
+        "personas": {
+            "U": {"client": persona, "authenticator": authenticator},
+        },
         "verify": True,
         "source_cluster_id": "initiator-uuid",
         "receiver_cluster_id": "receiver-uuid",
@@ -258,7 +310,6 @@ def test_required_job_case_runs_recoverably_on_named_peer(monkeypatch) -> None:
 
     edge.test_required_mesh_job_reaches_receiver_and_returns_marker(
         wiring,
-        SimpleNamespace(base_url="https://initiator.example/api"),
     )
 
     kwargs = jobs.run.call_args.kwargs
@@ -416,7 +467,9 @@ def test_pairing_requires_two_distinct_cluster_identities() -> None:
 
 
 def test_required_retrieval_case_asserts_streamed_known_answer(monkeypatch) -> None:
-    persona = object()
+    persona = SimpleNamespace(session=object())
+    authenticator = Mock()
+    authenticator.get_access_token.return_value = "opaque-test-token"
     rows = edge.mc.records()[:3]
     footers = [
         {
@@ -428,12 +481,13 @@ def test_required_retrieval_case_asserts_streamed_known_answer(monkeypatch) -> N
         }
     ]
     retrieve = Mock(return_value=(rows, footers))
-    monkeypatch.setattr(edge.mc, "raw_token_client", lambda *args, **kwargs: persona)
     monkeypatch.setattr(edge.mc, "mesh_retrieve_through_gate", retrieve)
     wiring = {
         "name": "receiver-cluster",
         "urn": "urn:kamiwaza:dataset:known",
-        "personas": {"U": {"token": "opaque-test-token"}},
+        "personas": {
+            "U": {"client": persona, "authenticator": authenticator},
+        },
         "verify": True,
     }
 
