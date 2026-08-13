@@ -496,6 +496,38 @@ class TestResolveEnvPlaceholders:
             "PLAIN_VAR=plain-value",
         ]
 
+    def test_resolves_default_substitution_embedded_in_value(self, transformer):
+        compose = {
+            "services": {
+                "neo4j": {
+                    "environment": {
+                        "NEO4J_AUTH": "neo4j/${NEO4J_PASSWORD:-changeme}",
+                    },
+                },
+            },
+        }
+
+        result = transformer.resolve_env_placeholders(compose)
+
+        assert result["services"]["neo4j"]["environment"] == {
+            "NEO4J_AUTH": "neo4j/changeme",
+        }
+
+    def test_drops_embedded_substitution_without_safe_default(self, transformer):
+        compose = {
+            "services": {
+                "neo4j": {
+                    "environment": {
+                        "NEO4J_AUTH": "neo4j/${NEO4J_PASSWORD:?required}",
+                    },
+                },
+            },
+        }
+
+        result = transformer.resolve_env_placeholders(compose)
+
+        assert result["services"]["neo4j"]["environment"] == {}
+
     def test_drops_kamiwaza_platform_vars(self, transformer):
         """``KAMIWAZA_*`` vars are platform-injected via ConfigMap
         envFrom; an explicit env entry would shadow the cluster-internal

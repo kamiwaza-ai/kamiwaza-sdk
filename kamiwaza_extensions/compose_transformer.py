@@ -297,9 +297,10 @@ def _fallback_image_basename(
 # ``${VAR-default}`` form (use default only if unset). For our purposes
 # both collapse to the literal default — there's no host process between
 # us and Kubernetes, so the var is always "unset" by the time the pod
-# starts. ``${VAR:?error}`` and bare ``${VAR}`` aren't matched (no safe
-# default → drop downstream).
-_DEFAULT_SUB_RE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*):?-([^}]*)\}$")
+# starts. The expression may be embedded in a larger value, such as
+# ``neo4j/${NEO4J_PASSWORD:-changeme}``. ``${VAR:?error}`` and bare
+# ``${VAR}`` aren't matched (no safe default → drop downstream).
+_DEFAULT_SUB_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*):?-([^}]*)\}")
 
 # Env var names that should be left to the platform's ConfigMap envFrom
 # injection (operator writes the cluster-internal value; an explicit
@@ -512,8 +513,9 @@ def _resolve_shell_refs(env: Any) -> Any:
 
     Two rules:
 
-    1. ``${VAR:-default}`` where ``VAR`` does NOT start with
-       ``KAMIWAZA_`` → resolve to ``default``. The host env isn't
+    1. ``${VAR:-default}`` where the env key does NOT start with
+       ``KAMIWAZA_`` → resolve to ``default``, including when the
+       expression is embedded in a larger value. The host env isn't
        consulted (we're nowhere near a docker-compose run); compose
        semantics for "VAR is unset" simply use the default. The cluster
        deployment then carries the literal default through to the pod
@@ -556,18 +558,18 @@ def _resolve_shell_refs(env: Any) -> Any:
 
 
 def _resolve_default_substitution(key: str, value: str) -> Optional[str]:
-    """Return ``default`` from ``${VAR:-default}`` for non-platform keys.
+    """Resolve default substitutions in a non-platform env value.
 
     Returns None when:
-    - the value isn't a single ``${VAR(:-)default}`` substitution
+    - any substitution has no safe default
     - the key is platform-injected (``KAMIWAZA_*``) — let envFrom win
     """
     if key.startswith(_PLATFORM_INJECTED_PREFIX):
         return None
-    m = _DEFAULT_SUB_RE.match(value.strip())
-    if not m:
+    resolved = _DEFAULT_SUB_RE.sub(lambda match: match.group(2), value)
+    if "${" in resolved:
         return None
-    return m.group(2)
+    return resolved
 
 
 def _resolve_list_entry(entry: Any) -> Optional[str]:
