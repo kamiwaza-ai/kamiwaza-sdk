@@ -113,7 +113,7 @@ def test_ws_m1_skeleton_walkthrough_pair_allowlist_run_audit(mock_client) -> Non
     # attribution comes back to the SDK caller.
     mock_client.expect(
         "POST",
-        "/cluster/jobs/run",
+        f"/mesh/{_ORION_NAME}/api/cluster/jobs/run",
         {
             "job_id": "job-fed-1",
             "status": "SUCCEEDED",
@@ -175,7 +175,10 @@ def test_ws_m1_skeleton_walkthrough_pair_allowlist_run_audit(mock_client) -> Non
         "POST",
         f"/cluster/federations/{_ORION_FEDERATION_ID}/users",
     )
-    assert methods_paths[4] == ("POST", "/cluster/jobs/run")
+    assert methods_paths[4] == (
+        "POST",
+        f"/mesh/{_ORION_NAME}/api/cluster/jobs/run",
+    )
 
 
 def test_ws_m1_skeleton_walkthrough_async_submit_path(mock_client) -> None:
@@ -234,15 +237,16 @@ def test_ws_m1_skeleton_walkthrough_async_submit_path(mock_client) -> None:
 
     # Async submit returns a job_id; SDK then polls /status (RUNNING → SUCCEEDED)
     # and finally fetches /result on terminal.
-    mock_client.expect("POST", "/cluster/jobs/submit", {"job_id": "job-async-1"})
+    jobs_prefix = f"/mesh/{_ORION_NAME}/api/cluster/jobs"
+    mock_client.expect("POST", f"{jobs_prefix}/submit", {"job_id": "job-async-1"})
     mock_client.expect_sequence(
         "GET",
-        "/cluster/jobs/job-async-1/status",
+        f"{jobs_prefix}/job-async-1/status",
         [{"status": "RUNNING"}, {"status": "SUCCEEDED"}],
     )
     mock_client.expect(
         "GET",
-        "/cluster/jobs/job-async-1/result",
+        f"{jobs_prefix}/job-async-1/result",
         {
             "job_id": "job-async-1",
             "status": "SUCCEEDED",

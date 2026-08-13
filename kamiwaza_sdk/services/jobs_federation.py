@@ -31,6 +31,7 @@ from typing import Any, Optional
 from ..exceptions import APIError, MeshJobTimeoutError
 from ..schemas.federation import JobResult
 from .base_service import BaseService
+from .jobs_routing import JobRouter
 
 # Polling backoff schedule for wait(). Mirrors the design §4.2.14
 # pattern: 1s, 2s, 4s, capped at 5s. Total budget is the caller's
@@ -56,6 +57,10 @@ _BARE_MARKER_PROMOTED_FIELD = "audit_actor"
 
 class JobsAPI(BaseService):
     """Job submission for the local cluster + federated targets."""
+
+    def __init__(self, client: Any) -> None:
+        super().__init__(client)
+        self._router = JobRouter(client)
 
     def run(
         self,
@@ -164,13 +169,14 @@ class JobsAPI(BaseService):
         timeout_seconds: Optional[int],
     ) -> JobResult:
         """Existing sync /run path; X-Job-Id only visible on completion."""
-        body = self._build_run_body(
+        body = _build_run_body(
             entrypoint=entrypoint,
-            target_cluster=target_cluster,
             runtime_env=runtime_env,
             timeout_seconds=timeout_seconds,
         )
-        response = self.client._request("POST", "/cluster/jobs/run", json=body)
+        response = self._router.request(
+            "POST", "run", target_cluster=target_cluster, json=body
+        )
         return JobResult.model_validate(response)
 
     def _run_recoverable(
@@ -194,7 +200,11 @@ class JobsAPI(BaseService):
             runtime_env=runtime_env,
             timeout_seconds=timeout_seconds,
         )
-        return self.wait(job_id, timeout=timeout_seconds or 600)
+        return self.wait(
+            job_id,
+            timeout=timeout_seconds or 600,
+            target_cluster=target_cluster,
+        )
 
     def submit_async(
         self,
@@ -210,16 +220,21 @@ class JobsAPI(BaseService):
         async submit + poll pattern is the recommended shape for jobs
         that may exceed 60s (per design §4.2.14).
         """
-        body = self._build_run_body(
+        body = _build_run_body(
             entrypoint=entrypoint,
-            target_cluster=target_cluster,
             runtime_env=runtime_env,
             timeout_seconds=timeout_seconds,
         )
-        response = self.client._request("POST", "/cluster/jobs/submit", json=body)
-        return str(response["job_id"])
+        response = self._router.request(
+            "POST", "submit", target_cluster=target_cluster, json=body
+        )
+        job_id = str(response["job_id"])
+        self._router.remember(job_id, target_cluster)
+        return job_id
 
-    def cancel(self, job_id: str) -> dict[str, Any]:
+    def cancel(
+        self, job_id: str, *, target_cluster: Optional[str] = None
+    ) -> dict[str, Any]:
         """Cancel a running job (T5.35 / ENG-4712).
 
         POSTs to ``/api/cluster/jobs/{id}/cancel``. The server returns a
@@ -229,10 +244,19 @@ class JobsAPI(BaseService):
         Demo bullet (3): ``kz.jobs.cancel(job_id)`` stops a stuck job
         within seconds.
         """
-        response = self.client._request("POST", f"/cluster/jobs/{job_id}/cancel")
+        target = self._router.resolve(job_id, target_cluster)
+        response = self._router.request(
+            "POST", f"{job_id}/cancel", target_cluster=target
+        )
         return dict(response)
 
-    def wait(self, job_id: str, *, timeout: int) -> JobResult:
+    def wait(
+        self,
+        job_id: str,
+        *,
+        timeout: int,
+        target_cluster: Optional[str] = None,
+    ) -> JobResult:
         """Poll a previously-submitted job until terminal, then return.
 
         Args:
@@ -241,6 +265,8 @@ class JobsAPI(BaseService):
                 ``MeshJobTimeoutError`` so customer code can branch on
                 "still running" vs "ran but failed" (which returns a
                 FAILED ``JobResult``, not an exception).
+            target_cluster: Federation used for the original submission.
+                Required when resuming a remotely submitted job.
 
         Returns:
             JobResult with status in {SUCCEEDED, FAILED, STOPPED, CANCELED}.
@@ -251,32 +277,16 @@ class JobsAPI(BaseService):
         """
         deadline = time.monotonic() + timeout
         delay = _POLL_BACKOFF_INITIAL_SECONDS
+        target = self._router.resolve(job_id, target_cluster)
         while time.monotonic() < deadline:
-            status_body = self.client._request(
-                "GET", f"/cluster/jobs/{job_id}/status"
+            status_body = self._router.request(
+                "GET", f"{job_id}/status", target_cluster=target
             )
             status = (
                 status_body.get("status") if isinstance(status_body, dict) else None
             )
             if status in _TERMINAL_STATES:
-                # /result returns the job's KZ_MESH_RUN_ON_JSON:: marker payload
-                # (the job's own structured output) — NOT a JobResult. The
-                # authoritative terminal status comes from /status; job_id +
-                # status are injected last so a marker key can't shadow them.
-                # A 410 means the job emitted no marker (it didn't self-report a
-                # result) — status is still authoritative, so don't treat it fatal.
-                payload: dict[str, Any] = {}
-                try:
-                    result_body = self.client._request(
-                        "GET", f"/cluster/jobs/{job_id}/result"
-                    )
-                    payload = self._marker_to_payload(result_body)
-                except APIError as exc:
-                    if getattr(exc, "status_code", None) != 410:
-                        raise
-                return JobResult.model_validate(
-                    {**payload, "job_id": str(job_id), "status": status}
-                )
+                return self._terminal_result(job_id, status, target)
 
             time.sleep(delay)
             delay = min(delay * _POLL_BACKOFF_FACTOR, _POLL_BACKOFF_CAP_SECONDS)
@@ -285,6 +295,23 @@ class JobsAPI(BaseService):
             f"Job {job_id} did not reach a terminal state within {timeout} seconds.",
             status_code=None,
             body={"job_id": job_id, "timeout_seconds": timeout},
+        )
+
+    def _terminal_result(
+        self, job_id: str, status: str, target_cluster: Optional[str]
+    ) -> JobResult:
+        """Fetch a terminal marker; tolerate the server's no-marker 410."""
+        payload: dict[str, Any] = {}
+        try:
+            result_body = self._router.request(
+                "GET", f"{job_id}/result", target_cluster=target_cluster
+            )
+            payload = self._marker_to_payload(result_body)
+        except APIError as exc:
+            if getattr(exc, "status_code", None) != 410:
+                raise
+        return JobResult.model_validate(
+            {**payload, "job_id": str(job_id), "status": status}
         )
 
     @staticmethod
@@ -315,24 +342,23 @@ class JobsAPI(BaseService):
         payload: dict[str, Any] = {}
         actor = domain.get(_BARE_MARKER_PROMOTED_FIELD)
         if isinstance(actor, str):
-            payload[_BARE_MARKER_PROMOTED_FIELD] = domain.pop(_BARE_MARKER_PROMOTED_FIELD)
+            payload[_BARE_MARKER_PROMOTED_FIELD] = domain.pop(
+                _BARE_MARKER_PROMOTED_FIELD
+            )
         if domain:
             payload["result"] = domain
         return payload
 
-    @staticmethod
-    def _build_run_body(
-        *,
-        entrypoint: str,
-        target_cluster: Optional[str],
-        runtime_env: Optional[dict[str, Any]],
-        timeout_seconds: Optional[int],
-    ) -> dict[str, Any]:
-        body: dict[str, Any] = {"entrypoint": entrypoint}
-        if target_cluster is not None:
-            body["target_cluster"] = target_cluster
-        if runtime_env is not None:
-            body["runtime_env"] = runtime_env
-        if timeout_seconds is not None:
-            body["timeout_seconds"] = timeout_seconds
-        return body
+
+def _build_run_body(
+    *,
+    entrypoint: str,
+    runtime_env: Optional[dict[str, Any]],
+    timeout_seconds: Optional[int],
+) -> dict[str, Any]:
+    body: dict[str, Any] = {"entrypoint": entrypoint}
+    if runtime_env is not None:
+        body["runtime_env"] = runtime_env
+    if timeout_seconds is not None:
+        body["timeout_seconds"] = timeout_seconds
+    return body
