@@ -165,4 +165,7 @@ collated.txt
 tests/integration/catalog_stack/data/
 .env.local
 
+# scenario-evidence.v2 records emitted by --emit-evidence (ENG-10026, T3.7)
+tests/e2e/evidence-out/
+
 handroll/

@@ -9,8 +9,12 @@ import sys
 import time
 from pathlib import Path
 
+import jwt
 import pytest
 from model_targets import InferenceTarget
+
+from kamiwaza_sdk.exceptions import APIError, AuthenticationError
+from kamiwaza_sdk.token_store import FileTokenStore
 
 pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
 
@@ -19,6 +23,9 @@ _SECRET_CLI_OPTIONS = frozenset(
 )
 _OUTPUT_LIMIT = 32_000
 _CLI_TIMEOUT_SECONDS = 4 * 60 * 60
+# Covers two 15-minute model-readiness phases plus the 10-minute deploy wait,
+# with enough margin for API calls and polling between phases.
+_DEPLOYMENT_PAT_TTL_SECONDS = 60 * 60
 _JWT_PATTERN = re.compile(
     r"\b(?:PAT-)?eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"
 )
@@ -180,12 +187,15 @@ def _cli_login_and_create_pat(
     token_path: Path,
     *,
     pat_prefix: str,
+    pat_scope: str,
+    pat_ttl_seconds: int,
 ) -> str:
     """Login + create a cached PAT via the CLI; return the PAT token.
 
     Asserts the session token and PAT cache are persisted along the way, so this
     doubles as the shared CLI-auth coverage for both the auth-only and the
-    deploy tests below.
+    deploy tests below. Callers must choose the least-privileged scope and
+    shortest lifetime that support the operation under test.
     """
     run_cli(
         [*base_args, "login", "--username", live_username, "--password", live_password],
@@ -197,14 +207,6 @@ def _cli_login_and_create_pat(
         raise AssertionError("CLI login cache did not contain an access token")
 
     pat_name = f"{pat_prefix}-{int(time.time())}"
-    # Mint the PAT with scope=admin. The server derives a PAT's roles from its
-    # resolved SCOPE, not the caller's Keycloak roles, and caps an omitted/openid
-    # scope at "write" (roles user/editor/viewer) to prevent accidental admin-PAT
-    # minting. `serve deploy` is admin-gated (/serving/deploy_model -> require_admin),
-    # so an openid PAT 403s with "Role 'admin' is required" even for an admin caller
-    # -- the provisioned-smoke CLI deploy failure. An admin caller's scope ceiling is
-    # admin, so admin scope yields an admin PAT; the auth-only flow test does not
-    # assert the role, so this is safe for both callers. (ENG-9932)
     result = run_cli(
         [
             *base_args,
@@ -213,9 +215,9 @@ def _cli_login_and_create_pat(
             "--name",
             pat_name,
             "--ttl",
-            "900",
+            str(pat_ttl_seconds),
             "--scope",
-            "admin",
+            pat_scope,
             "--aud",
             "kamiwaza-platform",
             "--cache-token",
@@ -230,6 +232,37 @@ def _cli_login_and_create_pat(
     if cached.get("access_token") != pat_token:
         raise AssertionError("Cached PAT did not match the CLI-created PAT")
     return pat_token
+
+
+def _cleanup_cli_pat(pat_client, pat_jti: str | None, token_path: Path) -> None:
+    """Revoke the test PAT and always remove its local cache."""
+    try:
+        if pat_jti:
+            try:
+                pat_client.auth.revoke_pat(pat_jti)
+            except (AuthenticationError, APIError):
+                pass
+    finally:
+        FileTokenStore(token_path).clear()
+
+
+def _pat_jti(pat_token: str) -> str:
+    """Read the server-issued PAT's cleanup identifier without trusting claims."""
+    # The platform validates this same token on every API request. Decode only
+    # the cleanup identifier here; no authorization decision relies on these
+    # unverified claims.
+    claims = jwt.decode(
+        pat_token,
+        options={
+            "verify_signature": False,
+            "verify_exp": False,
+            "verify_aud": False,
+        },
+    )
+    pat_jti = claims.get("jti")
+    if not isinstance(pat_jti, str) or not pat_jti:
+        raise AssertionError("CLI-created PAT did not contain a JTI for cleanup")
+    return pat_jti
 
 
 def test_cli_login_and_pat_flow(
@@ -247,7 +280,14 @@ def test_cli_login_and_pat_flow(
 
     # _cli_login_and_create_pat asserts the session token, PAT, and cache match.
     _cli_login_and_create_pat(
-        base_args, env, live_username, live_password, token_path, pat_prefix="cli-m1"
+        base_args,
+        env,
+        live_username,
+        live_password,
+        token_path,
+        pat_prefix="cli-m1",
+        pat_scope="openid",
+        pat_ttl_seconds=900,
     )
 
 
@@ -281,36 +321,47 @@ def test_cli_serve_deploy(
         live_password,
         token_path,
         pat_prefix="cli-deploy",
+        pat_scope="admin",
+        pat_ttl_seconds=_DEPLOYMENT_PAT_TTL_SECONDS,
     )
     pat_client = client_factory(base_url=live_server_available, api_key=pat_token)
-    model = ensure_deployable_model_ready(pat_client)
-    model_file_id = target_model_file_id(model, deployable_model_target.quantization)
-
-    serve_result = run_cli(
-        [
-            *base_args,
-            "serve",
-            "deploy",
-            "--repo-id",
-            deployable_model_target.repo_id,
-            "--engine-name",
-            deployable_model_target.engine_name,
-            *(["--file-id", model_file_id] if model_file_id else []),
-            "--wait",
-            "--poll-interval",
-            "5",
-            "--timeout",
-            "600",
-        ],
-        env,
-    )
-
-    summary = json.loads(serve_result.stdout.strip())
-    deployment_id = summary.get("deployment_id")
-    assert deployment_id, "CLI serve deploy did not return a deployment_id"
-    assert summary.get("status") == "DEPLOYED"
+    pat_jti: str | None = None
 
     try:
-        pat_client.serving.stop_deployment(deployment_id=deployment_id, force=True)
-    except Exception:
-        pass
+        pat_jti = _pat_jti(pat_token)
+
+        model = ensure_deployable_model_ready(pat_client)
+        model_file_id = target_model_file_id(
+            model, deployable_model_target.quantization
+        )
+
+        serve_result = run_cli(
+            [
+                *base_args,
+                "serve",
+                "deploy",
+                "--repo-id",
+                deployable_model_target.repo_id,
+                "--engine-name",
+                deployable_model_target.engine_name,
+                *(["--file-id", model_file_id] if model_file_id else []),
+                "--wait",
+                "--poll-interval",
+                "5",
+                "--timeout",
+                "600",
+            ],
+            env,
+        )
+
+        summary = json.loads(serve_result.stdout.strip())
+        deployment_id = summary.get("deployment_id")
+        assert deployment_id, "CLI serve deploy did not return a deployment_id"
+        assert summary.get("status") == "DEPLOYED"
+
+        try:
+            pat_client.serving.stop_deployment(deployment_id=deployment_id, force=True)
+        except Exception:
+            pass
+    finally:
+        _cleanup_cli_pat(pat_client, pat_jti, token_path)
