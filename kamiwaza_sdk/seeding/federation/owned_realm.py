@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, Protocol
+from typing import Any, Callable, Dict, Generic, Protocol, TypeVar
 from urllib.parse import quote
 
 OWNED_REALM_ATTRIBUTE = "kajiya.fixture.owner_nonce"
@@ -13,13 +13,16 @@ class _Response(Protocol):
     text: str
 
 
-class OwnedRealmLifecycle:
+_ResponseT = TypeVar("_ResponseT", bound=_Response)
+
+
+class OwnedRealmLifecycle(Generic[_ResponseT]):
     """Create/reconcile/delete a realm through injected admin HTTP primitives."""
 
     def __init__(
         self,
-        request: Callable[..., _Response],
-        parse_json: Callable[[_Response, str], Any],
+        request: Callable[..., _ResponseT],
+        parse_json: Callable[[_ResponseT, str], Any],
         error_type: type[Exception],
     ) -> None:
         self._request = request
@@ -54,7 +57,7 @@ class OwnedRealmLifecycle:
                 f"preflight realm {realm!r} failed ({got.status_code}): {got.text[:200]}"
             )
 
-    def _create_realm(self, realm: str, owner_nonce: str) -> _Response:
+    def _create_realm(self, realm: str, owner_nonce: str) -> _ResponseT:
         try:
             return self._request(
                 "POST",
