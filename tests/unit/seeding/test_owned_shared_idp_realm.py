@@ -214,8 +214,17 @@ def test_delete_owned_realm_propagates_delete_failure(
     assert [method for method, _, _ in calls] == ["GET", "DELETE"]
 
 
-def test_partial_provision_rolls_back_whole_owned_realm(
+@pytest.mark.parametrize(
+    ("delete_error", "expected_message"),
+    [
+        (None, "profile mutation failed"),
+        (KeycloakAdminError("delete failed"), "rollback also failed"),
+    ],
+)
+def test_partial_provision_rolls_back_owned_realm(
     monkeypatch: pytest.MonkeyPatch,
+    delete_error: Exception | None,
+    expected_message: str,
 ) -> None:
     events: list[tuple[str, str, str | None]] = []
 
@@ -229,6 +238,8 @@ def test_partial_provision_rolls_back_whole_owned_realm(
 
         def delete_owned_realm(self, realm: str, owner: str) -> bool:
             events.append(("delete", realm, owner))
+            if delete_error:
+                raise delete_error
             return True
 
     monkeypatch.setattr(
@@ -236,13 +247,12 @@ def test_partial_provision_rolls_back_whole_owned_realm(
         lambda *args, **kwargs: _Admin(),
     )
 
-    with pytest.raises(RuntimeError, match="profile mutation failed"):
+    with pytest.raises(RuntimeError, match=expected_message):
         fixture.provision(
             "http://keycloak",
             "admin-pw",
             "persona-pw",
-            realm="unique",
-            owner_nonce="owner-a",
+            fixture.OwnedRealm("unique", "owner-a"),
         )
 
     assert events == [
@@ -250,31 +260,3 @@ def test_partial_provision_rolls_back_whole_owned_realm(
         ("profile", "unique", None),
         ("delete", "unique", "owner-a"),
     ]
-
-
-def test_partial_provision_reports_rollback_delete_failure(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class _Admin:
-        def create_owned_realm(self, realm: str, owner: str) -> None:
-            return None
-
-        def set_unmanaged_attributes(self, realm: str) -> None:
-            raise RuntimeError("profile mutation failed")
-
-        def delete_owned_realm(self, realm: str, owner: str) -> bool:
-            raise KeycloakAdminError("delete failed")
-
-    monkeypatch.setattr(
-        "kamiwaza_sdk.seeding.federation.keycloak.KeycloakAdmin",
-        lambda *args, **kwargs: _Admin(),
-    )
-
-    with pytest.raises(RuntimeError, match="rollback also failed"):
-        fixture.provision(
-            "http://keycloak",
-            "admin-pw",
-            "persona-pw",
-            realm="unique",
-            owner_nonce="owner-a",
-        )

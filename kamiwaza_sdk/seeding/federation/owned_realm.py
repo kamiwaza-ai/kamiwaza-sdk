@@ -29,6 +29,23 @@ class OwnedRealmLifecycle:
     def create(self, realm: str, owner_nonce: str) -> Dict[str, Any]:
         """Create only a new realm, reconciling ambiguous POST outcomes."""
         self._require_nonce(owner_nonce, "requires")
+        self._require_absent(realm)
+        created = self._create_realm(realm, owner_nonce)
+        if created.status_code == 201:
+            return {"realm": realm, "created": True, "owner_nonce": owner_nonce}
+        status_error = self._error(
+            f"create new owned realm {realm!r} failed ({created.status_code}): "
+            f"{created.text[:200]}"
+        )
+        self._finish_failed_create(
+            realm,
+            owner_nonce,
+            status_error,
+            delete_if_owned=created.status_code != 409,
+        )
+        raise status_error
+
+    def _require_absent(self, realm: str) -> None:
         got = self._request("GET", self._path(realm))
         if got.status_code == 200:
             raise self._error(f"refusing to mutate pre-existing realm {realm!r}")
@@ -36,8 +53,10 @@ class OwnedRealmLifecycle:
             raise self._error(
                 f"preflight realm {realm!r} failed ({got.status_code}): {got.text[:200]}"
             )
+
+    def _create_realm(self, realm: str, owner_nonce: str) -> _Response:
         try:
-            created = self._request(
+            return self._request(
                 "POST",
                 "/realms",
                 json={
@@ -51,19 +70,6 @@ class OwnedRealmLifecycle:
                 realm, owner_nonce, post_exception, delete_if_owned=True
             )
             raise
-        if created.status_code != 201:
-            status_error = self._error(
-                f"create new owned realm {realm!r} failed ({created.status_code}): "
-                f"{created.text[:200]}"
-            )
-            self._finish_failed_create(
-                realm,
-                owner_nonce,
-                status_error,
-                delete_if_owned=created.status_code != 409,
-            )
-            raise status_error
-        return {"realm": realm, "created": True, "owner_nonce": owner_nonce}
 
     def delete(self, realm: str, owner_nonce: str) -> bool:
         """Delete only a realm carrying the exact nonce; absent is success."""

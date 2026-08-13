@@ -48,6 +48,7 @@ import shlex
 import socket
 import subprocess
 import time
+from dataclasses import dataclass
 from typing import Iterator
 
 NAMESPACE = "kamiwaza"
@@ -62,6 +63,12 @@ KEYCLOAK_SVC_PORT = os.getenv("KEYCLOAK_SVC_PORT", "80")
 # -> module-fixture ERROR, not a skip. Keep these two dicts identical.
 # Clearance values match _mini_clearance.KNOWN: U sees 3 rows, S sees 4, TS sees all 5.
 PERSONAS = {"U": "fed-clr-u", "S": "fed-clr-s", "TS": "fed-clr-ts"}
+
+
+@dataclass(frozen=True)
+class OwnedRealm:
+    name: str
+    owner_nonce: str
 
 
 def run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
@@ -147,9 +154,7 @@ def provision(
     kc_url: str,
     admin_pw: str,
     persona_pw: str,
-    *,
-    realm: str,
-    owner_nonce: str,
+    owned_realm: OwnedRealm,
 ) -> dict:
     """Realm + ROPC client + clearance mapper + the three personas."""
     from kamiwaza_sdk.seeding.federation.cli import _verify_ssl
@@ -162,7 +167,8 @@ def provision(
     kc = KeycloakAdmin(
         kc_url, admin_user="admin", admin_password=admin_pw, verify=_verify_ssl()
     )
-    kc.create_owned_realm(realm, owner_nonce)
+    realm = owned_realm.name
+    kc.create_owned_realm(realm, owned_realm.owner_nonce)
     try:
         # Keycloak >=24 drops unrecognised user attributes unless the realm opts
         # in, which silently strips `clearance` and leaves the gate with nothing.
@@ -179,7 +185,7 @@ def provision(
             )
     except BaseException:
         try:
-            kc.delete_owned_realm(realm, owner_nonce)
+            kc.delete_owned_realm(realm, owned_realm.owner_nonce)
         except Exception as cleanup_error:
             raise RuntimeError(
                 "shared realm provision failed and owned-realm rollback also failed"
@@ -206,48 +212,41 @@ def teardown(kc_url: str, admin_pw: str, *, realm: str, owner_nonce: str) -> boo
     return kc.delete_owned_realm(realm, owner_nonce)
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("action", choices=["provision", "teardown", "env"])
-    ap.add_argument("--kubectl", default="kubectl")
-    ap.add_argument(
-        "--persona-password-env",
-        default="FED_PERSONA_PASSWORD",
-        help="env var holding the persona password; generated when unset",
-    )
-    args = ap.parse_args()
-
-    if args.action == "env":
-        print("# provision first; it prints the exports")
-        return 0
-
+def _required_owned_realm() -> OwnedRealm:
     realm = os.getenv("SHARED_REALM_NAME", "").strip()
     owner_nonce = os.getenv("SHARED_REALM_OWNER_NONCE", "").strip()
-    if not realm or not owner_nonce:
-        raise SystemExit(
-            "SHARED_REALM_NAME and SHARED_REALM_OWNER_NONCE are required; "
-            "the fixture refuses fixed or unowned realms"
-        )
+    if realm and owner_nonce:
+        return OwnedRealm(realm, owner_nonce)
+    raise SystemExit(
+        "SHARED_REALM_NAME and SHARED_REALM_OWNER_NONCE are required; "
+        "the fixture refuses fixed or unowned realms"
+    )
+
+
+def _run_fixture_action(args: argparse.Namespace, owned_realm: OwnedRealm) -> int:
     admin_pw = admin_password(args.kubectl)
     if args.action == "teardown":
         with keycloak_admin_channel(args.kubectl) as kc_url:
-            deleted = teardown(kc_url, admin_pw, realm=realm, owner_nonce=owner_nonce)
-        print(f"  realm={realm} cleanup={'deleted' if deleted else 'already-absent'}")
+            deleted = teardown(
+                kc_url,
+                admin_pw,
+                realm=owned_realm.name,
+                owner_nonce=owned_realm.owner_nonce,
+            )
+        status = "deleted" if deleted else "already-absent"
+        print(f"  realm={owned_realm.name} cleanup={status}")
         return 0
 
     persona_pw = os.getenv(
         args.persona_password_env, ""
     ).strip() or secrets.token_urlsafe(24)
     with keycloak_admin_channel(args.kubectl) as kc_url:
-        exports = provision(
-            kc_url,
-            admin_pw,
-            persona_pw,
-            realm=realm,
-            owner_nonce=owner_nonce,
-        )
+        exports = provision(kc_url, admin_pw, persona_pw, owned_realm)
+    _print_provisioned_realm(owned_realm.name, exports)
+    return 0
 
-    # The issuer must be the address the CLUSTERS resolve, not the port-forward.
+
+def _print_provisioned_realm(realm: str, exports: dict[str, str]) -> None:
     public = os.getenv("KEYCLOAK_PUBLIC_URL", "").strip()
     if public:
         exports["SHARED_ISSUER_URL"] = f"{public}/realms/{realm}"
@@ -265,13 +264,6 @@ def main() -> int:
     print(json.dumps(exports, indent=2))
     for key, value in exports.items():
         print(f"export {key}={shlex.quote(value)}")
-
-    # Standing the realm up is necessary but NOT sufficient. The receiver's
-    # shared-realm allowlist is fail-closed by design (ENG-8376:
-    # `scheduler.trustedSharedIssuers` defaults to []), so until the issuer is
-    # enrolled there the receiver answers 403 `shared_idp_issuer_untrusted`. That
-    # reason is in the suite's AUTH_LAYER_REASONS, which makes it a hard RED
-    # rather than a skip — a confusing result to debug from the test output alone.
     print(
         "\n  NEXT (required, or the suite goes red with 403 "
         "shared_idp_issuer_untrusted):\n"
@@ -280,7 +272,23 @@ def main() -> int:
         "      trustedSharedIssuers:\n"
         f"        - {exports['SHARED_ISSUER_URL']}"
     )
-    return 0
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("action", choices=["provision", "teardown", "env"])
+    ap.add_argument("--kubectl", default="kubectl")
+    ap.add_argument(
+        "--persona-password-env",
+        default="FED_PERSONA_PASSWORD",
+        help="env var holding the persona password; generated when unset",
+    )
+    args = ap.parse_args()
+
+    if args.action == "env":
+        print("# provision first; it prints the exports")
+        return 0
+    return _run_fixture_action(args, _required_owned_realm())
 
 
 if __name__ == "__main__":

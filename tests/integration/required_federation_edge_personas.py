@@ -98,12 +98,11 @@ def _login_primary_persona(
 
 
 def _onboard_persona(
-    cleanup: ExitStack,
     receiver: Any,
     identity: tuple[str, str, str],
     clearance: str,
     persona: dict[str, Any],
-) -> None:
+) -> str:
     federation_id, source_cluster_id, dataset_urn = identity
     external_id = f"{persona['sub']}@{source_cluster_id}"
     persona["external_id"] = external_id
@@ -118,7 +117,7 @@ def _onboard_persona(
             ),
         },
     )
-    cleanup.callback(cleanup_brokered_persona, receiver, federation_id, external_id)
+    return external_id
 
 
 def provision_primary_personas(
@@ -150,5 +149,11 @@ def provision_primary_personas(
         )
         personas[clearance] = persona
         if clearance != "unonboarded":
-            _onboard_persona(cleanup, receiver, identity, clearance, persona)
+            external_id = _onboard_persona(receiver, identity, clearance, persona)
+            cleanup.callback(
+                cleanup_brokered_persona,
+                receiver,
+                identity[0],
+                external_id,
+            )
     return personas
