@@ -22,7 +22,17 @@ import pytest
 
 from kamiwaza_sdk.exceptions import APIError
 
-pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.live,
+    pytest.mark.withoutresponses,
+    # Single-cluster federation POSTURE check: exercises the shared_idp trust gate
+    # on one cluster (no peer needed). Tagged requires_shared_idp so provisioned
+    # smokes can select it per-cluster via `requires_shared_idp and not
+    # requires_two_clusters` — without dragging in the full single-cluster
+    # integration suite (ENG-8213 / ENG-9848).
+    pytest.mark.requires_shared_idp,
+]
 
 
 def _cleanup(client, name_prefix: str) -> None:

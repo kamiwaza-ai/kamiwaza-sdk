@@ -76,22 +76,6 @@ def _decode_jwt_payload(token: str) -> dict[str, Any]:
     return json.loads(base64.urlsafe_b64decode(payload_b64))
 
 
-def _proxy_by_id(client: KamiwazaClient, federation_id: str):
-    """A FederationProxy bound to a known federation id, bypassing name
-    resolution. Guest ops run on the RECEIVER, whose ``remote_cluster_name`` is
-    rewritten to the initiator's cluster identity by the /pair handshake — so
-    resolving the receiver's federation by the pair name fails. The console
-    (FederationGuests) already keys on the federation id; the SDK reaches it via
-    the cached-id proxy here."""
-    from kamiwaza_sdk.services.federations import FederationProxy
-
-    proxy = FederationProxy(
-        client=client, federations_api=client.federations, name=str(federation_id)
-    )
-    proxy._cached_id = str(federation_id)
-    return proxy
-
-
 def _pair_receiver_realm(
     initiator_client: KamiwazaClient,
     receiver_client: KamiwazaClient,
@@ -209,7 +193,9 @@ class TestReceiverRealmWalkthrough:
         """guests.enroll mints a durable offline credential whose issuer is the
         receiver's federation-<id> realm (validates the S6 issuer-derivation: iss is the
         KC FRONTEND URL of the fed realm, not the internal admin URL)."""
-        fed = _proxy_by_id(receiver_client, receiver_realm_federation["receiver_id"])
+        fed = receiver_client.federations.by_id(
+            receiver_realm_federation["receiver_id"]
+        )
         external_id = f"uatguest-{uuid.uuid4().hex[:8]}@src"
         guest = fed.guests.enroll(external_id)
 
@@ -235,7 +221,7 @@ class TestReceiverRealmWalkthrough:
         """An enrolled guest surfaces on the federation users list (keyed on its
         federation-realm sub) and revoke disables its allowlist row (FR-79)."""
         fed_id = receiver_realm_federation["receiver_id"]
-        fed = _proxy_by_id(receiver_client, receiver_realm_federation["receiver_id"])
+        fed = receiver_client.federations.by_id(fed_id)
         external_id = f"uatrevoke-{uuid.uuid4().hex[:8]}@src"
         guest = fed.guests.enroll(external_id)
         guest_sub = guest.external_id  # allowlist row is keyed on the realm sub
@@ -262,7 +248,9 @@ class TestReceiverRealmWalkthrough:
         refused fail-closed at enrollment; no credential is minted."""
         from kamiwaza_sdk.exceptions import APIError
 
-        fed = _proxy_by_id(receiver_client, receiver_realm_federation["receiver_id"])
+        fed = receiver_client.federations.by_id(
+            receiver_realm_federation["receiver_id"]
+        )
         with pytest.raises(APIError) as exc:
             fed.guests.enroll(
                 f"uatf5-{uuid.uuid4().hex[:8]}@src",
@@ -297,7 +285,9 @@ class TestReceiverRealmWalkthrough:
         that would mean the credential itself was refused.
         """
         name = receiver_realm_federation["name"]
-        fed = _proxy_by_id(receiver_client, receiver_realm_federation["receiver_id"])
+        fed = receiver_client.federations.by_id(
+            receiver_realm_federation["receiver_id"]
+        )
         guest = fed.guests.enroll(f"uatmesh-{uuid.uuid4().hex[:8]}@src")
 
         # Source resolves the receiver-issued credential for THIS target; the
@@ -395,7 +385,7 @@ class TestReceiverRealmGuardsOnNonReceiverRealmFederation:
     ) -> None:
         from kamiwaza_sdk.exceptions import APIError
 
-        fed = _proxy_by_id(receiver_client, peer_kc_federation["receiver_id"])
+        fed = receiver_client.federations.by_id(peer_kc_federation["receiver_id"])
         with pytest.raises(APIError) as exc:
             fed.guests.enroll(f"uatnrr-{uuid.uuid4().hex[:8]}@src")
         assert getattr(exc.value, "status_code", None) == 400

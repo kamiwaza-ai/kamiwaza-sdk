@@ -168,7 +168,7 @@ def test_receiver_assigned_clearance_claim_reaches_dataset_gate_over_mesh(
         "federation_name"
     ].upper().replace("-", "_")
     monkeypatch.setenv(env_name, credential)
-    rows, gate_audit = mc.mesh_retrieve_through_gate(
+    rows, gate_audits = mc.mesh_retrieve_through_gate(
         requester,
         requester.base_url,
         local_token,
@@ -179,4 +179,4 @@ def test_receiver_assigned_clearance_claim_reaches_dataset_gate_over_mesh(
 
     expected = [row for row in mc.records() if row["classification"] in {"U", "S"}]
     assert sorted(rows, key=lambda row: row["id"]) == expected
-    assert gate_audit == {"filtered": True}
+    mc.assert_persona_result("S", rows, gate_audits)

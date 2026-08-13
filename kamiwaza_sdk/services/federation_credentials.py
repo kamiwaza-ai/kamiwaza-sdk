@@ -42,6 +42,16 @@ def _env_suffix(target: str) -> str:
     return re.sub(r"[^A-Za-z0-9]", "_", target).upper()
 
 
+def _load_credential_mapping(file_path: str) -> Optional[dict[str, object]]:
+    """Load a credential mapping, returning ``None`` for unusable files."""
+    try:
+        with open(file_path, "r", encoding="utf-8") as fh:
+            mapping = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    return mapping if isinstance(mapping, dict) else None
+
+
 def resolve_federation_credential(
     target: str, *, env: Optional[Mapping[str, str]] = None
 ) -> Optional[str]:
@@ -59,17 +69,15 @@ def resolve_federation_credential(
         return from_env
 
     file_path = environ.get(_ENV_FILE)
-    if file_path:
-        try:
-            with open(file_path, "r", encoding="utf-8") as fh:
-                mapping = json.load(fh)
-        except (OSError, ValueError):
-            return None
-        if isinstance(mapping, dict):
-            value = mapping.get(target)
-            if isinstance(value, str) and value:
-                return value
-    return None
+    if not file_path:
+        return None
+
+    mapping = _load_credential_mapping(file_path)
+    if mapping is None:
+        return None
+
+    value = mapping.get(target)
+    return value if isinstance(value, str) and value else None
 
 
 def federation_credential_headers(
