@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import os
 import re
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
@@ -293,14 +294,12 @@ def _fallback_image_basename(
     return basename or "extension"
 
 
-# Compose ``${VAR:-default}`` (use default if unset OR empty) and the
-# ``${VAR-default}`` form (use default only if unset). For our purposes
-# both collapse to the literal default — there's no host process between
-# us and Kubernetes, so the var is always "unset" by the time the pod
-# starts. The expression may be embedded in a larger value, such as
-# ``neo4j/${NEO4J_PASSWORD:-changeme}``. ``${VAR:?error}`` and bare
-# ``${VAR}`` aren't matched (no safe default → drop downstream).
-_DEFAULT_SUB_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*):?-([^}]*)\}")
+# A single Compose substitution. The fallback is greedy so nested defaults
+# are parsed after ``_compose_substitution_end`` finds the balanced expression.
+_COMPOSE_SUB_RE = re.compile(
+    r"^\$\{([A-Za-z_][A-Za-z0-9_]*)(?:(:?[-?])(.*))?\}$",
+    re.DOTALL,
+)
 
 # Env var names that should be left to the platform's ConfigMap envFrom
 # injection (operator writes the cluster-internal value; an explicit
@@ -483,13 +482,13 @@ class ComposeTransformer:
         the pod verbatim.
 
         Rules (per env var):
+        - Host environment values are used with normal Compose semantics.
         - ``${VAR:-default}`` / ``${VAR-default}`` for non-platform
-          keys → collapsed to the literal ``default``.
+          keys → recursively collapsed to a host value or literal default.
         - ``${KAMIWAZA_*:-default}`` → dropped. The kamiwaza-extension
           operator injects these via ConfigMap envFrom; an explicit
           env entry would shadow the cluster-internal value.
-        - ``${VAR}`` (no default) and ``${VAR:?error}`` (required) →
-          dropped. No safe value to ship.
+        - Unset ``${VAR}`` and unsatisfied required forms are dropped.
         - Plain values pass through unchanged.
 
         Skip this step when the destination DOES perform install-time
@@ -513,12 +512,10 @@ def _resolve_shell_refs(env: Any) -> Any:
 
     Two rules:
 
-    1. ``${VAR:-default}`` where the env key does NOT start with
-       ``KAMIWAZA_`` → resolve to ``default``, including when the
-       expression is embedded in a larger value. The host env isn't
-       consulted (we're nowhere near a docker-compose run); compose
-       semantics for "VAR is unset" simply use the default. The cluster
-       deployment then carries the literal default through to the pod
+    1. Non-platform placeholders use the current process environment and
+       normal Compose unset/empty semantics. Embedded substitutions and nested
+       defaults are resolved recursively. The cluster deployment carries the
+       resolved value through to the pod
        — and ``detect_service_url_rewrites`` (called by
        ``PayloadBuilder``) emits a ``service-ref-rewrites`` annotation
        so the operator can swap cross-service hostnames at deploy time.
@@ -529,8 +526,7 @@ def _resolve_shell_refs(env: Any) -> Any:
        point to laptop-only addresses (``host.docker.internal:7777``)
        that don't resolve in-cluster anyway.
 
-    3. ``${VAR}`` (no default) and ``${VAR:?error}`` (required) → drop.
-       No safe value to ship.
+    3. Unset bare substitutions and unsatisfied required forms are dropped.
 
     Plain values without ``${`` pass through unchanged.
     """
@@ -558,18 +554,64 @@ def _resolve_shell_refs(env: Any) -> Any:
 
 
 def _resolve_default_substitution(key: str, value: str) -> Optional[str]:
-    """Resolve default substitutions in a non-platform env value.
-
-    Returns None when:
-    - any substitution has no safe default
-    - the key is platform-injected (``KAMIWAZA_*``) — let envFrom win
-    """
+    """Resolve Compose substitutions in one non-platform environment value."""
     if key.startswith(_PLATFORM_INJECTED_PREFIX):
         return None
-    resolved = _DEFAULT_SUB_RE.sub(lambda match: match.group(2), value)
-    if "${" in resolved:
+    return _resolve_compose_value(value)
+
+
+def _resolve_compose_value(value: str) -> Optional[str]:
+    """Resolve every balanced ``${...}`` expression embedded in *value*."""
+    resolved: List[str] = []
+    cursor = 0
+    while (start := value.find("${", cursor)) >= 0:
+        end = _compose_substitution_end(value, start)
+        if end is None:
+            return None
+        resolved.append(value[cursor:start])
+        substitution = _resolve_compose_substitution(value[start : end + 1])
+        if substitution is None:
+            return None
+        resolved.append(substitution)
+        cursor = end + 1
+    resolved.append(value[cursor:])
+    return "".join(resolved)
+
+
+def _compose_substitution_end(value: str, start: int) -> Optional[int]:
+    """Find the closing brace paired with the ``${`` at *start*."""
+    depth = 1
+    cursor = start + 2
+    while cursor < len(value):
+        if value.startswith("${", cursor):
+            depth += 1
+            cursor += 2
+            continue
+        if value[cursor] == "}":
+            depth -= 1
+            if depth == 0:
+                return cursor
+        cursor += 1
+    return None
+
+
+def _resolve_compose_substitution(value: str) -> Optional[str]:
+    """Resolve one full substitution using Compose environment semantics."""
+    match = _COMPOSE_SUB_RE.match(value)
+    if match is None:
         return None
-    return resolved
+    name, operator, fallback = match.groups()
+    is_set = name in os.environ
+    host_value = os.environ.get(name, "")
+    if operator is None:
+        return host_value if is_set else None
+    if operator in (":-", ":?") and host_value:
+        return host_value
+    if operator in ("-", "?") and is_set:
+        return host_value
+    if operator in (":?", "?"):
+        return None
+    return _resolve_compose_value(fallback)
 
 
 def _resolve_list_entry(entry: Any) -> Optional[str]:

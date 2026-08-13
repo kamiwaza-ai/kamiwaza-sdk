@@ -460,16 +460,15 @@ class TestFullTransform:
 
 
 class TestResolveEnvPlaceholders:
-    """``resolve_env_placeholders`` collapses ``${VAR:-default}`` env
-    placeholders to their default, drops unresolvable forms, and drops
-    ``KAMIWAZA_*`` keys (so the operator's ConfigMap envFrom wins)."""
+    """Direct deploy resolves Compose env values and drops platform keys."""
 
-    def test_resolves_default_substitution_dict_form(self, transformer):
+    def test_resolves_default_substitution_dict_form(self, transformer, monkeypatch):
+        monkeypatch.delenv("KZ_TEST_BACKEND_URL", raising=False)
         compose = {
             "services": {
                 "frontend": {
                     "environment": {
-                        "BACKEND_URL": "${BACKEND_URL:-http://backend:8000}",
+                        "BACKEND_URL": "${KZ_TEST_BACKEND_URL:-http://backend:8000}",
                     },
                 },
             },
@@ -479,12 +478,13 @@ class TestResolveEnvPlaceholders:
             "BACKEND_URL": "http://backend:8000",
         }
 
-    def test_resolves_default_substitution_list_form(self, transformer):
+    def test_resolves_default_substitution_list_form(self, transformer, monkeypatch):
+        monkeypatch.delenv("KZ_TEST_BACKEND_URL", raising=False)
         compose = {
             "services": {
                 "frontend": {
                     "environment": [
-                        "BACKEND_URL=${BACKEND_URL:-http://backend:8000}",
+                        "BACKEND_URL=${KZ_TEST_BACKEND_URL:-http://backend:8000}",
                         "PLAIN_VAR=plain-value",
                     ],
                 },
@@ -496,12 +496,13 @@ class TestResolveEnvPlaceholders:
             "PLAIN_VAR=plain-value",
         ]
 
-    def test_resolves_default_substitution_embedded_in_value(self, transformer):
+    def test_resolves_default_substitution_embedded_in_value(self, transformer, monkeypatch):
+        monkeypatch.delenv("KZ_TEST_NEO4J_PASSWORD", raising=False)
         compose = {
             "services": {
                 "neo4j": {
                     "environment": {
-                        "NEO4J_AUTH": "neo4j/${NEO4J_PASSWORD:-changeme}",
+                        "NEO4J_AUTH": "neo4j/${KZ_TEST_NEO4J_PASSWORD:-changeme}",
                     },
                 },
             },
@@ -513,12 +514,13 @@ class TestResolveEnvPlaceholders:
             "NEO4J_AUTH": "neo4j/changeme",
         }
 
-    def test_drops_embedded_substitution_without_safe_default(self, transformer):
+    def test_drops_embedded_substitution_without_safe_default(self, transformer, monkeypatch):
+        monkeypatch.delenv("KZ_TEST_NEO4J_PASSWORD", raising=False)
         compose = {
             "services": {
                 "neo4j": {
                     "environment": {
-                        "NEO4J_AUTH": "neo4j/${NEO4J_PASSWORD:?required}",
+                        "NEO4J_AUTH": "neo4j/${KZ_TEST_NEO4J_PASSWORD:?required}",
                     },
                 },
             },
@@ -548,15 +550,17 @@ class TestResolveEnvPlaceholders:
             "BACKEND_URL": "http://backend:8000",
         }
 
-    def test_drops_unresolvable_substitutions(self, transformer):
+    def test_drops_unresolvable_substitutions(self, transformer, monkeypatch):
         """``${VAR}`` without a default and ``${VAR:?error}`` (required)
         have no safe value to ship — drop them."""
+        monkeypatch.delenv("KZ_TEST_UNSET_VALUE", raising=False)
+        monkeypatch.delenv("KZ_TEST_REQUIRED_VALUE", raising=False)
         compose = {
             "services": {
                 "backend": {
                     "environment": {
-                        "OPENAI_API_KEY": "${OPENAI_API_KEY}",
-                        "REQUIRED_VAR": "${REQUIRED_VAR:?missing}",
+                        "OPENAI_API_KEY": "${KZ_TEST_UNSET_VALUE}",
+                        "REQUIRED_VAR": "${KZ_TEST_REQUIRED_VALUE:?missing}",
                         "PLAIN": "kept",
                     },
                 },
@@ -565,18 +569,69 @@ class TestResolveEnvPlaceholders:
         result = transformer.resolve_env_placeholders(compose)
         assert result["services"]["backend"]["environment"] == {"PLAIN": "kept"}
 
-    def test_alternate_default_form_dash_only(self, transformer):
+    def test_alternate_default_form_dash_only(self, transformer, monkeypatch):
         """Compose accepts both ``${VAR:-default}`` (unset OR empty)
         and ``${VAR-default}`` (unset only). Both collapse to default."""
+        monkeypatch.delenv("KZ_TEST_UNSET_VALUE", raising=False)
         compose = {
             "services": {
                 "backend": {
-                    "environment": {"X": "${UNSET-fallback}"},
+                    "environment": {"X": "${KZ_TEST_UNSET_VALUE-fallback}"},
                 },
             },
         }
         result = transformer.resolve_env_placeholders(compose)
         assert result["services"]["backend"]["environment"] == {"X": "fallback"}
+
+    def test_uses_exported_value_for_bare_placeholder(self, transformer, monkeypatch):
+        monkeypatch.setenv("KZ_TEST_FIELD_KEY", "durable-secret")
+        compose = {
+            "services": {
+                "backend": {
+                    "environment": {"SECRET_ENCRYPTION_KEY": "${KZ_TEST_FIELD_KEY}"},
+                },
+            },
+        }
+
+        result = transformer.resolve_env_placeholders(compose)
+
+        assert result["services"]["backend"]["environment"] == {
+            "SECRET_ENCRYPTION_KEY": "durable-secret",
+        }
+
+    @pytest.mark.parametrize(
+        ("expression", "host_value", "expected"),
+        [
+            ("${KZ_TEST_VALUE:-fallback}", "", "fallback"),
+            ("${KZ_TEST_VALUE-fallback}", "", ""),
+            ("${KZ_TEST_VALUE:?required}", "set", "set"),
+            ("${KZ_TEST_VALUE?required}", "", ""),
+        ],
+    )
+    def test_preserves_compose_empty_value_semantics(
+        self, transformer, monkeypatch, expression, host_value, expected
+    ):
+        monkeypatch.setenv("KZ_TEST_VALUE", host_value)
+        compose = {"services": {"backend": {"environment": {"VALUE": expression}}}}
+
+        result = transformer.resolve_env_placeholders(compose)
+
+        assert result["services"]["backend"]["environment"] == {"VALUE": expected}
+
+    def test_resolves_nested_default_substitution(self, transformer, monkeypatch):
+        monkeypatch.delenv("KZ_TEST_DATABASE_URL", raising=False)
+        monkeypatch.delenv("KZ_TEST_LEGACY_DATABASE_URL", raising=False)
+        value = (
+            "${KZ_TEST_DATABASE_URL:-"
+            "${KZ_TEST_LEGACY_DATABASE_URL:-postgresql://postgres:dev@postgres/db}}"
+        )
+        compose = {"services": {"backend": {"environment": {"DATABASE_URL": value}}}}
+
+        result = transformer.resolve_env_placeholders(compose)
+
+        assert result["services"]["backend"]["environment"] == {
+            "DATABASE_URL": "postgresql://postgres:dev@postgres/db",
+        }
 
     def test_plain_values_pass_through(self, transformer):
         compose = {
