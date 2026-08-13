@@ -348,14 +348,22 @@ job_id = kz.jobs.submit_async(
     target_cluster="ORION",
     timeout_seconds=600,
 )
-# ... persist job_id somewhere (sqlite, /tmp file, etc.) ...
+# ... persist (job_id, target_cluster) somewhere (sqlite, etc.) ...
 # ... process dies ...
 
 # Fresh process, much later
 saved_job_id = load_persisted_job_id()
-result = kz.jobs.wait(saved_job_id, timeout=600)
-print(result.status, result.result)
+saved_target_cluster = "ORION"
+result = kz.jobs.wait(
+    saved_job_id,
+    timeout=600,
+    target_cluster=saved_target_cluster,
+)
 ```
+
+The client that submitted the job remembers up to 256 recent remote handles,
+so `wait(job_id, ...)` and `cancel(job_id)` on that same client do not need the
+selector repeated. A new client has no such in-memory routing state.
 
 **Recommended:** use `recoverable=True` for any job with
 `timeout_seconds > 60`. The two-call cost (submit + poll) is amortized
