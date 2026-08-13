@@ -297,7 +297,7 @@ def _fallback_image_basename(
 # A single Compose substitution. The fallback is greedy so nested defaults
 # are parsed after ``_compose_substitution_end`` finds the balanced expression.
 _COMPOSE_SUB_RE = re.compile(
-    r"^\$\{([A-Za-z_][A-Za-z0-9_]*)(?:(:?[-?])(.*))?\}$",
+    r"^\$\{([A-Za-z_][A-Za-z0-9_]*)(?:(:?[-?+])(.*))?\}$",
     re.DOTALL,
 )
 _COMPOSE_BRACE_RE = re.compile(r"[{}]")
@@ -342,9 +342,10 @@ _DEFAULT_LIMITS: Dict[str, Dict[str, str]] = {
 class ComposeTransformer:
     """Transform a local-dev compose dict into a deployment-ready dict.
 
-    All operations are pure (no I/O).  The caller provides the parsed
-    compose dict and receives a new dict suitable for building a
-    ``CreateExtension`` payload.
+    The caller provides the parsed compose dict and receives a new dict
+    suitable for building a ``CreateExtension`` payload. Transformations are
+    pure; ``resolve_env_placeholders`` additionally reads the process
+    environment without modifying it.
     """
 
     def transform(
@@ -487,6 +488,8 @@ class ComposeTransformer:
           substitution semantics.
         - ``${VAR:-default}`` / ``${VAR-default}`` for non-platform
           keys → recursively collapsed to a host value or literal default.
+        - ``${VAR:+alternate}`` / ``${VAR+alternate}`` → the alternate when
+          the corresponding non-empty/set condition is satisfied, else empty.
         - Placeholder-bearing entries whose key starts with ``KAMIWAZA_`` →
           dropped. The kamiwaza-extension operator injects these via ConfigMap
           envFrom; an explicit resolved entry would shadow the cluster-internal
@@ -513,12 +516,13 @@ class ComposeTransformer:
 def _resolve_shell_refs(env: Any) -> Any:
     """Resolve compose ``${VAR:-default}`` substitutions, drop unresolvable.
 
-    Two rules:
+    Three rules:
 
     1. Non-platform placeholders use the current process environment and
-       Compose unset/empty semantics for ``:-``, ``-``, ``:?``, and ``?``.
-       Embedded substitutions and nested defaults are resolved recursively.
-       The cluster deployment carries the resolved value through to the pod
+       Compose unset/empty semantics for ``:-``, ``-``, ``:?``, ``?``,
+       ``:+``, and ``+``. Embedded substitutions and nested defaults are
+       resolved recursively. The cluster deployment carries the resolved
+       value through to the pod
        — and ``detect_service_url_rewrites`` (called by
        ``PayloadBuilder``) emits a ``service-ref-rewrites`` annotation
        so the operator can swap cross-service hostnames at deploy time.
@@ -531,12 +535,12 @@ def _resolve_shell_refs(env: Any) -> Any:
 
     3. Unset bare substitutions and unsatisfied required forms are dropped.
 
-    Plain values without ``${`` pass through unchanged.
+    Values without supported substitutions or ``$$`` escapes pass unchanged.
     """
     if isinstance(env, dict):
         out: Dict[str, Any] = {}
         for k, v in env.items():
-            if not isinstance(v, str) or "${" not in v:
+            if not isinstance(v, str) or "$" not in v:
                 out[k] = v
                 continue
             resolved = _resolve_default_substitution(k, v)
@@ -557,10 +561,24 @@ def _resolve_shell_refs(env: Any) -> Any:
 
 
 def _resolve_default_substitution(key: str, value: str) -> Optional[str]:
-    """Resolve Compose substitutions in one non-platform environment value."""
-    if key.startswith(_PLATFORM_INJECTED_PREFIX):
+    """Resolve Compose substitutions in one environment value."""
+    is_platform_key = key.startswith(_PLATFORM_INJECTED_PREFIX)
+    if is_platform_key and _has_braced_substitution(value):
         return None
     return _resolve_compose_value(value)
+
+
+def _has_braced_substitution(value: str) -> bool:
+    """Whether *value* contains an unescaped ``${...}`` opener."""
+    cursor = 0
+    while (dollar := value.find("$", cursor)) >= 0:
+        if value.startswith("$$", dollar):
+            cursor = dollar + 2
+            continue
+        if value.startswith("${", dollar):
+            return True
+        cursor = dollar + 1
+    return False
 
 
 def _resolve_compose_value(value: str) -> Optional[str]:
@@ -619,6 +637,10 @@ def _resolve_compose_substitution(value: str) -> Optional[str]:
         return host_value
     if operator in ("-", "?") and is_set:
         return host_value
+    if operator == ":+":
+        return _resolve_compose_value(fallback) if host_value else ""
+    if operator == "+":
+        return _resolve_compose_value(fallback) if is_set else ""
     if operator in (":?", "?"):
         return None
     return _resolve_compose_value(fallback)
@@ -637,9 +659,9 @@ def _resolve_list_entry(entry: Any) -> Optional[str]:
 
 def _entry_has_shell_ref(entry: Any) -> bool:
     if isinstance(entry, str) and "=" in entry:
-        return "${" in entry.split("=", 1)[1]
+        return "$" in entry.split("=", 1)[1]
     if isinstance(entry, dict):
-        return "${" in str(entry.get("value", ""))
+        return "$" in str(entry.get("value", ""))
     return False
 
 

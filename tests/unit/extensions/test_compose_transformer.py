@@ -611,6 +611,8 @@ class TestResolveEnvPlaceholders:
             ("${KZ_TEST_VALUE-fallback}", "", ""),
             ("${KZ_TEST_VALUE:?required}", "set", "set"),
             ("${KZ_TEST_VALUE?required}", "", ""),
+            ("${KZ_TEST_VALUE:+alternate}", "set", "alternate"),
+            ("${KZ_TEST_VALUE+alternate}", "", "alternate"),
         ],
     )
     def test_preserves_compose_empty_value_semantics(
@@ -622,6 +624,20 @@ class TestResolveEnvPlaceholders:
         result = transformer.resolve_env_placeholders(compose)
 
         assert result["services"]["backend"]["environment"] == {"VALUE": expected}
+
+    @pytest.mark.parametrize(
+        "expression",
+        ["${KZ_TEST_VALUE:+alternate}", "${KZ_TEST_VALUE+alternate}"],
+    )
+    def test_alternate_substitution_is_empty_when_unset(
+        self, transformer, monkeypatch, expression
+    ):
+        monkeypatch.delenv("KZ_TEST_VALUE", raising=False)
+        compose = {"services": {"backend": {"environment": {"VALUE": expression}}}}
+
+        result = transformer.resolve_env_placeholders(compose)
+
+        assert result["services"]["backend"]["environment"] == {"VALUE": ""}
 
     def test_resolves_nested_default_substitution(self, transformer, monkeypatch):
         monkeypatch.delenv("KZ_TEST_DATABASE_URL", raising=False)
@@ -651,6 +667,7 @@ class TestResolveEnvPlaceholders:
                 "backend": {
                     "environment": {
                         "LITERAL": "$${KZ_TEST_ESCAPED:-fallback}",
+                        "PLAIN_ESCAPE": "cost$$value",
                         "MIXED": (
                             "$${KZ_TEST_ESCAPED:-literal} "
                             "${KZ_TEST_SUFFIX:-resolved}"
@@ -665,6 +682,7 @@ class TestResolveEnvPlaceholders:
 
         assert result["services"]["backend"]["environment"] == {
             "LITERAL": "${KZ_TEST_ESCAPED:-fallback}",
+            "PLAIN_ESCAPE": "cost$value",
             "MIXED": "${KZ_TEST_ESCAPED:-literal} resolved",
         }
 
@@ -730,6 +748,7 @@ class TestResolveEnvPlaceholders:
                 "backend": {
                     "environment": [
                         "AUTH=${KZ_TEST_USER:-neo4j}/${KZ_TEST_PASSWORD:-changeme}",
+                        "LITERAL=cost$$value",
                     ],
                 },
             },
@@ -739,13 +758,14 @@ class TestResolveEnvPlaceholders:
 
         assert result["services"]["backend"]["environment"] == [
             "AUTH=neo4j/changeme",
+            "LITERAL=cost$value",
         ]
 
     def test_plain_values_pass_through(self, transformer):
         compose = {
             "services": {
                 "backend": {
-                    "environment": {"FOO": "bar", "PORT": "8000"},
+                    "environment": {"FOO": "bar", "PORT": "8000", "TAIL": "abc$"},
                 },
             },
         }
@@ -753,6 +773,7 @@ class TestResolveEnvPlaceholders:
         assert result["services"]["backend"]["environment"] == {
             "FOO": "bar",
             "PORT": "8000",
+            "TAIL": "abc$",
         }
 
     def test_does_not_mutate_input(self, transformer):
