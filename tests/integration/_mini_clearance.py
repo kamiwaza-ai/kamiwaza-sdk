@@ -25,6 +25,8 @@ import os
 from pathlib import Path
 from typing import Any, Optional
 
+from kamiwaza_sdk.services.federation_credentials import federation_credential_headers
+
 GATE_CLASSPATH = "acme_gates.mini_clearance_gate.MiniClearanceGate"
 GATE_NAME = "mini_clearance_gate"
 WHEEL_NAME = "acme_gates-1.1.0-py3-none-any.whl"
@@ -67,6 +69,7 @@ def write_dataset_file(path: Path) -> str:
 
 
 # ── gate-package install ────────────────────────────────────────────────────
+
 
 def wheel_and_index() -> Optional[tuple[str, str]]:
     """(M5_TEST_WHEEL_DIR, M5_TEST_INDEX_URL) iff both set and the 1.1.0 wheel is present."""
@@ -131,6 +134,7 @@ def install_gate_package(kz: Any, wheel_dir: str, index_url: str) -> None:
 
 # ── clearance personas ──────────────────────────────────────────────────────
 
+
 def declare_clearance_attribute(kz: Any) -> None:
     """Declare the ``clearance`` attribute in the realm vocabulary (idempotent).
 
@@ -175,7 +179,10 @@ def authed_client(base_url: str, username: str, password: str, *, verify: bool) 
 
     client = KamiwazaClient(base_url=base_url, verify=verify)
     client.authenticator = UserPasswordAuthenticator(
-        username, password, client._auth_service, token_store=_NoCacheTokenStore()  # type: ignore[arg-type]
+        username,
+        password,
+        client._auth_service,
+        token_store=_NoCacheTokenStore(),  # type: ignore[arg-type]
     )
     return client
 
@@ -239,6 +246,7 @@ def jwt_sub(token: str) -> str:
 
 
 # ── file-backed gated dataset ───────────────────────────────────────────────
+
 
 def create_file_dataset(kz: Any, name: str, file_path: str) -> str:
     """Create a ``platform="file"`` dataset pointing at ``file_path`` and bind
@@ -309,8 +317,12 @@ def mesh_retrieve_through_gate(
     """
     import requests
 
+    credential_headers = federation_credential_headers(fed_name)
     job = persona_client._request(
-        "POST", f"/mesh/{fed_name}/api/retrieval/jobs", json={"dataset_urn": dataset_urn}
+        "POST",
+        f"/mesh/{fed_name}/api/retrieval/jobs",
+        json={"dataset_urn": dataset_urn},
+        headers=credential_headers,
     )
     if isinstance(job, dict):
         job_id = job.get("job_id") or job.get("id")
@@ -335,7 +347,11 @@ def mesh_retrieve_through_gate(
             filtered = filtered or bool(entry.get("filtered"))
 
     url = f"{base_url}/mesh/{fed_name}/api/retrieval/jobs/{job_id}/stream"
-    headers = {"Authorization": f"Bearer {token}", "Accept": "text/event-stream"}
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "text/event-stream",
+        **credential_headers,
+    }
     with requests.get(
         url, headers=headers, stream=True, verify=verify, timeout=120
     ) as sr:
@@ -400,12 +416,16 @@ def assert_persona_result(clearance: str, rows: list[dict], gate_audit: dict) ->
     """
     included, redacted, allowed = KNOWN[clearance]
     assert gate_audit, "no gate_audit footer in retrieval stream — gate not invoked?"
-    assert len(rows) == included, f"expected {included} rows for {clearance}, got {len(rows)}"
+    assert len(rows) == included, (
+        f"expected {included} rows for {clearance}, got {len(rows)}"
+    )
     assert gate_audit.get("filtered") is (redacted > 0), gate_audit
     # The deprecated count keys must be present-and-null, not resurrected.
-    assert all(gate_audit.get(k) is None for k in ("included", "redacted", "total", "gate")), (
-        gate_audit
-    )
+    assert all(
+        gate_audit.get(k) is None for k in ("included", "redacted", "total", "gate")
+    ), gate_audit
     # zero leakage: nothing above the caller's clearance survives
-    leaked = [r for r in rows if str(r.get("classification", "")).upper() not in allowed]
+    leaked = [
+        r for r in rows if str(r.get("classification", "")).upper() not in allowed
+    ]
     assert not leaked, f"{clearance} caller leaked rows above clearance: {leaked}"
