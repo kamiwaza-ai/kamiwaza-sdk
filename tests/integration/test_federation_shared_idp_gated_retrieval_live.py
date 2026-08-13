@@ -38,6 +38,7 @@ pytestmark = [
     pytest.mark.withoutresponses,
     pytest.mark.requires_two_clusters,
     pytest.mark.requires_shared_idp,
+    pytest.mark.requires_owned_shared_realm,
 ]
 
 _PERSONAS = {"U": "fed-clr-u", "S": "fed-clr-s", "TS": "fed-clr-ts"}

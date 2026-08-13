@@ -21,7 +21,11 @@ def required_edge_enabled(config: pytest.Config) -> bool:
 
 
 def is_required_edge_item(item: pytest.Item) -> bool:
-    required_markers = {"requires_two_clusters", "requires_shared_idp"}
+    required_markers = {
+        "requires_two_clusters",
+        "requires_shared_idp",
+        "requires_owned_shared_realm",
+    }
     return (
         required_edge_enabled(item.config)
         and Path(str(item.fspath)).name == REQUIRED_EDGE_FILE

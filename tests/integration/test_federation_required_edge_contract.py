@@ -25,15 +25,23 @@ def _required_item(nodeid: str) -> SimpleNamespace:
     return SimpleNamespace(
         config=config,
         fspath=Path(required_edge.REQUIRED_EDGE_FILE),
-        keywords={"requires_two_clusters": True, "requires_shared_idp": True},
+        keywords={
+            "requires_two_clusters": True,
+            "requires_shared_idp": True,
+            "requires_owned_shared_realm": True,
+        },
         nodeid=nodeid,
     )
 
 
-def test_required_edge_carries_both_topology_markers() -> None:
+def test_required_edge_carries_owned_shared_realm_capability_markers() -> None:
     marker_names = {marker.name for marker in edge.pytestmark}
 
-    assert {"requires_two_clusters", "requires_shared_idp"} <= marker_names
+    assert {
+        "requires_two_clusters",
+        "requires_shared_idp",
+        "requires_owned_shared_realm",
+    } <= marker_names
 
 
 def test_required_edge_plugin_is_registered_only_at_pytest_root() -> None:
