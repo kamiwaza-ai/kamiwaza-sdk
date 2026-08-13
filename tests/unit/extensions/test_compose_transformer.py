@@ -785,6 +785,7 @@ class TestResolveEnvPlaceholders:
 
     def test_resolves_name_value_dict_list_entries(self, transformer, monkeypatch):
         monkeypatch.delenv("KZ_TEST_PRICE", raising=False)
+        value_from = {"secretKeyRef": {"name": "secret", "key": "token"}}
         compose = {
             "services": {
                 "backend": {
@@ -795,6 +796,7 @@ class TestResolveEnvPlaceholders:
                             "value": "${KZ_TEST_PRICE:-cost$$value}",
                         },
                         {"name": "PLAIN", "value": "kept"},
+                        {"name": "SECRET", "valueFrom": value_from},
                     ],
                 },
             },
@@ -806,6 +808,7 @@ class TestResolveEnvPlaceholders:
             {"name": "PRICE", "value": "cost$value"},
             {"name": "RESOLVED", "value": "cost$value"},
             {"name": "PLAIN", "value": "kept"},
+            {"name": "SECRET", "valueFrom": value_from},
         ]
 
     def test_resolves_mapping_fragment_list_entries(self, transformer, monkeypatch):
@@ -1082,6 +1085,32 @@ class TestDetectServiceUrlRewrites:
                     "to": "http://ext-backend:8000",
                 }
             }
+        }
+
+    def test_handles_mapping_fragment_list_environment(self):
+        from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
+
+        services = {
+            "frontend": {
+                "environment": [
+                    {
+                        "BACKEND_URL": "http://backend:8000",
+                        "PLAIN": "kept",
+                    },
+                ],
+            },
+            "backend": {"environment": []},
+        }
+
+        rewrites = detect_service_url_rewrites(services, "ext")
+
+        assert rewrites == {
+            "frontend": {
+                "BACKEND_URL": {
+                    "from": "http://backend:8000",
+                    "to": "http://ext-backend:8000",
+                },
+            },
         }
 
     def test_ignores_self_reference(self):

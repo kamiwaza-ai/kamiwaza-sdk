@@ -332,6 +332,27 @@ class TestRewriteEnvImageRefsListForm:
             },
         ]
 
+    def test_mapping_fragment_agent_server_image(self):
+        ref_map = _ref_map(_kaizen_compose()["services"])
+        compose = {
+            "services": {
+                "backend": {
+                    "environment": [
+                        {
+                            "AGENT_SERVER_IMAGE": f"{_AGENT_GHCR}:2.0.2",
+                            "FOO": "bar",
+                        },
+                    ],
+                },
+            },
+        }
+
+        result = rewrite_env_image_refs(compose, ref_map)
+
+        assert result["services"]["backend"]["environment"] == [
+            {"AGENT_SERVER_IMAGE": _AGENT_BUILT, "FOO": "bar"},
+        ]
+
 
 class TestDevRemoteWiresEnvRewrite:
     """``run_dev_remote`` must actually apply the env rewrite — guards against

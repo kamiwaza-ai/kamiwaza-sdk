@@ -777,7 +777,7 @@ def detect_service_url_rewrites(
 
 
 def _iter_env_entries(env: Any) -> List[Tuple[str, str]]:
-    """Yield ``(key, value)`` pairs from either env shape."""
+    """Yield ``(key, value)`` pairs from supported env shapes."""
     out: List[Tuple[str, str]] = []
     if isinstance(env, dict):
         for k, v in env.items():
@@ -788,8 +788,14 @@ def _iter_env_entries(env: Any) -> List[Tuple[str, str]]:
             if isinstance(entry, str) and "=" in entry:
                 k, v = entry.split("=", 1)
                 out.append((k, v))
-            elif isinstance(entry, dict) and "name" in entry and "value" in entry:
-                out.append((str(entry["name"]), str(entry["value"])))
+            elif isinstance(entry, dict):
+                if "name" in entry and "value" in entry:
+                    out.append((str(entry["name"]), str(entry["value"])))
+                    continue
+                if "name" not in entry:
+                    for k, v in entry.items():
+                        if isinstance(v, (str, int, float, bool)):
+                            out.append((str(k), str(v)))
     return out
 
 

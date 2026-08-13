@@ -119,17 +119,27 @@ def rewrite_env_image_refs(
 
 
 def _rewrite_env_list_entry(entry: Any, ref_map: Dict[str, str]) -> Any:
-    """Rewrite one string or tolerated name/value environment-list entry."""
+    """Rewrite one string or tolerated mapping environment-list entry."""
     if isinstance(entry, str) and "=" in entry:
         key, value = entry.split("=", 1)
         rewritten = _rewrite_env_value(key.strip(), value, ref_map)
         return f"{key}={rewritten}" if rewritten != value else entry
-    if isinstance(entry, dict) and "name" in entry:
-        dict_value = entry.get("value")
-        if isinstance(dict_value, str):
-            out = dict(entry)
-            out["value"] = _rewrite_env_value(str(entry["name"]), dict_value, ref_map)
-            return out
+    if isinstance(entry, dict):
+        if "name" in entry:
+            dict_value = entry.get("value")
+            if isinstance(dict_value, str):
+                out = dict(entry)
+                out["value"] = _rewrite_env_value(
+                    str(entry["name"]), dict_value, ref_map
+                )
+                return out
+            return entry
+        return {
+            key: _rewrite_env_value(str(key), value, ref_map)
+            if isinstance(value, str)
+            else value
+            for key, value in entry.items()
+        }
     return entry
 
 
