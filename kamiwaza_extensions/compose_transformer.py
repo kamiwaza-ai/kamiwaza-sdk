@@ -300,6 +300,7 @@ _COMPOSE_SUB_RE = re.compile(
     r"^\$\{([A-Za-z_][A-Za-z0-9_]*)(?:(:?[-?])(.*))?\}$",
     re.DOTALL,
 )
+_COMPOSE_SUB_TOKEN_RE = re.compile(r"\$\{|}")
 
 # Env var names that should be left to the platform's ConfigMap envFrom
 # injection (operator writes the cluster-internal value; an explicit
@@ -581,17 +582,10 @@ def _resolve_compose_value(value: str) -> Optional[str]:
 def _compose_substitution_end(value: str, start: int) -> Optional[int]:
     """Find the closing brace paired with the ``${`` at *start*."""
     depth = 1
-    cursor = start + 2
-    while cursor < len(value):
-        if value.startswith("${", cursor):
-            depth += 1
-            cursor += 2
-            continue
-        if value[cursor] == "}":
-            depth -= 1
-            if depth == 0:
-                return cursor
-        cursor += 1
+    for token in _COMPOSE_SUB_TOKEN_RE.finditer(value, start + 2):
+        depth += 1 if token.group() == "${" else -1
+        if depth == 0:
+            return token.start()
     return None
 
 
