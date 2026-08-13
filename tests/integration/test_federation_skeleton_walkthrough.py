@@ -35,6 +35,11 @@ from unittest.mock import patch
 
 _ORION_FEDERATION_ID = "fed-orion-uuid"
 _ORION_NAME = "ORION"
+_ORION_JOBS_PREFIX = f"/mesh/{_ORION_NAME}/api/cluster/jobs"
+
+
+def _expect_job_post(mock_client, suffix: str, response: dict) -> None:
+    mock_client.expect("POST", f"{_ORION_JOBS_PREFIX}/{suffix}", response)
 _LYRA_CLUSTER_UUID = "lyra-cluster-uuid"
 _BROKERED_EXTERNAL_ID = f"cdr-baker@{_LYRA_CLUSTER_UUID}"
 
@@ -113,7 +118,7 @@ def test_ws_m1_skeleton_walkthrough_pair_allowlist_run_audit(mock_client) -> Non
     # attribution comes back to the SDK caller.
     mock_client.expect(
         "POST",
-        f"/mesh/{_ORION_NAME}/api/cluster/jobs/run",
+        f"{_ORION_JOBS_PREFIX}/run",
         {
             "job_id": "job-fed-1",
             "status": "SUCCEEDED",
@@ -175,10 +180,7 @@ def test_ws_m1_skeleton_walkthrough_pair_allowlist_run_audit(mock_client) -> Non
         "POST",
         f"/cluster/federations/{_ORION_FEDERATION_ID}/users",
     )
-    assert methods_paths[4] == (
-        "POST",
-        f"/mesh/{_ORION_NAME}/api/cluster/jobs/run",
-    )
+    assert methods_paths[4] == ("POST", f"{_ORION_JOBS_PREFIX}/run")
 
 
 def test_ws_m1_skeleton_walkthrough_async_submit_path(mock_client) -> None:
@@ -237,16 +239,15 @@ def test_ws_m1_skeleton_walkthrough_async_submit_path(mock_client) -> None:
 
     # Async submit returns a job_id; SDK then polls /status (RUNNING → SUCCEEDED)
     # and finally fetches /result on terminal.
-    jobs_prefix = f"/mesh/{_ORION_NAME}/api/cluster/jobs"
-    mock_client.expect("POST", f"{jobs_prefix}/submit", {"job_id": "job-async-1"})
+    _expect_job_post(mock_client, "submit", {"job_id": "job-async-1"})
     mock_client.expect_sequence(
         "GET",
-        f"{jobs_prefix}/job-async-1/status",
+        f"{_ORION_JOBS_PREFIX}/job-async-1/status",
         [{"status": "RUNNING"}, {"status": "SUCCEEDED"}],
     )
     mock_client.expect(
         "GET",
-        f"{jobs_prefix}/job-async-1/result",
+        f"{_ORION_JOBS_PREFIX}/job-async-1/result",
         {
             "job_id": "job-async-1",
             "status": "SUCCEEDED",
