@@ -344,7 +344,7 @@ class KamiwazaClient:
                     kwargs["headers"][key] = value
                     existing.add(key.lower())
 
-        if self.authenticator and not skip_auth:
+        if self.authenticator is not None and not skip_auth:
             self.authenticator.authenticate(self.session)
 
         # Always inject session.verify when the caller hasn't supplied an
@@ -403,7 +403,7 @@ class KamiwazaClient:
         logger.warning(
             f"Received 401 Unauthorized. Response: {_extract_server_detail(response)}"
         )
-        if not self.authenticator:
+        if self.authenticator is None:
             raise AuthenticationError(
                 "Authentication failed. No authenticator provided."
             )
@@ -804,7 +804,7 @@ class KamiwazaClient:
         return self._authz
 
     def get_bearer_token(self) -> Optional[str]:
-        if not self.authenticator:
+        if self.authenticator is None:
             return None
         try:
             return self.authenticator.get_access_token(self.session)
