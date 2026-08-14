@@ -227,6 +227,7 @@ class TestModelFileCreateAndDelete:
 
     def test_create_model_file(self, live_kamiwaza_client) -> None:
         """TS11.002: POST /model_files/ - Create model file."""
+        created_file = None
         try:
             # Create a test model file
             create_payload = CreateModelFile(
@@ -242,17 +243,18 @@ class TestModelFileCreateAndDelete:
             assert isinstance(created_file, ModelFile)
             assert created_file.name == "sdk-test-file.bin"
             assert created_file.id is not None
-
-            # Cleanup
-            try:
-                live_kamiwaza_client.models.delete_model_file(created_file.id)
-            except Exception:
-                pass
-
         except APIError as exc:
             if exc.status_code in (403, 401):
                 pytest.skip("Insufficient permissions for model file creation")
             raise
+        finally:
+            if created_file is not None:
+                live_kamiwaza_client.models.delete_model_file(created_file.id)
+                remaining_ids = {
+                    model_file.id
+                    for model_file in live_kamiwaza_client.models.list_model_files()
+                }
+                assert created_file.id not in remaining_ids
 
     def test_delete_nonexistent_model_file(self, live_kamiwaza_client) -> None:
         """TS11.006: DELETE /model_files/{id} - Test deleting non-existent file."""
