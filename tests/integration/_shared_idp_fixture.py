@@ -1,0 +1,212 @@
+"""Stand up the shared_idp realm the gated-retrieval live tests need (ENG-8325).
+
+``test_federation_shared_idp_gated_retrieval_live.py`` has a three-deep
+precondition chain, and each guard only reports the FIRST unmet one — so the
+suite reads "4 skipped" identically at every stage while meaning something
+different each time:
+
+1. the acme-gates wheel + pip index      -> ``_gate_fixture.py``
+2. ``MINI_CLEARANCE_DATASET_PATH``       -> ``_gate_fixture.py`` publishes the CSV
+3. a **shared realm** both clusters trust -> this module
+
+The realm has to project a ``clearance`` claim into brokered JWTs, and the three
+personas must be able to mint tokens from it by ROPC, because the receiver's
+shared_idp validation accepts a caller only when the token's ``kid`` is in the
+SHARED realm's JWKS. A token from either cluster's own realm is rejected — that
+rejection is the trust boundary the suite exists to prove.
+
+This drives the primitives that already ship in
+``kamiwaza_sdk.seeding.federation`` (the ``kamiwaza-federation idp`` group) rather than
+re-implementing Keycloak admin calls. It is DEV/TEST only: it needs master-realm
+admin, which the ingress deliberately does not expose, so it reaches Keycloak
+through a port-forward. Production provisioning belongs in the auth chart's
+init-Job pipeline (ENG-8573).
+
+Usage::
+
+    python -m tests.integration._shared_idp_fixture provision --kubectl "ssh spark-2 kubectl"
+    python -m tests.integration._shared_idp_fixture env
+"""
+
+from __future__ import annotations
+
+import argparse
+import contextlib
+import json
+import os
+import secrets
+import shlex
+import socket
+import subprocess
+import time
+from typing import Iterator
+
+NAMESPACE = "kamiwaza"
+REALM = os.getenv("SHARED_REALM_NAME", "federated")
+ROPC_CLIENT = "kamiwaza-shared-cli"
+# Verified against the live chart: svc/keycloak exposes 80 (http) and 9000
+# (management), NOT 8080. Overridable for a chart that differs.
+KEYCLOAK_SVC_PORT = os.getenv("KEYCLOAK_SVC_PORT", "80")
+# These names are a CONTRACT with the consumer, not a local choice: the test's
+# ``_PERSONAS`` (test_federation_shared_idp_gated_retrieval_live.py) passes each
+# value straight to ROPC as the username, and ``_mini_clearance.shared_realm_token``
+# calls ``raise_for_status()``, so a name that does not exist in the realm is a 401
+# -> module-fixture ERROR, not a skip. Keep these two dicts identical.
+# Clearance values match _mini_clearance.KNOWN: U sees 3 rows, S sees 4, TS sees all 5.
+PERSONAS = {"U": "fed-clr-u", "S": "fed-clr-s", "TS": "fed-clr-ts"}
+
+
+def run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
+    if cmd and cmd[0] == "ssh" and len(cmd) > 2:
+        cmd = cmd[:2] + [shlex.join(cmd[2:])]
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=120, **kw)
+
+
+def _free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return int(s.getsockname()[1])
+
+
+@contextlib.contextmanager
+def keycloak_admin_channel(kubectl: str) -> Iterator[str]:
+    """Yield a base URL reaching Keycloak's admin API.
+
+    A port-forward rather than the ingress: the master-realm admin endpoints are
+    deliberately not exposed publicly, and this fixture is the one caller that
+    legitimately needs them. Torn down on exit either way.
+    """
+    argv = shlex.split(kubectl)
+    if argv[0] == "ssh":
+        raise SystemExit(
+            "a port-forward cannot be tunnelled through `ssh <host> kubectl`.\n"
+            "Run this fixture ON the cluster host, or point --kubectl at a "
+            "kubeconfig context that reaches it directly."
+        )
+    port = _free_port()
+    proc = subprocess.Popen(
+        argv + ["-n", NAMESPACE, "port-forward", "svc/keycloak", f"{port}:{KEYCLOAK_SVC_PORT}"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        for _ in range(30):
+            with contextlib.suppress(OSError):
+                with socket.create_connection(("127.0.0.1", port), timeout=1):
+                    break
+            time.sleep(1)
+        else:
+            raise SystemExit("port-forward to svc/keycloak never became ready")
+        yield f"http://127.0.0.1:{port}"
+    finally:
+        proc.terminate()
+        with contextlib.suppress(Exception):
+            proc.wait(timeout=10)
+
+
+def admin_password(kubectl: str) -> str:
+    argv = shlex.split(kubectl)
+    got = run(
+        argv
+        + ["-n", NAMESPACE, "get", "secret", "keycloak-admin",
+           "-o", "jsonpath={.data.password}"]
+    )
+    if got.returncode != 0 or not got.stdout.strip():
+        raise SystemExit(
+            "could not read the keycloak-admin secret; this fixture needs "
+            "master-realm admin to create the shared realm."
+        )
+    import base64
+
+    return base64.b64decode(got.stdout.strip()).decode()
+
+
+def provision(kc_url: str, admin_pw: str, persona_pw: str) -> dict:
+    """Realm + ROPC client + clearance mapper + the three personas."""
+    from kamiwaza_sdk.seeding.federation.cli import _verify_ssl
+    from kamiwaza_sdk.seeding.federation.keycloak import KeycloakAdmin
+
+    # Honour KAMIWAZA_VERIFY_SSL rather than hardcoding it off. This particular
+    # channel is plain HTTP to a localhost port-forward, so TLS is not in play
+    # here at all — but a hardcoded verify=False is the kind of thing that gets
+    # copied into a call where it does matter.
+    kc = KeycloakAdmin(
+        kc_url, admin_user="admin", admin_password=admin_pw, verify=_verify_ssl()
+    )
+    kc.ensure_realm(REALM)
+    # Keycloak >=24 drops unrecognised user attributes unless the realm opts in,
+    # which silently strips `clearance` and leaves the gate with nothing to read.
+    kc.set_unmanaged_attributes(REALM)
+    client = kc.ensure_ropc_client(REALM, ROPC_CLIENT)
+    kc.ensure_attribute_mapper(REALM, client["id"], attribute="clearance")
+
+    for clearance, username in PERSONAS.items():
+        kc.ensure_user(REALM, username, password=persona_pw, attributes={"clearance": clearance})
+
+    issuer = kc.issuer_url(REALM)
+    return {
+        "SHARED_ISSUER_URL": issuer,
+        "SHARED_JWKS_URL": f"{issuer}/protocol/openid-connect/certs",
+        "SHARED_REALM_CLIENT_ID": ROPC_CLIENT,
+        "FED_PERSONA_PASSWORD": persona_pw,
+    }
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("action", choices=["provision", "env"])
+    ap.add_argument("--kubectl", default="kubectl")
+    ap.add_argument(
+        "--persona-password-env",
+        default="FED_PERSONA_PASSWORD",
+        help="env var holding the persona password; generated when unset",
+    )
+    args = ap.parse_args()
+
+    if args.action == "env":
+        print("# provision first; it prints the exports")
+        return 0
+
+    persona_pw = os.getenv(args.persona_password_env, "").strip() or secrets.token_urlsafe(24)
+    admin_pw = admin_password(args.kubectl)
+    with keycloak_admin_channel(args.kubectl) as kc_url:
+        exports = provision(kc_url, admin_pw, persona_pw)
+
+    # The issuer must be the address the CLUSTERS resolve, not the port-forward.
+    public = os.getenv("KEYCLOAK_PUBLIC_URL", "").strip()
+    if public:
+        exports["SHARED_ISSUER_URL"] = f"{public}/realms/{REALM}"
+        exports["SHARED_JWKS_URL"] = (
+            f"{public}/realms/{REALM}/protocol/openid-connect/certs"
+        )
+    else:
+        print(
+            "  WARNING: issuer points at the port-forward. Set KEYCLOAK_PUBLIC_URL\n"
+            "  to the address BOTH clusters resolve, or the receiver cannot fetch\n"
+            "  the shared JWKS and every persona token is rejected."
+        )
+
+    print(f"  realm={REALM} client={ROPC_CLIENT} personas={sorted(PERSONAS.values())}")
+    print(json.dumps(exports, indent=2))
+    for key, value in exports.items():
+        print(f"export {key}={shlex.quote(value)}")
+
+    # Standing the realm up is necessary but NOT sufficient. The receiver's
+    # shared-realm allowlist is fail-closed by design (ENG-8376:
+    # `scheduler.trustedSharedIssuers` defaults to []), so until the issuer is
+    # enrolled there the receiver answers 403 `shared_idp_issuer_untrusted`. That
+    # reason is in the suite's AUTH_LAYER_REASONS, which makes it a hard RED
+    # rather than a skip — a confusing result to debug from the test output alone.
+    print(
+        "\n  NEXT (required, or the suite goes red with 403 "
+        "shared_idp_issuer_untrusted):\n"
+        "  enroll this issuer on the RECEIVER, then resync:\n"
+        "    scheduler:\n"
+        "      trustedSharedIssuers:\n"
+        f"        - {exports['SHARED_ISSUER_URL']}"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
