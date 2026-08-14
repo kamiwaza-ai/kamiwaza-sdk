@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 import time
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
@@ -12,7 +13,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import requests  # type: ignore[import-untyped]
-from filelock import FileLock
+from filelock import FileLock, Timeout as FileLockTimeout
 from pydantic import ValidationError
 
 from .authentication import Authenticator
@@ -38,12 +39,18 @@ class SharedIdpAuthConfig:
     timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS
     token_root: Path | str | None = None
     allow_insecure_http: bool = False
+    allow_insecure_tls: bool = False
     password_regrant_on_invalid_grant: bool = False
 
     def __post_init__(self) -> None:
         """Reject plaintext credential transport unless explicitly enabled."""
         scheme = urlsplit(self.normalized_issuer).scheme.lower()
         if scheme == "https":
+            if self.verify is False and not self.allow_insecure_tls:
+                raise ValueError(
+                    "Shared identity provider TLS verification cannot be disabled; "
+                    "set allow_insecure_tls=True only for isolated development"
+                )
             return
         if scheme == "http" and self.allow_insecure_http:
             return
@@ -125,24 +132,40 @@ class SharedIdpAuthenticator(Authenticator):
         self._access_token: str | None = None
         self._refresh_token: str | None = None
         self._expires_at: float | None = None
+        self._invalidated_token: StoredToken | None = None
+        self._refresh_lock = threading.RLock()
         self._load_cached_token()
 
     def authenticate(self, session: requests.Session) -> None:
         """Attach a valid bearer token, refreshing it proactively."""
-        if self._needs_refresh():
-            self.refresh_token(session)
-            return
-        self._attach_access_token(session)
+        with self._refresh_lock:
+            if self._needs_refresh():
+                self._coordinated_refresh(session, force=False)
+                return
+            self._attach_access_token(session)
 
     def refresh_token(self, session: requests.Session) -> None:
         """Refresh the shared-realm token or perform a programmatic login."""
-        with self._refresh_guard():
-            self._refresh_token_locked(session)
+        with self._refresh_lock:
+            self._coordinated_refresh(session, force=True)
 
-    def _refresh_token_locked(self, session: requests.Session) -> None:
+    def _coordinated_refresh(self, session: requests.Session, *, force: bool) -> None:
+        """Refresh under both the process-local and shared-cache locks."""
+        try:
+            with self._refresh_guard():
+                self._refresh_token_locked(session, force=force)
+        except FileLockTimeout as exc:
+            raise AuthenticationError(
+                "Timed out waiting for the shared-IDP token cache lock"
+            ) from exc
+
+    def _refresh_token_locked(self, session: requests.Session, *, force: bool) -> None:
         """Refresh while holding the shared file-cache lock, when configured."""
-        known_token = self._current_token()
+        known_token = self._current_token() or self._invalidated_token
         if self._adopt_updated_cached_token(known_token, session):
+            return
+        if not force and not self._needs_refresh():
+            self._attach_access_token(session)
             return
 
         refresh_token = self._refresh_token
@@ -173,7 +196,8 @@ class SharedIdpAuthenticator(Authenticator):
             f"{self.token_store.path.suffix}.lock"
         )
         lock_path.parent.mkdir(parents=True, exist_ok=True)
-        return FileLock(lock_path, mode=0o600)
+        timeout = max(0.1, self.config.timeout_seconds * 2)
+        return FileLock(lock_path, mode=0o600, timeout=timeout)
 
     def _adopt_updated_cached_token(
         self,
@@ -207,9 +231,11 @@ class SharedIdpAuthenticator(Authenticator):
 
     def invalidate_session(self, session: requests.Session) -> bool:
         """Expire the access token while retaining refresh capability."""
-        self._access_token = None
-        self._expires_at = None
-        session.headers.pop("Authorization", None)
+        with self._refresh_lock:
+            self._invalidated_token = self._current_token()
+            self._access_token = None
+            self._expires_at = None
+            session.headers.pop("Authorization", None)
         return True
 
     def close(self) -> None:
@@ -305,6 +331,10 @@ class SharedIdpAuthenticator(Authenticator):
         *,
         previous_refresh: str | None,
     ) -> None:
+        if not response.access_token:
+            raise AuthenticationError(
+                "Shared identity provider access token is unavailable"
+            )
         refresh_token = response.refresh_token or previous_refresh
         if not refresh_token:
             raise AuthenticationError(
@@ -317,9 +347,7 @@ class SharedIdpAuthenticator(Authenticator):
             expires_at=expires_at,
         )
         self.token_store.save(stored)
-        self._access_token = stored.access_token
-        self._refresh_token = stored.refresh_token
-        self._expires_at = stored.expires_at
+        self._apply_cached_token(stored)
 
     def _attach_access_token(self, session: requests.Session) -> None:
         if not self._access_token:
@@ -332,6 +360,7 @@ class SharedIdpAuthenticator(Authenticator):
         self._access_token = None
         self._refresh_token = None
         self._expires_at = None
+        self._invalidated_token = None
         self.token_store.clear()
 
     def _load_cached_token(self) -> None:
@@ -344,3 +373,4 @@ class SharedIdpAuthenticator(Authenticator):
         self._access_token = cached.access_token
         self._refresh_token = cached.refresh_token
         self._expires_at = cached.expires_at
+        self._invalidated_token = None

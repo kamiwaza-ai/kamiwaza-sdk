@@ -54,6 +54,18 @@ def test_required_edge_plugin_is_registered_only_at_pytest_root() -> None:
 
 
 def test_required_edge_collection_guard_requires_all_five_cases() -> None:
+    expected_cases = {
+        "test_required_mesh_retrieval_returns_exact_post_gate_rows[U]",
+        "test_required_mesh_retrieval_returns_exact_post_gate_rows[S]",
+        "test_required_mesh_retrieval_returns_exact_post_gate_rows[TS]",
+        "test_required_mesh_job_reaches_receiver_and_returns_marker",
+        "test_unonboarded_shared_idp_user_rejected_by_receiver_allowlist",
+    }
+    assert required_edge.REQUIRED_EDGE_CASES == expected_cases
+    assert len(required_edge.REQUIRED_EDGE_CASES) == 5
+    for case in expected_cases:
+        function_name = case.split("[", 1)[0]
+        assert callable(getattr(edge, function_name, None)), case
     items = [
         _required_item(f"tests/integration/{required_edge.REQUIRED_EDGE_FILE}::{case}")
         for case in required_edge.REQUIRED_EDGE_CASES
@@ -137,14 +149,23 @@ def test_required_mesh_call_propagates_downstream_denial() -> None:
     assert caught.value is denial
 
 
-def test_native_token_negative_uses_mesh_and_rejects_authorization_denial() -> None:
+def test_unonboarded_shared_user_uses_mesh_and_rejects_generic_denial() -> None:
     client = Mock()
     client._request.side_effect = APIError("forbidden", status_code=403)
 
-    with pytest.raises(AssertionError, match="peer_jwt_validation_failed"):
-        edge.test_native_realm_token_rejected_at_receiver_shared_idp_boundary(
-            {"name": "receiver-cluster"},
-            client,
+    with pytest.raises(AssertionError, match="unauthorized_brokered_user"):
+        edge.test_unonboarded_shared_idp_user_rejected_by_receiver_allowlist(
+            {
+                "name": "receiver-cluster",
+                "personas": {
+                    "unonboarded": {
+                        "client": client,
+                        "authenticator": Mock(
+                            get_access_token=Mock(return_value="shared-token")
+                        ),
+                    }
+                },
+            }
         )
 
     client._request.assert_called_once_with(
@@ -153,16 +174,16 @@ def test_native_token_negative_uses_mesh_and_rejects_authorization_denial() -> N
     )
 
 
-def test_native_token_negative_accepts_receiver_peer_jwt_rejection() -> None:
+def test_unonboarded_shared_user_accepts_receiver_allowlist_rejection() -> None:
     denial = APIError(
-        "peer rejected",
+        "not onboarded",
         status_code=403,
         response_data={
-            "detail": {"reason": "peer_jwt_validation_failed"},
+            "detail": {"reason": "unauthorized_brokered_user"},
         },
     )
 
-    edge._assert_receiver_auth_rejection(Mock(side_effect=denial))
+    edge._assert_receiver_onboarding_rejection(Mock(side_effect=denial))
 
 
 @pytest.mark.parametrize(
@@ -178,9 +199,9 @@ def test_native_token_negative_accepts_receiver_peer_jwt_rejection() -> None:
         ),
     ],
 )
-def test_native_token_negative_rejects_unrelated_auth_failure(denial) -> None:
-    with pytest.raises(AssertionError, match="peer_jwt_validation_failed"):
-        edge._assert_receiver_auth_rejection(Mock(side_effect=denial))
+def test_unonboarded_shared_user_rejects_unrelated_auth_failure(denial) -> None:
+    with pytest.raises(AssertionError, match="unauthorized_brokered_user"):
+        edge._assert_receiver_onboarding_rejection(Mock(side_effect=denial))
 
 
 def test_brokered_personas_get_only_required_fixture_authority() -> None:
@@ -229,10 +250,13 @@ def test_persona_session_performs_password_grant_then_real_refresh(monkeypatch) 
             return session.headers["Authorization"].removeprefix("Bearer ")
 
     class _Client:
-        def __init__(self, *, base_url, authenticator, verify) -> None:
+        def __init__(
+            self, *, base_url, authenticator, verify, owns_authenticator
+        ) -> None:
             self.base_url = base_url
             self.authenticator = authenticator
             self.verify = verify
+            self.owns_authenticator = owns_authenticator
             self.session = SimpleNamespace(headers={})
 
     monkeypatch.setattr(edge, "SharedIdpAuthenticator", _Authenticator, raising=False)
@@ -247,6 +271,7 @@ def test_persona_session_performs_password_grant_then_real_refresh(monkeypatch) 
             "password": "secret",
             "idp_verify": "/tmp/shared-idp-ca.pem",
             "platform_verify": True,
+            "allow_insecure_tls": False,
         },
         "fed-clr-u",
     )
@@ -256,6 +281,7 @@ def test_persona_session_performs_password_grant_then_real_refresh(monkeypatch) 
     assert persona["client"].authenticator is persona["authenticator"]
     assert persona["authenticator"].config.verify == "/tmp/shared-idp-ca.pem"
     assert persona["client"].verify is True
+    assert persona["client"].owns_authenticator is True
 
 
 def test_shared_ca_pem_uses_a_dedicated_idp_bundle(tmp_path: Path) -> None:
