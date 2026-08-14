@@ -16,15 +16,21 @@ import shlex
 import uuid
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Iterator
 from urllib.parse import quote
 
 import pytest
 
+from kamiwaza_sdk import (
+    KamiwazaClient,
+    SharedIdpAuthConfig,
+    SharedIdpAuthenticator,
+)
+from kamiwaza_sdk.token_store import InMemoryTokenStore
 from tests.integration import mesh_outcome
 
 from . import _mini_clearance as mc
-from .required_federation_edge_personas import provision_primary_personas
 from .required_federation_edge_setup import pair_required_edge, provision_gated_dataset
 
 pytestmark = [
@@ -33,7 +39,10 @@ pytestmark = [
     pytest.mark.withoutresponses,
     pytest.mark.requires_two_clusters,
     pytest.mark.requires_shared_idp,
+    pytest.mark.requires_owned_shared_realm,
 ]
+
+_PERSONAS = {"U": "fed-clr-u", "S": "fed-clr-s", "TS": "fed-clr-ts"}
 
 _ALLOW_ALL_EXECUTION_GATE = (
     "kamiwaza.services.authz.gates.default_gates.AllowAllExecutionGate"
@@ -84,8 +93,8 @@ def _required_mesh_call(call: Callable[[], Any]) -> Any:
     return call()
 
 
-def _assert_receiver_onboarding_rejection(call: Callable[[], Any]) -> None:
-    """Accept only the receiver's structured allowlist rejection."""
+def _assert_receiver_auth_rejection(call: Callable[[], Any]) -> None:
+    """Accept only the receiver's structured peer-JWT validation failure."""
     from kamiwaza_sdk.exceptions import KamiwazaError
 
     try:
@@ -94,15 +103,15 @@ def _assert_receiver_onboarding_rejection(call: Callable[[], Any]) -> None:
         reason = mesh_outcome.reason_of(exc)
         status = getattr(exc, "status_code", None)
         assert status == 403, (
-            "expected unauthorized_brokered_user from receiver status 403, "
+            "expected peer_jwt_validation_failed from receiver status 403, "
             f"got status {status!r}: {exc!r}"
         )
-        assert reason == "unauthorized_brokered_user", (
-            "expected unauthorized_brokered_user from the receiver allowlist, "
-            f"got {reason!r}: {exc!r}"
+        assert reason == "peer_jwt_validation_failed", (
+            "expected peer_jwt_validation_failed from the receiver's shared-IDP "
+            f"validator, got {reason!r}: {exc!r}"
         )
         return
-    pytest.fail("unonboarded primary-realm user unexpectedly crossed the allowlist")
+    pytest.fail("non-shared token unexpectedly crossed receiver authentication")
 
 
 def _require_prerequisite(config: pytest.Config, condition: bool, message: str) -> None:
@@ -111,6 +120,30 @@ def _require_prerequisite(config: pytest.Config, condition: bool, message: str) 
     if config.getoption("require_federation_edge"):
         pytest.fail(message, pytrace=False)
     pytest.skip(message)
+
+
+def _required_initial_tuples(
+    dataset_urn: str,
+    *,
+    job_executor: bool,
+) -> list[dict[str, str]]:
+    """Fixture-scoped retrieval authority plus one explicit job submitter."""
+    tuples = [
+        {
+            "subject": "user:{{user_id}}",
+            "relation": "viewer",
+            "object": f"dataset:{dataset_urn}",
+        }
+    ]
+    if job_executor:
+        tuples.append(
+            {
+                "subject": "user:{{user_id}}",
+                "relation": "executor",
+                "object": "cluster_jobs:__all__",
+            }
+        )
+    return tuples
 
 
 def _assert_terminal_mesh_job(result: Any, expected_marker: str) -> None:
@@ -191,14 +224,36 @@ def _shared_realm(config: pytest.Config) -> dict[str, str]:
     return cfg
 
 
-def _persona_auth(config: pytest.Config) -> dict:
-    """Normal initiator-login config for clearance-bearing local personas."""
+def _shared_idp_verify(
+    shared: dict[str, str],
+    *,
+    platform_verify: bool,
+    temp_root: Path,
+) -> bool | str:
+    """Materialize shared-realm CA content for direct OIDC token requests."""
+    ca_pem = shared.get("shared_ca_pem")
+    if not ca_pem:
+        return platform_verify
+    ca_path = temp_root / "shared-idp-ca.pem"
+    ca_path.write_text(ca_pem, encoding="utf-8")
+    ca_path.chmod(0o600)
+    return str(ca_path)
+
+
+def _persona_auth(
+    config: pytest.Config,
+    *,
+    shared: dict[str, str],
+    temp_root: Path,
+) -> dict:
+    """Shared-realm ROPC config for clearance-bearing personas."""
+    client_id = os.getenv("SHARED_REALM_CLIENT_ID", "").strip()
     password = os.getenv("FED_PERSONA_PASSWORD", "").strip()
     _require_prerequisite(
         config,
-        bool(password),
-        "FED_PERSONA_PASSWORD not set — the initiator primary-realm personas "
-        "must log in through the normal platform password flow",
+        bool(client_id and password),
+        "SHARED_REALM_CLIENT_ID / FED_PERSONA_PASSWORD not set — the personas "
+        "need a shared-realm ROPC token with the `clearance` claim",
     )
     verify = os.getenv("KAMIWAZA_VERIFY_SSL", "1").strip().lower() not in {
         "0",
@@ -207,8 +262,15 @@ def _persona_auth(config: pytest.Config) -> dict:
         "off",
     }
     return {
+        "client_id": client_id,
+        "client_secret": os.getenv("SHARED_REALM_CLIENT_SECRET", "").strip() or None,
         "password": password,
-        "verify": verify,
+        "idp_verify": _shared_idp_verify(
+            shared,
+            platform_verify=verify,
+            temp_root=temp_root,
+        ),
+        "platform_verify": verify,
     }
 
 
@@ -217,7 +279,10 @@ def _fed_name() -> str:
 
 
 @pytest.fixture(scope="module")
-def _receiver_prereqs(pytestconfig: pytest.Config) -> _EdgePrerequisites:
+def _receiver_prereqs(
+    pytestconfig: pytest.Config,
+    tmp_path_factory: pytest.TempPathFactory,
+) -> _EdgePrerequisites:
     wi = mc.wheel_and_index()
     _require_prerequisite(
         pytestconfig,
@@ -231,13 +296,116 @@ def _receiver_prereqs(pytestconfig: pytest.Config) -> _EdgePrerequisites:
         bool(dataset_path),
         "MINI_CLEARANCE_DATASET_PATH not set (receiver fixture file)",
     )
+    shared = _shared_realm(pytestconfig)
     return _EdgePrerequisites(
         wheel_dir=wi[0],
         index_url=wi[1],
         dataset_path=dataset_path,
-        shared=_shared_realm(pytestconfig),
-        persona_auth=_persona_auth(pytestconfig),
+        shared=shared,
+        persona_auth=_persona_auth(
+            pytestconfig,
+            shared=shared,
+            temp_root=tmp_path_factory.mktemp("shared-idp-ca"),
+        ),
     )
+
+
+def _cleanup_brokered_persona(
+    receiver: Any, federation_id: str, external_id: str
+) -> None:
+    """Revoke the exact temporary allowlist row and cancel its active jobs."""
+    encoded_external_id = quote(external_id, safe="")
+    receiver._request(
+        "POST",
+        f"/cluster/federations/{federation_id}/users/{encoded_external_id}/revoke",
+        params={"cancel_in_flight_jobs": "true"},
+    )
+
+
+def _programmatic_persona_session(
+    base_url: str,
+    auth: dict[str, Any],
+    username: str,
+) -> dict[str, Any]:
+    """Create a direct shared-realm session and prove one real refresh grant."""
+    config = SharedIdpAuthConfig(
+        issuer=auth["issuer"],
+        client_id=auth["client_id"],
+        client_secret=auth["client_secret"],
+        username=username,
+        password=auth["password"],
+        verify=auth["idp_verify"],
+    )
+    token_store = InMemoryTokenStore()
+    authenticator = SharedIdpAuthenticator(config, token_store=token_store)
+    client = KamiwazaClient(
+        base_url=base_url,
+        authenticator=authenticator,
+        verify=auth["platform_verify"],
+    )
+    authenticator.authenticate(client.session)
+    authenticator.refresh_token(client.session)
+    token = authenticator.get_access_token(client.session)
+    assert token, "shared-IDP refresh produced no access token"
+    assert token_store.load() is not None
+    assert token_store.load().refresh_token  # type: ignore[union-attr]
+    return {
+        "client": client,
+        "authenticator": authenticator,
+        "token": token,
+    }
+
+
+def _active_persona_session(persona: dict[str, Any]) -> tuple[Any, str]:
+    client = persona["client"]
+    token = persona["authenticator"].get_access_token(client.session)
+    assert token, "shared-IDP persona has no current access token"
+    return client, token
+
+
+def _provision_personas(
+    cleanup: ExitStack,
+    initiator_base_url: str,
+    receiver: Any,
+    identifiers: tuple[str, str, str],
+    prerequisites: _EdgePrerequisites,
+) -> dict[str, dict[str, Any]]:
+    federation_id, source_cluster_id, dataset_urn = identifiers
+    auth = prerequisites.persona_auth
+    issuer = prerequisites.shared["shared_issuer_url"]
+    personas: dict[str, dict[str, Any]] = {}
+    for clearance, base in _PERSONAS.items():
+        persona = _programmatic_persona_session(
+            initiator_base_url,
+            {**auth, "issuer": issuer},
+            base,
+        )
+        token = persona["token"]
+        sub = mc.jwt_sub(token) or base
+        external_id = f"{sub}@{source_cluster_id}"
+        receiver._request(
+            "POST",
+            f"/cluster/federations/{federation_id}/users",
+            json={
+                "external_id": external_id,
+                "initial_tuples": _required_initial_tuples(
+                    dataset_urn,
+                    job_executor=clearance == "U",
+                ),
+            },
+        )
+        cleanup.callback(
+            _cleanup_brokered_persona,
+            receiver,
+            federation_id,
+            external_id,
+        )
+        personas[clearance] = {
+            **persona,
+            "external_id": external_id,
+            "sub": sub,
+        }
+    return personas
 
 
 def _wire_required_edge(
@@ -257,9 +425,10 @@ def _wire_required_edge(
         prerequisites,
         pair_request.name,
     )
-    personas = provision_primary_personas(
+    personas = _provision_personas(
         cleanup,
-        clients,
+        clients.initiator.base_url,
+        clients.receiver,
         (identities.receiver_federation_id, identities.initiator_cluster_id, urn),
         prerequisites,
     )
@@ -269,7 +438,7 @@ def _wire_required_edge(
         urn=urn,
         personas=personas,
         shared=prerequisites.shared,
-        verify=bool(prerequisites.persona_auth["verify"]),
+        verify=bool(prerequisites.persona_auth["platform_verify"]),
         source_cluster_id=identities.initiator_cluster_id,
         receiver_cluster_id=identities.receiver_cluster_id,
     )
@@ -312,8 +481,7 @@ def test_required_mesh_retrieval_returns_exact_post_gate_rows(
     wiring = shared_idp_gated_pair
     initiator = live_kamiwaza_session_client
     name, urn = wiring["name"], wiring["urn"]
-    token = wiring["personas"][clearance]["token"]
-    persona = wiring["personas"][clearance]["client"]
+    persona, token = _active_persona_session(wiring["personas"][clearance])
 
     def _retrieve():
         # Create the retrieval job over the mesh AND drain its gated SSE stream
@@ -332,7 +500,7 @@ def test_required_mesh_job_reaches_receiver_and_returns_marker(
 ) -> None:
     """Run a recoverable job on the receiver and assert its exact payload."""
     wiring = shared_idp_gated_pair
-    persona = wiring["personas"]["U"]["client"]
+    persona, _token = _active_persona_session(wiring["personas"]["U"])
     marker = f"eng10050-{uuid.uuid4().hex}"
     script = (
         "import json\n"
@@ -362,14 +530,14 @@ def test_required_mesh_job_reaches_receiver_and_returns_marker(
     )
 
 
-def test_unonboarded_primary_realm_user_rejected_by_receiver_allowlist(
+def test_native_realm_token_rejected_at_receiver_shared_idp_boundary(
     shared_idp_gated_pair,
+    live_kamiwaza_session_client,
 ) -> None:
-    """A valid primary-realm login still needs receiver-side onboarding."""
+    """A valid initiator-native token must fail receiver shared-IDP auth."""
     selector = quote(shared_idp_gated_pair["name"], safe="")
-    persona = shared_idp_gated_pair["personas"]["unonboarded"]["client"]
-    _assert_receiver_onboarding_rejection(
-        lambda: persona._request(
+    _assert_receiver_auth_rejection(
+        lambda: live_kamiwaza_session_client._request(
             "GET",
             f"/mesh/{selector}/api/cluster/diagnose",
         )
