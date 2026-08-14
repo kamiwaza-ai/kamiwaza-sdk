@@ -150,7 +150,7 @@ markers = [
     "withoutresponses: tests needing real network access",
     "requires_embedding_model: live tests that require a platform embedding deployment that can generate embeddings",
     "requires_two_clusters: live tests that require a federation peer cluster reachable via KAMIWAZA_PEER_BASE_URL / KAMIWAZA_PEER_API_KEY (ENG-5784)",
-    "requires_shared_idp: live federation tests exercising the shared_idp (Alt C) trust posture — receiver validates a shared-realm token against a trusted issuer (ENG-8213). The single-cluster identity gate carries this without requires_two_clusters; two-cluster shared_idp suites will carry both once tagged (currently deferred).",
+    "requires_shared_idp: live federation tests exercising the shared_idp (Alt C) trust posture — receiver validates a shared-realm token against a trusted issuer (ENG-8213). Required two-cluster lanes carry this together with requires_two_clusters and must provision their shared-identity prerequisites before selection.",
     "requires_deployable_model: live tests that require the host to deploy the integration test model; skips on hosts without compatible inference capacity (e.g. x86 CPU smoke vs an MLX model)",
     "extension_regression: D210 12-issue regression checklist (UAC-17 / EDX-OPS-2). See tests/unit/extensions/regression/inventory.yaml.",
     "live_extension: live extension-contract tests against a real cluster (relocated from kamiwaza, env-gated by RUN_LIVE_EXTENSION_TESTS=1)",

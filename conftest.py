@@ -9,7 +9,7 @@ from tests.e2e import _evidence_emitter
 # tests/e2e/test_evidence_emitter.py (ENG-10026). It has to live here, not
 # beside those tests: pytest only honors `pytest_plugins` in the rootdir
 # conftest, so repo-wide registration is a requirement, not a preference.
-pytest_plugins = ["pytester"]
+pytest_plugins = ["pytester", "tests.integration.required_federation_edge"]
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:

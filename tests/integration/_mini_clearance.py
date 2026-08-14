@@ -57,6 +57,7 @@ KNOWN: dict[str, tuple[int, int, set[str]]] = {
     "S": (4, 1, {"U", "S"}),
     "TS": (5, 0, {"U", "S", "TS"}),
 }
+_EXACT_FIXTURE_CLEARANCES = frozenset(KNOWN)
 
 
 def records() -> list[dict[str, Any]]:
@@ -458,10 +459,32 @@ def initiator_cluster_uuid(receiver: Any, receiver_fed_id: str) -> Optional[str]
     return str(cluster_uuid) if cluster_uuid else None
 
 
+def _assert_exact_fixture_rows(
+    clearance: str,
+    rows: list[dict],
+    allowed: set[str],
+) -> None:
+    if clearance not in _EXACT_FIXTURE_CLEARANCES:
+        return
+    expected_rows = sorted(
+        (
+            record
+            for record in records()
+            if str(record.get("classification", "")).upper() in allowed
+        ),
+        key=lambda record: str(record.get("id", "")),
+    )
+    actual_rows = sorted(rows, key=lambda record: str(record.get("id", "")))
+    assert actual_rows == expected_rows, (
+        f"{clearance} caller received the wrong post-gate rows: "
+        f"expected={expected_rows!r} actual={actual_rows!r}"
+    )
+
+
 def assert_persona_result(
     clearance: str, rows: list[dict], gate_audits: list[dict]
 ) -> None:
-    """Assert the known post-gate counts + zero leakage for a persona.
+    """Assert the exact post-gate rows, footer contract, and zero leakage.
 
     Counts are asserted against the rows that ARRIVED, not against the footer's
     claim about them — the footer no longer carries counts (ENG-8859), and
@@ -474,6 +497,7 @@ def assert_persona_result(
     assert len(rows) == included, (
         f"expected {included} rows for {clearance}, got {len(rows)}"
     )
+    _assert_exact_fixture_rows(clearance, rows, allowed)
     assert any(bool(audit.get("filtered")) for audit in gate_audits) is (
         redacted > 0
     ), gate_audits
