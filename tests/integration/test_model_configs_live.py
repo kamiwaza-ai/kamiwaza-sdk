@@ -7,25 +7,25 @@ Tests cover:
 - TS10.004: GET /model_configs/{model_config_id} - Get model config by ID
 - TS10.005: PUT /model_configs/{model_config_id} - Update model config
 """
+
 from __future__ import annotations
 
 import pytest
-from uuid import UUID
 
 from kamiwaza_sdk.exceptions import APIError
 from kamiwaza_sdk.schemas.models.model import CreateModelConfig, ModelConfig
 
 pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
 
-CANONICAL_REPO = "mlx-community/Qwen3-4B-4bit"
-
 
 class TestModelConfigReadOperations:
     """Tests for read-only model config operations."""
 
-    def test_get_model_configs_for_model(self, live_kamiwaza_client, ensure_repo_ready) -> None:
+    def test_get_model_configs_for_model(
+        self, live_kamiwaza_client, ensure_model_lifecycle_target_ready
+    ) -> None:
         """TS10.001: GET /model_configs/ - List configs for a specific model."""
-        model = ensure_repo_ready(live_kamiwaza_client, CANONICAL_REPO)
+        model = ensure_model_lifecycle_target_ready(live_kamiwaza_client)
 
         configs = live_kamiwaza_client.models.get_model_configs(model.id)
         assert isinstance(configs, list)
@@ -35,19 +35,21 @@ class TestModelConfigReadOperations:
             assert config.m_id == model.id
 
     def test_get_model_configs_for_model_via_models_endpoint(
-        self, live_kamiwaza_client, ensure_repo_ready
+        self, live_kamiwaza_client, ensure_model_lifecycle_target_ready
     ) -> None:
         """TS10.001: GET /models/{model_id}/configs - List configs via model endpoint."""
-        model = ensure_repo_ready(live_kamiwaza_client, CANONICAL_REPO)
+        model = ensure_model_lifecycle_target_ready(live_kamiwaza_client)
 
         configs = live_kamiwaza_client.models.get_model_configs_for_model(model.id)
         assert isinstance(configs, list)
         for config in configs:
             assert isinstance(config, ModelConfig)
 
-    def test_get_model_config_by_id(self, live_kamiwaza_client, ensure_repo_ready) -> None:
+    def test_get_model_config_by_id(
+        self, live_kamiwaza_client, ensure_model_lifecycle_target_ready
+    ) -> None:
         """TS10.004: GET /model_configs/{model_config_id} - Get config by ID."""
-        model = ensure_repo_ready(live_kamiwaza_client, CANONICAL_REPO)
+        model = ensure_model_lifecycle_target_ready(live_kamiwaza_client)
 
         configs = live_kamiwaza_client.models.get_model_configs(model.id)
         if not configs:
@@ -64,10 +66,10 @@ class TestModelConfigLifecycle:
     """Tests for model config CRUD lifecycle."""
 
     def test_create_and_delete_model_config(
-        self, live_kamiwaza_client, ensure_repo_ready
+        self, live_kamiwaza_client, ensure_model_lifecycle_target_ready
     ) -> None:
         """TS10.002/003: Create and delete a model config."""
-        model = ensure_repo_ready(live_kamiwaza_client, CANONICAL_REPO)
+        model = ensure_model_lifecycle_target_ready(live_kamiwaza_client)
 
         # Create a non-default config for testing
         create_payload = CreateModelConfig(
@@ -76,7 +78,7 @@ class TestModelConfigLifecycle:
             default=False,
             description="Integration test config",
             config={"temperature": 0.7},
-            system_config={"max_tokens": 1024}
+            system_config={"max_tokens": 1024},
         )
 
         created = None
@@ -106,16 +108,18 @@ class TestModelConfigLifecycle:
                 except APIError:
                     pass  # Best effort cleanup
 
-    def test_update_model_config(self, live_kamiwaza_client, ensure_repo_ready) -> None:
+    def test_update_model_config(
+        self, live_kamiwaza_client, ensure_model_lifecycle_target_ready
+    ) -> None:
         """TS10.005: PUT /model_configs/{model_config_id} - Update config."""
-        model = ensure_repo_ready(live_kamiwaza_client, CANONICAL_REPO)
+        model = ensure_model_lifecycle_target_ready(live_kamiwaza_client)
 
         # Create a config to update
         create_payload = CreateModelConfig(
             m_id=model.id,
             name="sdk-test-config-update",
             default=False,
-            config={"temperature": 0.5}
+            config={"temperature": 0.5},
         )
 
         created = None
@@ -128,7 +132,7 @@ class TestModelConfigLifecycle:
                 name="sdk-test-config-updated",
                 default=False,
                 description="Updated description",
-                config={"temperature": 0.9, "top_p": 0.95}
+                config={"temperature": 0.9, "top_p": 0.95},
             )
 
             updated = live_kamiwaza_client.models.update_model_config(
@@ -162,9 +166,7 @@ class TestModelConfigValidation:
 
         fake_model_id = uuid4()
         create_payload = CreateModelConfig(
-            m_id=fake_model_id,
-            name="test-config-fake-model",
-            default=False
+            m_id=fake_model_id, name="test-config-fake-model", default=False
         )
 
         try:
@@ -172,7 +174,9 @@ class TestModelConfigValidation:
         except APIError as exc:
             assert exc.status_code == 404
         else:
-            pytest.fail("Expected server to reject a non-existent model_id when creating configs")
+            pytest.fail(
+                "Expected server to reject a non-existent model_id when creating configs"
+            )
 
     def test_get_nonexistent_config(self, live_kamiwaza_client) -> None:
         """Test that getting a non-existent config returns appropriate error."""

@@ -1418,6 +1418,23 @@ def deployable_model_target(
     return _model_targets.select_inference_target(cluster_capability_snapshot)
 
 
+@pytest.fixture(scope="session")
+def ensure_model_lifecycle_target_ready(
+    ensure_repo_ready: Callable[..., object],
+    deployable_model_target: _model_targets.InferenceTarget,
+) -> Callable[[KamiwazaClient], object]:
+    """Prepare the platform-aware model target for lifecycle endpoint tests."""
+
+    def _ensure(client: KamiwazaClient) -> object:
+        return ensure_repo_ready(
+            client,
+            deployable_model_target.repo_id,
+            quantization=deployable_model_target.quantization,
+        )
+
+    return _ensure
+
+
 def _ensure_deployable_target_ready(
     client: KamiwazaClient,
     ensure_repo_ready: Callable[..., object],
