@@ -1,7 +1,7 @@
 """ENG-10050: Offline contract for the required shared-IDP smoke edge."""
 
-from pathlib import Path
 import stat
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -19,6 +19,16 @@ except ImportError:  # exact-parent RED: the required-edge plugin does not exist
     required_setup = SimpleNamespace()
 
 pytestmark = pytest.mark.unit
+
+_EXPECTED_REQUIRED_EDGE_CASES = frozenset(
+    {
+        "test_required_mesh_retrieval_returns_exact_post_gate_rows[U]",
+        "test_required_mesh_retrieval_returns_exact_post_gate_rows[S]",
+        "test_required_mesh_retrieval_returns_exact_post_gate_rows[TS]",
+        "test_required_mesh_job_reaches_receiver_and_returns_marker",
+        "test_native_realm_token_rejected_at_receiver_shared_idp_boundary",
+    }
+)
 
 
 def _required_item(nodeid: str) -> SimpleNamespace:
@@ -54,9 +64,26 @@ def test_required_edge_plugin_is_registered_only_at_pytest_root() -> None:
 
 
 def test_required_edge_collection_guard_requires_all_five_cases() -> None:
+    assert len(_EXPECTED_REQUIRED_EDGE_CASES) == 5
+    assert required_edge.REQUIRED_EDGE_CASES == _EXPECTED_REQUIRED_EDGE_CASES
+    assert edge._PERSONAS == {
+        "U": "fed-clr-u",
+        "S": "fed-clr-s",
+        "TS": "fed-clr-ts",
+    }
+    retrieval_marks = [
+        mark
+        for mark in edge.test_required_mesh_retrieval_returns_exact_post_gate_rows.pytestmark
+        if mark.name == "parametrize"
+    ]
+    assert len(retrieval_marks) == 1
+    assert retrieval_marks[0].args == ("clearance", ["U", "S", "TS"])
+    assert retrieval_marks[0].kwargs == {}
+    case_functions = {case.partition("[")[0] for case in _EXPECTED_REQUIRED_EDGE_CASES}
+    assert all(callable(getattr(edge, name, None)) for name in case_functions)
     items = [
         _required_item(f"tests/integration/{required_edge.REQUIRED_EDGE_FILE}::{case}")
-        for case in required_edge.REQUIRED_EDGE_CASES
+        for case in _EXPECTED_REQUIRED_EDGE_CASES
     ]
 
     required_edge.assert_required_cases(items)

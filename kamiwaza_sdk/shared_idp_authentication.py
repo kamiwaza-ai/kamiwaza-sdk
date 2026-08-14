@@ -8,6 +8,7 @@ import time
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
+from threading import RLock
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -122,27 +123,42 @@ class SharedIdpAuthenticator(Authenticator):
         )
         self._owns_http_session = http_session is None
         self._http = http_session if http_session is not None else requests.Session()
+        self._refresh_lock = RLock()
         self._access_token: str | None = None
         self._refresh_token: str | None = None
         self._expires_at: float | None = None
+        self._invalidated_token: StoredToken | None = None
         self._load_cached_token()
 
     def authenticate(self, session: requests.Session) -> None:
         """Attach a valid bearer token, refreshing it proactively."""
-        if self._needs_refresh():
-            self.refresh_token(session)
-            return
-        self._attach_access_token(session)
+        with self._refresh_lock:
+            if not self._needs_refresh():
+                self._attach_access_token(session)
+                return
+        self._refresh_session(session, force=False)
 
     def refresh_token(self, session: requests.Session) -> None:
         """Refresh the shared-realm token or perform a programmatic login."""
-        with self._refresh_guard():
-            self._refresh_token_locked(session)
+        self._refresh_session(session, force=True)
 
-    def _refresh_token_locked(self, session: requests.Session) -> None:
+    def _refresh_session(self, session: requests.Session, *, force: bool) -> None:
+        with self._refresh_lock:
+            with self._refresh_guard():
+                self._refresh_token_locked(session, force=force)
+
+    def _refresh_token_locked(
+        self,
+        session: requests.Session,
+        *,
+        force: bool,
+    ) -> None:
         """Refresh while holding the shared file-cache lock, when configured."""
-        known_token = self._current_token()
+        known_token = self._current_token() or self._invalidated_token
         if self._adopt_updated_cached_token(known_token, session):
+            return
+        if not force and not self._needs_refresh():
+            self._attach_access_token(session)
             return
 
         refresh_token = self._refresh_token
@@ -202,14 +218,19 @@ class SharedIdpAuthenticator(Authenticator):
 
     def get_access_token(self, session: requests.Session) -> str | None:
         """Return a current bearer token for callers that need token access."""
-        self.authenticate(session)
-        return self._access_token
+        with self._refresh_lock:
+            self.authenticate(session)
+            return self._access_token
 
     def invalidate_session(self, session: requests.Session) -> bool:
         """Expire the access token while retaining refresh capability."""
-        self._access_token = None
-        self._expires_at = None
-        session.headers.pop("Authorization", None)
+        with self._refresh_lock:
+            current_token = self._current_token()
+            if current_token is not None:
+                self._invalidated_token = current_token
+            self._access_token = None
+            self._expires_at = None
+            session.headers.pop("Authorization", None)
         return True
 
     def close(self) -> None:
@@ -317,9 +338,7 @@ class SharedIdpAuthenticator(Authenticator):
             expires_at=expires_at,
         )
         self.token_store.save(stored)
-        self._access_token = stored.access_token
-        self._refresh_token = stored.refresh_token
-        self._expires_at = stored.expires_at
+        self._apply_cached_token(stored)
 
     def _attach_access_token(self, session: requests.Session) -> None:
         if not self._access_token:
@@ -332,6 +351,7 @@ class SharedIdpAuthenticator(Authenticator):
         self._access_token = None
         self._refresh_token = None
         self._expires_at = None
+        self._invalidated_token = None
         self.token_store.clear()
 
     def _load_cached_token(self) -> None:
@@ -344,3 +364,4 @@ class SharedIdpAuthenticator(Authenticator):
         self._access_token = cached.access_token
         self._refresh_token = cached.refresh_token
         self._expires_at = cached.expires_at
+        self._invalidated_token = None

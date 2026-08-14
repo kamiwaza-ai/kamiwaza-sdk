@@ -249,7 +249,8 @@ class KamiwazaClient:
         self._auth_service = AuthService(self)
 
         self.authenticator: Optional[Authenticator] = None
-        if authenticator:
+        self._owned_authenticator: Optional[Authenticator] = None
+        if authenticator is not None:
             self.authenticator = authenticator
         else:
             api_key = (
@@ -258,7 +259,8 @@ class KamiwazaClient:
                 or os.environ.get("KAMIWAZA_API_TOKEN")
             )
             self.authenticator = ApiKeyAuthenticator(api_key) if api_key else None
-        self._owns_authenticator = self.authenticator is not None
+            self._owned_authenticator = self.authenticator
+        self._owns_authenticator = self._owned_authenticator is not None
 
         # Don't authenticate during initialization - let it happen on first request
 
@@ -268,7 +270,7 @@ class KamiwazaClient:
         Idempotent — repeated close() calls are safe (Session.close()
         does its own idempotency).
         """
-        close_authenticator = getattr(self.authenticator, "close", None)
+        close_authenticator = getattr(self._owned_authenticator, "close", None)
         try:
             if self._owns_authenticator and callable(close_authenticator):
                 close_authenticator()
@@ -668,6 +670,7 @@ class KamiwazaClient:
         )
         # Preserve exact parent auth state; __init__ may otherwise consult env vars.
         scoped.authenticator = self.authenticator
+        scoped._owned_authenticator = None
         scoped._owns_authenticator = False
         scoped.session.headers.update(self.session.headers)
         scoped.session.cookies.update(self.session.cookies)

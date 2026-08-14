@@ -68,17 +68,20 @@ def test_workroom_scope_can_be_used_as_context_manager() -> None:
     assert closed == [True]
 
 
-def test_workroom_scope_does_not_close_parent_authenticator() -> None:
-    parent = _recording_client()
+def test_workroom_scope_and_parent_preserve_caller_authenticator() -> None:
     authenticator = Mock()
-    parent.authenticator = authenticator
+    parent = KamiwazaClient(
+        base_url="https://example.test/api",
+        authenticator=authenticator,
+        verify=False,
+    )
 
     with parent.workroom_scope("wr-ctx"):
         pass
 
     authenticator.close.assert_not_called()
     parent.close()
-    authenticator.close.assert_called_once_with()
+    authenticator.close.assert_not_called()
 
 
 def test_per_request_workroom_header_overrides_scoped_default() -> None:

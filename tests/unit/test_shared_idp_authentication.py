@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import stat
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier, Event, Lock
 from typing import Any
 from unittest.mock import Mock
 
@@ -163,6 +165,242 @@ def test_expired_cached_access_token_refreshes_and_rotates_automatically() -> No
     assert platform_session.headers["Authorization"] == "Bearer access-2"
     assert store.load() is not None
     assert store.load().refresh_token == "refresh-2"  # type: ignore[union-attr]
+
+
+def test_concurrent_in_memory_refresh_issues_one_rotating_grant() -> None:
+    store = InMemoryTokenStore()
+    store.save(
+        StoredToken(
+            access_token="expired-access",
+            refresh_token="refresh-1",
+            expires_at=time.time() - 1,
+        )
+    )
+    http = Mock(spec=requests.Session)
+    first_grant_started = Event()
+    release_first_grant = Event()
+    second_started = Event()
+    second_finished = Event()
+    grant_lock = Lock()
+    grant_numbers: list[int] = []
+
+    def post(*_args: Any, **_kwargs: Any) -> StubResponse:
+        with grant_lock:
+            grant_number = len(grant_numbers) + 1
+            grant_numbers.append(grant_number)
+        if grant_number == 1:
+            first_grant_started.set()
+            if not release_first_grant.wait(timeout=2):
+                raise AssertionError("test did not release the first token grant")
+        return _token_response(f"access-{grant_number}", f"refresh-{grant_number + 1}")
+
+    http.post.side_effect = post
+    authenticator = SharedIdpAuthenticator(
+        _config(),
+        token_store=store,
+        http_session=http,
+    )
+    first_session = requests.Session()
+    second_session = requests.Session()
+
+    def authenticate_second() -> None:
+        second_started.set()
+        authenticator.authenticate(second_session)
+        second_finished.set()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(authenticator.authenticate, first_session)
+        assert first_grant_started.wait(timeout=1)
+        second = executor.submit(authenticate_second)
+        assert second_started.wait(timeout=1)
+        try:
+            assert not second_finished.wait(timeout=0.1)
+        finally:
+            release_first_grant.set()
+        first.result(timeout=1)
+        second.result(timeout=1)
+
+    assert grant_numbers == [1]
+    assert first_session.headers["Authorization"] == "Bearer access-1"
+    assert second_session.headers["Authorization"] == "Bearer access-1"
+
+
+def test_proactive_refresh_rechecks_freshness_after_lock_contention() -> None:
+    store = InMemoryTokenStore()
+    store.save(
+        StoredToken(
+            access_token="expired-access",
+            refresh_token="refresh-1",
+            expires_at=time.time() - 1,
+        )
+    )
+    authenticator, http = _authenticator(
+        [
+            _token_response("access-2", "refresh-2"),
+            AssertionError("fresh token was refreshed again"),
+        ],
+        token_store=store,
+    )
+    refresh_callers = Barrier(2)
+    original_refresh_session = authenticator._refresh_session
+
+    def synchronized_refresh(session: requests.Session, *, force: bool) -> None:
+        if not force:
+            refresh_callers.wait(timeout=1)
+        original_refresh_session(session, force=force)
+
+    authenticator._refresh_session = synchronized_refresh  # type: ignore[method-assign]
+    sessions = [requests.Session(), requests.Session()]
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        list(executor.map(authenticator.authenticate, sessions))
+
+    http.post.assert_called_once()
+    assert {session.headers["Authorization"] for session in sessions} == {
+        "Bearer access-2"
+    }
+
+
+def test_invalidation_waits_for_in_flight_refresh_to_attach() -> None:
+    store = InMemoryTokenStore()
+    store.save(
+        StoredToken(
+            access_token="expired-access",
+            refresh_token="refresh-1",
+            expires_at=time.time() - 1,
+        )
+    )
+    authenticator, _http = _authenticator(
+        [_token_response("access-2", "refresh-2")],
+        token_store=store,
+    )
+    response_stored = Event()
+    release_attach = Event()
+    invalidation_started = Event()
+    invalidation_finished = Event()
+    original_store_response = authenticator._store_response
+
+    def store_response(response: Any, *, previous_refresh: str | None) -> None:
+        original_store_response(response, previous_refresh=previous_refresh)
+        response_stored.set()
+        if not release_attach.wait(timeout=2):
+            raise AssertionError("test did not release the token attachment")
+
+    authenticator._store_response = store_response  # type: ignore[method-assign]
+    refresh_session = requests.Session()
+    rejected_session = requests.Session()
+    rejected_session.headers["Authorization"] = "Bearer expired-access"
+
+    def invalidate() -> None:
+        invalidation_started.set()
+        authenticator.invalidate_session(rejected_session)
+        invalidation_finished.set()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        refresh = executor.submit(authenticator.authenticate, refresh_session)
+        assert response_stored.wait(timeout=1)
+        invalidation = executor.submit(invalidate)
+        assert invalidation_started.wait(timeout=1)
+        try:
+            assert not invalidation_finished.wait(timeout=0.1)
+        finally:
+            release_attach.set()
+        refresh.result(timeout=1)
+        invalidation.result(timeout=1)
+
+    assert refresh_session.headers["Authorization"] == "Bearer access-2"
+    assert "Authorization" not in rejected_session.headers
+
+
+def test_invalidation_waits_for_valid_token_attachment() -> None:
+    store = InMemoryTokenStore()
+    store.save(
+        StoredToken(
+            access_token="access-1",
+            refresh_token="refresh-1",
+            expires_at=time.time() + 300,
+        )
+    )
+    authenticator, _http = _authenticator([], token_store=store)
+    token_checked = Event()
+    release_attach = Event()
+    invalidation_started = Event()
+    invalidation_finished = Event()
+    original_needs_refresh = authenticator._needs_refresh
+
+    def paused_needs_refresh() -> bool:
+        needs_refresh = original_needs_refresh()
+        token_checked.set()
+        if not release_attach.wait(timeout=2):
+            raise AssertionError("test did not release valid-token attachment")
+        return needs_refresh
+
+    authenticator._needs_refresh = paused_needs_refresh  # type: ignore[method-assign]
+    attached_session = requests.Session()
+    rejected_session = requests.Session()
+
+    def invalidate() -> None:
+        invalidation_started.set()
+        authenticator.invalidate_session(rejected_session)
+        invalidation_finished.set()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        attach = executor.submit(authenticator.authenticate, attached_session)
+        assert token_checked.wait(timeout=1)
+        invalidation = executor.submit(invalidate)
+        assert invalidation_started.wait(timeout=1)
+        try:
+            assert not invalidation_finished.wait(timeout=0.1)
+        finally:
+            release_attach.set()
+        attach.result(timeout=1)
+        invalidation.result(timeout=1)
+
+    assert attached_session.headers["Authorization"] == "Bearer access-1"
+
+
+def test_get_access_token_returns_before_concurrent_invalidation() -> None:
+    store = InMemoryTokenStore()
+    store.save(
+        StoredToken(
+            access_token="access-1",
+            refresh_token="refresh-1",
+            expires_at=time.time() + 300,
+        )
+    )
+    authenticator, _http = _authenticator([], token_store=store)
+    authentication_finished = Event()
+    release_return = Event()
+    invalidation_started = Event()
+    invalidation_finished = Event()
+    original_authenticate = authenticator.authenticate
+
+    def paused_authenticate(session: requests.Session) -> None:
+        original_authenticate(session)
+        authentication_finished.set()
+        if not release_return.wait(timeout=2):
+            raise AssertionError("test did not release access-token return")
+
+    authenticator.authenticate = paused_authenticate  # type: ignore[method-assign]
+    token_session = requests.Session()
+    rejected_session = requests.Session()
+
+    def invalidate() -> None:
+        invalidation_started.set()
+        authenticator.invalidate_session(rejected_session)
+        invalidation_finished.set()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        read_token = executor.submit(authenticator.get_access_token, token_session)
+        assert authentication_finished.wait(timeout=1)
+        invalidation = executor.submit(invalidate)
+        assert invalidation_started.wait(timeout=1)
+        try:
+            assert not invalidation_finished.wait(timeout=0.1)
+        finally:
+            release_return.set()
+        assert read_token.result(timeout=1) == "access-1"
+        invalidation.result(timeout=1)
 
 
 def test_shared_file_cache_reloads_refresh_rotation_before_reuse(
@@ -421,6 +659,38 @@ def test_invalidation_retains_refresh_and_get_access_token_renews() -> None:
     assert http.post.call_args_list[-1].kwargs["data"]["grant_type"] == "refresh_token"
 
 
+def test_invalidation_adopts_peer_rotated_cached_token_without_replay(
+    tmp_path: Path,
+) -> None:
+    token_path = tmp_path / "shared-token.json"
+    FileTokenStore(token_path).save(
+        StoredToken(
+            access_token="access-1",
+            refresh_token="refresh-1",
+            expires_at=time.time() + 300,
+        )
+    )
+    authenticator, http = _authenticator(
+        [AssertionError("stale refresh token was replayed")],
+        token_store=FileTokenStore(token_path),
+    )
+    platform_session = requests.Session()
+    authenticator.authenticate(platform_session)
+    FileTokenStore(token_path).save(
+        StoredToken(
+            access_token="access-2",
+            refresh_token="refresh-2",
+            expires_at=time.time() + 300,
+        )
+    )
+
+    authenticator.invalidate_session(platform_session)
+
+    assert authenticator.get_access_token(platform_session) == "access-2"
+    assert platform_session.headers["Authorization"] == "Bearer access-2"
+    http.post.assert_not_called()
+
+
 def test_empty_access_token_is_rejected() -> None:
     authenticator, _http = _authenticator(
         [_token_response("", "refresh-1")],
@@ -504,7 +774,7 @@ def test_existing_custom_token_root_permissions_are_not_changed(tmp_path: Path) 
     assert stat.S_IMODE(token_root.stat().st_mode) == 0o755
 
 
-def test_client_close_releases_internally_owned_oidc_session() -> None:
+def test_client_close_preserves_caller_supplied_authenticator() -> None:
     authenticator = SharedIdpAuthenticator(
         _config(),
         token_store=InMemoryTokenStore(),
@@ -518,7 +788,22 @@ def test_client_close_releases_internally_owned_oidc_session() -> None:
 
     client.close()
 
-    close_oidc.assert_called_once_with()
+    close_oidc.assert_not_called()
+
+
+def test_client_close_does_not_assume_ownership_after_authenticator_replacement() -> (
+    None
+):
+    client = KamiwazaClient(
+        base_url="https://cluster.example/api",
+        api_key="initial-api-key",
+    )
+    replacement = Mock()
+    client.authenticator = replacement
+
+    client.close()
+
+    replacement.close.assert_not_called()
 
 
 def test_client_close_preserves_caller_owned_oidc_session() -> None:
