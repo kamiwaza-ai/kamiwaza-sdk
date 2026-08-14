@@ -1,6 +1,7 @@
 """ENG-10050: Offline contract for the required shared-IDP smoke edge."""
 
 from pathlib import Path
+import stat
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -244,7 +245,8 @@ def test_persona_session_performs_password_grant_then_real_refresh(monkeypatch) 
             "client_id": "federation-client",
             "client_secret": None,
             "password": "secret",
-            "verify": True,
+            "idp_verify": "/tmp/shared-idp-ca.pem",
+            "platform_verify": True,
         },
         "fed-clr-u",
     )
@@ -252,6 +254,25 @@ def test_persona_session_performs_password_grant_then_real_refresh(monkeypatch) 
     assert calls == ["password", "refresh", "read"]
     assert persona["token"] == "refreshed"
     assert persona["client"].authenticator is persona["authenticator"]
+    assert persona["authenticator"].config.verify == "/tmp/shared-idp-ca.pem"
+    assert persona["client"].verify is True
+
+
+def test_shared_ca_pem_uses_a_dedicated_idp_bundle(tmp_path: Path) -> None:
+    ca_pem = "-----BEGIN CERTIFICATE-----\nfixture\n-----END CERTIFICATE-----\n"
+
+    verify = edge._shared_idp_verify(
+        {"shared_ca_pem": ca_pem},
+        platform_verify=True,
+        temp_root=tmp_path,
+    )
+
+    ca_path = Path(verify)
+    assert ca_path.read_text() == ca_pem
+    assert stat.S_IMODE(ca_path.stat().st_mode) == 0o600
+    assert (
+        edge._shared_idp_verify({}, platform_verify=False, temp_root=tmp_path) is False
+    )
 
 
 @pytest.mark.parametrize(

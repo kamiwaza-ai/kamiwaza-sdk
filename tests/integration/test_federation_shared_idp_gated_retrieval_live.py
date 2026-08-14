@@ -16,6 +16,7 @@ import shlex
 import uuid
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Iterator
 from urllib.parse import quote
 
@@ -223,7 +224,28 @@ def _shared_realm(config: pytest.Config) -> dict[str, str]:
     return cfg
 
 
-def _persona_auth(config: pytest.Config) -> dict:
+def _shared_idp_verify(
+    shared: dict[str, str],
+    *,
+    platform_verify: bool,
+    temp_root: Path,
+) -> bool | str:
+    """Materialize shared-realm CA content for direct OIDC token requests."""
+    ca_pem = shared.get("shared_ca_pem")
+    if not ca_pem:
+        return platform_verify
+    ca_path = temp_root / "shared-idp-ca.pem"
+    ca_path.write_text(ca_pem, encoding="utf-8")
+    ca_path.chmod(0o600)
+    return str(ca_path)
+
+
+def _persona_auth(
+    config: pytest.Config,
+    *,
+    shared: dict[str, str],
+    temp_root: Path,
+) -> dict:
     """Shared-realm ROPC config for clearance-bearing personas."""
     client_id = os.getenv("SHARED_REALM_CLIENT_ID", "").strip()
     password = os.getenv("FED_PERSONA_PASSWORD", "").strip()
@@ -243,7 +265,12 @@ def _persona_auth(config: pytest.Config) -> dict:
         "client_id": client_id,
         "client_secret": os.getenv("SHARED_REALM_CLIENT_SECRET", "").strip() or None,
         "password": password,
-        "verify": verify,
+        "idp_verify": _shared_idp_verify(
+            shared,
+            platform_verify=verify,
+            temp_root=temp_root,
+        ),
+        "platform_verify": verify,
     }
 
 
@@ -252,7 +279,10 @@ def _fed_name() -> str:
 
 
 @pytest.fixture(scope="module")
-def _receiver_prereqs(pytestconfig: pytest.Config) -> _EdgePrerequisites:
+def _receiver_prereqs(
+    pytestconfig: pytest.Config,
+    tmp_path_factory: pytest.TempPathFactory,
+) -> _EdgePrerequisites:
     wi = mc.wheel_and_index()
     _require_prerequisite(
         pytestconfig,
@@ -266,12 +296,17 @@ def _receiver_prereqs(pytestconfig: pytest.Config) -> _EdgePrerequisites:
         bool(dataset_path),
         "MINI_CLEARANCE_DATASET_PATH not set (receiver fixture file)",
     )
+    shared = _shared_realm(pytestconfig)
     return _EdgePrerequisites(
         wheel_dir=wi[0],
         index_url=wi[1],
         dataset_path=dataset_path,
-        shared=_shared_realm(pytestconfig),
-        persona_auth=_persona_auth(pytestconfig),
+        shared=shared,
+        persona_auth=_persona_auth(
+            pytestconfig,
+            shared=shared,
+            temp_root=tmp_path_factory.mktemp("shared-idp-ca"),
+        ),
     )
 
 
@@ -299,14 +334,14 @@ def _programmatic_persona_session(
         client_secret=auth["client_secret"],
         username=username,
         password=auth["password"],
-        verify=auth["verify"],
+        verify=auth["idp_verify"],
     )
     token_store = InMemoryTokenStore()
     authenticator = SharedIdpAuthenticator(config, token_store=token_store)
     client = KamiwazaClient(
         base_url=base_url,
         authenticator=authenticator,
-        verify=auth["verify"],
+        verify=auth["platform_verify"],
     )
     authenticator.authenticate(client.session)
     authenticator.refresh_token(client.session)
@@ -403,7 +438,7 @@ def _wire_required_edge(
         urn=urn,
         personas=personas,
         shared=prerequisites.shared,
-        verify=bool(prerequisites.persona_auth["verify"]),
+        verify=bool(prerequisites.persona_auth["platform_verify"]),
         source_cluster_id=identities.initiator_cluster_id,
         receiver_cluster_id=identities.receiver_cluster_id,
     )

@@ -5,11 +5,14 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import requests  # type: ignore[import-untyped]
+from filelock import FileLock
 from pydantic import ValidationError
 
 from .authentication import Authenticator
@@ -34,11 +37,30 @@ class SharedIdpAuthConfig:
     verify: bool | str = True
     timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS
     token_root: Path | str | None = None
+    allow_insecure_http: bool = False
+    password_regrant_on_invalid_grant: bool = False
+
+    def __post_init__(self) -> None:
+        """Reject plaintext credential transport unless explicitly enabled."""
+        scheme = urlsplit(self.normalized_issuer).scheme.lower()
+        if scheme == "https":
+            return
+        if scheme == "http" and self.allow_insecure_http:
+            return
+        raise ValueError(
+            "Shared identity provider issuer must use HTTPS; "
+            "set allow_insecure_http=True only for isolated development"
+        )
 
     @property
     def normalized_issuer(self) -> str:
         """Return the issuer without a trailing slash."""
         return self.issuer.rstrip("/")
+
+    @property
+    def normalized_scope(self) -> str:
+        """Return the OAuth scope as a stable, de-duplicated set."""
+        return " ".join(sorted(set(self.scope.split())))
 
 
 class _OidcGrantError(AuthenticationError):
@@ -60,8 +82,13 @@ def shared_idp_token_path(
     *,
     root: Path | str | None = None,
 ) -> Path:
-    """Return a deterministic token path scoped to issuer, client, and user."""
-    identity = [config.normalized_issuer, config.client_id, config.username]
+    """Return a deterministic token path scoped to the full grant identity."""
+    identity = [
+        config.normalized_issuer,
+        config.client_id,
+        config.username,
+        config.normalized_scope,
+    ]
     encoded = json.dumps(identity, separators=(",", ":"), ensure_ascii=True)
     digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
     token_root = Path(
@@ -72,8 +99,10 @@ def shared_idp_token_path(
 
 def _default_token_store(config: SharedIdpAuthConfig) -> FileTokenStore:
     token_path = shared_idp_token_path(config)
+    token_root_existed = token_path.parent.exists()
     token_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    token_path.parent.chmod(0o700)
+    if config.token_root is None or not token_root_existed:
+        token_path.parent.chmod(0o700)
     return FileTokenStore(token_path)
 
 
@@ -91,7 +120,8 @@ class SharedIdpAuthenticator(Authenticator):
         self.token_store = (
             token_store if token_store is not None else _default_token_store(config)
         )
-        self._http = http_session or requests.Session()
+        self._owns_http_session = http_session is None
+        self._http = http_session if http_session is not None else requests.Session()
         self._access_token: str | None = None
         self._refresh_token: str | None = None
         self._expires_at: float | None = None
@@ -106,6 +136,15 @@ class SharedIdpAuthenticator(Authenticator):
 
     def refresh_token(self, session: requests.Session) -> None:
         """Refresh the shared-realm token or perform a programmatic login."""
+        with self._refresh_guard():
+            self._refresh_token_locked(session)
+
+    def _refresh_token_locked(self, session: requests.Session) -> None:
+        """Refresh while holding the shared file-cache lock, when configured."""
+        known_token = self._current_token()
+        if self._adopt_updated_cached_token(known_token, session):
+            return
+
         refresh_token = self._refresh_token
         if not refresh_token:
             response = self._password_grant()
@@ -119,11 +158,47 @@ class SharedIdpAuthenticator(Authenticator):
         except _OidcGrantError as exc:
             if exc.oauth_error != "invalid_grant":
                 raise
+            if not self.config.password_regrant_on_invalid_grant:
+                raise
             self._clear_tokens()
             response = self._password_grant()
             previous_refresh = None
         self._store_response(response, previous_refresh=previous_refresh)
         self._attach_access_token(session)
+
+    def _refresh_guard(self) -> AbstractContextManager[object]:
+        if not isinstance(self.token_store, FileTokenStore):
+            return nullcontext()
+        lock_path = self.token_store.path.with_suffix(
+            f"{self.token_store.path.suffix}.lock"
+        )
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        return FileLock(lock_path, mode=0o600)
+
+    def _adopt_updated_cached_token(
+        self,
+        known_token: StoredToken | None,
+        session: requests.Session,
+    ) -> bool:
+        cached = self.token_store.load()
+        if not cached or known_token is None:
+            return False
+        if cached == known_token:
+            return False
+        self._apply_cached_token(cached)
+        if self._needs_refresh():
+            return False
+        self._attach_access_token(session)
+        return True
+
+    def _current_token(self) -> StoredToken | None:
+        if not self._access_token or self._expires_at is None:
+            return None
+        return StoredToken(
+            access_token=self._access_token,
+            refresh_token=self._refresh_token,
+            expires_at=self._expires_at,
+        )
 
     def get_access_token(self, session: requests.Session) -> str | None:
         """Return a current bearer token for callers that need token access."""
@@ -137,6 +212,11 @@ class SharedIdpAuthenticator(Authenticator):
         session.headers.pop("Authorization", None)
         return True
 
+    def close(self) -> None:
+        """Release the OIDC transport when this authenticator created it."""
+        if self._owns_http_session:
+            self._http.close()
+
     def _needs_refresh(self) -> bool:
         if not self._access_token or self._expires_at is None:
             return True
@@ -148,7 +228,7 @@ class SharedIdpAuthenticator(Authenticator):
             "client_id": self.config.client_id,
             "username": self.config.username,
             "password": self.config.password,
-            "scope": self.config.scope,
+            "scope": self.config.normalized_scope,
         }
         return self._request_token(self._with_client_secret(data))
 
@@ -173,11 +253,17 @@ class SharedIdpAuthenticator(Authenticator):
                 data=data,
                 timeout=self.config.timeout_seconds,
                 verify=self.config.verify,
+                allow_redirects=False,
             )
         except requests.RequestException as exc:
             raise AuthenticationError(
                 "Shared identity provider is unavailable"
             ) from exc
+
+        if 300 <= response.status_code < 400:
+            raise AuthenticationError(
+                "Shared identity provider token endpoint redirects are not permitted"
+            )
 
         payload = self._response_payload(response)
         if response.status_code >= 400:
@@ -252,6 +338,9 @@ class SharedIdpAuthenticator(Authenticator):
         cached = self.token_store.load()
         if not cached:
             return
+        self._apply_cached_token(cached)
+
+    def _apply_cached_token(self, cached: StoredToken) -> None:
         self._access_token = cached.access_token
         self._refresh_token = cached.refresh_token
         self._expires_at = cached.expires_at
