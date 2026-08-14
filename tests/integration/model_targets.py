@@ -73,56 +73,10 @@ def _load_inference_targets() -> tuple[InferenceTarget, InferenceTarget, Inferen
 MLX_LLM_TARGET, VLLM_LLM_TARGET, GGUF_LLM_TARGET = _load_inference_targets()
 
 
-_GGUF_REPO_MARKER: Final = "-GGUF"
-
-
-def _is_gguf_repo(repo_id: str) -> bool:
-    """Whether the repo ships GGUF weights (Hugging Face naming convention)."""
-    return _GGUF_REPO_MARKER in repo_id.upper()
-
-
-def _engine_for(
-    repo_id: str, snapshot: ClusterCapabilitySnapshot | None
-) -> str:
-    """Mirror the platform's engine_selector: the weights pick the engine.
-
-    GGUF loads on llama.cpp on every host. Safetensors load on MLX on Apple
-    Silicon and vLLM everywhere else — that second split is the host OS, not
-    the model. Never forced at deploy time; this only records the expected
-    engine so existing-deployment matching stays accurate.
-    """
-    if _is_gguf_repo(repo_id):
-        return "llamacpp"
-    if snapshot is not None and snapshot.is_apple_silicon:
-        return "mlx"
-    return "vllm"
-
-
-def _pinned_quantization(repo_id: str) -> str:
-    """Quantization for a pinned repo; only GGUF weights carry a meaningful one."""
-    configured = os.environ.get("KAMIWAZA_TEST_LLM_QUANT", "").strip()
-    if configured:
-        return configured
-    return "q4_k" if _is_gguf_repo(repo_id) else "q6_k"
-
-
 def select_inference_target(
     snapshot: ClusterCapabilitySnapshot | None,
 ) -> InferenceTarget:
-    """Choose weights and engine that match the live cluster hardware.
-
-    A topology can pin one model per node with ``KAMIWAZA_TEST_LLM_REPO``
-    (plus ``KAMIWAZA_TEST_LLM_QUANT`` for GGUF); the engine is still derived
-    from the weights, never overridden. Unset, the hardware defaults below
-    apply unchanged.
-    """
-    pinned = os.environ.get("KAMIWAZA_TEST_LLM_REPO", "").strip()
-    if pinned:
-        return InferenceTarget(
-            repo_id=pinned,
-            engine_name=_engine_for(pinned, snapshot),
-            quantization=_pinned_quantization(pinned),
-        )
+    """Choose weights and engine that match the live cluster hardware."""
     if snapshot is not None and "nvidia" in snapshot.gpu_vendors:
         return VLLM_LLM_TARGET
     if snapshot is not None and snapshot.is_apple_silicon:
