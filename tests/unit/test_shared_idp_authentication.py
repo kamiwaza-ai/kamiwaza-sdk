@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 import stat
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 from unittest.mock import Mock
 
 import pytest
 import requests
+from filelock import FileLock
 
+import kamiwaza_sdk.shared_idp_authentication as shared_auth
+import kamiwaza_sdk.token_store as token_store_module
 from kamiwaza_sdk.client import KamiwazaClient
 from kamiwaza_sdk.exceptions import AuthenticationError
 from kamiwaza_sdk.shared_idp_authentication import (
@@ -229,6 +234,113 @@ def test_shared_file_cache_reloads_access_rotation_when_refresh_is_reused(
     second_http.post.assert_not_called()
 
 
+def test_invalidated_client_adopts_peer_refresh_before_reusing_old_token(
+    tmp_path: Path,
+) -> None:
+    token_path = tmp_path / "shared-token.json"
+    first_store = FileTokenStore(token_path)
+    first_store.save(
+        StoredToken(
+            access_token="access-1",
+            refresh_token="refresh-1",
+            expires_at=time.time() + 300,
+        )
+    )
+    first, _first_http = _authenticator(
+        [_token_response("access-2", "refresh-2")],
+        token_store=first_store,
+    )
+    second, second_http = _authenticator(
+        [AssertionError("stale refresh token was replayed")],
+        token_store=FileTokenStore(token_path),
+    )
+    second_session = requests.Session()
+
+    first.refresh_token(requests.Session())
+    second.invalidate_session(second_session)
+    second.authenticate(second_session)
+
+    assert second_session.headers["Authorization"] == "Bearer access-2"
+    second_http.post.assert_not_called()
+
+
+def test_concurrent_authentication_issues_only_one_token_grant() -> None:
+    store = InMemoryTokenStore()
+    store.save(
+        StoredToken(
+            access_token="expired-access",
+            refresh_token="refresh-1",
+            expires_at=time.time() - 1,
+        )
+    )
+    entered = threading.Event()
+    release = threading.Event()
+    call_lock = threading.Lock()
+    grant_count = 0
+    http = Mock(spec=requests.Session)
+
+    def grant(*_args: Any, **_kwargs: Any) -> StubResponse:
+        nonlocal grant_count
+        with call_lock:
+            grant_count += 1
+            call_number = grant_count
+        if call_number == 1:
+            entered.set()
+            assert release.wait(timeout=2)
+        return _token_response(f"access-{call_number}", f"refresh-{call_number}")
+
+    http.post.side_effect = grant
+    authenticator = SharedIdpAuthenticator(
+        _config(), token_store=store, http_session=http
+    )
+    sessions = [requests.Session(), requests.Session()]
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(authenticator.authenticate, sessions[0])
+        assert entered.wait(timeout=2)
+        second = executor.submit(authenticator.authenticate, sessions[1])
+        time.sleep(0.05)
+        release.set()
+        first.result(timeout=2)
+        second.result(timeout=2)
+
+    assert grant_count == 1
+    assert {session.headers["Authorization"] for session in sessions} == {
+        "Bearer access-1"
+    }
+
+
+def test_file_cache_lock_timeout_is_typed_and_bounded(tmp_path: Path) -> None:
+    token_path = tmp_path / "shared-token.json"
+    store = FileTokenStore(token_path)
+    store.save(
+        StoredToken(
+            access_token="expired-access",
+            refresh_token="refresh-1",
+            expires_at=time.time() - 1,
+        )
+    )
+    authenticator, http = _authenticator(
+        [_token_response("access-2", "refresh-2")],
+        config=_config(timeout_seconds=0.05),
+        token_store=store,
+    )
+    lock_path = token_path.with_suffix(f"{token_path.suffix}.lock")
+
+    held_lock = FileLock(lock_path)
+    held_lock.acquire()
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(authenticator.authenticate, requests.Session())
+        time.sleep(0.2)
+        completed_while_held = future.done()
+        held_lock.release()
+        with pytest.raises(AuthenticationError, match="token cache lock"):
+            future.result(timeout=2)
+
+    assert completed_while_held is True
+    http.post.assert_not_called()
+
+
 def test_explicit_refresh_reuses_refresh_token_when_provider_does_not_rotate() -> None:
     store = InMemoryTokenStore()
     store.save(
@@ -276,6 +388,55 @@ def test_invalid_refresh_token_performs_one_password_regrant() -> None:
     assert http.post.call_args_list[1].kwargs["data"]["grant_type"] == "password"
     assert store.load() is not None
     assert store.load().access_token == "access-2"  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        StubResponse(400, {"error": "invalid_client"}),
+        StubResponse(503, {"error": "temporarily_unavailable"}),
+    ],
+)
+def test_password_regrant_never_runs_for_non_invalid_grant_failures(
+    failure: StubResponse,
+) -> None:
+    store = InMemoryTokenStore()
+    store.save(
+        StoredToken(
+            access_token="expired-access",
+            refresh_token="refresh-1",
+            expires_at=time.time() - 1,
+        )
+    )
+    authenticator, http = _authenticator(
+        [failure, _token_response("unexpected", "unexpected-refresh")],
+        config=_config(password_regrant_on_invalid_grant=True),
+        token_store=store,
+    )
+
+    with pytest.raises(AuthenticationError):
+        authenticator.authenticate(requests.Session())
+
+    assert http.post.call_count == 1
+
+
+def test_password_regrant_clears_revoked_token_store() -> None:
+    store = Mock(wraps=InMemoryTokenStore())
+    store.load.return_value = StoredToken(
+        access_token="expired-access",
+        refresh_token="revoked-refresh",
+        expires_at=time.time() - 1,
+    )
+    invalid_grant = StubResponse(400, {"error": "invalid_grant"})
+    authenticator, _http = _authenticator(
+        [invalid_grant, _token_response("access-2", "refresh-2")],
+        config=_config(password_regrant_on_invalid_grant=True),
+        token_store=store,
+    )
+
+    authenticator.authenticate(requests.Session())
+
+    store.clear.assert_called_once_with()
 
 
 def test_invalid_refresh_token_is_not_silently_regranted_by_default() -> None:
@@ -421,13 +582,52 @@ def test_invalidation_retains_refresh_and_get_access_token_renews() -> None:
     assert http.post.call_args_list[-1].kwargs["data"]["grant_type"] == "refresh_token"
 
 
+def test_access_token_inside_refresh_leeway_is_refreshed(monkeypatch) -> None:
+    now = 1_000.0
+    monkeypatch.setattr(shared_auth.time, "time", lambda: now)
+    store = InMemoryTokenStore()
+    store.save(
+        StoredToken(
+            access_token="almost-expired",
+            refresh_token="refresh-1",
+            expires_at=now + 20,
+        )
+    )
+    authenticator, http = _authenticator(
+        [_token_response("access-2", "refresh-2")], token_store=store
+    )
+
+    authenticator.authenticate(requests.Session())
+
+    http.post.assert_called_once()
+
+
+def test_token_expiry_uses_provider_expires_in(monkeypatch) -> None:
+    now = 1_000.0
+    monkeypatch.setattr(shared_auth.time, "time", lambda: now)
+    store = InMemoryTokenStore()
+    authenticator, _http = _authenticator(
+        [_token_response("access-1", "refresh-1", expires_in=90)],
+        token_store=store,
+    )
+
+    authenticator.authenticate(requests.Session())
+
+    assert store.load() is not None
+    assert store.load().expires_at == now + 90  # type: ignore[union-attr]
+
+
 def test_empty_access_token_is_rejected() -> None:
+    store = InMemoryTokenStore()
     authenticator, _http = _authenticator(
         [_token_response("", "refresh-1")],
+        token_store=store,
     )
 
     with pytest.raises(AuthenticationError, match="access token is unavailable"):
         authenticator.authenticate(requests.Session())
+
+    assert store.load() is None
 
 
 def test_token_cache_path_is_scoped_by_issuer_client_and_username(
@@ -474,6 +674,17 @@ def test_plain_http_issuer_requires_explicit_dev_override() -> None:
     assert config.normalized_issuer == "http://shared.example/realms/federation"
 
 
+def test_https_verification_cannot_be_disabled_implicitly() -> None:
+    with pytest.raises(ValueError, match="allow_insecure_tls"):
+        _config(verify=False)
+
+
+def test_https_verification_requires_explicit_dev_override() -> None:
+    config = _config(verify=False, allow_insecure_tls=True)
+
+    assert config.verify is False
+
+
 def test_new_custom_scoped_file_store_is_private(tmp_path: Path) -> None:
     token_root = tmp_path / "new-cache"
     config = _config(token_root=token_root)
@@ -491,6 +702,24 @@ def test_new_custom_scoped_file_store_is_private(tmp_path: Path) -> None:
     assert stat.S_IMODE(token_path.parent.stat().st_mode) == 0o700
 
 
+def test_token_file_is_created_private_before_any_chmod(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    observed_modes: list[int] = []
+    real_open = token_store_module.os.open
+
+    def recording_open(path, flags, mode=0o777):
+        observed_modes.append(mode)
+        return real_open(path, flags, mode)
+
+    monkeypatch.setattr(token_store_module.os, "open", recording_open)
+    FileTokenStore(tmp_path / "token.json").save(
+        StoredToken("access", "refresh", time.time() + 300)
+    )
+
+    assert observed_modes == [0o600]
+
+
 def test_existing_custom_token_root_permissions_are_not_changed(tmp_path: Path) -> None:
     token_root = tmp_path / "caller-managed-cache"
     token_root.mkdir(mode=0o755)
@@ -504,7 +733,7 @@ def test_existing_custom_token_root_permissions_are_not_changed(tmp_path: Path) 
     assert stat.S_IMODE(token_root.stat().st_mode) == 0o755
 
 
-def test_client_close_releases_internally_owned_oidc_session() -> None:
+def test_client_close_releases_explicitly_owned_oidc_authenticator() -> None:
     authenticator = SharedIdpAuthenticator(
         _config(),
         token_store=InMemoryTokenStore(),
@@ -514,11 +743,24 @@ def test_client_close_releases_internally_owned_oidc_session() -> None:
     client = KamiwazaClient(
         base_url="https://cluster.example/api",
         authenticator=authenticator,
+        owns_authenticator=True,
     )
 
     client.close()
 
     close_oidc.assert_called_once_with()
+
+
+def test_client_close_preserves_caller_owned_authenticator() -> None:
+    authenticator = Mock()
+    client = KamiwazaClient(
+        base_url="https://cluster.example/api",
+        authenticator=authenticator,
+    )
+
+    client.close()
+
+    authenticator.close.assert_not_called()
 
 
 def test_client_close_preserves_caller_owned_oidc_session() -> None:

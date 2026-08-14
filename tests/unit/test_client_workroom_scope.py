@@ -69,9 +69,13 @@ def test_workroom_scope_can_be_used_as_context_manager() -> None:
 
 
 def test_workroom_scope_does_not_close_parent_authenticator() -> None:
-    parent = _recording_client()
     authenticator = Mock()
-    parent.authenticator = authenticator
+    parent = KamiwazaClient(
+        base_url="https://example.test/api",
+        authenticator=authenticator,
+        owns_authenticator=True,
+        verify=False,
+    )
 
     with parent.workroom_scope("wr-ctx"):
         pass

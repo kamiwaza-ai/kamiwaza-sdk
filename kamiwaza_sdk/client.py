@@ -169,6 +169,7 @@ class KamiwazaClient:
         *,
         verify: Optional[Any] = None,
         ca_bundle: Optional[str] = None,
+        owns_authenticator: bool = False,
     ):
         """Construct a KamiwazaClient.
 
@@ -180,6 +181,9 @@ class KamiwazaClient:
                 ``KAMIWAZA_API_TOKEN`` env vars.
             authenticator: Optional ``Authenticator`` instance; takes
                 precedence over ``api_key`` when supplied.
+            owns_authenticator: Close a supplied authenticator with this client.
+                Defaults to ``False`` because caller-supplied authenticators may
+                be shared by more than one client.
             log_level: Python logging level (default INFO).
             verify: TLS verification setting. ``True`` (default — system
                 bundle), ``False`` (disable; warns), or a path string
@@ -258,7 +262,7 @@ class KamiwazaClient:
                 or os.environ.get("KAMIWAZA_API_TOKEN")
             )
             self.authenticator = ApiKeyAuthenticator(api_key) if api_key else None
-        self._owns_authenticator = self.authenticator is not None
+        self._owns_authenticator = bool(authenticator and owns_authenticator)
 
         # Don't authenticate during initialization - let it happen on first request
 

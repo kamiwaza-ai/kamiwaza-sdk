@@ -11,7 +11,7 @@ REQUIRED_EDGE_CASES = frozenset(
         "test_required_mesh_retrieval_returns_exact_post_gate_rows[S]",
         "test_required_mesh_retrieval_returns_exact_post_gate_rows[TS]",
         "test_required_mesh_job_reaches_receiver_and_returns_marker",
-        "test_native_realm_token_rejected_at_receiver_shared_idp_boundary",
+        "test_unonboarded_shared_idp_user_rejected_by_receiver_allowlist",
     }
 )
 

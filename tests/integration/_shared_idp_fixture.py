@@ -9,11 +9,13 @@ different each time:
 2. ``MINI_CLEARANCE_DATASET_PATH``       -> ``_gate_fixture.py`` publishes the CSV
 3. a **shared realm** both clusters trust -> this module
 
-The realm has to project a ``clearance`` claim into brokered JWTs, and the three
-personas must be able to mint tokens from it by ROPC, because the receiver's
+The realm has to project a ``clearance`` claim into brokered JWTs. The three
+clearance personas and one deliberately unonboarded persona must mint tokens
+from it by ROPC, because the receiver's
 shared_idp validation accepts a caller only when the token's ``kid`` is in the
-SHARED realm's JWKS. A token from either cluster's own realm is rejected — that
-rejection is the trust boundary the suite exists to prove.
+SHARED realm's JWKS. A valid shared-realm token is still receiver-denied until
+its subject is explicitly onboarded; that allowlist boundary is part of the
+suite's required proof.
 
 This drives the primitives that already ship in
 ``kamiwaza_sdk.seeding.federation`` (the ``kamiwaza-federation idp`` group) rather than
@@ -56,13 +58,12 @@ ROPC_CLIENT = "kamiwaza-shared-cli"
 # Verified against the live chart: svc/keycloak exposes 80 (http) and 9000
 # (management), NOT 8080. Overridable for a chart that differs.
 KEYCLOAK_SVC_PORT = os.getenv("KEYCLOAK_SVC_PORT", "80")
-# These names are a CONTRACT with the consumer, not a local choice: the test's
-# ``_PERSONAS`` (test_federation_shared_idp_gated_retrieval_live.py) passes each
-# value straight to ROPC as the username, and ``_mini_clearance.shared_realm_token``
-# calls ``raise_for_status()``, so a name that does not exist in the realm is a 401
-# -> module-fixture ERROR, not a skip. Keep these two dicts identical.
+# These names are a CONTRACT with the consumer, not a local choice: the live
+# test passes every value straight to ROPC as the username, so a missing user
+# is a module-fixture ERROR, not a skip. Keep both constants aligned there.
 # Clearance values match _mini_clearance.KNOWN: U sees 3 rows, S sees 4, TS sees all 5.
 PERSONAS = {"U": "fed-clr-u", "S": "fed-clr-s", "TS": "fed-clr-ts"}
+UNONBOARDED_PERSONA = "fed-clr-unonboarded"
 
 
 @dataclass(frozen=True)
@@ -156,7 +157,7 @@ def provision(
     persona_pw: str,
     owned_realm: OwnedRealm,
 ) -> dict:
-    """Realm + ROPC client + clearance mapper + the three personas."""
+    """Realm + ROPC client + mapper + clearance and negative personas."""
     from kamiwaza_sdk.seeding.federation.cli import _verify_ssl
     from kamiwaza_sdk.seeding.federation.keycloak import KeycloakAdmin
 
@@ -183,6 +184,12 @@ def provision(
                 password=persona_pw,
                 attributes={"clearance": clearance},
             )
+        kc.ensure_user(
+            realm,
+            UNONBOARDED_PERSONA,
+            password=persona_pw,
+            attributes={"clearance": "U"},
+        )
     except BaseException:
         try:
             kc.delete_owned_realm(realm, owned_realm.owner_nonce)
@@ -260,7 +267,8 @@ def _print_provisioned_realm(realm: str, exports: dict[str, str]) -> None:
             "  the shared JWKS and every persona token is rejected."
         )
 
-    print(f"  realm={realm} client={ROPC_CLIENT} personas={sorted(PERSONAS.values())}")
+    usernames = [*PERSONAS.values(), UNONBOARDED_PERSONA]
+    print(f"  realm={realm} client={ROPC_CLIENT} personas={sorted(usernames)}")
     print(json.dumps(exports, indent=2))
     for key, value in exports.items():
         print(f"export {key}={shlex.quote(value)}")

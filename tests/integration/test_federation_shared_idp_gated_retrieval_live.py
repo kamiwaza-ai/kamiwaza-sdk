@@ -43,6 +43,7 @@ pytestmark = [
 ]
 
 _PERSONAS = {"U": "fed-clr-u", "S": "fed-clr-s", "TS": "fed-clr-ts"}
+_UNONBOARDED_PERSONA = "fed-clr-unonboarded"
 
 _ALLOW_ALL_EXECUTION_GATE = (
     "kamiwaza.services.authz.gates.default_gates.AllowAllExecutionGate"
@@ -93,8 +94,8 @@ def _required_mesh_call(call: Callable[[], Any]) -> Any:
     return call()
 
 
-def _assert_receiver_auth_rejection(call: Callable[[], Any]) -> None:
-    """Accept only the receiver's structured peer-JWT validation failure."""
+def _assert_receiver_onboarding_rejection(call: Callable[[], Any]) -> None:
+    """Accept only the receiver's structured allowlist rejection."""
     from kamiwaza_sdk.exceptions import KamiwazaError
 
     try:
@@ -103,15 +104,15 @@ def _assert_receiver_auth_rejection(call: Callable[[], Any]) -> None:
         reason = mesh_outcome.reason_of(exc)
         status = getattr(exc, "status_code", None)
         assert status == 403, (
-            "expected peer_jwt_validation_failed from receiver status 403, "
+            "expected unauthorized_brokered_user from receiver status 403, "
             f"got status {status!r}: {exc!r}"
         )
-        assert reason == "peer_jwt_validation_failed", (
-            "expected peer_jwt_validation_failed from the receiver's shared-IDP "
-            f"validator, got {reason!r}: {exc!r}"
+        assert reason == "unauthorized_brokered_user", (
+            "expected unauthorized_brokered_user from the receiver allowlist, "
+            f"got {reason!r}: {exc!r}"
         )
         return
-    pytest.fail("non-shared token unexpectedly crossed receiver authentication")
+    pytest.fail("unonboarded shared-IDP user unexpectedly crossed the allowlist")
 
 
 def _require_prerequisite(config: pytest.Config, condition: bool, message: str) -> None:
@@ -271,6 +272,7 @@ def _persona_auth(
             temp_root=temp_root,
         ),
         "platform_verify": verify,
+        "allow_insecure_tls": verify is False,
     }
 
 
@@ -335,6 +337,7 @@ def _programmatic_persona_session(
         username=username,
         password=auth["password"],
         verify=auth["idp_verify"],
+        allow_insecure_tls=auth["allow_insecure_tls"],
     )
     token_store = InMemoryTokenStore()
     authenticator = SharedIdpAuthenticator(config, token_store=token_store)
@@ -342,6 +345,7 @@ def _programmatic_persona_session(
         base_url=base_url,
         authenticator=authenticator,
         verify=auth["platform_verify"],
+        owns_authenticator=True,
     )
     authenticator.authenticate(client.session)
     authenticator.refresh_token(client.session)
@@ -380,8 +384,10 @@ def _provision_personas(
             {**auth, "issuer": issuer},
             base,
         )
+        cleanup.callback(persona["client"].close)
         token = persona["token"]
-        sub = mc.jwt_sub(token) or base
+        sub = mc.jwt_sub(token)
+        assert sub, f"shared-IDP token has no subject claim for {base}"
         external_id = f"{sub}@{source_cluster_id}"
         receiver._request(
             "POST",
@@ -405,6 +411,13 @@ def _provision_personas(
             "external_id": external_id,
             "sub": sub,
         }
+    unonboarded = _programmatic_persona_session(
+        initiator_base_url,
+        {**auth, "issuer": issuer},
+        _UNONBOARDED_PERSONA,
+    )
+    cleanup.callback(unonboarded["client"].close)
+    personas["unonboarded"] = unonboarded
     return personas
 
 
@@ -530,14 +543,16 @@ def test_required_mesh_job_reaches_receiver_and_returns_marker(
     )
 
 
-def test_native_realm_token_rejected_at_receiver_shared_idp_boundary(
+def test_unonboarded_shared_idp_user_rejected_by_receiver_allowlist(
     shared_idp_gated_pair,
-    live_kamiwaza_session_client,
 ) -> None:
-    """A valid initiator-native token must fail receiver shared-IDP auth."""
+    """A valid shared-IDP token still requires receiver-side onboarding."""
     selector = quote(shared_idp_gated_pair["name"], safe="")
-    _assert_receiver_auth_rejection(
-        lambda: live_kamiwaza_session_client._request(
+    persona, _token = _active_persona_session(
+        shared_idp_gated_pair["personas"]["unonboarded"]
+    )
+    _assert_receiver_onboarding_rejection(
+        lambda: persona._request(
             "GET",
             f"/mesh/{selector}/api/cluster/diagnose",
         )

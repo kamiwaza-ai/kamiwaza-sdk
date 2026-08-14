@@ -260,3 +260,60 @@ def test_partial_provision_rolls_back_owned_realm(
         ("profile", "unique", None),
         ("delete", "unique", "owner-a"),
     ]
+
+
+def test_provision_creates_clearance_and_unonboarded_personas(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    users: list[tuple[str, dict[str, str]]] = []
+
+    class _Admin:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def create_owned_realm(self, _realm: str, _owner: str) -> None:
+            pass
+
+        def set_unmanaged_attributes(self, _realm: str) -> None:
+            pass
+
+        def ensure_ropc_client(self, _realm: str, _client: str) -> dict[str, str]:
+            return {"id": "client-id"}
+
+        def ensure_attribute_mapper(
+            self, _realm: str, _client: str, *, attribute: str
+        ) -> None:
+            assert attribute == "clearance"
+
+        def ensure_user(
+            self,
+            _realm: str,
+            username: str,
+            *,
+            password: str,
+            attributes: dict[str, str],
+        ) -> None:
+            assert password == "persona-pw"
+            users.append((username, attributes))
+
+        def issuer_url(self, realm: str) -> str:
+            return f"https://keycloak/realms/{realm}"
+
+    monkeypatch.setattr(
+        "kamiwaza_sdk.seeding.federation.keycloak.KeycloakAdmin",
+        _Admin,
+    )
+
+    fixture.provision(
+        "https://keycloak",
+        "admin-pw",
+        "persona-pw",
+        fixture.OwnedRealm("unique", "owner-a"),
+    )
+
+    assert users == [
+        ("fed-clr-u", {"clearance": "U"}),
+        ("fed-clr-s", {"clearance": "S"}),
+        ("fed-clr-ts", {"clearance": "TS"}),
+        ("fed-clr-unonboarded", {"clearance": "U"}),
+    ]
