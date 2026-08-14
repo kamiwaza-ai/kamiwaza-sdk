@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 
@@ -65,6 +66,23 @@ def test_workroom_scope_can_be_used_as_context_manager() -> None:
 
     assert calls[0]["headers"]["X-Workroom-Id"] == "wr-ctx"
     assert closed == [True]
+
+
+def test_workroom_scope_does_not_close_parent_authenticator() -> None:
+    authenticator = Mock()
+    parent = KamiwazaClient(
+        base_url="https://example.test/api",
+        authenticator=authenticator,
+        owns_authenticator=True,
+        verify=False,
+    )
+
+    with parent.workroom_scope("wr-ctx"):
+        pass
+
+    authenticator.close.assert_not_called()
+    parent.close()
+    authenticator.close.assert_called_once_with()
 
 
 def test_per_request_workroom_header_overrides_scoped_default() -> None:

@@ -1,4 +1,4 @@
-"""``kamiwaza-fed`` — shared_idp seeding + ReBAC access CLI.
+"""``kamiwaza-federation`` — shared_idp seeding + ReBAC access CLI.
 
 Deterministic, idempotent wrappers around SDK / Keycloak-admin methods. Secrets
 are read from env vars (``--*-env``), never argv. Handlers return a dict (printed
@@ -295,7 +295,7 @@ def _add_kc_args(p: argparse.ArgumentParser) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="kamiwaza-fed",
+        prog="kamiwaza-federation",
         description="Shared_idp federation seeding + ReBAC access management.",
     )
     parser.add_argument(

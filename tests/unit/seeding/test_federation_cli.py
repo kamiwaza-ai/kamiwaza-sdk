@@ -1,4 +1,4 @@
-"""Unit tests for the kamiwaza-fed CLI (mocked SDK client + Keycloak admin)."""
+"""Unit tests for the kamiwaza-federation CLI (mocked SDK client + Keycloak admin)."""
 
 from __future__ import annotations
 

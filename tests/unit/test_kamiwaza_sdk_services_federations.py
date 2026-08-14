@@ -499,8 +499,7 @@ def test_resolve_id_tolerates_list_item_missing_status() -> None:
     assert user.federation_id == "fed-orion-id"
     # Resolved the id from a status-less entry and POSTed to the right path.
     assert any(
-        p == "/cluster/federations/fed-orion-id/users"
-        for _, p, _ in client.calls
+        p == "/cluster/federations/fed-orion-id/users" for _, p, _ in client.calls
     )
 
 

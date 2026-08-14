@@ -2,6 +2,10 @@
 from importlib.metadata import version, PackageNotFoundError
 
 from .client import KamiwazaClient
+from .shared_idp_authentication import (
+    SharedIdpAuthConfig as SharedIdpAuthConfig,
+    SharedIdpAuthenticator as SharedIdpAuthenticator,
+)
 
 # Export as kamiwaza_sdk for the import pattern: from kamiwaza_sdk import KamiwazaClient as kz
 kamiwaza_sdk = KamiwazaClient

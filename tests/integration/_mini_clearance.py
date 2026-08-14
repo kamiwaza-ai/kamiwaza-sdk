@@ -23,7 +23,10 @@ import hashlib
 import json
 import os
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, NoReturn, Optional
+
+from kamiwaza_sdk.exceptions import APIError
+from kamiwaza_sdk.services.federation_credentials import federation_credential_headers
 
 GATE_CLASSPATH = "acme_gates.mini_clearance_gate.MiniClearanceGate"
 GATE_NAME = "mini_clearance_gate"
@@ -32,12 +35,29 @@ PACKAGE_SPEC = "acme-gates==1.1.0"
 
 _FIXTURE = Path(__file__).parent / "fixtures" / "mini_clearance_records.json"
 
+# FastAPI auth denials are normally a few hundred bytes. Keep enough room for
+# structured detail while preventing a peer from making this live-test helper
+# retain or print an unbounded streaming response.
+_MESH_STREAM_ERROR_BODY_LIMIT_BYTES = 8 * 1024
+_MESH_STREAM_ERROR_CHUNK_BYTES = 1024
+_MESH_STREAM_ERROR_TRUNCATION_MARKER = (
+    f"...[truncated after {_MESH_STREAM_ERROR_BODY_LIMIT_BYTES} bytes]"
+)
+
+
+class _MeshStreamAPIError(APIError):
+    """Raw mesh stream failure with an explicit diagnostic truncation signal."""
+
+    response_truncated: bool
+
+
 # persona clearance -> (included, redacted, allowed classifications)
 KNOWN: dict[str, tuple[int, int, set[str]]] = {
     "U": (3, 2, {"U"}),
     "S": (4, 1, {"U", "S"}),
     "TS": (5, 0, {"U", "S", "TS"}),
 }
+_EXACT_FIXTURE_CLEARANCES = frozenset(KNOWN)
 
 
 def records() -> list[dict[str, Any]]:
@@ -67,6 +87,7 @@ def write_dataset_file(path: Path) -> str:
 
 
 # ── gate-package install ────────────────────────────────────────────────────
+
 
 def wheel_and_index() -> Optional[tuple[str, str]]:
     """(M5_TEST_WHEEL_DIR, M5_TEST_INDEX_URL) iff both set and the 1.1.0 wheel is present."""
@@ -131,6 +152,7 @@ def install_gate_package(kz: Any, wheel_dir: str, index_url: str) -> None:
 
 # ── clearance personas ──────────────────────────────────────────────────────
 
+
 def declare_clearance_attribute(kz: Any) -> None:
     """Declare the ``clearance`` attribute in the realm vocabulary (idempotent).
 
@@ -175,7 +197,10 @@ def authed_client(base_url: str, username: str, password: str, *, verify: bool) 
 
     client = KamiwazaClient(base_url=base_url, verify=verify)
     client.authenticator = UserPasswordAuthenticator(
-        username, password, client._auth_service, token_store=_NoCacheTokenStore()  # type: ignore[arg-type]
+        username,
+        password,
+        client._auth_service,
+        token_store=_NoCacheTokenStore(),  # type: ignore[arg-type]
     )
     return client
 
@@ -240,6 +265,7 @@ def jwt_sub(token: str) -> str:
 
 # ── file-backed gated dataset ───────────────────────────────────────────────
 
+
 def create_file_dataset(kz: Any, name: str, file_path: str) -> str:
     """Create a ``platform="file"`` dataset pointing at ``file_path`` and bind
     MiniClearanceGate. Returns the dataset URN. Install must have run first."""
@@ -252,34 +278,76 @@ def create_file_dataset(kz: Any, name: str, file_path: str) -> str:
     return urn
 
 
-def retrieve_through_gate(client: Any, dataset_urn: str) -> tuple[list[dict], dict]:
-    """Retrieve the dataset through the gate; return (rows, gate_audit summary).
+def retrieve_through_gate(
+    client: Any, dataset_urn: str
+) -> tuple[list[dict], list[dict]]:
+    """Retrieve the dataset through the gate; return rows and actual audit footers.
 
     Drains the SSE stream: ``chunk`` events carry ``records`` and a ``metadata``
-    dict whose ``gate_audit`` is the runner footer {gate, included, redacted,
-    total}. Summed across chunks (one chunk for the 5-row fixture).
+    dict whose ``gate_audit`` is the runner footer.
+
+    ENG-8859 reduced that footer to a single ``filtered`` boolean. The counts it
+    used to carry (``included`` / ``redacted`` / ``total``) are now always
+    ``null`` — in a classified setting the *volume* of withheld material is
+    itself a disclosure to the caller who was denied it — so summing them here
+    raised ``TypeError: int() argument must be ... not 'NoneType'``.
+
+    Counting from ``rows`` instead is the stronger assertion anyway: it checks
+    what actually arrived rather than what the footer claimed about it.
     """
     from kamiwaza_sdk.schemas.retrieval import RetrievalRequest
 
     job = client.retrieval.create_job(RetrievalRequest(dataset_urn=dataset_urn))
     rows: list[dict] = []
-    included = redacted = total = 0
-    saw_audit = False
+    gate_audits: list[dict] = []
     for event in client.retrieval.stream_events(job.job_id):
         if event.event != "chunk":
             continue
         data = event.data or {}
-        rows.extend(data.get("records") or data.get("rows") or [])
+        rows.extend(data.get("data") or data.get("records") or data.get("rows") or [])
         gate_audit = (data.get("metadata") or {}).get("gate_audit")
-        if gate_audit:
-            saw_audit = True
-            included += int(gate_audit.get("included", 0))
-            redacted += int(gate_audit.get("redacted", 0))
-            total += int(gate_audit.get("total", 0))
-    summary = (
-        {"included": included, "redacted": redacted, "total": total} if saw_audit else {}
+        if isinstance(gate_audit, dict):
+            gate_audits.append(gate_audit)
+    return rows, gate_audits
+
+
+def _read_bounded_stream_error_body(response: Any) -> tuple[bytes, bool]:
+    retained = bytearray()
+    truncated = False
+    for chunk in response.iter_content(chunk_size=_MESH_STREAM_ERROR_CHUNK_BYTES):
+        if not chunk:
+            continue
+        remaining = _MESH_STREAM_ERROR_BODY_LIMIT_BYTES - len(retained)
+        if len(chunk) <= remaining:
+            retained.extend(chunk)
+            continue
+        retained.extend(chunk[:remaining])
+        truncated = True
+        break
+    return bytes(retained), truncated
+
+
+def _decode_stream_error_body(response: Any) -> tuple[str, Any, bool]:
+    body, truncated = _read_bounded_stream_error_body(response)
+    text = body.decode("utf-8", errors="replace")
+    if truncated:
+        return f"{text}{_MESH_STREAM_ERROR_TRUNCATION_MARKER}", None, True
+    try:
+        return text, json.loads(text), False
+    except json.JSONDecodeError:
+        return text, None, False
+
+
+def _raise_mesh_stream_error(response: Any) -> NoReturn:
+    diagnostic, response_data, response_truncated = _decode_stream_error_body(response)
+    error = _MeshStreamAPIError(
+        f"mesh retrieval stream returned {response.status_code}: {diagnostic}",
+        status_code=response.status_code,
+        response_text=diagnostic,
+        response_data=response_data,
     )
-    return rows, summary
+    error.response_truncated = response_truncated
+    raise error
 
 
 def mesh_retrieve_through_gate(
@@ -290,7 +358,7 @@ def mesh_retrieve_through_gate(
     dataset_urn: str,
     *,
     verify: Any,
-) -> tuple[list[dict], dict]:
+) -> tuple[list[dict], list[dict]]:
     """Create a retrieval job over the mesh, then drain its gated SSE stream over
     the mesh — the L3 (two-cluster) analogue of ``retrieve_through_gate``.
 
@@ -300,14 +368,18 @@ def mesh_retrieve_through_gate(
     forwards both verbatim (StreamingResponse over ``aiter_raw``). The create goes
     through the SDK client so a 401/403/404 raises APIError for
     ``_mesh_call_or_skip`` to classify; the stream is a raw SSE GET (the SDK only
-    streams local retrieval paths). Returns (rows, gate_audit summary) in the
-    shape ``assert_persona_result`` expects; ``gate_audit`` is absorbed as either
-    the inline single-dict footer or the federated list-of-dicts seam.
+    streams local retrieval paths). Returns every actual footer in stream order;
+    ``gate_audit`` is absorbed as either the inline single-dict footer or the
+    federated list-of-dicts seam.
     """
     import requests
 
+    credential_headers = federation_credential_headers(fed_name)
     job = persona_client._request(
-        "POST", f"/mesh/{fed_name}/api/retrieval/jobs", json={"dataset_urn": dataset_urn}
+        "POST",
+        f"/mesh/{fed_name}/api/retrieval/jobs",
+        json={"dataset_urn": dataset_urn},
+        **({"headers": credential_headers} if credential_headers else {}),
     )
     if isinstance(job, dict):
         job_id = job.get("job_id") or job.get("id")
@@ -315,32 +387,29 @@ def mesh_retrieve_through_gate(
         job_id = getattr(job, "job_id", None) or getattr(job, "id", None)
     assert job_id, f"mesh create-job returned no job id: {job!r}"
 
-    included = redacted = total = 0
-    saw = False
     rows: list[dict] = []
+    gate_audits: list[dict] = []
 
     def _absorb(entry: Any) -> None:
-        nonlocal included, redacted, total, saw
+        # The job-result seam emits a LIST of per-gate footers, while inline/SSE
+        # emits a single dict. Preserve each footer instead of reconstructing it.
         if isinstance(entry, list):
             for item in entry:
                 _absorb(item)
         elif isinstance(entry, dict):
-            saw = True
-            included += int(entry.get("included", 0))
-            redacted += int(entry.get("redacted", 0))
-            total += int(entry.get("total", 0))
+            gate_audits.append(entry)
 
     url = f"{base_url}/mesh/{fed_name}/api/retrieval/jobs/{job_id}/stream"
-    headers = {"Authorization": f"Bearer {token}", "Accept": "text/event-stream"}
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "text/event-stream",
+        **credential_headers,
+    }
     with requests.get(
         url, headers=headers, stream=True, verify=verify, timeout=120
     ) as sr:
         if sr.status_code in (403, 404):
-            from kamiwaza_sdk.exceptions import APIError
-
-            exc = APIError(f"mesh retrieval stream returned {sr.status_code}")
-            exc.status_code = sr.status_code  # let _mesh_call_or_skip classify it
-            raise exc
+            _raise_mesh_stream_error(sr)
         sr.raise_for_status()
         event: Optional[str] = None
         data_lines: list[str] = []
@@ -350,7 +419,12 @@ def mesh_retrieve_through_gate(
             if raw == "":  # SSE event terminator (blank line)
                 if data_lines and event == "chunk":
                     payload = json.loads("\n".join(data_lines))
-                    rows.extend(payload.get("records") or payload.get("rows") or [])
+                    rows.extend(
+                        payload.get("data")
+                        or payload.get("records")
+                        or payload.get("rows")
+                        or []
+                    )
                     _absorb((payload.get("metadata") or {}).get("gate_audit"))
                 event, data_lines = None, []
                 continue
@@ -361,8 +435,7 @@ def mesh_retrieve_through_gate(
             elif raw.startswith("data:"):
                 data_lines.append(raw[len("data:") :].lstrip())
 
-    summary = {"included": included, "redacted": redacted, "total": total} if saw else {}
-    return rows, summary
+    return rows, gate_audits
 
 
 def initiator_cluster_uuid(receiver: Any, receiver_fed_id: str) -> Optional[str]:
@@ -386,13 +459,56 @@ def initiator_cluster_uuid(receiver: Any, receiver_fed_id: str) -> Optional[str]
     return str(cluster_uuid) if cluster_uuid else None
 
 
-def assert_persona_result(clearance: str, rows: list[dict], gate_audit: dict) -> None:
-    """Assert the known post-gate counts + zero leakage for a persona."""
+def _assert_exact_fixture_rows(
+    clearance: str,
+    rows: list[dict],
+    allowed: set[str],
+) -> None:
+    if clearance not in _EXACT_FIXTURE_CLEARANCES:
+        return
+    expected_rows = sorted(
+        (
+            record
+            for record in records()
+            if str(record.get("classification", "")).upper() in allowed
+        ),
+        key=lambda record: str(record.get("id", "")),
+    )
+    actual_rows = sorted(rows, key=lambda record: str(record.get("id", "")))
+    assert actual_rows == expected_rows, (
+        f"{clearance} caller received the wrong post-gate rows: "
+        f"expected={expected_rows!r} actual={actual_rows!r}"
+    )
+
+
+def assert_persona_result(
+    clearance: str, rows: list[dict], gate_audits: list[dict]
+) -> None:
+    """Assert the exact post-gate rows, footer contract, and zero leakage.
+
+    Counts are asserted against the rows that ARRIVED, not against the footer's
+    claim about them — the footer no longer carries counts (ENG-8859), and
+    checking the data directly is what the test was really for. The footer
+    contributes one bit, ``filtered``, which must agree with whether this
+    persona has anything withheld.
+    """
     included, redacted, allowed = KNOWN[clearance]
-    assert gate_audit, "no gate_audit footer in retrieval stream — gate not invoked?"
-    assert gate_audit["included"] == included, gate_audit
-    assert gate_audit["redacted"] == redacted, gate_audit
-    assert gate_audit["total"] == included + redacted
+    assert gate_audits, "no gate_audit footer in retrieval stream — gate not invoked?"
+    assert len(rows) == included, (
+        f"expected {included} rows for {clearance}, got {len(rows)}"
+    )
+    _assert_exact_fixture_rows(clearance, rows, allowed)
+    assert any(bool(audit.get("filtered")) for audit in gate_audits) is (
+        redacted > 0
+    ), gate_audits
+    for gate_audit in gate_audits:
+        # The deprecated count keys must be present-and-null, not resurrected.
+        assert all(
+            key in gate_audit and gate_audit[key] is None
+            for key in ("included", "redacted", "total", "gate")
+        ), f"deprecated gate_audit keys must be present and null: {gate_audit}"
     # zero leakage: nothing above the caller's clearance survives
-    leaked = [r for r in rows if str(r.get("classification", "")).upper() not in allowed]
+    leaked = [
+        r for r in rows if str(r.get("classification", "")).upper() not in allowed
+    ]
     assert not leaked, f"{clearance} caller leaked rows above clearance: {leaked}"
