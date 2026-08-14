@@ -68,6 +68,27 @@ def test_workroom_scope_can_be_used_as_context_manager() -> None:
     assert closed == [True]
 
 
+def test_falsey_supplied_authenticator_is_preserved(monkeypatch) -> None:
+    class FalseyAuthenticator:
+        def __bool__(self) -> bool:
+            return False
+
+        def authenticate(self, _session) -> None:
+            pass
+
+    monkeypatch.delenv("KAMIWAZA_API_KEY", raising=False)
+    monkeypatch.delenv("KAMIWAZA_API_TOKEN", raising=False)
+    authenticator = FalseyAuthenticator()
+
+    client = KamiwazaClient(
+        base_url="https://example.test/api",
+        authenticator=authenticator,
+        verify=False,
+    )
+
+    assert client.authenticator is authenticator
+
+
 def test_workroom_scope_does_not_close_parent_authenticator() -> None:
     authenticator = Mock()
     parent = KamiwazaClient(
@@ -83,6 +104,23 @@ def test_workroom_scope_does_not_close_parent_authenticator() -> None:
     authenticator.close.assert_not_called()
     parent.close()
     authenticator.close.assert_called_once_with()
+
+
+def test_client_closes_owned_authenticator_after_public_replacement() -> None:
+    owned = Mock()
+    replacement = Mock()
+    client = KamiwazaClient(
+        base_url="https://example.test/api",
+        authenticator=owned,
+        owns_authenticator=True,
+        verify=False,
+    )
+    client.authenticator = replacement
+
+    client.close()
+
+    owned.close.assert_called_once_with()
+    replacement.close.assert_not_called()
 
 
 def test_per_request_workroom_header_overrides_scoped_default() -> None:
