@@ -51,8 +51,9 @@ class BuildOverride:
 
 
 _PYTHON_OVERLAY = (
-    "# --- SDK override: install local Python runtime lib ---\n"
+    "# --- SDK override: install local Python SDK packages ---\n"
     "USER root\n"
+    "COPY --from=sdk kamiwaza_sdk /tmp/kamiwaza_sdk\n"
     "COPY --from=sdk kamiwaza_extensions_lib /tmp/kamiwaza_extensions_lib\n"
     # Resolve the site-packages dir via ``sysconfig`` rather than by
     # importing ``kamiwaza_extensions_lib``. The pre-install strip
@@ -63,9 +64,10 @@ _PYTHON_OVERLAY = (
     # installed. (ENG-3901 / F-002 round-3.)
     'RUN PURELIB=$(python -c "import sysconfig; print(sysconfig.get_paths()[\\"purelib\\"])")'
     ' && mkdir -p "$PURELIB"'
-    ' && rm -rf "$PURELIB/kamiwaza_extensions_lib"'
+    ' && rm -rf "$PURELIB/kamiwaza_sdk" "$PURELIB/kamiwaza_extensions_lib"'
+    ' && cp -r /tmp/kamiwaza_sdk "$PURELIB/"'
     ' && cp -r /tmp/kamiwaza_extensions_lib "$PURELIB/"'
-    " && rm -rf /tmp/kamiwaza_extensions_lib\n"
+    " && rm -rf /tmp/kamiwaza_sdk /tmp/kamiwaza_extensions_lib\n"
     "{restore_user_block}"
 )
 
@@ -220,37 +222,44 @@ def _build_patch_for_service(
     FROM nginx:alpine`` frontend still receives the TS strip on its
     builder stage (PR #91 round-3 H2).
     """
-    if "build" not in svc_config:
+    build_spec = svc_config.get("build")
+    if build_spec is None:
         return None
 
     svc_runtime = _detect_build_service_runtime(
         "_", svc_config, extension_dir=extension_dir
     )
-    if svc_runtime == "backend" and spec.python:
-        pattern = _PYTHON_PIP_INSTALL_PATTERN
-        strip_steps = _PYTHON_PRE_INSTALL_STRIP
-    elif svc_runtime == "frontend" and spec.typescript:
-        pattern = _TS_NPM_INSTALL_PATTERN
-        strip_steps = _TS_PRE_INSTALL_STRIP
-    else:
+    strip_plan = _install_strip_plan(svc_runtime, spec)
+    if strip_plan is None:
         return None
 
-    df_path = _resolve_dockerfile(svc_config["build"], extension_dir)
+    df_path = _resolve_dockerfile(build_spec, extension_dir)
     if df_path is None or not df_path.exists():
         return None
 
+    pattern, strip_steps = strip_plan
     original = df_path.read_text()
     patched = _insert_before_install_pattern(original, strip_steps, pattern)
     if patched == original:
         return None
+    return _normalize_install_command(patched, pattern)
 
-    # Mirror the cluster-deploy ``apply_build_overlay`` behavior: if
-    # the matched install line uses ``npm ci``, rewrite to ``npm
-    # install`` so the package.json/lockfile divergence the strip
-    # creates doesn't abort the build (PR #91 round-3 H1).
+
+def _install_strip_plan(
+    service_runtime: str, spec: SdkOverrideSpec
+) -> Optional[Tuple["re.Pattern[str]", str]]:
+    if service_runtime == "backend" and spec.python:
+        return _PYTHON_PIP_INSTALL_PATTERN, _PYTHON_PRE_INSTALL_STRIP
+    if service_runtime == "frontend" and spec.typescript:
+        return _TS_NPM_INSTALL_PATTERN, _TS_PRE_INSTALL_STRIP
+    return None
+
+
+def _normalize_install_command(content: str, pattern: "re.Pattern[str]") -> str:
+    """Keep a stripped package manifest compatible with its install command."""
     if pattern is _TS_NPM_INSTALL_PATTERN:
-        patched = _TS_NPM_CI_LINE_PATTERN.sub(r"\1npm install", patched)
-    return patched
+        return _TS_NPM_CI_LINE_PATTERN.sub(r"\1npm install", content)
+    return content
 
 
 def generate_build_overrides(
@@ -357,9 +366,7 @@ def _apply_pre_install_strip(content: str, overlay: BuildOverride) -> str:
             # ``npm install`` so the lockfile mismatch the strip step
             # creates doesn't abort the build (Codex P2 review on PR #91).
             if pattern is _TS_NPM_INSTALL_PATTERN:
-                new_content = _TS_NPM_CI_LINE_PATTERN.sub(
-                    r"\1npm install", new_content
-                )
+                new_content = _TS_NPM_CI_LINE_PATTERN.sub(r"\1npm install", new_content)
             return new_content
     return content
 
@@ -438,30 +445,33 @@ def _insert_before_install_pattern(
     install on its own, and the post-install overlay (if any) still
     appends as before."""
     lines = dockerfile_content.splitlines(keepends=True)
-    insert_idx = None
-    for i, line in enumerate(lines):
-        if pattern.match(line):
-            insert_idx = i
-            break
+    insert_idx = next(
+        (index for index, line in enumerate(lines) if pattern.match(line)), None
+    )
     if insert_idx is None:
         return dockerfile_content
+    prefix = lines[:insert_idx]
     pre_steps_resolved = pre_steps.replace(
         "{restore_user_block}",
-        _restore_user_block(_find_active_user(lines[:insert_idx])),
+        _restore_user_block(_find_active_user(prefix)),
     )
     # Ensure the inserted block starts on its own line and doesn't fuse with
     # the preceding directive.
-    leading = (
-        "" if not lines[:insert_idx] or lines[insert_idx - 1].endswith("\n") else "\n"
-    )
+    leading = _leading_separator(prefix)
     trailing = "" if pre_steps_resolved.endswith("\n") else "\n"
     return (
-        "".join(lines[:insert_idx])
+        "".join(prefix)
         + leading
         + pre_steps_resolved
         + trailing
         + "".join(lines[insert_idx:])
     )
+
+
+def _leading_separator(prefix: List[str]) -> str:
+    if not prefix or prefix[-1].endswith("\n"):
+        return ""
+    return "\n"
 
 
 def _find_active_user(lines: List[str]) -> Optional[str]:
@@ -478,17 +488,17 @@ def _find_active_user(lines: List[str]) -> Optional[str]:
     """
     active_user: Optional[str] = None
     for line in lines:
-        stripped = line.strip()
-        if stripped.upper().startswith("FROM "):
-            # New stage — image default user takes over (we don't try
-            # to resolve it; treat as None and let _restore_user_block
-            # decline to emit a directive).
-            active_user = None
-        elif stripped.startswith("USER "):
-            user = stripped[len("USER ") :].strip()
-            if user:
-                active_user = user
+        active_user = _active_user_after_line(active_user, line)
     return active_user
+
+
+def _active_user_after_line(active_user: Optional[str], line: str) -> Optional[str]:
+    stripped = line.strip()
+    if stripped.upper().startswith("FROM "):
+        return None
+    if not stripped.startswith("USER "):
+        return active_user
+    return stripped[len("USER ") :].strip() or active_user
 
 
 def _restore_user_block(user: Optional[str]) -> str:

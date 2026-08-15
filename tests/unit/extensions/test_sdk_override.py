@@ -45,6 +45,7 @@ def _write_runtime_dockerfiles(tmp_path: Path, compose: dict) -> Path:
 class TestSdkOverrideSpec:
     def test_paths(self, tmp_path):
         spec = SdkOverrideSpec(sdk_repo=tmp_path)
+        assert spec.python_client_path == tmp_path / "kamiwaza_sdk"
         assert spec.python_lib_path == tmp_path / "kamiwaza_extensions_lib"
         assert spec.typescript_lib_path == tmp_path / "kamiwaza-ai-extensions-lib"
         assert (
@@ -148,6 +149,7 @@ class TestValidateSdkOverride:
     def test_valid_repo(self, tmp_path):
         import time
 
+        (tmp_path / "kamiwaza_sdk").mkdir()
         (tmp_path / "kamiwaza_extensions_lib").mkdir()
         ts_lib = tmp_path / "kamiwaza-ai-extensions-lib"
         ts_lib.mkdir()
@@ -171,6 +173,7 @@ class TestValidateSdkOverride:
         assert "not found" in result.errors[0]
 
     def test_missing_python_lib(self, tmp_path):
+        (tmp_path / "kamiwaza_sdk").mkdir()
         ts_lib = tmp_path / "kamiwaza-ai-extensions-lib"
         ts_lib.mkdir()
         (ts_lib / "dist").mkdir()
@@ -181,6 +184,7 @@ class TestValidateSdkOverride:
         assert "Python" in result.errors[0]
 
     def test_missing_ts_lib(self, tmp_path):
+        (tmp_path / "kamiwaza_sdk").mkdir()
         (tmp_path / "kamiwaza_extensions_lib").mkdir()
 
         spec = SdkOverrideSpec(sdk_repo=tmp_path)
@@ -189,6 +193,7 @@ class TestValidateSdkOverride:
         assert "TypeScript" in result.errors[0]
 
     def test_missing_ts_dist_warns(self, tmp_path):
+        (tmp_path / "kamiwaza_sdk").mkdir()
         (tmp_path / "kamiwaza_extensions_lib").mkdir()
         ts_lib = tmp_path / "kamiwaza-ai-extensions-lib"
         ts_lib.mkdir()
@@ -203,6 +208,7 @@ class TestValidateSdkOverride:
     def test_stale_ts_dist_warns(self, tmp_path):
         import time
 
+        (tmp_path / "kamiwaza_sdk").mkdir()
         (tmp_path / "kamiwaza_extensions_lib").mkdir()
         ts_lib = tmp_path / "kamiwaza-ai-extensions-lib"
         ts_lib.mkdir()
@@ -219,6 +225,7 @@ class TestValidateSdkOverride:
         assert any("stale" in w for w in result.warnings)
 
     def test_python_only_skips_ts_validation(self, tmp_path):
+        (tmp_path / "kamiwaza_sdk").mkdir()
         (tmp_path / "kamiwaza_extensions_lib").mkdir()
 
         spec = SdkOverrideSpec(sdk_repo=tmp_path, typescript=False)
@@ -479,6 +486,7 @@ class TestGenerateBuildOverrides:
         assert names == {"frontend", "backend"}
 
         backend = [o for o in overrides if o.service_name == "backend"][0]
+        assert "COPY --from=sdk kamiwaza_sdk /tmp/kamiwaza_sdk" in backend.overlay_steps
         assert "kamiwaza_extensions_lib" in backend.overlay_steps
         assert "sdk" in backend.additional_build_contexts
 
@@ -1547,6 +1555,7 @@ class TestDoctorSdkChecks:
         from kamiwaza_extensions.doctor import DoctorChecker
 
         # Set up SDK repo structure
+        (tmp_path / "kamiwaza_sdk").mkdir()
         (tmp_path / "kamiwaza_extensions_lib").mkdir()
         ts_lib = tmp_path / "kamiwaza-ai-extensions-lib"
         ts_lib.mkdir()
