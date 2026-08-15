@@ -173,6 +173,8 @@ _TS_BUILD_PATTERNS = re.compile(
     r"^\s*RUN\s+.*(?:npm\s+run\s+build|next\s+build|yarn\s+build)", re.IGNORECASE
 )
 
+_PYTHON_ENV_COPY_MARKERS = (".venv", "site-packages")
+
 
 def generate_local_build_dockerfile_patches(
     spec: SdkOverrideSpec,
@@ -399,17 +401,7 @@ def _splice_overlay_steps(content: str, overlay: BuildOverride) -> str:
                 break
 
     if insert_idx is None:
-        # Multi-stage Dockerfile? Insert before the runtime FROM so
-        # the overlay runs in the build stage (shell + python both
-        # available, even when runtime is distroless). For single-stage
-        # we fall through to "append at end".
-        from_indices = [
-            i
-            for i, line in enumerate(lines)
-            if line.strip().upper().startswith("FROM ")
-        ]
-        if len(from_indices) >= 2:
-            insert_idx = from_indices[-1]
+        insert_idx = _build_stage_overlay_index(lines, overlay)
 
     user_scope = lines[:insert_idx] if insert_idx is not None else lines
     overlay_steps = overlay.overlay_steps.replace(
@@ -431,6 +423,35 @@ def _splice_overlay_steps(content: str, overlay: BuildOverride) -> str:
     # convert the Dockerfile to multi-stage; we surface a clear build
     # error rather than silently degrading.
     return content.rstrip() + "\n\n" + overlay_steps
+
+
+def _build_stage_overlay_index(
+    lines: List[str], overlay: BuildOverride
+) -> Optional[int]:
+    from_indices = [
+        index
+        for index, line in enumerate(lines)
+        if line.strip().upper().startswith("FROM ")
+    ]
+    if len(from_indices) < 2:
+        return None
+    runtime_stage_index = from_indices[-1]
+    if overlay.language != "python":
+        return runtime_stage_index
+    if _runtime_copies_python_environment(lines[runtime_stage_index + 1 :]):
+        return runtime_stage_index
+    return None
+
+
+def _runtime_copies_python_environment(runtime_lines: List[str]) -> bool:
+    copy_lines = (
+        line.lower()
+        for line in runtime_lines
+        if line.strip().upper().startswith("COPY --FROM=")
+    )
+    return any(
+        marker in line for line in copy_lines for marker in _PYTHON_ENV_COPY_MARKERS
+    )
 
 
 def _insert_before_install_pattern(

@@ -823,6 +823,29 @@ class TestApplyBuildOverlay:
             f"{inject_idx}, runtime FROM at line {runtime_from_idx}."
         )
 
+    def test_python_overlay_lands_in_runtime_when_only_wheels_cross_stages(self):
+        """A build-stage source overlay is discarded when the runtime copies
+        only wheels and installs them into its own Python environment."""
+        dockerfile = (
+            "FROM python:3.12 AS build\n"
+            "RUN python -m build --wheel --outdir /wheels\n"
+            "FROM python:3.12 AS runtime\n"
+            "COPY --from=build /wheels /wheels\n"
+            "RUN pip install /wheels/*.whl\n"
+            "USER appuser\n"
+        )
+        overlay = BuildOverride(
+            service_name="backend",
+            overlay_steps="# SDK override\nUSER root\nRUN echo injecting sdk\n{restore_user_block}",
+            additional_build_contexts={"sdk": "/sdk"},
+            language="python",
+        )
+
+        result = apply_build_overlay(dockerfile, overlay)
+
+        assert result.index("echo injecting sdk") > result.index("pip install")
+        assert result.rstrip().endswith("USER appuser")
+
     def test_single_stage_dockerfile_still_appends(self):
         """Single-stage Dockerfiles preserve prior behavior (append at
         end). A single-stage distroless build will surface a clear
