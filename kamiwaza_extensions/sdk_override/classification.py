@@ -27,6 +27,20 @@ ServiceRuntime = Literal["frontend", "backend", "static", "other"]
 _PYTHON_IMAGE_TOKENS = ("python",)
 _NODE_IMAGE_TOKENS = ("node", "bun")
 _STATIC_IMAGE_TOKENS = ("nginx", "caddy", "httpd", "apache")
+# Built infrastructure services can still have Compose build contexts (for
+# example, to add configuration or seed SQL) without containing either SDK
+# runtime.  Treat their explicit base images as authoritative non-SDK evidence
+# instead of falling back to the service-name heuristic, which otherwise calls
+# every unrecognised image a Python backend and appends a ``python -c`` layer.
+_NON_SDK_IMAGE_TOKENS = (
+    "postgres",
+    "redis",
+    "valkey",
+    "seaweedfs",
+    "jre",
+    "java",
+    "openjdk",
+)
 _PYTHONPATH_ENV_RE = re.compile(
     r"""^\s*ENV\s+
         (?:.*?\s+)?              # allow other ENV pairs before ours
@@ -52,21 +66,34 @@ def detect_service_type(
     if any(token in name_lower for token in ("frontend", "ui", "web")):
         return "frontend"
 
-    build = svc_config.get("build", {})
-    if isinstance(build, dict):
-        dockerfile = str(build.get("dockerfile", "")).lower()
-        context = str(build.get("context", "")).lower()
-        if "frontend" in dockerfile or "frontend" in context:
-            return "frontend"
+    if _service_build_looks_like_frontend(svc_config):
+        return "frontend"
 
+    if _service_exposes_frontend_port(svc_config):
+        return "frontend"
+
+    return "backend"
+
+
+def _service_build_looks_like_frontend(svc_config: dict) -> bool:
+    """Return whether build metadata explicitly points at a frontend."""
+    build = svc_config.get("build", {})
+    if not isinstance(build, dict):
+        return False
+    dockerfile = str(build.get("dockerfile", "")).lower()
+    context = str(build.get("context", "")).lower()
+    return "frontend" in dockerfile or "frontend" in context
+
+
+def _service_exposes_frontend_port(svc_config: dict) -> bool:
+    """Return whether a service exposes a conventional frontend port."""
     # Uses the shared compose-port parser so all three spec shapes (bare,
     # host:container, long-form dict) classify the same way. Mirrors
     # ``_should_use_node_frontend_probe``.
-    for port_spec in svc_config.get("ports", []):
-        if extract_container_port(port_spec) in (3000, 3001):
-            return "frontend"
-
-    return "backend"
+    return any(
+        extract_container_port(port_spec) in (3000, 3001)
+        for port_spec in svc_config.get("ports", [])
+    )
 
 
 def detect_service_runtime(
@@ -93,6 +120,8 @@ def detect_service_runtime(
         runtime = _classify_runtime_image(base_image)
         if runtime != "other":
             return runtime
+        if _contains_token(_image_basename(base_image), _NON_SDK_IMAGE_TOKENS):
+            return "other"
     return detect_service_type(svc_name, svc_config)
 
 
@@ -112,9 +141,7 @@ def _detect_build_service_runtime(
     dockerfile = _service_dockerfile(svc_config, extension_dir)
     stage_bases = _read_dockerfile_stage_bases(dockerfile)
     if not stage_bases:
-        return detect_service_runtime(
-            svc_name, svc_config, extension_dir=extension_dir
-        )
+        return detect_service_runtime(svc_name, svc_config, extension_dir=extension_dir)
 
     final_runtime = _classify_runtime_image(stage_bases[-1])
     if final_runtime == "static":
@@ -124,9 +151,7 @@ def _detect_build_service_runtime(
             return "frontend"
         return "static"
     if final_runtime == "other":
-        return detect_service_runtime(
-            svc_name, svc_config, extension_dir=extension_dir
-        )
+        return detect_service_runtime(svc_name, svc_config, extension_dir=extension_dir)
 
     return final_runtime
 

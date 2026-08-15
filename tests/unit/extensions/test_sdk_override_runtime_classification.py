@@ -46,7 +46,7 @@ def test_unrecognized_runtime_base_falls_back_to_service_heuristics(tmp_path):
     """A base image matching no known runtime token is not decisive, so
     classification falls back to the name/port heuristic."""
     extension_dir, service = _service_with_dockerfile(
-        tmp_path, "database", "FROM postgres:17\n"
+        tmp_path, "database", "FROM debian:12\n"
     )
 
     runtime = detect_service_runtime("postgres", service, extension_dir=extension_dir)
@@ -97,30 +97,23 @@ class TestBuildTimeClassification:
         return extension_dir, {"build": {"context": "./svc"}}
 
     @pytest.mark.parametrize(
-        "base", ["FROM debian:12\n", "FROM postgres:17\n", "FROM golang:1.22\n"]
+        ("base", "service_name", "expected"),
+        (
+            ("FROM debian:12\n", "backend", "backend"),
+            ("FROM golang:1.22\n", "backend", "backend"),
+            ("FROM debian:12\n", "frontend", "frontend"),
+        ),
     )
     def test_unrecognized_final_base_falls_back_to_heuristics(
-        self, tmp_path, base: str
+        self, tmp_path, base: str, service_name: str, expected: str
     ) -> None:
         extension_dir, service = self._service(tmp_path, base)
 
         assert (
             _detect_build_service_runtime(
-                "backend", service, extension_dir=extension_dir
+                service_name, service, extension_dir=extension_dir
             )
-            == "backend"
-        )
-
-    def test_unrecognized_final_base_respects_the_name_heuristic(
-        self, tmp_path
-    ) -> None:
-        extension_dir, service = self._service(tmp_path, "FROM debian:12\n")
-
-        assert (
-            _detect_build_service_runtime(
-                "frontend", service, extension_dir=extension_dir
-            )
-            == "frontend"
+            == expected
         )
 
     def test_node_build_stage_shipping_from_nginx_is_a_frontend(self, tmp_path) -> None:
