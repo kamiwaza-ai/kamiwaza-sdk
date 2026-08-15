@@ -56,16 +56,16 @@ def test_run_recoverable_true_uses_submit_then_poll(mock_client) -> None:
 
 
 def test_run_recoverable_true_forwards_runtime_env_to_submit(mock_client) -> None:
-    """runtime_env, target_cluster, timeout_seconds must reach the submit
-    body — they're how the server provisions the long-running job."""
+    """Runtime configuration reaches the remote submit without a routing hint."""
     from kamiwaza_sdk.services.jobs_federation import JobsAPI
 
     job_id = "job-fwd-test"
-    mock_client.expect("POST", "/cluster/jobs/submit", {"job_id": job_id})
-    mock_client.expect("GET", f"/cluster/jobs/{job_id}/status", {"status": "SUCCEEDED"})
+    prefix = "/mesh/ORION/api/cluster/jobs"
+    mock_client.expect("POST", f"{prefix}/submit", {"job_id": job_id})
+    mock_client.expect("GET", f"{prefix}/{job_id}/status", {"status": "SUCCEEDED"})
     mock_client.expect(
         "GET",
-        f"/cluster/jobs/{job_id}/result",
+        f"{prefix}/{job_id}/result",
         {"job_id": job_id, "status": "SUCCEEDED", "result": {}},
     )
 
@@ -81,7 +81,7 @@ def test_run_recoverable_true_forwards_runtime_env_to_submit(mock_client) -> Non
     submit_call = next(c for c in mock_client.calls if c[0] == "POST")
     body = submit_call[2].get("json", {})
     assert body["entrypoint"] == "python long.py"
-    assert body["target_cluster"] == "ORION"
+    assert "target_cluster" not in body
     assert body["runtime_env"] == {"env_vars": {"X": "1"}}
     assert body["timeout_seconds"] == 300
 
@@ -145,9 +145,7 @@ def test_wait_nests_generic_marker_payload_under_result(mock_client) -> None:
 
     jid = "job-answer"
     _status_terminal(mock_client, jid)
-    mock_client.expect(
-        "GET", f"/cluster/jobs/{jid}/result", {"answer": 42}
-    )
+    mock_client.expect("GET", f"/cluster/jobs/{jid}/result", {"answer": 42})
 
     with patch("time.sleep"):
         result = JobsAPI(client=mock_client).wait(jid, timeout=300)

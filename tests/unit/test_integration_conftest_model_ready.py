@@ -235,7 +235,11 @@ def test_deployable_model_probe_uses_shared_repo_and_engine(
     )
 
     assert deploy_calls[0]["model_id"] == "model-for-org/model.gguf"
-    assert deploy_calls[0]["engine_name"] == "llamacpp"
+    # engine_name is intentionally NOT forced: the platform auto-selects it from
+    # the model's weight format (GGUF -> llamacpp; kamiwaza.serving.engine_selector),
+    # which equals the target's engine by construction. The probe passes only the
+    # repo + file; forcing the engine was redundant with the model choice. (ENG-9872)
+    assert "engine_name" not in deploy_calls[0]
     assert deploy_calls[0]["m_file_id"] == str(model_file_id)
 
 
@@ -525,7 +529,10 @@ def test_deployable_model_probe_does_not_reuse_mismatched_target(
         target,
     )
 
-    assert deploy_calls[0]["engine_name"] == "llamacpp"
+    # A mismatched active deployment must trigger a fresh deploy (not reuse). The
+    # re-deploy no longer forces engine_name -- the platform auto-selects it from
+    # the model format; the target's engine remains the match key above. (ENG-9872)
+    assert deploy_calls and "engine_name" not in deploy_calls[0]
 
 
 def test_context_target_carries_shared_quantization(

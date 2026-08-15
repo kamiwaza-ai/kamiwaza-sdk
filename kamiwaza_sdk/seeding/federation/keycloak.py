@@ -17,6 +17,11 @@ from urllib.parse import quote
 
 import requests  # type: ignore[import-untyped]
 
+from .owned_realm import (
+    OWNED_REALM_ATTRIBUTE as OWNED_REALM_ATTRIBUTE,
+    OwnedRealmLifecycle,
+)
+
 
 class KeycloakAdminError(RuntimeError):
     """A Keycloak admin REST call failed."""
@@ -102,7 +107,9 @@ class KeycloakAdmin:
         KeyError/TypeError far from the real cause.
         """
         if resp.status_code >= 400:
-            raise KeycloakAdminError(f"{what} failed ({resp.status_code}): {resp.text[:200]}")
+            raise KeycloakAdminError(
+                f"{what} failed ({resp.status_code}): {resp.text[:200]}"
+            )
         try:
             return resp.json()
         except ValueError:
@@ -115,14 +122,32 @@ class KeycloakAdmin:
         got = self._req("GET", f"/realms/{quote(realm)}")
         if got.status_code == 200:
             return {"realm": realm, "created": False}
-        resp = self._req(
-            "POST", "/realms", json={"realm": realm, "enabled": True}
-        )
+        resp = self._req("POST", "/realms", json={"realm": realm, "enabled": True})
         if resp.status_code not in (201, 409):
             raise KeycloakAdminError(
                 f"create realm {realm!r} failed ({resp.status_code}): {resp.text[:200]}"
             )
         return {"realm": realm, "created": resp.status_code == 201}
+
+    def create_owned_realm(self, realm: str, owner_nonce: str) -> Dict[str, Any]:
+        """Create a new fixture-owned realm, refusing any pre-existing realm.
+
+        Unlike :meth:`ensure_realm`, this is intentionally non-idempotent. A
+        smoke cleanup may delete the whole realm, so provisioning must prove it
+        created this exact realm before making any client/profile/user mutation.
+        """
+        return self._owned_realms().create(realm, owner_nonce)
+
+    def delete_owned_realm(self, realm: str, owner_nonce: str) -> bool:
+        """Delete only a realm carrying ``owner_nonce``; absent is success.
+
+        Returning ``False`` for an already-absent realm makes cleanup safe to
+        retry after an ambiguous SSH result without weakening ownership checks.
+        """
+        return self._owned_realms().delete(realm, owner_nonce)
+
+    def _owned_realms(self) -> OwnedRealmLifecycle:
+        return OwnedRealmLifecycle(self._req, self._ok_json, KeycloakAdminError)
 
     def set_unmanaged_attributes(self, realm: str, *, policy: str = "ENABLED") -> None:
         """Set the realm user-profile ``unmanagedAttributePolicy`` so persona
@@ -232,7 +257,10 @@ class KeycloakAdmin:
             ),
             "search users",
         )
-        attrs = {k: (v if isinstance(v, list) else [str(v)]) for k, v in (attributes or {}).items()}
+        attrs = {
+            k: (v if isinstance(v, list) else [str(v)])
+            for k, v in (attributes or {}).items()
+        }
         rep = {
             "username": username,
             "enabled": True,
@@ -299,5 +327,3 @@ def jwks_uri_from_issuer(issuer: str) -> str:
     """Derive a Keycloak realm's JWKS endpoint (mirrors the server-side helper;
     ``fed pair`` uses this so JWKS is pinned to the issuer — #2298 H1)."""
     return issuer.rstrip("/") + "/protocol/openid-connect/certs"
-
-
