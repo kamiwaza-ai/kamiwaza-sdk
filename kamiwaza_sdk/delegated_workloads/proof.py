@@ -327,8 +327,12 @@ def _secure_assertion_file(metadata: os.stat_result) -> bool:
     if metadata.st_uid not in {0, os.geteuid()}:
         return False
     permissions = stat.S_IMODE(metadata.st_mode)
-    forbidden = stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH | stat.S_IXUSR
-    forbidden |= stat.S_IXGRP | stat.S_IXOTH | stat.S_IROTH
+    forbidden = stat.S_IWOTH | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+    forbidden |= stat.S_IROTH
+    if metadata.st_uid == os.geteuid():
+        forbidden |= stat.S_IWUSR
+    if metadata.st_gid in _effective_groups():
+        forbidden |= stat.S_IWGRP
     if permissions & forbidden:
         return False
     return _effective_identity_can_read(metadata, permissions)
@@ -337,8 +341,11 @@ def _secure_assertion_file(metadata: os.stat_result) -> bool:
 def _effective_identity_can_read(metadata: os.stat_result, permissions: int) -> bool:
     if metadata.st_uid == os.geteuid():
         return bool(permissions & stat.S_IRUSR)
-    groups = {os.getegid(), *os.getgroups()}
-    return metadata.st_gid in groups and bool(permissions & stat.S_IRGRP)
+    return metadata.st_gid in _effective_groups() and bool(permissions & stat.S_IRGRP)
+
+
+def _effective_groups() -> set[int]:
+    return {os.getegid(), *os.getgroups()}
 
 
 def _decode_assertion(raw: bytes) -> str:

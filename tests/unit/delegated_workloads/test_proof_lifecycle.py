@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import pickle
+import stat
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID
@@ -77,6 +79,19 @@ def test_projected_assertion_adapter_reads_only_the_fixed_secure_path(
             AttestationProfile.KUBERNETES_OFFLINE_V1,
             token_path=tmp_path / "caller-selected-token",
         )
+
+
+def test_projected_assertion_accepts_root_owned_kubelet_mode_for_group_reader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    metadata = os.stat_result(
+        (stat.S_IFREG | 0o640, 0, 0, 1, 0, 65532, len(ASSERTION), 0, 0, 0)
+    )
+    monkeypatch.setattr(proof_module.os, "geteuid", lambda: 65532)
+    monkeypatch.setattr(proof_module.os, "getegid", lambda: 65532)
+    monkeypatch.setattr(proof_module.os, "getgroups", lambda: [65532])
+
+    assert proof_module._secure_assertion_file(metadata)
 
 
 @pytest.mark.parametrize("mode", [0o600, 0o404, 0o440 | 0o020])
