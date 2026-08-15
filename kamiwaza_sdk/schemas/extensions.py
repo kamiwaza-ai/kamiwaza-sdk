@@ -115,6 +115,7 @@ class CreateExtension(BaseModel):
     kamiwaza: Optional[KamiwazaIntegrationSpec] = None
     networking: Optional[NetworkingSpec] = None
     security: Optional[SecuritySpec] = None
+    workload_identity: Optional[Dict[str, Any]] = None
 
 
 class ExtensionServiceStatus(BaseModel):
@@ -189,11 +190,12 @@ class PatchServiceSpec(BaseModel):
 
 
 class PatchExtension(BaseModel):
-    """Partial extension update. Only service-level fields supported in v1."""
+    """Partial extension update."""
 
     model_config = ConfigDict(extra="allow")
 
     services: List[PatchServiceSpec] = Field(..., min_length=1)
+    workload_identity: Optional[Dict[str, Any]] = None
 
 
 # ---------------------------------------------------------------------------
