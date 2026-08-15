@@ -508,6 +508,22 @@ def test_required_mesh_retrieval_returns_exact_post_gate_rows(
     mc.assert_persona_result(clearance, rows, gate_audit)
 
 
+def test_required_mesh_dataset_list_returns_only_authorized_fixture(
+    shared_idp_gated_pair,
+) -> None:
+    """List receiver datasets through mesh with receiver-local ReBAC filtering."""
+    wiring = shared_idp_gated_pair
+    persona, _token = _active_persona_session(wiring["personas"]["U"])
+
+    datasets = _required_mesh_call(
+        lambda: persona.catalog.datasets.list(
+            target_cluster=wiring["name"],
+        )
+    )
+
+    assert [str(dataset.urn) for dataset in datasets] == [wiring["urn"]]
+
+
 def test_required_mesh_job_reaches_receiver_and_returns_marker(
     shared_idp_gated_pair,
 ) -> None:

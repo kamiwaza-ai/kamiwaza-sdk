@@ -9,6 +9,50 @@ from kamiwaza_sdk.services.catalog import CatalogService, ContainerClient, Datas
 pytestmark = pytest.mark.unit
 
 
+_DATASET = {
+    "urn": "urn:li:dataset:(file,mesh-demo,PROD)",
+    "name": "mesh-demo",
+    "platform": "file",
+    "environment": "PROD",
+    "tags": [],
+    "properties": {},
+}
+
+
+def test_dataset_list_routes_to_mesh_target(mock_client, monkeypatch):
+    path = "/mesh/receiver%20edge/api/catalog/datasets/"
+    monkeypatch.setenv(
+        "KAMIWAZA_FEDERATION_CREDENTIAL_RECEIVER_EDGE",
+        "receiver-token",
+    )
+    mock_client.expect("GET", path, [_DATASET])
+
+    datasets = DatasetClient(mock_client).list(
+        query="mesh-demo",
+        target_cluster="receiver edge",
+    )
+
+    assert [dataset.urn for dataset in datasets] == [_DATASET["urn"]]
+    assert mock_client.calls == [
+        (
+            "GET",
+            path,
+            {
+                "params": {"query": "mesh-demo"},
+                "headers": {"X-KZ-Federation-Credential": "receiver-token"},
+            },
+        )
+    ]
+
+
+@pytest.mark.parametrize("target_cluster", ["", " receiver", "receiver/edge", "."])
+def test_dataset_list_rejects_unsafe_mesh_target(mock_client, target_cluster):
+    with pytest.raises(ValueError, match="target_cluster"):
+        DatasetClient(mock_client).list(target_cluster=target_cluster)
+
+    assert mock_client.calls == []
+
+
 def test_catalog_service_create_dataset_roundtrip(dummy_client):
     dataset_response = {
         "urn": "urn:li:dataset:(s3,my,PROD)",

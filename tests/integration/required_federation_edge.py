@@ -10,6 +10,7 @@ REQUIRED_EDGE_CASES = frozenset(
         "test_required_mesh_retrieval_returns_exact_post_gate_rows[U]",
         "test_required_mesh_retrieval_returns_exact_post_gate_rows[S]",
         "test_required_mesh_retrieval_returns_exact_post_gate_rows[TS]",
+        "test_required_mesh_dataset_list_returns_only_authorized_fixture",
         "test_required_mesh_job_reaches_receiver_and_returns_marker",
         "test_unonboarded_shared_idp_user_rejected_by_receiver_allowlist",
     }
