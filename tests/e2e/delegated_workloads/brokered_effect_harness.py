@@ -24,7 +24,7 @@ from kamiwaza_sdk.delegated_workloads import (
     EffectReservationRequest,
     EffectResourceRef,
 )
-from kamiwaza_sdk.delegated_workloads.proof import body_digest
+from kamiwaza_sdk.delegated_workloads.proof import BODY_DIGEST_CLAIM, body_digest
 
 from .fixtures.fake_provider import (
     BrokerResourceCall,
@@ -286,7 +286,7 @@ def _assert_exact_proof(view: _RequestView) -> None:
     encoded = view.headers["DPoP"]
     claims = jwt.decode(encoded, options={"verify_signature": False})
     assert (claims["htm"], claims["htu"]) == (view.method, view.url)
-    assert claims["body_sha256"] == body_digest(view.body)
+    assert claims[BODY_DIGEST_CLAIM] == body_digest(view.body)
     authorization = view.headers.get("Authorization")
     if authorization is None:
         raise AssertionError("broker journey capability is missing")

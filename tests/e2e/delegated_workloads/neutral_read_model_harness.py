@@ -10,7 +10,7 @@ from dataclasses import dataclass
 
 import jwt
 
-from kamiwaza_sdk.delegated_workloads.proof import body_digest
+from kamiwaza_sdk.delegated_workloads.proof import BODY_DIGEST_CLAIM, body_digest
 
 BASE_URL = "https://core.example.test/api/v1/delegated-workloads"
 RESOURCE_URL = "https://resource.example.test/documents/doc-7"
@@ -92,7 +92,7 @@ def _assert_exact_proof(view: RequestView) -> None:
     claims = jwt.decode(encoded, options={"verify_signature": False})
     assert claims["htm"] == view.method
     assert claims["htu"] == view.url
-    assert claims["body_sha256"] == body_digest(view.body)
+    assert claims[BODY_DIGEST_CLAIM] == body_digest(view.body)
     authorization = view.headers.get("Authorization")
     if authorization is None:
         assert "ath" not in claims
