@@ -26,10 +26,12 @@ Server-side correlate: ``kamiwaza.cluster.jobs`` (FederatedJobsService
 from __future__ import annotations
 
 import time
+from collections.abc import Mapping
 from typing import Any, Optional
 
 from ..exceptions import APIError, MeshJobTimeoutError
 from ..schemas.federation import JobResult
+from ..schemas.delegated_jobs import DelegatedAccess
 from .base_service import BaseService
 from .jobs_routing import JobRouter
 
@@ -73,6 +75,7 @@ class JobsAPI(BaseService):
         pip: Optional[list[str]] = None,
         py_modules: Optional[list[str]] = None,
         working_dir: Optional[str] = None,
+        delegated_access: DelegatedAccess | Mapping[str, Any] | None = None,
     ) -> JobResult:
         """Run a job and return the completed JobResult.
 
@@ -98,6 +101,8 @@ class JobsAPI(BaseService):
             working_dir: T5.38 / ENG-4715 / FR-94 convenience — local
                 directory to bundle as the working dir; packs into
                 ``runtime_env["working_dir"]``.
+            delegated_access: Exact receiver datasets/models and their typed
+                operations. Omission preserves the ordinary job path.
 
         Returns:
             Completed ``JobResult``. ``status`` will be SUCCEEDED for
@@ -121,12 +126,14 @@ class JobsAPI(BaseService):
                 target_cluster=target_cluster,
                 runtime_env=merged_runtime_env,
                 timeout_seconds=timeout_seconds,
+                delegated_access=delegated_access,
             )
         return self._run_sync(
             entrypoint=entrypoint,
             target_cluster=target_cluster,
             runtime_env=merged_runtime_env,
             timeout_seconds=timeout_seconds,
+            delegated_access=delegated_access,
         )
 
     @staticmethod
@@ -167,12 +174,14 @@ class JobsAPI(BaseService):
         target_cluster: Optional[str],
         runtime_env: Optional[dict[str, Any]],
         timeout_seconds: Optional[int],
+        delegated_access: DelegatedAccess | Mapping[str, Any] | None,
     ) -> JobResult:
         """Existing sync /run path; X-Job-Id only visible on completion."""
         body = _build_run_body(
             entrypoint=entrypoint,
             runtime_env=runtime_env,
             timeout_seconds=timeout_seconds,
+            delegated_access=delegated_access,
         )
         response = self._router.request(
             "POST", "run", target_cluster=target_cluster, json=body
@@ -186,6 +195,7 @@ class JobsAPI(BaseService):
         target_cluster: Optional[str],
         runtime_env: Optional[dict[str, Any]],
         timeout_seconds: Optional[int],
+        delegated_access: DelegatedAccess | Mapping[str, Any] | None,
     ) -> JobResult:
         """Async submit + poll. job_id available immediately for resume.
 
@@ -199,6 +209,7 @@ class JobsAPI(BaseService):
             target_cluster=target_cluster,
             runtime_env=runtime_env,
             timeout_seconds=timeout_seconds,
+            delegated_access=delegated_access,
         )
         return self.wait(
             job_id,
@@ -213,6 +224,7 @@ class JobsAPI(BaseService):
         target_cluster: Optional[str] = None,
         runtime_env: Optional[dict[str, Any]] = None,
         timeout_seconds: Optional[int] = None,
+        delegated_access: DelegatedAccess | Mapping[str, Any] | None = None,
     ) -> str:
         """Submit a job and return its job_id immediately.
 
@@ -224,6 +236,7 @@ class JobsAPI(BaseService):
             entrypoint=entrypoint,
             runtime_env=runtime_env,
             timeout_seconds=timeout_seconds,
+            delegated_access=delegated_access,
         )
         response = self._router.request(
             "POST", "submit", target_cluster=target_cluster, json=body
@@ -355,10 +368,14 @@ def _build_run_body(
     entrypoint: str,
     runtime_env: Optional[dict[str, Any]],
     timeout_seconds: Optional[int],
+    delegated_access: DelegatedAccess | Mapping[str, Any] | None,
 ) -> dict[str, Any]:
     body: dict[str, Any] = {"entrypoint": entrypoint}
     if runtime_env is not None:
         body["runtime_env"] = runtime_env
     if timeout_seconds is not None:
         body["timeout_seconds"] = timeout_seconds
+    if delegated_access is not None:
+        access = DelegatedAccess.model_validate(delegated_access)
+        body["delegated_access"] = access.model_dump(mode="json")
     return body

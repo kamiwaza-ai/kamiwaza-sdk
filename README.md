@@ -289,6 +289,47 @@ job_id = kz.jobs.submit_async(
 result = kz.jobs.wait(job_id, timeout=600)
 ```
 
+For a governed receiver job, pass exact typed resources at submission. The
+server rejects the whole request if any resource or operation is not granted:
+
+```python
+from kamiwaza_sdk import DelegatedAccess, DatasetDelegatedAccess
+
+job_id = kz.jobs.submit_async(
+    target_cluster="ORION",
+    entrypoint="python summarize.py",
+    timeout_seconds=36_000,
+    delegated_access=DelegatedAccess(
+        datasets=(
+            DatasetDelegatedAccess(
+                urn=DATASET_URN,
+                operations=("discover", "read", "retrieve"),
+            ),
+        ),
+    ),
+)
+```
+
+Inside that managed job, use only the private credential-agent socket. The
+runtime client never reads an API key, user token, refresh token, or public
+base URL; capability renewal remains inside the agent:
+
+```python
+from kamiwaza_sdk import JobRuntimeClient
+
+with JobRuntimeClient.from_environment() as receiver:
+    granted = receiver.datasets.list_granted()
+    rows = receiver.retrieval.collect(dataset_urn=DATASET_URN)
+    answer = receiver.models.chat(
+        deployment_id=DEPLOYMENT_ID,
+        messages=[{"role": "user", "content": summarize(rows)}],
+    )
+```
+
+`receiver.retrieval.stream(...)` and `receiver.models.stream_chat(...)` expose
+streaming iterators. A sidecar restart is picked up on the next operation by
+re-reading and kernel-verifying the platform-owned agent identity file.
+
 `wait` raises `kamiwaza.exceptions.MeshJobTimeoutError` when the
 budget expires before a terminal state. A *failed* job returns a
 JobResult with `status="FAILED"` and an `error` message — that's
