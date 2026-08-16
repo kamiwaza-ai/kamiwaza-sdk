@@ -188,6 +188,33 @@ def test_cache_is_bounded_by_sdk_ceiling_and_server_validity() -> None:
     assert len(short_transport.requests) == 2
 
 
+def test_freshness_uses_response_time_after_the_discovery_request() -> None:
+    clock = [NOW]
+
+    class _DelayedTransport(_Transport):
+        def send_json(self, request: object) -> object:
+            clock[0] += timedelta(seconds=5)
+            document = _document().model_copy(
+                update={
+                    "checked_at": clock[0],
+                    "valid_until": clock[0] + timedelta(minutes=1),
+                }
+            )
+            self.responses = [document]
+            return super().send_json(request)
+
+    client = ReadinessClient(
+        "https://core.example.test/api/v1/delegated-workloads",
+        _DelayedTransport([]),
+        clock=lambda: clock[0],
+    )
+
+    result = client.check(_requirements())
+
+    assert result.ready is True
+    assert result.diagnostics == ()
+
+
 def test_readiness_types_are_exported_from_the_neutral_package() -> None:
     import kamiwaza_sdk.delegated_workloads as delegated
 

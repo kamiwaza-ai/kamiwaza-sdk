@@ -184,10 +184,11 @@ class ReadinessClient:
             if now < self._cache.expires_at:
                 return self._cache.result
         document = self._fetch()
-        result = self._evaluator.evaluate(document, requirements, now=now)
+        response_time = self._clock()
+        result = self._evaluator.evaluate(document, requirements, now=response_time)
         expires_at = min(
             document.valid_until,
-            now + timedelta(seconds=MAX_READINESS_CACHE_SECONDS),
+            response_time + timedelta(seconds=MAX_READINESS_CACHE_SECONDS),
         )
         self._cache = _CacheEntry(fence, expires_at, result)
         return result
