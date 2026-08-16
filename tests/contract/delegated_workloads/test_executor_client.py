@@ -103,7 +103,7 @@ def test_executor_transitions_are_capability_bound_and_fenced() -> None:
     _assert_run_authority(session.calls[1])
 
 
-def test_executor_reserves_an_exact_effect_without_assertion_forwarding() -> None:
+def test_executor_reserves_an_exact_effect_with_current_workload_assertion() -> None:
     session = StubSession(
         [
             StubResponse(200, _claim_payload()),
@@ -134,7 +134,7 @@ def test_executor_reserves_an_exact_effect_without_assertion_forwarding() -> Non
     assert effect.effect_id == UUID(EFFECT_ID)
     headers = _headers(session.calls[1])
     assert headers["Authorization"] == f"DPoP {RUN_CAPABILITY}"
-    assert "X-Kamiwaza-Workload-Assertion" not in headers
+    assert headers["X-Kamiwaza-Workload-Assertion"] == ASSERTION
     assert _json_body(session.calls[1])["effect_digest"] == DIGEST
 
 

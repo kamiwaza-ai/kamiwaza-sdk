@@ -13,6 +13,7 @@ from kamiwaza_sdk.delegated_workloads import (
     DPoPNonceRequired,
     ProtocolRetrySafety,
 )
+from kamiwaza_sdk.delegated_workloads.proof import BODY_DIGEST_CLAIM, body_digest
 
 pytestmark = pytest.mark.unit
 NOW = datetime(2026, 8, 9, 12, tzinfo=UTC)
@@ -101,6 +102,29 @@ def test_application_work_is_never_replayed_for_nonce_challenge() -> None:
         transport.send(_request(ProtocolRetrySafety.NEVER))
 
     assert len(session.calls) == 1
+
+
+def test_prepare_headers_binds_external_transport_to_exact_request() -> None:
+    transport = DelegatedWorkloadTransport(StubSession([]), clock=lambda: NOW)
+    request = DelegatedProtocolRequest(
+        method="POST",
+        url="https://models.example.test/v1/chat/completions",
+        capability="header.effect.signature",
+        body=b'{"model":"model-1"}',
+        content_type="application/vnd.kamiwaza.model+json",
+        extra_headers=(("X-Kamiwaza-Workload-Assertion", "assertion"),),
+    )
+
+    headers = transport.prepare_headers(request)
+    claims = jwt.decode(headers["DPoP"], options={"verify_signature": False})
+
+    assert headers["Authorization"] == "DPoP header.effect.signature"
+    assert headers["Content-Type"] == "application/vnd.kamiwaza.model+json"
+    assert headers["X-Kamiwaza-Workload-Assertion"] == "assertion"
+    assert claims["htm"] == "POST"
+    assert claims["htu"] == request.url
+    assert "ath" in claims
+    assert claims[BODY_DIGEST_CLAIM] == body_digest(request.body)
 
 
 def test_repeated_nonce_challenge_stops_after_one_safe_retry() -> None:

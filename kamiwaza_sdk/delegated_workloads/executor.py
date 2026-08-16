@@ -89,6 +89,7 @@ class DelegatedExecutorClient:
             f"/runs/{authority.run_id}/effects",
             request.model_dump(mode="json", exclude_none=True),
             capability=authority.capability,
+            extra_headers=_assertion_header(authority.workload_assertion),
         )
         return validated(EffectReservation, payload)
 
