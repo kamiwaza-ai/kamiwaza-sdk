@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Annotated, Literal
 from uuid import UUID
 
+from packaging.requirements import InvalidRequirement, Requirement
+from packaging.specifiers import Specifier
+from packaging.utils import InvalidName, canonicalize_name
+from packaging.version import InvalidVersion, Version
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from typing_extensions import Self
 
@@ -14,6 +19,7 @@ ModelOperation = Literal["discover", "chat"]
 _DATASET_OPERATION_ORDER = {"discover": 0, "read": 1, "retrieve": 2}
 _MODEL_OPERATION_ORDER = {"discover": 0, "chat": 1}
 _MAX_RESOURCES_PER_KIND = 64
+MAX_JOB_PYTHON_PACKAGES = 32
 
 
 class _ExactRequest(BaseModel):
@@ -115,9 +121,60 @@ class JobChatMessage(_ExactRequest):
     content: Annotated[str, Field(min_length=1, max_length=32 * 1024)]
 
 
-def _require_distinct(values: list[object], message: str) -> None:
+def _require_distinct(values: Sequence[object], message: str) -> None:
     if len(set(values)) != len(values):
         raise ValueError(message)
+
+
+def normalize_python_packages(
+    values: list[str] | tuple[str, ...] | None,
+) -> tuple[str, ...]:
+    """Normalize an SDK package list to Core's exact source-free coordinates."""
+    if values is None:
+        return ()
+    if not isinstance(values, (list, tuple)):
+        raise ValueError("python_packages must be a list")
+    if len(values) > MAX_JOB_PYTHON_PACKAGES:
+        raise ValueError("python_packages must contain at most 32 packages")
+    normalized = tuple(_normalize_python_package(item) for item in values)
+    names = [item.partition("==")[0] for item in normalized]
+    _require_distinct(names, "python package names must be unique")
+    return normalized
+
+
+def _normalize_python_package(value: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError("python packages must be strings")
+    try:
+        requirement = Requirement(value)
+    except InvalidRequirement as exc:
+        raise ValueError("invalid Python package coordinate") from exc
+    specifiers = list(requirement.specifier)
+    if _is_non_exact_requirement(requirement, specifiers):
+        raise ValueError("Python packages require exact name==version coordinates")
+    try:
+        name = str(canonicalize_name(requirement.name, validate=True))
+        version = str(Version(specifiers[0].version))
+    except (InvalidName, InvalidVersion) as exc:
+        raise ValueError("invalid Python package coordinate") from exc
+    return f"{name}=={version}"
+
+
+def _is_non_exact_requirement(
+    requirement: Requirement, specifiers: Sequence[Specifier]
+) -> bool:
+    if requirement.url is not None:
+        return True
+    if requirement.extras:
+        return True
+    if requirement.marker is not None:
+        return True
+    if len(specifiers) != 1:
+        return True
+    specifier = specifiers[0]
+    return getattr(specifier, "operator", None) != "==" or "*" in str(
+        getattr(specifier, "version", "")
+    )
 
 
 __all__ = (
@@ -127,6 +184,8 @@ __all__ = (
     "GrantedDataset",
     "GrantedModel",
     "JobChatMessage",
+    "MAX_JOB_PYTHON_PACKAGES",
     "ModelDelegatedAccess",
     "ModelOperation",
+    "normalize_python_packages",
 )

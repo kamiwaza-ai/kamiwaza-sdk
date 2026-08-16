@@ -17,7 +17,8 @@ Skeleton scope (WS-M1):
 Operability scope (WS-M2):
     - kz.jobs.cancel(job_id) — T5.35 / ENG-4712
     - kz.jobs.run(..., recoverable=True) — T5.22 / ENG-4699
-    - kz.jobs.run(..., pip=[...], py_modules=[...]) — T5.38 / ENG-4715
+    - kz.jobs.run(..., pip=[...], py_modules=[...]) — ordinary Ray runtime env
+    - kz.jobs.run(..., python_packages=[...]) — approved delegated-job packages
 
 Server-side correlate: ``kamiwaza.cluster.jobs`` (FederatedJobsService
 + /api/cluster/jobs/{run,submit,{id}/status,{id}/result} endpoints).
@@ -31,7 +32,7 @@ from typing import Any, Optional
 
 from ..exceptions import APIError, MeshJobTimeoutError
 from ..schemas.federation import JobResult
-from ..schemas.delegated_jobs import DelegatedAccess
+from ..schemas.delegated_jobs import DelegatedAccess, normalize_python_packages
 from .base_service import BaseService
 from .jobs_routing import JobRouter
 
@@ -76,6 +77,7 @@ class JobsAPI(BaseService):
         py_modules: Optional[list[str]] = None,
         working_dir: Optional[str] = None,
         delegated_access: DelegatedAccess | Mapping[str, Any] | None = None,
+        python_packages: Optional[list[str]] = None,
     ) -> JobResult:
         """Run a job and return the completed JobResult.
 
@@ -95,6 +97,8 @@ class JobsAPI(BaseService):
                 ``job_id`` is in hand immediately.
             pip: T5.38 / ENG-4715 / FR-94 convenience — Ray pip list,
                 packed into ``runtime_env["pip"]`` on the wire.
+                For isolated delegated jobs, use ``python_packages`` instead;
+                Core strips execution-environment runtime keys at that boundary.
             py_modules: T5.38 / ENG-4715 / FR-94 convenience — local
                 module paths to ship with the job; packs into
                 ``runtime_env["py_modules"]``.
@@ -103,6 +107,10 @@ class JobsAPI(BaseService):
                 ``runtime_env["working_dir"]``.
             delegated_access: Exact receiver datasets/models and their typed
                 operations. Omission preserves the ordinary job path.
+            python_packages: Exact ``name==version`` coordinates from the
+                receiver operator's approved private package catalog. This is
+                available only with ``delegated_access``; repository location
+                and credentials are never part of the request.
 
         Returns:
             Completed ``JobResult``. ``status`` will be SUCCEEDED for
@@ -127,6 +135,7 @@ class JobsAPI(BaseService):
                 runtime_env=merged_runtime_env,
                 timeout_seconds=timeout_seconds,
                 delegated_access=delegated_access,
+                python_packages=python_packages,
             )
         return self._run_sync(
             entrypoint=entrypoint,
@@ -134,6 +143,7 @@ class JobsAPI(BaseService):
             runtime_env=merged_runtime_env,
             timeout_seconds=timeout_seconds,
             delegated_access=delegated_access,
+            python_packages=python_packages,
         )
 
     @staticmethod
@@ -175,6 +185,7 @@ class JobsAPI(BaseService):
         runtime_env: Optional[dict[str, Any]],
         timeout_seconds: Optional[int],
         delegated_access: DelegatedAccess | Mapping[str, Any] | None,
+        python_packages: Optional[list[str]],
     ) -> JobResult:
         """Existing sync /run path; X-Job-Id only visible on completion."""
         body = _build_run_body(
@@ -182,6 +193,7 @@ class JobsAPI(BaseService):
             runtime_env=runtime_env,
             timeout_seconds=timeout_seconds,
             delegated_access=delegated_access,
+            python_packages=python_packages,
         )
         response = self._router.request(
             "POST", "run", target_cluster=target_cluster, json=body
@@ -196,6 +208,7 @@ class JobsAPI(BaseService):
         runtime_env: Optional[dict[str, Any]],
         timeout_seconds: Optional[int],
         delegated_access: DelegatedAccess | Mapping[str, Any] | None,
+        python_packages: Optional[list[str]],
     ) -> JobResult:
         """Async submit + poll. job_id available immediately for resume.
 
@@ -210,6 +223,7 @@ class JobsAPI(BaseService):
             runtime_env=runtime_env,
             timeout_seconds=timeout_seconds,
             delegated_access=delegated_access,
+            python_packages=python_packages,
         )
         return self.wait(
             job_id,
@@ -225,6 +239,7 @@ class JobsAPI(BaseService):
         runtime_env: Optional[dict[str, Any]] = None,
         timeout_seconds: Optional[int] = None,
         delegated_access: DelegatedAccess | Mapping[str, Any] | None = None,
+        python_packages: Optional[list[str]] = None,
     ) -> str:
         """Submit a job and return its job_id immediately.
 
@@ -237,6 +252,7 @@ class JobsAPI(BaseService):
             runtime_env=runtime_env,
             timeout_seconds=timeout_seconds,
             delegated_access=delegated_access,
+            python_packages=python_packages,
         )
         response = self._router.request(
             "POST", "submit", target_cluster=target_cluster, json=body
@@ -369,6 +385,7 @@ def _build_run_body(
     runtime_env: Optional[dict[str, Any]],
     timeout_seconds: Optional[int],
     delegated_access: DelegatedAccess | Mapping[str, Any] | None,
+    python_packages: Optional[list[str]],
 ) -> dict[str, Any]:
     body: dict[str, Any] = {"entrypoint": entrypoint}
     if runtime_env is not None:
@@ -378,4 +395,9 @@ def _build_run_body(
     if delegated_access is not None:
         access = DelegatedAccess.model_validate(delegated_access)
         body["delegated_access"] = access.model_dump(mode="json")
+    packages = normalize_python_packages(python_packages)
+    if packages and delegated_access is None:
+        raise ValueError("python_packages require delegated_access")
+    if packages:
+        body["python_packages"] = list(packages)
     return body

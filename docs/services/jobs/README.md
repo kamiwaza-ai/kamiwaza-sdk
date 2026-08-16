@@ -39,6 +39,32 @@ job_id = client.jobs.submit_async(
 Passing a mapping with the same shape remains supported. Omitting
 `delegated_access` preserves the ordinary job wire format and execution path.
 
+### Approved Python dependencies
+
+An isolated delegated job can request exact Python packages from the receiver
+operator's approved catalog:
+
+```python
+job_id = client.jobs.submit_async(
+    target_cluster="receiver",
+    entrypoint="python summarize.py",
+    delegated_access=access,
+    python_packages=["humanize==4.13.0"],
+)
+```
+
+Only exact `name==version` coordinates are accepted. URLs, version ranges,
+extras, markers, duplicate package names, and more than 32 packages are rejected
+before the request is sent. The receiver resolves each coordinate to its
+operator-approved SHA-256 hashes and installs it from the configured private
+Python index. Repository URLs, credentials, and trust material are never part
+of the SDK request or the Ray job environment. Air-gapped deployments can point
+the operator-managed repository Secret at an internal PEP 503/691-compatible
+mirror without changing job code.
+
+The older `pip=` convenience parameter belongs to ordinary Ray runtime
+environments. Use `python_packages=` for isolated delegated jobs.
+
 ## In-job runtime client
 
 Managed job code uses `JobRuntimeClient`, which connects only to the private
