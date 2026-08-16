@@ -282,12 +282,12 @@ def _collect_stream(
 
 
 def _error_for_code(code: str) -> Exception:
-    if code in {"grant_denied", "resource_denied"}:
+    if code == "resource_denied":
         return DelegatedResourceNotFoundError("delegated resource not found")
     if code == "delegation_revoked":
         return DelegationRevokedError("delegated job authority was revoked")
-    if code == "operation_unavailable":
-        return DelegatedOperationDeniedError("delegated operation is unavailable")
+    if code == "grant_denied":
+        return DelegatedOperationDeniedError("delegated access is denied")
     if code in {"job_identity_unavailable", "attestation_rejected"}:
         return JobIdentityUnavailableError("job identity is unavailable")
     return DelegationUnavailableError("delegated authority is unavailable")

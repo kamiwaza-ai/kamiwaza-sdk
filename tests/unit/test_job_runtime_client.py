@@ -15,6 +15,7 @@ from unittest.mock import patch
 import pytest
 
 from kamiwaza_sdk.exceptions import (
+    DelegatedOperationDeniedError,
     DelegatedResourceNotFoundError,
     DelegationRevokedError,
     DelegationUnavailableError,
@@ -236,6 +237,8 @@ def test_incomplete_stream_never_returns_success(
     ("code", "error_type"),
     [
         ("resource_denied", DelegatedResourceNotFoundError),
+        ("grant_denied", DelegatedOperationDeniedError),
+        ("operation_unavailable", DelegationUnavailableError),
         ("delegation_revoked", DelegationRevokedError),
         ("attestation_rejected", JobIdentityUnavailableError),
     ],

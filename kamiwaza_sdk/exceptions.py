@@ -297,7 +297,7 @@ class DelegationRevokedError(AuthorizationError):
 
 
 class DelegatedOperationDeniedError(AuthorizationError):
-    """The requested operation is not enrolled in the job workload profile."""
+    """The grant does not authorize the requested delegated operation."""
 
 
 class JobIdentityUnavailableError(KamiwazaError):
