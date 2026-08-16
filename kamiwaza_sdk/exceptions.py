@@ -288,6 +288,26 @@ class MeshJobFailedError(KamiwazaError):
     error context for diagnostics."""
 
 
+class DelegatedResourceNotFoundError(NotFoundError):
+    """A job requested a resource outside its exact delegated grant."""
+
+
+class DelegationRevokedError(AuthorizationError):
+    """The job, grant, user, or federation is no longer active."""
+
+
+class DelegatedOperationDeniedError(AuthorizationError):
+    """The grant does not authorize the requested delegated operation."""
+
+
+class JobIdentityUnavailableError(KamiwazaError):
+    """The local agent could not attest the calling job process."""
+
+
+class DelegationUnavailableError(KamiwazaError):
+    """Delegated authority or its replay protection is unavailable."""
+
+
 # ----------------------------------------------------------------------------
 # Gate-package typed subclasses (T7.13 / ENG-4767 — WS-M5)
 #
