@@ -61,6 +61,9 @@ def _build_patch_kwargs(
     sandbox = extra.get("sandbox")
     if sandbox:
         kwargs["sandbox"] = sandbox
+    workload_identity = getattr(payload, "workload_identity", None)
+    if workload_identity is not None:
+        kwargs["workload_identity"] = workload_identity
     return kwargs
 
 

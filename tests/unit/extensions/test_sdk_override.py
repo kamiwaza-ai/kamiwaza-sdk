@@ -45,6 +45,7 @@ def _write_runtime_dockerfiles(tmp_path: Path, compose: dict) -> Path:
 class TestSdkOverrideSpec:
     def test_paths(self, tmp_path):
         spec = SdkOverrideSpec(sdk_repo=tmp_path)
+        assert spec.python_client_path == tmp_path / "kamiwaza_sdk"
         assert spec.python_lib_path == tmp_path / "kamiwaza_extensions_lib"
         assert spec.typescript_lib_path == tmp_path / "kamiwaza-ai-extensions-lib"
         assert (
@@ -148,6 +149,7 @@ class TestValidateSdkOverride:
     def test_valid_repo(self, tmp_path):
         import time
 
+        (tmp_path / "kamiwaza_sdk").mkdir()
         (tmp_path / "kamiwaza_extensions_lib").mkdir()
         ts_lib = tmp_path / "kamiwaza-ai-extensions-lib"
         ts_lib.mkdir()
@@ -171,6 +173,7 @@ class TestValidateSdkOverride:
         assert "not found" in result.errors[0]
 
     def test_missing_python_lib(self, tmp_path):
+        (tmp_path / "kamiwaza_sdk").mkdir()
         ts_lib = tmp_path / "kamiwaza-ai-extensions-lib"
         ts_lib.mkdir()
         (ts_lib / "dist").mkdir()
@@ -181,6 +184,7 @@ class TestValidateSdkOverride:
         assert "Python" in result.errors[0]
 
     def test_missing_ts_lib(self, tmp_path):
+        (tmp_path / "kamiwaza_sdk").mkdir()
         (tmp_path / "kamiwaza_extensions_lib").mkdir()
 
         spec = SdkOverrideSpec(sdk_repo=tmp_path)
@@ -189,6 +193,7 @@ class TestValidateSdkOverride:
         assert "TypeScript" in result.errors[0]
 
     def test_missing_ts_dist_warns(self, tmp_path):
+        (tmp_path / "kamiwaza_sdk").mkdir()
         (tmp_path / "kamiwaza_extensions_lib").mkdir()
         ts_lib = tmp_path / "kamiwaza-ai-extensions-lib"
         ts_lib.mkdir()
@@ -203,6 +208,7 @@ class TestValidateSdkOverride:
     def test_stale_ts_dist_warns(self, tmp_path):
         import time
 
+        (tmp_path / "kamiwaza_sdk").mkdir()
         (tmp_path / "kamiwaza_extensions_lib").mkdir()
         ts_lib = tmp_path / "kamiwaza-ai-extensions-lib"
         ts_lib.mkdir()
@@ -219,6 +225,7 @@ class TestValidateSdkOverride:
         assert any("stale" in w for w in result.warnings)
 
     def test_python_only_skips_ts_validation(self, tmp_path):
+        (tmp_path / "kamiwaza_sdk").mkdir()
         (tmp_path / "kamiwaza_extensions_lib").mkdir()
 
         spec = SdkOverrideSpec(sdk_repo=tmp_path, typescript=False)
@@ -479,6 +486,7 @@ class TestGenerateBuildOverrides:
         assert names == {"frontend", "backend"}
 
         backend = [o for o in overrides if o.service_name == "backend"][0]
+        assert "COPY --from=sdk kamiwaza_sdk /tmp/kamiwaza_sdk" in backend.overlay_steps
         assert "kamiwaza_extensions_lib" in backend.overlay_steps
         assert "sdk" in backend.additional_build_contexts
 
@@ -814,6 +822,29 @@ class TestApplyBuildOverlay:
             "runtime images. Was placed at line "
             f"{inject_idx}, runtime FROM at line {runtime_from_idx}."
         )
+
+    def test_python_overlay_lands_in_runtime_when_only_wheels_cross_stages(self):
+        """A build-stage source overlay is discarded when the runtime copies
+        only wheels and installs them into its own Python environment."""
+        dockerfile = (
+            "FROM python:3.12 AS build\n"
+            "RUN python -m build --wheel --outdir /wheels\n"
+            "FROM python:3.12 AS runtime\n"
+            "COPY --from=build /wheels /wheels\n"
+            "RUN pip install /wheels/*.whl\n"
+            "USER appuser\n"
+        )
+        overlay = BuildOverride(
+            service_name="backend",
+            overlay_steps="# SDK override\nUSER root\nRUN echo injecting sdk\n{restore_user_block}",
+            additional_build_contexts={"sdk": "/sdk"},
+            language="python",
+        )
+
+        result = apply_build_overlay(dockerfile, overlay)
+
+        assert result.index("echo injecting sdk") > result.index("pip install")
+        assert result.rstrip().endswith("USER appuser")
 
     def test_single_stage_dockerfile_still_appends(self):
         """Single-stage Dockerfiles preserve prior behavior (append at
@@ -1547,6 +1578,7 @@ class TestDoctorSdkChecks:
         from kamiwaza_extensions.doctor import DoctorChecker
 
         # Set up SDK repo structure
+        (tmp_path / "kamiwaza_sdk").mkdir()
         (tmp_path / "kamiwaza_extensions_lib").mkdir()
         ts_lib = tmp_path / "kamiwaza-ai-extensions-lib"
         ts_lib.mkdir()

@@ -21,6 +21,7 @@ from __future__ import annotations
 import copy
 import re
 import subprocess
+from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import quote
 
@@ -29,6 +30,9 @@ import yaml
 # Safe for the dev path: registry_builder imports only stdlib, yaml and
 # packaging — none of the forbidden publishing machinery (see TestImportInvariant).
 from kamiwaza_extensions.registry_builder import _normalize_preview_image
+from kamiwaza_extensions.validators.workload_identity import (
+    require_valid_declaration,
+)
 
 OVERLAY_PATH = "/apps/app_templates/catalog/overlay"
 
@@ -36,6 +40,32 @@ OVERLAY_PATH = "/apps/app_templates/catalog/overlay"
 MAX_VERSION_LENGTH = 40
 
 _BRANCH_SLUG_RE = re.compile(r"[^a-z0-9-]+")
+_FORWARDED_METADATA_TYPES = (
+    ("display_name", str),
+    ("description", str),
+    ("category", str),
+    ("author", str),
+    ("license", str),
+    ("homepage", str),
+    ("image", str),
+    ("preview_image", str),
+    ("kamiwaza_version", str),
+    ("preferred_model_type", str),
+    ("preferred_model_name", str),
+    ("tags", list),
+    ("capabilities", list),
+    ("required_env_vars", list),
+    ("strip_path_prefix", bool),
+    ("fail_if_model_type_unavailable", bool),
+    ("fail_if_model_name_unavailable", bool),
+)
+
+
+@dataclass(frozen=True)
+class _DigestPinning:
+    push_refs: Dict[str, str]
+    resolve: Optional[Callable[[str], str]]
+    warn: Optional[Callable[[str], None]]
 
 
 def get_git_branch(cwd: Optional[str] = None) -> Optional[str]:
@@ -109,27 +139,8 @@ def build_overlay_entry(
     the entry stays unambiguous.
     """
     compose = copy.deepcopy(transformed_compose)
-    services = compose.get("services") or {}
-    push_ref_map = push_ref_map or {}
-
-    for service_name, canonical_ref in canonical_refs.items():
-        svc = services.get(service_name)
-        if not isinstance(svc, dict) or svc.get("image") != canonical_ref:
-            continue
-        if resolve_digest is None:
-            continue
-        lookup_ref = push_ref_map.get(canonical_ref, canonical_ref)
-        try:
-            digest = resolve_digest(lookup_ref)
-        except Exception as exc:
-            if warn is not None:
-                warn(
-                    f"could not resolve digest for {lookup_ref}: {exc} — "
-                    "overlay entry will use the tag-only ref"
-                )
-            continue
-        svc["image"] = f"{canonical_ref}@{digest}"
-
+    pinning = _DigestPinning(push_ref_map or {}, resolve_digest, warn)
+    _pin_service_digests(compose, canonical_refs, pinning)
     metadata = metadata or {}
     entry: Dict[str, Any] = {
         "version": version,
@@ -140,6 +151,66 @@ def build_overlay_entry(
             "dirty": dirty,
         },
     }
+    _apply_catalog_metadata(entry, metadata)
+    return entry
+
+
+def _pin_service_digests(
+    compose: Dict[str, Any],
+    canonical_refs: Dict[str, str],
+    pinning: _DigestPinning,
+) -> None:
+    services = compose.get("services") or {}
+    for service_name, canonical_ref in canonical_refs.items():
+        _pin_service_digest(services.get(service_name), canonical_ref, pinning)
+
+
+def _pin_service_digest(
+    service: object,
+    canonical_ref: str,
+    pinning: _DigestPinning,
+) -> None:
+    if not isinstance(service, dict):
+        return
+    if service.get("image") != canonical_ref:
+        return
+    if pinning.resolve is None:
+        return
+    lookup_ref = pinning.push_refs.get(canonical_ref, canonical_ref)
+    try:
+        digest = pinning.resolve(lookup_ref)
+    except Exception as exc:
+        _warn_unresolved_digest(pinning.warn, lookup_ref, exc)
+        return
+    service["image"] = f"{canonical_ref}@{digest}"
+
+
+def _warn_unresolved_digest(
+    warn: Optional[Callable[[str], None]],
+    lookup_ref: str,
+    error: Exception,
+) -> None:
+    if warn is None:
+        return
+    warn(
+        f"could not resolve digest for {lookup_ref}: {error} — "
+        "overlay entry will use the tag-only ref"
+    )
+
+
+def _apply_catalog_metadata(
+    entry: Dict[str, Any], metadata: Dict[str, Any]
+) -> None:
+    _copy_environment_metadata(entry, metadata)
+    _copy_forwarded_metadata(entry, metadata)
+    _normalize_entry_preview(entry)
+    entry.update(_validated_workload_identity(metadata))
+    _copy_template_type(entry, metadata)
+
+
+def _copy_environment_metadata(
+    entry: Dict[str, Any], metadata: Dict[str, Any]
+) -> None:
     env_defaults = metadata.get("env_defaults")
     if isinstance(env_defaults, dict):
         # JSON-faithful string coercion: booleans render lowercase, as a
@@ -150,44 +221,49 @@ def build_overlay_entry(
         }
     if isinstance(metadata.get("env_metadata"), dict):
         entry["env_metadata"] = metadata["env_metadata"]
+
+
+def _copy_forwarded_metadata(
+    entry: Dict[str, Any], metadata: Dict[str, Any]
+) -> None:
     # Platform-consumed catalog metadata: forward everything kamiwaza.json
     # declares so the shadow template behaves like a published catalog entry
     # would (required_env_vars gates launch env, strip_path_prefix shapes
     # routing, etc.). Presence-based: an explicit empty list is a deliberate
     # clear and must reach the platform; only ABSENT keys keep the
     # pre-shadow row values.
-    for key, expected_type in (
-        ("display_name", str),
-        ("description", str),
-        ("category", str),
-        ("author", str),
-        ("license", str),
-        ("homepage", str),
-        ("image", str),
-        ("preview_image", str),
-        ("kamiwaza_version", str),
-        ("preferred_model_type", str),
-        ("preferred_model_name", str),
-        ("tags", list),
-        ("capabilities", list),
-        ("required_env_vars", list),
-        ("strip_path_prefix", bool),
-        ("fail_if_model_type_unavailable", bool),
-        ("fail_if_model_name_unavailable", bool),
-    ):
+    for key, expected_type in _FORWARDED_METADATA_TYPES:
         value = metadata.get(key)
         if isinstance(value, expected_type):
             entry[key] = value
+
+
+def _normalize_entry_preview(entry: Dict[str, Any]) -> None:
     if isinstance(entry.get("preview_image"), str):
         # The publish path stores this normalized, so the shorthand
         # ``preview_image: "screenshot.png"`` becomes ``images/screenshot.png``
         # in the catalog. Writing the raw value here would overwrite that row
         # with a key the asset was never uploaded under.
         entry["preview_image"] = _normalize_preview_image(entry["preview_image"])
+
+
+def _copy_template_type(entry: Dict[str, Any], metadata: Dict[str, Any]) -> None:
     ext_type = metadata.get("type") or metadata.get("template_type")
     if isinstance(ext_type, str) and ext_type in ("app", "tool", "service"):
         entry["template_type"] = ext_type
-    return entry
+
+
+def _validated_workload_identity(metadata: Dict[str, Any]) -> Dict[str, Any]:
+    """Return the validated authority declaration, when one was published.
+
+    A malformed declaration fails publication instead of being dropped: an
+    extension that silently loses its declaration looks healthy but can never
+    be registered for delegated authority.
+    """
+    declaration = metadata.get("workload_identity")
+    if declaration is None:
+        return {}
+    return {"workload_identity": require_valid_declaration(declaration)}
 
 
 def publish_overlay(client: Any, name: str, entry: Dict[str, Any]) -> Dict[str, Any]:

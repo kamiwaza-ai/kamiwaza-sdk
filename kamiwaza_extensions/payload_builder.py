@@ -20,6 +20,9 @@ from kamiwaza_extensions.compose_volumes import (
 )
 from kamiwaza_extensions.connections import ConnectionInfo
 from kamiwaza_extensions.validators.compose import INVALID_DEPLOY_REQUESTS_TEXT
+from kamiwaza_extensions.validators.workload_identity import (
+    require_valid_declaration,
+)
 from kamiwaza_sdk.schemas.extensions import (
     CreateExtension,
     ExtensionPort,
@@ -133,6 +136,9 @@ class PayloadBuilder:
         sandbox = self._build_sandbox_spec(metadata, transformed_compose)
         if sandbox:
             kwargs["sandbox"] = sandbox
+        workload_identity = metadata.get("workload_identity")
+        if workload_identity is not None:
+            kwargs["workload_identity"] = require_valid_declaration(workload_identity)
 
         annotations = self.build_annotations(deployer=deployer, revision=revision)
 
