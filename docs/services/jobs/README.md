@@ -65,5 +65,6 @@ key, refresh token, or public HTTP endpoint.
 
 Denied resources raise `DelegatedResourceNotFoundError`; lifecycle revocation
 raises `DelegationRevokedError`; attestation failure raises
-`JobIdentityUnavailableError`; and authority/replay-store outages raise
-`DelegationUnavailableError`.
+`JobIdentityUnavailableError`; grant denial raises
+`DelegatedOperationDeniedError`; and authority, dependency, or replay-store
+outages raise `DelegationUnavailableError`.
