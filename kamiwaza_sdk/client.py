@@ -144,6 +144,39 @@ def _retry_after_seconds(response: Any) -> Optional[float]:
     return float(value)
 
 
+def _contains_consumable_stream(value: Any) -> bool:
+    """True when ``value`` holds something a retry cannot re-read.
+
+    Walks the containers ``requests`` accepts for ``data`` / ``files`` looking
+    for file-like objects and one-shot iterators. Strings and bytes are
+    explicitly repeatable; dicts/lists are inspected element-wise because
+    ``files={"f": ("name", fh)}`` hides the handle one level down.
+    """
+    if value is None or isinstance(value, (str, bytes, bytearray)):
+        return False
+    if hasattr(value, "read"):
+        return True
+    if isinstance(value, dict):
+        return any(_contains_consumable_stream(v) for v in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_contains_consumable_stream(v) for v in value)
+    return hasattr(value, "__iter__")
+
+
+def _request_body_is_replayable(kwargs: dict) -> bool:
+    """True when the outgoing body can safely be sent a second time.
+
+    ``requests`` consumes a streamed body to EOF on the first attempt, so
+    replaying the same kwargs would re-encode it from its current position --
+    silently uploading an empty or truncated file rather than failing. A 503
+    surfaced to the caller is far better than corrupt data written on their
+    behalf, so a non-replayable body opts out of retry entirely.
+    """
+    return not any(
+        _contains_consumable_stream(kwargs.get(key)) for key in ("data", "files")
+    )
+
+
 def _psk_timeout_error_from_response(response: Any) -> FederationPairTimeoutError:
     """Construct a typed FederationPairTimeoutError from the final retried
     response when the wall-clock budget is exhausted. Carries the structured
@@ -688,7 +721,7 @@ class KamiwazaClient:
                 raise _psk_timeout_error_from_response(response)
 
             retry_after = _retry_after_seconds(response)
-            if retry_after is not None:
+            if retry_after is not None and _request_body_is_replayable(kwargs):
                 # The server told us this is transient and how long to wait.
                 # Honor it within budget; on exhaustion fall through to the
                 # normal error path so the terminal exception is unchanged.

@@ -14,7 +14,7 @@ from uuid import uuid4
 
 import pytest
 
-from kamiwaza_sdk.exceptions import APIError
+from kamiwaza_sdk.exceptions import APIError, NotFoundError
 from kamiwaza_sdk.seeding import scoped_client_for_workroom
 
 pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
@@ -41,8 +41,17 @@ def _delete_and_confirm(admin_client, workroom_id) -> None:
 
     try:
         admin_client.workrooms.get(workroom_id)
-    except APIError:
+    except NotFoundError:
         return  # gone, as intended
+    except APIError as exc:
+        # A 500 or an exhausted 503 tells us nothing about whether the
+        # workroom survived. Treating it as proof of deletion would hide
+        # exactly the residue this check exists to catch.
+        warnings.warn(
+            f"cleanup: could not confirm workroom {workroom_id} was deleted: {exc}",
+            stacklevel=1,
+        )
+        return
     warnings.warn(
         f"cleanup: workroom {workroom_id} still resolves after admin_delete",
         stacklevel=1,

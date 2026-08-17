@@ -28,6 +28,7 @@ Contract asserted here:
 
 from __future__ import annotations
 
+import io
 import json
 from collections.abc import Iterator
 from typing import Any
@@ -234,3 +235,44 @@ def test_does_not_retry_non_503_errors(
         client.delete("workrooms/abc")
 
     assert sleeps == []
+
+
+def test_does_not_replay_a_request_whose_body_is_a_consumed_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A file-like body cannot be re-sent (PR #276 review, P1).
+
+    ``requests`` reads the stream to EOF on the first attempt. Replaying the
+    same kwargs would re-encode it from its current position and silently
+    upload an empty or truncated file -- ``ContextService.upload_file`` takes
+    ``IO[bytes]``, so this is reachable. Better to surface the 503 than to
+    write corrupt data.
+    """
+    client, sleeps = _make_client_with_sequence(
+        monkeypatch,
+        [_authority_fenced_response(), _success_response()],
+    )
+
+    with pytest.raises(APIError):
+        client._request(
+            "POST",
+            "context/upload",
+            files={"file": ("x.bin", io.BytesIO(b"payload"))},
+        )
+
+    assert sleeps == [], "a stream body must not be replayed"
+
+
+def test_still_replays_ordinary_json_bodies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The stream guard must not disable retry for normal repeatable bodies."""
+    client, sleeps = _make_client_with_sequence(
+        monkeypatch,
+        [_authority_fenced_response(), _success_response()],
+    )
+
+    result = client._request("POST", "workrooms", json={"name": "w"})
+
+    assert result == {"deleted": True}
+    assert sleeps == [10.0]
