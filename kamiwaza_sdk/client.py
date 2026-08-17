@@ -272,6 +272,25 @@ def _verify_ssl_disabled_from_env() -> bool:
     return value.strip().lower() in _VERIFY_SSL_FALSE_VALUES
 
 
+class _RetryState:
+    """Per-request retry bookkeeping.
+
+    Bundled into one object so the retry helpers stay inside the 4-argument
+    cap and ``_request`` keeps a single local instead of four counters.
+    """
+
+    def __init__(self, method: str, path: str) -> None:
+        now = time.monotonic()
+        self.method = method
+        self.path = path
+        # Fixed local schedule for one known reason.
+        self.psk_deadline = now + _RETRY_WALL_CLOCK_BUDGET_SECONDS
+        self.psk_idx = 0
+        # Server-directed: follows whatever delay the server asks for.
+        self.deadline_503 = now + _RETRYABLE_503_WALL_CLOCK_BUDGET_SECONDS
+        self.attempts_503 = 0
+
+
 class KamiwazaClient:
     _RECENT_DATASET_TTL_SECONDS = 30.0
     _RECENT_DATASET_MAX = 1024
@@ -694,6 +713,56 @@ class KamiwazaClient:
                 "credential off-host."
             )
 
+    def _wait_for_psk_retry(self, kwargs: dict, state: "_RetryState") -> bool:
+        """Sleep the next psk backoff step; False when the arm is exhausted.
+
+        A non-replayable body opts out entirely: ``requests`` has already read
+        it to EOF, so re-issuing would silently send a truncated payload.
+        """
+        if state.psk_idx >= len(_RETRY_BACKOFF_SCHEDULE_SECONDS):
+            return False
+        if not _request_body_is_replayable(kwargs):
+            return False
+        delay = _RETRY_BACKOFF_SCHEDULE_SECONDS[state.psk_idx]
+        if time.monotonic() + delay > state.psk_deadline:
+            return False
+        time.sleep(delay)
+        state.psk_idx += 1
+        return True
+
+    def _wait_for_retryable_503(
+        self, response, kwargs: dict, state: "_RetryState"
+    ) -> bool:
+        """Sleep the server's Retry-After hint; False when not retryable.
+
+        Clamps the hint into a sane band and adds jitter so co-fenced clients
+        do not retry in lockstep. Returning False falls through to the normal
+        error path, so the terminal exception is unchanged.
+        """
+        retry_after = _retry_after_seconds(response)
+        if retry_after is None:
+            return False
+        if not _request_body_is_replayable(kwargs):
+            return False
+        if state.attempts_503 >= _RETRYABLE_503_MAX_ATTEMPTS:
+            return False
+        delay = min(
+            max(retry_after, _RETRYABLE_503_MIN_SLEEP_SECONDS),
+            _RETRYABLE_503_MAX_SLEEP_SECONDS,
+        )
+        delay += delay * _RETRYABLE_503_JITTER_FRACTION * _retry_jitter_unit()
+        if time.monotonic() + delay > state.deadline_503:
+            return False
+        self.logger.debug(
+            "Retrying %s %s after server Retry-After=%.1fs",
+            state.method,
+            state.path,
+            delay,
+        )
+        time.sleep(delay)
+        state.attempts_503 += 1
+        return True
+
     def _request(
         self,
         method: str,
@@ -724,17 +793,7 @@ class KamiwazaClient:
         # Deadline captures wall-clock budget at request entry; schedule_idx
         # advances exactly once per retry so the (1, 2, 4, 8, 16, 32, 64)
         # progression is preserved across the loop.
-        psk_deadline = time.monotonic() + _RETRY_WALL_CLOCK_BUDGET_SECONDS
-        psk_schedule_idx = 0
-
-        # Server-directed retry budget for 503s carrying a Retry-After hint
-        # (kamiwaza.lib.http_errors.service_unavailable). Independent of the
-        # psk budget above: that one is a fixed local schedule for one known
-        # reason, this one follows whatever delay the server asks for.
-        retryable_503_deadline = (
-            time.monotonic() + _RETRYABLE_503_WALL_CLOCK_BUDGET_SECONDS
-        )
-        retryable_503_attempts = 0
+        state = _RetryState(method, path)
 
         while True:
             response = self._send_request(method, url, kwargs)
@@ -758,45 +817,15 @@ class KamiwazaClient:
                 continue
 
             if _is_psk_propagation_timeout(response):
-                # Eligible for psk retry — sleep + continue if budget allows,
-                # otherwise raise the typed FederationPairTimeoutError so
-                # customer code can branch on the specific terminal failure.
-                if psk_schedule_idx < len(
-                    _RETRY_BACKOFF_SCHEDULE_SECONDS
-                ) and _request_body_is_replayable(kwargs):
-                    delay = _RETRY_BACKOFF_SCHEDULE_SECONDS[psk_schedule_idx]
-                    if time.monotonic() + delay <= psk_deadline:
-                        time.sleep(delay)
-                        psk_schedule_idx += 1
-                        continue
+                # Retry within budget, otherwise raise the typed
+                # FederationPairTimeoutError so customer code can branch on the
+                # specific terminal failure.
+                if self._wait_for_psk_retry(kwargs, state):
+                    continue
                 raise _psk_timeout_error_from_response(response)
 
-            retry_after = _retry_after_seconds(response)
-            if (
-                retry_after is not None
-                and _request_body_is_replayable(kwargs)
-                and retryable_503_attempts < _RETRYABLE_503_MAX_ATTEMPTS
-            ):
-                # The server told us this is transient and how long to wait.
-                # Clamp its hint into a sane band, add jitter so co-fenced
-                # clients do not retry in lockstep, and honor it within budget.
-                # On exhaustion fall through to the normal error path so the
-                # terminal exception is unchanged.
-                delay = min(
-                    max(retry_after, _RETRYABLE_503_MIN_SLEEP_SECONDS),
-                    _RETRYABLE_503_MAX_SLEEP_SECONDS,
-                )
-                delay += delay * _RETRYABLE_503_JITTER_FRACTION * _retry_jitter_unit()
-                if time.monotonic() + delay <= retryable_503_deadline:
-                    self.logger.debug(
-                        "Retrying %s %s after server Retry-After=%.1fs",
-                        method,
-                        path,
-                        delay,
-                    )
-                    time.sleep(delay)
-                    retryable_503_attempts += 1
-                    continue
+            if self._wait_for_retryable_503(response, kwargs, state):
+                continue
 
             if response.status_code >= 400:
                 should_retry, retry_idx = self._retry_dataset_schema_update(
