@@ -35,7 +35,11 @@ from typing import Any
 
 import pytest
 from kamiwaza_sdk.client import KamiwazaClient
-from kamiwaza_sdk.exceptions import APIError
+from kamiwaza_sdk.exceptions import (
+    APIError,
+    AuthenticationError,
+    FederationPairTimeoutError,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -94,6 +98,9 @@ def _make_client_with_sequence(
 
     monkeypatch.setattr("kamiwaza_sdk.client.time.monotonic", fake_monotonic)
     monkeypatch.setattr("kamiwaza_sdk.client.time.sleep", fake_sleep)
+    # Pin jitter to zero so schedules are exactly assertable. Jitter itself is
+    # covered by test_applies_jitter_to_the_delay.
+    monkeypatch.setattr("kamiwaza_sdk.client._retry_jitter_unit", lambda: 0.0)
 
     return client, sleeps
 
@@ -152,9 +159,13 @@ def test_gives_up_and_raises_api_error_when_fence_never_clears(
 ) -> None:
     """A wedged fence terminates as the ordinary APIError rather than
     retrying forever — callers already handling APIError are unaffected."""
+    # Feed deliberately longer than any plausible schedule so the loop ends by
+    # hitting its own bound, not by exhausting the iterator. The previous
+    # `len(sleeps) < 12` could never fail: widening the budget died at
+    # StopIteration one request earlier than the assertion.
     client, sleeps = _make_client_with_sequence(
         monkeypatch,
-        [_authority_fenced_response() for _ in range(12)],
+        [_authority_fenced_response() for _ in range(64)],
     )
 
     with pytest.raises(APIError) as exc_info:
@@ -162,8 +173,7 @@ def test_gives_up_and_raises_api_error_when_fence_never_clears(
 
     assert exc_info.value.status_code == 503
     assert "workroom_authority_unavailable" in str(exc_info.value)
-    assert sleeps, "must actually retry before giving up"
-    assert len(sleeps) < 12, "must stop retrying, not exhaust the response feed"
+    assert sleeps == [10.0] * 6, "exact schedule: six 10s sleeps, then terminal"
 
 
 def test_does_not_retry_a_503_without_a_retry_hint(
@@ -276,3 +286,247 @@ def test_still_replays_ordinary_json_bodies(
 
     assert result == {"deleted": True}
     assert sleeps == [10.0]
+
+
+def test_clamps_an_absurdly_large_hint_to_the_ceiling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A huge hint is clamped to the per-attempt ceiling, not obeyed."""
+    client, sleeps = _make_client_with_sequence(
+        monkeypatch,
+        [_authority_fenced_response(retry_after=999), _success_response()],
+    )
+
+    client.delete("workrooms/abc")
+
+    assert sleeps == [30.0]
+
+
+def test_rejects_a_zero_hint_rather_than_hot_spinning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``retry_after_seconds: 0`` carries no usable delay and must not retry."""
+    client, sleeps = _make_client_with_sequence(
+        monkeypatch,
+        [
+            _StubResponse(
+                status_code=503,
+                json_data={
+                    "code": "workroom_authority_unavailable",
+                    "retry_after_seconds": 0,
+                },
+            )
+        ],
+    )
+
+    with pytest.raises(APIError):
+        client.delete("workrooms/abc")
+
+    assert sleeps == []
+
+
+def test_rejects_a_boolean_hint(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``True`` is an int in Python; it is not a delay."""
+    client, sleeps = _make_client_with_sequence(
+        monkeypatch,
+        [
+            _StubResponse(
+                status_code=503,
+                json_data={
+                    "code": "workroom_authority_unavailable",
+                    "retry_after_seconds": True,
+                },
+            )
+        ],
+    )
+
+    with pytest.raises(APIError):
+        client.delete("workrooms/abc")
+
+    assert sleeps == []
+
+
+def test_floors_a_tiny_hint_to_prevent_amplification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A sub-second hint is raised to the floor.
+
+    Unfloored, a hostile ``0.0001`` sustains ~1712 req/s against the customer's
+    own cluster for the whole budget.
+    """
+    client, sleeps = _make_client_with_sequence(
+        monkeypatch,
+        [_authority_fenced_response(retry_after=0.0001), _success_response()],
+    )
+
+    client.delete("workrooms/abc")
+
+    assert sleeps == [1.0]
+
+
+def test_caps_attempts_independently_of_the_wall_clock_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A small hint must not spend the budget in thousands of requests."""
+    client, sleeps = _make_client_with_sequence(
+        monkeypatch,
+        [_authority_fenced_response(retry_after=1) for _ in range(64)],
+    )
+
+    with pytest.raises(APIError):
+        client.delete("workrooms/abc")
+
+    assert sleeps == [1.0] * 6, "attempt cap bounds the count, not just the time"
+
+
+def test_applies_jitter_to_the_delay(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Co-fenced clients get the same hint; jitter keeps them out of lockstep."""
+    client, sleeps = _make_client_with_sequence(
+        monkeypatch,
+        [_authority_fenced_response(), _success_response()],
+    )
+    monkeypatch.setattr("kamiwaza_sdk.client._retry_jitter_unit", lambda: 1.0)
+
+    client.delete("workrooms/abc")
+
+    assert sleeps == [11.0], "10s hint + 10% jitter at the top of the range"
+
+
+def test_does_not_replay_an_open_file_passed_as_data(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """The ``data=`` half of the guard must be pinned too.
+
+    Dropping ``"data"`` from the guarded kwargs previously passed the whole
+    suite, silently re-opening the fixed data-integrity bug.
+    """
+    target = tmp_path / "payload.bin"
+    target.write_bytes(b"payload")
+    client, sleeps = _make_client_with_sequence(
+        monkeypatch,
+        [_authority_fenced_response(), _success_response()],
+    )
+
+    with target.open("rb") as handle, pytest.raises(APIError):
+        client._request("POST", "context/upload", data=handle)
+
+    assert sleeps == []
+
+
+def test_does_not_replay_a_generator_body(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A one-shot iterator is spent after the first attempt.
+
+    Pins the walker's ``__iter__`` branch, which the file-object test cannot --
+    a BytesIO satisfies both ``.read`` and ``__iter__``, so either could rot
+    unnoticed behind the other.
+    """
+    client, sleeps = _make_client_with_sequence(
+        monkeypatch,
+        [_authority_fenced_response(), _success_response()],
+    )
+
+    def chunks():
+        yield b"a"
+        yield b"b"
+
+    with pytest.raises(APIError):
+        client._request("POST", "context/upload", data=chunks())
+
+    assert sleeps == []
+
+
+def test_wall_clock_budget_bounds_long_delays(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pin the budget itself, which the attempt cap otherwise masks.
+
+    At the 30s ceiling the budget binds first (2 sleeps), so widening it moves
+    this schedule -- whereas any hint small enough to hit the cap makes the
+    budget invisible.
+    """
+    client, sleeps = _make_client_with_sequence(
+        monkeypatch,
+        [_authority_fenced_response(retry_after=30) for _ in range(64)],
+    )
+
+    with pytest.raises(APIError):
+        client.delete("workrooms/abc")
+
+    assert sleeps == [30.0, 30.0], "60s budget admits exactly two 30s sleeps"
+
+
+def test_does_not_replay_a_read_only_body_object(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pin the walker's ``.read`` branch on its own.
+
+    Files and BytesIO satisfy *both* ``.read`` and ``__iter__``, so a test using
+    either lets one branch rot behind the other. This object has only ``read``.
+    """
+
+    class _ReadOnlyBody:
+        def read(self, *_args: Any) -> bytes:
+            return b"payload"
+
+    client, sleeps = _make_client_with_sequence(
+        monkeypatch,
+        [_authority_fenced_response(), _success_response()],
+    )
+
+    with pytest.raises(APIError):
+        client._request("POST", "context/upload", data=_ReadOnlyBody())
+
+    assert sleeps == []
+
+
+def _psk_timeout_response() -> _StubResponse:
+    return _StubResponse(
+        status_code=503,
+        json_data={"detail": {"reason": "psk_propagation_timeout"}},
+    )
+
+
+def test_psk_arm_does_not_replay_a_streamed_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The psk retry shares the loop and the same replay hazard (H1).
+
+    Pre-existing, but fixed here because it is the same defect class in the
+    same ``while True`` and the remedy was already in the diff.
+    """
+    client, sleeps = _make_client_with_sequence(
+        monkeypatch,
+        [_psk_timeout_response(), _success_response()],
+    )
+
+    def chunks():
+        yield b"a"
+
+    with pytest.raises(FederationPairTimeoutError):
+        client._request("POST", "federation/pair", data=chunks())
+
+    assert sleeps == [], "a spent stream must not be replayed on the psk arm"
+
+
+def test_401_arm_raises_rather_than_replaying_a_streamed_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A token refresh mid-upload must not re-send a consumed stream (H1).
+
+    The refresh itself is stubbed to isolate the replay decision; what is under
+    test is what ``_request`` does *after* a successful refresh.
+    """
+    client, sleeps = _make_client_with_sequence(
+        monkeypatch,
+        [_StubResponse(status_code=401, json_data={}), _success_response()],
+    )
+    monkeypatch.setattr(client, "_handle_unauthorized_response", lambda *_a, **_k: None)
+
+    def chunks():
+        yield b"a"
+
+    with pytest.raises(AuthenticationError) as exc_info:
+        client._request("POST", "context/upload", data=chunks())
+
+    assert "already been consumed" in str(exc_info.value)
+    assert sleeps == []

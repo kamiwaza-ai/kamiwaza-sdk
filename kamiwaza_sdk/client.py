@@ -3,6 +3,7 @@
 from collections import OrderedDict
 import logging
 import os
+import random
 import time
 from typing import Any, Optional
 
@@ -98,7 +99,43 @@ _RETRYABLE_503_WALL_CLOCK_BUDGET_SECONDS = 60.0
 """Hard cap on total wall-clock time spent honoring server Retry-After hints."""
 
 _RETRYABLE_503_MAX_SLEEP_SECONDS = 30.0
-"""Per-attempt ceiling, so one hostile or mistaken hint cannot park the SDK."""
+"""Per-attempt ceiling on the server's hint."""
+
+_RETRYABLE_503_MIN_SLEEP_SECONDS = 1.0
+"""Floor under the server's hint.
+
+The delay is server-controlled input. Without a floor, a hint of 0.0001 turns
+every SDK caller into an amplifier against the customer's own cluster --
+measured at ~1712 req/s, ~10^5 attempts inside the wall-clock budget. Since
+``KAMIWAZA_VERIFY_SSL=false`` is a supported mode, an intercepting proxy can
+inject that hint into any 503, so this is a hostile-input boundary and not
+merely a sanity check.
+"""
+
+_RETRYABLE_503_MAX_ATTEMPTS = 6
+"""Hard cap on retries, independent of the wall-clock budget.
+
+The budget alone bounds total *time*, not attempt *count*: a small hint spends
+it in thousands of requests. With Core's real 10s hint the cap and the budget
+coincide at six sleeps.
+"""
+
+_RETRYABLE_503_JITTER_FRACTION = 0.1
+"""Spread of the random jitter added to each delay, as a fraction of it.
+
+Every client fenced by the same operation receives the same hint and would
+otherwise retry in lockstep, re-contending as a thundering herd.
+"""
+
+
+def _retry_jitter_unit() -> float:
+    """Return a jitter multiplier in ``[0, 1)``.
+
+    A seam, not indirection for its own sake: tests monkeypatch this to 0.0 so
+    schedules stay exactly assertable while production keeps real jitter.
+    """
+    return random.random()
+
 
 _RETRYABLE_503_CODES = frozenset({"workroom_authority_unavailable"})
 """Server ``code`` values this client will retry.
@@ -697,6 +734,7 @@ class KamiwazaClient:
         retryable_503_deadline = (
             time.monotonic() + _RETRYABLE_503_WALL_CLOCK_BUDGET_SECONDS
         )
+        retryable_503_attempts = 0
 
         while True:
             response = self._send_request(method, url, kwargs)
@@ -705,6 +743,17 @@ class KamiwazaClient:
                 self._handle_unauthorized_response(
                     response, endpoint, skip_auth, did_refresh
                 )
+                if not _request_body_is_replayable(kwargs):
+                    # The refresh succeeded, but the body is spent. Replaying
+                    # would re-send it from EOF and silently write an empty or
+                    # truncated file -- the most reachable form of this in
+                    # production is an upload spanning a token expiry.
+                    raise AuthenticationError(
+                        "Authentication was refreshed, but the request body is "
+                        "a stream that has already been consumed and cannot be "
+                        "safely re-sent. Retry the call with a fresh handle.",
+                        status_code=response.status_code,
+                    )
                 did_refresh = True
                 continue
 
@@ -712,7 +761,9 @@ class KamiwazaClient:
                 # Eligible for psk retry — sleep + continue if budget allows,
                 # otherwise raise the typed FederationPairTimeoutError so
                 # customer code can branch on the specific terminal failure.
-                if psk_schedule_idx < len(_RETRY_BACKOFF_SCHEDULE_SECONDS):
+                if psk_schedule_idx < len(
+                    _RETRY_BACKOFF_SCHEDULE_SECONDS
+                ) and _request_body_is_replayable(kwargs):
                     delay = _RETRY_BACKOFF_SCHEDULE_SECONDS[psk_schedule_idx]
                     if time.monotonic() + delay <= psk_deadline:
                         time.sleep(delay)
@@ -721,11 +772,21 @@ class KamiwazaClient:
                 raise _psk_timeout_error_from_response(response)
 
             retry_after = _retry_after_seconds(response)
-            if retry_after is not None and _request_body_is_replayable(kwargs):
+            if (
+                retry_after is not None
+                and _request_body_is_replayable(kwargs)
+                and retryable_503_attempts < _RETRYABLE_503_MAX_ATTEMPTS
+            ):
                 # The server told us this is transient and how long to wait.
-                # Honor it within budget; on exhaustion fall through to the
-                # normal error path so the terminal exception is unchanged.
-                delay = min(retry_after, _RETRYABLE_503_MAX_SLEEP_SECONDS)
+                # Clamp its hint into a sane band, add jitter so co-fenced
+                # clients do not retry in lockstep, and honor it within budget.
+                # On exhaustion fall through to the normal error path so the
+                # terminal exception is unchanged.
+                delay = min(
+                    max(retry_after, _RETRYABLE_503_MIN_SLEEP_SECONDS),
+                    _RETRYABLE_503_MAX_SLEEP_SECONDS,
+                )
+                delay += delay * _RETRYABLE_503_JITTER_FRACTION * _retry_jitter_unit()
                 if time.monotonic() + delay <= retryable_503_deadline:
                     self.logger.debug(
                         "Retrying %s %s after server Retry-After=%.1fs",
@@ -734,6 +795,7 @@ class KamiwazaClient:
                         delay,
                     )
                     time.sleep(delay)
+                    retryable_503_attempts += 1
                     continue
 
             if response.status_code >= 400:
