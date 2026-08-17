@@ -94,6 +94,56 @@ def _is_psk_propagation_timeout(response: Any) -> bool:
     return detail.get("reason") == _PSK_PROPAGATION_TIMEOUT_REASON
 
 
+_RETRYABLE_503_WALL_CLOCK_BUDGET_SECONDS = 60.0
+"""Hard cap on total wall-clock time spent honoring server Retry-After hints."""
+
+_RETRYABLE_503_MAX_SLEEP_SECONDS = 30.0
+"""Per-attempt ceiling, so one hostile or mistaken hint cannot park the SDK."""
+
+_RETRYABLE_503_CODES = frozenset({"workroom_authority_unavailable"})
+"""Server ``code`` values this client will retry.
+
+Deliberately an allowlist rather than "any 503 carrying a hint" (ENG-10506):
+a hint means the server *believes* the condition is transient, which is not
+the same as the SDK being safe to silently re-issue the call. Adding a code
+here is a decision about idempotency, so it stays explicit.
+"""
+
+
+def _retry_after_seconds(response: Any) -> Optional[float]:
+    """Return the server's retry delay for a retryable 503, else ``None``.
+
+    ``kamiwaza.lib.http_errors.service_unavailable()`` renders retryable
+    503s as the bare ``ServiceUnavailable503Detail`` body
+    ``{"code": ..., "message": ..., "retry_after_seconds": N}`` (see
+    ``BareDetailHTTPException`` -- the body is the detail itself, not
+    ``{"detail": ...}``) and mirrors the value in a ``Retry-After`` header.
+
+    Both halves must line up: the ``code`` must be one we have decided is
+    safe to re-issue (``_RETRYABLE_503_CODES``), and the delay must be
+    usable. Status code is part of the match so a stray hint on a 4xx -- a
+    terminal conflict, say -- cannot turn a permanent failure into a retry
+    loop. Non-numeric and non-positive delays are rejected: they carry no
+    usable wait, and treating them as zero would spin.
+    """
+    if response.status_code != 503:
+        return None
+    try:
+        body = response.json()
+    except (ValueError, AttributeError):
+        return None
+    if not isinstance(body, dict):
+        return None
+    if body.get("code") not in _RETRYABLE_503_CODES:
+        return None
+    value = body.get("retry_after_seconds")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if value <= 0:
+        return None
+    return float(value)
+
+
 def _psk_timeout_error_from_response(response: Any) -> FederationPairTimeoutError:
     """Construct a typed FederationPairTimeoutError from the final retried
     response when the wall-clock budget is exhausted. Carries the structured
@@ -597,6 +647,14 @@ class KamiwazaClient:
         psk_deadline = time.monotonic() + _RETRY_WALL_CLOCK_BUDGET_SECONDS
         psk_schedule_idx = 0
 
+        # Server-directed retry budget for 503s carrying a Retry-After hint
+        # (kamiwaza.lib.http_errors.service_unavailable). Independent of the
+        # psk budget above: that one is a fixed local schedule for one known
+        # reason, this one follows whatever delay the server asks for.
+        retryable_503_deadline = (
+            time.monotonic() + _RETRYABLE_503_WALL_CLOCK_BUDGET_SECONDS
+        )
+
         while True:
             response = self._send_request(method, url, kwargs)
 
@@ -618,6 +676,22 @@ class KamiwazaClient:
                         psk_schedule_idx += 1
                         continue
                 raise _psk_timeout_error_from_response(response)
+
+            retry_after = _retry_after_seconds(response)
+            if retry_after is not None:
+                # The server told us this is transient and how long to wait.
+                # Honor it within budget; on exhaustion fall through to the
+                # normal error path so the terminal exception is unchanged.
+                delay = min(retry_after, _RETRYABLE_503_MAX_SLEEP_SECONDS)
+                if time.monotonic() + delay <= retryable_503_deadline:
+                    self.logger.debug(
+                        "Retrying %s %s after server Retry-After=%.1fs",
+                        method,
+                        path,
+                        delay,
+                    )
+                    time.sleep(delay)
+                    continue
 
             if response.status_code >= 400:
                 should_retry, retry_idx = self._retry_dataset_schema_update(
@@ -863,7 +937,7 @@ class KamiwazaClient:
 
     @property
     def workrooms(self):
-        if not hasattr(self, '_workrooms'):
+        if not hasattr(self, "_workrooms"):
             self._workrooms = WorkroomService(self)
         return self._workrooms
 
