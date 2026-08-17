@@ -219,6 +219,7 @@ class KamiwazaClient:
         *,
         verify: Optional[Any] = None,
         ca_bundle: Optional[str] = None,
+        owns_authenticator: bool = False,
     ):
         """Construct a KamiwazaClient.
 
@@ -230,6 +231,9 @@ class KamiwazaClient:
                 ``KAMIWAZA_API_TOKEN`` env vars.
             authenticator: Optional ``Authenticator`` instance; takes
                 precedence over ``api_key`` when supplied.
+            owns_authenticator: Close a supplied authenticator with this client.
+                Defaults to ``False`` because caller-supplied authenticators may
+                be shared by more than one client.
             log_level: Python logging level (default INFO).
             verify: TLS verification setting. ``True`` (default — system
                 bundle), ``False`` (disable; warns), or a path string
@@ -308,16 +312,22 @@ class KamiwazaClient:
                 or os.environ.get("KAMIWAZA_API_TOKEN")
             )
             self.authenticator = ApiKeyAuthenticator(api_key) if api_key else None
+        self._owns_authenticator = bool(authenticator and owns_authenticator)
 
         # Don't authenticate during initialization - let it happen on first request
 
     def close(self) -> None:
-        """Release the underlying requests.Session transport.
+        """Release the authentication and platform HTTP transports.
 
         Idempotent — repeated close() calls are safe (Session.close()
         does its own idempotency).
         """
-        self.session.close()
+        close_authenticator = getattr(self.authenticator, "close", None)
+        try:
+            if self._owns_authenticator and callable(close_authenticator):
+                close_authenticator()
+        finally:
+            self.session.close()
 
     def __enter__(self) -> "KamiwazaClient":
         return self
@@ -736,6 +746,7 @@ class KamiwazaClient:
         )
         # Preserve exact parent auth state; __init__ may otherwise consult env vars.
         scoped.authenticator = self.authenticator
+        scoped._owns_authenticator = False
         scoped.session.headers.update(self.session.headers)
         scoped.session.cookies.update(self.session.cookies)
         scoped._default_headers = dict(self._default_headers)

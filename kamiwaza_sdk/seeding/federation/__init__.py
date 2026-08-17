@@ -1,6 +1,6 @@
 """Federation / shared_idp seeding + ReBAC access CLI.
 
-A deterministic, operator-facing utility (``kamiwaza-fed``) that productizes the
+A deterministic, operator-facing utility (``kamiwaza-federation``) that productizes the
 shared_idp stand-up + resource-access management that previously lived only in
 test fixtures (``tests/integration/_mini_clearance.py``):
 
