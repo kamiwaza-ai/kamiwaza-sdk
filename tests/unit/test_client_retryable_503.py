@@ -34,6 +34,7 @@ from collections.abc import Iterator
 from typing import Any
 
 import pytest
+from kamiwaza_sdk import client as client_module
 from kamiwaza_sdk.client import KamiwazaClient
 from kamiwaza_sdk.exceptions import (
     APIError,
@@ -288,20 +289,6 @@ def test_still_replays_ordinary_json_bodies(
     assert sleeps == [10.0]
 
 
-def test_clamps_an_absurdly_large_hint_to_the_ceiling(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A huge hint is clamped to the per-attempt ceiling, not obeyed."""
-    client, sleeps = _make_client_with_sequence(
-        monkeypatch,
-        [_authority_fenced_response(retry_after=999), _success_response()],
-    )
-
-    client.delete("workrooms/abc")
-
-    assert sleeps == [30.0]
-
-
 def test_rejects_a_zero_hint_rather_than_hot_spinning(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -539,12 +526,16 @@ def test_401_arm_raises_rather_than_replaying_a_streamed_body(
 # runtime's own header), and asserting a number the SDK was just handed pins
 # nothing about core anyway. What is pinned here is that each code is admitted
 # and its in-band hint is slept verbatim; the clamps are pinned separately.
+# Values are strictly INSIDE [1, 30). Core sends 30 for the last three, but a
+# row at exactly 30 cannot tell the server's hint from the SDK's own ceiling:
+# with the stub sending 40x the hint those rows still pass, because the clamp
+# produces 30 either way. These are chosen to falsify.
 _ADMITTED_CODES = [
     ("embedding_deploying", 10),
     ("embedding_runtime_unreachable", 5),
-    ("discovery_unavailable", 30),
-    ("pinned_discovery_unavailable", 30),
-    ("global_ontology_provisioning", 30),
+    ("discovery_unavailable", 29),
+    ("pinned_discovery_unavailable", 15),
+    ("global_ontology_provisioning", 20),
 ]
 
 # Deliberately excluded: core emits these from the same responses={503: ...}
@@ -577,7 +568,6 @@ def test_retries_each_admitted_503_code(
                     "message": f"{code} is transient",
                     "retry_after_seconds": retry_after,
                 },
-                headers={"Retry-After": str(retry_after)},
             ),
             _success_response(),
         ],
@@ -618,3 +608,161 @@ def test_does_not_retry_a_real_excluded_core_code(
         client.post("probe")
 
     assert sleeps == []
+
+
+def test_ceiling_holds_after_jitter_for_an_in_budget_hint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same invariant, for a hint the SDK will actually act on.
+
+    45s is inside the 60s budget so it is retried, and it exceeds the 30s
+    ceiling so the clamp must bind — at maximum jitter the delay is still
+    exactly 30.0, never 33.0.
+    """
+    client, sleeps = _make_client_with_sequence(
+        monkeypatch,
+        [_authority_fenced_response(retry_after=45), _success_response()],
+    )
+    monkeypatch.setattr("kamiwaza_sdk.client._retry_jitter_unit", lambda: 1.0)
+
+    client.post("workrooms/abc")
+
+    assert sleeps == [30.0]
+
+
+def test_does_not_retry_a_hint_longer_than_the_whole_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A hint core cannot be waited out is surfaced, not clamped (M2).
+
+    auto_provisioner's _BACKOFF_SCHEDULE reaches 60/300/900. Clamping those to
+    30 buys one replay that lands inside the very window it was told to sit
+    out — measured at zero successes — for ~31.5s of latency on a call that
+    used to fail fast.
+    """
+    client, sleeps = _make_client_with_sequence(
+        monkeypatch,
+        [_authority_fenced_response(retry_after=300), _success_response()],
+    )
+
+    with pytest.raises(APIError):
+        client.post("embedding/generate")
+
+    assert sleeps == []
+
+
+def test_does_not_retry_a_nested_detail_body_even_with_a_retry_after_header(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The control that keeps a mutating PUT out of automatic replay (H2).
+
+    ontology.py raises discovery_unavailable as a raw HTTPException — payload
+    nested under "detail", no retry_after_seconds mirror, Retry-After header
+    set — behind PUT /ontologies/{id}/model-bindings. Keying on the bare body
+    rather than the header is the only thing preventing the SDK from replaying
+    that write. Widening _retry_after_seconds to unwrap detail or read the
+    header previously left the whole suite green.
+    """
+    client, sleeps = _make_client_with_sequence(
+        monkeypatch,
+        [
+            _StubResponse(
+                status_code=503,
+                json_data={
+                    "detail": {
+                        "code": "discovery_unavailable",
+                        "message": "discovery is unavailable",
+                    }
+                },
+                headers={"Retry-After": "5"},
+            ),
+            _success_response(),
+        ],
+    )
+
+    with pytest.raises(APIError):
+        client.put("ontologies/abc/model-bindings")
+
+    assert sleeps == [], "nested detail + header must not be replayed"
+
+
+def test_jitter_seam_returns_a_unit_fraction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exercise the seam's own body (M5).
+
+    Every other test monkeypatches _retry_jitter_unit, so replacing it with
+    `return 0.0` — disabling production jitter outright — passed the suite.
+    """
+    monkeypatch.setattr("kamiwaza_sdk.client.random.random", lambda: 0.42)
+    assert client_module._retry_jitter_unit() == 0.42
+
+    values = {client_module._retry_jitter_unit() for _ in range(200)}
+    monkeypatch.undo()
+    live = [client_module._retry_jitter_unit() for _ in range(200)]
+    assert all(0.0 <= v < 1.0 for v in live), "jitter must be a unit fraction"
+    assert len(set(live)) > 1, "jitter must actually vary, not be a constant"
+    assert values == {0.42}
+
+
+def test_does_not_unwrap_a_nested_detail_that_carries_a_mirror(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Kill the "unwrap detail" widening on its own (H2).
+
+    The production ontology shape has no mirror, so unwrapping alone leaves it
+    unretried and a test using that shape cannot see this mutation. This body
+    nests a *complete* detail, so unwrapping is sufficient to switch on replay
+    — which is exactly what must not happen.
+    """
+    client, sleeps = _make_client_with_sequence(
+        monkeypatch,
+        [
+            _StubResponse(
+                status_code=503,
+                json_data={
+                    "detail": {
+                        "code": "discovery_unavailable",
+                        "message": "discovery is unavailable",
+                        "retry_after_seconds": 5,
+                    }
+                },
+            ),
+            _success_response(),
+        ],
+    )
+
+    with pytest.raises(APIError):
+        client.put("ontologies/abc/model-bindings")
+
+    assert sleeps == [], "the payload must be read bare, never unwrapped"
+
+
+def test_does_not_fall_back_to_the_retry_after_header(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Kill the "read the header" widening on its own (H2).
+
+    A bare, admitted code with no mirror but a Retry-After header. Only a
+    header fallback could retry this, so the assertion isolates that branch
+    from the nesting one.
+    """
+    client, sleeps = _make_client_with_sequence(
+        monkeypatch,
+        [
+            _StubResponse(
+                status_code=503,
+                json_data={
+                    "code": "discovery_unavailable",
+                    "message": "discovery is unavailable",
+                },
+                headers={"Retry-After": "5"},
+            ),
+            _success_response(),
+        ],
+    )
+
+    with pytest.raises(APIError):
+        client.put("ontologies/abc/model-bindings")
+
+    assert sleeps == [], "the header is not a retry signal; only the mirror is"

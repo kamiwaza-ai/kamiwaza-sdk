@@ -116,8 +116,9 @@ _RETRYABLE_503_MAX_ATTEMPTS = 6
 """Hard cap on retries, independent of the wall-clock budget.
 
 The budget alone bounds total *time*, not attempt *count*: a small hint spends
-it in thousands of requests. With Core's real 10s hint the cap and the budget
-coincide at six sleeps.
+it in thousands of requests. The cap binds for hints up to roughly 9s; above
+that the budget binds first once jitter is counted, so the two are not
+interchangeable and neither alone is sufficient.
 """
 
 _RETRYABLE_503_JITTER_FRACTION = 0.1
@@ -167,12 +168,17 @@ _RETRYABLE_503_CODES = frozenset(
         # core adds a raise site, so keep it complete:
         #   services/embedding/api.py  create_embedding, get_embedding,
         #                              chunk_text, embed_chunks
-        #   services/embedding/api.py  _translate_upstream_runtime_error
-        #                              (used by three of the above)
+        #   services/embedding/api.py  _translate_upstream_runtime_error,
+        #     used by all four of the above. Note this one emits on
+        #     httpx.HTTPStatusError -- the upstream itself returned 503 --
+        #     not on a transport failure.
         #   services/embedding/exceptions.py  translate_to_http_503, reached
-        #     via context/lib/embedding_availability.py from search_service
-        #     and agentic_retrieval -- i.e. POST /context/search and
-        #     /context/search/unified.
+        #     via context/lib/embedding_availability.py from:
+        #       context/api/search.py:155 (_search_http_error) -> /search,
+        #         /search/unified, /search/simple, /retrieve, /search/retrieve
+        #       context/api/search.py:388 -> POST /search/agentic
+        #       context/api/dataset_indexes.py:463 (_run_unified_search) ->
+        #         POST /context/dataset-indexes/{binding_id}/search
         # The agentic search path is pure but not cheap: a read-timeout replay
         # re-runs a multi-iteration LLM workload.
         "embedding_runtime_unreachable",
@@ -192,7 +198,21 @@ _RETRYABLE_503_CODES = frozenset(
         # returns without writing when a row exists and rolls back on
         # IntegrityError.
         "pinned_discovery_unavailable",
-        # Shared Global Workroom ontology not provisioned yet; nothing ran.
+        # Two raise sites, and only one of them means "nothing ran":
+        #   router.py:658 (GlobalOntologyProvisioningPendingError) comes from
+        #     _precheck_ontology_create, which fires before the plan builder --
+        #     nothing ran.
+        #   router.py:639 (ensure_default_global_instance() returned None) is
+        #     reached through _create_ontology_candidate, which calls
+        #     app_service.create_deployment() first. A real deployment was
+        #     created.
+        # Admitted on convergence, as with embedding_deploying: that path's
+        # `except Exception` runs _reconcile_context_deployment ->
+        # reconcile_cleanup_intent, whose contract is to retain one winner or
+        # strictly remove and verify one loser, so it reclaims what it made.
+        # The route also needs an AlreadyExists plus every
+        # SCOPED_INSTANCE_RECOVERY_ATTEMPTS finding nothing. Worst case is
+        # bounded, self-cleaning create/teardown churn across the replays.
         "global_ontology_provisioning",
     }
 )
@@ -820,15 +840,26 @@ class KamiwazaClient:
         retry_after = _retry_after_seconds(response)
         if retry_after is None:
             return False
+        if retry_after > _RETRYABLE_503_WALL_CLOCK_BUDGET_SECONDS:
+            # Core asked for longer than we are willing to wait in total, so
+            # any retry we make is premature by construction and lands inside
+            # the window it was told to sit out. auto_provisioner's
+            # _BACKOFF_SCHEDULE reaches 60/300/900; clamping those to 30 buys
+            # exactly one guaranteed-to-fail replay and ~31.5s of latency on a
+            # call that used to fail fast. Surface the hint instead.
+            return False
         if not _request_body_is_replayable(kwargs):
             return False
         if state.attempts_503 >= _RETRYABLE_503_MAX_ATTEMPTS:
             return False
-        delay = min(
-            max(retry_after, _RETRYABLE_503_MIN_SLEEP_SECONDS),
-            _RETRYABLE_503_MAX_SLEEP_SECONDS,
-        )
+        # Order matters: jitter is added *before* the ceiling clamp. Clamping
+        # first lets jitter lift the result to 30 * 1.1 = 33.0, which both
+        # breaks the documented ceiling and, at a hint of exactly 30 (what
+        # core sends for three of the admitted codes), spends the 60s budget
+        # in one sleep instead of two.
+        delay = max(retry_after, _RETRYABLE_503_MIN_SLEEP_SECONDS)
         delay += delay * _RETRYABLE_503_JITTER_FRACTION * _retry_jitter_unit()
+        delay = min(delay, _RETRYABLE_503_MAX_SLEEP_SECONDS)
         if time.monotonic() + delay > state.deadline_503:
             return False
         self.logger.debug(
