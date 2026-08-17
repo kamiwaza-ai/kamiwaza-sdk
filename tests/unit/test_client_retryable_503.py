@@ -530,3 +530,47 @@ def test_401_arm_raises_rather_than_replaying_a_streamed_body(
 
     assert "already been consumed" in str(exc_info.value)
     assert sleeps == []
+
+
+# Codes admitted in ENG-10516, each paired with the retry_after_seconds its
+# raise site in core actually sends.
+_ADMITTED_CODES = [
+    ("embedding_deploying", 10),
+    ("embedding_runtime_unreachable", 5),
+    ("discovery_unavailable", 30),
+    ("pinned_discovery_unavailable", 30),
+    ("global_ontology_provisioning", 30),
+]
+
+
+@pytest.mark.parametrize(("code", "retry_after"), _ADMITTED_CODES)
+def test_retries_each_admitted_503_code(
+    monkeypatch: pytest.MonkeyPatch, code: str, retry_after: int
+) -> None:
+    """Each vetted code retries, sleeping the delay core actually sends.
+
+    Bodies mirror ``ServiceUnavailable503Detail`` exactly — bare top-level
+    keys, not nested under ``detail`` — because that is what
+    ``BareDetailHTTPException`` puts on the wire. Every value here sits inside
+    the [1s, 30s] band, so the floor and ceiling do not mask a wrong hint.
+    """
+    client, sleeps = _make_client_with_sequence(
+        monkeypatch,
+        [
+            _StubResponse(
+                status_code=503,
+                json_data={
+                    "code": code,
+                    "message": f"{code} is transient",
+                    "retry_after_seconds": retry_after,
+                },
+                headers={"Retry-After": str(retry_after)},
+            ),
+            _success_response(),
+        ],
+    )
+
+    result = client.delete("probe")
+
+    assert result == {"deleted": True}
+    assert sleeps == [float(retry_after)]
