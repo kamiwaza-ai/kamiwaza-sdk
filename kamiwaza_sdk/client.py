@@ -137,13 +137,40 @@ def _retry_jitter_unit() -> float:
     return random.random()
 
 
-_RETRYABLE_503_CODES = frozenset({"workroom_authority_unavailable"})
+_RETRYABLE_503_CODES = frozenset(
+    {
+        # Authority fence briefly held by another operation; the workroom is
+        # untouched in this state. (ENG-10506)
+        "workroom_authority_unavailable",
+        # Embedding model still coming up — the request provably never ran.
+        "embedding_deploying",
+        # Transport failure reaching the embedding runtime. Raised from
+        # httpx.RequestError, which includes read timeouts, so the backend may
+        # in principle have seen the request; the affected routes (generate
+        # embedding, chunk text) are pure computations with no persistent
+        # effect, so a replay is harmless either way.
+        "embedding_runtime_unreachable",
+        # Pre-flight discovery failure on an idempotent PUT.
+        "discovery_unavailable",
+        # Raised during pin *validation*, before the operation proceeds.
+        "pinned_discovery_unavailable",
+        # Shared Global Workroom ontology not provisioned yet; nothing ran.
+        "global_ontology_provisioning",
+    }
+)
 """Server ``code`` values this client will retry.
 
 Deliberately an allowlist rather than "any 503 carrying a hint" (ENG-10506):
 a hint means the server *believes* the condition is transient, which is not
 the same as the SDK being safe to silently re-issue the call. Adding a code
 here is a decision about idempotency, so it stays explicit.
+
+Every code above was reviewed against its raise site in core (ENG-10516) and
+admitted on the same test: the 503 fires because a dependency was unreachable
+or not yet ready, so the requested work did not take effect. HTTP verb alone
+is not the criterion — a POST whose handler fails pre-flight is replayable,
+and a code that could fire *after* a persistent effect would not be, whatever
+its verb.
 """
 
 
