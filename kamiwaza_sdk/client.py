@@ -157,7 +157,7 @@ _RETRYABLE_503_CODES = frozenset(
         # them. A retry landing on a replica whose _LAST_ATTEMPT is unset can
         # re-enter _provision(); the deploy pre-check is then the only thing
         # standing between that and a duplicate deployment. Not demonstrated,
-        # but it is where this admission's safety actually rests. (ENG-10531)
+        # but it is where this admission's safety actually rests. (ENG-10527)
         "embedding_deploying",
         # Transport failure reaching the embedding runtime. Raised from
         # httpx.RequestError, which includes read timeouts, so the backend may
