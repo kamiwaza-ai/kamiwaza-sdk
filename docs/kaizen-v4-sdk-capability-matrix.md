@@ -39,7 +39,7 @@ rollout observation.
 
 | Component | Revision audited | Notes |
 | --- | --- | --- |
-| `kamiwaza-sdk` `develop` | `238c913fc430e981be327892bcd46a8c7e51498e` | Audit artifact base. Package version is `1.1.0`. |
+| `kamiwaza-sdk` `develop` | `238c913fc43014e622bc20f24d4e55abc7a34ded` | Audit artifact base. Package version is `1.1.0`. |
 | Tomo/Kaizen v4 `develop` | `f2b12889a9ab246993d63ea5b90a5198ff1592d2` | Pins both SDK distributions to SDK commit `6be36aff7ccba2e5c80799852fd2a29bd56946a9`. |
 | Tomo-pinned SDK | `6be36aff7ccba2e5c80799852fd2a29bd56946a9` | Capability client/service files match the audited `develop` base; only delegated-workload readiness code differs, outside this matrix. |
 | Core `develop` live image source | `c8b6c9af03a1b16cdfb0ac019f7b41cf4110d861` | Scheduler is blocked by ENG-10492. |
