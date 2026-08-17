@@ -45,6 +45,7 @@ _POLL_BACKOFF_FACTOR = 2.0
 _POLL_BACKOFF_CAP_SECONDS = 5.0
 
 _TERMINAL_STATES = frozenset({"SUCCEEDED", "FAILED", "STOPPED", "CANCELED"})
+_UNSUCCESSFUL_TERMINAL_STATES = _TERMINAL_STATES - {"SUCCEEDED"}
 
 # A JobResult-shaped /result wrapper is identified by these two required-field
 # keys both present; a body without them is a bare marker (the job's own
@@ -329,7 +330,7 @@ class JobsAPI(BaseService):
     def _terminal_result(
         self, job_id: str, status: str, target_cluster: Optional[str]
     ) -> JobResult:
-        """Fetch a terminal marker; tolerate the server's no-marker 410."""
+        """Fetch a terminal marker when Core makes one available."""
         payload: dict[str, Any] = {}
         try:
             result_body = self._router.request(
@@ -337,7 +338,7 @@ class JobsAPI(BaseService):
             )
             payload = self._marker_to_payload(result_body)
         except APIError as exc:
-            if getattr(exc, "status_code", None) != 410:
+            if not _result_error_is_ignorable(status, exc.status_code):
                 raise
         return JobResult.model_validate(
             {**payload, "job_id": str(job_id), "status": status}
@@ -377,6 +378,14 @@ class JobsAPI(BaseService):
         if domain:
             payload["result"] = domain
         return payload
+
+
+def _result_error_is_ignorable(status: str, status_code: int | None) -> bool:
+    if status_code == 410:
+        return True
+    if status not in _UNSUCCESSFUL_TERMINAL_STATES:
+        return False
+    return status_code == 409
 
 
 def _build_run_body(
