@@ -847,6 +847,38 @@ class TestBuildPatchKwargsCarriesAnnotations:
         specs = _build_patch_service_specs(_FakePayload())
         assert (specs[0].model_extra or {})["automountServiceAccountToken"] is False
 
+    def test_tag_only_patch_explicitly_clears_a_prior_digest_pin(self):
+        """ENG-10538: iterative dev must make an explicit digest decision."""
+        from kamiwaza_extensions.commands.dev import _build_patch_service_specs
+        from kamiwaza_sdk.schemas.extensions import ExtensionServiceSpec
+
+        class _FakePayload:
+            services = [
+                ExtensionServiceSpec(name="api", image="registry.test/api:next"),
+            ]
+
+        patch = _build_patch_service_specs(_FakePayload())[0]
+
+        assert patch.model_dump(exclude_none=True)["image"]["digest"] == ""
+
+    def test_digest_pinned_patch_preserves_the_new_exact_digest(self):
+        from kamiwaza_extensions.commands.dev import _build_patch_service_specs
+        from kamiwaza_sdk.schemas.extensions import ExtensionServiceSpec
+
+        digest = "sha256:" + "a" * 64
+
+        class _FakePayload:
+            services = [
+                ExtensionServiceSpec(
+                    name="api",
+                    image=f"registry.test/api:next@{digest}",
+                ),
+            ]
+
+        patch = _build_patch_service_specs(_FakePayload())[0]
+
+        assert patch.model_dump(exclude_none=True)["image"]["digest"] == digest
+
     def test_patch_service_specs_forwards_volumes_and_mounts(self):
         """ENG-4834: service pod-volume contract must refresh on PATCH."""
         from kamiwaza_extensions.commands.dev import _build_patch_service_specs

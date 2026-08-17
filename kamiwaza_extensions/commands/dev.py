@@ -88,6 +88,11 @@ def _build_patch_service_specs(
     would have written — flows through. Sending only ``tag`` would
     leave the CR's image field at the original repository and produce
     ``ImagePullBackOff`` on the next pull.
+
+    A tag-only image also sends an explicit empty digest. The platform keeps
+    existing digest pins unless PATCH deliberately replaces or clears them;
+    omitting this field would make every later dev deploy of a pinned service
+    fail before the tag can change.
     """
     return [
         _build_patch_service_spec(service)
@@ -232,7 +237,7 @@ def _build_patch_service_spec(service: Any) -> Any:
             tag=tag,
             registry=registry,
             repository=repository,
-            digest=digest if separator else None,
+            digest=digest if separator else "",
         ),
         env=service.env or None,
         replicas=service.replicas,
