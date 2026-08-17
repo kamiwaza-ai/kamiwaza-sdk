@@ -438,6 +438,10 @@ More examples coming soon!
 | `client.ingestion` | Data ingestion | [Ingestion Service](docs/services/ingestion/README.md) |
 | `client.enclaves` | Connectors + documents | [Enclaves Service](docs/services/enclaves/README.md) |
 
+The cross-service [Kaizen v4 SDK capability audit](docs/kaizen-v4-sdk-capability-matrix.md)
+maps supported SDK entry points to their Kaizen runtime registrations, evidence,
+and closure owners.
+
 ## Auth / User Management (0.9.0)
 
 - **Base URL rule:** set `base_url=https://<host>` (no `/auth` suffix). Quick preflight: `GET {base_url}/auth/ping` → 200. If you include `/auth`, calls will double-prefix and fail.
