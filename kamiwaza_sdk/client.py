@@ -142,17 +142,55 @@ _RETRYABLE_503_CODES = frozenset(
         # Authority fence briefly held by another operation; the workroom is
         # untouched in this state. (ENG-10506)
         "workroom_authority_unavailable",
-        # Embedding model still coming up — the request provably never ran.
+        # NOT "the request never ran" -- it did. auto_provisioner._provision()
+        # reaps stranded seed rows and calls serving_service.deploy_model()
+        # *before* raising this on the on_demand path, and
+        # _handle_provision_failure raises it after a deploy attempt too. What
+        # makes the replay safe is that provisioning is gated and convergent:
+        # the provisioner holds _PROVISIONER_LOCK and consults _LAST_ATTEMPT,
+        # so a re-issued call inside the warmup window observes the in-flight
+        # attempt instead of starting a second one, and the freshly created
+        # row is non-terminal so the reaper will not take it.
+        #
+        # Caveat worth knowing: those gates are module-level process-local
+        # globals, so the window is shared within a core replica, not across
+        # them. A retry landing on a replica whose _LAST_ATTEMPT is unset can
+        # re-enter _provision(); the deploy pre-check is then the only thing
+        # standing between that and a duplicate deployment. Not demonstrated,
+        # but it is where this admission's safety actually rests. (ENG-10531)
         "embedding_deploying",
         # Transport failure reaching the embedding runtime. Raised from
         # httpx.RequestError, which includes read timeouts, so the backend may
-        # in principle have seen the request; the affected routes (generate
-        # embedding, chunk text) are pure computations with no persistent
-        # effect, so a replay is harmless either way.
+        # in principle have seen the request. Every route that can raise it is
+        # a pure computation with no persistent effect, so a replay is
+        # harmless either way. The full set -- this is the standing rule when
+        # core adds a raise site, so keep it complete:
+        #   services/embedding/api.py  create_embedding, get_embedding,
+        #                              chunk_text, embed_chunks
+        #   services/embedding/api.py  _translate_upstream_runtime_error
+        #                              (used by three of the above)
+        #   services/embedding/exceptions.py  translate_to_http_503, reached
+        #     via context/lib/embedding_availability.py from search_service
+        #     and agentic_retrieval -- i.e. POST /context/search and
+        #     /context/search/unified.
+        # The agentic search path is pure but not cheap: a read-timeout replay
+        # re-runs a multi-iteration LLM workload.
         "embedding_runtime_unreachable",
-        # Pre-flight discovery failure on an idempotent PUT.
+        # Pre-flight discovery failure on an idempotent PUT
+        # (context/api/embedding_model.py). Core emits this code a second way,
+        # from ontology.py inside the PUT /ontologies/{id}/model-bindings
+        # write, as a raw HTTPException whose payload is nested under
+        # "detail" with no retry_after_seconds mirror -- so it does not match
+        # below and is not retried. That is load-bearing, not incidental: the
+        # ontology site is a *mutating* write whose replay safety nobody has
+        # reviewed. See the note on the mirror in _retry_after_seconds.
         "discovery_unavailable",
-        # Raised during pin *validation*, before the operation proceeds.
+        # Raised during pin validation. No caller-visible effect, and the
+        # internal seeds are convergent on replay: resolve() gates its rebind
+        # write on `allow_persist and discovery_ok`, and discovery_ok is False
+        # on this path, so no pin is committed; seed_binding_from_workroom_attrs
+        # returns without writing when a row exists and rolls back on
+        # IntegrityError.
         "pinned_discovery_unavailable",
         # Shared Global Workroom ontology not provisioned yet; nothing ran.
         "global_ontology_provisioning",
@@ -182,6 +220,19 @@ def _retry_after_seconds(response: Any) -> Optional[float]:
     ``{"code": ..., "message": ..., "retry_after_seconds": N}`` (see
     ``BareDetailHTTPException`` -- the body is the detail itself, not
     ``{"detail": ...}``) and mirrors the value in a ``Retry-After`` header.
+
+    Deliberately keyed on the **bare top-level body**, not the ``Retry-After``
+    header, even though core sets both. Core's own docstring calls
+    ``retry_after_seconds`` a "mirror of the Retry-After header for clients
+    that don't read response headers", so reading only the mirror looks like
+    an oversight -- it is not. Emitters that go through
+    ``service_unavailable()`` always set the mirror, while the one raise site
+    that hand-rolls a raw ``HTTPException`` (ontology.py, behind a *mutating*
+    model-bindings PUT) sets only the header and nests its payload under
+    ``detail``. Honoring the header would silently switch on automatic replay
+    of that write, which nobody has reviewed for replay safety. The mirror is
+    the narrower and safer signal; keep it that way until the ontology site is
+    normalized and reviewed.
 
     Both halves must line up: the ``code`` must be one we have decided is
     safe to re-issue (``_RETRYABLE_503_CODES``), and the delay must be

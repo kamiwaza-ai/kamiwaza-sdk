@@ -532,8 +532,13 @@ def test_401_arm_raises_rather_than_replaying_a_streamed_body(
     assert sleeps == []
 
 
-# Codes admitted in ENG-10516, each paired with the retry_after_seconds its
-# raise site in core actually sends.
+# Codes admitted in ENG-10516. The delay column is a representative in-band
+# value, NOT a claim about core's cadence: two of these are computed at
+# runtime rather than literals (embedding_deploying forwards the provisioner's
+# variable warmup window; embedding_runtime_unreachable forwards the upstream
+# runtime's own header), and asserting a number the SDK was just handed pins
+# nothing about core anyway. What is pinned here is that each code is admitted
+# and its in-band hint is slept verbatim; the clamps are pinned separately.
 _ADMITTED_CODES = [
     ("embedding_deploying", 10),
     ("embedding_runtime_unreachable", 5),
@@ -541,6 +546,10 @@ _ADMITTED_CODES = [
     ("pinned_discovery_unavailable", 30),
     ("global_ontology_provisioning", 30),
 ]
+
+# Deliberately excluded: core emits these from the same responses={503: ...}
+# entries as the admitted codes, so they are the meaningful boundary.
+_EXCLUDED_CODES = ["embedding_unavailable", "embedding_service_error"]
 
 
 @pytest.mark.parametrize(("code", "retry_after"), _ADMITTED_CODES)
@@ -551,8 +560,12 @@ def test_retries_each_admitted_503_code(
 
     Bodies mirror ``ServiceUnavailable503Detail`` exactly — bare top-level
     keys, not nested under ``detail`` — because that is what
-    ``BareDetailHTTPException`` puts on the wire. Every value here sits inside
-    the [1s, 30s] band, so the floor and ceiling do not mask a wrong hint.
+    ``BareDetailHTTPException`` puts on the wire. Every value sits inside the
+    [1s, 30s] band so neither clamp masks it.
+
+    Driven over POST: no core route emits any of these on a DELETE. The
+    machinery is verb-agnostic, so the verb proves nothing either way — but
+    the test should not read as though it does.
     """
     client, sleeps = _make_client_with_sequence(
         monkeypatch,
@@ -570,7 +583,38 @@ def test_retries_each_admitted_503_code(
         ],
     )
 
-    result = client.delete("probe")
+    result = client.post("probe")
 
     assert result == {"deleted": True}
     assert sleeps == [float(retry_after)]
+
+
+@pytest.mark.parametrize("code", _EXCLUDED_CODES)
+def test_does_not_retry_a_real_excluded_core_code(
+    monkeypatch: pytest.MonkeyPatch, code: str
+) -> None:
+    """The allowlist boundary, pinned against codes core actually emits.
+
+    The synthetic-code test proves the mechanism rejects unknown values; this
+    proves the *membership* is right. These two ship from the same
+    ``responses={503: ...}`` entries as the admitted codes, so a careless
+    widening would pick them up.
+    """
+    client, sleeps = _make_client_with_sequence(
+        monkeypatch,
+        [
+            _StubResponse(
+                status_code=503,
+                json_data={
+                    "code": code,
+                    "message": f"{code} is not admitted",
+                    "retry_after_seconds": 5,
+                },
+            )
+        ],
+    )
+
+    with pytest.raises(APIError):
+        client.post("probe")
+
+    assert sleeps == []
