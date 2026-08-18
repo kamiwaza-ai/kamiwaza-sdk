@@ -64,16 +64,17 @@ def test_required_edge_plugin_is_registered_only_at_pytest_root() -> None:
     assert "pytest_plugins" not in integration_conftest
 
 
-def test_required_edge_collection_guard_requires_all_five_cases() -> None:
+def test_required_edge_collection_guard_requires_all_six_cases() -> None:
     expected_cases = {
         "test_required_mesh_retrieval_returns_exact_post_gate_rows[U]",
         "test_required_mesh_retrieval_returns_exact_post_gate_rows[S]",
         "test_required_mesh_retrieval_returns_exact_post_gate_rows[TS]",
+        "test_required_mesh_dataset_list_returns_only_authorized_fixture",
         "test_required_mesh_job_reaches_receiver_and_returns_marker",
         "test_unonboarded_shared_idp_user_rejected_by_receiver_allowlist",
     }
     assert required_edge.REQUIRED_EDGE_CASES == expected_cases
-    assert len(required_edge.REQUIRED_EDGE_CASES) == 5
+    assert len(required_edge.REQUIRED_EDGE_CASES) == 6
     _assert_live_retrieval_parametrization()
     for case in expected_cases:
         function_name = case.split("[", 1)[0]
@@ -96,7 +97,7 @@ def test_required_edge_collection_guard_inspects_live_parametrization(
     monkeypatch.setattr(retrieval, "pytestmark", [])
 
     with pytest.raises(AssertionError):
-        test_required_edge_collection_guard_requires_all_five_cases()
+        _assert_live_retrieval_parametrization()
 
 
 def test_required_edge_post_selection_guard_rejects_deselection_and_extras() -> None:
@@ -375,6 +376,31 @@ def test_terminal_job_oracle_accepts_exact_receiver_marker() -> None:
     )
 
     edge._assert_terminal_mesh_job(result, "eng10050-exact")
+
+
+def test_required_dataset_list_uses_mesh_and_requires_exact_fixture() -> None:
+    list_datasets = Mock(
+        return_value=[SimpleNamespace(urn="urn:dataset:only-authorized")]
+    )
+    persona = SimpleNamespace(
+        catalog=SimpleNamespace(
+            datasets=SimpleNamespace(list=list_datasets),
+        ),
+        session=object(),
+    )
+    authenticator = Mock()
+    authenticator.get_access_token.return_value = "opaque-test-token"
+    wiring = {
+        "name": "receiver cluster",
+        "urn": "urn:dataset:only-authorized",
+        "personas": {
+            "U": {"client": persona, "authenticator": authenticator},
+        },
+    }
+
+    edge.test_required_mesh_dataset_list_returns_only_authorized_fixture(wiring)
+
+    list_datasets.assert_called_once_with(target_cluster="receiver cluster")
 
 
 def test_required_job_case_runs_recoverably_on_named_peer(monkeypatch) -> None:
