@@ -58,6 +58,51 @@ Classification vocabulary:
 - **Deliberately out of scope** — the operation should remain outside the
   ordinary agent surface.
 
+## Capability-kit reconciliation
+
+This matrix was reconciled on 2026-08-18 with the current
+[`capability-kit`](https://github.com/kamiwaza-internal/capability-kit) corpus.
+That corpus is the evidence vocabulary and capability record layer, not a
+replacement for this implementation matrix. The two artifacts therefore join
+at capability and evidence identifiers but retain deliberately non-equivalent
+fields:
+
+| This audit | Capability-kit counterpart | Reconciliation |
+| --- | --- | --- |
+| Capability, supported SDK entry point | `id`, `title`, `surface`, `requires`, `preconditions` in `capability.v1` | A kit capability may span several SDK methods; the audit retains method-level entries so a missing or unregistered method cannot be hidden by an aggregate product label. |
+| Kaizen v4 runtime registration | None | This is Tomo-specific implementation evidence. It remains an audit-only field because the kit deliberately does not infer extension wiring from a platform SDK contract. |
+| Classification and owner / closure | None | These are engineering triage decisions, not customer-capability claims. |
+| Representative verification | `evidence_plan`, `evidence`, and a `scenario-evidence.v2` record | Existing test counts prove contract coverage but are not fresh-deployment evidence. A closing record must name the executed build, method, capability IDs, status, and ordered observations. |
+
+### Context mapping and closure preconditions
+
+The kit's `context.workroom-document-search` capability maps directly to the
+three Context rows in this matrix: collections, ingest/pipeline lifecycle, and
+retrieval. Its preconditions make the default-path closure more precise:
+
+- Every call must remain under the authorized current workroom; a cross-workroom
+  job or collection must not become visible through the default agent path.
+- Managed vector-store and embedding/parser dependencies are prerequisites. A
+  missing dependency must surface the Context service's specific, actionable
+  error rather than a fallback to an unrelated Kaizen tool.
+- Context writes must target an explicit non-Global workroom. The SDK documents
+  the Global Workroom as read-only: collection, ingest, and ontology writes
+  return 403 there, while reads remain allowed.
+
+The corpus has **no separate ontology capability record** today. That is a
+documentation/evidence gap, not a missing SDK contract: the SDK Context service
+already supplies ontology CRUD, knowledge/entity writes, and queries. Before
+ENG-10505 can emit its required end-to-end evidence, capability-kit needs an
+ontology capability identifier or an explicitly reviewed decision to extend
+`context.workroom-document-search`; the evidence schema requires every emitted
+`capability_ids[]` value to join to a live document.
+
+The `kaizen.data-chat` record is intentionally not evidence that Context is
+registered by default: it declares that Kaizen extension internals were outside
+its source scope. Its `UI` evidence plan can cover a conversation experience
+only after the Context default-registration proof exists; it cannot replace the
+SDK-backed ingestion/retrieval or ontology round trips required here.
+
 ## Capability matrix
 
 | Capability | Supported SDK entry point | Kaizen v4 runtime registration | Classification | Representative verification | Owner / closure |
