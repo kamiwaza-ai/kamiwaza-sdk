@@ -39,6 +39,7 @@ def test_submit_async_serializes_typed_delegated_access(mock_client) -> None:
     job_id = JobsAPI(client=mock_client).submit_async(
         entrypoint="python summarize.py",
         delegated_access=access,
+        python_packages=["Humanize==4.13.0"],
     )
 
     assert job_id == "job-1"
@@ -56,6 +57,7 @@ def test_submit_async_serializes_typed_delegated_access(mock_client) -> None:
             }
         ],
     }
+    assert mock_client.calls[0][2]["json"]["python_packages"] == ["humanize==4.13.0"]
 
 
 def test_run_accepts_mapping_and_validates_before_network(mock_client) -> None:
@@ -76,6 +78,41 @@ def test_existing_submission_body_is_unchanged_when_access_absent(mock_client) -
     JobsAPI(client=mock_client).submit_async(entrypoint="python ordinary.py")
 
     assert mock_client.calls[0][2]["json"] == {"entrypoint": "python ordinary.py"}
+
+
+@pytest.mark.parametrize(
+    "python_packages",
+    [
+        ["humanize"],
+        ["humanize>=4.13.0"],
+        ["humanize @ https://packages.example/humanize.whl"],
+        ["humanize==4.13.0", "Humanize==4.13.0"],
+        [f"package-{index}==1.0.0" for index in range(33)],
+    ],
+)
+def test_python_packages_fail_before_network_when_not_exact_or_bounded(
+    mock_client, python_packages: list[str]
+) -> None:
+    with pytest.raises((ValidationError, ValueError)):
+        JobsAPI(client=mock_client).submit_async(
+            entrypoint="python summarize.py",
+            delegated_access={
+                "datasets": [{"urn": _DATASET_URN, "operations": ["discover"]}]
+            },
+            python_packages=python_packages,
+        )
+
+    assert mock_client.calls == []
+
+
+def test_python_packages_require_delegated_access(mock_client) -> None:
+    with pytest.raises(ValueError, match="require delegated_access"):
+        JobsAPI(client=mock_client).submit_async(
+            entrypoint="python ordinary.py",
+            python_packages=["humanize==4.13.0"],
+        )
+
+    assert mock_client.calls == []
 
 
 @pytest.mark.parametrize(
