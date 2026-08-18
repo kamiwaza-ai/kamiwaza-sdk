@@ -32,7 +32,7 @@ is missing or empty at the time the runtime lib tried to parse the request.
 - The request reached the extension pod without passing through the
   platform-managed ingress authorization path (for example, a direct
   in-cluster call, port-forward, or misconfigured ingress).
-- The platform ForwardAuth layer is not injecting the envelope correctly
+- The platform-managed ingress authorization path is not injecting the envelope correctly
 (transient platform outage or misconfiguration).
 - Local development with `KAMIWAZA_USE_AUTH=true` but no platform to populate
 the envelope — expected failure mode.
