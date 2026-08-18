@@ -117,12 +117,18 @@ def test_delegated_result_requires_exact_installed_versions() -> None:
     result = SimpleNamespace(
         status="SUCCEEDED",
         result={
-            "probe": "marker",
-            "package_imports": ["humanize", "kamiwaza_sdk"],
-            "package_versions": {
-                "humanize": "4.13.0",
-                "kamiwaza-sdk": "1.1.0",
-            },
+            "data": [
+                {
+                    "classification": "U",
+                    "probe": "marker",
+                    "package_imports": ["humanize", "kamiwaza_sdk"],
+                    "package_versions": {
+                        "humanize": "4.13.0",
+                        "kamiwaza-sdk": "1.1.0",
+                    },
+                }
+            ],
+            "metadata": {"gate_audit": [{}], "filtered": False},
         },
     )
 
@@ -133,7 +139,7 @@ def test_delegated_result_requires_exact_installed_versions() -> None:
         {"humanize": "4.13.0", "kamiwaza-sdk": "1.1.0"},
     )
 
-    result.result["package_versions"]["humanize"] = "4.12.0"
+    result.result["data"][0]["package_versions"]["humanize"] = "4.12.0"
     with pytest.raises(AssertionError):
         live_edge._assert_delegated_result(
             result,
@@ -148,13 +154,31 @@ def test_delegated_package_fixture_must_change_the_base_environment() -> None:
     missing_from_base = SimpleNamespace(
         status="SUCCEEDED",
         result={
-            "probe": "baseline",
-            "package_versions": {"humanize": None, "kamiwaza-sdk": "1.1.0"},
+            "data": [
+                {
+                    "classification": "U",
+                    "probe": "baseline",
+                    "package_versions": {
+                        "humanize": None,
+                        "kamiwaza-sdk": "1.1.0",
+                    },
+                }
+            ],
+            "metadata": {"gate_audit": [{}], "filtered": False},
         },
     )
     already_in_base = SimpleNamespace(
         status="SUCCEEDED",
-        result={"probe": "baseline", "package_versions": expected},
+        result={
+            "data": [
+                {
+                    "classification": "U",
+                    "probe": "baseline",
+                    "package_versions": expected,
+                }
+            ],
+            "metadata": {"gate_audit": [{}], "filtered": False},
+        },
     )
 
     live_edge._assert_package_fixture_changes_environment(
@@ -168,3 +192,24 @@ def test_delegated_package_fixture_must_change_the_base_environment() -> None:
             "baseline",
             expected,
         )
+
+
+def test_delegated_workload_waits_for_submitter_marker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pending = SimpleNamespace(status="SUCCEEDED", result=None, job_id="job-1")
+    ready = SimpleNamespace(
+        status="SUCCEEDED",
+        result={
+            "data": [{"classification": "U", "probe": "ready"}],
+            "metadata": {"gate_audit": [{}], "filtered": False},
+        },
+        job_id="job-1",
+    )
+    jobs = SimpleNamespace(wait=lambda *args, **kwargs: ready)
+    persona = SimpleNamespace(jobs=jobs)
+    ticks = iter((0.0, 0.0))
+    monkeypatch.setattr(live_edge.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(live_edge.time, "sleep", lambda _seconds: None)
+
+    assert live_edge._await_delegated_result(persona, pending, "receiver") is ready

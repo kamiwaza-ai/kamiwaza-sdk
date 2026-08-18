@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shlex
+import time
 import uuid
 from typing import Any
 from urllib.parse import quote
@@ -33,6 +34,9 @@ pytestmark = [
 ]
 
 _IMPORT_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*")
+_TEST_CLASSIFICATION = "U"
+_RESULT_MARKER_WAIT_SECONDS = 15.0
+_RESULT_MARKER_POLL_SECONDS = 1.0
 
 
 def _environment_string_list(name: str) -> tuple[str, ...]:
@@ -75,10 +79,9 @@ def _assert_package_fixture_changes_environment(
     marker: str,
     expected_versions: dict[str, str],
 ) -> None:
-    assert result.status == "SUCCEEDED", result
-    payload = result.result if isinstance(result.result, dict) else {}
-    assert payload.get("probe") == marker, result
-    installed = payload.get("package_versions")
+    record = _require_gated_result_record(result)
+    assert record.get("probe") == marker, result
+    installed = record.get("package_versions")
     assert isinstance(installed, dict), result
     assert any(
         installed.get(name) != version for name, version in expected_versions.items()
@@ -91,11 +94,41 @@ def _assert_delegated_result(
     import_names: tuple[str, ...],
     expected_versions: dict[str, str],
 ) -> None:
+    record = _require_gated_result_record(result)
+    assert record.get("probe") == marker, result
+    assert record.get("package_imports") == list(import_names), result
+    assert record.get("package_versions") == expected_versions, result
+
+
+def _require_gated_result_record(result: Any) -> dict[str, Any]:
     assert result.status == "SUCCEEDED", result
-    payload = result.result if isinstance(result.result, dict) else {}
-    assert payload.get("probe") == marker, result
-    assert payload.get("package_imports") == list(import_names), result
-    assert payload.get("package_versions") == expected_versions, result
+    envelope = result.result if isinstance(result.result, dict) else {}
+    records = envelope.get("data")
+    metadata = envelope.get("metadata")
+    assert isinstance(records, list) and len(records) == 1, result
+    assert isinstance(records[0], dict), result
+    assert isinstance(metadata, dict), result
+    assert isinstance(metadata.get("gate_audit"), list), result
+    assert len(metadata["gate_audit"]) == 1, result
+    assert records[0].get("classification") == _TEST_CLASSIFICATION, result
+    return records[0]
+
+
+def _await_delegated_result(persona: Any, result: Any, target_cluster: str) -> Any:
+    """Wait briefly for KubeRay's submitter log to expose the result marker."""
+    deadline = time.monotonic() + _RESULT_MARKER_WAIT_SECONDS
+    while result.result is None:
+        if time.monotonic() >= deadline:
+            return result
+        time.sleep(_RESULT_MARKER_POLL_SECONDS)
+        result = _required_mesh_call(
+            lambda: persona.jobs.wait(
+                str(result.job_id),
+                timeout=int(_RESULT_MARKER_WAIT_SECONDS),
+                target_cluster=target_cluster,
+            )
+        )
+    return result
 
 
 def test_shared_idp_delegated_job_installs_approved_package(
@@ -123,8 +156,8 @@ def test_shared_idp_delegated_job_installs_approved_package(
         "        versions[name] = importlib.metadata.version(name)\n"
         "    except importlib.metadata.PackageNotFoundError:\n"
         "        versions[name] = None\n"
-        f"payload = {{'probe': {baseline_marker!r}, "
-        "'package_versions': versions}\n"
+        f"payload = [{{'classification': {_TEST_CLASSIFICATION!r}, "
+        f"'probe': {baseline_marker!r}, 'package_versions': versions}}]\n"
         "print('KZ_MESH_RUN_ON_JSON::' + json.dumps(payload))\n"
     )
     baseline = _required_mesh_call(
@@ -136,6 +169,7 @@ def test_shared_idp_delegated_job_installs_approved_package(
             delegated_access=delegated_access,
         )
     )
+    baseline = _await_delegated_result(persona, baseline, wiring["name"])
     _assert_package_fixture_changes_environment(
         baseline,
         baseline_marker,
@@ -149,10 +183,9 @@ def test_shared_idp_delegated_job_installs_approved_package(
         f"packages = {tuple(expected_versions)!r}\n"
         "modules = [importlib.import_module(name).__name__ for name in names]\n"
         "versions = {name: importlib.metadata.version(name) for name in packages}\n"
-        "payload = {"
+        f"payload = [{{'classification': {_TEST_CLASSIFICATION!r}, "
         f"'probe': {marker!r}, 'package_imports': modules, "
-        "'package_versions': versions"
-        "}\n"
+        "'package_versions': versions}]\n"
         "print('KZ_MESH_RUN_ON_JSON::' + json.dumps(payload))\n"
     )
 
@@ -166,6 +199,7 @@ def test_shared_idp_delegated_job_installs_approved_package(
             python_packages=list(coordinates),
         )
     )
+    result = _await_delegated_result(persona, result, wiring["name"])
 
     _assert_delegated_result(result, marker, import_names, expected_versions)
     selector = quote(wiring["name"], safe="")
