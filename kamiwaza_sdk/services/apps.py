@@ -34,15 +34,33 @@ def _kaizen_v4_version(template: AppTemplate) -> Optional[Version]:
         parsed_version = Version(template.version or "")
     except InvalidVersion:
         return None
-    if not parsed_version.release or parsed_version.release[0] != 4:
+    trusted_v4 = all(
+        (
+            parsed_version.release[0] == 4,
+            template.source_type.value == "kamiwaza",
+            template.visibility.value == "public",
+            all(
+            marker in template.compose_yml for marker in _KAIZEN_V4_COMPOSE_MARKERS
+            ),
+        )
+    )
+    return parsed_version if trusted_v4 else None
+
+
+def _find_kaizen_v4_template(
+    templates: List[AppTemplate], version: Optional[str]
+) -> Optional[AppTemplate]:
+    candidates = [
+        (parsed_version, template.name == "kaizen", template)
+        for template in templates
+        if template.name.lower() in _KAIZEN_TEMPLATE_NAMES
+        if version is None or template.version == version
+        for parsed_version in [_kaizen_v4_version(template)]
+        if parsed_version is not None
+    ]
+    if not candidates:
         return None
-    if template.source_type.value != "kamiwaza":
-        return None
-    if template.visibility.value != "public":
-        return None
-    if not all(marker in template.compose_yml for marker in _KAIZEN_V4_COMPOSE_MARKERS):
-        return None
-    return parsed_version
+    return max(candidates, key=lambda candidate: candidate[:2])[2]
 
 
 class AppService(BaseService):
@@ -147,19 +165,7 @@ class AppService(BaseService):
         """
         templates = self.list_templates()
         if name.lower() == "kaizen":
-            candidates: List[tuple[Version, bool, AppTemplate]] = []
-            for template in templates:
-                if template.name.lower() not in _KAIZEN_TEMPLATE_NAMES:
-                    continue
-                parsed_version = _kaizen_v4_version(template)
-                if parsed_version is None:
-                    continue
-                if version is not None and template.version != version:
-                    continue
-                candidates.append((parsed_version, template.name == "kaizen", template))
-            if not candidates:
-                return None
-            return max(candidates, key=lambda candidate: candidate[:2])[2]
+            return _find_kaizen_v4_template(templates, version)
 
         for template in templates:
             if template.name != name:
