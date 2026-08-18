@@ -19,8 +19,12 @@ def _template(name: str, version: str = "1.0.0") -> dict:
         "name": name,
         "version": version,
         "source_type": "kamiwaza",
-        "visibility": "private",
-        "compose_yml": "services: {}",
+        "visibility": "public",
+        "compose_yml": (
+            "images/kaizen-api:4.0.0\n"
+            "KAIZEN_PROCESS: worker\n"
+            "PI_KAIZEN_CALLBACK_URL: http://pi\n"
+        ),
         "risk_tier": 1,
         "created_at": _TS,
     }
@@ -66,11 +70,11 @@ def _service(client) -> AppService:
 
 
 def test_install_by_name_resolves_template_and_deploys_with_workroom_header():
-    template = _template("kaizen", "2.0.2")
+    template = _template("kaizen-next", "4.0.0")
     client = DummyClient([[template]], _deployment("kaizen"))
     service = _service(client)
 
-    deployment = service.install_by_name("kaizen", version="2.0.2", workroom_id="wr-1")
+    deployment = service.install_by_name("kaizen", version="4.0.0", workroom_id="wr-1")
 
     assert deployment.name == "kaizen"
     post_calls = [c for c in client.calls if c[0] == "POST"]
@@ -79,6 +83,38 @@ def test_install_by_name_resolves_template_and_deploys_with_workroom_header():
     assert path == "/apps/deploy_app"
     assert str(kwargs["json"]["template_id"]) == template["id"]
     assert kwargs["headers"] == {"X-Workroom-Id": "wr-1"}
+
+
+def test_install_by_name_rejects_legacy_kaizen_and_uses_v4_alias():
+    legacy = _template("kaizen", "2.0.3")
+    legacy["compose_yml"] = "image: legacy/kaizen:2.0.3"
+    transitional = _template("kaizen-next", "4.0.0")
+    client = DummyClient([[legacy, transitional]], _deployment("kaizen"))
+    service = _service(client)
+
+    service.install_by_name("kaizen", sync_if_missing=False)
+
+    deploy_call = next(call for call in client.calls if call[1] == "/apps/deploy_app")
+    assert str(deploy_call[2]["json"]["template_id"]) == transitional["id"]
+
+
+def test_install_by_name_cannot_pin_legacy_kaizen_version():
+    legacy = _template("kaizen", "2.0.3")
+    legacy["compose_yml"] = "image: legacy/kaizen:2.0.3"
+    client = DummyClient([[legacy]], _deployment("kaizen"))
+    service = _service(client)
+
+    with pytest.raises(NotFoundError, match="version 2.0.3"):
+        service.install_by_name("kaizen", version="2.0.3", sync_if_missing=False)
+
+
+def test_install_by_name_does_not_silently_widen_past_v4():
+    future = _template("kaizen", "5.0.0")
+    client = DummyClient([[future]], _deployment("kaizen"))
+    service = _service(client)
+
+    with pytest.raises(NotFoundError, match="No catalog template named 'kaizen'"):
+        service.install_by_name("kaizen", sync_if_missing=False)
 
 
 def test_install_by_name_syncs_catalog_when_template_missing():

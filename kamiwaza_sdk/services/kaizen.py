@@ -14,6 +14,7 @@ platform honors this header. A workroom-scoped token is the durable fix
 """
 
 import math
+import re
 import time
 from typing import Any, Dict, List, Optional, Union
 
@@ -76,10 +77,10 @@ def _find_workroom_extension(client, extension_name: str, workroom_id):
 
     The operator names a per-workroom CR ``<extension_name>-<hash>`` and stamps it
     with its ``workroom_id``, so we match on both: the exact ``workroom_id`` (never
-    another workroom's instance) and the ``<extension_name>-`` prefix (the kaizen,
-    not milvus/omniparse). ``workroom_id`` is the strong discriminator; the
-    ambiguity guard below is the backstop if more than one ever matches — so the
-    prefix check doesn't need to over-anchor on the hash shape. Requires the client
+    another workroom's instance) and the complete operator name. The suffix is one
+    to sixteen lowercase alphanumeric characters, depending on the workroom ID.
+    Matching the whole shape prevents ``kaizen`` from adopting ``kaizen-next-*``.
+    Requires the client
     to be scoped into the workroom — the platform only lists a workroom's
     extensions to a caller scoped into it.
 
@@ -89,12 +90,12 @@ def _find_workroom_extension(client, extension_name: str, workroom_id):
         AmbiguousExtensionError: when more than one matches (a workroom should
             hold one) — deterministic, callers must not retry.
     """
-    prefix = f"{extension_name}-"
+    operator_name = re.compile(rf"^{re.escape(extension_name)}-[a-z0-9]{{1,16}}$")
     matches = [
         ext
         for ext in client.extensions.list_extensions(workroom_id=workroom_id)
         if str(getattr(ext, "workroom_id", "")) == str(workroom_id)
-        and ext.name.startswith(prefix)
+        and operator_name.fullmatch(ext.name)
     ]
     if not matches:
         raise ValueError(
