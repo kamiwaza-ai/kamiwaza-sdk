@@ -31,6 +31,14 @@ from kamiwaza_extensions.image_builder import ImageBuildError
 
 pytestmark = [pytest.mark.unit, pytest.mark.extension_regression]
 
+_DEV_IMAGE_DIGEST = "sha256:" + "d" * 64
+
+
+def _digest_resolving_pusher(pusher: MagicMock) -> MagicMock:
+    factory = MagicMock(return_value=pusher)
+    factory.resolve_digest.return_value = _DEV_IMAGE_DIGEST
+    return factory
+
 
 def _info_with_divergent_namespace(tmp_path: Path) -> ExtensionInfo:
     """Extension with one service whose image namespace diverges from the
@@ -1952,7 +1960,7 @@ class TestKaizenDevRegistryEndToEnd:
             ),
             patch(
                 "kamiwaza_extensions.image_pusher.ImagePusher",
-                return_value=pusher,
+                new=_digest_resolving_pusher(pusher),
             ),
             patch(
                 "kamiwaza_extensions.registry_resolution.detect_core_config_registry",
@@ -2003,10 +2011,10 @@ class TestKaizenDevRegistryEndToEnd:
         }
         # Builder and pusher agree.
         assert sorted(cap["pushed"]) == sorted(built.values())
-        # ...and every deployed service pulls exactly the ref that was pushed.
+        # ...and every deployed service pulls the exact manifest that was pushed.
         for name, ref in deployed.items():
-            assert ref == built[name], name
-            assert ref in cap["pushed"], name
+            assert ref == f"{built[name]}@{_DEV_IMAGE_DIGEST}", name
+            assert built[name] in cap["pushed"], name
         # The profiled agent is built and pushed but never deployed as a
         # service — the backend launches it dynamically.
         assert "agent" in built
@@ -2034,7 +2042,9 @@ class TestKaizenDevRegistryEndToEnd:
         # The sandbox pod is launched from this ref, and the controller gates
         # it against the allowlist — both must name the image we actually
         # pushed, or the sandbox ImagePullBackOffs / is rejected.
-        assert controller_env["AGENT_SERVER_IMAGE"] == agent_ref
+        assert (
+            controller_env["AGENT_SERVER_IMAGE"] == f"{agent_ref}@{_DEV_IMAGE_DIGEST}"
+        )
         prefixes = controller_env["SANDBOX_ALLOWED_IMAGE_PREFIXES"].split(",")
         assert any(agent_ref.startswith(p) for p in prefixes), (
             prefixes,

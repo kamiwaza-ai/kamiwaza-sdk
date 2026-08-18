@@ -11,10 +11,28 @@ import typer
 from pydantic import ValidationError as PydanticValidationError
 from rich.console import Console
 
+from kamiwaza_extensions.constants import extract_user_id
+from kamiwaza_extensions.dev_image_pinning import (
+    DevImagePinRequest,
+    pin_dev_deployment_images,
+)
+
 console = Console(stderr=True)
 
 
 # ---------------------------------------------------------------------------
+
+
+def _dev_timeout() -> int:
+    try:
+        return int(os.environ.get("KAMIWAZA_DEV_TIMEOUT", "300"))
+    except ValueError:
+        console.print(
+            "[yellow]Warning:[/yellow] Invalid KAMIWAZA_DEV_TIMEOUT, using 300s"
+        )
+        return 300
+
+
 # Helpers extracted for unit testing — review re-review PR #84 H1 + H4
 # ---------------------------------------------------------------------------
 
@@ -136,9 +154,7 @@ def _validate_service_filter(
         )
 
 
-def warn_orphaned_persistence(
-    prior_mounts: Dict[str, str], payload: Any
-) -> List[str]:
+def warn_orphaned_persistence(prior_mounts: Dict[str, str], payload: Any) -> List[str]:
     """Warn where a removed persistence block leaves the CR's PVC in place.
 
     ``get_extension`` returns only ``ExtensionServiceStatus``, so the CR's own
@@ -214,9 +230,7 @@ def _deployable_service_names(services: Dict[str, Any]) -> List[str]:
     )
 
 
-def _fail_service_filter(
-    service: str, reason: str, services: Dict[str, Any]
-) -> None:
+def _fail_service_filter(service: str, reason: str, services: Dict[str, Any]) -> None:
     console.print(f"[red]Error:[/red] --service '{service}' {reason}.")
     deployable = _deployable_service_names(services)
     if deployable:
@@ -1047,9 +1061,25 @@ def run_dev_remote(
     elif no_push:
         console.print("[dim]Skipping push (--no-push)[/dim]\n")
 
+    # Resolve the exact manifests that were just pushed (or verified during a
+    # resume) before constructing either deployment payload. This replaces a
+    # stale prior pin atomically with the new tag's digest and keeps dynamic
+    # worker images immutable too. An explicit --no-push remains tag-only
+    # because there is no registry artifact this invocation can prove.
+    pin_request = DevImagePinRequest(
+        transformed,
+        catalog_compose,
+        image_refs,
+        registry,
+        push_registry,
+        user_no_push,
+        console,
+        ImagePusher.resolve_digest,
+    )
+    transformed, catalog_compose = pin_dev_deployment_images(pin_request)
+
     # 8. Build API payload
     payload_builder = PayloadBuilder()
-    from kamiwaza_extensions.constants import extract_user_id
 
     dev_name = PayloadBuilder.make_dev_name(
         info.name, user_id=extract_user_id(token.access_token)
@@ -1131,9 +1161,7 @@ def run_dev_remote(
             # Build patch from payload — extract image, env, replicas
             # plus the x-kamiwaza per-service overrides forwarded via
             # ``extra="allow"`` (jxstanford PR #97 review H2).
-            patch_services = _build_patch_service_specs(
-                payload, service_filter=service
-            )
+            patch_services = _build_patch_service_specs(payload, service_filter=service)
             # Carries the deployer/revision/deployed-at annotations on
             # every PATCH so `kz-ext status` reflects the current
             # redeploy (review re-review PR #84 H1).
@@ -1164,16 +1192,9 @@ def run_dev_remote(
         _record("apply")
 
         # 10. Poll for readiness
-        try:
-            timeout = int(os.environ.get("KAMIWAZA_DEV_TIMEOUT", "300"))
-        except ValueError:
-            console.print(
-                "[yellow]Warning:[/yellow] Invalid KAMIWAZA_DEV_TIMEOUT, using 300s"
-            )
-            timeout = 300
         poller = DeploymentPoller()
         try:
-            ext = poller.wait_for_ready(client, dev_name, timeout=timeout)
+            ext = poller.wait_for_ready(client, dev_name, timeout=_dev_timeout())
         except DeploymentTimeoutError as exc:
             # P9 (ENG-3887): print the dev-suffixed name even on timeout so
             # the user can locate the partial deployment via kz-ext status.
