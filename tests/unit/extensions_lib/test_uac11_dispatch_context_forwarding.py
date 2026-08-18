@@ -10,7 +10,7 @@ dispatch attribution test (ENG-3905 in its full form) is deferred until
 ENG-3822 ships and can be observed.
 
 This file is the durable artifact for that relaxation. The full audit-event
-verification — invoking through Traefik, capturing the dispatch event,
+verification — invoking through the configured platform ingress, capturing the dispatch event,
 asserting end-user + workroom attribution — remains tracked under
 ENG-3905's `blockedBy ENG-3822` edge and will run when ENG-3822 lands.
 
@@ -33,7 +33,7 @@ from openai._models import FinalRequestOptions
 from kamiwaza_extensions_lib.auth import _FORWARD_HEADERS
 from kamiwaza_extensions_lib.models import get_model_client
 
-# The full canonical envelope a Traefik-fronted request carries when the
+# The full canonical envelope a gateway-authorized request carries when the
 # user is authenticated and bound to a workroom. Mirrors the IdentityExtractor
 # input set (kamiwaza_extensions_lib.identity) so a future schema drift here
 # fails this test loudly rather than silently dropping a header at the
@@ -126,7 +126,7 @@ class TestUAC11DispatchContextForwarding:
         the AsyncOpenAI client pins the bearer into ``api_key`` so the
         on-the-wire request matches the gateway-attested bearer rather than
         the placeholder. The bearer here is the platform-attested envelope
-        token (issued through Traefik), not a raw provider credential — design
+        token (supplied through platform ingress), not a raw provider credential — design
         §4.4.5 forbids forwarding raw user tokens to upstream model providers,
         but the gateway-attested bearer is the very mechanism the platform
         uses to attribute the request, so it must round-trip intact."""

@@ -18,7 +18,7 @@ steps:
     description: "Hit the frontend root unauthenticated; assert the response is a redirect to the platform login URL (not a 200 with empty user)."
   - name: deploy_to_cluster
     description: "kz-ext dev pushes the image and applies the Extension CR; cluster_extension_readiness probe is green; pods reach Ready."
-  - name: invoke_through_traefik_with_user_session
+  - name: invoke_through_platform_ingress_with_user_session
     description: "Browse to the cluster ingress, authenticate as a non-admin user, exercise a protected route; identity headers (X-User-Id, X-Workroom-Id, etc.) reach the backend per IdentityExtractor."
   - name: assert_no_internal_url_leak
     description: "Confirm /api/info (unauthenticated) does not leak internal cluster URLs (regression guard for ENG-3920)."

@@ -29,8 +29,9 @@ is missing or empty at the time the runtime lib tried to parse the request.
 
 **Typical causes:**
 
-- The request reached the extension pod *without* passing through Traefik
-(e.g., direct in-cluster call, port-forward, or misconfigured ingress).
+- The request reached the extension pod without passing through the
+  platform-managed ingress authorization path (for example, a direct
+  in-cluster call, port-forward, or misconfigured ingress).
 - The platform ForwardAuth layer is not injecting the envelope correctly
 (transient platform outage or misconfiguration).
 - Local development with `KAMIWAZA_USE_AUTH=true` but no platform to populate
@@ -38,8 +39,8 @@ the envelope — expected failure mode.
 
 **Fix:**
 
-1. Confirm the request is reaching the extension *through* Traefik. Check
-  ingress rules and the request URL.
+1. Confirm the request is reaching the extension through the configured
+   platform ingress. Check the provider-owned route and request URL.
 2. Run `kz-ext doctor` — a failed `Kamiwaza connection` check often precedes
   `misbound_auth`.
 3. For local dev, set `KAMIWAZA_USE_AUTH=false` and restart the extension.
@@ -165,7 +166,7 @@ CI and operators can key off the exit code alone:
 kz-ext dev
 case $? in
   0)  echo "OK" ;;
-  10) echo "Platform envelope missing — check Traefik" ;;
+  10) echo "Platform envelope missing — check the configured ingress route" ;;
   11) echo "Envelope shape wrong — check deployment context" ;;
   12) echo "Cross-workroom access — extension logic bug" ;;
   13) echo "Platform outage — retry later" ;;
@@ -191,4 +192,3 @@ drifts from either the `ExitCode` enum or the `kz-ext doctor` output.
 - `§4.2.8 DoctorUACFailureHints + ExitCodeMap`
 - `§5 Q6 Security implications and auth interactions`
 - Linear: [ENG-3885](https://linear.app/kamiwaza/issue/ENG-3885)
-

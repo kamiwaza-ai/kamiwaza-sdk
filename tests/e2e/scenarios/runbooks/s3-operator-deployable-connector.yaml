@@ -19,11 +19,11 @@ steps:
   - name: invoke_with_authenticated_user_identity
     description: "An authenticated end-user invokes the connector through the gateway; identity headers reach the connector with the user's identity (not the operator's)."
   - name: assert_traffic_routing_correct
-    description: "UAC-10: routing places the request through Traefik with the gateway-attested envelope; no direct pod-to-pod bypass."
+    description: "UAC-10: routing places the request through the configured platform ingress with the gateway-attested envelope; no direct pod-to-pod bypass."
   - name: assert_unauthenticated_request_rejected
     description: "An unauthenticated request to the connector is rejected at the gateway, not by the connector code (negative path)."
   - name: capture_command_transcript
-    description: "Capture transcript + CR snapshot + Traefik routing config for the UAT packet."
+    description: "Capture transcript + CR snapshot + provider-owned routing config for the UAT packet."
 
 expected_outcomes:
   - "Operator-deployable connector works for end-users without the operator pre-baking user identities."
