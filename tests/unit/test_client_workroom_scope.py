@@ -34,6 +34,7 @@ class _FalseyAuthenticator(Authenticator):
     def __init__(self) -> None:
         self.authenticate_calls = 0
         self.access_token_calls = 0
+        self.close_calls = 0
         self.refresh_calls = 0
 
     def __bool__(self) -> bool:
@@ -51,6 +52,9 @@ class _FalseyAuthenticator(Authenticator):
         self.access_token_calls += 1
         return "falsey-token"
 
+    def close(self) -> None:
+        self.close_calls += 1
+
 
 def _recording_client(workroom_id: str | None = None) -> KamiwazaClient:
     client = KamiwazaClient(
@@ -63,6 +67,8 @@ def _recording_client(workroom_id: str | None = None) -> KamiwazaClient:
 
 def _falsey_client(
     monkeypatch: pytest.MonkeyPatch,
+    *,
+    owns_authenticator: bool = False,
 ) -> tuple[KamiwazaClient, _FalseyAuthenticator]:
     monkeypatch.delenv("KAMIWAZA_API_KEY", raising=False)
     monkeypatch.delenv("KAMIWAZA_API_TOKEN", raising=False)
@@ -70,6 +76,7 @@ def _falsey_client(
     client = KamiwazaClient(
         base_url="https://example.test/api",
         authenticator=authenticator,
+        owns_authenticator=owns_authenticator,
         verify=False,
     )
     return client, authenticator
@@ -143,6 +150,14 @@ def test_falsey_supplied_authenticator_refreshes_after_401(monkeypatch) -> None:
     assert authenticator.refresh_calls == 1
     assert client.session.headers["Authorization"] == "Bearer refreshed-token"
     assert request.call_count == 2
+
+
+def test_falsey_owned_authenticator_is_closed(monkeypatch) -> None:
+    client, authenticator = _falsey_client(monkeypatch, owns_authenticator=True)
+
+    client.close()
+
+    assert authenticator.close_calls == 1
 
 
 def test_workroom_scope_does_not_close_parent_authenticator() -> None:
