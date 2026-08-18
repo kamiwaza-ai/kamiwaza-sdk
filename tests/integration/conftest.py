@@ -104,6 +104,16 @@ def _enforce_required_edge_collection(
     enforce_collection(config, items)
 
 
+def _enforce_delegated_workload_collection(
+    config: pytest.Config, items: list[pytest.Item]
+) -> None:
+    from tests.integration.required_delegated_workload_edge import (
+        enforce_collection,
+    )
+
+    enforce_collection(config, items)
+
+
 class _TimeoutHTTPAdapter(HTTPAdapter):
     """HTTPAdapter that applies a default timeout to every request."""
 
@@ -1771,6 +1781,7 @@ def pytest_collection_modifyitems(
     workroom-scoped state before the later half resumes.
     """
     _enforce_required_edge_collection(config, items)
+    _enforce_delegated_workload_collection(config, items)
     peer_url = str(config.getoption("live_peer_base_url")).strip()
     if not peer_url:
         kept: list[pytest.Item] = []
