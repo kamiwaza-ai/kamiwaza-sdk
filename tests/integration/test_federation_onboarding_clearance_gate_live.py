@@ -37,6 +37,7 @@ pytestmark = [
     pytest.mark.live,
     pytest.mark.withoutresponses,
     pytest.mark.requires_two_clusters,
+    pytest.mark.requires_receiver_realm,
 ]
 
 
