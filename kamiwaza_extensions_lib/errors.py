@@ -61,7 +61,7 @@ class KamiwazaRuntimeError(Exception):
 
 
 class MisboundAuthError(KamiwazaRuntimeError):
-    """Required envelope header missing or malformed (post-Traefik)."""
+    """Required gateway-attested envelope header missing or malformed."""
 
     class_name = "misbound_auth"
 

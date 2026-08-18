@@ -161,9 +161,9 @@ def extract_identity(headers: Mapping[str, str]) -> Identity:
     """Strict header parsing for UAC-9d.
 
     Raises ``MisboundAuthError`` when ``X-User-Id`` or ``X-Workroom-Id``
-    is missing or empty (including whitespace-only values — the request
-    did not reach the extension via Traefik, or the platform did not
-    populate the envelope).
+    is missing or empty (including whitespace-only values — the request did
+    not cross the platform ingress authorization boundary, or the platform
+    did not populate the envelope).
     """
     lower = _lower(headers, reject_identity_duplicates=True)
     user_id = _stripped(lower, _HEADER_USER_ID)
