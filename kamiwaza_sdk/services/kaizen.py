@@ -78,7 +78,7 @@ def _find_workroom_extension(client, extension_name: str, workroom_id):
     The operator names a per-workroom CR ``<extension_name>-<hash>`` and stamps it
     with its ``workroom_id``, so we match on both: the exact ``workroom_id`` (never
     another workroom's instance) and the complete operator name. The suffix is one
-    to sixteen lowercase hex characters, depending on the workroom ID.
+    to sixteen lowercase alphanumeric characters, depending on the workroom ID.
     Matching the whole shape prevents ``kaizen`` from adopting ``kaizen-next-*``.
     Requires the client
     to be scoped into the workroom — the platform only lists a workroom's
@@ -90,7 +90,7 @@ def _find_workroom_extension(client, extension_name: str, workroom_id):
         AmbiguousExtensionError: when more than one matches (a workroom should
             hold one) — deterministic, callers must not retry.
     """
-    operator_name = re.compile(rf"^{re.escape(extension_name)}-[0-9a-f]{{1,16}}$")
+    operator_name = re.compile(rf"^{re.escape(extension_name)}-[a-z0-9]{{1,16}}$")
     matches = [
         ext
         for ext in client.extensions.list_extensions(workroom_id=workroom_id)

@@ -242,6 +242,12 @@ def test_resolve_base_url_does_not_adopt_kaizen_next_instance_by_prefix():
         resolve_base_url(client, "kaizen", workroom_id="wr-A")
 
 
+def test_resolve_base_url_accepts_non_uuid_workroom_suffix_shape():
+    client = _client_listing([_ext("kaizen-wra", "wr-A")])
+
+    assert resolve_base_url(client, "kaizen", workroom_id="wr-A") == KAIZEN_URL
+
+
 def test_wait_for_base_url_does_not_retry_ambiguity(monkeypatch):
     import kamiwaza_sdk.services.kaizen as kaizen_mod
 
