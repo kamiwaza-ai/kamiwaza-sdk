@@ -5,6 +5,8 @@ from uuid import UUID
 import logging
 import warnings
 
+from packaging.version import InvalidVersion, Version
+
 from .base_service import BaseService
 from ..schemas.apps import (
     AppTemplate,
@@ -16,6 +18,31 @@ from ..schemas.apps import (
     GardenApp,
 )
 from ..exceptions import APIError, NotFoundError
+
+
+_KAIZEN_TEMPLATE_NAMES = frozenset({"kaizen", "kaizen-next"})
+_KAIZEN_V4_COMPOSE_MARKERS = (
+    "images/kaizen-api:",
+    "KAIZEN_PROCESS: worker",
+    "PI_KAIZEN_CALLBACK_URL:",
+)
+
+
+def _kaizen_v4_version(template: AppTemplate) -> Optional[Version]:
+    """Return a sortable version only for trusted Kaizen v4 templates."""
+    try:
+        parsed_version = Version(template.version or "")
+    except InvalidVersion:
+        return None
+    if not parsed_version.release or parsed_version.release[0] != 4:
+        return None
+    if template.source_type.value != "kamiwaza":
+        return None
+    if template.visibility.value != "public":
+        return None
+    if not all(marker in template.compose_yml for marker in _KAIZEN_V4_COMPOSE_MARKERS):
+        return None
+    return parsed_version
 
 
 class AppService(BaseService):
@@ -118,7 +145,23 @@ class AppService(BaseService):
         Returns:
             The matching AppTemplate, or None if no template matches.
         """
-        for template in self.list_templates():
+        templates = self.list_templates()
+        if name.lower() == "kaizen":
+            candidates: List[tuple[Version, bool, AppTemplate]] = []
+            for template in templates:
+                if template.name.lower() not in _KAIZEN_TEMPLATE_NAMES:
+                    continue
+                parsed_version = _kaizen_v4_version(template)
+                if parsed_version is None:
+                    continue
+                if version is not None and template.version != version:
+                    continue
+                candidates.append((parsed_version, template.name == "kaizen", template))
+            if not candidates:
+                return None
+            return max(candidates, key=lambda candidate: candidate[:2])[2]
+
+        for template in templates:
             if template.name != name:
                 continue
             if version is not None and template.version != version:

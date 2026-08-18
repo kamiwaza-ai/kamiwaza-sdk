@@ -14,6 +14,7 @@ platform honors this header. A workroom-scoped token is the durable fix
 """
 
 import math
+import re
 import time
 from typing import Any, Dict, List, Optional, Union
 
@@ -89,12 +90,12 @@ def _find_workroom_extension(client, extension_name: str, workroom_id):
         AmbiguousExtensionError: when more than one matches (a workroom should
             hold one) — deterministic, callers must not retry.
     """
-    prefix = f"{extension_name}-"
+    operator_name = re.compile(rf"^{re.escape(extension_name)}-[0-9a-f]{{16}}$")
     matches = [
         ext
         for ext in client.extensions.list_extensions(workroom_id=workroom_id)
         if str(getattr(ext, "workroom_id", "")) == str(workroom_id)
-        and ext.name.startswith(prefix)
+        and operator_name.fullmatch(ext.name)
     ]
     if not matches:
         raise ValueError(
