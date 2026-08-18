@@ -15,6 +15,7 @@ import pytest
 from kamiwaza_sdk.schemas.delegated_jobs import normalize_python_packages
 
 from .test_federation_shared_idp_gated_retrieval_live import (
+    _receiver_prereqs,  # noqa: F401 - dependency of imported live fixture
     _active_persona_session,
     _assert_receiver_job_provenance,
     _required_mesh_call,
