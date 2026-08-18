@@ -11,6 +11,7 @@ from _kamiwaza_cli_live import (
     CliAuthConfig,
     _cleanup_cli_resources,
     _serve_deploy_args,
+    assert_cli_pat_cache_matches,
     cli_login_and_create_pat,
     pat_jti,
     run_cli,
@@ -33,7 +34,7 @@ def test_cli_login_and_pat_flow(
     env = os.environ.copy()
     env.setdefault("PYTHONWARNINGS", "ignore")
 
-    # The helper asserts the session token, PAT, and cache match.
+    # Cache verification runs inside cleanup protection after PAT creation.
     auth_config = CliAuthConfig(
         base_args,
         env,
@@ -43,7 +44,7 @@ def test_cli_login_and_pat_flow(
     )
     pat_token = cli_login_and_create_pat(auth_config, pat_prefix="cli-m1")
     try:
-        assert pat_token
+        assert_cli_pat_cache_matches(token_path, pat_token)
     finally:
         live_kamiwaza_client.auth.revoke_pat(pat_jti(pat_token))
 
@@ -87,6 +88,7 @@ def test_cli_serve_deploy(
     deployment_id: str | None = None
 
     try:
+        assert_cli_pat_cache_matches(token_path, pat_token)
         pat_client = client_factory(base_url=live_server_available, api_key=pat_token)
         model = ensure_deployable_model_ready(pat_client)
         model_file_id = target_model_file_id(
@@ -104,7 +106,12 @@ def test_cli_serve_deploy(
         summary = json.loads(serve_result.stdout.strip())
         deployment_id = summary.get("deployment_id")
         assert deployment_id, "CLI serve deploy did not return a deployment_id"
-        assert summary.get("status") == "DEPLOYED"
+        deployment = pat_client.serving.wait_deployment_ready(
+            deployment_id,
+            timeout_seconds=600,
+            poll_interval_seconds=5,
+        )
+        assert deployment.status == "DEPLOYED"
     finally:
         _cleanup_cli_resources(
             live_kamiwaza_client,

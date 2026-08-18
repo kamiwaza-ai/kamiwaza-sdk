@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 _JWT_PATTERN = re.compile(
-    r"(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"
+    r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"
 )
 _CLEANUP_ERROR_MAX_LENGTH = 500
 
@@ -95,7 +95,7 @@ def _serve_deploy_args(
     target: _DeploymentTarget,
     model_file_id: str | None,
 ) -> list[str]:
-    """Build a bounded CLI model deployment command."""
+    """Build an asynchronous CLI model deployment command."""
 
     args = [
         *base_args,
@@ -108,7 +108,7 @@ def _serve_deploy_args(
     ]
     if model_file_id:
         args.extend(["--file-id", model_file_id])
-    return [*args, "--wait", "--poll-interval", "5", "--timeout", "600"]
+    return args
 
 
 def _cleanup_cli_resources(
@@ -140,6 +140,16 @@ def _token_digest(token: str) -> str:
     return sha256(token.encode()).hexdigest()
 
 
+def assert_cli_pat_cache_matches(token_path: Path, pat_token: str) -> None:
+    """Verify CLI PAT caching without exposing the credential value."""
+
+    assert pat_token, "CLI pat create did not return a token"
+    cached = json.loads(token_path.read_text())
+    if "access_token" not in cached:
+        raise AssertionError("CLI PAT cache does not contain an access token")
+    assert _token_digest(cached["access_token"]) == _token_digest(pat_token)
+
+
 def cli_login_and_create_pat(
     config: CliAuthConfig,
     *,
@@ -149,7 +159,7 @@ def cli_login_and_create_pat(
         [list[str], Mapping[str, str]], subprocess.CompletedProcess[str]
     ] = run_cli,
 ) -> str:
-    """Login, cache a PAT with the requested scope, and return its token."""
+    """Login, create a PAT with the requested scope, and return its token."""
 
     runner(
         [
@@ -184,12 +194,7 @@ def cli_login_and_create_pat(
         ],
         config.env,
     )
-    pat_token = result.stdout.strip()
-    assert pat_token
-
-    cached = json.loads(config.token_path.read_text())
-    assert _token_digest(cached["access_token"]) == _token_digest(pat_token)
-    return pat_token
+    return result.stdout.strip()
 
 
 def pat_jti(token: str) -> str:

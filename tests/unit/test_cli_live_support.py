@@ -13,10 +13,15 @@ from _kamiwaza_cli_live import (
     CliAuthConfig,
     _cleanup_cli_resources,
     _serve_deploy_args,
+    _token_digest,
+    assert_cli_pat_cache_matches,
     cli_login_and_create_pat,
     pat_jti,
     run_cli,
 )
+
+
+pytestmark = pytest.mark.unit
 
 _PAT_TOKEN = (
     "eyJhbGciOiJub25lIn0."
@@ -124,11 +129,6 @@ def test_serve_deploy_args_include_model_file_when_provided(
         "--engine-name",
         "llamacpp",
         *expected_file_args,
-        "--wait",
-        "--poll-interval",
-        "5",
-        "--timeout",
-        "600",
     ]
 
 
@@ -164,7 +164,7 @@ def test_cleanup_revokes_pat_when_no_deployment_was_reported() -> None:
 
 
 def test_cleanup_redacts_and_truncates_failure_details() -> None:
-    long_error = f"backend token={_PAT_TOKEN} {'x' * 600}"
+    long_error = f"{'x' * 470}{_PAT_TOKEN}/{'x' * 600}"
     client = SimpleNamespace(
         serving=SimpleNamespace(
             stop_deployment=Mock(side_effect=RuntimeError(long_error))
@@ -177,8 +177,12 @@ def test_cleanup_redacts_and_truncates_failure_details() -> None:
 
     message = str(exc_info.value)
     assert _PAT_TOKEN not in message
+    assert _PAT_TOKEN[:10] not in message
     assert "[REDACTED_TOKEN]" in message
     assert "<truncated>" in message
+    client.auth.revoke_pat.assert_called_once_with(
+        "be090b7f-f636-4e57-83d1-8c60872a9a50"
+    )
 
 
 def test_cli_pat_cache_mismatch_does_not_expose_tokens(tmp_path: Path) -> None:
@@ -200,12 +204,20 @@ def test_cli_pat_cache_mismatch_does_not_expose_tokens(tmp_path: Path) -> None:
         )
 
     config = CliAuthConfig([], {}, "admin", "password", token_path)
+    pat_token = cli_login_and_create_pat(
+        config,
+        pat_prefix="cli-test",
+        runner=fake_runner,
+    )
+
     with pytest.raises(AssertionError) as exc_info:
-        cli_login_and_create_pat(config, pat_prefix="cli-test", runner=fake_runner)
+        assert_cli_pat_cache_matches(token_path, pat_token)
 
     message = str(exc_info.value)
     assert cached_token not in message
     assert emitted_token not in message
+    assert _token_digest(cached_token) in message
+    assert _token_digest(emitted_token) in message
 
 
 def test_pat_jti_extracts_exact_cleanup_identifier() -> None:
