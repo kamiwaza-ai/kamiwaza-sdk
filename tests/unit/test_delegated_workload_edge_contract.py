@@ -5,6 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.integration import test_federation_shared_idp_gated_retrieval_live as shared_edge
+
 try:
     from tests.integration import required_delegated_workload_edge as required_edge
     from tests.integration import test_federation_delegated_workload_live as live_edge
@@ -78,6 +80,10 @@ def test_delegated_workload_live_case_carries_all_capability_markers() -> None:
         "requires_owned_shared_realm",
         "requires_delegated_workload",
     } <= marker_names
+
+
+def test_delegated_workload_live_case_registers_shared_fixture_dependencies() -> None:
+    assert live_edge._receiver_prereqs is shared_edge._receiver_prereqs
 
 
 def test_delegated_workload_plugin_is_registered_at_pytest_root() -> None:
