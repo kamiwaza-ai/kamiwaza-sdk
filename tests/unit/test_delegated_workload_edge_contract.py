@@ -39,9 +39,7 @@ def test_required_delegated_workload_edge_has_one_substantive_case() -> None:
     assert callable(live_edge.test_shared_idp_delegated_job_installs_approved_package)
 
     items = [
-        _required_item(
-            f"tests/integration/{required_edge.REQUIRED_EDGE_FILE}::{case}"
-        )
+        _required_item(f"tests/integration/{required_edge.REQUIRED_EDGE_FILE}::{case}")
         for case in expected
     ]
     required_edge.assert_required_cases(items)
@@ -105,4 +103,62 @@ def test_delegated_workload_package_fixture_requires_a_dependency_list(
     assert live_edge._delegated_package_config() == (
         ("humanize==4.13.0", "kamiwaza-sdk==1.1.0"),
         ("humanize", "kamiwaza_sdk"),
+        {"humanize": "4.13.0", "kamiwaza-sdk": "1.1.0"},
     )
+
+
+def test_delegated_result_requires_exact_installed_versions() -> None:
+    result = SimpleNamespace(
+        status="SUCCEEDED",
+        result={
+            "probe": "marker",
+            "package_imports": ["humanize", "kamiwaza_sdk"],
+            "package_versions": {
+                "humanize": "4.13.0",
+                "kamiwaza-sdk": "1.1.0",
+            },
+        },
+    )
+
+    live_edge._assert_delegated_result(
+        result,
+        "marker",
+        ("humanize", "kamiwaza_sdk"),
+        {"humanize": "4.13.0", "kamiwaza-sdk": "1.1.0"},
+    )
+
+    result.result["package_versions"]["humanize"] = "4.12.0"
+    with pytest.raises(AssertionError):
+        live_edge._assert_delegated_result(
+            result,
+            "marker",
+            ("humanize", "kamiwaza_sdk"),
+            {"humanize": "4.13.0", "kamiwaza-sdk": "1.1.0"},
+        )
+
+
+def test_delegated_package_fixture_must_change_the_base_environment() -> None:
+    expected = {"humanize": "4.13.0", "kamiwaza-sdk": "1.1.0"}
+    missing_from_base = SimpleNamespace(
+        status="SUCCEEDED",
+        result={
+            "probe": "baseline",
+            "package_versions": {"humanize": None, "kamiwaza-sdk": "1.1.0"},
+        },
+    )
+    already_in_base = SimpleNamespace(
+        status="SUCCEEDED",
+        result={"probe": "baseline", "package_versions": expected},
+    )
+
+    live_edge._assert_package_fixture_changes_environment(
+        missing_from_base,
+        "baseline",
+        expected,
+    )
+    with pytest.raises(AssertionError, match="already contains every exact package"):
+        live_edge._assert_package_fixture_changes_environment(
+            already_in_base,
+            "baseline",
+            expected,
+        )

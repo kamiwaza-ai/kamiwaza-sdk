@@ -18,8 +18,8 @@ boundary, receiver-owned capability authority, and private package repository.
 | Unonboarded-user denial | `test_unonboarded_shared_idp_user_rejected_by_receiver_allowlist` | Required SDK live edge |
 | Receiver execution and mesh provenance | `test_required_mesh_job_reaches_receiver_and_returns_marker` | Required SDK live edge |
 | Exact model discovery and chat | ENG-10429 immutable-image provider-parity UAT | Manual until the owned lane provisions a chat model |
-| Isolated delegated RayJob with an approved Python package | `test_shared_idp_delegated_job_installs_approved_package` | Required delegated-workload SDK edge |
-| Private PyPI-compatible repository and arbitrary-internet denial | Delegated-workload package edge; Deploy package-boundary contracts; `gate_packages/test_lifecycle.py` network checks | Automated contract plus live package import |
+| Isolated delegated RayJob with approved exact Python package versions | `test_shared_idp_delegated_job_installs_approved_package` | Required delegated-workload SDK edge |
+| Private PyPI-compatible repository and arbitrary-internet denial | Internal playbook network probes; Deploy package-boundary contracts; `gate_packages/test_lifecycle.py` documents the manual probes | Manual live UAT plus automated Deploy contract |
 | Job cancellation and durable grant revocation | ENG-10429 cancellation UAT and Core delegated-job lifecycle tests | Manual live UAT plus automated Core contract |
 | Mid-job dataset, model, onboarding, user, and federation revocation | ENG-10429 lifecycle matrix and Core authority tests | Manual live UAT plus automated Core contract |
 | Credential-agent restart, remint, AuthZ, and replay-store recovery | ENG-10429 outage UAT and Core agent/authority tests | Manual live UAT plus automated Core contract |
@@ -55,8 +55,11 @@ uv run pytest \
 ```
 
 Both strict options reject missing cases and promote every selected skip to a
-failure. The package coordinate is part of the request, while repository
-location, CA trust, and credentials remain receiver-owned installation state.
+failure. The package coordinate is part of the request, and the live result
+must report the exact installed distribution version. Repository location, CA
+trust, and credentials remain receiver-owned installation state. The
+playbook's network probes separately prove that the private repository is
+reachable and arbitrary internet egress is denied; those probes are manual.
 
 ## Manual-only remainder
 
