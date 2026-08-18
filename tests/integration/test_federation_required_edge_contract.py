@@ -35,6 +35,17 @@ def _required_item(nodeid: str) -> SimpleNamespace:
     )
 
 
+def _assert_live_retrieval_parametrization() -> None:
+    retrieval_marks = [
+        mark
+        for mark in edge.test_required_mesh_retrieval_returns_exact_post_gate_rows.pytestmark
+        if mark.name == "parametrize"
+    ]
+    assert len(retrieval_marks) == 1
+    assert retrieval_marks[0].args == ("clearance", ["U", "S", "TS"])
+    assert retrieval_marks[0].kwargs == {}
+
+
 def test_required_edge_carries_owned_shared_realm_capability_markers() -> None:
     marker_names = {marker.name for marker in edge.pytestmark}
 
@@ -64,6 +75,7 @@ def test_required_edge_collection_guard_requires_all_six_cases() -> None:
     }
     assert required_edge.REQUIRED_EDGE_CASES == expected_cases
     assert len(required_edge.REQUIRED_EDGE_CASES) == 6
+    _assert_live_retrieval_parametrization()
     for case in expected_cases:
         function_name = case.split("[", 1)[0]
         assert callable(getattr(edge, function_name, None)), case
@@ -76,6 +88,16 @@ def test_required_edge_collection_guard_requires_all_six_cases() -> None:
 
     with pytest.raises(pytest.UsageError, match="missing contract cases"):
         required_edge.assert_required_cases(items[:-1])
+
+
+def test_required_edge_collection_guard_inspects_live_parametrization(
+    monkeypatch,
+) -> None:
+    retrieval = edge.test_required_mesh_retrieval_returns_exact_post_gate_rows
+    monkeypatch.setattr(retrieval, "pytestmark", [])
+
+    with pytest.raises(AssertionError):
+        _assert_live_retrieval_parametrization()
 
 
 def test_required_edge_post_selection_guard_rejects_deselection_and_extras() -> None:
