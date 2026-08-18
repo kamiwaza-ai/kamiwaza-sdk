@@ -13,6 +13,7 @@ import json
 from dataclasses import asdict
 
 import pytest
+from jsonschema import Draft202012Validator
 
 from tests.e2e.scenarios import harness
 from tests.e2e.scenarios.harness import (
@@ -393,11 +394,8 @@ class TestSchemaFileSync:
         assert set(schema["properties"]) == emitted_keys
 
     def test_v2_record_validates_against_schema_file(self, schema):
-        """Full JSON Schema validation — runs only where jsonschema happens
-        to be importable (it is not a declared dependency; the structural
-        validator in harness.py is the always-on check)."""
-        jsonschema = pytest.importorskip("jsonschema")
-        validator = jsonschema.Draft202012Validator(schema)
+        """Validate a v2 record against the checked-in JSON Schema."""
+        validator = Draft202012Validator(schema)
         validator.validate(_synthetic_v2_record())
         assert list(validator.iter_errors(_synthetic_v2_record(build="")))
 
