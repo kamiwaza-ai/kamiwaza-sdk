@@ -10,10 +10,10 @@ from tests.integration.test_model_files_live import (
 )
 
 
-def _client_with_created_file() -> tuple[SimpleNamespace, ModelFile]:
-    created_file = ModelFile.model_validate(
-        {"id": uuid4(), "name": "sdk-test-file.bin"}
-    )
+def _client_with_created_file(
+    name: str = "sdk-test-file.bin",
+) -> tuple[SimpleNamespace, ModelFile]:
+    created_file = ModelFile.model_validate({"id": uuid4(), "name": name})
     models = SimpleNamespace(
         create_model_file=Mock(return_value=created_file),
         delete_model_file=Mock(),
@@ -41,3 +41,12 @@ def test_live_model_file_cleanup_verifies_row_is_absent() -> None:
 
     client.models.delete_model_file.assert_called_once_with(created_file.id)
     client.models.list_model_files.assert_called_once_with()
+
+
+def test_live_model_file_cleanup_runs_when_test_body_raises() -> None:
+    client, created_file = _client_with_created_file(name="unexpected-name.bin")
+
+    with pytest.raises(AssertionError):
+        _TestModelFileCreateAndDelete().test_create_model_file(client)
+
+    client.models.delete_model_file.assert_called_once_with(created_file.id)
