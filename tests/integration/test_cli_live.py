@@ -2,82 +2,29 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
-import sys
-import time
 from pathlib import Path
 
 import pytest
-
 from model_targets import InferenceTarget
 
+from _kamiwaza_cli_live import (
+    CliAuthConfig,
+    _cleanup_cli_resources,
+    _serve_deploy_args,
+    assert_cli_pat_cache_matches,
+    cli_login_and_create_pat,
+    pat_jti,
+    run_cli,
+)
+
 pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
-
-
-def run_cli(args: list[str], env: dict[str, str]) -> subprocess.CompletedProcess[str]:
-    cmd = [sys.executable, "-m", "kamiwaza_sdk.cli", *args]
-    return subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        check=True,
-        env=env,
-    )
-
-
-def _cli_login_and_create_pat(
-    base_args: list[str],
-    env: dict[str, str],
-    live_username: str,
-    live_password: str,
-    token_path: Path,
-    *,
-    pat_prefix: str,
-) -> str:
-    """Login + create a cached PAT via the CLI; return the PAT token.
-
-    Asserts the session token and PAT cache are persisted along the way, so this
-    doubles as the shared CLI-auth coverage for both the auth-only and the
-    deploy tests below.
-    """
-    run_cli(
-        [*base_args, "login", "--username", live_username, "--password", live_password],
-        env,
-    )
-    assert token_path.exists()
-    session_token = json.loads(token_path.read_text())
-    assert "access_token" in session_token
-
-    pat_name = f"{pat_prefix}-{int(time.time())}"
-    result = run_cli(
-        [
-            *base_args,
-            "pat",
-            "create",
-            "--name",
-            pat_name,
-            "--ttl",
-            "900",
-            "--scope",
-            "openid",
-            "--aud",
-            "kamiwaza-platform",
-            "--cache-token",
-        ],
-        env,
-    )
-    pat_token = result.stdout.strip()
-    assert pat_token
-
-    cached = json.loads(token_path.read_text())
-    assert cached["access_token"] == pat_token
-    return pat_token
 
 
 def test_cli_login_and_pat_flow(
     live_server_available: str,
     live_username: str,
     live_password: str,
+    live_kamiwaza_client,
     tmp_path: Path,
 ) -> None:
     """CLI login + PAT creation/caching (no model deployment required)."""
@@ -87,10 +34,19 @@ def test_cli_login_and_pat_flow(
     env = os.environ.copy()
     env.setdefault("PYTHONWARNINGS", "ignore")
 
-    # _cli_login_and_create_pat asserts the session token, PAT, and cache match.
-    _cli_login_and_create_pat(
-        base_args, env, live_username, live_password, token_path, pat_prefix="cli-m1"
+    # Cache verification runs inside cleanup protection after PAT creation.
+    auth_config = CliAuthConfig(
+        base_args,
+        env,
+        live_username,
+        live_password,
+        token_path,
     )
+    pat_token = cli_login_and_create_pat(auth_config, pat_prefix="cli-m1")
+    try:
+        assert_cli_pat_cache_matches(token_path, pat_token)
+    finally:
+        live_kamiwaza_client.auth.revoke_pat(pat_jti(pat_token))
 
 
 @pytest.mark.requires_deployable_model
@@ -99,6 +55,7 @@ def test_cli_serve_deploy(
     live_username: str,
     live_password: str,
     client_factory,
+    live_kamiwaza_client,
     ensure_deployable_model_ready,
     deployable_model_target: InferenceTarget,
     target_model_file_id,
@@ -116,40 +73,48 @@ def test_cli_serve_deploy(
     env = os.environ.copy()
     env.setdefault("PYTHONWARNINGS", "ignore")
 
-    pat_token = _cli_login_and_create_pat(
-        base_args, env, live_username, live_password, token_path, pat_prefix="cli-deploy"
-    )
-    pat_client = client_factory(base_url=live_server_available, api_key=pat_token)
-    model = ensure_deployable_model_ready(pat_client)
-    model_file_id = target_model_file_id(
-        model, deployable_model_target.quantization
-    )
-
-    serve_result = run_cli(
-        [
-            *base_args,
-            "serve",
-            "deploy",
-            "--repo-id",
-            deployable_model_target.repo_id,
-            "--engine-name",
-            deployable_model_target.engine_name,
-            *(["--file-id", model_file_id] if model_file_id else []),
-            "--wait",
-            "--poll-interval",
-            "5",
-            "--timeout",
-            "600",
-        ],
+    auth_config = CliAuthConfig(
+        base_args,
         env,
+        live_username,
+        live_password,
+        token_path,
     )
-
-    summary = json.loads(serve_result.stdout.strip())
-    deployment_id = summary.get("deployment_id")
-    assert deployment_id, "CLI serve deploy did not return a deployment_id"
-    assert summary.get("status") == "DEPLOYED"
+    pat_token = cli_login_and_create_pat(
+        auth_config,
+        pat_prefix="cli-deploy",
+        scope="admin",
+    )
+    deployment_id: str | None = None
 
     try:
-        pat_client.serving.stop_deployment(deployment_id=deployment_id, force=True)
-    except Exception:
-        pass
+        assert_cli_pat_cache_matches(token_path, pat_token)
+        pat_client = client_factory(base_url=live_server_available, api_key=pat_token)
+        model = ensure_deployable_model_ready(pat_client)
+        model_file_id = target_model_file_id(
+            model, deployable_model_target.quantization
+        )
+        serve_result = run_cli(
+            _serve_deploy_args(
+                base_args,
+                deployable_model_target,
+                model_file_id,
+            ),
+            env,
+        )
+
+        summary = json.loads(serve_result.stdout.strip())
+        deployment_id = summary.get("deployment_id")
+        assert deployment_id, "CLI serve deploy did not return a deployment_id"
+        deployment = pat_client.serving.wait_deployment_ready(
+            deployment_id,
+            timeout_seconds=600,
+            poll_interval_seconds=5,
+        )
+        assert deployment.status == "DEPLOYED"
+    finally:
+        _cleanup_cli_resources(
+            live_kamiwaza_client,
+            deployment_id,
+            pat_token,
+        )
