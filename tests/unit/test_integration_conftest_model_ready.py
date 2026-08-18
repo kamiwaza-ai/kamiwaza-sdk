@@ -278,6 +278,55 @@ def test_deployable_model_target_follows_cluster_inventory(
     assert target is getattr(integration_conftest._model_targets, target_name)
 
 
+@pytest.mark.parametrize(
+    ("snapshot_kwargs", "target_name"),
+    [
+        (
+            {"gpu_count": 1, "gpu_vendors": frozenset({"nvidia"})},
+            "VLLM_LLM_TARGET",
+        ),
+        (
+            {
+                "os_platforms": frozenset(
+                    {("darwin", "macos-15.4-arm64-arm-64bit")}
+                )
+            },
+            "MLX_LLM_TARGET",
+        ),
+        (
+            {
+                "os_platforms": frozenset(
+                    {("linux", "linux-5.14.0-el9.x86_64")}
+                )
+            },
+            "GGUF_LLM_TARGET",
+        ),
+    ],
+)
+def test_model_lifecycle_readiness_forwards_capability_target(
+    integration_conftest,
+    snapshot_kwargs: dict[str, object],
+    target_name: str,
+) -> None:
+    snapshot = integration_conftest._cap.ClusterCapabilitySnapshot(
+        **snapshot_kwargs
+    )
+    target = integration_conftest.deployable_model_target.__wrapped__(snapshot)
+    calls: list[tuple[object, str, str]] = []
+    client = object()
+    ensure = integration_conftest.ensure_model_lifecycle_target_ready.__wrapped__(
+        lambda actual_client, repo_id, *, quantization: calls.append(
+            (actual_client, repo_id, quantization)
+        )
+        or "ready-model",
+        target,
+    )
+
+    assert target is getattr(integration_conftest._model_targets, target_name)
+    assert ensure(client) == "ready-model"
+    assert calls == [(client, target.repo_id, target.quantization)]
+
+
 def test_ensure_deployable_model_ready_forwards_selected_target(
     integration_conftest,
 ) -> None:
