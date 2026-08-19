@@ -9,12 +9,17 @@ open string the platform resolves against the catalog, and ``config`` is an opaq
 dict the platform validates against the connector's manifest config_schema, so new
 connectors need no SDK change. The per-user OAuth connection is a separate
 interactive flow and is intentionally not wrapped here.
+
+The workroom-scoped *runtime* surface an ordinary member uses — surface catalog,
+connection verification, browse, search, and content fetch — is composed in from
+:class:`~kamiwaza_sdk.services.connector_surfaces.ConnectorSurfaceMixin`.
 """
 
 from typing import Any, Dict, List, Optional, Union
 from uuid import UUID
 
 from .base_service import BaseService
+from .connector_surfaces import ConnectorSurfaceMixin
 from ..exceptions import APIError, NotFoundError
 from ..schemas.connectors import (
     AvailableConnector,
@@ -27,8 +32,8 @@ from ..schemas.connectors import (
 )
 
 
-class ConnectorService(BaseService):
-    """Manage cluster-wide connector registrations."""
+class ConnectorService(BaseService, ConnectorSurfaceMixin):
+    """Manage cluster-wide connector registrations and read their surfaces."""
 
     def list(self) -> List[Connector]:
         """List registered connectors."""
