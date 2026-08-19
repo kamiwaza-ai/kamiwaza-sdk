@@ -163,7 +163,7 @@ permanent denial from a transient outage:
 
 | Status | Meaning |
 | --- | --- |
-| 400 | Invalid request |
+| 400 | Invalid request, or a connector id the workroom does not resolve |
 | 401 | Connector authentication failed |
 | 403 | Not permitted for this workroom / member |
 | 404 | Connector or node not found |

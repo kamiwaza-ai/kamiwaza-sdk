@@ -164,9 +164,10 @@ class ConnectorSurfaceMixin:
             One page of nodes.
 
         Raises:
-            APIError: With ``status_code`` 403 (not permitted), 409 (surface not
-                ready in this workroom), 501 (surface does not support browse),
-                or 502 (upstream provider error).
+            APIError: With ``status_code`` 400 (a connector id this workroom
+                does not resolve), 403 (not permitted), 409 (surface not ready
+                in this workroom), 501 (surface does not support browse), or
+                502 (upstream provider error).
         """
         return self._nodes_page(ref, "browse", request.to_params(), timeout)
 
@@ -193,8 +194,9 @@ class ConnectorSurfaceMixin:
             One page of matching nodes.
 
         Raises:
-            APIError: With ``status_code`` 403 (not permitted), 409 (surface not
-                ready), 501 (surface does not support search), or 502 (upstream
+            APIError: With ``status_code`` 400 (a connector id this workroom
+                does not resolve), 403 (not permitted), 409 (surface not ready),
+                501 (surface does not support search), or 502 (upstream
                 provider error).
         """
         return self._nodes_page(ref, "search", request.to_params(), timeout)
@@ -230,8 +232,9 @@ class ConnectorSurfaceMixin:
 
         Raises:
             ValueError: If ``node_id`` is empty.
-            APIError: With ``status_code`` 403 (not permitted), 404 (node gone),
-                409 (surface not ready), or 502 (upstream provider error).
+            APIError: With ``status_code`` 400 (a connector id this workroom
+                does not resolve), 403 (not permitted), 404 (node gone), 409
+                (surface not ready), or 502 (upstream provider error).
         """
         node_id = (node_id or "").strip()
         if not node_id:

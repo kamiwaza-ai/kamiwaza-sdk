@@ -1,0 +1,31 @@
+{
+  "verified_at": "2026-08-19T22:41:18Z",
+  "head_sha": "9c0a92085b8a7dec94ab36ee347b1c9e571a3847",
+  "steps": [
+    {
+      "description": "Compare the SDK's constructed routes and query parameters against the live Core OpenAPI on the running local stack (https://kamiwaza.test/api/openapi.json, admin bearer, HTTP 200, 1191323 bytes).",
+      "observation": "Live Core declares exactly: GET /connectors/surfaces/workrooms/{workroom_id}/catalog; GET .../{connector_id}/browse (query surface*, container_id, page_size, page_token, view, start_date, end_date); GET .../{connector_id}/search (query surface*, q*, container_id, page_size, page_token); GET .../{connector_id}/content/{node_id} (query surface*, drive_id, mime_type); POST /connectors/{connector_id}/verify. Every parameter the SDK emits appears in the live contract, and the SDK emits no parameter Core does not declare.",
+      "status": "pass"
+    },
+    {
+      "description": "Execute the new SDK methods against the running stack as the admin member, using a forwarded bearer authenticator and base_url https://kamiwaza.test/api.",
+      "observation": "workrooms.list returned 1 workroom (id ffffffff-ffff-ffff-ffff-ffffffffffff, 'Global Workroom'). connectors.list_surface_catalog(workroom) returned HTTP 200 and parsed to 0 connector instances; list_connector_surfaces(connected_only=True) returned 0. No connector instance is configured on this stack, so the catalog is legitimately empty.",
+      "status": "pass"
+    },
+    {
+      "description": "Negative scope test: call every surface method with a connector id that is not registered to the member/workroom (random UUID).",
+      "observation": "browse_surface, search_surface and fetch_surface_content each raised APIError with status_code=400 and body {\"detail\":\"Connector not found.\"}; verify_connection raised APIError with status_code=404 and body {\"detail\":\"Connector not found\"}. All four failed closed, and the SDK preserved the distinct status codes rather than collapsing them.",
+      "status": "pass"
+    },
+    {
+      "description": "Positive content-path proof: an ordinary authorized member discovers a CONNECTED connector, browses/searches it, and fetches representative content.",
+      "observation": "NOT RUN. The local stack has zero configured connector instances, and connecting one requires the interactive per-user OAuth ceremony against a real third-party provider (M365/Google), which cannot be completed autonomously. The browse/search/fetch happy path is therefore covered only by unit tests, not by runtime evidence.",
+      "status": "skipped"
+    },
+    {
+      "description": "Local quality gates on the change set.",
+      "observation": "37 new connector-surface unit tests pass; 87 pass across the connector test files. ruff clean on all changed files (the 28 remaining kamiwaza_sdk/ findings reproduce unchanged on origin/develop). mypy reports no errors in the changed files. CodeScene analyze_change_set against origin/develop: quality_gates=passed, no degraded files.",
+      "status": "pass"
+    }
+  ]
+}
