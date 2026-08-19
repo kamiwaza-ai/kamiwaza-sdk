@@ -14,16 +14,26 @@ so an agent runtime forwarding a member envelope keeps per-user authorization
 without ever holding a provider secret.
 
 **Failures are not flattened.** These endpoints distinguish "not permitted"
-(403), "surface not ready in this workroom" (409), "operation unsupported for
-this surface" (501), "upstream provider error" (502) and "verification
+(403), "connector not connected for this member" (409), "operation unsupported
+for this surface" (501), "upstream provider error" (502) and "verification
 unavailable" (503). The methods below let :class:`~kamiwaza_sdk.exceptions.APIError`
 propagate with its ``status_code`` intact rather than collapsing everything to a
 single not-found, because callers must be able to tell a permanent denial from a
 transient outage — a distinction a caller cannot recover once it is lost.
+
+**The one exception is 401, and it is not ours to change.**
+:class:`~kamiwaza_sdk.client.KamiwazaClient` intercepts every 401 before service
+code runs: it refreshes the credential and retries once, then raises
+:class:`~kamiwaza_sdk.exceptions.AuthenticationError`. That type descends from
+:class:`~kamiwaza_sdk.exceptions.KamiwazaError`, **not** ``APIError``, and
+carries no ``status_code``. So a caller matching ``except APIError as exc: if
+exc.status_code == 401`` will never fire on these methods — catch
+``AuthenticationError`` separately. Note also that because the client retries
+before raising, an expired credential costs a duplicate content download.
 """
 
-from typing import Any, Dict, Iterator, List, Union
-from urllib.parse import quote
+from typing import Any, Dict, Iterator, List, Optional, Union
+from urllib.parse import quote, unquote
 from uuid import UUID
 
 from ..schemas.connector_surfaces import (
@@ -52,6 +62,22 @@ def _segment(value: Union[str, UUID]) -> str:
     return quote(str(value), safe="")
 
 
+def _served_filename(response: Any) -> Optional[str]:
+    """The filename the platform advertised, if it sent one.
+
+    The platform forwards the provider's ``Content-Disposition``, which is
+    better-informed than any name the caller guessed from a browse result.
+    """
+    disposition = response.headers.get("content-disposition", "")
+    if not disposition:
+        return None
+    for part in disposition.split(";"):
+        key, _, raw = part.strip().partition("=")
+        if key.strip().lower() == "filename":
+            return unquote(raw.strip().strip('"')) or None
+    return None
+
+
 class ConnectorSurfaceMixin:
     """Connector surface discovery and read operations for one workroom."""
 
@@ -59,8 +85,17 @@ class ConnectorSurfaceMixin:
     client: Any
 
     def _surfaces_root(self, workroom_id: Union[str, UUID]) -> str:
-        """The per-workroom connector-surfaces API root."""
-        return f"/connectors/surfaces/workrooms/{_segment(workroom_id)}"
+        """The per-workroom connector-surfaces API root.
+
+        Raises:
+            ValueError: If ``workroom_id`` is empty — an empty segment would
+                build ``/workrooms//catalog``, which reads as a different route
+                rather than as the mistake it is.
+        """
+        segment = _segment(str(workroom_id).strip())
+        if not segment:
+            raise ValueError("workroom_id is required for connector surface calls")
+        return f"/connectors/surfaces/workrooms/{segment}"
 
     def _surface_base(self, ref: ConnectorSurfaceRef) -> str:
         """The surface-operation base path for one configured connector instance."""
@@ -126,6 +161,15 @@ class ConnectorSurfaceMixin:
         and returns per-capability results. Gate on
         :attr:`~kamiwaza_sdk.schemas.connector_surfaces.ConnectorVerification.available`
         for the fail-closed verdict rather than reading ``status`` directly.
+
+        **This writes, despite the name.** Unlike every other method in this
+        mixin, verification is not a pure read: the platform classifies the
+        probe and *persists* the resulting connection health, so a verify can
+        move the member's stored connection into a degraded or reauth-required
+        state. It also issues live calls to the third-party provider. Call it
+        deliberately — on connect, on an explicit user action, or when a surface
+        call already failed — and do not poll it on a timer or fan it out across
+        a catalog.
 
         Args:
             connector_id: The configured connector instance to verify.
@@ -195,9 +239,9 @@ class ConnectorSurfaceMixin:
 
         Raises:
             APIError: With ``status_code`` 400 (a connector id this workroom
-                does not resolve), 403 (not permitted), 409 (surface not ready),
-                501 (surface does not support search), or 502 (upstream
-                provider error).
+                does not resolve), 403 (not permitted), 409 (connection missing —
+                see the catalog entry's ``reauth`` deep links), 501 (surface does
+                not support search), or 502 (upstream provider error).
         """
         return self._nodes_page(ref, "search", request.to_params(), timeout)
 
@@ -234,7 +278,8 @@ class ConnectorSurfaceMixin:
             ValueError: If ``node_id`` is empty.
             APIError: With ``status_code`` 400 (a connector id this workroom
                 does not resolve), 403 (not permitted), 404 (node gone), 409
-                (surface not ready), or 502 (upstream provider error).
+                (connection missing), 413 (content exceeds the platform's cap),
+                or 502 (upstream provider error).
         """
         node_id = (node_id or "").strip()
         if not node_id:
@@ -250,7 +295,7 @@ class ConnectorSurfaceMixin:
             surface=request.surface,
             content_type=response.headers.get("content-type", ""),
             content=response.content,
-            filename=request.filename,
+            filename=_served_filename(response) or request.filename,
             status_code=response.status_code,
         )
 
@@ -279,10 +324,23 @@ class ConnectorSurfaceMixin:
             in page order.
 
         Raises:
-            ValueError: If ``max_pages`` is less than 1.
+            ValueError: If ``max_pages`` is less than 1. Raised when the method
+                is called, not deferred to the first iteration — a generator
+                that validates lazily reports the bad argument from the wrong
+                place in the caller's stack.
         """
         if max_pages < 1:
             raise ValueError("max_pages must be at least 1")
+        return self._iter_pages(ref, request, max_pages, timeout)
+
+    def _iter_pages(
+        self,
+        ref: ConnectorSurfaceRef,
+        request: ConnectorBrowseRequest,
+        max_pages: int,
+        timeout: float,
+    ) -> Iterator[ConnectorNode]:
+        """Walk browse pages, advancing the page token, bounded by ``max_pages``."""
         page_request = request
         for _ in range(max_pages):
             page = self.browse_surface(ref, page_request, timeout=timeout)

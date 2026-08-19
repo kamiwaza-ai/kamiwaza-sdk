@@ -296,7 +296,11 @@ class ConnectorVerification(BaseModel):
     """The platform's verdict on the acting user's connection to a connector.
 
     This is a readiness probe, not a content sync: it reports whether the
-    caller's stored credential still reaches the provider right now.
+    caller's stored credential still reaches the provider right now. Producing
+    it is a *write* — the platform persists the classified health it observes —
+    so see
+    :meth:`~kamiwaza_sdk.services.connector_surfaces.ConnectorSurfaceMixin.verify_connection`
+    before calling it on a schedule.
     """
 
     model_config = ConfigDict(extra="allow")
@@ -314,6 +318,14 @@ class ConnectorVerification(BaseModel):
 
         ``False`` for the connection states that require the user to reconnect
         or re-consent, regardless of what the capability checks report.
+
+        This is a deny-list, so a connection state the platform adds later reads
+        as usable here. That is deliberate on two counts: it reproduces exactly
+        the behavior of the agent runtime this contract replaces, which the
+        migration must preserve, and it is not load-bearing on its own —
+        :attr:`available` additionally requires :attr:`checks_passed`, which
+        *is* an allow-list. An unrecognized connection status therefore cannot
+        by itself make a connector available.
         """
         return self.connection_status.lower() not in UNUSABLE_CONNECTION_STATUSES
 
@@ -465,10 +477,24 @@ class ConnectorContentRequest(BaseModel):
     """Request for one node's content.
 
     ``drive_id`` and ``mime_type`` are the locators the platform declares today.
-    ``locator`` carries any further provider locator values copied verbatim from
-    the node's :attr:`ConnectorNode.content_handle` query, so a provider that
-    grows a new locator needs no SDK change. Locator keys never override the
-    declared parameters, and ``surface`` is not accepted as a locator key.
+    ``locator`` carries any further provider locator values copied from the
+    node's :attr:`ConnectorNode.content_handle` query.
+
+    Two things about ``locator`` are worth knowing before relying on it:
+
+    * A locator entry named ``drive_id`` or ``mime_type`` **fills in** the
+      matching declared field when that field is unset. The platform copies a
+      connector's own content query verbatim into ``content_handle.query``, so a
+      connector may ship its export ``mime_type`` there and nowhere else;
+      dropping it would silently fetch the wrong representation.
+    * Any *other* locator key is still sent, but the platform's content route
+      declares only ``surface``, ``drive_id`` and ``mime_type`` — so an
+      undeclared key is discarded server-side today. Passing one is harmless and
+      costs nothing if the route later declares it, but it is not a substitute
+      for a platform change.
+
+    An explicitly-set declared field always wins over a locator entry of the
+    same name, and ``surface`` is never accepted as a locator key.
     """
 
     model_config = ConfigDict(extra="allow")
@@ -480,7 +506,12 @@ class ConnectorContentRequest(BaseModel):
     locator: Dict[str, LocatorValue] = Field(default_factory=dict)
 
     def to_params(self) -> Dict[str, Any]:
-        """The query parameters for the content endpoint, omitting unset fields."""
+        """The query parameters for the content endpoint, omitting unset fields.
+
+        A ``drive_id`` / ``mime_type`` carried only in ``locator`` is promoted
+        into the declared parameter rather than dropped; an explicitly-set field
+        takes precedence over the locator entry of the same name.
+        """
         declared = {"surface", "drive_id", "mime_type"}
         params: Dict[str, Any] = {
             key: value
@@ -488,10 +519,12 @@ class ConnectorContentRequest(BaseModel):
             if key and key not in declared
         }
         params["surface"] = self.surface
-        if self.drive_id:
-            params["drive_id"] = self.drive_id
-        if self.mime_type:
-            params["mime_type"] = self.mime_type
+        drive_id = self.drive_id or self.locator.get("drive_id")
+        mime_type = self.mime_type or self.locator.get("mime_type")
+        if drive_id:
+            params["drive_id"] = str(drive_id)
+        if mime_type:
+            params["mime_type"] = str(mime_type)
         return params
 
     @classmethod

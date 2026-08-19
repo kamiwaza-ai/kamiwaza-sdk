@@ -544,6 +544,18 @@ def test_content_request_from_node_carries_the_provider_locator():
     }
 
 
+def test_undeclared_locator_keys_are_sent_though_the_platform_ignores_them():
+    """The SDK does not filter unknown locator keys, but they are not a feature.
+
+    The platform's content route declares only surface/drive_id/mime_type, so an
+    undeclared key is discarded server-side. This asserts the SDK's behavior, not
+    a forward-compatibility guarantee the platform actually honors.
+    """
+    request = ConnectorContentRequest(surface="files", locator={"site_id": "site-3"})
+
+    assert request.to_params() == {"surface": "files", "site_id": "site-3"}
+
+
 def test_content_request_locator_cannot_override_declared_parameters():
     request = ConnectorContentRequest(
         surface="files",
@@ -556,6 +568,41 @@ def test_content_request_locator_cannot_override_declared_parameters():
         "drive_id": "real-drive",
         "site_id": "site-3",
     }
+
+
+def test_locator_only_mime_type_is_promoted_not_dropped():
+    """A connector may ship its export mime_type only inside content_handle.query.
+
+    Core copies a connector's own content query verbatim, so the export type can
+    arrive solely as a locator entry. Dropping it silently fetches the wrong
+    representation — the regression this guards.
+    """
+    node = ConnectorNode.model_validate(
+        {
+            "id": "doc-1",
+            "surface": "files",
+            "label": "Design",
+            "content_handle": {
+                "query": {"drive_id": "drive-9", "mime_type": "application/pdf"},
+                "available": True,
+            },
+        }
+    )
+
+    params = ConnectorContentRequest.from_node(node).to_params()
+
+    assert params["mime_type"] == "application/pdf"
+    assert params["drive_id"] == "drive-9"
+
+
+def test_explicit_declared_fields_win_over_locator_entries():
+    request = ConnectorContentRequest(
+        surface="files",
+        mime_type="text/plain",
+        locator={"mime_type": "application/pdf"},
+    )
+
+    assert request.to_params()["mime_type"] == "text/plain"
 
 
 def test_content_request_from_a_node_without_a_handle_still_works():
@@ -614,3 +661,49 @@ def test_surface_ref_accepts_uuid_objects_and_is_immutable():
 def test_surface_ref_rejects_an_empty_identifier():
     with pytest.raises(ValueError):
         ConnectorSurfaceRef(workroom_id=_WORKROOM, connector_id="")
+
+
+def test_iter_surface_nodes_rejects_a_non_positive_page_bound_eagerly():
+    """The ValueError must surface at the call, not at the first iteration."""
+    service, _ = _service({})
+
+    with pytest.raises(ValueError):
+        service.iter_surface_nodes(
+            _REF, ConnectorBrowseRequest(surface="files"), max_pages=0
+        )
+
+
+def test_served_filename_wins_over_the_callers_guess():
+    class _Disposed(_Response):
+        def __init__(self):
+            super().__init__(b"x", "application/pdf")
+            self.headers["content-disposition"] = 'attachment; filename="Q3%20Report.pdf"'
+
+    service, _ = _service({("GET", f"{_SURFACE_BASE}/content/node-1"): _Disposed()})
+
+    content = service.fetch_surface_content(
+        _REF,
+        "node-1",
+        ConnectorContentRequest(surface="files", filename="guess.pdf"),
+    )
+
+    assert content.filename == "Q3 Report.pdf"
+
+
+def test_caller_filename_is_used_when_the_platform_sends_none():
+    service, _ = _service(
+        {("GET", f"{_SURFACE_BASE}/content/node-1"): _Response(b"x", "application/pdf")}
+    )
+
+    content = service.fetch_surface_content(
+        _REF, "node-1", ConnectorContentRequest(surface="files", filename="guess.pdf")
+    )
+
+    assert content.filename == "guess.pdf"
+
+
+def test_empty_workroom_id_is_rejected_rather_than_building_a_bare_path():
+    service, _ = _service({})
+
+    with pytest.raises(ValueError):
+        service.list_surface_catalog("   ")

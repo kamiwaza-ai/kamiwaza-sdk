@@ -79,7 +79,12 @@ if result.available:
 ```
 
 `verify_connection` probes the provider under the member's stored credential and
-reports per-capability results. Gate on `available` — the fail-closed verdict
+reports per-capability results. **It is the one write on this surface**: the
+platform persists the health it classifies, so a verify can move the member's
+stored connection into a degraded or reauth-required state, and it issues live
+third-party calls. Call it deliberately — on connect, on an explicit user
+action, or after a surface call already failed — not on a timer and not fanned
+out across a catalog. Gate on `available` — the fail-closed verdict
 that requires both a usable `connection_status` and a passing check — rather
 than reading `status` directly. `connection_usable` and `checks_passed` expose
 the two halves separately when a caller needs to explain *why* access was
@@ -148,9 +153,18 @@ else:
 
 `ConnectorContentRequest.from_node` copies the node's surface and its
 `content_handle.query` provider locator, so callers never hand-assemble provider
-identifiers. Extra locator keys are forwarded verbatim for forward
-compatibility, but they can never override `surface`, `drive_id`, or
-`mime_type`. Node ids are opaque and are percent-encoded on the way out.
+identifiers. A `drive_id` or `mime_type` that arrives only inside the locator is
+promoted into the declared parameter rather than dropped — connectors do ship
+their export `mime_type` that way. An explicitly-set field always wins over a
+locator entry of the same name, and `surface` is never accepted as a locator key.
+
+Any *other* locator key is still sent, but the platform's content route declares
+only `surface`, `drive_id` and `mime_type`, so an undeclared key is discarded
+server-side today. Passing one is harmless and costs nothing if the route later
+declares it — it is not a forward-compatibility guarantee.
+
+Node ids are opaque and are percent-encoded on the way out. When the platform
+sends a `Content-Disposition`, its filename wins over the caller's guess.
 
 A missing content type counts as text, matching how the platform serves provider
 payloads that declare no type. `is_partial` reports a 206 range response.
@@ -164,13 +178,29 @@ permanent denial from a transient outage:
 | Status | Meaning |
 | --- | --- |
 | 400 | Invalid request, or a connector id the workroom does not resolve |
-| 401 | Connector authentication failed |
 | 403 | Not permitted for this workroom / member |
 | 404 | Connector or node not found |
-| 409 | Surface is not ready in this workroom |
+| 409 | The member's connector connection is missing — send them to the catalog entry's `reauth` deep links, not a retry |
+| 413 | Content exceeds the platform's size cap (permanent for that node) |
+| 429 | Provider rate limit — transient, back off |
 | 501 | Operation not supported for this surface |
 | 502 | Upstream provider error |
 | 503 | Connector not deployed; verification unavailable |
+
+**401 is the exception, and it never reaches you as an `APIError`.** The client
+intercepts every 401 before service code runs, refreshes the credential, retries
+once, and then raises `AuthenticationError` — which descends from
+`KamiwazaError`, *not* `APIError`, and carries no `status_code`. So this does
+not fire:
+
+```python
+except APIError as exc:
+    if exc.status_code == 401:   # unreachable on these methods
+        ...
+```
+
+Catch `AuthenticationError` separately. Because the client retries before
+raising, an expired credential also costs a duplicate content download.
 
 ### Timeouts
 
