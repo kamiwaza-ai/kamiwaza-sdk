@@ -11,8 +11,10 @@ each federation's identity mode (`peer_kc` or `shared_idp` in Kamiwaza 1.2.0);
 see the platform
 [Identity Trust Modes](https://docs.kamiwaza.ai/federation/identity-trust-modes)
 guide for the trust model. The `receiver_realm` value and the SDK's guest helper
-symbols are reserved for a future receiver-owned identity workflow. Kamiwaza
-1.2.0 rejects that mode with `identity_mode_unsupported`.
+symbols are reserved for a future receiver-owned identity workflow. The 1.2.0
+SDK still accepts `realm_scope` for forward compatibility, but Core 1.2.0
+ignores that unknown request field: it does not select `receiver_realm` or
+return `identity_mode_unsupported`.
 
 ## Methods
 
@@ -26,11 +28,12 @@ Create a federation pairing. `role` is the side being set up (`initiator` or
 
 - supplying `shared_issuer_url` (with `shared_jwks_url` / `shared_ca_pem`) creates
   a **receiver-controlled `shared_idp`** federation;
-- do not supply `realm_scope` on Kamiwaza 1.2.0. It selects the reserved
-  `receiver_realm` mode, which the server rejects as unsupported. It is mutually
-  exclusive with the `shared_*` inputs;
-- omitting both creates a legacy source-trusted **`peer_kc`** federation
-  (subject to the cluster's `ALLOW_UNTRUSTED_FEDERATION` policy).
+- do not supply `realm_scope` on Kamiwaza 1.2.0. Core ignores it, so it is not a
+  mode selector or a fail-closed security signal;
+- without `shared_issuer_url`, Core follows the legacy source-trusted
+  **`peer_kc`** path. It creates the federation only when
+  `ALLOW_UNTRUSTED_FEDERATION` permits that path; otherwise it fails with
+  `untrusted_federation_disabled`.
 
 ```python
 # shared_idp (receiver-controlled)
