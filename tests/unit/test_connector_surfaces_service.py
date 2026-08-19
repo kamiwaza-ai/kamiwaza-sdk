@@ -192,7 +192,7 @@ def test_catalog_authorization_failure_preserves_status_code():
     assert excinfo.value.status_code == 403
 
 
-def test_list_connector_surfaces_can_drop_unconnected_instances():
+def test_catalog_can_drop_unconnected_instances():
     service, _ = _service(
         {
             ("GET", f"{_SURFACES_ROOT}/catalog"): {
@@ -204,8 +204,8 @@ def test_list_connector_surfaces_can_drop_unconnected_instances():
         }
     )
 
-    assert len(service.list_connector_surfaces(_WORKROOM)) == 2
-    assert len(service.list_connector_surfaces(_WORKROOM, connected_only=True)) == 1
+    assert len(service.list_surface_catalog(_WORKROOM)) == 2
+    assert len(service.list_surface_catalog(_WORKROOM, connected_only=True)) == 1
 
 
 # --------------------------------------------------------------------------
@@ -352,15 +352,31 @@ def test_search_on_an_unsupported_surface_preserves_status_code():
     assert excinfo.value.status_code == 501
 
 
-def test_browse_on_a_surface_that_is_not_ready_preserves_status_code():
+def test_browse_on_a_surface_that_is_not_ready_preserves_the_400():
+    """A surface not ready in this workroom answers 400, not 409.
+
+    The platform raises it as a request error alongside an unknown surface name;
+    409 means specifically that the member has no connection. Asserting 409 for
+    this condition would encode a status the platform never emits, and would
+    send callers to a reconnect flow that cannot help them.
+    """
     service, _ = _service(
-        {("GET", f"{_SURFACE_BASE}/browse"): APIError("not ready", status_code=409)}
+        {("GET", f"{_SURFACE_BASE}/browse"): APIError("not ready", status_code=400)}
     )
 
     with pytest.raises(APIError) as excinfo:
-        service.browse_surface(
-            _REF, ConnectorBrowseRequest(surface="files")
-        )
+        service.browse_surface(_REF, ConnectorBrowseRequest(surface="files"))
+
+    assert excinfo.value.status_code == 400
+
+
+def test_browse_without_a_member_connection_preserves_the_409():
+    service, _ = _service(
+        {("GET", f"{_SURFACE_BASE}/browse"): APIError("not connected", status_code=409)}
+    )
+
+    with pytest.raises(APIError) as excinfo:
+        service.browse_surface(_REF, ConnectorBrowseRequest(surface="files"))
 
     assert excinfo.value.status_code == 409
 
@@ -374,55 +390,6 @@ def test_node_page_tolerates_an_empty_payload():
 
     assert page.items == []
     assert page.has_more is False
-
-
-def test_iter_surface_nodes_follows_pagination_to_the_last_page():
-    pages = [
-        {"items": [_node("a")], "next_page_token": "tok-2"},
-        {"items": [_node("b")], "next_page_token": None},
-    ]
-
-    class PagingClient(DummyClient):
-        def get(self, path, **kwargs):
-            self.calls.append(("GET", path, kwargs))
-            return pages[len(self.calls) - 1]
-
-    client = PagingClient({})
-    service = ConnectorService(client)
-
-    node_ids = [
-        node.id
-        for node in service.iter_surface_nodes(
-            _REF, ConnectorBrowseRequest(surface="files")
-        )
-    ]
-
-    assert node_ids == ["a", "b"]
-    assert client.calls[1][2]["params"]["page_token"] == "tok-2"
-
-
-def test_iter_surface_nodes_stops_at_the_page_bound():
-    class EndlessClient(DummyClient):
-        def get(self, path, **kwargs):
-            self.calls.append(("GET", path, kwargs))
-            return {"items": [_node()], "next_page_token": "always-more"}
-
-    client = EndlessClient({})
-    service = ConnectorService(client)
-
-    nodes = list(
-        service.iter_surface_nodes(
-            _REF, ConnectorBrowseRequest(surface="files"), max_pages=3
-        )
-    )
-
-    assert len(nodes) == 3
-    assert len(client.calls) == 3
-
-
-# --------------------------------------------------------------------------
-# Content fetch
-# --------------------------------------------------------------------------
 
 
 def test_fetch_surface_content_returns_decodable_text():
@@ -462,7 +429,6 @@ def test_fetch_surface_content_leaves_binary_payloads_as_bytes():
 
     assert content.is_text is False
     assert content.content == payload
-    assert content.is_partial is False
 
 
 def test_missing_content_type_is_treated_as_text():
@@ -475,22 +441,6 @@ def test_missing_content_type_is_treated_as_text():
     )
 
     assert content.is_text is True
-
-
-def test_fetch_surface_content_reports_partial_responses():
-    service, _ = _service(
-        {
-            ("GET", f"{_SURFACE_BASE}/content/node-1"): _Response(
-                b"chunk", "application/octet-stream", status_code=206
-            )
-        }
-    )
-
-    content = service.fetch_surface_content(
-        _REF, "node-1", ConnectorContentRequest(surface="files")
-    )
-
-    assert content.is_partial is True
 
 
 def test_fetch_surface_content_percent_encodes_the_node_id():
@@ -663,47 +613,120 @@ def test_surface_ref_rejects_an_empty_identifier():
         ConnectorSurfaceRef(workroom_id=_WORKROOM, connector_id="")
 
 
-def test_iter_surface_nodes_rejects_a_non_positive_page_bound_eagerly():
-    """The ValueError must surface at the call, not at the first iteration."""
+def test_empty_workroom_id_is_rejected_rather_than_building_a_bare_path():
     service, _ = _service({})
 
     with pytest.raises(ValueError):
-        service.iter_surface_nodes(
-            _REF, ConnectorBrowseRequest(surface="files"), max_pages=0
-        )
+        service.list_surface_catalog("   ")
 
 
-def test_served_filename_wins_over_the_callers_guess():
+def test_export_mime_type_wins_over_the_nodes_source_type():
+    """The provider's export type must outrank the document's own type.
+
+    A Google Doc's source type is `application/vnd.google-apps.document` while
+    the connector asks for `text/plain` via the content handle's locator. Letting
+    the source type win fetches the wrong representation, silently.
+    """
+    node = ConnectorNode.model_validate(
+        {
+            "id": "doc-1",
+            "surface": "files",
+            "label": "Design",
+            "mime_type": "application/vnd.google-apps.document",
+            "content_handle": {
+                "query": {"drive_id": "drive-9", "mime_type": "text/plain"},
+                "available": True,
+            },
+        }
+    )
+
+    params = ConnectorContentRequest.from_node(node).to_params()
+
+    assert params["mime_type"] == "text/plain"
+    assert params["drive_id"] == "drive-9"
+
+
+def test_content_handle_mime_type_outranks_the_locator_entry():
+    node = ConnectorNode.model_validate(
+        {
+            "id": "doc-1",
+            "surface": "files",
+            "mime_type": "application/vnd.google-apps.document",
+            "content_handle": {
+                "query": {"mime_type": "text/plain"},
+                "mime_type": "application/pdf",
+                "available": True,
+            },
+        }
+    )
+
+    assert (
+        ConnectorContentRequest.from_node(node).to_params()["mime_type"]
+        == "application/pdf"
+    )
+
+
+def test_uppercase_content_type_is_still_text():
+    service, _ = _service(
+        {("GET", f"{_SURFACE_BASE}/content/node-1"): _Response(b"hi", "TEXT/PLAIN")}
+    )
+
+    content = service.fetch_surface_content(
+        _REF, "node-1", ConnectorContentRequest(surface="files")
+    )
+
+    assert content.is_text is True
+
+
+def test_blank_connector_id_is_rejected_by_the_ref():
+    with pytest.raises(ValueError):
+        ConnectorSurfaceRef(workroom_id=_WORKROOM, connector_id="   ")
+
+
+@pytest.mark.parametrize(
+    "disposition, caller_filename, expected",
+    [
+        # The platform's name wins when it is usable.
+        ('attachment; filename="Q3 Report.pdf"', "guess.pdf", "Q3 Report.pdf"),
+        # No header at all — the caller's own name stands.
+        ("", "guess.pdf", "guess.pdf"),
+        # Undecoded separators are a real traversal attempt: reject, fall back.
+        ('attachment; filename="../../etc/passwd"', "safe.pdf", "safe.pdf"),
+        # The encoded form is NOT decoded, so it stays an ugly-but-harmless name.
+        (
+            'attachment; filename="..%2F..%2Fetc%2Fpasswd"',
+            "safe.pdf",
+            "..%2F..%2Fetc%2Fpasswd",
+        ),
+        # A literal percent in a real name must survive verbatim.
+        ('attachment; filename="Q3%20Report.pdf"', None, "Q3%20Report.pdf"),
+        # filename* is preferred over filename, and IS decoded.
+        (
+            "attachment; filename=\"fallback.pdf\"; filename*=UTF-8''Q3%20Rapport.pdf",
+            None,
+            "Q3 Rapport.pdf",
+        ),
+        # filename* is decoded, so it needs the separator check that decoding earns.
+        ("attachment; filename*=UTF-8''..%2F..%2Fetc%2Fpasswd", "safe.pdf", "safe.pdf"),
+    ],
+)
+def test_served_filename_precedence_and_sanitization(
+    disposition, caller_filename, expected
+):
+    """Content-Disposition is provider text: preferred, but never blindly trusted."""
+
     class _Disposed(_Response):
         def __init__(self):
             super().__init__(b"x", "application/pdf")
-            self.headers["content-disposition"] = 'attachment; filename="Q3%20Report.pdf"'
+            if disposition:
+                self.headers["content-disposition"] = disposition
 
     service, _ = _service({("GET", f"{_SURFACE_BASE}/content/node-1"): _Disposed()})
 
     content = service.fetch_surface_content(
         _REF,
         "node-1",
-        ConnectorContentRequest(surface="files", filename="guess.pdf"),
+        ConnectorContentRequest(surface="files", filename=caller_filename),
     )
 
-    assert content.filename == "Q3 Report.pdf"
-
-
-def test_caller_filename_is_used_when_the_platform_sends_none():
-    service, _ = _service(
-        {("GET", f"{_SURFACE_BASE}/content/node-1"): _Response(b"x", "application/pdf")}
-    )
-
-    content = service.fetch_surface_content(
-        _REF, "node-1", ConnectorContentRequest(surface="files", filename="guess.pdf")
-    )
-
-    assert content.filename == "guess.pdf"
-
-
-def test_empty_workroom_id_is_rejected_rather_than_building_a_bare_path():
-    service, _ = _service({})
-
-    with pytest.raises(ValueError):
-        service.list_surface_catalog("   ")
+    assert content.filename == expected

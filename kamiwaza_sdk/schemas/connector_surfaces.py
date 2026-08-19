@@ -59,8 +59,14 @@ class ConnectorSurfaceRef(BaseModel):
     @field_validator("workroom_id", "connector_id", mode="before")
     @classmethod
     def _coerce_identifier(cls, value: Any) -> Any:
-        """Accept a ``UUID`` as readily as the string form the API uses."""
-        return str(value) if isinstance(value, UUID) else value
+        """Accept a ``UUID`` as readily as the string form the API uses.
+
+        Surrounding whitespace is stripped so an all-blank id fails the
+        ``min_length`` check rather than becoming a ``%20%20`` path segment.
+        """
+        if isinstance(value, UUID):
+            return str(value)
+        return value.strip() if isinstance(value, str) else value
 
 
 class ConnectorConstraint(BaseModel):
@@ -375,16 +381,13 @@ class ConnectorSurfaceContent(BaseModel):
         """Whether the payload should be read as text.
 
         A missing content type counts as text, matching how the platform serves
-        provider payloads that declare no type.
+        provider payloads that declare no type. The comparison is
+        case-insensitive: ``TEXT/PLAIN`` is a legal spelling and must not be
+        mistaken for binary.
         """
-        return not self.content_type or self.content_type.startswith(
+        return not self.content_type or self.content_type.lower().startswith(
             TEXT_CONTENT_TYPE_PREFIXES
         )
-
-    @property
-    def is_partial(self) -> bool:
-        """Whether the platform answered a range request with partial content."""
-        return self.status_code == 206
 
     def text(self, *, limit: Optional[int] = None) -> str:
         """Decode the payload as UTF-8, replacing undecodable bytes.
@@ -538,10 +541,22 @@ class ConnectorContentRequest(BaseModel):
         """
         handle = node.content_handle
         locator = dict(handle.query) if handle else {}
+        drive_id = locator.pop("drive_id", None)
+        # Precedence is deliberate: the handle's own type, then the provider
+        # locator's, then the node's. The first two describe how to *export* the
+        # item; ``node.mime_type`` is the source document's type, so letting it
+        # win would fetch a Google Doc as its native type instead of the
+        # requested export — the exact silent-wrong-representation failure this
+        # class exists to avoid.
+        mime_type = (
+            (handle.mime_type if handle else None)
+            or locator.pop("mime_type", None)
+            or node.mime_type
+        )
         return cls(
             surface=surface or node.surface,
-            drive_id=str(locator.pop("drive_id")) if "drive_id" in locator else None,
-            mime_type=(handle.mime_type if handle else None) or node.mime_type,
+            drive_id=str(drive_id) if drive_id is not None else None,
+            mime_type=str(mime_type) if mime_type is not None else None,
             filename=(handle.filename if handle else None) or node.label or None,
             locator={key: value for key, value in locator.items() if key != "surface"},
         )

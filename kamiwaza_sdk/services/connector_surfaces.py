@@ -13,13 +13,21 @@ token itself. Nothing here accepts, constructs, or stores a provider credential,
 so an agent runtime forwarding a member envelope keeps per-user authorization
 without ever holding a provider secret.
 
-**Failures are not flattened.** These endpoints distinguish "not permitted"
-(403), "connector not connected for this member" (409), "operation unsupported
-for this surface" (501), "upstream provider error" (502) and "verification
-unavailable" (503). The methods below let :class:`~kamiwaza_sdk.exceptions.APIError`
-propagate with its ``status_code`` intact rather than collapsing everything to a
-single not-found, because callers must be able to tell a permanent denial from a
-transient outage — a distinction a caller cannot recover once it is lost.
+**Failures are not flattened.** These endpoints distinguish "bad request, or a
+surface that is unknown or not ready in this workroom" (400), "not permitted"
+(403), "this member has no connection to the connector" (409), "no such
+operation, *or* the connector is not deployed" (501), "upstream provider error"
+(502) and "connector not deployed, verification impossible" (503). The methods
+below let :class:`~kamiwaza_sdk.exceptions.APIError` propagate with its
+``status_code`` intact rather than collapsing everything to a single not-found,
+because callers must be able to tell a permanent denial from a transient outage
+— a distinction a caller cannot recover once it is lost.
+
+**501 is the one status that is genuinely ambiguous**, and the platform gives
+callers no way to disambiguate it: the same code covers "this surface declares
+no such operation" (permanent) and "the connector is not reachable right now"
+(transient, during a rollout). Treat a 501 as retryable-with-backoff at least
+once before recording a surface as unsupported.
 
 **The one exception is 401, and it is not ours to change.**
 :class:`~kamiwaza_sdk.client.KamiwazaClient` intercepts every 401 before service
@@ -32,7 +40,7 @@ exc.status_code == 401`` will never fire on these methods — catch
 before raising, an expired credential costs a duplicate content download.
 """
 
-from typing import Any, Dict, Iterator, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 from urllib.parse import quote, unquote
 from uuid import UUID
 
@@ -40,7 +48,6 @@ from ..schemas.connector_surfaces import (
     ConnectorBrowseRequest,
     ConnectorCatalogItem,
     ConnectorContentRequest,
-    ConnectorNode,
     ConnectorNodePage,
     ConnectorSearchRequest,
     ConnectorSurfaceContent,
@@ -62,20 +69,58 @@ def _segment(value: Union[str, UUID]) -> str:
     return quote(str(value), safe="")
 
 
-def _served_filename(response: Any) -> Optional[str]:
-    """The filename the platform advertised, if it sent one.
+# Characters that would let a provider-supplied filename escape the directory a
+# caller joins it onto.
+_UNSAFE_FILENAME_CHARS = ("/", "\\", "\x00")
 
-    The platform forwards the provider's ``Content-Disposition``, which is
-    better-informed than any name the caller guessed from a browse result.
+
+def _safe_filename(candidate: str) -> Optional[str]:
+    """A filename safe to join onto a directory, or ``None`` if it isn't.
+
+    ``Content-Disposition`` is the third-party provider's text — the platform
+    filters which headers pass through, not what they contain — so this value is
+    untrusted. Callers routinely do ``open(os.path.join(dest, name), "wb")``, so
+    anything carrying a path separator or a parent reference is rejected rather
+    than sanitized into something that merely looks safe.
     """
-    disposition = response.headers.get("content-disposition", "")
-    if not disposition:
+    name = candidate.strip().strip('"').strip()
+    if not name or name in {".", ".."}:
         return None
+    if any(char in name for char in _UNSAFE_FILENAME_CHARS):
+        return None
+    return name
+
+
+def _disposition_params(disposition: str):
+    """Yield ``(lowercased key, raw value)`` for each parameter in the header."""
     for part in disposition.split(";"):
-        key, _, raw = part.strip().partition("=")
-        if key.strip().lower() == "filename":
-            return unquote(raw.strip().strip('"')) or None
-    return None
+        key, separator, raw = part.strip().partition("=")
+        if separator:
+            yield key.strip().lower(), raw
+
+
+def _extended_filename(raw: str) -> Optional[str]:
+    """Decode an RFC 5987 ``charset'language'percent-encoded-value`` parameter."""
+    return _safe_filename(unquote(raw.strip().strip('"').rpartition("'")[2]))
+
+
+def _served_filename(response: Any) -> Optional[str]:
+    """The filename the platform advertised, if it sent a usable one.
+
+    Prefers RFC 5987's ``filename*`` (the form providers use for any non-ASCII
+    name) over the plain ``filename``. Only ``filename*`` is percent-decoded —
+    decoding a plain ``filename`` both corrupts a literal ``%20`` in a real name
+    and can manufacture a path separator that was not in the header.
+    """
+    plain: Optional[str] = None
+    for key, raw in _disposition_params(response.headers.get("content-disposition", "")):
+        if key == "filename*":
+            extended = _extended_filename(raw)
+            if extended:
+                return extended
+        elif key == "filename" and plain is None:
+            plain = _safe_filename(raw)
+    return plain
 
 
 class ConnectorSurfaceMixin:
@@ -119,6 +164,7 @@ class ConnectorSurfaceMixin:
         self,
         workroom_id: Union[str, UUID],
         *,
+        connected_only: bool = False,
         timeout: float = DEFAULT_CATALOG_TIMEOUT_SECONDS,
     ) -> List[ConnectorCatalogItem]:
         """List the connector surfaces available to the caller in a workroom.
@@ -134,12 +180,16 @@ class ConnectorSurfaceMixin:
 
         Args:
             workroom_id: The workroom whose catalog to read.
+            connected_only: When true, drop instances whose own account the
+                caller has not connected. The platform still returns them, since
+                knowing a connector exists is what lets a UI offer to connect it.
             timeout: Transport timeout in seconds.
 
         Returns:
             The catalog entries, empty when the caller has no usable connector.
 
         Raises:
+            ValueError: If ``workroom_id`` is empty.
             APIError: With ``status_code`` 403 when the caller may not view the
                 workroom, or the platform's own status for other failures.
         """
@@ -147,7 +197,10 @@ class ConnectorSurfaceMixin:
             f"{self._surfaces_root(workroom_id)}/catalog", timeout=timeout
         )
         items = response.get("items", []) if isinstance(response, dict) else response
-        return [ConnectorCatalogItem.model_validate(item) for item in items or []]
+        entries = [ConnectorCatalogItem.model_validate(item) for item in items or []]
+        if not connected_only:
+            return entries
+        return [entry for entry in entries if entry.connected]
 
     def verify_connection(
         self,
@@ -208,10 +261,19 @@ class ConnectorSurfaceMixin:
             One page of nodes.
 
         Raises:
-            APIError: With ``status_code`` 400 (a connector id this workroom
-                does not resolve), 403 (not permitted), 409 (surface not ready
-                in this workroom), 501 (surface does not support browse), or
-                502 (upstream provider error).
+            APIError: With ``status_code`` 400 (a connector id this workroom does
+                not resolve, an unknown surface, or a surface whose workroom
+                registration is not ``ready``), 403 (not permitted), 409 (the
+                member has no connection to this connector — send them to the
+                catalog entry's ``reauth`` deep links), 501 (either the surface
+                genuinely has no browse op, or the connector is not deployed
+                right now — see the note below), or 502 (upstream provider
+                error).
+
+        Note:
+            A surface that is merely *not ready in this workroom* answers 400,
+            not 409: the platform raises it as a request error alongside an
+            unknown surface name. Do not treat it as a connection problem.
         """
         return self._nodes_page(ref, "browse", request.to_params(), timeout)
 
@@ -238,10 +300,12 @@ class ConnectorSurfaceMixin:
             One page of matching nodes.
 
         Raises:
-            APIError: With ``status_code`` 400 (a connector id this workroom
-                does not resolve), 403 (not permitted), 409 (connection missing —
-                see the catalog entry's ``reauth`` deep links), 501 (surface does
-                not support search), or 502 (upstream provider error).
+            APIError: With ``status_code`` 400 (a connector id this workroom does
+                not resolve, an unknown surface, or a surface not ``ready`` in
+                this workroom), 403 (not permitted), 409 (the member has no
+                connection — see the catalog entry's ``reauth`` deep links), 501
+                (no search op for this surface, or the connector is not deployed
+                right now), or 502 (upstream provider error).
         """
         return self._nodes_page(ref, "search", request.to_params(), timeout)
 
@@ -298,78 +362,3 @@ class ConnectorSurfaceMixin:
             filename=_served_filename(response) or request.filename,
             status_code=response.status_code,
         )
-
-    def iter_surface_nodes(
-        self,
-        ref: ConnectorSurfaceRef,
-        request: ConnectorBrowseRequest,
-        *,
-        max_pages: int = 10,
-        timeout: float = DEFAULT_SURFACE_TIMEOUT_SECONDS,
-    ) -> Iterator[ConnectorNode]:
-        """Yield browse results across pages, up to ``max_pages``.
-
-        Bounded on purpose: a connector surface can be arbitrarily large, so an
-        unbounded walk is a way to hang a caller on a provider's paging. Raise
-        ``max_pages`` deliberately when a caller really wants more.
-
-        Args:
-            ref: The workroom and connector instance to browse.
-            request: The first page's request; its ``page_token`` is advanced.
-            max_pages: Maximum number of pages to request.
-            timeout: Per-request transport timeout in seconds.
-
-        Yields:
-            Each :class:`~kamiwaza_sdk.schemas.connector_surfaces.ConnectorNode`
-            in page order.
-
-        Raises:
-            ValueError: If ``max_pages`` is less than 1. Raised when the method
-                is called, not deferred to the first iteration — a generator
-                that validates lazily reports the bad argument from the wrong
-                place in the caller's stack.
-        """
-        if max_pages < 1:
-            raise ValueError("max_pages must be at least 1")
-        return self._iter_pages(ref, request, max_pages, timeout)
-
-    def _iter_pages(
-        self,
-        ref: ConnectorSurfaceRef,
-        request: ConnectorBrowseRequest,
-        max_pages: int,
-        timeout: float,
-    ) -> Iterator[ConnectorNode]:
-        """Walk browse pages, advancing the page token, bounded by ``max_pages``."""
-        page_request = request
-        for _ in range(max_pages):
-            page = self.browse_surface(ref, page_request, timeout=timeout)
-            yield from page.items
-            if not page.next_page_token:
-                return
-            page_request = page_request.model_copy(
-                update={"page_token": page.next_page_token}
-            )
-
-    def list_connector_surfaces(
-        self,
-        workroom_id: Union[str, UUID],
-        *,
-        connected_only: bool = False,
-        timeout: float = DEFAULT_CATALOG_TIMEOUT_SECONDS,
-    ) -> List[ConnectorCatalogItem]:
-        """The surface catalog, optionally narrowed to connected instances.
-
-        Args:
-            workroom_id: The workroom whose catalog to read.
-            connected_only: When true, drop instances the caller has not
-                connected their own account to.
-            timeout: Transport timeout in seconds.
-
-        Returns:
-            The matching catalog entries.
-        """
-        items = self.list_surface_catalog(workroom_id, timeout=timeout)
-        if not connected_only:
-            return items
-        return [item for item in items if item.connected]

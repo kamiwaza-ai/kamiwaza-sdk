@@ -63,8 +63,10 @@ for entry in catalog:
     entry.searchable_surfaces() # …of those, the ones supporting full-text search
 ```
 
-`list_connector_surfaces(workroom_id, connected_only=True)` is the same call
-narrowed to instances the member has actually connected.
+`list_surface_catalog(workroom_id, connected_only=True)` narrows the same call
+to instances the member has actually connected. The platform returns
+unconnected instances too — knowing a connector exists is what lets a UI offer
+to connect it.
 
 A surface is usable only when its `workroom_state` is `ready`; the
 `ConnectorSurfaceCapability.ready` property encodes that, and anything else
@@ -122,15 +124,19 @@ hits = client.connectors.search_surface(
 rejected. Search is only accepted on surfaces that declare `search_supported`;
 check `searchable_surfaces()` first instead of discovering it as a 501.
 
-To walk several pages, `iter_surface_nodes` yields nodes across pages and is
-bounded by `max_pages` (default 10) so a large provider surface cannot hang the
-caller:
+To walk several pages, pass the previous page's `next_page_token` back in and
+stop on your own terms — the SDK deliberately ships no exhaustive-walk helper,
+because a bounded one would have to choose between hanging on a large surface
+and silently truncating it, and only the caller knows which is acceptable:
 
 ```python
-for node in client.connectors.iter_surface_nodes(
-    ref, ConnectorBrowseRequest(surface="files"), max_pages=3
-):
-    ...
+request = ConnectorBrowseRequest(surface="files")
+while True:
+    page = client.connectors.browse_surface(ref, request)
+    handle(page.items)
+    if not page.has_more:
+        break
+    request = request.model_copy(update={"page_token": page.next_page_token})
 ```
 
 ### Content fetch
@@ -167,7 +173,11 @@ Node ids are opaque and are percent-encoded on the way out. When the platform
 sends a `Content-Disposition`, its filename wins over the caller's guess.
 
 A missing content type counts as text, matching how the platform serves provider
-payloads that declare no type. `is_partial` reports a 206 range response.
+payloads that declare no type, and the check is case-insensitive. When the
+platform sends a `Content-Disposition`, its filename wins over the caller's
+guess — but only after being rejected for path separators, since that header is
+the third-party provider's text and callers join it onto a directory. RFC 5987's
+`filename*` is preferred and decoded; a plain `filename` is used verbatim.
 
 ### Failure behavior
 
@@ -177,17 +187,30 @@ permanent denial from a transient outage:
 
 | Status | Meaning |
 | --- | --- |
-| 400 | Invalid request, or a connector id the workroom does not resolve |
+| 400 | Invalid request; a connector id this workroom does not resolve; an unknown surface; **or a surface whose workroom registration is not `ready`** |
 | 403 | Not permitted for this workroom / member |
 | 404 | Connector or node not found |
-| 409 | The member's connector connection is missing — send them to the catalog entry's `reauth` deep links, not a retry |
+| 409 | The member has no connection to this connector — send them to the catalog entry's `reauth` deep links, not a retry |
 | 413 | Content exceeds the platform's size cap (permanent for that node) |
 | 429 | Provider rate limit — transient, back off |
-| 501 | Operation not supported for this surface |
+| 501 | **Ambiguous:** either the surface declares no such operation (permanent) *or* the connector is not deployed right now (transient) |
 | 502 | Upstream provider error |
-| 503 | Connector not deployed; verification unavailable |
+| 503 | Connector not deployed; verification impossible |
 
-**401 is the exception, and it never reaches you as an `APIError`.** The client
+Two of these are easy to get wrong:
+
+- **A surface that is not ready is a 400, not a 409.** The platform raises it as
+  a request error alongside an unknown surface name. Routing it to the reconnect
+  flow sends the member somewhere that cannot help them.
+- **501 carries two meanings and the platform does not distinguish them.** Retry
+  once with backoff before recording a surface as permanently unsupported,
+  otherwise a connector rollout looks like a missing capability.
+
+**401 never reaches you as an `APIError`** — and it covers two different
+problems. The platform returns it both when *your* session credential is
+rejected and when the *connector's* provider token needs reauthorization
+(`TokenRefreshException`), which is a permanent, member-actionable condition.
+The client
 intercepts every 401 before service code runs, refreshes the credential, retries
 once, and then raises `AuthenticationError` — which descends from
 `KamiwazaError`, *not* `APIError`, and carries no `status_code`. So this does
@@ -200,7 +223,10 @@ except APIError as exc:
 ```
 
 Catch `AuthenticationError` separately. Because the client retries before
-raising, an expired credential also costs a duplicate content download.
+raising, an expired credential also costs a duplicate content download — and
+because both causes flatten into the same exception with no status code, a
+caller cannot currently tell "log in again" from "reconnect this connector"
+from the exception alone.
 
 ### Timeouts
 
