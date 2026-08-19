@@ -7,11 +7,12 @@ manages cluster-to-cluster federation pairings and cross-cluster access from the
 SDK. Access it as `client.federations`. It covers the federation lifecycle
 (pair, list, get, probe, disconnect), a per-federation proxy for sub-resources,
 and brokered-user allowlisting. Cross-cluster **identity trust** is governed by
-each federation's identity mode (`peer_kc`, `shared_idp`, or `receiver_realm`);
+each federation's identity mode (`peer_kc` or `shared_idp` in Kamiwaza 1.2.0);
 see the platform
 [Identity Trust Modes](https://docs.kamiwaza.ai/federation/identity-trust-modes)
-guide for the trust model. In `receiver_realm` mode the receiver provisions a
-dedicated realm and issues guest credentials (see `guests` below).
+guide for the trust model. The `receiver_realm` value and the SDK's guest helper
+symbols are reserved for a future receiver-owned identity workflow. Kamiwaza
+1.2.0 rejects that mode with `identity_mode_unsupported`.
 
 ## Methods
 
@@ -25,10 +26,9 @@ Create a federation pairing. `role` is the side being set up (`initiator` or
 
 - supplying `shared_issuer_url` (with `shared_jwks_url` / `shared_ca_pem`) creates
   a **receiver-controlled `shared_idp`** federation;
-- supplying `realm_scope` (e.g. `"per_federation"`) creates a
-  **receiver-owned `receiver_realm`** federation — the receiver provisions a
-  dedicated `federation-<id>` Keycloak realm at pairing and issues its own guest
-  credentials (design §15). Mutually exclusive with the `shared_*` inputs;
+- do not supply `realm_scope` on Kamiwaza 1.2.0. It selects the reserved
+  `receiver_realm` mode, which the server rejects as unsupported. It is mutually
+  exclusive with the `shared_*` inputs;
 - omitting both creates a legacy source-trusted **`peer_kc`** federation
   (subject to the cluster's `ALLOW_UNTRUSTED_FEDERATION` policy).
 
@@ -56,15 +56,14 @@ Fetch a single federation by id (`GET /cluster/federations/{id}`).
 ### `by_id(federation_id, *, remote_name=None) -> FederationProxy`
 
 Return a proxy bound directly to an authoritative federation id, without a
-federation read or list lookup. Use this for receiver-side guest, user, and
-disconnect operations when pairing has replaced an operator-entered label with
+federation read or list lookup. Use this for receiver-side user and disconnect
+operations when pairing has replaced an operator-entered label with
 the peer's advertised cluster name. IDs may be UUID strings or `uuid.UUID`
 objects; invalid IDs raise `ValueError` before any request is made.
 
 ```python
 receiver = client.federations.by_id(receiver_federation_id)
-guest = receiver.guests.enroll("carol@src-uuid")
-receiver.guests.revoke(guest.external_id)
+receiver.users.add(external_id="carol@src-uuid")
 ```
 
 For a mesh probe, prefer the name-keyed proxy below. If the caller already has
@@ -104,27 +103,12 @@ Allowlist a brokered remote user on this (receiver) cluster
 subject; `initial_tuples` seeds the ReBAC grants the user should have on this
 cluster.
 
-### `FederationProxy.guests.enroll(external_id, *, initial_tuples=None) -> FederationGuest`
+### Reserved guest helpers
 
-**`receiver_realm` only** (ENG-8213 Alt D). Enroll a source user as a guest in
-the receiver's dedicated `federation-<id>` realm and mint a durable offline credential
-(`POST /cluster/federations/{id}/guests`). The returned `FederationGuest` carries
-`offline_token` — **returned once**; it is never re-fetchable, so persist it and
-deliver it to the source cluster out-of-band. `initial_tuples` seeds the guest's
-ReBAC grants at enrollment.
-
-```python
-receiver = client.federations.by_id(receiver_federation_id)
-guest = receiver.guests.enroll("carol@src-uuid")
-print(guest.realm, guest.offline_token)            # federation-<id>, <credential — save now>
-receiver.guests.revoke(guest.external_id)           # disable the guest (FR-79)
-```
-
-### `FederationProxy.guests.revoke(external_id) -> Any`
-
-Revoke an enrolled guest by disabling its allowlist row
-(`POST /cluster/federations/{id}/guests/{external_id}/revoke`). Subsequent mesh
-calls presenting that guest's credential are refused at the receiver's ingress.
+`FederationProxy.guests.enroll(...)` and `.revoke(...)` are forward-looking SDK
+symbols for the unavailable `receiver_realm` workflow. They are not part of the
+supported Kamiwaza 1.2.0 server contract and must not be used against a 1.2.0
+cluster.
 
 ## Trust lifecycle (`client.cluster`)
 
@@ -174,29 +158,20 @@ CA's real `fingerprint` so it can be verified out of band.
 
 ### `client.cluster.reconnect_federation(federation_id) -> dict`
 
-Undo a disconnect this cluster performed, re-admitting the peer's guests
+Undo a disconnect this cluster performed, re-admitting the peer's brokered users
 (`POST /cluster/federations/{id}/reconnect`). Accepts a `DISCONNECTED`
 federation and nothing else (409 `federation_not_disconnected`) — it reverses a
 local disconnect, where the realm, key and truststore entry were all preserved;
-re-pairing is the general flow. Returns the count of guests `restored` plus the
+re-pairing is the general flow. Returns the count of users `restored` plus the
 best-effort Keycloak outcomes.
 
-### Source-side credential resolution (`receiver_realm`)
+### Reserved source-side credential resolution
 
-A source user targeting a `receiver_realm` federation calls the receiver over the
-mesh with the **receiver-issued** credential (obtained out of band from
-`guests.enroll`), not their local login. Configure it per target and the SDK
-attaches it automatically as `X-KZ-Federation-Credential` on mesh calls to that
-federation:
-
-- `KAMIWAZA_FEDERATION_CREDENTIAL_<NAME>` — env var, where `<NAME>` is the
-  federation name upper-cased with non-alphanumerics mapped to `_`
-  (`orion-prod` → `KAMIWAZA_FEDERATION_CREDENTIAL_ORION_PROD`).
-- `KAMIWAZA_FEDERATION_CREDENTIAL_FILE` — path to a JSON file mapping federation
-  name → credential (env var wins when both are set).
-
-The local `KAMIWAZA_PAT` continues to serve local calls unchanged; targets in
-other identity modes (`peer_kc` / `shared_idp`) are unaffected (no header added).
+The SDK retains forward-looking configuration symbols for a future
+`receiver_realm` credential. Kamiwaza 1.2.0 does not issue that credential or
+accept `receiver_realm` federations, so do not configure these symbols for a
+1.2.0 deployment. `peer_kc` and `shared_idp` calls continue to use their
+documented identity paths without this header.
 
 ## The `kamiwaza-federation` CLI
 
