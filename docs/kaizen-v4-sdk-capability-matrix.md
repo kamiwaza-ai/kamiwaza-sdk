@@ -8,29 +8,25 @@ Audited: 2026-08-17
 ## Decision
 
 Kaizen v4 has a sound request-scoped SDK integration for model, deployment,
-extension, dataset, workroom, authentication, authorization, and tenant-scope
-operations. It does not yet meet the full supported-SDK cutover bar:
+extension, dataset, workroom, authentication, authorization, tenant-scope, and
+Context operations. It does not yet meet the full supported-SDK cutover bar:
 
-1. Context SDK contracts exist, but collections, ingest/retrieval, and ontology
-   operations are not available to the default Kaizen agent. They require an
-   administrator-selected generic OpenAPI surface or a specialized bundle.
-   [ENG-10505](https://linear.app/kamiwaza/issue/ENG-10505) owns closure.
-2. Skills Library SDK contracts exist, but the default Kaizen agent does not
+1. Skills Library SDK contracts exist, but the default Kaizen agent does not
    register them. The generic OpenAPI Skills tag is deployment-policy opt-in.
    [ENG-9983](https://linear.app/kamiwaza/issue/ENG-9983) owns Kaizen v4
    consumption qualification.
-3. Connector instance administration is in the SDK. The connector-surface
+2. Connector instance administration is in the SDK. The connector-surface
    catalog, verification, browse/search, and content-fetch contracts have since
    been added to `ConnectorService`, so Kaizen no longer *needs* direct `httpx`
    adapters for that runtime path — but the Kaizen-side migration onto them has
    not landed yet, and the fresh-deployment runtime proof remains outstanding.
    [ENG-10518](https://linear.app/kamiwaza/issue/ENG-10518) owns closure.
-4. The required fresh-deployment runtime proofs cannot currently run because
-   the compiled Core scheduler crashloops before readiness.
-   [ENG-10492](https://linear.app/kamiwaza/issue/ENG-10492) owns that blocker.
+3. Fresh-deployment runtime coverage remains incomplete outside the now-proven
+   Context path; the original Core scheduler readiness failure remains tracked by
+   [ENG-10492](https://linear.app/kamiwaza/issue/ENG-10492).
 
 No other missing SDK contract was confirmed in the audited product classes.
-The cutover decision should be revisited after the four items above have current
+The cutover decision should be revisited after the three items above have current
 runtime evidence.
 
 ## Audit basis
@@ -115,10 +111,10 @@ SDK-backed ingestion/retrieval or ontology round trips required here.
 | Connector provider OAuth and secrets | SDK exposes admin connector contracts, but not an interactive provider-login ceremony | Provider authorization remains a Core/UI flow; Tomo receives only opaque handles and forwarded identity | Deliberately out of scope for the agent; connected provider is a prerequisite | Connector tests confirm provider credentials are not accepted or persisted by Tomo | Core connector UI + policy |
 | Dataset lifecycle and attribute gates | `client.datasets.create`, `get`, `delete`, `set_gate`, `get_gate`, `clear_gate`; catalog dataset listing | `inspect_kamiwaza` operations `list_datasets` and `get_dataset`; `manage_kamiwaza_demo.ensure_dataset` for bounded create/reuse | Supported; writes are approval-gated | SDK dataset/catalog tests and Tomo direct-SDK tests | SDK + Tomo |
 | Skills Library catalog/package lifecycle | `client.skills.list_skills`, `get_skill`, `import_skill_package`, `download_skill_package`, `export_skill_package`, `export_skills_bundle`, `update_skill_metadata`, `delete_skill` | No direct SDK tool on the default agent; `openapi_tag:skills` can be enabled through deployment policy; local agent bundles are a separate Kaizen package system | **SDK exists, not exposed** on the default path | SDK Skills Library tests pass; Tomo OpenAPI policy tests prove opt-in discovery but not default consumption | [ENG-9983](https://linear.app/kamiwaza/issue/ENG-9983) |
-| Context collections | `client.context.list_collections`, `create_collection`, `get_collection`, `delete_collection` | No default direct-SDK registration; generic Context OpenAPI and specialized bundles are policy-selected | **SDK exists, not exposed** | SDK Context tests pass; no ordinary-user fresh-install proof | [ENG-10505](https://linear.app/kamiwaza/issue/ENG-10505) |
-| Context ingest and pipeline lifecycle | `client.context.upload_file`, raw-file create/list/get/update, pipeline/import options, source import, item replay/retry/rerun/cancel, OmniParse lifecycle | No default direct-SDK registration; specialized Context tooling is separately enabled | **SDK exists, not exposed**; storage/parser/embedding resources are prerequisites | SDK Context tests pass; no ordinary-user fresh-install ingest proof | [ENG-10505](https://linear.app/kamiwaza/issue/ENG-10505) |
-| Context retrieval | `client.context.search`, `retrieve`, `agentic_search`, vector queries | A reviewed `KamiwazaRetrieveTool` and generic Context OpenAPI route exist, but an empty deployment selection is fail-closed and the default agent receives neither | **SDK exists, not exposed** on a fresh default configuration | SDK Context tests and Tomo OpenAPI/retrieval contract tests pass; runtime default proof remains absent | [ENG-10505](https://linear.app/kamiwaza/issue/ENG-10505) |
-| Context ontology | `client.context` ontology list/get/create/delete, add knowledge/entity, search, memory, episodes, group delete, health | No default direct-SDK registration; Ontology Builder is a specialized bundle | **SDK exists, not exposed**; unrestricted ontology mutation is deliberately not implicit | SDK Context tests pass; no default ontology round-trip proof | [ENG-10505](https://linear.app/kamiwaza/issue/ENG-10505) |
+| Context collections | `client.context.list_collections`, `create_collection`, `get_collection`, `delete_collection` | Default closed Context SDK tool family in Tomo; specialized bundles remain optional | Supported; writes retain confirmation and audit gates | PR #243 tests; default registration is no longer policy-selected | [ENG-10505](https://linear.app/kamiwaza/issue/ENG-10505), merged |
+| Context ingest and pipeline lifecycle | `client.context.upload_file`, raw-file create/list/get/update, pipeline/import options, source import, item replay/retry/rerun/cancel, OmniParse lifecycle | Default closed Context SDK tool family in Tomo; specialized bundles remain optional | Supported; storage/parser/embedding resources are prerequisites and writes retain confirmation/audit gates | PR #243 tests; default registration is no longer policy-selected | [ENG-10505](https://linear.app/kamiwaza/issue/ENG-10505), merged |
+| Context retrieval | `client.context.search`, `retrieve`, `agentic_search`, vector queries | Default `search_knowledge` Context SDK tool with required query/group schema fields | Supported | PR #246 tests; `search_knowledge` in group `eng10505-validation` retrieved `amber-cypress-917` | [ENG-10505](https://linear.app/kamiwaza/issue/ENG-10505), merged |
+| Context ontology | `client.context` ontology list/get/create/delete, add knowledge/entity, search, memory, episodes, group delete, health | Default `add_knowledge` Context SDK tool; mutation is approval-gated | Supported; unrestricted ontology mutation is deliberately not implicit | Fresh Kaizen-chat approved `add_knowledge` wrote `amber-cypress-917`; PR #246 tests | [ENG-10505](https://linear.app/kamiwaza/issue/ENG-10505), merged |
 | Authentication | `client.auth` password login/refresh/logout/current-user/forward-auth; extensions-lib identity helpers | Tomo validates the signed request identity and constructs a `KamiwazaClient` with a closed forwarded-envelope authenticator | Supported; identity-provider and user administration are deliberately outside the ordinary agent | SDK auth and extensions-lib auth tests; Tomo tool tests verify exact header forwarding | SDK + Tomo |
 | Authorization | `client.authz` tuple upsert/delete/object delete/access check | Core remains final authority; Tomo tools carry the validated caller envelope and classify actor-private/bound operations; mutations retain confirmation gates | Supported request boundary; authorization administration is deliberately out of scope | Static SDK service inspection plus Tomo SDK/connector policy tests | SDK + Core + Tomo |
 | Tenant and workroom scope | `client.workrooms` CRUD/enter/leave/export/ingestion summary; client workroom-scope recovery | `_platform_context` binds API base, verified forwarded headers, and current workroom; SDK projections never accept caller-authored endpoint or credential fields | Supported; membership is a prerequisite | SDK workroom/scope tests and Tomo SDK-tool tests | SDK + Core + Tomo |
@@ -162,9 +158,26 @@ ordinary-member proof for every supported class above, including negative
 tenant/workroom cases. Context, Skills Library, and connector-surface proofs
 must run only after their respective closure tickets land.
 
+### Context closure evidence (2026-08-19)
+
+[ENG-10505](https://linear.app/kamiwaza/issue/ENG-10505) closed the default
+Context runtime-registration gap through Tomo PR
+[#243](https://github.com/kamiwaza-internal/kamiwaza-extensions-tomo/pull/243)
+and schema/approval hardening in PR
+[#246](https://github.com/kamiwaza-internal/kamiwaza-extensions-tomo/pull/246),
+merged as `3d246a1b7a35f53c5f38ebdfff6972d282ab484b`. PR #246 passed 42
+checks and had current-head approvals from Kevin and `kamiwaza-pr-verify`.
+
+In a fresh Kaizen chat, an approved `add_knowledge` call wrote
+`amber-cypress-917`; `search_knowledge` scoped to group
+`eng10505-validation` retrieved that exact token. This is a Context-specific
+runtime proof. It removes Context from the cutover blockers; it does not claim
+connector-surface coverage or substitute for the remaining fresh-deployment
+proofs.
+
 ## Follow-up ownership
 
-- Context default-path findings are folded into
+- Context default-path findings were closed by
   [ENG-10505](https://linear.app/kamiwaza/issue/ENG-10505).
 - Skills Library consumption remains with
   [ENG-9983](https://linear.app/kamiwaza/issue/ENG-9983).
