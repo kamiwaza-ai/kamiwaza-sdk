@@ -9,14 +9,14 @@ different each time:
 2. ``MINI_CLEARANCE_DATASET_PATH``       -> ``_gate_fixture.py`` publishes the CSV
 3. a **shared realm** both clusters trust -> this module
 
-The realm has to project ``clearance`` and an explicit
-``tenant_id=__default__`` into brokered JWTs. The three clearance personas and
-one deliberately unonboarded persona must mint tokens from it by ROPC, because
-the receiver's
-shared_idp validation accepts a caller only when the token's ``kid`` is in the
-SHARED realm's JWKS. A valid shared-realm token is still receiver-denied until
-its subject is explicitly onboarded; that allowlist boundary is part of the
-suite's required proof.
+The realm has to project ``clearance`` plus the tenant attributes needed by the
+release contract into brokered JWTs. The three default-tenant clearance
+personas, one deliberately unonboarded persona, and three tenant-negative
+personas must mint tokens from it by ROPC, because the receiver's shared_idp
+validation accepts a caller only when the token's ``kid`` is in the SHARED
+realm's JWKS. A valid shared-realm token is still receiver-denied until its
+subject is explicitly onboarded; that allowlist boundary is part of the suite's
+required proof.
 
 This drives the primitives that already ship in
 ``kamiwaza_sdk.seeding.federation`` (the ``kamiwaza-federation idp`` group) rather than
@@ -66,6 +66,17 @@ KEYCLOAK_SVC_PORT = os.getenv("KEYCLOAK_SVC_PORT", "80")
 # Clearance values match _mini_clearance.KNOWN: U sees 3 rows, S sees 4, TS sees all 5.
 PERSONAS = {"U": "fed-clr-u", "S": "fed-clr-s", "TS": "fed-clr-ts"}
 UNONBOARDED_PERSONA = "fed-clr-unonboarded"
+TENANT_NEGATIVE_PERSONAS: dict[str, tuple[str, dict[str, str]]] = {
+    "missing-canonical": ("fed-tenant-missing", {"clearance": "U"}),
+    "legacy-only": (
+        "fed-tenant-legacy-only",
+        {"clearance": "U", "tenant": DEFAULT_TENANT_ID},
+    ),
+    "canonical-nondefault": (
+        "fed-tenant-nondefault",
+        {"clearance": "U", "tenant_id": "tenant-a"},
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -179,6 +190,7 @@ def provision(
         client = kc.ensure_ropc_client(realm, ROPC_CLIENT)
         kc.ensure_attribute_mapper(realm, client["id"], attribute="clearance")
         kc.ensure_attribute_mapper(realm, client["id"], attribute="tenant_id")
+        kc.ensure_attribute_mapper(realm, client["id"], attribute="tenant")
 
         for clearance, username in PERSONAS.items():
             kc.ensure_user(
@@ -196,6 +208,13 @@ def provision(
             password=persona_pw,
             attributes={"clearance": "U", "tenant_id": DEFAULT_TENANT_ID},
         )
+        for username, attributes in TENANT_NEGATIVE_PERSONAS.values():
+            kc.ensure_user(
+                realm,
+                username,
+                password=persona_pw,
+                attributes=attributes,
+            )
     except BaseException:
         try:
             kc.delete_owned_realm(realm, owned_realm.owner_nonce)
@@ -273,7 +292,11 @@ def _print_provisioned_realm(realm: str, exports: dict[str, str]) -> None:
             "  the shared JWKS and every persona token is rejected."
         )
 
-    usernames = [*PERSONAS.values(), UNONBOARDED_PERSONA]
+    usernames = [
+        *PERSONAS.values(),
+        UNONBOARDED_PERSONA,
+        *(username for username, _attributes in TENANT_NEGATIVE_PERSONAS.values()),
+    ]
     print(f"  realm={realm} client={ROPC_CLIENT} personas={sorted(usernames)}")
     print(json.dumps(exports, indent=2))
     for key, value in exports.items():

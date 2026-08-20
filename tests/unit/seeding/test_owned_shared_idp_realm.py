@@ -262,7 +262,7 @@ def test_partial_provision_rolls_back_owned_realm(
     ]
 
 
-def test_provision_creates_default_tenant_clearance_and_unonboarded_personas(
+def test_provision_creates_default_and_tenant_negative_personas(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     mappers: list[str] = []
@@ -312,7 +312,7 @@ def test_provision_creates_default_tenant_clearance_and_unonboarded_personas(
         fixture.OwnedRealm("unique", "owner-a"),
     )
 
-    assert mappers == ["clearance", "tenant_id"]
+    assert mappers == ["clearance", "tenant_id", "tenant"]
     assert users == [
         ("fed-clr-u", {"clearance": "U", "tenant_id": "__default__"}),
         ("fed-clr-s", {"clearance": "S", "tenant_id": "__default__"}),
@@ -320,5 +320,14 @@ def test_provision_creates_default_tenant_clearance_and_unonboarded_personas(
         (
             "fed-clr-unonboarded",
             {"clearance": "U", "tenant_id": "__default__"},
+        ),
+        ("fed-tenant-missing", {"clearance": "U"}),
+        (
+            "fed-tenant-legacy-only",
+            {"clearance": "U", "tenant": "__default__"},
+        ),
+        (
+            "fed-tenant-nondefault",
+            {"clearance": "U", "tenant_id": "tenant-a"},
         ),
     ]

@@ -3,10 +3,12 @@
 The lane carries both topology markers, provisions every prerequisite before
 selection, and treats any skip or denial as failure. It drains mesh retrieval
 SSE for exact U/S/TS rows and runs a recoverable job to ``SUCCEEDED`` with a
-unique receiver marker. Every persona receives viewer authority only for the
-unique dataset; the U submitter additionally receives the explicit cluster-job
-executor relation. The receiver execution gate still governs dispatch, and the
-job service auto-grants per-job authority only after successful submission.
+unique receiver marker. Every clearance persona receives viewer authority only
+for the unique dataset; the U submitter additionally receives the explicit
+cluster-job executor relation. Tenant-negative personas are receiver-allowlisted
+with no initial tuples so the producer tenant boundary is the exact denial under
+test. The receiver execution gate still governs dispatch, and the job service
+auto-grants per-job authority only after successful submission.
 """
 
 from __future__ import annotations
@@ -28,11 +30,12 @@ from kamiwaza_sdk import (
     SharedIdpAuthConfig,
     SharedIdpAuthenticator,
 )
+from kamiwaza_sdk.services.federation_credentials import federation_credential_headers
 from kamiwaza_sdk.token_store import InMemoryTokenStore
 from tests.integration import mesh_outcome
 
 from . import _mini_clearance as mc
-from ._shared_idp_fixture import DEFAULT_TENANT_ID
+from ._shared_idp_fixture import DEFAULT_TENANT_ID, TENANT_NEGATIVE_PERSONAS
 from .required_federation_edge_setup import pair_required_edge, provision_gated_dataset
 
 pytestmark = [
@@ -89,6 +92,35 @@ class _EdgeWiring:
 class _EdgeClients:
     initiator: Any
     receiver: Any
+
+
+@dataclass(frozen=True)
+class _PersonaProvisioning:
+    cleanup: ExitStack
+    initiator_base_url: str
+    receiver: Any
+    federation_id: str
+    source_cluster_id: str
+    dataset_urn: str
+    auth: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class _TenantRejectionCase:
+    persona_key: str
+    expected_status: int
+    expected_reason: str
+
+
+_TENANT_REJECTION_CASES = (
+    _TenantRejectionCase("missing-canonical", 401, "tenant_required"),
+    _TenantRejectionCase("legacy-only", 401, "tenant_required"),
+    _TenantRejectionCase(
+        "canonical-nondefault",
+        403,
+        "mesh_tenant_not_admitted",
+    ),
+)
 
 
 def _required_mesh_call(call: Callable[[], Any]) -> Any:
@@ -287,9 +319,29 @@ def _assert_default_tenant_claim(token: str) -> None:
     """Preflight claim shape; the receiver still validates token cryptography."""
     claims = decode_jwt_payload(token)
     if claims.get("tenant_id") != DEFAULT_TENANT_ID:
+        raise AssertionError("shared-IDP access token must carry tenant_id=__default__")
+
+
+def _assert_tenant_claim_shape(
+    token: str,
+    expected: dict[str, str],
+    *,
+    context: str,
+) -> None:
+    """Validate only tenant claims without exposing token or claim contents."""
+    claims = decode_jwt_payload(token)
+    observed = {key: claims[key] for key in ("tenant_id", "tenant") if key in claims}
+    if observed != expected:
         raise AssertionError(
-            "shared-IDP access token must carry tenant_id=__default__"
+            f"shared-IDP access token has unexpected tenant claim shape for {context}"
         )
+
+
+def _tenant_rejection_reason(payload: Any) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    detail = payload.get("detail")
+    return detail if isinstance(detail, str) else None
 
 
 @pytest.fixture(scope="module")
@@ -363,7 +415,6 @@ def _programmatic_persona_session(
     authenticator.refresh_token(client.session)
     token = authenticator.get_access_token(client.session)
     assert token, "shared-IDP refresh produced no access token"
-    _assert_default_tenant_claim(token)
     assert token_store.load() is not None
     assert token_store.load().refresh_token  # type: ignore[union-attr]
     return {
@@ -380,57 +431,65 @@ def _active_persona_session(persona: dict[str, Any]) -> tuple[Any, str]:
     return client, token
 
 
+def _open_persona(
+    provisioning: _PersonaProvisioning,
+    username: str,
+) -> dict[str, Any]:
+    persona = _programmatic_persona_session(
+        provisioning.initiator_base_url,
+        provisioning.auth,
+        username,
+    )
+    provisioning.cleanup.callback(persona["client"].close)
+    return persona
+
+
+def _allowlist_persona(
+    provisioning: _PersonaProvisioning,
+    persona: dict[str, Any],
+    initial_tuples: list[dict[str, str]],
+) -> dict[str, Any]:
+    sub = mc.jwt_sub(persona["token"])
+    assert sub, "shared-IDP token has no subject claim"
+    external_id = f"{sub}@{provisioning.source_cluster_id}"
+    provisioning.receiver._request(
+        "POST",
+        f"/cluster/federations/{provisioning.federation_id}/users",
+        json={"external_id": external_id, "initial_tuples": initial_tuples},
+    )
+    provisioning.cleanup.callback(
+        _cleanup_brokered_persona,
+        provisioning.receiver,
+        provisioning.federation_id,
+        external_id,
+    )
+    return {**persona, "external_id": external_id, "sub": sub}
+
+
 def _provision_personas(
-    cleanup: ExitStack,
-    initiator_base_url: str,
-    receiver: Any,
-    identifiers: tuple[str, str, str],
-    prerequisites: _EdgePrerequisites,
+    provisioning: _PersonaProvisioning,
 ) -> dict[str, dict[str, Any]]:
-    federation_id, source_cluster_id, dataset_urn = identifiers
-    auth = prerequisites.persona_auth
-    issuer = prerequisites.shared["shared_issuer_url"]
     personas: dict[str, dict[str, Any]] = {}
     for clearance, base in _PERSONAS.items():
-        persona = _programmatic_persona_session(
-            initiator_base_url,
-            {**auth, "issuer": issuer},
-            base,
+        persona = _open_persona(provisioning, base)
+        _assert_default_tenant_claim(persona["token"])
+        tuples = _required_initial_tuples(
+            provisioning.dataset_urn,
+            job_executor=clearance == "U",
         )
-        cleanup.callback(persona["client"].close)
-        token = persona["token"]
-        sub = mc.jwt_sub(token)
-        assert sub, f"shared-IDP token has no subject claim for {base}"
-        external_id = f"{sub}@{source_cluster_id}"
-        receiver._request(
-            "POST",
-            f"/cluster/federations/{federation_id}/users",
-            json={
-                "external_id": external_id,
-                "initial_tuples": _required_initial_tuples(
-                    dataset_urn,
-                    job_executor=clearance == "U",
-                ),
-            },
-        )
-        cleanup.callback(
-            _cleanup_brokered_persona,
-            receiver,
-            federation_id,
-            external_id,
-        )
-        personas[clearance] = {
-            **persona,
-            "external_id": external_id,
-            "sub": sub,
-        }
-    unonboarded = _programmatic_persona_session(
-        initiator_base_url,
-        {**auth, "issuer": issuer},
-        _UNONBOARDED_PERSONA,
-    )
-    cleanup.callback(unonboarded["client"].close)
+        personas[clearance] = _allowlist_persona(provisioning, persona, tuples)
+
+    unonboarded = _open_persona(provisioning, _UNONBOARDED_PERSONA)
+    _assert_default_tenant_claim(unonboarded["token"])
     personas["unonboarded"] = unonboarded
+
+    for case_id, (username, attributes) in TENANT_NEGATIVE_PERSONAS.items():
+        persona = _open_persona(provisioning, username)
+        expected = {
+            key: attributes[key] for key in ("tenant_id", "tenant") if key in attributes
+        }
+        _assert_tenant_claim_shape(persona["token"], expected, context=case_id)
+        personas[case_id] = _allowlist_persona(provisioning, persona, [])
     return personas
 
 
@@ -452,11 +511,18 @@ def _wire_required_edge(
         pair_request.name,
     )
     personas = _provision_personas(
-        cleanup,
-        clients.initiator.base_url,
-        clients.receiver,
-        (identities.receiver_federation_id, identities.initiator_cluster_id, urn),
-        prerequisites,
+        _PersonaProvisioning(
+            cleanup=cleanup,
+            initiator_base_url=clients.initiator.base_url,
+            receiver=clients.receiver,
+            federation_id=identities.receiver_federation_id,
+            source_cluster_id=identities.initiator_cluster_id,
+            dataset_urn=urn,
+            auth={
+                **prerequisites.persona_auth,
+                "issuer": prerequisites.shared["shared_issuer_url"],
+            },
+        )
     )
     cleanup.enter_context(_temporary_execution_gate(clients.receiver))
     return _EdgeWiring(
@@ -519,6 +585,49 @@ def test_required_mesh_retrieval_returns_exact_post_gate_rows(
 
     rows, gate_audit = _required_mesh_call(_retrieve)
     mc.assert_persona_result(clearance, rows, gate_audit)
+
+
+@pytest.mark.parametrize(
+    "case",
+    [pytest.param(case, id=case.persona_key) for case in _TENANT_REJECTION_CASES],
+)
+def test_required_mesh_retrieval_rejects_invalid_tenant(
+    case: _TenantRejectionCase,
+    shared_idp_gated_pair: dict[str, Any],
+    live_kamiwaza_session_client: Any,
+) -> None:
+    """Tenant-negative users fail at the producer mesh authority boundary.
+
+    Persona setup already proves a real refresh grant. This uses that same
+    authenticated session directly so the SDK's 401 translation cannot discard
+    the response status/body before this exact denial oracle inspects them.
+    """
+    wiring = shared_idp_gated_pair
+    persona, token = _active_persona_session(wiring["personas"][case.persona_key])
+    selector = quote(wiring["name"], safe="")
+    url = (
+        f"{live_kamiwaza_session_client.base_url.rstrip('/')}"
+        f"/mesh/{selector}/api/retrieval/jobs"
+    )
+    headers = {
+        "Authorization": f"Bearer {token}",
+        **federation_credential_headers(wiring["name"]),
+    }
+
+    with persona.session.post(
+        url,
+        json={"dataset_urn": wiring["urn"]},
+        headers=headers,
+        verify=wiring["verify"],
+        timeout=120,
+    ) as response:
+        assert response.status_code == case.expected_status
+        try:
+            payload = response.json()
+        except ValueError:
+            pytest.fail("tenant rejection returned a non-JSON body", pytrace=False)
+
+    assert _tenant_rejection_reason(payload) == case.expected_reason
 
 
 def test_required_mesh_dataset_list_returns_only_authorized_fixture(

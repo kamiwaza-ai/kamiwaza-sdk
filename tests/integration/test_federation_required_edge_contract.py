@@ -3,7 +3,7 @@
 from pathlib import Path
 import stat
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import MagicMock, Mock
 
 import pytest
 
@@ -46,6 +46,20 @@ def _assert_live_retrieval_parametrization() -> None:
     assert retrieval_marks[0].kwargs == {}
 
 
+def _assert_live_tenant_rejection_parametrization() -> None:
+    rejection_marks = [
+        mark
+        for mark in edge.test_required_mesh_retrieval_rejects_invalid_tenant.pytestmark
+        if mark.name == "parametrize"
+    ]
+    assert len(rejection_marks) == 1
+    assert rejection_marks[0].args[0] == "case"
+    assert rejection_marks[0].kwargs == {}
+    assert [
+        (parameter.id, parameter.values[0]) for parameter in rejection_marks[0].args[1]
+    ] == [(case.persona_key, case) for case in edge._TENANT_REJECTION_CASES]
+
+
 def test_required_edge_carries_owned_shared_realm_capability_markers() -> None:
     marker_names = {marker.name for marker in edge.pytestmark}
 
@@ -64,18 +78,22 @@ def test_required_edge_plugin_is_registered_only_at_pytest_root() -> None:
     assert "pytest_plugins" not in integration_conftest
 
 
-def test_required_edge_collection_guard_requires_all_six_cases() -> None:
+def test_required_edge_collection_guard_requires_all_nine_cases() -> None:
     expected_cases = {
         "test_required_mesh_retrieval_returns_exact_post_gate_rows[U]",
         "test_required_mesh_retrieval_returns_exact_post_gate_rows[S]",
         "test_required_mesh_retrieval_returns_exact_post_gate_rows[TS]",
+        "test_required_mesh_retrieval_rejects_invalid_tenant[missing-canonical]",
+        "test_required_mesh_retrieval_rejects_invalid_tenant[legacy-only]",
+        "test_required_mesh_retrieval_rejects_invalid_tenant[canonical-nondefault]",
         "test_required_mesh_dataset_list_returns_only_authorized_fixture",
         "test_required_mesh_job_reaches_receiver_and_returns_marker",
         "test_unonboarded_shared_idp_user_rejected_by_receiver_allowlist",
     }
     assert required_edge.REQUIRED_EDGE_CASES == expected_cases
-    assert len(required_edge.REQUIRED_EDGE_CASES) == 6
+    assert len(required_edge.REQUIRED_EDGE_CASES) == 9
     _assert_live_retrieval_parametrization()
+    _assert_live_tenant_rejection_parametrization()
     for case in expected_cases:
         function_name = case.split("[", 1)[0]
         assert callable(getattr(edge, function_name, None)), case
@@ -287,7 +305,7 @@ def test_persona_session_performs_password_grant_then_real_refresh(monkeypatch) 
     monkeypatch.setattr(
         edge,
         "decode_jwt_payload",
-        lambda token: {"tenant_id": "__default__"} if token == "refreshed" else {},
+        Mock(side_effect=AssertionError("raw session must not inspect claims")),
     )
 
     persona = edge._programmatic_persona_session(
@@ -632,6 +650,106 @@ def test_required_retrieval_case_asserts_streamed_known_answer(monkeypatch) -> N
         "receiver-cluster",
         "urn:kamiwaza:dataset:known",
     )
+
+
+def _tenant_rejection_wiring(post: Mock, persona_key: str) -> dict:
+    persona = SimpleNamespace(session=SimpleNamespace(post=post))
+    authenticator = Mock(get_access_token=Mock(return_value="opaque-test-token"))
+    return {
+        "name": "receiver-cluster",
+        "urn": "urn:kamiwaza:dataset:known",
+        "personas": {
+            persona_key: {
+                "client": persona,
+                "authenticator": authenticator,
+            }
+        },
+        "verify": True,
+    }
+
+
+@pytest.mark.parametrize(
+    "case",
+    edge._TENANT_REJECTION_CASES,
+    ids=lambda case: case.persona_key,
+)
+def test_required_tenant_rejection_case_asserts_exact_producer_denial(
+    monkeypatch,
+    case,
+) -> None:
+    response = MagicMock(status_code=case.expected_status)
+    response.__enter__.return_value = response
+    response.json.return_value = {"detail": case.expected_reason}
+    post = Mock(return_value=response)
+    monkeypatch.setattr(edge, "federation_credential_headers", Mock(return_value={}))
+    wiring = _tenant_rejection_wiring(post, case.persona_key)
+
+    edge.test_required_mesh_retrieval_rejects_invalid_tenant(
+        case,
+        wiring,
+        SimpleNamespace(base_url="https://initiator.example/api"),
+    )
+
+    post.assert_called_once_with(
+        "https://initiator.example/api/mesh/receiver-cluster/api/retrieval/jobs",
+        json={"dataset_urn": "urn:kamiwaza:dataset:known"},
+        headers={"Authorization": "Bearer opaque-test-token"},
+        verify=True,
+        timeout=120,
+    )
+
+
+def test_required_tenant_rejection_oracle_rejects_wrong_reason(monkeypatch) -> None:
+    case = edge._TenantRejectionCase(
+        "missing-canonical",
+        401,
+        "tenant_required",
+    )
+    response = MagicMock(status_code=401)
+    response.__enter__.return_value = response
+    response.json.return_value = {"detail": "wrong_reason"}
+    post = Mock(return_value=response)
+    monkeypatch.setattr(edge, "federation_credential_headers", Mock(return_value={}))
+    wiring = _tenant_rejection_wiring(post, case.persona_key)
+
+    with pytest.raises(AssertionError):
+        edge.test_required_mesh_retrieval_rejects_invalid_tenant(
+            case,
+            wiring,
+            SimpleNamespace(base_url="https://initiator.example/api"),
+        )
+
+
+def test_required_tenant_rejection_oracle_rejects_non_json(monkeypatch) -> None:
+    case = edge._TenantRejectionCase("missing-canonical", 401, "tenant_required")
+    response = MagicMock(status_code=401)
+    response.__enter__.return_value = response
+    response.json.side_effect = ValueError("not JSON")
+    monkeypatch.setattr(edge, "federation_credential_headers", Mock(return_value={}))
+    wiring = _tenant_rejection_wiring(Mock(return_value=response), case.persona_key)
+
+    with pytest.raises(pytest.fail.Exception, match="non-JSON body"):
+        edge.test_required_mesh_retrieval_rejects_invalid_tenant(
+            case,
+            wiring,
+            SimpleNamespace(base_url="https://initiator.example/api"),
+        )
+
+
+def test_required_tenant_rejection_oracle_propagates_transport_error(
+    monkeypatch,
+) -> None:
+    case = edge._TenantRejectionCase("missing-canonical", 401, "tenant_required")
+    post = Mock(side_effect=RuntimeError("transport failed"))
+    monkeypatch.setattr(edge, "federation_credential_headers", Mock(return_value={}))
+    wiring = _tenant_rejection_wiring(post, case.persona_key)
+
+    with pytest.raises(RuntimeError, match="transport failed"):
+        edge.test_required_mesh_retrieval_rejects_invalid_tenant(
+            case,
+            wiring,
+            SimpleNamespace(base_url="https://initiator.example/api"),
+        )
 
 
 def test_exact_retrieval_oracle_rejects_duplicate_allowed_rows() -> None:
