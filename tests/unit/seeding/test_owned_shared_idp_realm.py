@@ -262,9 +262,10 @@ def test_partial_provision_rolls_back_owned_realm(
     ]
 
 
-def test_provision_creates_clearance_and_unonboarded_personas(
+def test_provision_creates_default_tenant_clearance_and_unonboarded_personas(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    mappers: list[str] = []
     users: list[tuple[str, dict[str, str]]] = []
 
     class _Admin:
@@ -283,7 +284,7 @@ def test_provision_creates_clearance_and_unonboarded_personas(
         def ensure_attribute_mapper(
             self, _realm: str, _client: str, *, attribute: str
         ) -> None:
-            assert attribute == "clearance"
+            mappers.append(attribute)
 
         def ensure_user(
             self,
@@ -311,9 +312,13 @@ def test_provision_creates_clearance_and_unonboarded_personas(
         fixture.OwnedRealm("unique", "owner-a"),
     )
 
+    assert mappers == ["clearance", "tenant_id"]
     assert users == [
-        ("fed-clr-u", {"clearance": "U"}),
-        ("fed-clr-s", {"clearance": "S"}),
-        ("fed-clr-ts", {"clearance": "TS"}),
-        ("fed-clr-unonboarded", {"clearance": "U"}),
+        ("fed-clr-u", {"clearance": "U", "tenant_id": "__default__"}),
+        ("fed-clr-s", {"clearance": "S", "tenant_id": "__default__"}),
+        ("fed-clr-ts", {"clearance": "TS", "tenant_id": "__default__"}),
+        (
+            "fed-clr-unonboarded",
+            {"clearance": "U", "tenant_id": "__default__"},
+        ),
     ]

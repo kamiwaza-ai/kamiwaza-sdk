@@ -284,6 +284,11 @@ def test_persona_session_performs_password_grant_then_real_refresh(monkeypatch) 
 
     monkeypatch.setattr(edge, "SharedIdpAuthenticator", _Authenticator, raising=False)
     monkeypatch.setattr(edge, "KamiwazaClient", _Client, raising=False)
+    monkeypatch.setattr(
+        edge,
+        "decode_jwt_payload",
+        lambda token: {"tenant_id": "__default__"} if token == "refreshed" else {},
+    )
 
     persona = edge._programmatic_persona_session(
         "https://initiator.example/api",

@@ -22,6 +22,7 @@ from urllib.parse import quote
 
 import pytest
 
+from kamiwaza_extensions_lib._jwt import decode_jwt_payload
 from kamiwaza_sdk import (
     KamiwazaClient,
     SharedIdpAuthConfig,
@@ -31,6 +32,7 @@ from kamiwaza_sdk.token_store import InMemoryTokenStore
 from tests.integration import mesh_outcome
 
 from . import _mini_clearance as mc
+from ._shared_idp_fixture import DEFAULT_TENANT_ID
 from .required_federation_edge_setup import pair_required_edge, provision_gated_dataset
 
 pytestmark = [
@@ -247,14 +249,15 @@ def _persona_auth(
     shared: dict[str, str],
     temp_root: Path,
 ) -> dict:
-    """Shared-realm ROPC config for clearance-bearing personas."""
+    """Shared-realm ROPC config for default-tenant clearance personas."""
     client_id = os.getenv("SHARED_REALM_CLIENT_ID", "").strip()
     password = os.getenv("FED_PERSONA_PASSWORD", "").strip()
     _require_prerequisite(
         config,
         bool(client_id and password),
         "SHARED_REALM_CLIENT_ID / FED_PERSONA_PASSWORD not set — the personas "
-        "need a shared-realm ROPC token with the `clearance` claim",
+        "need a shared-realm ROPC token with `clearance` and explicit "
+        "`tenant_id=__default__` claims",
     )
     verify = os.getenv("KAMIWAZA_VERIFY_SSL", "1").strip().lower() not in {
         "0",
@@ -278,6 +281,15 @@ def _persona_auth(
 
 def _fed_name() -> str:
     return f"eng8325-sharedidp-{uuid.uuid4().hex[:8]}"
+
+
+def _assert_default_tenant_claim(token: str) -> None:
+    """Preflight claim shape; the receiver still validates token cryptography."""
+    claims = decode_jwt_payload(token)
+    if claims.get("tenant_id") != DEFAULT_TENANT_ID:
+        raise AssertionError(
+            "shared-IDP access token must carry tenant_id=__default__"
+        )
 
 
 @pytest.fixture(scope="module")
@@ -351,6 +363,7 @@ def _programmatic_persona_session(
     authenticator.refresh_token(client.session)
     token = authenticator.get_access_token(client.session)
     assert token, "shared-IDP refresh produced no access token"
+    _assert_default_tenant_claim(token)
     assert token_store.load() is not None
     assert token_store.load().refresh_token  # type: ignore[union-attr]
     return {

@@ -22,6 +22,41 @@ def _identifiers() -> tuple[str, str, str]:
     return "receiver-fed", "source-cluster", "urn:dataset:known"
 
 
+def test_persona_token_contract_accepts_explicit_default_tenant(monkeypatch) -> None:
+    monkeypatch.setattr(
+        edge,
+        "decode_jwt_payload",
+        lambda _token: {"tenant_id": "__default__"},
+    )
+
+    edge._assert_default_tenant_claim("opaque-token")
+
+
+@pytest.mark.parametrize(
+    "claims",
+    [
+        {},
+        {"tenant": "__default__"},
+        {"tenant_id": "another-tenant"},
+        {"tenant_id": ""},
+    ],
+    ids=["missing", "legacy-only", "non-default", "blank"],
+)
+def test_persona_token_contract_rejects_noncanonical_tenant_claims(
+    monkeypatch, claims
+) -> None:
+    monkeypatch.setattr(
+        edge,
+        "decode_jwt_payload",
+        lambda _token: claims,
+    )
+    with pytest.raises(AssertionError) as exc_info:
+        edge._assert_default_tenant_claim("opaque-token")
+    assert str(exc_info.value) == (
+        "shared-IDP access token must carry tenant_id=__default__"
+    )
+
+
 def test_persona_provisioning_onboards_only_clearance_personas(monkeypatch) -> None:
     sessions: dict[str, dict[str, Any]] = {}
 

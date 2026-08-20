@@ -9,9 +9,10 @@ different each time:
 2. ``MINI_CLEARANCE_DATASET_PATH``       -> ``_gate_fixture.py`` publishes the CSV
 3. a **shared realm** both clusters trust -> this module
 
-The realm has to project a ``clearance`` claim into brokered JWTs. The three
-clearance personas and one deliberately unonboarded persona must mint tokens
-from it by ROPC, because the receiver's
+The realm has to project ``clearance`` and an explicit
+``tenant_id=__default__`` into brokered JWTs. The three clearance personas and
+one deliberately unonboarded persona must mint tokens from it by ROPC, because
+the receiver's
 shared_idp validation accepts a caller only when the token's ``kid`` is in the
 SHARED realm's JWKS. A valid shared-realm token is still receiver-denied until
 its subject is explicitly onboarded; that allowlist boundary is part of the
@@ -55,6 +56,7 @@ from typing import Iterator
 
 NAMESPACE = "kamiwaza"
 ROPC_CLIENT = "kamiwaza-shared-cli"
+DEFAULT_TENANT_ID = "__default__"
 # Verified against the live chart: svc/keycloak exposes 80 (http) and 9000
 # (management), NOT 8080. Overridable for a chart that differs.
 KEYCLOAK_SVC_PORT = os.getenv("KEYCLOAK_SVC_PORT", "80")
@@ -157,7 +159,7 @@ def provision(
     persona_pw: str,
     owned_realm: OwnedRealm,
 ) -> dict:
-    """Realm + ROPC client + mapper + clearance and negative personas."""
+    """Realm + ROPC client + claim mappers + clearance and negative personas."""
     from kamiwaza_sdk.seeding.federation.cli import _verify_ssl
     from kamiwaza_sdk.seeding.federation.keycloak import KeycloakAdmin
 
@@ -172,23 +174,27 @@ def provision(
     kc.create_owned_realm(realm, owned_realm.owner_nonce)
     try:
         # Keycloak >=24 drops unrecognised user attributes unless the realm opts
-        # in, which silently strips `clearance` and leaves the gate with nothing.
+        # in, which silently strips the fixture's clearance and tenant attributes.
         kc.set_unmanaged_attributes(realm)
         client = kc.ensure_ropc_client(realm, ROPC_CLIENT)
         kc.ensure_attribute_mapper(realm, client["id"], attribute="clearance")
+        kc.ensure_attribute_mapper(realm, client["id"], attribute="tenant_id")
 
         for clearance, username in PERSONAS.items():
             kc.ensure_user(
                 realm,
                 username,
                 password=persona_pw,
-                attributes={"clearance": clearance},
+                attributes={
+                    "clearance": clearance,
+                    "tenant_id": DEFAULT_TENANT_ID,
+                },
             )
         kc.ensure_user(
             realm,
             UNONBOARDED_PERSONA,
             password=persona_pw,
-            attributes={"clearance": "U"},
+            attributes={"clearance": "U", "tenant_id": DEFAULT_TENANT_ID},
         )
     except BaseException:
         try:
