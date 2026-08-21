@@ -445,14 +445,6 @@ def _decode_email(access_token: str) -> Optional[str]:
     return decode_email(access_token)
 
 
-def _detect_kind_registry() -> Optional[str]:
-    """Compatibility wrapper for tests and callers that patch this helper."""
-
-    from kamiwaza_extensions.registry_resolution import detect_kind_registry
-
-    return detect_kind_registry()
-
-
 def _delete_and_recreate(client, dev_name, payload, console):
     """Legacy fallback: delete the old extension and re-create it.
 
@@ -611,7 +603,6 @@ def run_dev_remote(
     try:
         registry_resolution = resolve_dev_registries(
             connection,
-            kind_registry_detector=_detect_kind_registry,
             push_engine=push_engine,
         )
     except ValueError as exc:
@@ -634,7 +625,6 @@ def run_dev_remote(
             try:
                 registry_resolution = resolve_dev_registries(
                     connection,
-                    kind_registry_detector=_detect_kind_registry,
                     push_engine=push_engine,
                 )
             except ValueError as exc:

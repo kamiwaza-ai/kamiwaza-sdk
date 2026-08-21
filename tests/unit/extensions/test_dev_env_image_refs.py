@@ -421,7 +421,6 @@ class TestDevRemoteWiresEnvRewrite:
                 "kamiwaza_extensions.dev_env_image_refs.rewrite_env_image_refs",
                 side_effect=_spy,
             ),
-            patch.object(dev_cmd, "_detect_kind_registry", return_value=None),
             patch(
                 "kamiwaza_extensions.registry_resolution.detect_core_config_registry",
                 return_value=None,

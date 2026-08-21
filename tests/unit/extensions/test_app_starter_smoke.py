@@ -711,7 +711,7 @@ def test_example_info_endpoint_does_not_leak_internal_api_url(tmp_path, monkeypa
 )
 def test_compose_does_not_pin_host_ports(compose_path):
     # ENG-3889 P2: bare container-port specs let Docker auto-assign the
-    # host port so `docker compose up` does not collide with kind-cluster
+    # host port so `docker compose up` does not collide with a local cluster
     # ports on developer laptops running Kamiwaza locally.
     import yaml
 

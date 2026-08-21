@@ -123,11 +123,6 @@ class TestDevRemoteBuildsAtCanonicalRefs:
                 "kamiwaza_extensions.image_builder.ImageBuilder",
                 return_value=builder,
             ),
-            patch.object(
-                dev_cmd,
-                "_detect_kind_registry",
-                return_value="registry.kamiwaza.test",
-            ),
             patch(
                 "kamiwaza_extensions.registry_resolution.detect_core_config_registry",
                 return_value=None,
@@ -207,7 +202,6 @@ class TestDevRemoteBuildsAtCanonicalRefs:
                 "kamiwaza_extensions.image_builder.ImageBuilder",
                 return_value=builder,
             ),
-            patch.object(dev_cmd, "_detect_kind_registry", return_value=None),
             patch(
                 "kamiwaza_extensions.registry_resolution.detect_core_config_registry",
                 return_value=None,
@@ -283,14 +277,9 @@ class TestDevRemoteBuildsAtCanonicalRefs:
                 "kamiwaza_extensions.image_pusher.ImagePusher",
                 return_value=pusher,
             ),
-            patch.object(
-                dev_cmd,
-                "_detect_kind_registry",
-                return_value="127.0.0.1:30010",
-            ),
             patch(
                 "kamiwaza_extensions.registry_resolution.detect_core_config_registry",
-                return_value=None,
+                return_value="127.0.0.1:30010",
             ),
             patch(
                 "kamiwaza_extensions.registry_resolution.build_engine_runs_in_vm",
@@ -470,12 +459,9 @@ class TestDevRemoteBuildsAtCanonicalRefs:
                 "kamiwaza_extensions.image_pusher.ImagePusher",
                 return_value=pusher,
             ),
-            patch.object(
-                dev_cmd, "_detect_kind_registry", return_value="127.0.0.1:30010"
-            ),
             patch(
                 "kamiwaza_extensions.registry_resolution.detect_core_config_registry",
-                return_value=None,
+                return_value="127.0.0.1:30010",
             ),
             patch(
                 "kamiwaza_extensions.registry_resolution.build_engine_runs_in_vm",
@@ -570,12 +556,9 @@ class TestDevRemoteBuildsAtCanonicalRefs:
                 "kamiwaza_extensions.image_pusher.ImagePusher",
                 return_value=pusher,
             ),
-            patch.object(
-                dev_cmd, "_detect_kind_registry", return_value="127.0.0.1:30010"
-            ),
             patch(
                 "kamiwaza_extensions.registry_resolution.detect_core_config_registry",
-                return_value=None,
+                return_value="127.0.0.1:30010",
             ),
             patch(
                 "kamiwaza_extensions.registry_resolution.build_engine_runs_in_vm",
@@ -663,12 +646,9 @@ class TestDevRemoteBuildsAtCanonicalRefs:
                 "kamiwaza_extensions.image_pusher.ImagePusher",
                 return_value=pusher,
             ),
-            patch.object(
-                dev_cmd, "_detect_kind_registry", return_value="127.0.0.1:30010"
-            ),
             patch(
                 "kamiwaza_extensions.registry_resolution.detect_core_config_registry",
-                return_value=None,
+                return_value="127.0.0.1:30010",
             ),
             patch(
                 "kamiwaza_extensions.registry_resolution.build_engine_runs_in_vm",
@@ -845,12 +825,9 @@ class TestInsecurePreflightSource:
                 "kamiwaza_extensions.image_pusher.ImagePusher",
                 return_value=pusher,
             ),
-            patch.object(
-                dev_cmd, "_detect_kind_registry", return_value="127.0.0.1:30010"
-            ),
             patch(
                 "kamiwaza_extensions.registry_resolution.detect_core_config_registry",
-                return_value=None,
+                return_value="127.0.0.1:30010",
             ),
             # No VM remap → push registry == image registry → the unrelated
             # insecure-registries pre-flight (push != registry) stays out and
@@ -1030,7 +1007,6 @@ class TestInsecurePreflightSource:
                 "kamiwaza_extensions.registry_resolution.detect_core_config_registry",
                 return_value=None,
             ),
-            patch.object(dev_cmd, "_detect_kind_registry", return_value=None),
             patch(
                 "kamiwaza_extensions.registry_resolution.podman_push_available",
                 return_value=False,
@@ -1192,12 +1168,9 @@ class TestInsecurePreflightSource:
                 "kamiwaza_extensions.image_pusher.ImagePusher",
                 return_value=pusher,
             ),
-            patch.object(
-                dev_cmd, "_detect_kind_registry", return_value="127.0.0.1:30010"
-            ),
             patch(
                 "kamiwaza_extensions.registry_resolution.detect_core_config_registry",
-                return_value=None,
+                return_value="127.0.0.1:30010",
             ),
             patch(
                 "kamiwaza_extensions.registry_resolution.running_podman_machine_name",
@@ -1794,12 +1767,9 @@ class TestInsecurePreflightSource:
                 "kamiwaza_extensions.image_pusher.ImagePusher",
                 return_value=pusher,
             ),
-            patch.object(
-                dev_cmd, "_detect_kind_registry", return_value="127.0.0.1:30010"
-            ),
             patch(
                 "kamiwaza_extensions.registry_resolution.detect_core_config_registry",
-                return_value=None,
+                return_value="127.0.0.1:30010",
             ),
             # Force docker as the push engine and have docker reject the alias —
             # the pre-flight's remaining preconditions — so the only thing

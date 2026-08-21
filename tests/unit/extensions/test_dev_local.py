@@ -893,7 +893,7 @@ class TestParsePortMapping:
     def test_container_only(self):
         # Bare container-port spec — host port is auto-assigned by Docker.
         # (ENG-3889 P2: scaffolded compose now uses bare specs to avoid
-        # host-port collisions with the kind-cluster control plane.)
+        # host-port collisions with the local cluster control plane.)
         assert parse_port_mapping("3000") == (None, 3000)
 
     def test_with_protocol(self):

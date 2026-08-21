@@ -9,7 +9,7 @@ import platform
 import shutil
 import subprocess
 from dataclasses import dataclass
-from typing import Callable, Iterable, Optional
+from typing import Iterable, Optional
 from urllib.parse import urlparse
 
 CORE_CONFIG_NAMESPACE = "kamiwaza"
@@ -60,7 +60,6 @@ class RegistryResolution:
 def resolve_dev_registries(
     connection,
     *,
-    kind_registry_detector: Optional[Callable[[], Optional[str]]] = None,
     push_engine: Optional[str] = None,
 ) -> RegistryResolution:
     """Resolve the deployment image registry and build-engine push registry.
@@ -81,10 +80,7 @@ def resolve_dev_registries(
     podman push from host CLI failed DNS lookup of host.docker.internal).
     """
 
-    image_registry, image_source = resolve_image_registry(
-        connection,
-        kind_registry_detector=kind_registry_detector,
-    )
+    image_registry, image_source = resolve_image_registry(connection)
     push_registry, push_source = resolve_push_registry(
         image_registry, push_engine=push_engine
     )
@@ -96,11 +92,7 @@ def resolve_dev_registries(
     )
 
 
-def resolve_image_registry(
-    connection,
-    *,
-    kind_registry_detector: Optional[Callable[[], Optional[str]]] = None,
-) -> tuple[str, str]:
+def resolve_image_registry(connection) -> tuple[str, str]:
     """Resolve the registry host used in deployment image references."""
 
     env_registry = os.environ.get("KAMIWAZA_REGISTRY")
@@ -137,19 +129,6 @@ def resolve_image_registry(
         core_config_registry = detect_core_config_registry()
         if core_config_registry:
             return core_config_registry, f"{CORE_CONFIG_NAMESPACE}/{CORE_CONFIG_NAME}"
-
-        # The Kind detector reads the same local kube context as core-config
-        # (kube-public/local-registry-hosting), so it is only meaningful when
-        # the connection itself is local. For a non-local connection whose
-        # kubectl happens to point at a local Kind cluster, returning
-        # localhost:5001 would ship an unreachable image registry to the remote
-        # API -- the same ENG-5719 bug class the core-config gate prevents, so
-        # gate it on the same local-kube-context predicate.
-        if kind_registry_detector is None:
-            kind_registry_detector = detect_kind_registry
-        kind_registry = kind_registry_detector()
-        if kind_registry:
-            return kind_registry, "kind local-registry-hosting"
 
     cluster_url = connection.url.removesuffix("/api")
     parsed = urlparse(cluster_url)
@@ -366,40 +345,6 @@ def detect_extension_registry() -> Optional[str]:
     """
 
     return _read_core_config_key(REGISTRY_EXTENSION_HOST_KEY)
-
-
-def detect_kind_registry() -> Optional[str]:
-    """Auto-detect a Kind local registry from the kube-public configmap."""
-
-    try:
-        result = subprocess.run(
-            [
-                "kubectl",
-                "get",
-                "configmap",
-                "local-registry-hosting",
-                "-n",
-                "kube-public",
-                "-o",
-                "jsonpath={.data.localRegistryHosting\\.v1}",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return None
-    if result.returncode != 0 or not result.stdout.strip():
-        return None
-
-    for line in result.stdout.strip().splitlines():
-        line = line.strip()
-        if line.startswith("host:"):
-            host_val = line.split(":", 1)[1].strip().strip('"').strip("'")
-            parsed = urlparse(f"//{host_val}")
-            port = parsed.port or 5001
-            return f"localhost:{port}"
-    return None
 
 
 def build_push_ref_map(
