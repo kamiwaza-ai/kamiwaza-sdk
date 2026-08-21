@@ -229,8 +229,9 @@ def shared_realm_token(
     (``issuer`` == the federation's shared_issuer_url): the mesh forwards the
     caller's bearer verbatim, and the receiver validates it against the shared
     realm's JWKS, so a local-realm token's kid is rejected (not in the shared
-    JWKS). The token also carries the realm's projected ``clearance`` claim,
-    which the initiator edge packs into X-User-Attributes for the gate.
+    JWKS). The token also carries the fixture realm's projected ``clearance``
+    and explicit ``tenant_id=__default__`` claims; the initiator edge packs
+    ``clearance`` into X-User-Attributes for the gate.
     """
     import requests  # noqa: PLC0415 — only needed on the persona-auth path
 

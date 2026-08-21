@@ -253,7 +253,8 @@ class KamiwazaClient:
         self._auth_service = AuthService(self)
 
         self.authenticator: Optional[Authenticator] = None
-        if authenticator:
+        self._owned_authenticator: Optional[Authenticator] = None
+        if authenticator is not None:
             self.authenticator = authenticator
         else:
             api_key = (
@@ -262,7 +263,9 @@ class KamiwazaClient:
                 or os.environ.get("KAMIWAZA_API_TOKEN")
             )
             self.authenticator = ApiKeyAuthenticator(api_key) if api_key else None
-        self._owns_authenticator = bool(authenticator and owns_authenticator)
+        if authenticator is not None and owns_authenticator:
+            self._owned_authenticator = authenticator
+        self._owns_authenticator = self._owned_authenticator is not None
 
         # Don't authenticate during initialization - let it happen on first request
 
@@ -272,7 +275,7 @@ class KamiwazaClient:
         Idempotent — repeated close() calls are safe (Session.close()
         does its own idempotency).
         """
-        close_authenticator = getattr(self.authenticator, "close", None)
+        close_authenticator = getattr(self._owned_authenticator, "close", None)
         try:
             if self._owns_authenticator and callable(close_authenticator):
                 close_authenticator()
@@ -341,7 +344,7 @@ class KamiwazaClient:
                     kwargs["headers"][key] = value
                     existing.add(key.lower())
 
-        if self.authenticator and not skip_auth:
+        if self.authenticator is not None and not skip_auth:
             self.authenticator.authenticate(self.session)
 
         # Always inject session.verify when the caller hasn't supplied an
@@ -400,7 +403,7 @@ class KamiwazaClient:
         logger.warning(
             f"Received 401 Unauthorized. Response: {_extract_server_detail(response)}"
         )
-        if not self.authenticator:
+        if self.authenticator is None:
             raise AuthenticationError(
                 "Authentication failed. No authenticator provided."
             )
@@ -672,6 +675,7 @@ class KamiwazaClient:
         )
         # Preserve exact parent auth state; __init__ may otherwise consult env vars.
         scoped.authenticator = self.authenticator
+        scoped._owned_authenticator = None
         scoped._owns_authenticator = False
         scoped.session.headers.update(self.session.headers)
         scoped.session.cookies.update(self.session.cookies)
@@ -800,7 +804,7 @@ class KamiwazaClient:
         return self._authz
 
     def get_bearer_token(self) -> Optional[str]:
-        if not self.authenticator:
+        if self.authenticator is None:
             return None
         try:
             return self.authenticator.get_access_token(self.session)
