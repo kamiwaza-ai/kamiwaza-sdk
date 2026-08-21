@@ -92,6 +92,10 @@ def add_live_options(parser: pytest.Parser) -> None:
         ),
     )
     # ENG-9748 - build identity recorded in scenario-evidence.v2 run records.
+    # ENG-10715 - version-first: the leading `; `-separated segment is the
+    # release a consumer asks by, and the digest/environment follow as
+    # annotations. KAMIWAZA_RELEASE supplies the release when this option
+    # carries only the annotation.
     group.addoption(
         "--build",
         action="store",
@@ -99,7 +103,11 @@ def add_live_options(parser: pytest.Parser) -> None:
         help=(
             "Build identity the e2e scenario run executed against, recorded in "
             "scenario-evidence.v2 artifacts (defaults to env KAMIWAZA_BUILD). "
-            "The scenario harness refuses to run without one."
+            "Version-first: '1.3.0; <image digest>; <environment>', or "
+            "'develop@<sha>; ...' for a dev build. The scenario harness refuses "
+            "to run without one, or with one no version query could reach. Set "
+            "KAMIWAZA_RELEASE=1.3.0 to have the release composed in front of a "
+            "digest-only value."
         ),
     )
     # ENG-5784 - federation peer cluster for two-cluster live tests.

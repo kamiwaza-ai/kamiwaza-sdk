@@ -35,7 +35,10 @@ from tests.e2e.scenarios import harness
 pytestmark = pytest.mark.unit
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-TEST_BUILD = "kamiwaza-0.99.0+test.abc1234"
+# Version-first: the leading segment is the release a question asks by, and
+# the rest is producer annotation (ENG-10715, build_identity.py). A fixture
+# leading with anything else would be refused by resolve_build_identity.
+TEST_BUILD = "0.99.0; core@sha256:abc1234; test-fixture"
 
 # Mirrors the real wiring in the repo-root conftest.py: register the
 # options, then conditionally register the plugin. The sys.path insert
