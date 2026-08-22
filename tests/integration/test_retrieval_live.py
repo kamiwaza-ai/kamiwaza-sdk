@@ -11,7 +11,6 @@ and TS17.002 coverage.
 """
 from __future__ import annotations
 
-import json
 import pytest
 from uuid import uuid4
 
@@ -34,29 +33,18 @@ def _ingest_sample_dataset(client, ingestion_environment: dict[str, str]) -> str
         recursive=True,
         endpoint_url=endpoint,
         region="us-east-1",
-        aws_access_key_id="minioadmin",
-        aws_secret_access_key="minioadmin",
+        secret_name=ingestion_environment["secret_name"],
     )
     urns = ingest_response.urns
     assert urns, "ingestion did not return dataset URNs"
     return urns[0]
 
 
-def _inline_payload(dataset_urn: str, endpoint: str) -> dict[str, str]:
+def _inline_payload(dataset_urn: str) -> dict[str, str]:
     return {
         "dataset_urn": dataset_urn,
         "transport": "inline",
         "format_hint": "parquet",
-        "credential_override": json.dumps(
-            {
-                "aws_access_key_id": "minioadmin",
-                "aws_secret_access_key": "minioadmin",
-                "endpoint": endpoint,
-                "endpoint_override": endpoint,
-                "endpoint_url": endpoint,
-                "region": "us-east-1",
-            }
-        ),
     }
 
 
@@ -120,12 +108,11 @@ class TestRetrievalJobOperations:
     ) -> None:
         """TS17.001 + TS17.002: Create a retrieval job and fetch its status."""
         client = live_kamiwaza_client
-        endpoint = ingestion_environment["endpoint"]
         dataset_urn: str | None = None
 
         try:
             dataset_urn = _ingest_sample_dataset(client, ingestion_environment)
-            job = client.post("/retrieval/jobs", json=_inline_payload(dataset_urn, endpoint))
+            job = client.post("/retrieval/jobs", json=_inline_payload(dataset_urn))
 
             job_id = str(job["job_id"])
             assert job_id

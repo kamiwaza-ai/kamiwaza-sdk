@@ -21,12 +21,14 @@ import pytest
 import requests
 import urllib3
 from huggingface_hub import snapshot_download
+from pydantic import SecretStr
 from requests.adapters import HTTPAdapter
 
 from kamiwaza_sdk import KamiwazaClient
 from kamiwaza_sdk.authentication import UserPasswordAuthenticator
 from kamiwaza_sdk.exceptions import APIError, AuthenticationError, KamiwazaError
 from kamiwaza_sdk.schemas.auth import PATCreate
+from kamiwaza_sdk.schemas.catalog import SecretCreate
 from kamiwaza_sdk.token_store import StoredToken, TokenStore
 from kamiwaza_sdk.utils.model_file_readiness import model_file_download_satisfied
 
@@ -2122,8 +2124,57 @@ def ensure_repo_ready() -> Callable[[KamiwazaClient, str], object]:
     return _ensure
 
 
+def _secret_owner(client: KamiwazaClient) -> str:
+    profile = client.get("/auth/users/me")
+    owner = str(profile.get("urn") or "").strip()
+    if owner:
+        return owner
+    username = str(profile.get("username") or "sdk-integration").replace("@", "-")
+    return f"urn:li:corpuser:{username}"
+
+
+def _s3_secret_value(endpoint: str) -> str:
+    return json.dumps(
+        {
+            "aws_access_key_id": "minioadmin",
+            "aws_secret_access_key": "minioadmin",
+            "endpoint_override": endpoint,
+            "region": "us-east-1",
+        }
+    )
+
+
 @pytest.fixture(scope="session")
-def ingestion_environment() -> Iterator[dict[str, str]]:
+def live_catalog_secret_factory(
+    live_kamiwaza_session_client: KamiwazaClient,
+) -> Iterator[Callable[[str, str, str], str]]:
+    """Create Catalog-owned credentials for durable ingestion live tests."""
+    client = live_kamiwaza_session_client
+    owner = _secret_owner(client)
+    created: list[str] = []
+
+    def create(name_prefix: str, value: str, description: str) -> str:
+        name = f"{name_prefix}-{uuid.uuid4().hex[:10]}"
+        payload = SecretCreate(
+            name=name,
+            value=SecretStr(value),
+            owner=owner,
+            description=description,
+        )
+        secret_urn = client.catalog.secrets.create(payload, clobber=True)
+        created.append(secret_urn)
+        return secret_urn
+
+    yield create
+
+    for secret_urn in reversed(created):
+        client.catalog.secrets.delete(secret_urn)
+
+
+@pytest.fixture(scope="session")
+def ingestion_environment(
+    live_catalog_secret_factory: Callable[[str, str, str], str],
+) -> Iterator[dict[str, str]]:
     """Spin up fixture services used by ingestion/retrieval integration tests."""
 
     try:
@@ -2152,10 +2203,16 @@ def ingestion_environment() -> Iterator[dict[str, str]]:
             error_msg += f"STDERR: {result.stderr}"
             pytest.skip(error_msg)
 
+        endpoint = _runtime_endpoint("http://localhost:19100")
         yield {
             "bucket": "kamiwaza-sdk-tests",
             "prefix": "sdk-integration",
-            "endpoint": _runtime_endpoint("http://localhost:19100"),
+            "endpoint": endpoint,
+            "secret_name": live_catalog_secret_factory(
+                "sdk-live-s3",
+                _s3_secret_value(endpoint),
+                "SDK live-test MinIO credentials",
+            ),
         }
     finally:
         if started_compose and os.environ.get("KEEP_INGESTION_FIXTURES") != "1":
@@ -2163,7 +2220,9 @@ def ingestion_environment() -> Iterator[dict[str, str]]:
 
 
 @pytest.fixture(scope="session")
-def catalog_stack_environment() -> Iterator[dict[str, object]]:
+def catalog_stack_environment(
+    live_catalog_secret_factory: Callable[[str, str, str], str],
+) -> Iterator[dict[str, object]]:
     """Provision the multi-source ingestion stack used by catalog tests."""
 
     try:
@@ -2250,8 +2309,14 @@ def catalog_stack_environment() -> Iterator[dict[str, object]]:
             "prefix": CATALOG_MINIO_PREFIX,
             "endpoint": minio_endpoint_runtime,
             "region": "us-east-1",
+            "secret_name": live_catalog_secret_factory(
+                "sdk-live-s3",
+                _s3_secret_value(minio_endpoint_runtime),
+                "SDK live-test MinIO credentials",
+            ),
             "small_key": f"{CATALOG_MINIO_PREFIX}/inline-small.parquet",
             "large_key": f"{CATALOG_MINIO_PREFIX}/inline-large.parquet",
+            "large_sse_key": f"{CATALOG_MINIO_PREFIX}/inline-large-sse.parquet",
         },
         "file_root": str((state_dir / "test-data").resolve()),
         "postgres": {
@@ -2259,7 +2324,11 @@ def catalog_stack_environment() -> Iterator[dict[str, object]]:
             "port": int(CATALOG_POSTGRES["port"]),
             "database": CATALOG_POSTGRES["database"],
             "user": CATALOG_POSTGRES["user"],
-            "password": CATALOG_POSTGRES["password"],
+            "password_secret_name": live_catalog_secret_factory(
+                "sdk-live-postgres",
+                CATALOG_POSTGRES["password"],
+                "SDK live-test PostgreSQL credentials",
+            ),
             "schema": CATALOG_POSTGRES["schema"],
         },
         "kafka": {

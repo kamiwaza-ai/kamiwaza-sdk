@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from typing import Dict
 
 import pytest
@@ -23,8 +22,7 @@ def _ingest_sample_dataset(client, ingestion_environment: Dict[str, str]) -> str
             recursive=True,
             endpoint_url=endpoint,
             region="us-east-1",
-            aws_access_key_id="minioadmin",
-            aws_secret_access_key="minioadmin",
+            secret_name=ingestion_environment["secret_name"],
         )
     except APIError as exc:
         if exc.status_code == 500 and "Could not connect to the endpoint URL" in str(exc):
@@ -44,26 +42,16 @@ def _ingest_sample_dataset(client, ingestion_environment: Dict[str, str]) -> str
     return dataset_urn
 
 
-def _inline_payload(dataset_urn: str, endpoint: str) -> Dict[str, str]:
+def _inline_payload(dataset_urn: str) -> Dict[str, str]:
     return {
         "dataset_urn": dataset_urn,
         "transport": "inline",
         "format_hint": "parquet",
-        "credential_override": json.dumps(
-            {
-                "aws_access_key_id": "minioadmin",
-                "aws_secret_access_key": "minioadmin",
-                "endpoint": endpoint,
-                "endpoint_override": endpoint,
-                "endpoint_url": endpoint,
-                "region": "us-east-1",
-            }
-        ),
     }
 
 
-def _grpc_payload(dataset_urn: str, endpoint: str) -> Dict[str, str]:
-    payload = _inline_payload(dataset_urn, endpoint)
+def _grpc_payload(dataset_urn: str) -> Dict[str, str]:
+    payload = _inline_payload(dataset_urn)
     payload["transport"] = "grpc"
     return payload
 
@@ -73,12 +61,11 @@ def test_s3_ingest_and_retrieve_inline(
     ingestion_environment: Dict[str, str],
 ) -> None:
     client = live_kamiwaza_client
-    endpoint = ingestion_environment["endpoint"]
     dataset_urn: str | None = None
 
     try:
         dataset_urn = _ingest_sample_dataset(client, ingestion_environment)
-        retrieval_payload = _inline_payload(dataset_urn, endpoint)
+        retrieval_payload = _inline_payload(dataset_urn)
 
         retrieval_job = client.post("/retrieval/jobs", json=retrieval_payload)
 
@@ -102,12 +89,11 @@ def test_s3_ingest_and_retrieve_grpc(
     ingestion_environment: Dict[str, str],
 ) -> None:
     client = live_kamiwaza_client
-    endpoint = ingestion_environment["endpoint"]
     dataset_urn: str | None = None
 
     try:
         dataset_urn = _ingest_sample_dataset(client, ingestion_environment)
-        retrieval_payload = _grpc_payload(dataset_urn, endpoint)
+        retrieval_payload = _grpc_payload(dataset_urn)
 
         retrieval_job = client.post("/retrieval/jobs", json=retrieval_payload)
         assert retrieval_job["transport"] == "grpc"
