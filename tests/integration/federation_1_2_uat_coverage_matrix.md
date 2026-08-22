@@ -32,7 +32,7 @@ boundary, receiver-owned capability authority, and private package repository.
 
 ## Required lanes
 
-Run the six-case shared-IDP edge with its existing strict option:
+Run the nine-case shared-IDP edge with its existing strict option:
 
 ```bash
 uv run pytest \

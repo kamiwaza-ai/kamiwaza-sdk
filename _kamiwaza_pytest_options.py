@@ -129,16 +129,14 @@ def add_live_options(parser: pytest.Parser) -> None:
         default=os.environ.get("KAMIWAZA_REQUIRE_FEDERATION_EDGE", "").lower()
         in {"1", "true", "yes", "on"},
         help=(
-            "Run the required shared-IDP two-cluster edge fail-closed: all six "
+            "Run the required shared-IDP two-cluster edge fail-closed: all nine "
             "contract cases must collect and any skip is promoted to failure."
         ),
     )
     group.addoption(
         "--require-delegated-workload-edge",
         action="store_true",
-        default=os.environ.get(
-            "KAMIWAZA_REQUIRE_DELEGATED_WORKLOAD_EDGE", ""
-        ).lower()
+        default=os.environ.get("KAMIWAZA_REQUIRE_DELEGATED_WORKLOAD_EDGE", "").lower()
         in {"1", "true", "yes", "on"},
         help=(
             "Run the delegated shared-IDP workload edge fail-closed: its live "
