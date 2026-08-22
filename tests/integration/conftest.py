@@ -136,6 +136,34 @@ def _mount_probe_timeout(client: KamiwazaClient) -> None:
 
 _HTTP_TRACE_FLAG = "KAMIWAZA_HTTP_TRACE"
 _HTTP_TRACE_FILE_ENV = "KAMIWAZA_HTTP_TRACE_FILE"
+_HTTP_TRACE_REDACTED = "[REDACTED]"
+_HTTP_TRACE_SENSITIVE_HEADERS = frozenset(
+    {
+        "authorization",
+        "cookie",
+        "proxy-authorization",
+        "set-cookie",
+        "x-api-key",
+        "x-kz-federation-credential",
+    }
+)
+_HTTP_TRACE_SENSITIVE_BODY_KEYS = frozenset(
+    {
+        "access_token",
+        "claim_token",
+        "client_assertion",
+        "client_secret",
+        "credential",
+        "credentials",
+        "federation_credential",
+        "id_token",
+        "password",
+        "preshared_key",
+        "refresh_token",
+        "secret",
+        "token",
+    }
+)
 _TEXT_BODY_MARKERS = (
     "application/json",
     "application/problem+json",
@@ -263,6 +291,72 @@ def _trace_request_body(prepared_request: requests.PreparedRequest) -> dict[str,
     }
 
 
+def _redact_http_trace_headers(headers: Any) -> list[tuple[str, str]]:
+    """Preserve trace structure while removing credential-bearing values."""
+    redacted: list[tuple[str, str]] = []
+    for name, value in headers:
+        header_name = str(name)
+        safe_value = (
+            _HTTP_TRACE_REDACTED
+            if header_name.casefold() in _HTTP_TRACE_SENSITIVE_HEADERS
+            else str(value)
+        )
+        redacted.append((header_name, safe_value))
+    return redacted
+
+
+def _redact_http_trace_json(value: Any) -> Any:
+    """Recursively redact credential-bearing JSON values by key."""
+    if isinstance(value, dict):
+        redacted: dict[str, Any] = {}
+        for name, nested in value.items():
+            key = str(name)
+            normalized = key.casefold().replace("-", "_")
+            if normalized in _HTTP_TRACE_SENSITIVE_BODY_KEYS:
+                redacted[key] = _HTTP_TRACE_REDACTED
+            else:
+                redacted[key] = _redact_http_trace_json(nested)
+        return redacted
+    if isinstance(value, list):
+        return [_redact_http_trace_json(nested) for nested in value]
+    return value
+
+
+def _redact_http_trace_body(payload: Any) -> dict[str, Any]:
+    """Retain safe body metadata and structured JSON diagnostics only."""
+    if not isinstance(payload, dict):
+        return {
+            "encoding": "unknown",
+            "size": None,
+            "shape": "opaque",
+            "body": _HTTP_TRACE_REDACTED,
+        }
+    safe = {
+        "encoding": payload.get("encoding", "unknown"),
+        "size": payload.get("size"),
+    }
+    body = payload.get("body")
+    if body is None:
+        safe.update(shape="none", body=None)
+        return safe
+    safe.update(shape="opaque-text", body=_HTTP_TRACE_REDACTED)
+    if not isinstance(body, str):
+        safe["shape"] = "opaque"
+        return safe
+    try:
+        decoded = json.loads(body)
+    except (TypeError, ValueError):
+        return safe
+    if not isinstance(decoded, (dict, list)):
+        safe["shape"] = "json-scalar"
+        return safe
+    safe.update(
+        shape="json",
+        body=json.dumps(_redact_http_trace_json(decoded), sort_keys=True),
+    )
+    return safe
+
+
 class _HTTPTraceWriter:
     def __init__(self, path: Path):
         self.path = path
@@ -270,13 +364,20 @@ class _HTTPTraceWriter:
         self._sequence = 0
 
     def write(self, event_type: str, **payload: Any) -> None:
+        safe_payload = dict(payload)
+        if "headers" in safe_payload:
+            safe_payload["headers"] = _redact_http_trace_headers(
+                safe_payload["headers"]
+            )
+        if "body" in safe_payload:
+            safe_payload["body"] = _redact_http_trace_body(safe_payload["body"])
         with self._lock:
             self._sequence += 1
             record = {
                 "seq": self._sequence,
                 "ts": time.time(),
                 "event": event_type,
-                **payload,
+                **safe_payload,
             }
             with self.path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(record, sort_keys=True))

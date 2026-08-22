@@ -6,6 +6,7 @@ import logging
 import os
 import uuid
 from collections.abc import Callable
+from functools import partial
 from typing import Any
 
 import pytest
@@ -57,23 +58,29 @@ def _best_effort(label: str, action: Callable[[], Any]) -> None:
         logger.warning("ENG-10096 cleanup failed for %s: %s", label, exc)
 
 
-def _recover_guest_sub(state: dict[str, Any]) -> None:
-    """Find an approval-created guest when claim failed before exposing its sub."""
-    if state.get("guest_sub") or not state.get("external_id"):
+def _recover_guest_subs(state: dict[str, Any]) -> None:
+    """Find approval-created guests when claims failed before exposing subs."""
+    external_ids = set(state.get("onboarding_external_ids", []))
+    if state.get("external_id"):
+        external_ids.add(str(state["external_id"]))
+    if not external_ids:
         return
     try:
         body = state["receiver"]._request(
             "GET", f"/cluster/federations/{state['receiver_id']}/users"
         )
         rows = body if isinstance(body, list) else (body or {}).get("items", [])
-        match = next(
-            row
-            for row in rows
-            if row.get("linked_external_user") == state["external_id"]
-        )
-        state["guest_sub"] = str(match["external_id"])
+        guest_subs = state.setdefault("dataset_guest_subs", [])
+        known_subs = set(guest_subs)
+        for row in rows:
+            if row.get("linked_external_user") not in external_ids:
+                continue
+            guest_sub = str(row["external_id"])
+            if guest_sub not in known_subs:
+                guest_subs.append(guest_sub)
+                known_subs.add(guest_sub)
     except Exception as exc:  # pragma: no cover - teardown best-effort
-        logger.warning("ENG-10096 could not recover guest for cleanup: %s", exc)
+        logger.warning("ENG-10096 could not recover guests for cleanup: %s", exc)
 
 
 def _remove_federation(client: Any, federation_id: str, side: str) -> None:
@@ -116,30 +123,44 @@ def cleanup(state: dict[str, Any]) -> None:
     """Remove exact grants/bindings/resources, then disconnect and delete the pair."""
     receiver = state["receiver"]
     initiator = state["initiator"]
-    _recover_guest_sub(state)
-    if state.get("guest_sub") and state.get("dataset_urn"):
-        _best_effort(
-            "dataset viewer grant",
-            lambda: receiver._request(
-                "DELETE",
-                "/authz/resources/dataset/grants",
-                params={
-                    "object_id": state["dataset_urn"],
-                    "subject_namespace": "user",
-                    "subject_id": state["guest_sub"],
-                    "relation": "viewer",
-                },
-            ),
-        )
+    _recover_guest_subs(state)
+    guest_subs = list(state.get("dataset_guest_subs", []))
+    if state.get("guest_sub"):
+        guest_subs.append(str(state["guest_sub"]))
+    if state.get("dataset_urn"):
+        for guest_sub in dict.fromkeys(guest_subs):
+            _best_effort(
+                f"dataset viewer grant for {guest_sub}",
+                partial(
+                    receiver._request,
+                    "DELETE",
+                    "/authz/resources/dataset/grants",
+                    params={
+                        "object_id": state["dataset_urn"],
+                        "subject_namespace": "user",
+                        "subject_id": guest_sub,
+                        "relation": "viewer",
+                    },
+                ),
+            )
     if state.get("dataset_urn"):
         _best_effort(
             "dataset gate", lambda: receiver.datasets.clear_gate(state["dataset_urn"])
         )
         _best_effort("dataset", lambda: receiver.datasets.delete(state["dataset_urn"]))
-    if state.get("requester_created"):
+    for requester in state.get("requester_clients", []):
+        _best_effort("requester client", requester.close)
+    requester_usernames = list(state.get("requester_usernames", []))
+    if state.get("requester_created") and state.get("username"):
+        requester_usernames.append(str(state["username"]))
+    for username in dict.fromkeys(requester_usernames):
         _best_effort(
-            "requester",
-            lambda: initiator.subjects.delete(state["username"], cascade_grants=True),
+            f"requester {username}",
+            partial(
+                initiator.subjects.delete,
+                username,
+                cascade_grants=True,
+            ),
         )
     if state.get("installed_gate_package"):
         _best_effort(
