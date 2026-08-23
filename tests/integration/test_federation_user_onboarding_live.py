@@ -181,6 +181,32 @@ def _claim_diagnostic(claim: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _validated_initial_claim(claim: dict[str, Any]) -> tuple[str, str]:
+    diagnostic = _claim_diagnostic(claim)
+    credential = claim.get("credential")
+    attempt_id = claim.get("attempt_id")
+    if not isinstance(credential, str) or not credential:
+        raise AssertionError(diagnostic)
+    if not isinstance(attempt_id, str) or not attempt_id:
+        raise AssertionError(diagnostic)
+    if diagnostic["recovery_state"] != "SOURCE_CUSTODY_COMPLETED":
+        raise AssertionError(diagnostic)
+    return credential, attempt_id
+
+
+def _validate_claim_replay(claim: dict[str, Any], expected_attempt_id: str) -> None:
+    diagnostic = _claim_diagnostic(claim)
+    credential_absent = claim.get("credential") is None
+    if diagnostic["status"] != "APPROVED":
+        raise AssertionError(diagnostic)
+    if not credential_absent:
+        raise AssertionError(diagnostic)
+    if diagnostic["attempt_id"] != expected_attempt_id:
+        raise AssertionError(diagnostic)
+    if diagnostic["recovery_state"] != "SOURCE_CUSTODY_COMPLETED":
+        raise AssertionError(diagnostic)
+
+
 @pytest.fixture(scope="module")
 def initiator_client(live_kamiwaza_session_client: KamiwazaClient) -> KamiwazaClient:
     return live_kamiwaza_session_client
@@ -396,19 +422,14 @@ def onboarded_pair(
         # Claim from the REQUESTER's session, not the admin's. Claiming as
         # admin would be the impersonation ENG-9731 exists to prevent, so a
         # test that did it could pass while the property was broken.
-        claimed = _claim(person["client"], initiator_fed_id, claim_token)
-        credential = claimed.get("credential")
-        assert credential, f"first claim must return the credential: {claimed!r}"
-        claim_attempt_id = claimed.get("attempt_id")
-        diagnostic = _claim_diagnostic(claimed)
-        assert claim_attempt_id, f"first claim must identify its attempt: {diagnostic!r}"
-        assert claimed.get("recovery_state") == "SOURCE_CUSTODY_COMPLETED", diagnostic
+        credential, claim_attempt_id = _validated_initial_claim(
+            _claim(person["client"], initiator_fed_id, claim_token)
+        )
 
         person["request_id"] = request_id
         person["receiver_request_id"] = receiver_request_id
         person["claim_token"] = claim_token
-        person["claim_attempt_id"] = claim_attempt_id
-        person["credential"] = credential
+        person["claim_attempt_id"], person["credential"] = claim_attempt_id, credential
 
     # ``federation_id`` stays the RECEIVER's: every downstream assertion reads
     # receiver-side state (minted guests, the allowlist, the ReBAC store), which
@@ -522,12 +543,7 @@ class TestPerUserOnboarding:
             onboarded_pair["initiator_federation_id"],
             person["claim_token"],
         )
-        diagnostic = _claim_diagnostic(replayed)
-
-        assert replayed.get("status") == "APPROVED", diagnostic
-        assert replayed.get("credential") is None, diagnostic
-        assert replayed.get("attempt_id") == person["claim_attempt_id"], diagnostic
-        assert replayed.get("recovery_state") == "SOURCE_CUSTODY_COMPLETED", diagnostic
+        _validate_claim_replay(replayed, person["claim_attempt_id"])
 
     def test_queue_lists_requests_without_leaking_claim_tokens(
         self, onboarded_pair: dict[str, Any], receiver_client: KamiwazaClient
