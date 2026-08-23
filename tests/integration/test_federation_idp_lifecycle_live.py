@@ -18,11 +18,12 @@ guards against that real internal provider.
 
 from __future__ import annotations
 
+import logging
 import secrets
 import uuid
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 import pytest
 
@@ -35,6 +36,8 @@ from kamiwaza_sdk.schemas.auth import (
 )
 
 pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
+
+logger = logging.getLogger(__name__)
 
 _FED_PREFIX = "federation-"
 _RESERVED_ALIAS_DETAIL = (
@@ -151,6 +154,26 @@ def _establish_owned_pair(pair: _OwnedPair, peer_url: str, psk: str) -> None:
     pair.initiator.federation_id = str(initiator.id)
 
 
+@contextmanager
+def _cleanup_preserving_primary(
+    cleanup: Callable[[], None], label: str
+) -> Iterator[None]:
+    """Fail on cleanup alone without replacing an active primary failure."""
+    primary_error: BaseException | None = None
+    try:
+        yield
+    except BaseException as exc:
+        primary_error = exc
+        raise
+    finally:
+        try:
+            cleanup()
+        except Exception:
+            if primary_error is None:
+                raise
+            logger.warning("%s cleanup failed while preserving primary failure", label)
+
+
 @pytest.fixture
 def brokered_federation_pair(
     live_kamiwaza_session_client: KamiwazaClient,
@@ -162,9 +185,10 @@ def brokered_federation_pair(
         initiator=_OwnedSide("initiator", live_kamiwaza_session_client),
         receiver=_OwnedSide("receiver", live_kamiwaza_peer_client),
     )
-    with ExitStack() as cleanup:
-        cleanup.callback(_cleanup_owned_side, pair.receiver, pair.name)
-        cleanup.callback(_cleanup_owned_side, pair.initiator, pair.name)
+    cleanup = ExitStack()
+    cleanup.callback(_cleanup_owned_side, pair.receiver, pair.name)
+    cleanup.callback(_cleanup_owned_side, pair.initiator, pair.name)
+    with _cleanup_preserving_primary(cleanup.close, "federation pair"):
         _establish_owned_pair(pair, live_peer_base_url, secrets.token_urlsafe(32))
         yield pair
 
@@ -222,7 +246,10 @@ class TestBrokeredIdPLifecycle:
         registration = side.client.auth.register_identity_provider(
             _idp_request(control_alias, credential=credential)
         )
-        try:
+        with _cleanup_preserving_primary(
+            lambda: _delete_control_idp(side.client, control_alias),
+            "control IdP",
+        ):
             assert registration.idp_management_enabled is not False
             assert control_alias in _admin_providers(side.client)
             public_aliases = {
@@ -235,8 +262,6 @@ class TestBrokeredIdPLifecycle:
             assert (
                 alias not in public_aliases
             ), "federation-brokered IdP leaked into console login options"
-        finally:
-            _delete_control_idp(side.client, control_alias)
 
     def test_deleting_federation_removes_its_brokered_idp(
         self,
