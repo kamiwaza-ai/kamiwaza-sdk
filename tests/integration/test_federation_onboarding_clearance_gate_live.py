@@ -2,12 +2,12 @@
 
 The receiver approves self-service guests with receiver-owned attributes and a
 viewer grant on a MiniClearanceGate dataset. Canonical ``tenant_id=__default__``
-plus ``clearance=S`` must reach the validated receiver credential and return the
-known-answer U/S rows. Missing, blank, legacy-only, whitespace-wrapped, and
-nondefault tenant claims remain fail-closed even when the caller spoofs a
-default-tenant header. A separate guest reuses one offline credential after
-Core's 60-second claims cache boundary, then proves revocation is still enforced
-while the refreshed claims are cached.
+plus ``clearance=S`` must survive the receiver's offline-token exchange and
+return the known-answer U/S rows. Missing, blank, legacy-only,
+whitespace-wrapped, and nondefault access-token claims remain fail-closed even
+when the caller spoofs a default-tenant header. A separate guest reuses one
+opaque offline credential after Core's 60-second claims cache boundary, then
+proves revocation is still enforced while the refreshed claims are cached.
 
 ``MINI_CLEARANCE_DATASET_PATH`` is the receiver-visible CSV written from
 ``mini_clearance_records.json`` by ``tests.integration._gate_fixture``. The test
@@ -36,7 +36,6 @@ from . import _mini_clearance as mc
 from . import _onboarding_clearance_fixture as fixture_support
 from .test_federation_user_onboarding_live import (
     _claim,
-    _decode_jwt_payload,
     _obj,
     _onboarding_path,
     _receiver_request_id,
@@ -60,7 +59,7 @@ _RECEIVER_REFRESH_BOUNDARY_WAIT_SECONDS = _RECEIVER_REALM_CLAIMS_CACHE_TTL_SECON
 class _TenantRejectionCase:
     case_id: str
     approval_attributes: dict[str, str]
-    expected_tenant_claims: dict[str, str]
+    expected_assigned_attributes: dict[str, str]
     expected_status: int
     expected_reason: str
 
@@ -69,35 +68,35 @@ _TENANT_REJECTION_CASES = (
     _TenantRejectionCase(
         "missing-canonical",
         {"clearance": "S"},
-        {},
+        {"clearance": "S"},
         401,
         "tenant_required",
     ),
     _TenantRejectionCase(
         "legacy-only",
         {"clearance": "S", "tenant": _DEFAULT_TENANT_ID},
-        {"tenant": _DEFAULT_TENANT_ID},
+        {"clearance": "S", "tenant": _DEFAULT_TENANT_ID},
         401,
         "tenant_required",
     ),
     _TenantRejectionCase(
         "canonical-blank",
         {"clearance": "S", "tenant_id": ""},
-        {"tenant_id": ""},
+        {"clearance": "S"},
         401,
         "tenant_required",
     ),
     _TenantRejectionCase(
         "canonical-whitespace-wrapped",
         {"clearance": "S", "tenant_id": " __default__ "},
-        {"tenant_id": " __default__ "},
+        {"clearance": "S", "tenant_id": " __default__ "},
         403,
         "mesh_tenant_not_admitted",
     ),
     _TenantRejectionCase(
         "canonical-nondefault",
         {"clearance": "S", "tenant_id": "tenant-a"},
-        {"tenant_id": "tenant-a"},
+        {"clearance": "S", "tenant_id": "tenant-a"},
         403,
         "mesh_tenant_not_admitted",
     ),
@@ -124,30 +123,6 @@ def _receiver_approval_body(
             }
         ],
     }
-
-
-def _assert_tenant_claim_shape(
-    credential: str,
-    expected: Mapping[str, str],
-    *,
-    context: str,
-) -> None:
-    """Inspect only tenant claims without exposing credential contents."""
-    claims = _decode_jwt_payload(credential)
-    observed = {key: claims[key] for key in ("tenant_id", "tenant") if key in claims}
-    if observed != dict(expected):
-        raise AssertionError(
-            "receiver-issued credential has unexpected tenant claim shape "
-            f"for {context}"
-        )
-
-
-def _assert_default_tenant_claim(credential: str) -> None:
-    claims = _decode_jwt_payload(credential)
-    if claims.get("tenant_id") != _DEFAULT_TENANT_ID:
-        raise AssertionError(
-            "receiver-issued credential must carry tenant_id=__default__"
-        )
 
 
 def _provision_pair(state: dict[str, Any], live_peer_base_url: str) -> None:
@@ -205,14 +180,41 @@ def _require_approved_status(status: Mapping[str, Any], message: str) -> None:
         raise AssertionError(message)
 
 
-def _required_claim_identity(claimed: Mapping[str, Any]) -> tuple[str, str]:
+def _claimed_guest_subs(body: Any, external_id: str) -> list[str]:
+    if isinstance(body, list):
+        rows = body
+    elif isinstance(body, dict):
+        rows = body.get("items", [])
+    else:
+        rows = []
+    matches = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if row.get("linked_external_user") != external_id:
+            continue
+        guest_sub = row.get("external_id")
+        if guest_sub:
+            matches.append(str(guest_sub))
+    return matches
+
+
+def _required_claim_identity(
+    state: Mapping[str, Any],
+    claimed: Mapping[str, Any],
+    external_id: str,
+) -> tuple[str, str]:
+    """Resolve identity from receiver-owned state; keep the refresh token opaque."""
     credential = claimed.get("credential")
     if not credential:
         raise AssertionError("receiver claim returned no federation credential")
-    guest_sub = _decode_jwt_payload(str(credential)).get("sub")
-    if not guest_sub:
-        raise AssertionError("receiver-issued credential carries no guest subject")
-    return str(credential), str(guest_sub)
+    body = state["receiver"]._request(
+        "GET", f"/cluster/federations/{state['receiver_id']}/users"
+    )
+    matches = _claimed_guest_subs(body, external_id)
+    if len(matches) != 1:
+        raise AssertionError("receiver roster did not expose exactly one claimed guest")
+    return str(credential), matches[0]
 
 
 def _approve_and_claim(
@@ -252,7 +254,7 @@ def _approve_and_claim(
     )
     _require_approved_status(mine, "receiver onboarding approval did not propagate")
     claimed = _claim(requester, state["initiator_id"], claim_token)
-    credential, guest_sub = _required_claim_identity(claimed)
+    credential, guest_sub = _required_claim_identity(state, claimed, external_id)
     state.setdefault("dataset_guest_subs", []).append(guest_sub)
     return {
         "credential": credential,
@@ -385,7 +387,6 @@ def _exercise_receiver_refresh_boundary(
     sleeper: Callable[[float], None] = time.sleep,
 ) -> None:
     credential = path["credential"]
-    _assert_default_tenant_claim(credential)
     _install_federation_credential(path, monkeypatch)
 
     _assert_clearance_retrieval(path)
@@ -416,15 +417,13 @@ def receiver_realm_clearance_edge(
         "receiver": live_kamiwaza_peer_client,
         "live_base_url": live_base_url,
     }
-    try:
+    with fixture_support.cleanup_preserving_primary(state):
         _provision_pair(state, live_peer_base_url)
         fixture_support.provision_gated_dataset(state)
         yield state
-    finally:
-        fixture_support.cleanup(state)
 
 
-def test_receiver_assigned_default_tenant_claim_reaches_dataset_gate_over_mesh(
+def test_receiver_assigned_default_tenant_reaches_dataset_gate_over_mesh(
     receiver_realm_clearance_edge: dict[str, Any],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -437,12 +436,10 @@ def test_receiver_assigned_default_tenant_claim_reaches_dataset_gate_over_mesh(
         "tenant_id": _DEFAULT_TENANT_ID,
     }
 
-    credential = path["credential"]
-    claims = _decode_jwt_payload(credential)
-    if claims.get("clearance") != "S":
-        raise AssertionError("receiver-issued credential must carry clearance=S")
-    _assert_default_tenant_claim(credential)
     _install_federation_credential(path, monkeypatch)
+    # The durable credential is a refresh token and is intentionally opaque.
+    # Exact U/S rows prove the receiver exchanged it, validated the resulting
+    # access token, and supplied both tenant_id and clearance to the gate.
     _assert_clearance_retrieval(path)
 
 
@@ -459,12 +456,7 @@ def test_receiver_tenant_claims_fail_closed_despite_default_caller_header(
         label=case.case_id,
         attributes=case.approval_attributes,
     )
-    assert path["assigned_attributes"] == case.approval_attributes
-    _assert_tenant_claim_shape(
-        path["credential"],
-        case.expected_tenant_claims,
-        context=case.case_id,
-    )
+    assert path["assigned_attributes"] == case.expected_assigned_attributes
 
     status, payload = _mesh_job_create_response(path, path["credential"])
     _assert_mesh_denial(

@@ -31,50 +31,12 @@ def test_default_data_plane_approval_assigns_receiver_owned_canonical_tenant() -
     }
 
 
-def test_receiver_credential_contract_accepts_canonical_default_tenant(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        edge,
-        "_decode_jwt_payload",
-        lambda _token: {"tenant_id": "__default__"},
-    )
-
-    edge._assert_default_tenant_claim("opaque-offline-credential")
-
-
-@pytest.mark.parametrize(
-    "claims",
-    [
-        {},
-        {"tenant": "__default__"},
-        {"tenant_id": "tenant-a"},
-        {"tenant_id": ""},
-        {"tenant_id": " __default__ "},
-    ],
-    ids=["missing", "legacy-only", "nondefault", "blank", "whitespace-wrapped"],
-)
-def test_receiver_credential_contract_rejects_noncanonical_default_tenant(
-    monkeypatch: pytest.MonkeyPatch,
-    claims: dict[str, str],
-) -> None:
-    monkeypatch.setattr(edge, "_decode_jwt_payload", lambda _token: claims)
-
-    with pytest.raises(AssertionError) as exc_info:
-        edge._assert_default_tenant_claim("opaque-offline-credential")
-
-    assert str(exc_info.value) == (
-        "receiver-issued credential must carry tenant_id=__default__"
-    )
-    assert "tenant-a" not in str(exc_info.value)
-
-
-def test_receiver_tenant_negative_cases_pin_claim_and_denial_contracts() -> None:
+def test_receiver_tenant_negative_cases_pin_readback_and_denial_contracts() -> None:
     assert [
         (
             case.case_id,
             case.approval_attributes,
-            case.expected_tenant_claims,
+            case.expected_assigned_attributes,
             case.expected_status,
             case.expected_reason,
         )
@@ -83,39 +45,112 @@ def test_receiver_tenant_negative_cases_pin_claim_and_denial_contracts() -> None
         (
             "missing-canonical",
             {"clearance": "S"},
-            {},
+            {"clearance": "S"},
             401,
             "tenant_required",
         ),
         (
             "legacy-only",
             {"clearance": "S", "tenant": "__default__"},
-            {"tenant": "__default__"},
+            {"clearance": "S", "tenant": "__default__"},
             401,
             "tenant_required",
         ),
         (
             "canonical-blank",
             {"clearance": "S", "tenant_id": ""},
-            {"tenant_id": ""},
+            {"clearance": "S"},
             401,
             "tenant_required",
         ),
         (
             "canonical-whitespace-wrapped",
             {"clearance": "S", "tenant_id": " __default__ "},
-            {"tenant_id": " __default__ "},
+            {"clearance": "S", "tenant_id": " __default__ "},
             403,
             "mesh_tenant_not_admitted",
         ),
         (
             "canonical-nondefault",
             {"clearance": "S", "tenant_id": "tenant-a"},
-            {"tenant_id": "tenant-a"},
+            {"clearance": "S", "tenant_id": "tenant-a"},
             403,
             "mesh_tenant_not_admitted",
         ),
     ]
+
+
+def test_claim_identity_uses_receiver_roster_not_durable_credential(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    decode = Mock(side_effect=AssertionError("durable credential must stay opaque"))
+    monkeypatch.setattr(edge, "_decode_jwt_payload", decode, raising=False)
+    receiver = SimpleNamespace(
+        _request=Mock(
+            return_value={
+                "items": [
+                    {
+                        "external_id": "other-sub",
+                        "linked_external_user": "other-user",
+                    },
+                    {
+                        "external_id": "guest-sub",
+                        "linked_external_user": "requester-external-id",
+                    },
+                ]
+            }
+        )
+    )
+    state = {"receiver": receiver, "receiver_id": "receiver-federation-id"}
+
+    identity = edge._required_claim_identity(
+        state,
+        {"credential": "opaque-offline-credential"},
+        "requester-external-id",
+    )
+
+    assert identity == ("opaque-offline-credential", "guest-sub")
+    receiver._request.assert_called_once_with(
+        "GET", "/cluster/federations/receiver-federation-id/users"
+    )
+    decode.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        [],
+        [
+            {
+                "external_id": "guest-sub-1",
+                "linked_external_user": "requester-external-id",
+            },
+            {
+                "external_id": "guest-sub-2",
+                "linked_external_user": "requester-external-id",
+            },
+        ],
+    ],
+    ids=["missing", "ambiguous"],
+)
+def test_claim_identity_fails_closed_on_nonunique_receiver_roster(
+    rows: list[dict[str, str]],
+) -> None:
+    credential = "offline-credential-canary"
+    receiver = SimpleNamespace(_request=Mock(return_value={"items": rows}))
+    state = {"receiver": receiver, "receiver_id": "receiver-federation-id"}
+
+    with pytest.raises(AssertionError) as exc_info:
+        edge._required_claim_identity(
+            state,
+            {"credential": credential},
+            "requester-external-id",
+        )
+
+    assert str(exc_info.value) == (
+        "receiver roster did not expose exactly one claimed guest"
+    )
+    assert credential not in str(exc_info.value)
 
 
 def test_receiver_tenant_denial_probe_cannot_source_tenant_from_caller_header() -> None:
@@ -411,7 +446,7 @@ def test_receiver_refresh_boundary_reuses_credential_then_revokes(
         ),
         "receiver_id": "receiver-federation-id",
     }
-    assert_default_tenant = Mock()
+    decode = Mock(side_effect=AssertionError("durable credential must stay opaque"))
     install_credential = Mock()
     retrieve = timeline.retrieve
     sleep = timeline.sleep
@@ -420,14 +455,14 @@ def test_receiver_refresh_boundary_reuses_credential_then_revokes(
         403,
         {"detail": {"reason": "revoked_guest"}},
     )
-    monkeypatch.setattr(edge, "_assert_default_tenant_claim", assert_default_tenant)
+    monkeypatch.setattr(edge, "_decode_jwt_payload", decode, raising=False)
     monkeypatch.setattr(edge, "_install_federation_credential", install_credential)
     monkeypatch.setattr(edge, "_assert_clearance_retrieval", retrieve)
     monkeypatch.setattr(edge, "_mesh_job_create_response", denial)
 
     edge._exercise_receiver_refresh_boundary(path, monkeypatch, sleeper=sleep)
 
-    assert_default_tenant.assert_called_once_with("same-offline-credential")
+    decode.assert_not_called()
     install_credential.assert_called_once_with(path, monkeypatch)
     assert retrieve.call_args_list == [call(path), call(path)]
     sleep.assert_called_once_with(edge._RECEIVER_REFRESH_BOUNDARY_WAIT_SECONDS)
