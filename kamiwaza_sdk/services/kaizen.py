@@ -22,9 +22,12 @@ from ..exceptions import APIError, AuthorizationError, KamiwazaError, NotFoundEr
 from ..schemas.kaizen import Agent, Conversation, LLMConfig
 from .base_service import BaseService
 
-# Kaizen route prefixes, relative to the extension's ingress root.
-_AGENTS_PATH = "api/agents/"
-_CONVERSATIONS_PATH = "api/conversations/"
+# Kaizen route prefixes, relative to the extension's ingress root. The collection
+# routes are canonical without a trailing slash. Kaizen redirects slash-suffixed
+# requests with 307, and that ingress redirect loses the platform bearer before
+# the request reaches the canonical route.
+_AGENTS_PATH = "api/agents"
+_CONVERSATIONS_PATH = "api/conversations"
 
 
 class AmbiguousExtensionError(KamiwazaError):
