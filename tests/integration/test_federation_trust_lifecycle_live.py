@@ -28,6 +28,7 @@ import hashlib
 import logging
 import uuid
 from typing import Any, Iterator
+from urllib.parse import urlparse
 
 import pytest
 
@@ -86,6 +87,12 @@ def _row(client: KamiwazaClient, federation_id: str) -> dict[str, Any]:
     return _obj(client, "GET", f"/cluster/federations/{federation_id}")
 
 
+def _host_of(url: str) -> str:
+    host = urlparse(url).hostname
+    assert host, f"could not parse a hostname out of {url!r}"
+    return host
+
+
 def _refusal(exc: KamiwazaError) -> tuple[int | None, str | None, dict[str, Any]]:
     """Status, machine-readable reason, and the full detail of a refusal.
 
@@ -134,12 +141,9 @@ def paired_federation(
     receiver_client: KamiwazaClient,
     live_peer_base_url: str,
 ) -> Iterator[dict[str, str]]:
-    """One PAIRED federation for the module. Pairing is the expensive step.
+    """Create one PAIRED federation; both rows need ``realm_scope``.
 
-    ``realm_scope`` is set on BOTH sides: the create-time identity stamp is
-    resolved per row, so without it the initiator's row falls through to the
-    legacy source-trusted peer_kc mode and is refused unless
-    ``ALLOW_UNTRUSTED_FEDERATION`` is on.
+    Otherwise the initiator falls back to gated legacy ``peer_kc`` mode.
     """
     name = f"eng9807-trust-{uuid.uuid4().hex[:8]}"
     pair_psk = str(uuid.uuid4())
@@ -157,6 +161,7 @@ def paired_federation(
             role="initiator",
             remote_url=live_peer_base_url,
             preshared_key=pair_psk,
+            callback_hostname=_host_of(initiator_client.base_url),
             realm_scope="per_federation",
         )
     except Exception:
