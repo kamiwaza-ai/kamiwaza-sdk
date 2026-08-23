@@ -125,11 +125,10 @@
     - "*::TestModelCleanupOperations::*"
     - "*::test_get_pending_deployments"
 
-# Justification: test_deploy_qwen_and_infer_with_strip_thinking deploys two
-# configs of the target model locally (serving.deploy_model + wait), then
-# infers through client.openai.get_client(...) chat completions — the
-# OpenAI-compatible inference path — before cleanup.
-- pattern: "tests/integration/test_serving_workflow.py::test_deploy_qwen_and_infer_with_strip_thinking"
+# Justification: test_deploy_mlx_qwen_and_infer_with_strip_thinking deploys
+# the default and strip-thinking MLX configs sequentially, waits and infers
+# through client.openai.get_client(...) chat completions, then cleans up.
+- pattern: "tests/integration/test_serving_workflow.py::test_deploy_mlx_qwen_and_infer_with_strip_thinking"
   capability_ids: [models.local-deployment, models.openai-compatible-inference]
   scenario_name: "Deploy model locally and infer via OpenAI-compatible client"
 
