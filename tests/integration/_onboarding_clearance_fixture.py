@@ -119,35 +119,39 @@ def _remove_federations(state: dict[str, Any], initiator: Any, receiver: Any) ->
             _remove_federation(client, str(fed_id), side)
 
 
-def cleanup(state: dict[str, Any]) -> None:
-    """Remove exact grants/bindings/resources, then disconnect and delete the pair."""
-    receiver = state["receiver"]
-    initiator = state["initiator"]
-    _recover_guest_subs(state)
+def _remove_dataset_grants(state: dict[str, Any], receiver: Any) -> None:
+    dataset_urn = state.get("dataset_urn")
+    if not dataset_urn:
+        return
     guest_subs = list(state.get("dataset_guest_subs", []))
     if state.get("guest_sub"):
         guest_subs.append(str(state["guest_sub"]))
-    if state.get("dataset_urn"):
-        for guest_sub in dict.fromkeys(guest_subs):
-            _best_effort(
-                f"dataset viewer grant for {guest_sub}",
-                partial(
-                    receiver._request,
-                    "DELETE",
-                    "/authz/resources/dataset/grants",
-                    params={
-                        "object_id": state["dataset_urn"],
-                        "subject_namespace": "user",
-                        "subject_id": guest_sub,
-                        "relation": "viewer",
-                    },
-                ),
-            )
-    if state.get("dataset_urn"):
+    for guest_sub in dict.fromkeys(guest_subs):
         _best_effort(
-            "dataset gate", lambda: receiver.datasets.clear_gate(state["dataset_urn"])
+            f"dataset viewer grant for {guest_sub}",
+            partial(
+                receiver._request,
+                "DELETE",
+                "/authz/resources/dataset/grants",
+                params={
+                    "object_id": dataset_urn,
+                    "subject_namespace": "user",
+                    "subject_id": guest_sub,
+                    "relation": "viewer",
+                },
+            ),
         )
-        _best_effort("dataset", lambda: receiver.datasets.delete(state["dataset_urn"]))
+
+
+def _remove_dataset(state: dict[str, Any], receiver: Any) -> None:
+    dataset_urn = state.get("dataset_urn")
+    if not dataset_urn:
+        return
+    _best_effort("dataset gate", lambda: receiver.datasets.clear_gate(dataset_urn))
+    _best_effort("dataset", lambda: receiver.datasets.delete(dataset_urn))
+
+
+def _remove_requesters(state: dict[str, Any], initiator: Any) -> None:
     for requester in state.get("requester_clients", []):
         _best_effort("requester client", requester.close)
     requester_usernames = list(state.get("requester_usernames", []))
@@ -162,9 +166,23 @@ def cleanup(state: dict[str, Any]) -> None:
                 cascade_grants=True,
             ),
         )
+
+
+def _remove_gate_package(state: dict[str, Any], receiver: Any) -> None:
     if state.get("installed_gate_package"):
         _best_effort(
             "gate package", lambda: receiver.gates.packages.uninstall("acme-gates")
         )
+
+
+def cleanup(state: dict[str, Any]) -> None:
+    """Remove exact grants/bindings/resources, then disconnect and delete the pair."""
+    receiver = state["receiver"]
+    initiator = state["initiator"]
+    _recover_guest_subs(state)
+    _remove_dataset_grants(state, receiver)
+    _remove_dataset(state, receiver)
+    _remove_requesters(state, initiator)
+    _remove_gate_package(state, receiver)
     _restore_clearance_schema(state, receiver)
     _remove_federations(state, initiator, receiver)
