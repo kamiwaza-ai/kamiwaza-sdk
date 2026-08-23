@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from typing import Dict
 
 import pytest
@@ -10,7 +9,11 @@ from kamiwaza_sdk.exceptions import APIError
 pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
 
 
-def _ingest_sample_dataset(client, ingestion_environment: Dict[str, str]) -> str:
+def _ingest_sample_dataset(
+    client,
+    ingestion_environment: Dict[str, str],
+    secret_urn: str,
+) -> str:
     bucket = ingestion_environment["bucket"]
     prefix = ingestion_environment["prefix"]
     endpoint = ingestion_environment["endpoint"]
@@ -23,8 +26,7 @@ def _ingest_sample_dataset(client, ingestion_environment: Dict[str, str]) -> str
             recursive=True,
             endpoint_url=endpoint,
             region="us-east-1",
-            aws_access_key_id="minioadmin",
-            aws_secret_access_key="minioadmin",
+            secret_name=secret_urn,
         )
     except APIError as exc:
         if exc.status_code == 500 and "Could not connect to the endpoint URL" in str(exc):
@@ -44,26 +46,16 @@ def _ingest_sample_dataset(client, ingestion_environment: Dict[str, str]) -> str
     return dataset_urn
 
 
-def _inline_payload(dataset_urn: str, endpoint: str) -> Dict[str, str]:
+def _inline_payload(dataset_urn: str) -> Dict[str, str]:
     return {
         "dataset_urn": dataset_urn,
         "transport": "inline",
         "format_hint": "parquet",
-        "credential_override": json.dumps(
-            {
-                "aws_access_key_id": "minioadmin",
-                "aws_secret_access_key": "minioadmin",
-                "endpoint": endpoint,
-                "endpoint_override": endpoint,
-                "endpoint_url": endpoint,
-                "region": "us-east-1",
-            }
-        ),
     }
 
 
-def _grpc_payload(dataset_urn: str, endpoint: str) -> Dict[str, str]:
-    payload = _inline_payload(dataset_urn, endpoint)
+def _grpc_payload(dataset_urn: str) -> Dict[str, str]:
+    payload = _inline_payload(dataset_urn)
     payload["transport"] = "grpc"
     return payload
 
@@ -71,14 +63,18 @@ def _grpc_payload(dataset_urn: str, endpoint: str) -> Dict[str, str]:
 def test_s3_ingest_and_retrieve_inline(
     live_kamiwaza_client,
     ingestion_environment: Dict[str, str],
+    ingestion_s3_secret_urn: str,
 ) -> None:
     client = live_kamiwaza_client
-    endpoint = ingestion_environment["endpoint"]
     dataset_urn: str | None = None
 
     try:
-        dataset_urn = _ingest_sample_dataset(client, ingestion_environment)
-        retrieval_payload = _inline_payload(dataset_urn, endpoint)
+        dataset_urn = _ingest_sample_dataset(
+            client,
+            ingestion_environment,
+            ingestion_s3_secret_urn,
+        )
+        retrieval_payload = _inline_payload(dataset_urn)
 
         retrieval_job = client.post("/retrieval/jobs", json=retrieval_payload)
 
@@ -100,14 +96,18 @@ def test_s3_ingest_and_retrieve_inline(
 def test_s3_ingest_and_retrieve_grpc(
     live_kamiwaza_client,
     ingestion_environment: Dict[str, str],
+    ingestion_s3_secret_urn: str,
 ) -> None:
     client = live_kamiwaza_client
-    endpoint = ingestion_environment["endpoint"]
     dataset_urn: str | None = None
 
     try:
-        dataset_urn = _ingest_sample_dataset(client, ingestion_environment)
-        retrieval_payload = _grpc_payload(dataset_urn, endpoint)
+        dataset_urn = _ingest_sample_dataset(
+            client,
+            ingestion_environment,
+            ingestion_s3_secret_urn,
+        )
+        retrieval_payload = _grpc_payload(dataset_urn)
 
         retrieval_job = client.post("/retrieval/jobs", json=retrieval_payload)
         assert retrieval_job["transport"] == "grpc"
