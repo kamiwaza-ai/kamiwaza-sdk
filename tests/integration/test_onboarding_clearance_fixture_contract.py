@@ -103,31 +103,24 @@ def test_cleanup_attempts_every_phase_before_reporting_failures(
     assert "cleanup canary" not in str(exc_info.value)
 
 
-def test_cleanup_failure_is_fatal_without_a_primary_failure(
+@pytest.mark.parametrize(
+    "primary_error",
+    [None, ValueError("test body failed")],
+    ids=["cleanup-only", "preserve-primary"],
+)
+def test_cleanup_failure_precedence(
     monkeypatch: pytest.MonkeyPatch,
+    primary_error: BaseException | None,
 ) -> None:
     cleanup_error = RuntimeError("cleanup failed")
     cleanup = Mock(side_effect=cleanup_error)
     monkeypatch.setattr(fixture, "cleanup", cleanup)
+    expected_error = primary_error if primary_error is not None else cleanup_error
 
-    with pytest.raises(RuntimeError) as exc_info:
+    with pytest.raises(type(expected_error)) as exc_info:
         with fixture.cleanup_preserving_primary({"state": "owned"}):
-            pass
+            if primary_error is not None:
+                raise primary_error
 
-    assert exc_info.value is cleanup_error
-    assert cleanup.call_args_list == [call({"state": "owned"})]
-
-
-def test_cleanup_failure_preserves_a_primary_failure(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    primary_error = ValueError("test body failed")
-    cleanup = Mock(side_effect=RuntimeError("cleanup failed"))
-    monkeypatch.setattr(fixture, "cleanup", cleanup)
-
-    with pytest.raises(ValueError) as exc_info:
-        with fixture.cleanup_preserving_primary({"state": "owned"}):
-            raise primary_error
-
-    assert exc_info.value is primary_error
+    assert exc_info.value is expected_error
     assert cleanup.call_args_list == [call({"state": "owned"})]

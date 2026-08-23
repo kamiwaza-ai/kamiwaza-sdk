@@ -123,21 +123,9 @@ def _restore_clearance_schema(state: dict[str, Any], receiver: Any) -> None:
     if prior_state == "declared":
         _assert_clearance_schema_state(receiver, prior_state)
         return
-    if prior_state == "deprecated":
-        response = receiver._request("DELETE", _CLEARANCE_SCHEMA_PATH)
-        expected_response_state = "deprecated"
-    elif prior_state is None:
-        # The fixture never writes ``clearance`` to native-realm subjects;
-        # receiver guest values live in the federation-scoped realm instead.
-        # The Core audit count for this native schema transition is exactly 0.
-        response = receiver._request(
-            "DELETE",
-            _CLEARANCE_SCHEMA_PATH,
-            params={"force": "true", "subjects_holding_value": 0},
-        )
-        expected_response_state = "withdrawn"
-    else:
-        raise AssertionError("clearance schema had an unsupported prior state")
+    response, expected_response_state = _restore_clearance_transition(
+        receiver, prior_state
+    )
     if not isinstance(response, dict):
         raise AssertionError("clearance schema cleanup returned a non-object response")
     if response.get("state") != expected_response_state:
@@ -145,6 +133,24 @@ def _restore_clearance_schema(state: dict[str, Any], receiver: Any) -> None:
             "clearance schema cleanup returned an unexpected transition state"
         )
     _assert_clearance_schema_state(receiver, prior_state)
+
+
+def _restore_clearance_transition(receiver: Any, prior_state: Any) -> tuple[Any, str]:
+    if prior_state == "deprecated":
+        return receiver._request("DELETE", _CLEARANCE_SCHEMA_PATH), "deprecated"
+    if prior_state is None:
+        # The fixture never writes ``clearance`` to native-realm subjects;
+        # receiver guest values live in the federation-scoped realm instead.
+        # The Core audit count for this native schema transition is exactly 0.
+        return (
+            receiver._request(
+                "DELETE",
+                _CLEARANCE_SCHEMA_PATH,
+                params={"force": "true", "subjects_holding_value": 0},
+            ),
+            "withdrawn",
+        )
+    raise AssertionError("clearance schema had an unsupported prior state")
 
 
 def _assert_clearance_schema_state(receiver: Any, expected: Any) -> None:
