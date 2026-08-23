@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import Mock, call
 
 import pytest
@@ -52,6 +54,42 @@ def _control_probe_pair() -> edge._OwnedPair:
         name="owned-pair",
         initiator=edge._OwnedSide("initiator", Mock(), "initiator-id"),
         receiver=side,
+    )
+
+
+def _failing_cleanup(message: str) -> tuple[RuntimeError, Mock]:
+    cleanup_error = RuntimeError(message)
+    return cleanup_error, Mock(side_effect=cleanup_error)
+
+
+def _assert_cleanup_precedence(
+    expected_error: BaseException,
+    cleanup: Mock,
+    action: Callable[[], Any],
+    expected_calls: int,
+) -> None:
+    with pytest.raises(type(expected_error)) as exc_info:
+        action()
+
+    assert exc_info.value is expected_error
+    assert cleanup.call_count == expected_calls
+
+
+def _configure_control_probe(
+    monkeypatch: pytest.MonkeyPatch,
+    admin_providers: Mock,
+    cleanup: Mock,
+) -> None:
+    monkeypatch.setattr(edge.uuid, "uuid4", lambda: SimpleNamespace(hex="abc12345"))
+    monkeypatch.setattr(edge, "_required_broker_provider", Mock())
+    monkeypatch.setattr(edge, "_exercise_reserved_alias_mutations", Mock())
+    monkeypatch.setattr(edge, "_admin_providers", admin_providers)
+    monkeypatch.setattr(edge, "_delete_control_idp", cleanup)
+
+
+def _run_control_probe() -> None:
+    edge.TestBrokeredIdPLifecycle().test_broker_idp_is_hidden_and_reserved_from_operator_mutation(
+        _control_probe_pair()
     )
 
 
@@ -225,94 +263,62 @@ def test_reserved_alias_probe_checks_provider_after_each_rejection() -> None:
 def test_pair_fixture_cleanup_failure_is_fatal_without_primary_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    cleanup_error = RuntimeError("pair cleanup failed")
-    cleanup = Mock(side_effect=cleanup_error)
+    cleanup_error, cleanup = _failing_cleanup("pair cleanup failed")
     monkeypatch.setattr(edge, "_cleanup_owned_side", cleanup)
     fixture = _pair_fixture(_PairClient("initiator-id"), _PairClient("receiver-id"))
 
     next(fixture)
-    with pytest.raises(RuntimeError) as exc_info:
-        next(fixture)
-
-    assert exc_info.value is cleanup_error
-    assert cleanup.call_count == 2
+    _assert_cleanup_precedence(cleanup_error, cleanup, lambda: next(fixture), 2)
 
 
 def test_pair_fixture_preserves_setup_failure_when_cleanup_also_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     primary_error = ValueError("pair setup failed")
-    cleanup_error = RuntimeError("pair cleanup failed")
-    cleanup = Mock(side_effect=cleanup_error)
+    _cleanup_error, cleanup = _failing_cleanup("pair cleanup failed")
     initiator = _PairClient("initiator-id")
     initiator.federations.pair.side_effect = primary_error
     monkeypatch.setattr(edge, "_cleanup_owned_side", cleanup)
     fixture = _pair_fixture(initiator, _PairClient("receiver-id"))
 
-    with pytest.raises(ValueError) as exc_info:
-        next(fixture)
-
-    assert exc_info.value is primary_error
-    assert cleanup.call_count == 2
+    _assert_cleanup_precedence(primary_error, cleanup, lambda: next(fixture), 2)
 
 
 def test_pair_fixture_preserves_test_failure_when_cleanup_also_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     primary_error = ValueError("test body failed")
-    cleanup_error = RuntimeError("pair cleanup failed")
-    cleanup = Mock(side_effect=cleanup_error)
+    _cleanup_error, cleanup = _failing_cleanup("pair cleanup failed")
     monkeypatch.setattr(edge, "_cleanup_owned_side", cleanup)
     fixture = _pair_fixture(_PairClient("initiator-id"), _PairClient("receiver-id"))
     next(fixture)
 
-    with pytest.raises(ValueError) as exc_info:
-        fixture.throw(primary_error)
-
-    assert exc_info.value is primary_error
-    assert cleanup.call_count == 2
+    _assert_cleanup_precedence(
+        primary_error,
+        cleanup,
+        lambda: fixture.throw(primary_error),
+        2,
+    )
 
 
 def test_control_idp_cleanup_failure_is_fatal_without_primary_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    cleanup_error = RuntimeError("control IdP cleanup failed")
-    cleanup = Mock(side_effect=cleanup_error)
-    monkeypatch.setattr(edge.uuid, "uuid4", lambda: SimpleNamespace(hex="abc12345"))
-    monkeypatch.setattr(edge, "_required_broker_provider", Mock())
-    monkeypatch.setattr(edge, "_exercise_reserved_alias_mutations", Mock())
-    monkeypatch.setattr(
-        edge,
-        "_admin_providers",
+    cleanup_error, cleanup = _failing_cleanup("control IdP cleanup failed")
+    _configure_control_probe(
+        monkeypatch,
         Mock(return_value={"idp-lifecycle-control-abc12345": SimpleNamespace()}),
+        cleanup,
     )
-    monkeypatch.setattr(edge, "_delete_control_idp", cleanup)
 
-    with pytest.raises(RuntimeError) as exc_info:
-        edge.TestBrokeredIdPLifecycle().test_broker_idp_is_hidden_and_reserved_from_operator_mutation(
-            _control_probe_pair()
-        )
-
-    assert exc_info.value is cleanup_error
-    cleanup.assert_called_once()
+    _assert_cleanup_precedence(cleanup_error, cleanup, _run_control_probe, 1)
 
 
 def test_control_idp_preserves_test_failure_when_cleanup_also_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     primary_error = ValueError("control assertion failed")
-    cleanup_error = RuntimeError("control IdP cleanup failed")
-    cleanup = Mock(side_effect=cleanup_error)
-    monkeypatch.setattr(edge.uuid, "uuid4", lambda: SimpleNamespace(hex="abc12345"))
-    monkeypatch.setattr(edge, "_required_broker_provider", Mock())
-    monkeypatch.setattr(edge, "_exercise_reserved_alias_mutations", Mock())
-    monkeypatch.setattr(edge, "_admin_providers", Mock(side_effect=primary_error))
-    monkeypatch.setattr(edge, "_delete_control_idp", cleanup)
+    _cleanup_error, cleanup = _failing_cleanup("control IdP cleanup failed")
+    _configure_control_probe(monkeypatch, Mock(side_effect=primary_error), cleanup)
 
-    with pytest.raises(ValueError) as exc_info:
-        edge.TestBrokeredIdPLifecycle().test_broker_idp_is_hidden_and_reserved_from_operator_mutation(
-            _control_probe_pair()
-        )
-
-    assert exc_info.value is primary_error
-    cleanup.assert_called_once()
+    _assert_cleanup_precedence(primary_error, cleanup, _run_control_probe, 1)
