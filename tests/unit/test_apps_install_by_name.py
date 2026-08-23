@@ -85,6 +85,29 @@ def test_install_by_name_resolves_template_and_deploys_with_workroom_header():
     assert kwargs["headers"] == {"X-Workroom-Id": "wr-1"}
 
 
+def test_install_by_name_accepts_canonical_product_package_version():
+    canonical = _template("kaizen", "0.5.0")
+    client = DummyClient([[canonical]], _deployment("kaizen"))
+    service = _service(client)
+
+    service.install_by_name("kaizen", sync_if_missing=False)
+
+    deploy_call = next(call for call in client.calls if call[1] == "/apps/deploy_app")
+    assert str(deploy_call[2]["json"]["template_id"]) == canonical["id"]
+
+
+def test_install_by_name_prefers_canonical_identity_over_transitional_version():
+    canonical = _template("kaizen", "0.5.0")
+    transitional = _template("kaizen-next", "4.0.0")
+    client = DummyClient([[transitional, canonical]], _deployment("kaizen"))
+    service = _service(client)
+
+    service.install_by_name("kaizen", sync_if_missing=False)
+
+    deploy_call = next(call for call in client.calls if call[1] == "/apps/deploy_app")
+    assert str(deploy_call[2]["json"]["template_id"]) == canonical["id"]
+
+
 def test_install_by_name_rejects_legacy_kaizen_and_uses_v4_alias():
     legacy = _template("kaizen", "2.0.3")
     legacy["compose_yml"] = "image: legacy/kaizen:2.0.3"
@@ -108,9 +131,10 @@ def test_install_by_name_cannot_pin_legacy_kaizen_version():
         service.install_by_name("kaizen", version="2.0.3", sync_if_missing=False)
 
 
-def test_install_by_name_does_not_silently_widen_past_v4():
-    future = _template("kaizen", "5.0.0")
-    client = DummyClient([[future]], _deployment("kaizen"))
+def test_install_by_name_does_not_silently_widen_past_product_contract():
+    untrusted = _template("kaizen", "5.0.0")
+    untrusted["compose_yml"] = "services: {}"
+    client = DummyClient([[untrusted]], _deployment("kaizen"))
     service = _service(client)
 
     with pytest.raises(NotFoundError, match="No catalog template named 'kaizen'"):
