@@ -3,6 +3,7 @@
 from collections import OrderedDict
 import logging
 import os
+import random
 import time
 from typing import Any, Optional
 
@@ -94,6 +95,223 @@ def _is_psk_propagation_timeout(response: Any) -> bool:
     return detail.get("reason") == _PSK_PROPAGATION_TIMEOUT_REASON
 
 
+_RETRYABLE_503_WALL_CLOCK_BUDGET_SECONDS = 60.0
+"""Hard cap on total wall-clock time spent honoring server Retry-After hints."""
+
+_RETRYABLE_503_MAX_SLEEP_SECONDS = 30.0
+"""Per-attempt ceiling on the server's hint."""
+
+_RETRYABLE_503_MIN_SLEEP_SECONDS = 1.0
+"""Floor under the server's hint.
+
+The delay is server-controlled input. Without a floor, a hint of 0.0001 turns
+every SDK caller into an amplifier against the customer's own cluster --
+measured at ~1712 req/s, ~10^5 attempts inside the wall-clock budget. Since
+``KAMIWAZA_VERIFY_SSL=false`` is a supported mode, an intercepting proxy can
+inject that hint into any 503, so this is a hostile-input boundary and not
+merely a sanity check.
+"""
+
+_RETRYABLE_503_MAX_ATTEMPTS = 6
+"""Hard cap on retries, independent of the wall-clock budget.
+
+The budget alone bounds total *time*, not attempt *count*: a small hint spends
+it in thousands of requests. The cap binds for hints up to roughly 9s; above
+that the budget binds first once jitter is counted, so the two are not
+interchangeable and neither alone is sufficient.
+"""
+
+_RETRYABLE_503_JITTER_FRACTION = 0.1
+"""Spread of the random jitter added to each delay, as a fraction of it.
+
+Every client fenced by the same operation receives the same hint and would
+otherwise retry in lockstep, re-contending as a thundering herd.
+"""
+
+
+def _retry_jitter_unit() -> float:
+    """Return a jitter multiplier in ``[0, 1)``.
+
+    A seam, not indirection for its own sake: tests monkeypatch this to 0.0 so
+    schedules stay exactly assertable while production keeps real jitter.
+    """
+    return random.random()
+
+
+_RETRYABLE_503_CODES = frozenset(
+    {
+        # Authority fence briefly held by another operation; the workroom is
+        # untouched in this state. (ENG-10506)
+        "workroom_authority_unavailable",
+        # NOT "the request never ran" -- it did. auto_provisioner._provision()
+        # reaps stranded seed rows and calls serving_service.deploy_model()
+        # *before* raising this on the on_demand path, and
+        # _handle_provision_failure raises it after a deploy attempt too. What
+        # makes the replay safe is that provisioning is gated and convergent:
+        # the provisioner holds _PROVISIONER_LOCK and consults _LAST_ATTEMPT,
+        # so a re-issued call inside the warmup window observes the in-flight
+        # attempt instead of starting a second one, and the freshly created
+        # row is non-terminal so the reaper will not take it.
+        #
+        # Caveat worth knowing: those gates are module-level process-local
+        # globals, so the window is shared within a core replica, not across
+        # them. A retry landing on a replica whose _LAST_ATTEMPT is unset can
+        # re-enter _provision(); the deploy pre-check is then the only thing
+        # standing between that and a duplicate deployment. Not demonstrated,
+        # but it is where this admission's safety actually rests. (ENG-10527)
+        "embedding_deploying",
+        # Transport failure reaching the embedding runtime. Raised from
+        # httpx.RequestError, which includes read timeouts, so the backend may
+        # in principle have seen the request. Every route that can raise it is
+        # a pure computation with no persistent effect, so a replay is
+        # harmless either way. The full set -- this is the standing rule when
+        # core adds a raise site, so keep it complete:
+        #   services/embedding/api.py  create_embedding, get_embedding,
+        #                              chunk_text, embed_chunks
+        #   services/embedding/api.py  _translate_upstream_runtime_error,
+        #     used by all four of the above. Note this one emits on
+        #     httpx.HTTPStatusError -- the upstream itself returned 503 --
+        #     not on a transport failure.
+        #   services/embedding/exceptions.py  translate_to_http_503, reached
+        #     via context/lib/embedding_availability.py from:
+        #       context/api/search.py:155 (_search_http_error) -> /search,
+        #         /search/unified, /search/simple, /retrieve, /search/retrieve
+        #       context/api/search.py:388 -> POST /search/agentic
+        #       context/api/dataset_indexes.py:463 (_run_unified_search) ->
+        #         POST /context/dataset-indexes/{binding_id}/search
+        # The agentic search path is pure but not cheap: a read-timeout replay
+        # re-runs a multi-iteration LLM workload.
+        "embedding_runtime_unreachable",
+        # Pre-flight discovery failure on an idempotent PUT
+        # (context/api/embedding_model.py). Core emits this code a second way,
+        # from ontology.py inside the PUT /ontologies/{id}/model-bindings
+        # write, as a raw HTTPException whose payload is nested under
+        # "detail" with no retry_after_seconds mirror -- so it does not match
+        # below and is not retried. That is load-bearing, not incidental: the
+        # ontology site is a *mutating* write whose replay safety nobody has
+        # reviewed. See the note on the mirror in _retry_after_seconds.
+        "discovery_unavailable",
+        # Raised during pin validation. No caller-visible effect, and the
+        # internal seeds are convergent on replay: resolve() gates its rebind
+        # write on `allow_persist and discovery_ok`, and discovery_ok is False
+        # on this path, so no pin is committed; seed_binding_from_workroom_attrs
+        # returns without writing when a row exists and rolls back on
+        # IntegrityError.
+        "pinned_discovery_unavailable",
+        # Two raise sites, and only one of them means "nothing ran":
+        #   router.py:658 (GlobalOntologyProvisioningPendingError) comes from
+        #     _precheck_ontology_create, which fires before the plan builder --
+        #     nothing ran.
+        #   router.py:639 (ensure_default_global_instance() returned None) is
+        #     reached through _create_ontology_candidate, which calls
+        #     app_service.create_deployment() first. A real deployment was
+        #     created.
+        # Admitted on convergence, as with embedding_deploying: that path's
+        # `except Exception` runs _reconcile_context_deployment ->
+        # reconcile_cleanup_intent, whose contract is to retain one winner or
+        # strictly remove and verify one loser, so it reclaims what it made.
+        # The route also needs an AlreadyExists plus every
+        # SCOPED_INSTANCE_RECOVERY_ATTEMPTS finding nothing. Worst case is
+        # bounded, self-cleaning create/teardown churn across the replays.
+        "global_ontology_provisioning",
+    }
+)
+"""Server ``code`` values this client will retry.
+
+Deliberately an allowlist rather than "any 503 carrying a hint" (ENG-10506):
+a hint means the server *believes* the condition is transient, which is not
+the same as the SDK being safe to silently re-issue the call. Adding a code
+here is a decision about idempotency, so it stays explicit.
+
+Every code above was reviewed against its raise site in core (ENG-10516) and
+admitted on the same test: the 503 fires because a dependency was unreachable
+or not yet ready, so the requested work did not take effect. HTTP verb alone
+is not the criterion — a POST whose handler fails pre-flight is replayable,
+and a code that could fire *after* a persistent effect would not be, whatever
+its verb.
+"""
+
+
+def _retry_after_seconds(response: Any) -> Optional[float]:
+    """Return the server's retry delay for a retryable 503, else ``None``.
+
+    ``kamiwaza.lib.http_errors.service_unavailable()`` renders retryable
+    503s as the bare ``ServiceUnavailable503Detail`` body
+    ``{"code": ..., "message": ..., "retry_after_seconds": N}`` (see
+    ``BareDetailHTTPException`` -- the body is the detail itself, not
+    ``{"detail": ...}``) and mirrors the value in a ``Retry-After`` header.
+
+    Deliberately keyed on the **bare top-level body**, not the ``Retry-After``
+    header, even though core sets both. Core's own docstring calls
+    ``retry_after_seconds`` a "mirror of the Retry-After header for clients
+    that don't read response headers", so reading only the mirror looks like
+    an oversight -- it is not. Emitters that go through
+    ``service_unavailable()`` always set the mirror, while the one raise site
+    that hand-rolls a raw ``HTTPException`` (ontology.py, behind a *mutating*
+    model-bindings PUT) sets only the header and nests its payload under
+    ``detail``. Honoring the header would silently switch on automatic replay
+    of that write, which nobody has reviewed for replay safety. The mirror is
+    the narrower and safer signal; keep it that way until the ontology site is
+    normalized and reviewed.
+
+    Both halves must line up: the ``code`` must be one we have decided is
+    safe to re-issue (``_RETRYABLE_503_CODES``), and the delay must be
+    usable. Status code is part of the match so a stray hint on a 4xx -- a
+    terminal conflict, say -- cannot turn a permanent failure into a retry
+    loop. Non-numeric and non-positive delays are rejected: they carry no
+    usable wait, and treating them as zero would spin.
+    """
+    if response.status_code != 503:
+        return None
+    try:
+        body = response.json()
+    except (ValueError, AttributeError):
+        return None
+    if not isinstance(body, dict):
+        return None
+    if body.get("code") not in _RETRYABLE_503_CODES:
+        return None
+    value = body.get("retry_after_seconds")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if value <= 0:
+        return None
+    return float(value)
+
+
+def _contains_consumable_stream(value: Any) -> bool:
+    """True when ``value`` holds something a retry cannot re-read.
+
+    Walks the containers ``requests`` accepts for ``data`` / ``files`` looking
+    for file-like objects and one-shot iterators. Strings and bytes are
+    explicitly repeatable; dicts/lists are inspected element-wise because
+    ``files={"f": ("name", fh)}`` hides the handle one level down.
+    """
+    if value is None or isinstance(value, (str, bytes, bytearray)):
+        return False
+    if hasattr(value, "read"):
+        return True
+    if isinstance(value, dict):
+        return any(_contains_consumable_stream(v) for v in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_contains_consumable_stream(v) for v in value)
+    return hasattr(value, "__iter__")
+
+
+def _request_body_is_replayable(kwargs: dict) -> bool:
+    """True when the outgoing body can safely be sent a second time.
+
+    ``requests`` consumes a streamed body to EOF on the first attempt, so
+    replaying the same kwargs would re-encode it from its current position --
+    silently uploading an empty or truncated file rather than failing. A 503
+    surfaced to the caller is far better than corrupt data written on their
+    behalf, so a non-replayable body opts out of retry entirely.
+    """
+    return not any(
+        _contains_consumable_stream(kwargs.get(key)) for key in ("data", "files")
+    )
+
+
 def _psk_timeout_error_from_response(response: Any) -> FederationPairTimeoutError:
     """Construct a typed FederationPairTimeoutError from the final retried
     response when the wall-clock budget is exhausted. Carries the structured
@@ -150,6 +368,25 @@ def _verify_ssl_disabled_from_env() -> bool:
     if value is None:
         return False
     return value.strip().lower() in _VERIFY_SSL_FALSE_VALUES
+
+
+class _RetryState:
+    """Per-request retry bookkeeping.
+
+    Bundled into one object so the retry helpers stay inside the 4-argument
+    cap and ``_request`` keeps a single local instead of four counters.
+    """
+
+    def __init__(self, method: str, path: str) -> None:
+        now = time.monotonic()
+        self.method = method
+        self.path = path
+        # Fixed local schedule for one known reason.
+        self.psk_deadline = now + _RETRY_WALL_CLOCK_BUDGET_SECONDS
+        self.psk_idx = 0
+        # Server-directed: follows whatever delay the server asks for.
+        self.deadline_503 = now + _RETRYABLE_503_WALL_CLOCK_BUDGET_SECONDS
+        self.attempts_503 = 0
 
 
 class KamiwazaClient:
@@ -577,6 +814,67 @@ class KamiwazaClient:
                 "credential off-host."
             )
 
+    def _wait_for_psk_retry(self, kwargs: dict, state: "_RetryState") -> bool:
+        """Sleep the next psk backoff step; False when the arm is exhausted.
+
+        A non-replayable body opts out entirely: ``requests`` has already read
+        it to EOF, so re-issuing would silently send a truncated payload.
+        """
+        if state.psk_idx >= len(_RETRY_BACKOFF_SCHEDULE_SECONDS):
+            return False
+        if not _request_body_is_replayable(kwargs):
+            return False
+        delay = _RETRY_BACKOFF_SCHEDULE_SECONDS[state.psk_idx]
+        if time.monotonic() + delay > state.psk_deadline:
+            return False
+        time.sleep(delay)
+        state.psk_idx += 1
+        return True
+
+    def _wait_for_retryable_503(
+        self, response, kwargs: dict, state: "_RetryState"
+    ) -> bool:
+        """Sleep the server's Retry-After hint; False when not retryable.
+
+        Clamps the hint into a sane band and adds jitter so co-fenced clients
+        do not retry in lockstep. Returning False falls through to the normal
+        error path, so the terminal exception is unchanged.
+        """
+        retry_after = _retry_after_seconds(response)
+        if retry_after is None:
+            return False
+        if retry_after > _RETRYABLE_503_WALL_CLOCK_BUDGET_SECONDS:
+            # Core asked for longer than we are willing to wait in total, so
+            # any retry we make is premature by construction and lands inside
+            # the window it was told to sit out. auto_provisioner's
+            # _BACKOFF_SCHEDULE reaches 60/300/900; clamping those to 30 buys
+            # exactly one guaranteed-to-fail replay and ~31.5s of latency on a
+            # call that used to fail fast. Surface the hint instead.
+            return False
+        if not _request_body_is_replayable(kwargs):
+            return False
+        if state.attempts_503 >= _RETRYABLE_503_MAX_ATTEMPTS:
+            return False
+        # Order matters: jitter is added *before* the ceiling clamp. Clamping
+        # first lets jitter lift the result to 30 * 1.1 = 33.0, which both
+        # breaks the documented ceiling and, at a hint of exactly 30 (what
+        # core sends for three of the admitted codes), spends the 60s budget
+        # in one sleep instead of two.
+        delay = max(retry_after, _RETRYABLE_503_MIN_SLEEP_SECONDS)
+        delay += delay * _RETRYABLE_503_JITTER_FRACTION * _retry_jitter_unit()
+        delay = min(delay, _RETRYABLE_503_MAX_SLEEP_SECONDS)
+        if time.monotonic() + delay > state.deadline_503:
+            return False
+        self.logger.debug(
+            "Retrying %s %s after server Retry-After=%.1fs",
+            state.method,
+            state.path,
+            delay,
+        )
+        time.sleep(delay)
+        state.attempts_503 += 1
+        return True
+
     def _request(
         self,
         method: str,
@@ -607,8 +905,7 @@ class KamiwazaClient:
         # Deadline captures wall-clock budget at request entry; schedule_idx
         # advances exactly once per retry so the (1, 2, 4, 8, 16, 32, 64)
         # progression is preserved across the loop.
-        psk_deadline = time.monotonic() + _RETRY_WALL_CLOCK_BUDGET_SECONDS
-        psk_schedule_idx = 0
+        state = _RetryState(method, path)
 
         while True:
             response = self._send_request(method, url, kwargs)
@@ -617,20 +914,30 @@ class KamiwazaClient:
                 self._handle_unauthorized_response(
                     response, endpoint, skip_auth, did_refresh
                 )
+                if not _request_body_is_replayable(kwargs):
+                    # The refresh succeeded, but the body is spent. Replaying
+                    # would re-send it from EOF and silently write an empty or
+                    # truncated file -- the most reachable form of this in
+                    # production is an upload spanning a token expiry.
+                    raise AuthenticationError(
+                        "Authentication was refreshed, but the request body is "
+                        "a stream that has already been consumed and cannot be "
+                        "safely re-sent. Retry the call with a fresh handle.",
+                        status_code=response.status_code,
+                    )
                 did_refresh = True
                 continue
 
             if _is_psk_propagation_timeout(response):
-                # Eligible for psk retry — sleep + continue if budget allows,
-                # otherwise raise the typed FederationPairTimeoutError so
-                # customer code can branch on the specific terminal failure.
-                if psk_schedule_idx < len(_RETRY_BACKOFF_SCHEDULE_SECONDS):
-                    delay = _RETRY_BACKOFF_SCHEDULE_SECONDS[psk_schedule_idx]
-                    if time.monotonic() + delay <= psk_deadline:
-                        time.sleep(delay)
-                        psk_schedule_idx += 1
-                        continue
+                # Retry within budget, otherwise raise the typed
+                # FederationPairTimeoutError so customer code can branch on the
+                # specific terminal failure.
+                if self._wait_for_psk_retry(kwargs, state):
+                    continue
                 raise _psk_timeout_error_from_response(response)
+
+            if self._wait_for_retryable_503(response, kwargs, state):
+                continue
 
             if response.status_code >= 400:
                 should_retry, retry_idx = self._retry_dataset_schema_update(
