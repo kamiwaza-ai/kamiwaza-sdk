@@ -23,6 +23,28 @@ class RotationPair:
     receiver_id: str
 
 
+@dataclass(frozen=True)
+class _TransitionSpec:
+    method_name: str
+    success_reason: str
+    repeated_reason: str
+    settled_phase: str
+
+
+_ACTIVATION = _TransitionSpec(
+    "activate_key_rotation",
+    "rotation_activated",
+    "rotation_already_activated",
+    "ACTIVE",
+)
+_COMPLETION = _TransitionSpec(
+    "complete_key_rotation",
+    "rotation_closed",
+    "rotation_already_closed",
+    "IDLE",
+)
+
+
 def _status(client: KamiwazaClient, federation_id: str) -> dict[str, Any]:
     return client.cluster.get_key_rotation_status(federation_id)
 
@@ -163,28 +185,26 @@ def _converge_divergent_stages(pair: RotationPair) -> tuple[str, str]:
     return fingerprint, old
 
 
+def _apply_idempotent_transition(
+    pair: RotationPair,
+    fingerprint: str,
+    alternate: str | None,
+    spec: _TransitionSpec,
+) -> None:
+    transition = getattr(pair.initiator.cluster, spec.method_name)
+    response = transition(pair.initiator_id, fingerprint=fingerprint)
+    assert response.get("reason") == spec.success_reason, response
+    repeated = transition(pair.initiator_id, fingerprint=fingerprint)
+    assert repeated.get("reason") == spec.repeated_reason, repeated
+    _assert_status(pair, spec.settled_phase, fingerprint, alternate)
+
+
 def _activate(pair: RotationPair, fingerprint: str, old: str) -> None:
-    activated = pair.initiator.cluster.activate_key_rotation(
-        pair.initiator_id, fingerprint=fingerprint
-    )
-    assert activated.get("reason") == "rotation_activated", activated
-    repeated = pair.initiator.cluster.activate_key_rotation(
-        pair.initiator_id, fingerprint=fingerprint
-    )
-    assert repeated.get("reason") == "rotation_already_activated", repeated
-    _assert_status(pair, "ACTIVE", fingerprint, old)
+    _apply_idempotent_transition(pair, fingerprint, old, _ACTIVATION)
 
 
 def _complete(pair: RotationPair, fingerprint: str) -> None:
-    closed = pair.initiator.cluster.complete_key_rotation(
-        pair.initiator_id, fingerprint=fingerprint
-    )
-    assert closed.get("reason") == "rotation_closed", closed
-    repeated = pair.initiator.cluster.complete_key_rotation(
-        pair.initiator_id, fingerprint=fingerprint
-    )
-    assert repeated.get("reason") == "rotation_already_closed", repeated
-    _assert_status(pair, "IDLE", fingerprint, None)
+    _apply_idempotent_transition(pair, fingerprint, None, _COMPLETION)
 
 
 def exercise_peer_proven_rotation(pair: RotationPair) -> None:
