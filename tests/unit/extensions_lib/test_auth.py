@@ -294,7 +294,7 @@ class TestRequireAuth:
     @pytest.mark.asyncio
     async def test_whitespace_only_workroom_id_rejected(self, monkeypatch):
         """Whitespace-only headers must be treated as empty, not as
-        workroom_id="   ", or a misconfigured Traefik bypasses the gate."""
+        workroom_id="   ", or a misconfigured ingress bypasses the gate."""
         monkeypatch.setenv("KAMIWAZA_USE_AUTH", "true")
         request = MagicMock()
         request.headers = {"x-user-id": "usr-123", "x-workroom-id": "   "}

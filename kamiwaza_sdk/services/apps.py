@@ -5,6 +5,8 @@ from uuid import UUID
 import logging
 import warnings
 
+from packaging.version import InvalidVersion, Version
+
 from .base_service import BaseService
 from ..schemas.apps import (
     AppTemplate,
@@ -16,6 +18,49 @@ from ..schemas.apps import (
     GardenApp,
 )
 from ..exceptions import APIError, NotFoundError
+
+
+_KAIZEN_TEMPLATE_NAMES = frozenset({"kaizen", "kaizen-next"})
+_KAIZEN_V4_COMPOSE_MARKERS = (
+    "images/kaizen-api:",
+    "KAIZEN_PROCESS: worker",
+    "PI_KAIZEN_CALLBACK_URL:",
+)
+
+
+def _kaizen_v4_version(template: AppTemplate) -> Optional[Version]:
+    """Return a sortable version only for trusted Kaizen v4 templates."""
+    try:
+        parsed_version = Version(template.version or "")
+    except InvalidVersion:
+        return None
+    trusted_v4 = all(
+        (
+            parsed_version.release[0] == 4,
+            template.source_type.value == "kamiwaza",
+            template.visibility.value == "public",
+            all(
+            marker in template.compose_yml for marker in _KAIZEN_V4_COMPOSE_MARKERS
+            ),
+        )
+    )
+    return parsed_version if trusted_v4 else None
+
+
+def _find_kaizen_v4_template(
+    templates: List[AppTemplate], version: Optional[str]
+) -> Optional[AppTemplate]:
+    candidates = [
+        (parsed_version, template.name == "kaizen", template)
+        for template in templates
+        if template.name.lower() in _KAIZEN_TEMPLATE_NAMES
+        if version is None or template.version == version
+        for parsed_version in [_kaizen_v4_version(template)]
+        if parsed_version is not None
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda candidate: candidate[:2])[2]
 
 
 class AppService(BaseService):
@@ -118,7 +163,11 @@ class AppService(BaseService):
         Returns:
             The matching AppTemplate, or None if no template matches.
         """
-        for template in self.list_templates():
+        templates = self.list_templates()
+        if name.lower() == "kaizen":
+            return _find_kaizen_v4_template(templates, version)
+
+        for template in templates:
             if template.name != name:
                 continue
             if version is not None and template.version != version:

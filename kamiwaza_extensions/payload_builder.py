@@ -13,6 +13,16 @@ from kamiwaza_extensions.compose_ports import (
     default_service_port_name,
     extract_container_port,
 )
+from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
+from kamiwaza_extensions.compose_volumes import (
+    ServiceVolumeSpec,
+    build_service_volume_specs,
+)
+from kamiwaza_extensions.connections import ConnectionInfo
+from kamiwaza_extensions.validators.compose import INVALID_DEPLOY_REQUESTS_TEXT
+from kamiwaza_extensions.validators.workload_identity import (
+    require_valid_declaration,
+)
 from kamiwaza_sdk.schemas.extensions import (
     CreateExtension,
     ExtensionPort,
@@ -22,14 +32,6 @@ from kamiwaza_sdk.schemas.extensions import (
     ResourceSpec,
     SecuritySpec,
 )
-
-from kamiwaza_extensions.compose_transformer import detect_service_url_rewrites
-from kamiwaza_extensions.compose_volumes import (
-    ServiceVolumeSpec,
-    build_service_volume_specs,
-)
-from kamiwaza_extensions.connections import ConnectionInfo
-from kamiwaza_extensions.validators.compose import INVALID_DEPLOY_REQUESTS_TEXT
 
 # CRD annotation keys — namespace is ``kamiwaza.io/*`` (NOT ``kamiwaza.ai/*``).
 # The platform's annotation persister filters incoming Extension CR annotations
@@ -134,6 +136,9 @@ class PayloadBuilder:
         sandbox = self._build_sandbox_spec(metadata, transformed_compose)
         if sandbox:
             kwargs["sandbox"] = sandbox
+        workload_identity = metadata.get("workload_identity")
+        if workload_identity is not None:
+            kwargs["workload_identity"] = require_valid_declaration(workload_identity)
 
         annotations = self.build_annotations(deployer=deployer, revision=revision)
 
@@ -445,8 +450,7 @@ class PayloadBuilder:
                     else:
                         result.append({"name": item})
                 elif isinstance(item, dict):
-                    for k, v in item.items():
-                        result.append({"name": str(k), "value": str(v)})
+                    result.extend(PayloadBuilder._parse_env_dict_item(item))
         elif isinstance(env, dict):
             for k, v in env.items():
                 entry: Dict[str, Any] = {"name": str(k)}
@@ -454,6 +458,21 @@ class PayloadBuilder:
                     entry["value"] = str(v)
                 result.append(entry)
         return result
+
+    @staticmethod
+    def _parse_env_dict_item(item: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Convert one mapping or Kubernetes-style name/value list item."""
+        if "name" not in item:
+            return [
+                {"name": str(key), "value": str(value)} for key, value in item.items()
+            ]
+        entry = dict(item)
+        entry["name"] = str(item["name"])
+        if item.get("value") is None:
+            entry.pop("value", None)
+        else:
+            entry["value"] = str(item["value"])
+        return [entry]
 
     @staticmethod
     def _default_health_check(

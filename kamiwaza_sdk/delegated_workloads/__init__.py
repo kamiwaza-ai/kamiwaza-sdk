@@ -1,0 +1,438 @@
+"""Portable client primitives for delegated workload authority."""
+
+from kamiwaza_sdk.delegated_workloads.adapters import (
+    BrokerOperationAdapter as BrokerOperationAdapter,
+)
+from kamiwaza_sdk.delegated_workloads.adapters import QuotaAdapter as QuotaAdapter
+from kamiwaza_sdk.delegated_workloads.adapters import (
+    ResourceCanonicalizer as ResourceCanonicalizer,
+)
+from kamiwaza_sdk.delegated_workloads.adapters import (
+    ResourceEntitlementAdapter as ResourceEntitlementAdapter,
+)
+from kamiwaza_sdk.delegated_workloads.adapters import (
+    ResourceRegistrationAdapter as ResourceRegistrationAdapter,
+)
+from kamiwaza_sdk.delegated_workloads.adapters import (
+    SafeResultNormalizer as SafeResultNormalizer,
+)
+from kamiwaza_sdk.delegated_workloads.adapters import (
+    WorkloadRegistrationAdapter as WorkloadRegistrationAdapter,
+)
+
+from kamiwaza_sdk.delegated_workloads.api import (
+    DelegatedApprovalAPI as DelegatedApprovalAPI,
+)
+from kamiwaza_sdk.delegated_workloads.api import (
+    DelegatedWorkloadAPI as DelegatedWorkloadAPI,
+)
+from kamiwaza_sdk.delegated_workloads.broker import (
+    CredentialBindingStatus as CredentialBindingStatus,
+)
+from kamiwaza_sdk.delegated_workloads.broker import (
+    CredentialBindingSummary as CredentialBindingSummary,
+)
+from kamiwaza_sdk.delegated_workloads.broker import CredentialBroker as CredentialBroker
+from kamiwaza_sdk.delegated_workloads.broker import CredentialMode as CredentialMode
+from kamiwaza_sdk.delegated_workloads.broker import (
+    CredentialOperationParameters as CredentialOperationParameters,
+)
+from kamiwaza_sdk.delegated_workloads.broker import (
+    CredentialUseRequest as CredentialUseRequest,
+)
+from kamiwaza_sdk.delegated_workloads.broker import (
+    CredentialUseResponse as CredentialUseResponse,
+)
+from kamiwaza_sdk.delegated_workloads.broker import (
+    CredentialUseStatus as CredentialUseStatus,
+)
+from kamiwaza_sdk.delegated_workloads.broker import (
+    TrustedAdapterLease as TrustedAdapterLease,
+)
+from kamiwaza_sdk.delegated_workloads.client import (
+    DelegatedControlPlaneClient as DelegatedControlPlaneClient,
+)
+from kamiwaza_sdk.delegated_workloads.client import (
+    DelegatedWorkloadClient as DelegatedWorkloadClient,
+)
+from kamiwaza_sdk.delegated_workloads.executor import (
+    DelegatedExecutorClient as DelegatedExecutorClient,
+)
+from kamiwaza_sdk.delegated_workloads.errors import (
+    AmbiguousEffectOutcome as AmbiguousEffectOutcome,
+)
+from kamiwaza_sdk.delegated_workloads.errors import ApprovalRequired as ApprovalRequired
+from kamiwaza_sdk.delegated_workloads.errors import (
+    AttestationRejected as AttestationRejected,
+)
+from kamiwaza_sdk.delegated_workloads.errors import (
+    CapabilityExpired as CapabilityExpired,
+)
+from kamiwaza_sdk.delegated_workloads.errors import ClaimConflict as ClaimConflict
+from kamiwaza_sdk.delegated_workloads.errors import (
+    CredentialBindingUnavailable as CredentialBindingUnavailable,
+)
+from kamiwaza_sdk.delegated_workloads.errors import (
+    CurrentAuthorityDenied as CurrentAuthorityDenied,
+)
+from kamiwaza_sdk.delegated_workloads.errors import (
+    DelegatedErrorCode as DelegatedErrorCode,
+)
+from kamiwaza_sdk.delegated_workloads.errors import (
+    DelegatedProtocolError as DelegatedProtocolError,
+)
+from kamiwaza_sdk.delegated_workloads.errors import (
+    DelegatedWorkloadError as DelegatedWorkloadError,
+)
+from kamiwaza_sdk.delegated_workloads.errors import (
+    DPoPNonceRequired as DPoPNonceRequired,
+)
+from kamiwaza_sdk.delegated_workloads.errors import (
+    ProofKeyUnavailable as ProofKeyUnavailable,
+)
+from kamiwaza_sdk.delegated_workloads.errors import (
+    UnsupportedAttestationProfile as UnsupportedAttestationProfile,
+)
+from kamiwaza_sdk.delegated_workloads.errors import (
+    WorkloadAssertionUnavailable as WorkloadAssertionUnavailable,
+)
+from kamiwaza_sdk.delegated_workloads.errors import (
+    EffectDigestConflict as EffectDigestConflict,
+)
+from kamiwaza_sdk.delegated_workloads.errors import FencedClaim as FencedClaim
+from kamiwaza_sdk.delegated_workloads.errors import GrantInactive as GrantInactive
+from kamiwaza_sdk.delegated_workloads.errors import (
+    IncompatibleContract as IncompatibleContract,
+)
+from kamiwaza_sdk.delegated_workloads.errors import InvalidRequest as InvalidRequest
+from kamiwaza_sdk.delegated_workloads.errors import (
+    OccurrenceDigestConflict as OccurrenceDigestConflict,
+)
+from kamiwaza_sdk.delegated_workloads.errors import ProofMismatch as ProofMismatch
+from kamiwaza_sdk.delegated_workloads.errors import (
+    ProtectedResourceRejected as ProtectedResourceRejected,
+)
+from kamiwaza_sdk.delegated_workloads.errors import (
+    ProviderTransientFailure as ProviderTransientFailure,
+)
+from kamiwaza_sdk.delegated_workloads.errors import (
+    ReadinessUnavailable as ReadinessUnavailable,
+)
+from kamiwaza_sdk.delegated_workloads.errors import (
+    RegistrationRejected as RegistrationRejected,
+)
+from kamiwaza_sdk.delegated_workloads.errors import ReplayRejected as ReplayRejected
+from kamiwaza_sdk.delegated_workloads.errors import (
+    ResourceRegistrationRejected as ResourceRegistrationRejected,
+)
+from kamiwaza_sdk.delegated_workloads.errors import (
+    RetryClassification as RetryClassification,
+)
+from kamiwaza_sdk.delegated_workloads.errors import RevisionMismatch as RevisionMismatch
+from kamiwaza_sdk.delegated_workloads.errors import (
+    UnknownResourceContract as UnknownResourceContract,
+)
+from kamiwaza_sdk.delegated_workloads.errors import (
+    delegated_error_from_response as delegated_error_from_response,
+)
+from kamiwaza_sdk.delegated_workloads.models import ApprovalDecision as ApprovalDecision
+from kamiwaza_sdk.delegated_workloads.models import (
+    AutomationApprovalPolicy as AutomationApprovalPolicy,
+)
+from kamiwaza_sdk.delegated_workloads.models import (
+    AutomationDescriptor as AutomationDescriptor,
+)
+from kamiwaza_sdk.delegated_workloads.models import (
+    AutomationLimits as AutomationLimits,
+)
+from kamiwaza_sdk.delegated_workloads.models import (
+    AutomationRevision as AutomationRevision,
+)
+from kamiwaza_sdk.delegated_workloads.models import (
+    ConsentDecision as ConsentDecision,
+)
+from kamiwaza_sdk.delegated_workloads.models import ConsentRequest as ConsentRequest
+from kamiwaza_sdk.delegated_workloads.models import (
+    ApprovalDecisionRequest as ApprovalDecisionRequest,
+)
+from kamiwaza_sdk.delegated_workloads.models import (
+    DecisionReasonCode as DecisionReasonCode,
+)
+from kamiwaza_sdk.delegated_workloads.models import IntentStatus as IntentStatus
+from kamiwaza_sdk.delegated_workloads.models import (
+    IntentLifecycleStatus as IntentLifecycleStatus,
+)
+from kamiwaza_sdk.delegated_workloads.models import (
+    DelegatedGuardAuthority as DelegatedGuardAuthority,
+)
+from kamiwaza_sdk.delegated_workloads.models import (
+    DelegatedRunAuthority as DelegatedRunAuthority,
+)
+from kamiwaza_sdk.delegated_workloads.models import (
+    DelegatedRequesterContext as DelegatedRequesterContext,
+)
+from kamiwaza_sdk.delegated_workloads.models import (
+    EffectAuthorization as EffectAuthorization,
+)
+from kamiwaza_sdk.delegated_workloads.models import (
+    EffectAuthorizationDecision as EffectAuthorizationDecision,
+)
+from kamiwaza_sdk.delegated_workloads.models import (
+    EffectAuthorizationRequest as EffectAuthorizationRequest,
+)
+from kamiwaza_sdk.delegated_workloads.models import (
+    EffectConsumption as EffectConsumption,
+)
+from kamiwaza_sdk.delegated_workloads.models import (
+    EffectConsumptionRequest as EffectConsumptionRequest,
+)
+from kamiwaza_sdk.delegated_workloads.models import EffectDecision as EffectDecision
+from kamiwaza_sdk.delegated_workloads.models import EffectDetail as EffectDetail
+from kamiwaza_sdk.delegated_workloads.models import (
+    EffectLifecycleStatus as EffectLifecycleStatus,
+)
+from kamiwaza_sdk.delegated_workloads.models import (
+    EffectReservation as EffectReservation,
+)
+from kamiwaza_sdk.delegated_workloads.models import (
+    EffectReservationRequest as EffectReservationRequest,
+)
+from kamiwaza_sdk.delegated_workloads.models import (
+    EffectReservationStatus as EffectReservationStatus,
+)
+from kamiwaza_sdk.delegated_workloads.models import (
+    EffectResourceRef as EffectResourceRef,
+)
+from kamiwaza_sdk.delegated_workloads.models import DestinationRef as DestinationRef
+from kamiwaza_sdk.delegated_workloads.models import ClaimedRun as ClaimedRun
+from kamiwaza_sdk.delegated_workloads.models import ResourceRef as ResourceRef
+from kamiwaza_sdk.delegated_workloads.models import (
+    OpaqueRunQueuePayload as OpaqueRunQueuePayload,
+)
+from kamiwaza_sdk.delegated_workloads.models import (
+    RunReservation as RunReservation,
+)
+from kamiwaza_sdk.delegated_workloads.models import (
+    RunReservationRequest as RunReservationRequest,
+)
+from kamiwaza_sdk.delegated_workloads.models import RunTrigger as RunTrigger
+from kamiwaza_sdk.delegated_workloads.models import (
+    RunTransition as RunTransition,
+)
+from kamiwaza_sdk.delegated_workloads.models import (
+    RunTransitionRequest as RunTransitionRequest,
+)
+from kamiwaza_sdk.delegated_workloads.models import (
+    RunTransitionResult as RunTransitionResult,
+)
+from kamiwaza_sdk.delegated_workloads.models import RunClaimStatus as RunClaimStatus
+from kamiwaza_sdk.delegated_workloads.models import RunDetail as RunDetail
+from kamiwaza_sdk.delegated_workloads.models import (
+    RunLifecycleStatus as RunLifecycleStatus,
+)
+from kamiwaza_sdk.delegated_workloads.models import (
+    WorkloadReadAuthority as WorkloadReadAuthority,
+)
+from kamiwaza_sdk.delegated_workloads.proof import (
+    AttestationProfile as AttestationProfile,
+)
+from kamiwaza_sdk.delegated_workloads.readiness import (
+    CapabilityDiscoveryDocument as CapabilityDiscoveryDocument,
+)
+from kamiwaza_sdk.delegated_workloads.readiness import (
+    ComponentReadiness as ComponentReadiness,
+)
+from kamiwaza_sdk.delegated_workloads.readiness import (
+    ComponentStatus as ComponentStatus,
+)
+from kamiwaza_sdk.delegated_workloads.readiness import (
+    ReadinessClient as ReadinessClient,
+)
+from kamiwaza_sdk.delegated_workloads.readiness import (
+    ReadinessDiagnosticCode as ReadinessDiagnosticCode,
+)
+from kamiwaza_sdk.delegated_workloads.readiness import (
+    ReadinessRequirements as ReadinessRequirements,
+)
+from kamiwaza_sdk.delegated_workloads.readiness import (
+    ReadinessResult as ReadinessResult,
+)
+from kamiwaza_sdk.delegated_workloads.readiness import (
+    ResourceReadinessRequirement as ResourceReadinessRequirement,
+)
+from kamiwaza_sdk.delegated_workloads.proof import BrokerHandle as BrokerHandle
+from kamiwaza_sdk.delegated_workloads.proof import CsrfToken as CsrfToken
+from kamiwaza_sdk.delegated_workloads.proof import (
+    DelegatedCapability as DelegatedCapability,
+)
+from kamiwaza_sdk.delegated_workloads.proof import DPoPNonce as DPoPNonce
+from kamiwaza_sdk.delegated_workloads.proof import (
+    DPoPKeyLifecycle as DPoPKeyLifecycle,
+)
+from kamiwaza_sdk.delegated_workloads.proof import DPoPProof as DPoPProof
+from kamiwaza_sdk.delegated_workloads.proof import (
+    DPoPProofRequest as DPoPProofRequest,
+)
+from kamiwaza_sdk.delegated_workloads.proof import OneUseToken as OneUseToken
+from kamiwaza_sdk.delegated_workloads.proof import (
+    SensitiveValue as SensitiveValue,
+)
+from kamiwaza_sdk.delegated_workloads.proof import (
+    WorkloadAssertion as WorkloadAssertion,
+)
+from kamiwaza_sdk.delegated_workloads.proof import WorkloadProof as WorkloadProof
+from kamiwaza_sdk.delegated_workloads.resource_server import (
+    CoreResourceGuardHTTPClient as CoreResourceGuardHTTPClient,
+)
+from kamiwaza_sdk.delegated_workloads.resource_server import (
+    DelegatedResourceServer as DelegatedResourceServer,
+)
+from kamiwaza_sdk.delegated_workloads.resource_server import (
+    ProtectedResourceGuard as ProtectedResourceGuard,
+)
+from kamiwaza_sdk.delegated_workloads.resource_server import (
+    ProtectedResourceRequest as ProtectedResourceRequest,
+)
+from kamiwaza_sdk.delegated_workloads.resource_server import (
+    ResourceGuardRegistration as ResourceGuardRegistration,
+)
+from kamiwaza_sdk.delegated_workloads.resource_server import (
+    ResourceGuardRejected as ResourceGuardRejected,
+)
+from kamiwaza_sdk.delegated_workloads.resource_server import (
+    SealedDelegatedContext as SealedDelegatedContext,
+)
+from kamiwaza_sdk.delegated_workloads.transport import (
+    DelegatedProtocolRequest as DelegatedProtocolRequest,
+)
+from kamiwaza_sdk.delegated_workloads.transport import (
+    DelegatedWorkloadTransport as DelegatedWorkloadTransport,
+)
+from kamiwaza_sdk.delegated_workloads.transport import (
+    ProtocolRetrySafety as ProtocolRetrySafety,
+)
+
+__all__ = (
+    "AmbiguousEffectOutcome",
+    "ApprovalDecision",
+    "ApprovalDecisionRequest",
+    "ApprovalRequired",
+    "AutomationApprovalPolicy",
+    "AutomationDescriptor",
+    "AutomationLimits",
+    "AutomationRevision",
+    "AttestationProfile",
+    "AttestationRejected",
+    "BrokerHandle",
+    "BrokerOperationAdapter",
+    "CapabilityExpired",
+    "CapabilityDiscoveryDocument",
+    "ClaimConflict",
+    "ClaimedRun",
+    "ComponentReadiness",
+    "ComponentStatus",
+    "ConsentDecision",
+    "ConsentRequest",
+    "CredentialBindingUnavailable",
+    "CredentialBindingStatus",
+    "CredentialBindingSummary",
+    "CredentialBroker",
+    "CredentialMode",
+    "CredentialOperationParameters",
+    "CredentialUseRequest",
+    "CredentialUseResponse",
+    "CredentialUseStatus",
+    "CoreResourceGuardHTTPClient",
+    "CurrentAuthorityDenied",
+    "CsrfToken",
+    "DPoPKeyLifecycle",
+    "DPoPNonce",
+    "DPoPNonceRequired",
+    "DPoPProof",
+    "DPoPProofRequest",
+    "DecisionReasonCode",
+    "DelegatedApprovalAPI",
+    "DelegatedControlPlaneClient",
+    "DelegatedCapability",
+    "DelegatedErrorCode",
+    "DelegatedGuardAuthority",
+    "DelegatedRunAuthority",
+    "DelegatedExecutorClient",
+    "DelegatedProtocolError",
+    "DelegatedProtocolRequest",
+    "DelegatedRequesterContext",
+    "DelegatedResourceServer",
+    "DelegatedWorkloadClient",
+    "DelegatedWorkloadAPI",
+    "DelegatedWorkloadError",
+    "DelegatedWorkloadTransport",
+    "EffectAuthorization",
+    "EffectAuthorizationDecision",
+    "EffectAuthorizationRequest",
+    "EffectConsumption",
+    "EffectConsumptionRequest",
+    "EffectDecision",
+    "EffectDetail",
+    "EffectDigestConflict",
+    "EffectLifecycleStatus",
+    "EffectReservation",
+    "EffectReservationRequest",
+    "EffectReservationStatus",
+    "EffectResourceRef",
+    "FencedClaim",
+    "GrantInactive",
+    "IncompatibleContract",
+    "InvalidRequest",
+    "IntentLifecycleStatus",
+    "IntentStatus",
+    "OccurrenceDigestConflict",
+    "OneUseToken",
+    "OpaqueRunQueuePayload",
+    "ProofMismatch",
+    "ProofKeyUnavailable",
+    "ProtectedResourceGuard",
+    "ProtectedResourceRejected",
+    "ProtectedResourceRequest",
+    "ProtocolRetrySafety",
+    "ProviderTransientFailure",
+    "QuotaAdapter",
+    "ReadinessUnavailable",
+    "ReadinessClient",
+    "ReadinessDiagnosticCode",
+    "ReadinessRequirements",
+    "ReadinessResult",
+    "RegistrationRejected",
+    "ReplayRejected",
+    "ResourceRef",
+    "ResourceCanonicalizer",
+    "ResourceEntitlementAdapter",
+    "ResourceGuardRegistration",
+    "ResourceGuardRejected",
+    "ResourceRegistrationAdapter",
+    "ResourceRegistrationRejected",
+    "ResourceReadinessRequirement",
+    "RetryClassification",
+    "RevisionMismatch",
+    "RunClaimStatus",
+    "RunDetail",
+    "RunLifecycleStatus",
+    "RunReservation",
+    "RunReservationRequest",
+    "RunTrigger",
+    "RunTransition",
+    "RunTransitionRequest",
+    "RunTransitionResult",
+    "SensitiveValue",
+    "SafeResultNormalizer",
+    "SealedDelegatedContext",
+    "DestinationRef",
+    "UnknownResourceContract",
+    "UnsupportedAttestationProfile",
+    "WorkloadAssertion",
+    "WorkloadAssertionUnavailable",
+    "WorkloadProof",
+    "WorkloadReadAuthority",
+    "WorkloadRegistrationAdapter",
+    "TrustedAdapterLease",
+    "delegated_error_from_response",
+)

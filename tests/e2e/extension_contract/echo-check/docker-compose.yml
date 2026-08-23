@@ -19,8 +19,8 @@ services:
       KAMIWAZA_APP_PATH: ${KAMIWAZA_APP_PATH:-}
       KAMIWAZA_DEPLOYMENT_ID: ${KAMIWAZA_DEPLOYMENT_ID:-}
       KAMIWAZA_WORKROOM_ID: ${KAMIWAZA_WORKROOM_ID:-}
-      # ENG-5956 follow-up: shared secret the routing layer (Traefik / istio
-      # ingress) injects in `x-kamiwaza-trusted-proxy` for routed traffic so
+      # ENG-5956 follow-up: shared secret the provider-owned ingress injects
+      # in `x-kamiwaza-trusted-proxy` for routed traffic so
       # the app can distinguish it from direct container hits. The harness
       # passes the matching value through here; production extensions get a
       # real high-entropy secret from out-of-band config.

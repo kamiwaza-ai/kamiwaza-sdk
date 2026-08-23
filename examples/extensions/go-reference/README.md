@@ -7,7 +7,8 @@ languages other than Python or TypeScript — every section here mirrors a
 section of the flow doc.
 
 > **Status:** scaffold-equivalent reference. Header parsing only — no HMAC,
-> no shared secret. Trust boundary is Traefik (flow doc §8). Tracked in
+> no shared secret. Trust is established by the platform-managed ingress
+> authorization path (flow doc §8). Tracked in
 > [ENG-3894](https://linear.app/kamiwaza/issue/ENG-3894).
 
 ## Layout

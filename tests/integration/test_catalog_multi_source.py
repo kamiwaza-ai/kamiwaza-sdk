@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 import time
 from pathlib import Path
@@ -13,11 +12,6 @@ from kamiwaza_sdk.exceptions import APIError
 from kamiwaza_sdk.schemas.catalog import ContainerCreate
 
 pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
-
-_MINIO_CREDS = {
-    "aws_access_key_id": "minioadmin",
-    "aws_secret_access_key": "minioadmin",
-}
 
 
 def _candidate_file_ingestion_roots(catalog_stack_environment: Dict) -> list[Path]:
@@ -82,34 +76,11 @@ def _fetch_dataset(client, urn: str) -> Dict:
     return client.get("/catalog/datasets/by-urn", params={"urn": urn})
 
 
-def _ensure_retrieval_metadata(client, urn: str, endpoint: str) -> None:
-    dataset = _fetch_dataset(client, urn)
-    props = dict(dataset.get("properties") or {})
-    props.setdefault("endpoint", endpoint)
-    props.setdefault("endpoint_url", endpoint)
-    props.setdefault("endpoint_override", endpoint)
-    props.setdefault("region", props.get("region", "us-east-1"))
-    client.patch(
-        "/catalog/datasets/by-urn",
-        params={"urn": urn},
-        json={"properties": props},
-    )
-
-
-def _run_inline_retrieval(client, dataset_urn: str, *, format_hint: str, endpoint: str) -> Dict:
+def _run_inline_retrieval(client, dataset_urn: str, *, format_hint: str) -> Dict:
     payload = {
         "dataset_urn": dataset_urn,
         "transport": "inline",
         "format_hint": format_hint,
-        "credential_override": json.dumps(
-            {
-                **_MINIO_CREDS,
-                "endpoint": endpoint,
-                "endpoint_override": endpoint,
-                "endpoint_url": endpoint,
-                "region": "us-east-1",
-            }
-        ),
     }
     job = client.post("/retrieval/jobs", json=payload)
     assert job["transport"] == "inline"
@@ -118,20 +89,11 @@ def _run_inline_retrieval(client, dataset_urn: str, *, format_hint: str, endpoin
     return inline
 
 
-def _run_sse_retrieval(client, dataset_urn: str, *, format_hint: str, endpoint: str) -> None:
+def _run_sse_retrieval(client, dataset_urn: str, *, format_hint: str) -> None:
     payload = {
         "dataset_urn": dataset_urn,
         "transport": "sse",
         "format_hint": format_hint,
-        "credential_override": json.dumps(
-            {
-                **_MINIO_CREDS,
-                "endpoint": endpoint,
-                "endpoint_override": endpoint,
-                "endpoint_url": endpoint,
-                "region": "us-east-1",
-            }
-        ),
     }
     job = client.post("/retrieval/jobs", json=payload)
     assert job["transport"] == "sse"
@@ -163,6 +125,7 @@ def _ingest_object_dataset(
     key: str,
     endpoint: str,
     region: str,
+    secret_urn: str,
 ) -> tuple[str, list[str]]:
     response = client.ingestion.run_active(
         "s3",
@@ -170,13 +133,12 @@ def _ingest_object_dataset(
         prefix=key,
         endpoint_url=endpoint,
         region=region,
-        **_MINIO_CREDS,
+        secret_name=secret_urn,
     )
     dataset_urns = response.urns
     if not dataset_urns:
         dataset_urns = [f"urn:li:dataset:(urn:li:dataPlatform:s3,{bucket}/{key},PROD)"]
     target = dataset_urns[0]
-    _ensure_retrieval_metadata(client, target, endpoint)
     return target, dataset_urns
 
 
@@ -270,7 +232,11 @@ def test_catalog_file_ingestion_metadata(live_kamiwaza_client, catalog_stack_env
         _cleanup_datasets(live_kamiwaza_client, dataset_urns)
 
 
-def test_catalog_object_ingestion_inline_retrieval(live_kamiwaza_client, catalog_stack_environment):
+def test_catalog_object_ingestion_inline_retrieval(
+    live_kamiwaza_client,
+    catalog_stack_environment,
+    catalog_s3_secret_urn: str,
+):
     cfg = catalog_stack_environment["object"]
     dataset_urns: list[str] = []
     prefix = f"{cfg['prefix']}/objects"
@@ -281,18 +247,18 @@ def test_catalog_object_ingestion_inline_retrieval(live_kamiwaza_client, catalog
             prefix=prefix,
             endpoint_url=cfg["endpoint"],
             region=cfg["region"],
-            **_MINIO_CREDS,
+            secret_name=catalog_s3_secret_urn,
         )
         dataset_urns = response.urns
         assert dataset_urns, "S3 ingestion returned no datasets"
-        target = next((urn for urn in dataset_urns if "sample.json" in urn), dataset_urns[0])
-        _ensure_retrieval_metadata(live_kamiwaza_client, target, cfg["endpoint"])
+        target = next(
+            (urn for urn in dataset_urns if "sample.json" in urn), dataset_urns[0]
+        )
         try:
             inline = _run_inline_retrieval(
                 live_kamiwaza_client,
                 target,
                 format_hint="json",
-                endpoint=cfg["endpoint"],
             )
         except APIError:
             pytest.xfail(
@@ -304,7 +270,11 @@ def test_catalog_object_ingestion_inline_retrieval(live_kamiwaza_client, catalog
         _cleanup_datasets(live_kamiwaza_client, dataset_urns)
 
 
-def test_catalog_parquet_ingestion_inline_retrieval(live_kamiwaza_client, catalog_stack_environment):
+def test_catalog_parquet_ingestion_inline_retrieval(
+    live_kamiwaza_client,
+    catalog_stack_environment,
+    catalog_s3_secret_urn: str,
+):
     cfg = catalog_stack_environment["object"]
     dataset_urns: list[str] = []
     prefix = f"{cfg['prefix']}/sales_data_10k.parquet"
@@ -315,24 +285,28 @@ def test_catalog_parquet_ingestion_inline_retrieval(live_kamiwaza_client, catalo
             prefix=prefix,
             endpoint_url=cfg["endpoint"],
             region=cfg["region"],
-            **_MINIO_CREDS,
+            secret_name=catalog_s3_secret_urn,
         )
         dataset_urns = response.urns
         assert dataset_urns, "Parquet ingestion returned no datasets"
-        target = next((urn for urn in dataset_urns if "sales_data_10k" in urn), dataset_urns[0])
-        _ensure_retrieval_metadata(live_kamiwaza_client, target, cfg["endpoint"])
+        target = next(
+            (urn for urn in dataset_urns if "sales_data_10k" in urn), dataset_urns[0]
+        )
         inline = _run_inline_retrieval(
             live_kamiwaza_client,
             target,
             format_hint="parquet",
-            endpoint=cfg["endpoint"],
         )
         assert inline["row_count"] > 0
     finally:
         _cleanup_datasets(live_kamiwaza_client, dataset_urns)
 
 
-def test_catalog_inline_small_object_succeeds(live_kamiwaza_client, catalog_stack_environment):
+def test_catalog_inline_small_object_succeeds(
+    live_kamiwaza_client,
+    catalog_stack_environment,
+    catalog_s3_secret_urn: str,
+):
     cfg = catalog_stack_environment["object"]
     dataset_urns: list[str] = []
     try:
@@ -342,19 +316,23 @@ def test_catalog_inline_small_object_succeeds(live_kamiwaza_client, catalog_stac
             key=cfg["small_key"],
             endpoint=cfg["endpoint"],
             region=cfg["region"],
+            secret_urn=catalog_s3_secret_urn,
         )
         inline = _run_inline_retrieval(
             live_kamiwaza_client,
             target,
             format_hint="parquet",
-            endpoint=cfg["endpoint"],
         )
         assert inline["row_count"] > 0
     finally:
         _cleanup_datasets(live_kamiwaza_client, dataset_urns)
 
 
-def test_catalog_inline_large_object_hits_threshold(live_kamiwaza_client, catalog_stack_environment):
+def test_catalog_inline_large_object_hits_threshold(
+    live_kamiwaza_client,
+    catalog_stack_environment,
+    catalog_s3_secret_urn: str,
+):
     cfg = catalog_stack_environment["object"]
     dataset_urns: list[str] = []
     try:
@@ -364,13 +342,13 @@ def test_catalog_inline_large_object_hits_threshold(live_kamiwaza_client, catalo
             key=cfg["large_key"],
             endpoint=cfg["endpoint"],
             region=cfg["region"],
+            secret_urn=catalog_s3_secret_urn,
         )
         with pytest.raises(APIError) as excinfo:
             _run_inline_retrieval(
                 live_kamiwaza_client,
                 target,
                 format_hint="parquet",
-                endpoint=cfg["endpoint"],
             )
         assert excinfo.value.status_code == 422
         detail = (excinfo.value.response_text or "").lower()
@@ -379,7 +357,11 @@ def test_catalog_inline_large_object_hits_threshold(live_kamiwaza_client, catalo
         _cleanup_datasets(live_kamiwaza_client, dataset_urns)
 
 
-def test_catalog_large_object_sse_retrieval(live_kamiwaza_client, catalog_stack_environment):
+def test_catalog_large_object_sse_retrieval(
+    live_kamiwaza_client,
+    catalog_stack_environment,
+    catalog_s3_secret_urn: str,
+):
     cfg = catalog_stack_environment["object"]
     dataset_urns: list[str] = []
     try:
@@ -389,18 +371,22 @@ def test_catalog_large_object_sse_retrieval(live_kamiwaza_client, catalog_stack_
             key=cfg["large_key"],
             endpoint=cfg["endpoint"],
             region=cfg["region"],
+            secret_urn=catalog_s3_secret_urn,
         )
         _run_sse_retrieval(
             live_kamiwaza_client,
             target,
             format_hint="parquet",
-            endpoint=cfg["endpoint"],
         )
     finally:
         _cleanup_datasets(live_kamiwaza_client, dataset_urns)
 
 
-def test_catalog_container_link_sets_dataset_container_urn(live_kamiwaza_client, catalog_stack_environment):
+def test_catalog_container_link_sets_dataset_container_urn(
+    live_kamiwaza_client,
+    catalog_stack_environment,
+    catalog_s3_secret_urn: str,
+):
     cfg = catalog_stack_environment["object"]
     dataset_urns: list[str] = []
     container_urn: str | None = None
@@ -411,6 +397,7 @@ def test_catalog_container_link_sets_dataset_container_urn(live_kamiwaza_client,
             key=cfg["small_key"],
             endpoint=cfg["endpoint"],
             region=cfg["region"],
+            secret_urn=catalog_s3_secret_urn,
         )
         containers = live_kamiwaza_client.catalog.containers
         container_payload = ContainerCreate(
@@ -465,7 +452,6 @@ def test_catalog_postgres_ingestion_metadata(live_kamiwaza_client, catalog_stack
                 "dataset_urn": orders,
                 "transport": "inline",
                 "format_hint": "parquet",
-                "credential_override": json.dumps({"password": pg["password"]}),
             },
         )
         assert job["transport"] == "inline"

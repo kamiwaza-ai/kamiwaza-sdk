@@ -185,8 +185,8 @@ def test_resolve_base_url_matches_workroom_by_base_name_and_id():
     # and ignore other extensions (milvus) and other workrooms' Kaizen.
     client = _client_listing(
         [
-            _ext("kaizen-4f8b3ae1", "wr-A"),
-            _ext("kaizen-99999999", "wr-B"),  # another workroom's Kaizen
+            _ext("kaizen-4f8b3ae100000000", "wr-A"),
+            _ext("kaizen-9999999900000000", "wr-B"),  # another workroom's Kaizen
             _ext("service-milvus-xyz", "wr-A", external="https://x/milvus"),
         ]
     )
@@ -199,7 +199,7 @@ def test_resolve_base_url_matches_workroom_by_base_name_and_id():
 
 def test_resolve_base_url_workroom_no_match_raises():
     # Kaizen exists, but only in a different workroom — must not be picked.
-    client = _client_listing([_ext("kaizen-99999999", "wr-B")])
+    client = _client_listing([_ext("kaizen-9999999900000000", "wr-B")])
 
     with pytest.raises(ValueError, match="No 'kaizen' extension found"):
         resolve_base_url(client, "kaizen", workroom_id="wr-A")
@@ -208,7 +208,12 @@ def test_resolve_base_url_workroom_no_match_raises():
 def test_resolve_base_url_workroom_ambiguous_raises():
     # Two Kaizen in the SAME workroom is anomalous — fail loudly, don't guess.
     # AmbiguousExtensionError (not ValueError) so the wait loop won't retry it.
-    client = _client_listing([_ext("kaizen-aaaa", "wr-A"), _ext("kaizen-bbbb", "wr-A")])
+    client = _client_listing(
+        [
+            _ext("kaizen-aaaaaaaaaaaaaaaa", "wr-A"),
+            _ext("kaizen-bbbbbbbbbbbbbbbb", "wr-A"),
+        ]
+    )
 
     with pytest.raises(AmbiguousExtensionError, match="Multiple 'kaizen' extensions"):
         resolve_base_url(client, "kaizen", workroom_id="wr-A")
@@ -221,9 +226,24 @@ def test_resolve_base_url_workroom_ignores_unsuffixed_exact_name():
     client = _client_listing(
         [
             _ext("kaizen", "wr-A", external="https://x/bare"),
-            _ext("kaizen-4f8b3ae1", "wr-A"),
+            _ext("kaizen-4f8b3ae100000000", "wr-A"),
         ]
     )
+
+    assert resolve_base_url(client, "kaizen", workroom_id="wr-A") == KAIZEN_URL
+
+
+def test_resolve_base_url_does_not_adopt_kaizen_next_instance_by_prefix():
+    client = _client_listing(
+        [_ext("kaizen-next-4f8b3ae100000000", "wr-A")]
+    )
+
+    with pytest.raises(ValueError, match="No 'kaizen' extension found"):
+        resolve_base_url(client, "kaizen", workroom_id="wr-A")
+
+
+def test_resolve_base_url_accepts_non_uuid_workroom_suffix_shape():
+    client = _client_listing([_ext("kaizen-wra", "wr-A")])
 
     assert resolve_base_url(client, "kaizen", workroom_id="wr-A") == KAIZEN_URL
 
@@ -233,7 +253,12 @@ def test_wait_for_base_url_does_not_retry_ambiguity(monkeypatch):
 
     slept: list = []
     monkeypatch.setattr(kaizen_mod.time, "sleep", lambda s: slept.append(s))
-    client = _client_listing([_ext("kaizen-aaaa", "wr-A"), _ext("kaizen-bbbb", "wr-A")])
+    client = _client_listing(
+        [
+            _ext("kaizen-aaaaaaaaaaaaaaaa", "wr-A"),
+            _ext("kaizen-bbbbbbbbbbbbbbbb", "wr-A"),
+        ]
+    )
 
     # Ambiguity is deterministic — it must propagate immediately, never poll.
     with pytest.raises(AmbiguousExtensionError):
@@ -270,7 +295,7 @@ def test_wait_for_base_url_workroom_retries_until_listed(monkeypatch):
     monkeypatch.setattr(kaizen_mod.time, "sleep", lambda _s: None)
 
     # First poll: workroom has no Kaizen yet. Second poll: it's listed and ready.
-    rounds = [[], [_ext("kaizen-4f8b3ae1", "wr-A")]]
+    rounds = [[], [_ext("kaizen-4f8b3ae100000000", "wr-A")]]
 
     def list_extensions(workroom_id=None):
         return rounds.pop(0)

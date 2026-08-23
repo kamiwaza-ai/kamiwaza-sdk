@@ -1,7 +1,7 @@
-// Package identity parses the Kamiwaza envelope headers stamped by Traefik's
-// ForwardAuth middleware into an Identity value. Header parsing only — no
-// HMAC, no shared secret, no canonicalization, no TTL check. The trust
-// boundary is Traefik (kamiwaza-sdk/docs/extensions/non-sdk-flow.md §8).
+// Package identity parses the Kamiwaza envelope headers supplied by the
+// platform-managed ingress authorization path into an Identity value. Header
+// parsing only — no HMAC, no shared secret, no canonicalization, no TTL check.
+// See kamiwaza-sdk/docs/extensions/non-sdk-flow.md §8 for the trust boundary.
 package identity
 
 import (
@@ -24,8 +24,9 @@ type Identity struct {
 	RequestID    *string  `json:"request_id"`
 }
 
-// MisboundAuthError is the canonical "request did not come through Traefik,
-// or platform did not populate the envelope" failure (non-sdk-flow.md §5).
+// MisboundAuthError is the canonical "request did not cross the configured
+// ingress authorization boundary, or the platform did not populate the
+// envelope" failure (non-sdk-flow.md §5).
 // Maps to HTTP 401 with class "misbound_auth". The message is read-only
 // from outside the package via Error().
 type MisboundAuthError struct{ msg string }

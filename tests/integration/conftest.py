@@ -21,12 +21,14 @@ import pytest
 import requests
 import urllib3
 from huggingface_hub import snapshot_download
+from pydantic import SecretStr
 from requests.adapters import HTTPAdapter
 
 from kamiwaza_sdk import KamiwazaClient
 from kamiwaza_sdk.authentication import UserPasswordAuthenticator
 from kamiwaza_sdk.exceptions import APIError, AuthenticationError, KamiwazaError
 from kamiwaza_sdk.schemas.auth import PATCreate
+from kamiwaza_sdk.schemas.catalog import SecretCreate
 from kamiwaza_sdk.token_store import StoredToken, TokenStore
 from kamiwaza_sdk.utils.model_file_readiness import model_file_download_satisfied
 
@@ -100,6 +102,16 @@ def _enforce_required_edge_collection(
     config: pytest.Config, items: list[pytest.Item]
 ) -> None:
     from tests.integration.required_federation_edge import enforce_collection
+
+    enforce_collection(config, items)
+
+
+def _enforce_delegated_workload_collection(
+    config: pytest.Config, items: list[pytest.Item]
+) -> None:
+    from tests.integration.required_delegated_workload_edge import (
+        enforce_collection,
+    )
 
     enforce_collection(config, items)
 
@@ -1633,6 +1645,22 @@ def _require_two_clusters_for_marked_tests(request: pytest.FixtureRequest) -> No
         )
 
 
+def _mark_deferred_receiver_realm_tests(items: list[pytest.Item]) -> None:
+    """Skip receiver-realm UAT before any live fixtures or network calls."""
+    enabled = os.environ.get("KAMIWAZA_TEST_RECEIVER_REALM", "").strip().lower()
+    if enabled in {"1", "true", "yes", "on"}:
+        return
+    reason = (
+        "requires_receiver_realm: deferred until the Federation Keycloak Patterns "
+        "receiver-realm contract is live; follow ENG-10585 / ENG-9808 and set "
+        "KAMIWAZA_TEST_RECEIVER_REALM=1 only on a qualifying deployment"
+    )
+    skip_marker = pytest.mark.skip(reason=reason)
+    for item in items:
+        if "requires_receiver_realm" in item.keywords:
+            item.add_marker(skip_marker)
+
+
 @pytest.fixture(scope="session")
 def cluster_capability_snapshot(
     live_kamiwaza_session_client: KamiwazaClient,
@@ -1770,7 +1798,9 @@ def pytest_collection_modifyitems(
     halves makes those fixtures live across unrelated tests and can invalidate
     workroom-scoped state before the later half resumes.
     """
+    _mark_deferred_receiver_realm_tests(items)
     _enforce_required_edge_collection(config, items)
+    _enforce_delegated_workload_collection(config, items)
     peer_url = str(config.getoption("live_peer_base_url")).strip()
     if not peer_url:
         kept: list[pytest.Item] = []
@@ -2134,6 +2164,65 @@ def ingestion_environment() -> Iterator[dict[str, str]]:
             _run_compose("down", "-v", env=compose_env)
 
 
+def _authenticated_catalog_owner(client: KamiwazaClient) -> str:
+    profile = client.get("/auth/users/me")
+    owner_urn = str(profile.get("urn") or "").strip()
+    if owner_urn:
+        return owner_urn
+
+    username = str(profile.get("username") or "").strip()
+    if not username:
+        pytest.fail("Authenticated user profile did not include an owner identity")
+    return f"urn:li:corpuser:{username.replace('@', '-')}"
+
+
+def _create_s3_catalog_secret(
+    client: KamiwazaClient,
+    *,
+    endpoint: str,
+    region: str,
+) -> str:
+    value = json.dumps(
+        {
+            "aws_access_key_id": "minioadmin",
+            "aws_secret_access_key": "minioadmin",
+            "endpoint_override": endpoint,
+            "endpoint_url": endpoint,
+            "region": region,
+        }
+    )
+    payload = SecretCreate(
+        name=f"sdk-s3-live-{uuid.uuid4().hex[:10]}",
+        value=SecretStr(value),
+        owner=_authenticated_catalog_owner(client),
+        description="SDK live S3 fixture credentials",
+    )
+    return client.catalog.secrets.create(payload)
+
+
+def _delete_catalog_secret(client: KamiwazaClient, secret_urn: str) -> None:
+    try:
+        client.catalog.secrets.delete(secret_urn)
+    except APIError:
+        pass
+
+
+@pytest.fixture
+def ingestion_s3_secret_urn(
+    live_kamiwaza_client: KamiwazaClient,
+    ingestion_environment: dict[str, str],
+) -> Iterator[str]:
+    secret_urn = _create_s3_catalog_secret(
+        live_kamiwaza_client,
+        endpoint=ingestion_environment["endpoint"],
+        region="us-east-1",
+    )
+    try:
+        yield secret_urn
+    finally:
+        _delete_catalog_secret(live_kamiwaza_client, secret_urn)
+
+
 @pytest.fixture(scope="session")
 def catalog_stack_environment() -> Iterator[dict[str, object]]:
     """Provision the multi-source ingestion stack used by catalog tests."""
@@ -2245,3 +2334,21 @@ def catalog_stack_environment() -> Iterator[dict[str, object]]:
     finally:
         if not stack_running and os.environ.get("KEEP_CATALOG_STACK") != "1":
             _run_catalog_compose("down", "-v")
+
+
+@pytest.fixture
+def catalog_s3_secret_urn(
+    live_kamiwaza_client: KamiwazaClient,
+    catalog_stack_environment: dict[str, object],
+) -> Iterator[str]:
+    object_config = catalog_stack_environment["object"]
+    assert isinstance(object_config, dict)
+    secret_urn = _create_s3_catalog_secret(
+        live_kamiwaza_client,
+        endpoint=str(object_config["endpoint"]),
+        region=str(object_config["region"]),
+    )
+    try:
+        yield secret_urn
+    finally:
+        _delete_catalog_secret(live_kamiwaza_client, secret_urn)

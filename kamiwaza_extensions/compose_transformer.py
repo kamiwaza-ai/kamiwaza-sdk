@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import os
 import re
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
@@ -293,13 +294,14 @@ def _fallback_image_basename(
     return basename or "extension"
 
 
-# Compose ``${VAR:-default}`` (use default if unset OR empty) and the
-# ``${VAR-default}`` form (use default only if unset). For our purposes
-# both collapse to the literal default — there's no host process between
-# us and Kubernetes, so the var is always "unset" by the time the pod
-# starts. ``${VAR:?error}`` and bare ``${VAR}`` aren't matched (no safe
-# default → drop downstream).
-_DEFAULT_SUB_RE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*):?-([^}]*)\}$")
+# A single Compose substitution. The fallback is greedy so nested defaults
+# are parsed after ``_compose_substitution_end`` finds the balanced expression.
+_COMPOSE_SUB_RE = re.compile(
+    r"^\$\{([A-Za-z_][A-Za-z0-9_]*)(?:(:?[-?+])(.*))?\}$",
+    re.DOTALL,
+)
+_COMPOSE_BRACE_RE = re.compile(r"[{}]")
+_MAX_COMPOSE_SUBSTITUTION_DEPTH = 100
 
 # Env var names that should be left to the platform's ConfigMap envFrom
 # injection (operator writes the cluster-internal value; an explicit
@@ -341,9 +343,10 @@ _DEFAULT_LIMITS: Dict[str, Dict[str, str]] = {
 class ComposeTransformer:
     """Transform a local-dev compose dict into a deployment-ready dict.
 
-    All operations are pure (no I/O).  The caller provides the parsed
-    compose dict and receives a new dict suitable for building a
-    ``CreateExtension`` payload.
+    The caller provides the parsed compose dict and receives a new dict
+    suitable for building a ``CreateExtension`` payload. Transformations are
+    pure; ``resolve_env_placeholders`` additionally reads the process
+    environment without modifying it.
     """
 
     def transform(
@@ -482,14 +485,23 @@ class ComposeTransformer:
         the pod verbatim.
 
         Rules (per env var):
+        - Host environment values are used with Compose's supported braced
+          substitution semantics.
         - ``${VAR:-default}`` / ``${VAR-default}`` for non-platform
-          keys → collapsed to the literal ``default``.
-        - ``${KAMIWAZA_*:-default}`` → dropped. The kamiwaza-extension
-          operator injects these via ConfigMap envFrom; an explicit
-          env entry would shadow the cluster-internal value.
-        - ``${VAR}`` (no default) and ``${VAR:?error}`` (required) →
-          dropped. No safe value to ship.
+          keys → recursively collapsed to a host value or literal default.
+        - ``${VAR:+alternate}`` / ``${VAR+alternate}`` → the alternate when
+          the corresponding non-empty/set condition is satisfied, else empty.
+        - Placeholder-bearing entries whose key starts with ``KAMIWAZA_`` →
+          dropped. The kamiwaza-extension operator injects these via ConfigMap
+          envFrom; an explicit resolved entry would shadow the cluster-internal
+          value.
+        - Unset ``${VAR}`` and unsatisfied required forms are dropped.
+        - Unbraced ``$VAR`` references stay literal; this resolver intentionally
+          handles only braced Compose substitutions.
         - Plain values pass through unchanged.
+
+        ``$$`` escapes collapse to a literal dollar. A resulting ``$(VAR)``
+        token can still be expanded later by Kubernetes container-env handling.
 
         Skip this step when the destination DOES perform install-time
         substitution (e.g. a catalog template consumed by the platform
@@ -510,35 +522,35 @@ class ComposeTransformer:
 def _resolve_shell_refs(env: Any) -> Any:
     """Resolve compose ``${VAR:-default}`` substitutions, drop unresolvable.
 
-    Two rules:
+    Three rules:
 
-    1. ``${VAR:-default}`` where ``VAR`` does NOT start with
-       ``KAMIWAZA_`` → resolve to ``default``. The host env isn't
-       consulted (we're nowhere near a docker-compose run); compose
-       semantics for "VAR is unset" simply use the default. The cluster
-       deployment then carries the literal default through to the pod
+    1. Non-platform placeholders use the current process environment and
+       Compose unset/empty semantics for ``:-``, ``-``, ``:?``, ``?``,
+       ``:+``, and ``+``. Embedded substitutions and nested defaults are
+       resolved recursively. The cluster deployment carries the resolved
+       value through to the pod
        — and ``detect_service_url_rewrites`` (called by
        ``PayloadBuilder``) emits a ``service-ref-rewrites`` annotation
        so the operator can swap cross-service hostnames at deploy time.
 
-    2. ``${KAMIWAZA_*:-default}`` → drop. The kamiwaza-extension
-       operator injects these via ConfigMap envFrom; an explicit env
-       entry would shadow the cluster-internal value. Compose defaults
-       point to laptop-only addresses (``host.docker.internal:7777``)
-       that don't resolve in-cluster anyway.
+    2. Placeholder-bearing entries whose key starts with ``KAMIWAZA_`` → drop.
+       The kamiwaza-extension operator injects these via ConfigMap envFrom; an
+       explicit resolved entry would shadow the cluster-internal value.
+       Compose defaults point to laptop-only addresses
+       (``host.docker.internal:7777``) that don't resolve in-cluster anyway.
 
-    3. ``${VAR}`` (no default) and ``${VAR:?error}`` (required) → drop.
-       No safe value to ship.
+    3. Unset bare substitutions and unsatisfied required forms are dropped.
 
-    Plain values without ``${`` pass through unchanged.
+    Values without supported substitutions or ``$$`` escapes pass unchanged;
+    unbraced ``$VAR`` references are outside this resolver's scope.
     """
     if isinstance(env, dict):
         out: Dict[str, Any] = {}
         for k, v in env.items():
-            if not isinstance(v, str) or "${" not in v:
+            if not isinstance(v, str) or "$" not in v:
                 out[k] = v
                 continue
-            resolved = _resolve_default_substitution(k, v)
+            resolved = _resolve_env_value(k, v)
             if resolved is not None:
                 out[k] = resolved
         return out
@@ -555,38 +567,145 @@ def _resolve_shell_refs(env: Any) -> Any:
     return env
 
 
-def _resolve_default_substitution(key: str, value: str) -> Optional[str]:
-    """Return ``default`` from ``${VAR:-default}`` for non-platform keys.
-
-    Returns None when:
-    - the value isn't a single ``${VAR(:-)default}`` substitution
-    - the key is platform-injected (``KAMIWAZA_*``) — let envFrom win
-    """
-    if key.startswith(_PLATFORM_INJECTED_PREFIX):
+def _resolve_env_value(key: str, value: str) -> Optional[str]:
+    """Resolve Compose substitutions in one environment value."""
+    is_platform_key = key.startswith(_PLATFORM_INJECTED_PREFIX)
+    if is_platform_key and _has_braced_substitution(value):
         return None
-    m = _DEFAULT_SUB_RE.match(value.strip())
-    if not m:
+    return _resolve_compose_value(value)
+
+
+def _has_braced_substitution(value: str) -> bool:
+    """Whether *value* contains an unescaped ``${...}`` opener."""
+    cursor = 0
+    while (dollar := value.find("$", cursor)) >= 0:
+        if value.startswith("$$", dollar):
+            cursor = dollar + 2
+            continue
+        if value.startswith("${", dollar):
+            return True
+        cursor = dollar + 1
+    return False
+
+
+def _resolve_compose_value(value: str, depth: int = 0) -> Optional[str]:
+    """Resolve braced expressions while honoring Compose's ``$$`` escape."""
+    if depth >= _MAX_COMPOSE_SUBSTITUTION_DEPTH:
         return None
-    return m.group(2)
+    resolved: List[str] = []
+    cursor = 0
+    while cursor < len(value):
+        dollar = value.find("$", cursor)
+        if dollar < 0:
+            resolved.append(value[cursor:])
+            break
+        resolved.append(value[cursor:dollar])
+        if value.startswith("$$", dollar):
+            resolved.append("$")
+            cursor = dollar + 2
+            continue
+        if not value.startswith("${", dollar):
+            resolved.append("$")
+            cursor = dollar + 1
+            continue
+        end = _compose_substitution_end(value, dollar)
+        if end is None:
+            return None
+        substitution = _resolve_compose_substitution(value[dollar : end + 1], depth)
+        if substitution is None:
+            return None
+        resolved.append(substitution)
+        cursor = end + 1
+    return "".join(resolved)
 
 
-def _resolve_list_entry(entry: Any) -> Optional[str]:
-    """Apply ``_resolve_default_substitution`` to ``KEY=value`` list entries."""
+def _compose_substitution_end(value: str, start: int) -> Optional[int]:
+    """Find the closing brace paired with the ``${`` at *start*."""
+    depth = 1
+    for brace in _COMPOSE_BRACE_RE.finditer(value, start + 2):
+        depth += 1 if brace.group() == "{" else -1
+        if depth == 0:
+            return brace.start()
+    # Compose's greedy fallback accepts an unmatched literal ``{`` inside a
+    # default. In that case its final ``}`` still closes the substitution.
+    final_brace = value.rfind("}", start + 2)
+    return final_brace if final_brace >= 0 else None
+
+
+def _resolve_compose_substitution(value: str, depth: int = 0) -> Optional[str]:
+    """Resolve one full substitution using Compose environment semantics."""
+    match = _COMPOSE_SUB_RE.match(value)
+    if match is None:
+        return None
+    name, operator, fallback = match.groups()
+    is_set = name in os.environ
+    host_value = os.environ.get(name, "")
+    if operator is None:
+        return host_value if is_set else None
+    if operator in (":-", ":?") and host_value:
+        return host_value
+    if operator in ("-", "?") and is_set:
+        return host_value
+    if operator == ":+":
+        return _resolve_compose_value(fallback, depth + 1) if host_value else ""
+    if operator == "+":
+        return _resolve_compose_value(fallback, depth + 1) if is_set else ""
+    if operator in (":?", "?"):
+        return None
+    return _resolve_compose_value(fallback, depth + 1)
+
+
+def _resolve_list_entry(entry: Any) -> Optional[Any]:
+    """Resolve one string or name/value dict environment-list entry."""
+    if isinstance(entry, dict):
+        return _resolve_dict_list_entry(entry)
     if not isinstance(entry, str) or "=" not in entry:
         return None
     key, value = entry.split("=", 1)
-    resolved = _resolve_default_substitution(key, value)
+    resolved = _resolve_env_value(key, value)
     if resolved is None:
         return None
     return f"{key}={resolved}"
 
 
+def _resolve_dict_list_entry(entry: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Resolve a tolerated environment-list mapping."""
+    if "name" not in entry:
+        return _resolve_mapping_list_entry(entry)
+    name = entry.get("name")
+    value = entry.get("value")
+    if name is None or not isinstance(value, str):
+        return None
+    resolved = _resolve_env_value(str(name), value)
+    if resolved is None:
+        return None
+    out = dict(entry)
+    out["value"] = resolved
+    return out
+
+
+def _resolve_mapping_list_entry(entry: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Resolve a mapping-fragment list entry one environment key at a time."""
+    out: Dict[str, Any] = {}
+    for key, value in entry.items():
+        if not isinstance(value, str) or "$" not in value:
+            out[key] = value
+            continue
+        resolved = _resolve_env_value(str(key), value)
+        if resolved is not None:
+            out[key] = resolved
+    return out or None
+
+
 def _entry_has_shell_ref(entry: Any) -> bool:
     if isinstance(entry, str) and "=" in entry:
-        return "${" in entry.split("=", 1)[1]
-    if isinstance(entry, dict):
-        return "${" in str(entry.get("value", ""))
-    return False
+        return "$" in entry.split("=", 1)[1]
+    if not isinstance(entry, dict):
+        return False
+    if "name" in entry:
+        value = entry.get("value")
+        return isinstance(value, str) and "$" in value
+    return any(isinstance(value, str) and "$" in value for value in entry.values())
 
 
 # ------------------------------------------------------------------
@@ -658,20 +777,38 @@ def detect_service_url_rewrites(
 
 
 def _iter_env_entries(env: Any) -> List[Tuple[str, str]]:
-    """Yield ``(key, value)`` pairs from either env shape."""
-    out: List[Tuple[str, str]] = []
+    """Yield ``(key, value)`` pairs from supported env shapes."""
     if isinstance(env, dict):
-        for k, v in env.items():
-            if isinstance(v, (str, int, float, bool)):
-                out.append((str(k), str(v)))
-    elif isinstance(env, list):
-        for entry in env:
-            if isinstance(entry, str) and "=" in entry:
-                k, v = entry.split("=", 1)
-                out.append((k, v))
-            elif isinstance(entry, dict) and "name" in entry and "value" in entry:
-                out.append((str(entry["name"]), str(entry["value"])))
+        return _iter_env_mapping(env)
+    if not isinstance(env, list):
+        return []
+    out: List[Tuple[str, str]] = []
+    for entry in env:
+        out.extend(_iter_env_list_entry(entry))
     return out
+
+
+def _iter_env_mapping(env: Dict[Any, Any]) -> List[Tuple[str, str]]:
+    """Return scalar key/value pairs from an environment mapping."""
+    return [
+        (str(key), str(value))
+        for key, value in env.items()
+        if isinstance(value, (str, int, float, bool))
+    ]
+
+
+def _iter_env_list_entry(entry: Any) -> List[Tuple[str, str]]:
+    """Return key/value pairs from one supported environment-list entry."""
+    if isinstance(entry, str) and "=" in entry:
+        key, value = entry.split("=", 1)
+        return [(key, value)]
+    if not isinstance(entry, dict):
+        return []
+    if "name" in entry:
+        if "value" in entry:
+            return [(str(entry["name"]), str(entry["value"]))]
+        return []
+    return _iter_env_mapping(entry)
 
 
 def _rewrite_url_hosts(
