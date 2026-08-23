@@ -27,6 +27,7 @@ def test_pair_advertises_initiator_public_callback_host() -> None:
         initiator,
         receiver,
         "https://spark-1.example.com/api",
+        "fixture-initial-psk",
     )
     next(fixture)
     try:
@@ -34,5 +35,13 @@ def test_pair_advertises_initiator_public_callback_host() -> None:
             "callback_hostname"
         )
         assert callback_host == "spark-2.example.com"
+        assert (
+            initiator.federations.pair.call_args.kwargs["preshared_key"]
+            == "fixture-initial-psk"
+        )
+        assert (
+            receiver.federations.pair.call_args.kwargs["preshared_key"]
+            == "fixture-initial-psk"
+        )
     finally:
         fixture.close()
