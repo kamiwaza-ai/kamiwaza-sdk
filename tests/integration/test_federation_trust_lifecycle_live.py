@@ -6,6 +6,11 @@ peer-first activation, and peer-first completion. Signed ping remains reachable
 before, during, and after the transition. Retried adoption, activation,
 completion, and abort pin lost-response idempotency.
 
+Catalog inventory proves both peers keep K1 through the dual-key window and
+physically remove its secret after completion. Direct operation-bound pings
+prove that exact K1 works before retirement and is rejected afterward in both
+directions; the generated key stays in memory and never enters assertion text.
+
 The adjacent CA and reconnect refusals remain explicit. A caller-provided
 fingerprint acknowledgement can only prove that the operator looked at a CA;
 it is never substituted for the peer-owned evidence that authorizes PSK
@@ -136,22 +141,28 @@ def receiver_client(live_kamiwaza_peer_client: KamiwazaClient) -> KamiwazaClient
 
 
 @pytest.fixture(scope="module")
+def federation_psk() -> str:
+    """Ephemeral K1 retained only in memory for the post-close refusal probe."""
+    return str(uuid.uuid4())
+
+
+@pytest.fixture(scope="module")
 def paired_federation(
     initiator_client: KamiwazaClient,
     receiver_client: KamiwazaClient,
     live_peer_base_url: str,
+    federation_psk: str,
 ) -> Iterator[dict[str, str]]:
     """Create one PAIRED federation; both rows need ``realm_scope``.
 
     Otherwise the initiator falls back to gated legacy ``peer_kc`` mode.
     """
     name = f"eng9807-trust-{uuid.uuid4().hex[:8]}"
-    pair_psk = str(uuid.uuid4())
 
     receiver_fed = receiver_client.federations.pair(
         name=name,
         role="receiver",
-        preshared_key=pair_psk,
+        preshared_key=federation_psk,
         realm_scope="per_federation",
     )
     receiver_id = str(receiver_fed.id)
@@ -160,7 +171,7 @@ def paired_federation(
             name=name,
             role="initiator",
             remote_url=live_peer_base_url,
-            preshared_key=pair_psk,
+            preshared_key=federation_psk,
             callback_hostname=_host_of(initiator_client.base_url),
             realm_scope="per_federation",
         )
@@ -199,6 +210,7 @@ def settled_rotation_pair(
     paired_federation: dict[str, str],
     initiator_client: KamiwazaClient,
     receiver_client: KamiwazaClient,
+    federation_psk: str,
 ) -> Iterator[RotationPair]:
     """Expose one pair and restore both rows to a closed rotation state."""
     pair = RotationPair(
@@ -206,6 +218,7 @@ def settled_rotation_pair(
         receiver=receiver_client,
         initiator_id=paired_federation["initiator_id"],
         receiver_id=paired_federation["receiver_id"],
+        initial_psk=federation_psk,
     )
     primary_error: BaseException | None = None
     try:
