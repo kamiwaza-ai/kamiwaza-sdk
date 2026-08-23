@@ -9,10 +9,12 @@ Note: TS17.001 and TS17.003 are already tested in test_catalog_ingest_retrieval.
 and test_catalog_multi_source.py. This file focuses on direct SDK method testing
 and TS17.002 coverage.
 """
+
 from __future__ import annotations
 
-import pytest
 from uuid import uuid4
+
+import pytest
 
 from kamiwaza_sdk.exceptions import APIError, DatasetNotFoundError
 from kamiwaza_sdk.services.retrieval import RetrievalService
@@ -21,7 +23,11 @@ from kamiwaza_sdk.schemas.retrieval import RetrievalJobStatus
 pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
 
 
-def _ingest_sample_dataset(client, ingestion_environment: dict[str, str]) -> str:
+def _ingest_sample_dataset(
+    client,
+    ingestion_environment: dict[str, str],
+    secret_urn: str,
+) -> str:
     bucket = ingestion_environment["bucket"]
     prefix = ingestion_environment["prefix"]
     endpoint = ingestion_environment["endpoint"]
@@ -33,7 +39,7 @@ def _ingest_sample_dataset(client, ingestion_environment: dict[str, str]) -> str
         recursive=True,
         endpoint_url=endpoint,
         region="us-east-1",
-        secret_name=ingestion_environment["secret_name"],
+        secret_name=secret_urn,
     )
     urns = ingest_response.urns
     assert urns, "ingestion did not return dataset URNs"
@@ -105,13 +111,18 @@ class TestRetrievalJobOperations:
         self,
         live_kamiwaza_client,
         ingestion_environment: dict[str, str],
+        ingestion_s3_secret_urn: str,
     ) -> None:
         """TS17.001 + TS17.002: Create a retrieval job and fetch its status."""
         client = live_kamiwaza_client
         dataset_urn: str | None = None
 
         try:
-            dataset_urn = _ingest_sample_dataset(client, ingestion_environment)
+            dataset_urn = _ingest_sample_dataset(
+                client,
+                ingestion_environment,
+                ingestion_s3_secret_urn,
+            )
             job = client.post("/retrieval/jobs", json=_inline_payload(dataset_urn))
 
             job_id = str(job["job_id"])

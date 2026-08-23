@@ -244,9 +244,9 @@ Missing integration coverage: 163
 
 | Test Id | Coverage | Method | Path | Tests |
 | --- | --- | --- | --- | --- |
-| TS10.001 | [x] | GET | /model_configs/ | test_serving_workflow.py::test_deploy_qwen_and_infer_with_strip_thinking (models.get_model_configs); test_model_configs_live.py::TestModelConfigListOperations::test_get_model_configs (models.get_model_configs) |
-| TS10.002 | [x] | POST | /model_configs/ | test_serving_workflow.py::test_deploy_qwen_and_infer_with_strip_thinking (models.create_model_config); test_model_configs_live.py::TestModelConfigLifecycle::test_create_and_delete_model_config (models.create_model_config) |
-| TS10.003 | [x] | DELETE | /model_configs/{model_config_id} | test_serving_workflow.py::test_deploy_qwen_and_infer_with_strip_thinking (models.delete_model_config); test_model_configs_live.py::TestModelConfigLifecycle::test_create_and_delete_model_config (models.delete_model_config) |
+| TS10.001 | [x] | GET | /model_configs/ | test_serving_workflow.py::test_deploy_mlx_qwen_and_infer_with_strip_thinking (models.get_model_configs); test_model_configs_live.py::TestModelConfigListOperations::test_get_model_configs (models.get_model_configs) |
+| TS10.002 | [x] | POST | /model_configs/ | test_serving_workflow.py::test_deploy_mlx_qwen_and_infer_with_strip_thinking (models.create_model_config); test_model_configs_live.py::TestModelConfigLifecycle::test_create_and_delete_model_config (models.create_model_config) |
+| TS10.003 | [x] | DELETE | /model_configs/{model_config_id} | test_serving_workflow.py::test_deploy_mlx_qwen_and_infer_with_strip_thinking (models.delete_model_config); test_model_configs_live.py::TestModelConfigLifecycle::test_create_and_delete_model_config (models.delete_model_config) |
 | TS10.004 | [x] | GET | /model_configs/{model_config_id} | test_model_configs_live.py::TestModelConfigReadOperations::test_get_model_config_by_id (models.get_model_config) |
 | TS10.005 | [x] | PUT | /model_configs/{model_config_id} | test_model_configs_live.py::TestModelConfigLifecycle::test_update_model_config (models.update_model_config) |
 
@@ -335,9 +335,9 @@ Missing integration coverage: 163
 
 | Test Id | Coverage | Method | Path | Tests |
 | --- | --- | --- | --- | --- |
-| TS19.001 | [x] | POST | /serving/deploy_model | test_cli_live.py::test_cli_login_and_pat_flow (CLI serve deploy); test_serving_workflow.py::test_deploy_qwen_and_infer_with_strip_thinking (serving.deploy_model) |
-| TS19.002 | [x] | DELETE | /serving/deployment/{deployment_id} | test_cli_live.py::test_cli_login_and_pat_flow (serving.stop_deployment); test_serving_workflow.py::test_deploy_qwen_and_infer_with_strip_thinking (serving.stop_deployment) |
-| TS19.003 | [x] | GET | /serving/deployment/{deployment_id} | test_cli_live.py::test_cli_login_and_pat_flow (CLI --wait); test_serving_workflow.py::test_deploy_qwen_and_infer_with_strip_thinking (serving.wait_for_deployment) |
+| TS19.001 | [x] | POST | /serving/deploy_model | test_cli_live.py::test_cli_login_and_pat_flow (CLI serve deploy); test_serving_workflow.py::test_deploy_mlx_qwen_and_infer_with_strip_thinking (serving.deploy_model) |
+| TS19.002 | [x] | DELETE | /serving/deployment/{deployment_id} | test_cli_live.py::test_cli_login_and_pat_flow (serving.stop_deployment); test_serving_workflow.py::test_deploy_mlx_qwen_and_infer_with_strip_thinking (serving.stop_deployment) |
+| TS19.003 | [x] | GET | /serving/deployment/{deployment_id} | test_cli_live.py::test_cli_login_and_pat_flow (CLI --wait); test_serving_workflow.py::test_deploy_mlx_qwen_and_infer_with_strip_thinking (serving.wait_for_deployment) |
 | TS19.004 | [x] | GET | /serving/deployment/{deployment_id}/logs | test_serving_workflow.py::_sample_logs (serving.stream_deployment_logs) |
 | TS19.005 | [x] | GET | /serving/deployment/{deployment_id}/logs/patterns | test_serving_endpoints_live.py::test_serving_deployment_status_and_log_patterns (direct) |
 | TS19.006 | [x] | GET | /serving/deployment/{deployment_id}/status | test_serving_endpoints_live.py::test_serving_deployment_status_and_log_patterns (direct) |
@@ -396,5 +396,4 @@ These service calls are used in integration tests but did not resolve to explici
 
 | Service Call | Test |
 | --- | --- |
-| openai.get_client | test_serving_workflow.py::test_deploy_qwen_and_infer_with_strip_thinking:106 |
-| openai.get_client | test_serving_workflow.py::test_deploy_qwen_and_infer_with_strip_thinking:107 |
+| openai.get_client | test_serving_workflow.py::_wait_and_infer:44 |

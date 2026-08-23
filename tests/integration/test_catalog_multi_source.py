@@ -122,6 +122,7 @@ def _ingest_object_dataset(
     *,
     config: Dict[str, str],
     key: str,
+    secret_urn: str,
 ) -> tuple[str, list[str]]:
     response = client.ingestion.run_active(
         "s3",
@@ -129,7 +130,7 @@ def _ingest_object_dataset(
         prefix=key,
         endpoint_url=config["endpoint"],
         region=config["region"],
-        secret_name=config["secret_name"],
+        secret_name=secret_urn,
     )
     dataset_urns = response.urns
     if not dataset_urns:
@@ -230,7 +231,11 @@ def test_catalog_file_ingestion_metadata(live_kamiwaza_client, catalog_stack_env
         _cleanup_datasets(live_kamiwaza_client, dataset_urns)
 
 
-def test_catalog_object_ingestion_inline_retrieval(live_kamiwaza_client, catalog_stack_environment):
+def test_catalog_object_ingestion_inline_retrieval(
+    live_kamiwaza_client,
+    catalog_stack_environment,
+    catalog_s3_secret_urn: str,
+):
     cfg = catalog_stack_environment["object"]
     dataset_urns: list[str] = []
     prefix = f"{cfg['prefix']}/objects"
@@ -241,11 +246,13 @@ def test_catalog_object_ingestion_inline_retrieval(live_kamiwaza_client, catalog
             prefix=prefix,
             endpoint_url=cfg["endpoint"],
             region=cfg["region"],
-            secret_name=cfg["secret_name"],
+            secret_name=catalog_s3_secret_urn,
         )
         dataset_urns = response.urns
         assert dataset_urns, "S3 ingestion returned no datasets"
-        target = next((urn for urn in dataset_urns if "sample.json" in urn), dataset_urns[0])
+        target = next(
+            (urn for urn in dataset_urns if "sample.json" in urn), dataset_urns[0]
+        )
         try:
             inline = _run_inline_retrieval(
                 live_kamiwaza_client,
@@ -262,7 +269,11 @@ def test_catalog_object_ingestion_inline_retrieval(live_kamiwaza_client, catalog
         _cleanup_datasets(live_kamiwaza_client, dataset_urns)
 
 
-def test_catalog_parquet_ingestion_inline_retrieval(live_kamiwaza_client, catalog_stack_environment):
+def test_catalog_parquet_ingestion_inline_retrieval(
+    live_kamiwaza_client,
+    catalog_stack_environment,
+    catalog_s3_secret_urn: str,
+):
     cfg = catalog_stack_environment["object"]
     dataset_urns: list[str] = []
     prefix = f"{cfg['prefix']}/sales_data_10k.parquet"
@@ -273,11 +284,13 @@ def test_catalog_parquet_ingestion_inline_retrieval(live_kamiwaza_client, catalo
             prefix=prefix,
             endpoint_url=cfg["endpoint"],
             region=cfg["region"],
-            secret_name=cfg["secret_name"],
+            secret_name=catalog_s3_secret_urn,
         )
         dataset_urns = response.urns
         assert dataset_urns, "Parquet ingestion returned no datasets"
-        target = next((urn for urn in dataset_urns if "sales_data_10k" in urn), dataset_urns[0])
+        target = next(
+            (urn for urn in dataset_urns if "sales_data_10k" in urn), dataset_urns[0]
+        )
         inline = _run_inline_retrieval(
             live_kamiwaza_client,
             target,
@@ -288,7 +301,11 @@ def test_catalog_parquet_ingestion_inline_retrieval(live_kamiwaza_client, catalo
         _cleanup_datasets(live_kamiwaza_client, dataset_urns)
 
 
-def test_catalog_inline_small_object_succeeds(live_kamiwaza_client, catalog_stack_environment):
+def test_catalog_inline_small_object_succeeds(
+    live_kamiwaza_client,
+    catalog_stack_environment,
+    catalog_s3_secret_urn: str,
+):
     cfg = catalog_stack_environment["object"]
     dataset_urns: list[str] = []
     try:
@@ -296,6 +313,7 @@ def test_catalog_inline_small_object_succeeds(live_kamiwaza_client, catalog_stac
             live_kamiwaza_client,
             config=cfg,
             key=cfg["small_key"],
+            secret_urn=catalog_s3_secret_urn,
         )
         inline = _run_inline_retrieval(
             live_kamiwaza_client,
@@ -307,7 +325,11 @@ def test_catalog_inline_small_object_succeeds(live_kamiwaza_client, catalog_stac
         _cleanup_datasets(live_kamiwaza_client, dataset_urns)
 
 
-def test_catalog_inline_large_object_hits_threshold(live_kamiwaza_client, catalog_stack_environment):
+def test_catalog_inline_large_object_hits_threshold(
+    live_kamiwaza_client,
+    catalog_stack_environment,
+    catalog_s3_secret_urn: str,
+):
     cfg = catalog_stack_environment["object"]
     dataset_urns: list[str] = []
     try:
@@ -315,6 +337,7 @@ def test_catalog_inline_large_object_hits_threshold(live_kamiwaza_client, catalo
             live_kamiwaza_client,
             config=cfg,
             key=cfg["large_key"],
+            secret_urn=catalog_s3_secret_urn,
         )
         with pytest.raises(APIError) as excinfo:
             _run_inline_retrieval(
@@ -329,7 +352,11 @@ def test_catalog_inline_large_object_hits_threshold(live_kamiwaza_client, catalo
         _cleanup_datasets(live_kamiwaza_client, dataset_urns)
 
 
-def test_catalog_large_object_sse_retrieval(live_kamiwaza_client, catalog_stack_environment):
+def test_catalog_large_object_sse_retrieval(
+    live_kamiwaza_client,
+    catalog_stack_environment,
+    catalog_s3_secret_urn: str,
+):
     cfg = catalog_stack_environment["object"]
     dataset_urns: list[str] = []
     try:
@@ -337,6 +364,7 @@ def test_catalog_large_object_sse_retrieval(live_kamiwaza_client, catalog_stack_
             live_kamiwaza_client,
             config=cfg,
             key=cfg["large_sse_key"],
+            secret_urn=catalog_s3_secret_urn,
         )
         _run_sse_retrieval(
             live_kamiwaza_client,
@@ -347,7 +375,11 @@ def test_catalog_large_object_sse_retrieval(live_kamiwaza_client, catalog_stack_
         _cleanup_datasets(live_kamiwaza_client, dataset_urns)
 
 
-def test_catalog_container_link_sets_dataset_container_urn(live_kamiwaza_client, catalog_stack_environment):
+def test_catalog_container_link_sets_dataset_container_urn(
+    live_kamiwaza_client,
+    catalog_stack_environment,
+    catalog_s3_secret_urn: str,
+):
     cfg = catalog_stack_environment["object"]
     dataset_urns: list[str] = []
     container_urn: str | None = None
@@ -356,6 +388,7 @@ def test_catalog_container_link_sets_dataset_container_urn(live_kamiwaza_client,
             live_kamiwaza_client,
             config=cfg,
             key=cfg["small_key"],
+            secret_urn=catalog_s3_secret_urn,
         )
         containers = live_kamiwaza_client.catalog.containers
         container_payload = ContainerCreate(

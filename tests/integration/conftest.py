@@ -2219,6 +2219,65 @@ def ingestion_environment(
             _run_compose("down", "-v", env=compose_env)
 
 
+def _authenticated_catalog_owner(client: KamiwazaClient) -> str:
+    profile = client.get("/auth/users/me")
+    owner_urn = str(profile.get("urn") or "").strip()
+    if owner_urn:
+        return owner_urn
+
+    username = str(profile.get("username") or "").strip()
+    if not username:
+        pytest.fail("Authenticated user profile did not include an owner identity")
+    return f"urn:li:corpuser:{username.replace('@', '-')}"
+
+
+def _create_s3_catalog_secret(
+    client: KamiwazaClient,
+    *,
+    endpoint: str,
+    region: str,
+) -> str:
+    value = json.dumps(
+        {
+            "aws_access_key_id": "minioadmin",
+            "aws_secret_access_key": "minioadmin",
+            "endpoint_override": endpoint,
+            "endpoint_url": endpoint,
+            "region": region,
+        }
+    )
+    payload = SecretCreate(
+        name=f"sdk-s3-live-{uuid.uuid4().hex[:10]}",
+        value=SecretStr(value),
+        owner=_authenticated_catalog_owner(client),
+        description="SDK live S3 fixture credentials",
+    )
+    return client.catalog.secrets.create(payload)
+
+
+def _delete_catalog_secret(client: KamiwazaClient, secret_urn: str) -> None:
+    try:
+        client.catalog.secrets.delete(secret_urn)
+    except APIError:
+        pass
+
+
+@pytest.fixture
+def ingestion_s3_secret_urn(
+    live_kamiwaza_client: KamiwazaClient,
+    ingestion_environment: dict[str, str],
+) -> Iterator[str]:
+    secret_urn = _create_s3_catalog_secret(
+        live_kamiwaza_client,
+        endpoint=ingestion_environment["endpoint"],
+        region="us-east-1",
+    )
+    try:
+        yield secret_urn
+    finally:
+        _delete_catalog_secret(live_kamiwaza_client, secret_urn)
+
+
 @pytest.fixture(scope="session")
 def catalog_stack_environment(
     live_catalog_secret_factory: Callable[[str, str, str], str],
@@ -2342,3 +2401,21 @@ def catalog_stack_environment(
     finally:
         if not stack_running and os.environ.get("KEEP_CATALOG_STACK") != "1":
             _run_catalog_compose("down", "-v")
+
+
+@pytest.fixture
+def catalog_s3_secret_urn(
+    live_kamiwaza_client: KamiwazaClient,
+    catalog_stack_environment: dict[str, object],
+) -> Iterator[str]:
+    object_config = catalog_stack_environment["object"]
+    assert isinstance(object_config, dict)
+    secret_urn = _create_s3_catalog_secret(
+        live_kamiwaza_client,
+        endpoint=str(object_config["endpoint"]),
+        region=str(object_config["region"]),
+    )
+    try:
+        yield secret_urn
+    finally:
+        _delete_catalog_secret(live_kamiwaza_client, secret_urn)
