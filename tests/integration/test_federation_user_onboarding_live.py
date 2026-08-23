@@ -172,6 +172,15 @@ def _claim(client: KamiwazaClient, federation_id: str, token: str) -> dict[str, 
     )
 
 
+def _claim_diagnostic(claim: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": claim.get("status"),
+        "attempt_id": claim.get("attempt_id"),
+        "recovery_state": claim.get("recovery_state"),
+        "credential_present": bool(claim.get("credential")),
+    }
+
+
 @pytest.fixture(scope="module")
 def initiator_client(live_kamiwaza_session_client: KamiwazaClient) -> KamiwazaClient:
     return live_kamiwaza_session_client
@@ -390,10 +399,15 @@ def onboarded_pair(
         claimed = _claim(person["client"], initiator_fed_id, claim_token)
         credential = claimed.get("credential")
         assert credential, f"first claim must return the credential: {claimed!r}"
+        claim_attempt_id = claimed.get("attempt_id")
+        diagnostic = _claim_diagnostic(claimed)
+        assert claim_attempt_id, f"first claim must identify its attempt: {diagnostic!r}"
+        assert claimed.get("recovery_state") == "SOURCE_CUSTODY_COMPLETED", diagnostic
 
         person["request_id"] = request_id
         person["receiver_request_id"] = receiver_request_id
         person["claim_token"] = claim_token
+        person["claim_attempt_id"] = claim_attempt_id
         person["credential"] = credential
 
     # ``federation_id`` stays the RECEIVER's: every downstream assertion reads
@@ -495,30 +509,25 @@ class TestPerUserOnboarding:
             )
 
     def test_claim_token_is_single_use(self, onboarded_pair: dict[str, Any]) -> None:
-        """The token is spent on first success, so a leaked token cannot re-fetch
-        a durable credential.
+        """A replay identifies the durable attempt but cannot re-fetch its secret.
 
         Replayed on the INITIATOR by the token's own owner, because that is
-        where single-use is enforced: ``claim_onboarding`` spends the token
-        before making its mesh call, and the receiver's queue deliberately holds
-        no token at all. Replaying at the receiver would prove nothing — there
-        is nothing there to spend.
+        where the bearer is spent and its digest is retained for safe recovery.
+        The receiver's queue deliberately holds no token at all, so replaying at
+        the receiver would prove nothing.
         """
-        from kamiwaza_sdk.exceptions import NotFoundError
-
         person = onboarded_pair["people"][0]
-        # A spent token is GONE, not merely unproductive: claim_onboarding
-        # clears it (`row.claim_token = None`) before its mesh call, so
-        # `_require_request_by_token` no longer resolves it and the API answers
-        # 404. This asserted a soft 200-with-no-credential, which the endpoint
-        # never returns for a spent token — 404 is the stronger guarantee, and
-        # the one that actually ships.
-        with pytest.raises(NotFoundError):
-            _claim(
-                person["client"],
-                onboarded_pair["initiator_federation_id"],
-                person["claim_token"],
-            )
+        replayed = _claim(
+            person["client"],
+            onboarded_pair["initiator_federation_id"],
+            person["claim_token"],
+        )
+        diagnostic = _claim_diagnostic(replayed)
+
+        assert replayed.get("status") == "APPROVED", diagnostic
+        assert replayed.get("credential") is None, diagnostic
+        assert replayed.get("attempt_id") == person["claim_attempt_id"], diagnostic
+        assert replayed.get("recovery_state") == "SOURCE_CUSTODY_COMPLETED", diagnostic
 
     def test_queue_lists_requests_without_leaking_claim_tokens(
         self, onboarded_pair: dict[str, Any], receiver_client: KamiwazaClient
