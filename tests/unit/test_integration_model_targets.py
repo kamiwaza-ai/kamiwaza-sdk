@@ -70,6 +70,54 @@ def test_nvidia_selects_vllm_before_host_platform() -> None:
     assert targets.select_inference_target(snapshot) == targets.VLLM_LLM_TARGET
 
 
+def test_explicit_suite_target_overrides_hardware_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KAMIWAZA_TEST_LLM_REPO", "Qwen/Qwen3-0.6B-GGUF")
+    monkeypatch.setenv("KAMIWAZA_TEST_LLM_ENGINE", "llamacpp")
+    monkeypatch.setenv("KAMIWAZA_TEST_LLM_QUANT", "q8_0")
+    snapshot = cap.ClusterCapabilitySnapshot(
+        gpu_count=1,
+        gpu_vendors=frozenset({"nvidia"}),
+    )
+
+    selected = targets.select_inference_target(snapshot)
+
+    assert selected == targets.InferenceTarget(
+        repo_id="Qwen/Qwen3-0.6B-GGUF",
+        engine_name="llamacpp",
+        quantization="q8_0",
+    )
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("KAMIWAZA_TEST_LLM_REPO", "org/model"),
+        ("KAMIWAZA_TEST_LLM_ENGINE", "llamacpp"),
+    ],
+)
+def test_partial_explicit_suite_target_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    value: str,
+) -> None:
+    monkeypatch.setenv(name, value)
+
+    with pytest.raises(ValueError, match="must be set together"):
+        targets.select_inference_target(None)
+
+
+def test_invalid_explicit_suite_engine_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KAMIWAZA_TEST_LLM_REPO", "org/model")
+    monkeypatch.setenv("KAMIWAZA_TEST_LLM_ENGINE", "unsupported")
+
+    with pytest.raises(ValueError, match="unsupported KAMIWAZA_TEST_LLM_ENGINE"):
+        targets.select_inference_target(None)
+
+
 def test_unknown_inventory_uses_portable_cpu_target() -> None:
     assert targets.select_inference_target(None) == targets.GGUF_LLM_TARGET
 
