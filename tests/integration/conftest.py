@@ -14,7 +14,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterator, NoReturn
 from urllib.parse import urlparse
 
 import pytest
@@ -659,20 +659,62 @@ def _context_llm_target(
 ) -> _model_targets.InferenceTarget:
     """Select a context-test LLM repo/engine for the live host.
 
-    Explicit context overrides win; otherwise use the shared platform target.
+    Explicit context overrides win and are required. Otherwise preserve the
+    shared platform target's required/optional contract.
     """
     if _CONTEXT_TEST_LLM_REPO_OVERRIDE:
         return _model_targets.InferenceTarget(
             repo_id=_CONTEXT_TEST_LLM_REPO_OVERRIDE,
             engine_name=_CONTEXT_TEST_LLM_ENGINE_OVERRIDE,
             quantization=_CONTEXT_TEST_LLM_QUANTIZATION_OVERRIDE or "q6_k",
+            required=True,
         )
     target = _model_targets.select_inference_target(snapshot)
     return _model_targets.InferenceTarget(
         repo_id=target.repo_id,
         engine_name=_CONTEXT_TEST_LLM_ENGINE_OVERRIDE or target.engine_name,
         quantization=_CONTEXT_TEST_LLM_QUANTIZATION_OVERRIDE or target.quantization,
+        required=target.required,
     )
+
+
+def _fail_or_skip_context_target(
+    target: _model_targets.InferenceTarget,
+    message: str,
+) -> NoReturn:
+    if target.required:
+        pytest.fail(message)
+    pytest.skip(message)
+
+
+def _raise_or_skip_context_target(
+    target: _model_targets.InferenceTarget,
+    error: Exception,
+    message: str,
+) -> NoReturn:
+    if target.required:
+        raise error
+    pytest.skip(message)
+
+
+def _active_context_deployment_matches_target(
+    deployment: dict[str, str],
+    target: _model_targets.InferenceTarget,
+    prepared_model: Any | None,
+) -> bool:
+    """Require exact prepared weights when reusing a required context target."""
+    if deployment.get("repo_model_id") != target.repo_id:
+        return False
+    if (
+        target.engine_name
+        and deployment.get("engine_name") != target.engine_name
+    ):
+        return False
+    if not target.required:
+        return True
+
+    model_file_id = _target_model_file_id(prepared_model, target.quantization)
+    return model_file_id is None or deployment.get("m_file_id") == model_file_id
 
 
 def _active_embedding_deployment(client: KamiwazaClient) -> dict[str, str] | None:
@@ -1314,14 +1356,11 @@ def context_llm_prerequisite(
     ensure_repo_ready,
     cluster_capability_snapshot: _cap.ClusterCapabilitySnapshot | None,
 ) -> Iterator[str]:
-    """Ensure a usable LLM deployment exists for context ontology operations, or skip once.
+    """Ensure a usable LLM deployment exists for context ontology operations.
 
     Mirrors ``embedding_model_prerequisite``: if no LLM is already deployed the
-    fixture attempts to provision one, but it **skips** (does not error) when the
-    platform cannot bring one up — e.g. a CPU-only smoke host with no inference
-    capacity, or an MLX-only test model on a non-Apple-Silicon runner. This keeps
-    the context ontology/vectordb tests as conditional skips on incapable hosts
-    instead of a cascade of fixture-setup ERRORs.
+    fixture attempts to provision one. Inventory-selected targets skip on hosts
+    without compatible inference capacity; explicit targets fail closed.
     """
     client = live_kamiwaza_session_client
     context_target = _context_llm_target(cluster_capability_snapshot)
@@ -1343,10 +1382,19 @@ def context_llm_prerequisite(
         preferred_repo_id=context_repo_id,
         preferred_engine_name=context_engine_name,
     )
-    if (
-        existing is not None
-        and existing.get("repo_model_id") == context_repo_id
-        and existing.get("engine_name") == context_engine_name
+    prepared_model: Any | None = None
+    if existing is not None and context_target.required:
+        # Resolve the selected quantization before reusing a required deployment.
+        # Repo + engine alone is ambiguous for multi-quant GGUF repositories.
+        prepared_model = ensure_repo_ready(
+            client,
+            context_repo_id,
+            quantization=context_target.quantization,
+        )
+    if existing is not None and _active_context_deployment_matches_target(
+        existing,
+        context_target,
+        prepared_model,
     ):
         yield existing["deployment_id"]
         return
@@ -1356,14 +1404,17 @@ def context_llm_prerequisite(
     # capacity-limited host) would be orphaned when we skip.
     provisioned_deployment_id: str | None = None
     try:
-        model = ensure_repo_ready(
-            client,
-            context_repo_id,
-            quantization=context_target.quantization,
-        )
+        model = prepared_model
+        if model is None:
+            model = ensure_repo_ready(
+                client,
+                context_repo_id,
+                quantization=context_target.quantization,
+            )
         configs = client.models.get_model_configs(model.id)
         if not configs:
-            pytest.skip(
+            _fail_or_skip_context_target(
+                context_target,
                 f"No model configs available for context LLM repo '{context_repo_id}'"
             )
         default_config = next(
@@ -1391,7 +1442,8 @@ def context_llm_prerequisite(
             deploy_kwargs["m_file_id"] = model_file_id
         raw_deployment_id = client.serving.deploy_model(**deploy_kwargs)
         if not raw_deployment_id:
-            pytest.skip(
+            _fail_or_skip_context_target(
+                context_target,
                 "deploy_model did not return a deployment id for context LLM repo "
                 f"'{context_repo_id}' (engine={context_engine_name or 'default'}, "
                 "deploy refused on this host)."
@@ -1404,30 +1456,35 @@ def context_llm_prerequisite(
         )
     except (TimeoutError, RuntimeError, ValueError) as exc:
         _stop_provisioned(provisioned_deployment_id)
-        pytest.skip(
-            "No active LLM deployment for context ontology tests and one could not "
-            f"be provisioned (repo={context_repo_id}, "
+        _raise_or_skip_context_target(
+            context_target,
+            exc,
+            "No active LLM deployment for context ontology tests and one could "
+            f"not be provisioned (repo={context_repo_id}, "
             f"engine={context_engine_name or 'default'}): "
-            f"{type(exc).__name__}: {exc}"
+            f"{type(exc).__name__}: {exc}",
         )
     except APIError as exc:
         _stop_provisioned(provisioned_deployment_id)
         status_code = getattr(exc, "status_code", None)
         if status_code is not None and status_code < 500:
             raise
-        pytest.skip(
-            "No active LLM deployment for context ontology tests and one could not "
-            f"be provisioned (repo={context_repo_id}, "
+        _raise_or_skip_context_target(
+            context_target,
+            exc,
+            "No active LLM deployment for context ontology tests and one could "
+            f"not be provisioned (repo={context_repo_id}, "
             f"engine={context_engine_name or 'default'}): "
-            f"APIError {status_code or 'transport'}: {exc}"
+            f"APIError {status_code or 'transport'}: {exc}",
         )
 
     if not _platform_deployment_ready(deployment):
         _stop_provisioned(provisioned_deployment_id)
-        pytest.skip(
+        _fail_or_skip_context_target(
+            context_target,
             "Context ontology prerequisite LLM deployment did not become ready: "
             f"deployment_id={deployment.id}, status={deployment.status}, "
-            f"instance_statuses={[instance.status for instance in deployment.instances]}"
+            f"instance_statuses={[instance.status for instance in deployment.instances]}",
         )
 
     try:
@@ -1449,7 +1506,7 @@ def _ensure_deployable_target_ready(
     ensure_repo_ready: Callable[..., object],
     target: _model_targets.InferenceTarget,
 ) -> Any:
-    """Make the selected target artifact ready, or skip capability failures."""
+    """Make the selected target ready; required fleet targets fail closed."""
     try:
         return ensure_repo_ready(
             client,
@@ -1457,13 +1514,15 @@ def _ensure_deployable_target_ready(
             quantization=target.quantization,
         )
     except (TimeoutError, RuntimeError, ValueError) as exc:
+        if target.required:
+            raise
         pytest.skip(
             f"Host cannot make deployable target '{target.repo_id}' ready "
             f"(quantization={target.quantization}): {type(exc).__name__}: {exc}"
         )
     except APIError as exc:
         status_code = getattr(exc, "status_code", None)
-        if status_code is not None and status_code < 500:
+        if target.required or (status_code is not None and status_code < 500):
             raise
         pytest.skip(
             f"Host cannot make deployable target '{target.repo_id}' ready "
@@ -1476,7 +1535,7 @@ def ensure_deployable_model_ready(
     ensure_repo_ready: Callable[..., object],
     deployable_model_target: _model_targets.InferenceTarget,
 ) -> Callable[[KamiwazaClient], Any]:
-    """Return a target-aware, skip-not-fail live model readiness helper."""
+    """Return a target-aware live model readiness helper."""
 
     def _ensure(client: KamiwazaClient) -> object:
         return _ensure_deployable_target_ready(
@@ -1489,12 +1548,69 @@ def ensure_deployable_model_ready(
 
 
 def _default_model_config(
-    client: KamiwazaClient, model_id: object, repo_id: str
+    client: KamiwazaClient,
+    model_id: object,
+    target: _model_targets.InferenceTarget,
 ) -> Any:
     configs = client.models.get_model_configs(model_id)
     if not configs:
-        pytest.skip(f"No model configs available for deployable test model '{repo_id}'")
+        message = (
+            "No model configs available for deployable test model "
+            f"'{target.repo_id}'"
+        )
+        if target.required:
+            pytest.fail(message)
+        pytest.skip(message)
     return next((config for config in configs if config.default), configs[0])
+
+
+def _matching_active_deployable_target(
+    client: KamiwazaClient,
+    target: _model_targets.InferenceTarget,
+) -> bool:
+    existing = _preferred_active_model_deployment(
+        client,
+        desired_type="llm",
+        preferred_repo_id=target.repo_id,
+        preferred_engine_name=target.engine_name,
+    )
+    return bool(
+        existing is not None
+        and existing.get("repo_model_id") == target.repo_id
+        and existing.get("engine_name") == target.engine_name
+    )
+
+
+def _start_deployable_target_probe(
+    client: KamiwazaClient,
+    ensure_repo_ready: Callable[..., object],
+    target: _model_targets.InferenceTarget,
+) -> str:
+    model = _ensure_deployable_target_ready(client, ensure_repo_ready, target)
+    default_config = _default_model_config(client, model.id, target)
+    # Deliberately omit engine_name: the platform auto-selects it from the
+    # model's weight format. That exercises the same path as a real deploy.
+    raw_deployment_id = client.serving.deploy_model(
+        model_id=str(model.id),
+        m_config_id=default_config.id,
+        lb_port=0,
+        autoscaling=False,
+        min_copies=1,
+        starting_copies=1,
+        m_file_id=_target_model_file_id(model, target.quantization),
+        # The caller's wait_for_deployment owns the timeout, not the SDK default.
+        wait=False,
+    )
+    if raw_deployment_id:
+        return str(raw_deployment_id)
+
+    message = (
+        f"deploy_model returned no id for '{target.repo_id}' "
+        "(deploy refused on this host)."
+    )
+    if target.required:
+        pytest.fail(message)
+    pytest.skip(message)
 
 
 @pytest.fixture(scope="session")
@@ -1503,63 +1619,26 @@ def deployable_model_prerequisite(
     ensure_repo_ready,
     deployable_model_target: _model_targets.InferenceTarget,
 ) -> None:
-    """Skip once if this host cannot deploy the integration test model.
+    """Probe once whether this host can deploy the integration test model.
 
-    Probe deployability once per session and skip the marked tests instead of
-    failing them. The shared target fixture keeps the probe and tests on the
+    Inventory-selected targets skip capability failures so ordinary developer
+    environments remain portable. Explicit fleet targets fail those same
+    failures closed. The shared target fixture keeps the probe and tests on the
     exact same platform-compatible model and engine.
     """
     client = live_kamiwaza_session_client
     repo_id = deployable_model_target.repo_id
     engine_name = deployable_model_target.engine_name
-    existing = _preferred_active_model_deployment(
-        client,
-        desired_type="llm",
-        preferred_repo_id=repo_id,
-        preferred_engine_name=engine_name,
-    )
-    if (
-        existing is not None
-        and existing.get("repo_model_id") == repo_id
-        and existing.get("engine_name") == engine_name
-    ):
+    if _matching_active_deployable_target(client, deployable_model_target):
         return
 
     probe_deployment_id: str | None = None
     try:
-        model = _ensure_deployable_target_ready(
+        probe_deployment_id = _start_deployable_target_probe(
             client,
             ensure_repo_ready,
             deployable_model_target,
         )
-        default_config = _default_model_config(client, model.id, repo_id)
-        # Deliberately omit engine_name: the platform auto-selects the engine
-        # from the model's weight format (GGUF->llamacpp, safetensors->vLLM/MLX;
-        # kamiwaza.serving.engine_selector), which is exactly the target's
-        # engine_name by construction. Forcing it here is redundant with the
-        # model choice; letting the server pick exercises the same auto-selection
-        # real deploys use. engine_name stays the EXPECTED value for the
-        # existing-deployment match above. (ENG-9872)
-        raw_deployment_id = client.serving.deploy_model(
-            model_id=str(model.id),
-            m_config_id=default_config.id,
-            lb_port=0,
-            autoscaling=False,
-            min_copies=1,
-            starting_copies=1,
-            m_file_id=_target_model_file_id(
-                model, deployable_model_target.quantization
-            ),
-            # The probe's wait_for_deployment below owns the timeout
-            # (DEPLOYABLE_TEST_DEPLOY_TIMEOUT_SECONDS), not the SDK default.
-            wait=False,
-        )
-        if not raw_deployment_id:
-            pytest.skip(
-                f"deploy_model returned no id for '{repo_id}' "
-                "(deploy refused on this host)."
-            )
-        probe_deployment_id = str(raw_deployment_id)
         deployment = client.serving.wait_for_deployment(
             probe_deployment_id,
             poll_interval=5,
@@ -1569,20 +1648,24 @@ def deployable_model_prerequisite(
         # Download/registration timeout, or the deployment entering FAILED/ERROR
         # status because the instance can't load the model on this host
         # (RuntimeError from wait_for_deployment, kamiwaza_sdk/services/serving.py)
-        # — capability/infra failure → skip + tear down.
+        # — capability/infra failure → tear down, then fail for an explicit
+        # fleet contract or skip for an inventory-selected local target.
         _stop_deployment_quietly(client, probe_deployment_id)
+        if deployable_model_target.required:
+            raise
         pytest.skip(
             "Host cannot provision integration test model (download/deploy) "
             f"'{repo_id}' (engine={engine_name}): {type(exc).__name__}: {exc}"
         )
     except APIError as exc:
-        # Only a 5xx (server cannot bring the model up on this host) is a
-        # capability failure → skip. A 4xx (auth / scope / validation /
-        # request-shape) is a real regression and MUST fail, not be masked as a
-        # skip, so it is re-raised.
+        # A 4xx (auth / scope / validation / request-shape) is always a real
+        # regression. A 5xx/transport failure skips only for an optional,
+        # inventory-selected target; an explicit fleet contract fails closed.
         status_code = getattr(exc, "status_code", None)
         _stop_deployment_quietly(client, probe_deployment_id)
-        if status_code is not None and status_code < 500:
+        if deployable_model_target.required or (
+            status_code is not None and status_code < 500
+        ):
             raise
         pytest.skip(
             "Host cannot provision integration test model (download/deploy) "
@@ -1593,10 +1676,13 @@ def deployable_model_prerequisite(
     ready = _platform_deployment_ready(deployment)
     _stop_deployment_quietly(client, probe_deployment_id)
     if not ready:
-        pytest.skip(
-            f"Integration test model '{repo_id}' (engine={engine_name}) did not become "
-            "ready on this host."
+        message = (
+            f"Integration test model '{repo_id}' (engine={engine_name}) did not "
+            "become ready on this host."
         )
+        if deployable_model_target.required:
+            pytest.fail(message)
+        pytest.skip(message)
 
 
 @pytest.fixture(autouse=True)
@@ -2034,7 +2120,9 @@ def _target_files_for_quantization(model: Any, quantization: str) -> list[Any]:
     from kamiwaza_sdk.utils.quant_manager import QuantizationManager
 
     return QuantizationManager().filter_files_by_quantization(
-        gguf_files, quantization
+        gguf_files,
+        quantization,
+        apply_fallback=False,
     )
 
 

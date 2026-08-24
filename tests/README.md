@@ -37,11 +37,17 @@ Some live integration tests exercise admin-only mutation paths. For those tests,
 The inference tests choose one model/engine/quantization target from the live
 cluster inventory. NVIDIA selects vLLM, complete Apple Silicon inventory selects
 MLX, and CPU-only, mixed, or incomplete inventory selects llamacpp/GGUF. Override
-the shared repositories with `KAMIWAZA_TEST_MLX_LLM_REPO`,
+the entire target explicitly with `KAMIWAZA_TEST_LLM_REPO` plus
+`KAMIWAZA_TEST_LLM_ENGINE` and optional `KAMIWAZA_TEST_LLM_QUANT`; this takes
+precedence over hardware selection and is the fleet/topology integration seam.
+An explicit target is required: download or deployment failure fails the suite
+instead of being reported as a capability skip.
+Override only the automatically selected repositories with `KAMIWAZA_TEST_MLX_LLM_REPO`,
 `KAMIWAZA_TEST_VLLM_LLM_REPO`, or `KAMIWAZA_TEST_GGUF_LLM_REPO`. Context tests
 also accept `KAMIWAZA_CONTEXT_LLM_REPO`, `KAMIWAZA_CONTEXT_LLM_ENGINE`, and
 `KAMIWAZA_CONTEXT_LLM_QUANTIZATION`; the latter defaults to `q6_k` for an
-explicit context repository and otherwise inherits the shared target.
+explicit context repository and otherwise inherits the shared target. An
+explicit context repository is also required and fails closed.
 
 ## Shared Fixtures
 - `dummy_client` – lightweight HTTP stub for unit tests (records calls, replays canned responses).

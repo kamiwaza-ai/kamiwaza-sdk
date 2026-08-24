@@ -8,6 +8,8 @@ from uuid import uuid4
 
 import pytest
 
+from kamiwaza_sdk.exceptions import APIError
+
 pytestmark = pytest.mark.unit
 
 CONFTEST_PATH = (
@@ -24,6 +26,17 @@ def integration_conftest():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+@pytest.fixture(autouse=True)
+def _clear_explicit_fleet_target(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep fixture unit tests independent of the invoking fleet environment."""
+    for name in (
+        "KAMIWAZA_TEST_LLM_REPO",
+        "KAMIWAZA_TEST_LLM_ENGINE",
+        "KAMIWAZA_TEST_LLM_QUANT",
+    ):
+        monkeypatch.delenv(name, raising=False)
 
 
 class _EmbeddingProbeClient:
@@ -186,6 +199,7 @@ def test_deployable_model_probe_uses_shared_repo_and_engine(
     target = integration_conftest._model_targets.InferenceTarget(
         repo_id="org/model.gguf",
         engine_name="llamacpp",
+        quantization="q4_k",
     )
     deploy_calls: list[dict[str, object]] = []
 
@@ -347,6 +361,27 @@ def test_ensure_deployable_target_ready_skips_download_timeout(
         )
 
 
+def test_ensure_required_deployable_target_ready_fails_download_timeout(
+    integration_conftest,
+) -> None:
+    target = integration_conftest._model_targets.InferenceTarget(
+        repo_id="org/required-model.gguf",
+        engine_name="llamacpp",
+        quantization="q4_k",
+        required=True,
+    )
+
+    def time_out(*_args: object, **_kwargs: object) -> object:
+        raise TimeoutError("required download stalled")
+
+    with pytest.raises(TimeoutError, match="required download stalled"):
+        integration_conftest._ensure_deployable_target_ready(
+            object(),
+            time_out,
+            target,
+        )
+
+
 def test_ensure_deployable_target_ready_skips_missing_quantization(
     integration_conftest,
 ) -> None:
@@ -431,6 +466,33 @@ def test_ensure_deployable_target_ready_skips_server_error(
             reject,
             target,
         )
+
+
+def test_ensure_required_deployable_target_ready_reraises_server_error(
+    integration_conftest,
+) -> None:
+    target = integration_conftest._model_targets.InferenceTarget(
+        repo_id="org/required-model.gguf",
+        engine_name="llamacpp",
+        quantization="q4_k",
+        required=True,
+    )
+    error = integration_conftest.APIError(
+        "required runtime unavailable",
+        status_code=500,
+    )
+
+    def reject(*_args: object, **_kwargs: object) -> object:
+        raise error
+
+    with pytest.raises(integration_conftest.APIError) as excinfo:
+        integration_conftest._ensure_deployable_target_ready(
+            object(),
+            reject,
+            target,
+        )
+
+    assert excinfo.value is error
 
 
 def test_ensure_deployable_target_ready_skips_transport_api_error(
@@ -543,6 +605,7 @@ def test_context_target_carries_shared_quantization(
         repo_id="org/model.gguf",
         engine_name="llamacpp",
         quantization="q4_k",
+        required=True,
     )
     monkeypatch.setattr(integration_conftest, "_CONTEXT_TEST_LLM_REPO_OVERRIDE", "")
     monkeypatch.setattr(integration_conftest, "_CONTEXT_TEST_LLM_ENGINE_OVERRIDE", "")
@@ -553,6 +616,24 @@ def test_context_target_carries_shared_quantization(
     )
 
     assert integration_conftest._context_llm_target(None) == target
+
+
+def test_explicit_context_override_is_required(
+    integration_conftest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        integration_conftest,
+        "_CONTEXT_TEST_LLM_REPO_OVERRIDE",
+        "org/context.gguf",
+    )
+    monkeypatch.setattr(
+        integration_conftest,
+        "_CONTEXT_TEST_LLM_ENGINE_OVERRIDE",
+        "llamacpp",
+    )
+
+    assert integration_conftest._context_llm_target(None).required is True
 
 
 def test_context_prerequisite_prepares_and_deploys_exact_target_file(
@@ -624,6 +705,116 @@ def test_context_prerequisite_prepares_and_deploys_exact_target_file(
     assert readiness_calls == [(target.repo_id, target.quantization)]
     assert deploy_calls[0]["engine_name"] == target.engine_name
     assert deploy_calls[0]["m_file_id"] == str(model_file_id)
+
+
+def test_required_context_does_not_reuse_mismatched_active_quantization(
+    integration_conftest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = integration_conftest._model_targets.InferenceTarget(
+        repo_id="org/context.gguf",
+        engine_name="llamacpp",
+        quantization="q8_0",
+        required=True,
+    )
+    q8_file_id = uuid4()
+    readiness_calls: list[tuple[str, str]] = []
+    deploy_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        integration_conftest,
+        "_context_llm_target",
+        lambda _snapshot: target,
+    )
+    monkeypatch.setattr(
+        integration_conftest,
+        "_preferred_active_model_deployment",
+        lambda *_args, **_kwargs: {
+            "deployment_id": "dep-q4",
+            "repo_model_id": target.repo_id,
+            "engine_name": target.engine_name,
+            "m_file_id": "q4-file-id",
+        },
+    )
+
+    def ensure_repo_ready(
+        _client: object, repo_id: str, *, quantization: str
+    ) -> object:
+        readiness_calls.append((repo_id, quantization))
+        return SimpleNamespace(
+            id="model-1",
+            m_files=[
+                SimpleNamespace(
+                    id=q8_file_id,
+                    name="context-Q8_0.gguf",
+                    storage_location="oci://context-Q8_0.gguf",
+                    is_downloading=False,
+                    dl_requested_at=None,
+                )
+            ],
+        )
+
+    client = SimpleNamespace(
+        models=SimpleNamespace(
+            get_model_configs=lambda _model_id: [
+                SimpleNamespace(id="cfg-1", default=True)
+            ]
+        ),
+        serving=SimpleNamespace(
+            deploy_model=lambda **kwargs: deploy_calls.append(kwargs) or "dep-q8",
+            wait_for_deployment=lambda *_args, **_kwargs: SimpleNamespace(
+                id="dep-q8",
+                status="DEPLOYED",
+                instances=[SimpleNamespace(status="DEPLOYED")],
+            ),
+            stop_deployment=lambda **_kwargs: None,
+        ),
+    )
+
+    prerequisite = integration_conftest.context_llm_prerequisite.__wrapped__(
+        client,
+        ensure_repo_ready,
+        None,
+    )
+    assert next(prerequisite) == "dep-q8"
+    with pytest.raises(StopIteration):
+        next(prerequisite)
+
+    assert readiness_calls == [(target.repo_id, target.quantization)]
+    assert deploy_calls[0]["m_file_id"] == str(q8_file_id)
+
+
+def test_required_context_repo_only_override_reuses_matching_active_file(
+    integration_conftest,
+) -> None:
+    model_file_id = uuid4()
+    target = integration_conftest._model_targets.InferenceTarget(
+        repo_id="org/context.gguf",
+        engine_name="",
+        quantization="q8_0",
+        required=True,
+    )
+    prepared_model = SimpleNamespace(
+        m_files=[
+            SimpleNamespace(
+                id=model_file_id,
+                name="context-Q8_0.gguf",
+                storage_location="oci://context-Q8_0.gguf",
+                is_downloading=False,
+                dl_requested_at=None,
+            )
+        ]
+    )
+
+    assert integration_conftest._active_context_deployment_matches_target(
+        {
+            "deployment_id": "dep-existing",
+            "repo_model_id": target.repo_id,
+            "engine_name": "llamacpp",
+            "m_file_id": str(model_file_id),
+        },
+        target,
+        prepared_model,
+    )
 
 
 def test_context_prerequisite_does_not_mask_programming_errors(
@@ -706,6 +897,52 @@ def test_context_prerequisite_preserves_api_error_taxonomy(
         pytest.fail("expected the 4xx to propagate")
 
 
+@pytest.mark.parametrize(
+    "error",
+    [
+        TimeoutError("required context deployment timed out"),
+        pytest.param(
+            APIError("required context server failure", status_code=500),
+            id="server-error",
+        ),
+    ],
+)
+def test_required_context_prerequisite_reraises_capability_failure(
+    integration_conftest,
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
+) -> None:
+    target = integration_conftest._model_targets.InferenceTarget(
+        repo_id="org/required-context.gguf",
+        engine_name="llamacpp",
+        required=True,
+    )
+    monkeypatch.setattr(
+        integration_conftest,
+        "_context_llm_target",
+        lambda _snapshot: target,
+    )
+    monkeypatch.setattr(
+        integration_conftest,
+        "_preferred_active_model_deployment",
+        lambda *_args, **_kwargs: None,
+    )
+
+    def fail_readiness(*_args: object, **_kwargs: object) -> object:
+        raise error
+
+    prerequisite = integration_conftest.context_llm_prerequisite.__wrapped__(
+        object(),
+        fail_readiness,
+        None,
+    )
+
+    with pytest.raises(type(error)) as excinfo:
+        next(prerequisite)
+
+    assert excinfo.value is error
+
+
 def test_deployable_probe_skips_transport_api_error(
     integration_conftest,
     monkeypatch: pytest.MonkeyPatch,
@@ -736,6 +973,120 @@ def test_deployable_probe_skips_transport_api_error(
         )
 
 
+def test_required_deployable_probe_reraises_readiness_timeout(
+    integration_conftest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = integration_conftest._model_targets.InferenceTarget(
+        repo_id="org/required-model.gguf",
+        engine_name="llamacpp",
+        required=True,
+    )
+    monkeypatch.setattr(
+        integration_conftest,
+        "_preferred_active_model_deployment",
+        lambda *_args, **_kwargs: None,
+    )
+
+    def fail_readiness(*_args: object, **_kwargs: object) -> object:
+        raise TimeoutError("required model download timed out")
+
+    client = SimpleNamespace(
+        serving=SimpleNamespace(stop_deployment=lambda **_kwargs: None)
+    )
+
+    with pytest.raises(TimeoutError, match="required model download timed out"):
+        integration_conftest.deployable_model_prerequisite.__wrapped__(
+            client,
+            fail_readiness,
+            target,
+        )
+
+
+def test_required_deployable_target_fails_without_model_config(
+    integration_conftest,
+) -> None:
+    target = integration_conftest._model_targets.InferenceTarget(
+        repo_id="org/required-model.gguf",
+        engine_name="llamacpp",
+        required=True,
+    )
+    client = SimpleNamespace(
+        models=SimpleNamespace(get_model_configs=lambda _model_id: [])
+    )
+
+    with pytest.raises(pytest.fail.Exception, match="No model configs available"):
+        integration_conftest._default_model_config(client, "model-1", target)
+
+
+def test_required_deployable_target_fails_when_deploy_returns_no_id(
+    integration_conftest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = integration_conftest._model_targets.InferenceTarget(
+        repo_id="org/required-model.gguf",
+        engine_name="llamacpp",
+        required=True,
+    )
+    monkeypatch.setattr(
+        integration_conftest,
+        "_ensure_deployable_target_ready",
+        lambda *_args, **_kwargs: SimpleNamespace(id="model-1", m_files=[]),
+    )
+    client = SimpleNamespace(
+        models=SimpleNamespace(
+            get_model_configs=lambda _model_id: [
+                SimpleNamespace(id="cfg-1", default=True)
+            ]
+        ),
+        serving=SimpleNamespace(deploy_model=lambda **_kwargs: None),
+    )
+
+    with pytest.raises(pytest.fail.Exception, match="returned no id"):
+        integration_conftest._start_deployable_target_probe(
+            client,
+            object(),
+            target,
+        )
+
+
+def test_required_deployable_probe_fails_when_deployment_is_not_ready(
+    integration_conftest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = integration_conftest._model_targets.InferenceTarget(
+        repo_id="org/required-model.gguf",
+        engine_name="llamacpp",
+        required=True,
+    )
+    monkeypatch.setattr(
+        integration_conftest,
+        "_matching_active_deployable_target",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        integration_conftest,
+        "_start_deployable_target_probe",
+        lambda *_args, **_kwargs: "dep-1",
+    )
+    client = SimpleNamespace(
+        serving=SimpleNamespace(
+            wait_for_deployment=lambda *_args, **_kwargs: SimpleNamespace(
+                status="FAILED",
+                instances=[SimpleNamespace(status="FAILED")],
+            ),
+            stop_deployment=lambda **_kwargs: None,
+        )
+    )
+
+    with pytest.raises(pytest.fail.Exception, match="did not become ready"):
+        integration_conftest.deployable_model_prerequisite.__wrapped__(
+            client,
+            object(),
+            target,
+        )
+
+
 def test_target_model_file_id_pins_ready_gguf_quantization(
     integration_conftest,
 ) -> None:
@@ -762,6 +1113,26 @@ def test_target_model_file_id_pins_ready_gguf_quantization(
     assert integration_conftest._target_model_file_id(model, "q4_k") == str(
         selected_id
     )
+
+
+def test_target_model_file_id_does_not_fallback_to_another_quantization(
+    integration_conftest,
+) -> None:
+    model = SimpleNamespace(
+        m_files=[
+            SimpleNamespace(
+                id=uuid4(),
+                name="model-Q4_K_M.gguf",
+                storage_location="oci://model-Q4_K_M.gguf",
+                is_downloading=False,
+                dl_requested_at=None,
+            )
+        ]
+    )
+
+    assert integration_conftest._target_files_for_quantization(model, "q8_0") == []
+    assert not integration_conftest._model_has_ready_target_files(model, "q8_0")
+    assert integration_conftest._target_model_file_id(model, "q8_0") is None
 
 
 def test_target_model_file_id_ignores_unready_files(integration_conftest) -> None:

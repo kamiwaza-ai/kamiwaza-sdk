@@ -13,6 +13,17 @@ import model_targets as targets  # noqa: E402
 pytestmark = pytest.mark.unit
 
 
+@pytest.fixture(autouse=True)
+def _clear_explicit_fleet_target(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep selector tests independent of the invoking fleet environment."""
+    for name in (
+        "KAMIWAZA_TEST_LLM_REPO",
+        "KAMIWAZA_TEST_LLM_ENGINE",
+        "KAMIWAZA_TEST_LLM_QUANT",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
 def test_suite_repo_override_wins_and_rejects_blank_values(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -68,6 +79,64 @@ def test_nvidia_selects_vllm_before_host_platform() -> None:
     )
 
     assert targets.select_inference_target(snapshot) == targets.VLLM_LLM_TARGET
+
+
+def test_explicit_suite_target_overrides_hardware_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KAMIWAZA_TEST_LLM_REPO", "Qwen/Qwen3-0.6B-GGUF")
+    monkeypatch.setenv("KAMIWAZA_TEST_LLM_ENGINE", "llamacpp")
+    monkeypatch.setenv("KAMIWAZA_TEST_LLM_QUANT", "q8_0")
+    snapshot = cap.ClusterCapabilitySnapshot(
+        gpu_count=1,
+        gpu_vendors=frozenset({"nvidia"}),
+    )
+
+    selected = targets.select_inference_target(snapshot)
+
+    assert selected == targets.InferenceTarget(
+        repo_id="Qwen/Qwen3-0.6B-GGUF",
+        engine_name="llamacpp",
+        quantization="q8_0",
+        required=True,
+    )
+
+
+def test_inventory_selected_target_is_optional() -> None:
+    snapshot = cap.ClusterCapabilitySnapshot(
+        gpu_count=1,
+        gpu_vendors=frozenset({"nvidia"}),
+    )
+
+    assert targets.select_inference_target(snapshot).required is False
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("KAMIWAZA_TEST_LLM_REPO", "org/model"),
+        ("KAMIWAZA_TEST_LLM_ENGINE", "llamacpp"),
+    ],
+)
+def test_partial_explicit_suite_target_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    value: str,
+) -> None:
+    monkeypatch.setenv(name, value)
+
+    with pytest.raises(ValueError, match="must be set together"):
+        targets.select_inference_target(None)
+
+
+def test_invalid_explicit_suite_engine_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KAMIWAZA_TEST_LLM_REPO", "org/model")
+    monkeypatch.setenv("KAMIWAZA_TEST_LLM_ENGINE", "unsupported")
+
+    with pytest.raises(ValueError, match="unsupported KAMIWAZA_TEST_LLM_ENGINE"):
+        targets.select_inference_target(None)
 
 
 def test_unknown_inventory_uses_portable_cpu_target() -> None:

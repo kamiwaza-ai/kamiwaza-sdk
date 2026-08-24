@@ -88,20 +88,28 @@ def test_cli_serve_deploy_requests_full_budget_admin_pat() -> None:
 
 
 @pytest.mark.parametrize(
-    ("revoke_error", "deploy_status"),
+    ("revoke_error", "deploy_status", "inference_error"),
     [
-        (None, "DEPLOYED"),
-        (APIError("gateway unavailable", status_code=503), "DEPLOYED"),
-        (AuthenticationError("PAT expired", status_code=401), "DEPLOYED"),
-        (APIError("gateway unavailable", status_code=503), "FAILED"),
+        (None, "DEPLOYED", None),
+        (APIError("gateway unavailable", status_code=503), "DEPLOYED", None),
+        (AuthenticationError("PAT expired", status_code=401), "DEPLOYED", None),
+        (APIError("gateway unavailable", status_code=503), "FAILED", None),
+        (None, "DEPLOYED", RuntimeError("inference failed")),
     ],
-    ids=["success", "api-error", "authentication-error", "deploy-and-revoke-fail"],
+    ids=[
+        "success",
+        "api-error",
+        "authentication-error",
+        "deploy-and-revoke-fail",
+        "inference-fail",
+    ],
 )
 def test_cli_serve_deploy_attempts_revocation_and_clears_cache(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     revoke_error: Exception | None,
     deploy_status: str,
+    inference_error: Exception | None,
 ) -> None:
     token_path = tmp_path / "token.json"
     pat_token = cli_live.jwt.encode(
@@ -123,6 +131,22 @@ def test_cli_serve_deploy_attempts_revocation_and_clears_cache(
     def fake_stop_deployment(**_kwargs: object) -> None:
         events.append("stop")
 
+    def fake_chat_completion(**_kwargs: object) -> object:
+        events.append("infer")
+        assert _kwargs["timeout"] == 60
+        assert _kwargs["messages"] == [
+            {"role": "user", "content": "Reply with exactly: ready /no_think"}
+        ]
+        assert _kwargs["temperature"] == 0.7
+        assert _kwargs["top_p"] == 0.8
+        assert _kwargs["presence_penalty"] == 1.5
+        assert _kwargs["max_tokens"] == 64
+        if inference_error:
+            raise inference_error
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="ready"))]
+        )
+
     def fake_run_cli(*_args: object, **_kwargs: object):
         events.append("deploy")
         return subprocess.CompletedProcess(
@@ -135,6 +159,13 @@ def test_cli_serve_deploy_attempts_revocation_and_clears_cache(
     pat_client = SimpleNamespace(
         auth=SimpleNamespace(revoke_pat=fake_revoke),
         serving=SimpleNamespace(stop_deployment=fake_stop_deployment),
+        openai=SimpleNamespace(
+            get_client=lambda **_kwargs: SimpleNamespace(
+                chat=SimpleNamespace(
+                    completions=SimpleNamespace(create=fake_chat_completion)
+                )
+            )
+        ),
     )
     monkeypatch.setattr(
         cli_live, "_cli_login_and_create_pat", fake_login_and_create_pat
@@ -155,13 +186,17 @@ def test_cli_serve_deploy_attempts_revocation_and_clears_cache(
             tmp_path,
         )
 
-    if deploy_status == "DEPLOYED":
+    if inference_error is not None:
+        with pytest.raises(RuntimeError, match="inference failed"):
+            invoke_deploy_test()
+        assert events == ["deploy", "infer", "stop", "revoke"]
+    elif deploy_status == "DEPLOYED":
         invoke_deploy_test()
-        assert events == ["deploy", "stop", "revoke"]
+        assert events == ["deploy", "infer", "stop", "revoke"]
     else:
         with pytest.raises(AssertionError, match="FAILED"):
             invoke_deploy_test()
-        assert events == ["deploy", "revoke"]
+        assert events == ["deploy", "stop", "revoke"]
 
     assert revoked == ["pat-jti"]
     assert not token_path.exists()

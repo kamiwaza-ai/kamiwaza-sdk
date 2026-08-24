@@ -121,6 +121,23 @@ def test_mlx_target_reaches_workflow_body() -> None:
     ensure_model_ready.assert_called_once_with(client)
 
 
+def test_required_target_fails_when_model_has_no_config() -> None:
+    client = Mock()
+    client.models.get_model_configs.return_value = []
+    target = model_targets.InferenceTarget(
+        repo_id="mlx-community/Qwen3-4B-4bit",
+        engine_name="mlx",
+        required=True,
+    )
+
+    with pytest.raises(pytest.fail.Exception, match="No model configs available"):
+        serving_workflow._default_config(
+            client,
+            SimpleNamespace(id="model-1"),
+            target,
+        )
+
+
 def test_mlx_workflow_has_no_pre_body_capability_gate() -> None:
     workflow = serving_workflow.test_deploy_mlx_qwen_and_infer_with_strip_thinking
     marker_names = {marker.name for marker in getattr(workflow, "pytestmark", ())}

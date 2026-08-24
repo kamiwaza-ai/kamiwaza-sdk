@@ -14,15 +14,19 @@ contributor PRs without a live cluster don't see false reds.
 | `KAMIWAZA_VERIFY_SSL` | Set `false` for self-signed certs in dev | `true` |
 | `KAMIWAZA_PEER_BASE_URL` | Federation peer cluster base URL (ENG-5784) | unset |
 | `KAMIWAZA_PEER_API_KEY` | API key on the peer cluster (ENG-5784) | unset |
+| `KAMIWAZA_TEST_LLM_REPO` | Explicit required live-test model; must be paired with `KAMIWAZA_TEST_LLM_ENGINE`, overrides inventory selection, and makes readiness/deployment failures fail rather than skip | unset |
+| `KAMIWAZA_TEST_LLM_ENGINE` | Explicit required engine (`llamacpp`, `mlx`, or `vllm`); must be paired with `KAMIWAZA_TEST_LLM_REPO` | unset |
+| `KAMIWAZA_TEST_LLM_QUANT` | Quantization for the explicit shared target | selected engine's default |
 | `KAMIWAZA_TEST_MLX_LLM_REPO` | MLX model used by live model tests (`KAMIWAZA_CONTEXT_MLX_LLM_REPO` is the legacy alias) | `mlx-community/Qwen3-4B-4bit` |
 | `KAMIWAZA_TEST_VLLM_LLM_REPO` | vLLM model used by live model tests (`KAMIWAZA_CONTEXT_VLLM_LLM_REPO` is the legacy alias) | `Qwen/Qwen3-0.6B` |
 | `KAMIWAZA_TEST_GGUF_LLM_REPO` | llama.cpp model used by live model tests; it must provide `q4_k` weights (`KAMIWAZA_CONTEXT_GGUF_LLM_REPO` is the legacy alias) | `unsloth/Qwen3-4B-Instruct-2507-GGUF` |
-| `KAMIWAZA_CONTEXT_LLM_REPO` | Higher-precedence model override for context tests | shared platform target |
+| `KAMIWAZA_CONTEXT_LLM_REPO` | Higher-precedence required model override for context tests; readiness/deployment failures fail rather than skip | shared platform target |
 | `KAMIWAZA_CONTEXT_LLM_ENGINE` | Higher-precedence engine override for context tests | shared platform target |
 | `KAMIWAZA_CONTEXT_LLM_QUANTIZATION` | Quantization override for context tests | shared target, or `q6_k` with an explicit context repo |
 
-Live model tests select vLLM for NVIDIA clusters, MLX only when every reported
-platform is Apple Silicon, and the GGUF/llama.cpp target otherwise.
+Unless the explicit shared target is configured, live model tests select vLLM
+for NVIDIA clusters, MLX only when every reported platform is Apple Silicon,
+and the GGUF/llama.cpp target otherwise.
 
 ### Brokering env vars (capabilities probe + federated job tests)
 

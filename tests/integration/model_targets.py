@@ -16,6 +16,7 @@ class InferenceTarget:
     repo_id: str
     engine_name: str
     quantization: str = "q6_k"
+    required: bool = False
 
 
 def _configured_repo(generic_name: str, legacy_name: str, default: str) -> str:
@@ -73,10 +74,45 @@ def _load_inference_targets() -> tuple[InferenceTarget, InferenceTarget, Inferen
 MLX_LLM_TARGET, VLLM_LLM_TARGET, GGUF_LLM_TARGET = _load_inference_targets()
 
 
+def _explicit_inference_target() -> InferenceTarget | None:
+    """Resolve the fleet-provided target contract, failing on partial input."""
+    repo_id = os.environ.get("KAMIWAZA_TEST_LLM_REPO", "").strip()
+    engine_name = os.environ.get("KAMIWAZA_TEST_LLM_ENGINE", "").strip().lower()
+    quantization = os.environ.get("KAMIWAZA_TEST_LLM_QUANT", "").strip()
+    if not any((repo_id, engine_name, quantization)):
+        return None
+    if not repo_id or not engine_name:
+        raise ValueError(
+            "KAMIWAZA_TEST_LLM_REPO and KAMIWAZA_TEST_LLM_ENGINE "
+            "must be set together; KAMIWAZA_TEST_LLM_QUANT is optional only "
+            "after both are set"
+        )
+    targets_by_engine = {
+        "llamacpp": GGUF_LLM_TARGET,
+        "mlx": MLX_LLM_TARGET,
+        "vllm": VLLM_LLM_TARGET,
+    }
+    if engine_name not in targets_by_engine:
+        raise ValueError(
+            f"unsupported KAMIWAZA_TEST_LLM_ENGINE '{engine_name}'; "
+            f"choose one of {sorted(targets_by_engine)}"
+        )
+    default_quantization = targets_by_engine[engine_name].quantization
+    return InferenceTarget(
+        repo_id=repo_id,
+        engine_name=engine_name,
+        quantization=quantization or default_quantization,
+        required=True,
+    )
+
+
 def select_inference_target(
     snapshot: ClusterCapabilitySnapshot | None,
 ) -> InferenceTarget:
     """Choose weights and engine that match the live cluster hardware."""
+    explicit_target = _explicit_inference_target()
+    if explicit_target is not None:
+        return explicit_target
     if snapshot is not None and "nvidia" in snapshot.gpu_vendors:
         return VLLM_LLM_TARGET
     if snapshot is not None and snapshot.is_apple_silicon:
