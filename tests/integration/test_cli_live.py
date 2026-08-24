@@ -302,11 +302,11 @@ def test_cli_serve_deploy(
     target_model_file_id,
     tmp_path: Path,
 ) -> None:
-    """CLI ``serve deploy`` round-trip.
+    """CLI ``serve deploy`` plus an authenticated inference round-trip.
 
     Requires a host that can actually deploy the test model; gated by
-    ``requires_deployable_model`` so it skips (rather than fails) on hosts
-    without compatible inference capacity for the platform-selected target.
+    ``requires_deployable_model`` so inventory-selected targets skip on hosts
+    without compatible inference capacity. Explicit fleet targets fail closed.
     """
     token_path = tmp_path / "token.json"
     base_args = ["--base-url", live_server_available, "--token-path", str(token_path)]
@@ -326,6 +326,7 @@ def test_cli_serve_deploy(
     )
     pat_client = client_factory(base_url=live_server_available, api_key=pat_token)
     pat_jti: str | None = None
+    deployment_id: str | None = None
 
     try:
         pat_jti = _pat_jti(pat_token)
@@ -359,9 +360,23 @@ def test_cli_serve_deploy(
         assert deployment_id, "CLI serve deploy did not return a deployment_id"
         assert summary.get("status") == "DEPLOYED"
 
-        try:
-            pat_client.serving.stop_deployment(deployment_id=deployment_id, force=True)
-        except Exception:
-            pass
+        openai_client = pat_client.openai.get_client(deployment_id=deployment_id)
+        response = openai_client.chat.completions.create(
+            model="kamiwaza",
+            messages=[{"role": "user", "content": "Reply with exactly: ready"}],
+            temperature=0.0,
+            max_tokens=8,
+        )
+        assert response.choices, "CLI-deployed model returned no chat choices"
+        content = response.choices[0].message.content or ""
+        assert content.strip(), "CLI-deployed model returned an empty chat response"
     finally:
+        if deployment_id:
+            try:
+                pat_client.serving.stop_deployment(
+                    deployment_id=deployment_id,
+                    force=True,
+                )
+            except Exception:
+                pass
         _cleanup_cli_pat(pat_client, pat_jti, token_path)
