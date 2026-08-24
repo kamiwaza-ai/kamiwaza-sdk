@@ -16,6 +16,7 @@ class InferenceTarget:
     repo_id: str
     engine_name: str
     quantization: str = "q6_k"
+    required: bool = False
 
 
 def _configured_repo(generic_name: str, legacy_name: str, default: str) -> str:
@@ -100,6 +101,7 @@ def _explicit_inference_target() -> InferenceTarget | None:
         repo_id=repo_id,
         engine_name=engine_name,
         quantization=quantization or default_quantization,
+        required=True,
     )
 
 

@@ -1449,7 +1449,7 @@ def _ensure_deployable_target_ready(
     ensure_repo_ready: Callable[..., object],
     target: _model_targets.InferenceTarget,
 ) -> Any:
-    """Make the selected target artifact ready, or skip capability failures."""
+    """Make the selected target ready; required fleet targets fail closed."""
     try:
         return ensure_repo_ready(
             client,
@@ -1457,13 +1457,15 @@ def _ensure_deployable_target_ready(
             quantization=target.quantization,
         )
     except (TimeoutError, RuntimeError, ValueError) as exc:
+        if target.required:
+            raise
         pytest.skip(
             f"Host cannot make deployable target '{target.repo_id}' ready "
             f"(quantization={target.quantization}): {type(exc).__name__}: {exc}"
         )
     except APIError as exc:
         status_code = getattr(exc, "status_code", None)
-        if status_code is not None and status_code < 500:
+        if target.required or (status_code is not None and status_code < 500):
             raise
         pytest.skip(
             f"Host cannot make deployable target '{target.repo_id}' ready "
@@ -1476,7 +1478,7 @@ def ensure_deployable_model_ready(
     ensure_repo_ready: Callable[..., object],
     deployable_model_target: _model_targets.InferenceTarget,
 ) -> Callable[[KamiwazaClient], Any]:
-    """Return a target-aware, skip-not-fail live model readiness helper."""
+    """Return a target-aware live model readiness helper."""
 
     def _ensure(client: KamiwazaClient) -> object:
         return _ensure_deployable_target_ready(
@@ -1489,11 +1491,19 @@ def ensure_deployable_model_ready(
 
 
 def _default_model_config(
-    client: KamiwazaClient, model_id: object, repo_id: str
+    client: KamiwazaClient,
+    model_id: object,
+    target: _model_targets.InferenceTarget,
 ) -> Any:
     configs = client.models.get_model_configs(model_id)
     if not configs:
-        pytest.skip(f"No model configs available for deployable test model '{repo_id}'")
+        message = (
+            "No model configs available for deployable test model "
+            f"'{target.repo_id}'"
+        )
+        if target.required:
+            pytest.fail(message)
+        pytest.skip(message)
     return next((config for config in configs if config.default), configs[0])
 
 
@@ -1503,10 +1513,11 @@ def deployable_model_prerequisite(
     ensure_repo_ready,
     deployable_model_target: _model_targets.InferenceTarget,
 ) -> None:
-    """Skip once if this host cannot deploy the integration test model.
+    """Probe once whether this host can deploy the integration test model.
 
-    Probe deployability once per session and skip the marked tests instead of
-    failing them. The shared target fixture keeps the probe and tests on the
+    Inventory-selected targets skip capability failures so ordinary developer
+    environments remain portable. Explicit fleet targets fail those same
+    failures closed. The shared target fixture keeps the probe and tests on the
     exact same platform-compatible model and engine.
     """
     client = live_kamiwaza_session_client
@@ -1532,7 +1543,11 @@ def deployable_model_prerequisite(
             ensure_repo_ready,
             deployable_model_target,
         )
-        default_config = _default_model_config(client, model.id, repo_id)
+        default_config = _default_model_config(
+            client,
+            model.id,
+            deployable_model_target,
+        )
         # Deliberately omit engine_name: the platform auto-selects the engine
         # from the model's weight format (GGUF->llamacpp, safetensors->vLLM/MLX;
         # kamiwaza.serving.engine_selector), which is exactly the target's
@@ -1555,10 +1570,13 @@ def deployable_model_prerequisite(
             wait=False,
         )
         if not raw_deployment_id:
-            pytest.skip(
+            message = (
                 f"deploy_model returned no id for '{repo_id}' "
                 "(deploy refused on this host)."
             )
+            if deployable_model_target.required:
+                pytest.fail(message)
+            pytest.skip(message)
         probe_deployment_id = str(raw_deployment_id)
         deployment = client.serving.wait_for_deployment(
             probe_deployment_id,
@@ -1569,20 +1587,24 @@ def deployable_model_prerequisite(
         # Download/registration timeout, or the deployment entering FAILED/ERROR
         # status because the instance can't load the model on this host
         # (RuntimeError from wait_for_deployment, kamiwaza_sdk/services/serving.py)
-        # — capability/infra failure → skip + tear down.
+        # — capability/infra failure → tear down, then fail for an explicit
+        # fleet contract or skip for an inventory-selected local target.
         _stop_deployment_quietly(client, probe_deployment_id)
+        if deployable_model_target.required:
+            raise
         pytest.skip(
             "Host cannot provision integration test model (download/deploy) "
             f"'{repo_id}' (engine={engine_name}): {type(exc).__name__}: {exc}"
         )
     except APIError as exc:
-        # Only a 5xx (server cannot bring the model up on this host) is a
-        # capability failure → skip. A 4xx (auth / scope / validation /
-        # request-shape) is a real regression and MUST fail, not be masked as a
-        # skip, so it is re-raised.
+        # A 4xx (auth / scope / validation / request-shape) is always a real
+        # regression. A 5xx/transport failure skips only for an optional,
+        # inventory-selected target; an explicit fleet contract fails closed.
         status_code = getattr(exc, "status_code", None)
         _stop_deployment_quietly(client, probe_deployment_id)
-        if status_code is not None and status_code < 500:
+        if deployable_model_target.required or (
+            status_code is not None and status_code < 500
+        ):
             raise
         pytest.skip(
             "Host cannot provision integration test model (download/deploy) "
@@ -1593,10 +1615,13 @@ def deployable_model_prerequisite(
     ready = _platform_deployment_ready(deployment)
     _stop_deployment_quietly(client, probe_deployment_id)
     if not ready:
-        pytest.skip(
-            f"Integration test model '{repo_id}' (engine={engine_name}) did not become "
-            "ready on this host."
+        message = (
+            f"Integration test model '{repo_id}' (engine={engine_name}) did not "
+            "become ready on this host."
         )
+        if deployable_model_target.required:
+            pytest.fail(message)
+        pytest.skip(message)
 
 
 @pytest.fixture(autouse=True)

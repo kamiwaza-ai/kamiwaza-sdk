@@ -347,6 +347,27 @@ def test_ensure_deployable_target_ready_skips_download_timeout(
         )
 
 
+def test_ensure_required_deployable_target_ready_fails_download_timeout(
+    integration_conftest,
+) -> None:
+    target = integration_conftest._model_targets.InferenceTarget(
+        repo_id="org/required-model.gguf",
+        engine_name="llamacpp",
+        quantization="q4_k",
+        required=True,
+    )
+
+    def time_out(*_args: object, **_kwargs: object) -> object:
+        raise TimeoutError("required download stalled")
+
+    with pytest.raises(TimeoutError, match="required download stalled"):
+        integration_conftest._ensure_deployable_target_ready(
+            object(),
+            time_out,
+            target,
+        )
+
+
 def test_ensure_deployable_target_ready_skips_missing_quantization(
     integration_conftest,
 ) -> None:
@@ -431,6 +452,33 @@ def test_ensure_deployable_target_ready_skips_server_error(
             reject,
             target,
         )
+
+
+def test_ensure_required_deployable_target_ready_reraises_server_error(
+    integration_conftest,
+) -> None:
+    target = integration_conftest._model_targets.InferenceTarget(
+        repo_id="org/required-model.gguf",
+        engine_name="llamacpp",
+        quantization="q4_k",
+        required=True,
+    )
+    error = integration_conftest.APIError(
+        "required runtime unavailable",
+        status_code=500,
+    )
+
+    def reject(*_args: object, **_kwargs: object) -> object:
+        raise error
+
+    with pytest.raises(integration_conftest.APIError) as excinfo:
+        integration_conftest._ensure_deployable_target_ready(
+            object(),
+            reject,
+            target,
+        )
+
+    assert excinfo.value is error
 
 
 def test_ensure_deployable_target_ready_skips_transport_api_error(
@@ -733,6 +781,36 @@ def test_deployable_probe_skips_transport_api_error(
     with pytest.raises(pytest.skip.Exception, match="APIError transport"):
         integration_conftest.deployable_model_prerequisite.__wrapped__(
             client, object(), target
+        )
+
+
+def test_required_deployable_probe_reraises_readiness_timeout(
+    integration_conftest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = integration_conftest._model_targets.InferenceTarget(
+        repo_id="org/required-model.gguf",
+        engine_name="llamacpp",
+        required=True,
+    )
+    monkeypatch.setattr(
+        integration_conftest,
+        "_preferred_active_model_deployment",
+        lambda *_args, **_kwargs: None,
+    )
+
+    def fail_readiness(*_args: object, **_kwargs: object) -> object:
+        raise TimeoutError("required model download timed out")
+
+    client = SimpleNamespace(
+        serving=SimpleNamespace(stop_deployment=lambda **_kwargs: None)
+    )
+
+    with pytest.raises(TimeoutError, match="required model download timed out"):
+        integration_conftest.deployable_model_prerequisite.__wrapped__(
+            client,
+            fail_readiness,
+            target,
         )
 
 

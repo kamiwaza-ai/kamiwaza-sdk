@@ -87,7 +87,17 @@ def test_explicit_suite_target_overrides_hardware_selection(
         repo_id="Qwen/Qwen3-0.6B-GGUF",
         engine_name="llamacpp",
         quantization="q8_0",
+        required=True,
     )
+
+
+def test_inventory_selected_target_is_optional() -> None:
+    snapshot = cap.ClusterCapabilitySnapshot(
+        gpu_count=1,
+        gpu_vendors=frozenset({"nvidia"}),
+    )
+
+    assert targets.select_inference_target(snapshot).required is False
 
 
 @pytest.mark.parametrize(

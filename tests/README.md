@@ -40,6 +40,8 @@ MLX, and CPU-only, mixed, or incomplete inventory selects llamacpp/GGUF. Overrid
 the entire target explicitly with `KAMIWAZA_TEST_LLM_REPO` plus
 `KAMIWAZA_TEST_LLM_ENGINE` and optional `KAMIWAZA_TEST_LLM_QUANT`; this takes
 precedence over hardware selection and is the fleet/topology integration seam.
+An explicit target is required: download or deployment failure fails the suite
+instead of being reported as a capability skip.
 Override only the automatically selected repositories with `KAMIWAZA_TEST_MLX_LLM_REPO`,
 `KAMIWAZA_TEST_VLLM_LLM_REPO`, or `KAMIWAZA_TEST_GGUF_LLM_REPO`. Context tests
 also accept `KAMIWAZA_CONTEXT_LLM_REPO`, `KAMIWAZA_CONTEXT_LLM_ENGINE`, and
