@@ -1215,3 +1215,12 @@ class KamiwazaClient:
 
             self._conversations = ConversationService(self)
         return self._conversations
+
+    @property
+    def kaizen_ops(self):
+        """Kaizen operator settings (per-workroom extension; take a base_url)."""
+        if not hasattr(self, "_kaizen_ops"):
+            from .services.kaizen import KaizenOpsService
+
+            self._kaizen_ops = KaizenOpsService(self)
+        return self._kaizen_ops
