@@ -28,6 +28,7 @@ from .base_service import BaseService
 # the request reaches the canonical route.
 _AGENTS_PATH = "api/agents"
 _CONVERSATIONS_PATH = "api/conversations"
+_OPS_MODELS_PATH = "api/ops/models"
 _OPS_CHAT_MODEL_PATH = "api/ops/models/chat"
 
 # Catalog identities. Two Kaizen products ship side by side and answer different
@@ -392,9 +393,10 @@ class AgentService(BaseService):
     ) -> None:
         """Delete an agent the caller owns (canonical Kaizen; owner-only).
 
-        ``expect_json=False`` because the route answers 204; a 200 with an empty
-        body would otherwise raise a JSON-parse error out of a call whose result
-        is discarded, masking whatever the caller was actually doing.
+        ``expect_json=False`` guards the 200-with-empty-body case: a 204 is
+        already handled upstream, but an empty 200 would raise a JSON-parse
+        error out of a call whose result is discarded — typically a cleanup
+        ``finally``, where it would mask the caller's real failure.
         """
         self.client._request(
             "DELETE",
@@ -1020,5 +1022,25 @@ class KaizenOpsService(BaseService):
             _OPS_CHAT_MODEL_PATH,
             base_url=base_url,
             json={"deployment_id": deployment_id},
+            headers=_workroom_headers(workroom_id),
+        )
+
+    def get_model_settings(
+        self,
+        *,
+        base_url: str,
+        workroom_id: Optional[Union[str, object]] = None,
+    ) -> Dict[str, Any]:
+        """Read the instance's current model-role settings.
+
+        Same view :meth:`set_chat_model` returns, so it doubles as a read-back
+        when a write answers without a body (a 204 is a perfectly ordinary
+        answer to a settings PUT) and the caller still needs to confirm what
+        got bound.
+        """
+        return self.client._request(
+            "GET",
+            _OPS_MODELS_PATH,
+            base_url=base_url,
             headers=_workroom_headers(workroom_id),
         )

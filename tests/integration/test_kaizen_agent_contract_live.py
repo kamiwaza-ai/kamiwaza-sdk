@@ -21,6 +21,7 @@ from kamiwaza_sdk.seeding.client import scoped_client_for_workroom
 from kamiwaza_sdk.services.kaizen import (
     CANONICAL_EXTENSION_NAME,
     AmbiguousExtensionError,
+    _is_serving,
     resolve_base_url,
 )
 
@@ -58,6 +59,12 @@ def _canonical_kaizen(client):
             )
         except (KamiwazaError, AmbiguousExtensionError, ValueError):
             continue
+        # A published ingress only means envoy has a route; right after install
+        # the backend can still be starting and every call 503s. Without this
+        # the tests would FAIL on a cold box, contradicting the skip-never-fail
+        # contract in this module's docstring.
+        if not _is_serving(scoped, base_url, workroom_id=workroom_id):
+            continue
         return scoped, workroom_id, base_url
     return None
 
@@ -93,6 +100,37 @@ def test_canonical_agent_create_accepts_the_content_contract(canonical_kaizen):
         assert any(item.id == agent.id for item in listed)
     finally:
         client.agents.delete(agent.id, base_url=base_url, workroom_id=workroom_id)
+
+
+def test_ops_model_settings_carry_the_shape_bind_chat_model_reads(canonical_kaizen):
+    """Anchor the response shape `bind-chat-model` confirms itself against.
+
+    `cmd_bind_chat_model` decides whether automation may proceed by reading
+    `chat.current.id` out of the ops model-settings view. That is the seeder's
+    load-bearing step, and until something checks it against a real instance
+    it is an assumption. This reads the same view `set_chat_model` returns.
+
+    Deliberately read-only: repointing a live instance's chat model would
+    mutate operator config other tests and users on that box depend on, so the
+    write half stays covered by unit tests and by the seeder itself.
+    """
+    client, workroom_id, base_url = canonical_kaizen
+
+    settings = client.kaizen_ops.get_model_settings(
+        base_url=base_url, workroom_id=workroom_id
+    )
+
+    assert isinstance(settings, dict), f"expected a settings object, got {type(settings)}"
+    assert "chat" in settings, f"no 'chat' key in ops model settings: {sorted(settings)}"
+    chat = settings["chat"]
+    assert isinstance(chat, dict), f"expected 'chat' to be an object, got {type(chat)}"
+    # `current` is None when nothing is bound yet — a legitimate state on a
+    # fresh instance. What must hold is that when it IS bound, the id lives at
+    # chat.current.id, which is what the CLI reads.
+    current = chat.get("current")
+    assert current is None or (
+        isinstance(current, dict) and "id" in current
+    ), f"chat.current is neither None nor an object carrying 'id': {current!r}"
 
 
 def test_canonical_agent_create_rejects_the_legacy_body(canonical_kaizen):

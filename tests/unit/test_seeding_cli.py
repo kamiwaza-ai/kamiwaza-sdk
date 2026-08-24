@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from kamiwaza_sdk.exceptions import DeploymentFailedError
+from kamiwaza_sdk.exceptions import DeploymentFailedError, KamiwazaError
 from kamiwaza_sdk.seeding import cli
 
 pytestmark = pytest.mark.unit
@@ -356,7 +356,11 @@ def test_create_agent_uses_kaizen_base_url(capsys, monkeypatch):
     assert call["base_url"] == "https://kamiwaza.test/kaizen"
     assert call["llm"].model == "llama-3"
     assert call["workroom_id"] == "wr-1"
-    assert json.loads(capsys.readouterr().out) == {"agent_id": "agent-1"}
+    # Both contracts emit the same keys; legacy has no content version.
+    assert json.loads(capsys.readouterr().out) == {
+        "agent_id": "agent-1",
+        "version": None,
+    }
 
 
 def test_create_agent_missing_llm_api_key_env_exits(monkeypatch):
@@ -566,36 +570,122 @@ def test_bind_chat_model_sends_only_the_deployment_id(capsys, monkeypatch):
     assert call["args"] == ("dep-xyz",)
     assert call["kwargs"]["base_url"] == "https://kamiwaza.test/kaizen"
     assert call["kwargs"]["workroom_id"] == "wr-1"
-    assert json.loads(capsys.readouterr().out) == {"chat_deployment_id": "dep-xyz"}
+    # The write echoed the binding back, so no read-back was needed.
+    assert json.loads(capsys.readouterr().out) == {
+        "chat_deployment_id": "dep-xyz",
+        "confirmed": True,
+    }
+
+
+def _bind(client, capsys=None):
+    _run(
+        [
+            "bind-chat-model",
+            "--kaizen-base-url", "https://kamiwaza.test/kaizen",
+            "--deployment-id", "dep-xyz",
+        ],
+        client,
+    )
+    return json.loads(capsys.readouterr().out) if capsys else None
 
 
 @pytest.mark.parametrize(
-    "response",
+    "write_response",
     [
-        {"chat": {"current": {"id": "some-other-dep"}}},  # server bound something else
-        {"chat": {"current": None}},  # nothing bound
-        {"chat": {}},  # no current at all
-        {},  # off-shape response entirely
-        "not-a-dict",
+        {"chat": {"current": {"id": "some-other-dep"}}},
+        {"chat": {"current": {"id": "dep-old"}}},
     ],
 )
-def test_bind_chat_model_fails_when_binding_is_not_confirmed(monkeypatch, response):
+def test_bind_chat_model_fails_when_instance_reports_a_different_binding(
+    monkeypatch, write_response
+):
     client = FakeClient()
     monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
-    client.kaizen_ops.set_chat_model = RecordingService(response)
+    client.kaizen_ops.set_chat_model = RecordingService(write_response)
 
-    # Exiting 0 here would let the caller go on to create and chat-verify an
-    # agent backed by an unintended model — the silent failure the contract
-    # split exists to remove.
-    with pytest.raises(SystemExit, match="not confirmed"):
+    # The must-fail state: the instance contradicts us. Exiting 0 would let the
+    # caller create and chat-verify an agent backed by an unintended model.
+    with pytest.raises(SystemExit, match="contradicted"):
+        _bind(client)
+
+
+@pytest.mark.parametrize(
+    "write_response",
+    [None, {}, {"chat": {}}, {"chat": {"current": None}}, "not-a-dict"],
+)
+def test_bind_chat_model_reads_back_when_the_write_carries_no_binding(
+    monkeypatch, capsys, write_response
+):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+    client.kaizen_ops.set_chat_model = RecordingService(write_response)
+    client.kaizen_ops.get_model_settings = RecordingService(
+        {"chat": {"current": {"id": "dep-xyz"}}}
+    )
+
+    # A 204 (or any body we can't read a binding out of) is an ordinary answer
+    # to a settings PUT — it must not be mistaken for a wrong binding.
+    out = _bind(client, capsys)
+
+    assert len(client.kaizen_ops.get_model_settings.calls) == 1
+    assert out == {"chat_deployment_id": "dep-xyz", "confirmed": True}
+
+
+def test_bind_chat_model_reports_unconfirmed_when_read_back_is_also_silent(
+    monkeypatch, capsys
+):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+    client.kaizen_ops.set_chat_model = RecordingService(None)
+    client.kaizen_ops.get_model_settings = RecordingService({"chat": {"current": None}})
+
+    # The write succeeded (a non-2xx would have raised); we simply can't
+    # confirm it. Say so rather than implying confirmation or failing a
+    # binding that probably worked.
+    out = _bind(client, capsys)
+
+    assert out == {"chat_deployment_id": "dep-xyz", "confirmed": False}
+
+
+def test_bind_chat_model_survives_a_failing_read_back(monkeypatch, capsys):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+    client.kaizen_ops.set_chat_model = RecordingService(None)
+    client.kaizen_ops.get_model_settings = _raiser(KamiwazaError("ops read failed"))
+
+    out = _bind(client, capsys)
+
+    assert out == {"chat_deployment_id": "dep-xyz", "confirmed": False}
+
+
+def test_create_agent_legacy_reads_the_secret_before_scoping_the_client(
+    monkeypatch,
+):
+    scoped = []
+    monkeypatch.setattr(
+        cli,
+        "scoped_client_for_workroom",
+        lambda c, wid: (scoped.append(wid), c)[1],
+    )
+    monkeypatch.delenv("MISSING_KEY_VAR", raising=False)
+
+    # The legacy half of the validate-before-scope ordering: a missing secret
+    # must fail locally, not after the workrooms.enter round trip.
+    with pytest.raises(SystemExit):
         _run(
             [
-                "bind-chat-model",
+                "create-agent",
+                "--extension-name", "kaizen-legacy",
                 "--kaizen-base-url", "https://kamiwaza.test/kaizen",
-                "--deployment-id", "dep-xyz",
+                "--name", "a",
+                "--model", "m",
+                "--llm-api-key-env", "MISSING_KEY_VAR",
+                "--workroom-id", "wr-1",
             ],
-            client,
+            FakeClient(),
         )
+
+    assert scoped == []
 
 
 def test_create_conversation(capsys):

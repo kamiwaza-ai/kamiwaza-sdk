@@ -57,9 +57,16 @@ class AgentDefinition(BaseModel):
     Only ``name`` and ``persona`` are required; the server defaults the rest.
     Unset optional fields are omitted from the wire body so the server's own
     defaults apply rather than a client-side guess at them.
+
+    ``extra="forbid"`` mirrors the server, which forbids extras on this body.
+    Allowing them here would let a misspelled field ride onto the wire, where
+    the intended field silently takes its default and the server answers 422 —
+    the opaque failure this contract split exists to remove, one layer up.
+    (Response models stay ``extra="allow"`` for forward compatibility; this is
+    a request model, so it mirrors instead.)
     """
 
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="forbid")
 
     name: str = Field(..., description="Agent name; must be unique in the instance")
     persona: str = Field(..., description="System persona driving the agent")
