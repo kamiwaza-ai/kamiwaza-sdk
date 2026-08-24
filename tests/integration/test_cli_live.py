@@ -363,9 +363,13 @@ def test_cli_serve_deploy(
         openai_client = pat_client.openai.get_client(deployment_id=deployment_id)
         response = openai_client.chat.completions.create(
             model="kamiwaza",
-            messages=[{"role": "user", "content": "Reply with exactly: ready"}],
-            temperature=0.0,
-            max_tokens=8,
+            messages=[
+                {"role": "user", "content": "Reply with exactly: ready /no_think"}
+            ],
+            temperature=0.7,
+            top_p=0.8,
+            presence_penalty=1.5,
+            max_tokens=64,
             timeout=60,
         )
         assert response.choices, "CLI-deployed model returned no chat choices"

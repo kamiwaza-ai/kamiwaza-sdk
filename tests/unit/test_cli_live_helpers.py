@@ -134,6 +134,13 @@ def test_cli_serve_deploy_attempts_revocation_and_clears_cache(
     def fake_chat_completion(**_kwargs: object) -> object:
         events.append("infer")
         assert _kwargs["timeout"] == 60
+        assert _kwargs["messages"] == [
+            {"role": "user", "content": "Reply with exactly: ready /no_think"}
+        ]
+        assert _kwargs["temperature"] == 0.7
+        assert _kwargs["top_p"] == 0.8
+        assert _kwargs["presence_penalty"] == 1.5
+        assert _kwargs["max_tokens"] == 64
         if inference_error:
             raise inference_error
         return SimpleNamespace(
