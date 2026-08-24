@@ -1507,6 +1507,55 @@ def _default_model_config(
     return next((config for config in configs if config.default), configs[0])
 
 
+def _matching_active_deployable_target(
+    client: KamiwazaClient,
+    target: _model_targets.InferenceTarget,
+) -> bool:
+    existing = _preferred_active_model_deployment(
+        client,
+        desired_type="llm",
+        preferred_repo_id=target.repo_id,
+        preferred_engine_name=target.engine_name,
+    )
+    return bool(
+        existing is not None
+        and existing.get("repo_model_id") == target.repo_id
+        and existing.get("engine_name") == target.engine_name
+    )
+
+
+def _start_deployable_target_probe(
+    client: KamiwazaClient,
+    ensure_repo_ready: Callable[..., object],
+    target: _model_targets.InferenceTarget,
+) -> str:
+    model = _ensure_deployable_target_ready(client, ensure_repo_ready, target)
+    default_config = _default_model_config(client, model.id, target)
+    # Deliberately omit engine_name: the platform auto-selects it from the
+    # model's weight format. That exercises the same path as a real deploy.
+    raw_deployment_id = client.serving.deploy_model(
+        model_id=str(model.id),
+        m_config_id=default_config.id,
+        lb_port=0,
+        autoscaling=False,
+        min_copies=1,
+        starting_copies=1,
+        m_file_id=_target_model_file_id(model, target.quantization),
+        # The caller's wait_for_deployment owns the timeout, not the SDK default.
+        wait=False,
+    )
+    if raw_deployment_id:
+        return str(raw_deployment_id)
+
+    message = (
+        f"deploy_model returned no id for '{target.repo_id}' "
+        "(deploy refused on this host)."
+    )
+    if target.required:
+        pytest.fail(message)
+    pytest.skip(message)
+
+
 @pytest.fixture(scope="session")
 def deployable_model_prerequisite(
     live_kamiwaza_session_client: KamiwazaClient,
@@ -1523,61 +1572,16 @@ def deployable_model_prerequisite(
     client = live_kamiwaza_session_client
     repo_id = deployable_model_target.repo_id
     engine_name = deployable_model_target.engine_name
-    existing = _preferred_active_model_deployment(
-        client,
-        desired_type="llm",
-        preferred_repo_id=repo_id,
-        preferred_engine_name=engine_name,
-    )
-    if (
-        existing is not None
-        and existing.get("repo_model_id") == repo_id
-        and existing.get("engine_name") == engine_name
-    ):
+    if _matching_active_deployable_target(client, deployable_model_target):
         return
 
     probe_deployment_id: str | None = None
     try:
-        model = _ensure_deployable_target_ready(
+        probe_deployment_id = _start_deployable_target_probe(
             client,
             ensure_repo_ready,
             deployable_model_target,
         )
-        default_config = _default_model_config(
-            client,
-            model.id,
-            deployable_model_target,
-        )
-        # Deliberately omit engine_name: the platform auto-selects the engine
-        # from the model's weight format (GGUF->llamacpp, safetensors->vLLM/MLX;
-        # kamiwaza.serving.engine_selector), which is exactly the target's
-        # engine_name by construction. Forcing it here is redundant with the
-        # model choice; letting the server pick exercises the same auto-selection
-        # real deploys use. engine_name stays the EXPECTED value for the
-        # existing-deployment match above. (ENG-9872)
-        raw_deployment_id = client.serving.deploy_model(
-            model_id=str(model.id),
-            m_config_id=default_config.id,
-            lb_port=0,
-            autoscaling=False,
-            min_copies=1,
-            starting_copies=1,
-            m_file_id=_target_model_file_id(
-                model, deployable_model_target.quantization
-            ),
-            # The probe's wait_for_deployment below owns the timeout
-            # (DEPLOYABLE_TEST_DEPLOY_TIMEOUT_SECONDS), not the SDK default.
-            wait=False,
-        )
-        if not raw_deployment_id:
-            message = (
-                f"deploy_model returned no id for '{repo_id}' "
-                "(deploy refused on this host)."
-            )
-            if deployable_model_target.required:
-                pytest.fail(message)
-            pytest.skip(message)
-        probe_deployment_id = str(raw_deployment_id)
         deployment = client.serving.wait_for_deployment(
             probe_deployment_id,
             poll_interval=5,
