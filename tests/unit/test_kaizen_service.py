@@ -10,12 +10,18 @@ from kamiwaza_sdk.exceptions import (
     BrokeredUserNotAllowlistedError,
     NotFoundError,
 )
-from kamiwaza_sdk.schemas.kaizen import LLMConfig
+from kamiwaza_sdk.schemas.kaizen import AgentDefinition, LLMConfig
 from kamiwaza_sdk.services.kaizen import (
+    AGENT_CONTRACT_CANONICAL,
+    AGENT_CONTRACT_LEGACY,
+    CANONICAL_EXTENSION_NAME,
+    LEGACY_EXTENSION_NAME,
     AgentService,
     AmbiguousExtensionError,
     ConversationError,
     ConversationService,
+    KaizenOpsService,
+    agent_contract_for_extension,
     _agent_error_from_events,
     _has_finish_action,
     _is_serving,
@@ -38,6 +44,118 @@ class DummyClient:
     def _request(self, method: str, path: str, **kwargs):
         self.calls.append((method, path, kwargs))
         return self.responses[(method, path)]
+
+
+def test_agent_contract_is_selected_by_catalog_identity():
+    assert (
+        agent_contract_for_extension(CANONICAL_EXTENSION_NAME)
+        == AGENT_CONTRACT_CANONICAL
+    )
+    assert agent_contract_for_extension(LEGACY_EXTENSION_NAME) == AGENT_CONTRACT_LEGACY
+
+
+def test_agent_contract_for_unknown_identity_raises_instead_of_guessing():
+    # Fail closed: guessing a contract is invisible in the request and only
+    # surfaces as a schema rejection at the server.
+    with pytest.raises(ValueError, match="not a known Kaizen catalog identity"):
+        agent_contract_for_extension("kaizen-next")
+
+
+def test_agent_create_canonical_wraps_definition_in_content_envelope():
+    responses = {("POST", "api/agents"): {"id": "agent-9", "version": 1}}
+    client = DummyClient(responses)
+    service = AgentService(client)
+
+    agent = service.create_canonical(
+        AgentDefinition(name="uat-bedrock-agent", persona="Answer UAT questions."),
+        base_url=KAIZEN_URL,
+        workroom_id="wr-123",
+    )
+
+    # The canonical response maps onto the SDK's stable agent-id output.
+    assert (agent.id, agent.version) == ("agent-9", 1)
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("POST", "api/agents")
+    assert kwargs["base_url"] == KAIZEN_URL
+    # Exactly the canonical body: a `content` envelope and nothing else. The
+    # server forbids extra keys, so any stray field is an HTTP 422.
+    assert kwargs["json"] == {
+        "content": {"name": "uat-bedrock-agent", "persona": "Answer UAT questions."}
+    }
+    assert kwargs["headers"] == {"X-Workroom-Id": "wr-123"}
+
+
+def test_agent_create_canonical_omits_unset_fields_and_carries_set_ones():
+    responses = {("POST", "api/agents"): {"id": "agent-10", "version": 1}}
+    client = DummyClient(responses)
+    service = AgentService(client)
+
+    service.create_canonical(
+        AgentDefinition(
+            name="a",
+            persona="p",
+            description="d",
+            capability_ceiling="read",
+        ),
+        base_url=KAIZEN_URL,
+    )
+
+    _, _, kwargs = client.calls[0]
+    content = kwargs["json"]["content"]
+    assert content == {
+        "name": "a",
+        "persona": "p",
+        "description": "d",
+        "capability_ceiling": "read",
+    }
+    # Unset optionals stay off the wire so the server's defaults apply, rather
+    # than nulls the fail-closed parser would reject.
+    assert "mode" not in content
+    assert "routing" not in content
+    assert kwargs["headers"] == {}
+
+
+def test_agent_create_canonical_never_sends_a_per_agent_model_binding():
+    responses = {("POST", "api/agents"): {"id": "agent-11", "version": 1}}
+    client = DummyClient(responses)
+    service = AgentService(client)
+
+    service.create_canonical(AgentDefinition(name="a", persona="p"), base_url=KAIZEN_URL)
+
+    body = client.calls[0][2]["json"]
+    # Canonical Kaizen has no per-agent model binding; the model is bound
+    # instance-wide instead. These keys are exactly what produced the 422.
+    for legacy_key in ("name", "agent_config", "llm_api_key"):
+        assert legacy_key not in body
+
+
+def test_agent_delete_targets_the_agent_resource():
+    client = DummyClient({("DELETE", "api/agents/agent-9"): None})
+    service = AgentService(client)
+
+    service.delete("agent-9", base_url=KAIZEN_URL, workroom_id="wr-123")
+
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("DELETE", "api/agents/agent-9")
+    assert kwargs["base_url"] == KAIZEN_URL
+    assert kwargs["headers"] == {"X-Workroom-Id": "wr-123"}
+
+
+def test_ops_set_chat_model_sends_only_the_deployment_id():
+    responses = {("PUT", "api/ops/models/chat"): {"chat": {"current": {"id": "dep-1"}}}}
+    client = DummyClient(responses)
+    service = KaizenOpsService(client)
+
+    result = service.set_chat_model("dep-1", base_url=KAIZEN_URL, workroom_id="wr-123")
+
+    assert result == {"chat": {"current": {"id": "dep-1"}}}
+    method, path, kwargs = client.calls[0]
+    assert (method, path) == ("PUT", "api/ops/models/chat")
+    assert kwargs["base_url"] == KAIZEN_URL
+    # Kaizen resolves endpoint + credentials from the deployment itself, so a
+    # URL or key must never ride along.
+    assert kwargs["json"] == {"deployment_id": "dep-1"}
+    assert kwargs["headers"] == {"X-Workroom-Id": "wr-123"}
 
 
 def test_agent_create_merges_llm_and_targets_kaizen_base_url():
@@ -240,6 +358,25 @@ def test_resolve_base_url_does_not_adopt_kaizen_next_instance_by_prefix():
 
     with pytest.raises(ValueError, match="No 'kaizen' extension found"):
         resolve_base_url(client, "kaizen", workroom_id="wr-A")
+
+
+def test_resolve_base_url_does_not_adopt_the_legacy_instance_as_canonical():
+    # Both products can sit in one workroom while legacy is still shipping.
+    # Canonical must never resolve the legacy instance: the two speak different
+    # agent-create contracts, so a wrong resolve is a silent HTTP 422 later.
+    client = _client_listing([_ext("kaizen-legacy-4f8b3ae100000000", "wr-A")])
+
+    with pytest.raises(ValueError, match="No 'kaizen' extension found"):
+        resolve_base_url(client, CANONICAL_EXTENSION_NAME, workroom_id="wr-A")
+
+
+def test_resolve_base_url_resolves_the_legacy_instance_by_its_own_identity():
+    client = _client_listing([_ext("kaizen-legacy-4f8b3ae100000000", "wr-A")])
+
+    assert (
+        resolve_base_url(client, LEGACY_EXTENSION_NAME, workroom_id="wr-A")
+        == KAIZEN_URL
+    )
 
 
 def test_resolve_base_url_accepts_non_uuid_workroom_suffix_shape():

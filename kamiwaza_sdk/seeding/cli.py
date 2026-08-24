@@ -16,6 +16,15 @@ Example::
         --name claude --region us-east-1 \\
         --model-id anthropic.claude-3-sonnet-20240229-v1:0 \\
         --credential-env AWS_BEDROCK_CREDENTIAL_JSON
+    kamiwaza-seed bind-chat-model --kaizen-base-url "$URL" \\
+        --workroom-id <wid> --deployment-id <dep>
+    kamiwaza-seed create-agent --kaizen-base-url "$URL" --workroom-id <wid> \\
+        --name uat-agent --persona "Answer UAT questions."
+
+Canonical Kaizen binds a model per instance, so ``bind-chat-model`` — not
+``create-agent`` — is what gives a seeded agent a backing model. Legacy Kaizen
+still binds per agent; select it with ``create-agent --extension-name
+kaizen-legacy``, which switches the request to the legacy contract.
 """
 
 from __future__ import annotations
@@ -28,14 +37,18 @@ from pathlib import Path
 from typing import Callable, Dict, Optional, Union
 
 from ..exceptions import DeploymentFailedError
-from ..schemas.kaizen import LLMConfig
+from ..schemas.kaizen import AgentDefinition, LLMConfig
 from ..schemas.models.external_endpoint import (
     AWSBedrockChatEndpoint,
     AWSTranscribeEndpoint,
 )
 from ..services.kaizen import (
+    AGENT_CONTRACT_CANONICAL,
+    CANONICAL_EXTENSION_NAME,
+    LEGACY_EXTENSION_NAME,
     AmbiguousExtensionError,
     ConversationError,
+    agent_contract_for_extension,
     wait_for_base_url,
 )
 from .client import build_client_from_env, scoped_client_for_workroom
@@ -254,7 +267,60 @@ def cmd_resolve_kaizen_url(args: argparse.Namespace, *, client) -> Optional[dict
     return {"kaizen_base_url": url}
 
 
-def cmd_create_agent(args: argparse.Namespace, *, client) -> dict:
+# Flags that only mean something under the legacy contract. Canonical Kaizen
+# binds a model per instance, not per agent, so accepting these there would
+# silently drop the operator's model choice — the request would still succeed
+# and the agent would answer on some other model.
+_LEGACY_ONLY_AGENT_FLAGS = (
+    ("--model", "model"),
+    ("--provider", "provider"),
+    ("--endpoint-path", "endpoint_path"),
+    ("--llm-base-url", "llm_base_url"),
+    ("--llm-api-key-env", "llm_api_key_env"),
+)
+
+
+def _reject_legacy_agent_flags(args: argparse.Namespace) -> None:
+    """Fail loudly when a canonical create carries legacy per-agent model flags."""
+    supplied = [flag for flag, dest in _LEGACY_ONLY_AGENT_FLAGS if getattr(args, dest)]
+    if not supplied:
+        return
+    raise SystemExit(
+        f"{', '.join(supplied)} bind a model to the agent, which canonical Kaizen "
+        f"('{CANONICAL_EXTENSION_NAME}') does not support. Bind the model to the "
+        "instance with 'kamiwaza-seed bind-chat-model', or pass "
+        f"--extension-name {LEGACY_EXTENSION_NAME} to use the legacy contract."
+    )
+
+
+def _create_canonical_agent(args: argparse.Namespace, client) -> dict:
+    """Create an agent through the canonical ``content`` contract."""
+    _reject_legacy_agent_flags(args)
+    if not args.persona:
+        raise SystemExit(
+            "--persona is required for canonical Kaizen agents (it is the "
+            "agent's system persona)."
+        )
+    definition = AgentDefinition(
+        name=args.name,
+        persona=args.persona,
+        description=args.description,
+        capability_ceiling=args.capability_ceiling,
+    )
+    agent = client.agents.create_canonical(
+        definition,
+        base_url=args.kaizen_base_url,
+        workroom_id=args.workroom_id,
+    )
+    return {"agent_id": agent.id, "version": agent.version}
+
+
+def _create_legacy_agent(args: argparse.Namespace, client) -> dict:
+    """Create an agent through the legacy flat ``agent_config.llm`` contract."""
+    if not args.model:
+        raise SystemExit(
+            f"--model is required for legacy Kaizen ('{LEGACY_EXTENSION_NAME}') agents."
+        )
     llm = LLMConfig(
         model=args.model,
         provider=args.provider,
@@ -262,7 +328,6 @@ def cmd_create_agent(args: argparse.Namespace, *, client) -> dict:
         base_url=args.llm_base_url,
     )
     api_key = _read_env_secret(args.llm_api_key_env, what="custom-endpoint LLM key")
-    client = _client_for_workroom(client, args.workroom_id)
     agent = client.agents.create(
         base_url=args.kaizen_base_url,
         name=args.name,
@@ -273,6 +338,38 @@ def cmd_create_agent(args: argparse.Namespace, *, client) -> dict:
         workroom_id=args.workroom_id,
     )
     return {"agent_id": agent.id}
+
+
+def cmd_create_agent(args: argparse.Namespace, *, client) -> dict:
+    """Create a Kaizen agent using the contract its catalog identity speaks.
+
+    ``--extension-name`` selects the contract, so an operator never has to know
+    which body shape a given Kaizen wants — and a mismatch is a local error with
+    the fix in it, not an opaque HTTP 422 from the server.
+    """
+    try:
+        contract = agent_contract_for_extension(args.extension_name)
+    except ValueError as exc:
+        raise SystemExit(str(exc))
+    client = _client_for_workroom(client, args.workroom_id)
+    if contract == AGENT_CONTRACT_CANONICAL:
+        return _create_canonical_agent(args, client)
+    return _create_legacy_agent(args, client)
+
+
+def cmd_bind_chat_model(args: argparse.Namespace, *, client) -> dict:
+    """Point a canonical Kaizen instance's chat role at a model deployment.
+
+    Canonical Kaizen resolves a model instance-wide rather than per agent, so
+    this is what actually gives seeded agents a backing model.
+    """
+    client = _client_for_workroom(client, args.workroom_id)
+    client.kaizen_ops.set_chat_model(
+        args.deployment_id,
+        base_url=args.kaizen_base_url,
+        workroom_id=args.workroom_id,
+    )
+    return {"chat_deployment_id": args.deployment_id}
 
 
 def cmd_create_conversation(args: argparse.Namespace, *, client) -> dict:
@@ -520,7 +617,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="Kaizen instance API root (per-workroom).",
     )
     p.add_argument("--name", required=True)
-    p.add_argument("--model", required=True)
+    p.add_argument(
+        "--extension-name",
+        default=CANONICAL_EXTENSION_NAME,
+        choices=[CANONICAL_EXTENSION_NAME, LEGACY_EXTENSION_NAME],
+        help=(
+            "Kaizen catalog identity, which selects the agent-create contract "
+            f"(default: {CANONICAL_EXTENSION_NAME})."
+        ),
+    )
+    p.add_argument(
+        "--persona",
+        default=None,
+        help=f"System persona (required for '{CANONICAL_EXTENSION_NAME}').",
+    )
+    p.add_argument(
+        "--capability-ceiling",
+        default=None,
+        help=f"Capability tier for '{CANONICAL_EXTENSION_NAME}' (server default: read).",
+    )
+    p.add_argument(
+        "--model", default=None, help=f"Required for '{LEGACY_EXTENSION_NAME}' only."
+    )
     p.add_argument(
         "--provider", default=None, help="'kamiwaza' for a platform deployment."
     )
@@ -535,6 +653,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--workroom-id", default=None)
     p.set_defaults(func=cmd_create_agent)
+
+    p = sub.add_parser(
+        "bind-chat-model",
+        help="Bind a canonical Kaizen instance's chat role to a model deployment.",
+    )
+    p.add_argument(
+        "--kaizen-base-url",
+        required=True,
+        help="Kaizen instance API root (per-workroom).",
+    )
+    p.add_argument(
+        "--deployment-id",
+        required=True,
+        help="Kamiwaza model deployment to serve Kaizen chat.",
+    )
+    p.add_argument("--workroom-id", default=None)
+    p.set_defaults(func=cmd_bind_chat_model)
 
     p = sub.add_parser("create-conversation", help="Start a Kaizen conversation.")
     p.add_argument(
