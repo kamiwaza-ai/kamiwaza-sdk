@@ -1,7 +1,8 @@
 """Opt-in scenario-evidence.v2 emitter for the existing e2e/live suite.
 
 ENG-10026 (T3.7): with ``--emit-evidence`` AND a build identity
-(``--build`` / ``KAMIWAZA_BUILD``), this pytest plugin groups the run's
+(``--build`` / ``KAMIWAZA_BUILD``, plus ``KAMIWAZA_RELEASE`` for the release
+segment), this pytest plugin groups the run's
 test outcomes by the reviewed entries in ``tests/e2e/capability_map.yaml``
 and, after the session, writes one ``scenario-evidence.v2`` record per
 entry that saw at least one matched test run to a non-skipped outcome,
@@ -13,9 +14,11 @@ Guarantees:
 
 * Without ``--emit-evidence`` the plugin is never registered — zero
   behavior change for a normal run.
-* ``--emit-evidence`` without a build identity is a refusal
+* ``--emit-evidence`` without a *usable* build identity is a refusal
   (``pytest.UsageError``), mirroring the scenario harness's G1 stance:
-  evidence that does not name its build is not evidence.
+  evidence that does not name its build is not evidence, and a stamp no
+  version query can reach names nothing anyone asks for (ENG-10715).
+  Build identities are version-first — see ``scenarios/build_identity.py``.
 * Mapping is explicit, never inferred: a test matched by no map entry
   emits nothing, and a map entry none of whose tests ran — or whose
   tests all skipped — emits nothing.
@@ -260,7 +263,8 @@ def add_evidence_options(parser: pytest.Parser) -> None:
         help=(
             "After the run, emit one scenario-evidence.v2 record per "
             "capability_map.yaml entry whose tests ran, as pre-existing "
-            "evidence. Requires a build identity (--build / KAMIWAZA_BUILD)."
+            "evidence. Requires a version-first build identity "
+            "(--build / KAMIWAZA_BUILD, with KAMIWAZA_RELEASE for the release)."
         ),
     )
     group.addoption(

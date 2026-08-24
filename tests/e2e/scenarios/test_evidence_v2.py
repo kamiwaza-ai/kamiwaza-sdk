@@ -14,7 +14,7 @@ from dataclasses import asdict
 
 import pytest
 
-from tests.e2e.scenarios import harness
+from tests.e2e.scenarios import build_identity, harness
 from tests.e2e.scenarios.harness import (
     CAPABILITY_ID_RE,
     EVIDENCE_METHODS,
@@ -33,15 +33,22 @@ from tests.e2e.scenarios.harness import (
     validate_evidence_record,
 )
 
-TEST_BUILD = "kamiwaza-0.99.0+test.abc1234"
+# Version-first: the leading segment is the release a question asks by, and
+# the rest is producer annotation (ENG-10715, build_identity.py). A fixture
+# leading with anything else would be refused by resolve_build_identity.
+TEST_BUILD = "0.99.0; core@sha256:abc1234; test-fixture"
 
 
 @pytest.fixture(autouse=True)
 def _build_identity_env(monkeypatch):
     """Every harness run needs a build identity (scenario-evidence.v2, G1).
 
-    Tests exercising the refusal path delete this env var explicitly.
+    Both build-identity env vars are controlled here, not inherited: a
+    KAMIWAZA_RELEASE exported in the ambient shell (which is exactly what
+    ENG-10715 asks operators and CI to do) would otherwise satisfy the
+    refusal tests and silently stop them testing refusal.
     """
+    monkeypatch.delenv("KAMIWAZA_RELEASE", raising=False)
     monkeypatch.setenv("KAMIWAZA_BUILD", TEST_BUILD)
 
 
@@ -119,12 +126,112 @@ class TestBuildIdentity:
 
     def test_explicit_build_arg_overrides_env(self):
         result = run_scenario(
-            _one_step_runbook(), {"x": lambda: "ok"}, build="explicit-0.1.0"
+            _one_step_runbook(), {"x": lambda: "ok"}, build="0.1.0; explicit"
         )
-        assert result.build == "explicit-0.1.0"
+        assert result.build == "0.1.0; explicit"
 
     def test_resolve_build_identity_strips_whitespace(self):
-        assert resolve_build_identity("  v1.2.3  ") == "v1.2.3"
+        assert resolve_build_identity("  1.2.3  ") == "1.2.3"
+
+
+@pytest.mark.unit
+class TestVersionFirstBuildIdentity:
+    """ENG-10715: a stamp no version query can reach is refused at capture.
+
+    Cycle 1 stamped the image digest and nothing else. Every record was
+    schema-valid, nothing failed, and the whole corpus turned out to be
+    unanswerable months later -- a question about a release matched none of
+    it. These assert the failure now happens where the identity is known.
+    """
+
+    def test_a_release_version_is_accepted(self):
+        assert resolve_build_identity("1.3.0") == "1.3.0"
+        assert (
+            resolve_build_identity("1.3.0; core@sha256:abc; uat")
+            == "1.3.0; core@sha256:abc; uat"
+        )
+
+    def test_a_prerelease_is_a_release_identity(self):
+        assert resolve_build_identity("1.3.0-rc3; core@sha256:abc") == (
+            "1.3.0-rc3; core@sha256:abc"
+        )
+
+    def test_a_dev_build_is_accepted(self):
+        assert resolve_build_identity("develop@8d21d43; core@sha256:abc") == (
+            "develop@8d21d43; core@sha256:abc"
+        )
+
+    def test_a_digest_first_stamp_is_refused(self, monkeypatch):
+        """The exact shape cycle 1 emitted."""
+        monkeypatch.delenv("KAMIWAZA_RELEASE", raising=False)
+        legacy = (
+            "ghcr.io/kamiwaza-internal/kamiwaza/images/core@sha256:"
+            + "a" * 64
+            + " @ kamiwaza.test (local k0s)"
+        )
+        with pytest.raises(ValueError, match="version-first"):
+            resolve_build_identity(legacy)
+
+    def test_the_refusal_names_both_ways_out(self, monkeypatch):
+        monkeypatch.delenv("KAMIWAZA_RELEASE", raising=False)
+        with pytest.raises(ValueError) as excinfo:
+            resolve_build_identity("kamiwaza-1.0.0-rc2")
+        message = str(excinfo.value)
+        assert "KAMIWAZA_RELEASE" in message
+        assert "KAMIWAZA_BUILD" in message
+
+    def test_release_env_composes_in_front_of_an_annotation(self, monkeypatch):
+        """The migration path: keep exporting the digest, add the release."""
+        monkeypatch.setenv("KAMIWAZA_RELEASE", "1.3.0")
+        assert resolve_build_identity("core@sha256:abc123") == (
+            "1.3.0; core@sha256:abc123"
+        )
+
+    def test_release_env_composes_in_front_of_several_annotations(
+        self, monkeypatch
+    ):
+        """The migration path for the shape cycle 1 actually stamped.
+
+        The operator's existing KAMIWAZA_BUILD is ``digest; environment`` --
+        the shape the --build help text advertises -- so composing must fold
+        it in as its own segments rather than treating the whole string as
+        one annotation.
+        """
+        monkeypatch.setenv("KAMIWAZA_RELEASE", "1.3.0")
+        assert resolve_build_identity(
+            "core@sha256:abc123; kamiwaza.test (local k0s)"
+        ) == "1.3.0; core@sha256:abc123; kamiwaza.test (local k0s)"
+
+    def test_a_stamp_written_without_the_separator_space_is_version_first(self):
+        """``;`` alone is the same identity -- the space is presentation."""
+        assert resolve_build_identity("1.3.0;core@sha256:abc") == (
+            "1.3.0; core@sha256:abc"
+        )
+
+    def test_release_env_does_not_second_guess_a_correct_stamp(self, monkeypatch):
+        monkeypatch.setenv("KAMIWAZA_RELEASE", "1.3.0")
+        assert resolve_build_identity("1.2.0; core@sha256:abc") == (
+            "1.2.0; core@sha256:abc"
+        )
+
+    def test_release_env_alone_is_a_complete_identity(self, monkeypatch):
+        monkeypatch.setenv("KAMIWAZA_RELEASE", "1.3.0")
+        monkeypatch.delenv("KAMIWAZA_BUILD", raising=False)
+        assert resolve_build_identity() == "1.3.0"
+
+    def test_a_malformed_release_env_is_refused(self, monkeypatch):
+        monkeypatch.setenv("KAMIWAZA_RELEASE", "develop@8d21d43")
+        with pytest.raises(ValueError, match="semver release version"):
+            resolve_build_identity("core@sha256:abc123")
+
+    def test_refusal_happens_before_any_step_runs(self, monkeypatch):
+        monkeypatch.delenv("KAMIWAZA_RELEASE", raising=False)
+        monkeypatch.setenv("KAMIWAZA_BUILD", "core@sha256:abc123")
+        calls: list[int] = []
+
+        with pytest.raises(ValueError, match="version-first"):
+            run_scenario(_one_step_runbook(), {"x": lambda: calls.append(1)})
+        assert calls == []
 
 
 @pytest.mark.unit
@@ -453,3 +560,51 @@ class TestValidateRunbookCapabilityIds:
         rb = _one_step_runbook(capability_ids=["Workrooms.Create"])
         with pytest.raises(ValueError, match="kebab-case"):
             _validate_runbook(rb, source=tmp_path / "s1-x.yaml")
+
+
+@pytest.mark.unit
+class TestBuildIdentityProducerContract:
+    """Direct cover for the producer half (``build_identity``) itself.
+
+    ``resolve`` is the only caller the harness has, but its branches route
+    through ``compose`` and ``is_well_formed``, and a branch reachable only
+    through one shape of operator env is a branch no scenario test walks.
+    """
+
+    def test_compose_joins_release_and_annotations(self):
+        assert build_identity.compose("1.3.0", "core@sha256:abc", "uat") == (
+            "1.3.0; core@sha256:abc; uat"
+        )
+
+    def test_compose_drops_blank_and_none_annotations(self):
+        assert build_identity.compose("1.3.0", None, "  ", "uat") == "1.3.0; uat"
+
+    def test_compose_refuses_an_empty_release(self):
+        with pytest.raises(ValueError, match="non-empty release segment"):
+            build_identity.compose("   ", "core@sha256:abc")
+
+    def test_compose_refuses_a_separator_inside_a_part(self):
+        """A part carrying ``;`` would silently become two segments."""
+        with pytest.raises(ValueError, match="may not contain"):
+            build_identity.compose("1.3.0", "core@sha256:abc; uat")
+
+    def test_split_segments_strips_and_tolerates_a_missing_space(self):
+        assert build_identity.split_segments("1.3.0;  core@sha256:abc ; uat") == [
+            "1.3.0",
+            "core@sha256:abc",
+            "uat",
+        ]
+
+    def test_is_well_formed_covers_both_reachable_shapes(self):
+        assert build_identity.is_well_formed("1.3.0; core@sha256:abc")
+        assert build_identity.is_well_formed("develop@8d21d43; core@sha256:abc")
+        assert not build_identity.is_well_formed("core@sha256:abc; 1.3.0")
+
+    def test_resolve_reads_the_env_mapping_it_is_given(self):
+        """``env=`` is the injection seam the harness never uses in anger."""
+        env = {"KAMIWAZA_RELEASE": "1.3.0", "KAMIWAZA_BUILD": "core@sha256:abc"}
+        assert build_identity.resolve(None, env) == "1.3.0; core@sha256:abc"
+
+    def test_a_whitespace_only_build_argument_does_not_shadow_the_env(self):
+        env = {"KAMIWAZA_BUILD": "1.3.0; core@sha256:abc"}
+        assert build_identity.resolve("   ", env) == "1.3.0; core@sha256:abc"
