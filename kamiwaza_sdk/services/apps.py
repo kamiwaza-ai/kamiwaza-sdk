@@ -28,35 +28,41 @@ _KAIZEN_V4_COMPOSE_MARKERS = (
 )
 
 
-def _kaizen_v4_version(template: AppTemplate) -> Optional[Version]:
-    """Return a sortable version only for trusted Kaizen v4 templates."""
+def _kaizen_package_version(template: AppTemplate) -> Version:
+    """Return a package version used only for deterministic ordering."""
     try:
-        parsed_version = Version(template.version or "")
+        return Version(template.version or "")
     except InvalidVersion:
-        return None
-    trusted_v4 = all(
+        return Version("0")
+
+
+def _is_trusted_kaizen_v4_template(template: AppTemplate) -> bool:
+    """Identify Product Kaizen by provenance and its compose contract."""
+    return all(
         (
-            parsed_version.release[0] == 4,
             template.source_type.value == "kamiwaza",
             template.visibility.value == "public",
             all(
-            marker in template.compose_yml for marker in _KAIZEN_V4_COMPOSE_MARKERS
+                marker in template.compose_yml
+                for marker in _KAIZEN_V4_COMPOSE_MARKERS
             ),
         )
     )
-    return parsed_version if trusted_v4 else None
 
 
 def _find_kaizen_v4_template(
     templates: List[AppTemplate], version: Optional[str]
 ) -> Optional[AppTemplate]:
     candidates = [
-        (parsed_version, template.name == "kaizen", template)
+        (
+            template.name.lower() == "kaizen",
+            _kaizen_package_version(template),
+            template,
+        )
         for template in templates
         if template.name.lower() in _KAIZEN_TEMPLATE_NAMES
         if version is None or template.version == version
-        for parsed_version in [_kaizen_v4_version(template)]
-        if parsed_version is not None
+        if _is_trusted_kaizen_v4_template(template)
     ]
     if not candidates:
         return None

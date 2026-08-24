@@ -41,7 +41,7 @@ class DummyClient:
 
 
 def test_agent_create_merges_llm_and_targets_kaizen_base_url():
-    responses = {("POST", "api/agents/"): {"id": "agent-1", "name": "seed-agent"}}
+    responses = {("POST", "api/agents"): {"id": "agent-1", "name": "seed-agent"}}
     client = DummyClient(responses)
     service = AgentService(client)
 
@@ -55,7 +55,7 @@ def test_agent_create_merges_llm_and_targets_kaizen_base_url():
 
     assert agent.id == "agent-1"
     method, path, kwargs = client.calls[0]
-    assert (method, path) == ("POST", "api/agents/")
+    assert (method, path) == ("POST", "api/agents")
     assert kwargs["base_url"] == KAIZEN_URL
     # llm is merged under agent_config; model binding preserved.
     assert kwargs["json"]["agent_config"]["llm"] == {
@@ -70,7 +70,7 @@ def test_agent_create_merges_llm_and_targets_kaizen_base_url():
 
 
 def test_agent_create_accepts_raw_llm_dict_and_no_workroom():
-    responses = {("POST", "api/agents/"): {"id": "agent-2"}}
+    responses = {("POST", "api/agents"): {"id": "agent-2"}}
     client = DummyClient(responses)
     service = AgentService(client)
 
@@ -88,7 +88,7 @@ def test_agent_create_accepts_raw_llm_dict_and_no_workroom():
 
 def test_conversation_create_builds_body_and_header():
     responses = {
-        ("POST", "api/conversations/"): {"id": "conv-1", "agent_id": "agent-1"}
+        ("POST", "api/conversations"): {"id": "conv-1", "agent_id": "agent-1"}
     }
     client = DummyClient(responses)
     service = ConversationService(client)
@@ -102,7 +102,7 @@ def test_conversation_create_builds_body_and_header():
 
     assert conv.id == "conv-1"
     method, path, kwargs = client.calls[0]
-    assert (method, path) == ("POST", "api/conversations/")
+    assert (method, path) == ("POST", "api/conversations")
     assert kwargs["base_url"] == KAIZEN_URL
     assert kwargs["json"] == {
         "agent_id": "agent-1",
@@ -570,7 +570,7 @@ def test_is_serving_true_on_success():
     assert _is_serving(client, KAIZEN_URL, workroom_id="wr-A") is True
     # Probes the agents endpoint against the resolved base_url, workroom-scoped.
     method, path, kwargs = calls[0]
-    assert (method, path) == ("GET", "api/agents/")
+    assert (method, path) == ("GET", "api/agents")
     assert kwargs["base_url"] == KAIZEN_URL
     assert kwargs["headers"] == {"X-Workroom-Id": "wr-A"}
 
@@ -679,7 +679,7 @@ def test_wait_for_base_url_times_out_when_published_but_never_serving(monkeypatc
 
 
 def test_agent_list_unwraps_agents_envelope():
-    responses = {("GET", "api/agents/"): {"agents": [{"id": "agent-1", "name": "a"}]}}
+    responses = {("GET", "api/agents"): {"agents": [{"id": "agent-1", "name": "a"}]}}
     client = DummyClient(responses)
     service = AgentService(client)
 
@@ -687,7 +687,7 @@ def test_agent_list_unwraps_agents_envelope():
 
     assert [a.id for a in agents] == ["agent-1"]
     method, path, kwargs = client.calls[0]
-    assert (method, path) == ("GET", "api/agents/")
+    assert (method, path) == ("GET", "api/agents")
     assert kwargs["headers"] == {"X-Workroom-Id": "wr-1"}
 
 

@@ -25,7 +25,8 @@ Step status semantics:
 Evidence record (``scenario-evidence.v2`` — ENG-9748, sales-developer-release-kit
 design §3.6/§4.6): the run artifact is the versioned successor to the original
 harness record. It adds ``build`` (the build identity the run executed against —
-the harness *refuses to run* without one, closing gap G1), ``method``
+version-first, and the harness *refuses to run* without a usable one, closing
+gap G1; see ``build_identity.py``), ``method``
 (``automated`` for harness runs), ``capability_ids`` (copied from the optional
 runbook field of the same name), ``evidence_provenance``, and a scenario-level
 three-valued ``status`` (``passed`` / ``passed_with_notes`` / ``failed``)
@@ -49,6 +50,8 @@ from pathlib import Path
 
 import pytest
 import yaml
+
+from .build_identity import resolve as resolve_identity
 
 SCENARIOS_DIR = Path(__file__).parent
 RUNBOOKS_DIR = SCENARIOS_DIR / "runbooks"
@@ -201,21 +204,21 @@ def _validate_capability_ids(runbook: dict, *, source: Path) -> None:
 def resolve_build_identity(build: str | None = None) -> str:
     """Resolve the build identity for the evidence record, or refuse.
 
-    Precedence: explicit ``build`` argument (the scenario drivers wire the
-    ``--build`` pytest option through here), then the ``KAMIWAZA_BUILD``
-    env var. Evidence that does not name the build it ran against cannot
-    support a staleness query or a validation stamp (design gap G1), so
-    the harness refuses to run rather than emit anonymous evidence.
+    Delegates to :mod:`build_identity`, which owns the producer half of the
+    version-first contract (ENG-10715). Precedence is unchanged -- explicit
+    ``build`` argument, then ``KAMIWAZA_BUILD`` -- with ``KAMIWAZA_RELEASE``
+    supplying the release segment when the identity is not already
+    version-first.
+
+    Evidence that does not name the build it ran against cannot support a
+    staleness query or a validation stamp (design gap G1), so the harness
+    refuses to run rather than emit anonymous evidence. It refuses on an
+    *unusable* identity for the same reason: a stamp that leads with an
+    image digest is unreachable by the question consumers actually ask
+    ("does Kamiwaza do X for 1.3.0?"), and cycle 1 discovered that months
+    after capture, across all 26 records.
     """
-    resolved = (build or os.environ.get("KAMIWAZA_BUILD", "")).strip()
-    if not resolved:
-        raise ValueError(
-            "scenario evidence requires a build identity: pass "
-            "build=... to run_scenario (the drivers wire the --build pytest "
-            "option), or set KAMIWAZA_BUILD. Refusing to run — a record "
-            "without build identity cannot support staleness queries (G1)."
-        )
-    return resolved
+    return resolve_identity(build)
 
 
 def _resolve_provenance(evidence_provenance: str | None) -> str:

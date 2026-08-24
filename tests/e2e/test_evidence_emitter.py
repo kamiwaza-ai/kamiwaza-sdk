@@ -35,7 +35,10 @@ from tests.e2e.scenarios import harness
 pytestmark = pytest.mark.unit
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-TEST_BUILD = "kamiwaza-0.99.0+test.abc1234"
+# Version-first: the leading segment is the release a question asks by, and
+# the rest is producer annotation (ENG-10715, build_identity.py). A fixture
+# leading with anything else would be refused by resolve_build_identity.
+TEST_BUILD = "0.99.0; core@sha256:abc1234; test-fixture"
 
 # Mirrors the real wiring in the repo-root conftest.py: register the
 # options, then conditionally register the plugin. The sys.path insert
@@ -66,7 +69,13 @@ MAP_ONE_ENTRY = """
 
 @pytest.fixture(autouse=True)
 def _build_identity_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Deterministic build identity; refusal tests delete it explicitly."""
+    """Deterministic build identity, and no ambient KAMIWAZA_RELEASE.
+
+    An exported release -- what ENG-10715 asks operators and CI to do --
+    would otherwise satisfy the refusal tests and stop them testing
+    refusal.
+    """
+    monkeypatch.delenv("KAMIWAZA_RELEASE", raising=False)
     monkeypatch.setenv("KAMIWAZA_BUILD", TEST_BUILD)
 
 
@@ -379,6 +388,29 @@ def test_refusal_without_build_identity(pytester, evidence_out, monkeypatch):
     result = _run_emitting(pytester, evidence_out, "--emit-evidence")
     assert result.ret == pytest.ExitCode.USAGE_ERROR
     result.stderr.fnmatch_lines(["*build identity*"])
+    assert not evidence_out.exists()
+
+
+def test_refusal_of_a_digest_first_build_at_the_emitter_seam(
+    pytester, evidence_out, monkeypatch
+):
+    """The emitter inherits the harness contract, not just its own G1 check.
+
+    A stamp that is *present* but unreachable by a version query is the
+    shape cycle 1 emitted (ENG-10715); it must fail here as a usage error
+    too, and before anything is written.
+    """
+    monkeypatch.delenv("KAMIWAZA_BUILD", raising=False)
+    pytester.makepyfile(test_mapped="def test_ok():\n    assert True\n")
+    result = _run_emitting(
+        pytester,
+        evidence_out,
+        "--emit-evidence",
+        "--build",
+        "ghcr.io/kamiwaza/core@sha256:abc1234; kamiwaza.test",
+    )
+    assert result.ret == pytest.ExitCode.USAGE_ERROR
+    result.stderr.fnmatch_lines(["*version-first*"])
     assert not evidence_out.exists()
 
 
