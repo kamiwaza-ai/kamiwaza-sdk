@@ -199,6 +199,7 @@ def test_deployable_model_probe_uses_shared_repo_and_engine(
     target = integration_conftest._model_targets.InferenceTarget(
         repo_id="org/model.gguf",
         engine_name="llamacpp",
+        quantization="q4_k",
     )
     deploy_calls: list[dict[str, object]] = []
 
@@ -1112,6 +1113,26 @@ def test_target_model_file_id_pins_ready_gguf_quantization(
     assert integration_conftest._target_model_file_id(model, "q4_k") == str(
         selected_id
     )
+
+
+def test_target_model_file_id_does_not_fallback_to_another_quantization(
+    integration_conftest,
+) -> None:
+    model = SimpleNamespace(
+        m_files=[
+            SimpleNamespace(
+                id=uuid4(),
+                name="model-Q4_K_M.gguf",
+                storage_location="oci://model-Q4_K_M.gguf",
+                is_downloading=False,
+                dl_requested_at=None,
+            )
+        ]
+    )
+
+    assert integration_conftest._target_files_for_quantization(model, "q8_0") == []
+    assert not integration_conftest._model_has_ready_target_files(model, "q8_0")
+    assert integration_conftest._target_model_file_id(model, "q8_0") is None
 
 
 def test_target_model_file_id_ignores_unready_files(integration_conftest) -> None:

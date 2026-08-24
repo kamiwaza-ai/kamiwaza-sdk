@@ -2120,7 +2120,9 @@ def _target_files_for_quantization(model: Any, quantization: str) -> list[Any]:
     from kamiwaza_sdk.utils.quant_manager import QuantizationManager
 
     return QuantizationManager().filter_files_by_quantization(
-        gguf_files, quantization
+        gguf_files,
+        quantization,
+        apply_fallback=False,
     )
 
 
