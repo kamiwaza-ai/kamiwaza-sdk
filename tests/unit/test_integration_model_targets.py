@@ -13,6 +13,17 @@ import model_targets as targets  # noqa: E402
 pytestmark = pytest.mark.unit
 
 
+@pytest.fixture(autouse=True)
+def _clear_explicit_fleet_target(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep selector tests independent of the invoking fleet environment."""
+    for name in (
+        "KAMIWAZA_TEST_LLM_REPO",
+        "KAMIWAZA_TEST_LLM_ENGINE",
+        "KAMIWAZA_TEST_LLM_QUANT",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
 def test_suite_repo_override_wins_and_rejects_blank_values(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

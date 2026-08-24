@@ -14,7 +14,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterator, NoReturn
 from urllib.parse import urlparse
 
 import pytest
@@ -659,20 +659,42 @@ def _context_llm_target(
 ) -> _model_targets.InferenceTarget:
     """Select a context-test LLM repo/engine for the live host.
 
-    Explicit context overrides win; otherwise use the shared platform target.
+    Explicit context overrides win and are required. Otherwise preserve the
+    shared platform target's required/optional contract.
     """
     if _CONTEXT_TEST_LLM_REPO_OVERRIDE:
         return _model_targets.InferenceTarget(
             repo_id=_CONTEXT_TEST_LLM_REPO_OVERRIDE,
             engine_name=_CONTEXT_TEST_LLM_ENGINE_OVERRIDE,
             quantization=_CONTEXT_TEST_LLM_QUANTIZATION_OVERRIDE or "q6_k",
+            required=True,
         )
     target = _model_targets.select_inference_target(snapshot)
     return _model_targets.InferenceTarget(
         repo_id=target.repo_id,
         engine_name=_CONTEXT_TEST_LLM_ENGINE_OVERRIDE or target.engine_name,
         quantization=_CONTEXT_TEST_LLM_QUANTIZATION_OVERRIDE or target.quantization,
+        required=target.required,
     )
+
+
+def _fail_or_skip_context_target(
+    target: _model_targets.InferenceTarget,
+    message: str,
+) -> NoReturn:
+    if target.required:
+        pytest.fail(message)
+    pytest.skip(message)
+
+
+def _raise_or_skip_context_target(
+    target: _model_targets.InferenceTarget,
+    error: Exception,
+    message: str,
+) -> NoReturn:
+    if target.required:
+        raise error
+    pytest.skip(message)
 
 
 def _active_embedding_deployment(client: KamiwazaClient) -> dict[str, str] | None:
@@ -1314,14 +1336,11 @@ def context_llm_prerequisite(
     ensure_repo_ready,
     cluster_capability_snapshot: _cap.ClusterCapabilitySnapshot | None,
 ) -> Iterator[str]:
-    """Ensure a usable LLM deployment exists for context ontology operations, or skip once.
+    """Ensure a usable LLM deployment exists for context ontology operations.
 
     Mirrors ``embedding_model_prerequisite``: if no LLM is already deployed the
-    fixture attempts to provision one, but it **skips** (does not error) when the
-    platform cannot bring one up — e.g. a CPU-only smoke host with no inference
-    capacity, or an MLX-only test model on a non-Apple-Silicon runner. This keeps
-    the context ontology/vectordb tests as conditional skips on incapable hosts
-    instead of a cascade of fixture-setup ERRORs.
+    fixture attempts to provision one. Inventory-selected targets skip on hosts
+    without compatible inference capacity; explicit targets fail closed.
     """
     client = live_kamiwaza_session_client
     context_target = _context_llm_target(cluster_capability_snapshot)
@@ -1363,7 +1382,8 @@ def context_llm_prerequisite(
         )
         configs = client.models.get_model_configs(model.id)
         if not configs:
-            pytest.skip(
+            _fail_or_skip_context_target(
+                context_target,
                 f"No model configs available for context LLM repo '{context_repo_id}'"
             )
         default_config = next(
@@ -1391,7 +1411,8 @@ def context_llm_prerequisite(
             deploy_kwargs["m_file_id"] = model_file_id
         raw_deployment_id = client.serving.deploy_model(**deploy_kwargs)
         if not raw_deployment_id:
-            pytest.skip(
+            _fail_or_skip_context_target(
+                context_target,
                 "deploy_model did not return a deployment id for context LLM repo "
                 f"'{context_repo_id}' (engine={context_engine_name or 'default'}, "
                 "deploy refused on this host)."
@@ -1404,30 +1425,35 @@ def context_llm_prerequisite(
         )
     except (TimeoutError, RuntimeError, ValueError) as exc:
         _stop_provisioned(provisioned_deployment_id)
-        pytest.skip(
-            "No active LLM deployment for context ontology tests and one could not "
-            f"be provisioned (repo={context_repo_id}, "
+        _raise_or_skip_context_target(
+            context_target,
+            exc,
+            "No active LLM deployment for context ontology tests and one could "
+            f"not be provisioned (repo={context_repo_id}, "
             f"engine={context_engine_name or 'default'}): "
-            f"{type(exc).__name__}: {exc}"
+            f"{type(exc).__name__}: {exc}",
         )
     except APIError as exc:
         _stop_provisioned(provisioned_deployment_id)
         status_code = getattr(exc, "status_code", None)
         if status_code is not None and status_code < 500:
             raise
-        pytest.skip(
-            "No active LLM deployment for context ontology tests and one could not "
-            f"be provisioned (repo={context_repo_id}, "
+        _raise_or_skip_context_target(
+            context_target,
+            exc,
+            "No active LLM deployment for context ontology tests and one could "
+            f"not be provisioned (repo={context_repo_id}, "
             f"engine={context_engine_name or 'default'}): "
-            f"APIError {status_code or 'transport'}: {exc}"
+            f"APIError {status_code or 'transport'}: {exc}",
         )
 
     if not _platform_deployment_ready(deployment):
         _stop_provisioned(provisioned_deployment_id)
-        pytest.skip(
+        _fail_or_skip_context_target(
+            context_target,
             "Context ontology prerequisite LLM deployment did not become ready: "
             f"deployment_id={deployment.id}, status={deployment.status}, "
-            f"instance_statuses={[instance.status for instance in deployment.instances]}"
+            f"instance_statuses={[instance.status for instance in deployment.instances]}",
         )
 
     try:

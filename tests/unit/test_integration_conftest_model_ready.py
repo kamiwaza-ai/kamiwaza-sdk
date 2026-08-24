@@ -8,6 +8,8 @@ from uuid import uuid4
 
 import pytest
 
+from kamiwaza_sdk.exceptions import APIError
+
 pytestmark = pytest.mark.unit
 
 CONFTEST_PATH = (
@@ -24,6 +26,17 @@ def integration_conftest():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+@pytest.fixture(autouse=True)
+def _clear_explicit_fleet_target(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep fixture unit tests independent of the invoking fleet environment."""
+    for name in (
+        "KAMIWAZA_TEST_LLM_REPO",
+        "KAMIWAZA_TEST_LLM_ENGINE",
+        "KAMIWAZA_TEST_LLM_QUANT",
+    ):
+        monkeypatch.delenv(name, raising=False)
 
 
 class _EmbeddingProbeClient:
@@ -591,6 +604,7 @@ def test_context_target_carries_shared_quantization(
         repo_id="org/model.gguf",
         engine_name="llamacpp",
         quantization="q4_k",
+        required=True,
     )
     monkeypatch.setattr(integration_conftest, "_CONTEXT_TEST_LLM_REPO_OVERRIDE", "")
     monkeypatch.setattr(integration_conftest, "_CONTEXT_TEST_LLM_ENGINE_OVERRIDE", "")
@@ -601,6 +615,24 @@ def test_context_target_carries_shared_quantization(
     )
 
     assert integration_conftest._context_llm_target(None) == target
+
+
+def test_explicit_context_override_is_required(
+    integration_conftest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        integration_conftest,
+        "_CONTEXT_TEST_LLM_REPO_OVERRIDE",
+        "org/context.gguf",
+    )
+    monkeypatch.setattr(
+        integration_conftest,
+        "_CONTEXT_TEST_LLM_ENGINE_OVERRIDE",
+        "llamacpp",
+    )
+
+    assert integration_conftest._context_llm_target(None).required is True
 
 
 def test_context_prerequisite_prepares_and_deploys_exact_target_file(
@@ -752,6 +784,52 @@ def test_context_prerequisite_preserves_api_error_taxonomy(
         assert raised is error
     else:
         pytest.fail("expected the 4xx to propagate")
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        TimeoutError("required context deployment timed out"),
+        pytest.param(
+            APIError("required context server failure", status_code=500),
+            id="server-error",
+        ),
+    ],
+)
+def test_required_context_prerequisite_reraises_capability_failure(
+    integration_conftest,
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
+) -> None:
+    target = integration_conftest._model_targets.InferenceTarget(
+        repo_id="org/required-context.gguf",
+        engine_name="llamacpp",
+        required=True,
+    )
+    monkeypatch.setattr(
+        integration_conftest,
+        "_context_llm_target",
+        lambda _snapshot: target,
+    )
+    monkeypatch.setattr(
+        integration_conftest,
+        "_preferred_active_model_deployment",
+        lambda *_args, **_kwargs: None,
+    )
+
+    def fail_readiness(*_args: object, **_kwargs: object) -> object:
+        raise error
+
+    prerequisite = integration_conftest.context_llm_prerequisite.__wrapped__(
+        object(),
+        fail_readiness,
+        None,
+    )
+
+    with pytest.raises(type(error)) as excinfo:
+        next(prerequisite)
+
+    assert excinfo.value is error
 
 
 def test_deployable_probe_skips_transport_api_error(

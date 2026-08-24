@@ -46,7 +46,8 @@ Override only the automatically selected repositories with `KAMIWAZA_TEST_MLX_LL
 `KAMIWAZA_TEST_VLLM_LLM_REPO`, or `KAMIWAZA_TEST_GGUF_LLM_REPO`. Context tests
 also accept `KAMIWAZA_CONTEXT_LLM_REPO`, `KAMIWAZA_CONTEXT_LLM_ENGINE`, and
 `KAMIWAZA_CONTEXT_LLM_QUANTIZATION`; the latter defaults to `q6_k` for an
-explicit context repository and otherwise inherits the shared target.
+explicit context repository and otherwise inherits the shared target. An
+explicit context repository is also required and fails closed.
 
 ## Shared Fixtures
 - `dummy_client` – lightweight HTTP stub for unit tests (records calls, replays canned responses).
