@@ -2,27 +2,181 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shlex
 import subprocess
 import sys
 import time
 from pathlib import Path
 
+import jwt
 import pytest
+from model_targets import InferenceTarget
 
-TEST_REPO_ID = "mlx-community/Qwen3-4B-4bit"
+from kamiwaza_sdk.exceptions import APIError, AuthenticationError
+from kamiwaza_sdk.token_store import FileTokenStore
 
 pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
 
+_SECRET_CLI_OPTIONS = frozenset(
+    {"--access-token", "--api-key", "--password", "--token"}
+)
+_OUTPUT_LIMIT = 32_000
+_CLI_TIMEOUT_SECONDS = 4 * 60 * 60
+# Covers two 15-minute model-readiness phases plus the 10-minute deploy wait,
+# with enough margin for API calls and polling between phases.
+_DEPLOYMENT_PAT_TTL_SECONDS = 60 * 60
+_JWT_PATTERN = re.compile(
+    r"\b(?:PAT-)?eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"
+)
+_TOKEN_FIELD_PATTERN = re.compile(
+    r"(?i)((?:access_token|refresh_token|id_token|token|pat|password|passwd"
+    r"|secret|api[-_]?key|client_secret)['\"]?\s*[:=]\s*['\"]?)([^'\"\s,}&]+)"
+)
+_AUTH_HEADER_PATTERN = re.compile(
+    r"(?i)\b(authorization\s*:\s*(?:bearer|basic)\s+)(\S+)"
+)
 
-def run_cli(args: list[str], env: dict[str, str]) -> subprocess.CompletedProcess[str]:
-    cmd = [sys.executable, "-m", "kamiwaza_sdk.cli", *args]
-    return subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        check=True,
-        env=env,
+
+def _secret_option(option: str) -> bool:
+    """Match exact secret flags and argparse's accepted abbreviations."""
+    if len(option) <= 2 or not option.startswith("--"):
+        return False
+    return any(secret.startswith(option) for secret in _SECRET_CLI_OPTIONS)
+
+
+def _redact_cli_args(args: list[str]) -> list[str]:
+    redacted: list[str] = []
+    hide_next = False
+    for arg in args:
+        if hide_next:
+            redacted.append("***")
+            hide_next = False
+            continue
+        option = arg.partition("=")[0]
+        if _secret_option(option):
+            redacted.append(option if "=" not in arg else f"{option}=***")
+            hide_next = "=" not in arg
+            continue
+        redacted.append(arg)
+    return redacted
+
+
+def _secret_cli_value_at(args: list[str], index: int) -> str | None:
+    option, separator, value = args[index].partition("=")
+    if not _secret_option(option):
+        return None
+    if separator:
+        return value
+    return args[index + 1] if index + 1 < len(args) else None
+
+
+def _secret_cli_values(args: list[str]) -> list[str]:
+    return [
+        value
+        for index in range(len(args))
+        if (value := _secret_cli_value_at(args, index)) is not None
+    ]
+
+
+def _scrub_output(value: str, secret_values: tuple[str, ...]) -> str:
+    scrubbed = value
+    for secret in secret_values:
+        if secret:
+            scrubbed = scrubbed.replace(secret, "***")
+    scrubbed = _JWT_PATTERN.sub("***", scrubbed)
+    scrubbed = _TOKEN_FIELD_PATTERN.sub(r"\1***", scrubbed)
+    return _AUTH_HEADER_PATTERN.sub(r"\1***", scrubbed)
+
+
+def _captured_output(value: str, secret_values: tuple[str, ...] = ()) -> str:
+    output = _scrub_output(value, secret_values).strip()
+    if not output:
+        return "<empty>"
+    if len(output) <= _OUTPUT_LIMIT:
+        return output
+    half = _OUTPUT_LIMIT // 2
+    omitted = len(output) - (half * 2)
+    return (
+        f"{output[:half]}\n" f"... <{omitted} chars omitted> ...\n" f"{output[-half:]}"
     )
+
+
+def _timeout_output(value: str | bytes | None) -> str:
+    if isinstance(value, bytes):
+        return value.decode(errors="replace")
+    return value or ""
+
+
+def _cli_failure_message(
+    cmd: list[str],
+    result: subprocess.CompletedProcess[str],
+    secret_values: tuple[str, ...] = (),
+) -> str:
+    command = shlex.join(_redact_cli_args(cmd))
+    return (
+        f"CLI command failed with exit code {result.returncode}: {command}\n"
+        f"stdout:\n{_captured_output(result.stdout, secret_values)}\n"
+        f"stderr:\n{_captured_output(result.stderr, secret_values)}"
+    )
+
+
+def _cli_timeout_message(
+    cmd: list[str],
+    exc: subprocess.TimeoutExpired,
+    secret_values: tuple[str, ...],
+) -> str:
+    command = shlex.join(_redact_cli_args(cmd))
+    return (
+        f"CLI command timed out after {_CLI_TIMEOUT_SECONDS}s: {command}\n"
+        f"stdout:\n{_captured_output(_timeout_output(exc.stdout), secret_values)}\n"
+        f"stderr:\n{_captured_output(_timeout_output(exc.stderr), secret_values)}"
+    )
+
+
+def _safe_cli_timeout_message(
+    cmd: list[str],
+    exc: subprocess.TimeoutExpired,
+    secret_values: tuple[str, ...],
+) -> str:
+    """Build a timeout diagnostic without ever re-exposing the original error."""
+    try:
+        return _cli_timeout_message(cmd, exc, secret_values)
+    except Exception as diagnostic_error:
+        return (
+            f"CLI command timed out after {_CLI_TIMEOUT_SECONDS}s; "
+            "diagnostic rendering failed safely "
+            f"({type(diagnostic_error).__name__})"
+        )
+
+
+def run_cli(
+    args: list[str],
+    env: dict[str, str],
+    *,
+    secret_values: tuple[str, ...] = (),
+    runner=subprocess.run,
+) -> subprocess.CompletedProcess[str]:
+    cmd = [sys.executable, "-m", "kamiwaza_sdk.cli", *args]
+    timeout_message: str | None = None
+    try:
+        result = runner(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+            timeout=_CLI_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        secrets = (*_secret_cli_values(args), *secret_values)
+        timeout_message = _safe_cli_timeout_message(cmd, exc, secrets)
+    if timeout_message is not None:
+        raise AssertionError(timeout_message) from None
+    if result.returncode != 0:
+        secrets = (*_secret_cli_values(args), *secret_values)
+        raise AssertionError(_cli_failure_message(cmd, result, secrets))
+    return result
 
 
 def _cli_login_and_create_pat(
@@ -33,12 +187,15 @@ def _cli_login_and_create_pat(
     token_path: Path,
     *,
     pat_prefix: str,
+    pat_scope: str,
+    pat_ttl_seconds: int,
 ) -> str:
     """Login + create a cached PAT via the CLI; return the PAT token.
 
     Asserts the session token and PAT cache are persisted along the way, so this
     doubles as the shared CLI-auth coverage for both the auth-only and the
-    deploy tests below.
+    deploy tests below. Callers must choose the least-privileged scope and
+    shortest lifetime that support the operation under test.
     """
     run_cli(
         [*base_args, "login", "--username", live_username, "--password", live_password],
@@ -46,7 +203,8 @@ def _cli_login_and_create_pat(
     )
     assert token_path.exists()
     session_token = json.loads(token_path.read_text())
-    assert "access_token" in session_token
+    if not isinstance(session_token, dict) or not session_token.get("access_token"):
+        raise AssertionError("CLI login cache did not contain an access token")
 
     pat_name = f"{pat_prefix}-{int(time.time())}"
     result = run_cli(
@@ -57,21 +215,54 @@ def _cli_login_and_create_pat(
             "--name",
             pat_name,
             "--ttl",
-            "900",
+            str(pat_ttl_seconds),
             "--scope",
-            "openid",
+            pat_scope,
             "--aud",
             "kamiwaza-platform",
             "--cache-token",
         ],
         env,
+        secret_values=(live_password, str(session_token["access_token"])),
     )
     pat_token = result.stdout.strip()
     assert pat_token
 
     cached = json.loads(token_path.read_text())
-    assert cached["access_token"] == pat_token
+    if cached.get("access_token") != pat_token:
+        raise AssertionError("Cached PAT did not match the CLI-created PAT")
     return pat_token
+
+
+def _cleanup_cli_pat(pat_client, pat_jti: str | None, token_path: Path) -> None:
+    """Revoke the test PAT and always remove its local cache."""
+    try:
+        if pat_jti:
+            try:
+                pat_client.auth.revoke_pat(pat_jti)
+            except (AuthenticationError, APIError):
+                pass
+    finally:
+        FileTokenStore(token_path).clear()
+
+
+def _pat_jti(pat_token: str) -> str:
+    """Read the server-issued PAT's cleanup identifier without trusting claims."""
+    # The platform validates this same token on every API request. Decode only
+    # the cleanup identifier here; no authorization decision relies on these
+    # unverified claims.
+    claims = jwt.decode(
+        pat_token,
+        options={
+            "verify_signature": False,
+            "verify_exp": False,
+            "verify_aud": False,
+        },
+    )
+    pat_jti = claims.get("jti")
+    if not isinstance(pat_jti, str) or not pat_jti:
+        raise AssertionError("CLI-created PAT did not contain a JTI for cleanup")
+    return pat_jti
 
 
 def test_cli_login_and_pat_flow(
@@ -89,7 +280,14 @@ def test_cli_login_and_pat_flow(
 
     # _cli_login_and_create_pat asserts the session token, PAT, and cache match.
     _cli_login_and_create_pat(
-        base_args, env, live_username, live_password, token_path, pat_prefix="cli-m1"
+        base_args,
+        env,
+        live_username,
+        live_password,
+        token_path,
+        pat_prefix="cli-m1",
+        pat_scope="openid",
+        pat_ttl_seconds=900,
     )
 
 
@@ -99,14 +297,16 @@ def test_cli_serve_deploy(
     live_username: str,
     live_password: str,
     client_factory,
-    ensure_repo_ready,
+    ensure_deployable_model_ready,
+    deployable_model_target: InferenceTarget,
+    target_model_file_id,
     tmp_path: Path,
 ) -> None:
     """CLI ``serve deploy`` round-trip.
 
     Requires a host that can actually deploy the test model; gated by
     ``requires_deployable_model`` so it skips (rather than fails) on hosts
-    without compatible inference capacity (e.g. the x86 CPU smoke vs an MLX model).
+    without compatible inference capacity for the platform-selected target.
     """
     token_path = tmp_path / "token.json"
     base_args = ["--base-url", live_server_available, "--token-path", str(token_path)]
@@ -115,33 +315,53 @@ def test_cli_serve_deploy(
     env.setdefault("PYTHONWARNINGS", "ignore")
 
     pat_token = _cli_login_and_create_pat(
-        base_args, env, live_username, live_password, token_path, pat_prefix="cli-deploy"
+        base_args,
+        env,
+        live_username,
+        live_password,
+        token_path,
+        pat_prefix="cli-deploy",
+        pat_scope="admin",
+        pat_ttl_seconds=_DEPLOYMENT_PAT_TTL_SECONDS,
     )
     pat_client = client_factory(base_url=live_server_available, api_key=pat_token)
-    ensure_repo_ready(pat_client, TEST_REPO_ID)
-
-    serve_result = run_cli(
-        [
-            *base_args,
-            "serve",
-            "deploy",
-            "--repo-id",
-            TEST_REPO_ID,
-            "--wait",
-            "--poll-interval",
-            "5",
-            "--timeout",
-            "600",
-        ],
-        env,
-    )
-
-    summary = json.loads(serve_result.stdout.strip())
-    deployment_id = summary.get("deployment_id")
-    assert deployment_id, "CLI serve deploy did not return a deployment_id"
-    assert summary.get("status") == "DEPLOYED"
+    pat_jti: str | None = None
 
     try:
-        pat_client.serving.stop_deployment(deployment_id=deployment_id, force=True)
-    except Exception:
-        pass
+        pat_jti = _pat_jti(pat_token)
+
+        model = ensure_deployable_model_ready(pat_client)
+        model_file_id = target_model_file_id(
+            model, deployable_model_target.quantization
+        )
+
+        serve_result = run_cli(
+            [
+                *base_args,
+                "serve",
+                "deploy",
+                "--repo-id",
+                deployable_model_target.repo_id,
+                "--engine-name",
+                deployable_model_target.engine_name,
+                *(["--file-id", model_file_id] if model_file_id else []),
+                "--wait",
+                "--poll-interval",
+                "5",
+                "--timeout",
+                "600",
+            ],
+            env,
+        )
+
+        summary = json.loads(serve_result.stdout.strip())
+        deployment_id = summary.get("deployment_id")
+        assert deployment_id, "CLI serve deploy did not return a deployment_id"
+        assert summary.get("status") == "DEPLOYED"
+
+        try:
+            pat_client.serving.stop_deployment(deployment_id=deployment_id, force=True)
+        except Exception:
+            pass
+    finally:
+        _cleanup_cli_pat(pat_client, pat_jti, token_path)

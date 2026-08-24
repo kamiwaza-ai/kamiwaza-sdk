@@ -91,6 +91,17 @@ def add_live_options(parser: pytest.Parser) -> None:
             "(defaults to env KAMIWAZA_PASSWORD, else integration fixture resolves via kz-login)."
         ),
     )
+    # ENG-9748 - build identity recorded in scenario-evidence.v2 run records.
+    group.addoption(
+        "--build",
+        action="store",
+        default=os.environ.get("KAMIWAZA_BUILD", ""),
+        help=(
+            "Build identity the e2e scenario run executed against, recorded in "
+            "scenario-evidence.v2 artifacts (defaults to env KAMIWAZA_BUILD). "
+            "The scenario harness refuses to run without one."
+        ),
+    )
     # ENG-5784 - federation peer cluster for two-cluster live tests.
     group.addoption(
         "--live-peer-base-url",
@@ -110,5 +121,27 @@ def add_live_options(parser: pytest.Parser) -> None:
         help=(
             "API key for the federation peer cluster (defaults to env "
             "KAMIWAZA_PEER_API_KEY). Required when --live-peer-base-url is set."
+        ),
+    )
+    group.addoption(
+        "--require-federation-edge",
+        action="store_true",
+        default=os.environ.get("KAMIWAZA_REQUIRE_FEDERATION_EDGE", "").lower()
+        in {"1", "true", "yes", "on"},
+        help=(
+            "Run the required shared-IDP two-cluster edge fail-closed: all six "
+            "contract cases must collect and any skip is promoted to failure."
+        ),
+    )
+    group.addoption(
+        "--require-delegated-workload-edge",
+        action="store_true",
+        default=os.environ.get(
+            "KAMIWAZA_REQUIRE_DELEGATED_WORKLOAD_EDGE", ""
+        ).lower()
+        in {"1", "true", "yes", "on"},
+        help=(
+            "Run the delegated shared-IDP workload edge fail-closed: its live "
+            "case must collect and any skip is promoted to failure."
         ),
     )

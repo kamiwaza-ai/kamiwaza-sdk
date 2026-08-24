@@ -169,6 +169,7 @@ class KamiwazaClient:
         *,
         verify: Optional[Any] = None,
         ca_bundle: Optional[str] = None,
+        owns_authenticator: bool = False,
     ):
         """Construct a KamiwazaClient.
 
@@ -180,6 +181,9 @@ class KamiwazaClient:
                 ``KAMIWAZA_API_TOKEN`` env vars.
             authenticator: Optional ``Authenticator`` instance; takes
                 precedence over ``api_key`` when supplied.
+            owns_authenticator: Close a supplied authenticator with this client.
+                Defaults to ``False`` because caller-supplied authenticators may
+                be shared by more than one client.
             log_level: Python logging level (default INFO).
             verify: TLS verification setting. ``True`` (default — system
                 bundle), ``False`` (disable; warns), or a path string
@@ -249,7 +253,8 @@ class KamiwazaClient:
         self._auth_service = AuthService(self)
 
         self.authenticator: Optional[Authenticator] = None
-        if authenticator:
+        self._owned_authenticator: Optional[Authenticator] = None
+        if authenticator is not None:
             self.authenticator = authenticator
         else:
             api_key = (
@@ -258,16 +263,24 @@ class KamiwazaClient:
                 or os.environ.get("KAMIWAZA_API_TOKEN")
             )
             self.authenticator = ApiKeyAuthenticator(api_key) if api_key else None
+        if authenticator is not None and owns_authenticator:
+            self._owned_authenticator = authenticator
+        self._owns_authenticator = self._owned_authenticator is not None
 
         # Don't authenticate during initialization - let it happen on first request
 
     def close(self) -> None:
-        """Release the underlying requests.Session transport.
+        """Release the authentication and platform HTTP transports.
 
         Idempotent — repeated close() calls are safe (Session.close()
         does its own idempotency).
         """
-        self.session.close()
+        close_authenticator = getattr(self._owned_authenticator, "close", None)
+        try:
+            if self._owns_authenticator and callable(close_authenticator):
+                close_authenticator()
+        finally:
+            self.session.close()
 
     def __enter__(self) -> "KamiwazaClient":
         return self
@@ -331,7 +344,7 @@ class KamiwazaClient:
                     kwargs["headers"][key] = value
                     existing.add(key.lower())
 
-        if self.authenticator and not skip_auth:
+        if self.authenticator is not None and not skip_auth:
             self.authenticator.authenticate(self.session)
 
         # Always inject session.verify when the caller hasn't supplied an
@@ -390,7 +403,7 @@ class KamiwazaClient:
         logger.warning(
             f"Received 401 Unauthorized. Response: {_extract_server_detail(response)}"
         )
-        if not self.authenticator:
+        if self.authenticator is None:
             raise AuthenticationError(
                 "Authentication failed. No authenticator provided."
             )
@@ -491,6 +504,10 @@ class KamiwazaClient:
 
         typed = error_for_response(response.status_code, payload, message)
         if type(typed) is not KamiwazaError:
+            if isinstance(typed, APIError):
+                typed.response_text = response_text
+                typed.response_data = payload
+                typed.body = payload
             raise typed
 
         raise APIError(
@@ -658,6 +675,8 @@ class KamiwazaClient:
         )
         # Preserve exact parent auth state; __init__ may otherwise consult env vars.
         scoped.authenticator = self.authenticator
+        scoped._owned_authenticator = None
+        scoped._owns_authenticator = False
         scoped.session.headers.update(self.session.headers)
         scoped.session.cookies.update(self.session.cookies)
         scoped._default_headers = dict(self._default_headers)
@@ -785,7 +804,7 @@ class KamiwazaClient:
         return self._authz
 
     def get_bearer_token(self) -> Optional[str]:
-        if not self.authenticator:
+        if self.authenticator is None:
             return None
         try:
             return self.authenticator.get_access_token(self.session)
@@ -859,7 +878,7 @@ class KamiwazaClient:
 
     @property
     def workrooms(self):
-        if not hasattr(self, '_workrooms'):
+        if not hasattr(self, "_workrooms"):
             self._workrooms = WorkroomService(self)
         return self._workrooms
 

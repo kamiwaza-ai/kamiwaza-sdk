@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
+import requests
 
+from kamiwaza_sdk.authentication import Authenticator
 from kamiwaza_sdk.client import KamiwazaClient
 
 pytestmark = pytest.mark.unit
@@ -18,6 +21,41 @@ class _JSONResponse:
         return {"ok": True}
 
 
+class _UnauthorizedResponse:
+    status_code = 401
+    headers = {"content-type": "application/json"}
+    text = '{"detail": "token expired"}'
+
+    def json(self) -> dict[str, str]:
+        return {"detail": "token expired"}
+
+
+class _FalseyAuthenticator(Authenticator):
+    def __init__(self) -> None:
+        self.authenticate_calls = 0
+        self.access_token_calls = 0
+        self.close_calls = 0
+        self.refresh_calls = 0
+
+    def __bool__(self) -> bool:
+        return False
+
+    def authenticate(self, session: requests.Session) -> None:
+        self.authenticate_calls += 1
+        session.headers["Authorization"] = "Bearer falsey-token"
+
+    def refresh_token(self, session: requests.Session) -> None:
+        self.refresh_calls += 1
+        session.headers["Authorization"] = "Bearer refreshed-token"
+
+    def get_access_token(self, session: requests.Session) -> str:
+        self.access_token_calls += 1
+        return "falsey-token"
+
+    def close(self) -> None:
+        self.close_calls += 1
+
+
 def _recording_client(workroom_id: str | None = None) -> KamiwazaClient:
     client = KamiwazaClient(
         base_url="https://example.test/api",
@@ -25,6 +63,23 @@ def _recording_client(workroom_id: str | None = None) -> KamiwazaClient:
         verify=False,
     )
     return client.workroom_scope(workroom_id) if workroom_id is not None else client
+
+
+def _falsey_client(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    owns_authenticator: bool = False,
+) -> tuple[KamiwazaClient, _FalseyAuthenticator]:
+    monkeypatch.delenv("KAMIWAZA_API_KEY", raising=False)
+    monkeypatch.delenv("KAMIWAZA_API_TOKEN", raising=False)
+    authenticator = _FalseyAuthenticator()
+    client = KamiwazaClient(
+        base_url="https://example.test/api",
+        authenticator=authenticator,
+        owns_authenticator=owns_authenticator,
+        verify=False,
+    )
+    return client, authenticator
 
 
 def _record_requests(client: KamiwazaClient) -> list[dict[str, Any]]:
@@ -65,6 +120,78 @@ def test_workroom_scope_can_be_used_as_context_manager() -> None:
 
     assert calls[0]["headers"]["X-Workroom-Id"] == "wr-ctx"
     assert closed == [True]
+
+
+def test_falsey_supplied_authenticator_authenticates_requests(monkeypatch) -> None:
+    client, authenticator = _falsey_client(monkeypatch)
+    _record_requests(client)
+
+    client.get("/context/health")
+
+    assert client.authenticator is authenticator
+    assert authenticator.authenticate_calls == 1
+    assert client.session.headers["Authorization"] == "Bearer falsey-token"
+
+
+def test_falsey_supplied_authenticator_returns_bearer(monkeypatch) -> None:
+    client, authenticator = _falsey_client(monkeypatch)
+
+    assert client.get_bearer_token() == "falsey-token"
+    assert authenticator.access_token_calls == 1
+
+
+def test_falsey_supplied_authenticator_refreshes_after_401(monkeypatch) -> None:
+    client, authenticator = _falsey_client(monkeypatch)
+    request = Mock(side_effect=[_UnauthorizedResponse(), _JSONResponse()])
+    client.session.request = request
+
+    assert client.get("/context/health") == {"ok": True}
+    assert authenticator.authenticate_calls == 1
+    assert authenticator.refresh_calls == 1
+    assert client.session.headers["Authorization"] == "Bearer refreshed-token"
+    assert request.call_count == 2
+
+
+def test_falsey_owned_authenticator_is_closed(monkeypatch) -> None:
+    client, authenticator = _falsey_client(monkeypatch, owns_authenticator=True)
+
+    client.close()
+
+    assert authenticator.close_calls == 1
+
+
+def test_workroom_scope_does_not_close_parent_authenticator() -> None:
+    authenticator = Mock()
+    parent = KamiwazaClient(
+        base_url="https://example.test/api",
+        authenticator=authenticator,
+        owns_authenticator=True,
+        verify=False,
+    )
+
+    with parent.workroom_scope("wr-ctx"):
+        pass
+
+    authenticator.close.assert_not_called()
+    parent.close()
+    authenticator.close.assert_called_once_with()
+
+
+def test_client_closes_owned_authenticator_after_public_replacement() -> None:
+    owned = Mock()
+    replacement = Mock()
+    client = KamiwazaClient(
+        base_url="https://example.test/api",
+        authenticator=owned,
+        owns_authenticator=True,
+        verify=False,
+    )
+    client.authenticator = replacement
+
+    client.close()
+
+    owned.close.assert_called_once_with()
+    replacement.close.assert_not_called()
 
 
 def test_per_request_workroom_header_overrides_scoped_default() -> None:

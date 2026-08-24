@@ -2893,6 +2893,13 @@ class TestReplaceImageTag:
             "localhost:5000/foo:1.0.0", "2.0.0-dev"
         ) == "localhost:5000/foo:2.0.0-dev"
 
+    def test_replaces_compose_default_tag_placeholder(self):
+        from kamiwaza_extensions.compose_transformer import _replace_image_tag
+
+        assert _replace_image_tag(
+            "ghcr.io/my-org/foo:${IMAGE_TAG:-local}", "2.0.0-dev"
+        ) == "ghcr.io/my-org/foo:2.0.0-dev"
+
     def test_strips_digest_before_retagging(self):
         from kamiwaza_extensions.compose_transformer import _replace_image_tag
 
@@ -3899,3 +3906,142 @@ class TestPublishDryRunImageBasename:
             "backend": f"{prefix}/workroom-manager-test-backend:testrev",
             "frontend": f"{prefix}/workroom-manager-test-frontend:testrev",
         }
+
+
+# ------------------------------------------------------------------
+# Entry image-coverage guard (ENG-8270)
+# ------------------------------------------------------------------
+
+
+class TestPublishRejectsUncoveredEnvImageRef:
+    """A publish whose final entry carries a registry-owned env image ref
+    that no docker_images/extra_docker_images entry covers must fail
+    validation instead of shipping (ENG-8270: such an entry reached the
+    prod catalog and broke sandbox spawn on every offline install)."""
+
+    @patch("kamiwaza_extensions.catalog_publisher.CatalogPublisher")
+    @patch("kamiwaza_extensions.image_pusher.ImagePusher")
+    @patch("kamiwaza_extensions.image_builder.ImageBuilder")
+    @patch("kamiwaza_extensions.profile_manager.ProfileManager")
+    @patch("kamiwaza_extensions.validators.compose.ComposeValidator")
+    @patch("kamiwaza_extensions.validators.metadata.MetadataValidator")
+    @patch("kamiwaza_extensions.extension_detector.ExtensionDetector")
+    def test_stale_env_default_fails_publish(
+        self,
+        mock_detector_cls,
+        mock_meta_validator_cls,
+        mock_compose_validator_cls,
+        mock_profile_mgr_cls,
+        mock_builder_cls,
+        mock_pusher_cls,
+        mock_publisher_cls,
+        tmp_path,
+    ):
+        # Env default pinned to a tag (1.7.0) this publish does not
+        # produce: != version, so the env-rewrite machinery deliberately
+        # passes it through, and no catalog list covers it. The guard
+        # must reject the entry before it reaches the publisher.
+        metadata = {
+            "name": "kaizenv3",
+            "version": "1.8.13",
+            "description": "Kaizen v3",
+            "extra_docker_images": ["ghcr.io/my-org/images/agent:{version}"],
+        }
+        compose_data = {
+            "services": {
+                "backend": {
+                    "build": {"context": "."},
+                    "image": "ghcr.io/my-org/kaizenv3-backend:1.8.13",
+                    "ports": ["8000"],
+                    "environment": {
+                        "AGENT_SERVER_IMAGE":
+                            "${AGENT_SERVER_IMAGE:-ghcr.io/my-org/images/agent:1.7.0}",
+                    },
+                },
+            },
+        }
+        mock_detector = MagicMock()
+        mock_detector.detect.return_value = _make_extension_info(
+            tmp_path,
+            name="kaizenv3",
+            version="1.8.13",
+            metadata=metadata,
+            compose_data=compose_data,
+        )
+        mock_detector_cls.return_value = mock_detector
+
+        mock_meta_validator = MagicMock()
+        mock_meta_validator.validate.return_value = _make_validation_result()
+        mock_meta_validator_cls.return_value = mock_meta_validator
+
+        mock_compose_validator = MagicMock()
+        mock_compose_validator.validate.return_value = _make_validation_result()
+        mock_compose_validator_cls.return_value = mock_compose_validator
+
+        mock_profile_mgr = MagicMock()
+        mock_profile_mgr.resolve_profile.return_value = _make_profile()
+        mock_profile_mgr_cls.return_value = mock_profile_mgr
+
+        mock_image_builder = MagicMock()
+        mock_image_builder.build.return_value = [
+            "ghcr.io/my-org/kaizenv3-backend:1.8.13-dev",
+        ]
+        mock_builder_cls.return_value = mock_image_builder
+
+        digest_by_ref = {
+            "ghcr.io/my-org/kaizenv3-backend:1.8.13-dev": "sha256:" + "a" * 64,
+            "ghcr.io/my-org/images/agent:1.8.13-dev": "sha256:" + "b" * 64,
+        }
+        mock_pusher_cls.resolve_digest.side_effect = lambda ref: digest_by_ref[ref]
+
+        mock_publisher = MagicMock()
+        mock_publisher_cls.return_value = mock_publisher
+
+        from kamiwaza_extensions.commands.publish import run_publish
+        from kamiwaza_extensions.exit_codes import ExitCode
+
+        with pytest.raises(CLI_EXIT_TYPES) as exc_info:
+            run_publish(stage="dev")
+
+        exit_code = getattr(exc_info.value, "exit_code", None) or getattr(
+            exc_info.value, "code", None
+        )
+        assert exit_code == int(ExitCode.VALIDATION)
+        mock_publisher.publish.assert_not_called()
+
+
+class TestTagSeparatorSharedByBothHelpers:
+    """``_replace_image_tag`` and ``_split_image_ref`` must agree on where the
+    tag starts; when they disagreed, a malformed ref reached the K8s PATCH."""
+
+    def test_split_image_ref_handles_default_value_placeholder(self):
+        from kamiwaza_extensions.compose_transformer import _split_image_ref
+
+        registry, repository, tag = _split_image_ref(
+            "ghcr.io/my-org/foo:${IMAGE_TAG:-local}"
+        )
+
+        assert (registry, repository) == ("ghcr.io", "my-org/foo")
+        assert tag == "${IMAGE_TAG:-local}"
+
+    def test_split_image_ref_still_handles_registry_port(self):
+        from kamiwaza_extensions.compose_transformer import _split_image_ref
+
+        assert _split_image_ref("localhost:5000/foo:1.2.3") == (
+            "localhost:5000",
+            "foo",
+            "1.2.3",
+        )
+
+    def test_both_helpers_agree_on_the_namespace(self):
+        from kamiwaza_extensions.compose_transformer import (
+            _replace_image_tag,
+            _split_image_ref,
+        )
+
+        ref = "ghcr.io/my-org/foo:${IMAGE_TAG:-local}"
+        registry, repository, _ = _split_image_ref(ref)
+
+        assert _replace_image_tag(ref, "2.0.0-dev") == (
+            f"{registry}/{repository}:2.0.0-dev"
+        )

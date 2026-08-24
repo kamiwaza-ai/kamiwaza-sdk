@@ -11,11 +11,11 @@ Per WS-M3.2 design (§6.2 v0.3.7), the unified hierarchy is:
 
     KamiwazaError                     (base — extended with status_code + body kwargs)
         ├─ APIError                   (existing legacy)
+        │      └─ NotFoundError       (existing legacy)
         ├─ AuthenticationError        (existing legacy)
         ├─ AuthorizationError         (existing legacy)
         │      └─ NativeRealmRequiredError      (NEW M3.2)
         │      └─ BrokeredUserNotAllowlistedError (NEW M3.2)
-        ├─ NotFoundError              (existing legacy)
         ├─ ValidationError            (existing legacy)
         ├─ TimeoutError               (existing legacy)
         ├─ FederationPairTimeoutError (NEW M3.2)
@@ -144,6 +144,23 @@ def test_authorization_subclasses_inherit_correctly() -> None:
     assert issubclass(BrokeredUserNotAllowlistedError, AuthorizationError)
 
 
+def test_not_found_error_inherits_api_error_for_compatibility() -> None:
+    """Service modules catch APIError to translate or retry 404s."""
+    from kamiwaza_sdk.exceptions import APIError, NotFoundError
+
+    assert issubclass(NotFoundError, APIError)
+    err = NotFoundError(
+        "missing",
+        status_code=404,
+        body={"detail": "Document not found"},
+        response_text='{"detail":"Document not found"}',
+    )
+    assert err.status_code == 404
+    assert err.response_data == {"detail": "Document not found"}
+    assert err.body == {"detail": "Document not found"}
+    assert err.response_text == '{"detail":"Document not found"}'
+
+
 # ---------------------------------------------------------------------------
 # error_for_response dispatch function — moved from kamiwaza/client.py
 # ---------------------------------------------------------------------------
@@ -230,6 +247,26 @@ def test_error_for_response_falls_back_on_403_without_reason() -> None:
     assert isinstance(err, KamiwazaError)
     assert not isinstance(err, BrokeredUserNotAllowlistedError)
     assert not isinstance(err, NativeRealmRequiredError)
+
+
+def test_error_for_response_dispatches_generic_404_to_not_found() -> None:
+    """A plain 404 without detail.reason still surfaces as NotFoundError."""
+    from kamiwaza_sdk.exceptions import NotFoundError, error_for_response
+
+    body = {"detail": "Document not found"}
+    err = error_for_response(404, body, "Missing document")
+    assert isinstance(err, NotFoundError)
+    assert err.status_code == 404
+    assert err.body == body
+
+
+def test_error_for_response_prefers_specific_404_reason() -> None:
+    """A known 404 detail.reason keeps its more specific subclass."""
+    from kamiwaza_sdk.exceptions import GatePackageNotFoundError, error_for_response
+
+    body = {"detail": {"reason": "gate_package_not_found"}}
+    err = error_for_response(404, body, "Missing package")
+    assert isinstance(err, GatePackageNotFoundError)
 
 
 def test_error_for_response_handles_none_body() -> None:

@@ -2,11 +2,55 @@ from __future__ import annotations
 
 import pytest
 
-from kamiwaza_sdk.exceptions import APIError
-from kamiwaza_sdk.schemas.catalog import ContainerCreate, DatasetCreate, SecretCreate
+from kamiwaza_sdk.exceptions import NotFoundError
+from kamiwaza_sdk.schemas.catalog import ContainerCreate, SecretCreate
 from kamiwaza_sdk.services.catalog import CatalogService, ContainerClient, DatasetClient, SecretClient
 
 pytestmark = pytest.mark.unit
+
+
+_DATASET = {
+    "urn": "urn:li:dataset:(file,mesh-demo,PROD)",
+    "name": "mesh-demo",
+    "platform": "file",
+    "environment": "PROD",
+    "tags": [],
+    "properties": {},
+}
+
+
+def test_dataset_list_routes_to_mesh_target(mock_client, monkeypatch):
+    path = "/mesh/receiver%20edge/api/catalog/datasets/"
+    monkeypatch.setenv(
+        "KAMIWAZA_FEDERATION_CREDENTIAL_RECEIVER_EDGE",
+        "receiver-token",
+    )
+    mock_client.expect("GET", path, [_DATASET])
+
+    datasets = DatasetClient(mock_client).list(
+        query="mesh-demo",
+        target_cluster="receiver edge",
+    )
+
+    assert [dataset.urn for dataset in datasets] == [_DATASET["urn"]]
+    assert mock_client.calls == [
+        (
+            "GET",
+            path,
+            {
+                "params": {"query": "mesh-demo"},
+                "headers": {"X-KZ-Federation-Credential": "receiver-token"},
+            },
+        )
+    ]
+
+
+@pytest.mark.parametrize("target_cluster", ["", " receiver", "receiver/edge", "."])
+def test_dataset_list_rejects_unsafe_mesh_target(mock_client, target_cluster):
+    with pytest.raises(ValueError, match="target_cluster"):
+        DatasetClient(mock_client).list(target_cluster=target_cluster)
+
+    assert mock_client.calls == []
 
 
 def test_catalog_service_create_dataset_roundtrip(dummy_client):
@@ -101,6 +145,62 @@ def test_secret_client_preserves_opaque_urn(dummy_client):
     assert "params" not in client.calls[1][2]
     assert client.calls[2][1].endswith(raw)
     assert "params" not in client.calls[2][2]
+
+
+def test_secret_client_falls_back_to_by_urn_after_v2_not_found():
+    class FallbackClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str, dict]] = []
+
+        def get(self, path: str, **kwargs):
+            self.calls.append(("get", path, kwargs))
+            if path == "/catalog/secrets/v2/urn:li:dataHubSecret:demo":
+                raise NotFoundError(
+                    "missing",
+                    status_code=404,
+                    response_data={"detail": "not found"},
+                )
+            if path == "/catalog/secrets/by-urn":
+                return {
+                    "urn": kwargs["params"]["urn"],
+                    "name": "demo",
+                    "owner": "urn:li:corpuser:demo",
+                }
+            raise AssertionError(f"Unexpected GET {path}")
+
+        def delete(self, path: str, **kwargs):
+            self.calls.append(("delete", path, kwargs))
+            if path == "/catalog/secrets/v2/urn:li:dataHubSecret:demo":
+                raise NotFoundError(
+                    "missing",
+                    status_code=404,
+                    response_data={"detail": "not found"},
+                )
+            if path == "/catalog/secrets/by-urn":
+                return None
+            raise AssertionError(f"Unexpected DELETE {path}")
+
+    client = FallbackClient()
+    secrets = SecretClient(client)
+
+    secret = secrets.get("urn:li:dataHubSecret:demo")
+    secrets.delete("urn:li:dataHubSecret:demo")
+
+    assert secret.urn == "urn:li:dataHubSecret:demo"
+    assert client.calls == [
+        ("get", "/catalog/secrets/v2/urn:li:dataHubSecret:demo", {}),
+        (
+            "get",
+            "/catalog/secrets/by-urn",
+            {"params": {"urn": "urn:li:dataHubSecret:demo"}},
+        ),
+        ("delete", "/catalog/secrets/v2/urn:li:dataHubSecret:demo", {}),
+        (
+            "delete",
+            "/catalog/secrets/by-urn",
+            {"params": {"urn": "urn:li:dataHubSecret:demo"}},
+        ),
+    ]
 
 
 def test_dataset_client_encode_helper():

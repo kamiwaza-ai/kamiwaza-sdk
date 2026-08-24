@@ -28,6 +28,7 @@ from kamiwaza_sdk.connectors import (
     InvalidConfigException,
     OAuthDescriptor,
     OpResult,
+    NoAuth,
     PerUserOAuth,
     ServiceToken,
     SurfaceDescriptor,
@@ -328,6 +329,7 @@ def test_connector_spec_manifest_roundtrip() -> None:
 def test_auth_model_from_kind() -> None:
     assert isinstance(auth_model_from_kind("per_user_oauth"), PerUserOAuth)
     assert isinstance(auth_model_from_kind("service_token"), ServiceToken)
+    assert isinstance(auth_model_from_kind("none"), NoAuth)
     with pytest.raises(ValueError):
         auth_model_from_kind("nope")
 

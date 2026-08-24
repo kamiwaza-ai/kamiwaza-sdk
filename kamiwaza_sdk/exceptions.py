@@ -16,16 +16,21 @@ Hierarchy:
     KamiwazaError                       (base — status_code + body kwargs)
         APIError                        (legacy HTTP-bound error class)
             VectorDBUnavailableError
+            NotFoundError               (404 base)
+                DatasetNotFoundError
         AuthenticationError             (401)
         AuthorizationError              (403 base)
             NativeRealmRequiredError    (403 + endpoint_requires_native_realm)
             BrokeredUserNotAllowlistedError (403 + brokered_user_not_allowlisted)
-        NotFoundError                   (404 base)
-            DatasetNotFoundError
         ValidationError                 (400/422)
         TimeoutError
         NonAPIResponseError
         TransportNotSupportedError
+        FlightConfigurationError
+            InsecureFlightEndpointError
+        FlightTimeoutError
+        FlightUnavailableError
+        FlightIncompleteStreamError
         DeploymentFailedError              (also RuntimeError; terminal deploy failure)
         FederationPairTimeoutError      (503 + psk_propagation_timeout)
         MeshJobTimeoutError             (mesh job exceeded wall-clock)
@@ -106,8 +111,29 @@ class AuthorizationError(KamiwazaError):
     """
 
 
-class NotFoundError(KamiwazaError):
-    """Raised when a requested resource is not found (HTTP 404)."""
+class NotFoundError(APIError):
+    """Raised when a requested resource is not found (HTTP 404).
+
+    NotFoundError remains an APIError subclass so existing service-layer
+    ``except APIError`` fallback and translation paths continue to catch 404s.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        body: object | None = None,
+        response_text: str | None = None,
+        response_data: object | None = None,
+    ):
+        data = body if response_data is None else response_data
+        super().__init__(
+            message,
+            status_code=status_code,
+            response_text=response_text,
+            response_data=data,
+        )
 
 
 class DatasetNotFoundError(NotFoundError):
@@ -132,6 +158,47 @@ class NonAPIResponseError(KamiwazaError):
 
 class TransportNotSupportedError(KamiwazaError):
     """Raised when a retrieval transport cannot satisfy the request."""
+
+
+class FlightConfigurationError(KamiwazaError):
+    """Raised when local Arrow Flight transport settings are unsafe or invalid."""
+
+
+class InsecureFlightEndpointError(FlightConfigurationError):
+    """Raised when plaintext Arrow Flight was not explicitly permitted."""
+
+
+class FlightTimeoutError(TimeoutError):
+    """An Arrow Flight transfer exceeded its configured end-to-end deadline."""
+
+    def __init__(self, message: str, *, timeout_seconds: float) -> None:
+        super().__init__(message)
+        self.timeout_seconds = timeout_seconds
+
+
+class FlightUnavailableError(KamiwazaError):
+    """An Arrow Flight endpoint could not be reached or stopped responding.
+
+    Raised by ``open_flight_stream`` when every endpoint in the
+    ``GrpcHandshake.endpoints`` list fails *before* streaming begins, or when
+    the selected endpoint becomes unavailable after delivery has begun.
+    Mid-stream failures are never retried or sent to another endpoint.
+    """
+
+
+class FlightIncompleteStreamError(KamiwazaError):
+    """A clean Flight EOF could not be confirmed as a completed retrieval job."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        job_id: str,
+        status: str | None,
+    ) -> None:
+        super().__init__(message)
+        self.job_id = job_id
+        self.status = status
 
 
 class DeploymentFailedError(KamiwazaError, RuntimeError):
@@ -219,6 +286,26 @@ class MeshJobFailedError(KamiwazaError):
     """A federated job ran but produced a non-success terminal state
     (``status == "FAILED"`` or similar). Body carries the receiver-side
     error context for diagnostics."""
+
+
+class DelegatedResourceNotFoundError(NotFoundError):
+    """A job requested a resource outside its exact delegated grant."""
+
+
+class DelegationRevokedError(AuthorizationError):
+    """The job, grant, user, or federation is no longer active."""
+
+
+class DelegatedOperationDeniedError(AuthorizationError):
+    """The grant does not authorize the requested delegated operation."""
+
+
+class JobIdentityUnavailableError(KamiwazaError):
+    """The local agent could not attest the calling job process."""
+
+
+class DelegationUnavailableError(KamiwazaError):
+    """Delegated authority or its replay protection is unavailable."""
 
 
 # ----------------------------------------------------------------------------
@@ -323,8 +410,8 @@ def error_for_response(status_code: int, body: Any, message: str) -> KamiwazaErr
             if isinstance(reason_value, str):
                 reason = reason_value
 
-    cls: type[KamiwazaError] = KamiwazaError
+    cls: type[KamiwazaError] = NotFoundError if status_code == 404 else KamiwazaError
     if reason is not None:
-        cls = _REASON_TO_EXCEPTION.get((status_code, reason), KamiwazaError)
+        cls = _REASON_TO_EXCEPTION.get((status_code, reason), cls)
 
     return cls(message, status_code=status_code, body=body)

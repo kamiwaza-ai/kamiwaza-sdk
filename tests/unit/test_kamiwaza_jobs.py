@@ -14,14 +14,12 @@ import pytest
 
 
 def test_run_synchronous_returns_job_result(mock_client) -> None:
-    """``jobs.run(target_cluster, entrypoint, ...)`` hits the synchronous
-    ``/cluster/jobs/run`` endpoint which returns the completed JobResult
-    in-line (no separate poll)."""
+    """A targeted synchronous job traverses mesh and returns JobResult inline."""
     from kamiwaza_sdk.services.jobs_federation import JobsAPI
 
     mock_client.expect(
         "POST",
-        "/cluster/jobs/run",
+        "/mesh/ORION/api/cluster/jobs/run",
         {
             "job_id": "job-abc-123",
             "status": "SUCCEEDED",
@@ -40,7 +38,7 @@ def test_run_synchronous_returns_job_result(mock_client) -> None:
 
     _method, _path, kwargs = mock_client.calls[0]
     body = kwargs.get("json", {})
-    assert body["target_cluster"] == "ORION"
+    assert "target_cluster" not in body
     assert "entrypoint" in body
 
 
@@ -64,11 +62,14 @@ def test_run_local_when_target_cluster_omitted(mock_client) -> None:
 
 
 def test_submit_async_returns_job_id(mock_client) -> None:
-    """submit_async POSTs to ``/cluster/jobs/submit`` and returns just
-    the job_id immediately. Customer polls via wait()."""
+    """Targeted submit_async POSTs through mesh and returns the remote job id."""
     from kamiwaza_sdk.services.jobs_federation import JobsAPI
 
-    mock_client.expect("POST", "/cluster/jobs/submit", {"job_id": "job-async-456"})
+    mock_client.expect(
+        "POST",
+        "/mesh/ORION/api/cluster/jobs/submit",
+        {"job_id": "job-async-456"},
+    )
 
     job_id = JobsAPI(client=mock_client).submit_async(
         target_cluster="ORION",

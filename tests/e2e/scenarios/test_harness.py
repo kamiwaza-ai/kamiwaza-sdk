@@ -3,6 +3,11 @@
 These pin the contract that the per-scenario drivers (and the upcoming T3.3
 dry-run) rely on. Each test exists because a real review would have caught
 the underlying bug — keeping them in place prevents regression.
+
+Tests for the scenario-evidence.v2 record contract (build identity, method,
+capability_ids, status derivation, structural validation) live in
+``test_evidence_v2.py`` instead — that's a separate concern from the
+step-dispatch/record/sign-off contract pinned here.
 """
 
 from __future__ import annotations
@@ -22,8 +27,19 @@ from tests.e2e.scenarios.harness import (
     run_scenario,
 )
 
+TEST_BUILD = "kamiwaza-0.99.0+test.abc1234"
 
-def _runbook(steps, *, scenario_id="S1"):
+
+@pytest.fixture(autouse=True)
+def _build_identity_env(monkeypatch):
+    """Every harness run needs a build identity (scenario-evidence.v2, G1).
+
+    Tests exercising the refusal path delete this env var explicitly.
+    """
+    monkeypatch.setenv("KAMIWAZA_BUILD", TEST_BUILD)
+
+
+def _runbook(steps, *, scenario_id="S1", **extra):
     return {
         "id": scenario_id,
         "name": f"Test scenario {scenario_id}",
@@ -31,6 +47,7 @@ def _runbook(steps, *, scenario_id="S1"):
         "uacs": ["UAC-16"],
         "expected_outcomes": ["something demonstrable"],
         "steps": steps,
+        **extra,
     }
 
 
@@ -290,6 +307,8 @@ class TestRecordRun:
             duration_s=5.0,
             sign_off_actor="SDK team",
             ci_job_url=None,
+            build=TEST_BUILD,
+            status="passed",
             steps=[
                 StepResult(name="x", status="passed", duration_s=0.1, detail="first")
             ],
@@ -302,6 +321,8 @@ class TestRecordRun:
             duration_s=7.0,
             sign_off_actor="SDK team",
             ci_job_url=None,
+            build=TEST_BUILD,
+            status="passed",
             steps=[
                 StepResult(name="x", status="passed", duration_s=0.1, detail="second")
             ],

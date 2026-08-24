@@ -1,6 +1,6 @@
 [project]
 name = "kamiwaza-sdk"
-version = "1.0.0"
+version = "1.1.0"
 description = "Python client library for the Kamiwaza AI Platform"
 readme = "README.md"
 license = "Apache-2.0"
@@ -24,6 +24,7 @@ dependencies = [
     "requests",
     "pydantic[email]>=2.11",
     "httpx",
+    "filelock>=3.20",
     "openai>=1.0",
     "huggingface_hub>=0.23",
     "typer>=0.9.0",
@@ -31,7 +32,7 @@ dependencies = [
     "packaging>=23.0",
     "fastapi>=0.100.0",
     "rich>=13.0",
-    "kamiwaza-extensions-lib>=0.4,<0.5",
+    "kamiwaza-extensions-lib>=0.4.4,<0.5",
 ]
 
 [project.optional-dependencies]
@@ -46,9 +47,13 @@ connector = [
     "fastapi>=0.100.0",
     "pydantic[email]>=2.11",
 ]
+flight = [
+    "pyarrow>=17.0",
+]
 all = [
     "boto3>=1.28.0",
     "anthropic>=0.30.0",
+    "pyarrow>=17.0",
 ]
 
 [project.urls]
@@ -65,6 +70,7 @@ build-backend = "setuptools.build_meta"
 [project.scripts]
 kz-ext = "kamiwaza_extensions.cli:app"
 kamiwaza-seed = "kamiwaza_sdk.seeding.cli:main"
+kamiwaza-federation = "kamiwaza_sdk.seeding.federation.cli:main"
 
 # `kamiwaza-extensions-lib` is published as its own PyPI distribution
 # from `kamiwaza_extensions_lib/pyproject.toml`. For local dev / tests we
@@ -123,6 +129,7 @@ dev = [
     "twine>=4.0",
     "radon>=5.1",
     "pdoc>=14.0",
+    "tomli>=2.0; python_version < '3.11'",
     # Used by tests/e2e/extension_contract/echo-check/backend/tests/test_helpers.py
     # to mint test JWTs; previously only declared in the nested backend's optional
     # `test` extra, which the root `uv sync --group dev` doesn't install.
@@ -144,6 +151,10 @@ markers = [
     "withoutresponses: tests needing real network access",
     "requires_embedding_model: live tests that require a platform embedding deployment that can generate embeddings",
     "requires_two_clusters: live tests that require a federation peer cluster reachable via KAMIWAZA_PEER_BASE_URL / KAMIWAZA_PEER_API_KEY (ENG-5784)",
+    "requires_receiver_realm: live federation tests for the deferred receiver_realm trust posture; skipped unless KAMIWAZA_TEST_RECEIVER_REALM=1 (ENG-10585 / ENG-9808)",
+    "requires_shared_idp: live federation tests exercising the shared_idp (Alt C) trust posture — receiver validates a shared-realm token against a trusted issuer (ENG-8213). Required two-cluster lanes carry this together with requires_two_clusters and must provision their shared-identity prerequisites before selection.",
+    "requires_owned_shared_realm: live shared_idp tests that require an independently provisioned realm, ROPC client, clearance-bearing personas, and ownership-guarded teardown (ENG-10050)",
+    "requires_delegated_workload: live federation tests that require the release/1.2.0 delegated RayJob boundary, receiver package catalog, and private package repository (ENG-8454)",
     "requires_deployable_model: live tests that require the host to deploy the integration test model; skips on hosts without compatible inference capacity (e.g. x86 CPU smoke vs an MLX model)",
     "extension_regression: D210 12-issue regression checklist (UAC-17 / EDX-OPS-2). See tests/unit/extensions/regression/inventory.yaml.",
     "live_extension: live extension-contract tests against a real cluster (relocated from kamiwaza, env-gated by RUN_LIVE_EXTENSION_TESTS=1)",
