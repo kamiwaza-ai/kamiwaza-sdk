@@ -37,6 +37,12 @@ def _canonical_kaizen(client):
     Matches on the canonical catalog identity specifically: while legacy Kaizen
     still ships as ``kaizen-legacy``, a workroom can hold either or both, and
     the two answer different agent-create contracts.
+
+    Scoping into each candidate is unavoidable rather than careless: the
+    platform only lists a workroom's extensions to a caller already scoped into
+    it, so there is no unscoped read that could narrow the search first. The
+    loop therefore stops at the first canonical instance it finds, and the
+    fixture is module-scoped so the sweep runs once per session.
     """
     try:
         workrooms = client.workrooms.list()

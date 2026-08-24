@@ -277,30 +277,79 @@ _LEGACY_ONLY_AGENT_FLAGS = (
     ("--endpoint-path", "endpoint_path"),
     ("--llm-base-url", "llm_base_url"),
     ("--llm-api-key-env", "llm_api_key_env"),
+    ("--custom-instructions", "custom_instructions"),
+)
+
+# The mirror set: fields that exist only in the canonical ``content`` body. The
+# legacy create has nowhere to put them, so accepting them there would drop an
+# operator's choice just as silently as the reverse.
+_CANONICAL_ONLY_AGENT_FLAGS = (
+    ("--persona", "persona"),
+    ("--capability-ceiling", "capability_ceiling"),
 )
 
 
+def _reject_flags(args: argparse.Namespace, flags, message: str) -> None:
+    """Fail loudly when a create carries flags the chosen contract can't honor.
+
+    Every flag this CLI accepts belongs to exactly one contract, and the two
+    bodies have no overlap — so a flag aimed at the other contract can only be
+    dropped. Dropping it silently is the failure mode the contract split exists
+    to remove, so it is always an error, never a warning.
+    """
+    supplied = [flag for flag, dest in flags if getattr(args, dest)]
+    if supplied:
+        raise SystemExit(f"{', '.join(supplied)} {message}")
+
+
 def _reject_legacy_agent_flags(args: argparse.Namespace) -> None:
-    """Fail loudly when a canonical create carries legacy per-agent model flags."""
-    supplied = [flag for flag, dest in _LEGACY_ONLY_AGENT_FLAGS if getattr(args, dest)]
-    if not supplied:
-        return
-    raise SystemExit(
-        f"{', '.join(supplied)} bind a model to the agent, which canonical Kaizen "
-        f"('{CANONICAL_EXTENSION_NAME}') does not support. Bind the model to the "
-        "instance with 'kamiwaza-seed bind-chat-model', or pass "
-        f"--extension-name {LEGACY_EXTENSION_NAME} to use the legacy contract."
+    """Reject legacy-only flags on a canonical create."""
+    _reject_flags(
+        args,
+        _LEGACY_ONLY_AGENT_FLAGS,
+        f"are per-agent settings that canonical Kaizen ('{CANONICAL_EXTENSION_NAME}') "
+        "does not support. Bind a model to the instance with "
+        "'kamiwaza-seed bind-chat-model', or pass "
+        f"--extension-name {LEGACY_EXTENSION_NAME} to use the legacy contract.",
     )
+
+
+def _reject_canonical_agent_flags(args: argparse.Namespace) -> None:
+    """Reject canonical-only flags on a legacy create."""
+    _reject_flags(
+        args,
+        _CANONICAL_ONLY_AGENT_FLAGS,
+        f"belong to the canonical Kaizen ('{CANONICAL_EXTENSION_NAME}') agent "
+        f"definition, which legacy Kaizen ('{LEGACY_EXTENSION_NAME}') has no "
+        "field for. Drop them, or omit --extension-name to create a canonical "
+        "agent.",
+    )
+
+
+def _validate_agent_args(args: argparse.Namespace, contract: str) -> None:
+    """Check the flag set against the chosen contract, before any network call.
+
+    Runs ahead of client scoping on purpose: scoping issues a ``workrooms.enter``
+    session bind, so validating after it would make a local flag mistake cost a
+    server round trip and leave a session bound for a command that then fails.
+    """
+    if contract == AGENT_CONTRACT_CANONICAL:
+        _reject_legacy_agent_flags(args)
+        if not args.persona:
+            raise SystemExit(
+                "--persona is required for canonical Kaizen agents (it is the "
+                "agent's system persona)."
+            )
+        return
+    _reject_canonical_agent_flags(args)
+    if not args.model:
+        raise SystemExit(
+            f"--model is required for legacy Kaizen ('{LEGACY_EXTENSION_NAME}') agents."
+        )
 
 
 def _create_canonical_agent(args: argparse.Namespace, client) -> dict:
     """Create an agent through the canonical ``content`` contract."""
-    _reject_legacy_agent_flags(args)
-    if not args.persona:
-        raise SystemExit(
-            "--persona is required for canonical Kaizen agents (it is the "
-            "agent's system persona)."
-        )
     definition = AgentDefinition(
         name=args.name,
         persona=args.persona,
@@ -317,10 +366,6 @@ def _create_canonical_agent(args: argparse.Namespace, client) -> dict:
 
 def _create_legacy_agent(args: argparse.Namespace, client) -> dict:
     """Create an agent through the legacy flat ``agent_config.llm`` contract."""
-    if not args.model:
-        raise SystemExit(
-            f"--model is required for legacy Kaizen ('{LEGACY_EXTENSION_NAME}') agents."
-        )
     llm = LLMConfig(
         model=args.model,
         provider=args.provider,
@@ -351,10 +396,25 @@ def cmd_create_agent(args: argparse.Namespace, *, client) -> dict:
         contract = agent_contract_for_extension(args.extension_name)
     except ValueError as exc:
         raise SystemExit(str(exc))
+    _validate_agent_args(args, contract)
     client = _client_for_workroom(client, args.workroom_id)
     if contract == AGENT_CONTRACT_CANONICAL:
         return _create_canonical_agent(args, client)
     return _create_legacy_agent(args, client)
+
+
+def _bound_chat_deployment_id(settings: object) -> Optional[str]:
+    """Pull the currently-bound chat deployment id out of a model-settings view."""
+    if not isinstance(settings, dict):
+        return None
+    chat = settings.get("chat")
+    if not isinstance(chat, dict):
+        return None
+    current = chat.get("current")
+    if not isinstance(current, dict):
+        return None
+    bound = current.get("id")
+    return str(bound) if bound else None
 
 
 def cmd_bind_chat_model(args: argparse.Namespace, *, client) -> dict:
@@ -364,12 +424,16 @@ def cmd_bind_chat_model(args: argparse.Namespace, *, client) -> dict:
     this is what actually gives seeded agents a backing model.
     """
     client = _client_for_workroom(client, args.workroom_id)
-    client.kaizen_ops.set_chat_model(
+    settings = client.kaizen_ops.set_chat_model(
         args.deployment_id,
         base_url=args.kaizen_base_url,
         workroom_id=args.workroom_id,
     )
-    return {"chat_deployment_id": args.deployment_id}
+    # Report what the instance now says is bound, not what we asked for — an
+    # echoed request would report success even if the server coerced or kept a
+    # different binding. None means the response didn't carry one, which is
+    # itself worth surfacing rather than papering over.
+    return {"chat_deployment_id": _bound_chat_deployment_id(settings)}
 
 
 def cmd_create_conversation(args: argparse.Namespace, *, client) -> dict:

@@ -517,44 +517,6 @@ class AgentService(BaseService):
 _ERROR_EVENT_KINDS = frozenset({"AgentErrorEvent", "ConversationErrorEvent"})
 _DONE_EXECUTION_STATUSES = frozenset({"finished", "completed", "done"})
 _ERROR_EXECUTION_STATUSES = frozenset({"error", "failed"})
-class KaizenOpsService(BaseService):
-    """Operator settings on a canonical Kaizen instance."""
-
-    def set_chat_model(
-        self,
-        deployment_id: str,
-        *,
-        base_url: str,
-        workroom_id: Optional[Union[str, object]] = None,
-    ) -> Dict[str, Any]:
-        """Point the instance's chat role at a Kamiwaza model deployment.
-
-        Canonical Kaizen binds models per instance, not per agent, so this is
-        how a caller gives its agents a backing model. Kaizen resolves the
-        endpoint and display metadata from the deployment itself — only the
-        deployment id crosses the wire, never an endpoint or a credential.
-
-        Requires an admin-ranked caller and an instance started with its config
-        store enabled; without either, Kaizen answers 4xx rather than silently
-        leaving the previous binding in place.
-
-        Args:
-            deployment_id: Kamiwaza deployment to serve chat.
-            base_url: The Kaizen instance API root (see :func:`resolve_base_url`).
-            workroom_id: Workroom scope (X-Workroom-Id header).
-
-        Returns:
-            The instance's model-settings view after the update.
-        """
-        return self.client._request(
-            "PUT",
-            _OPS_CHAT_MODEL_PATH,
-            base_url=base_url,
-            json={"deployment_id": deployment_id},
-            headers=_workroom_headers(workroom_id),
-        )
-
-
 _READY_CONTAINER_STATUSES = frozenset({"active", "ready", "running", "serving"})
 _PENDING_CONTAINER_STATUSES = frozenset(
     {
@@ -1016,3 +978,41 @@ class ConversationService(BaseService):
             # max(0, …) keeps zero poll intervals bounded by the timeout rather
             # than raising from time.sleep().
             time.sleep(max(0.0, min(poll_interval_seconds, remaining)))
+
+
+class KaizenOpsService(BaseService):
+    """Operator settings on a canonical Kaizen instance."""
+
+    def set_chat_model(
+        self,
+        deployment_id: str,
+        *,
+        base_url: str,
+        workroom_id: Optional[Union[str, object]] = None,
+    ) -> Dict[str, Any]:
+        """Point the instance's chat role at a Kamiwaza model deployment.
+
+        Canonical Kaizen binds models per instance, not per agent, so this is
+        how a caller gives its agents a backing model. Kaizen resolves the
+        endpoint and display metadata from the deployment itself — only the
+        deployment id crosses the wire, never an endpoint or a credential.
+
+        Requires an admin-ranked caller and an instance started with its config
+        store enabled; without either, Kaizen answers 4xx rather than silently
+        leaving the previous binding in place.
+
+        Args:
+            deployment_id: Kamiwaza deployment to serve chat.
+            base_url: The Kaizen instance API root (see :func:`resolve_base_url`).
+            workroom_id: Workroom scope (X-Workroom-Id header).
+
+        Returns:
+            The instance's model-settings view after the update.
+        """
+        return self.client._request(
+            "PUT",
+            _OPS_CHAT_MODEL_PATH,
+            base_url=base_url,
+            json={"deployment_id": deployment_id},
+            headers=_workroom_headers(workroom_id),
+        )

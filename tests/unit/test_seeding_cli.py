@@ -430,6 +430,77 @@ def test_create_agent_canonical_rejects_per_agent_model_flags(monkeypatch):
     assert client.agents.create_canonical.calls == []
 
 
+def test_create_agent_canonical_rejects_custom_instructions(monkeypatch):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+
+    # custom_instructions only exists on the legacy body; the canonical content
+    # body has no field for it, so accepting it would drop it silently.
+    with pytest.raises(SystemExit, match="--custom-instructions"):
+        _run(
+            [
+                "create-agent",
+                "--kaizen-base-url", "https://kamiwaza.test/kaizen",
+                "--name", "a",
+                "--persona", "p",
+                "--custom-instructions", "be terse",
+            ],
+            client,
+        )
+
+    assert client.agents.create_canonical.calls == []
+
+
+@pytest.mark.parametrize(
+    "flag,value",
+    [("--persona", "p"), ("--capability-ceiling", "write")],
+)
+def test_create_agent_legacy_rejects_canonical_only_flags(monkeypatch, flag, value):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+
+    # The mirror of the canonical guard: the legacy body has nowhere to put a
+    # persona or a capability ceiling, so they must not be quietly accepted.
+    with pytest.raises(SystemExit, match=flag):
+        _run(
+            [
+                "create-agent",
+                "--extension-name", "kaizen-legacy",
+                "--kaizen-base-url", "https://kamiwaza.test/kaizen",
+                "--name", "a",
+                "--model", "m",
+                flag, value,
+            ],
+            client,
+        )
+
+    assert client.agents.create.calls == []
+
+
+def test_create_agent_validates_flags_before_scoping_the_client(monkeypatch):
+    scoped = []
+    monkeypatch.setattr(
+        cli,
+        "scoped_client_for_workroom",
+        lambda c, wid: (scoped.append(wid), c)[1],
+    )
+
+    # Scoping issues a workrooms.enter session bind, so a local flag mistake
+    # must never cost a server round trip.
+    with pytest.raises(SystemExit):
+        _run(
+            [
+                "create-agent",
+                "--kaizen-base-url", "https://kamiwaza.test/kaizen",
+                "--name", "a",
+                "--workroom-id", "wr-1",
+            ],
+            FakeClient(),
+        )
+
+    assert scoped == []
+
+
 def test_create_agent_canonical_requires_persona(monkeypatch):
     client = FakeClient()
     monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
