@@ -750,7 +750,7 @@ class DoctorChecker:
         # almost always front /v2/ with TLS, and HTTPS-only registries
         # whose port-80 returns an HTML landing page would otherwise be
         # mis-reported as a hard failure on the first probe. For loopback
-        # registries (k0s/kind local dev), plain HTTP is the convention.
+        # local-development registries, plain HTTP is the convention.
         if loopback:
             urls = (f"http://{registry}/v2/", f"https://{registry}/v2/")
         else:

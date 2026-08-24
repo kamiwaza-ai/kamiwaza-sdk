@@ -180,7 +180,7 @@ class TestBuildPatchServiceSpecs:
         assert img.repository == "kamiwaza-internal/foo/images/omniparse"
         assert img.tag == "2.0.14-dev"
 
-    def test_localhost_kind_registry_with_port(self):
+    def test_localhost_registry_with_port(self):
         from kamiwaza_extensions.commands.dev import _build_patch_service_specs
 
         payload = self._payload("localhost:5001/my-ext-backend:1.0.0-gabc")

@@ -135,7 +135,7 @@ class TestDoctorRegistryChecks:
         assert "https://registry.kamiwaza.test/v2/" in result.message
 
     def test_registry_endpoint_loopback_uses_http_first_and_skips_verify(self):
-        """Loopback dev registries (k0s/kind) speak plain HTTP and almost
+        """Loopback development registries speak plain HTTP and almost
         always present a self-signed cert if HTTPS is even reachable. Probe
         order is HTTP-first, and the HTTPS fallback must pass ``verify=False``
         without leaking ``InsecureRequestWarning`` to stderr."""
@@ -537,9 +537,8 @@ class TestDoctorRegistryChecks:
         assert insecure_check.status == "fail"
 
     @patch("kamiwaza_extensions.registry_resolution.detect_core_config_registry")
-    @patch("kamiwaza_extensions.registry_resolution.detect_kind_registry")
     def test_registry_readiness_checks_non_split_docker_insecure_registry(
-        self, mock_kind, mock_core, tmp_path
+        self, mock_core, tmp_path
     ):
         """Doctor must catch same-registry insecure Docker pushes too.
 
@@ -548,7 +547,6 @@ class TestDoctorRegistryChecks:
         insecure-registry configuration before it will push HTTP to that host."""
 
         mock_core.return_value = None
-        mock_kind.return_value = None
         checker = DoctorChecker(config_dir=tmp_path / ".kamiwaza")
         checker._conn_mgr.get_active_connection = MagicMock(
             return_value=MagicMock(

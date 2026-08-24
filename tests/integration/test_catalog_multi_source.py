@@ -13,7 +13,6 @@ from kamiwaza_sdk.schemas.catalog import ContainerCreate
 
 pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.withoutresponses]
 
-
 def _candidate_file_ingestion_roots(catalog_stack_environment: Dict) -> list[Path]:
     candidates: list[Path] = []
     seen: set[Path] = set()
@@ -121,25 +120,25 @@ def _run_sse_retrieval(client, dataset_urn: str, *, format_hint: str) -> None:
 def _ingest_object_dataset(
     client,
     *,
-    bucket: str,
+    config: Dict[str, str],
     key: str,
-    endpoint: str,
-    region: str,
     secret_urn: str,
 ) -> tuple[str, list[str]]:
     response = client.ingestion.run_active(
         "s3",
-        bucket=bucket,
+        bucket=config["bucket"],
         prefix=key,
-        endpoint_url=endpoint,
-        region=region,
+        endpoint_url=config["endpoint"],
+        region=config["region"],
         secret_name=secret_urn,
     )
     dataset_urns = response.urns
     if not dataset_urns:
-        dataset_urns = [f"urn:li:dataset:(urn:li:dataPlatform:s3,{bucket}/{key},PROD)"]
-    target = dataset_urns[0]
-    return target, dataset_urns
+        bucket = config["bucket"]
+        dataset_urns = [
+            f"urn:li:dataset:(urn:li:dataPlatform:s3,{bucket}/{key},PROD)"
+        ]
+    return dataset_urns[0], dataset_urns
 
 
 def test_catalog_file_ingestion_metadata(live_kamiwaza_client, catalog_stack_environment):
@@ -312,10 +311,8 @@ def test_catalog_inline_small_object_succeeds(
     try:
         target, dataset_urns = _ingest_object_dataset(
             live_kamiwaza_client,
-            bucket=cfg["bucket"],
+            config=cfg,
             key=cfg["small_key"],
-            endpoint=cfg["endpoint"],
-            region=cfg["region"],
             secret_urn=catalog_s3_secret_urn,
         )
         inline = _run_inline_retrieval(
@@ -338,10 +335,8 @@ def test_catalog_inline_large_object_hits_threshold(
     try:
         target, dataset_urns = _ingest_object_dataset(
             live_kamiwaza_client,
-            bucket=cfg["bucket"],
+            config=cfg,
             key=cfg["large_key"],
-            endpoint=cfg["endpoint"],
-            region=cfg["region"],
             secret_urn=catalog_s3_secret_urn,
         )
         with pytest.raises(APIError) as excinfo:
@@ -367,10 +362,8 @@ def test_catalog_large_object_sse_retrieval(
     try:
         target, dataset_urns = _ingest_object_dataset(
             live_kamiwaza_client,
-            bucket=cfg["bucket"],
-            key=cfg["large_key"],
-            endpoint=cfg["endpoint"],
-            region=cfg["region"],
+            config=cfg,
+            key=cfg["large_sse_key"],
             secret_urn=catalog_s3_secret_urn,
         )
         _run_sse_retrieval(
@@ -393,10 +386,8 @@ def test_catalog_container_link_sets_dataset_container_urn(
     try:
         target, dataset_urns = _ingest_object_dataset(
             live_kamiwaza_client,
-            bucket=cfg["bucket"],
+            config=cfg,
             key=cfg["small_key"],
-            endpoint=cfg["endpoint"],
-            region=cfg["region"],
             secret_urn=catalog_s3_secret_urn,
         )
         containers = live_kamiwaza_client.catalog.containers
@@ -438,7 +429,7 @@ def test_catalog_postgres_ingestion_metadata(live_kamiwaza_client, catalog_stack
             port=pg["port"],
             database=pg["database"],
             user=pg["user"],
-            password=pg["password"],
+            password_secret_name=pg["password_secret_name"],
             schema=pg["schema"],
         )
         dataset_urns = response.urns
