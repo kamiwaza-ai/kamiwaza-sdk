@@ -391,6 +391,29 @@ def test_refusal_without_build_identity(pytester, evidence_out, monkeypatch):
     assert not evidence_out.exists()
 
 
+def test_refusal_of_a_digest_first_build_at_the_emitter_seam(
+    pytester, evidence_out, monkeypatch
+):
+    """The emitter inherits the harness contract, not just its own G1 check.
+
+    A stamp that is *present* but unreachable by a version query is the
+    shape cycle 1 emitted (ENG-10715); it must fail here as a usage error
+    too, and before anything is written.
+    """
+    monkeypatch.delenv("KAMIWAZA_BUILD", raising=False)
+    pytester.makepyfile(test_mapped="def test_ok():\n    assert True\n")
+    result = _run_emitting(
+        pytester,
+        evidence_out,
+        "--emit-evidence",
+        "--build",
+        "ghcr.io/kamiwaza/core@sha256:abc1234; kamiwaza.test",
+    )
+    assert result.ret == pytest.ExitCode.USAGE_ERROR
+    result.stderr.fnmatch_lines(["*version-first*"])
+    assert not evidence_out.exists()
+
+
 # ---------------------------------------------------------------------------
 # Capability-map loader
 # ---------------------------------------------------------------------------

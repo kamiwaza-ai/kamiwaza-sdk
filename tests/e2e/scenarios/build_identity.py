@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Mapping
 
 SEPARATOR = "; "
 
@@ -149,16 +150,17 @@ def _refusal(resolved: str) -> str:
     )
 
 
-def resolve(build: str | None = None, env: dict | None = None) -> str:
+def resolve(build: str | None = None, env: Mapping[str, str] | None = None) -> str:
     """Resolve the build identity for an evidence record, or refuse.
 
     Precedence for the identity: the explicit ``build`` argument (the
     scenario drivers wire the ``--build`` pytest option through here), then
     ``KAMIWAZA_BUILD``.
 
-    Then the release. If the resolved identity is already version-first it
-    is used unchanged -- a caller that stamps correctly is never
-    second-guessed. Otherwise ``KAMIWAZA_RELEASE`` is composed in front of
+    Then the release. If the resolved identity is already version-first its
+    segments are kept as they are -- a caller that stamps correctly is never
+    second-guessed; only the separator between segments is normalized, and
+    empty segments dropped. Otherwise ``KAMIWAZA_RELEASE`` is composed in front of
     it, which is the migration path from the digest-only stamp: the operator
     keeps exporting the digest and adds the release the image was tagged
     with. With neither, the harness refuses.
