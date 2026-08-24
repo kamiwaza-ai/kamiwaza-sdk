@@ -697,6 +697,23 @@ def _raise_or_skip_context_target(
     pytest.skip(message)
 
 
+def _active_context_deployment_matches_target(
+    deployment: dict[str, str],
+    target: _model_targets.InferenceTarget,
+    prepared_model: Any | None,
+) -> bool:
+    """Require exact prepared weights when reusing a required context target."""
+    if deployment.get("repo_model_id") != target.repo_id:
+        return False
+    if deployment.get("engine_name") != target.engine_name:
+        return False
+    if not target.required:
+        return True
+
+    model_file_id = _target_model_file_id(prepared_model, target.quantization)
+    return model_file_id is None or deployment.get("m_file_id") == model_file_id
+
+
 def _active_embedding_deployment(client: KamiwazaClient) -> dict[str, str] | None:
     return _preferred_active_model_deployment(
         client,
@@ -1362,10 +1379,19 @@ def context_llm_prerequisite(
         preferred_repo_id=context_repo_id,
         preferred_engine_name=context_engine_name,
     )
-    if (
-        existing is not None
-        and existing.get("repo_model_id") == context_repo_id
-        and existing.get("engine_name") == context_engine_name
+    prepared_model: Any | None = None
+    if existing is not None and context_target.required:
+        # Resolve the selected quantization before reusing a required deployment.
+        # Repo + engine alone is ambiguous for multi-quant GGUF repositories.
+        prepared_model = ensure_repo_ready(
+            client,
+            context_repo_id,
+            quantization=context_target.quantization,
+        )
+    if existing is not None and _active_context_deployment_matches_target(
+        existing,
+        context_target,
+        prepared_model,
     ):
         yield existing["deployment_id"]
         return
@@ -1375,11 +1401,13 @@ def context_llm_prerequisite(
     # capacity-limited host) would be orphaned when we skip.
     provisioned_deployment_id: str | None = None
     try:
-        model = ensure_repo_ready(
-            client,
-            context_repo_id,
-            quantization=context_target.quantization,
-        )
+        model = prepared_model
+        if model is None:
+            model = ensure_repo_ready(
+                client,
+                context_repo_id,
+                quantization=context_target.quantization,
+            )
         configs = client.models.get_model_configs(model.id)
         if not configs:
             _fail_or_skip_context_target(

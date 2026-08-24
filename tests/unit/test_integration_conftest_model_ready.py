@@ -706,6 +706,82 @@ def test_context_prerequisite_prepares_and_deploys_exact_target_file(
     assert deploy_calls[0]["m_file_id"] == str(model_file_id)
 
 
+def test_required_context_does_not_reuse_mismatched_active_quantization(
+    integration_conftest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = integration_conftest._model_targets.InferenceTarget(
+        repo_id="org/context.gguf",
+        engine_name="llamacpp",
+        quantization="q8_0",
+        required=True,
+    )
+    q8_file_id = uuid4()
+    readiness_calls: list[tuple[str, str]] = []
+    deploy_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        integration_conftest,
+        "_context_llm_target",
+        lambda _snapshot: target,
+    )
+    monkeypatch.setattr(
+        integration_conftest,
+        "_preferred_active_model_deployment",
+        lambda *_args, **_kwargs: {
+            "deployment_id": "dep-q4",
+            "repo_model_id": target.repo_id,
+            "engine_name": target.engine_name,
+            "m_file_id": "q4-file-id",
+        },
+    )
+
+    def ensure_repo_ready(
+        _client: object, repo_id: str, *, quantization: str
+    ) -> object:
+        readiness_calls.append((repo_id, quantization))
+        return SimpleNamespace(
+            id="model-1",
+            m_files=[
+                SimpleNamespace(
+                    id=q8_file_id,
+                    name="context-Q8_0.gguf",
+                    storage_location="oci://context-Q8_0.gguf",
+                    is_downloading=False,
+                    dl_requested_at=None,
+                )
+            ],
+        )
+
+    client = SimpleNamespace(
+        models=SimpleNamespace(
+            get_model_configs=lambda _model_id: [
+                SimpleNamespace(id="cfg-1", default=True)
+            ]
+        ),
+        serving=SimpleNamespace(
+            deploy_model=lambda **kwargs: deploy_calls.append(kwargs) or "dep-q8",
+            wait_for_deployment=lambda *_args, **_kwargs: SimpleNamespace(
+                id="dep-q8",
+                status="DEPLOYED",
+                instances=[SimpleNamespace(status="DEPLOYED")],
+            ),
+            stop_deployment=lambda **_kwargs: None,
+        ),
+    )
+
+    prerequisite = integration_conftest.context_llm_prerequisite.__wrapped__(
+        client,
+        ensure_repo_ready,
+        None,
+    )
+    assert next(prerequisite) == "dep-q8"
+    with pytest.raises(StopIteration):
+        next(prerequisite)
+
+    assert readiness_calls == [(target.repo_id, target.quantization)]
+    assert deploy_calls[0]["m_file_id"] == str(q8_file_id)
+
+
 def test_context_prerequisite_does_not_mask_programming_errors(
     integration_conftest,
     monkeypatch: pytest.MonkeyPatch,
