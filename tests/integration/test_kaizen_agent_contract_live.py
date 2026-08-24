@@ -41,8 +41,7 @@ def _canonical_kaizen(client):
     Scoping into each candidate is unavoidable rather than careless: the
     platform only lists a workroom's extensions to a caller already scoped into
     it, so there is no unscoped read that could narrow the search first. The
-    loop therefore stops at the first canonical instance it finds, and the
-    fixture is module-scoped so the sweep runs once per session.
+    loop therefore stops at the first canonical instance it finds.
     """
     try:
         workrooms = client.workrooms.list()
@@ -63,7 +62,7 @@ def _canonical_kaizen(client):
     return None
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def canonical_kaizen(live_kamiwaza_client):
     found = _canonical_kaizen(live_kamiwaza_client)
     if found is None:
@@ -104,13 +103,22 @@ def test_canonical_agent_create_rejects_the_legacy_body(canonical_kaizen):
     being detectable and the SDK's identity-based dispatch could rot unnoticed.
     """
     client, workroom_id, base_url = canonical_kaizen
+    created = None
 
-    with pytest.raises(KamiwazaError) as excinfo:
-        client.agents.create(
-            base_url=base_url,
-            name=f"sdk-contract-legacy-{uuid4().hex[:8]}",
-            llm={"model": "any", "base_url": "https://unused.example/v1"},
-            workroom_id=workroom_id,
-        )
-
-    assert getattr(excinfo.value, "status_code", None) in (400, 422)
+    try:
+        with pytest.raises(KamiwazaError) as excinfo:
+            created = client.agents.create(
+                base_url=base_url,
+                name=f"sdk-contract-legacy-{uuid4().hex[:8]}",
+                llm={"model": "any", "base_url": "https://unused.example/v1"},
+                workroom_id=workroom_id,
+            )
+        assert getattr(excinfo.value, "status_code", None) in (400, 422)
+    finally:
+        # If canonical ever *did* accept the flat body, the assertion above
+        # fails — and without this the stray agent would leak onto a live
+        # instance, which is the very outcome this test exists to detect.
+        if created is not None:
+            client.agents.delete(
+                created.id, base_url=base_url, workroom_id=workroom_id
+            )

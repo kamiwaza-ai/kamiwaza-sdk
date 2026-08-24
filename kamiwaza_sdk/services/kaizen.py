@@ -390,12 +390,18 @@ class AgentService(BaseService):
         base_url: str,
         workroom_id: Optional[Union[str, object]] = None,
     ) -> None:
-        """Delete an agent the caller owns (canonical Kaizen; owner-only)."""
+        """Delete an agent the caller owns (canonical Kaizen; owner-only).
+
+        ``expect_json=False`` because the route answers 204; a 200 with an empty
+        body would otherwise raise a JSON-parse error out of a call whose result
+        is discarded, masking whatever the caller was actually doing.
+        """
         self.client._request(
             "DELETE",
             f"{_AGENTS_PATH}/{agent_id}",
             base_url=base_url,
             headers=_workroom_headers(workroom_id),
+            expect_json=False,
         )
 
     def create(

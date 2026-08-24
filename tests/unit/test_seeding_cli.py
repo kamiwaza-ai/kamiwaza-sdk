@@ -569,6 +569,35 @@ def test_bind_chat_model_sends_only_the_deployment_id(capsys, monkeypatch):
     assert json.loads(capsys.readouterr().out) == {"chat_deployment_id": "dep-xyz"}
 
 
+@pytest.mark.parametrize(
+    "response",
+    [
+        {"chat": {"current": {"id": "some-other-dep"}}},  # server bound something else
+        {"chat": {"current": None}},  # nothing bound
+        {"chat": {}},  # no current at all
+        {},  # off-shape response entirely
+        "not-a-dict",
+    ],
+)
+def test_bind_chat_model_fails_when_binding_is_not_confirmed(monkeypatch, response):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+    client.kaizen_ops.set_chat_model = RecordingService(response)
+
+    # Exiting 0 here would let the caller go on to create and chat-verify an
+    # agent backed by an unintended model — the silent failure the contract
+    # split exists to remove.
+    with pytest.raises(SystemExit, match="not confirmed"):
+        _run(
+            [
+                "bind-chat-model",
+                "--kaizen-base-url", "https://kamiwaza.test/kaizen",
+                "--deployment-id", "dep-xyz",
+            ],
+            client,
+        )
+
+
 def test_create_conversation(capsys):
     client = FakeClient()
 

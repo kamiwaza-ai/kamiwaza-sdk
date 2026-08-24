@@ -17,7 +17,7 @@ Two agent-create contracts ship side by side and are **not** interchangeable:
   :class:`LLMConfig` under ``agent_config.llm``.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -93,7 +93,11 @@ class Agent(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     id: str
-    version: Optional[int] = None
+    # Canonical Kaizen returns an int here. The type stays wide because this
+    # model is shared with the legacy create path, and narrowing it would turn
+    # a legacy response carrying a non-int version into a ValidationError on a
+    # path that works today.
+    version: Optional[Union[int, str]] = None
     name: Optional[str] = None
     description: Optional[str] = None
     workroom_id: Optional[str] = None
