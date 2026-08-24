@@ -84,7 +84,8 @@ def _explicit_inference_target() -> InferenceTarget | None:
     if not repo_id or not engine_name:
         raise ValueError(
             "KAMIWAZA_TEST_LLM_REPO and KAMIWAZA_TEST_LLM_ENGINE "
-            "must be set together"
+            "must be set together; KAMIWAZA_TEST_LLM_QUANT is optional only "
+            "after both are set"
         )
     targets_by_engine = {
         "llamacpp": GGUF_LLM_TARGET,

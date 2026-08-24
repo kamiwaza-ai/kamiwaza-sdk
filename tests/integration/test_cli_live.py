@@ -366,6 +366,7 @@ def test_cli_serve_deploy(
             messages=[{"role": "user", "content": "Reply with exactly: ready"}],
             temperature=0.0,
             max_tokens=8,
+            timeout=60,
         )
         assert response.choices, "CLI-deployed model returned no chat choices"
         content = response.choices[0].message.content or ""

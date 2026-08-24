@@ -814,6 +814,90 @@ def test_required_deployable_probe_reraises_readiness_timeout(
         )
 
 
+def test_required_deployable_target_fails_without_model_config(
+    integration_conftest,
+) -> None:
+    target = integration_conftest._model_targets.InferenceTarget(
+        repo_id="org/required-model.gguf",
+        engine_name="llamacpp",
+        required=True,
+    )
+    client = SimpleNamespace(
+        models=SimpleNamespace(get_model_configs=lambda _model_id: [])
+    )
+
+    with pytest.raises(pytest.fail.Exception, match="No model configs available"):
+        integration_conftest._default_model_config(client, "model-1", target)
+
+
+def test_required_deployable_target_fails_when_deploy_returns_no_id(
+    integration_conftest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = integration_conftest._model_targets.InferenceTarget(
+        repo_id="org/required-model.gguf",
+        engine_name="llamacpp",
+        required=True,
+    )
+    monkeypatch.setattr(
+        integration_conftest,
+        "_ensure_deployable_target_ready",
+        lambda *_args, **_kwargs: SimpleNamespace(id="model-1", m_files=[]),
+    )
+    client = SimpleNamespace(
+        models=SimpleNamespace(
+            get_model_configs=lambda _model_id: [
+                SimpleNamespace(id="cfg-1", default=True)
+            ]
+        ),
+        serving=SimpleNamespace(deploy_model=lambda **_kwargs: None),
+    )
+
+    with pytest.raises(pytest.fail.Exception, match="returned no id"):
+        integration_conftest._start_deployable_target_probe(
+            client,
+            object(),
+            target,
+        )
+
+
+def test_required_deployable_probe_fails_when_deployment_is_not_ready(
+    integration_conftest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = integration_conftest._model_targets.InferenceTarget(
+        repo_id="org/required-model.gguf",
+        engine_name="llamacpp",
+        required=True,
+    )
+    monkeypatch.setattr(
+        integration_conftest,
+        "_matching_active_deployable_target",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        integration_conftest,
+        "_start_deployable_target_probe",
+        lambda *_args, **_kwargs: "dep-1",
+    )
+    client = SimpleNamespace(
+        serving=SimpleNamespace(
+            wait_for_deployment=lambda *_args, **_kwargs: SimpleNamespace(
+                status="FAILED",
+                instances=[SimpleNamespace(status="FAILED")],
+            ),
+            stop_deployment=lambda **_kwargs: None,
+        )
+    )
+
+    with pytest.raises(pytest.fail.Exception, match="did not become ready"):
+        integration_conftest.deployable_model_prerequisite.__wrapped__(
+            client,
+            object(),
+            target,
+        )
+
+
 def test_target_model_file_id_pins_ready_gguf_quantization(
     integration_conftest,
 ) -> None:
