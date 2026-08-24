@@ -64,10 +64,13 @@ def _require_mlx_target(deployable_model_target):
         )
 
 
-def _default_config(client, model):
+def _default_config(client, model, target: InferenceTarget):
     configs = client.models.get_model_configs(model.id)
     if not configs:
-        pytest.skip("No model configs available for test model")
+        message = f"No model configs available for test model '{target.repo_id}'"
+        if target.required:
+            pytest.fail(message)
+        pytest.skip(message)
     return next((config for config in configs if config.default), configs[0])
 
 
@@ -157,7 +160,7 @@ def test_deploy_mlx_qwen_and_infer_with_strip_thinking(
     client = live_kamiwaza_client
     model = ensure_deployable_model_ready(client)
     model_file_id = target_model_file_id(model, deployable_model_target.quantization)
-    default_config = _default_config(client, model)
+    default_config = _default_config(client, model, deployable_model_target)
     strip_config = _create_strip_config(client, model)
     deployment_kwargs = _deployment_kwargs(
         model,

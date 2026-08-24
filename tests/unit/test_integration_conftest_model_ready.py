@@ -782,6 +782,40 @@ def test_required_context_does_not_reuse_mismatched_active_quantization(
     assert deploy_calls[0]["m_file_id"] == str(q8_file_id)
 
 
+def test_required_context_repo_only_override_reuses_matching_active_file(
+    integration_conftest,
+) -> None:
+    model_file_id = uuid4()
+    target = integration_conftest._model_targets.InferenceTarget(
+        repo_id="org/context.gguf",
+        engine_name="",
+        quantization="q8_0",
+        required=True,
+    )
+    prepared_model = SimpleNamespace(
+        m_files=[
+            SimpleNamespace(
+                id=model_file_id,
+                name="context-Q8_0.gguf",
+                storage_location="oci://context-Q8_0.gguf",
+                is_downloading=False,
+                dl_requested_at=None,
+            )
+        ]
+    )
+
+    assert integration_conftest._active_context_deployment_matches_target(
+        {
+            "deployment_id": "dep-existing",
+            "repo_model_id": target.repo_id,
+            "engine_name": "llamacpp",
+            "m_file_id": str(model_file_id),
+        },
+        target,
+        prepared_model,
+    )
+
+
 def test_context_prerequisite_does_not_mask_programming_errors(
     integration_conftest,
     monkeypatch: pytest.MonkeyPatch,

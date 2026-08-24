@@ -705,7 +705,10 @@ def _active_context_deployment_matches_target(
     """Require exact prepared weights when reusing a required context target."""
     if deployment.get("repo_model_id") != target.repo_id:
         return False
-    if deployment.get("engine_name") != target.engine_name:
+    if (
+        target.engine_name
+        and deployment.get("engine_name") != target.engine_name
+    ):
         return False
     if not target.required:
         return True
