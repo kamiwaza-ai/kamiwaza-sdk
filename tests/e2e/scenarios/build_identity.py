@@ -53,9 +53,19 @@ RELEASE_ENV = "KAMIWAZA_RELEASE"
 BUILD_ENV = "KAMIWAZA_BUILD"
 
 
+def split_segments(build: str) -> list[str]:
+    """The ``;``-separated segments of a build identity, stripped.
+
+    The canonical separator is ``"; "``, but a stamp written without the
+    space is the same identity and is read as one -- the space is
+    presentation, not contract.
+    """
+    return [segment.strip() for segment in build.split(";")]
+
+
 def release_segment(build: str) -> str:
     """The leading segment: the release identity the record is evidence for."""
-    return build.split(SEPARATOR)[0]
+    return split_segments(build)[0]
 
 
 def is_release_version(segment: str) -> bool:
@@ -159,7 +169,7 @@ def resolve(build: str | None = None, env: dict | None = None) -> str:
     rather than merely present.
     """
     environ = os.environ if env is None else env
-    resolved = (build or environ.get(BUILD_ENV, "")).strip()
+    resolved = (build or "").strip() or environ.get(BUILD_ENV, "").strip()
     release = (environ.get(RELEASE_ENV) or "").strip()
 
     # A release and nothing else is a complete, if unannotated, identity --
@@ -169,7 +179,10 @@ def resolve(build: str | None = None, env: dict | None = None) -> str:
     if not resolved:
         raise ValueError(_no_build_refusal())
     if is_well_formed(resolved):
-        return resolved
+        # Already reachable; kept as-is but for the separator, which is
+        # normalized so a consumer comparing on "; " sees what it expects.
+        segments = split_segments(resolved)
+        return compose(segments[0], *segments[1:])
     if release:
-        return compose(_validated_release(release), resolved)
+        return compose(_validated_release(release), *split_segments(resolved))
     raise ValueError(_refusal(resolved))

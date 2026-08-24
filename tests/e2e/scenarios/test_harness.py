@@ -37,8 +37,12 @@ TEST_BUILD = "0.99.0; core@sha256:abc1234; test-fixture"
 def _build_identity_env(monkeypatch):
     """Every harness run needs a build identity (scenario-evidence.v2, G1).
 
-    Tests exercising the refusal path delete this env var explicitly.
+    Both build-identity env vars are controlled here, not inherited: a
+    KAMIWAZA_RELEASE exported in the ambient shell (which is exactly what
+    ENG-10715 asks operators and CI to do) would otherwise satisfy the
+    refusal tests and silently stop them testing refusal.
     """
+    monkeypatch.delenv("KAMIWAZA_RELEASE", raising=False)
     monkeypatch.setenv("KAMIWAZA_BUILD", TEST_BUILD)
 
 
