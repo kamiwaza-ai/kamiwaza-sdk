@@ -19,7 +19,7 @@ import time
 from typing import Any, Dict, List, Optional, Union
 
 from ..exceptions import APIError, AuthorizationError, KamiwazaError, NotFoundError
-from ..schemas.kaizen import Agent, Conversation, LLMConfig
+from ..schemas.kaizen import Agent, AgentDefinition, Conversation, LLMConfig
 from .base_service import BaseService
 
 # Kaizen route prefixes, relative to the extension's ingress root. The collection
@@ -28,6 +28,44 @@ from .base_service import BaseService
 # the request reaches the canonical route.
 _AGENTS_PATH = "api/agents"
 _CONVERSATIONS_PATH = "api/conversations"
+_OPS_MODELS_PATH = "api/ops/models"
+_OPS_CHAT_MODEL_PATH = "api/ops/models/chat"
+
+# Catalog identities. Two Kaizen products ship side by side and answer different
+# agent-create contracts, so the identity — not the ingress, which looks the same
+# either way — is what selects the body shape.
+CANONICAL_EXTENSION_NAME = "kaizen"
+LEGACY_EXTENSION_NAME = "kaizen-legacy"
+
+# Agent-create contracts, keyed by the catalog identity that speaks them.
+AGENT_CONTRACT_CANONICAL = "canonical"
+AGENT_CONTRACT_LEGACY = "legacy"
+
+_AGENT_CONTRACT_BY_EXTENSION = {
+    CANONICAL_EXTENSION_NAME: AGENT_CONTRACT_CANONICAL,
+    LEGACY_EXTENSION_NAME: AGENT_CONTRACT_LEGACY,
+}
+
+
+def agent_contract_for_extension(extension_name: str) -> str:
+    """Map a Kaizen catalog identity to the agent-create contract it speaks.
+
+    Fail-closed on purpose: an unrecognized identity raises rather than falling
+    back to either contract. Guessing wrong is silent in the request and only
+    surfaces as a schema rejection at the server, which is exactly the failure
+    this mapping exists to remove.
+
+    Raises:
+        ValueError: when ``extension_name`` is not a known Kaizen identity.
+    """
+    try:
+        return _AGENT_CONTRACT_BY_EXTENSION[extension_name]
+    except KeyError:
+        known = ", ".join(sorted(_AGENT_CONTRACT_BY_EXTENSION))
+        raise ValueError(
+            f"'{extension_name}' is not a known Kaizen catalog identity "
+            f"(expected one of: {known}); cannot choose an agent-create contract."
+        ) from None
 
 
 class AmbiguousExtensionError(KamiwazaError):
@@ -304,7 +342,69 @@ def wait_for_base_url(
 
 
 class AgentService(BaseService):
-    """Create and list Kaizen agents within a workroom."""
+    """Create and list Kaizen agents within a workroom.
+
+    Two create paths, one per catalog identity — pick with
+    :func:`agent_contract_for_extension` rather than by hand:
+
+    * :meth:`create_canonical` — ``kaizen`` (canonical). Posts a ``content``
+      envelope; the agent carries no model binding.
+    * :meth:`create` — ``kaizen-legacy`` (v3) only. Posts the flat body with
+      ``agent_config.llm``.
+    """
+
+    def create_canonical(
+        self,
+        definition: AgentDefinition,
+        *,
+        base_url: str,
+        workroom_id: Optional[Union[str, object]] = None,
+    ) -> Agent:
+        """Create an agent on canonical Kaizen via the ``content`` contract.
+
+        Canonical Kaizen has no per-agent model binding — a model is resolved
+        instance-wide from the ops chat-model setting (see
+        :meth:`KaizenOpsService.set_chat_model`) or chosen per turn by the
+        caller. Bind the model there; passing one here is rejected server-side.
+
+        Args:
+            definition: The agent definition sent as the ``content`` body.
+            base_url: The Kaizen instance API root (see :func:`resolve_base_url`).
+            workroom_id: Workroom to scope the agent to (X-Workroom-Id header).
+
+        Returns:
+            Agent: carries the new agent's ``id`` and content ``version``.
+        """
+        response = self.client._request(
+            "POST",
+            _AGENTS_PATH,
+            base_url=base_url,
+            json={"content": definition.to_content()},
+            headers=_workroom_headers(workroom_id),
+        )
+        return Agent.model_validate(response)
+
+    def delete(
+        self,
+        agent_id: str,
+        *,
+        base_url: str,
+        workroom_id: Optional[Union[str, object]] = None,
+    ) -> None:
+        """Delete an agent the caller owns (canonical Kaizen; owner-only).
+
+        ``expect_json=False`` guards the 200-with-empty-body case: a 204 is
+        already handled upstream, but an empty 200 would raise a JSON-parse
+        error out of a call whose result is discarded — typically a cleanup
+        ``finally``, where it would mask the caller's real failure.
+        """
+        self.client._request(
+            "DELETE",
+            f"{_AGENTS_PATH}/{agent_id}",
+            base_url=base_url,
+            headers=_workroom_headers(workroom_id),
+            expect_json=False,
+        )
 
     def create(
         self,
@@ -320,6 +420,10 @@ class AgentService(BaseService):
         workroom_id: Optional[Union[str, object]] = None,
     ) -> Agent:
         """Create an agent bound to a model via ``agent_config.llm``.
+
+        This is the **legacy** contract and only ``kaizen-legacy`` accepts it.
+        Canonical Kaizen rejects this body outright (its schema forbids extra
+        fields and requires ``content``); use :meth:`create_canonical` there.
 
         Args:
             base_url: The Kaizen instance API root (see :func:`resolve_base_url`).
@@ -882,3 +986,61 @@ class ConversationService(BaseService):
             # max(0, …) keeps zero poll intervals bounded by the timeout rather
             # than raising from time.sleep().
             time.sleep(max(0.0, min(poll_interval_seconds, remaining)))
+
+
+class KaizenOpsService(BaseService):
+    """Operator settings on a canonical Kaizen instance."""
+
+    def set_chat_model(
+        self,
+        deployment_id: str,
+        *,
+        base_url: str,
+        workroom_id: Optional[Union[str, object]] = None,
+    ) -> Dict[str, Any]:
+        """Point the instance's chat role at a Kamiwaza model deployment.
+
+        Canonical Kaizen binds models per instance, not per agent, so this is
+        how a caller gives its agents a backing model. Kaizen resolves the
+        endpoint and display metadata from the deployment itself — only the
+        deployment id crosses the wire, never an endpoint or a credential.
+
+        Requires an admin-ranked caller and an instance started with its config
+        store enabled; without either, Kaizen answers 4xx rather than silently
+        leaving the previous binding in place.
+
+        Args:
+            deployment_id: Kamiwaza deployment to serve chat.
+            base_url: The Kaizen instance API root (see :func:`resolve_base_url`).
+            workroom_id: Workroom scope (X-Workroom-Id header).
+
+        Returns:
+            The instance's model-settings view after the update.
+        """
+        return self.client._request(
+            "PUT",
+            _OPS_CHAT_MODEL_PATH,
+            base_url=base_url,
+            json={"deployment_id": deployment_id},
+            headers=_workroom_headers(workroom_id),
+        )
+
+    def get_model_settings(
+        self,
+        *,
+        base_url: str,
+        workroom_id: Optional[Union[str, object]] = None,
+    ) -> Dict[str, Any]:
+        """Read the instance's current model-role settings.
+
+        Same view :meth:`set_chat_model` returns, so it doubles as a read-back
+        when a write answers without a body (a 204 is a perfectly ordinary
+        answer to a settings PUT) and the caller still needs to confirm what
+        got bound.
+        """
+        return self.client._request(
+            "GET",
+            _OPS_MODELS_PATH,
+            base_url=base_url,
+            headers=_workroom_headers(workroom_id),
+        )

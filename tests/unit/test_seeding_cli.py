@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from kamiwaza_sdk.exceptions import DeploymentFailedError
+from kamiwaza_sdk.exceptions import DeploymentFailedError, KamiwazaError
 from kamiwaza_sdk.seeding import cli
 
 pytestmark = pytest.mark.unit
@@ -61,7 +61,11 @@ class FakeClient:
             install_by_name=RecordingService(SimpleNamespace(id="dep-1", name="kaizen"))
         )
         self.agents = SimpleNamespace(
-            create=RecordingService(SimpleNamespace(id="agent-1"))
+            create=RecordingService(SimpleNamespace(id="agent-1")),
+            create_canonical=RecordingService(SimpleNamespace(id="agent-1", version=1)),
+        )
+        self.kaizen_ops = SimpleNamespace(
+            set_chat_model=RecordingService({"chat": {"current": {"id": "dep-xyz"}}})
         )
         self.conversations = SimpleNamespace(
             create=RecordingService(SimpleNamespace(id="conv-1")),
@@ -330,6 +334,8 @@ def test_create_agent_uses_kaizen_base_url(capsys, monkeypatch):
     _run(
         [
             "create-agent",
+            "--extension-name",
+            "kaizen-legacy",
             "--kaizen-base-url",
             "https://kamiwaza.test/kaizen",
             "--name",
@@ -350,7 +356,11 @@ def test_create_agent_uses_kaizen_base_url(capsys, monkeypatch):
     assert call["base_url"] == "https://kamiwaza.test/kaizen"
     assert call["llm"].model == "llama-3"
     assert call["workroom_id"] == "wr-1"
-    assert json.loads(capsys.readouterr().out) == {"agent_id": "agent-1"}
+    # Both contracts emit the same keys; legacy has no content version.
+    assert json.loads(capsys.readouterr().out) == {
+        "agent_id": "agent-1",
+        "version": None,
+    }
 
 
 def test_create_agent_missing_llm_api_key_env_exits(monkeypatch):
@@ -362,6 +372,7 @@ def test_create_agent_missing_llm_api_key_env_exits(monkeypatch):
         _run(
             [
                 "create-agent",
+                "--extension-name", "kaizen-legacy",
                 "--kaizen-base-url", "https://kamiwaza.test/kaizen",
                 "--name", "a",
                 "--model", "m",
@@ -369,6 +380,312 @@ def test_create_agent_missing_llm_api_key_env_exits(monkeypatch):
             ],
             client,
         )
+
+
+def test_create_agent_defaults_to_canonical_content_contract(capsys, monkeypatch):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+
+    _run(
+        [
+            "create-agent",
+            "--kaizen-base-url", "https://kamiwaza.test/kaizen",
+            "--name", "uat-bedrock-agent",
+            "--persona", "You answer UAT smoke questions.",
+            "--workroom-id", "wr-1",
+        ],
+        client,
+    )
+
+    # Canonical is the default identity, so no legacy call is made at all.
+    assert client.agents.create.calls == []
+    call = client.agents.create_canonical.calls[0]
+    definition = call["args"][0]
+    assert definition.name == "uat-bedrock-agent"
+    assert definition.persona == "You answer UAT smoke questions."
+    assert call["kwargs"]["base_url"] == "https://kamiwaza.test/kaizen"
+    assert call["kwargs"]["workroom_id"] == "wr-1"
+    # agent_id stays the stable output the seeder profile parses.
+    assert json.loads(capsys.readouterr().out) == {"agent_id": "agent-1", "version": 1}
+
+
+def test_create_agent_canonical_rejects_per_agent_model_flags(monkeypatch):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+
+    with pytest.raises(SystemExit) as excinfo:
+        _run(
+            [
+                "create-agent",
+                "--kaizen-base-url", "https://kamiwaza.test/kaizen",
+                "--name", "a",
+                "--persona", "p",
+                "--model", "openai/bedrock-uat",
+                "--provider", "kamiwaza",
+            ],
+            client,
+        )
+
+    # The operator's model choice must never be silently dropped: the error
+    # names the flags and points at the instance-level binding instead.
+    message = str(excinfo.value)
+    assert "--model" in message and "--provider" in message
+    assert "bind-chat-model" in message
+    assert client.agents.create_canonical.calls == []
+
+
+def test_create_agent_canonical_rejects_custom_instructions(monkeypatch):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+
+    # custom_instructions only exists on the legacy body; the canonical content
+    # body has no field for it, so accepting it would drop it silently.
+    with pytest.raises(SystemExit, match="--custom-instructions"):
+        _run(
+            [
+                "create-agent",
+                "--kaizen-base-url", "https://kamiwaza.test/kaizen",
+                "--name", "a",
+                "--persona", "p",
+                "--custom-instructions", "be terse",
+            ],
+            client,
+        )
+
+    assert client.agents.create_canonical.calls == []
+
+
+@pytest.mark.parametrize(
+    "flag,value",
+    [("--persona", "p"), ("--capability-ceiling", "write")],
+)
+def test_create_agent_legacy_rejects_canonical_only_flags(monkeypatch, flag, value):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+
+    # The mirror of the canonical guard: the legacy body has nowhere to put a
+    # persona or a capability ceiling, so they must not be quietly accepted.
+    with pytest.raises(SystemExit, match=flag):
+        _run(
+            [
+                "create-agent",
+                "--extension-name", "kaizen-legacy",
+                "--kaizen-base-url", "https://kamiwaza.test/kaizen",
+                "--name", "a",
+                "--model", "m",
+                flag, value,
+            ],
+            client,
+        )
+
+    assert client.agents.create.calls == []
+
+
+def test_create_agent_validates_flags_before_scoping_the_client(monkeypatch):
+    scoped = []
+    monkeypatch.setattr(
+        cli,
+        "scoped_client_for_workroom",
+        lambda c, wid: (scoped.append(wid), c)[1],
+    )
+
+    # Scoping issues a workrooms.enter session bind, so a local flag mistake
+    # must never cost a server round trip.
+    with pytest.raises(SystemExit):
+        _run(
+            [
+                "create-agent",
+                "--kaizen-base-url", "https://kamiwaza.test/kaizen",
+                "--name", "a",
+                "--workroom-id", "wr-1",
+            ],
+            FakeClient(),
+        )
+
+    assert scoped == []
+
+
+def test_create_agent_canonical_requires_persona(monkeypatch):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+
+    with pytest.raises(SystemExit, match="--persona"):
+        _run(
+            [
+                "create-agent",
+                "--kaizen-base-url", "https://kamiwaza.test/kaizen",
+                "--name", "a",
+            ],
+            client,
+        )
+
+
+def test_create_agent_legacy_requires_model(monkeypatch):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+
+    with pytest.raises(SystemExit, match="--model"):
+        _run(
+            [
+                "create-agent",
+                "--extension-name", "kaizen-legacy",
+                "--kaizen-base-url", "https://kamiwaza.test/kaizen",
+                "--name", "a",
+            ],
+            client,
+        )
+
+
+def test_create_agent_rejects_unknown_extension_identity():
+    parser = cli.build_parser()
+
+    # argparse choices keep an unknown identity from ever reaching the contract
+    # resolver, so a typo can't silently pick a contract.
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            [
+                "create-agent",
+                "--kaizen-base-url", "u",
+                "--name", "n",
+                "--extension-name", "kaizen-next",
+            ]
+        )
+
+
+def test_bind_chat_model_sends_only_the_deployment_id(capsys, monkeypatch):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+
+    _run(
+        [
+            "bind-chat-model",
+            "--kaizen-base-url", "https://kamiwaza.test/kaizen",
+            "--deployment-id", "dep-xyz",
+            "--workroom-id", "wr-1",
+        ],
+        client,
+    )
+
+    call = client.kaizen_ops.set_chat_model.calls[0]
+    assert call["args"] == ("dep-xyz",)
+    assert call["kwargs"]["base_url"] == "https://kamiwaza.test/kaizen"
+    assert call["kwargs"]["workroom_id"] == "wr-1"
+    # The write echoed the binding back, so no read-back was needed.
+    assert json.loads(capsys.readouterr().out) == {
+        "chat_deployment_id": "dep-xyz",
+        "confirmed": True,
+    }
+
+
+def _bind(client, capsys=None):
+    _run(
+        [
+            "bind-chat-model",
+            "--kaizen-base-url", "https://kamiwaza.test/kaizen",
+            "--deployment-id", "dep-xyz",
+        ],
+        client,
+    )
+    return json.loads(capsys.readouterr().out) if capsys else None
+
+
+@pytest.mark.parametrize(
+    "write_response",
+    [
+        {"chat": {"current": {"id": "some-other-dep"}}},
+        {"chat": {"current": {"id": "dep-old"}}},
+    ],
+)
+def test_bind_chat_model_fails_when_instance_reports_a_different_binding(
+    monkeypatch, write_response
+):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+    client.kaizen_ops.set_chat_model = RecordingService(write_response)
+
+    # The must-fail state: the instance contradicts us. Exiting 0 would let the
+    # caller create and chat-verify an agent backed by an unintended model.
+    with pytest.raises(SystemExit, match="contradicted"):
+        _bind(client)
+
+
+@pytest.mark.parametrize(
+    "write_response",
+    [None, {}, {"chat": {}}, {"chat": {"current": None}}, "not-a-dict"],
+)
+def test_bind_chat_model_reads_back_when_the_write_carries_no_binding(
+    monkeypatch, capsys, write_response
+):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+    client.kaizen_ops.set_chat_model = RecordingService(write_response)
+    client.kaizen_ops.get_model_settings = RecordingService(
+        {"chat": {"current": {"id": "dep-xyz"}}}
+    )
+
+    # A 204 (or any body we can't read a binding out of) is an ordinary answer
+    # to a settings PUT — it must not be mistaken for a wrong binding.
+    out = _bind(client, capsys)
+
+    assert len(client.kaizen_ops.get_model_settings.calls) == 1
+    assert out == {"chat_deployment_id": "dep-xyz", "confirmed": True}
+
+
+def test_bind_chat_model_reports_unconfirmed_when_read_back_is_also_silent(
+    monkeypatch, capsys
+):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+    client.kaizen_ops.set_chat_model = RecordingService(None)
+    client.kaizen_ops.get_model_settings = RecordingService({"chat": {"current": None}})
+
+    # The write succeeded (a non-2xx would have raised); we simply can't
+    # confirm it. Say so rather than implying confirmation or failing a
+    # binding that probably worked.
+    out = _bind(client, capsys)
+
+    assert out == {"chat_deployment_id": "dep-xyz", "confirmed": False}
+
+
+def test_bind_chat_model_survives_a_failing_read_back(monkeypatch, capsys):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+    client.kaizen_ops.set_chat_model = RecordingService(None)
+    client.kaizen_ops.get_model_settings = _raiser(KamiwazaError("ops read failed"))
+
+    out = _bind(client, capsys)
+
+    assert out == {"chat_deployment_id": "dep-xyz", "confirmed": False}
+
+
+def test_create_agent_legacy_reads_the_secret_before_scoping_the_client(
+    monkeypatch,
+):
+    scoped = []
+    monkeypatch.setattr(
+        cli,
+        "scoped_client_for_workroom",
+        lambda c, wid: (scoped.append(wid), c)[1],
+    )
+    monkeypatch.delenv("MISSING_KEY_VAR", raising=False)
+
+    # The legacy half of the validate-before-scope ordering: a missing secret
+    # must fail locally, not after the workrooms.enter round trip.
+    with pytest.raises(SystemExit):
+        _run(
+            [
+                "create-agent",
+                "--extension-name", "kaizen-legacy",
+                "--kaizen-base-url", "https://kamiwaza.test/kaizen",
+                "--name", "a",
+                "--model", "m",
+                "--llm-api-key-env", "MISSING_KEY_VAR",
+                "--workroom-id", "wr-1",
+            ],
+            FakeClient(),
+        )
+
+    assert scoped == []
 
 
 def test_create_conversation(capsys):
