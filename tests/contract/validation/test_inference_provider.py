@@ -23,6 +23,7 @@ from kamiwaza_sdk.validation.inference_runtime import (
     ReadyDeployment,
     RuntimeObservation,
 )
+from kamiwaza_sdk.validation.models import FixtureMutation, FixtureState
 from kamiwaza_sdk.validation.provider import ProviderContractError
 from kamiwaza_sdk.validation.testkit import (
     RecordingFixtureStateWriter,
@@ -86,6 +87,8 @@ class FakeCluster:
         self.messages: list[tuple[dict[str, str], ...]] = []
         self.quantization = "q8_0"
         self.fail_at: str | None = None
+        self.close_error = False
+        self.stop_calls: list[str] = []
 
     def discover(self, repository: str) -> CatalogModel:
         self._raise("catalog-discovery")
@@ -130,6 +133,7 @@ class FakeCluster:
 
     def stop(self, deployment_id: str) -> bool:
         self._raise("deployment-stop")
+        self.stop_calls.append(deployment_id)
         self.deployments.discard(deployment_id)
         return True
 
@@ -138,7 +142,8 @@ class FakeCluster:
         return deployment_id in self.deployments
 
     def close(self) -> None:
-        return None
+        if self.close_error:
+            raise RuntimeError("close secret-value")
 
     def _raise(self, phase: str) -> None:
         if self.fail_at == phase:
@@ -174,6 +179,7 @@ def test_describe_and_resolve_publish_exact_required_lifecycle() -> None:
     assert descriptor.scenario_id == INFERENCE_SCENARIO_ID
     assert descriptor.case_ids == INFERENCE_CASE_IDS
     assert descriptor.requires == ("cluster-api", "kube-api")
+    assert descriptor.fixture_modes == ("owned",)
     assert plan.provider_revision == INFERENCE_PROVIDER_REVISION
     assert plan.runtime_requirements == ("cluster-api", "kube-api")
     assert len(plan.selected) == 1
@@ -224,6 +230,63 @@ def test_resolve_rejects_incompatible_required_target(
 
     with pytest.raises(ProviderContractError, match="incompatible required target"):
         provider.resolve(_profile(**updates))
+
+
+def test_resolve_rejects_external_fixture_mode_until_adoption_exists() -> None:
+    profile = _profile()
+    profile = profile.model_copy(
+        update={
+            "validation": profile.validation.model_copy(
+                update={"fixture_mode": "external"}
+            )
+        }
+    )
+    provider = InferenceLifecycleProvider(cluster_factory=FakeFactory(FakeCluster()))
+
+    with pytest.raises(ProviderContractError, match="fixture mode"):
+        provider.resolve(profile)
+
+
+def test_default_activation_rejects_required_unsupported_engine() -> None:
+    profile = _profile(engine="sglang")
+    profile = profile.model_copy(
+        update={"validation": profile.validation.model_copy(update={"include": ()})}
+    )
+    provider = InferenceLifecycleProvider(cluster_factory=FakeFactory(FakeCluster()))
+
+    with pytest.raises(ProviderContractError, match="incompatible required target"):
+        provider.resolve(profile)
+
+
+def test_resolve_rejects_vllm_quantization_without_artifact_semantics() -> None:
+    provider = InferenceLifecycleProvider(cluster_factory=FakeFactory(FakeCluster()))
+
+    with pytest.raises(ProviderContractError, match="incompatible required target"):
+        provider.resolve(
+            _profile(
+                engine="vllm",
+                model_format="safetensors",
+                quantization="q4_k_m",
+            )
+        )
+
+
+def test_resolve_rejects_vllm_architecture_outside_v1_support_policy() -> None:
+    payload = profile_payload()
+    payload["clusters"][0]["hardware"] = {  # type: ignore[index]
+        "accelerators": [{"vendor": "nvidia", "architecture": "turing", "count": 1}]
+    }
+    payload["inference_targets"][0].update(  # type: ignore[index,union-attr]
+        {
+            "engine": "vllm",
+            "model_format": "safetensors",
+            "quantization": "none",
+        }
+    )
+    provider = InferenceLifecycleProvider(cluster_factory=FakeFactory(FakeCluster()))
+
+    with pytest.raises(ProviderContractError, match="incompatible required target"):
+        provider.resolve(ValidationProfile.model_validate(payload))
 
 
 def test_happy_lifecycle_records_exact_selection_runtime_and_cleanup() -> None:
@@ -350,6 +413,141 @@ def test_readiness_failure_still_stops_and_reconciles_created_deployment() -> No
     assert by_case["deployment-stop"].status == "passed"
     assert by_case["residual-cleanup"].status == "passed"
     assert cleanup.results[0].status == "absent"
+
+
+def test_run_rejects_opaque_deployment_id_not_bound_to_created_journal() -> None:
+    cluster = FakeCluster()
+    provider = InferenceLifecycleProvider(cluster_factory=FakeFactory(cluster))
+    plan, _writer, state = _prepared(provider)
+    targets = dict(state.opaque["targets"])  # type: ignore[arg-type]
+    target = dict(targets["evo-x2-2-llamacpp-chat"])  # type: ignore[arg-type]
+    target["deployment_id"] = "55555555-5555-5555-5555-555555555555"
+    targets["evo-x2-2-llamacpp-chat"] = target
+    tampered = state.model_copy(update={"opaque": {"targets": targets}})
+
+    with pytest.raises(ProviderContractError, match="owned deployment"):
+        provider.run(plan, _runtime(), tampered)
+
+    assert cluster.messages == []
+    assert cluster.stop_calls == []
+
+
+def test_run_rejects_adopted_deployment_without_chat_or_stop() -> None:
+    cluster = FakeCluster()
+    provider = InferenceLifecycleProvider(cluster_factory=FakeFactory(cluster))
+    plan, _writer, state = _prepared(provider)
+    adopted = state.journal[0].model_copy(update={"action": "adopted"})
+    tampered = state.model_copy(update={"journal": (adopted,)})
+
+    with pytest.raises(ProviderContractError, match="owned deployment"):
+        provider.run(plan, _runtime(), tampered)
+
+    assert cluster.messages == []
+    assert cluster.stop_calls == []
+
+
+def test_run_rejects_tampered_owner_digest_without_product_calls() -> None:
+    cluster = FakeCluster()
+    provider = InferenceLifecycleProvider(cluster_factory=FakeFactory(cluster))
+    plan, _writer, state = _prepared(provider)
+    tampered = state.model_copy(update={"owner_token_digest": "sha256:" + "0" * 64})
+
+    with pytest.raises(ProviderContractError, match="ownership digest"):
+        provider.run(plan, _runtime(), tampered)
+
+    assert cluster.messages == []
+    assert cluster.stop_calls == []
+
+
+def test_teardown_retains_adopted_deployment_without_mutation() -> None:
+    cluster = FakeCluster()
+    provider = InferenceLifecycleProvider(cluster_factory=FakeFactory(cluster))
+    _plan, _writer, state = _prepared(provider)
+    adopted = state.journal[0].model_copy(update={"action": "adopted"})
+    tampered = state.model_copy(update={"journal": (adopted,)})
+
+    cleanup = provider.teardown(_runtime(), tampered)
+
+    assert cleanup.status == "passed"
+    assert cleanup.results[0].status == "retained_foreign"
+    assert cluster.stop_calls == []
+
+
+def test_teardown_rejects_removed_deployment_state_without_mutation() -> None:
+    cluster = FakeCluster()
+    provider = InferenceLifecycleProvider(cluster_factory=FakeFactory(cluster))
+    _plan, _writer, state = _prepared(provider)
+    removed = FixtureMutation(
+        sequence=2,
+        target_id=state.journal[0].target_id,
+        resource_type="model-deployment",
+        resource_id=state.journal[0].resource_id,
+        action="removed",
+    )
+    transitioned = state.model_copy(update={"journal": (*state.journal, removed)})
+
+    cleanup = provider.teardown(_runtime(), transitioned)
+
+    assert cleanup.status == "failed"
+    assert cleanup.results[0].status == "failed"
+    assert cluster.stop_calls == []
+
+
+def test_teardown_rejects_multiple_deployments_for_one_target_without_mutation() -> (
+    None
+):
+    cluster = FakeCluster()
+    provider = InferenceLifecycleProvider(cluster_factory=FakeFactory(cluster))
+    _plan, _writer, state = _prepared(provider)
+    foreign = FixtureMutation(
+        sequence=2,
+        target_id=state.journal[0].target_id,
+        resource_type="model-deployment",
+        resource_id="55555555-5555-5555-5555-555555555555",
+        action="created",
+    )
+    tampered = state.model_copy(update={"journal": (*state.journal, foreign)})
+
+    with pytest.raises(ProviderContractError, match="multiple model deployments"):
+        provider.teardown(_runtime(), tampered)
+
+    assert cluster.stop_calls == []
+
+
+class _FailDeploymentJournalWriter:
+    def __init__(self) -> None:
+        self.snapshots: list[FixtureState] = []
+
+    def write(self, state: FixtureState) -> None:
+        if state.journal:
+            raise OSError("persistence secret-value")
+        self.snapshots.append(state)
+
+
+def test_deployment_is_compensated_when_ownership_journal_cannot_persist() -> None:
+    cluster = FakeCluster()
+    provider = InferenceLifecycleProvider(cluster_factory=FakeFactory(cluster))
+    plan = provider.resolve(_profile())
+    writer = _FailDeploymentJournalWriter()
+
+    with pytest.raises(OSError, match="persistence secret-value"):
+        provider.prepare(plan, _runtime(), writer)
+
+    assert cluster.deployments == set()
+    assert cluster.stop_calls == ["44444444-4444-4444-4444-444444444444"]
+
+
+def test_client_close_failure_does_not_erase_lifecycle_evidence() -> None:
+    cluster = FakeCluster()
+    cluster.close_error = True
+    provider = InferenceLifecycleProvider(cluster_factory=FakeFactory(cluster))
+
+    plan, _writer, state = _prepared(provider)
+    evidence = provider.run(plan, _runtime(), state)
+    cleanup = provider.teardown(_runtime(), state)
+
+    assert all(item.status == "passed" for item in evidence.results)
+    assert cleanup.status == "passed"
 
 
 def test_expected_image_mismatch_fails_readiness_but_preserves_observation() -> None:

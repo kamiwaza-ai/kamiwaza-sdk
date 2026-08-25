@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -34,6 +35,7 @@ from kamiwaza_sdk.validation.inference_spec import (
     parameters as _parameters,
     resolve_candidate as _resolve_candidate,
     scenario_descriptor as _scenario_descriptor,
+    validate_required_targets as _validate_required_targets,
 )
 from kamiwaza_sdk.validation.inference_evidence import (
     case_result as _case_result,
@@ -43,8 +45,8 @@ from kamiwaza_sdk.validation.inference_evidence import (
     failed as _failed,
     failure as _failure,
     mapping as _mapping,
-    optional_text as _optional_text,
-    owned_deployments as _owned_deployments,
+    deployment_resources as _deployment_resources,
+    owned_deployment_id as _owned_deployment_id,
     passed as _passed,
     reconcile_deployment as _reconcile_deployment,
     required_image_digest as _required_image_digest,
@@ -111,6 +113,11 @@ class InferenceLifecycleProvider:
         descriptor = self.describe()[0]
         selected: tuple[ResolvedScenario, ...] = ()
         if descriptor_is_active(profile, descriptor):
+            if profile.validation.fixture_mode not in descriptor.fixture_modes:
+                raise ProviderContractError(
+                    "inference scenario does not support fixture mode"
+                )
+            _validate_required_targets(profile)
             selected = self._resolve_active(profile, descriptor)
         return ScenarioPlan(
             schema="kamiwaza.scenario-plan/v1",
@@ -156,6 +163,7 @@ class InferenceLifecycleProvider:
     ) -> ScenarioEvidence:
         self._validate_revision(plan.provider_revision)
         validate_state_identity(plan, runtime, state)
+        _validate_owner_digest(runtime, state)
         clusters = {item.id: item for item in runtime.clusters}
         results: list[CaseResult] = []
         resolved_runtime: dict[str, Any] = {}
@@ -165,6 +173,7 @@ class InferenceLifecycleProvider:
                 selected,
                 clusters[selected.cluster_id],
                 target_state,
+                state,
             )
             results.extend(target_results)
             resolved_runtime[selected.target_id] = observation
@@ -181,11 +190,12 @@ class InferenceLifecycleProvider:
     def teardown(self, runtime: RuntimeContext, state: FixtureState) -> CleanupEvidence:
         self._validate_revision(state.provider_revision)
         validate_state_runtime_identity(runtime, state)
+        _validate_owner_digest(runtime, state)
         clusters = {item.id: item for item in runtime.clusters}
         target_clusters = _target_clusters(state)
         results = tuple(
             self._cleanup_resource(item, clusters[target_clusters[item.target_id]])
-            for item in _owned_deployments(state)
+            for item in _deployment_resources(state)
         )
         status: Literal["passed", "failed"] = (
             "failed" if any(item.status == "failed" for item in results) else "passed"
@@ -236,18 +246,19 @@ class InferenceLifecycleProvider:
         try:
             return _prepare_with_cluster(state, context)
         finally:
-            cluster.close()
+            _close_cluster(cluster)
 
     def _run_target(
         self,
         selected: ResolvedScenario,
         runtime_cluster: RuntimeCluster,
         target_state: Mapping[str, Any],
+        state: FixtureState,
     ) -> tuple[list[CaseResult], dict[str, Any]]:
         outcomes = [
             _stored_result(selected, target_state, case) for case in _PREPARE_CASE_IDS
         ]
-        deployment_id = _optional_text(target_state.get("deployment_id"))
+        deployment_id = _owned_deployment_id(state, selected.target_id, target_state)
         observation = _runtime_evidence(target_state)
         run_outcomes = self._execute_run_phases(
             runtime_cluster, target_state, deployment_id
@@ -283,7 +294,7 @@ class InferenceLifecycleProvider:
             residual = _residual_outcome(cluster, deployment_id)
             return chat, stopped, residual
         finally:
-            cluster.close()
+            _close_cluster(cluster)
 
     def _cleanup_resource(
         self, mutation: FixtureMutation, runtime_cluster: RuntimeCluster
@@ -295,7 +306,7 @@ class InferenceLifecycleProvider:
         try:
             return _reconcile_deployment(cluster, mutation)
         finally:
-            cluster.close()
+            _close_cluster(cluster)
 
     @staticmethod
     def _validate_revision(revision: str) -> None:
@@ -307,6 +318,13 @@ def _default_cluster_factory() -> InferenceClusterFactory:
     from kamiwaza_sdk.validation.sdk_inference_runtime import SdkInferenceClusterFactory
 
     return SdkInferenceClusterFactory()
+
+
+def _close_cluster(cluster: InferenceCluster) -> None:
+    try:
+        cluster.close()
+    except Exception:
+        pass
 
 
 def _initial_state(
@@ -336,6 +354,14 @@ def _initial_state(
         journal=(),
         opaque={"targets": cast(JsonValue, targets)},
     )
+
+
+def _validate_owner_digest(runtime: RuntimeContext, state: FixtureState) -> None:
+    owner = hashlib.sha256(
+        f"{runtime.run_id}:{INFERENCE_PROVIDER_REVISION}".encode()
+    ).hexdigest()
+    if not hmac.compare_digest(state.owner_token_digest, f"sha256:{owner}"):
+        raise ProviderContractError("fixture state ownership digest mismatch")
 
 
 def _parameter_payload(parameters: _TargetParameters) -> dict[str, Any]:
@@ -451,9 +477,32 @@ def _deployment_phase(
     except Exception as exc:
         failure = _failure(_PREPARE_CASE_IDS[3], exc, _elapsed_ms(started))
         return _fail_remaining(state, context, 3, failure), None
-    state = _record_created_deployment(state, context, deployment_id)
+    try:
+        state = _record_created_deployment(state, context, deployment_id)
+    except Exception:
+        _compensate_unjournaled_deployment(_cluster(context), deployment_id)
+        raise
     state = _record_phase(state, context, _PREPARE_CASE_IDS[3], _passed(started))
     return state, deployment_id
+
+
+def _compensate_unjournaled_deployment(
+    cluster: InferenceCluster, deployment_id: str
+) -> None:
+    try:
+        cluster.stop(deployment_id)
+    except Exception:
+        pass
+    try:
+        remains_active = cluster.is_active(deployment_id)
+    except Exception:
+        raise ProviderContractError(
+            "deployment journal failed and cleanup could not be verified"
+        ) from None
+    if remains_active:
+        raise ProviderContractError(
+            "deployment journal failed and deployment remains active"
+        )
 
 
 def _readiness_phase(

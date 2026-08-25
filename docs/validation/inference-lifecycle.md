@@ -28,9 +28,17 @@ A selected required case that cannot run is `failed`, never `skipped`.
   the gateway origin before invoking the provider.
 - A kubeconfig with read access to pods in the `kamiwaza` namespace.
 - `kubectl` on `PATH`.
-- A target whose engine, model format, accelerator, and semantic runtime profile
-  are compatible. Version 1 supports `llamacpp` with GGUF and `vllm` with
-  safetensors on NVIDIA or AMD.
+- An owned-fixture target whose engine, model format, quantization, accelerator,
+  architecture, and semantic runtime profile match the version 1 support
+  policy. Version 1 accepts `llamacpp` with a recognized GGUF quantization on
+  AMD gfx1151, Apple M5, NVIDIA Turing, GB10, or Ampere-and-newer targets. It
+  accepts `vllm` with unquantized safetensors on AMD gfx1151, NVIDIA GB10, or
+  Ampere-and-newer targets. NVIDIA Turing vLLM remains outside this provider's
+  version 1 policy.
+
+External fixture adoption is not implemented by this provider version. An
+`external` profile fails during resolution instead of creating or deleting a
+deployment under ambiguous ownership.
 
 The kubeconfig is read-only during scenario execution. It is used to bind the
 platform deployment ID to the emitted pod and record the pulled image digest

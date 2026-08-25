@@ -13,6 +13,7 @@ from kamiwaza_sdk.validation.models import (
     InferenceTarget,
     ResolvedScenario,
     ScenarioDescriptor,
+    ValidationProfile,
 )
 from kamiwaza_sdk.validation.provider import ProviderContractError
 
@@ -30,7 +31,87 @@ INFERENCE_CASE_IDS = (
     "residual-cleanup",
 )
 SUPPORTED_FORMATS = {"llamacpp": "gguf", "vllm": "safetensors"}
-VLLM_ACCELERATORS = frozenset({"amd", "nvidia"})
+SUPPORTED_QUANTIZATIONS = {
+    "llamacpp": frozenset(
+        {
+            "fp16",
+            "iq1_m",
+            "iq1_s",
+            "iq2_m",
+            "iq2_s",
+            "iq2_xs",
+            "iq2_xxs",
+            "iq3_m",
+            "iq3_s",
+            "iq3_xs",
+            "iq4_nl",
+            "iq4_xs",
+            "q2_k",
+            "q2_k_l",
+            "q2_k_m",
+            "q2_k_s",
+            "q3_k",
+            "q3_k_l",
+            "q3_k_m",
+            "q3_k_s",
+            "q3_k_xl",
+            "q4_0",
+            "q4_1",
+            "q4_k",
+            "q4_k_l",
+            "q4_k_m",
+            "q4_k_s",
+            "q5_k",
+            "q5_k_l",
+            "q5_k_m",
+            "q5_k_s",
+            "q6_k",
+            "q6_k_l",
+            "q6_k_m",
+            "q6_k_s",
+            "q8_0",
+        }
+    ),
+    "vllm": frozenset({"none"}),
+}
+NVIDIA_AMPERE_PLUS = frozenset(
+    {
+        ("nvidia", "a10"),
+        ("nvidia", "a16"),
+        ("nvidia", "a30"),
+        ("nvidia", "a40"),
+        ("nvidia", "a100"),
+        ("nvidia", "ada"),
+        ("nvidia", "ampere"),
+        ("nvidia", "b100"),
+        ("nvidia", "b200"),
+        ("nvidia", "blackwell"),
+        ("nvidia", "gb10"),
+        ("nvidia", "gb200"),
+        ("nvidia", "h100"),
+        ("nvidia", "h200"),
+        ("nvidia", "hopper"),
+        ("nvidia", "l4"),
+        ("nvidia", "l40"),
+    }
+)
+SUPPORTED_ACCELERATORS = {
+    "llamacpp": frozenset(
+        {
+            ("amd", "gfx1151"),
+            ("apple", "m5"),
+            ("nvidia", "t4"),
+            ("nvidia", "turing"),
+        }
+    )
+    | NVIDIA_AMPERE_PLUS,
+    "vllm": NVIDIA_AMPERE_PLUS
+    | frozenset(
+        {
+            ("amd", "gfx1151"),
+        }
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -65,7 +146,7 @@ def scenario_descriptor() -> ScenarioDescriptor:
             ),
         ),
         requires=("cluster-api", "kube-api"),
-        fixture_modes=("owned", "external"),
+        fixture_modes=("owned",),
         case_ids=INFERENCE_CASE_IDS,
     )
 
@@ -93,10 +174,34 @@ def _compatibility_error(target: InferenceTarget, cluster: Any) -> str | None:
         return "engine/model format mismatch"
     if target.runtime_profile != "product-default":
         return "unsupported semantic runtime profile"
-    vendors = {item.vendor for item in cluster.hardware.accelerators}
-    if target.engine == "vllm" and not vendors & VLLM_ACCELERATORS:
-        return "vllm requires a supported accelerator"
+    quantizations = SUPPORTED_QUANTIZATIONS.get(target.engine, frozenset())
+    if target.quantization.lower() not in quantizations:
+        return "unsupported engine/model quantization"
+    accelerators = {
+        (item.vendor.lower(), item.architecture.lower())
+        for item in cluster.hardware.accelerators
+    }
+    supported = SUPPORTED_ACCELERATORS.get(target.engine, frozenset())
+    if not accelerators & supported:
+        return "unsupported engine/accelerator architecture"
     return None
+
+
+def validate_required_targets(profile: ValidationProfile) -> None:
+    """Reject required inference targets before matcher filtering can hide them."""
+
+    clusters = {item.id: item for item in profile.clusters}
+    for target in profile.inference_targets:
+        if not target.required:
+            continue
+        cluster = clusters[target.cluster_id]
+        reason = _compatibility_error(target, cluster)
+        if "inference" not in cluster.roles:
+            reason = "target cluster lacks the inference role"
+        if reason:
+            raise ProviderContractError(
+                f"incompatible required target: {target.id} ({reason})"
+            )
 
 
 def _resolved_target(target: InferenceTarget, cluster: Any) -> ResolvedScenario:
