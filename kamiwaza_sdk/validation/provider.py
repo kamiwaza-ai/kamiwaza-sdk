@@ -59,21 +59,38 @@ def validate_plan_identity(profile: ValidationProfile, plan: ScenarioPlan) -> No
     _require_equal(
         plan.profile_digest, model_digest(profile), "plan profile digest mismatch"
     )
-    target_clusters = {cluster.id: cluster.id for cluster in profile.clusters}
-    target_clusters.update(
-        {target.id: target.cluster_id for target in profile.inference_targets}
-    )
+    target_clusters = _profile_target_clusters(profile)
     _require_target_subset(
         (item.target_id for item in plan.selected),
         set(target_clusters),
         "plan references an undeclared target",
     )
+    _validate_plan_target_clusters(target_clusters, plan)
+    _validate_plan_required_targets(profile, plan)
+
+
+def _profile_target_clusters(profile: ValidationProfile) -> dict[str, str]:
+    target_clusters = {cluster.id: cluster.id for cluster in profile.clusters}
+    target_clusters.update(
+        {target.id: target.cluster_id for target in profile.inference_targets}
+    )
+    return target_clusters
+
+
+def _validate_plan_target_clusters(
+    target_clusters: dict[str, str], plan: ScenarioPlan
+) -> None:
     for item in plan.selected:
         _require_equal(
             item.cluster_id,
             target_clusters[item.target_id],
             "plan target cluster mismatch",
         )
+
+
+def _validate_plan_required_targets(
+    profile: ValidationProfile, plan: ScenarioPlan
+) -> None:
     required_targets = {
         target.id for target in profile.inference_targets if target.required
     }
@@ -91,29 +108,45 @@ def validate_plan_completeness(
 ) -> None:
     """Fail when an explicitly requested provider scenario selects no target."""
 
-    described = {descriptor.scenario_id for descriptor in descriptors}
-    selected = {item.scenario_id for item in plan.selected}
-    requested = set(profile.validation.include) & described
+    requested = _requested_scenarios(profile, descriptors)
+    selected = _selected_scenarios(plan)
     if requested - selected:
         raise ProviderContractError(
             "requested scenario resolved to zero selected cases"
         )
-    selected_cells = {
-        (item.target_id, item.scenario_id) for item in plan.selected
-    }
-    required_cells = {
-        (target.id, scenario_id)
-        for target in profile.inference_targets
-        if target.required
-        for scenario_id in requested
-    }
-    if required_cells - selected_cells:
+    if _required_requested_cells(profile, requested) - _selected_cells(plan):
         raise ProviderContractError(
             "requested scenario omitted a required target"
         )
     excluded = set(profile.validation.exclude) & selected
     if excluded:
         raise ProviderContractError("plan selected an excluded scenario")
+
+
+def _requested_scenarios(
+    profile: ValidationProfile, descriptors: Sequence[ScenarioDescriptor]
+) -> set[str]:
+    described = {descriptor.scenario_id for descriptor in descriptors}
+    return set(profile.validation.include) & described
+
+
+def _selected_scenarios(plan: ScenarioPlan) -> set[str]:
+    return {item.scenario_id for item in plan.selected}
+
+
+def _selected_cells(plan: ScenarioPlan) -> set[tuple[str, str]]:
+    return {(item.target_id, item.scenario_id) for item in plan.selected}
+
+
+def _required_requested_cells(
+    profile: ValidationProfile, requested: set[str]
+) -> set[tuple[str, str]]:
+    return {
+        (target.id, scenario_id)
+        for target in profile.inference_targets
+        if target.required
+        for scenario_id in requested
+    }
 
 
 def validate_plan_runtime_identity(
@@ -222,21 +255,20 @@ def _journal_resource_actions(state: FixtureState) -> dict[ResourceKey, CleanupA
     actions: dict[ResourceKey, CleanupAction] = {}
     for item in state.journal:
         key = (item.target_id, item.resource_type, item.resource_id)
-        previous = actions.get(key)
-        if previous is None:
-            if item.action == "removed":
-                raise ProviderContractError(
-                    "fixture journal contains an invalid ownership transition"
-                )
-            actions[key] = item.action
-            continue
-        if previous == "created" and item.action == "removed":
-            actions[key] = item.action
-            continue
-        raise ProviderContractError(
-            "fixture journal contains an invalid ownership transition"
-        )
+        actions[key] = _next_resource_action(actions.get(key), item.action)
     return actions
+
+
+def _next_resource_action(
+    previous: CleanupAction | None, current: CleanupAction
+) -> CleanupAction:
+    if previous is None and current != "removed":
+        return current
+    if previous == "created" and current == "removed":
+        return current
+    raise ProviderContractError(
+        "fixture journal contains an invalid ownership transition"
+    )
 
 
 def _cleanup_resource_results(
@@ -362,13 +394,27 @@ def validate_fixture_state_transition(
     """Reject an unsafe snapshot before it can replace the recovery journal."""
 
     if previous is None:
-        if current.journal:
-            raise ProviderContractError(
-                "prepare did not persist state before mutation"
-            )
+        _validate_initial_snapshot(current)
         return
+    _validate_snapshot_transition_identity(previous, current)
+    _validate_snapshot_transition_journal(previous, current)
+
+
+def _validate_initial_snapshot(current: FixtureState) -> None:
+    if current.journal:
+        raise ProviderContractError("prepare did not persist state before mutation")
+
+
+def _validate_snapshot_transition_identity(
+    previous: FixtureState, current: FixtureState
+) -> None:
     if _fixture_state_identity(current) != _fixture_state_identity(previous):
         raise ProviderContractError("fixture snapshot identity changed")
+
+
+def _validate_snapshot_transition_journal(
+    previous: FixtureState, current: FixtureState
+) -> None:
     if len(current.journal) < len(previous.journal):
         raise ProviderContractError("fixture journal snapshot regressed")
     if current.journal[: len(previous.journal)] != previous.journal:

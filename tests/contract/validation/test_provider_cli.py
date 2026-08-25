@@ -48,6 +48,8 @@ class PrepareFailure:
     provider: GoldenProvider
     expected_error: str
     retained: bool = False
+    journal_entries: int | None = None
+    forbidden_text: str | None = None
 
 
 def _write_json(path: Path, payload: dict[str, object]) -> None:
@@ -78,10 +80,12 @@ def _assert_provider_failure(
     args: list[str],
     capsys: pytest.CaptureFixture[str],
     artifact: ArtifactFailure,
-) -> None:
+) -> str:
     assert provider_main(provider, args) == 2
-    assert artifact.expected_error in capsys.readouterr().err
+    stderr = capsys.readouterr().err
+    assert artifact.expected_error in stderr
     assert artifact.path.exists() is artifact.retained
+    return stderr
 
 
 def _write_golden_profile(tmp_path: Path) -> Path:
@@ -404,56 +408,6 @@ class InvalidPartialIdentityProvider(GoldenProvider):
         raise ProviderContractError("simulated invalid partial state")
 
 
-def test_cli_preserves_private_partial_state_when_prepare_fails(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    provider = PartialPrepareFailureProvider()
-    plan_path, runtime_path, state_path = _write_prepare_inputs(tmp_path, provider)
-
-    exit_code = provider_main(
-        provider,
-        [
-            "prepare",
-            "--plan",
-            str(plan_path),
-            "--runtime",
-            str(runtime_path),
-            "--state",
-            str(state_path),
-        ],
-    )
-
-    assert exit_code == 2
-    assert capsys.readouterr().out == ""
-    assert stat.S_IMODE(state_path.stat().st_mode) == 0o600
-    partial_state = FixtureState.model_validate_json(state_path.read_text())
-    assert len(partial_state.journal) == 1
-
-
-def test_cli_rejects_provider_that_does_not_persist_prepare_state(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    provider = NonJournalingProvider()
-    plan_path, runtime_path, state_path = _write_prepare_inputs(tmp_path, provider)
-
-    exit_code = provider_main(
-        provider,
-        [
-            "prepare",
-            "--plan",
-            str(plan_path),
-            "--runtime",
-            str(runtime_path),
-            "--state",
-            str(state_path),
-        ],
-    )
-
-    assert exit_code == 2
-    assert "did not persist fixture state" in capsys.readouterr().err
-    assert not state_path.exists()
-
-
 @pytest.mark.parametrize(
     ("provider", "expected_error"),
     [
@@ -680,12 +634,36 @@ def test_cli_invalid_utf8_input_fails_without_traceback(
     [
         PrepareFailure(WrongSnapshotOutputProvider(), "provider contract failed"),
         PrepareFailure(
+            PartialPrepareFailureProvider(),
+            "provider contract failed",
+            retained=True,
+            journal_entries=1,
+        ),
+        PrepareFailure(
+            NonJournalingProvider(),
+            "did not persist fixture state",
+        ),
+        PrepareFailure(
             RegressiveSnapshotProvider(),
             "fixture journal snapshot regressed",
             retained=True,
+            journal_entries=1,
         ),
         PrepareFailure(
             InvalidPartialIdentityProvider(), "fixture state run identity mismatch"
+        ),
+        PrepareFailure(
+            RegressiveSnapshotThenFailureProvider(),
+            "provider contract failed",
+            retained=True,
+            journal_entries=1,
+            forbidden_text="sensitive-provider-value",
+        ),
+        PrepareFailure(
+            SwallowedRegressiveSnapshotProvider(),
+            "fixture journal snapshot regressed",
+            retained=True,
+            journal_entries=1,
         ),
     ],
 )
@@ -705,12 +683,18 @@ def test_cli_rejects_invalid_fixture_state_snapshots(
         str(state_path),
     ]
 
-    _assert_provider_failure(
+    stderr = _assert_provider_failure(
         case.provider,
         args,
         capsys,
         ArtifactFailure(state_path, case.expected_error, case.retained),
     )
+    if case.forbidden_text is not None:
+        assert case.forbidden_text not in stderr
+    if case.journal_entries is not None:
+        assert stat.S_IMODE(state_path.stat().st_mode) == 0o600
+        state = FixtureState.model_validate_json(state_path.read_text())
+        assert len(state.journal) == case.journal_entries
 
 
 @pytest.mark.parametrize(
@@ -756,93 +740,32 @@ def test_cli_semantic_failure_returns_nonzero_with_evidence(
         )
 
 
-def test_cli_sanitizes_unexpected_provider_failures(
+@pytest.mark.parametrize(
+    ("provider", "expected_error"),
+    [
+        (ExplodingResolveProvider(), "provider execution failed"),
+        (ContractExplodingResolveProvider(), "provider contract failed"),
+    ],
+)
+def test_cli_sanitizes_provider_failures(
+    provider: GoldenProvider,
+    expected_error: str,
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     profile_path = _write_golden_profile(tmp_path)
     plan_path = tmp_path / "plan.json"
-
-    assert (
-        provider_main(
-            ExplodingResolveProvider(),
-            ["resolve", "--profile", str(profile_path), "--plan", str(plan_path)],
-        )
-        == 2
-    )
-    captured = capsys.readouterr()
-    assert "provider execution failed" in captured.err
-    assert "sensitive-provider-value" not in captured.err
-    assert not plan_path.exists()
-
-
-def test_cli_sanitizes_provider_contract_failures(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    profile_path = _write_golden_profile(tmp_path)
-    plan_path = tmp_path / "plan.json"
-
-    assert (
-        provider_main(
-            ContractExplodingResolveProvider(),
-            ["resolve", "--profile", str(profile_path), "--plan", str(plan_path)],
-        )
-        == 2
-    )
-    captured = capsys.readouterr()
-    assert "provider contract failed" in captured.err
-    assert "sensitive-provider-value" not in captured.err
-    assert not plan_path.exists()
-
-
-def test_cli_keeps_last_valid_snapshot_when_provider_regresses_then_fails(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    provider = RegressiveSnapshotThenFailureProvider()
-    plan_path, runtime_path, state_path = _write_prepare_inputs(tmp_path, provider)
-
-    exit_code = provider_main(
-        provider,
-        [
-            "prepare",
-            "--plan",
-            str(plan_path),
-            "--runtime",
-            str(runtime_path),
-            "--state",
-            str(state_path),
-        ],
-    )
-
-    assert exit_code == 2
-    assert "sensitive-provider-value" not in capsys.readouterr().err
-    retained_state = FixtureState.model_validate_json(state_path.read_text())
-    assert len(retained_state.journal) == 1
-
-
-def test_cli_rejects_a_snapshot_violation_swallowed_by_the_provider(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    provider = SwallowedRegressiveSnapshotProvider()
-    plan_path, runtime_path, state_path = _write_prepare_inputs(tmp_path, provider)
 
     assert (
         provider_main(
             provider,
-            [
-                "prepare",
-                "--plan",
-                str(plan_path),
-                "--runtime",
-                str(runtime_path),
-                "--state",
-                str(state_path),
-            ],
+            ["resolve", "--profile", str(profile_path), "--plan", str(plan_path)],
         )
         == 2
     )
-    assert "fixture journal snapshot regressed" in capsys.readouterr().err
-    retained_state = FixtureState.model_validate_json(state_path.read_text())
-    assert len(retained_state.journal) == 1
+    captured = capsys.readouterr()
+    assert expected_error in captured.err
+    assert "sensitive-provider-value" not in captured.err
+    assert not plan_path.exists()
 
 
 def test_fixture_state_write_fsyncs_file_and_parent_directory(
