@@ -144,7 +144,7 @@ def scenario_descriptor() -> ScenarioDescriptor:
                 value=cast(JsonValue, sorted(SUPPORTED_FORMATS)),
             ),
         ),
-        requires=("cluster-api", "kube-api"),
+        requires=("cluster-api", "kube-api", "ownership-key"),
         fixture_modes=("owned",),
         case_ids=INFERENCE_CASE_IDS,
     )

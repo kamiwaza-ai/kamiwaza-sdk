@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -85,7 +86,8 @@ def test_run_rejects_rotated_ownership_key_before_product_calls(
     tmp_path: Path,
 ) -> None:
     ownership_key = tmp_path / "ownership-key"
-    ownership_key.write_text("first-test-ownership-key", encoding="utf-8")
+    ownership_key.write_text("first-test-ownership-key-material-01", encoding="utf-8")
+    ownership_key.chmod(0o600)
     runtime = provider_contract._runtime().model_copy(
         update={"ownership_key_ref": ownership_key.resolve().as_uri()}
     )
@@ -95,7 +97,7 @@ def test_run_rejects_rotated_ownership_key_before_product_calls(
     plan = provider.resolve(provider_contract._profile())
     state = provider.prepare(plan, runtime, RecordingFixtureStateWriter())
     factory_calls = len(factory.cluster_ids)
-    ownership_key.write_text("second-test-ownership-key", encoding="utf-8")
+    ownership_key.write_text("second-test-ownership-key-material-2", encoding="utf-8")
 
     with pytest.raises(ProviderContractError, match="ownership MAC mismatch"):
         provider.run(plan, runtime, state)
@@ -117,6 +119,44 @@ def test_prepare_rejects_unavailable_ownership_key_before_product_calls() -> Non
     plan = provider.resolve(provider_contract._profile())
 
     with pytest.raises(ProviderContractError, match="ownership key file is unavailable"):
+        provider.prepare(plan, runtime, RecordingFixtureStateWriter())
+
+    assert factory.cluster_ids == []
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        ("file", b"too-short", 0o600, "at least 32 bytes"),
+        ("file", b"x" * 4097, 0o600, "at most 4096 bytes"),
+        ("directory", b"", 0o700, "must be a regular file"),
+        pytest.param(
+            ("file", b"x" * 32, 0o644, "must not allow group or other access"),
+            marks=pytest.mark.skipif(
+                os.name != "posix", reason="POSIX permission contract"
+            ),
+        ),
+    ],
+)
+def test_prepare_rejects_unsafe_ownership_key_before_product_calls(
+    tmp_path: Path,
+    case: tuple[str, bytes, int, str],
+) -> None:
+    kind, contents, mode, expected_error = case
+    ownership_key = tmp_path / "ownership-key"
+    if kind == "directory":
+        ownership_key.mkdir(mode=mode)
+    else:
+        ownership_key.write_bytes(contents)
+        ownership_key.chmod(mode)
+    runtime = provider_contract._runtime().model_copy(
+        update={"ownership_key_ref": ownership_key.resolve().as_uri()}
+    )
+    factory = provider_contract.FakeFactory(provider_contract.FakeCluster())
+    provider = InferenceLifecycleProvider(cluster_factory=factory)
+    plan = provider.resolve(provider_contract._profile())
+
+    with pytest.raises(ProviderContractError, match=expected_error):
         provider.prepare(plan, runtime, RecordingFixtureStateWriter())
 
     assert factory.cluster_ids == []

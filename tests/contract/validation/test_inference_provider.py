@@ -48,9 +48,9 @@ def _profile(**target_updates: object) -> ValidationProfile:
 
 def _runtime() -> RuntimeContext:
     api_key_ref = Path(__file__).with_name("test-api-key.txt").resolve().as_uri()
-    ownership_key_ref = (
-        Path(__file__).with_name("test-ownership-key.txt").resolve().as_uri()
-    )
+    ownership_key_path = Path(__file__).with_name("test-ownership-key.txt").resolve()
+    ownership_key_path.chmod(0o600)
+    ownership_key_ref = ownership_key_path.as_uri()
     return RuntimeContext.model_validate(
         {
             "schema": "kamiwaza.runtime-context/v1",
@@ -188,10 +188,14 @@ def test_describe_and_resolve_publish_exact_required_lifecycle() -> None:
 
     assert descriptor.scenario_id == INFERENCE_SCENARIO_ID
     assert descriptor.case_ids == INFERENCE_CASE_IDS
-    assert descriptor.requires == ("cluster-api", "kube-api")
+    assert descriptor.requires == ("cluster-api", "kube-api", "ownership-key")
     assert descriptor.fixture_modes == ("owned",)
     assert plan.provider_revision == INFERENCE_PROVIDER_REVISION
-    assert plan.runtime_requirements == ("cluster-api", "kube-api")
+    assert plan.runtime_requirements == (
+        "cluster-api",
+        "kube-api",
+        "ownership-key",
+    )
     assert len(plan.selected) == 1
     selected = plan.selected[0]
     assert selected.required is True

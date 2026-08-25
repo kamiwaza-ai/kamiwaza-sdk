@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import os
+import stat
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,11 +34,13 @@ from kamiwaza_sdk.validation.registry import model_digest
 
 _STATE_MAC_KEY = "ownership_mac"
 _KEY_DERIVATION_DOMAIN = b"kamiwaza.sdk.inference.ownership-key/v1\0"
+_MIN_OWNERSHIP_KEY_BYTES = 32
+_MAX_OWNERSHIP_KEY_BYTES = 4096
 OwnershipKeyResolver = Callable[[RuntimeContext], bytes]
 
 
 class InferenceStateAuthenticator:
-    """Bind inference state authorization to runtime-secret key material."""
+    """Bind inference state authorization to per-run ownership-key material."""
 
     def __init__(self, key_resolver: OwnershipKeyResolver | None = None) -> None:
         self._key_resolver = key_resolver or runtime_ownership_key
@@ -150,15 +154,59 @@ def runtime_ownership_key(runtime: RuntimeContext) -> bytes:
 
 def _read_materialized_ownership_key(reference: str) -> bytes:
     path = _materialized_ownership_key_path(reference)
+    descriptor = _open_ownership_key(path)
     try:
-        ownership_key = path.read_bytes().strip()
+        ownership_key = _read_ownership_key(descriptor)
+    finally:
+        os.close(descriptor)
+    return _validate_ownership_key_material(ownership_key.strip())
+
+
+def _open_ownership_key(path: Path) -> int:
+    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0)
+    try:
+        return os.open(path, flags)
     except OSError:
         raise ProviderContractError(
             "runtime ownership key file is unavailable"
         ) from None
-    if not ownership_key:
-        raise ProviderContractError("runtime ownership key file is empty")
+
+
+def _read_ownership_key(descriptor: int) -> bytes:
+    try:
+        metadata = os.fstat(descriptor)
+        _validate_ownership_key_file(metadata)
+        with os.fdopen(descriptor, "rb", closefd=False) as stream:
+            return stream.read(_MAX_OWNERSHIP_KEY_BYTES + 1)
+    except OSError:
+        raise ProviderContractError(
+            "runtime ownership key file is unavailable"
+        ) from None
+
+
+def _validate_ownership_key_material(ownership_key: bytes) -> bytes:
+    if len(ownership_key) > _MAX_OWNERSHIP_KEY_BYTES:
+        raise ProviderContractError(
+            "runtime ownership key must contain at most 4096 bytes"
+        )
+    if len(ownership_key) < _MIN_OWNERSHIP_KEY_BYTES:
+        raise ProviderContractError(
+            "runtime ownership key must contain at least 32 bytes"
+        )
     return ownership_key
+
+
+def _validate_ownership_key_file(metadata: os.stat_result) -> None:
+    if not stat.S_ISREG(metadata.st_mode):
+        raise ProviderContractError("runtime ownership key must be a regular file")
+    if metadata.st_size > _MAX_OWNERSHIP_KEY_BYTES:
+        raise ProviderContractError(
+            "runtime ownership key must contain at most 4096 bytes"
+        )
+    if os.name == "posix" and metadata.st_mode & (stat.S_IRWXG | stat.S_IRWXO):
+        raise ProviderContractError(
+            "runtime ownership key must not allow group or other access"
+        )
 
 
 def _materialized_ownership_key_path(reference: str) -> Path:

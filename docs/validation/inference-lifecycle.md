@@ -123,10 +123,12 @@ Save the runtime references as `runtime.json`:
 }
 ```
 
-Create a unique, mode-`0600` ownership key for each run, for example with
-`umask 077; openssl rand -hex 32 > manual-inference-001.key`. Keep that exact
-key available through `prepare`, `run`, and `teardown`; delete it only after
-cleanup no longer needs recovery. API credentials may rotate independently.
+Resolution advertises `ownership-key` as a required runtime capability. Create
+a unique, regular-file, mode-`0600` ownership key containing 32–4096 bytes of
+key material for each run, for example with
+`umask 077; openssl rand -hex 32 > manual-inference-001.key`. Keep that exact key
+available through `prepare`, `run`, and `teardown`; delete it only after cleanup
+no longer needs recovery. API credentials may rotate independently.
 
 The provider reads the PAT and ownership key only from their referenced files.
 It never writes them, the kubeconfig, or their contents to the plan, state,
