@@ -20,7 +20,12 @@ A selected required case that cannot run is `failed`, never `skipped`.
 
 ## Prerequisites
 
-- A reachable Kamiwaza API and an admin-capable PAT stored in a file.
+- A reachable Kamiwaza gateway and an admin-capable PAT stored in a file. The
+  configured `base_url` ends in `/api`, while the same origin must also route
+  `/runtime/models/...` for OpenAI-compatible inference. A port-forward to the
+  `core-api` service alone does not provide that runtime route. If API and
+  runtime traffic use different origins, set `KAMIWAZA_RUNTIME_BASE_URL` to
+  the gateway origin before invoking the provider.
 - A kubeconfig with read access to pods in the `kamiwaza` namespace.
 - `kubectl` on `PATH`.
 - A target whose engine, model format, accelerator, and semantic runtime profile
