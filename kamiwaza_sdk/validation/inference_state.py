@@ -9,7 +9,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
-from urllib.parse import unquote, urlsplit
+from urllib.parse import SplitResult, unquote, urlsplit
 
 from pydantic import JsonValue
 
@@ -162,16 +162,20 @@ def _read_materialized_credential(reference: str) -> bytes:
 
 def _materialized_credential_path(reference: str) -> Path:
     parsed = urlsplit(reference)
+    _validate_materialized_location(parsed)
+    path = Path(unquote(parsed.path))
+    if not path.is_absolute():
+        raise ProviderContractError("runtime API key file path must be absolute")
+    return path
+
+
+def _validate_materialized_location(parsed: SplitResult) -> None:
     if parsed.scheme != "file":
         raise ProviderContractError(_MATERIALIZATION_ERROR)
     if parsed.netloc:
         raise ProviderContractError(_MATERIALIZATION_ERROR)
     if not parsed.path:
         raise ProviderContractError(_MATERIALIZATION_ERROR)
-    path = Path(unquote(parsed.path))
-    if not path.is_absolute():
-        raise ProviderContractError("runtime API key file path must be absolute")
-    return path
 
 
 _MATERIALIZATION_ERROR = "runtime API key must be materialized as a local file"
