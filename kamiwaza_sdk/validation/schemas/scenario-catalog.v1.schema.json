@@ -76,6 +76,15 @@
           "title": "Fixture Modes",
           "type": "array"
         },
+        "minimum_level": {
+          "enum": [
+            "smoke",
+            "standard",
+            "comprehensive"
+          ],
+          "title": "Minimum Level",
+          "type": "string"
+        },
         "protocol_version": {
           "const": "v1",
           "title": "Protocol Version",
@@ -104,12 +113,22 @@
           "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
           "title": "Scenario Id",
           "type": "string"
+        },
+        "target_scope": {
+          "enum": [
+            "cluster",
+            "inference_target"
+          ],
+          "title": "Target Scope",
+          "type": "string"
         }
       },
       "required": [
         "scenario_id",
         "provider_id",
         "protocol_version",
+        "target_scope",
+        "minimum_level",
         "capability_ids",
         "applies_when",
         "requires",

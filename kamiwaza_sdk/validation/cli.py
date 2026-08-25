@@ -219,7 +219,13 @@ class _FixtureStateFileWriter:
         except ProviderContractError as error:
             self.violation = _AdapterContractError(str(error))
             raise self.violation from None
-        _write_model(self.path, validated, private=True)
+        try:
+            _write_model(self.path, validated, private=True)
+        except OSError:
+            self.violation = _AdapterContractError(
+                "fixture state persistence failed"
+            )
+            raise self.violation from None
         self.snapshots.append(validated)
 
     def require_valid(self) -> None:

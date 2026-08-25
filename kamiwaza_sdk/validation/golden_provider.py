@@ -39,10 +39,12 @@ class GoldenProvider:
                 scenario_id=GOLDEN_SCENARIO_ID,
                 provider_id=GOLDEN_PROVIDER_ID,
                 protocol_version="v1",
+                target_scope="inference_target",
+                minimum_level="smoke",
                 capability_ids=("inference.chat",),
                 applies_when=(
                     FactMatcher(
-                        path="inference_targets.engine",
+                        path="target.engine",
                         operator="eq",
                         value="llamacpp",
                     ),

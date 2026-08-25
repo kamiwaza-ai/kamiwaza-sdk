@@ -20,6 +20,7 @@ from kamiwaza_sdk.validation import (
     ScenarioPlan,
 )
 from kamiwaza_sdk.validation.cli import _fsync_directory, provider_main
+from kamiwaza_sdk.validation import cli as provider_cli
 from kamiwaza_sdk.validation.golden_provider import GoldenProvider
 from kamiwaza_sdk.validation.provider import ProviderContractError
 from kamiwaza_sdk.validation.testkit import RecordingFixtureStateWriter
@@ -268,6 +269,13 @@ class WrongResolveOutputProvider(GoldenProvider):
         return profile
 
 
+class SensitiveInvalidResolveOutputProvider(GoldenProvider):
+    def resolve(self, profile):  # type: ignore[no-untyped-def]
+        payload = super().resolve(profile).model_dump(mode="python", by_alias=True)
+        payload["sensitive-provider-value"] = "not allowed"
+        return payload
+
+
 class WrongResolveDigestProvider(GoldenProvider):
     def resolve(self, profile):  # type: ignore[no-untyped-def]
         return (
@@ -406,6 +414,18 @@ class InvalidPartialIdentityProvider(GoldenProvider):
         state = super().prepare(plan, runtime, RecordingFixtureStateWriter())
         state_writer.write(state.model_copy(update={"run_id": "foreign-run"}))
         raise ProviderContractError("simulated invalid partial state")
+
+
+class SwallowedPersistenceFailureProvider(GoldenProvider):
+    def prepare(self, plan, runtime, state_writer):  # type: ignore[no-untyped-def]
+        recorder = RecordingFixtureStateWriter()
+        state = super().prepare(plan, runtime, recorder)
+        state_writer.write(recorder.snapshots[0])
+        try:
+            state_writer.write(state)
+        except Exception:
+            pass
+        return recorder.snapshots[0]
 
 
 @pytest.mark.parametrize(
@@ -697,6 +717,49 @@ def test_cli_rejects_invalid_fixture_state_snapshots(
         assert len(state.journal) == case.journal_entries
 
 
+def test_cli_latches_a_provider_swallowed_state_persistence_failure(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = SwallowedPersistenceFailureProvider()
+    plan_path, runtime_path, state_path = _write_prepare_inputs(tmp_path, provider)
+    original_write_model = provider_cli._write_model
+    writes = 0
+
+    def fail_second_write(path, model, *, private=False):  # type: ignore[no-untyped-def]
+        nonlocal writes
+        writes += 1
+        if writes == 2:
+            raise OSError("sensitive-provider-value")
+        return original_write_model(path, model, private=private)
+
+    monkeypatch.setattr(provider_cli, "_write_model", fail_second_write)
+
+    stderr = _assert_provider_failure(
+        provider,
+        [
+            "prepare",
+            "--plan",
+            str(plan_path),
+            "--runtime",
+            str(runtime_path),
+            "--state",
+            str(state_path),
+        ],
+        capsys,
+        ArtifactFailure(
+            state_path,
+            "fixture state persistence failed",
+            retained=True,
+        ),
+    )
+
+    assert "sensitive-provider-value" not in stderr
+    state = FixtureState.model_validate_json(state_path.read_text())
+    assert state.journal == ()
+
+
 @pytest.mark.parametrize(
     "case",
     [
@@ -745,6 +808,7 @@ def test_cli_semantic_failure_returns_nonzero_with_evidence(
     [
         (ExplodingResolveProvider(), "provider execution failed"),
         (ContractExplodingResolveProvider(), "provider contract failed"),
+        (SensitiveInvalidResolveOutputProvider(), "provider contract failed"),
     ],
 )
 def test_cli_sanitizes_provider_failures(

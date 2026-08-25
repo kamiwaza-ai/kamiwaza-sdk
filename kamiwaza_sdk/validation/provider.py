@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
-from typing import Literal, Protocol, Sequence, TypeVar
+from collections.abc import Iterable, Mapping
+from typing import TYPE_CHECKING, Literal, Protocol, Sequence, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
@@ -19,6 +19,9 @@ from kamiwaza_sdk.validation.models import (
     ValidationProfile,
 )
 from kamiwaza_sdk.validation.registry import model_digest
+
+if TYPE_CHECKING:
+    from kamiwaza_sdk.validation.applicability import ApplicableTarget
 
 
 class ProviderContractError(ValueError):
@@ -38,14 +41,9 @@ def validate_provider_output(value: object, model_type: type[ModelT]) -> ModelT:
             else value
         )
         return model_type.model_validate(payload)
-    except ValidationError as error:
-        fields = {
-            ".".join(str(part) for part in item["loc"])
-            for item in error.errors(include_url=False, include_input=False)
-        }
-        locations = ", ".join(sorted(fields)) or "unknown field"
+    except ValidationError:
         raise ProviderContractError(
-            f"provider returned invalid {model_type.__name__}: {locations}"
+            f"provider returned invalid {model_type.__name__}"
         ) from None
     except Exception:
         raise ProviderContractError(
@@ -106,46 +104,138 @@ def validate_plan_completeness(
     descriptors: Sequence[ScenarioDescriptor],
     plan: ScenarioPlan,
 ) -> None:
-    """Fail when an explicitly requested provider scenario selects no target."""
+    """Fail when an active descriptor's applicable coverage is incomplete."""
 
-    requested = _requested_scenarios(profile, descriptors)
-    selected = _selected_scenarios(plan)
-    if requested - selected:
-        raise ProviderContractError(
-            "requested scenario resolved to zero selected cases"
+    selected_by_scenario = _selected_targets_by_scenario(plan)
+    applicable_by_scenario = _applicable_by_scenario(profile, descriptors)
+    _validate_selected_applicability(applicable_by_scenario, plan)
+    for descriptor in descriptors:
+        _validate_descriptor_resolution(
+            profile,
+            descriptor,
+            applicable_by_scenario[descriptor.scenario_id],
+            selected_by_scenario.get(descriptor.scenario_id, set()),
         )
-    if _required_requested_cells(profile, requested) - _selected_cells(plan):
-        raise ProviderContractError(
-            "requested scenario omitted a required target"
-        )
-    excluded = set(profile.validation.exclude) & selected
+    _validate_selected_descriptor_requirements(profile, descriptors, plan)
+    excluded = set(profile.validation.exclude) & _selected_scenarios(plan)
     if excluded:
         raise ProviderContractError("plan selected an excluded scenario")
-
-
-def _requested_scenarios(
-    profile: ValidationProfile, descriptors: Sequence[ScenarioDescriptor]
-) -> set[str]:
-    described = {descriptor.scenario_id for descriptor in descriptors}
-    return set(profile.validation.include) & described
 
 
 def _selected_scenarios(plan: ScenarioPlan) -> set[str]:
     return {item.scenario_id for item in plan.selected}
 
 
-def _selected_cells(plan: ScenarioPlan) -> set[tuple[str, str]]:
-    return {(item.target_id, item.scenario_id) for item in plan.selected}
+def _selected_targets_by_scenario(plan: ScenarioPlan) -> dict[str, set[str]]:
+    selected: dict[str, set[str]] = {}
+    for item in plan.selected:
+        selected.setdefault(item.scenario_id, set()).add(item.target_id)
+    return selected
 
 
-def _required_requested_cells(
-    profile: ValidationProfile, requested: set[str]
-) -> set[tuple[str, str]]:
+def _applicable_by_scenario(
+    profile: ValidationProfile, descriptors: Sequence[ScenarioDescriptor]
+) -> dict[str, tuple[ApplicableTarget, ...]]:
+    from kamiwaza_sdk.validation.applicability import applicable_targets
+
     return {
-        (target.id, scenario_id)
-        for target in profile.inference_targets
-        if target.required
-        for scenario_id in requested
+        descriptor.scenario_id: applicable_targets(profile, descriptor)
+        for descriptor in descriptors
+    }
+
+
+def _validate_descriptor_resolution(
+    profile: ValidationProfile,
+    descriptor: ScenarioDescriptor,
+    applicable: Sequence[ApplicableTarget],
+    selected: set[str],
+) -> None:
+    from kamiwaza_sdk.validation.applicability import descriptor_is_active
+
+    explicitly_included = descriptor.scenario_id in profile.validation.include
+    if explicitly_included and not applicable:
+        raise ProviderContractError("requested scenario is not applicable")
+    if not descriptor_is_active(profile, descriptor):
+        _reject_inactive_selection(selected)
+        return
+    if explicitly_included and not selected:
+        raise ProviderContractError(
+            "requested scenario resolved to zero selected cases"
+        )
+    _validate_required_applicable_targets(descriptor, applicable, selected)
+
+
+def _reject_inactive_selection(selected: set[str]) -> None:
+    if selected:
+        raise ProviderContractError("plan selected an inactive scenario")
+
+
+def _validate_required_applicable_targets(
+    descriptor: ScenarioDescriptor,
+    applicable: Sequence[ApplicableTarget],
+    selected: set[str],
+) -> None:
+    expected = {
+        item.target_id
+        for item in applicable
+        if descriptor.target_scope == "cluster" or item.required
+    }
+    if expected - selected:
+        raise ProviderContractError("plan omitted a required applicable target")
+
+
+def _validate_selected_applicability(
+    applicable_by_scenario: Mapping[str, Sequence[ApplicableTarget]],
+    plan: ScenarioPlan,
+) -> None:
+    target_ids_by_scenario = {
+        scenario_id: {target.target_id for target in targets}
+        for scenario_id, targets in applicable_by_scenario.items()
+    }
+    if any(
+        item.target_id not in target_ids_by_scenario[item.scenario_id]
+        for item in plan.selected
+    ):
+        raise ProviderContractError(
+            "plan selected a target outside descriptor scope or applicability"
+        )
+
+
+def _validate_selected_descriptor_requirements(
+    profile: ValidationProfile,
+    descriptors: Sequence[ScenarioDescriptor],
+    plan: ScenarioPlan,
+) -> None:
+    selected = _selected_descriptors(descriptors, plan)
+    if _has_unsupported_fixture_mode(profile, selected):
+        raise ProviderContractError("selected scenario does not support fixture mode")
+    required_runtime = _descriptor_runtime_requirements(selected)
+    if not required_runtime <= set(plan.runtime_requirements):
+        raise ProviderContractError("plan omitted a selected runtime requirement")
+
+
+def _selected_descriptors(
+    descriptors: Sequence[ScenarioDescriptor], plan: ScenarioPlan
+) -> tuple[ScenarioDescriptor, ...]:
+    registry = {descriptor.scenario_id: descriptor for descriptor in descriptors}
+    selected_ids = {item.scenario_id for item in plan.selected}
+    return tuple(registry[scenario_id] for scenario_id in selected_ids)
+
+
+def _has_unsupported_fixture_mode(
+    profile: ValidationProfile, descriptors: Sequence[ScenarioDescriptor]
+) -> bool:
+    return any(
+        profile.validation.fixture_mode not in descriptor.fixture_modes
+        for descriptor in descriptors
+    )
+
+
+def _descriptor_runtime_requirements(
+    descriptors: Sequence[ScenarioDescriptor],
+) -> set[str]:
+    return {
+        requirement for descriptor in descriptors for requirement in descriptor.requires
     }
 
 

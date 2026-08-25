@@ -10,6 +10,7 @@ from kamiwaza_sdk.validation.provider import (
     ProviderContractError,
     validate_cleanup_identity,
     validate_fixture_state_snapshots,
+    validate_plan_completeness,
     validate_state_identity,
 )
 from kamiwaza_sdk.validation.testkit import (
@@ -117,11 +118,22 @@ class DowngradedRequiredTargetGoldenProvider(GoldenProvider):
         return plan.model_copy(update={"selected": (selected,)})
 
 
-class OmittedRequiredTargetGoldenProvider(GoldenProvider):
+class RequiredTargetOmittingGoldenProvider(GoldenProvider):
     def resolve(self, profile):  # type: ignore[no-untyped-def]
         plan = super().resolve(profile)
         selected = tuple(item for item in plan.selected if not item.required)
         return plan.model_copy(update={"selected": selected})
+
+
+class ExternalOnlyGoldenProvider(GoldenProvider):
+    def describe(self):  # type: ignore[no-untyped-def]
+        descriptor = super().describe()[0]
+        return (descriptor.model_copy(update={"fixture_modes": ("external",)}),)
+
+
+class MissingRuntimeRequirementGoldenProvider(GoldenProvider):
+    def resolve(self, profile):  # type: ignore[no-untyped-def]
+        return super().resolve(profile).model_copy(update={"runtime_requirements": ()})
 
 
 class UnplannedStateTargetGoldenProvider(GoldenProvider):
@@ -248,7 +260,179 @@ def test_contract_kit_binds_selected_targets_to_runtime_clusters() -> None:
         )
 
 
-def test_contract_kit_requires_requested_scenario_for_each_required_target() -> None:
+def test_plan_completeness_allows_requested_cluster_scoped_scenario() -> None:
+    source_profile = _profile()
+    profile = source_profile.model_copy(
+        update={
+            "validation": source_profile.validation.model_copy(
+                update={"include": ("sdk.platform.baseline/v1",)}
+            )
+        }
+    )
+    source_descriptor = GoldenProvider().describe()[0]
+    descriptor = source_descriptor.model_copy(
+        update={
+            "scenario_id": "sdk.platform.baseline/v1",
+            "target_scope": "cluster",
+            "applies_when": (
+                source_descriptor.applies_when[0].model_copy(
+                    update={
+                        "path": "cluster.roles",
+                        "operator": "contains",
+                        "value": "controller",
+                    }
+                ),
+            ),
+        }
+    )
+    source_plan = GoldenProvider().resolve(source_profile)
+    cluster_cell = source_plan.selected[0].model_copy(
+        update={
+            "target_id": "evo-x2-2",
+            "cluster_id": "evo-x2-2",
+            "scenario_id": "sdk.platform.baseline/v1",
+        }
+    )
+    plan = source_plan.model_copy(update={"selected": (cluster_cell,)})
+
+    validate_plan_completeness(profile, (descriptor,), plan)
+
+
+def test_plan_completeness_allows_omitting_a_default_above_profile_level() -> None:
+    profile = _profile().model_copy(
+        update={
+            "validation": _profile().validation.model_copy(update={"include": ()})
+        }
+    )
+    descriptor = GoldenProvider().describe()[0].model_copy(
+        update={"minimum_level": "comprehensive"}
+    )
+    empty_plan = GoldenProvider().resolve(profile).model_copy(update={"selected": ()})
+
+    validate_plan_completeness(profile, (descriptor,), empty_plan)
+
+
+def test_plan_completeness_rejects_selection_above_profile_level() -> None:
+    profile = _profile().model_copy(
+        update={
+            "validation": _profile().validation.model_copy(update={"include": ()})
+        }
+    )
+    descriptor = GoldenProvider().describe()[0].model_copy(
+        update={"minimum_level": "comprehensive"}
+    )
+
+    with pytest.raises(ProviderContractError, match="inactive scenario"):
+        validate_plan_completeness(
+            profile,
+            (descriptor,),
+            GoldenProvider().resolve(profile),
+        )
+
+
+def test_plan_completeness_explicit_include_overrides_minimum_level() -> None:
+    profile = _profile()
+    descriptor = GoldenProvider().describe()[0].model_copy(
+        update={"minimum_level": "comprehensive"}
+    )
+
+    validate_plan_completeness(
+        profile,
+        (descriptor,),
+        GoldenProvider().resolve(profile),
+    )
+
+
+def test_plan_completeness_accepts_collection_valued_matchers() -> None:
+    profile = _profile()
+    source_descriptor = GoldenProvider().describe()[0]
+    descriptor = source_descriptor.model_copy(
+        update={
+            "applies_when": (
+                source_descriptor.applies_when[0].model_copy(
+                    update={"operator": "in", "value": ["llamacpp", "vllm"]}
+                ),
+            )
+        }
+    )
+
+    validate_plan_completeness(
+        profile,
+        (descriptor,),
+        GoldenProvider().resolve(profile),
+    )
+
+
+def test_plan_completeness_rejects_a_target_outside_descriptor_scope() -> None:
+    profile = _profile()
+    descriptor = GoldenProvider().describe()[0]
+    source_plan = GoldenProvider().resolve(profile)
+    cluster_cell = source_plan.selected[0].model_copy(
+        update={"target_id": "evo-x2-2"}
+    )
+    plan = source_plan.model_copy(update={"selected": (cluster_cell,)})
+
+    with pytest.raises(ProviderContractError, match="outside descriptor scope"):
+        validate_plan_completeness(profile, (descriptor,), plan)
+
+
+def test_plan_completeness_rejects_an_inapplicable_explicit_scenario() -> None:
+    profile = _profile()
+    source_descriptor = GoldenProvider().describe()[0]
+    descriptor = source_descriptor.model_copy(
+        update={
+            "applies_when": (
+                source_descriptor.applies_when[0].model_copy(update={"value": "vllm"}),
+            )
+        }
+    )
+    empty_plan = GoldenProvider().resolve(profile).model_copy(update={"selected": ()})
+
+    with pytest.raises(ProviderContractError, match="not applicable"):
+        validate_plan_completeness(profile, (descriptor,), empty_plan)
+
+
+@pytest.mark.parametrize(
+    ("path", "operator", "value", "expected_error"),
+    [
+        ("clusters.roles", "contains", "controller", "invalid fact root"),
+        ("target.missing", "eq", "value", "missing fact"),
+        ("target.engine", "gte", 1, "incompatible value types"),
+    ],
+)
+def test_plan_completeness_rejects_invalid_matchers(
+    path: str, operator: str, value: object, expected_error: str
+) -> None:
+    profile = _profile()
+    source_descriptor = GoldenProvider().describe()[0]
+    matcher = source_descriptor.applies_when[0].model_copy(
+        update={"path": path, "operator": operator, "value": value}
+    )
+    descriptor = source_descriptor.model_copy(update={"applies_when": (matcher,)})
+
+    with pytest.raises(ProviderContractError, match=expected_error):
+        validate_plan_completeness(
+            profile,
+            (descriptor,),
+            GoldenProvider().resolve(profile),
+        )
+
+
+def test_contract_kit_rejects_an_empty_default_required_plan() -> None:
+    profile = _profile().model_copy(
+        update={
+            "validation": _profile().validation.model_copy(update={"include": ()})
+        }
+    )
+
+    with pytest.raises(
+        ProviderContractError,
+        match="required applicable target",
+    ):
+        exercise_provider_contract(EmptyPlanGoldenProvider(), profile, _runtime())
+
+
+def test_contract_kit_requires_every_applicable_required_inference_target() -> None:
     payload = profile_payload()
     payload["validation"]["include"] = ["sdk.golden.echo/v1"]  # type: ignore[index]
     optional_target = dict(payload["inference_targets"][0])  # type: ignore[index]
@@ -258,17 +442,31 @@ def test_contract_kit_requires_requested_scenario_for_each_required_target() -> 
             "required": False,
         }
     )
-    payload["inference_targets"].append(optional_target)  # type: ignore[union-attr]
+    payload["inference_targets"].append(optional_target)  # type: ignore[attr-defined]
 
     with pytest.raises(
         ProviderContractError,
-        match="requested scenario omitted a required target",
+        match="required applicable target",
     ):
         exercise_provider_contract(
-            OmittedRequiredTargetGoldenProvider(),
+            RequiredTargetOmittingGoldenProvider(),
             ValidationProfile.model_validate(payload),
             _runtime(),
         )
+
+
+@pytest.mark.parametrize(
+    ("provider", "expected_error"),
+    [
+        (ExternalOnlyGoldenProvider(), "fixture mode"),
+        (MissingRuntimeRequirementGoldenProvider(), "runtime requirement"),
+    ],
+)
+def test_contract_kit_binds_selected_scenarios_to_descriptor_requirements(
+    provider: GoldenProvider, expected_error: str
+) -> None:
+    with pytest.raises(ProviderContractError, match=expected_error):
+        exercise_provider_contract(provider, _profile(), _runtime())
 
 
 def test_contract_kit_binds_fixture_mutations_to_selected_targets() -> None:

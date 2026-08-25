@@ -4,27 +4,6 @@
     "JsonValue": {},
     "ResolvedScenario": {
       "additionalProperties": false,
-      "allOf": [
-        {
-          "if": {
-            "properties": {
-              "required": {
-                "const": true
-              }
-            },
-            "required": [
-              "required"
-            ]
-          },
-          "then": {
-            "properties": {
-              "case_ids": {
-                "minItems": 1
-              }
-            }
-          }
-        }
-      ],
       "properties": {
         "case_ids": {
           "items": {
@@ -33,6 +12,7 @@
             "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
             "type": "string"
           },
+          "minItems": 1,
           "title": "Case Ids",
           "type": "array",
           "uniqueItems": true

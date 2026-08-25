@@ -216,6 +216,8 @@ class ScenarioDescriptor(ClosedModel):
     scenario_id: StableId
     provider_id: StableId
     protocol_version: Literal["v1"]
+    target_scope: Literal["cluster", "inference_target"]
+    minimum_level: Literal["smoke", "standard", "comprehensive"]
     capability_ids: tuple[StableId, ...]
     applies_when: tuple[FactMatcher, ...]
     requires: tuple[StableId, ...]
@@ -255,31 +257,14 @@ class ResolvedScenario(ClosedModel):
     scenario_id: StableId
     required: bool
     case_ids: Annotated[
-        tuple[StableId, ...], Field(json_schema_extra={"uniqueItems": True})
+        tuple[StableId, ...],
+        Field(min_length=1, json_schema_extra={"uniqueItems": True}),
     ]
     redacted_parameters: dict[str, JsonValue]
 
-    model_config = ConfigDict(
-        json_schema_extra={
-            "allOf": [
-                {
-                    "if": {
-                        "properties": {"required": {"const": True}},
-                        "required": ["required"],
-                    },
-                    "then": {"properties": {"case_ids": {"minItems": 1}}},
-                }
-            ]
-        }
-    )
-
     @model_validator(mode="after")
     def validate_cases(self) -> ResolvedScenario:
-        _require_values_when(
-            self.case_ids,
-            self.required,
-            "required scenario must select at least one case",
-        )
+        _require_values(self.case_ids, "resolved scenario must select at least one case")
         _reject_duplicate_values(
             self.case_ids, "resolved scenario case IDs contain a duplicate"
         )

@@ -15,6 +15,7 @@ from kamiwaza_sdk.validation import (
     ResolvedScenario,
     RuntimeContext,
     ScenarioCatalog,
+    ScenarioDescriptor,
     ValidationProfile,
 )
 from kamiwaza_sdk.validation.golden_provider import GoldenProvider
@@ -78,13 +79,14 @@ def test_validation_profile_rejects_test_and_engine_selectors(
         ValidationProfile.model_validate(payload)
 
 
-def test_required_resolved_scenario_rejects_zero_cases() -> None:
-    with pytest.raises(ValidationError, match="at least one case"):
+@pytest.mark.parametrize("required", [True, False])
+def test_resolved_scenario_rejects_zero_cases(required: bool) -> None:
+    with pytest.raises(ValidationError, match="at least 1 item"):
         ResolvedScenario(
             target_id="evo-x2-2-llamacpp-chat",
             cluster_id="evo-x2-2",
             scenario_id="sdk.inference.lifecycle/v1",
-            required=True,
+            required=required,
             case_ids=(),
             redacted_parameters={},
         )
@@ -110,6 +112,15 @@ def test_scenario_catalog_rejects_empty_and_duplicate_scenario_ids() -> None:
         ScenarioCatalog(())
     with pytest.raises(ValidationError, match="duplicate scenario ID"):
         ScenarioCatalog((descriptor, descriptor))
+
+
+@pytest.mark.parametrize("field", ["target_scope", "minimum_level"])
+def test_scenario_descriptor_requires_activation_metadata(field: str) -> None:
+    payload = GoldenProvider().describe()[0].model_dump(mode="python")
+    del payload[field]
+
+    with pytest.raises(ValidationError, match=field):
+        ScenarioDescriptor.model_validate(payload)
 
 
 def test_validation_profile_rejects_mesh_edges_to_unknown_clusters() -> None:

@@ -45,9 +45,15 @@ from kamiwaza_sdk.validation.provider import (
     validate_state_identity,
     validate_state_runtime_identity,
 )
+from kamiwaza_sdk.validation.applicability import (
+    ApplicableTarget,
+    applicable_targets,
+    descriptor_is_active,
+)
 
 __all__ = [
     "AcceleratorFacts",
+    "ApplicableTarget",
     "CaseResult",
     "ClusterFacts",
     "CleanupEvidence",
@@ -74,6 +80,8 @@ __all__ = [
     "ScenarioProvider",
     "ValidationIntent",
     "ValidationProfile",
+    "applicable_targets",
+    "descriptor_is_active",
     "evaluate_coverage",
     "model_digest",
     "require_passed",
