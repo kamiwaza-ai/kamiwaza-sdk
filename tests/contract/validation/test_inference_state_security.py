@@ -55,7 +55,9 @@ def test_run_and_teardown_reject_coordinated_resource_id_tampering() -> None:
     assert cluster.stop_calls == []
 
 
-def test_run_rejects_state_after_runtime_credential_changes(tmp_path: Path) -> None:
+def test_run_allows_api_credential_rotation_with_stable_ownership_key(
+    tmp_path: Path,
+) -> None:
     credential = tmp_path / "api-key"
     credential.write_text("first-test-credential", encoding="utf-8")
     runtime = provider_contract._runtime()
@@ -71,6 +73,30 @@ def test_run_rejects_state_after_runtime_credential_changes(tmp_path: Path) -> N
     factory_calls = len(factory.cluster_ids)
     credential.write_text("second-test-credential", encoding="utf-8")
 
+    evidence = provider.run(plan, runtime, state)
+
+    assert len(factory.cluster_ids) == factory_calls + 1
+    assert all(item.status == "passed" for item in evidence.results)
+    assert len(cluster.messages) == 2
+    assert cluster.stop_calls == ["44444444-4444-4444-4444-444444444444"]
+
+
+def test_run_rejects_rotated_ownership_key_before_product_calls(
+    tmp_path: Path,
+) -> None:
+    ownership_key = tmp_path / "ownership-key"
+    ownership_key.write_text("first-test-ownership-key", encoding="utf-8")
+    runtime = provider_contract._runtime().model_copy(
+        update={"ownership_key_ref": ownership_key.resolve().as_uri()}
+    )
+    cluster = provider_contract.FakeCluster()
+    factory = provider_contract.FakeFactory(cluster)
+    provider = InferenceLifecycleProvider(cluster_factory=factory)
+    plan = provider.resolve(provider_contract._profile())
+    state = provider.prepare(plan, runtime, RecordingFixtureStateWriter())
+    factory_calls = len(factory.cluster_ids)
+    ownership_key.write_text("second-test-ownership-key", encoding="utf-8")
+
     with pytest.raises(ProviderContractError, match="ownership MAC mismatch"):
         provider.run(plan, runtime, state)
 
@@ -79,17 +105,18 @@ def test_run_rejects_state_after_runtime_credential_changes(tmp_path: Path) -> N
     assert cluster.stop_calls == []
 
 
-def test_prepare_rejects_unavailable_runtime_credential_before_product_calls() -> None:
+def test_prepare_rejects_unavailable_ownership_key_before_product_calls() -> None:
     runtime = provider_contract._runtime()
-    runtime_cluster = runtime.clusters[0].model_copy(
-        update={"api_key_ref": "file:///definitely/missing/inference.pat"}
+    runtime = runtime.model_copy(
+        update={
+            "ownership_key_ref": "file:///definitely/missing/inference-ownership.key"
+        }
     )
-    runtime = runtime.model_copy(update={"clusters": (runtime_cluster,)})
     factory = provider_contract.FakeFactory(provider_contract.FakeCluster())
     provider = InferenceLifecycleProvider(cluster_factory=factory)
     plan = provider.resolve(provider_contract._profile())
 
-    with pytest.raises(ProviderContractError, match="API key file is unavailable"):
+    with pytest.raises(ProviderContractError, match="ownership key file is unavailable"):
         provider.prepare(plan, runtime, RecordingFixtureStateWriter())
 
     assert factory.cluster_ids == []

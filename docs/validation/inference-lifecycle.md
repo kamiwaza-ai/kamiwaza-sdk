@@ -111,6 +111,7 @@ Save the runtime references as `runtime.json`:
 {
   "schema": "kamiwaza.runtime-context/v1",
   "run_id": "manual-inference-001",
+  "ownership_key_ref": "file:///absolute/path/to/manual-inference-001.key",
   "clusters": [
     {
       "id": "evo-x2-2",
@@ -122,13 +123,18 @@ Save the runtime references as `runtime.json`:
 }
 ```
 
-The provider reads the PAT only from the referenced file. It never writes the
-token, kubeconfig, or their contents to the plan, state, evidence, or error
-details. A `secret://` reference must be materialized to a temporary `file://`
-reference by the invoking orchestrator before the provider process starts.
-Every persisted state snapshot is authenticated with a keyed MAC derived in
-memory from those materialized API credentials. `run` and `teardown` reject a
-changed state or changed credential before issuing product API calls.
+Create a unique, mode-`0600` ownership key for each run, for example with
+`umask 077; openssl rand -hex 32 > manual-inference-001.key`. Keep that exact
+key available through `prepare`, `run`, and `teardown`; delete it only after
+cleanup no longer needs recovery. API credentials may rotate independently.
+
+The provider reads the PAT and ownership key only from their referenced files.
+It never writes them, the kubeconfig, or their contents to the plan, state,
+evidence, or error details. A `secret://` reference must be materialized to a
+temporary `file://` reference by the invoking orchestrator before the provider
+process starts. Every persisted state snapshot is authenticated with a keyed
+MAC derived from the per-run ownership key. `run` and `teardown` reject changed
+state or changed ownership material before issuing product API calls.
 
 ## Execute and always clean up
 

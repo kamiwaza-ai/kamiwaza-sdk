@@ -46,6 +46,26 @@ def test_runtime_context_rejects_url_userinfo_without_exposing_it() -> None:
     assert _schema_rejects("kamiwaza.runtime-context/v1", payload)
 
 
+def test_runtime_context_schema_accepts_explicit_null_ownership_key() -> None:
+    payload = {
+        "schema": "kamiwaza.runtime-context/v1",
+        "run_id": "run-123",
+        "ownership_key_ref": None,
+        "clusters": [
+            {
+                "id": "evo-x2-2",
+                "base_url": "https://cluster.example.test/api",
+                "api_key_ref": "secret://evo-x2-2/admin-pat",
+                "kubeconfig_ref": "file:///run/secrets/evo-x2-2.kubeconfig",
+            }
+        ],
+    }
+
+    RuntimeContext.model_validate(payload)
+
+    assert not _schema_rejects("kamiwaza.runtime-context/v1", payload)
+
+
 def test_packaged_schemas_reject_trailing_newlines_rejected_by_runtime() -> None:
     identifier_profile = profile_payload()
     identifier_profile["clusters"][0]["id"] = "evo-x2-2\n"  # type: ignore[index]

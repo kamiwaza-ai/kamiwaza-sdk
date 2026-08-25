@@ -45,6 +45,14 @@ ImmutableImageReference = Annotated[
         json_schema_extra=_NO_LINE_TERMINATORS_SCHEMA,
     ),
 ]
+OwnershipKeyReference = Annotated[
+    str,
+    Field(
+        pattern=r"^(?:secret|file)://[^\s]+$",
+        max_length=4096,
+        json_schema_extra=_NO_LINE_TERMINATORS_SCHEMA,
+    ),
+]
 
 
 def _require_values(values: Sequence[object], message: str) -> None:
@@ -374,6 +382,7 @@ class RuntimeCluster(ClosedModel):
 class RuntimeContext(ClosedModel):
     schema_id: Literal["kamiwaza.runtime-context/v1"] = Field(alias="schema")
     run_id: StableId
+    ownership_key_ref: OwnershipKeyReference | None = Field(default=None, repr=False)
     clusters: Annotated[
         tuple[RuntimeCluster, ...],
         Field(min_length=1, json_schema_extra={"uniqueItems": True}),

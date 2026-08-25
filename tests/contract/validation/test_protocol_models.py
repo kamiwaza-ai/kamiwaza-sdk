@@ -177,11 +177,13 @@ def test_runtime_context_rejects_inline_secrets_and_hides_references() -> None:
         {
             "schema": "kamiwaza.runtime-context/v1",
             "run_id": "run-123",
+            "ownership_key_ref": "secret://run-123/ownership-key",
             "clusters": [cluster],
         }
     )
 
     assert "admin-pat" not in repr(runtime)
+    assert "ownership-key" not in repr(runtime)
     cluster["api_key"] = "inline-secret"
     with pytest.raises(ValidationError, match="api_key"):
         RuntimeContext.model_validate(
@@ -196,6 +198,8 @@ def test_runtime_context_rejects_inline_secrets_and_hides_references() -> None:
 @pytest.mark.parametrize(
     ("field", "invalid_value"),
     [
+        ("ownership_key_ref", "secret://"),
+        ("ownership_key_ref", "secret://ownership-key\nforged"),
         ("base_url", "https://"),
         ("base_url", "https://cluster.example.test/api\nforged"),
         ("api_key_ref", "secret://"),
@@ -219,7 +223,10 @@ def test_runtime_context_rejects_empty_or_multiline_references(
             }
         ],
     }
-    payload["clusters"][0][field] = invalid_value  # type: ignore[index]
+    if field == "ownership_key_ref":
+        payload[field] = invalid_value
+    else:
+        payload["clusters"][0][field] = invalid_value  # type: ignore[index]
 
     with pytest.raises(ValidationError, match=field):
         RuntimeContext.model_validate(payload)

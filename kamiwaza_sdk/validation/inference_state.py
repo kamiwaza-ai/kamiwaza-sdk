@@ -139,33 +139,34 @@ class InferenceStateStore:
 
 
 def runtime_ownership_key(runtime: RuntimeContext) -> bytes:
-    """Derive a provider key from materialized runtime credentials."""
+    """Derive a provider key from a stable materialized per-run secret."""
 
-    digest = hashlib.sha256(_KEY_DERIVATION_DOMAIN)
-    for cluster in sorted(runtime.clusters, key=lambda item: item.id):
-        credential = _read_materialized_credential(cluster.api_key_ref)
-        _update_length_prefixed(digest, cluster.id.encode())
-        _update_length_prefixed(digest, credential)
-    return digest.digest()
+    reference = runtime.ownership_key_ref
+    if reference is None:
+        raise ProviderContractError("runtime ownership key reference is required")
+    secret = _read_materialized_ownership_key(reference)
+    return hmac.new(secret, _KEY_DERIVATION_DOMAIN, hashlib.sha256).digest()
 
 
-def _read_materialized_credential(reference: str) -> bytes:
-    path = _materialized_credential_path(reference)
+def _read_materialized_ownership_key(reference: str) -> bytes:
+    path = _materialized_ownership_key_path(reference)
     try:
-        credential = path.read_bytes().strip()
+        ownership_key = path.read_bytes().strip()
     except OSError:
-        raise ProviderContractError("runtime API key file is unavailable") from None
-    if not credential:
-        raise ProviderContractError("runtime API key file is empty")
-    return credential
+        raise ProviderContractError(
+            "runtime ownership key file is unavailable"
+        ) from None
+    if not ownership_key:
+        raise ProviderContractError("runtime ownership key file is empty")
+    return ownership_key
 
 
-def _materialized_credential_path(reference: str) -> Path:
+def _materialized_ownership_key_path(reference: str) -> Path:
     parsed = urlsplit(reference)
     _validate_materialized_location(parsed)
     path = Path(unquote(parsed.path))
     if not path.is_absolute():
-        raise ProviderContractError("runtime API key file path must be absolute")
+        raise ProviderContractError("runtime ownership key path must be absolute")
     return path
 
 
@@ -178,12 +179,7 @@ def _validate_materialized_location(parsed: SplitResult) -> None:
         raise ProviderContractError(_MATERIALIZATION_ERROR)
 
 
-_MATERIALIZATION_ERROR = "runtime API key must be materialized as a local file"
-
-
-def _update_length_prefixed(digest: Any, value: bytes) -> None:
-    digest.update(len(value).to_bytes(8, byteorder="big"))
-    digest.update(value)
+_MATERIALIZATION_ERROR = "runtime ownership key must be materialized as a local file"
 
 
 def sign_state(state: FixtureState, key: bytes) -> FixtureState:

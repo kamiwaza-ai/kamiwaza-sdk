@@ -48,10 +48,14 @@ def _profile(**target_updates: object) -> ValidationProfile:
 
 def _runtime() -> RuntimeContext:
     api_key_ref = Path(__file__).with_name("test-api-key.txt").resolve().as_uri()
+    ownership_key_ref = (
+        Path(__file__).with_name("test-ownership-key.txt").resolve().as_uri()
+    )
     return RuntimeContext.model_validate(
         {
             "schema": "kamiwaza.runtime-context/v1",
             "run_id": "run-inference-1",
+            "ownership_key_ref": ownership_key_ref,
             "clusters": [
                 {
                     "id": "evo-x2-2",
