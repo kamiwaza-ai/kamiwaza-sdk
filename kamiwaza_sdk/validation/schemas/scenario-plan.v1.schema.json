@@ -1,8 +1,30 @@
 {
+  "$comment": "JSON Schema enforces representable wire constraints; canonical SDK runtime model validation is required for cross-field identity, reference, journal, and status invariants that JSON Schema cannot express.",
   "$defs": {
     "JsonValue": {},
     "ResolvedScenario": {
       "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "required": {
+                "const": true
+              }
+            },
+            "required": [
+              "required"
+            ]
+          },
+          "then": {
+            "properties": {
+              "case_ids": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      ],
       "properties": {
         "case_ids": {
           "items": {
@@ -12,7 +34,8 @@
             "type": "string"
           },
           "title": "Case Ids",
-          "type": "array"
+          "type": "array",
+          "uniqueItems": true
         },
         "redacted_parameters": {
           "additionalProperties": {
@@ -93,7 +116,8 @@
         "$ref": "#/$defs/ResolvedScenario"
       },
       "title": "Selected",
-      "type": "array"
+      "type": "array",
+      "uniqueItems": true
     }
   },
   "required": [

@@ -42,6 +42,11 @@ def schema_document(schema_id: str, model_type: type[BaseModel]) -> dict[str, An
     document = model_type.model_json_schema(by_alias=True, mode="validation")
     document["$schema"] = "https://json-schema.org/draft/2020-12/schema"
     document["$id"] = schema_id
+    document["$comment"] = (
+        "JSON Schema enforces representable wire constraints; canonical SDK runtime "
+        "model validation is required for cross-field identity, reference, journal, "
+        "and status invariants that JSON Schema cannot express."
+    )
     return document
 
 

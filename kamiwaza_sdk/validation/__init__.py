@@ -32,6 +32,7 @@ from kamiwaza_sdk.validation.provider import (
     ProviderContractError,
     ScenarioProvider,
     validate_fixture_state_snapshots,
+    validate_provider_output,
 )
 
 __all__ = [
@@ -65,4 +66,5 @@ __all__ = [
     "evaluate_coverage",
     "model_digest",
     "validate_fixture_state_snapshots",
+    "validate_provider_output",
 ]

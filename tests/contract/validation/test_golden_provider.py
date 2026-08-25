@@ -30,6 +30,36 @@ def test_golden_provider_describe_and_resolve_are_deterministic() -> None:
     assert provider.resolve(profile).selected[0].case_ids == ("echo",)
 
 
+def test_golden_provider_retains_external_fixtures() -> None:
+    payload = profile_payload()
+    payload["validation"]["include"] = ["sdk.golden.echo/v1"]  # type: ignore[index]
+    payload["validation"]["fixture_mode"] = "external"  # type: ignore[index]
+    profile = ValidationProfile.model_validate(payload)
+    provider = GoldenProvider()
+    plan = provider.resolve(profile)
+    runtime = RuntimeContext.model_validate(
+        {
+            "schema": "kamiwaza.runtime-context/v1",
+            "run_id": "external-fixture-run",
+            "clusters": [
+                {
+                    "id": "evo-x2-2",
+                    "base_url": "https://evo-x2-2.example.test/api",
+                    "api_key_ref": "secret://evo-x2-2/admin-pat",
+                    "kubeconfig_ref": "file:///run/secrets/evo-x2-2.kubeconfig",
+                }
+            ],
+        }
+    )
+
+    state = provider.prepare(plan, runtime, RecordingFixtureStateWriter())
+    cleanup = provider.teardown(runtime, state)
+
+    assert plan.selected[0].redacted_parameters["fixture_mode"] == "external"
+    assert state.journal[0].action == "adopted"
+    assert cleanup.results[0].status == "retained_foreign"
+
+
 def test_golden_provider_rejects_unknown_requested_scenario() -> None:
     payload = profile_payload()
     payload["validation"]["include"] = ["unknown.scenario/v1"]  # type: ignore[index]

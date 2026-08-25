@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Protocol, Sequence
+from typing import Protocol, Sequence, TypeVar
+
+from pydantic import BaseModel, ValidationError
 
 from kamiwaza_sdk.validation.models import (
     CleanupEvidence,
@@ -17,6 +19,30 @@ from kamiwaza_sdk.validation.models import (
 
 class ProviderContractError(ValueError):
     """Provider input cannot resolve to a valid, complete scenario plan."""
+
+
+ModelT = TypeVar("ModelT", bound=BaseModel)
+
+
+def validate_provider_output(value: object, model_type: type[ModelT]) -> ModelT:
+    """Round-trip an untrusted provider callback through its wire model."""
+
+    payload = (
+        value.model_dump(mode="python", by_alias=True)
+        if isinstance(value, BaseModel)
+        else value
+    )
+    try:
+        return model_type.model_validate(payload)
+    except ValidationError as error:
+        fields = {
+            ".".join(str(part) for part in item["loc"])
+            for item in error.errors(include_url=False, include_input=False)
+        }
+        locations = ", ".join(sorted(fields)) or "unknown field"
+        raise ProviderContractError(
+            f"provider returned invalid {model_type.__name__}: {locations}"
+        ) from None
 
 
 class FixtureStateWriter(Protocol):

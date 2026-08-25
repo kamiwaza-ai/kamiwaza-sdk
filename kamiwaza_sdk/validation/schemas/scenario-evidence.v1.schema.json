@@ -1,4 +1,5 @@
 {
+  "$comment": "JSON Schema enforces representable wire constraints; canonical SDK runtime model validation is required for cross-field identity, reference, journal, and status invariants that JSON Schema cannot express.",
   "$defs": {
     "CaseResult": {
       "additionalProperties": false,

@@ -6,15 +6,18 @@ import argparse
 import json
 import os
 import sys
+import tempfile
 from pathlib import Path
 from typing import Sequence, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
 from kamiwaza_sdk.validation.models import (
+    CleanupEvidence,
     FixtureState,
     RuntimeContext,
     ScenarioCatalog,
+    ScenarioEvidence,
     ScenarioPlan,
     ValidationProfile,
 )
@@ -22,6 +25,7 @@ from kamiwaza_sdk.validation.provider import (
     ProviderContractError,
     ScenarioProvider,
     validate_fixture_state_snapshots,
+    validate_provider_output,
 )
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
@@ -48,27 +52,36 @@ def provider_main(provider: ScenarioProvider, argv: Sequence[str] | None = None)
 
 def _execute(provider: ScenarioProvider, args: argparse.Namespace) -> None:
     if args.command == "describe":
-        catalog = ScenarioCatalog(tuple(provider.describe()))
+        catalog = validate_provider_output(tuple(provider.describe()), ScenarioCatalog)
         payload = catalog.model_dump(mode="json", by_alias=True)
         print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
         return
     if args.command == "resolve":
         profile = _read_model(args.profile, ValidationProfile)
-        _write_model(args.plan, provider.resolve(profile))
+        plan = validate_provider_output(provider.resolve(profile), ScenarioPlan)
+        _write_model(args.plan, plan)
         return
     runtime = _read_model(args.runtime, RuntimeContext)
     if args.command == "prepare":
         plan = _read_model(args.plan, ScenarioPlan)
         writer = _FixtureStateFileWriter(args.state)
-        state = provider.prepare(plan, runtime, writer)
+        state = validate_provider_output(
+            provider.prepare(plan, runtime, writer), FixtureState
+        )
         validate_fixture_state_snapshots(writer.snapshots, state)
         return
     state = _read_model(args.state, FixtureState)
     if args.command == "run":
         plan = _read_model(args.plan, ScenarioPlan)
-        _write_model(args.evidence, provider.run(plan, runtime, state))
+        evidence = validate_provider_output(
+            provider.run(plan, runtime, state), ScenarioEvidence
+        )
+        _write_model(args.evidence, evidence)
         return
-    _write_model(args.evidence, provider.teardown(runtime, state))
+    cleanup = validate_provider_output(
+        provider.teardown(runtime, state), CleanupEvidence
+    )
+    _write_model(args.evidence, cleanup)
 
 
 def _read_model(path: Path, model_type: type[ModelT]) -> ModelT:
@@ -77,18 +90,41 @@ def _read_model(path: Path, model_type: type[ModelT]) -> ModelT:
 
 def _write_model(path: Path, model: BaseModel, *, private: bool = False) -> None:
     mode = 0o600 if private else 0o644
-    temporary = path.with_name(f".{path.name}.tmp")
-    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
-    os.fchmod(descriptor, mode)
-    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-        json.dump(
-            model.model_dump(mode="json", by_alias=True),
-            stream,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        stream.write("\n")
-    os.replace(temporary, path)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        os.fchmod(descriptor, mode)
+        stream = os.fdopen(descriptor, "w", encoding="utf-8")
+        descriptor = -1
+        with stream:
+            json.dump(
+                model.model_dump(mode="json", by_alias=True),
+                stream,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        _fsync_directory(path.parent)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def _validation_fields(error: ValidationError) -> str:
@@ -105,8 +141,9 @@ class _FixtureStateFileWriter:
         self.snapshots: list[FixtureState] = []
 
     def write(self, state: FixtureState) -> None:
-        _write_model(self.path, state, private=True)
-        self.snapshots.append(state)
+        validated = validate_provider_output(state, FixtureState)
+        _write_model(self.path, validated, private=True)
+        self.snapshots.append(validated)
 
 
 def _parser() -> argparse.ArgumentParser:

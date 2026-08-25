@@ -55,7 +55,9 @@ class GoldenProvider:
 
     def resolve(self, profile: ValidationProfile) -> ScenarioPlan:
         self._validate_requested_scenarios(profile)
-        selected = self._resolve_targets(profile.inference_targets)
+        selected = self._resolve_targets(
+            profile.inference_targets, profile.validation.fixture_mode
+        )
         self._validate_required_targets(profile.inference_targets)
         self._validate_required_selection(profile, selected)
         return ScenarioPlan(
@@ -69,10 +71,12 @@ class GoldenProvider:
 
     @classmethod
     def _resolve_targets(
-        cls, targets: Sequence[InferenceTarget]
+        cls,
+        targets: Sequence[InferenceTarget],
+        fixture_mode: str,
     ) -> tuple[ResolvedScenario, ...]:
         return tuple(
-            cls._resolve_target(target)
+            cls._resolve_target(target, fixture_mode)
             for target in targets
             if target.engine == "llamacpp"
         )
@@ -116,13 +120,19 @@ class GoldenProvider:
             opaque={},
         )
         state_writer.write(state)
+        fixture_modes = {
+            item.target_id: item.redacted_parameters["fixture_mode"]
+            for item in plan.selected
+        }
         for index, target_id in enumerate(sorted(target_ids), start=1):
             mutation = FixtureMutation(
                 sequence=index,
                 target_id=target_id,
                 resource_type="golden-fixture",
                 resource_id=f"{runtime.run_id}:{target_id}",
-                action="created",
+                action=(
+                    "adopted" if fixture_modes[target_id] == "external" else "created"
+                ),
             )
             state = state.model_copy(update={"journal": (*state.journal, mutation)})
             state_writer.write(state)
@@ -164,7 +174,7 @@ class GoldenProvider:
                 target_id=item.target_id,
                 resource_type=item.resource_type,
                 resource_id=item.resource_id,
-                status="removed",
+                status=("retained_foreign" if item.action == "adopted" else "removed"),
                 detail=None,
             )
             for item in reversed(state.journal)
@@ -179,13 +189,16 @@ class GoldenProvider:
         )
 
     @staticmethod
-    def _resolve_target(target: InferenceTarget) -> ResolvedScenario:
+    def _resolve_target(target: InferenceTarget, fixture_mode: str) -> ResolvedScenario:
         return ResolvedScenario(
             target_id=target.id,
             scenario_id=GOLDEN_SCENARIO_ID,
             required=target.required,
             case_ids=(GOLDEN_CASE_ID,),
-            redacted_parameters={"engine": target.engine},
+            redacted_parameters={
+                "engine": target.engine,
+                "fixture_mode": fixture_mode,
+            },
         )
 
     @staticmethod

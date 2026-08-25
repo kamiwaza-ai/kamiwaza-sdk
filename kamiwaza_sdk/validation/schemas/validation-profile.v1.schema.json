@@ -1,4 +1,5 @@
 {
+  "$comment": "JSON Schema enforces representable wire constraints; canonical SDK runtime model validation is required for cross-field identity, reference, journal, and status invariants that JSON Schema cannot express.",
   "$defs": {
     "AcceleratorFacts": {
       "additionalProperties": false,
@@ -69,8 +70,10 @@
             "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
             "type": "string"
           },
+          "minItems": 1,
           "title": "Roles",
-          "type": "array"
+          "type": "array",
+          "uniqueItems": true
         }
       },
       "required": [
@@ -252,7 +255,8 @@
             "$ref": "#/$defs/MeshEdge"
           },
           "title": "Edges",
-          "type": "array"
+          "type": "array",
+          "uniqueItems": true
         }
       },
       "title": "MeshFacts",
@@ -270,7 +274,8 @@
             "type": "string"
           },
           "title": "Exclude",
-          "type": "array"
+          "type": "array",
+          "uniqueItems": true
         },
         "fixture_mode": {
           "enum": [
@@ -289,7 +294,8 @@
             "type": "string"
           },
           "title": "Include",
-          "type": "array"
+          "type": "array",
+          "uniqueItems": true
         },
         "level": {
           "enum": [
@@ -317,8 +323,10 @@
       "items": {
         "$ref": "#/$defs/ClusterFacts"
       },
+      "minItems": 1,
       "title": "Clusters",
-      "type": "array"
+      "type": "array",
+      "uniqueItems": true
     },
     "deployment": {
       "$ref": "#/$defs/DeploymentFacts"
@@ -329,7 +337,8 @@
         "$ref": "#/$defs/InferenceTarget"
       },
       "title": "Inference Targets",
-      "type": "array"
+      "type": "array",
+      "uniqueItems": true
     },
     "mesh": {
       "$ref": "#/$defs/MeshFacts"

@@ -1,17 +1,18 @@
 {
+  "$comment": "JSON Schema enforces representable wire constraints; canonical SDK runtime model validation is required for cross-field identity, reference, journal, and status invariants that JSON Schema cannot express.",
   "$defs": {
     "RuntimeCluster": {
       "additionalProperties": false,
       "properties": {
         "api_key_ref": {
           "maxLength": 4096,
-          "pattern": "^(secret|file)://",
+          "pattern": "^(?:secret|file)://[^\\s]+$",
           "title": "Api Key Ref",
           "type": "string"
         },
         "base_url": {
           "maxLength": 2048,
-          "pattern": "^https?://",
+          "pattern": "^https?://[^\\s/]+(?:/[^\\s]*)?$",
           "title": "Base Url",
           "type": "string"
         },
@@ -24,7 +25,7 @@
         },
         "kubeconfig_ref": {
           "maxLength": 4096,
-          "pattern": "^file://",
+          "pattern": "^file://[^\\s]+$",
           "title": "Kubeconfig Ref",
           "type": "string"
         }
@@ -47,8 +48,10 @@
       "items": {
         "$ref": "#/$defs/RuntimeCluster"
       },
+      "minItems": 1,
       "title": "Clusters",
-      "type": "array"
+      "type": "array",
+      "uniqueItems": true
     },
     "run_id": {
       "maxLength": 256,

@@ -145,6 +145,38 @@ def test_runtime_context_rejects_inline_secrets_and_hides_references() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("field", "invalid_value"),
+    [
+        ("base_url", "https://"),
+        ("base_url", "https://cluster.example.test/api\nforged"),
+        ("api_key_ref", "secret://"),
+        ("api_key_ref", "secret://token\nforged"),
+        ("kubeconfig_ref", "file://"),
+        ("kubeconfig_ref", "file:///secret\nforged"),
+    ],
+)
+def test_runtime_context_rejects_empty_or_multiline_references(
+    field: str, invalid_value: str
+) -> None:
+    payload = {
+        "schema": "kamiwaza.runtime-context/v1",
+        "run_id": "run-123",
+        "clusters": [
+            {
+                "id": "evo-x2-2",
+                "base_url": "https://evo-x2-2.example.test/api",
+                "api_key_ref": "secret://evo-x2-2/admin-pat",
+                "kubeconfig_ref": "file:///run/secrets/evo-x2-2.kubeconfig",
+            }
+        ],
+    }
+    payload["clusters"][0][field] = invalid_value  # type: ignore[index]
+
+    with pytest.raises(ValidationError, match=field):
+        RuntimeContext.model_validate(payload)
+
+
 def test_cleanup_evidence_cannot_pass_with_a_failed_cleanup_result() -> None:
     with pytest.raises(ValidationError, match="passed cleanup contains a failure"):
         CleanupEvidence(

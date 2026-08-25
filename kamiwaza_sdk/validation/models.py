@@ -78,7 +78,10 @@ class HardwareFacts(ClosedModel):
 
 class ClusterFacts(ClosedModel):
     id: StableId
-    roles: tuple[StableId, ...]
+    roles: Annotated[
+        tuple[StableId, ...],
+        Field(min_length=1, json_schema_extra={"uniqueItems": True}),
+    ]
     node_count: int = Field(ge=1)
     hardware: HardwareFacts
     features: dict[StableId, bool] = Field(default_factory=dict)
@@ -103,7 +106,9 @@ class MeshEdge(ClosedModel):
 
 
 class MeshFacts(ClosedModel):
-    edges: tuple[MeshEdge, ...] = ()
+    edges: Annotated[
+        tuple[MeshEdge, ...], Field(json_schema_extra={"uniqueItems": True})
+    ] = ()
 
     @model_validator(mode="after")
     def validate_edges(self) -> MeshFacts:
@@ -117,8 +122,12 @@ class MeshFacts(ClosedModel):
 class ValidationIntent(ClosedModel):
     level: Literal["smoke", "standard", "comprehensive"]
     fixture_mode: Literal["owned", "external"]
-    include: tuple[StableId, ...] = ()
-    exclude: tuple[StableId, ...] = ()
+    include: Annotated[
+        tuple[StableId, ...], Field(json_schema_extra={"uniqueItems": True})
+    ] = ()
+    exclude: Annotated[
+        tuple[StableId, ...], Field(json_schema_extra={"uniqueItems": True})
+    ] = ()
 
     @model_validator(mode="after")
     def validate_scenario_overrides(self) -> ValidationIntent:
@@ -148,10 +157,15 @@ class InferenceTarget(ClosedModel):
 class ValidationProfile(ClosedModel):
     schema_id: Literal["kamiwaza.validation-profile/v1"] = Field(alias="schema")
     deployment: DeploymentFacts
-    clusters: tuple[ClusterFacts, ...]
+    clusters: Annotated[
+        tuple[ClusterFacts, ...],
+        Field(min_length=1, json_schema_extra={"uniqueItems": True}),
+    ]
     mesh: MeshFacts = Field(default_factory=MeshFacts)
     validation: ValidationIntent
-    inference_targets: tuple[InferenceTarget, ...] = ()
+    inference_targets: Annotated[
+        tuple[InferenceTarget, ...], Field(json_schema_extra={"uniqueItems": True})
+    ] = ()
 
     @model_validator(mode="after")
     def validate_references(self) -> ValidationProfile:
@@ -191,7 +205,10 @@ class ScenarioDescriptor(ClosedModel):
     applies_when: tuple[FactMatcher, ...]
     requires: tuple[StableId, ...]
     fixture_modes: tuple[Literal["owned", "external"], ...]
-    case_ids: tuple[StableId, ...]
+    case_ids: Annotated[
+        tuple[StableId, ...],
+        Field(min_length=1, json_schema_extra={"uniqueItems": True}),
+    ]
 
     @model_validator(mode="after")
     def validate_case_registry(self) -> ScenarioDescriptor:
@@ -205,7 +222,7 @@ class ScenarioDescriptor(ClosedModel):
 class ScenarioCatalog(RootModel[tuple[ScenarioDescriptor, ...]]):
     """Wire document emitted by the deterministic describe command."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, json_schema_extra={"minItems": 1})
 
     @model_validator(mode="after")
     def validate_descriptors(self) -> ScenarioCatalog:
@@ -221,8 +238,24 @@ class ResolvedScenario(ClosedModel):
     target_id: StableId
     scenario_id: StableId
     required: bool
-    case_ids: tuple[StableId, ...]
+    case_ids: Annotated[
+        tuple[StableId, ...], Field(json_schema_extra={"uniqueItems": True})
+    ]
     redacted_parameters: dict[str, JsonValue]
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "allOf": [
+                {
+                    "if": {
+                        "properties": {"required": {"const": True}},
+                        "required": ["required"],
+                    },
+                    "then": {"properties": {"case_ids": {"minItems": 1}}},
+                }
+            ]
+        }
+    )
 
     @model_validator(mode="after")
     def validate_cases(self) -> ResolvedScenario:
@@ -241,7 +274,9 @@ class ScenarioPlan(ClosedModel):
     schema_id: Literal["kamiwaza.scenario-plan/v1"] = Field(alias="schema")
     profile_digest: Digest
     provider_revision: NonEmptyText
-    selected: tuple[ResolvedScenario, ...]
+    selected: Annotated[
+        tuple[ResolvedScenario, ...], Field(json_schema_extra={"uniqueItems": True})
+    ]
     install_requirements: dict[str, JsonValue]
     runtime_requirements: tuple[StableId, ...]
 
@@ -275,19 +310,34 @@ class ScenarioEvidence(ClosedModel):
 
 class RuntimeCluster(ClosedModel):
     id: StableId
-    base_url: Annotated[str, Field(pattern=r"^https?://", max_length=2048)]
+    base_url: Annotated[
+        str,
+        Field(
+            pattern=r"^https?://[^\s/]+(?:/[^\s]*)?$",
+            max_length=2048,
+        ),
+    ]
     api_key_ref: Annotated[
-        str, Field(pattern=r"^(secret|file)://", max_length=4096, repr=False)
+        str,
+        Field(
+            pattern=r"^(?:secret|file)://[^\s]+$",
+            max_length=4096,
+            repr=False,
+        ),
     ]
     kubeconfig_ref: Annotated[
-        str, Field(pattern=r"^file://", max_length=4096, repr=False)
+        str,
+        Field(pattern=r"^file://[^\s]+$", max_length=4096, repr=False),
     ]
 
 
 class RuntimeContext(ClosedModel):
     schema_id: Literal["kamiwaza.runtime-context/v1"] = Field(alias="schema")
     run_id: StableId
-    clusters: tuple[RuntimeCluster, ...]
+    clusters: Annotated[
+        tuple[RuntimeCluster, ...],
+        Field(min_length=1, json_schema_extra={"uniqueItems": True}),
+    ]
 
     @model_validator(mode="after")
     def validate_clusters(self) -> RuntimeContext:
@@ -340,6 +390,31 @@ class CleanupEvidence(ClosedModel):
     status: Literal["passed", "failed"]
     results: tuple[CleanupResult, ...]
 
+    model_config = ConfigDict(
+        json_schema_extra={
+            "allOf": [
+                {
+                    "if": {
+                        "properties": {"status": {"const": "passed"}},
+                        "required": ["status"],
+                    },
+                    "then": {
+                        "properties": {
+                            "results": {
+                                "not": {
+                                    "contains": {
+                                        "properties": {"status": {"const": "failed"}},
+                                        "required": ["status"],
+                                    }
+                                }
+                            }
+                        }
+                    },
+                }
+            ]
+        }
+    )
+
     @model_validator(mode="after")
     def validate_status(self) -> CleanupEvidence:
         if self.status == "passed":
@@ -373,6 +448,21 @@ class CoverageSummary(ClosedModel):
     status: Literal["passed", "failed"]
     plan_digest: Digest
     issues: tuple[CoverageIssue, ...]
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "allOf": [
+                {
+                    "if": {
+                        "properties": {"status": {"const": "passed"}},
+                        "required": ["status"],
+                    },
+                    "then": {"properties": {"issues": {"maxItems": 0}}},
+                    "else": {"properties": {"issues": {"minItems": 1}}},
+                }
+            ]
+        }
+    )
 
     @model_validator(mode="after")
     def validate_status(self) -> CoverageSummary:

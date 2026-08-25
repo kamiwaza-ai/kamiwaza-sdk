@@ -83,10 +83,58 @@ class UndescribedCaseGoldenProvider(GoldenProvider):
         return plan.model_copy(update={"selected": (selected,)})
 
 
+class WrongProfileDigestGoldenProvider(GoldenProvider):
+    def resolve(self, profile):  # type: ignore[no-untyped-def]
+        return (
+            super()
+            .resolve(profile)
+            .model_copy(update={"profile_digest": "sha256:" + "0" * 64})
+        )
+
+
+class UnplannedStateTargetGoldenProvider(GoldenProvider):
+    def prepare(self, plan, runtime, state_writer):  # type: ignore[no-untyped-def]
+        state = super().prepare(plan, runtime, state_writer)
+        mutation = state.journal[0].model_copy(update={"target_id": "foreign-target"})
+        changed = state.model_copy(update={"journal": (mutation,)})
+        state_writer.write(changed)
+        return changed
+
+
+class WrongCleanupDigestGoldenProvider(GoldenProvider):
+    def teardown(self, runtime, state):  # type: ignore[no-untyped-def]
+        return (
+            super()
+            .teardown(runtime, state)
+            .model_copy(update={"state_digest": "sha256:" + "0" * 64})
+        )
+
+
 def test_contract_kit_rejects_cases_absent_from_descriptor_registry() -> None:
     with pytest.raises(ProviderContractError, match="undescribed case"):
         exercise_provider_contract(
             UndescribedCaseGoldenProvider(), _profile(), _runtime()
+        )
+
+
+def test_contract_kit_binds_plan_to_input_profile() -> None:
+    with pytest.raises(ProviderContractError, match="plan profile digest mismatch"):
+        exercise_provider_contract(
+            WrongProfileDigestGoldenProvider(), _profile(), _runtime()
+        )
+
+
+def test_contract_kit_binds_fixture_mutations_to_selected_targets() -> None:
+    with pytest.raises(ProviderContractError, match="unplanned target"):
+        exercise_provider_contract(
+            UnplannedStateTargetGoldenProvider(), _profile(), _runtime()
+        )
+
+
+def test_contract_kit_binds_cleanup_to_runtime_plan_and_state() -> None:
+    with pytest.raises(ProviderContractError, match="cleanup state digest mismatch"):
+        exercise_provider_contract(
+            WrongCleanupDigestGoldenProvider(), _profile(), _runtime()
         )
 
 
