@@ -9,6 +9,7 @@ from typing import Callable, TypeGuard
 from pydantic import BaseModel
 
 from kamiwaza_sdk.validation.fact_schema import validate_descriptor_matchers
+from kamiwaza_sdk.validation.json_semantics import json_values_equal
 from kamiwaza_sdk.validation.models import (
     ClusterFacts,
     FactMatcher,
@@ -154,13 +155,13 @@ def _apply_operator(values: Sequence[object], matcher: FactMatcher) -> bool:
 
 
 def _matches_equal(values: Sequence[object], expected: object) -> bool:
-    return any(_json_equal(value, expected) for value in values)
+    return any(json_values_equal(value, expected) for value in values)
 
 
 def _matches_in(values: Sequence[object], expected: object) -> bool:
     options = _require_collection(expected)
     return any(
-        _json_equal(value, option) for value in values for option in options
+        json_values_equal(value, option) for value in values for option in options
     )
 
 
@@ -202,9 +203,9 @@ def _contains(value: object, expected: object) -> bool:
     if isinstance(value, str):
         return _text_contains(value, expected)
     if isinstance(value, Mapping):
-        return any(_json_equal(key, expected) for key in value)
+        return any(json_values_equal(key, expected) for key in value)
     if _is_collection(value):
-        return any(_json_equal(item, expected) for item in value)
+        return any(json_values_equal(item, expected) for item in value)
     raise ProviderContractError("descriptor matcher has incompatible value types")
 
 
@@ -218,15 +219,3 @@ def _require_number(value: object) -> int | float:
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         return value
     raise ProviderContractError("descriptor matcher has incompatible value types")
-
-
-def _is_json_number(value: object) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
-
-
-def _json_equal(left: object, right: object) -> bool:
-    if _is_json_number(left) and _is_json_number(right):
-        return left == right
-    if type(left) is not type(right):
-        return False
-    return left == right

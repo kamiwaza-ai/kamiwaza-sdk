@@ -106,6 +106,7 @@ def validate_plan_completeness(
 ) -> None:
     """Fail when an active descriptor's applicable coverage is incomplete."""
 
+    _validate_requested_descriptors(profile, descriptors)
     selected_by_scenario = _selected_targets_by_scenario(plan)
     applicable_by_scenario = _applicable_by_scenario(profile, descriptors)
     _validate_selected_applicability(applicable_by_scenario, plan)
@@ -122,6 +123,16 @@ def validate_plan_completeness(
     excluded = set(profile.validation.exclude) & _selected_scenarios(plan)
     if excluded:
         raise ProviderContractError("plan selected an excluded scenario")
+
+
+def _validate_requested_descriptors(
+    profile: ValidationProfile, descriptors: Sequence[ScenarioDescriptor]
+) -> None:
+    catalog_ids = {descriptor.scenario_id for descriptor in descriptors}
+    if set(profile.validation.include) - catalog_ids:
+        raise ProviderContractError(
+            "requested scenario is absent from descriptor catalog"
+        )
 
 
 def _selected_scenarios(plan: ScenarioPlan) -> set[str]:

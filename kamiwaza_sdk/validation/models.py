@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Hashable, Sequence
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
+from urllib.parse import urlsplit
 
 from pydantic import (
     BaseModel,
@@ -11,13 +12,29 @@ from pydantic import (
     Field,
     JsonValue,
     RootModel,
+    field_validator,
     model_validator,
 )
 
-Digest = Annotated[str, Field(pattern=r"^sha256:[0-9a-f]{64}$")]
+_NO_LINE_TERMINATORS_SCHEMA: dict[str, Any] = {
+    "not": {"pattern": r"[\r\n\u2028\u2029]"},
+}
+
+Digest = Annotated[
+    str,
+    Field(
+        pattern=r"^sha256:[0-9a-f]{64}$",
+        json_schema_extra=_NO_LINE_TERMINATORS_SCHEMA,
+    ),
+]
 StableId = Annotated[
     str,
-    Field(min_length=1, max_length=256, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/-]*$"),
+    Field(
+        min_length=1,
+        max_length=256,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+        json_schema_extra=_NO_LINE_TERMINATORS_SCHEMA,
+    ),
 ]
 NonEmptyText = Annotated[str, Field(min_length=1, max_length=4096)]
 ImmutableImageReference = Annotated[
@@ -25,6 +42,7 @@ ImmutableImageReference = Annotated[
     Field(
         max_length=4096,
         pattern=r"^(?:[^@\s]+@)?sha256:[0-9a-f]{64}$",
+        json_schema_extra=_NO_LINE_TERMINATORS_SCHEMA,
     ),
 ]
 
@@ -95,6 +113,7 @@ class ClusterFacts(ClosedModel):
             "propertyNames": {
                 "maxLength": 256,
                 "pattern": r"^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+                **_NO_LINE_TERMINATORS_SCHEMA,
             }
         },
     )
@@ -315,8 +334,9 @@ class RuntimeCluster(ClosedModel):
     base_url: Annotated[
         str,
         Field(
-            pattern=r"^https?://[^\s/]+(?:/[^\s]*)?$",
+            pattern=r"^https?://[^@\s/]+(?:/[^\s]*)?$",
             max_length=2048,
+            json_schema_extra=_NO_LINE_TERMINATORS_SCHEMA,
         ),
     ]
     api_key_ref: Annotated[
@@ -325,12 +345,29 @@ class RuntimeCluster(ClosedModel):
             pattern=r"^(?:secret|file)://[^\s]+$",
             max_length=4096,
             repr=False,
+            json_schema_extra=_NO_LINE_TERMINATORS_SCHEMA,
         ),
     ]
     kubeconfig_ref: Annotated[
         str,
-        Field(pattern=r"^file://[^\s]+$", max_length=4096, repr=False),
+        Field(
+            pattern=r"^file://[^\s]+$",
+            max_length=4096,
+            repr=False,
+            json_schema_extra=_NO_LINE_TERMINATORS_SCHEMA,
+        ),
     ]
+
+    @field_validator("base_url")
+    @classmethod
+    def reject_url_userinfo(cls, value: str) -> str:
+        try:
+            authority = urlsplit(value).netloc
+        except ValueError:
+            raise ValueError("runtime base URL has an invalid authority") from None
+        if "@" in authority:
+            raise ValueError("runtime base URL must not contain userinfo")
+        return value
 
 
 class RuntimeContext(ClosedModel):

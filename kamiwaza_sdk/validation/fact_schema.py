@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import types
 from collections.abc import Callable, Mapping, Sequence
 from typing import Annotated, Union, get_args, get_origin
 
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
+from kamiwaza_sdk.validation.json_semantics import json_values_equal
 from kamiwaza_sdk.validation.models import (
     ClusterFacts,
     DeploymentFacts,
@@ -136,10 +138,11 @@ _OPERATOR_VALIDATORS: dict[str, _OperatorValidator] = {
 
 def _annotation_accepts(annotation: object, value: object) -> bool:
     try:
-        TypeAdapter(annotation).validate_python(value, strict=True)
-    except ValidationError:
+        payload = json.dumps(value, allow_nan=False, separators=(",", ":"))
+        normalized: object = TypeAdapter(annotation).validate_json(payload)
+    except (TypeError, ValueError, ValidationError):
         return False
-    return True
+    return json_values_equal(value, normalized)
 
 
 def _contained_annotation(annotation: object) -> object:
