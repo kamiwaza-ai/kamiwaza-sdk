@@ -18,8 +18,42 @@ from typing import Optional, Tuple
 from ..services.kaizen import (
     AGENT_CONTRACT_CANONICAL,
     AGENT_CONTRACT_LEGACY,
+    CANONICAL_EXTENSION_NAME,
+    LEGACY_EXTENSION_NAME,
     agent_contract_for_extension,
 )
+
+# Flags that only the v3 conversation body can carry. Canonical Kaizen creates a
+# conversation with no body at all and selects the agent per input, so it has
+# nowhere to put any of these — accepting them there would drop an operator's
+# choice silently, which is the failure mode this contract split exists to
+# remove.
+_LEGACY_ONLY_CONVERSATION_FLAGS = (
+    ("--agent-id", "agent_id"),
+    ("--title", "title"),
+    ("--max-iterations", "max_iterations"),
+)
+
+
+def _reject_legacy_conversation_flags(args: argparse.Namespace) -> None:
+    """Fail loudly when a canonical create carries v3-only conversation flags."""
+    supplied = [
+        flag
+        for flag, dest in _LEGACY_ONLY_CONVERSATION_FLAGS
+        if getattr(args, dest, None) is not None
+    ]
+    if getattr(args, "ephemeral", False):
+        supplied.append("--ephemeral")
+    if not supplied:
+        return
+    joined = ", ".join(supplied)
+    verb = "is a v3 conversation setting" if len(supplied) == 1 else "are v3 conversation settings"
+    raise SystemExit(
+        f"{joined} {verb} that canonical Kaizen "
+        f"('{CANONICAL_EXTENSION_NAME}') does not support: it creates a "
+        "conversation with no body and selects the agent per message. Pass "
+        f"--extension-name {LEGACY_EXTENSION_NAME} to use the legacy contract."
+    )
 
 def conversation_contract(args: argparse.Namespace) -> str:
     """Resolve the turn contract from the catalog identity, or fail locally.
@@ -36,6 +70,7 @@ def conversation_contract(args: argparse.Namespace) -> str:
 
 def _create_canonical_conversation(args: argparse.Namespace, client):
     """Open a conversation on canonical Kaizen (no body; Idempotency-Key)."""
+    _reject_legacy_conversation_flags(args)
     return client.conversations.create_canonical(
         base_url=args.kaizen_base_url,
         workroom_id=args.workroom_id,
@@ -44,11 +79,19 @@ def _create_canonical_conversation(args: argparse.Namespace, client):
 
 def _create_legacy_conversation(args: argparse.Namespace, client):
     """Open a conversation on legacy Kaizen (v3 flat body)."""
+    if not args.agent_id:
+        raise SystemExit(
+            f"--agent-id is required for legacy Kaizen "
+            f"('{LEGACY_EXTENSION_NAME}') conversations."
+        )
     return client.conversations.create(
         base_url=args.kaizen_base_url,
         agent_id=args.agent_id,
         title=args.title,
-        max_iterations=args.max_iterations,
+        # The v3 server default; kept here so the flag can stay unset-by-default
+        # and the canonical path can tell "operator asked for this" from "never
+        # supplied".
+        max_iterations=args.max_iterations if args.max_iterations is not None else 500,
         ephemeral=args.ephemeral,
         workroom_id=args.workroom_id,
     )

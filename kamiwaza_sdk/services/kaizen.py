@@ -20,7 +20,10 @@ import math
 import re
 import time
 import uuid
+from dataclasses import dataclass
 from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
+
+import requests
 
 from ..exceptions import APIError, AuthorizationError, KamiwazaError, NotFoundError
 from ..schemas.kaizen import (
@@ -52,9 +55,13 @@ _IDEMPOTENCY_KEY_MAX_LEN = 200
 # interim narration is never mistaken for the final answer.
 _CANONICAL_REPLY_EVENT = "assistant_message"
 _CANONICAL_TERMINAL_OK = "agent_run_completed"
+# A salvaged run recovered partial output after a runtime fault: terminal, but
+# only a success if it actually carried a reply.
+_CANONICAL_TERMINAL_SALVAGED = "agent_run_salvaged"
 _CANONICAL_TERMINAL_EVENTS = frozenset(
     {
         _CANONICAL_TERMINAL_OK,
+        _CANONICAL_TERMINAL_SALVAGED,
         "agent_run_failed",
         "agent_run_cancelled",
     }
@@ -230,13 +237,69 @@ def _canonical_terminal_reply(
     payload: Dict[str, Any],
     reply: Optional[str],
 ) -> Optional[str]:
-    """Resolve a terminal turn event into a reply, or raise if the run failed."""
-    if event != _CANONICAL_TERMINAL_OK:
+    """Resolve a terminal turn event into a reply, or raise if the run failed.
+
+    A salvaged run is terminal but only counts as a reply when it actually
+    carried one; treating it as success unconditionally would report an empty
+    answer as a passing chat verification.
+    """
+    if event == _CANONICAL_TERMINAL_OK:
+        return reply
+    if event == _CANONICAL_TERMINAL_SALVAGED and reply:
+        return reply
+    raise ConversationError(
+        f"Kaizen agent run ended as '{event}': {_canonical_failure_reason(payload)}"
+    )
+
+
+def _append_reply_text(reply: Optional[str], payload: Dict[str, Any]) -> Optional[str]:
+    """Accumulate an assistant_message chunk; a turn may emit more than one."""
+    text = _canonical_event_text(payload)
+    if not text:
+        return reply
+    return text if reply is None else f"{reply}\n{text}"
+
+
+def _event_position(payload: Dict[str, Any], fallback: int) -> int:
+    """Journal position of a durable frame, for resuming a dropped stream."""
+    position = payload.get("position")
+    return position if isinstance(position, int) else fallback
+
+
+def _safe_sse_events(
+    response: Any,
+    turn: "_CanonicalTurn",
+) -> Iterator[Tuple[str, Dict[str, Any]]]:
+    """Iterate SSE events, mapping transport faults onto this service's contract.
+
+    ``requests`` timeouts derive from ``RequestException``/``OSError``, not from
+    the builtin ``TimeoutError``, so an unwrapped read timeout would bypass both
+    the documented ``Raises`` of :meth:`ConversationService.chat_canonical` and
+    the seeder CLI's handler — surfacing as a raw traceback instead of the clean
+    non-zero exit every other seeder command produces.
+    """
+    try:
+        yield from _iter_sse_events(response)
+    except requests.exceptions.Timeout as exc:
+        raise TimeoutError(
+            f"Timed out reading the event stream for conversation "
+            f"{turn.conversation_id} (input {turn.input_id}): {exc}"
+        ) from exc
+    except requests.exceptions.RequestException as exc:
         raise ConversationError(
-            f"Kaizen agent run ended as '{event}': "
-            f"{_canonical_failure_reason(payload)}"
-        )
-    return reply
+            f"Event stream for conversation {turn.conversation_id} failed "
+            f"(input {turn.input_id}): {exc}"
+        ) from exc
+
+
+@dataclass(frozen=True)
+class _CanonicalTurn:
+    """Everything needed to route one canonical turn's event stream."""
+
+    conversation_id: str
+    input_id: str
+    base_url: str
+    workroom_id: Optional[Union[str, object]]
 
 
 def _workroom_headers(workroom_id: Optional[Union[str, object]]) -> Dict[str, str]:
@@ -925,51 +988,93 @@ class ConversationService(BaseService):
         )
         if timeout_seconds is None:
             return None
-        response = self.stream_events_canonical(
-            conversation_id,
+        turn = _CanonicalTurn(
+            conversation_id=conversation_id,
+            input_id=accepted.input_id,
             base_url=base_url,
             workroom_id=workroom_id,
-            after=accepted.accepted_position,
-            # Bound the socket read by the caller's budget: the deadline below
-            # only advances when a frame arrives, so a stream that goes silent
-            # would otherwise block past the budget entirely. The floor keeps a
-            # zero budget from meaning "no timeout" to the transport.
-            read_timeout_seconds=max(timeout_seconds, 1.0),
         )
-        try:
-            return self._await_canonical_reply(
-                response,
-                conversation_id=conversation_id,
-                input_id=accepted.input_id,
-                timeout_seconds=timeout_seconds,
-            )
-        finally:
-            response.close()
+        return self._await_canonical_reply(
+            turn,
+            after=accepted.accepted_position,
+            deadline=time.monotonic() + timeout_seconds,
+        )
 
     def _await_canonical_reply(
         self,
-        response: Any,
+        turn: "_CanonicalTurn",
         *,
-        conversation_id: str,
-        input_id: str,
-        timeout_seconds: float,
+        after: int,
+        deadline: float,
     ) -> Optional[str]:
-        """Read the SSE stream until this turn ends; return its reply text."""
-        deadline = time.monotonic() + timeout_seconds
+        """Read this turn's events until it ends, reconnecting if the stream drops.
+
+        A canonical event stream can close before the turn finishes — an ingress
+        idle timeout, a proxy drop, or the server's own degraded-fanout path.
+        That is recoverable rather than fatal precisely because the stream
+        replays from a journal position, so reopen from the last position seen
+        and keep going while budget remains.
+        """
         reply: Optional[str] = None
-        for event, payload in _iter_sse_events(response):
-            if not _is_turn_event(payload, input_id):
+        cursor = after
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            response = self.stream_events_canonical(
+                turn.conversation_id,
+                base_url=turn.base_url,
+                workroom_id=turn.workroom_id,
+                after=cursor,
+                # Floor the socket read so a zero/near-zero budget never reads
+                # as "no timeout" to the transport.
+                read_timeout_seconds=max(remaining, 1.0),
+            )
+            try:
+                done, reply, cursor = self._read_turn_events(
+                    response, turn, reply=reply, cursor=cursor, deadline=deadline
+                )
+            finally:
+                response.close()
+            if done:
+                return reply
+        raise TimeoutError(
+            f"No agent reply on conversation {turn.conversation_id} within the "
+            f"wait budget (input {turn.input_id} never reached a terminal event)."
+        )
+
+    def _read_turn_events(
+        self,
+        response: Any,
+        turn: "_CanonicalTurn",
+        *,
+        reply: Optional[str],
+        cursor: int,
+        deadline: float,
+    ) -> Tuple[bool, Optional[str], int]:
+        """Consume one event stream; return (turn_finished, reply, next cursor).
+
+        Returning instead of raising on a dropped stream is what lets the caller
+        reconnect. Transport failures are re-raised as the two exception types
+        this service's contract documents, so a caller catching those does not
+        get a bare ``requests`` error through the seeder CLI.
+        """
+        for event, payload in _safe_sse_events(response, turn):
+            # The budget check must precede the turn filter: the stream carries
+            # conversation-level keepalive and presence frames that belong to no
+            # turn, and skipping the check on those would let a stalled run hold
+            # the loop open indefinitely.
+            if time.monotonic() >= deadline:
+                return False, reply, cursor
+            cursor = _event_position(payload, cursor)
+            if not _is_turn_event(payload, turn.input_id):
                 continue
             if event == _CANONICAL_REPLY_EVENT:
-                reply = _canonical_event_text(payload) or reply
+                reply = _append_reply_text(reply, payload)
             elif event in _CANONICAL_TERMINAL_EVENTS:
-                return _canonical_terminal_reply(event, payload, reply)
-            if time.monotonic() >= deadline:
-                break
-        raise TimeoutError(
-            f"No agent reply on conversation {conversation_id} within "
-            f"{timeout_seconds:g}s (input {input_id} never reached a terminal event)."
-        )
+                return True, _canonical_terminal_reply(event, payload, reply), cursor
+        # Stream ended without a terminal event — recoverable, not a timeout.
+        return False, reply, cursor
 
     def create(
         self,

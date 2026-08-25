@@ -1197,8 +1197,6 @@ def test_create_conversation_defaults_to_the_canonical_contract(capsys, monkeypa
             "create-conversation",
             "--kaizen-base-url",
             "https://kamiwaza.test/kaizen",
-            "--agent-id",
-            "agent-1",
         ],
         client,
     )
@@ -1230,3 +1228,90 @@ def test_create_conversation_legacy_extension_keeps_the_v3_body(monkeypatch):
     create = client.conversations.create.calls[0]["kwargs"]
     assert (create["agent_id"], create["max_iterations"]) == ("agent-1", 12)
     assert client.conversations.create_canonical.calls == []
+
+
+@pytest.mark.parametrize(
+    "flag,value",
+    [
+        ("--agent-id", "agent-1"),
+        ("--title", "seed convo"),
+        ("--max-iterations", "12"),
+    ],
+)
+def test_create_conversation_rejects_v3_flags_on_the_canonical_contract(
+    flag, value, monkeypatch
+):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+
+    # Canonical create has no body to carry these, so honoring them is
+    # impossible; dropping them silently is the failure the split exists to fix.
+    with pytest.raises(SystemExit, match="does not support"):
+        _run(
+            [
+                "create-conversation",
+                "--kaizen-base-url",
+                "https://kamiwaza.test/kaizen",
+                flag,
+                value,
+            ],
+            client,
+        )
+    assert client.conversations.create_canonical.calls == []
+
+
+def test_create_conversation_rejects_ephemeral_on_the_canonical_contract(monkeypatch):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+
+    with pytest.raises(SystemExit, match="--ephemeral"):
+        _run(
+            [
+                "create-conversation",
+                "--kaizen-base-url",
+                "https://kamiwaza.test/kaizen",
+                "--ephemeral",
+            ],
+            client,
+        )
+
+
+def test_create_conversation_legacy_still_requires_an_agent_id(monkeypatch):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+
+    # --agent-id stopped being argparse-required so canonical can reject it;
+    # the legacy path must still fault when it is missing.
+    with pytest.raises(SystemExit, match="--agent-id is required"):
+        _run(
+            [
+                "create-conversation",
+                "--extension-name",
+                "kaizen-legacy",
+                "--kaizen-base-url",
+                "https://kamiwaza.test/kaizen",
+            ],
+            client,
+        )
+
+
+def test_create_conversation_legacy_defaults_max_iterations_when_unset(monkeypatch):
+    client = FakeClient()
+    monkeypatch.setattr(cli, "scoped_client_for_workroom", lambda c, wid: c)
+
+    _run(
+        [
+            "create-conversation",
+            "--extension-name",
+            "kaizen-legacy",
+            "--kaizen-base-url",
+            "https://kamiwaza.test/kaizen",
+            "--agent-id",
+            "agent-1",
+        ],
+        client,
+    )
+
+    # The flag defaults to None so canonical can tell "operator asked" from
+    # "never supplied"; the legacy body must still carry the v3 server default.
+    assert client.conversations.create.calls[0]["kwargs"]["max_iterations"] == 500

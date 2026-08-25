@@ -590,10 +590,29 @@ def _add_create_conversation_parser(sub) -> None:
             f"(default: {CANONICAL_EXTENSION_NAME})."
         ),
     )
-    p.add_argument("--agent-id", required=True)
-    p.add_argument("--title", default=None)
-    p.add_argument("--max-iterations", type=int, default=500)
-    p.add_argument("--ephemeral", action="store_true")
+    p.add_argument(
+        "--agent-id",
+        default=None,
+        help=(
+            f"Agent to converse with. Required for '{LEGACY_EXTENSION_NAME}'; "
+            f"rejected for '{CANONICAL_EXTENSION_NAME}', which selects the "
+            "agent per message instead."
+        ),
+    )
+    p.add_argument(
+        "--title", default=None, help=f"Legacy-only ('{LEGACY_EXTENSION_NAME}')."
+    )
+    p.add_argument(
+        "--max-iterations",
+        type=int,
+        default=None,
+        help=f"Agent step ceiling; legacy-only ('{LEGACY_EXTENSION_NAME}', default 500).",
+    )
+    p.add_argument(
+        "--ephemeral",
+        action="store_true",
+        help=f"Legacy-only ('{LEGACY_EXTENSION_NAME}').",
+    )
     p.add_argument("--workroom-id", default=None)
     p.set_defaults(func=cmd_create_conversation)
 
