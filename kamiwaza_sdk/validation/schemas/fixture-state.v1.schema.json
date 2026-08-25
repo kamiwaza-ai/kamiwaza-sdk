@@ -1,0 +1,104 @@
+{
+  "$defs": {
+    "FixtureMutation": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "enum": [
+            "created",
+            "adopted",
+            "removed"
+          ],
+          "title": "Action",
+          "type": "string"
+        },
+        "resource_id": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Resource Id",
+          "type": "string"
+        },
+        "resource_type": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+          "title": "Resource Type",
+          "type": "string"
+        },
+        "sequence": {
+          "minimum": 1,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "target_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+          "title": "Target Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sequence",
+        "target_id",
+        "resource_type",
+        "resource_id",
+        "action"
+      ],
+      "title": "FixtureMutation",
+      "type": "object"
+    },
+    "JsonValue": {}
+  },
+  "$id": "kamiwaza.fixture-state/v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "journal": {
+      "items": {
+        "$ref": "#/$defs/FixtureMutation"
+      },
+      "title": "Journal",
+      "type": "array"
+    },
+    "opaque": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "title": "Opaque",
+      "type": "object"
+    },
+    "owner_token_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Owner Token Digest",
+      "type": "string"
+    },
+    "provider_revision": {
+      "maxLength": 4096,
+      "minLength": 1,
+      "title": "Provider Revision",
+      "type": "string"
+    },
+    "run_id": {
+      "maxLength": 256,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+      "title": "Run Id",
+      "type": "string"
+    },
+    "schema": {
+      "const": "kamiwaza.fixture-state/v1",
+      "title": "Schema",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema",
+    "provider_revision",
+    "run_id",
+    "owner_token_digest",
+    "journal"
+  ],
+  "title": "FixtureState",
+  "type": "object"
+}

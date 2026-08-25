@@ -1,0 +1,116 @@
+{
+  "$defs": {
+    "CoverageIssue": {
+      "additionalProperties": false,
+      "properties": {
+        "case_id": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Case Id"
+        },
+        "code": {
+          "enum": [
+            "metadata_mismatch",
+            "missing_case",
+            "unexpected_case",
+            "duplicate_case",
+            "required_failure",
+            "required_skip"
+          ],
+          "title": "Code",
+          "type": "string"
+        },
+        "detail": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Detail",
+          "type": "string"
+        },
+        "scenario_id": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scenario Id"
+        },
+        "target_id": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Id"
+        }
+      },
+      "required": [
+        "code",
+        "detail"
+      ],
+      "title": "CoverageIssue",
+      "type": "object"
+    }
+  },
+  "$id": "kamiwaza.coverage-summary/v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "issues": {
+      "items": {
+        "$ref": "#/$defs/CoverageIssue"
+      },
+      "title": "Issues",
+      "type": "array"
+    },
+    "plan_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Plan Digest",
+      "type": "string"
+    },
+    "schema": {
+      "const": "kamiwaza.coverage-summary/v1",
+      "default": "kamiwaza.coverage-summary/v1",
+      "title": "Schema",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "passed",
+        "failed"
+      ],
+      "title": "Status",
+      "type": "string"
+    }
+  },
+  "required": [
+    "status",
+    "plan_digest",
+    "issues"
+  ],
+  "title": "CoverageSummary",
+  "type": "object"
+}

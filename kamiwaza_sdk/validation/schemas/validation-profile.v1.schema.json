@@ -1,0 +1,354 @@
+{
+  "$defs": {
+    "AcceleratorFacts": {
+      "additionalProperties": false,
+      "properties": {
+        "architecture": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+          "title": "Architecture",
+          "type": "string"
+        },
+        "count": {
+          "minimum": 1,
+          "title": "Count",
+          "type": "integer"
+        },
+        "vendor": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+          "title": "Vendor",
+          "type": "string"
+        }
+      },
+      "required": [
+        "vendor",
+        "architecture",
+        "count"
+      ],
+      "title": "AcceleratorFacts",
+      "type": "object"
+    },
+    "ClusterFacts": {
+      "additionalProperties": false,
+      "properties": {
+        "features": {
+          "patternProperties": {
+            "^[A-Za-z0-9][A-Za-z0-9._:/-]*$": {
+              "type": "boolean"
+            }
+          },
+          "propertyNames": {
+            "maxLength": 256,
+            "minLength": 1
+          },
+          "title": "Features",
+          "type": "object"
+        },
+        "hardware": {
+          "$ref": "#/$defs/HardwareFacts"
+        },
+        "id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+          "title": "Id",
+          "type": "string"
+        },
+        "node_count": {
+          "minimum": 1,
+          "title": "Node Count",
+          "type": "integer"
+        },
+        "roles": {
+          "items": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+            "type": "string"
+          },
+          "title": "Roles",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "roles",
+        "node_count",
+        "hardware"
+      ],
+      "title": "ClusterFacts",
+      "type": "object"
+    },
+    "DeploymentFacts": {
+      "additionalProperties": false,
+      "properties": {
+        "ephemeral": {
+          "title": "Ephemeral",
+          "type": "boolean"
+        },
+        "provider": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+          "title": "Provider",
+          "type": "string"
+        },
+        "topology_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+          "title": "Topology Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "topology_id",
+        "ephemeral"
+      ],
+      "title": "DeploymentFacts",
+      "type": "object"
+    },
+    "HardwareFacts": {
+      "additionalProperties": false,
+      "properties": {
+        "accelerators": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/AcceleratorFacts"
+          },
+          "title": "Accelerators",
+          "type": "array"
+        }
+      },
+      "title": "HardwareFacts",
+      "type": "object"
+    },
+    "InferenceTarget": {
+      "additionalProperties": false,
+      "properties": {
+        "cluster_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+          "title": "Cluster Id",
+          "type": "string"
+        },
+        "engine": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+          "title": "Engine",
+          "type": "string"
+        },
+        "expected_image": {
+          "anyOf": [
+            {
+              "maxLength": 4096,
+              "pattern": "^(?:[^@\\s]+@)?sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expected Image"
+        },
+        "id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+          "title": "Id",
+          "type": "string"
+        },
+        "model_format": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+          "title": "Model Format",
+          "type": "string"
+        },
+        "quantization": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+          "title": "Quantization",
+          "type": "string"
+        },
+        "repository": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Repository",
+          "type": "string"
+        },
+        "required": {
+          "title": "Required",
+          "type": "boolean"
+        },
+        "runtime_profile": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+          "title": "Runtime Profile",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "cluster_id",
+        "required",
+        "repository",
+        "engine",
+        "model_format",
+        "quantization",
+        "runtime_profile"
+      ],
+      "title": "InferenceTarget",
+      "type": "object"
+    },
+    "MeshEdge": {
+      "additionalProperties": false,
+      "properties": {
+        "identity_mode": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+          "title": "Identity Mode",
+          "type": "string"
+        },
+        "initiator": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+          "title": "Initiator",
+          "type": "string"
+        },
+        "receiver": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+          "title": "Receiver",
+          "type": "string"
+        }
+      },
+      "required": [
+        "initiator",
+        "receiver",
+        "identity_mode"
+      ],
+      "title": "MeshEdge",
+      "type": "object"
+    },
+    "MeshFacts": {
+      "additionalProperties": false,
+      "properties": {
+        "edges": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/MeshEdge"
+          },
+          "title": "Edges",
+          "type": "array"
+        }
+      },
+      "title": "MeshFacts",
+      "type": "object"
+    },
+    "ValidationIntent": {
+      "additionalProperties": false,
+      "properties": {
+        "exclude": {
+          "default": [],
+          "items": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+            "type": "string"
+          },
+          "title": "Exclude",
+          "type": "array"
+        },
+        "fixture_mode": {
+          "enum": [
+            "owned",
+            "external"
+          ],
+          "title": "Fixture Mode",
+          "type": "string"
+        },
+        "include": {
+          "default": [],
+          "items": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+            "type": "string"
+          },
+          "title": "Include",
+          "type": "array"
+        },
+        "level": {
+          "enum": [
+            "smoke",
+            "standard",
+            "comprehensive"
+          ],
+          "title": "Level",
+          "type": "string"
+        }
+      },
+      "required": [
+        "level",
+        "fixture_mode"
+      ],
+      "title": "ValidationIntent",
+      "type": "object"
+    }
+  },
+  "$id": "kamiwaza.validation-profile/v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "clusters": {
+      "items": {
+        "$ref": "#/$defs/ClusterFacts"
+      },
+      "title": "Clusters",
+      "type": "array"
+    },
+    "deployment": {
+      "$ref": "#/$defs/DeploymentFacts"
+    },
+    "inference_targets": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/InferenceTarget"
+      },
+      "title": "Inference Targets",
+      "type": "array"
+    },
+    "mesh": {
+      "$ref": "#/$defs/MeshFacts"
+    },
+    "schema": {
+      "const": "kamiwaza.validation-profile/v1",
+      "title": "Schema",
+      "type": "string"
+    },
+    "validation": {
+      "$ref": "#/$defs/ValidationIntent"
+    }
+  },
+  "required": [
+    "schema",
+    "deployment",
+    "clusters",
+    "validation"
+  ],
+  "title": "ValidationProfile",
+  "type": "object"
+}

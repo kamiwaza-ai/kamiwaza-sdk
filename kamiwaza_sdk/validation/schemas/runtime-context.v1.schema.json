@@ -1,0 +1,73 @@
+{
+  "$defs": {
+    "RuntimeCluster": {
+      "additionalProperties": false,
+      "properties": {
+        "api_key_ref": {
+          "maxLength": 4096,
+          "pattern": "^(secret|file)://",
+          "title": "Api Key Ref",
+          "type": "string"
+        },
+        "base_url": {
+          "maxLength": 2048,
+          "pattern": "^https?://",
+          "title": "Base Url",
+          "type": "string"
+        },
+        "id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+          "title": "Id",
+          "type": "string"
+        },
+        "kubeconfig_ref": {
+          "maxLength": 4096,
+          "pattern": "^file://",
+          "title": "Kubeconfig Ref",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "base_url",
+        "api_key_ref",
+        "kubeconfig_ref"
+      ],
+      "title": "RuntimeCluster",
+      "type": "object"
+    }
+  },
+  "$id": "kamiwaza.runtime-context/v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "clusters": {
+      "items": {
+        "$ref": "#/$defs/RuntimeCluster"
+      },
+      "title": "Clusters",
+      "type": "array"
+    },
+    "run_id": {
+      "maxLength": 256,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+      "title": "Run Id",
+      "type": "string"
+    },
+    "schema": {
+      "const": "kamiwaza.runtime-context/v1",
+      "title": "Schema",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema",
+    "run_id",
+    "clusters"
+  ],
+  "title": "RuntimeContext",
+  "type": "object"
+}

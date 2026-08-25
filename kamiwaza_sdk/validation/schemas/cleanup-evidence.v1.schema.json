@@ -1,0 +1,113 @@
+{
+  "$defs": {
+    "CleanupResult": {
+      "additionalProperties": false,
+      "properties": {
+        "detail": {
+          "anyOf": [
+            {
+              "maxLength": 4096,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Detail"
+        },
+        "resource_id": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Resource Id",
+          "type": "string"
+        },
+        "resource_type": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+          "title": "Resource Type",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "removed",
+            "absent",
+            "retained_foreign",
+            "failed"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "target_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+          "title": "Target Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target_id",
+        "resource_type",
+        "resource_id",
+        "status"
+      ],
+      "title": "CleanupResult",
+      "type": "object"
+    }
+  },
+  "$id": "kamiwaza.cleanup-evidence/v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "provider_revision": {
+      "maxLength": 4096,
+      "minLength": 1,
+      "title": "Provider Revision",
+      "type": "string"
+    },
+    "results": {
+      "items": {
+        "$ref": "#/$defs/CleanupResult"
+      },
+      "title": "Results",
+      "type": "array"
+    },
+    "run_id": {
+      "maxLength": 256,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+      "title": "Run Id",
+      "type": "string"
+    },
+    "schema": {
+      "const": "kamiwaza.cleanup-evidence/v1",
+      "title": "Schema",
+      "type": "string"
+    },
+    "state_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "State Digest",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "passed",
+        "failed"
+      ],
+      "title": "Status",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema",
+    "provider_revision",
+    "run_id",
+    "state_digest",
+    "status",
+    "results"
+  ],
+  "title": "CleanupEvidence",
+  "type": "object"
+}

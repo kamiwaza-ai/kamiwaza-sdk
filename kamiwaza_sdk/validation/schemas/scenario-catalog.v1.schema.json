@@ -1,0 +1,128 @@
+{
+  "$defs": {
+    "FactMatcher": {
+      "additionalProperties": false,
+      "properties": {
+        "operator": {
+          "enum": [
+            "eq",
+            "in",
+            "contains",
+            "gte",
+            "lte"
+          ],
+          "title": "Operator",
+          "type": "string"
+        },
+        "path": {
+          "pattern": "^[A-Za-z0-9_.-]+$",
+          "title": "Path",
+          "type": "string"
+        },
+        "value": {
+          "$ref": "#/$defs/JsonValue"
+        }
+      },
+      "required": [
+        "path",
+        "operator",
+        "value"
+      ],
+      "title": "FactMatcher",
+      "type": "object"
+    },
+    "JsonValue": {},
+    "ScenarioDescriptor": {
+      "additionalProperties": false,
+      "properties": {
+        "applies_when": {
+          "items": {
+            "$ref": "#/$defs/FactMatcher"
+          },
+          "title": "Applies When",
+          "type": "array"
+        },
+        "capability_ids": {
+          "items": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+            "type": "string"
+          },
+          "title": "Capability Ids",
+          "type": "array"
+        },
+        "case_ids": {
+          "items": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+            "type": "string"
+          },
+          "title": "Case Ids",
+          "type": "array"
+        },
+        "fixture_modes": {
+          "items": {
+            "enum": [
+              "owned",
+              "external"
+            ],
+            "type": "string"
+          },
+          "title": "Fixture Modes",
+          "type": "array"
+        },
+        "protocol_version": {
+          "const": "v1",
+          "title": "Protocol Version",
+          "type": "string"
+        },
+        "provider_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+          "title": "Provider Id",
+          "type": "string"
+        },
+        "requires": {
+          "items": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+            "type": "string"
+          },
+          "title": "Requires",
+          "type": "array"
+        },
+        "scenario_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+          "title": "Scenario Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "scenario_id",
+        "provider_id",
+        "protocol_version",
+        "capability_ids",
+        "applies_when",
+        "requires",
+        "fixture_modes",
+        "case_ids"
+      ],
+      "title": "ScenarioDescriptor",
+      "type": "object"
+    }
+  },
+  "$id": "kamiwaza.scenario-catalog/v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Wire document emitted by the deterministic describe command.",
+  "items": {
+    "$ref": "#/$defs/ScenarioDescriptor"
+  },
+  "title": "ScenarioCatalog",
+  "type": "array"
+}

@@ -1,0 +1,109 @@
+{
+  "$defs": {
+    "JsonValue": {},
+    "ResolvedScenario": {
+      "additionalProperties": false,
+      "properties": {
+        "case_ids": {
+          "items": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+            "type": "string"
+          },
+          "title": "Case Ids",
+          "type": "array"
+        },
+        "redacted_parameters": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Redacted Parameters",
+          "type": "object"
+        },
+        "required": {
+          "title": "Required",
+          "type": "boolean"
+        },
+        "scenario_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+          "title": "Scenario Id",
+          "type": "string"
+        },
+        "target_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+          "title": "Target Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target_id",
+        "scenario_id",
+        "required",
+        "case_ids",
+        "redacted_parameters"
+      ],
+      "title": "ResolvedScenario",
+      "type": "object"
+    }
+  },
+  "$id": "kamiwaza.scenario-plan/v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "install_requirements": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "title": "Install Requirements",
+      "type": "object"
+    },
+    "profile_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Profile Digest",
+      "type": "string"
+    },
+    "provider_revision": {
+      "maxLength": 4096,
+      "minLength": 1,
+      "title": "Provider Revision",
+      "type": "string"
+    },
+    "runtime_requirements": {
+      "items": {
+        "maxLength": 256,
+        "minLength": 1,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+        "type": "string"
+      },
+      "title": "Runtime Requirements",
+      "type": "array"
+    },
+    "schema": {
+      "const": "kamiwaza.scenario-plan/v1",
+      "title": "Schema",
+      "type": "string"
+    },
+    "selected": {
+      "items": {
+        "$ref": "#/$defs/ResolvedScenario"
+      },
+      "title": "Selected",
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema",
+    "profile_digest",
+    "provider_revision",
+    "selected",
+    "install_requirements",
+    "runtime_requirements"
+  ],
+  "title": "ScenarioPlan",
+  "type": "object"
+}
