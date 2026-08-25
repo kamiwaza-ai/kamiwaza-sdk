@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from kamiwaza_sdk.validation import RuntimeContext, ValidationProfile
+from kamiwaza_sdk.validation import RuntimeContext, ValidationProfile, model_digest
 from kamiwaza_sdk.validation.golden_provider import GoldenProvider
 from kamiwaza_sdk.validation.provider import (
     ProviderContractError,
@@ -105,6 +105,25 @@ class ForeignPlanTargetGoldenProvider(GoldenProvider):
         return plan.model_copy(update={"selected": (selected,)})
 
 
+class EmptyPlanGoldenProvider(GoldenProvider):
+    def resolve(self, profile):  # type: ignore[no-untyped-def]
+        return super().resolve(profile).model_copy(update={"selected": ()})
+
+
+class DowngradedRequiredTargetGoldenProvider(GoldenProvider):
+    def resolve(self, profile):  # type: ignore[no-untyped-def]
+        plan = super().resolve(profile)
+        selected = plan.selected[0].model_copy(update={"required": False})
+        return plan.model_copy(update={"selected": (selected,)})
+
+
+class OmittedRequiredTargetGoldenProvider(GoldenProvider):
+    def resolve(self, profile):  # type: ignore[no-untyped-def]
+        plan = super().resolve(profile)
+        selected = tuple(item for item in plan.selected if not item.required)
+        return plan.model_copy(update={"selected": selected})
+
+
 class UnplannedStateTargetGoldenProvider(GoldenProvider):
     def prepare(self, plan, runtime, state_writer):  # type: ignore[no-untyped-def]
         state = super().prepare(plan, runtime, RecordingFixtureStateWriter())
@@ -113,6 +132,16 @@ class UnplannedStateTargetGoldenProvider(GoldenProvider):
         state_writer.write(changed.model_copy(update={"journal": ()}))
         state_writer.write(changed)
         return changed
+
+
+class SwallowedRegressiveSnapshotGoldenProvider(GoldenProvider):
+    def prepare(self, plan, runtime, state_writer):  # type: ignore[no-untyped-def]
+        state = super().prepare(plan, runtime, state_writer)
+        try:
+            state_writer.write(state.model_copy(update={"journal": ()}))
+        except ProviderContractError:
+            pass
+        return state
 
 
 class WrongStatePlanDigestGoldenProvider(GoldenProvider):
@@ -185,6 +214,60 @@ def test_contract_kit_rejects_plan_target_absent_from_profile() -> None:
     with pytest.raises(ProviderContractError, match="undeclared target"):
         exercise_provider_contract(
             ForeignPlanTargetGoldenProvider(), _profile(), _runtime()
+        )
+
+
+@pytest.mark.parametrize(
+    ("provider", "expected_error"),
+    [
+        (EmptyPlanGoldenProvider(), "requested scenario resolved to zero selected cases"),
+        (
+            DowngradedRequiredTargetGoldenProvider(),
+            "plan downgraded a required target",
+        ),
+    ],
+)
+def test_contract_kit_rejects_vacuous_or_downgraded_required_plans(
+    provider: GoldenProvider, expected_error: str
+) -> None:
+    with pytest.raises(ProviderContractError, match=expected_error):
+        exercise_provider_contract(provider, _profile(), _runtime())
+
+
+def test_contract_kit_binds_selected_targets_to_runtime_clusters() -> None:
+    runtime = _runtime()
+    foreign_cluster = runtime.clusters[0].model_copy(
+        update={"id": "completely-foreign-cluster"}
+    )
+
+    with pytest.raises(ProviderContractError, match="runtime missing a selected cluster"):
+        exercise_provider_contract(
+            GoldenProvider(),
+            _profile(),
+            runtime.model_copy(update={"clusters": (foreign_cluster,)}),
+        )
+
+
+def test_contract_kit_requires_requested_scenario_for_each_required_target() -> None:
+    payload = profile_payload()
+    payload["validation"]["include"] = ["sdk.golden.echo/v1"]  # type: ignore[index]
+    optional_target = dict(payload["inference_targets"][0])  # type: ignore[index]
+    optional_target.update(
+        {
+            "id": "evo-x2-2-optional-llamacpp-chat",
+            "required": False,
+        }
+    )
+    payload["inference_targets"].append(optional_target)  # type: ignore[union-attr]
+
+    with pytest.raises(
+        ProviderContractError,
+        match="requested scenario omitted a required target",
+    ):
+        exercise_provider_contract(
+            OmittedRequiredTargetGoldenProvider(),
+            ValidationProfile.model_validate(payload),
+            _runtime(),
         )
 
 
@@ -273,6 +356,13 @@ def test_fixture_snapshot_journal_cannot_regress() -> None:
         )
 
 
+def test_contract_kit_rejects_a_snapshot_violation_swallowed_by_provider() -> None:
+    with pytest.raises(ProviderContractError, match="journal snapshot regressed"):
+        exercise_provider_contract(
+            SwallowedRegressiveSnapshotGoldenProvider(), _profile(), _runtime()
+        )
+
+
 def test_cleanup_identity_rejects_duplicate_results_directly() -> None:
     provider = GoldenProvider()
     runtime = _runtime()
@@ -286,6 +376,40 @@ def test_cleanup_identity_rejects_duplicate_results_directly() -> None:
             state,
             cleanup.model_copy(update={"results": cleanup.results * 2}),
         )
+
+
+@pytest.mark.parametrize(
+    "actions",
+    [
+        ("adopted", "created"),
+        ("adopted", "removed"),
+        ("removed",),
+    ],
+)
+def test_cleanup_identity_rejects_unsafe_ownership_histories(
+    actions: tuple[str, ...],
+) -> None:
+    provider = GoldenProvider()
+    runtime = _runtime()
+    plan = provider.resolve(_profile("external"))
+    state = provider.prepare(plan, runtime, RecordingFixtureStateWriter())
+    original = state.journal[0]
+    journal = tuple(
+        original.model_copy(update={"sequence": index, "action": action})
+        for index, action in enumerate(actions, start=1)
+    )
+    unsafe_state = state.model_copy(update={"journal": journal})
+    cleanup = provider.teardown(runtime, state)
+    removed = cleanup.results[0].model_copy(update={"status": "removed"})
+    unsafe_cleanup = cleanup.model_copy(
+        update={
+            "state_digest": model_digest(unsafe_state),
+            "results": (removed,),
+        }
+    )
+
+    with pytest.raises(ProviderContractError, match="ownership transition"):
+        validate_cleanup_identity(runtime, unsafe_state, unsafe_cleanup)
 
 
 def test_golden_provider_refuses_tampered_fixture_ownership() -> None:

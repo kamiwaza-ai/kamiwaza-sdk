@@ -31,12 +31,12 @@ ModelT = TypeVar("ModelT", bound=BaseModel)
 def validate_provider_output(value: object, model_type: type[ModelT]) -> ModelT:
     """Round-trip an untrusted provider callback through its wire model."""
 
-    payload = (
-        value.model_dump(mode="python", by_alias=True)
-        if isinstance(value, BaseModel)
-        else value
-    )
     try:
+        payload = (
+            value.model_dump(mode="python", by_alias=True)
+            if isinstance(value, BaseModel)
+            else value
+        )
         return model_type.model_validate(payload)
     except ValidationError as error:
         fields = {
@@ -47,6 +47,10 @@ def validate_provider_output(value: object, model_type: type[ModelT]) -> ModelT:
         raise ProviderContractError(
             f"provider returned invalid {model_type.__name__}: {locations}"
         ) from None
+    except Exception:
+        raise ProviderContractError(
+            f"provider returned unreadable {model_type.__name__}"
+        ) from None
 
 
 def validate_plan_identity(profile: ValidationProfile, plan: ScenarioPlan) -> None:
@@ -55,12 +59,72 @@ def validate_plan_identity(profile: ValidationProfile, plan: ScenarioPlan) -> No
     _require_equal(
         plan.profile_digest, model_digest(profile), "plan profile digest mismatch"
     )
-    declared_targets = {cluster.id for cluster in profile.clusters}
-    declared_targets.update(target.id for target in profile.inference_targets)
+    target_clusters = {cluster.id: cluster.id for cluster in profile.clusters}
+    target_clusters.update(
+        {target.id: target.cluster_id for target in profile.inference_targets}
+    )
     _require_target_subset(
         (item.target_id for item in plan.selected),
-        declared_targets,
+        set(target_clusters),
         "plan references an undeclared target",
+    )
+    for item in plan.selected:
+        _require_equal(
+            item.cluster_id,
+            target_clusters[item.target_id],
+            "plan target cluster mismatch",
+        )
+    required_targets = {
+        target.id for target in profile.inference_targets if target.required
+    }
+    if any(
+        item.target_id in required_targets and not item.required
+        for item in plan.selected
+    ):
+        raise ProviderContractError("plan downgraded a required target")
+
+
+def validate_plan_completeness(
+    profile: ValidationProfile,
+    descriptors: Sequence[ScenarioDescriptor],
+    plan: ScenarioPlan,
+) -> None:
+    """Fail when an explicitly requested provider scenario selects no target."""
+
+    described = {descriptor.scenario_id for descriptor in descriptors}
+    selected = {item.scenario_id for item in plan.selected}
+    requested = set(profile.validation.include) & described
+    if requested - selected:
+        raise ProviderContractError(
+            "requested scenario resolved to zero selected cases"
+        )
+    selected_cells = {
+        (item.target_id, item.scenario_id) for item in plan.selected
+    }
+    required_cells = {
+        (target.id, scenario_id)
+        for target in profile.inference_targets
+        if target.required
+        for scenario_id in requested
+    }
+    if required_cells - selected_cells:
+        raise ProviderContractError(
+            "requested scenario omitted a required target"
+        )
+    excluded = set(profile.validation.exclude) & selected
+    if excluded:
+        raise ProviderContractError("plan selected an excluded scenario")
+
+
+def validate_plan_runtime_identity(
+    plan: ScenarioPlan, runtime: RuntimeContext
+) -> None:
+    """Require every selected target's bound cluster in the runtime context."""
+
+    _require_target_subset(
+        (item.cluster_id for item in plan.selected),
+        {cluster.id for cluster in runtime.clusters},
+        "runtime missing a selected cluster",
     )
 
 
@@ -96,6 +160,7 @@ def validate_state_identity(
         {item.target_id for item in plan.selected},
         "fixture state references an unplanned target",
     )
+    _journal_resource_actions(state)
 
 
 def validate_evidence_identity(
@@ -154,10 +219,24 @@ CleanupAction = Literal["created", "adopted", "removed"]
 
 
 def _journal_resource_actions(state: FixtureState) -> dict[ResourceKey, CleanupAction]:
-    return {
-        (item.target_id, item.resource_type, item.resource_id): item.action
-        for item in state.journal
-    }
+    actions: dict[ResourceKey, CleanupAction] = {}
+    for item in state.journal:
+        key = (item.target_id, item.resource_type, item.resource_id)
+        previous = actions.get(key)
+        if previous is None:
+            if item.action == "removed":
+                raise ProviderContractError(
+                    "fixture journal contains an invalid ownership transition"
+                )
+            actions[key] = item.action
+            continue
+        if previous == "created" and item.action == "removed":
+            actions[key] = item.action
+            continue
+        raise ProviderContractError(
+            "fixture journal contains an invalid ownership transition"
+        )
+    return actions
 
 
 def _cleanup_resource_results(
@@ -275,6 +354,25 @@ def validate_fixture_state_snapshots(
     _validate_snapshot_bounds(snapshots, final_state)
     _validate_snapshot_journals(snapshots, final_state)
     _validate_snapshot_identity(snapshots, final_state)
+
+
+def validate_fixture_state_transition(
+    previous: FixtureState | None, current: FixtureState
+) -> None:
+    """Reject an unsafe snapshot before it can replace the recovery journal."""
+
+    if previous is None:
+        if current.journal:
+            raise ProviderContractError(
+                "prepare did not persist state before mutation"
+            )
+        return
+    if _fixture_state_identity(current) != _fixture_state_identity(previous):
+        raise ProviderContractError("fixture snapshot identity changed")
+    if len(current.journal) < len(previous.journal):
+        raise ProviderContractError("fixture journal snapshot regressed")
+    if current.journal[: len(previous.journal)] != previous.journal:
+        raise ProviderContractError("fixture journal snapshot is out of order")
 
 
 def _validate_snapshot_bounds(

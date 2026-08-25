@@ -37,6 +37,13 @@
           "type": "array",
           "uniqueItems": true
         },
+        "cluster_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+          "title": "Cluster Id",
+          "type": "string"
+        },
         "redacted_parameters": {
           "additionalProperties": {
             "$ref": "#/$defs/JsonValue"
@@ -65,6 +72,7 @@
       },
       "required": [
         "target_id",
+        "cluster_id",
         "scenario_id",
         "required",
         "case_ids",

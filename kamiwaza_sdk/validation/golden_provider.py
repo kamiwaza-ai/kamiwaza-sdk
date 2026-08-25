@@ -192,6 +192,7 @@ class GoldenProvider:
     def _resolve_target(target: InferenceTarget, fixture_mode: str) -> ResolvedScenario:
         return ResolvedScenario(
             target_id=target.id,
+            cluster_id=target.cluster_id,
             scenario_id=GOLDEN_SCENARIO_ID,
             required=target.required,
             case_ids=(GOLDEN_CASE_ID,),

@@ -23,9 +23,12 @@ from kamiwaza_sdk.validation.provider import (
     validate_cleanup_identity,
     validate_descriptor_registry,
     validate_evidence_identity,
+    validate_fixture_state_transition,
     validate_fixture_state_snapshots,
+    validate_plan_completeness,
     validate_plan_identity,
     validate_plan_registry,
+    validate_plan_runtime_identity,
     validate_provider_output,
     validate_state_identity,
 )
@@ -48,9 +51,21 @@ class RecordingFixtureStateWriter:
     """In-memory state sink used to verify incremental prepare journaling."""
 
     snapshots: list[FixtureState] = field(default_factory=list)
+    violation: ProviderContractError | None = field(
+        default=None, init=False, repr=False
+    )
 
     def write(self, state: FixtureState) -> None:
-        self.snapshots.append(validate_provider_output(state, FixtureState))
+        if self.violation is not None:
+            raise self.violation
+        try:
+            validated = validate_provider_output(state, FixtureState)
+            previous = self.snapshots[-1] if self.snapshots else None
+            validate_fixture_state_transition(previous, validated)
+        except ProviderContractError as error:
+            self.violation = ProviderContractError(str(error))
+            raise self.violation from None
+        self.snapshots.append(validated)
 
 
 def exercise_provider_contract(
@@ -66,6 +81,8 @@ def exercise_provider_contract(
     plan = _resolve_deterministically(provider, profile)
     validate_plan_registry(descriptors, plan)
     validate_plan_identity(profile, plan)
+    validate_plan_completeness(profile, descriptors, plan)
+    validate_plan_runtime_identity(plan, runtime)
     state = _prepare(provider, plan, runtime)
     validate_state_identity(plan, runtime, state)
     evidence, coverage, cleanup = _run_and_cleanup(provider, plan, runtime, state)
@@ -118,6 +135,8 @@ def _prepare(
     state = validate_provider_output(
         provider.prepare(plan, runtime, writer), FixtureState
     )
+    if writer.violation is not None:
+        raise writer.violation
     validate_fixture_state_snapshots(writer.snapshots, state)
     return state
 

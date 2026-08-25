@@ -24,6 +24,7 @@ def _plan() -> ScenarioPlan:
         selected=(
             ResolvedScenario(
                 target_id="evo-x2-2-llamacpp-chat",
+                cluster_id="evo-x2-2",
                 scenario_id="sdk.inference.lifecycle/v1",
                 required=True,
                 case_ids=("catalog-discovery", "openai-multi-turn-chat"),

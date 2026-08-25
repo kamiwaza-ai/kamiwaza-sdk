@@ -57,7 +57,12 @@ def _reject_unknown_references(
 class ClosedModel(BaseModel):
     """Immutable model that rejects fields outside the versioned contract."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
+    model_config = ConfigDict(
+        allow_inf_nan=False,
+        extra="forbid",
+        frozen=True,
+        populate_by_name=True,
+    )
 
 
 class DeploymentFacts(ClosedModel):
@@ -185,6 +190,8 @@ class ValidationProfile(ClosedModel):
         _reject_duplicate_values(
             target_ids, "profile inference target IDs contain a duplicate"
         )
+        if set(cluster_ids) & set(target_ids):
+            raise ValueError("profile target IDs overlap cluster IDs")
         _reject_unknown_references(
             {target.cluster_id for target in self.inference_targets},
             known_clusters,
@@ -244,6 +251,7 @@ class ScenarioCatalog(RootModel[tuple[ScenarioDescriptor, ...]]):
 
 class ResolvedScenario(ClosedModel):
     target_id: StableId
+    cluster_id: StableId
     scenario_id: StableId
     required: bool
     case_ids: Annotated[

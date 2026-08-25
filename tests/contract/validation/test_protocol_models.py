@@ -59,6 +59,14 @@ def test_validation_profile_requires_immutable_expected_image_reference() -> Non
     assert profile.inference_targets[0].expected_image.endswith("a" * 64)
 
 
+def test_validation_profile_requires_unique_target_ids_across_namespaces() -> None:
+    payload = profile_payload()
+    payload["inference_targets"][0]["id"] = "evo-x2-2"  # type: ignore[index]
+
+    with pytest.raises(ValidationError, match="target IDs overlap"):
+        ValidationProfile.model_validate(payload)
+
+
 @pytest.mark.parametrize("forbidden_field", ["markers", "suite_env", "engine_args"])
 def test_validation_profile_rejects_test_and_engine_selectors(
     forbidden_field: str,
@@ -74,10 +82,24 @@ def test_required_resolved_scenario_rejects_zero_cases() -> None:
     with pytest.raises(ValidationError, match="at least one case"):
         ResolvedScenario(
             target_id="evo-x2-2-llamacpp-chat",
+            cluster_id="evo-x2-2",
             scenario_id="sdk.inference.lifecycle/v1",
             required=True,
             case_ids=(),
             redacted_parameters={},
+        )
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_protocol_models_reject_non_finite_json_values(value: float) -> None:
+    with pytest.raises(ValidationError):
+        ResolvedScenario(
+            target_id="evo-x2-2-llamacpp-chat",
+            cluster_id="evo-x2-2",
+            scenario_id="sdk.inference.lifecycle/v1",
+            required=True,
+            case_ids=("openai-multi-turn-chat",),
+            redacted_parameters={"threshold": value},
         )
 
 

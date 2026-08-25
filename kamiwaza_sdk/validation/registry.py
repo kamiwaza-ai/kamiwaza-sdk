@@ -24,7 +24,12 @@ def model_digest(model: BaseModel) -> str:
     """Return a canonical SHA-256 digest for a protocol model."""
 
     payload = model.model_dump(mode="json", by_alias=True, exclude_none=False)
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    encoded = json.dumps(
+        payload,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
     return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 

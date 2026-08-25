@@ -280,6 +280,18 @@ class ForeignResolveTargetProvider(GoldenProvider):
         return plan.model_copy(update={"selected": (selected,)})
 
 
+class EmptyResolvePlanProvider(GoldenProvider):
+    def resolve(self, profile):  # type: ignore[no-untyped-def]
+        return super().resolve(profile).model_copy(update={"selected": ()})
+
+
+class DowngradedRequiredResolveProvider(GoldenProvider):
+    def resolve(self, profile):  # type: ignore[no-untyped-def]
+        plan = super().resolve(profile)
+        selected = plan.selected[0].model_copy(update={"required": False})
+        return plan.model_copy(update={"selected": (selected,)})
+
+
 class UndescribedResolveCaseProvider(GoldenProvider):
     def resolve(self, profile):  # type: ignore[no-untyped-def]
         plan = super().resolve(profile)
@@ -290,6 +302,11 @@ class UndescribedResolveCaseProvider(GoldenProvider):
 class ExplodingResolveProvider(GoldenProvider):
     def resolve(self, profile):  # type: ignore[no-untyped-def]
         raise RuntimeError("sensitive-provider-value")
+
+
+class ContractExplodingResolveProvider(GoldenProvider):
+    def resolve(self, profile):  # type: ignore[no-untyped-def]
+        raise ProviderContractError("credential=sensitive-provider-value")
 
 
 class WrongRunOutputProvider(GoldenProvider):
@@ -361,6 +378,25 @@ class RegressiveSnapshotProvider(GoldenProvider):
         return state
 
 
+class RegressiveSnapshotThenFailureProvider(GoldenProvider):
+    def prepare(self, plan, runtime, state_writer):  # type: ignore[no-untyped-def]
+        state = super().prepare(plan, runtime, RecordingFixtureStateWriter())
+        initial = state.model_copy(update={"journal": ()})
+        for snapshot in (initial, state, initial):
+            state_writer.write(snapshot)
+        raise ProviderContractError("credential=sensitive-provider-value")
+
+
+class SwallowedRegressiveSnapshotProvider(GoldenProvider):
+    def prepare(self, plan, runtime, state_writer):  # type: ignore[no-untyped-def]
+        state = super().prepare(plan, runtime, state_writer)
+        try:
+            state_writer.write(state.model_copy(update={"journal": ()}))
+        except ProviderContractError:
+            pass
+        return state
+
+
 class InvalidPartialIdentityProvider(GoldenProvider):
     def prepare(self, plan, runtime, state_writer):  # type: ignore[no-untyped-def]
         state = super().prepare(plan, runtime, RecordingFixtureStateWriter())
@@ -425,6 +461,14 @@ def test_cli_rejects_provider_that_does_not_persist_prepare_state(
         (WrongResolveDigestProvider(), "plan profile digest mismatch"),
         (ForeignResolveTargetProvider(), "undeclared target"),
         (UndescribedResolveCaseProvider(), "undescribed case"),
+        (
+            EmptyResolvePlanProvider(),
+            "requested scenario resolved to zero selected cases",
+        ),
+        (
+            DowngradedRequiredResolveProvider(),
+            "plan downgraded a required target",
+        ),
     ],
 )
 def test_cli_rejects_invalid_or_detached_plans(
@@ -550,6 +594,38 @@ def test_cli_rejects_runtime_content_changed_after_prepare(
         ],
         capsys,
         ArtifactFailure(evidence_path, "fixture state runtime digest mismatch"),
+    )
+
+
+def test_cli_rejects_runtime_without_the_selected_target_cluster(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    provider = GoldenProvider()
+    plan_path, runtime_path, state_path = _write_prepare_inputs(tmp_path, provider)
+    runtime = RuntimeContext.model_validate_json(runtime_path.read_text())
+    foreign_cluster = runtime.clusters[0].model_copy(
+        update={"id": "completely-foreign-cluster"}
+    )
+    runtime_path.write_text(
+        runtime.model_copy(update={"clusters": (foreign_cluster,)}).model_dump_json(
+            by_alias=True
+        ),
+        encoding="utf-8",
+    )
+
+    _assert_provider_failure(
+        provider,
+        [
+            "prepare",
+            "--plan",
+            str(plan_path),
+            "--runtime",
+            str(runtime_path),
+            "--state",
+            str(state_path),
+        ],
+        capsys,
+        ArtifactFailure(state_path, "runtime missing a selected cluster"),
     )
 
 
@@ -697,6 +773,76 @@ def test_cli_sanitizes_unexpected_provider_failures(
     assert "provider execution failed" in captured.err
     assert "sensitive-provider-value" not in captured.err
     assert not plan_path.exists()
+
+
+def test_cli_sanitizes_provider_contract_failures(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    profile_path = _write_golden_profile(tmp_path)
+    plan_path = tmp_path / "plan.json"
+
+    assert (
+        provider_main(
+            ContractExplodingResolveProvider(),
+            ["resolve", "--profile", str(profile_path), "--plan", str(plan_path)],
+        )
+        == 2
+    )
+    captured = capsys.readouterr()
+    assert "provider contract failed" in captured.err
+    assert "sensitive-provider-value" not in captured.err
+    assert not plan_path.exists()
+
+
+def test_cli_keeps_last_valid_snapshot_when_provider_regresses_then_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    provider = RegressiveSnapshotThenFailureProvider()
+    plan_path, runtime_path, state_path = _write_prepare_inputs(tmp_path, provider)
+
+    exit_code = provider_main(
+        provider,
+        [
+            "prepare",
+            "--plan",
+            str(plan_path),
+            "--runtime",
+            str(runtime_path),
+            "--state",
+            str(state_path),
+        ],
+    )
+
+    assert exit_code == 2
+    assert "sensitive-provider-value" not in capsys.readouterr().err
+    retained_state = FixtureState.model_validate_json(state_path.read_text())
+    assert len(retained_state.journal) == 1
+
+
+def test_cli_rejects_a_snapshot_violation_swallowed_by_the_provider(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    provider = SwallowedRegressiveSnapshotProvider()
+    plan_path, runtime_path, state_path = _write_prepare_inputs(tmp_path, provider)
+
+    assert (
+        provider_main(
+            provider,
+            [
+                "prepare",
+                "--plan",
+                str(plan_path),
+                "--runtime",
+                str(runtime_path),
+                "--state",
+                str(state_path),
+            ],
+        )
+        == 2
+    )
+    assert "fixture journal snapshot regressed" in capsys.readouterr().err
+    retained_state = FixtureState.model_validate_json(state_path.read_text())
+    assert len(retained_state.journal) == 1
 
 
 def test_fixture_state_write_fsyncs_file_and_parent_directory(
