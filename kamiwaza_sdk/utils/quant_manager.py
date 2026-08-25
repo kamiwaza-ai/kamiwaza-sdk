@@ -1,5 +1,5 @@
 import re
-from typing import List, Dict, Any, Optional
+from typing import Any, List, Optional
 
 
 class QuantizationManager:
@@ -46,7 +46,7 @@ class QuantizationManager:
         
         # Compile the regex pattern for detecting quantization formats once
         # Updated pattern to better match all quantization formats, case-insensitive
-        self._quant_pattern = re.compile(r'-(q[2-8]_[0-9k]|q[2-8]_k_[lms]|iq[1-4]_[a-z]+|fp\d+)', re.IGNORECASE)
+        self._quant_pattern = re.compile(r'-(q[2-8]_k_[lms]|q[2-8]_[0-9k]|iq[1-4]_[a-z]+|fp\d+)', re.IGNORECASE)
 
     def detect_quantization(self, filename: str) -> Optional[str]:
         """
